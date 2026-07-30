@@ -132,11 +132,7 @@ export function ChannelComposerActivityRow({
   }, [agentTypingPubkeys.length, agents, profiles]);
 
   return (
-    <div
-      className="h-8.5 overflow-visible bg-background px-5 pb-1.5 pt-0"
-      data-testid="channel-composer-activity-row"
-    >
-      <div className="flex h-full w-full items-center overflow-visible">
+    <div className="flex min-w-0 flex-1 items-center overflow-visible">
         {/* One strip hosts both groups: working pills plus the typing group
             as the strip's trailing slot sibling, so they share the scroller,
             edge fades, and layout/enter/exit animations. When the row gets
@@ -165,7 +161,6 @@ export function ChannelComposerActivityRow({
             workingBotPubkeys={pillBotPubkeys}
           />
         ) : null}
-      </div>
     </div>
   );
 }

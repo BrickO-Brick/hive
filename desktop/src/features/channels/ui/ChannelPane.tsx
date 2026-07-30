@@ -38,8 +38,7 @@ import { useFocusDrawerPresence } from "@/features/channels/ui/useFocusDrawerPre
 import { useChannelWorkingAgentPubkeys } from "@/features/agents/agentWorkingSignal";
 import { useCardMintJobs } from "@/features/agents/cardMintStore";
 import { BotActivityComposerAction } from "@/features/channels/ui/BotActivityBar";
-import { ChannelComposerActivityRow } from "@/features/channels/ui/ChannelComposerActivityRow";
-import { ComposerActivityAccessory } from "@/features/messages/ui/ComposerActivityAccessory";
+import { ChannelComposerActivityAccessory } from "@/features/channels/ui/ChannelComposerActivityAccessory";
 import { TypingIndicatorRow } from "@/features/messages/ui/TypingIndicatorRow";
 import {
   containsWelcomePersonaMention,
@@ -740,16 +739,15 @@ export const ChannelPane = React.memo(function ChannelPane({
                     bottom rail, so fading it cannot change the observed
                     overlay height or move the conversation. Its natural
                     content height remains responsive. */}
-                  <ComposerActivityAccessory visible={hasComposerBottomActivity}>
-                    <ChannelComposerActivityRow
-                      agents={activityAgents}
-                      channel={activeChannel}
-                      currentPubkey={currentPubkey}
-                      onOpenAgentSession={onOpenAgentSession}
-                      profiles={profiles}
-                      typingPubkeys={typingPubkeys}
-                    />
-                  </ComposerActivityAccessory>
+                  <ChannelComposerActivityAccessory
+                    agents={activityAgents}
+                    channel={activeChannel}
+                    currentPubkey={currentPubkey}
+                    onOpenAgentSession={onOpenAgentSession}
+                    profiles={profiles}
+                    typingPubkeys={typingPubkeys}
+                    visible={hasComposerBottomActivity}
+                  />
                 </div>
               </div>
             )}
