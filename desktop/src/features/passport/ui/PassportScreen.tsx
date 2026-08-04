@@ -6,8 +6,10 @@ import { toast } from "sonner";
 import { useAppNavigation } from "@/app/navigation/useAppNavigation";
 import {
   useManagedAgentsQuery,
+  usePersonasQuery,
   useRelayAgentsQuery,
 } from "@/features/agents/hooks";
+import { resolveAdoptionRecord } from "@/features/agents/lib/personaAdoption";
 import { useOpenAgentActivity } from "@/features/agents/useOpenAgentActivity";
 import { useChannelsQuery } from "@/features/channels/hooks";
 import { useCommunities } from "@/features/communities/useCommunities";
@@ -190,6 +192,29 @@ export function PassportScreen({
     relayAgentsQuery.data,
   ]);
 
+  // Origin: agents deployed from an adopted catalog entry keep a durable
+  // local record of where the persona came from (source coordinate + adoption
+  // date on the local copy). Local custody data, so it renders only for the
+  // agent's own operator.
+  const personasQuery = usePersonasQuery({
+    enabled: managedAgent?.personaId != null,
+  });
+  const linkedPersona = managedAgent?.personaId
+    ? personasQuery.data?.find(
+        (persona) => persona.id === managedAgent.personaId,
+      )
+    : undefined;
+  const adoptionRecord = linkedPersona
+    ? resolveAdoptionRecord(linkedPersona, selfPubkey)
+    : null;
+  const adoptionPublisherQuery = useUserProfileQuery(
+    adoptionRecord?.publisherPubkey ?? undefined,
+  );
+  const adoptionPublisherName = adoptionRecord
+    ? adoptionPublisherQuery.data?.displayName?.trim() ||
+      truncatePubkey(adoptionRecord.publisherPubkey)
+    : null;
+
   const navigate = useNavigate();
   const openAgentPassport = React.useCallback(
     (agentPubkey: string) => {
@@ -290,6 +315,36 @@ export function PassportScreen({
                 trailing={`${badges.length}`}
               >
                 <PassportBadgeList badges={badges} />
+              </RecordSection>
+            ) : null}
+
+            {adoptionRecord ? (
+              <RecordSection label="Origin · Adoption">
+                <div
+                  className="flex flex-col items-start gap-1"
+                  data-testid="passport-origin"
+                >
+                  <p className="text-sm text-muted-foreground">
+                    Persona added from{" "}
+                    <span className="text-foreground">
+                      {adoptionPublisherName}
+                    </span>
+                    ’s catalog entry via Discover on{" "}
+                    {formatStampDate(new Date(adoptionRecord.adoptedAt))}.
+                  </p>
+                  <Button
+                    className="text-muted-foreground hover:text-foreground"
+                    data-testid="passport-origin-publisher"
+                    onClick={() =>
+                      openAgentPassport(adoptionRecord.publisherPubkey)
+                    }
+                    size="sm"
+                    variant="ghost"
+                  >
+                    <UserRound className="mr-2 h-3.5 w-3.5" />
+                    View {adoptionPublisherName}’s passport
+                  </Button>
+                </div>
               </RecordSection>
             ) : null}
 

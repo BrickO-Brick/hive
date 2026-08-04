@@ -130,12 +130,19 @@ test("catalog entry shows the deployed agent's passport record", async ({
   await expect(page.getByTestId("passport-screen")).toBeVisible();
 });
 
-test("another member's deployment matches by persona name", async ({
+test("adopting a catalog entry records provenance on both passports", async ({
   page,
 }) => {
-  // Alice publishes the persona, but the running instance ("nadia") is
-  // operated by the viewer — adoption still shows on the entry.
+  // Alice published the entry; the viewer added it via Discover (local copy
+  // with a source coordinate + adoption date) and deployed it as "nadia".
   await installMockBridge(page, {
+    managedAgents: [
+      {
+        name: "nadia",
+        personaId: "adopted-nadia",
+        pubkey: OWNED_RELAY_AGENT_PUBKEY,
+      },
+    ],
     personaCatalogEvents: [
       createCatalogEvent({
         displayName: "nadia",
@@ -144,6 +151,18 @@ test("another member's deployment matches by persona name", async ({
         sourcePersonaId: "nadia-from-alice",
         systemPrompt: "Shared by alice, run by anyone.",
       }),
+    ],
+    personas: [
+      {
+        catalogSource: {
+          ownerPubkey: TEST_IDENTITIES.alice.pubkey,
+          personaId: "nadia-from-alice",
+        },
+        createdAt: "2026-03-03T10:00:00Z",
+        displayName: "nadia",
+        id: "adopted-nadia",
+        systemPrompt: "Shared by alice, run by anyone.",
+      },
     ],
     relayAgents: [
       {
@@ -162,6 +181,26 @@ test("another member's deployment matches by persona name", async ({
   await expect(
     passportSection.getByTestId("persona-catalog-publisher-passport"),
   ).toHaveText(/View alice’s passport/);
+
+  // The adopted copy's local provenance shows on the catalog entry…
+  await expect(
+    passportSection.getByTestId("persona-catalog-adopted"),
+  ).toHaveText(/In your setup since .*2026 — added from alice’s catalog/);
+
+  await waitForAnimations(page);
+  await page
+    .getByTestId("persona-catalog-detail-pane")
+    .screenshot({ path: `${OUTDIR}/04-catalog-adopted.png` });
+
+  // …and as an Origin section on the deployed agent's own passport.
+  await passportSection.getByTestId("passport-agent-chip").click();
+  await expect(page.getByTestId("passport-screen")).toBeVisible();
+  const origin = page.getByTestId("passport-origin");
+  await expect(origin).toHaveText(
+    /added from alice’s catalog entry via Discover/,
+  );
+  await waitForAnimations(page);
+  await origin.screenshot({ path: `${OUTDIR}/05-passport-origin.png` });
 });
 
 test("entry without a deployed agent shows the empty passport state", async ({

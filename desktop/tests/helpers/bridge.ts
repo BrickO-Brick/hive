@@ -101,6 +101,10 @@ type MockPersonaSeed = {
   model?: string | null;
   /** Provider pinned on the persona. Leave empty for Codex/Claude runtimes. */
   provider?: string | null;
+  /** Provenance of an adopted catalog copy (source coordinate). */
+  catalogSource?: { ownerPubkey: string; personaId: string } | null;
+  /** Creation timestamp — for adopted copies, the adoption date. */
+  createdAt?: string;
   namePool?: string[];
   respondTo?: "owner-only" | "allowlist" | "anyone";
   respondToAllowlist?: string[];

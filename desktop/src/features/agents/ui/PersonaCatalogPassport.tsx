@@ -1,12 +1,15 @@
 import * as React from "react";
 import { useNavigate } from "@tanstack/react-router";
-import { CopyPlus, IdCard } from "lucide-react";
+import { CircleCheck, CopyPlus, IdCard } from "lucide-react";
 
 import {
   useManagedAgentsQuery,
   useRelayAgentsQuery,
 } from "@/features/agents/hooks";
-import { countCatalogRepublishers } from "@/features/agents/lib/personaAdoption";
+import {
+  countCatalogRepublishers,
+  resolveAdoptionRecord,
+} from "@/features/agents/lib/personaAdoption";
 import { usePersonaCatalogQuery } from "@/features/agents/lib/usePersonaCatalogRelay";
 import { useCommunities } from "@/features/communities/useCommunities";
 import {
@@ -24,6 +27,18 @@ import { useIdentityQuery } from "@/shared/api/hooks";
 import type { AgentPersona } from "@/shared/api/types";
 import { Button } from "@/shared/ui/button";
 import { Skeleton } from "@/shared/ui/skeleton";
+
+function formatAdoptionDate(iso: string): string {
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) {
+    return iso;
+  }
+  return parsed.toLocaleDateString(undefined, {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+}
 
 /**
  * The passport record for a catalog entry: the agents running this persona
@@ -136,6 +151,10 @@ export function PersonaCatalogPassport({
   // cross-server runs are invisible from a single relay entirely.
   const { activeCommunity } = useCommunities();
   const catalogQuery = usePersonaCatalogQuery(activeCommunity?.id ?? null);
+  // Durable local provenance: when the viewer added this entry, their copy
+  // records the source coordinate and the adoption date.
+  const adoptionRecord = resolveAdoptionRecord(persona, selfPubkey);
+
   const republisherCount = React.useMemo(
     () =>
       countCatalogRepublishers(catalogQuery.data ?? [], {
@@ -223,6 +242,18 @@ export function PersonaCatalogPassport({
               appears here once one is.
             </p>
           )}
+          {adoptionRecord ? (
+            <p
+              className="flex items-center gap-2 text-sm text-muted-foreground"
+              data-testid="persona-catalog-adopted"
+            >
+              <CircleCheck className="h-3.5 w-3.5 shrink-0 text-chart-2" />
+              In your setup since {formatAdoptionDate(adoptionRecord.adoptedAt)}{" "}
+              — added from{" "}
+              {publisherName ? `${publisherName}’s` : "the publisher’s"}{" "}
+              catalog.
+            </p>
+          ) : null}
           {republisherCount > 0 ? (
             <p
               className="flex items-center gap-2 text-sm text-muted-foreground"

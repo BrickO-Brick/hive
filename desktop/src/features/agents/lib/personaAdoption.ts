@@ -9,6 +9,48 @@
 
 import type { PersonaCatalogPublication } from "@/features/agents/lib/personaCatalogRelay";
 
+/** Where an adopted persona came from, and when it entered this setup. */
+export type AdoptionRecord = {
+  /** The catalog entry's publisher — the identity the copy descends from. */
+  publisherPubkey: string;
+  /** ISO timestamp of the local copy's creation — the moment of adoption. */
+  adoptedAt: string;
+};
+
+/**
+ * The adoption provenance of a persona, when it was added from another
+ * member's catalog entry. Local copies persist their source coordinate
+ * (`catalogSource`) and their creation date, so this is a durable local
+ * record, not a heuristic. Returns null for the viewer's own entries, for
+ * catalog projections the viewer never added, and for personas created from
+ * scratch.
+ */
+export function resolveAdoptionRecord(
+  persona: {
+    id: string;
+    createdAt: string;
+    catalogSource?: { ownerPubkey: string } | null;
+  },
+  selfPubkey: string | null,
+): AdoptionRecord | null {
+  const source = persona.catalogSource;
+  if (!source) {
+    return null;
+  }
+  if (source.ownerPubkey.toLowerCase() === selfPubkey?.toLowerCase()) {
+    return null;
+  }
+  // Catalog projections that were never added use a synthetic `catalog:` id
+  // and carry the publication timestamp, not an adoption date.
+  if (persona.id.startsWith("catalog:")) {
+    return null;
+  }
+  return {
+    adoptedAt: persona.createdAt,
+    publisherPubkey: source.ownerPubkey,
+  };
+}
+
 /**
  * The identity of a persona definition for adoption matching: its operating
  * prompt when it has one (whitespace-insensitive), otherwise its display name.

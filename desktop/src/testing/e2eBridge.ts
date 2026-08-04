@@ -130,6 +130,10 @@ type MockPersonaSeed = {
   namePool?: string[];
   respondTo?: "owner-only" | "allowlist" | "anyone";
   respondToAllowlist?: string[];
+  /** Provenance of an adopted catalog copy (source coordinate). */
+  catalogSource?: { ownerPubkey: string; personaId: string } | null;
+  /** Creation timestamp — for adopted copies, the adoption date. */
+  createdAt?: string;
 };
 
 type MockTeamSeed = {
@@ -2342,8 +2346,14 @@ function resetMockPersonas(config?: E2eConfig) {
       is_active: persona.isActive ?? true,
       shared: persona.shared ?? false,
       source_team: persona.sourceTeam ?? null,
+      catalog_source: persona.catalogSource
+        ? {
+            owner_pubkey: persona.catalogSource.ownerPubkey,
+            persona_id: persona.catalogSource.personaId,
+          }
+        : null,
       env_vars: { ...(persona.envVars ?? {}) },
-      created_at: now,
+      created_at: persona.createdAt ?? now,
       updated_at: persona.updatedAt ?? now,
     });
   }
