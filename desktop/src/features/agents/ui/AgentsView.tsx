@@ -1,5 +1,5 @@
 import * as React from "react";
-import { EllipsisVertical, OctagonX, Settings2 } from "lucide-react";
+import { Compass, EllipsisVertical, OctagonX, Settings2 } from "lucide-react";
 import {
   consumePendingSnapshotImport,
   subscribeSnapshotImport,
@@ -142,6 +142,16 @@ export function AgentsView() {
               <>
                 <div className="flex flex-wrap justify-end gap-2 [@container(max-width:40rem)]:hidden">
                   <Button
+                    data-testid="discover-agents-button"
+                    disabled={personas.isPending}
+                    onClick={() => personas.openCatalog()}
+                    size="sm"
+                    variant="outline"
+                  >
+                    <Compass />
+                    Discover
+                  </Button>
+                  <Button
                     data-testid="agent-defaults-button"
                     ref={fullAiDefaultsTriggerRef}
                     onClick={(event) => openAiDefaults(event.currentTarget)}
@@ -183,6 +193,13 @@ export function AgentsView() {
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end">
+                    <DropdownMenuItem
+                      disabled={personas.isPending}
+                      onSelect={() => personas.openCatalog()}
+                    >
+                      <Compass />
+                      Discover
+                    </DropdownMenuItem>
                     <DropdownMenuItem
                       onSelect={() => {
                         openAiDefaults(compactActionsTriggerRef.current);
