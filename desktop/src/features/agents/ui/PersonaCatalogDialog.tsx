@@ -4,6 +4,7 @@ import { isCatalogPersonaSelected } from "@/features/agents/lib/catalog";
 import { isCatalogPersona } from "@/features/agents/lib/personaCatalogRelay";
 import { useUsersBatchQuery } from "@/features/profile/hooks";
 import { ProfileAvatar } from "@/features/profile/ui/ProfileAvatar";
+import { useIdentityQuery } from "@/shared/api/hooks";
 import type { AgentPersona } from "@/shared/api/types";
 import { useFeedbackToasts } from "@/shared/hooks/useToastEffect";
 import { cn } from "@/shared/lib/cn";
@@ -306,22 +307,23 @@ function PersonaCatalogDetail({
 }) {
   const isCommunityEntry =
     isCatalogPersona(persona) && !persona.catalogSource.isOwn;
+  const identityQuery = useIdentityQuery();
+  // Community entries resolve their publisher's profile; own/local entries
+  // resolve the viewer's, so "Added by You" carries the viewer's avatar.
   const ownerPubkey = isCommunityEntry
     ? persona.catalogSource.ownerPubkey
-    : undefined;
+    : identityQuery.data?.pubkey;
   const ownerBatchQuery = useUsersBatchQuery(ownerPubkey ? [ownerPubkey] : [], {
     enabled: !!ownerPubkey,
   });
+  const ownerSummary = ownerPubkey
+    ? ownerBatchQuery.data?.profiles[ownerPubkey.toLowerCase()]
+    : undefined;
 
-  let addedByLabel: string;
-  if (!isCommunityEntry) {
-    addedByLabel = "You";
-  } else {
-    const summary = ownerPubkey
-      ? ownerBatchQuery.data?.profiles[ownerPubkey.toLowerCase()]
-      : undefined;
-    addedByLabel = resolveCatalogOwnerLabel(summary);
-  }
+  const addedByLabel = isCommunityEntry
+    ? resolveCatalogOwnerLabel(ownerSummary)
+    : "You";
+  const addedByAvatarUrl = ownerSummary?.avatarUrl ?? null;
 
   return (
     <div className="w-full min-w-0 max-w-full space-y-6 overflow-x-hidden">
@@ -336,7 +338,11 @@ function PersonaCatalogDetail({
             {persona.displayName}
           </h3>
           {persona.isBuiltIn ? null : (
-            <PersonaAddedBy className="mt-0.5" label={addedByLabel} />
+            <PersonaAddedBy
+              avatarUrl={addedByAvatarUrl}
+              className="mt-0.5"
+              label={addedByLabel}
+            />
           )}
         </div>
       </div>
