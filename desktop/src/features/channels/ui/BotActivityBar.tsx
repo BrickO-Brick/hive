@@ -37,10 +37,13 @@ type BotActivityBarProps = {
   onOpenAgentSession: (pubkey: string, channelId?: string | null) => void;
   profiles?: UserProfileLookup;
   /**
-   * Combined typing indicator (humans + typing-fallback agents), rendered as
-   * the strip's trailing item — a sibling of the working pills, so it shares
-   * the scroller, edge fades, and layout/enter/exit animations.
+   * Agent pubkeys known to be typing in this strip's scope. Thread-only
+   * typing is intentionally absent from the channel-wide working registry,
+   * so callers pass it here to relabel an already pill-worthy agent without
+   * leaking thread activity into channel-level surfaces.
    */
+  typingBotPubkeys?: string[];
+  /** Combined human + typing-fallback agent indicator. */
   typingIndicator?: React.ReactNode;
   workingBotPubkeys: string[];
 };
@@ -240,6 +243,7 @@ function BotActivityAgentPill({
   onOpenAgentSession,
   pinWidth,
   profiles,
+  typingBotPubkeys,
 }: {
   agent: BotActivityAgent;
   avatarUrl: string | null;
@@ -256,6 +260,7 @@ function BotActivityAgentPill({
    */
   pinWidth: boolean;
   profiles?: UserProfileLookup;
+  typingBotPubkeys?: ReadonlySet<string>;
 }) {
   const pillKey = agent.pubkey.toLowerCase();
   const open = hover.activePubkey === pillKey;
@@ -276,7 +281,8 @@ function BotActivityAgentPill({
     subscribeAgentWorkingSignal,
     () => getAgentChannelTypingSince(agent.pubkey, channelId),
   );
-  const isTyping = typingSince !== null;
+  const isTyping =
+    typingBotPubkeys?.has(pillKey) === true || typingSince !== null;
   const activeId = isTyping
     ? TYPING_LABEL_ID
     : (headline?.id ?? GENERIC_LABEL_ID);
@@ -582,6 +588,7 @@ export function BotActivityComposerAction({
   channelId = null,
   onOpenAgentSession,
   profiles,
+  typingBotPubkeys = [],
   typingIndicator,
   workingBotPubkeys,
 }: BotActivityBarProps) {
@@ -611,6 +618,10 @@ export function BotActivityComposerAction({
 
     return agents.filter((agent) => workingSet.has(agent.pubkey.toLowerCase()));
   }, [agents, workingBotPubkeys]);
+  const typingBotSet = React.useMemo(
+    () => new Set(typingBotPubkeys.map((pubkey) => pubkey.toLowerCase())),
+    [typingBotPubkeys],
+  );
 
   // Turn-start pill order (earliest worker left-most, new agents append on
   // the right). Anchored to when each agent STARTED working — stable for the
@@ -762,6 +773,7 @@ export function BotActivityComposerAction({
                         onOpenAgentSession={onOpenAgentSession}
                         pinWidth={guardsOpenCard}
                         profiles={profiles}
+                        typingBotPubkeys={typingBotSet}
                       />
                     )}
                   </AnimatedPillSlot>

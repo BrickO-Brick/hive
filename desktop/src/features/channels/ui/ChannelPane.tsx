@@ -39,6 +39,7 @@ import { useChannelWorkingAgentPubkeys } from "@/features/agents/agentWorkingSig
 import { useCardMintJobs } from "@/features/agents/cardMintStore";
 import { BotActivityComposerAction } from "@/features/channels/ui/BotActivityBar";
 import { ChannelComposerActivityAccessory } from "@/features/channels/ui/ChannelComposerActivityAccessory";
+import { useThreadComposerActivity } from "@/features/channels/ui/useThreadComposerActivity";
 import { TypingIndicatorRow } from "@/features/messages/ui/TypingIndicatorRow";
 import {
   containsWelcomePersonaMention,
@@ -364,20 +365,16 @@ export const ChannelPane = React.memo(function ChannelPane({
   const hasCardMintActivity = useCardMintJobs().length > 0;
   const hasComposerBottomActivity =
     hasComposerBotActivity || hasTypingActivity || hasCardMintActivity;
-  const threadComposerBotTypingPubkeys = React.useMemo(() => {
-    if (!openThreadHeadId) return [];
-    return botTypingEntries
-      .filter((entry) => entry.threadHeadId === openThreadHeadId)
-      .map((entry) => entry.pubkey)
-      .filter(
-        (pubkey, index, all) =>
-          all.findIndex(
-            (candidate) => candidate.toLowerCase() === pubkey.toLowerCase(),
-          ) === index,
-      );
-  }, [botTypingEntries, openThreadHeadId]);
-  const hasThreadComposerBotActivity =
-    threadComposerBotTypingPubkeys.length > 0;
+  const {
+    combinedTypingPubkeys: combinedThreadTypingPubkeys,
+    hasActivity: hasThreadComposerActivity,
+    pillBotPubkeys: threadPillBotPubkeys,
+  } = useThreadComposerActivity({
+    botTypingEntries,
+    channelId: activeChannel?.id ?? null,
+    threadHeadId: openThreadHeadId,
+    typingPubkeys: threadTypingPubkeys,
+  });
   const directMessageIntro = React.useMemo(
     () =>
       buildDirectMessageIntro({
@@ -836,34 +833,27 @@ export const ChannelPane = React.memo(function ChannelPane({
                   threadHeadMessage.id,
                 )}
                 threadReplyUnreadCounts={threadReplyUnreadCounts}
-                activityAccessoryVisible={
-                  hasThreadComposerBotActivity ||
-                  threadTypingPubkeys.length > 0
-                }
+                activityAccessoryVisible={hasThreadComposerActivity}
                 activityAccessoryContent={
-                  hasThreadComposerBotActivity ||
-                  threadTypingPubkeys.length > 0 ? (
+                  hasThreadComposerActivity ? (
                     <BotActivityComposerAction
                       agents={activityAgents}
                       channelId={activeChannel?.id ?? null}
                       onOpenAgentSession={onOpenAgentSession}
                       profiles={profiles}
+                      typingBotPubkeys={threadPillBotPubkeys}
                       typingIndicator={
-                        threadTypingPubkeys.length > 0 ? (
+                        combinedThreadTypingPubkeys.length > 0 ? (
                           <TypingIndicatorRow
                             channel={activeChannel}
-                            // The strip's slot owns spacing and the
-                            // typing-only inset; zero the base paddings and
-                            // let the row shrink so the lone-item slot can
-                            // ellipsize the label.
                             className="min-w-0 shrink px-0 py-0 sm:px-0"
                             currentPubkey={currentPubkey}
                             profiles={profiles}
-                            typingPubkeys={threadTypingPubkeys}
+                            typingPubkeys={combinedThreadTypingPubkeys}
                           />
                         ) : null
                       }
-                      workingBotPubkeys={threadComposerBotTypingPubkeys}
+                      workingBotPubkeys={threadPillBotPubkeys}
                     />
                   ) : null
                 }
