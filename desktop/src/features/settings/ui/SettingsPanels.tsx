@@ -14,6 +14,7 @@ import {
   MonitorCog,
   Moon,
   ShieldAlert,
+  ShieldCheck,
   Smartphone,
   Smile,
   Sun,
@@ -69,6 +70,7 @@ import { ModerationQueueCard } from "./ModerationQueueCard";
 import { NotificationSettingsCard } from "./NotificationSettingsCard";
 import { AgentsSettingsPanel } from "./AgentsSettingsPanel";
 import { HostedCommunitiesSettingsCard } from "./HostedCommunitiesSettingsCard";
+import { AdminConsoleSettingsCard } from "@/features/admin-console/AdminConsoleSettingsCard";
 import { SettingsOptionGroup, SettingsOptionRow } from "./SettingsOptionGroup";
 import { ProfileSettingsCard } from "./ProfileSettingsCard";
 import { UpdateChecker } from "../UpdateChecker";
@@ -88,6 +90,7 @@ export type SettingsSection =
   | "hosted-communities"
   | "community-members"
   | "moderation"
+  | "admin-console"
   | "custom-emoji"
   | "local-archive"
   | "mobile"
@@ -108,6 +111,7 @@ const SETTINGS_SECTION_VALUES: readonly SettingsSection[] = [
   "hosted-communities",
   "community-members",
   "moderation",
+  "admin-console",
   "custom-emoji",
   "local-archive",
   "mobile",
@@ -206,6 +210,11 @@ export const settingsSections: SettingsSectionDescriptor[] = [
     value: "moderation",
     label: "Moderation",
     icon: ShieldAlert,
+  },
+  {
+    value: "admin-console",
+    label: "Moderation console",
+    icon: ShieldCheck,
   },
   {
     value: "custom-emoji",
@@ -863,6 +872,8 @@ export function renderSettingsSection(
       );
     case "moderation":
       return <ModerationQueueCard />;
+    case "admin-console":
+      return <AdminConsoleSettingsCard />;
     case "custom-emoji":
       return <CustomEmojiSettingsCard />;
     case "local-archive":
