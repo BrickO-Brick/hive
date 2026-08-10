@@ -1549,15 +1549,29 @@ struct RespawnResult {
 /// `event_id` is the hex id of the single event the steer carried.
 struct NativeSteerPrepared {
     channel_id: Uuid,
+    /// Membership generation captured when this edit was reserved. A removal
+    /// advances the generation even if the agent is subsequently re-added.
+    membership_generation: u64,
     event: nostr::Event,
     prompt_blocks: Vec<String>,
 }
 
-/// Async edit enrichment may finish after channel membership was revoked.
-/// Such prepared work is stale: removal drains its queue reservation, and it
-/// must never be forwarded to an otherwise still-live ACP turn.
-fn native_steer_preparation_is_stale(removed_channels: &HashSet<Uuid>, channel_id: Uuid) -> bool {
+/// Async edit enrichment may finish after channel membership changed. Such
+/// prepared work is stale: removal drains its queue reservation, and it must
+/// never be forwarded into either the removed membership period or a later
+/// re-added period.
+fn native_steer_preparation_is_stale(
+    removed_channels: &HashSet<Uuid>,
+    membership_generations: &HashMap<Uuid, u64>,
+    channel_id: Uuid,
+    prepared_generation: u64,
+) -> bool {
     removed_channels.contains(&channel_id)
+        || membership_generations
+            .get(&channel_id)
+            .copied()
+            .unwrap_or(0)
+            != prepared_generation
 }
 
 struct SteerAckEvent {
@@ -2389,6 +2403,9 @@ let (typing_tx, mut typing_rx) = mpsc::unbounded_channel::<(Uuid, String, Thread
     // causal invalidation is needed, add a monotonic epoch counter per channel
     // and capture it in TaskMeta at dispatch time.
     let mut removed_channels: HashSet<Uuid> = HashSet::new();
+    // Incremented on removal, rather than reset on re-add, so asynchronous
+    // edit preparation cannot cross a membership boundary.
+    let mut membership_generations: HashMap<Uuid, u64> = HashMap::new();
 
     //
     // One SlotCircuit per agent slot. crash_times entries are pruned to the last
@@ -2739,6 +2756,8 @@ Typing(Uuid, String, ThreadTags),
                                     // Track removed channels so checked-out agents get
                                     // their sessions stripped when they return to the pool.
                                     removed_channels.insert(ch);
+                                    let generation = membership_generations.entry(ch).or_default();
+                                    *generation = generation.wrapping_add(1);
                                     typing_channels.remove(&ch);
                                     // Best-effort: clean up 👀 on drained events.
                                     // Note: the relay revokes membership before
@@ -3019,6 +3038,10 @@ Typing(Uuid, String, ThreadTags),
                                             let tx = native_steer_tx.clone();
                                             let ctx = Arc::clone(&ctx);
                                             let channel_id = buzz_event.channel_id;
+                                            let membership_generation = membership_generations
+                                                .get(&channel_id)
+                                                .copied()
+                                                .unwrap_or(0);
                                             tokio::spawn(async move {
                                                 let prompt_blocks = pool::format_native_steer_prompt(
                                                     channel_id,
@@ -3029,6 +3052,7 @@ Typing(Uuid, String, ThreadTags),
                                                 .await;
                                                 let _ = tx.send(NativeSteerPrepared {
                                                     channel_id,
+                                                    membership_generation,
                                                     event: event_for_steer,
                                                     prompt_blocks,
                                                 });
@@ -3304,10 +3328,16 @@ Typing(Uuid, String, ThreadTags),
             }
             Some(PoolEvent::NativeSteerPrepared(NativeSteerPrepared {
                 channel_id,
+                membership_generation,
                 event,
                 prompt_blocks,
             })) => {
-                if native_steer_preparation_is_stale(&removed_channels, channel_id) {
+                if native_steer_preparation_is_stale(
+                    &removed_channels,
+                    &membership_generations,
+                    channel_id,
+                    membership_generation,
+                ) {
                     tracing::debug!(
                         %channel_id,
                         event_id = %event.id.to_hex(),
