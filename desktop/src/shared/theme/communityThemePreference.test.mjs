@@ -86,6 +86,29 @@ test("older theme records inherit the pre-migration appearance controls", () => 
   });
 });
 
+test("later legacy records use stable defaults instead of a prior community", () => {
+  const priorCommunity = {
+    ...DEFAULT_COMMUNITY_THEME,
+    glassBackground: true,
+    glassOpacity: 42,
+    prominentActiveTab: true,
+  };
+  const olderRecord = {
+    version: 1,
+    theme: "houston",
+    accent: "#a855f7",
+    followSystem: false,
+  };
+
+  assert.deepEqual(
+    parseCommunityThemePreference(
+      olderRecord,
+      communityThemeScopeFallback(true, priorCommunity),
+    ),
+    { ...DEFAULT_COMMUNITY_THEME, ...olderRecord },
+  );
+});
+
 test("appearance equality includes glass and prominent-tab choices", () => {
   assert.equal(
     sameCommunityThemePreference(DEFAULT_COMMUNITY_THEME, {

@@ -80,7 +80,10 @@ export function CommunityThemeController() {
 
   useLayoutEffect(() => {
     if (!pubkey || !relayUrl) return;
-    const legacyFallback = initialPreferenceRef.current;
+    const legacyFallback = communityThemeScopeFallback(
+      hasMigratedCommunityTheme(pubkey),
+      initialPreferenceRef.current,
+    );
     const local = readCommunityThemePreference(
       pubkey,
       relayUrl,
@@ -90,10 +93,7 @@ export function CommunityThemeController() {
     // Preserve the user's existing global appearance the first time this
     // feature sees their current community. Later missing/malformed target
     // records use the stable default so the previous community never leaks.
-    const fallback = communityThemeScopeFallback(
-      hasMigratedCommunityTheme(pubkey),
-      initialPreferenceRef.current,
-    );
+    const fallback = legacyFallback;
     const scopedPreference = dirty ?? local ?? fallback;
     scopedPreferenceRef.current = scopedPreference;
     applyPreference(scopedPreference);
@@ -110,7 +110,10 @@ export function CommunityThemeController() {
   useEffect(() => {
     if (!pubkey || !relayUrl) return;
     const scope = `${pubkey}:${relayUrl}`;
-    const legacyFallback = initialPreferenceRef.current;
+    const legacyFallback = communityThemeScopeFallback(
+      hasMigratedCommunityTheme(pubkey),
+      initialPreferenceRef.current,
+    );
     scopeRef.current = scope;
     lastRemoteRef.current = { createdAt: 0, eventId: "" };
     const manager = new CommunityThemeSyncManager(
@@ -247,7 +250,10 @@ export function CommunityThemeController() {
     const stored = readCommunityThemePreference(
       pubkey,
       relayUrl,
-      initialPreferenceRef.current,
+      communityThemeScopeFallback(
+        hasMigratedCommunityTheme(pubkey),
+        initialPreferenceRef.current,
+      ),
     );
     if (stored && sameCommunityThemePreference(stored, preference)) return;
     scopedPreferenceRef.current = preference;

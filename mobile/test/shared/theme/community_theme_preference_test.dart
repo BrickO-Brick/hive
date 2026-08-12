@@ -34,7 +34,7 @@ void main() {
 
     expect(preference.glassBackground, isFalse);
     expect(preference.glassOpacity, 65);
-    expect(preference.prominentActiveTab, isTrue);
+    expect(preference.prominentActiveTab, isFalse);
     expect(preference.toJson(), containsPair('glassOpacity', 65));
   });
 

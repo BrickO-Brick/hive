@@ -12,7 +12,7 @@ const defaultCommunityGlassBackground = false;
 const defaultCommunityGlassOpacity = 65;
 const minCommunityGlassOpacity = 30;
 const maxCommunityGlassOpacity = 90;
-const defaultCommunityProminentActiveTab = true;
+const defaultCommunityProminentActiveTab = false;
 const defaultCommunityTheme = CommunityThemePreference(
   theme: 'buzz',
   accent: '#3b82f6',
