@@ -58,11 +58,64 @@ function nextStepLabel(status: ProjectPullRequest["status"]) {
   return "Review PR";
 }
 
-function pullRequestBranchLabel(pullRequest: ProjectPullRequest) {
-  if (pullRequest.branchName && pullRequest.targetBranch) {
-    return `${pullRequest.branchName} → ${pullRequest.targetBranch}`;
-  }
-  return pullRequest.branchName ?? pullRequest.targetBranch;
+function PullRequestContext({
+  authorLabel,
+  authorTestId,
+  className,
+  profiles,
+  pullRequest,
+  repository,
+  showMobileStatus = false,
+}: {
+  authorLabel: string;
+  authorTestId?: string;
+  className?: string;
+  profiles?: UserProfileLookup;
+  pullRequest: ProjectPullRequest;
+  repository: Repository;
+  showMobileStatus?: boolean;
+}) {
+  return (
+    <div
+      className={cn(
+        "flex min-w-0 items-center gap-x-1 overflow-hidden whitespace-nowrap",
+        className,
+      )}
+    >
+      <ProjectAuthorIdentity
+        label={authorLabel}
+        profiles={profiles}
+        pubkey={pullRequest.author}
+        testId={authorTestId}
+      />
+      <span>opened this in</span>
+      <span className="truncate">{repository.name}</span>
+      {pullRequest.branchName && pullRequest.targetBranch ? (
+        <>
+          <span>to merge</span>
+          <span className="truncate">{pullRequest.branchName}</span>
+          <span>into</span>
+          <span className="truncate">{pullRequest.targetBranch}</span>
+        </>
+      ) : pullRequest.branchName ? (
+        <>
+          <span>from</span>
+          <span className="truncate">{pullRequest.branchName}</span>
+        </>
+      ) : pullRequest.targetBranch ? (
+        <>
+          <span>targeting</span>
+          <span className="truncate">{pullRequest.targetBranch}</span>
+        </>
+      ) : null}
+      <span className="-ml-1">.</span>
+      {showMobileStatus ? (
+        <span className="md:hidden">
+          It is {pullRequest.status.toLowerCase()}.
+        </span>
+      ) : null}
+    </div>
+  );
 }
 
 function PullRequestGridCard({
@@ -82,7 +135,6 @@ function PullRequestGridCard({
     profiles,
     pubkey: pullRequest.author,
   });
-  const branchLabel = pullRequestBranchLabel(pullRequest);
 
   return (
     <Card
@@ -108,21 +160,13 @@ function PullRequestGridCard({
                 {pullRequest.title}
               </p>
             </div>
-            <div className="flex min-w-0 items-center gap-x-1.5 overflow-hidden whitespace-nowrap text-xs leading-4 text-muted-foreground">
-              <ProjectAuthorIdentity
-                label={authorLabel}
-                profiles={profiles}
-                pubkey={pullRequest.author}
-              />
-              <span aria-hidden>·</span>
-              <span className="truncate">{repository.name}</span>
-              {branchLabel ? (
-                <>
-                  <span aria-hidden>·</span>
-                  <span className="truncate">{branchLabel}</span>
-                </>
-              ) : null}
-            </div>
+            <PullRequestContext
+              authorLabel={authorLabel}
+              className="text-xs leading-4 text-muted-foreground"
+              profiles={profiles}
+              pullRequest={pullRequest}
+              repository={repository}
+            />
           </div>
           <Button
             className="relative z-10 h-7 shrink-0 px-2.5"
@@ -180,7 +224,6 @@ function PullRequestListRow({
     profiles,
     pubkey: pullRequest.author,
   });
-  const branchLabel = pullRequestBranchLabel(pullRequest);
 
   return (
     <div
@@ -203,26 +246,15 @@ function PullRequestListRow({
           <div className="flex min-w-0 items-center gap-1.5">
             <p className={PROJECT_LIST_ROW_TITLE_CLASS}>{pullRequest.title}</p>
           </div>
-          <div
-            className={`flex min-w-0 items-center gap-x-1.5 overflow-hidden whitespace-nowrap ${PROJECT_LIST_ROW_SUBTEXT_CLASS}`}
-          >
-            <ProjectAuthorIdentity
-              label={authorLabel}
-              profiles={profiles}
-              pubkey={pullRequest.author}
-              testId="projects-pr-author"
-            />
-            <span aria-hidden>·</span>
-            <span className="truncate">{repository.name}</span>
-            {branchLabel ? (
-              <>
-                <span aria-hidden>·</span>
-                <span className="truncate">{branchLabel}</span>
-              </>
-            ) : null}
-            <span className="md:hidden">·</span>
-            <span className="md:hidden">{pullRequest.status}</span>
-          </div>
+          <PullRequestContext
+            authorLabel={authorLabel}
+            authorTestId="projects-pr-author"
+            className={PROJECT_LIST_ROW_SUBTEXT_CLASS}
+            profiles={profiles}
+            pullRequest={pullRequest}
+            repository={repository}
+            showMobileStatus
+          />
         </div>
         <div className={PROJECT_LIST_ROW_TRAILING_CLASS}>
           <span className={PROJECT_LIST_ROW_STATUS_CLASS}>

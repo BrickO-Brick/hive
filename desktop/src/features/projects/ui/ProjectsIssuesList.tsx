@@ -88,7 +88,7 @@ function IssueHeader({
       {/* Flex (not inline flow) so the 20px author avatar cannot grow the
           line box — keeps row heights identical to the PR list. */}
       <div
-        className={`flex min-w-0 items-center gap-x-1.5 overflow-hidden whitespace-nowrap ${PROJECT_LIST_ROW_SUBTEXT_CLASS}`}
+        className={`flex min-w-0 items-center gap-x-1 overflow-hidden whitespace-nowrap ${PROJECT_LIST_ROW_SUBTEXT_CLASS}`}
       >
         <ProjectAuthorIdentity
           label={authorLabel}
@@ -96,18 +96,16 @@ function IssueHeader({
           pubkey={issue.author}
           testId={authorTestId}
         />
-        <span aria-hidden>·</span>
+        <span>opened this in</span>
         <span className="truncate">{repository.name}</span>
         {labelsSummary ? (
           <>
-            <span aria-hidden>·</span>
+            <span>and tagged it</span>
             <span className="truncate">{labelsSummary}</span>
           </>
         ) : null}
-        <span className="md:hidden" aria-hidden>
-          ·
-        </span>
-        <span className="md:hidden">{issue.status}</span>
+        <span className="-ml-1">.</span>
+        <span className="md:hidden">It is {issue.status.toLowerCase()}.</span>
       </div>
     </div>
   );
