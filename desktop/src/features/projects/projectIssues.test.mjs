@@ -46,6 +46,31 @@ function statusEvent({ kind, pubkey, createdAt }) {
   };
 }
 
+function assignmentComment(
+  pubkey,
+  assignees,
+  id,
+  label = ISSUE_ASSIGNMENT_LABEL,
+  createdAt = 200,
+) {
+  return {
+    id,
+    kind: 1,
+    pubkey,
+    created_at: createdAt,
+    content:
+      label === ISSUE_ASSIGNMENT_LABEL
+        ? "Assigned this issue"
+        : "Unassigned this issue",
+    tags: [
+      ["e", "e".repeat(64), "", "root"],
+      ["a", REPO_ADDRESS],
+      ...assignees.map((value) => ["p", value]),
+      ["t", label],
+    ],
+  };
+}
+
 test("ignores status events from a different pubkey", () => {
   const attackerClosed = statusEvent({
     kind: 1632,
@@ -157,28 +182,6 @@ test("assignees follow trusted assignment operations in deterministic order", ()
   const assignee = "d".repeat(64);
   const otherAssignee = "f".repeat(64);
   const volunteer = "5".repeat(64);
-  const assignmentComment = (
-    pubkey,
-    assignees,
-    id,
-    label = ISSUE_ASSIGNMENT_LABEL,
-    createdAt = 200,
-  ) => ({
-    id,
-    kind: 1,
-    pubkey,
-    created_at: createdAt,
-    content:
-      label === ISSUE_ASSIGNMENT_LABEL
-        ? "Assigned this issue"
-        : "Unassigned this issue",
-    tags: [
-      ["e", "e".repeat(64), "", "root"],
-      ["a", REPO_ADDRESS],
-      ...assignees.map((value) => ["p", value]),
-      ["t", label],
-    ],
-  });
 
   const issue = eventToProjectIssue(
     issueEvent(),
@@ -244,6 +247,52 @@ test("assignees follow trusted assignment operations in deterministic order", ()
   );
 
   assert.deepEqual(issue.assignees.sort(), [AUTHOR, assignee].sort());
+});
+
+test("owner unassignment overrides a future-dated self-assignment", () => {
+  const volunteer = "5".repeat(64);
+  const issue = eventToProjectIssue(
+    issueEvent(),
+    [],
+    [
+      assignmentComment(
+        volunteer,
+        [volunteer],
+        "future-self-assign",
+        undefined,
+        1_000,
+      ),
+      assignmentComment(
+        OWNER,
+        [volunteer],
+        "owner-unassign",
+        ISSUE_UNASSIGNMENT_LABEL,
+        200,
+      ),
+    ],
+  );
+
+  assert.deepEqual(issue.assignees, []);
+});
+
+test("owner assignment overrides a future-dated self-unassignment", () => {
+  const volunteer = "5".repeat(64);
+  const issue = eventToProjectIssue(
+    issueEvent(),
+    [],
+    [
+      assignmentComment(
+        volunteer,
+        [volunteer],
+        "future-self-unassign",
+        ISSUE_UNASSIGNMENT_LABEL,
+        1_000,
+      ),
+      assignmentComment(OWNER, [volunteer], "owner-assign", undefined, 200),
+    ],
+  );
+
+  assert.deepEqual(issue.assignees, [volunteer]);
 });
 
 test("issue recipients remain notification routing, not assignments", () => {

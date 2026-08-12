@@ -177,14 +177,14 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
   const [selectedPullRequestId, setSelectedPullRequestId] = React.useState<
     string | null
   >(pullRequestId ?? null);
-  React.useEffect(
-    () => setSelectedPullRequestId(pullRequestId ?? null),
-    [pullRequestId],
-  );
   const [selectedIssueId, setSelectedIssueId] = React.useState<string | null>(
     issueId ?? null,
   );
-  React.useEffect(() => setSelectedIssueId(issueId ?? null), [issueId]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the transient request ID deliberately reapplies an unchanged entity selection.
+  React.useEffect(() => {
+    setSelectedPullRequestId(pullRequestId ?? null);
+    setSelectedIssueId(issueId ?? null);
+  }, [entityNavigationId, issueId, pullRequestId]);
   const [selectedCommitHash, setSelectedCommitHash] = React.useState<
     string | null
   >(commitHash ?? null);

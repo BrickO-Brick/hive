@@ -17,6 +17,8 @@ const DEFAULT_MOCK_PUBKEY = "deadbeef".repeat(8);
 const REPO_ADDRESS = `30617:${ALICE_PUBKEY}:relay-tools`;
 const PR_ID = `e0${"ca4d".repeat(15)}ff`; // 64-hex event id
 const PR_SUBJECT = "Restore recipient-side entity cards";
+const ISSUE_ID = `f0${"1a2b".repeat(15)}ee`; // 64-hex event id
+const ISSUE_SUBJECT = "Reopen identical issue links";
 
 test("agent-style message with bare buzz:// links renders entity cards without snapshot tags", async ({
   page,
@@ -167,14 +169,56 @@ test("desktop composer shows entity card and send is not blocked by missing snap
   });
 });
 
-test("reopening the same entity link reapplies its workspace tab", async ({
+test("reopening the same entity link reapplies its workspace state", async ({
   page,
 }) => {
+  const repoAddress = `30617:${DEFAULT_MOCK_PUBKEY}:buzz`;
+  await page.addInitScript(
+    ({ issueId, issueSubject, prId, prSubject, repoAddress, owner }) => {
+      const createdAt = Math.floor(Date.now() / 1000) - 60;
+      window.__BUZZ_E2E_EXTRA_PROJECT_EVENTS__ = [
+        {
+          id: prId,
+          kind: 1618, // KIND_GIT_PULL_REQUEST
+          pubkey: owner,
+          created_at: createdAt,
+          content: "PR body",
+          tags: [
+            ["a", repoAddress],
+            ["subject", prSubject],
+            ["c", "abc123".padEnd(40, "0")],
+            ["branch-name", "fix/reopen-entity-link"],
+          ],
+        },
+        {
+          id: issueId,
+          kind: 1621, // KIND_GIT_ISSUE
+          pubkey: owner,
+          created_at: createdAt,
+          content: "Issue body",
+          tags: [
+            ["a", repoAddress],
+            ["subject", issueSubject],
+          ],
+        },
+      ];
+    },
+    {
+      issueId: ISSUE_ID,
+      issueSubject: ISSUE_SUBJECT,
+      prId: PR_ID,
+      prSubject: PR_SUBJECT,
+      repoAddress,
+      owner: DEFAULT_MOCK_PUBKEY,
+    },
+  );
   await installMockBridge(page);
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await expect(page.getByTestId("open-projects-view")).toBeVisible();
-  const link = `buzz://repo?owner=${DEFAULT_MOCK_PUBKEY}&d=buzz&tab=prs`;
-  const emitEntityLink = async () => {
+  const repoLink = `buzz://repo?owner=${DEFAULT_MOCK_PUBKEY}&d=buzz&tab=prs`;
+  const prLink = `buzz://pr?id=${PR_ID}&owner=${DEFAULT_MOCK_PUBKEY}&d=buzz`;
+  const issueLink = `buzz://issue?id=${ISSUE_ID}&owner=${DEFAULT_MOCK_PUBKEY}&d=buzz`;
+  const emitEntityLink = async (link: string) => {
     await page.waitForFunction(
       () => typeof window.__TAURI_INTERNALS__?.invoke === "function",
     );
@@ -188,7 +232,7 @@ test("reopening the same entity link reapplies its workspace tab", async ({
     );
   };
 
-  await emitEntityLink();
+  await emitEntityLink(repoLink);
   const pullRequestsTab = page.getByRole("tab", {
     name: "Pull Request",
     exact: true,
@@ -204,13 +248,31 @@ test("reopening the same entity link reapplies its workspace tab", async ({
     "true",
   );
 
-  await emitEntityLink();
+  await emitEntityLink(repoLink);
   await expect(pullRequestsTab).toHaveAttribute("aria-selected", "true");
 
   const filesTab = page.getByRole("tab", { name: "Files", exact: true });
   await filesTab.click();
   await expect(filesTab).toHaveAttribute("aria-selected", "true");
 
-  await emitEntityLink();
+  await emitEntityLink(repoLink);
   await expect(pullRequestsTab).toHaveAttribute("aria-selected", "true");
+
+  await emitEntityLink(prLink);
+  const prHeading = page.getByRole("heading", { name: PR_SUBJECT });
+  await expect(prHeading).toBeVisible();
+  await breadcrumb
+    .getByRole("button", { name: "Pull Request", exact: true })
+    .click();
+  await expect(prHeading).toHaveCount(0);
+  await emitEntityLink(prLink);
+  await expect(prHeading).toBeVisible();
+
+  await emitEntityLink(issueLink);
+  const issueHeading = page.getByRole("heading", { name: ISSUE_SUBJECT });
+  await expect(issueHeading).toBeVisible();
+  await breadcrumb.getByRole("button", { name: "Issues", exact: true }).click();
+  await expect(issueHeading).toHaveCount(0);
+  await emitEntityLink(issueLink);
+  await expect(issueHeading).toBeVisible();
 });

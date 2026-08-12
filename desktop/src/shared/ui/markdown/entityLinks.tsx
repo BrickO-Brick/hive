@@ -26,9 +26,9 @@ export function useOpenEntityLink(): (link: ParsedEntityLink) => void {
           ? link.tab
           : undefined;
       void goProject(entityLinkProjectRouteId(link), {
+        entityNavigationId: crypto.randomUUID(),
         ...(tab
           ? {
-              entityNavigationId: crypto.randomUUID(),
               tab,
             }
           : {}),

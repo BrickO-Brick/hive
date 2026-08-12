@@ -224,6 +224,7 @@ export function ProjectsView() {
           ...(projectsWorkItemsQuery.data?.issues.items.flatMap(({ issue }) => [
             issue.author,
             ...issue.recipients,
+            ...issue.assignees,
             ...issue.comments.map((comment) => comment.author),
           ]) ?? []),
         ].map(normalizePubkey),

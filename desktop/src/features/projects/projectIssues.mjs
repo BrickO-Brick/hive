@@ -84,24 +84,28 @@ function statusFromEvent(issue, statusEvent) {
 }
 
 /**
- * Assignment state is reduced from trusted kind:1 operations in chronological
- * order. `t: assignment` adds each `p` tag and `t: unassignment` removes it.
- * The issue root's `p` tags are notification routing only.
+ * Assignment state is reduced from trusted kind:1 operations. `t: assignment`
+ * adds each `p` tag and `t: unassignment` removes it. The issue root's `p`
+ * tags are notification routing only.
  *
  * Trusted signers are the issue author and repo owner (who may change anyone),
- * plus any community member whose operation names only themselves. Same-second
- * events use their id as a deterministic tie-breaker because relay result order
- * is not stable.
+ * plus any community member whose operation names only themselves. Self-service
+ * operations are applied first and authoritative operations last, so an author
+ * or owner decision wins regardless of signer-controlled timestamps. Within
+ * each authority class, same-second events use their id as a deterministic
+ * tie-breaker because relay result order is not stable.
  */
 function assigneesForIssue(issue, issueCommentEvents) {
   const allowedActors = allowedActorsForRoot(issue);
   const assignees = new Set();
-  const operations = sortEvents(
+  const selfServiceOperations = [];
+  const authoritativeOperations = [];
+  const events = sortEvents(
     issueCommentEvents.filter((event) =>
       event.tags.some((tag) => tag[0] === "e" && tag[1] === issue.id),
     ),
   );
-  for (const event of operations) {
+  for (const event of events) {
     const labels = getAllTags(event, "t");
     const isAssignment = labels.includes(ISSUE_ASSIGNMENT_LABEL);
     const isUnassignment = labels.includes(ISSUE_UNASSIGNMENT_LABEL);
@@ -112,6 +116,17 @@ function assigneesForIssue(issue, issueCommentEvents) {
     );
     const isSelfOperation = pubkeys.length === 1 && pubkeys[0] === signer;
     if (!allowedActors.has(signer) && !isSelfOperation) continue;
+    const operation = { isAssignment, pubkeys };
+    if (allowedActors.has(signer)) {
+      authoritativeOperations.push(operation);
+    } else {
+      selfServiceOperations.push(operation);
+    }
+  }
+  for (const { isAssignment, pubkeys } of [
+    ...selfServiceOperations,
+    ...authoritativeOperations,
+  ]) {
     for (const pubkey of pubkeys) {
       if (isAssignment) {
         assignees.add(pubkey);
