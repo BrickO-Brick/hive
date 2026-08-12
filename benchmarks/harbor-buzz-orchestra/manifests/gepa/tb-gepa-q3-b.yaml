@@ -1,0 +1,42 @@
+# GEPA per-problem probe Q3 (model-extraction-relu-logits, Q2 verdict 1/3 under v3),
+# arm B. Base: tb-gepa-twins-v3 (reply guard lineage).
+# Single variable vs base: mia-v4-selfcheck prompt — self-built numeric check
+# against the target's observable contract before DONE; near-miss repair loop;
+# never read the black box's internals.
+# Failure targeted: fQx2yGT crashed on hallucinated forward.A1 attribute;
+# pjCcGV3 matched 29/30 weight rows and shipped without re-probing the target.
+schema_version: "1"
+condition: tb-gepa-q3-b
+timing_signal: true
+roster:
+  - id: mia
+    kind: orchestrator
+    role: conn
+    require_reply: true
+    count: 1
+    endpoint: deepseek-ai/Deepseek-V4-Flash
+    model_revision: deepseek/deepseek-v4-flash-20260731
+    prompt:
+      path: personas/bench/gepa/mia-v4-selfcheck.md
+      sha256: 2c89b49b816946bba98f78a6a1c78ba7ccb69d7db64dee4bd701f78f4612169e
+    generation:
+      thinking_effort: high
+  - id: mie
+    kind: worker
+    role: twin
+    count: 1
+    endpoint: deepseek-ai/Deepseek-V4-Flash
+    model_revision: deepseek/deepseek-v4-flash-20260731
+    prompt:
+      path: personas/bench/gepa/mie-v0.md
+      sha256: a4924e4c4507ac466a7500bb34a04a782618df41dba850b6f0f729787c48439b
+    generation:
+      thinking_effort: high
+prices:
+  deepseek-ai/Deepseek-V4-Flash:
+    input_per_million_usd: 0.14
+    cached_input_per_million_usd: 0.14
+    output_per_million_usd: 0.28
+    cache_read_rate: 0.0
+trial_budget:
+  timeout_seconds: 36000
