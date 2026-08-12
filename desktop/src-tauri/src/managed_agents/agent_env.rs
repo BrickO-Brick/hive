@@ -97,26 +97,68 @@ pub(crate) fn build_buzz_agent_provider_defaults(cmd: &mut std::process::Command
     }
 }
 
-/// Drop inherited provider/model env before an agent's own is derived.
+/// Prefixes of inherited environment that must not reach an agent.
 ///
-/// `DERIVED_PROVIDER_MODEL_ENV_KEYS` are refused at save time so a stale
-/// override cannot shadow the record's structured provider/model fields. That
-/// guard only covers env we *persist*: the spawned child still inherits this
-/// process's environment, and Desktop inherits the user's login shell. A
-/// developer with goose installed exports `GOOSE_PROVIDER` there, and it
-/// reached the agent as if it were configuration — an agent set to OpenAI sent
-/// its OpenAI model to Anthropic and 404'd every turn while its settings still
-/// read "OpenAI" in the UI.
+/// `GOOSE_*` because goose reads its entire configuration from the
+/// environment, so any of it inherited from the launching shell is
+/// configuration Buzz did not choose. The provider families because Buzz
+/// supplies the agent's own credentials and endpoints; an inherited key would
+/// authenticate and bill the agent as whoever it belongs to.
+const STRIPPED_ENV_PREFIXES: &[&str] = &[
+    "GOOSE_",
+    "ANTHROPIC_",
+    "OPENAI_",
+    "OPENROUTER_",
+    "DATABRICKS_",
+];
+
+/// Whether an inherited variable is Buzz's to decide rather than the shell's.
+fn is_stripped_env_key(key: &str) -> bool {
+    STRIPPED_ENV_PREFIXES
+        .iter()
+        .any(|prefix| key.starts_with(prefix))
+}
+
+/// Drop inherited agent configuration so the record is the only source.
 ///
-/// Clearing them makes the record the only source: whatever
-/// `runtime_metadata_env_vars` writes afterwards is what the child sees, and an
-/// agent with no configured provider gets none rather than the developer's.
+/// A spawned agent inherits Desktop's environment, and Desktop inherits the
+/// user's login shell. A developer with goose installed exports
+/// `GOOSE_PROVIDER` there, and it reached the agent as if it were
+/// configuration: an agent set to OpenAI sent its OpenAI model to Anthropic and
+/// 404'd every turn while its settings still read "OpenAI" in the UI.
 ///
-/// Call AFTER `build_buzz_agent_provider_defaults` and BEFORE the record's own
-/// provider/model env.
-pub(crate) fn clear_inherited_provider_model_env(cmd: &mut std::process::Command) {
-    for key in super::env_vars::DERIVED_PROVIDER_MODEL_ENV_KEYS {
-        cmd.env_remove(key);
+/// Stripping is **by prefix, not by name**. Naming the two keys that caused
+/// that bug would leave `GOOSE_MODE`, `GOOSE_CONTEXT_LIMIT`,
+/// `GOOSE_MAX_TOKENS`, `OPENAI_API_KEY` and the rest still leaking — the same
+/// bug waiting on a different variable. Prefixes close the class.
+///
+/// Deliberately **not** a whole-environment allowlist. Agents run shell tools,
+/// and those need the developer's `PATH`, `HOME`, `SSH_AUTH_SOCK`, proxy
+/// settings and language-toolchain variables (`NVM_DIR`, `CARGO_HOME`,
+/// `JAVA_HOME`, …). An allowlist that missed one would break tools silently,
+/// which is a worse failure than the one being fixed. Only agent
+/// configuration is Buzz's to own; the rest of the shell is the user's.
+///
+/// Call AFTER `build_buzz_agent_provider_defaults` and BEFORE any env Buzz
+/// derives from the record — those are written afterwards and so survive.
+pub(crate) fn clear_inherited_agent_config(cmd: &mut std::process::Command) {
+    clear_inherited_agent_config_from(cmd, std::env::vars().map(|(key, _)| key));
+}
+
+/// The strip step, over a supplied key list.
+///
+/// Split out so a test can supply keys directly. Taking them from
+/// `std::env::vars()` inside the function would make the test pass or fail
+/// depending on what the developer running it happens to export — which is the
+/// same class of accident this whole function exists to prevent.
+fn clear_inherited_agent_config_from(
+    cmd: &mut std::process::Command,
+    keys: impl IntoIterator<Item = String>,
+) {
+    for key in keys {
+        if is_stripped_env_key(&key) {
+            cmd.env_remove(&key);
+        }
     }
 }
 
@@ -145,7 +187,8 @@ pub(crate) fn parse_agent_env_lines(raw: &str) -> Vec<(&str, &str)> {
 mod tests {
     use super::{
         baked_build_env, build_buzz_agent_provider_defaults, build_env_map,
-        clear_inherited_provider_model_env, discovery_env_with_baked_floor, parse_agent_env_lines,
+        clear_inherited_agent_config_from, discovery_env_with_baked_floor, is_stripped_env_key,
+        parse_agent_env_lines,
     };
 
     #[test]
@@ -175,23 +218,31 @@ mod tests {
     ///
     /// Desktop inherits the developer's login shell, so `GOOSE_PROVIDER` from
     /// an installed goose reached the agent subprocess and beat the record's
-    /// configured provider. Spawn must clear the derived keys before writing
-    /// the ones it derives, so the record is the only source.
+    /// configured provider. Spawn must strip inherited agent configuration
+    /// before writing what it derives, so the record is the only source.
     ///
-    /// Uses `env` as the child rather than reaching into `spawn_agent_child`
-    /// (which needs an `AppHandle`): the assertion is about what survives to
-    /// the child's environment, which is exactly what `env` prints.
+    /// Inherited keys are supplied explicitly rather than read from the real
+    /// environment: a test that depended on what the developer exports would
+    /// be testing their shell, not this code.
     #[test]
-    fn spawn_clears_inherited_provider_and_model_before_deriving_its_own() {
+    fn spawn_strips_inherited_agent_config_before_deriving_its_own() {
+        let inherited = [
+            "GOOSE_PROVIDER",
+            "GOOSE_MODEL",
+            "GOOSE_MODE",
+            "GOOSE_CONTEXT_LIMIT",
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "DATABRICKS_HOST",
+        ];
+
         let mut cmd = std::process::Command::new("env");
         cmd.env_clear();
-        // Stand in for the inherited login-shell environment.
-        for key in super::super::env_vars::DERIVED_PROVIDER_MODEL_ENV_KEYS {
+        for key in inherited {
             cmd.env(key, "inherited-from-login-shell");
         }
 
-        // The clearing step under test, as `spawn_agent_child` calls it.
-        clear_inherited_provider_model_env(&mut cmd);
+        clear_inherited_agent_config_from(&mut cmd, inherited.iter().map(|key| (*key).to_string()));
         // Then the record's own values, as `runtime_metadata_env_vars` writes.
         cmd.env("BUZZ_AGENT_PROVIDER", "openai");
         cmd.env("BUZZ_AGENT_MODEL", "gpt-5.6-sol");
@@ -201,14 +252,43 @@ mod tests {
 
         assert!(
             !stdout.contains("inherited-from-login-shell"),
-            "no inherited provider/model value may reach the agent: {stdout}"
+            "no inherited agent config may reach the agent: {stdout}"
         );
         assert!(stdout.contains("BUZZ_AGENT_PROVIDER=openai"));
         assert!(stdout.contains("BUZZ_AGENT_MODEL=gpt-5.6-sol"));
-        // An agent with no configured provider must get none at all, rather
-        // than silently inheriting the developer's.
-        assert!(!stdout.contains("GOOSE_PROVIDER="));
-        assert!(!stdout.contains("GOOSE_MODEL="));
+    }
+
+    /// Stripping is by prefix so a variable we never thought about cannot leak
+    /// the same way `GOOSE_PROVIDER` did. The negative cases matter as much:
+    /// agents run shell tools that need the developer's toolchain and auth
+    /// sockets, so only agent *configuration* is Buzz's to own.
+    #[test]
+    fn only_agent_configuration_is_stripped() {
+        for key in [
+            "GOOSE_PROVIDER",
+            "GOOSE_MODE",
+            "GOOSE_SOMETHING_INVENTED_LATER",
+            "OPENAI_API_KEY",
+            "ANTHROPIC_BASE_URL",
+            "OPENROUTER_MODEL",
+            "DATABRICKS_TOKEN",
+        ] {
+            assert!(is_stripped_env_key(key), "{key} should be stripped");
+        }
+
+        for key in [
+            "PATH",
+            "HOME",
+            "SSH_AUTH_SOCK",
+            "HTTPS_PROXY",
+            "NVM_DIR",
+            "CARGO_HOME",
+            "TMPDIR",
+            "BUZZ_AGENT_PROVIDER",
+            "BUZZ_ACP_RELAY_URL",
+        ] {
+            assert!(!is_stripped_env_key(key), "{key} must survive");
+        }
     }
 
     #[test]

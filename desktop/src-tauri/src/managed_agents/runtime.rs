@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use tauri::AppHandle;
 
-use super::agent_env::{build_buzz_agent_provider_defaults, clear_inherited_provider_model_env};
+use super::agent_env::{build_buzz_agent_provider_defaults, clear_inherited_agent_config};
 
 use crate::{
     managed_agents::{
@@ -740,7 +740,7 @@ pub fn spawn_agent_child(
         resolve_session_title(record.display_name.as_deref(), &record.name),
     );
     build_buzz_agent_provider_defaults(&mut command);
-    clear_inherited_provider_model_env(&mut command);
+    clear_inherited_agent_config(&mut command);
     if let Some(meta) = runtime_meta {
         for (key, value) in runtime_metadata_env_vars(
             meta.model_env_var,
