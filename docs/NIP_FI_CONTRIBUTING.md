@@ -28,12 +28,12 @@ Do not move later runtime behavior into an earlier reviewed commit to make a che
 
 ## Stable labels
 
-`FI-INV-01` through `FI-INV-16` and the 24 `FI-TRACE-*` identifiers are public review interfaces. Do not renumber or reuse them for different semantics.
+`FI-INV-01` through `FI-INV-16` and the 24 `FI-TRACE-*` identifiers are public review interfaces. Do not renumber them. When an existing profile-neutral trace gains a new transport construction, record an explicit transport-contract revision and profile-contract digest; evidence under the older meaning is not transferable.
 
 When behavior changes:
 
 1. update the normative text and model together;
-2. decide whether an existing trace still represents the same oracle;
+2. decide whether an existing trace still represents the same oracle or needs an explicit contract revision;
 3. add a new stable trace only when no existing trace can express the behavior;
 4. update the matrix and example report in the same series; and
 5. hand the label to the implementation stack for executable adapter coverage.
@@ -42,13 +42,13 @@ A wording cleanup that does not change behavior should not churn labels.
 
 ## Behavioral adapters
 
-An adapter maps a stable trace to executable behavior at one exact implementation revision. It records the command, test IDs, fixtures, expected oracle, artifacts, and cleanup.
+An adapter maps a stable trace to executable behavior at one exact implementation revision. It records the command, test IDs, fixtures, expected oracle, artifacts, cleanup, transport-contract revision, and applicable profile-contract digest.
 
 Adapters should exercise production or production-equivalent entry points. Internal helpers may inspect state or inject an outage. They cannot replace the protected operation under test.
 
 Examples:
 
-- verifier parity runs one assertion corpus through every transport adapter;
+- verifier parity runs one shared authorization-projection corpus through every transport adapter, validates each profile's identity, revision, digest, `policy_id`, and deadlines, and hands changed dependencies to the prepared-stale trace;
 - uniform authority executes the protected-route inventory and observes policy identity at each ingress;
 - tombstone replay creates selector state in the database, presents fresh evidence through a real ingress, and verifies no mutation;
 - final-denial tests inspect every authoritative store, prove zero denied receipts, and exercise available and exhausted denial-observation channels; and
@@ -93,10 +93,12 @@ Do not describe a feature as conforming because it compiles, parses configuratio
 ### Runtime
 
 - Every protected ingress uses one current authority and policy lineage.
-- The canonical verifier produces identical decisions across transports.
-- HMAC provenance covers the exact canonical request and retains replay state long enough.
+- The selected transport comes only from server configuration and never falls back.
+- Every profile produces the same closed normalized result and reaches the same final-admission authority.
+- When HMAC-v2 is configured, provenance covers the exact canonical request and retains replay state long enough.
+- A registered authenticated-edge adapter proves immediate-caller authentication, origin isolation, request integrity, field stripping, upstream-policy validation, and its mechanism-specific replay behavior.
 - Binding and lifecycle decisions are serialized under concurrency.
-- JWKS addition, removal, hard expiry, and outage behavior are exercised.
+- When a local JWT/JWKS verifier is configured, JWKS addition, removal, hard expiry, and outage behavior are exercised; other adapters exercise their authenticated current-policy dependencies.
 - Lease reuse checks current dependencies.
 - Application denial leaves no authority or application mutation, creates no authorization receipt, and remains effective when denial observation is unavailable.
 
@@ -123,6 +125,7 @@ Do not describe a feature as conforming because it compiles, parses configuratio
 
 - All 24 traces appear exactly once in the report.
 - Every required trace passes at the claim tuple.
+- Proxy and verifier-parity evidence matches the claim's transport-contract revision and profile-contract digest.
 - Every `not-applicable` trace has executable absence evidence.
 - Artifacts and digests resolve.
 - Privacy canaries are absent from every public and operational sink.
@@ -142,9 +145,9 @@ Runtime and deployment changes additionally run the repository's normal gates an
 
 ## Security-sensitive changes
 
-Treat verifier rules, proxy canonicalization, secret rotation, replay retention, lifecycle transitions, privacy filters, denial mapping, delegation, lease invalidation, restore, and rollback as security-sensitive. Update the [threat model](NIP_FI_THREAT_MODEL.md) when a trust boundary, asset, attacker capability, or residual risk changes.
+Treat verifier rules, normalized-result mappings, profile registration, proxy canonicalization, secret rotation, replay retention, lifecycle transitions, privacy filters, denial mapping, delegation, lease invalidation, restore, and rollback as security-sensitive. Update the [threat model](NIP_FI_THREAT_MODEL.md) when a trust boundary, asset, attacker capability, or residual risk changes.
 
-Never place real assertions, subjects, issuer-private values, HMAC secrets, operator credentials, or production evidence in examples or test fixtures.
+Never place real assertions, subjects, issuer-private values, HMAC secrets, registered profile identifiers, private deployment fields, operator credentials, or production evidence in examples or test fixtures.
 
 ## Commit and handoff
 

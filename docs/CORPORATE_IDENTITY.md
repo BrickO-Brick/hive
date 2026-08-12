@@ -105,10 +105,11 @@ The future parser must reject unknown fields. In Enforce mode:
   `max_presentations_per_domain` cannot exceed `audit.max_events_per_domain`,
   and the per-actor and per-peer limits cannot exceed the per-domain limit.
 - `transport`, `enrollment`, and `restore` are required non-empty objects
-  consumed by the matching runtime adapters. A future production ingress requires the
-  exact `trusted_proxy_hmac_v2` transport configuration shown above; the
-  trusted-proxy provenance verifier to be constructed at startup, before
-  listeners open.
+  consumed by matching runtime adapters. The example uses the stock
+  `trusted_proxy_hmac_v2` adapter. A later implementation may instead select
+  `client_attached` or one installed registered profile for a bound route and
+  domain. Selection occurs before listeners open, never from request input,
+  and failure never falls back to another profile.
 
 The future implementation must validate the `jwks` refresh policy at construction: a fetched document
 cannot exceed 4 MiB, a snapshot cannot stay fresh longer than 24 hours, every
@@ -145,7 +146,7 @@ session evidence.
 
 ## Supported boundary
 
-NIP-FI combines a valid issuer assertion with independent fresh Nostr key proof, current durable binding and lifecycle state, server-owned request context, and final application admission. For the trusted-proxy profile, the stock Buzz contract requires cryptographic HMAC provenance bound to the complete canonical request. Header presence and network location alone are insufficient.
+NIP-FI combines a verified issuer-qualified assertion result with independent fresh Nostr key proof, current durable binding and lifecycle state, server-owned request context, and final application admission. The stock `trusted-proxy-hmac-v2` construction binds HMAC provenance to the complete canonical request. A private registered trusted-edge profile may use another reviewed construction only when it satisfies the same normalized-result and final-admission contract. Header presence and network location alone are insufficient.
 
 NIP-FI defines no public corporate directory or identity projection. Issuer-qualified identity and profile claims remain access-controlled enforcement data.
 
@@ -169,7 +170,7 @@ NIP-42 and NIP-98 continue to prove control of a Nostr key. They do not replace 
 3. **Define domains and policies:** map each server-owned domain to exact issuer-qualified identities `(iss, sub)`, accepted semantics, enrollment mode, and transport profile.
 4. **Normalize state:** represent active durable bindings, immutable provenance, retired pairs, disabled identities, revoked keys, pending replacement lineage, typed history, and versions.
 5. **Verify imports:** require independent evidence for imported identity/key pairs. Do not treat a forwarded header, email match, or expired assertion as proof of key control.
-6. **Install without activation:** deploy the later exact implementation with discovery and enforcement off, one canonical verifier, and no legacy fallback.
+6. **Install without activation:** deploy the later exact implementation with discovery and enforcement off, one canonical normalized-result and final-admission contract, and no legacy fallback.
 7. **Run behavior:** execute all applicable `FI-TRACE-*` adapters at the exact artifact, deployment, and policy digests, including route inventory and deployed-boundary proxy negatives.
 8. **Cut over atomically:** enable one authority across the complete protected-ingress set and remove the legacy path. Canary isolated domains or deployments, not individual routes under competing authorities.
 9. **Verify and retain:** test old headers, old keys, tombstones, conflicts, denial privacy, dependency outages, restore, and rollback; retain privacy-safe evidence.

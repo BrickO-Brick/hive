@@ -64,21 +64,21 @@ The inventory records the server-selected domain, operation, resource, transport
 
 Trusted listener and route configuration resolves the target context before identity evidence can influence a decision. The Nostr proof then seals the actor key into the request context.
 
-The implementation must not accept a client domain, forwarded authority, assertion claim, tag, or query parameter as a domain selector. If a trusted edge rewrites authority or path, it completes the rewrite before computing HMAC provenance and the relay reconstructs the same canonical post-routing values.
+The implementation must not accept a client domain, forwarded authority, assertion claim, tag, or query parameter as a domain selector. If a trusted edge rewrites authority or path, it completes the rewrite before producing configured profile evidence. HMAC-v2 computes its MAC only after that rewrite, and the relay reconstructs the same canonical post-routing values.
 
 Multi-domain deployments use the same authenticated domain lookup for authorization and discovery. An unconfigured domain receives no inherited NIP-FI profile.
 
 ## Canonical assertion verifier
 
-Every transport adapter calls one provider-neutral assertion verifier contract. The verifier owns compact-JWS parsing, issuer and audience selection, algorithm and key compatibility, subject rules, optional key attestation, time bounds, size bounds, JWKS refresh, and normalized evidence. Operators separately establish that each configured issuer's subject is stable and non-reassignable; the verifier cannot prove that property from one assertion.
+Every transport adapter produces one closed normalized verified assertion result and reaches the same final-admission authority. The stock adapters call one provider-neutral compact-JWS verifier. A registered adapter either calls that verifier or authenticates its closed upstream assertion and authorization claim set before producing the same result. Ordinary forwarded headers and adapter-local authorization cannot enter it. Operators separately establish that each configured issuer's subject is stable and non-reassignable; one request cannot prove that property.
 
-The stable verifier policy identity deterministically covers every configured semantic input—including the allowed algorithm set and authenticated key-source identity—plus a versioned fingerprint of compiled acceptance rules. It excludes rotating keys and transport. A separate JWKS generation identifies the effective key snapshot. Prepared and direct-lease evidence retains a confidential handle to the exact assertion and the key snapshot's hard-validity deadline.
+The stable verifier policy identity deterministically covers every configured assertion-semantic input—including identity/key/claim mapping, bounds, normalization, authenticated key or upstream-policy source identity, and applicable algorithm rules—plus a versioned fingerprint of compiled acceptance rules. It excludes transport and rotating key or upstream-policy snapshot contents. Prepared and direct-lease evidence retains the current profile and assertion-policy dependencies plus confidential material needed to revalidate the authoritative assertion input.
 
-On a generation change, final admission and lease reuse revalidate the original assertion against the current snapshot. A retained key can continue to authorize. A key absent from the current snapshot, an unreadable current snapshot, or a hard-expired snapshot denies. The base contract has no durable anti-rollback oracle, so republication of an old authenticated set can make its keys current again. `FI-TRACE-VERIFIER-PARITY`, `FI-TRACE-JWKS-ADD`, and `FI-TRACE-JWKS-REMOVE` prove these behaviors through every transport.
+For a JWT policy, a separate JWKS generation identifies the effective key snapshot. On a generation change, final admission and lease reuse revalidate the original assertion against the current snapshot. A retained key can continue to authorize. A key absent from the current snapshot, an unreadable current snapshot, or a hard-expired snapshot denies. The base JWT contract has no durable anti-rollback oracle, so republication of an old authenticated set can make its keys current again. A non-JWT registered adapter defines equivalent authenticated current-policy snapshot dependencies and revalidation. `FI-TRACE-VERIFIER-PARITY` proves the common result; applicable JWT deployments also run `FI-TRACE-JWKS-ADD` and `FI-TRACE-JWKS-REMOVE`.
 
 ## Assertion transport
 
-The selected profile is part of trusted target context. The implementation supports only complete profiles and never falls back after mixed, missing, or rejected evidence.
+The selected profile, transport-contract revision, and profile-contract digest are part of trusted target context. Server-owned listener, route, and authorization-domain configuration selects exactly one profile before accepting protected traffic. The implementation supports only complete profiles and never falls back after mixed, missing, or rejected evidence. Clients cannot select, negotiate, or downgrade the profile.
 
 ### Client attached
 
@@ -87,6 +87,8 @@ The `client-attached` adapter accepts exactly one `Nostr-Federated-Identity: Bea
 ### Trusted proxy
 
 The `trusted-proxy-hmac-v2` adapter implements the exact envelope, canonical request bytes, time bounds, nonce size, HMAC, client-peer field, and replay retention in NIP-FI. The trusted edge removes inbound assertion, provenance, and client-peer fields before setting its own. v1 envelopes are rejected.
+
+HMAC-v2 is the portable stock trusted-edge profile, not a mandatory deployment choice. When selected, every applicable request requires valid HMAC-v2 evidence and failure never falls back to `client-attached` or another adapter.
 
 The deployment also proves:
 
@@ -98,6 +100,14 @@ The deployment also proves:
 - changing the domain, proof transport, authenticated client peer, or any other request-bound field denies.
 
 Local unit tests cannot prove network isolation. The deployment bundle must retain live negative evidence for `FI-TRACE-PROXY-SPOOF`.
+
+### Registered trusted edge
+
+A deployment may install one private registered profile matching `x-<operator>-<profile>-v<N>`. Its contract identifies either request-bound evidence or an authenticated-edge assertion adapter and closes every authoritative field, provenance rule, deadline, protected request component, replay semantic, and assertion-policy adapter identity. The selected assertion policy separately closes the normalized-result semantics. Registered identifiers and private mechanism details remain outside NIP-11 and public examples.
+
+An authenticated-edge adapter must prove cryptographic immediate-caller authentication, accepting-origin isolation, full integrity for authorization-relevant request components, inbound-field stripping, and validated upstream policy projection together. It records mechanism-specific spoof, replay, cross-request, and verifier-parity evidence at the exact implementation, adapter, deployment, policy, transport-contract revision, and profile-contract digest.
+
+If a JWT-based adapter permits bearer reuse, reusing an unexpired JWT with a fresh request-appropriate Nostr proof is not itself a proxy-replay failure. Expired assertions, replayed or transplanted Nostr proofs, presentation outside the configured edge, and every mechanism-specific captured-artifact violation still deny.
 
 ## Binding and lifecycle state
 
@@ -152,19 +162,19 @@ See [runtime operations](NIP_FI_RUNTIME_OPERATIONS.md) for preconditions, postco
 
 ## Sessions and delegation
 
-HTTP authorization applies to one request. A WebSocket lease is per key, domain, capability, resource, and exact dependency set. Its deadline is the earliest applicable assertion, key-snapshot, proxy, proof, binding, delegation, policy, and implementation bound.
+HTTP authorization applies to one request. A WebSocket lease is per key, domain, capability, resource, normalized result, and exact dependency set. Its deadline is the earliest normalized authority deadline and every applicable transport, proof, binding, delegation, policy, and implementation bound. JWT profiles include assertion and key-snapshot deadlines; every profile supplies at least one finite authority deadline. Equality is expired.
 
 This section defines the contract for future delegation support; the current
 [delegation availability](#delegation-availability) statement remains
 controlling for Buzz deployments.
 
-Direct lease reuse rechecks current binding and lifecycle versions, the key-snapshot hard deadline, and JWKS generation. Delegated lease reuse rechecks the current exact owner binding and relationship revision. A lease for one key never covers another key on the connection.
+Direct lease reuse rechecks current binding and lifecycle versions plus every profile and assertion-policy dependency; changed dependencies require equivalent normalized-result revalidation. JWT dependencies include the key-snapshot hard deadline and JWKS generation. Delegated lease reuse rechecks the current exact owner binding and relationship revision. A lease for one key never covers another key on the connection.
 
 Delegation is optional and separate from federated assertion transport. The delegate supplies its own fresh Nostr proof and no assertion or assertion-provenance field. The owner must remain current and eligible at preparation and final admission. Rotation does not transfer delegation to the new owner key.
 
 ## Discovery and privacy
 
-Discovery is a claim, not a feature flag. The service advertises only profiles and optional behavior that passed the evidence matrix at the running implementation and deployment revision. An implementation without a complete adapter omits NIP-FI discovery.
+Discovery is a claim, not a feature flag. The service advertises only implemented stock profiles and optional behavior that passed the evidence matrix at the running implementation and deployment revision. Registered profile identifiers and private mechanism details never appear in NIP-11. An implementation without a complete stock adapter omits NIP-FI discovery.
 
 NIP-FI defines no public identity projection. Assertions, issuer-qualified identities, profile claims, HMAC correlation values, and private policy state stay out of protocol output and public history. Access-controlled enforcement state retains only what lifecycle, audit, and incident response need.
 

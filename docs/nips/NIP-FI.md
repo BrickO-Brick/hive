@@ -22,13 +22,16 @@ This NIP defines a provider-neutral contract. It does not standardize an identit
 
 ## Definitions
 
-- **assertion** (`A`): a JWT issued under an accepted verifier policy and presented as independent evidence alongside Nostr proof.
+- **assertion** (`A`): authoritative federated identity input presented as independent evidence alongside Nostr proof. Both stock profiles carry a compact-JWS JWT. A registered profile may use another private authenticated input only under its closed profile contract and normalized-result obligations.
 - **federated identity** (`i`): the exact tuple `(iss, sub)` from a validated assertion. `iss` is the exact accepted issuer identifier. `sub` is the exact non-empty subject string. A username, email address, display name, employee number, mutable profile field, or bare `sub` is not a federated identity.
 - **authorization domain** (`D`): a boundary selected from authenticated server routing and configuration. A client-supplied domain, forwarded host value, assertion claim, or unsigned header cannot select `D`.
 - **target context** (`R_t`): the server-resolved method, authority, path and query, body digest, transport, operation, and resource for the request being admitted.
 - **request context** (`R`): `R_t` sealed with the acting key returned by Nostr-proof validation. Client input cannot supply or replace that key.
 - **verifier-contract fingerprint**: a versioned, implementation-supplied digest of every compiled assertion-acceptance rule that is not otherwise represented in configured policy, including protected-header handling, algorithm/key compatibility, claim normalization, and size behavior. A binary that changes any such rule MUST change this fingerprint.
-- **verifier policy identity** (`policy_id`): a stable digest of assertion semantics, including issuer, audience, allowed algorithms, authenticated key-source identity, claim and normalization rules, time and size bounds, and the verifier-contract fingerprint. It MUST change when those semantics change and MUST NOT include transport, rotating signing-key contents, key-set order, cache timestamps, or a JWKS generation.
+- **verifier policy identity** (`policy_id`): a stable digest of assertion semantics, including the issuer or authenticated upstream-policy source, audience where applicable, allowed algorithms where applicable, authenticated key or policy-source identity, identity/key/claim mapping and normalization rules, time and size bounds, and the verifier-contract fingerprint. It MUST change when those semantics change and MUST NOT include transport, rotating key or upstream-policy contents, snapshot order, cache timestamps, or a snapshot generation.
+- **normalized verified assertion result**: the closed, transport-neutral result consumed by direct authorization. It contains an issuer-qualified principal, an optional asserted key, current authorization claims or capabilities, at least one finite authority deadline, `policy_id`, the transport profile, the transport-contract revision, the profile-contract digest, and revalidation dependencies. It contains no unchecked forwarded field.
+- **authorization projection**: the shared normalized identity, optional asserted key, and authorization claims or capabilities consumed by local admission. Profile identity, evidence deadlines, `policy_id`, and revalidation dependencies remain profile-specific evidence metadata. `FI-TRACE-VERIFIER-PARITY` validates that metadata for each profile, and `FI-TRACE-PREPARED-STALE` validates changed dependencies.
+- **profile-contract digest**: a stable digest of the selected transport profile's authoritative fields, provenance rules, protected request components, replay semantics, and assertion-policy adapter identity. Assertion semantic changes advance `policy_id`; transport or provenance changes advance the profile-contract digest. Evidence from another digest is not interchangeable.
 - **JWKS generation** (`g`): an opaque identifier for one effective verification-key snapshot. It MUST change whenever the accepted key identifiers or key material change.
 - **binding**: a durable, versioned record associating one identity with one 32-byte Nostr public key in `D`. Its immutable provenance is `attested-key`, `provisioned`, or `tofu`. It MAY carry a separately authorized administrative `binding_not_after` bound. It MUST NOT derive that bound from assertion `exp` or `iat`.
 - **retired pair**: a durable denial fact for one exact `(D, i, k)` pair. Ordinary authorization can never recreate that pair.
@@ -48,11 +51,41 @@ Within a domain, active bindings form a partial bijection: one identity has at m
 
 An assertion is captured on the request being authorized: the WebSocket upgrade for NIP-42 connections or the same HTTP request as its NIP-98 proof. Assertions MUST NOT appear in URLs, query parameters, Nostr events, tags, filters, application history, or public identity projections.
 
-Two transport profiles are defined. A service MUST advertise and accept only profiles it implements completely.
+Two stock transport profiles are defined: `client-attached` and `trusted-proxy-hmac-v2`. A deployment MAY also install a private registered trusted-edge profile whose identifier matches `x-<operator>-<profile>-v<N>`. Server-owned listener, route, and authorization-domain configuration selects exactly one profile before accepting requests. Client input cannot select, negotiate, or downgrade it.
+
+This document defines transport-contract revision `2`, represented as the unsigned integer `2`. A change to the common transport-profile obligations or evidence meaning requires a new revision. Each profile contract is an immutable UTF-8 artifact whose exact bytes identify its authoritative fields, provenance rules, protected request components, replay semantics, deadlines, and assertion-policy adapter identity. Its digest is `sha256:` followed by the lowercase hexadecimal SHA-256 of those exact bytes; implementations MUST NOT apply implicit reserialization or newline normalization while computing it. A profile-specific contract change produces a new artifact and digest.
+
+### Transport profile obligations
+
+Every configured transport profile MUST:
+
+1. Produce one normalized verified assertion result under a closed profile contract. The result identifies an issuer-qualified principal, an optional asserted key, current authorization claims or capabilities, at least one finite authority deadline, `policy_id`, the selected profile, the transport-contract revision, the profile-contract digest, and revalidation dependencies. Deadline comparison MUST be overflow safe and equality is expired.
+2. Feed the same Nostr-proof, binding, lifecycle, invalidation, lease, local-policy, and final-admission authority. An adapter cannot weaken or replace those checks.
+3. Preserve the exact server-resolved domain, operation, resource, method, authority, path and query, body semantics, proof transport, and actor key used by final admission.
+4. Reject absent, mixed, malformed, or profile-inconsistent evidence without falling back to or from another profile.
+5. Require independent fresh Nostr proof for the current request or connection.
+6. Expose every assertion and provenance deadline to lease construction, including the required finite authority deadline.
+7. Keep credentials, signatures, MACs, and unredacted identity or authorization claims out of public output and observability.
+8. Bind conformance evidence to one exact implementation, adapter, deployment, policy, transport-contract revision, and profile-contract digest.
+
+The normalized result is a security boundary, not a generic map of trusted headers. A profile contract closes its fields, types, authority, deadlines, provenance rules, and assertion-policy adapter identity. The selected assertion policy closes identity, key, claim or capability, deadline, and normalization semantics. A deployment MUST NOT treat header presence, source address, private-network location, hostname, or reachability alone as trusted-edge provenance.
 
 ### Client-attached profile
 
 This profile's discovery identifier is `client-attached`. The client sends exactly one `Nostr-Federated-Identity: Bearer <JWT>` field and no assertion-provenance field. The same field is used on WebSocket upgrades and NIP-98 HTTP requests; `Authorization` remains reserved for the Nostr proof where that protocol requires it. Missing, repeated, comma-combined, malformed, empty, non-Bearer, or mixed-profile assertion fields are rejected.
+
+### Trusted-edge profile obligations
+
+Every stock or registered trusted-edge profile MUST strip inbound copies of each assertion, identity, authorization, and capability field before setting its own values. It MUST cryptographically authenticate the immediate trusted edge, deny requests that the origin cannot attribute to that edge, protect every request component used for authorization, and impose a positive finite provenance acceptance bound that expires at equality. It MUST document the accepting origin, direct-origin controls, field-stripping point, caller authentication, protected components, upstream validation, Nostr-proof path, compromise impact, and evidence location.
+
+A trusted-edge profile uses one of these constructions:
+
+- **Request-bound evidence:** a signature or MAC binds the authoritative assertion and authorization-relevant request components. A single-use replay claim also requires bounded atomic replay consumption.
+- **Authenticated-edge assertion adapter:** a trusted platform validates upstream identity and policy, the immediate edge is cryptographically authenticated, the accepting origin is isolated, inbound authority-bearing fields are stripped, and the complete authorized request is integrity protected. The adapter maps only its closed validated claim set into the normalized result.
+
+Request-bound HMAC-v2 gives Buzz application-verified proof of the exact request and relies less on deployment-only assurances for spoof, replay, and cross-request resistance. An authenticated-edge adapter omits that application-level seal and therefore MUST demonstrate immediate-caller authentication, accepting-origin isolation, full integrity for authorization-relevant request components, inbound-field stripping, and validated upstream policy projection together.
+
+A registered profile is private deployment policy. Its identifier, fields, caller identity, issuer, and mechanism MUST NOT appear in NIP-11 or public examples. Registration does not weaken verifier parity or final admission. If a JWT-based registered profile permits bearer reuse, reuse of an unexpired JWT with a fresh request-appropriate Nostr proof is not itself a proxy-replay violation. The profile still rejects expired assertions, replayed or transplanted Nostr proofs, and presentation outside its configured edge; it cannot claim single-use JWT semantics unless it defines and proves them.
 
 ### Trusted-proxy HMAC profile
 
@@ -88,9 +121,13 @@ The verifier MUST reject an absent, repeated, malformed, stale, future-dated, wr
 
 The proxy-to-verifier hop still requires confidentiality and integrity. Trusted listener and route configuration selects the profile in `R_t`. Direct ingress to a listener configured for this profile MUST reject assertion-bearing requests that lack valid provenance and MUST NOT fall back to `client-attached` after missing or rejected provenance.
 
+`trusted-proxy-hmac-v2` is a portable stock profile, not a mandatory deployment choice. A service that selects it MUST require valid HMAC-v2 evidence on every applicable request. Selection occurs before listeners accept protected traffic and never changes in response to request evidence. Failure MUST NOT fall back to `client-attached` or a registered profile.
+
 ## Assertion validation
 
-For each accepted issuer, the verifier has authenticated configuration for the exact issuer identifier, accepted audiences, allowed asymmetric algorithms, key source, optional Nostr-key claim, finite maximum assertion age, and bounded clock skew. Policy construction incorporates the running implementation's verifier-contract fingerprint; it is not a client field or an operator-selected weakening. Transport adapters supply assertion bytes but cannot change this contract. Validation enforces all of the following:
+Every adapter produces the same closed normalized verified assertion result. The two stock profiles supply compact-JWS bytes to one canonical verifier. A registered profile either uses that verifier or supplies a reviewed adapter that authenticates its closed upstream assertion and authorization claim set before producing the same result. Ordinary forwarded headers, unchecked companion fields, or adapter-local authorization cannot enter it. Claims or capabilities in the result constrain local admission; they never replace the current local policy decision.
+
+For each accepted JWT issuer, the verifier has authenticated configuration for the exact issuer identifier, accepted audiences, allowed asymmetric algorithms, key source, optional Nostr-key claim, optional authorization claim or capability mapping, finite maximum assertion age, and bounded clock skew. Policy construction incorporates the running implementation's verifier-contract fingerprint; it is not a client field or an operator-selected weakening. Transport adapters cannot change this contract. JWT validation enforces all of the following:
 
 1. The input is exactly one bounded compact JWS. Protected-header and claim member names are unambiguous. Unknown critical headers, `none`, symmetric algorithms, algorithm and key-type mismatch, and incompatible JWK `use` or `key_ops` are rejected before signature acceptance.
 2. The signature verifies under exactly one currently accepted asymmetric key and explicitly allowed algorithm. A duplicate or ambiguous `kid` fails. A missing `kid` is accepted only when policy deterministically selects exactly one compatible key.
@@ -99,18 +136,19 @@ For each accepted issuer, the verifier has authenticated configuration for the e
 5. `exp` and `iat` are finite numeric dates. The verifier requires `now < exp`, `iat <= now + skew`, and `now < iat + maximum_assertion_age`, using overflow-safe comparisons. An optional `nbf` requires `nbf <= now + skew`. Equality at an expiry or maximum-age bound is expired.
 6. `sub` is a non-empty exact string within the configured size bound.
 7. If a Nostr-key claim is configured and present, it resolves unambiguously to one 32-byte public key. Lowercase hexadecimal is canonical. Any additional accepted encoding must normalize to that value without ambiguity.
+8. Any configured authorization claim or capability mapping accepts only its closed bounded input set and produces one deterministic normalized value. When no mapping is configured, the result contains an empty set.
 
 The verifier bounds assertion, header, claim, subject, key-identifier, and configured key-set sizes before lookup or observability. Attacker-controlled values, including `kid`, are never emitted unsanitized.
 
 Subject stability is an issuer trust and deployment assumption, not a property that a signed request can prove. Before accepting an issuer, the operator MUST record authoritative evidence that its selected subject is opaque, stable for the account lifetime, never reassigned, and not intentionally derived from a profile or personally identifying claim. That record identifies the issuer policy version and review owner. If the issuer can reassign a subject, the same `(iss, sub)` can name a different principal and inherit identity-scoped lifecycle or recovery authority; the issuer policy MUST remain disabled until a separately authorized remediation establishes a new non-reassignable coordinate.
 
-The validated result seals `i`, an optional asserted key `k_a`, the assertion deadline, `policy_id`, JWKS generation `g`, the verification-key identity, the key snapshot's hard-validity deadline, and confidential revalidation material that can recover the exact compact-JWS bytes. Display names, email addresses, and other profile claims do not enter this result.
+The normalized verified result seals `i`, an optional asserted key `k_a`, current authorization claims or capabilities, every assertion or transport deadline, `policy_id`, the transport profile, transport-contract revision, profile-contract digest, and revalidation dependencies. For JWT profiles those dependencies include JWKS generation `g`, verification-key identity, the key snapshot's hard-validity deadline, and confidential material that can recover the exact compact-JWS bytes. Display names, email addresses, and other unchecked profile claims do not enter this result.
 
-Verifier-policy identity is independent of key rotation. Adding, overlapping, or removing issuer keys changes `g`, not `policy_id`. `policy_id` MUST be derived from a deterministic, versioned encoding of every configured semantic input plus the verifier-contract fingerprint; implementations MUST publish vectors showing that every semantic change advances it while a key-only rotation does not. Final admission MUST deny if the current verifier policy identity differs from the prepared identity. Evidence prepared under generation `g_old` MUST be revalidated against the currently authenticated key snapshot before final admission if the generation changed. Revalidation must reproduce the same identity, asserted key, policy identity, and live time bounds. A key absent from the current snapshot, unreadable current generation, or failed revalidation denies admission. A normal overlapping key rotation therefore does not require a new binding or policy lineage.
+Verifier-policy identity is independent of authenticated snapshot rotation. `policy_id` MUST be derived from a deterministic, versioned encoding of every configured semantic input plus the verifier-contract fingerprint; implementations MUST publish vectors showing that every semantic change advances it while snapshot-only rotation does not. Final admission MUST deny if the current assertion-policy identity differs from the prepared identity. A changed dependency requires revalidation that reproduces the same identity, asserted key, claims or capabilities, policy identity, and live time bounds. For JWT profiles, adding, overlapping, or removing issuer keys changes `g`, not `policy_id`; evidence under `g_old` is revalidated against the current key snapshot, and an absent key, unreadable generation, or failed revalidation denies. A normal overlapping key rotation therefore does not require a new binding or policy lineage.
 
-This profile does not define durable JWKS anti-rollback state. If an authenticated key source republishes a previously removed key set, that document is the current snapshot and assertions under those keys may validate again. A deployment that promises rollback prevention MUST add a separately authenticated monotonic version or equivalent durable key floor and corresponding conformance evidence; otherwise key-source rollback remains residual issuer risk.
+The base JWT verifier does not define durable JWKS anti-rollback state. If an authenticated key source republishes a previously removed key set, that document is the current snapshot and assertions under those keys may validate again. A deployment that promises rollback prevention MUST add a separately authenticated monotonic version or equivalent durable key floor and corresponding conformance evidence; otherwise key-source rollback remains residual issuer risk.
 
-Signing-key retrieval fails closed. Refresh work MUST be bounded and coalesced. An unknown `kid` cannot trigger unbounded per-request retrieval and has no stale-key fallback. A previously known key MAY be used after a soft refresh failure only under a documented finite stale-known-key policy and never after its hard maximum age.
+JWT signing-key retrieval fails closed. Refresh work MUST be bounded and coalesced. An unknown `kid` cannot trigger unbounded per-request retrieval and has no stale-key fallback. A previously known key MAY be used after a soft refresh failure only under a documented finite stale-known-key policy and never after its hard maximum age.
 
 ## Nostr proof and server-owned context
 
@@ -128,19 +166,22 @@ Every protected ingress in a domain MUST use one canonical current domain policy
 Authorization uses two phases. Implementations MAY combine the phases inside one transaction, but they MUST preserve the same no-mutation and revalidation properties.
 
 ```text
-PrepareAuthorization(request, assertion?, nostr_proof?, delegation?):
+PrepareAuthorization(request, assertion_input?, nostr_proof?, delegation?):
   (D, R_t, operation, resource) := ResolveTargetContext(request) or DENY
 
   if delegation is present:
-      require assertion and assertion-provenance fields are absent
+      require assertion_input and all profile-specific fields are absent
       ValidateNostrProof(nostr_proof, D, R_t) -> k or DENY
       R := SealActor(R_t, k)
       return PrepareDelegated(D, R, k, delegation)
 
-  VerifyTransportProvenance(D, R_t, assertion) or DENY
+  ValidateConfiguredTransport(D, R_t, assertion_input) ->
+      (verified_assertion, transport_evidence) or DENY
   ValidateNostrProof(nostr_proof, D, R_t) -> k or DENY
   R := SealActor(R_t, k)
-  ValidateAssertion(assertion, D) -> (i, k_a?, deadline, policy_id, g)
+  (i, k_a?, claims_or_capabilities, deadlines, policy_id,
+   revalidation_dependencies) :=
+      verified_assertion
   if k_a exists and k_a != k: DENY(key_mismatch)
 
   atomically read B(i), B(k), retired(i,k), disabled(i),
@@ -166,7 +207,9 @@ PrepareAuthorization(request, assertion?, nostr_proof?, delegation?):
       tofu:
           proposal := enroll(i, k, k_a = k ? attested-key : tofu)
 
-  EvaluateEveryLocalAdmissionPolicy(D, R, operation, resource, k) or DENY
+  EvaluateEveryLocalAdmissionPolicy(
+      D, R, operation, resource, k, claims_or_capabilities
+  ) or DENY
   return PreparedAuthorization(all evidence, proposal, witnesses, and bounds)
 ```
 
@@ -179,13 +222,16 @@ Final admission consumes the prepared value exactly once:
 ```text
 CommitAdmission(prepared, current_request):
   require exact D, R, operation, resource, actor, and transport match
-  require every assertion, proof, proxy, delegation, and policy bound is live
+  require every assertion, proof, transport, delegation, and policy bound is live
   if prepared is DirectPrepared:
-      require CurrentVerifierPolicyIdentity(D, prepared.direct.i.iss) =
+      require CurrentTransportContract(D, R_t) matches the prepared profile,
+              transport-contract revision, and profile-contract digest
+      require CurrentAssertionPolicyIdentity(D, prepared.direct.i.iss) =
               prepared.direct.policy_id
-      if CurrentJwksGeneration(prepared.direct.policy_id) !=
-         prepared.direct.g:
-          revalidate the assertion under the current generation
+      if a prepared revalidation dependency changed:
+          revalidate the configured profile's authoritative assertion input
+          require the normalized result, including claims or capabilities,
+                  is equivalent
   else:
       require prepared is DelegatedPrepared
       revalidate its delegation, relationship, owner, target, and policy witnesses
@@ -194,8 +240,10 @@ CommitAdmission(prepared, current_request):
       reread every applicable binding, lifecycle, enrollment-mode, policy, resource,
              replay, and invalidation witness
       unreadable state denies; changed state requires a complete recomputation
-      require the current result is equivalent and eligible
-      claim every applicable proxy nonce and proof replay identity
+      require the current result, including current claims or capabilities,
+              is equivalent and eligible
+      claim every applicable transport and proof replay identity,
+            including the HMAC-v2 nonce when that profile is selected
       create the proposed binding only if enrollment remains eligible
       append the required receipt and privacy-safe authorization audit evidence
 
@@ -248,13 +296,13 @@ A delegated lease requires a configured positive finite maximum. Its deadline is
 
 HTTP authorization applies to one exact request. It does not imply a reusable lease.
 
-A WebSocket lease is scoped to one authenticated key, domain, operation set, direct-assertion or delegated-evidence dependencies, current binding and lifecycle versions, policy versions, and invalidation dependencies. A direct lease records its verifier policy identity, JWKS generation, verification-key identity, key-snapshot hard-validity deadline, and confidential revalidation material for the exact assertion. A delegated lease instead records the exact owner binding version and relationship revision.
+A WebSocket lease is scoped to one authenticated key, domain, operation set, direct-assertion or delegated-evidence dependencies, current binding and lifecycle versions, policy versions, and invalidation dependencies. A direct lease records its normalized result, profile and policy revalidation dependencies, and confidential material needed to revalidate the authoritative assertion input. For a JWT profile those dependencies include JWKS generation, verification-key identity, key-snapshot hard-validity deadline, and the exact compact-JWS bytes. A delegated lease instead records the exact owner binding version and relationship revision.
 
-The deadline is the earliest applicable assertion `exp`, `iat + maximum_assertion_age`, key-snapshot hard-validity deadline, proof or proxy bound, administrative binding expiry, delegation expiry, local-policy limit, and configured finite implementation maximum. Equality is expired.
+The deadline is the earliest authority deadline in the normalized result and every applicable proof, transport-provenance, administrative binding, delegation, local-policy, and configured implementation bound. JWT profiles include assertion `exp`, `iat + maximum_assertion_age`, and the key-snapshot hard-validity deadline. Comparisons are overflow safe and equality is expired.
 
 Assertion expiry ends the lease, not the binding. Renewal requires a new connection carrying a fresh assertion on the upgrade request, followed by fresh NIP-42 proof and a complete new preparation and final admission. If the durable binding remains eligible, expiry of the assertion used for an earlier lease does not prevent the new decision. Exact assertion revalidation material is retained confidentially only through the admission or lease that may need it and is destroyed on expiry, close, or invalidation.
 
-Before each protected use, the service rechecks the binding and lifecycle versions, administrative bound, operation, resource, actor, and lease deadline. A direct lease also requires a live, readable key snapshot within its hard-validity deadline; a changed JWKS generation requires revalidation of the original assertion against the current generation. For a delegated lease, the service rechecks the exact current owner binding and relationship revision. When another dependency changes, the service rejects protected operations or closes the connection within its documented detection bound. A polling implementation cannot claim immediate invalidation. A lease for one key never authorizes an operation attributed to another key on the same connection.
+Before each protected use, the service rechecks the binding and lifecycle versions, administrative bound, operation, resource, actor, lease deadline, and direct profile and assertion-policy dependencies. A changed dependency requires revalidation that reproduces the equivalent normalized result. For JWT evidence, the key snapshot must remain readable within its hard-validity deadline and a changed JWKS generation requires revalidation of the original assertion. For a delegated lease, the service rechecks the exact current owner binding and relationship revision. When another dependency changes, the service rejects protected operations or closes the connection within its documented detection bound. A polling implementation cannot claim immediate invalidation. A lease for one key never authorizes an operation attributed to another key on the same connection.
 
 ## Rejection semantics
 
@@ -287,7 +335,7 @@ A relay SHOULD advertise support in its NIP-11 document under `limitation` as `"
 }
 ```
 
-`transports` contains only the exact identifiers `client-attached` and `trusted-proxy-hmac-v2` for profiles implemented completely. `enrollment` is exactly one configured mode. `delegation` is true only when owner-current resolution and a positive finite delegated maximum are configured. Unknown fields are ignored.
+`transports` contains only the exact stock identifiers `client-attached` and `trusted-proxy-hmac-v2` for profiles implemented completely. A service MUST NOT advertise a registered profile identifier. `enrollment` is exactly one configured mode. `delegation` is true only when owner-current resolution and a positive finite delegated maximum are configured. Unknown fields are ignored.
 
 A service MUST NOT enter enforcement or advertise support until every configured protected operation uses the same canonical final-admission authority, unknown protected routes fail closed, and all applicable conformance traces pass at one reviewed revision. Discovery is selected by the same server-owned domain policy as authorization. It MUST NOT expose private issuer URLs, audiences, claim names, tenant identifiers, HMAC key identifiers, or implementation-only policy detail.
 
@@ -301,7 +349,7 @@ Any separate presentation protocol is non-authoritative and cannot create, renew
 
 - **Issuer compromise** can impersonate principals but cannot prove an uncompromised already-bound Nostr key. In `attested-key` mode it must also forge the matching key claim to enroll an arbitrary key.
 - **Assertion theft** cannot use an eligible existing binding without the bound key. TOFU intentionally retains first-use theft risk.
-- **Proxy spoofing and replay** are limited by request-bound HMAC provenance, bounded time, one-time nonce consumption, exact assertion and body digests, and exact server-resolved routing values.
+- **Proxy spoofing and replay** are limited by the configured trusted-edge profile's reviewed provenance, protected request components, deadlines, and replay semantics. HMAC-v2 supplies request-bound provenance, bounded time, one-time nonce consumption, exact assertion and body digests, and exact server-resolved routing values. An authenticated-edge adapter instead depends on the complete reviewed boundary-control set above.
 - **JWKS rotation** does not change stable policy identity. Final generation revalidation prevents a key absent from the currently authenticated snapshot from authorizing. The base profile has no durable anti-rollback oracle; authenticated key-source republication of an old set is residual issuer risk.
 - **Time-of-check/time-of-use races** are limited by read-only preparation and complete witness revalidation in final admission.
 - **Lifecycle replay** cannot erase retired-pair, disabled-identity, revoked-key, or pending-replacement facts. Ordinary assertions never reactivate them.
@@ -311,15 +359,15 @@ Any separate presentation protocol is non-authoritative and cannot create, renew
 
 ## Stable conformance labels
 
-The companion model and later executable matrix use these stable trace identifiers. A conforming implementation must cover every applicable trace and its boundary and concurrency subcases at one reviewed revision. The model also defines the stable safety labels `FI-INV-01` through `FI-INV-16`.
+The companion model and later executable matrix use these stable trace identifiers. A conforming implementation must cover every applicable trace and its boundary and concurrency subcases at one reviewed revision. Every proxy-trace and `FI-TRACE-VERIFIER-PARITY` result records `transport_contract_revision` and `profile_contract_digest`; an older revision or different profile, digest, adapter, deployment, or policy tuple cannot satisfy the claim. Each profile declares the exact spoof, replay, and cross-request artifacts its oracle exercises. The model also defines the stable safety labels `FI-INV-01` through `FI-INV-16`.
 
 | ID | Required property |
 |---|---|
-| `FI-TRACE-PROXY-SPOOF` | A valid assertion without valid proxy HMAC provenance, including direct ingress, denies. |
-| `FI-TRACE-PROXY-REPLAY` | Two final admissions using one proxy nonce produce at most one committed authorization; preparation consumes neither. |
-| `FI-TRACE-PROXY-CROSS-REQUEST` | Changing the assertion, domain, proof transport, authenticated client peer, method, authority, path/query, or body invalidates provenance and denies. |
+| `FI-TRACE-PROXY-SPOOF` | A trusted-edge request without the configured profile's valid provenance, including direct ingress, denies. HMAC-v2 retains its exact field, MAC, and boundary negatives. |
+| `FI-TRACE-PROXY-REPLAY` | The configured trusted-edge profile enforces its declared replay semantics. For HMAC-v2, two final admissions using one proxy nonce produce at most one committed authorization and preparation consumes neither. |
+| `FI-TRACE-PROXY-CROSS-REQUEST` | Changing a request component protected by the configured profile denies. HMAC-v2 protects the assertion, domain, proof transport, authenticated client peer, method, authority, path/query, and body. |
 | `FI-TRACE-AUTHORITY-UNIFORM` | Every protected ingress uses the same current domain policy and final-admission authority. |
-| `FI-TRACE-VERIFIER-PARITY` | The same assertion, policy, time, and key snapshot produce the same verifier result on every transport; deterministic vectors prove semantic changes advance `policy_id` while key-only rotation does not. |
+| `FI-TRACE-VERIFIER-PARITY` | Equivalent authenticated assertion input and policy produce the same authorization projection and final-admission decision at each controlled time on every transport. The same trace validates each profile's identity, revision, digest, `policy_id`, and deadlines; `FI-TRACE-PREPARED-STALE` validates changed revalidation dependencies. Deterministic vectors prove semantic changes advance `policy_id` while authenticated snapshot-only rotation does not. |
 | `FI-TRACE-DOMAIN-SPOOF` | Client-selected domain or forwarded authority cannot replace server-owned context. |
 | `FI-TRACE-ASSERTION-KEY-MISMATCH` | An asserted key different from the proven key denies before mutation. |
 | `FI-TRACE-BINDING-CONFLICT` | A pair that conflicts with either side of the active relation denies without replacement. |

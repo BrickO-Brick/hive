@@ -16,22 +16,22 @@ The files under [`docs/examples`](examples/) are review templates. They are not 
 external client
   -> TLS listener or trusted edge
   -> Buzz verifier ingress
-  -> one canonical NIP-FI verifier and final-admission authority
+  -> one canonical NIP-FI normalized-result and final-admission authority
        |-> binding/lifecycle, replay, policy, receipt, authorization-audit, and application stores
        |-> separately bounded, non-authoritative denial observations
-       `-> configured issuer metadata and JWKS over authenticated TLS
+       `-> configured assertion-policy source over authenticated transport
 ```
 
-The stock profile is provider free. It identifies issuers by exact configured values and retrieves keys under bounded policy. It does not require a provider-specific sidecar, claim dialect, SDK, or forwarded-identity convention.
+The stock profiles are provider free. They identify issuers by exact configured values and retrieve keys under bounded policy. They do not require a provider-specific sidecar, claim dialect, SDK, or forwarded-identity convention.
 
 ## Activation prerequisites
 
 Do not publish NIP-FI discovery or enable enforcement until all of these are true for one immutable claim tuple:
 
-1. The running artifact supplies a canonical verifier, final-admission authority, lifecycle state, and executable adapter manifest.
+1. The running artifact supplies a canonical normalized-result contract, final-admission authority, lifecycle state, and executable adapter manifest.
 2. Every protected WebSocket and HTTP ingress appears in the executed route inventory.
 3. One current domain policy and policy lineage covers every protected ingress.
-4. Issuer, audience, algorithm, claim, time, size, JWKS, and enrollment policy is explicit for each domain.
+4. Assertion-policy source, identity/key/claim mapping, time, size, authenticated snapshot, and enrollment policy is explicit for each domain; JWT policies also define issuer, audience, algorithm, and JWKS behavior.
 5. Binding, lifecycle, replay, receipt, authorization-audit, invalidation, and application storage meets serialization and durability requirements; denial observations use a separate finite-capacity non-authoritative channel.
 6. Secrets arrive from an access-controlled secret store and never from repository examples.
 7. Backup, restore, key rotation, dependency outage, recovery, and rollback exercises pass.
@@ -50,15 +50,15 @@ The runtime document and its fixed verifier semantics together represent:
 - allowed compact-JWS algorithms and compatible key types;
 - subject and optional Nostr-key claim rules, plus the operator evidence that the issuer subject is stable and non-reassignable;
 - assertion, clock-skew, header, and body bounds;
-- JWKS refresh, stale-on-error, and hard-validity bounds;
+- authenticated policy-snapshot refresh, stale-on-error, and hard-validity bounds, including JWKS behavior for JWT policies;
 - exactly one enrollment mode;
-- accepted assertion transports;
+- exactly one server-selected assertion transport per bound route and domain, with its transport-contract revision and profile-contract digest;
 - delegation support and positive finite maximum, when enabled;
 - stable public denial mapping;
 - bounded private denial observation with stable reason and correlation identifiers, minimal attacker-controlled payload, and no authorization effect; and
-- current policy identity and lineage, including the authenticated key-source identity and compiled verifier-contract fingerprint.
+- current policy identity and lineage, including the authenticated key or upstream-policy source identity and compiled verifier-contract fingerprint.
 
-Rotating verification keys changes the JWKS generation, not the stable verifier-policy identity. Changing accepted assertion semantics creates a new policy identity.
+Rotating authenticated key or upstream-policy snapshot contents changes the applicable generation, not the stable verifier-policy identity. Changing accepted assertion semantics creates a new policy identity. For JWT policies, verification-key rotation changes the JWKS generation.
 
 The stock contract compares against the current authenticated JWKS snapshot and does not promise durable anti-rollback. If an old set is republished, its keys may become current again. A deployment that needs rollback prevention adds an authenticated monotonic version or durable key floor and corresponding evidence.
 
@@ -70,7 +70,7 @@ Treat assertions as confidential bearer material. Do not log headers, echo them 
 
 ## Trusted-proxy profile
 
-The Buzz stock trusted-proxy profile is `trusted-proxy-hmac-v2`; v1 is rejected. The edge:
+The Buzz stock trusted-proxy profile is `trusted-proxy-hmac-v2`; v1 is rejected. A deployment is not required to implement or advertise it. When selected, every applicable request requires valid HMAC-v2 evidence and cannot fall back to another profile. The edge:
 
 1. removes every inbound assertion, provenance, and client-peer field, including attacker-supplied duplicates;
 2. completes trusted routing and canonical path rewriting;
@@ -84,6 +84,16 @@ The HMAC secret is random, access controlled, versioned, and delivered independe
 
 Network controls ensure that only the trusted edge can reach verifier ingress. A separate health or administrative listener cannot proxy protected operations. The deployment test runs direct-origin, bypass, client-header injection, mixed-profile, replay, and cross-request mutations from both sides of the boundary. A mocked listener test cannot satisfy `FI-TRACE-PROXY-SPOOF`.
 
+## Registered trusted-edge profile
+
+A deployment may install one private registered trusted-edge profile whose identifier matches `x-<operator>-<profile>-v<N>`. The identifier and its mechanism, fields, caller identity, issuer, and topology stay out of NIP-11 and public examples. Clients cannot request or infer it.
+
+The reviewed profile contract identifies either request-bound evidence or an authenticated-edge assertion adapter. It closes every authoritative field, provenance rule, positive finite provenance bound, protected request component, replay semantic, and assertion-policy adapter identity. Equality is expired. The selected assertion policy separately closes normalized-result semantics. An authenticated-edge adapter proves cryptographic immediate-caller authentication, accepting-origin isolation, full integrity for authorization-relevant request components, inbound-field stripping, and validated upstream policy projection together.
+
+The deployment record identifies the trusted edge, accepting origin, direct-origin controls, field-stripping point, caller authentication, protected components, upstream assertion validation, Nostr-proof path, compromise impact, and evidence location. It binds all proxy and verifier-parity evidence to the exact transport-contract revision and profile-contract digest.
+
+If a JWT-based profile permits bearer reuse, an unexpired JWT may be presented again only with a fresh request-appropriate Nostr proof and current binding, lifecycle, policy, and final-admission state. The deployment does not claim single-use JWT semantics unless the profile defines and proves them.
+
 ## Storage and transactions
 
 Production-equivalent storage must provide:
@@ -95,7 +105,7 @@ Production-equivalent storage must provide:
 - idempotent application consumption when the application effect uses another transaction;
 - bounded replay retention that outlives the accepted provenance window;
 - a separately capacity-bounded denial-observation channel whose failure never changes or delays denial and never creates an authorization receipt;
-- current policy, JWKS generation, resource, and relationship witnesses; and
+- current policy, authenticated snapshot generation, resource, and relationship witnesses; and
 - backup and restore consistency across authority state.
 
 Caching may improve reads but cannot authorize from state older than its witnessed invalidation bound. An unavailable cache origin, database, replay store, receipt store, or required authorization-audit sink denies. An unavailable or exhausted denial-observation channel drops or truncates observation while the denial stands and authoritative stores remain unchanged.
@@ -108,7 +118,7 @@ List every protected ingress and its current authorization path. Include WebSock
 
 ### 2. Install without discovery
 
-After the implementation stack supplies the proposed configuration contract, deploy its exact artifact with NIP-FI discovery and enforcement off using the implementation's reviewed fail-closed mechanism. Load reviewed policy and secret references. Validate issuer connectivity, JWKS authenticity, state migrations, backup, observability redaction, and route inventory without creating production bindings.
+After the implementation stack supplies the proposed configuration contract, deploy its exact artifact with NIP-FI discovery and enforcement off using the implementation's reviewed fail-closed mechanism. Load reviewed policy and secret references. Validate assertion-policy source connectivity and authenticity, including JWKS for JWT policies, plus state migrations, backup, observability redaction, and route inventory without creating production bindings.
 
 ### 3. Run isolated behavior
 
@@ -147,4 +157,4 @@ A later bundle must:
 
 ## Deployment record
 
-For each enforcing environment, retain the immutable claim tuple, policy and artifact digests, route inventory, accepted profiles, enrollment mode, delegation posture, secret versions without secret values, storage topology, executed adapter report, restore exercise, activation time, and rollback target.
+For each enforcing environment, retain the immutable claim tuple, policy and artifact digests, route inventory, accepted profiles, transport-contract revision, immutable profile-contract artifacts and digests, enrollment mode, delegation posture, secret versions without secret values, storage topology, executed adapter report, restore exercise, activation time, and rollback target.

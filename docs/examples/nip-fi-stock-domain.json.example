@@ -1,5 +1,5 @@
 {
-  "schema": "nip-fi-stock-domain-review-v1",
+  "schema": "nip-fi-stock-domain-review-v2",
   "document_role": "review-template-not-runtime-schema",
   "numeric_values_role": "illustrative-review-values-not-production-defaults",
   "domain": {
@@ -24,6 +24,9 @@
   },
   "transport": {
     "profile": "trusted-proxy-hmac-v2",
+    "transport_contract_revision": 2,
+    "profile_contract_artifact": "REPLACE_WITH_CONTENT_ADDRESSED_ARTIFACT_REFERENCE",
+    "profile_contract_digest": "sha256:REPLACE_WITH_64_HEX_DIGEST",
     "assertion_field": "Nostr-Federated-Identity",
     "assertion_scheme": "Bearer",
     "assertion_field_cardinality": "exactly-one",
