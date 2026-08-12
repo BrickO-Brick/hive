@@ -6,7 +6,6 @@ import {
   Copy,
   Cpu,
   Ear,
-  Fingerprint,
   Server,
   Terminal,
   UserRound,
@@ -14,9 +13,12 @@ import {
 import * as React from "react";
 import { AgentStatusBadge } from "@/features/agents/ui/AgentStatusBadge";
 import { truncatePubkey } from "@/shared/lib/pubkey";
-import { copyTextToClipboard } from "@/shared/lib/clipboard";
+import {
+  HoverCopyIndicator,
+  useCopyFeedback,
+} from "@/shared/ui/HoverCopyIndicator";
 import { PubKey } from "@/shared/ui/PubKey";
-import { UserAvatar } from "@/shared/ui/UserAvatar";
+import { PanelSectionGroup } from "@/shared/ui/PanelSectionGroup";
 import type {
   AgentPersona,
   ManagedAgent,
@@ -41,7 +43,7 @@ export type ProfileField = {
   copyValue?: string;
   displayValue: string;
   displayNode?: React.ReactNode;
-  icon: LucideIcon;
+  icon?: LucideIcon;
   label: string;
   onClick?: () => void;
   testId?: string;
@@ -86,7 +88,6 @@ export function useProfileFieldBuckets({
   isOwner,
   managedAgent,
   onOpenProfile,
-  ownerAvatarUrl,
   ownerDisplayName,
   ownerHandle,
   ownerProfilePubkey,
@@ -102,7 +103,6 @@ export function useProfileFieldBuckets({
   isOwner: boolean | undefined;
   managedAgent: ManagedAgent | undefined;
   onOpenProfile?: (pubkey: string) => void;
-  ownerAvatarUrl: string | null;
   ownerDisplayName: string | null;
   ownerHandle: string | null;
   ownerProfilePubkey: string | null;
@@ -122,7 +122,6 @@ export function useProfileFieldBuckets({
             includeOperationalFields: isOwner === true,
             managedAgent,
             onOpenProfile,
-            ownerAvatarUrl,
             ownerDisplayName,
             ownerHandle,
             ownerProfilePubkey,
@@ -140,7 +139,6 @@ export function useProfileFieldBuckets({
     isOwner,
     managedAgent,
     onOpenProfile,
-    ownerAvatarUrl,
     ownerDisplayName,
     ownerHandle,
     ownerProfilePubkey,
@@ -171,10 +169,17 @@ export function buildPublicFields({
 
   if (pubkey) {
     fields.push({
+      copyValue: pubkey,
       displayValue: truncatePubkey(pubkey),
-      displayNode: <PubKey pubkey={pubkey} testId="user-profile-copy-pubkey" />,
-      icon: Fingerprint,
+      displayNode: (
+        <PubKey
+          interactive={false}
+          pubkey={pubkey}
+          testId="user-profile-copy-pubkey"
+        />
+      ),
       label: "Public key",
+      testId: "user-profile-public-key",
     });
   }
 
@@ -246,7 +251,6 @@ export function buildOwnerFields({
   includeOperationalFields,
   managedAgent,
   onOpenProfile,
-  ownerAvatarUrl,
   ownerDisplayName,
   ownerHandle,
   ownerProfilePubkey,
@@ -259,7 +263,6 @@ export function buildOwnerFields({
   includeOperationalFields: boolean;
   managedAgent: ManagedAgent | undefined;
   onOpenProfile?: (pubkey: string) => void;
-  ownerAvatarUrl: string | null;
   ownerDisplayName: string | null;
   ownerHandle: string | null;
   ownerProfilePubkey: string | null;
@@ -282,18 +285,6 @@ export function buildOwnerFields({
     : null;
 
   const ownerClickable = Boolean(onOpenProfile && ownerProfilePubkey);
-  const ownerContent = (
-    <>
-      <UserAvatar
-        avatarUrl={ownerAvatarUrl}
-        className="shrink-0"
-        displayName={ownerHandle ?? ownerDisplayName ?? ""}
-        size="xs"
-        testId="user-profile-owner-avatar"
-      />
-      <span className="truncate">{ownerDisplayName}</span>
-    </>
-  );
 
   if (ownerDisplayName) {
     fields.push({
@@ -301,12 +292,7 @@ export function buildOwnerFields({
         ? undefined
         : (ownerProfilePubkey ?? ownerPubkey ?? ownerHandle ?? undefined),
       displayValue: ownerDisplayName,
-      displayNode: (
-        <span className="inline-flex max-w-full items-center gap-2">
-          {ownerContent}
-        </span>
-      ),
-      icon: UserRound,
+      displayNode: <span className="truncate">{ownerDisplayName}</span>,
       label: "Managed by",
       onClick:
         ownerClickable && ownerProfilePubkey
@@ -361,8 +347,10 @@ export function buildOwnerFields({
         .replace(/\b\w/g, (char: string) => char.toUpperCase()),
       displayNode: (
         <AgentStatusBadge
+          className="normal-case tracking-normal"
           presenceLoaded={presenceLoaded}
           presenceStatus={presenceStatus}
+          sentenceCase
           status={managedAgent.status}
         />
       ),
@@ -469,52 +457,114 @@ function orderProfileFields(fields: ProfileField[]) {
   ];
 }
 
-export function ProfileFieldRows({ fields }: { fields: ProfileField[] }) {
+export function ProfileFieldRows({
+  fields,
+  variant = "default",
+}: {
+  fields: ProfileField[];
+  variant?: "default" | "runtime";
+}) {
   return (
     <>
       {orderProfileFields(fields).map((field) => (
-        <ProfileFieldRow field={field} key={field.testId ?? field.label} />
+        <ProfileFieldRow
+          field={field}
+          key={field.testId ?? field.label}
+          variant={variant}
+        />
       ))}
     </>
   );
 }
 
-export function ProfileFieldGroup({ fields }: { fields: ProfileField[] }) {
+export function ProfileSectionGroup({
+  children,
+  headerAction,
+  testId,
+  title,
+}: {
+  children: React.ReactNode;
+  headerAction?: React.ReactNode;
+  testId?: string;
+  title?: string;
+}) {
   return (
-    <section>
-      <div className="overflow-hidden rounded-2xl bg-muted/20">
-        <ProfileFieldRows fields={fields} />
-      </div>
-    </section>
+    <PanelSectionGroup
+      headerAction={headerAction}
+      testId={testId}
+      title={title}
+    >
+      <div className="divide-y divide-border/55">{children}</div>
+    </PanelSectionGroup>
   );
 }
 
-function ProfileFieldRow({ field }: { field: ProfileField }) {
+export function ProfileFieldGroup({
+  fields,
+  title,
+}: {
+  fields: ProfileField[];
+  title?: string;
+}) {
+  return (
+    <ProfileSectionGroup title={title}>
+      <ProfileFieldRows fields={fields} />
+    </ProfileSectionGroup>
+  );
+}
+
+function ProfileFieldRow({
+  field,
+  variant,
+}: {
+  field: ProfileField;
+  variant: "default" | "runtime";
+}) {
   const Icon = field.icon;
   const isCopyable = Boolean(field.copyValue);
   const isActionable = Boolean(field.onClick);
+  const isTrailingDisplay =
+    variant === "runtime" && field.label === "Status" && field.displayNode;
+  const { copied, copy } = useCopyFeedback({
+    label: field.label,
+    value: field.copyValue ?? "",
+  });
 
   const content = (
     <>
-      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-muted/60">
-        <Icon className="h-4 w-4 text-muted-foreground" />
-      </span>
+      {variant === "default" && Icon ? (
+        <Icon
+          className="h-4 w-4 shrink-0 text-muted-foreground"
+          data-slot="profile-field-icon"
+        />
+      ) : null}
       <span className="min-w-0 flex-1 text-left">
-        <span className="block text-xs font-medium text-foreground">
+        <span className="block text-sm font-medium text-foreground">
           {field.label}
         </span>
-        <span
-          className="mt-0.5 block truncate text-sm text-muted-foreground"
-          title={field.displayValue}
-        >
-          {field.displayNode ?? field.displayValue}
-        </span>
+        {!isTrailingDisplay ? (
+          <span
+            className="mt-0.5 block truncate text-sm text-muted-foreground/70"
+            title={field.displayValue}
+          >
+            {field.displayNode ?? field.displayValue}
+          </span>
+        ) : null}
       </span>
+      {isTrailingDisplay ? field.displayNode : null}
       {field.trailingNode}
       {isActionable ? (
-        <ArrowUpRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+        <ArrowUpRight
+          className="h-4 w-4 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
+          data-testid={
+            field.testId ? `${field.testId}-action-indicator` : undefined
+          }
+        />
       ) : isCopyable ? (
-        <Copy className="h-4 w-4 shrink-0 text-muted-foreground" />
+        <HoverCopyIndicator
+          copied={copied}
+          testId={field.testId ? `${field.testId}-copy-status` : undefined}
+        />
       ) : null}
     </>
   );
@@ -523,7 +573,7 @@ function ProfileFieldRow({ field }: { field: ProfileField }) {
     return (
       <button
         aria-label={`Open ${field.label}`}
-        className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/40"
+        className="group flex min-h-16 w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/40 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
         data-testid={field.testId}
         onClick={field.onClick}
         title={`Open ${field.label}`}
@@ -538,11 +588,9 @@ function ProfileFieldRow({ field }: { field: ProfileField }) {
     return (
       <button
         aria-label={`Copy ${field.label}`}
-        className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/40"
+        className="group flex min-h-16 w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/40 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
         data-testid={field.testId}
-        onClick={() =>
-          copyTextToClipboard(field.copyValue ?? "", `Copied ${field.label}`)
-        }
+        onClick={() => void copy()}
         title={`Copy ${field.label}`}
         type="button"
       >
@@ -553,7 +601,7 @@ function ProfileFieldRow({ field }: { field: ProfileField }) {
 
   return (
     <div
-      className="flex items-center gap-3 px-4 py-3"
+      className="flex min-h-16 items-center gap-3 px-4 py-3"
       data-testid={field.testId}
     >
       {content}
