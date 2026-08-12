@@ -898,15 +898,16 @@ test("navigating via a 30617 entity-link route opens the correct non-primary rep
     { waitUntil: "domcontentloaded" },
   );
 
-  // The repository picker must show "relay-tools" (non-primary), not "buzz" (primary).
-  const picker = page.getByTestId("project-repository-picker");
-  await expect(picker).toContainText("relay-tools", { timeout: 10_000 });
-  await expect(picker).not.toContainText("buzz");
-
-  // The PR detail panel must render from the relay-tools repository — not blank.
+  // Repository controls intentionally render only on README and Files. The
+  // seeded PR and branch prove that this detail route resolved relay-tools
+  // rather than falling back to the project's primary repository.
+  await expect(page.getByTestId("project-repository-picker")).toHaveCount(0);
   // Use `first()` to avoid Playwright strict-mode violations: the text appears
   // in both the breadcrumb and the PR title heading once the detail panel opens.
   await expect(
     page.getByText("Entity-link test PR from relay-tools").first(),
   ).toBeVisible({ timeout: 10_000 });
+  await expect(
+    page.getByText("feature/entity-link-test").first(),
+  ).toBeVisible();
 });
