@@ -855,6 +855,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn steering_appends_queued_messages_and_drains_them() {
+        let steers = crate::steer::SteerQueue::new();
+        steers
+            .push(Message::user().with_text("actually, do X"))
+            .await;
+        let op = BuzzSteerOperation::new(steers.clone());
+
+        match op
+            .run(&Session::default(), &conversation(1), &emitter())
+            .await
+            .unwrap()
+        {
+            OperationResult::Applied(step) => {
+                assert_eq!(step.effects.len(), 1);
+                assert!(!step.yield_to_client, "a steer must not end the turn");
+            }
+            OperationResult::NotApplicable => panic!("expected the steer to apply"),
+        }
+
+        // Drained, not peeked: a steer delivered twice would repeat the
+        // instruction to the model on the next round.
+        assert!(matches!(
+            op.run(&Session::default(), &conversation(1), &emitter())
+                .await
+                .unwrap(),
+            OperationResult::NotApplicable
+        ));
+    }
+
+    #[tokio::test]
+    async fn an_empty_steer_queue_does_not_apply() {
+        // Must be NotApplicable rather than an empty Applied: the loop treats
+        // "applied but changed nothing" as a reason to look again, and an
+        // always-applying operation would spin it.
+        let op = BuzzSteerOperation::new(crate::steer::SteerQueue::new());
+        assert!(matches!(
+            op.run(&Session::default(), &conversation(1), &emitter())
+                .await
+                .unwrap(),
+            OperationResult::NotApplicable
+        ));
+    }
+
+    #[tokio::test]
     async fn a_zero_cap_disables_the_veto_entirely() {
         // Documented behaviour on main: BUZZ_AGENT_STOP_MAX_REJECTIONS=0 turns
         // `_Stop` off. An operator with a misbehaving hook depends on it.

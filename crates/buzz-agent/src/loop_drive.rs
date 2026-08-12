@@ -569,6 +569,82 @@ pub(crate) fn max_reflections() -> usize {
 mod tests {
     use super::*;
 
+    fn turn_state() -> crate::turn_state::TurnState {
+        crate::turn_state::TurnState::new("s".to_string(), std::path::PathBuf::from("/tmp"), None)
+    }
+
+    /// The loop treats "applied but changed nothing" as a reason to stop
+    /// looking. If an ignored effect reported progress the start machine would
+    /// spin forever, and a real change that reported none would end the turn
+    /// with the model's work unseen.
+    #[test]
+    fn only_effects_that_change_state_count_as_progress() {
+        use goose::agents::state_machine::StateEffect;
+
+        let mut state = turn_state();
+        assert!(
+            apply_effects(
+                &mut state,
+                vec![StateEffect::AppendMessage(Message::user().with_text("hi"))]
+            ),
+            "an appended message is progress"
+        );
+        assert_eq!(state.conversation().len(), 1);
+
+        assert!(
+            !apply_effects(&mut state, vec![]),
+            "no effects is not progress"
+        );
+
+        // goose's own operations emit effects buzz has no use for. Ignoring
+        // them is correct, but they must not read as progress.
+        assert!(
+            !apply_effects(
+                &mut state,
+                vec![StateEffect::PatchToolRequestMeta {
+                    tool_call_id: "x".into(),
+                    patch: serde_json::json!({}),
+                }]
+            ),
+            "an effect this loop ignores is not progress"
+        );
+        assert_eq!(state.conversation().len(), 1, "and it changed nothing");
+    }
+
+    /// Compaction replaces the conversation rather than appending to it, and
+    /// must clear the running token total -- that number described a
+    /// conversation that no longer exists, and carrying it forward would make
+    /// goose think the window is still nearly full and compact again.
+    #[test]
+    fn compaction_replaces_the_conversation_and_resets_the_token_total() {
+        use goose::agents::state_machine::StateEffect;
+
+        let mut state = turn_state();
+        state.push(Message::user().with_text("one"));
+        state.push(Message::assistant().with_text("two"));
+        state.set_total_tokens(Some(190_000));
+
+        let compacted = Conversation::new_unvalidated(vec![Message::user().with_text("summary")]);
+        assert!(apply_effects(
+            &mut state,
+            vec![StateEffect::ReplaceConversation {
+                conversation: compacted,
+                usage: None,
+            }]
+        ));
+
+        assert_eq!(state.conversation().len(), 1);
+        assert_eq!(
+            state.conversation().messages()[0].as_concat_text(),
+            "summary"
+        );
+        assert_eq!(
+            state.session().usage.total_tokens,
+            None,
+            "a stale total would re-trigger compaction immediately"
+        );
+    }
+
     #[test]
     fn merge_coalesces_consecutive_text() {
         let mut target = Message::assistant().with_text("hel");
