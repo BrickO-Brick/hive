@@ -5571,7 +5571,9 @@ function createMockEvent(
   tags: string[][],
   pubkey = DEFAULT_MOCK_IDENTITY.pubkey,
   createdAt = Math.floor(Date.now() / 1000),
-  id = crypto.randomUUID().replace(/-/g, ""),
+  // 64 hex chars like a real event id — share-link builders reject shorter
+  // ids, so copy-link buttons only render with full-length ids.
+  id = (crypto.randomUUID() + crypto.randomUUID()).replace(/-/g, ""),
 ): RelayEvent {
   return {
     id,
