@@ -142,6 +142,9 @@ export function SettingsSegmentedControl<Value extends string>({
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
+      style={{
+        gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))`,
+      }}
     >
       <legend className="sr-only">{legend}</legend>
       <div
