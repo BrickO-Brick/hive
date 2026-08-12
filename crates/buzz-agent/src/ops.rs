@@ -22,7 +22,10 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use async_trait::async_trait;
-use goose::agents::state_machine::{not_applicable, yielded, Emitter, Operation, OperationResult};
+use goose::agents::state_machine::{
+    applied, not_applicable, yielded, Emitter, Operation, OperationResult,
+};
+use goose::agents::Agent;
 use goose::conversation::Conversation;
 use goose::session::Session;
 use goose_provider_types::conversation::message::Message;
@@ -160,6 +163,125 @@ impl Operation for BuzzMaxRoundsOperation {
     }
 }
 
+/// Whether the last message ends the turn: an assistant message with no error
+/// and no outstanding tool request.
+///
+/// goose has this as `ends_turn` in its private `operation` module
+/// (`operation.rs:63`); only the names re-exported from `state_machine` escape
+/// the crate. Reimplemented to match, with one deliberate narrowing: buzz has
+/// no frontend tools and no approval flow, so `FrontendToolRequest` and
+/// `ActionRequired` cannot appear in a buzz conversation. Matching on
+/// `ToolRequest` alone is the whole of buzz's turn shape.
+fn ends_turn(messages: &[Message]) -> bool {
+    messages.last().is_some_and(|last| {
+        last.role == rmcp::model::Role::Assistant
+            && last.error_kind().is_none()
+            && !last.content.iter().any(|content| {
+                matches!(
+                    content,
+                    goose_provider_types::conversation::message::MessageContent::ToolRequest(_)
+                )
+            })
+    })
+}
+
+/// Lets the `_Stop` hook object to a turn that wants to end.
+///
+/// When the agent has finished, `_Stop` is asked whether it may stop. An
+/// objection is appended as an agent-visible `[Stop]` message and the turn
+/// continues; silence lets it end.
+///
+/// # How this differs from goose's `StopHookOperation`
+///
+/// goose drives its own `HookManager` plugins and emits a user-facing
+/// notification for each denial. buzz's hook is an **MCP tool** (`_Stop` on
+/// the dev-MCP extension), and buzz stays silent: `buzz-acp` publishes
+/// assistant messages into a channel, so a "hook blocked ending this turn"
+/// notification would be posted to the humans in that channel every time an
+/// agent's todo list was incomplete. The objection reaches the model, not the
+/// room. Same reasoning as `BuzzMaxRoundsOperation` not appending goose's
+/// "Would you like me to continue?".
+///
+/// # Why the block count lives on the messages
+///
+/// The cap was a loop-local `u32` in `run_turn`. Counting prior objections
+/// from their own metadata instead makes the operation a pure function of the
+/// conversation, so a pipeline rebuilt from persisted messages reaches the
+/// same decision — the same reason goose tags its denials.
+///
+/// **This is not a behaviour change.** `run_turn` is per `session/prompt`, so
+/// the old counter was already turn-scoped, and `messages_since_kickoff`
+/// spans exactly that same turn. Three objections still end the turn; a new
+/// prompt still starts from zero.
+pub struct BuzzStopVetoOperation {
+    agent: Arc<Agent>,
+    extension: String,
+    block_cap: u32,
+}
+
+impl BuzzStopVetoOperation {
+    /// `extension` is the MCP extension serving `_Stop`; without one there is
+    /// no hook to ask, and the operation never applies.
+    pub fn new(agent: Arc<Agent>, extension: String, block_cap: u32) -> Self {
+        Self {
+            agent,
+            extension,
+            block_cap,
+        }
+    }
+}
+
+/// Metadata key marking a message as a `_Stop` objection, so later rounds can
+/// count them without a side channel.
+const OBJECTED: &str = "objected";
+
+#[async_trait]
+impl Operation for BuzzStopVetoOperation {
+    fn name(&self) -> &'static str {
+        "buzz_stop_veto"
+    }
+
+    async fn run(
+        &self,
+        session: &Session,
+        conversation: &Conversation,
+        _emit: &Emitter,
+    ) -> Result<OperationResult> {
+        let Some(messages) = messages_since_kickoff(conversation) else {
+            return not_applicable();
+        };
+        // Only a turn that is trying to end can be vetoed.
+        if !ends_turn(messages) {
+            return not_applicable();
+        }
+
+        let blocks = messages
+            .iter()
+            .filter(|message| self.message_meta(message, OBJECTED).is_some())
+            .count() as u32;
+        if blocks >= self.block_cap {
+            tracing::warn!(blocks, "_Stop veto cap reached; ending turn");
+            return not_applicable();
+        }
+
+        // A broken or absent hook must never trap a turn -- `stop_objection`
+        // maps every failure to `None`, which is "no objection".
+        let Some(objection) =
+            crate::hooks::stop_objection(&self.agent, session, &self.extension).await
+        else {
+            return not_applicable();
+        };
+
+        tracing::info!(blocks = blocks + 1, "_Stop hook vetoed end of turn");
+
+        let mut message = Message::user()
+            .with_text(format!("[Stop] {objection}"))
+            .with_visibility(false, true);
+        self.set_message_meta(&mut message, OBJECTED, serde_json::json!(true));
+        applied([message.into()])
+    }
+}
+
 /// The operations that gate the start of a round.
 ///
 /// One entry today. As `PLANS/BUZZ_OPERATIONS_MIGRATION.md` proceeds, the
@@ -169,10 +291,23 @@ pub fn round_gate(
     max_rounds: u32,
     outcome: Outcome,
     cancel: tokio_util::sync::CancellationToken,
+    stop_veto: Option<(Arc<Agent>, String)>,
 ) -> goose::agents::state_machine::StateMachine<'static> {
-    let steps = vec![goose::agents::state_machine::Step::Operation(Arc::new(
-        BuzzMaxRoundsOperation::new(max_rounds, outcome),
-    ))];
+    use goose::agents::state_machine::Step;
+
+    // Order is precedence. The round budget is checked first: once it is
+    // spent the turn ends, and asking `_Stop` to veto a turn we are ending
+    // anyway would dispatch a tool call whose answer cannot be honoured.
+    let mut steps: Vec<Step> = vec![Step::Operation(Arc::new(BuzzMaxRoundsOperation::new(
+        max_rounds, outcome,
+    )))];
+    if let Some((agent, extension)) = stop_veto {
+        steps.push(Step::Operation(Arc::new(BuzzStopVetoOperation::new(
+            agent,
+            extension,
+            crate::hooks::MAX_STOP_BLOCKS,
+        ))));
+    }
     goose::agents::state_machine::StateMachine::new(steps, cancel)
 }
 
@@ -181,6 +316,12 @@ mod tests {
     use super::*;
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
+
+    /// A bare agent with no extensions: enough to dispatch a tool call that
+    /// will fail to resolve, which is the "hook unavailable" path.
+    async fn agent() -> Arc<Agent> {
+        Arc::new(Agent::new())
+    }
 
     fn emitter() -> Emitter {
         let (tx, rx) = mpsc::channel(16);
@@ -241,6 +382,90 @@ mod tests {
             OperationResult::NotApplicable => panic!("budget was reached but nothing applied"),
         }
         assert!(matches!(outcome.take(), Some(StopReason::MaxTurnRequests)));
+    }
+
+    /// An assistant message with an outstanding tool request: the model is
+    /// still working, so the turn is not trying to end.
+    fn tool_calling_conversation() -> Conversation {
+        Conversation::new_unvalidated(vec![
+            Message::user().with_text("kickoff"),
+            Message::assistant().with_tool_request(
+                "call_1",
+                Ok(rmcp::model::CallToolRequestParams::new("developer__shell")),
+            ),
+        ])
+    }
+
+    #[tokio::test]
+    async fn the_veto_does_not_apply_while_tools_are_outstanding() {
+        // The hook is only asked when the turn is trying to end. Asking
+        // mid-tool-call would dispatch `_Stop` on every round.
+        let op = BuzzStopVetoOperation::new(agent().await, "buzz-dev-mcp".to_string(), 3);
+        let result = op
+            .run(
+                &Session::default(),
+                &tool_calling_conversation(),
+                &emitter(),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(result, OperationResult::NotApplicable));
+    }
+
+    #[tokio::test]
+    async fn a_missing_hook_extension_never_traps_the_turn() {
+        // No such extension -> `stop_objection` yields None -> the turn ends.
+        // A broken hook must not be able to hold a turn open.
+        let op = BuzzStopVetoOperation::new(agent().await, "no-such-extension".to_string(), 3);
+        let result = op
+            .run(&Session::default(), &conversation(1), &emitter())
+            .await
+            .unwrap();
+        assert!(matches!(result, OperationResult::NotApplicable));
+    }
+
+    #[tokio::test]
+    async fn the_cap_counts_objections_already_in_the_conversation() {
+        // Three prior objections is the cap, so the operation must decline
+        // rather than dispatch a fourth `_Stop` call. Proven by pointing it at
+        // an extension that would otherwise be consulted: the result is the
+        // same NotApplicable either way, so instead assert the counting
+        // helper directly against tagged messages.
+        let op = BuzzStopVetoOperation::new(agent().await, "buzz-dev-mcp".to_string(), 3);
+
+        let mut objection = Message::user()
+            .with_text("[Stop] finish your todos")
+            .with_visibility(false, true);
+        op.set_message_meta(&mut objection, OBJECTED, serde_json::json!(true));
+
+        let mut messages = vec![Message::user().with_text("kickoff")];
+        for _ in 0..3 {
+            messages.push(objection.clone());
+            messages.push(Message::assistant().with_text("done"));
+        }
+        let conversation = Conversation::new_unvalidated(messages);
+
+        let counted = messages_since_kickoff(&conversation)
+            .unwrap()
+            .iter()
+            .filter(|message| op.message_meta(message, OBJECTED).is_some())
+            .count();
+        assert_eq!(counted, 3, "each objection must be countable from history");
+
+        // At the cap the turn is allowed to end.
+        let result = op
+            .run(&Session::default(), &conversation, &emitter())
+            .await
+            .unwrap();
+        assert!(matches!(result, OperationResult::NotApplicable));
+    }
+
+    #[tokio::test]
+    async fn ends_turn_matches_the_shape_of_a_finished_answer() {
+        assert!(ends_turn(&[Message::assistant().with_text("done")]));
+        assert!(!ends_turn(&[Message::user().with_text("hi")]));
+        assert!(!ends_turn(tool_calling_conversation().messages()));
+        assert!(!ends_turn(&[]));
     }
 
     #[tokio::test]

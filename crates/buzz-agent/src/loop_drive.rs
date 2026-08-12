@@ -70,10 +70,6 @@ const ERROR_REFLECTION: &str =
 /// conversation.
 const MAX_REFLECTIONS: usize = 8;
 
-/// Hard cap on consecutive `_Stop` vetoes, mirroring goose's own
-/// `stop_hook_block_cap`. A tool that always objects must not trap the turn.
-pub const MAX_STOP_BLOCKS: u32 = 3;
-
 /// Rounds allowed when the caller sets no limit.
 ///
 /// buzz-agent's loop was previously bounded by goose's `max_turns`. Owning the
@@ -153,14 +149,19 @@ pub async fn run_turn(
     state.push(prompt);
 
     let max_rounds = ctx.max_rounds.unwrap_or(DEFAULT_MAX_ROUNDS);
-    let mut stop_blocks = 0u32;
     let mut reflections = 0usize;
 
     // First decision expressed as a goose `Operation` rather than inline
     // control flow. The others follow one at a time; see
     // `PLANS/BUZZ_OPERATIONS_MIGRATION.md` for the order and why.
     let outcome = crate::ops::Outcome::new();
-    let machine = crate::ops::round_gate(max_rounds, outcome.clone(), ctx.cancel.clone());
+    let machine = crate::ops::round_gate(
+        max_rounds,
+        outcome.clone(),
+        ctx.cancel.clone(),
+        ctx.hook_extension
+            .map(|extension| (Arc::clone(ctx.agent), extension.to_string())),
+    );
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(16);
     // Operations may emit; nothing in this step does, but a dropped receiver
     // would silently swallow events from the ones that follow.
@@ -179,12 +180,16 @@ pub async fn run_turn(
         // Ask the machine before doing any work. `step` returns the first
         // operation that applies, or `None` when the loop below should run.
         match gate(&machine, state.session(), &emitter).await {
-            Err(e) => return (Err(e), tokens, state.conversation().messages().to_vec()),
-            Ok(true) => {
+            Gate::Ended => {
                 let reason = outcome.take().unwrap_or(StopReason::EndTurn);
                 return (Ok(reason), tokens, state.conversation().messages().to_vec());
             }
-            Ok(false) => {}
+            Gate::Applied(messages) => {
+                for message in messages {
+                    state.push(message);
+                }
+            }
+            Gate::Open => {}
         }
 
         // Steers land here, at the round boundary — never mid-inference,
@@ -211,48 +216,92 @@ pub async fn run_turn(
                     continue;
                 }
 
-                // The turn wants to end. `_Stop` gets a veto.
-                match stop_veto(&ctx, state.session(), &mut stop_blocks).await {
-                    Some(objection) => {
-                        state.push(
-                            Message::user()
-                                .with_text(format!("[Stop] {objection}"))
-                                .with_visibility(false, true),
-                        );
-                        continue;
-                    }
-                    None => {
-                        // A steer arriving after this point belongs to no run.
-                        ctx.steers.clear().await;
-                        return (
-                            Ok(StopReason::EndTurn),
-                            tokens,
-                            state.conversation().messages().to_vec(),
-                        );
+                // The turn wants to end, so ask the machine again. This is
+                // the call `BuzzStopVetoOperation` exists for: it only applies
+                // to a conversation whose last message ends the turn, which is
+                // true here and false at the top of a round.
+                //
+                // Cancellation short-circuits it -- dispatching a hook tool
+                // for a turn the user already abandoned would delay the
+                // cancel for no gain.
+                if !ctx.cancel.is_cancelled() {
+                    match gate(&machine, state.session(), &emitter).await {
+                        Gate::Applied(messages) if !messages.is_empty() => {
+                            for message in messages {
+                                state.push(message);
+                            }
+                            continue;
+                        }
+                        Gate::Ended => {
+                            let reason = outcome.take().unwrap_or(StopReason::EndTurn);
+                            ctx.steers.clear().await;
+                            return (Ok(reason), tokens, state.conversation().messages().to_vec());
+                        }
+                        // An operation that applied without appending anything
+                        // has not given the model new work, so the turn still
+                        // ends -- otherwise the loop would spin.
+                        Gate::Applied(_) | Gate::Open => {}
                     }
                 }
+
+                // A steer arriving after this point belongs to no run.
+                ctx.steers.clear().await;
+                return (
+                    Ok(StopReason::EndTurn),
+                    tokens,
+                    state.conversation().messages().to_vec(),
+                );
             }
         }
     }
 }
 
-/// Run the operation gate for one round.
+/// What the operation gate decided.
+enum Gate {
+    /// No operation applied; the loop proceeds.
+    Open,
+    /// An operation applied and appended messages; the loop continues with
+    /// them in history rather than ending.
+    Applied(Vec<Message>),
+    /// An operation ended the turn.
+    Ended,
+}
+
+/// Run the operation gate once.
 ///
-/// Returns `true` when an operation ended the turn.
+/// Called at the top of every round, and again when a round wants to end --
+/// that second call is what gives `_Stop` its veto, since its operation only
+/// applies to a conversation whose last message ends the turn.
 async fn gate(
     machine: &goose::agents::state_machine::StateMachine<'_>,
     session: &Session,
     emitter: &Emitter,
-) -> Result<bool, AgentError> {
+) -> Gate {
     match machine.step(session, emitter).await {
-        Ok(Some(result)) => Ok(result.yield_to_client),
-        Ok(None) => Ok(false),
+        Ok(Some(result)) if result.yield_to_client => Gate::Ended,
+        Ok(Some(result)) => Gate::Applied(
+            result
+                .effects
+                .into_iter()
+                .filter_map(|effect| match effect {
+                    goose::agents::state_machine::StateEffect::AppendMessage(message) => {
+                        Some(message)
+                    }
+                    // buzz's operations only append. Other effects belong to
+                    // goose's own operations (recipes, approval, extension
+                    // data) and have no meaning in this loop; ignoring them
+                    // is correct rather than lossy.
+                    _ => None,
+                })
+                .collect(),
+        ),
+        Ok(None) => Gate::Open,
         // A failing gate must not take the turn down with it: the operations
         // here are guards, and a guard that errors should let the round
         // proceed rather than strand the user's prompt unanswered.
         Err(e) => {
             tracing::warn!(error = %e, "operation gate failed; continuing");
-            Ok(false)
+            Gate::Open
         }
     }
 }
@@ -507,29 +556,6 @@ async fn maybe_compact(
     }
 
     Ok(())
-}
-
-/// Ask `_Stop` whether the turn may end. `Some(objection)` means keep working.
-async fn stop_veto(
-    ctx: &TurnContext<'_>,
-    session: &Session,
-    stop_blocks: &mut u32,
-) -> Option<String> {
-    if ctx.cancel.is_cancelled() {
-        return None;
-    }
-    let extension = ctx.hook_extension?;
-
-    if *stop_blocks >= MAX_STOP_BLOCKS {
-        tracing::warn!(blocks = *stop_blocks, "_Stop veto cap reached; ending turn");
-        return None;
-    }
-
-    let objection = crate::hooks::stop_objection(ctx.agent, session, extension).await?;
-
-    *stop_blocks += 1;
-    tracing::info!(blocks = *stop_blocks, "_Stop hook vetoed end of turn");
-    Some(objection)
 }
 
 /// Preserve buzz-agent's error taxonomy so the harness's JSON-RPC code mapping
