@@ -24,6 +24,7 @@ import {
 import {
   type AsyncState,
   type AttachmentMeta,
+  CommunityGroupedList,
   DetailRow,
   ErrorMessage,
   LoadingSpinner,
@@ -75,8 +76,9 @@ export function FeedbackTab({
   }
 
   return (
-    <ul className="space-y-1">
-      {items.map((item: AdminFeedbackSummaryDto) => {
+    <CommunityGroupedList
+      items={items}
+      renderItem={(item: AdminFeedbackSummaryDto) => {
         const id = item.id;
         const text = item.bodySummary.slice(0, 120);
         const receivedAt = item.receivedAt;
@@ -104,8 +106,8 @@ export function FeedbackTab({
             </button>
           </li>
         );
-      })}
-    </ul>
+      }}
+    />
   );
 }
 

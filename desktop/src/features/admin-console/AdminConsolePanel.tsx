@@ -48,6 +48,7 @@ import {
   DetailRow,
   ErrorMessage,
   LoadingSpinner,
+  CommunityGroupedList,
   formatTimestamp,
   useAsyncLoad,
 } from "./AdminConsolePanelHelpers";
@@ -468,8 +469,9 @@ function ReportsTab({
   }
 
   return (
-    <ul className="space-y-1">
-      {reports.map((report: AdminReportDto) => {
+    <CommunityGroupedList
+      items={reports}
+      renderItem={(report: AdminReportDto) => {
         const id = report.id;
         const summary = report.reportType || "Report";
         const status = report.status;
@@ -499,8 +501,8 @@ function ReportsTab({
             </button>
           </li>
         );
-      })}
-    </ul>
+      }}
+    />
   );
 }
 

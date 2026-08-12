@@ -1696,3 +1696,129 @@ test("discovery-skipped: a saved origin takes precedence and discovery is not at
 
   await unmount();
 });
+
+// ── community grouping ────────────────────────────────────────────────────
+
+test("reports-grouped-by-community: multi-community reports render per-community headings", async () => {
+  // The admin API returns deployment-wide reports; the console buckets them
+  // by community for triage. Two communities → two group headings; rows stay
+  // navigable (the first non-tab, non-processing report opens its detail).
+  //
+  // Mutation evidence: revert ReportsTab to a flat <ul> → community-group
+  // headings vanish and this test goes red.
+
+  const origin = "https://admin.example.com";
+  const pubkey = "a7".repeat(32);
+
+  const reports = [
+    {
+      id: "00000000-0000-0000-0000-0000000000a1",
+      communityId: "comm-1",
+      communityHost: "alpha.example.com",
+      reportEventId: "aa",
+      reporterPubkey: "bb",
+      targetKind: "event",
+      target: "cc",
+      reportType: "spam",
+      status: "open",
+      createdAt: "2024-06-01T12:00:00Z",
+    },
+    {
+      id: "00000000-0000-0000-0000-0000000000a2",
+      communityId: "comm-2",
+      communityHost: "beta.example.com",
+      reportEventId: "dd",
+      reporterPubkey: "ee",
+      targetKind: "event",
+      target: "ff",
+      reportType: "abuse",
+      status: "open",
+      createdAt: "2024-06-02T12:00:00Z",
+    },
+  ];
+
+  setIpcHandler("admin_list_reports", () => Promise.resolve(reports));
+  setIpcHandler("admin_list_feedback", () => Promise.resolve([]));
+
+  const { container, doRender, unmount } = mountPanel({ origin, pubkey });
+  await doRender();
+  await settle(30);
+
+  const groups = container.querySelectorAll("[data-testid='community-group']");
+  assert.equal(
+    groups.length,
+    2,
+    `two communities must render two groups; got ${groups.length}`,
+  );
+
+  const hosts = Array.from(
+    container.querySelectorAll("[data-testid='community-group-host']"),
+  ).map((el) => el.textContent);
+  assert.deepEqual(
+    hosts,
+    ["alpha.example.com", "beta.example.com"],
+    `group headings must show each community host in first-seen order; got: ${JSON.stringify(hosts)}`,
+  );
+
+  await unmount();
+});
+
+test("feedback-grouped-by-community: multi-community feedback renders per-community headings", async () => {
+  // Same grouping contract for the Feedback tab.
+  //
+  // Mutation evidence: revert FeedbackTab to a flat <ul> → group headings
+  // vanish and this test goes red.
+
+  const origin = "https://admin.example.com";
+  const pubkey = "b8".repeat(32);
+
+  const feedback = [
+    {
+      id: "00000000-0000-0000-0000-0000000000b1",
+      communityId: "comm-1",
+      communityHost: "alpha.example.com",
+      submitterPubkey: "sub1",
+      category: "bug",
+      bodySummary: "Alpha feedback body",
+      receivedAt: "2024-06-01T09:00:00Z",
+    },
+    {
+      id: "00000000-0000-0000-0000-0000000000b2",
+      communityId: "comm-2",
+      communityHost: "beta.example.com",
+      submitterPubkey: "sub2",
+      category: "idea",
+      bodySummary: "Beta feedback body",
+      receivedAt: "2024-06-02T09:00:00Z",
+    },
+  ];
+
+  setIpcHandler("admin_list_reports", () => Promise.resolve([]));
+  setIpcHandler("admin_list_feedback", () => Promise.resolve(feedback));
+
+  const { container, doRender, unmount } = mountPanel({ origin, pubkey });
+  await doRender();
+  await settle(30);
+
+  // Switch to the Feedback tab.
+  const feedbackTab = container.querySelector(
+    "[data-testid='admin-tab-feedback']",
+  );
+  assert.ok(feedbackTab, "Feedback tab must be present");
+  await act(async () => {
+    fireEvent.click(feedbackTab);
+    await new Promise((r) => setTimeout(r, 30));
+  });
+  await settle(30);
+
+  const hosts = Array.from(
+    container.querySelectorAll("[data-testid='community-group-host']"),
+  ).map((el) => el.textContent);
+  assert.deepEqual(
+    hosts,
+    ["alpha.example.com", "beta.example.com"],
+    `feedback group headings must show each community host; got: ${JSON.stringify(hosts)}`,
+  );
+
+  await unmount();
+});
