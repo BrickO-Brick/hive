@@ -537,6 +537,7 @@ test("commit detail opens from the commits feed with a diff", async ({
   await expect(
     page.getByRole("button", { name: "Copy commit hash" }),
   ).toBeVisible();
+  await expect(page.getByTestId("project-workspace-tab-menu")).toHaveCount(0);
   await expect(
     page.getByRole("link", { name: "project guide", exact: true }),
   ).toHaveAttribute("href", "https://example.com/project-guide");
@@ -568,6 +569,7 @@ test("commit detail opens from the commits feed with a diff", async ({
     .getByRole("button", { name: "Commits", exact: true })
     .click();
   await expect(commitRows.first()).toBeVisible();
+  await expect(page.getByTestId("project-workspace-tab-menu")).toBeVisible();
 
   // The commits feed itself gets a grayed sub-tab crumb.
   await expect(

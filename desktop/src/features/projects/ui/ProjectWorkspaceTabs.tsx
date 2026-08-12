@@ -236,6 +236,9 @@ export function WorkspaceTabs({
     [pullRequests, selectedCommitHash],
   );
   const isPullRequestSelected = Boolean(selectedPullRequest);
+  const isDetailSelected = Boolean(
+    selectedPullRequestId || selectedIssueId || selectedCommitHash,
+  );
   const [selectedTab, setSelectedTab] = React.useState(
     initialTab ?? "overview",
   );
@@ -360,7 +363,7 @@ export function WorkspaceTabs({
       onValueChange={handleTabChange}
       value={selectedTab}
     >
-      {repositoryLoaded ? (
+      {repositoryLoaded && !isDetailSelected ? (
         <div
           className="flex h-10 min-w-0 items-center gap-1"
           data-testid="project-workspace-tab-menu"

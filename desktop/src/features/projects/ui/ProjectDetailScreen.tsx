@@ -870,9 +870,6 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
             activeTabCrumb={activeTabCrumb}
             activeWorkItemCrumb={activeWorkItemCrumb}
             chromeRef={projectDetailHeaderChromeRef}
-            onGoChannel={(channelId) => {
-              void goChannel(channelId);
-            }}
             onGoProjectHome={handleGoToProjectHome}
             onGoProjects={() => {
               void goProjects();
@@ -944,13 +941,6 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
                     project={project}
                     projects={projectsQuery.data ?? []}
                     repository={repository}
-                    webUrl={
-                      repoRemote.webUrl &&
-                      (repoRemote.host.kind !== "external" ||
-                        repoSource === "local")
-                        ? repoRemote.webUrl
-                        : null
-                    }
                   />
                 }
                 projectId={project.id}

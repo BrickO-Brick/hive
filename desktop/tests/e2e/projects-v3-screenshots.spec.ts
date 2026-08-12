@@ -24,6 +24,9 @@ async function openBuzzProject(page: import("@playwright/test").Page) {
 test("projects v3 workspace screenshot states", async ({ page }) => {
   await installMockBridge(page);
   await openBuzzProject(page);
+  await expect(
+    page.getByRole("button", { name: "Open Discussion" }),
+  ).toHaveCount(0);
 
   // Single-box workspace: tabs sit above the pickers, which only appear for
   // the README overview and Files.
@@ -134,6 +137,7 @@ test("projects v3 workspace screenshot states", async ({ page }) => {
   await issueRow.getByRole("button", { name: /^#/ }).click();
   const composer = page.getByTestId("project-issue-comment-composer");
   await expect(composer).toBeVisible();
+  await expect(tabMenu).toHaveCount(0);
   for (const comment of [
     "The palette needs the most work — starting there.",
     "Agreed. Typography pass can land separately.",
@@ -156,6 +160,11 @@ test("projects v3 workspace screenshot states", async ({ page }) => {
   await page.screenshot({ path: `${SHOTS}/03-issue-detail.png` });
 
   // PR list: section header owns creation; detail keeps its entity header.
+  await page
+    .getByRole("navigation", { name: "Project breadcrumb" })
+    .getByRole("button", { name: "Issues", exact: true })
+    .click();
+  await expect(tabMenu).toBeVisible();
   await page.getByRole("tab", { name: "Pull Request", exact: true }).click();
   await expect(
     workspacePanel.getByRole("heading", {
@@ -183,6 +192,7 @@ test("projects v3 workspace screenshot states", async ({ page }) => {
   await expect(
     page.getByTestId("project-pull-request-copy-link"),
   ).toBeVisible();
+  await expect(tabMenu).toHaveCount(0);
   await waitForAnimations(page);
   await page.screenshot({ path: `${SHOTS}/04-pr-detail.png` });
 });

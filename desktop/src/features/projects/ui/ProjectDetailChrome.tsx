@@ -1,4 +1,4 @@
-import { ChevronRight, FolderGit2, MessageSquare } from "lucide-react";
+import { ChevronRight, FolderGit2 } from "lucide-react";
 import type * as React from "react";
 
 import type { Project } from "@/features/projects/hooks";
@@ -6,7 +6,6 @@ import { projectShareLink } from "@/features/projects/lib/projectShareLinks";
 import { channelChrome, topChromeInset } from "@/shared/layout/chromeLayout";
 import { cn } from "@/shared/lib/cn";
 import type { EntityLinkTab } from "@/shared/lib/entityLink";
-import { Button } from "@/shared/ui/button";
 import { ShareLinkButton } from "./ShareLinkButton";
 
 export type ProjectDetailWorkItemCrumb = {
@@ -20,7 +19,6 @@ export function ProjectDetailChrome({
   activeTabCrumb,
   activeWorkItemCrumb,
   chromeRef,
-  onGoChannel,
   onGoProjectHome,
   onGoProjects,
   project,
@@ -31,7 +29,6 @@ export function ProjectDetailChrome({
   activeTabCrumb: string | null;
   activeWorkItemCrumb: ProjectDetailWorkItemCrumb | null;
   chromeRef: React.Ref<HTMLDivElement>;
-  onGoChannel: (channelId: string) => void;
   onGoProjectHome: () => void;
   onGoProjects: () => void;
   project: Project;
@@ -125,17 +122,6 @@ export function ProjectDetailChrome({
             link={projectShareLink(project, shareTab)}
             testId="project-detail-copy-link"
           />
-          {project.projectChannelId ? (
-            <Button
-              className="h-8 shrink-0 gap-1.5"
-              onClick={() => onGoChannel(project.projectChannelId as string)}
-              size="sm"
-              variant="outline"
-            >
-              <MessageSquare className="h-4 w-4" />
-              Open Discussion
-            </Button>
-          ) : null}
         </div>
       </div>
     </div>
