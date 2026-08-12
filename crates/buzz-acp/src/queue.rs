@@ -165,6 +165,16 @@ pub struct EventQueue {
     /// by `flush_next` / `has_flushable_work` (recover, not log-and-drop —
     /// the events were never delivered to the agent).
     withheld_native_steer: HashMap<Uuid, Vec<QueuedEvent>>,
+    /// Event ids whose reserved payload has already been accepted by the
+    /// in-flight task's steer transport and is awaiting its acknowledgement.
+    /// Reservations absent from this set are still only being prepared and
+    /// may be safely released before cancel+merge.
+    sent_native_steers: HashMap<Uuid, HashSet<String>>,
+    /// Channels whose prompt task returned while a sent native steer still
+    /// awaits acknowledgement. The acknowledgement is the authority that
+    /// settles delivery, so replacement dispatch must remain fenced until it
+    /// consumes or restores that event.
+    completed_awaiting_native_steer: HashSet<Uuid>,
     /// Duration after which an in-flight channel is auto-expired as orphaned.
     /// Must be strictly greater than `max_turn_duration` so a turn running to
     /// the hard cap returns via `mark_complete` before the backstop fires.
@@ -189,6 +199,8 @@ impl EventQueue {
             cancelled_batches: HashMap::new(),
             cancel_reasons: HashMap::new(),
             withheld_native_steer: HashMap::new(),
+            sent_native_steers: HashMap::new(),
+            completed_awaiting_native_steer: HashSet::new(),
             in_flight_deadline: Duration::from_secs(DEFAULT_IN_FLIGHT_DEADLINE_SECS),
         }
     }
@@ -390,7 +402,6 @@ impl EventQueue {
                 received_at: qe.received_at,
             })
             .collect();
-
         // Remove the queue entry if now empty.
         if self.queues.get(&channel_id).is_some_and(|q| q.is_empty()) {
             self.queues.remove(&channel_id);
@@ -432,6 +443,22 @@ impl EventQueue {
     ///
     /// Also cleans up any already-expired `retry_after` entry.
     pub fn mark_complete(&mut self, channel_id: Uuid) {
+        if self.has_sent_native_steer(channel_id) {
+            // A result can win the main loop's select before the native-steer
+            // watcher posts its ack. Keep this channel in-flight: otherwise a
+            // later queued event can start a replacement turn before a neutral
+            // ack restores the older withheld event.
+            self.completed_awaiting_native_steer.insert(channel_id);
+            return;
+        }
+        self.clear_complete(channel_id);
+    }
+
+    /// Clear a channel after its prompt and every sent native steer have
+    /// settled. Kept private so only `mark_complete` and acknowledgement
+    /// settlement can open the replacement-dispatch gate.
+    fn clear_complete(&mut self, channel_id: Uuid) {
+        self.completed_awaiting_native_steer.remove(&channel_id);
         self.in_flight_channels.remove(&channel_id);
         self.in_flight_deadlines.remove(&channel_id);
         self.in_flight_batch_sizes.remove(&channel_id);
@@ -766,6 +793,8 @@ impl EventQueue {
         self.retry_after.remove(&channel_id);
         self.retry_counts.remove(&channel_id);
         self.cancel_reasons.remove(&channel_id);
+        self.sent_native_steers.remove(&channel_id);
+        self.completed_awaiting_native_steer.remove(&channel_id);
         // Preserve in_flight_channels AND in_flight_deadlines: the in-flight
         // task will eventually complete (calling mark_complete) or the deadline
         // will expire (auto-cleaning the channel). Removing deadlines without
@@ -846,6 +875,60 @@ impl EventQueue {
             .is_some_and(|entries| entries.iter().any(|qe| qe.event.id.to_hex() == event_id))
     }
 
+    /// Mark an existing reservation as accepted by the steer transport.
+    pub fn mark_native_steer_sent(&mut self, channel_id: Uuid, event_id: &str) {
+        if self.has_native_steer_reservation(channel_id, event_id) {
+            self.sent_native_steers
+                .entry(channel_id)
+                .or_default()
+                .insert(event_id.to_string());
+        }
+    }
+
+    /// Return whether this channel has a sent steer awaiting acknowledgement.
+    pub fn has_sent_native_steer(&self, channel_id: Uuid) -> bool {
+        self.sent_native_steers
+            .get(&channel_id)
+            .is_some_and(|ids| !ids.is_empty())
+    }
+
+    /// Release only reservations that are still in asynchronous preparation.
+    /// Sent steers remain withheld until their acknowledgement settles them.
+    pub fn release_native_steer_preparations(&mut self, channel_id: Uuid) -> usize {
+        let sent = self.sent_native_steers.get(&channel_id);
+        let Some(entries) = self.withheld_native_steer.get_mut(&channel_id) else {
+            return 0;
+        };
+        let mut released = Vec::new();
+        let mut i = 0;
+        while i < entries.len() {
+            let event_id = entries[i].event.id.to_hex();
+            if sent.is_some_and(|ids| ids.contains(&event_id)) {
+                i += 1;
+            } else {
+                released.push(entries.remove(i));
+            }
+        }
+        if entries.is_empty() {
+            self.withheld_native_steer.remove(&channel_id);
+        }
+        let n = released.len();
+        let queue = self.queues.entry(channel_id).or_default();
+        for event in released.into_iter().rev() {
+            queue.push_front(event);
+        }
+        n
+    }
+
+    /// Open a completion fence once the last sent steer has settled.
+    fn settle_sent_native_steer(&mut self, channel_id: Uuid) {
+        if self.completed_awaiting_native_steer.contains(&channel_id)
+            && !self.has_sent_native_steer(channel_id)
+        {
+            self.clear_complete(channel_id);
+        }
+    }
+
     /// Release a single withheld event back to the front of
     /// `queues[channel_id]`, preserving its original `received_at`.
     ///
@@ -867,9 +950,16 @@ impl EventQueue {
             return;
         };
         let qe = entries.remove(pos);
+        if let Some(sent) = self.sent_native_steers.get_mut(&channel_id) {
+            sent.remove(event_id);
+            if sent.is_empty() {
+                self.sent_native_steers.remove(&channel_id);
+            }
+        }
         if entries.is_empty() {
             self.withheld_native_steer.remove(&channel_id);
         }
+        self.settle_sent_native_steer(channel_id);
         // Push to FRONT so original `received_at` keeps the event at the head
         // of the channel's queue. Per-channel cap is enforced below in case
         // a flood of events arrived during the ack window.
@@ -892,6 +982,12 @@ impl EventQueue {
     /// event has been "delivered" via the non-cancelling path and must not
     /// be redelivered via normal dispatch. Idempotent across both stores.
     pub fn remove_event(&mut self, channel_id: Uuid, event_id: &str) {
+        if let Some(sent) = self.sent_native_steers.get_mut(&channel_id) {
+            sent.remove(event_id);
+            if sent.is_empty() {
+                self.sent_native_steers.remove(&channel_id);
+            }
+        }
         if let Some(entries) = self.withheld_native_steer.get_mut(&channel_id) {
             entries.retain(|qe| qe.event.id.to_hex() != event_id);
             if entries.is_empty() {
@@ -904,6 +1000,7 @@ impl EventQueue {
                 self.queues.remove(&channel_id);
             }
         }
+        self.settle_sent_native_steer(channel_id);
     }
 
     /// Release every native-steer reservation for `channel_id` to the queue
@@ -913,6 +1010,8 @@ impl EventQueue {
         let Some(entries) = self.withheld_native_steer.remove(&channel_id) else {
             return 0;
         };
+        self.sent_native_steers.remove(&channel_id);
+        self.settle_sent_native_steer(channel_id);
         let n = entries.len();
         let queue = self.queues.entry(channel_id).or_default();
         for qe in entries.into_iter().rev() {
@@ -2023,6 +2122,25 @@ mod tests {
         let event = EventBuilder::new(Kind::Custom(9), content)
             .custom_created_at(Timestamp::from(created_at_secs))
             .tags([])
+            .sign_with_keys(&keys)
+            .unwrap();
+        QueuedEvent {
+            channel_id,
+            event,
+            received_at: Instant::now(),
+            prompt_tag: "test".into(),
+        }
+    }
+
+    fn make_edit_queued_created_at(
+        channel_id: Uuid,
+        target: &str,
+        created_at_secs: u64,
+    ) -> QueuedEvent {
+        let keys = Keys::generate();
+        let event = EventBuilder::new(Kind::Custom(40003), "edited mention")
+            .custom_created_at(Timestamp::from(created_at_secs))
+            .tags([nostr::Tag::parse(["e", target]).unwrap()])
             .sign_with_keys(&keys)
             .unwrap();
         QueuedEvent {
@@ -5104,6 +5222,141 @@ mod tests {
             &event_id,
             0,
         ));
+    }
+
+    /// Replay arrives newest-first. Chronology must be restored before the
+    /// edit boundary is selected, or the newer ordinary event starts a turn
+    /// before the older edit can recover its original-message routing.
+    #[test]
+    fn replay_orders_before_partitioning_at_edit_boundaries() {
+        let mut q = EventQueue::new(DedupMode::Queue);
+        let ch = Uuid::new_v4();
+        let older = make_queued_created_at(ch, "older", 100);
+        let older_id = older.event.id.to_hex();
+        let edit = make_edit_queued_created_at(ch, &"cd".repeat(32), 200);
+        let edit_id = edit.event.id.to_hex();
+        let newer = make_queued_created_at(ch, "newer", 300);
+        let newer_id = newer.event.id.to_hex();
+
+        // Production relay replay order: newest first.
+        q.push(newer);
+        q.push(edit);
+        q.push(older);
+
+        let first = q
+            .flush_next()
+            .expect("older ordinary event dispatches first");
+        assert_eq!(
+            first
+                .events
+                .iter()
+                .map(|event| event.event.id.to_hex())
+                .collect::<Vec<_>>(),
+            vec![older_id],
+        );
+        q.mark_complete(ch);
+        let second = q.flush_next().expect("edit dispatches at its own boundary");
+        assert_eq!(second.events[0].event.id.to_hex(), edit_id);
+        q.mark_complete(ch);
+        let third = q
+            .flush_next()
+            .expect("newer ordinary event remains after edit");
+        assert_eq!(third.events[0].event.id.to_hex(), newer_id);
+    }
+
+    #[test]
+    fn sent_steer_fences_replacement_until_ack_settles() {
+        let mut q = EventQueue::new(DedupMode::Queue);
+        let ch = Uuid::new_v4();
+        q.push(make_queued(ch, "original turn"));
+        let _original = q.flush_next().expect("initial prompt in flight");
+
+        let steered = make_edit_queued_created_at(ch, &"cd".repeat(32), 100);
+        let steered_id = steered.event.id.to_hex();
+        let replacement = make_queued_created_at(ch, "later replacement", 200);
+        let replacement_id = replacement.event.id.to_hex();
+        q.push(steered);
+        assert!(q.mark_native_steer_pending(ch, &steered_id));
+        q.mark_native_steer_sent(ch, &steered_id);
+        q.push(replacement);
+
+        // Adversarial select schedule: prompt result is processed before the
+        // delayed neutral acknowledgement. It must not start replacement work.
+        q.mark_complete(ch);
+        assert!(q.is_channel_in_flight(ch));
+        assert!(
+            q.flush_next().is_none(),
+            "sent steer fences replacement dispatch"
+        );
+
+        // Neutral acknowledgement restores the older steered event and opens
+        // the fence atomically, so chronological delivery cannot reverse.
+        q.release_native_steer(ch, &steered_id);
+        let restored = q
+            .flush_next()
+            .expect("neutral ack restores the steer first");
+        assert_eq!(restored.events[0].event.id.to_hex(), steered_id);
+        q.mark_complete(ch);
+        let later = q.flush_next().expect("replacement follows settled steer");
+        assert_eq!(later.events[0].event.id.to_hex(), replacement_id);
+    }
+
+    #[test]
+    fn mixed_batch_stops_before_edit_and_dispatches_edit_separately() {
+        let mut q = EventQueue::new(DedupMode::Queue);
+        let ch = Uuid::new_v4();
+        let first = make_queued_at(ch, "first", Duration::from_millis(30));
+        let first_id = first.event.id.to_hex();
+        let edit = edit_event(&"cd".repeat(32));
+        let edit_id = edit.id.to_hex();
+        let later = make_queued_at(ch, "later", Duration::from_millis(10));
+        let later_id = later.event.id.to_hex();
+        q.push(first);
+        q.push(QueuedEvent {
+            channel_id: ch,
+            event: edit,
+            received_at: Instant::now() - Duration::from_millis(20),
+            prompt_tag: "@mention".into(),
+        });
+        q.push(later);
+
+        let first_batch = q.flush_next().expect("pre-edit event should dispatch");
+        assert_eq!(first_batch.events.len(), 1);
+        assert_eq!(first_batch.events[0].event.id.to_hex(), first_id);
+        q.mark_complete(ch);
+
+        let edit_batch = q.flush_next().expect("edit should dispatch separately");
+        assert_eq!(edit_batch.events.len(), 1);
+        assert_eq!(edit_batch.events[0].event.id.to_hex(), edit_id);
+        q.mark_complete(ch);
+
+        let later_batch = q
+            .flush_next()
+            .expect("post-edit event should remain queued");
+        assert_eq!(later_batch.events.len(), 1);
+        assert_eq!(later_batch.events[0].event.id.to_hex(), later_id);
+    }
+
+    #[test]
+    fn releasing_preparations_does_not_release_sent_steer() {
+        let mut q = EventQueue::new(DedupMode::Queue);
+        let ch = Uuid::new_v4();
+        let sent = make_queued_at(ch, "sent", Duration::from_millis(20));
+        let sent_id = sent.event.id.to_hex();
+        let later = make_queued_at(ch, "later", Duration::from_millis(10));
+        q.push(sent);
+        assert!(q.mark_native_steer_pending(ch, &sent_id));
+        q.mark_native_steer_sent(ch, &sent_id);
+        q.push(later);
+
+        assert_eq!(q.release_native_steer_preparations(ch), 0);
+        assert!(q.has_native_steer_reservation(ch, &sent_id));
+        assert!(q.has_sent_native_steer(ch));
+        q.remove_event(ch, &sent_id);
+        assert!(!q.has_sent_native_steer(ch));
+        let replacement = q.flush_next().expect("only later event should dispatch");
+        assert_eq!(replacement.events.len(), 1);
+        assert_ne!(replacement.events[0].event.id.to_hex(), sent_id);
     }
 
     #[test]
