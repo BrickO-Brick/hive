@@ -38,9 +38,23 @@ use goose::agents::Agent;
 use goose::session::session_manager::Session;
 use rmcp::model::CallToolRequestParams;
 
-/// Hard cap on consecutive vetoes, mirroring goose's own `stop_hook_block_cap`
-/// (`agent.rs:108-119`). A tool that always objects must not trap the turn.
+/// Default cap on consecutive vetoes, mirroring goose's own
+/// `stop_hook_block_cap` (`agent.rs:108-119`). A tool that always objects must
+/// not trap the turn.
 pub const MAX_STOP_BLOCKS: u32 = 3;
+
+/// The veto cap in force, from `BUZZ_AGENT_STOP_MAX_REJECTIONS`.
+///
+/// Configurable rather than hardcoded because it was configurable on main, and
+/// **`0` disables the `_Stop` veto entirely** — documented behaviour there
+/// ("set to 0 to disable `_Stop` hooks entirely"), which an operator with a
+/// misbehaving hook relies on. A hardcoded cap silently takes that away.
+pub fn stop_block_cap() -> u32 {
+    std::env::var("BUZZ_AGENT_STOP_MAX_REJECTIONS")
+        .ok()
+        .and_then(|raw| raw.trim().parse().ok())
+        .unwrap_or(MAX_STOP_BLOCKS)
+}
 
 /// Tools are advertised to the model prefixed with their extension name
 /// (`extension_manager.rs:1425`), and dispatch resolves the same prefixed

@@ -52,6 +52,10 @@ pub struct Config {
     /// this yet — wiring it to a real human affordance is the point of the
     /// isolation work, and this is the seam it will use.
     pub goose_mode: GooseMode,
+    /// Remind the model to publish when a turn is about to end with no
+    /// recognised attempt to post to Buzz. Default off; Desktop opts
+    /// shared-compute agents in via `BUZZ_AGENT_REQUIRE_REPLY=1`.
+    pub require_reply: bool,
 
     // ---- Databricks model-discovery fields -------------------------------
     // Goose owns provider auth for the agent loop, but the desktop model
@@ -141,9 +145,13 @@ impl Config {
         Self {
             model: env_str("BUZZ_AGENT_MODEL"),
             max_rounds: env_parse::<u32>("BUZZ_AGENT_MAX_ROUNDS").filter(|n| *n > 0),
-            max_sessions: env_parse("BUZZ_AGENT_MAX_SESSIONS").unwrap_or(8),
+            // `usize::MAX`, not a small number: main defaulted to unlimited
+            // and an agent that never set this must not start refusing
+            // sessions after some arbitrary count.
+            max_sessions: env_parse("BUZZ_AGENT_MAX_SESSIONS").unwrap_or(usize::MAX),
             system_prompt,
             goose_mode: parse_approval(env_str("BUZZ_AGENT_APPROVAL").as_deref()),
+            require_reply: env_str("BUZZ_AGENT_REQUIRE_REPLY").is_some_and(|v| v != "0"),
             // Discovery-only; the agent loop resolves providers through goose.
             provider: Provider::default(),
             api_key: String::new(),
@@ -162,6 +170,7 @@ impl Config {
             max_sessions: 1,
             system_prompt: None,
             goose_mode: GooseMode::default(),
+            require_reply: false,
             provider,
             api_key,
             base_url,
@@ -221,8 +230,55 @@ impl Config {
         if let Some(ctx) = env_str("BUZZ_AGENT_MAX_CONTEXT_TOKENS") {
             set_if_absent("GOOSE_CONTEXT_LIMIT", &ctx);
         }
+
+        // ---- Knobs whose implementation moved to goose ------------------
+        //
+        // goose owning the *mechanism* must not mean the `BUZZ_AGENT_*` name
+        // stops working. Anyone who set one of these against buzz-agent on
+        // main gets the same effect here, because we translate it onto goose's
+        // equivalent. Silently ignoring a knob someone deliberately set is the
+        // worst outcome: no error, just different behaviour.
+        //
+        // `set_if_absent`, unlike the provider/model pair above: these have no
+        // structured field behind them, so an explicit `GOOSE_*` in the
+        // environment is a deliberate override and should win.
+
+        // Per-tool-call timeout. buzz's default was 660s; goose's is 300s
+        // (`DEFAULT_EXTENSION_TIMEOUT`), so leaving it unset would silently
+        // shorten every long tool call. We therefore project buzz's default
+        // too, not just an explicit value.
+        set_if_absent(
+            "GOOSE_DEFAULT_EXTENSION_TIMEOUT",
+            &env_str("BUZZ_AGENT_TOOL_TIMEOUT_SECS")
+                .unwrap_or_else(|| DEFAULT_TOOL_TIMEOUT_SECS.to_string()),
+        );
+
+        // Tool-result truncation threshold. Same reasoning: buzz truncated at
+        // 50 KB, goose at 200 KB, so the default has to be carried across or a
+        // tool returning 100 KB reaches the model on this branch when it did
+        // not on main.
+        set_if_absent(
+            "GOOSE_MAX_TOOL_RESPONSE_SIZE",
+            &env_str("BUZZ_AGENT_MAX_TOOL_RESULT_TEXT_BYTES")
+                .unwrap_or_else(|| DEFAULT_TOOL_RESULT_TEXT_BYTES.to_string()),
+        );
+
+        // `BUZZ_AGENT_NO_HINTS=1` suppressed AGENTS.md/.goosehints loading.
+        // goose has no boolean for this, but it takes the *filename list* —
+        // an empty list finds nothing, which is the same outcome.
+        if env_str("BUZZ_AGENT_NO_HINTS").is_some_and(|v| v != "0") {
+            set_if_absent("CONTEXT_FILE_NAMES", "[]");
+        }
     }
 }
+
+/// Per-tool-call timeout, in seconds. buzz-agent's long-standing default,
+/// preserved because goose's is shorter (300s).
+const DEFAULT_TOOL_TIMEOUT_SECS: u64 = 660;
+
+/// Tool-result text truncation threshold, in bytes. buzz-agent's default,
+/// preserved because goose's is larger (200 KB).
+const DEFAULT_TOOL_RESULT_TEXT_BYTES: usize = 50 * 1024;
 
 fn set_if_absent(key: &str, value: &str) {
     if std::env::var_os(key).is_none() {
@@ -234,8 +290,118 @@ fn set_if_absent(key: &str, value: &str) {
 mod tests {
     use super::*;
 
+    /// Process env is global; tests that mutate it must not interleave.
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     // Env is process-global; these tests set disjoint keys and assert only on
     // the pure mapping helpers where possible.
+
+    /// Every `BUZZ_AGENT_*` knob whose implementation moved to goose must
+    /// still reach goose under its goose name. A knob that silently stops
+    /// working is the regression this test exists to prevent.
+    ///
+    /// Serialised by the shared env lock: `project_goose_env` mutates process
+    /// globals.
+    #[test]
+    fn knobs_that_moved_to_goose_still_reach_it() {
+        let _guard = env_lock();
+        let keys = [
+            "BUZZ_AGENT_TOOL_TIMEOUT_SECS",
+            "BUZZ_AGENT_MAX_TOOL_RESULT_TEXT_BYTES",
+            "BUZZ_AGENT_NO_HINTS",
+            "GOOSE_DEFAULT_EXTENSION_TIMEOUT",
+            "GOOSE_MAX_TOOL_RESPONSE_SIZE",
+            "CONTEXT_FILE_NAMES",
+        ];
+        for key in keys {
+            std::env::remove_var(key);
+        }
+
+        std::env::set_var("BUZZ_AGENT_TOOL_TIMEOUT_SECS", "1200");
+        std::env::set_var("BUZZ_AGENT_MAX_TOOL_RESULT_TEXT_BYTES", "12345");
+        std::env::set_var("BUZZ_AGENT_NO_HINTS", "1");
+        Config::project_goose_env();
+
+        assert_eq!(
+            std::env::var("GOOSE_DEFAULT_EXTENSION_TIMEOUT").unwrap(),
+            "1200"
+        );
+        assert_eq!(
+            std::env::var("GOOSE_MAX_TOOL_RESPONSE_SIZE").unwrap(),
+            "12345"
+        );
+        assert_eq!(std::env::var("CONTEXT_FILE_NAMES").unwrap(), "[]");
+
+        for key in keys {
+            std::env::remove_var(key);
+        }
+    }
+
+    /// buzz's defaults differ from goose's, so leaving them unset would change
+    /// behaviour for everyone who never touched these knobs: tool calls would
+    /// time out at 300s instead of 660s, and tool output would truncate at
+    /// 200 KB instead of 50 KB.
+    #[test]
+    fn buzz_defaults_are_projected_not_left_to_goose() {
+        let _guard = env_lock();
+        for key in [
+            "BUZZ_AGENT_TOOL_TIMEOUT_SECS",
+            "BUZZ_AGENT_MAX_TOOL_RESULT_TEXT_BYTES",
+            "GOOSE_DEFAULT_EXTENSION_TIMEOUT",
+            "GOOSE_MAX_TOOL_RESPONSE_SIZE",
+        ] {
+            std::env::remove_var(key);
+        }
+
+        Config::project_goose_env();
+
+        assert_eq!(
+            std::env::var("GOOSE_DEFAULT_EXTENSION_TIMEOUT").unwrap(),
+            "660",
+            "buzz's tool timeout, not goose's 300s"
+        );
+        assert_eq!(
+            std::env::var("GOOSE_MAX_TOOL_RESPONSE_SIZE").unwrap(),
+            (50 * 1024).to_string(),
+            "buzz's truncation threshold, not goose's 200 KB"
+        );
+
+        for key in [
+            "GOOSE_DEFAULT_EXTENSION_TIMEOUT",
+            "GOOSE_MAX_TOOL_RESPONSE_SIZE",
+        ] {
+            std::env::remove_var(key);
+        }
+    }
+
+    /// main defaulted to unlimited concurrent sessions. A small default would
+    /// make a busy agent start refusing sessions it used to accept.
+    #[test]
+    fn max_sessions_defaults_to_unlimited() {
+        let _guard = env_lock();
+        std::env::remove_var("BUZZ_AGENT_MAX_SESSIONS");
+        assert_eq!(Config::from_env().max_sessions, usize::MAX);
+    }
+
+    /// Desktop enables this for shared-compute agents; it must be read.
+    #[test]
+    fn require_reply_is_read_from_the_environment() {
+        let _guard = env_lock();
+        std::env::remove_var("BUZZ_AGENT_REQUIRE_REPLY");
+        assert!(!Config::from_env().require_reply);
+
+        std::env::set_var("BUZZ_AGENT_REQUIRE_REPLY", "1");
+        assert!(Config::from_env().require_reply);
+
+        // An explicit 0 opts out, which relay_mesh.rs goes out of its way to
+        // preserve through the spawn path.
+        std::env::set_var("BUZZ_AGENT_REQUIRE_REPLY", "0");
+        assert!(!Config::from_env().require_reply);
+        std::env::remove_var("BUZZ_AGENT_REQUIRE_REPLY");
+    }
 
     #[test]
     fn set_if_absent_does_not_clobber() {

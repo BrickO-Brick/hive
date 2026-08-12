@@ -753,6 +753,7 @@ async fn session_prompt(app: &Arc<App>, id: Value, params: Value, wire_tx: &Wire
             wire_tx,
             cancel: &cancel,
             hook_extension: hook_extension.as_deref(),
+            require_reply: app.cfg.require_reply,
             max_rounds: app.cfg.max_rounds,
             prompt: &prompt,
             steers: &steers,

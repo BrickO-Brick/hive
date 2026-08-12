@@ -28,7 +28,7 @@ use goose::agents::state_machine::{
 use goose::agents::Agent;
 use goose::conversation::Conversation;
 use goose::session::Session;
-use goose_provider_types::conversation::message::Message;
+use goose_provider_types::conversation::message::{Message, ToolRequest};
 
 use crate::types::StopReason;
 
@@ -282,6 +282,125 @@ impl Operation for BuzzStopVetoOperation {
     }
 }
 
+/// Reminds the model to publish when a turn is about to end with nothing
+/// posted to Buzz.
+///
+/// Ported from main's reply guard (`agent.rs`, pre-goose), which this branch
+/// dropped. Desktop still enables it by default for shared-compute/mesh agents
+/// (`relay_mesh.rs`), so without this the flag is set and silently ignored.
+///
+/// Advisory: at most [`MAX_REPLY_NAGS`] reminders, then the turn ends whether
+/// or not anything was published. The guard catches accidental omission; it
+/// does not compel speech.
+pub struct BuzzReplyGuardOperation {
+    max_nags: u32,
+}
+
+/// Reminder text. Kept byte-identical to main's.
+///
+/// Explicitly licenses silence: the base prompt tells agents publishing is
+/// optional and "silence is usually correct", and a reminder that argued
+/// otherwise would fight that instruction and make agents chattier.
+const REPLY_GUARD_NAG: &str = "You are about to end this turn without calling `buzz messages send`. \
+Your assistant text and reasoning are never shown to anyone — if you did work, found an answer, \
+or hit a blocker that someone is waiting on, it exists only if you publish it. \
+If you already posted, or if silence is genuinely correct for this turn, ignore this and end your turn.";
+
+/// Maximum reminders per turn, as on main.
+pub const MAX_REPLY_NAGS: u32 = 2;
+
+/// Metadata key marking a reminder, so the budget survives in the
+/// conversation rather than in a loop-local counter.
+const NAGGED: &str = "nagged";
+
+impl BuzzReplyGuardOperation {
+    pub fn new(max_nags: u32) -> Self {
+        Self { max_nags }
+    }
+
+    /// Whether a tool request is a recognised attempt to publish to Buzz.
+    ///
+    /// An *attempt*, not a success: a failed send already returns a non-zero
+    /// exit and error JSON to the model, which is louder than this reminder.
+    ///
+    /// Same matcher as main's `is_reply_shaped`, with one simplification the
+    /// port allows: main checked `mcp.has(name) && !mcp.is_hook(name)` first
+    /// because a hallucinated `fake__shell` would otherwise disarm the guard.
+    /// Here the conversation only contains requests goose actually dispatched,
+    /// so a hallucinated name never reaches this code.
+    fn is_reply_shaped(request: &ToolRequest) -> bool {
+        let Ok(call) = &request.tool_call else {
+            return false;
+        };
+        if !call.name.ends_with("__shell") {
+            return false;
+        }
+        call.arguments
+            .as_ref()
+            .and_then(|args| args.get("command"))
+            .and_then(|command| command.as_str())
+            // Coarse substring test against the structured `command` field, as
+            // on main: `messages send` also covers `send-diff`, and `reactions
+            // add` counts because the base prompt tells agents to react rather
+            // than post a bare acknowledgement. Missing a real post is the
+            // expensive direction, so the forgiving match is the right one.
+            .is_some_and(|cmd| cmd.contains("messages send") || cmd.contains("reactions add"))
+    }
+}
+
+#[async_trait]
+impl Operation for BuzzReplyGuardOperation {
+    fn name(&self) -> &'static str {
+        "buzz_reply_guard"
+    }
+
+    async fn run(
+        &self,
+        _session: &Session,
+        conversation: &Conversation,
+        _emit: &Emitter,
+    ) -> Result<OperationResult> {
+        let Some(messages) = messages_since_kickoff(conversation) else {
+            return not_applicable();
+        };
+        if !ends_turn(messages) {
+            return not_applicable();
+        }
+
+        let nags = messages
+            .iter()
+            .filter(|message| self.message_meta(message, NAGGED).is_some())
+            .count() as u32;
+        if nags >= self.max_nags {
+            return not_applicable();
+        }
+
+        // Any publish-shaped call this turn disarms the guard for the rest of
+        // it, matching main's `buzz_reply_call_seen` latch.
+        let published = messages.iter().any(|message| {
+            message.content.iter().any(|content| {
+                matches!(
+                    content,
+                    goose_provider_types::conversation::message::MessageContent::ToolRequest(
+                        request,
+                    ) if Self::is_reply_shaped(request)
+                )
+            })
+        });
+        if published {
+            return not_applicable();
+        }
+
+        tracing::info!(nags = nags + 1, "reply guard reminded the model to publish");
+
+        let mut message = Message::user()
+            .with_text(REPLY_GUARD_NAG)
+            .with_visibility(false, true);
+        self.set_message_meta(&mut message, NAGGED, serde_json::json!(true));
+        applied([message.into()])
+    }
+}
+
 /// The operations that gate the start of a round.
 ///
 /// One entry today. As `PLANS/BUZZ_OPERATIONS_MIGRATION.md` proceeds, the
@@ -292,6 +411,7 @@ pub fn round_gate(
     outcome: Outcome,
     cancel: tokio_util::sync::CancellationToken,
     stop_veto: Option<(Arc<Agent>, String)>,
+    require_reply: bool,
 ) -> goose::agents::state_machine::StateMachine<'static> {
     use goose::agents::state_machine::Step;
 
@@ -305,7 +425,15 @@ pub fn round_gate(
         steps.push(Step::Operation(Arc::new(BuzzStopVetoOperation::new(
             agent,
             extension,
-            crate::hooks::MAX_STOP_BLOCKS,
+            crate::hooks::stop_block_cap(),
+        ))));
+    }
+    // After the `_Stop` veto: on main both objections rode the same gate, and
+    // a hook objection already keeps the turn alive, so reminding as well
+    // would spend two rounds where main spent one.
+    if require_reply {
+        steps.push(Step::Operation(Arc::new(BuzzReplyGuardOperation::new(
+            MAX_REPLY_NAGS,
         ))));
     }
     goose::agents::state_machine::StateMachine::new(steps, cancel)
@@ -455,6 +583,116 @@ mod tests {
         // At the cap the turn is allowed to end.
         let result = op
             .run(&Session::default(), &conversation, &emitter())
+            .await
+            .unwrap();
+        assert!(matches!(result, OperationResult::NotApplicable));
+    }
+
+    fn shell_request(command: &str) -> Message {
+        let mut args = serde_json::Map::new();
+        args.insert("command".into(), serde_json::json!(command));
+        Message::assistant().with_tool_request(
+            "call_1",
+            Ok(rmcp::model::CallToolRequestParams::new("developer__shell").with_arguments(args)),
+        )
+    }
+
+    /// A turn that ran a tool and then answered.
+    fn turn_with(request: Message) -> Conversation {
+        Conversation::new_unvalidated(vec![
+            Message::user().with_text("kickoff"),
+            request,
+            tool_response(),
+            Message::assistant().with_text("done"),
+        ])
+    }
+
+    #[tokio::test]
+    async fn the_reply_guard_reminds_when_nothing_was_published() {
+        let op = BuzzReplyGuardOperation::new(MAX_REPLY_NAGS);
+        let result = op
+            .run(&Session::default(), &conversation(1), &emitter())
+            .await
+            .unwrap();
+        match result {
+            OperationResult::Applied(step) => {
+                assert!(!step.yield_to_client, "a reminder must not end the turn");
+                assert_eq!(step.effects.len(), 1);
+            }
+            OperationResult::NotApplicable => panic!("expected a reminder"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_publish_attempt_disarms_the_guard() {
+        let op = BuzzReplyGuardOperation::new(MAX_REPLY_NAGS);
+        for command in [
+            "buzz messages send --channel x --content hi",
+            "buzz messages send-diff --channel x",
+            "buzz reactions add --event x --emoji +1",
+        ] {
+            let result = op
+                .run(
+                    &Session::default(),
+                    &turn_with(shell_request(command)),
+                    &emitter(),
+                )
+                .await
+                .unwrap();
+            assert!(
+                matches!(result, OperationResult::NotApplicable),
+                "`{command}` should disarm the guard"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unrelated_tool_call_does_not_disarm_the_guard() {
+        let op = BuzzReplyGuardOperation::new(MAX_REPLY_NAGS);
+        let result = op
+            .run(
+                &Session::default(),
+                &turn_with(shell_request("ls -la")),
+                &emitter(),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(result, OperationResult::Applied(_)));
+    }
+
+    #[tokio::test]
+    async fn the_guard_stops_after_its_budget() {
+        // Advisory, not compulsion: after MAX_REPLY_NAGS the turn ends whether
+        // or not anything was published.
+        let op = BuzzReplyGuardOperation::new(MAX_REPLY_NAGS);
+        let mut nag = Message::user()
+            .with_text(REPLY_GUARD_NAG)
+            .with_visibility(false, true);
+        op.set_message_meta(&mut nag, NAGGED, serde_json::json!(true));
+
+        let mut messages = vec![Message::user().with_text("kickoff")];
+        for _ in 0..MAX_REPLY_NAGS {
+            messages.push(nag.clone());
+            messages.push(Message::assistant().with_text("done"));
+        }
+        let result = op
+            .run(
+                &Session::default(),
+                &Conversation::new_unvalidated(messages),
+                &emitter(),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(result, OperationResult::NotApplicable));
+    }
+
+    #[tokio::test]
+    async fn a_zero_cap_disables_the_veto_entirely() {
+        // Documented behaviour on main: BUZZ_AGENT_STOP_MAX_REJECTIONS=0 turns
+        // `_Stop` off. An operator with a misbehaving hook depends on it.
+        let op = BuzzStopVetoOperation::new(agent().await, "buzz-dev-mcp".to_string(), 0);
+        let result = op
+            .run(&Session::default(), &conversation(1), &emitter())
             .await
             .unwrap();
         assert!(matches!(result, OperationResult::NotApplicable));

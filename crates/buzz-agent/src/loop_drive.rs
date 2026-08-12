@@ -108,6 +108,10 @@ pub struct TurnContext<'a> {
     /// buzz-agent holds this across turns itself now that the turn's
     /// conversation is in memory rather than in goose's database.
     pub history: &'a [Message],
+    /// Whether the reply guard is armed for this session
+    /// (`BUZZ_AGENT_REQUIRE_REPLY`). Desktop turns it on by default for
+    /// shared-compute agents.
+    pub require_reply: bool,
     /// Provider and model config for this turn. Read from here rather than
     /// from goose's `Agent`, which resolves the config out of its session
     /// store; see [`crate::model`].
@@ -161,6 +165,7 @@ pub async fn run_turn(
         ctx.cancel.clone(),
         ctx.hook_extension
             .map(|extension| (Arc::clone(ctx.agent), extension.to_string())),
+        ctx.require_reply,
     );
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(16);
     // Operations may emit; nothing in this step does, but a dropped receiver
