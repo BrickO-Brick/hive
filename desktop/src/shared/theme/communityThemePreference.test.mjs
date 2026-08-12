@@ -62,6 +62,18 @@ test("parses only the versioned stable appearance contract", () => {
     parseCommunityThemePreference({ ...valid, prominentActiveTab: 1 }),
     null,
   );
+  assert.equal(
+    parseCommunityThemePreference({ ...valid, glassBackground: null }),
+    null,
+  );
+  assert.equal(
+    parseCommunityThemePreference({ ...valid, glassOpacity: null }),
+    null,
+  );
+  assert.equal(
+    parseCommunityThemePreference({ ...valid, prominentActiveTab: null }),
+    null,
+  );
 });
 
 test("older theme records inherit the pre-migration appearance controls", () => {

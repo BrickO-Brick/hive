@@ -79,6 +79,27 @@ void main() {
         'followSystem': true,
         'prominentActiveTab': 1,
       },
+      {
+        'version': 1,
+        'theme': 'buzz',
+        'accent': '#3b82f6',
+        'followSystem': true,
+        'glassBackground': null,
+      },
+      {
+        'version': 1,
+        'theme': 'buzz',
+        'accent': '#3b82f6',
+        'followSystem': true,
+        'glassOpacity': null,
+      },
+      {
+        'version': 1,
+        'theme': 'buzz',
+        'accent': '#3b82f6',
+        'followSystem': true,
+        'prominentActiveTab': null,
+      },
     ]) {
       expect(
         () => CommunityThemePreference.fromJson(payload),

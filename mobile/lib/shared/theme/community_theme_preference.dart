@@ -49,11 +49,15 @@ class CommunityThemePreference {
         json['followSystem'] is! bool) {
       throw const FormatException('Invalid community theme preference');
     }
-    final glassBackground =
-        json['glassBackground'] ?? defaultCommunityGlassBackground;
-    final glassOpacity = json['glassOpacity'] ?? defaultCommunityGlassOpacity;
-    final prominentActiveTab =
-        json['prominentActiveTab'] ?? defaultCommunityProminentActiveTab;
+    final glassBackground = json.containsKey('glassBackground')
+        ? json['glassBackground']
+        : defaultCommunityGlassBackground;
+    final glassOpacity = json.containsKey('glassOpacity')
+        ? json['glassOpacity']
+        : defaultCommunityGlassOpacity;
+    final prominentActiveTab = json.containsKey('prominentActiveTab')
+        ? json['prominentActiveTab']
+        : defaultCommunityProminentActiveTab;
     if (glassBackground is! bool ||
         glassOpacity is! num ||
         !glassOpacity.isFinite ||

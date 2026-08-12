@@ -61,11 +61,15 @@ export function parseCommunityThemePreference(
   // These fields were added to the existing v1 payload. Fill older records
   // from the pre-migration appearance so a user's former global glass and tab
   // choices become the initial values for each existing community.
-  const glassBackground =
-    candidate.glassBackground ?? legacyFallback.glassBackground;
-  const glassOpacity = candidate.glassOpacity ?? legacyFallback.glassOpacity;
-  const prominentActiveTab =
-    candidate.prominentActiveTab ?? legacyFallback.prominentActiveTab;
+  const glassBackground = Object.hasOwn(candidate, "glassBackground")
+    ? candidate.glassBackground
+    : legacyFallback.glassBackground;
+  const glassOpacity = Object.hasOwn(candidate, "glassOpacity")
+    ? candidate.glassOpacity
+    : legacyFallback.glassOpacity;
+  const prominentActiveTab = Object.hasOwn(candidate, "prominentActiveTab")
+    ? candidate.prominentActiveTab
+    : legacyFallback.prominentActiveTab;
   if (
     candidate.version !== 1 ||
     typeof candidate.theme !== "string" ||
