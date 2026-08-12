@@ -61,6 +61,13 @@ Use the lifecycle state, not the operator's desired outcome, to choose the trans
 - An identity with no active binding and no lineage uses **Provision** when policy allows it.
 - A binding blocked only by administrative expiry uses the separately authorized administrative-expiry transition.
 
+Re-enable identity always requires an eligible target key and fresh proof and
+creates the new binding in the same transition that clears disabled state. A
+clear-only operation would create a resurrection window: provisioned mode
+would have no target to match, while TOFU could let the next ordinary
+admission capture first use. To re-enable now and provision later, leave the
+identity disabled until the target and proof are available.
+
 If selectors are contradictory, versions are unknown, or history and active state disagree, stop. Preserve the evidence, fail closed, and investigate before authorizing a forward repair.
 
 ## Recovery procedure

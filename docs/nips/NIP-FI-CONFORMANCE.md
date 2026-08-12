@@ -46,6 +46,14 @@ Stateful tests use an isolated database or namespace. They inspect committed sta
 
 When an adapter evaluates denial timing, it freezes the sampling method, production-equivalent environment, warm-up, sample count, statistic, noise treatment, and acceptance threshold before execution. The report retains those values and the raw privacy-safe measurements. An undefined or post-selected threshold cannot pass a trace.
 
+`FI-TRACE-DENIAL-ORACLE` runs a fixed positive iteration count on a pinned,
+isolated runner at the exact implementation and adapter head. Before the run,
+the operator records the environment, public-response corpus, bounds,
+statistical rule, noise treatment, and acceptance threshold. A threshold
+breach fails the gate and MUST NOT trigger an automatic retry. The failure is
+retained and investigated before a separately authorized new run produces new
+evidence.
+
 The following do not satisfy a trace:
 
 - searching source, documentation, schemas, or binaries for a token;
@@ -78,7 +86,7 @@ The following do not satisfy a trace:
 | `FI-TRACE-TOFU-THEFT` | Stolen-assertion first use denies in attested and provisioned modes. Only explicitly configured risk-labelled TOFU may create the attacker's proven key. | Same synthetic theft fixture under all three modes, discovery/config witness, provenance result, and no-mutation denials. | `FI-INV-05`, `FI-INV-10` |
 | `FI-TRACE-DELEGATE-OWNER-ROTATED` | Rotation, retirement, disablement, key revocation, owner-binding version change, or relationship revision makes old delegation non-current. No authority transfers to a replacement key. | Delegated allow baseline; each dependency mutation between preparation and final admission and during lease reuse; exact owner and relationship versions; replacement-key non-inheritance; denial; and bounded closure time. | `FI-INV-10`, `FI-INV-12` |
 | `FI-TRACE-DELEGATION-EXPIRED` | Missing finite configuration, delegation-expiry equality, owner administrative-expiry equality, and use after either bound deny. | Controlled-clock just-before/equal/after cases for both bounds, configuration omission case, delegate proof, exact owner version, and lease deadline. | `FI-INV-11`, `FI-INV-12`, `FI-INV-14` |
-| `FI-TRACE-DENIAL-ORACLE` | Unknown identity, conflicts, tombstones, enrollment posture, and private-policy denials are not distinguishable on the public wire. | Public response corpus normalized by transport, status/prefix comparison, predeclared timing method and threshold with raw measurements, and private-detail scan. | `FI-INV-13` |
+| `FI-TRACE-DENIAL-ORACLE` | Unknown identity, conflicts, tombstones, enrollment posture, and private-policy denials are not distinguishable on the public wire. | Public response corpus normalized by transport; fixed iteration count; pinned isolated runner and recorded environment; exact implementation and adapter head; status/prefix comparison; predeclared bounds, timing method, statistical rule, noise treatment, and threshold with raw measurements; private-detail scan; and proof that a breach failed without automatic retry. | `FI-INV-13` |
 | `FI-TRACE-DEPENDENCY-FAIL-CLOSED` | An unreadable verifier or registered adapter, authenticated key or upstream-policy snapshot, binding, lifecycle, replay, policy, receipt, audit, or invalidation state never allows. | One injected outage per dependency at preparation, final admission, and lease reuse where applicable, including authenticated upstream-policy snapshot retrieval; results and state diffs. | `FI-INV-14` |
 | `FI-TRACE-MULTI-KEY-SESSION` | A lease for one authenticated key cannot authorize another key on the same connection. | One connection with two keys, per-key operations, lease lookup evidence, and wire results before and after invalidation. | `FI-INV-05`, `FI-INV-11` |
 | `FI-TRACE-CROSS-DOMAIN-COLLISION` | Equal subjects across issuers and equal pairs across domains remain distinct and inherit no authority. | Two issuers and two domains with controlled collisions, four state snapshots, and cross-use denials. | `FI-INV-01`, `FI-INV-04` |

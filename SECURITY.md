@@ -55,16 +55,17 @@ The relay verifies the Schnorr signature and extracts the pubkey.
 
 ### Authorization and admission
 
-Channel membership is Buzz's application-level access control mechanism. If a
-principal (human or agent) is a member of a channel, application policy may
-allow them to read and write it. If they are not a member, the relay rejects
-their requests even if they are authenticated.
+In the current merged runtime, channel membership is Buzz's only
+application-level access-control mechanism. If a principal (human or agent)
+is a member of a channel, application policy may allow them to read and write
+it. If they are not a member, the relay rejects their requests even if they
+are authenticated.
 
 Private channels are invisible to non-members: they do not appear in channel
 listings, and subscription filters for private channel events return nothing
 unless the subscriber is a member.
 
-[NIP-FI](docs/nips/NIP-FI.md) defines an optional additional admission
+[NIP-FI](docs/nips/NIP-FI.md) defines a future optional additional admission
 authority that combines provider-neutral issuer assertions with fresh Nostr
 key proof, current durable binding and lifecycle state, and final application
 admission. When enabled for a domain, one current NIP-FI authority covers every
@@ -72,8 +73,9 @@ protected ingress atomically, and both NIP-FI and application authorization
 must allow each operation. NIP-FI does not replace NIP-42, NIP-98, Nostr
 signatures, channel membership, or resource policy.
 
-This documentation revision does not include or activate a NIP-FI runtime
-adapter. A later exact-head implementation and deployment must pass the
+That NIP-FI behavior is not shipped in the current merged runtime. This
+documentation revision does not include or activate a NIP-FI runtime adapter.
+A later exact-head implementation and deployment must pass the
 [behavioral evidence matrix](docs/nips/NIP-FI-CONFORMANCE.md) before publishing
 discovery or enforcing the contract. Source scans, prose, and configuration
 presence do not establish conformance. See the [threat

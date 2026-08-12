@@ -127,6 +127,9 @@ Do not describe a feature as conforming because it compiles, parses configuratio
 - Every required trace passes at the claim tuple.
 - Proxy and verifier-parity evidence matches the claim's transport-contract revision and profile-contract digest.
 - Every `not-applicable` trace has executable absence evidence.
+- Denial-oracle evidence uses a fixed iteration count, predeclared bounds and
+  statistical rule, a pinned isolated runner, and no automatic retry after a
+  threshold breach.
 - Artifacts and digests resolve.
 - Privacy canaries are absent from every public and operational sink.
 

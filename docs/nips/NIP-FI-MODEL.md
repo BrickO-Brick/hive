@@ -416,6 +416,14 @@ SetAdministrativeExpiry(i, k, old_version, binding_not_after?):
   create the same pair and provenance at new_version with the supplied bound
 ```
 
+`ReenableIdentity` deliberately clears `X_D` only while creating an eligible
+target binding under fresh proof. Clearing disabled state without a target
+would create a resurrection window: provisioned mode would have no target to
+match, while TOFU could let the next ordinary admission capture first use. An
+operator that wants to re-enable now and provision later leaves the identity
+disabled until the target and proof are available; there is no separate
+clear-only transition.
+
 Rotation does not globally revoke `k_old`; revocation does. A retired pair remains retired after rotation, recovery, or re-enablement. Ordinary authorization cannot cross disabled, revoked, retired, pending, or administratively expired state.
 
 # Lease model

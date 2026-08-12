@@ -156,7 +156,7 @@ Provision, retire, disable, revoke, rotate, recover, re-enable, and administrati
 
 Every new target key proves control. Replacement provenance reflects the evidence used for that key. A privileged transition without matching issuer key attestation records provisioned provenance; it never inherits TOFU or attested provenance from another key.
 
-Rotation starts from an active binding and leaves no pending lineage. Recovery consumes exact pending lineage for an enabled identity. A disabled identity uses re-enablement. Retired pairs and revoked keys remain durable.
+Rotation starts from an active binding and leaves no pending lineage. Recovery consumes exact pending lineage for an enabled identity. A disabled identity uses re-enablement, which requires an eligible target key with fresh proof and creates the binding while clearing disabled state. There is no clear-only transition: without a target, provisioned mode has nothing to match and TOFU could expose a first-use resurrection window. Retired pairs and revoked keys remain durable.
 
 See [runtime operations](NIP_FI_RUNTIME_OPERATIONS.md) for preconditions, postconditions, recovery, and rollback rules.
 
@@ -186,16 +186,61 @@ Private denial observations contain no raw tokens or verbatim unverified claims 
 
 The later implementation stack must deliver, at one exact head:
 
-1. a route adapter manifest for every protected ingress;
-2. one canonical assertion verifier and transport-neutral assertion corpus;
-3. serialized lifecycle storage with selector-conflict fixtures;
-4. read-only preparation and atomic final admission;
-5. direct and delegated lease dependency revalidation;
-6. deployed trusted-proxy negative evidence when that profile is supported;
-7. an executable adapter mapping for all applicable `FI-TRACE-*` labels; and
-8. a conformance report whose revisions and artifact digests match the deployment.
+1. Recheck binding version, lifecycle version, invalidation state, every
+   authenticated policy-snapshot hard deadline, and current snapshot
+   generation before every protected WebSocket use. JWT evidence revalidates
+   the retained assertion when JWKS generation changes.
+2. Install exactly one server-selected transport for each bound route and
+   domain, with no request negotiation or fallback.
+3. Preserve the HMAC-v2 envelope, canonicalization, time bounds, nonce ledger,
+   replay behavior, secret rotation, and fixtures unchanged when that stock
+   profile is selected.
+4. Install a registered adapter only after its closed profile contract,
+   normalized-result mapping, deployment evidence, and profile-contract digest
+   are reviewed. Permission in these documents does not mean the current
+   runtime implements such an adapter.
+5. Bound every lease by all assertion, provenance, authenticated policy
+   snapshot, proof, binding, local-policy, and implementation deadlines.
+6. Register every issued lease with the invalidation registry, meaning the
+   implementation's generic lease-cancellation owner, or an equivalent owner
+   that supplies immediate version fencing and bounded post-commit closure.
+7. Preserve evidence for the exact request, actor, proof transport, admission,
+   adapter, deployment, policy, transport-contract revision, and
+   profile-contract digest.
+8. Demonstrate the selected profile's spoof, replay, cross-request,
+   verifier-parity, and final-admission properties before claiming
+   conformance.
 
-The implementation handoff also lists exact commands, required services, fault-injection controls, and cleanup steps. A source grep, documentation link, or claim that code paths are wired is not a substitute.
+The same handoff also includes the complete supporting deliverables:
+
+- a route-adapter manifest for every protected ingress;
+- one canonical normalized-result contract and shared authorization corpus;
+- serialized lifecycle storage with selector-conflict fixtures;
+- read-only preparation and atomic final admission;
+- direct and delegated lease dependency revalidation;
+- an executable adapter mapping for every applicable `FI-TRACE-*` label; and
+- a conformance report whose revisions, profile contracts, and artifact
+  digests match the exact deployment.
+
+The configuration migration is explicit: add
+`configuration_contract_revision`; replace the flat issuer shape with
+`domains[]` and nested `domains[].issuers[]`; add `denial_observation`; remove
+the earlier client-presentation-capacity object and restore map; and replace
+the earlier nonstandard enrollment value with the `attested-key`,
+`provisioned`, and `tofu` enum. Parser behavior, validation, fixtures, policy
+digests, and adapter evidence move to that shape together. The implementation
+must reject the obsolete shape rather than treat it as an alias.
+
+These are implementation obligations, not claims about present runtime
+behavior. The implementation stack may remain HMAC-v2-only until a deployment
+chooses and implements a registered profile. This documentation change does
+not require deleting the HMAC envelope, secrets, nonce ledger,
+canonicalization, replay machinery, or fixtures. The new configuration and
+trace contracts do require a revised implementation plan and evidence.
+
+The implementation handoff also lists exact commands, required services,
+fault-injection controls, and cleanup steps. A source grep, documentation link,
+or claim that code paths are wired is not a substitute.
 
 ## Related guidance
 

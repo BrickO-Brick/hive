@@ -99,6 +99,14 @@ Changing enrollment mode does not repair or reclassify existing bindings. Operat
 
 Fail-closed behavior deliberately trades availability for authorization safety. Attackers may amplify issuer refresh, signature verification, replay lookup, authorization-audit writes, denial observations, or policy reads. Implementations bound assertion and header sizes, canonicalization work, clock skew, JWKS refresh, replay retention, concurrency, queues, and observability work. A full or unavailable required authorization-audit or replay store denies instead of silently dropping evidence.
 
+The authorization-audit budget is a non-reclaimable installation-lifetime
+capacity. Legitimate exhaustion is an accepted, unrecoverable, domain-wide
+fail-closed outage within that installation and domain lineage. Sizing is an
+irreversible installation-lifetime decision, so operators monitor consumption
+and alert with substantial headroom. Successful or authorization-affecting
+operations consume the finite budget; denied operations do not. The base
+contract defines no prune, export, reset, acknowledgement, or recovery path.
+
 Denial observations have different failure semantics because a denial is already safe. They use finite capacity separate from the non-reclaimable authorization-audit budget. Saturation or write failure drops or truncates the observation, emits aggregate health signals where possible, and leaves the denial and authoritative stores unchanged. Records minimize attacker control: no raw tokens or verbatim failed claims, only stable reason and correlation identifiers, time, transport class, and bounded or keyed-hashed source coordinates. Authorization, lockout, and rate-limit policy does not consume this best-effort channel.
 
 Rate limits cannot replace cryptographic verification, lifecycle selectors, or final-admission serialization.
@@ -113,6 +121,7 @@ The protocol cannot eliminate:
 - compromise of the trusted edge, an active HMAC key, a registered adapter or its authenticated caller, the Buzz process, storage credentials, or privileged operator authority;
 - first-use theft in risk-labelled TOFU mode;
 - denial of service caused by required dependencies failing closed;
+- unrecoverable domain-wide outage after legitimate authorization-audit budget exhaustion;
 - correlation visible to systems that legitimately process private identity state; or
 - an implementation defect that the exact behavioral matrix does not exercise.
 

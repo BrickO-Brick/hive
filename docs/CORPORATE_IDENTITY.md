@@ -20,104 +20,153 @@ public wording alone is not activation or conformance evidence.
 ## Proposed runtime document
 
 The later implementation stack reserves `BUZZ_NIP_FI_V1_CONFIG_JSON` as its
-sole identity-configuration input. The `V1` suffix versions this proposed
-runtime document; it does not name or enable a legacy transport profile. The
-implementation must provide the following modes and reject the
-legacy provider-specific variables rather than treating them as aliases.
+sole identity-configuration input. `V1` is the reserved input name, while the
+document's `configuration_contract_revision` records breaking shape changes;
+neither names or enables a legacy transport profile. The implementation must
+provide the following modes and reject the legacy provider-specific variables
+rather than treating them as aliases.
 
 ### Proposed operating modes
 
 - **Off:** `BUZZ_NIP_FI_V1_CONFIG_JSON` is unset. Protected composition is
   not installed and existing unprotected behavior remains available.
 - **DenyProtected:** the document is `{"deny_protected":true}`. Every
-  protected route is denied before its handler runs. `deny_protected` takes
-  precedence over every other field in the document.
-- **Enforce:** the complete document below is provided. Missing, unknown, empty, or
+  protected route is denied before its handler runs. This mode accepts no
+  other field; an additional field fails startup.
+- **Enforce:** `deny_protected` is absent or false and the complete document
+  below is provided. Missing, unknown, empty, duplicate, contradictory, or
   invalid fields fail startup.
 
 ```json
 {
-  "issuer": "https://issuer.example",
-  "audience": "buzz-relay",
-  "subject_claim": "sub",
-  "event_author_claim": "nostr_pubkey",
-  "clock_skew_seconds": 30,
-  "maximum_token_lifetime_seconds": 3600,
-  "jwks": {
-    "jwks_uri": "https://issuer.example/.well-known/jwks.json"
-  },
-  "lease": { "maximum_seconds": 300 },
-  "policy_revision": 1,
-  "audit": {
-    "max_events_per_domain": 1000000,
-    "max_bytes_per_domain": 4294967296,
-    "max_envelope_bytes": 65536
-  },
-  "client_status_admission": {
-    "max_presentations_per_domain": 1000000,
-    "max_presentations_per_actor": 10000,
-    "max_presentations_per_peer": 10000
-  },
-  "transport": {
-    "kind": "trusted_proxy_hmac_v2",
-    "active_secrets_base64url": ["replace-with-base64url-secret"],
-    "maximum_provenance_age_seconds": 60,
-    "future_skew_seconds": 5
-  },
-  "enrollment": { "kind": "canonical_admission" },
-  "restore": { "kind": "operation_manifest" },
-  "delegation": { "enabled": false }
+  "configuration_contract_revision": 2,
+  "deny_protected": false,
+  "domains": [
+    {
+      "id": "community.example.test",
+      "authorization_domain_id": "00000000-0000-0000-0000-000000000001",
+      "authorities": ["community.example.test:443"],
+      "issuers": [
+        {
+          "issuer": "https://issuer.example.test",
+          "audiences": ["community.example.test"],
+          "subject_claim": "sub",
+          "event_author_claim": "nostr_pubkey",
+          "clock_skew_seconds": 30,
+          "maximum_token_lifetime_seconds": 3600,
+          "jwks": {
+            "jwks_uri": "https://issuer.example.test/.well-known/jwks.json"
+          }
+        }
+      ],
+      "lease": { "maximum_seconds": 300 },
+      "policy_revision": 1,
+      "audit": {
+        "max_events_per_domain": 1000000,
+        "max_bytes_per_domain": 4294967296,
+        "max_envelope_bytes": 65536
+      },
+      "denial_observation": {
+        "maximum_records": 100000,
+        "maximum_bytes": 268435456,
+        "maximum_record_bytes": 1024
+      },
+      "transport": {
+        "kind": "trusted_proxy_hmac_v2",
+        "active_secrets_base64url": ["REPLACE_WITH_BASE64URL_SECRET"],
+        "maximum_provenance_age_seconds": 60,
+        "future_skew_seconds": 5
+      },
+      "enrollment": { "kind": "attested-key" },
+      "delegation": { "enabled": false }
+    }
+  ]
 }
 ```
 
+Revision `2` is an independently reviewed, breaking documentation-first
+revision from the earlier flat draft. It does not claim compatibility with a
+current parser. The later implementation must update its parser, validation,
+fixtures, policy digests, and adapters before claiming this contract.
+
 ### Proposed document rules and bounds
 
-The future parser must reject unknown fields. In Enforce mode:
+The future parser must reject unknown and duplicate fields. In Enforce mode:
 
-- `issuer` and `audience` are required non-empty strings of at most 2048
-  characters each.
+- `configuration_contract_revision` is the unsigned integer `2` and
+  `domains` is non-empty.
+- Domain `id`, `authorization_domain_id`, and every authority are non-empty
+  and unique across the document. Each domain's authority list is non-empty
+  and contains no duplicates.
+- `authorization_domain_id` is the canonical lowercase UUID text form. Remove
+  its hyphens and decode the hexadecimal octets from left to right to obtain
+  the exact 16 opaque bytes used by HMAC-v2; any other spelling or length
+  fails startup.
+- Each authority is the server-configured lowercase ASCII host with an
+  explicit decimal effective port and brackets around IPv6, matching the
+  HMAC-v2 canonical input. Non-canonical or ambiguous authority text fails
+  startup.
+- Each domain has at least one issuer. Issuer identifiers are unique within a
+  domain. Each `issuer` and audience is a non-empty string of at most 2048
+  characters, and each issuer's audience list is non-empty and unique.
 - The implementation's closed asymmetric algorithm set enters verifier-policy
   identity through deterministic policy construction. If a later document
   makes that set configurable, adding or removing an algorithm must change the
   identity and algorithm order must be normalized.
-- `subject_claim` defaults to `sub`. It and the optional `event_author_claim`
+- Each issuer's `subject_claim` defaults to `sub`. It and the optional `event_author_claim`
   are limited to 128 characters.
-- `clock_skew_seconds` defaults to `0` and is at most 300.
-- `maximum_token_lifetime_seconds` is required, positive, and at most 86400.
-- `jwks` accepts exactly one HTTPS `jwks_uri` or `discovery_uri`; credentials,
+- Each issuer's `clock_skew_seconds` defaults to `0` and is at most 300.
+- Each issuer's `maximum_token_lifetime_seconds` is required, positive, and at most 86400.
+- Each issuer's `jwks` accepts exactly one HTTPS `jwks_uri` or `discovery_uri`; credentials,
   fragments, redirects, and private-network targets are rejected. The source
   kind and normalized authenticated URI enter verifier-policy identity.
-- `lease.maximum_seconds` is required, positive, and at most 3600.
-- `policy_revision` is required and positive.
-- `audit` sets the immutable authorization-evidence capacity
+- Each domain's `lease.maximum_seconds` is required, positive, and at most
+  3600. Detection bounds derive from this lease limit, immediate version
+  fencing, and bounded post-commit invalidation behavior. Presentation is
+  non-authoritative.
+- Each domain's `policy_revision` is required and positive.
+- Each domain's `audit` sets the immutable authorization-evidence capacity
   (`max_events_per_domain`, `max_bytes_per_domain`, `max_envelope_bytes`).
-  There is no online prune, export, reset, or acknowledgement workflow — size
-  the budget for the installation's lifetime with generous headroom, because
-  exhaustion denies further authorization-affecting operations instead of
-  dropping evidence.
-- Denied operations never consume that non-reclaimable authorization-evidence
-  budget and never create authorization receipts. A later implementation must
-  attempt denial observations through a separate finite-capacity,
-  non-authoritative channel. Channel exhaustion drops or truncates observation,
-  emits aggregate saturation signals where possible, and cannot weaken, delay,
-  or reverse the denial.
-- `client_status_admission` limits are positive;
-  `max_presentations_per_domain` cannot exceed `audit.max_events_per_domain`,
-  and the per-actor and per-peer limits cannot exceed the per-domain limit.
-- `transport`, `enrollment`, and `restore` are required non-empty objects
-  consumed by matching runtime adapters. The example uses the stock
-  `trusted_proxy_hmac_v2` adapter. A later implementation may instead select
-  `client_attached` or one installed registered profile for a bound route and
-  domain. Selection occurs before listeners open, never from request input,
-  and failure never falls back to another profile.
+  Values are positive and finite, validation is overflow safe, and
+  `max_envelope_bytes` cannot exceed `max_bytes_per_domain`. There is no online
+  prune, export, reset, acknowledgement, or recovery workflow. Successful or
+  authorization-affecting operations consume this finite budget; denied
+  operations do not consume it and never create authorization receipts.
+  Legitimate exhaustion is an accepted, unrecoverable, domain-wide fail-closed
+  outage within the installation and domain lineage. Sizing is an irreversible
+  installation-lifetime decision, so operators monitor consumption and alert
+  with substantial headroom. See the threat model's [availability and resource
+  exhaustion](NIP_FI_THREAT_MODEL.md#availability-and-resource-exhaustion)
+  analysis.
+- Each domain's `denial_observation` has positive finite `maximum_records`,
+  `maximum_bytes`, and `maximum_record_bytes`. Validation is overflow safe and
+  `maximum_record_bytes` cannot exceed `maximum_bytes`. This capacity is
+  independent from authorization audit. Exhaustion permits drop or bounded
+  truncation only and emits aggregate saturation signals where possible; it
+  cannot weaken, delay, retry, reverse, receipt, bind, replay, or otherwise
+  mutate a denial.
+- `transport` and `enrollment` are required non-empty domain objects consumed
+  by matching runtime adapters. `enrollment.kind` is exactly `attested-key`,
+  `provisioned`, or `tofu`; `delegation` remains optional and disabled by
+  omission as described below.
+- `transport.kind` is `client_attached`, `trusted_proxy_hmac_v2`, or a private
+  registered identifier matching `x-<operator>-<profile>-v<N>` and accepted
+  only when its deployment-installed adapter and profile contract satisfy
+  NIP-FI. The example remains stock. Selection occurs before listeners open
+  for each bound route and domain, never from request input, and failure never
+  falls back to another profile.
 
-The future implementation must validate the `jwks` refresh policy at construction: a fetched document
+Issuer-level fields own issuer, audience, claim, time, and JWKS semantics.
+Domain-level fields own transport, enrollment, lease, policy revision, audit
+capacity, denial-observation capacity, and delegation. Stable verifier policy
+identity covers every semantic input, authenticated key-source identity, and
+the compiled verifier-contract fingerprint.
+
+The future implementation must validate each `jwks` refresh policy at construction: a fetched document
 cannot exceed 4 MiB, a snapshot cannot stay fresh longer than 24 hours, every
 refresh bound is finite and nonzero, and an accepted key set contains between
 1 and 128 keys. Production deployments may use tighter bounds. Key refreshes are
-single-flight and stale verification fails closed. Current-status
-presentation renews within 120 seconds, so active connections observe
-authoritative policy changes within that polling bound.
+single-flight and stale verification fails closed.
 
 ### Delegation
 

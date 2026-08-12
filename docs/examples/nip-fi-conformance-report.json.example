@@ -1,6 +1,7 @@
 {
   "schema": "nip-fi-conformance-report-v2",
   "document_role": "shape-example-not-conformance-claim",
+  "numeric_values_role": "illustrative-shape-values-not-production-defaults",
   "claim": {
     "implementation_revision": "REPLACE_WITH_40_HEX_COMMIT",
     "adapter_revision": "REPLACE_WITH_40_HEX_COMMIT",
@@ -166,6 +167,20 @@
     },
     {
       "trace_id": "FI-TRACE-DENIAL-ORACLE",
+      "execution": {
+        "iteration_count": 1000,
+        "warm_up_iterations": 100,
+        "runner_artifact_sha256": "REPLACE_WITH_64_HEX_DIGEST",
+        "environment_sha256": "REPLACE_WITH_64_HEX_DIGEST",
+        "public_response_corpus_sha256": "REPLACE_WITH_64_HEX_DIGEST",
+        "sampling_method": "REPLACE_WITH_PREDECLARED_METHOD_REFERENCE",
+        "predeclared_bounds": "REPLACE_WITH_IMMUTABLE_BOUNDS_REFERENCE",
+        "statistical_rule": "REPLACE_WITH_IMMUTABLE_RULE_REFERENCE",
+        "noise_treatment": "REPLACE_WITH_PREDECLARED_NOISE_TREATMENT",
+        "acceptance_threshold": "REPLACE_WITH_PREDECLARED_THRESHOLD",
+        "raw_measurements_sha256": "REPLACE_WITH_64_HEX_DIGEST",
+        "automatic_retry_on_failure": false
+      },
       "status": "not-run",
       "adapter_test_ids": [],
       "evidence": []
