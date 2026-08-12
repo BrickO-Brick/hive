@@ -50,7 +50,7 @@ export function ProjectIssueCommentTimeline({
   }
 
   return (
-    <div className="overflow-hidden">
+    <div className="overflow-hidden px-px">
       <button
         aria-expanded={!isCollapsed}
         className="flex min-h-10 w-full items-center gap-2 py-2.5 text-sm font-semibold text-muted-foreground transition-colors hover:text-foreground"
