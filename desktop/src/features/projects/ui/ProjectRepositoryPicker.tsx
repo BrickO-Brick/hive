@@ -43,10 +43,12 @@ export function ProjectRepositoryPicker({
   return (
     <div className="flex items-center gap-1.5">
       {project.repositoryAddresses.length === 1 ? (
+        // Mirrors the Button `outline` variant so the pill matches the
+        // source/branch dropdown triggers even without a dropdown.
         <div
           className={cn(
-            "flex max-w-64 items-center rounded-md border border-input bg-background",
             PROJECT_PICKER_TRIGGER_CLASS,
+            "flex max-w-64 items-center rounded-md border border-input/40 bg-background hover:border-input/40",
           )}
           data-testid="project-repository-picker"
         >

@@ -1,12 +1,5 @@
-import {
-  CircleDot,
-  GitPullRequest,
-  Plus,
-  RefreshCw,
-  SquareTerminal,
-} from "lucide-react";
+import { Plus, RefreshCw, SquareTerminal } from "lucide-react";
 import * as React from "react";
-import type { ComponentType } from "react";
 
 import type {
   Project,
@@ -22,6 +15,7 @@ import {
   commitAuthorPubkeysFromPullRequests,
   type ViewerGitIdentity,
 } from "@/features/projects/lib/projectContributorMatching";
+import { repositoryDiscussionQuery } from "@/features/projects/lib/discussionChannels";
 import type { ProjectRepoHost } from "@/features/projects/lib/projectRepoHost";
 import {
   projectRepoUnavailableReason,
@@ -43,6 +37,7 @@ import {
   RepoSyncActionButton,
   RepositoryBranchDropdown,
 } from "./ProjectRepositorySource";
+import { DiscussionChannelsPanel } from "./DiscussionChannels";
 import { ProjectCommitDetailPanel } from "./ProjectCommitDetailPanel";
 import { ActivityPanel, ContributorsPanel } from "./ProjectDetailFeedPanels";
 import { ProjectIssuesPanel } from "./ProjectIssuesPanel";
@@ -70,7 +65,6 @@ import {
   CreateIssueDialog,
   type CreateIssueDialogInput,
 } from "./CreateIssueDialog";
-import { PROJECT_PANEL_ACTION_BUTTON_CLASS } from "./projectPanelStyles";
 
 type CreatePullRequestAction = {
   projects: Project[];
@@ -91,42 +85,6 @@ type UpdatePullRequestAction = {
   onUpdate: () => void;
   pending: boolean;
 };
-
-function WorkItemListHeader({
-  actionDisabled = false,
-  actionLabel,
-  actionTitle,
-  icon: Icon,
-  onAction,
-  title,
-}: {
-  actionDisabled?: boolean;
-  actionLabel: string;
-  actionTitle?: string;
-  icon: ComponentType<{ className?: string }>;
-  onAction: () => void;
-  title: string;
-}) {
-  return (
-    <div className="flex min-h-14 items-center gap-2 border-border/50 border-b px-4 py-3">
-      <Icon className="h-4 w-4 text-muted-foreground" />
-      <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">
-        {title}
-      </span>
-      <Button
-        className={PROJECT_PANEL_ACTION_BUTTON_CLASS}
-        disabled={actionDisabled}
-        onClick={onAction}
-        size="xs"
-        title={actionTitle}
-        variant="ghost"
-      >
-        <Plus className="h-4 w-4" />
-        {actionLabel}
-      </Button>
-    </div>
-  );
-}
 
 export function WorkspaceTabs({
   commitDiff,
@@ -394,6 +352,35 @@ export function WorkspaceTabs({
         {repositoryLoaded ? (
           <div className="flex h-10 min-w-0 items-center gap-1 border-border/50 border-b px-2">
             <ProjectTabsList prsActive={isPullRequestSelected} />
+            {selectedTab === "issues" ? (
+              <Button
+                aria-label="New issue"
+                className="h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground"
+                disabled={createIssueAction.pending}
+                onClick={() => setCreateIssueOpen(true)}
+                size="icon"
+                title="New issue"
+                variant="ghost"
+              >
+                <Plus className="h-4 w-4" />
+              </Button>
+            ) : null}
+            {selectedTab === "prs" ? (
+              <Button
+                aria-label="New pull request"
+                className="h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground"
+                disabled={
+                  !createPullRequestAction ||
+                  createPullRequestAction.projects.length === 0
+                }
+                onClick={() => setCreatePullRequestOpen(true)}
+                size="icon"
+                title="New pull request — choose a repository and branches to compare"
+                variant="ghost"
+              >
+                <Plus className="h-4 w-4" />
+              </Button>
+            ) : null}
             {onOpenTerminal ? (
               <Button
                 aria-label="Open terminal"
@@ -553,17 +540,6 @@ export function WorkspaceTabs({
           data-project-detail-panel
           value="prs"
         >
-          <WorkItemListHeader
-            actionDisabled={
-              !createPullRequestAction ||
-              createPullRequestAction.projects.length === 0
-            }
-            actionLabel="Pull Request"
-            actionTitle="Choose a repository and branches to compare."
-            icon={GitPullRequest}
-            onAction={() => setCreatePullRequestOpen(true)}
-            title="Pull Requests"
-          />
           <PullRequestsPanel
             error={pullRequestsError}
             isLoading={pullRequestsLoading}
@@ -582,13 +558,6 @@ export function WorkspaceTabs({
           data-project-detail-panel
           value="issues"
         >
-          <WorkItemListHeader
-            actionDisabled={createIssueAction.pending}
-            actionLabel="Issues"
-            icon={CircleDot}
-            onAction={() => setCreateIssueOpen(true)}
-            title="Issues"
-          />
           <ProjectIssuesPanel
             onSelectedIssueIdChange={onSelectedIssueIdChange}
             profiles={profiles}
@@ -628,6 +597,10 @@ export function WorkspaceTabs({
             profiles={profiles}
             repoContributors={displayedContributors}
           />
+        </TabsContent>
+
+        <TabsContent className="m-0" value="channels">
+          <DiscussionChannelsPanel query={repositoryDiscussionQuery(project)} />
         </TabsContent>
       </div>
       {createPullRequestAction && createPullRequestOpen ? (

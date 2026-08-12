@@ -17,6 +17,7 @@ import * as React from "react";
 import { toast } from "sonner";
 
 import { useIsManagedAgent } from "@/features/agent-memory/hooks";
+import { DiscussedInChannels } from "./DiscussionChannels";
 import { ProjectOriginReference } from "./ProjectOriginReference";
 import { ForumComposer } from "@/features/forum/ui/ForumComposer";
 import {
@@ -26,6 +27,7 @@ import {
   useCreateProjectPullRequestCommentMutation,
 } from "@/features/projects/hooks";
 import { projectPullRequestCommentTimelineKind } from "@/features/projects/projectPullRequests.mjs";
+import { entityDiscussionQuery } from "@/features/projects/lib/discussionChannels";
 import { pullRequestShareLink } from "@/features/projects/lib/projectShareLinks";
 import {
   formatExactTimestamp,
@@ -335,19 +337,18 @@ export function PullRequestDetailHeader({
 
   return (
     <header className="min-w-0 space-y-1 p-4 pb-4">
-      <div className="flex min-w-0 items-start gap-2">
-        <h3 className="line-clamp-2 min-w-0 flex-1 text-xl font-semibold text-foreground">
-          {pullRequest.title}{" "}
-          <span className="font-normal text-muted-foreground">
-            #{pullRequest.id.slice(0, 8)}
-          </span>
-        </h3>
+      <h3 className="line-clamp-2 min-w-0 text-xl font-semibold text-foreground">
+        {pullRequest.title}{" "}
+        <span className="font-normal text-muted-foreground">
+          #{pullRequest.id.slice(0, 8)}
+        </span>
         <ShareLinkButton
+          className="ml-1 inline-flex h-7 w-7 align-text-bottom"
           label="Copy pull request link"
           link={pullRequestShareLink(pullRequest)}
           testId="project-pull-request-copy-link"
         />
-      </div>
+      </h3>
       <p className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
         <GitPullRequest className="h-3.5 w-3.5" />
         <span className="flex min-w-0 items-center gap-1">
@@ -674,7 +675,12 @@ export function ProjectPullRequestDetail({
       ) : null}
 
       <section className="space-y-3 p-4">
-        <div className="group/timeline -mx-4 overflow-hidden border-border/50 border-b">
+        <DiscussedInChannels
+          entityLabel="this pull request"
+          query={entityDiscussionQuery(pullRequest.id)}
+          testId="pull-request-discussed-in"
+        />
+        <div className="group/timeline -mx-4 overflow-hidden">
           {reviewHistory.length > 0 ? (
             <button
               aria-expanded={!reviewHistoryCollapsed}
@@ -863,10 +869,6 @@ export function ProjectPullRequestDetail({
             />
           </div>
         </div>
-        <h4 className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
-          <MessageSquare className="h-3.5 w-3.5" />
-          Add Your Comment
-        </h4>
         <div data-testid="project-pull-request-comment-composer">
           <ForumComposer
             className="border border-border/60 bg-background/45"
