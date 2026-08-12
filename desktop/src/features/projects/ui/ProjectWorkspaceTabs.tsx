@@ -27,10 +27,7 @@ import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
 import { Tabs, TabsContent } from "@/shared/ui/tabs";
 import { findReadmeFile } from "./ProjectReadmePanel";
-import {
-  formatLastChangedAt,
-  RepositoryFilesPanel,
-} from "./ProjectRepositoryPanel";
+import { RepositoryFilesPanel } from "./ProjectRepositoryPanel";
 import {
   type RepoSourceHeaderControls,
   RepoSourceDropdown,
@@ -405,11 +402,6 @@ export function WorkspaceTabs({
                 <RefreshCw className="h-4 w-4" />
                 {updatePullRequestAction.pending ? "Updating…" : "Update PR"}
               </Button>
-            ) : null}
-            {selectedTab === "overview" && readmeFile ? (
-              <span className="ml-auto hidden shrink-0 pr-2 text-2xs text-muted-foreground sm:block">
-                Last changed {formatLastChangedAt(readmeFile.lastChangedAt)}
-              </span>
             ) : null}
           </div>
         ) : null}
