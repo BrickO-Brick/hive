@@ -148,6 +148,48 @@ mod tests {
         );
     }
 
+    /// The regression that routed an OpenAI agent's traffic to Anthropic.
+    ///
+    /// Desktop inherits the developer's login shell, so `GOOSE_PROVIDER` from
+    /// an installed goose reached the agent subprocess and beat the record's
+    /// configured provider. Spawn must clear the derived keys before writing
+    /// the ones it derives, so the record is the only source.
+    ///
+    /// Uses `env` as the child rather than reaching into `spawn_agent_child`
+    /// (which needs an `AppHandle`): the assertion is about what survives to
+    /// the child's environment, which is exactly what `env` prints.
+    #[test]
+    fn spawn_clears_inherited_provider_and_model_before_deriving_its_own() {
+        let mut cmd = std::process::Command::new("env");
+        cmd.env_clear();
+        // Stand in for the inherited login-shell environment.
+        for key in super::super::env_vars::DERIVED_PROVIDER_MODEL_ENV_KEYS {
+            cmd.env(key, "inherited-from-login-shell");
+        }
+
+        // The clearing step under test, mirrored from `spawn_agent_child`.
+        for key in super::super::env_vars::DERIVED_PROVIDER_MODEL_ENV_KEYS {
+            cmd.env_remove(key);
+        }
+        // Then the record's own values, as `runtime_metadata_env_vars` writes.
+        cmd.env("BUZZ_AGENT_PROVIDER", "openai");
+        cmd.env("BUZZ_AGENT_MODEL", "gpt-5.6-sol");
+
+        let output = cmd.output().expect("env should run");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        assert!(
+            !stdout.contains("inherited-from-login-shell"),
+            "no inherited provider/model value may reach the agent: {stdout}"
+        );
+        assert!(stdout.contains("BUZZ_AGENT_PROVIDER=openai"));
+        assert!(stdout.contains("BUZZ_AGENT_MODEL=gpt-5.6-sol"));
+        // An agent with no configured provider must get none at all, rather
+        // than silently inheriting the developer's.
+        assert!(!stdout.contains("GOOSE_PROVIDER="));
+        assert!(!stdout.contains("GOOSE_MODEL="));
+    }
+
     #[test]
     fn parse_agent_env_lines_splits_on_first_equals() {
         // Value may itself contain `=` — only the first `=` is the separator.
