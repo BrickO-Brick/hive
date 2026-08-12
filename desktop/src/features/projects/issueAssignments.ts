@@ -93,6 +93,11 @@ async function writeProjectIssueAssignment({
     });
     return;
   }
+  const normalizedSigner = signerPubkey.toLowerCase();
+  const prior =
+    assigneePubkeys.length === 1 && assigneePubkeys[0] === normalizedSigner
+      ? issue.assigneeOperationHeads[normalizedSigner]
+      : undefined;
   const event = await signRelayEvent({
     kind: KIND_TEXT_NOTE,
     content,
@@ -102,6 +107,7 @@ async function writeProjectIssueAssignment({
       ["a", project.repoAddress],
       ...assigneePubkeys.map((pubkey) => ["p", pubkey]),
       ["t", label],
+      ...(prior ? [["prior", prior]] : []),
     ],
   });
 

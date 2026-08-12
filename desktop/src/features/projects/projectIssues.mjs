@@ -89,20 +89,25 @@ function statusFromEvent(issue, statusEvent) {
  * tags are notification routing only.
  *
  * Trusted signers are the issue author and repo owner (who may change anyone),
- * plus any community member whose operation names only themselves. Self-service
- * operations are applied first and authoritative operations last, so an author
- * or owner decision wins regardless of signer-controlled timestamps. Within
- * each authority class, same-second events use their id as a deterministic
- * tie-breaker because relay result order is not stable.
+ * plus any community member whose operation names only themselves. Uncaused
+ * self-service operations are applied first, authoritative operations second,
+ * and self-service operations that causally reference the current per-assignee
+ * operation head last. This prevents signer-controlled timestamps from
+ * overriding authority while allowing a later observed owner/author decision
+ * to be superseded by the affected assignee.
  */
-function assigneesForIssue(issue, issueCommentEvents) {
+function assignmentStateForIssue(issue, issueCommentEvents) {
   const allowedActors = allowedActorsForRoot(issue);
   const assignees = new Set();
-  const selfServiceOperations = [];
+  const operationHeads = new Map();
+  const uncausedSelfServiceOperations = [];
   const authoritativeOperations = [];
+  const causalSelfServiceOperations = [];
   const events = sortEvents(
-    issueCommentEvents.filter((event) =>
-      event.tags.some((tag) => tag[0] === "e" && tag[1] === issue.id),
+    issueCommentEvents.filter(
+      (event) =>
+        event.kind === 1 &&
+        event.tags.some((tag) => tag[0] === "e" && tag[1] === issue.id),
     ),
   );
   for (const event of events) {
@@ -116,26 +121,50 @@ function assigneesForIssue(issue, issueCommentEvents) {
     );
     const isSelfOperation = pubkeys.length === 1 && pubkeys[0] === signer;
     if (!allowedActors.has(signer) && !isSelfOperation) continue;
-    const operation = { isAssignment, pubkeys };
+    const operation = {
+      id: event.id.toLowerCase(),
+      isAssignment,
+      pubkeys,
+    };
     if (allowedActors.has(signer)) {
       authoritativeOperations.push(operation);
     } else {
-      selfServiceOperations.push(operation);
+      const priorTags = event.tags.filter((tag) => tag[0] === "prior");
+      if (priorTags.length === 0) {
+        uncausedSelfServiceOperations.push(operation);
+        continue;
+      }
+      if (
+        priorTags.length !== 1 ||
+        !/^[a-fA-F0-9]{64}$/.test(priorTags[0]?.[1] ?? "")
+      ) {
+        continue;
+      }
+      causalSelfServiceOperations.push({
+        ...operation,
+        prior: priorTags[0][1].toLowerCase(),
+      });
     }
   }
-  for (const { isAssignment, pubkeys } of [
-    ...selfServiceOperations,
+  for (const { id, isAssignment, pubkeys, prior } of [
+    ...uncausedSelfServiceOperations,
     ...authoritativeOperations,
+    ...causalSelfServiceOperations,
   ]) {
+    if (prior && operationHeads.get(pubkeys[0]) !== prior) continue;
     for (const pubkey of pubkeys) {
       if (isAssignment) {
         assignees.add(pubkey);
       } else {
         assignees.delete(pubkey);
       }
+      operationHeads.set(pubkey, id);
     }
   }
-  return [...assignees];
+  return {
+    assignees: [...assignees],
+    heads: Object.fromEntries(operationHeads),
+  };
 }
 
 function commentsForIssue(issueCommentEvents) {
@@ -160,6 +189,7 @@ export function eventToProjectIssue(
     ),
   );
   const comments = commentsForIssue(issueCommentEvents);
+  const assignmentState = assignmentStateForIssue(issue, issueCommentEvents);
   const title =
     getTag(issue, "subject") ||
     issue.content.split("\n")[0] ||
@@ -177,7 +207,8 @@ export function eventToProjectIssue(
     originAgentName: getTag(issue, "buzz-origin-agent") ?? null,
     labels: getAllTags(issue, "t"),
     recipients: getAllTags(issue, "p"),
-    assignees: assigneesForIssue(issue, issueCommentEvents),
+    assignees: assignmentState.assignees,
+    assigneeOperationHeads: assignmentState.heads,
     status: statusFromEvent(issue, latestStatus),
     statusEventId: latestStatus?.id ?? null,
     updatedAt:

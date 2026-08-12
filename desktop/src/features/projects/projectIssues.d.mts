@@ -29,6 +29,7 @@ export type ProjectIssue = {
   labels: string[];
   recipients: string[];
   assignees: string[];
+  assigneeOperationHeads: Record<string, string>;
   status: ProjectIssueStatus;
   statusEventId: string | null;
   updatedAt: number;

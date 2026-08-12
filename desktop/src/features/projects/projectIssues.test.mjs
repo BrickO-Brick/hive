@@ -52,6 +52,7 @@ function assignmentComment(
   id,
   label = ISSUE_ASSIGNMENT_LABEL,
   createdAt = 200,
+  prior,
 ) {
   return {
     id,
@@ -67,6 +68,7 @@ function assignmentComment(
       ["a", REPO_ADDRESS],
       ...assignees.map((value) => ["p", value]),
       ["t", label],
+      ...(prior ? [["prior", prior]] : []),
     ],
   };
 }
@@ -293,6 +295,91 @@ test("owner assignment overrides a future-dated self-unassignment", () => {
   );
 
   assert.deepEqual(issue.assignees, [volunteer]);
+});
+
+test("causal self-unassignment can follow an owner assignment", () => {
+  const volunteer = "5".repeat(64);
+  const ownerAssignmentId = "1".repeat(64);
+  const selfUnassignmentId = "2".repeat(64);
+  const issue = eventToProjectIssue(
+    issueEvent(),
+    [],
+    [
+      assignmentComment(OWNER, [volunteer], ownerAssignmentId),
+      assignmentComment(
+        volunteer,
+        [volunteer],
+        selfUnassignmentId,
+        ISSUE_UNASSIGNMENT_LABEL,
+        300,
+        ownerAssignmentId,
+      ),
+    ],
+  );
+
+  assert.deepEqual(issue.assignees, []);
+  assert.equal(issue.assigneeOperationHeads[volunteer], selfUnassignmentId);
+});
+
+test("causal self-assignment can follow an owner unassignment", () => {
+  const volunteer = "5".repeat(64);
+  const ownerUnassignmentId = "3".repeat(64);
+  const selfAssignmentId = "4".repeat(64);
+  const issue = eventToProjectIssue(
+    issueEvent(),
+    [],
+    [
+      assignmentComment(
+        OWNER,
+        [volunteer],
+        ownerUnassignmentId,
+        ISSUE_UNASSIGNMENT_LABEL,
+      ),
+      assignmentComment(
+        volunteer,
+        [volunteer],
+        selfAssignmentId,
+        ISSUE_ASSIGNMENT_LABEL,
+        300,
+        ownerUnassignmentId,
+      ),
+    ],
+  );
+
+  assert.deepEqual(issue.assignees, [volunteer]);
+  assert.equal(issue.assigneeOperationHeads[volunteer], selfAssignmentId);
+});
+
+test("ignores a causal self-operation with a stale prior", () => {
+  const volunteer = "5".repeat(64);
+  const initialAssignmentId = "6".repeat(64);
+  const ownerUnassignmentId = "7".repeat(64);
+  const staleSelfAssignmentId = "8".repeat(64);
+  const issue = eventToProjectIssue(
+    issueEvent(),
+    [],
+    [
+      assignmentComment(OWNER, [volunteer], initialAssignmentId),
+      assignmentComment(
+        OWNER,
+        [volunteer],
+        ownerUnassignmentId,
+        ISSUE_UNASSIGNMENT_LABEL,
+        250,
+      ),
+      assignmentComment(
+        volunteer,
+        [volunteer],
+        staleSelfAssignmentId,
+        ISSUE_ASSIGNMENT_LABEL,
+        300,
+        initialAssignmentId,
+      ),
+    ],
+  );
+
+  assert.deepEqual(issue.assignees, []);
+  assert.equal(issue.assigneeOperationHeads[volunteer], ownerUnassignmentId);
 });
 
 test("issue recipients remain notification routing, not assignments", () => {
