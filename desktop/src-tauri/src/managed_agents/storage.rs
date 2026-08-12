@@ -192,7 +192,7 @@ enum KeyMigration {
 ///
 /// The single source of truth for the migrate-vs-keep decision, shared by the
 /// load-time opportunistic re-migrate ([`hydrate_keys`]) and the save-time
-/// chokepoint ([`persist_agent_keys`]). An empty key returns
+/// chokepoint ([`persist_agent_keys_with`]). An empty key returns
 /// [`KeyMigration::Nothing`] — never [`KeyMigration::Persisted`], so a record
 /// left empty by a keyring outage is not mistaken for one verified present.
 fn migrate_inline_key(store: &impl KeyStore, record: &ManagedAgentRecord) -> KeyMigration {
@@ -252,13 +252,19 @@ pub(crate) fn spawn_key_refusal(record: &ManagedAgentRecord) -> Option<String> {
 /// Read the raw unified store — keyed instances AND key-less definitions —
 /// with fail-loud parse handling. Internal seam; public readers filter.
 fn load_agent_store(app: &AppHandle) -> Result<Vec<ManagedAgentRecord>, String> {
-    let path = managed_agents_store_path(app)?;
+    load_agent_store_at(&managed_agents_store_path(app)?)
+}
+
+/// Path-based core of [`load_agent_store`]: reads and parses the raw store at
+/// `path`. Split out so the save path and tests can drive the load/split/write
+/// merge against a tempdir without an `AppHandle`.
+fn load_agent_store_at(path: &Path) -> Result<Vec<ManagedAgentRecord>, String> {
     if !path.exists() {
         return Ok(Vec::new());
     }
 
-    let content = fs::read_to_string(&path)
-        .map_err(|error| format!("failed to read agent store: {error}"))?;
+    let content =
+        fs::read_to_string(path).map_err(|error| format!("failed to read agent store: {error}"))?;
     serde_json::from_str(&content).map_err(|error| {
         // Fail loudly and preserve the evidence: a later in-app save rewrites
         // this file wholesale, which would silently destroy a malformed hand
@@ -266,7 +272,7 @@ fn load_agent_store(app: &AppHandle) -> Result<Vec<ManagedAgentRecord>, String> 
         // reconcile): the broken content survives as `.invalid` for the user
         // to recover, and the parse error propagates instead of being
         // swallowed into an empty store.
-        backup_invalid_store(&path);
+        backup_invalid_store(path);
         format!("failed to parse agent store (preserved as .invalid): {error}")
     })
 }
@@ -391,7 +397,38 @@ pub fn save_managed_agents(app: &AppHandle, records: &[ManagedAgentRecord]) -> R
     // Lock FIRST — the definition half re-read below must be under the lock
     // (Race 1); see `acquire_secret_txn_lock` for span + residual.
     let _txn = acquire_secret_txn_lock(app)?;
-    let definitions = load_agent_definitions(app).unwrap_or_default();
+    save_managed_agents_at(
+        &managed_agents_store_path(app)?,
+        agent_secret_store(),
+        records,
+    )
+}
+
+/// Path-based core of [`save_managed_agents`]: merges the caller's instance
+/// records with the definition half re-read from disk and commits the unified
+/// store. Split out so the definition-preservation contract can be exercised
+/// over a tempdir without an `AppHandle`.
+///
+/// The definition half is re-read RAW ([`load_agent_store_at`] + retain), NOT
+/// through the hydrating `load_agent_definitions`: a hydrated definition holds
+/// its `env_vars` inline, so writing it back would re-inline the definition's
+/// provider secrets into plaintext JSON on every instance-side save — the exact
+/// regression the projection protocol exists to prevent — and would create the
+/// inline+ref conflict that freezes GC. A raw definition is already stripped on
+/// disk, so it needs no strip pass. The parse error propagates with `?` instead
+/// of collapsing into an empty definition half: the wholesale rewrite below
+/// would otherwise delete every definition from the live store.
+fn save_managed_agents_at<S>(
+    store_path: &Path,
+    store: Option<&S>,
+    records: &[ManagedAgentRecord],
+) -> Result<(), String>
+where
+    S: KeyStore + crate::managed_agents::secret_projection::ProjectionStore,
+{
+    let mut definitions = load_agent_store_at(store_path)?;
+    definitions.retain(|record| record.pubkey.is_empty());
+
     let mut sorted = records.to_vec();
     // A caller-supplied key-less record would collide with the definition
     // half re-read above; instances always carry a pubkey.
@@ -403,16 +440,15 @@ pub fn save_managed_agents(app: &AppHandle, records: &[ManagedAgentRecord]) -> R
             .then_with(|| left.pubkey.cmp(&right.pubkey))
     });
 
-    // Persist each nsec to the keyring; on success blank the inline copy.
-    persist_agent_keys(&mut sorted);
-
-    // Persist env/auth_tag/provider_config to the keyring; on success blank
-    // inline values and set *_ref. On failure keep inline and clear *_ref.
-    if let Some(store) = agent_secret_store() {
+    if let Some(store) = store {
+        // Persist each nsec to the keyring; on success blank the inline copy.
+        persist_agent_keys_with(store, &mut sorted);
+        // Persist env/auth_tag/provider_config to the keyring; on success blank
+        // inline values and set *_ref. On failure keep inline and clear *_ref.
         strip_and_persist_all_for_records(store, &mut sorted);
     }
 
-    write_agent_store(app, definitions, sorted)
+    write_agent_store_at(store_path, definitions, sorted)
 }
 
 /// Save the key-less agent *definitions*, preserving the keyed instances —
@@ -442,6 +478,15 @@ pub(crate) fn save_agent_definitions(
 /// name/pubkey order their save path established.
 fn write_agent_store(
     app: &AppHandle,
+    definitions: Vec<ManagedAgentRecord>,
+    instances: Vec<ManagedAgentRecord>,
+) -> Result<(), String> {
+    write_agent_store_at(&managed_agents_store_path(app)?, definitions, instances)
+}
+
+/// Path-based core of [`write_agent_store`].
+fn write_agent_store_at(
+    path: &Path,
     mut definitions: Vec<ManagedAgentRecord>,
     instances: Vec<ManagedAgentRecord>,
 ) -> Result<(), String> {
@@ -449,7 +494,6 @@ fn write_agent_store(
     let mut all = definitions;
     all.extend(instances);
 
-    let path = managed_agents_store_path(app)?;
     let payload = serde_json::to_vec_pretty(&all)
         .map_err(|error| format!("failed to serialize agent store: {error}"))?;
 
@@ -457,22 +501,13 @@ fn write_agent_store(
     // fallback. Write it owner-only (`0o600`) unconditionally — harmless for the
     // keyring-backed case (it is the user's own agent store) and closes the
     // umask window a post-write `chmod` would leave open.
-    atomic_write_json_restricted(&path, &payload)
+    atomic_write_json_restricted(path, &payload)
 }
 
 /// Write each record's in-memory key to the keyring and blank the inline copy
 /// on success. Keys that cannot be persisted (keyring unreachable) stay inline
 /// in the JSON. Mutates `records` (a save-local clone) — the caller's in-memory
 /// records keep their keys.
-fn persist_agent_keys(records: &mut [ManagedAgentRecord]) {
-    let Some(store) = agent_secret_store() else {
-        // No keyring backend: keys stay inline.
-        return;
-    };
-    persist_agent_keys_with(store, records);
-}
-
-/// Testable core of [`persist_agent_keys`], generic over the [`KeyStore`] seam.
 fn persist_agent_keys_with(store: &impl KeyStore, records: &mut [ManagedAgentRecord]) {
     for record in records.iter_mut() {
         // Only a verified keyring entry lets us drop the inline copy. Both

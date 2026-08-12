@@ -973,3 +973,196 @@ fn serialized_store_is_empty_of_secret_values_after_strip() {
         "provider_config_ref must be set after successful strip"
     );
 }
+
+// ── W2: instance-side save preserves the definition half raw ───────────────
+//
+// `save_managed_agents` re-reads the definition half RAW under the txn lock
+// (never through the hydrating loader) before committing the unified store, so
+// an instance-only save can never re-inline a definition's projected secrets
+// into plaintext JSON, and a store parse error propagates instead of silently
+// collapsing the definition half to empty.
+
+/// In-memory store implementing BOTH seams `save_managed_agents_at` requires:
+/// [`KeyStore`] (nsec persistence) and `ProjectionStore` (env/auth/provider
+/// projection). A single backing map so a written secret reads back verified.
+struct FakeCombinedStore {
+    data: RefCell<HashMap<String, String>>,
+}
+
+impl FakeCombinedStore {
+    fn new() -> Self {
+        Self {
+            data: RefCell::new(HashMap::new()),
+        }
+    }
+}
+
+impl KeyStore for FakeCombinedStore {
+    fn probe(&self, _name: &str) -> KeyringProbe {
+        KeyringProbe::ReachableButEmpty
+    }
+    fn load(&self, name: &str) -> Result<Option<String>, String> {
+        Ok(self.data.borrow().get(name).cloned())
+    }
+    fn load_all_readonly(&self) -> Result<Option<HashMap<String, String>>, String> {
+        Ok(Some(self.data.borrow().clone()))
+    }
+    fn write_and_verify(&self, name: &str, value: &str) -> Result<(), String> {
+        self.data
+            .borrow_mut()
+            .insert(name.to_string(), value.to_string());
+        Ok(())
+    }
+    fn store_all(&self, entries: &HashMap<String, String>) -> Result<(), String> {
+        for (k, v) in entries {
+            self.data.borrow_mut().insert(k.clone(), v.clone());
+        }
+        Ok(())
+    }
+}
+
+impl crate::managed_agents::secret_projection::ProjectionStore for FakeCombinedStore {
+    fn write_and_verify(&self, key: &str, value: &str) -> Result<(), String> {
+        self.data
+            .borrow_mut()
+            .insert(key.to_string(), value.to_string());
+        Ok(())
+    }
+    fn load_key(&self, key: &str) -> Result<Option<String>, String> {
+        Ok(self.data.borrow().get(key).cloned())
+    }
+    fn load_all(&self) -> Result<Option<HashMap<String, String>>, String> {
+        Ok(Some(self.data.borrow().clone()))
+    }
+    fn store_batch(&self, entries: &HashMap<String, String>) -> Result<(), String> {
+        for (k, v) in entries {
+            self.data.borrow_mut().insert(k.clone(), v.clone());
+        }
+        Ok(())
+    }
+    fn remove_batch(&self, keys: &[&str]) -> Result<(), String> {
+        let mut d = self.data.borrow_mut();
+        for k in keys {
+            d.remove(*k);
+        }
+        Ok(())
+    }
+}
+
+/// A key-less definition record carrying an already-projected `env_vars_ref`
+/// (no inline env) — the on-disk shape after the definition's secrets were
+/// stripped into the keyring on a prior save.
+fn projected_definition(slug: &str, env_ref: &str) -> ManagedAgentRecord {
+    let mut record: ManagedAgentRecord = serde_json::from_str(&format!(
+        r#"{{
+            "pubkey": "",
+            "name": "def-{slug}",
+            "slug": "{slug}",
+            "relay_url": "",
+            "acp_command": "buzz-acp",
+            "agent_command": "goose",
+            "agent_args": [],
+            "mcp_command": "",
+            "turn_timeout_seconds": 320,
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z"
+        }}"#
+    ))
+    .expect("definition record");
+    record.env_vars_ref = Some(env_ref.to_string());
+    record
+}
+
+#[test]
+fn save_managed_agents_preserves_projected_definition_ref_without_reinlining() {
+    // Seed a store whose definition half is already projected: `env_vars_ref`
+    // set, NO inline env bytes. Save an UNRELATED instance. The committed store
+    // must keep the definition's ref verbatim and must not resurrect its inline
+    // env — the W2 regression was that the hydrating re-read re-inlined it.
+    use crate::managed_agents::secret_projection::definition_env_key;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store_path = dir.path().join("managed-agents.json");
+
+    // The keyring already holds the definition's projected env under its ref.
+    let store = FakeCombinedStore::new();
+    let def_env_gen = "gendef123";
+    store.data.borrow_mut().insert(
+        definition_env_key("shared-def", def_env_gen),
+        r#"{"DEF_SECRET":"def-secret-value"}"#.to_string(),
+    );
+
+    // On-disk starting store: one projected definition, no instances.
+    let definition = projected_definition("shared-def", def_env_gen);
+    std::fs::write(
+        &store_path,
+        serde_json::to_string(&[&definition]).expect("serialize seed"),
+    )
+    .expect("write seed store");
+
+    // Save an unrelated instance (carries its own inline env to project).
+    let mut instance = record_with_pubkey_and_key("instance-pubkey", "nsec1instkey");
+    instance.env_vars = [("INSTANCE_KEY".to_string(), "inst-secret".to_string())]
+        .into_iter()
+        .collect();
+
+    super::save_managed_agents_at(&store_path, Some(&store), std::slice::from_ref(&instance))
+        .expect("save must succeed");
+
+    // Re-read the committed store RAW (no hydration).
+    let committed = std::fs::read_to_string(&store_path).expect("read committed");
+
+    // The definition's plaintext secret must NOT be in the JSON.
+    assert!(
+        !committed.contains("def-secret-value"),
+        "an instance-side save must not re-inline the definition's projected secret"
+    );
+
+    // The definition's ref must survive verbatim.
+    let records: Vec<ManagedAgentRecord> =
+        serde_json::from_str(&committed).expect("parse committed");
+    let def = records
+        .iter()
+        .find(|r| r.pubkey.is_empty() && r.slug.as_deref() == Some("shared-def"))
+        .expect("definition must survive the instance save");
+    assert_eq!(
+        def.env_vars_ref.as_deref(),
+        Some(def_env_gen),
+        "the definition's projected ref must be preserved unchanged"
+    );
+    assert!(
+        def.env_vars.is_empty(),
+        "the definition must carry no inline env after the save"
+    );
+    // The instance was persisted alongside it.
+    assert!(
+        records.iter().any(|r| r.pubkey == "instance-pubkey"),
+        "the saved instance must be present in the committed store"
+    );
+}
+
+#[test]
+fn save_managed_agents_propagates_store_parse_error_instead_of_dropping_definitions() {
+    // A malformed on-disk store must fail the save with an error — NEVER be
+    // read as an empty definition half, because the wholesale rewrite would
+    // then delete every definition from the live store. W2/F2: the re-read uses
+    // `?`, not `unwrap_or_default()`.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store_path = dir.path().join("managed-agents.json");
+    std::fs::write(&store_path, b"{ this is not valid json ]").expect("write malformed");
+
+    let store = FakeCombinedStore::new();
+    let instance = record_with_pubkey_and_key("instance-pubkey", "nsec1instkey");
+
+    let result =
+        super::save_managed_agents_at(&store_path, Some(&store), std::slice::from_ref(&instance));
+
+    assert!(
+        result.is_err(),
+        "a malformed store must fail the save, not silently drop definitions"
+    );
+    assert!(
+        result.unwrap_err().contains("parse"),
+        "the error must surface the parse failure"
+    );
+}

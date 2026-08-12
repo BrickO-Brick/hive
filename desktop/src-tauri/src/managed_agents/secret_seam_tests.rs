@@ -558,3 +558,292 @@ fn test_cleared_conflict_marker_restores_availability_and_allows_spawn() {
         "spawn must be allowed once the conflict is resolved"
     );
 }
+
+// ── W1: boot-migration transition never clears a committed ref ──────────────
+//
+// The strip-on-save seam reads an empty inline field on an available record as
+// a deliberate user-clear and drops the ref. The boot migration re-reads
+// ALREADY-PROJECTED records off disk (empty inline + live ref) on EVERY launch;
+// routing those through the strip seam wiped every committed ref on the second
+// launch (W1). These tests pin the migration seam's distinct contract: project
+// a non-empty inline value, preserve an existing ref when inline is absent, and
+// never clear a ref it did not write.
+
+#[test]
+fn test_migrate_inline_field_projects_nonempty_inline() {
+    let store = FakeProjectionStore::new();
+    let outcome = migrate_inline_field(
+        &store,
+        |gen| agent_env_key("abc", gen),
+        Some(r#"{"K":"v"}"#),
+        None,
+        "agent:abc env_vars",
+    );
+    let gen = match outcome {
+        FieldMigration::Projected { gen } => gen,
+        other => panic!("expected Projected, got {other:?}"),
+    };
+    assert!(
+        store.contains(&agent_env_key("abc", &gen)),
+        "a projected value must be written under its new generation"
+    );
+}
+
+#[test]
+fn test_migrate_inline_field_preserves_ref_when_inline_absent() {
+    // The W1 shape: an already-projected record (no inline, live ref). The
+    // migration must PRESERVE the ref, never treat empty as a clear.
+    let store =
+        FakeProjectionStore::new().with_entry(&agent_env_key("abc", "gen_live"), r#"{"K":"v"}"#);
+    let outcome = migrate_inline_field(
+        &store,
+        |gen| agent_env_key("abc", gen),
+        None,
+        Some("gen_live"),
+        "agent:abc env_vars",
+    );
+    assert_eq!(
+        outcome,
+        FieldMigration::Preserved,
+        "an absent inline with a live ref must preserve, not clear"
+    );
+    assert!(
+        store.contains(&agent_env_key("abc", "gen_live")),
+        "the preserved generation must remain in the keyring"
+    );
+}
+
+#[test]
+fn test_migrate_inline_field_cleared_when_no_inline_and_no_ref() {
+    // Genuinely empty field: nothing inline, no ref. The migration does not
+    // fabricate a ref — Cleared means "leave the field exactly as-is."
+    let store = FakeProjectionStore::new();
+    let outcome = migrate_inline_field(
+        &store,
+        |gen| agent_env_key("abc", gen),
+        None,
+        None,
+        "agent:abc env_vars",
+    );
+    assert_eq!(outcome, FieldMigration::Cleared);
+}
+
+#[test]
+fn test_migrate_two_launches_preserves_every_ref_for_instance_and_definition() {
+    // The end-to-end W1 regression at the seam level: a first launch projects
+    // inline env/auth/provider (instance) + env (definition) into fresh
+    // generations; a second launch over the now-projected records (empty
+    // inline, live refs) is a no-op that leaves EVERY ref intact. The old
+    // strip-seam path cleared them all on launch two.
+    let store = FakeProjectionStore::new();
+
+    let mut instance = instance_record("abc");
+    instance.env_vars = env_map(&[("ANTHROPIC_API_KEY", "sk-secret")]);
+    instance.auth_tag = Some("auth-secret".to_string());
+    instance.backend = BackendKind::Provider {
+        id: "anthropic".to_string(),
+        config: serde_json::json!({"api_key": "provider-secret"}),
+    };
+    let mut definition = definition_record("my-def");
+    definition.env_vars = env_map(&[("DEF_KEY", "def-secret")]);
+    let mut records = vec![instance, definition];
+
+    // Launch 1: inline present → all fields projected.
+    let changed1 = migrate_all_secrets_for_records(&store, &mut records);
+    assert!(changed1, "first launch projects inline secrets");
+    let env_ref = records[0].env_vars_ref.clone().expect("instance env ref");
+    let auth_ref = records[0].auth_tag_ref.clone().expect("instance auth ref");
+    let pc_ref = records[0]
+        .provider_config_ref
+        .clone()
+        .expect("instance provider ref");
+    let def_ref = records[1].env_vars_ref.clone().expect("definition env ref");
+    assert!(
+        records[0].env_vars.is_empty(),
+        "inline env cleared on launch 1"
+    );
+    assert!(
+        records[0].auth_tag.is_none(),
+        "inline auth cleared on launch 1"
+    );
+
+    // Launch 2: records are already projected (empty inline, live refs).
+    let changed2 = migrate_all_secrets_for_records(&store, &mut records);
+    assert!(
+        !changed2,
+        "second launch is a no-op — no ref changes on already-projected records"
+    );
+    assert_eq!(
+        records[0].env_vars_ref,
+        Some(env_ref.clone()),
+        "env ref survives launch 2"
+    );
+    assert_eq!(
+        records[0].auth_tag_ref,
+        Some(auth_ref.clone()),
+        "auth ref survives launch 2"
+    );
+    assert_eq!(
+        records[0].provider_config_ref,
+        Some(pc_ref.clone()),
+        "provider ref survives launch 2"
+    );
+    assert_eq!(
+        records[1].env_vars_ref,
+        Some(def_ref.clone()),
+        "definition ref survives launch 2"
+    );
+
+    // The generations themselves must still be present and hydratable.
+    assert!(store.contains(&agent_env_key("abc", &env_ref)));
+    assert!(store.contains(&agent_auth_tag_key("abc", &auth_ref)));
+    assert!(store.contains(&agent_provider_config_key("abc", &pc_ref)));
+    assert!(store.contains(&definition_env_key("my-def", &def_ref)));
+    let errors = hydrate_all_secrets_for_records(&store, &mut records);
+    assert!(
+        errors.is_empty(),
+        "every ref must still hydrate after two launches: {errors:?}"
+    );
+    assert_eq!(
+        records[0]
+            .env_vars
+            .get("ANTHROPIC_API_KEY")
+            .map(String::as_str),
+        Some("sk-secret")
+    );
+    assert_eq!(
+        records[1].env_vars.get("DEF_KEY").map(String::as_str),
+        Some("def-secret")
+    );
+}
+
+#[test]
+fn test_migrate_does_not_clear_ref_on_keyring_write_failure() {
+    // Distinct from Preserved: an inline value present but the keyring write
+    // fails (KeptInline). The migration must return Cleared (caller leaves the
+    // field as-is, value stays inline for retry) and must NOT set a ref it did
+    // not write. The record keeps its inline value; no ref is fabricated.
+    struct FailingWriteStore;
+    impl ProjectionStore for FailingWriteStore {
+        fn write_and_verify(&self, _key: &str, _value: &str) -> Result<(), String> {
+            Err("simulated keyring write failure".to_string())
+        }
+        fn load_key(&self, _key: &str) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+        fn load_all(&self) -> Result<Option<HashMap<String, String>>, String> {
+            Ok(Some(HashMap::new()))
+        }
+        fn store_batch(&self, _entries: &HashMap<String, String>) -> Result<(), String> {
+            Ok(())
+        }
+        fn remove_batch(&self, _keys: &[&str]) -> Result<(), String> {
+            Ok(())
+        }
+    }
+    let store = FailingWriteStore;
+    let mut record = instance_record("abc");
+    record.env_vars = env_map(&[("K", "v")]);
+    // No pre-existing ref.
+    migrate_agent_secrets_with(&store, &mut record);
+    assert_eq!(
+        record.env_vars,
+        env_map(&[("K", "v")]),
+        "a failed keyring write must keep the value inline for retry"
+    );
+    assert_eq!(
+        record.env_vars_ref, None,
+        "the migration must not fabricate a ref it did not write"
+    );
+}
+
+#[test]
+fn test_migrate_two_launches_survive_both_gc_cycles() {
+    // The full W1 regression through the real GC: after a first launch projects
+    // inline secrets into fresh generations and commits the refs to JSON, a
+    // complete two-cycle GC sweep (delete→mark, twice, the boot order) must NOT
+    // reclaim any of those generations — they are all referenced by live JSON —
+    // and a second launch's migration must leave every ref intact. Before the
+    // W1 fix the second launch cleared the refs, orphaning the generations, and
+    // this GC would then delete them.
+    use crate::managed_agents::secret_projection::{
+        collect_live_refs, delete_gc_candidates, mark_gc_candidates,
+    };
+
+    let store = FakeProjectionStore::new();
+
+    let mut instance = instance_record("abc");
+    instance.env_vars = env_map(&[("ANTHROPIC_API_KEY", "sk-secret")]);
+    instance.auth_tag = Some("auth-secret".to_string());
+    instance.backend = BackendKind::Provider {
+        id: "anthropic".to_string(),
+        config: serde_json::json!({"api_key": "provider-secret"}),
+    };
+    let mut definition = definition_record("my-def");
+    definition.env_vars = env_map(&[("DEF_KEY", "def-secret")]);
+    let mut records = vec![instance, definition];
+
+    // Launch 1: project inline → refs.
+    migrate_all_secrets_for_records(&store, &mut records);
+    let env_ref = records[0].env_vars_ref.clone().expect("env ref");
+    let auth_ref = records[0].auth_tag_ref.clone().expect("auth ref");
+    let pc_ref = records[0]
+        .provider_config_ref
+        .clone()
+        .expect("provider ref");
+    let def_ref = records[1].env_vars_ref.clone().expect("def ref");
+
+    // Commit the projected records to disk exactly as the migration does, so GC
+    // reads the same JSON production would. Global config is empty.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let agents_path = dir.path().join("managed-agents.json");
+    let global_path = dir.path().join("global-agent-config.json");
+    std::fs::write(
+        &agents_path,
+        serde_json::to_string(&records).expect("serialize records"),
+    )
+    .expect("write agents json");
+    std::fs::write(&global_path, "{}").expect("write global json");
+
+    // Sanity: the committed JSON is a clean projection — every ref resolves to
+    // a live coordinate present in the blob, no inline+ref conflict.
+    let agents_json = std::fs::read_to_string(&agents_path).unwrap();
+    let live = collect_live_refs(&agents_json, "{}").expect("clean live refs");
+    for gen in [&env_ref, &auth_ref, &pc_ref, &def_ref] {
+        assert!(live.gen_ids.contains(gen), "{gen} must be a live ref");
+    }
+
+    // Two full boot-order GC cycles (delete before mark) over the committed
+    // JSON. A referenced generation is never a deletion candidate.
+    for _ in 0..2 {
+        delete_gc_candidates(&store, &agents_path, &global_path);
+        mark_gc_candidates(&store, &agents_path, &global_path);
+    }
+
+    // Launch 2: migrate again over the already-projected records (empty inline,
+    // live refs). Must be a no-op that preserves every ref.
+    let changed = migrate_all_secrets_for_records(&store, &mut records);
+    assert!(!changed, "second launch must not change any ref");
+
+    // Every generation must have survived both GC cycles and still hydrate.
+    assert!(store.contains(&agent_env_key("abc", &env_ref)));
+    assert!(store.contains(&agent_auth_tag_key("abc", &auth_ref)));
+    assert!(store.contains(&agent_provider_config_key("abc", &pc_ref)));
+    assert!(store.contains(&definition_env_key("my-def", &def_ref)));
+    let errors = hydrate_all_secrets_for_records(&store, &mut records);
+    assert!(
+        errors.is_empty(),
+        "every ref must still hydrate after two launches + two GC cycles: {errors:?}"
+    );
+    assert_eq!(
+        records[0]
+            .env_vars
+            .get("ANTHROPIC_API_KEY")
+            .map(String::as_str),
+        Some("sk-secret")
+    );
+    assert_eq!(
+        records[1].env_vars.get("DEF_KEY").map(String::as_str),
+        Some("def-secret")
+    );
+}

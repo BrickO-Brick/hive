@@ -4,7 +4,15 @@
 //!
 //! Runs ONCE at the END of `run_boot_migrations_inner` (after
 //! `materialize_agent_runtimes`) so raw-JSON migrations see inline values.
-//! Idempotent: records that already have refs skip the write path.
+//!
+//! Idempotent across launches, but NOT by "skipping records that already have
+//! refs": it re-runs the field-granular migration seam over every record on
+//! every launch. That seam projects only a non-empty inline value and
+//! otherwise preserves an existing ref — it never re-reads an already-projected
+//! record's empty inline field as a user-clear, so a second launch is a no-op
+//! that leaves every committed ref intact (the strip-on-save seam would have
+//! cleared them). See
+//! [`crate::managed_agents::secret_seam::migrate_all_secrets_for_records`].
 
 use tauri::Manager;
 
@@ -318,9 +326,12 @@ pub(crate) fn cleanup_secret_artifacts(agents_dir: &std::path::Path) {
         };
 
         // ── 0o600 sweep ──────────────────────────────────────────────────
+        // Tighten permissions on every store-shaped file up front, so even a
+        // backup whose scrub write later fails is not left group/world-readable
+        // with plaintext. Uses the same backup recognizer as the scrub below.
         #[cfg(unix)]
         if fname.ends_with(".json")
-            || fname.contains(".json.bak")
+            || is_backup_filename(&fname)
             || fname.ends_with(".json.invalid")
         {
             let _ = std::fs::set_permissions(&real_path, std::fs::Permissions::from_mode(0o600));
@@ -364,15 +375,30 @@ fn is_atomic_write_temp(fname: &str) -> bool {
 }
 
 /// Returns true when `fname` is a backup file we should scrub.
+///
+/// Recognizes every managed-store backup naming family this repo produces —
+/// each is `<store>.json` with a backup suffix appended, and each can carry
+/// pre-projection plaintext (env vars, auth tags, nsecs, provider config):
+///
+/// - `managed-agents.json.bak`, `.bak-<timestamp>`, `.bak.<timestamp>`
+/// - `managed-agents.json.pre-backfill.bak` ([`crate::migration::backfill`])
+/// - `managed-agents.json.pre-team-suffix-strip.bak`
+///   ([`crate::migration::team_suffix`])
+/// - `personas.json.bak` ([`crate::migration::fold`]) / `teams.json.bak-*`
+///
+/// The match is structural rather than an enumerated suffix list: a name
+/// belonging to one of our stores whose `.json` base is followed by a `.bak`
+/// marker anywhere. This catches a new `<store>.json.<phase>.bak` producer
+/// without another edit here. Deliberately excludes the live `<store>.json`
+/// (no `.bak` after `.json`) and `.invalid` artifacts (handled separately).
 fn is_backup_filename(fname: &str) -> bool {
-    // managed-agents.json.bak-<timestamp>
-    // managed-agents.json.bak
-    // personas.json.bak-<timestamp> / teams.json.bak-<timestamp>
-    let is_json_bak = fname.contains(".json.bak");
-    is_json_bak
-        && (fname.starts_with("managed-agents")
-            || fname.starts_with("personas")
-            || fname.starts_with("teams"))
+    let is_ours = fname.starts_with("managed-agents")
+        || fname.starts_with("personas")
+        || fname.starts_with("teams");
+    let Some((_, after_json)) = fname.split_once(".json") else {
+        return false;
+    };
+    is_ours && after_json.contains(".bak")
 }
 
 /// Strip secret fields from a parseable backup and overwrite it at 0o600.
@@ -454,6 +480,18 @@ fn strip_secrets_from_json(content: &str) -> Option<String> {
     serde_json::to_string_pretty(&v).ok()
 }
 
+/// Boot-migrate inline secrets to the keyring using the field-granular
+/// migration seam — NOT the strip-on-save seam.
+///
+/// This function runs on EVERY launch over records read straight off disk.
+/// After the first launch those records are already projected: their inline
+/// fields are empty and their `*_ref`s point at live generations. The
+/// strip-on-save seam would read an empty inline field as a deliberate
+/// user-clear and drop the ref (W1: silent credential loss on the second
+/// launch, then GC deletes the orphaned generation). The migration seam does
+/// not: it only ever projects a non-empty inline value or preserves an
+/// existing ref, and never clears one it did not write. See
+/// [`crate::managed_agents::secret_seam::migrate_all_secrets_for_records`].
 fn migrate_inline_secrets_in_records(
     _app: &tauri::AppHandle,
     records: &mut [crate::managed_agents::ManagedAgentRecord],
@@ -461,26 +499,7 @@ fn migrate_inline_secrets_in_records(
     let Some(store) = crate::managed_agents::storage::agent_secret_store_pub() else {
         return false;
     };
-    let mut changed = false;
-    for record in records.iter_mut() {
-        let before_env_ref = record.env_vars_ref.clone();
-        let before_auth_ref = record.auth_tag_ref.clone();
-        let before_pc_ref = record.provider_config_ref.clone();
-        if record.pubkey.is_empty() {
-            crate::managed_agents::secret_seam::strip_and_persist_definition_secrets_with(
-                store, record,
-            );
-        } else {
-            crate::managed_agents::secret_seam::strip_and_persist_agent_secrets_with(store, record);
-        }
-        if record.env_vars_ref != before_env_ref
-            || record.auth_tag_ref != before_auth_ref
-            || record.provider_config_ref != before_pc_ref
-        {
-            changed = true;
-        }
-    }
-    changed
+    crate::managed_agents::secret_seam::migrate_all_secrets_for_records(store, records)
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────
@@ -509,6 +528,41 @@ mod tests {
         assert!(!is_backup_filename("managed-agents.json"));
         assert!(!is_backup_filename("managed-agents.json.invalid"));
         assert!(!is_backup_filename("global-agent-config.json.bak-20260608")); // not in our set
+    }
+
+    #[test]
+    fn test_is_backup_filename_recognizes_phase_suffixed_producers() {
+        // W4: the exact backup filenames this repo's own migrations produce.
+        // Each is `<store>.json` with a phase/marker suffix appended — NOT the
+        // literal `.json.bak` the old recognizer required — so each survived
+        // the scrub with pre-projection plaintext (env vars, auth tags, nsecs,
+        // provider config) intact.
+        assert!(
+            is_backup_filename("managed-agents.json.pre-backfill.bak"),
+            "backfill.rs pre-migration backup must be recognized"
+        );
+        assert!(
+            is_backup_filename("managed-agents.json.pre-team-suffix-strip.bak"),
+            "team_suffix.rs pre-migration backup must be recognized"
+        );
+        assert!(
+            is_backup_filename("personas.json.bak"),
+            "the persona-fold backup must be recognized"
+        );
+        // `.bak.<stamp>` ordering (marker then stamp) is ours too.
+        assert!(is_backup_filename(
+            "managed-agents.json.bak.20260608-175938"
+        ));
+        // A future `<store>.json.<phase>.bak` producer is caught structurally,
+        // without another edit here — this is why the match is not an
+        // enumerated suffix list.
+        assert!(is_backup_filename(
+            "managed-agents.json.some-future-phase.bak"
+        ));
+
+        // A phase-suffixed backup of a store we do NOT own is not ours to
+        // scrub, even though it is shaped identically.
+        assert!(!is_backup_filename("credentials.json.pre-backfill.bak"));
     }
 
     #[test]
@@ -635,6 +689,37 @@ mod tests {
             !result.contains("\"env_vars\""),
             "secrets must be stripped from parseable backup"
         );
+    }
+
+    /// W4 end-to-end: the phase-suffixed producer backups (`pre-backfill.bak`,
+    /// `pre-team-suffix-strip.bak`) carry pre-projection plaintext and must be
+    /// scrubbed by the full cleanup sweep — not just matched by the recognizer.
+    /// Before the structural recognizer these names lacked the literal
+    /// `.json.bak` substring and survived cleanup with secrets intact.
+    #[test]
+    fn test_cleanup_scrubs_phase_suffixed_producer_backups() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let content = r#"[{"pubkey":"abc","name":"test","env_vars":{"ANTHROPIC_API_KEY":"sk-ant-secret"},"auth_tag":"tag-secret","created_at":"2026","updated_at":"2026"}]"#;
+        for name in [
+            "managed-agents.json.pre-backfill.bak",
+            "managed-agents.json.pre-team-suffix-strip.bak",
+        ] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, content).expect("write producer backup");
+
+            cleanup_secret_artifacts(dir.path());
+
+            assert!(path.exists(), "{name} must survive as a scrubbed backup");
+            let result = std::fs::read_to_string(&path).expect("read");
+            assert!(
+                !result.contains("sk-ant-secret"),
+                "{name} must have its env_vars secret stripped"
+            );
+            assert!(
+                !result.contains("tag-secret"),
+                "{name} must have its auth_tag secret stripped"
+            );
+        }
     }
 
     /// Cleanup must not follow symlinks that escape the agents dir.

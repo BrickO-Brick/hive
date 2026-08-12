@@ -290,6 +290,175 @@ pub(crate) fn strip_and_persist_all_for_records<S: ProjectionStore>(
     }
 }
 
+// ── Boot-migration transition (W1-safe) ───────────────────────────────────
+//
+// The ordinary save path (`strip_and_persist_*`) treats an empty inline field
+// on an AVAILABLE record as a deliberate user-clear and drops the ref. The
+// boot migration must NOT: it re-reads ALREADY-PROJECTED records straight off
+// disk (empty inline + live ref, and `secrets_unavailable` is `#[serde(skip)]`
+// so always `false`), which the save path would read as a clear and wipe every
+// committed ref on the second launch. This transition is the migration's own
+// contract: project only a non-empty inline value; preserve an existing ref
+// when inline is absent; never infer a clear from a raw projected record.
+
+/// Outcome of one field's boot-migration transition.
+///
+/// The caller applies the record mutation implied by each arm — the transition
+/// itself is coordinate-generic (it does not know which record field it serves)
+/// so it can back the agent tiers here AND the custom-harness surface, which
+/// carries a single `env` map under its own keyring namespace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FieldMigration {
+    /// Inline value written and read-back verified under a new generation.
+    /// Caller: clear the inline field and set its `*_ref` to `gen`.
+    Projected { gen: String },
+    /// Inline absent, an existing ref is present. Caller: leave the ref
+    /// untouched — the committed generation stays live.
+    Preserved,
+    /// No projection: inline absent with no existing ref, OR the keyring write
+    /// failed (value kept inline for retry). Caller: leave the field as-is; the
+    /// migration never sets a ref it did not write.
+    Cleared,
+}
+
+/// Field-granular boot-migration transition. Projects `inline` into the keyring
+/// under a fresh generation when present; otherwise preserves `existing_ref`
+/// without ever clearing it.
+///
+/// Distinct from the strip-on-save seam: an absent inline value here means
+/// "already projected on a prior launch," never "the user cleared it," so a
+/// present ref is preserved rather than dropped. This is the seam Hayt's
+/// custom-harness boot migration consumes so the two surfaces share one
+/// W1-safe semantic instead of forking it.
+pub(crate) fn migrate_inline_field<S: ProjectionStore>(
+    store: &S,
+    coord_key_fn: impl Fn(&str) -> String,
+    inline: Option<&str>,
+    existing_ref: Option<&str>,
+    context: &str,
+) -> FieldMigration {
+    match write_secret(store, &coord_key_fn, inline, context) {
+        WriteOutcome::Persisted { gen } => {
+            cancel_gc_candidacy(store, &coord_key_fn(&gen));
+            FieldMigration::Projected { gen }
+        }
+        // Inline absent: `write_secret` attempted nothing. Preserve an existing
+        // ref (already-projected record) instead of treating empty as a clear.
+        WriteOutcome::Nothing if existing_ref.is_some() => FieldMigration::Preserved,
+        WriteOutcome::Nothing | WriteOutcome::KeptInline { .. } => FieldMigration::Cleared,
+    }
+}
+
+/// Boot-migrate one instance record's secret fields at field granularity.
+/// W1-safe: an already-projected record (empty inline, live refs) is left with
+/// its refs intact rather than having them cleared.
+fn migrate_agent_secrets_with<S: ProjectionStore>(store: &S, record: &mut ManagedAgentRecord) {
+    let pubkey = record.pubkey.clone();
+    let inline_env = if !record.env_vars.is_empty() {
+        serialize_env_map(&record.env_vars).ok()
+    } else {
+        None
+    };
+    if let FieldMigration::Projected { gen } = migrate_inline_field(
+        store,
+        |gen| agent_env_key(&pubkey, gen),
+        inline_env.as_deref(),
+        record.env_vars_ref.as_deref(),
+        &format!("agent:{pubkey} env_vars"),
+    ) {
+        record.env_vars.clear();
+        record.env_vars_ref = Some(gen);
+    }
+
+    let auth_val = record.auth_tag.clone();
+    if let FieldMigration::Projected { gen } = migrate_inline_field(
+        store,
+        |gen| agent_auth_tag_key(&pubkey, gen),
+        auth_val.as_deref(),
+        record.auth_tag_ref.as_deref(),
+        &format!("agent:{pubkey} auth_tag"),
+    ) {
+        record.auth_tag = None;
+        record.auth_tag_ref = Some(gen);
+    }
+
+    if let BackendKind::Provider {
+        ref id,
+        ref mut config,
+    } = record.backend
+    {
+        let serialized = if !config.is_null() {
+            serialize_provider_config(config).ok()
+        } else {
+            None
+        };
+        if let FieldMigration::Projected { gen } = migrate_inline_field(
+            store,
+            |gen| agent_provider_config_key(&pubkey, gen),
+            serialized.as_deref(),
+            record.provider_config_ref.as_deref(),
+            &format!("agent:{pubkey} provider_config ({id})"),
+        ) {
+            *config = serde_json::Value::Null;
+            record.provider_config_ref = Some(gen);
+        }
+    }
+}
+
+/// Boot-migrate one definition record's `env_vars` at field granularity.
+/// The definition-tier mirror of [`migrate_agent_secrets_with`].
+fn migrate_definition_secrets_with<S: ProjectionStore>(store: &S, record: &mut ManagedAgentRecord) {
+    let Some(slug) = record.slug.as_deref().map(str::to_string) else {
+        return;
+    };
+    let inline_env = if !record.env_vars.is_empty() {
+        serialize_env_map(&record.env_vars).ok()
+    } else {
+        None
+    };
+    if let FieldMigration::Projected { gen } = migrate_inline_field(
+        store,
+        |gen| definition_env_key(&slug, gen),
+        inline_env.as_deref(),
+        record.env_vars_ref.as_deref(),
+        &format!("definition:{slug} env_vars"),
+    ) {
+        record.env_vars.clear();
+        record.env_vars_ref = Some(gen);
+    }
+}
+
+/// Boot-migrate all secret fields in `records` at field granularity. Returns
+/// `true` when any record's ref set changed (the caller then rewrites JSON).
+pub(crate) fn migrate_all_secrets_for_records<S: ProjectionStore>(
+    store: &S,
+    records: &mut [ManagedAgentRecord],
+) -> bool {
+    let mut changed = false;
+    for record in records.iter_mut() {
+        let before = (
+            record.env_vars_ref.clone(),
+            record.auth_tag_ref.clone(),
+            record.provider_config_ref.clone(),
+        );
+        if record.pubkey.is_empty() {
+            migrate_definition_secrets_with(store, record);
+        } else {
+            migrate_agent_secrets_with(store, record);
+        }
+        if before
+            != (
+                record.env_vars_ref.clone(),
+                record.auth_tag_ref.clone(),
+                record.provider_config_ref.clone(),
+            )
+        {
+            changed = true;
+        }
+    }
+    changed
+}
+
 #[cfg(test)]
 #[path = "secret_seam_tests.rs"]
 mod tests;
