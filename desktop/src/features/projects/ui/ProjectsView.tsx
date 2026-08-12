@@ -761,7 +761,7 @@ export function ProjectsView() {
 
   const projectsHeader = (
     <PageHeader
-      className="pointer-events-auto mb-8"
+      className="pointer-events-auto mb-4"
       description="Set up and manage your projects."
       title="Projects"
     />
