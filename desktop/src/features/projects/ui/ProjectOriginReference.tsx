@@ -18,7 +18,14 @@ export function ProjectOriginReference({
     return (
       <span
         className="inline-flex min-w-0 items-center gap-1"
-        title="Origin is claimed by the event author and is not relay-verified."
+        title={
+          channel
+            ? "Origin is claimed by the event author and is not relay-verified."
+            : // Open channels always resolve by name (the relay serves their
+              // metadata to every community member), so an unresolved id means
+              // a private, deleted, or otherwise inaccessible channel.
+              `Origin channel ${channelId} is not visible to you. Origin is claimed by the event author and is not relay-verified.`
+        }
       >
         <span>started from</span>
         {channel ? (
@@ -31,7 +38,7 @@ export function ProjectOriginReference({
             #{channel.name}
           </button>
         ) : (
-          <span>a public channel</span>
+          <span>a private channel</span>
         )}
         <span>(author-claimed)</span>
       </span>

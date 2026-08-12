@@ -190,7 +190,14 @@ fn is_linkable_dtag(value: &str) -> bool {
 ///
 /// Workspace tabs addressable by `buzz://repo|project` links — mirrors
 /// `ENTITY_LINK_TABS` in `entityLink.ts`.
-const ENTITY_LINK_TABS: [&str; 5] = ["files", "commits", "issues", "prs", "contributors"];
+const ENTITY_LINK_TABS: [&str; 6] = [
+    "files",
+    "commits",
+    "issues",
+    "prs",
+    "contributors",
+    "channels",
+];
 
 /// The canonical-form rules match `parseEntityLink`: no path segments, no
 /// fragment, and no parameters beyond `owner`/`d` (plus `id` for event

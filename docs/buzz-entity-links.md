@@ -90,8 +90,8 @@ buzz://issue?id=<event-id-hex>&owner=<pubkey-hex>&d=<repo-dtag>
   (`owner`, `d`) pair is the full `30617:<owner>:<d>` /
   `30621:<owner>:<d>` coordinate.
 - `tab` (coordinate links only, optional) selects a workspace tab instead
-  of the default readme overview: `files`, `commits`, `issues`, `prs`, or
-  `contributors`. The overview has no spelling (canonical links omit the
+  of the default readme overview: `files`, `commits`, `issues`, `prs`,
+  `contributors`, or `channels`. The overview has no spelling (canonical links omit the
   parameter), unknown values are rejected, and event links accept no `tab`.
   The desktop's copy-link button emits it automatically when a non-overview
   tab is active, so "link to the PR list" is just the project link copied

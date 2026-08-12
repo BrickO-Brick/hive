@@ -30,6 +30,7 @@ export const ENTITY_LINK_TABS = [
   "issues",
   "prs",
   "contributors",
+  "channels",
 ] as const;
 
 export type EntityLinkTab = (typeof ENTITY_LINK_TABS)[number];

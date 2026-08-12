@@ -75,6 +75,7 @@ export function shareTabForWorkspaceTab(
     case "issues":
     case "prs":
     case "contributors":
+    case "channels":
       return workspaceTab;
     case "activity":
       return "commits";
