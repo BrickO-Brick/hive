@@ -2,13 +2,13 @@
 
 This guide describes a provider-neutral stock deployment for the normative [NIP-FI contract](nips/NIP-FI.md). It does not by itself activate support.
 
-## Runtime configuration
+## Availability boundary
 
-The relay accepts exactly one identity-configuration input: the `BUZZ_NIP_FI_V1_CONFIG_JSON` environment variable. Absent means Off, `{"deny_protected":true}` denies every protected route before its handler runs, and only the complete document enables Enforce mode. The document contract, field bounds, and startup rejection rules — including the removed legacy identity-provider variables, which fail startup when set — are documented in the [identity configuration contract](CORPORATE_IDENTITY.md).
+This documentation revision does not add a NIP-FI runtime parser, adapter, discovery, or enforcement. The proposed `BUZZ_NIP_FI_V1_CONFIG_JSON` document, operating modes, field bounds, and future startup rejection rules are recorded in the [identity configuration contract](CORPORATE_IDENTITY.md); they are not claims about the current relay binary.
 
-Configuring Enforce is not conformance. A deployment must not advertise or enforce NIP-FI until it passes the [behavioral evidence matrix](nips/NIP-FI-CONFORMANCE.md) at the deployed revision.
+After a later implementation supplies that parser, configuring Enforce is still not conformance. A deployment must not advertise or enforce NIP-FI until it passes the [behavioral evidence matrix](nips/NIP-FI-CONFORMANCE.md) at the deployed revision.
 
-The files under [`docs/examples`](examples/) are review templates. They are not accepted runtime schemas — the only runtime input is the environment variable above — and they contain no deployable secrets.
+The files under [`docs/examples`](examples/) are review templates. They are not accepted runtime schemas and contain no deployable secrets.
 
 ## Stock topology
 
@@ -17,9 +17,9 @@ external client
   -> TLS listener or trusted edge
   -> Buzz verifier ingress
   -> one canonical NIP-FI verifier and final-admission authority
-  -> binding/lifecycle, replay, policy, receipt, audit, and application stores
-                    |
-                    -> configured issuer metadata and JWKS over authenticated TLS
+       |-> binding/lifecycle, replay, policy, receipt, authorization-audit, and application stores
+       |-> separately bounded, non-authoritative denial observations
+       `-> configured issuer metadata and JWKS over authenticated TLS
 ```
 
 The stock profile is provider free. It identifies issuers by exact configured values and retrieves keys under bounded policy. It does not require a provider-specific sidecar, claim dialect, SDK, or forwarded-identity convention.
@@ -32,7 +32,7 @@ Do not publish NIP-FI discovery or enable enforcement until all of these are tru
 2. Every protected WebSocket and HTTP ingress appears in the executed route inventory.
 3. One current domain policy and policy lineage covers every protected ingress.
 4. Issuer, audience, algorithm, claim, time, size, JWKS, and enrollment policy is explicit for each domain.
-5. Binding, lifecycle, replay, receipt, audit, invalidation, and application storage meets serialization and durability requirements.
+5. Binding, lifecycle, replay, receipt, authorization-audit, invalidation, and application storage meets serialization and durability requirements; denial observations use a separate finite-capacity non-authoritative channel.
 6. Secrets arrive from an access-controlled secret store and never from repository examples.
 7. Backup, restore, key rotation, dependency outage, recovery, and rollback exercises pass.
 8. All applicable `FI-TRACE-*` rows pass at the exact implementation, adapter, artifact, deployment, and policy digests.
@@ -48,16 +48,19 @@ The runtime document and its fixed verifier semantics together represent:
 - exact domain identity and trusted listener or route mapping;
 - accepted issuer and audience values;
 - allowed compact-JWS algorithms and compatible key types;
-- subject and optional Nostr-key claim rules;
+- subject and optional Nostr-key claim rules, plus the operator evidence that the issuer subject is stable and non-reassignable;
 - assertion, clock-skew, header, and body bounds;
 - JWKS refresh, stale-on-error, and hard-validity bounds;
 - exactly one enrollment mode;
 - accepted assertion transports;
 - delegation support and positive finite maximum, when enabled;
-- stable public denial mapping; and
-- current policy identity and lineage.
+- stable public denial mapping;
+- bounded private denial observation with stable reason and correlation identifiers, minimal attacker-controlled payload, and no authorization effect; and
+- current policy identity and lineage, including the authenticated key-source identity and compiled verifier-contract fingerprint.
 
 Rotating verification keys changes the JWKS generation, not the stable verifier-policy identity. Changing accepted assertion semantics creates a new policy identity.
+
+The stock contract compares against the current authenticated JWKS snapshot and does not promise durable anti-rollback. If an old set is republished, its keys may become current again. A deployment that needs rollback prevention adds an authenticated monotonic version or durable key floor and corresponding evidence.
 
 ## Client-attached profile
 
@@ -67,14 +70,15 @@ Treat assertions as confidential bearer material. Do not log headers, echo them 
 
 ## Trusted-proxy profile
 
-The Buzz stock trusted-proxy profile is `trusted-proxy-hmac-v1`. The edge:
+The Buzz stock trusted-proxy profile is `trusted-proxy-hmac-v2`; v1 is rejected. The edge:
 
-1. removes every inbound assertion and provenance field, including attacker-supplied duplicates;
+1. removes every inbound assertion, provenance, and client-peer field, including attacker-supplied duplicates;
 2. completes trusted routing and canonical path rewriting;
 3. computes the assertion digest and request body digest;
 4. creates a fresh timestamp and nonce;
-5. MACs the exact timestamp, nonce, assertion digest, method, authority, path/query, and body digest; and
-6. sends exactly one `Nostr-Federated-Identity: Bearer <JWT>` field and one `Nostr-Federated-Identity-Provenance` field to verifier ingress.
+5. canonicalizes the authenticated end-client IP and selects the authorization domain and proof-transport code;
+6. MACs the exact timestamp, nonce, assertion digest, authorization domain, method, authority, path/query, body digest, proof transport, and client peer; and
+7. sends exactly one `Nostr-Federated-Identity: Bearer <JWT>` field, one `Nostr-Federated-Identity-Provenance` field, and one `Nostr-Federated-Identity-Client-Peer` field to verifier ingress.
 
 The HMAC secret is random, access controlled, versioned, and delivered independently of application configuration. Rotation uses a short, explicit overlap. Replay uniqueness is scoped to the trusted-proxy domain, profile, and nonce and is independent of which active secret verified the MAC. A nonce re-signed with another active secret remains a replay. The matched secret version may appear only in private audit metadata. Remove the old version after all requests and replay windows expire.
 
@@ -87,13 +91,14 @@ Production-equivalent storage must provide:
 - serialized uniqueness for both sides of each domain's active binding relation;
 - durable lifecycle selectors and immutable typed history;
 - monotonic binding and lifecycle versions;
-- atomic enrollment, replay claim, request-bound receipt, and required audit evidence;
+- atomic enrollment, replay claim, request-bound receipt, and required authorization audit evidence;
 - idempotent application consumption when the application effect uses another transaction;
 - bounded replay retention that outlives the accepted provenance window;
+- a separately capacity-bounded denial-observation channel whose failure never changes or delays denial and never creates an authorization receipt;
 - current policy, JWKS generation, resource, and relationship witnesses; and
 - backup and restore consistency across authority state.
 
-Caching may improve reads but cannot authorize from state older than its witnessed invalidation bound. An unavailable cache origin, database, replay store, receipt store, or audit sink denies.
+Caching may improve reads but cannot authorize from state older than its witnessed invalidation bound. An unavailable cache origin, database, replay store, receipt store, or required authorization-audit sink denies. An unavailable or exhausted denial-observation channel drops or truncates observation while the denial stands and authoritative stores remain unchanged.
 
 ## Rollout
 
@@ -103,7 +108,7 @@ List every protected ingress and its current authorization path. Include WebSock
 
 ### 2. Install without discovery
 
-Deploy the exact implementation artifact with NIP-FI discovery and enforcement off — leave `BUZZ_NIP_FI_V1_CONFIG_JSON` unset, or set `{"deny_protected":true}` where protected routes must already deny. Load reviewed policy and secret references. Validate issuer connectivity, JWKS authenticity, state migrations, backup, observability redaction, and route inventory without creating production bindings.
+After the implementation stack supplies the proposed configuration contract, deploy its exact artifact with NIP-FI discovery and enforcement off using the implementation's reviewed fail-closed mechanism. Load reviewed policy and secret references. Validate issuer connectivity, JWKS authenticity, state migrations, backup, observability redaction, and route inventory without creating production bindings.
 
 ### 3. Run isolated behavior
 
@@ -119,7 +124,7 @@ Only after the exact claim tuple passes, publish discovery and enable one canoni
 
 ### 6. Observe without identity leakage
 
-Monitor aggregate allow/deny classes, dependency readiness, refresh age, replay pressure, final-admission conflicts, lease invalidations, and audit capacity. Private reason details stay access controlled. Raw assertions and identity claims are never metric labels or trace attributes.
+Monitor aggregate allow/deny classes, stable private denial reasons, denial-observation drops and saturation, dependency readiness, refresh age, replay pressure, final-admission conflicts, lease invalidations, and authorization-audit capacity. Private reason details stay access controlled. Raw assertions and identity claims are never metric labels or trace attributes, and denial records never contain raw tokens or verbatim unverified claims.
 
 ## Rollback
 

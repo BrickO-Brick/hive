@@ -70,11 +70,11 @@ Multi-domain deployments use the same authenticated domain lookup for authorizat
 
 ## Canonical assertion verifier
 
-Every transport adapter calls one provider-neutral assertion verifier contract. The verifier owns compact-JWS parsing, issuer and audience selection, algorithm and key compatibility, subject rules, optional key attestation, time bounds, size bounds, JWKS refresh, and normalized evidence.
+Every transport adapter calls one provider-neutral assertion verifier contract. The verifier owns compact-JWS parsing, issuer and audience selection, algorithm and key compatibility, subject rules, optional key attestation, time bounds, size bounds, JWKS refresh, and normalized evidence. Operators separately establish that each configured issuer's subject is stable and non-reassignable; the verifier cannot prove that property from one assertion.
 
-The stable verifier policy identity contains accepted semantics but excludes rotating keys and transport. A separate JWKS generation identifies the effective key snapshot. Prepared and direct-lease evidence retains a confidential handle to the exact assertion and the key snapshot's hard-validity deadline.
+The stable verifier policy identity deterministically covers every configured semantic input—including the allowed algorithm set and authenticated key-source identity—plus a versioned fingerprint of compiled acceptance rules. It excludes rotating keys and transport. A separate JWKS generation identifies the effective key snapshot. Prepared and direct-lease evidence retains a confidential handle to the exact assertion and the key snapshot's hard-validity deadline.
 
-On a generation change, final admission and lease reuse revalidate the original assertion against the current snapshot. A retained key can continue to authorize. A removed key, unreadable current snapshot, or hard-expired snapshot denies. `FI-TRACE-VERIFIER-PARITY`, `FI-TRACE-JWKS-ADD`, and `FI-TRACE-JWKS-REMOVE` prove these behaviors through every transport.
+On a generation change, final admission and lease reuse revalidate the original assertion against the current snapshot. A retained key can continue to authorize. A key absent from the current snapshot, an unreadable current snapshot, or a hard-expired snapshot denies. The base contract has no durable anti-rollback oracle, so republication of an old authenticated set can make its keys current again. `FI-TRACE-VERIFIER-PARITY`, `FI-TRACE-JWKS-ADD`, and `FI-TRACE-JWKS-REMOVE` prove these behaviors through every transport.
 
 ## Assertion transport
 
@@ -86,7 +86,7 @@ The `client-attached` adapter accepts exactly one `Nostr-Federated-Identity: Bea
 
 ### Trusted proxy
 
-The `trusted-proxy-hmac-v1` adapter implements the exact envelope, canonical request bytes, time bounds, nonce size, HMAC, and replay retention in NIP-FI. The trusted edge removes inbound assertion and provenance fields before setting its own.
+The `trusted-proxy-hmac-v2` adapter implements the exact envelope, canonical request bytes, time bounds, nonce size, HMAC, client-peer field, and replay retention in NIP-FI. The trusted edge removes inbound assertion, provenance, and client-peer fields before setting its own. v1 envelopes are rejected.
 
 The deployment also proves:
 
@@ -95,7 +95,7 @@ The deployment also proves:
 - mixed profiles deny without fallback;
 - client header injection denies;
 - nonce replay commits at most once; and
-- changing any request-bound field denies.
+- changing the domain, proof transport, authenticated client peer, or any other request-bound field denies.
 
 Local unit tests cannot prove network isolation. The deployment bundle must retain live negative evidence for `FI-TRACE-PROXY-SPOOF`.
 
@@ -117,7 +117,7 @@ Hot-path authorization reads both sides of the active relation and every applica
 
 ## Prepared and committed authorization
 
-Preparation is read-only. It creates no binding, lifecycle fact, replay claim, receipt, audit observation, lease, publication, last-seen value, or application mutation.
+Preparation is read-only. It creates no authoritative state, publication, or last-seen value. A denied preparation may attempt the separately bounded, non-authoritative denial observation only after the decision is fixed.
 
 Prepared evidence uses one of two dependency sets:
 
@@ -129,6 +129,8 @@ Both include exact request context, fresh Nostr proof, local policy and resource
 Final admission rereads only applicable witnesses inside the authorization transaction. Unreadable state denies. Changed state requires a complete recomputation and may commit only a semantically equivalent current result. Identical concurrent enrollment may converge on the same binding version; a conflicting result denies.
 
 Replay claims, eligible enrollment, request-bound receipt, and required authorization audit evidence commit together. If the application effect uses another transaction, it consumes a request-bound idempotent receipt so retry cannot duplicate the effect.
+
+A denied operation creates no authorization receipt. It attempts a stable reason code and correlation identifier through the non-authoritative denial channel. That channel has a finite capacity separate from required authorization audit evidence; an unavailable or exhausted channel cannot weaken, delay, retry, or reverse the denial.
 
 ## Enrollment modes
 
@@ -167,6 +169,8 @@ Discovery is a claim, not a feature flag. The service advertises only profiles a
 NIP-FI defines no public identity projection. Assertions, issuer-qualified identities, profile claims, HMAC correlation values, and private policy state stay out of protocol output and public history. Access-controlled enforcement state retains only what lifecycle, audit, and incident response need.
 
 Public denials use the stable classes from NIP-FI. They do not reveal whether an identity, key, binding, tombstone, claim, enrollment mode, or private policy exists.
+
+Private denial observations contain no raw tokens or verbatim unverified claims and use only bounded or keyed-hashed source coordinates. Their absence does not prove that no denial occurred, and authorization, lockout, or rate-limit policy does not depend on them.
 
 ## Implementation-stack handoff
 

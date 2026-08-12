@@ -41,13 +41,9 @@ keypair.
   `gen_random_uuid()` and digest hashing). On managed PostgreSQL, ensure the
   extension is permitted for the migration role or pre-create it as an
   administrator.
-- Relay-verified identity (optional, off by default) is configured with
-  `BUZZ_NIP_FI_V1_CONFIG_JSON` (see the
-  [identity configuration contract](../../docs/CORPORATE_IDENTITY.md)). Its
-  `audit` bounds are a one-way lifetime budget per community domain — size
-  `max_events_per_domain` from expected identities × lifecycle operations with
-  generous headroom and monitor consumption, because exhaustion fails closed
-  and denies authorization-affecting operations rather than dropping evidence.
+- The proposed NIP-FI configuration contract is future-facing; this bundle
+  does not imply that the current relay parses or enforces it. See the
+  [identity configuration contract](../../docs/CORPORATE_IDENTITY.md).
 - The stack uses Postgres, Redis, MinIO, and a git data volume because
   those are real Buzz dependencies today. Minimal mode can simplify this later.
 
@@ -55,16 +51,14 @@ Run `./run.sh backup-hint` for the backup checklist.
 
 ## NIP-FI readiness
 
-This Compose bundle does not provision a NIP-FI trusted edge, issuer
-integration, or conformance runner. The relay's identity configuration
-document (`BUZZ_NIP_FI_V1_CONFIG_JSON`, see the
-[identity configuration contract](../../docs/CORPORATE_IDENTITY.md)) passes
-through like any other relay environment variable, but do not advertise or
-enforce NIP-FI from this bundle, and do not add a provider-specific sidecar
+This Compose bundle does not provision a NIP-FI runtime, trusted edge, issuer
+integration, or conformance runner. It makes no claim that the proposed
+`BUZZ_NIP_FI_V1_CONFIG_JSON` document is parsed or enforced. Do not advertise
+or enforce NIP-FI from this bundle, and do not add a provider-specific sidecar
 or unsigned corporate identity header as a substitute.
 
 An activating deployment must pin an exact image, isolate verifier ingress
-when `trusted-proxy-hmac-v1` is enabled, deliver HMAC secrets through a
+when `trusted-proxy-hmac-v2` is enabled, deliver HMAC secrets through a
 secret store rather than `.env`, and pass the complete exact-head behavioral
 matrix before activation. A valid Compose render or healthy relay does not
 close those gates. See the

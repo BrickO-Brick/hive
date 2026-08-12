@@ -4,6 +4,7 @@
   "numeric_values_role": "illustrative-review-values-not-production-defaults",
   "domain": {
     "id": "community.example.test",
+    "authorization_domain_id": "00000000-0000-0000-0000-000000000001",
     "authority": "community.example.test:443",
     "protected_ingress_classes": [
       "websocket",
@@ -17,15 +18,19 @@
   },
   "policy_control": {
     "current_policy_identity": "REPLACE_WITH_STABLE_POLICY_DIGEST",
-    "current_policy_lineage": "REPLACE_WITH_MONOTONIC_LINEAGE_ID"
+    "current_policy_lineage": "REPLACE_WITH_MONOTONIC_LINEAGE_ID",
+    "verifier_contract_fingerprint": "REPLACE_WITH_COMPILED_CONTRACT_DIGEST",
+    "verifier_contract_fingerprint_source": "implementation-observed-not-operator-input"
   },
   "transport": {
-    "profile": "trusted-proxy-hmac-v1",
+    "profile": "trusted-proxy-hmac-v2",
     "assertion_field": "Nostr-Federated-Identity",
     "assertion_scheme": "Bearer",
     "assertion_field_cardinality": "exactly-one",
     "federated_assertion_in_authorization_field": false,
     "provenance_field": "Nostr-Federated-Identity-Provenance",
+    "client_peer_field": "Nostr-Federated-Identity-Client-Peer",
+    "client_peer_encoding": "canonical-ip",
     "hmac_secret_ref": "secret://nip-fi/community.example.test/proxy-hmac",
     "hmac_algorithm": "HMAC-SHA-256",
     "minimum_hmac_secret_bits": 256,
@@ -36,6 +41,17 @@
     "maximum_nonce_bytes": 64,
     "nonce_retention_minimum_seconds": 35,
     "nonce_replay_scope": "domain-and-profile-independent-of-secret-version",
+    "mac_binds": [
+      "assertion-digest",
+      "authorization-domain-id",
+      "method",
+      "authority",
+      "path-and-query",
+      "body-digest",
+      "proof-transport-code",
+      "authenticated-client-peer"
+    ],
+    "legacy_v1_envelopes": "deny",
     "direct_origin_allowed": false,
     "fallback_profile": null
   },
@@ -58,6 +74,8 @@
     ],
     "authenticated_key_source": "https://issuer.example.test/keys.json",
     "subject_claim": "sub",
+    "subject_stability_evidence": "REPLACE_WITH_REVIEW_RECORD_ID",
+    "subject_reassignment_policy": "disable-issuer-until-remediated",
     "nostr_key_claim": "nostr_pubkey",
     "maximum_assertion_age_seconds": 300,
     "clock_skew_seconds": 30,
@@ -70,6 +88,7 @@
     "jwks_soft_refresh_seconds": 300,
     "jwks_stale_known_key_seconds": 0,
     "jwks_hard_maximum_age_seconds": 3600,
+    "jwks_rollback_model": "current-authenticated-snapshot-no-durable-anti-rollback",
     "unknown_key_refresh_is_per_request": false
   },
   "nostr_proof": {
@@ -94,6 +113,24 @@
     "dependency_unavailable": "deny",
     "competing_authority": "startup-deny",
     "public_identity_projection": false,
+    "denial_observation": {
+      "authority_role": "non-authoritative-best-effort",
+      "capacity_is_separate_from_authorization_audit": true,
+      "maximum_records": 100000,
+      "maximum_bytes": 268435456,
+      "maximum_record_bytes": 1024,
+      "write_failure_effect": "denial-stands-observation-may-drop",
+      "authorization_receipt_on_denial": false,
+      "allowed_payload": [
+        "stable-reason-code",
+        "correlation-identifier",
+        "timestamp",
+        "transport-class",
+        "bounded-or-keyed-hashed-source-coordinates"
+      ],
+      "raw_tokens_or_verbatim_unverified_claims": "forbidden",
+      "policy_dependency": "none"
+    },
     "public_denial_mapping": {
       "missing_evidence": {
         "http_status": 401,

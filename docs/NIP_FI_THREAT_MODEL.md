@@ -18,7 +18,7 @@ NIP-FI adds issuer-qualified identity to fresh Nostr key proof without making ei
 - keep preparation read-only and make final admission the only authority commit point;
 - bound sessions and delegation by every current dependency;
 - deny on unreadable, ambiguous, stale, or contradictory state; and
-- prevent identity material and detailed decision reasons from becoming public or observable.
+- prevent identity material and detailed decision reasons from becoming public or attacker-observable while retaining bounded private denial signals.
 
 ## Protected assets
 
@@ -31,13 +31,14 @@ NIP-FI adds issuer-qualified identity to fresh Nostr key proof without making ei
 | Verifier policy and JWKS generations | Stable semantic identity, authentic refresh, hard expiry, and current-key revalidation |
 | Binding and lifecycle state `B`, `T`, `X`, `Y`, `Q`, `H`, and `V` | Serialization, durability, monotonic lineage, and backup consistency |
 | Prepared evidence, receipts, replay claims, and audit evidence | Integrity, idempotence, privacy, and atomic final admission |
+| Denial-observation channel | Separate finite capacity, minimal attacker-controlled payload, drop visibility, and no authorization effect |
 | Leases, delegation, and invalidation state | Finite bounds and current owner, key, policy, and resource dependencies |
 | Conformance reports and artifacts | Exact-revision provenance, digest integrity, completeness, and reproducibility |
 
 ## Actors and trust boundaries
 
 - **Client:** controls all request fields and may hold a valid assertion, a Nostr key, both, or neither.
-- **Trusted edge:** for `trusted-proxy-hmac-v1`, terminates the external request, strips inbound identity fields, and creates the request-bound HMAC envelope.
+- **Trusted edge:** for `trusted-proxy-hmac-v2`, terminates the external request, strips inbound identity and client-peer fields, and creates the request-bound HMAC envelope.
 - **Buzz ingress:** selects the domain and route from trusted configuration, verifies transport evidence, and invokes one final-admission authority.
 - **Issuer and JWKS endpoint:** assert identity and publish verification keys. They are trusted only within configured policy and freshness bounds.
 - **State services:** store binding, lifecycle, replay, receipt, audit, policy, relationship, and application state.
@@ -65,10 +66,13 @@ The model does not assume that source IP, header presence, a private subnet, or 
 |---|---|---|---|
 | Forged or unsigned forwarded identity | Assertion accepted without a trusted edge | Accept only the complete request-bound HMAC profile; reject direct, missing, mixed, and client-injected provenance | `FI-TRACE-PROXY-SPOOF` |
 | Proxy nonce replay | Duplicate authorization or application effect | Retain nonce state through final admission and commit replay claim with receipt and authority state | `FI-TRACE-PROXY-REPLAY`, `FI-TRACE-FINAL-DENIAL-NO-MUTATION` |
-| Cross-request HMAC reuse | Identity transplanted to another operation | MAC the timestamp, nonce, assertion digest, method, authority, path/query, and body digest using exact canonical bytes | `FI-TRACE-PROXY-CROSS-REQUEST` |
+| Cross-request HMAC reuse | Identity transplanted to another domain, peer, proof transport, or operation | MAC the timestamp, nonce, assertion digest, authorization domain, proof transport, authenticated client peer, method, authority, path/query, and body digest using exact canonical bytes | `FI-TRACE-PROXY-CROSS-REQUEST` |
 | Domain or route confusion | Authority crosses tenants or bypasses policy | Resolve context from trusted listener and route state; reject uncovered or different-lineage authorities | `FI-TRACE-DOMAIN-SPOOF`, `FI-TRACE-AUTHORITY-UNIFORM`, `FI-TRACE-CROSS-DOMAIN-COLLISION` |
 | Transport-specific verifier drift | A weaker ingress accepts a rejected assertion | Use one canonical verifier and run one corpus through every transport adapter | `FI-TRACE-VERIFIER-PARITY` |
-| JWKS rotation race or stale key use | Removed keys continue to authorize, or retained keys fail unpredictably | Separate policy identity from JWKS generation and revalidate prepared evidence and leases on generation change | `FI-TRACE-JWKS-ADD`, `FI-TRACE-JWKS-REMOVE` |
+| Verifier policy aliasing | A semantic change reuses an old policy identity | Digest every configured semantic input and a versioned compiled verifier-contract fingerprint | `FI-TRACE-VERIFIER-PARITY` policy vectors |
+| Reassignable issuer subject | A different account inherits identity-scoped lifecycle or recovery authority | Treat stable non-reassignment as an issuer trust and deployment prerequisite; disable the policy when it cannot be established | Issuer review record; `FI-TRACE-CROSS-DOMAIN-COLLISION` |
+| JWKS rotation race or stale key use | A key absent from the current snapshot continues to authorize, or a retained key fails unpredictably | Separate policy identity from JWKS generation and revalidate prepared evidence and leases on generation change | `FI-TRACE-JWKS-ADD`, `FI-TRACE-JWKS-REMOVE` |
+| JWKS source rollback | Republishing an old authenticated set reauthorizes removed keys | Treat this as residual issuer risk unless the deployment adds an authenticated monotonic version or durable key floor | A→B→A `FI-TRACE-JWKS-REMOVE` evidence |
 | Assertion/key substitution | Issuer identity attaches to an unproven key | Require fresh Nostr proof and equality with any asserted key claim | `FI-TRACE-ASSERTION-KEY-MISMATCH` |
 | Binding takeover or concurrent first use | One identity or key silently replaces another | Serialize both sides of the partial bijection and commit at most one conflicting enrollment | `FI-TRACE-BINDING-CONFLICT`, `FI-TRACE-CONCURRENT-ENROLLMENT` |
 | Tombstone bypass | Retired, disabled, revoked, or pending lineage reappears | Check every active lifecycle selector before enrollment and preserve lineage durably | `FI-TRACE-TOMBSTONE-REPLAY` |
@@ -78,6 +82,7 @@ The model does not assume that source IP, header presence, a private subnet, or 
 | Delegation survives owner change or expiry | Former or expired owner authority persists | Bind delegation to exact current owner version and a positive finite deadline | `FI-TRACE-DELEGATE-OWNER-ROTATED`, `FI-TRACE-DELEGATION-EXPIRED` |
 | Cross-key session confusion | One key's lease authorizes another key | Key leases by actor, domain, capability, resource, and dependency set | `FI-TRACE-MULTI-KEY-SESSION` |
 | Public decision oracle | Identity or private policy can be enumerated | Map private reasons to stable many-to-one public denial classes | `FI-TRACE-DENIAL-ORACLE` |
+| Denial-observation exhaustion | Attacker-reachable denials consume finite observation capacity or interfere with admission | Use a separately bounded non-authoritative channel; keep denials effective when writes fail; alert on deny rate, drops, and saturation | `FI-TRACE-FINAL-DENIAL-NO-MUTATION`, `FI-TRACE-PRIVACY-NONPUBLIC` |
 | Identity leakage | Assertions or claims enter public events or observability | Minimize private state and scan protocol output plus every configured sink with canaries | `FI-TRACE-PRIVACY-NONPUBLIC` |
 | Dependency outage or contradictory state | Availability failure becomes an authorization bypass | Bound work, alert, and fail closed at preparation, final admission, and lease reuse | `FI-TRACE-DEPENDENCY-FAIL-CLOSED` |
 | Evidence substitution | A report from another revision is used to activate enforcement | Bind reports and artifact digests to one immutable claim tuple and fail on missing or duplicate traces | Complete exact-head matrix validation |
@@ -90,7 +95,9 @@ Changing enrollment mode does not repair or reclassify existing bindings. Operat
 
 ## Availability and resource exhaustion
 
-Fail-closed behavior deliberately trades availability for authorization safety. Attackers may amplify issuer refresh, signature verification, replay lookup, audit writes, or policy reads. Implementations bound assertion and header sizes, canonicalization work, clock skew, JWKS refresh, replay retention, concurrency, queues, and observability work. A full or unavailable audit or replay store denies instead of silently dropping evidence.
+Fail-closed behavior deliberately trades availability for authorization safety. Attackers may amplify issuer refresh, signature verification, replay lookup, authorization-audit writes, denial observations, or policy reads. Implementations bound assertion and header sizes, canonicalization work, clock skew, JWKS refresh, replay retention, concurrency, queues, and observability work. A full or unavailable required authorization-audit or replay store denies instead of silently dropping evidence.
+
+Denial observations have different failure semantics because a denial is already safe. They use finite capacity separate from the non-reclaimable authorization-audit budget. Saturation or write failure drops or truncates the observation, emits aggregate health signals where possible, and leaves the denial and authoritative stores unchanged. Records minimize attacker control: no raw tokens or verbatim failed claims, only stable reason and correlation identifiers, time, transport class, and bounded or keyed-hashed source coordinates. Authorization, lockout, and rate-limit policy does not consume this best-effort channel.
 
 Rate limits cannot replace cryptographic verification, lifecycle selectors, or final-admission serialization.
 
@@ -99,6 +106,8 @@ Rate limits cannot replace cryptographic verification, lifecycle selectors, or f
 The protocol cannot eliminate:
 
 - compromise or malicious behavior by an accepted issuer within its configured claims;
+- issuer subject reassignment after operator review;
+- authenticated JWKS source rollback when no monotonic anti-rollback extension is deployed;
 - compromise of the trusted edge, an active HMAC key, the Buzz process, storage credentials, or privileged operator authority;
 - first-use theft in risk-labelled TOFU mode;
 - denial of service caused by required dependencies failing closed;

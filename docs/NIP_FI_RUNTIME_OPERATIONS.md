@@ -2,9 +2,9 @@
 
 This guide covers lifecycle, recovery, restore, and rollback for a conforming Buzz NIP-FI implementation. The normative [specification](nips/NIP-FI.md) and [formal model](nips/NIP-FI-MODEL.md) control when this guide differs.
 
-## Runtime configuration
+## Availability boundary
 
-The runtime's sole identity-configuration input is `BUZZ_NIP_FI_V1_CONFIG_JSON`: absent is Off, `{"deny_protected":true}` denies every protected route, and the complete document enables Enforce. Field bounds and the removed legacy identity-provider variables — which fail startup when set — are documented in the [identity configuration contract](CORPORATE_IDENTITY.md). Operator lifecycle command names and request schemas come from the implementation's own operator tooling; the [recovery-plan example](examples/nip-fi-recovery-plan.json.example) is a review template, not a runtime request.
+This documentation revision supplies no NIP-FI runtime parser or operator tooling. The proposed future `BUZZ_NIP_FI_V1_CONFIG_JSON` contract and operating modes are documented in the [identity configuration contract](CORPORATE_IDENTITY.md), but are not claims about the current relay binary. Once an implementation exists, its own reviewed tooling defines lifecycle command names and request schemas; the [recovery-plan example](examples/nip-fi-recovery-plan.json.example) remains a review template, not a runtime request.
 
 Do not simulate an operator transition with direct database edits. Every authority change uses a separately authorized, audited transition with fresh target-key proof when a new key is introduced.
 
@@ -14,11 +14,12 @@ Do not simulate an operator transition with direct database edits. Every authori
 - Resolve the domain, operation, identity, current version, and target key from one sealed operator request.
 - Check both sides of the active binding and every lifecycle selector under serialization.
 - Preserve retired pairs, revoked keys, disabled identities, pending lineage, typed history, and immutable provenance.
-- Treat preparation and denial as read-only.
+- Treat preparation and denial as read-only with respect to authoritative state; emit denial observations only through the separately bounded non-authoritative channel.
 - Commit final authority state, receipt, replay claim, and required audit evidence atomically.
 - Atomically commit current authority versions and a durable invalidation intent. Fence new and reused authority on those versions immediately, then close affected cached leases after commit within the documented detection bound.
 - Use compensating transitions for repair; never rewind authority tables.
 - Fail closed when current policy, state, receipt, replay, audit, or invalidation dependencies are unreadable.
+- Never create an authorization receipt for a denied operation or make denial depend on an observation write.
 
 ## Routine readiness
 
@@ -87,9 +88,9 @@ On a new key generation:
 4. revalidate prepared evidence and direct leases that observe the generation change; and
 5. invalidate evidence whose signing key was removed.
 
-A retained key may continue after successful revalidation. A removed key cannot. Once a snapshot reaches its hard-validity deadline, unreadable current state denies even if a cache contains the old key.
+A retained key may continue after successful revalidation. A key absent from the current authenticated snapshot cannot. Once a snapshot reaches its hard-validity deadline, unreadable current state denies even if a cache contains the old key.
 
-Alert on refresh failure, increasing snapshot age, key-set rollback, incompatible algorithms, or invalid metadata. Never fix an outage by extending hard validity without a reviewed policy change and a new exact-head claim.
+Alert on refresh failure, increasing snapshot age, unexpected key-set regression, incompatible algorithms, or invalid metadata. The base profile has no durable anti-rollback oracle: if an authenticated source republishes an old set, its keys may become current again. Deployments that require rollback prevention must add and monitor a separately authenticated monotonic version or durable key floor. Never fix an outage by extending hard validity without a reviewed policy change and a new exact-head claim.
 
 ## Trusted-proxy secret rotation
 
@@ -139,9 +140,11 @@ Any authority correction uses a new privileged transition with new receipt and h
 
 ## Monitoring and privacy
 
-Monitor dependency readiness, public denial class, final-admission conflict, replay pressure, JWKS age, lease invalidation lag, lifecycle transition rate, receipt/application reconciliation, audit capacity, and route-inventory drift.
+Monitor dependency readiness, public denial class, private stable denial reason, denial-observation drop and saturation rate, final-admission conflict, replay pressure, JWKS age, lease invalidation lag, lifecycle transition rate, receipt/application reconciliation, authorization-audit capacity, and route-inventory drift.
 
-Never use raw assertions, issuer-qualified identities, Nostr keys linked to private identity, email, display name, HMAC value, or private decision reason as a metric label or public trace field. Access-controlled investigation records retain only the minimum needed under a documented retention period.
+Never use raw assertions, issuer-qualified identities, Nostr keys linked to private identity, email, display name, HMAC value, or private decision reason as a metric label or public trace field. Denial observations contain only a stable reason code, correlation identifier, timestamp, transport class, and bounded or keyed-hashed source coordinates; never raw tokens or verbatim unverified claims. Access-controlled investigation records retain only the minimum needed under a documented retention period.
+
+The denial-observation channel has a finite capacity independent of required authorization audit evidence. When it is unavailable or exhausted, drop or truncate the observation, preserve aggregate health signals where possible, and keep the denial effective without blocking or retrying admission. Do not use this best-effort history for authorization, lockout, or rate-limit decisions, and do not infer from a missing record that no denial occurred.
 
 Run privacy canaries through allowed and denied flows after adding an observability sink or changing redaction. Finding a canary in protocol output, public history, logs, metrics, or traces is an incident and a conformance failure.
 

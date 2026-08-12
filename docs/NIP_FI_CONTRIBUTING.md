@@ -51,7 +51,7 @@ Examples:
 - verifier parity runs one assertion corpus through every transport adapter;
 - uniform authority executes the protected-route inventory and observes policy identity at each ingress;
 - tombstone replay creates selector state in the database, presents fresh evidence through a real ingress, and verifies no mutation;
-- final-denial tests inspect replay, receipt, binding, audit, and application stores; and
+- final-denial tests inspect every authoritative store, prove zero denied receipts, and exercise available and exhausted denial-observation channels; and
 - trusted-proxy spoof tests run against the deployed listener boundary.
 
 The following are not behavioral adapters:
@@ -98,7 +98,7 @@ Do not describe a feature as conforming because it compiles, parses configuratio
 - Binding and lifecycle decisions are serialized under concurrency.
 - JWKS addition, removal, hard expiry, and outage behavior are exercised.
 - Lease reuse checks current dependencies.
-- Application denial leaves no authority or application mutation.
+- Application denial leaves no authority or application mutation, creates no authorization receipt, and remains effective when denial observation is unavailable.
 
 ### Lifecycle
 
@@ -116,8 +116,8 @@ Do not describe a feature as conforming because it compiles, parses configuratio
 - Secret references contain no secret values in repository files.
 - Startup denies uncovered routes or competing authorities.
 - Backup and restore include lifecycle selectors, policy generations, receipts, and audit state.
-- Dependency outages and audit-capacity limits fail closed and alert.
-- A rollback cannot restore a removed verification key or bypass current tombstones.
+- Required-dependency outages and authorization-audit capacity limits fail closed and alert; separately bounded denial-observation exhaustion drops observation without weakening the denial and emits saturation signals.
+- A deployment claiming durable JWKS rollback prevention supplies an authenticated monotonic version or key floor; the base current-snapshot contract makes no such claim.
 
 ### Evidence
 

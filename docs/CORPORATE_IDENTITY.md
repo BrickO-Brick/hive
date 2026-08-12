@@ -1,30 +1,38 @@
-# Corporate identity migration
+# Future corporate identity configuration contract
 
 Historical corporate identity approaches based on provider-specific middleware, unsigned forwarded headers, or a parallel authorization authority are retired guidance. Buzz's provider-neutral contract is [NIP-FI](nips/NIP-FI.md).
 
-## Runtime configuration
+## Availability boundary
 
-The relay's protected authorization runtime is configured only with the
-`BUZZ_NIP_FI_V1_CONFIG_JSON` environment variable. The former
-identity-provider variables (`BUZZ_REQUIRE_CORPORATE_IDENTITY` and every
-`BUZZ_CORPORATE_IDENTITY_*` name) are removed: setting any of them fails
-startup instead of weakening policy, and none of them is an alias for the
-document below.
+This documentation revision defines a proposed configuration contract for a
+later NIP-FI implementation. It does not add a parser for
+`BUZZ_NIP_FI_V1_CONFIG_JSON`, remove or reject legacy variables, install a
+protected authorization runtime, or activate discovery or enforcement. The
+later implementation stack must reconcile this shape with its reviewed code
+and executable adapters before claiming any behavior below.
 
-Configuring the runtime is not conformance. A deployment must pass the
+Even after the parser exists, configuring the runtime is not conformance. A deployment must pass the
 [behavioral evidence matrix](nips/NIP-FI-CONFORMANCE.md) at its exact
 deployed revision before NIP-FI discovery or enforcement is advertised, and
 operators must verify the effective configuration in their deployment;
 public wording alone is not activation or conformance evidence.
 
-### Operating modes
+## Proposed runtime document
 
-- **Off:** leave `BUZZ_NIP_FI_V1_CONFIG_JSON` unset. Protected composition is
+The later implementation stack reserves `BUZZ_NIP_FI_V1_CONFIG_JSON` as its
+sole identity-configuration input. The `V1` suffix versions this proposed
+runtime document; it does not name or enable a legacy transport profile. The
+implementation must provide the following modes and reject the
+legacy provider-specific variables rather than treating them as aliases.
+
+### Proposed operating modes
+
+- **Off:** `BUZZ_NIP_FI_V1_CONFIG_JSON` is unset. Protected composition is
   not installed and existing unprotected behavior remains available.
-- **DenyProtected:** set the document to `{"deny_protected":true}`. Every
+- **DenyProtected:** the document is `{"deny_protected":true}`. Every
   protected route is denied before its handler runs. `deny_protected` takes
   precedence over every other field in the document.
-- **Enforce:** provide the complete document below. Missing, unknown, empty, or
+- **Enforce:** the complete document below is provided. Missing, unknown, empty, or
   invalid fields fail startup.
 
 ```json
@@ -62,18 +70,23 @@ public wording alone is not activation or conformance evidence.
 }
 ```
 
-### Document rules and bounds
+### Proposed document rules and bounds
 
-The document rejects unknown fields. In Enforce mode:
+The future parser must reject unknown fields. In Enforce mode:
 
 - `issuer` and `audience` are required non-empty strings of at most 2048
   characters each.
+- The implementation's closed asymmetric algorithm set enters verifier-policy
+  identity through deterministic policy construction. If a later document
+  makes that set configurable, adding or removing an algorithm must change the
+  identity and algorithm order must be normalized.
 - `subject_claim` defaults to `sub`. It and the optional `event_author_claim`
   are limited to 128 characters.
 - `clock_skew_seconds` defaults to `0` and is at most 300.
 - `maximum_token_lifetime_seconds` is required, positive, and at most 86400.
 - `jwks` accepts exactly one HTTPS `jwks_uri` or `discovery_uri`; credentials,
-  fragments, redirects, and private-network targets are rejected.
+  fragments, redirects, and private-network targets are rejected. The source
+  kind and normalized authenticated URI enter verifier-policy identity.
 - `lease.maximum_seconds` is required, positive, and at most 3600.
 - `policy_revision` is required and positive.
 - `audit` sets the immutable authorization-evidence capacity
@@ -82,19 +95,25 @@ The document rejects unknown fields. In Enforce mode:
   the budget for the installation's lifetime with generous headroom, because
   exhaustion denies further authorization-affecting operations instead of
   dropping evidence.
+- Denied operations never consume that non-reclaimable authorization-evidence
+  budget and never create authorization receipts. A later implementation must
+  attempt denial observations through a separate finite-capacity,
+  non-authoritative channel. Channel exhaustion drops or truncates observation,
+  emits aggregate saturation signals where possible, and cannot weaken, delay,
+  or reverse the denial.
 - `client_status_admission` limits are positive;
   `max_presentations_per_domain` cannot exceed `audit.max_events_per_domain`,
   and the per-actor and per-peer limits cannot exceed the per-domain limit.
 - `transport`, `enrollment`, and `restore` are required non-empty objects
-  consumed by the matching runtime adapters. Production ingress requires the
+  consumed by the matching runtime adapters. A future production ingress requires the
   exact `trusted_proxy_hmac_v2` transport configuration shown above; the
-  trusted-proxy provenance verifier is constructed at startup, before
+  trusted-proxy provenance verifier to be constructed at startup, before
   listeners open.
 
-The `jwks` refresh policy is validated at construction: a fetched document
+The future implementation must validate the `jwks` refresh policy at construction: a fetched document
 cannot exceed 4 MiB, a snapshot cannot stay fresh longer than 24 hours, every
 refresh bound is finite and nonzero, and an accepted key set contains between
-1 and 128 keys. Production uses tighter bounds. Key refreshes are
+1 and 128 keys. Production deployments may use tighter bounds. Key refreshes are
 single-flight and stale verification fails closed. Current-status
 presentation renews within 120 seconds, so active connections observe
 authoritative policy changes within that polling bound.
@@ -110,7 +129,7 @@ set, and a positive `maximum_seconds` of at most 3600 that does not exceed
 never transport-wide — and the relay's NIP-11 information document does not
 advertise delegation.
 
-Corporate-identity delegation is currently unsupported. The public production
+Corporate-identity delegation is unsupported by this documentation stack. The public production
 path does not implement complete delegated issuance, owner-bound resolution,
 expiry, invalidation, reconnect, or protected-transport behavior. Operators
 must keep delegation disabled, and discovery must report it as false or omit

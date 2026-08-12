@@ -8,7 +8,7 @@
     "deployment_revision": "REPLACE_WITH_IMMUTABLE_DEPLOYMENT_ID",
     "domain_policy_sha256": "REPLACE_WITH_64_HEX_DIGEST",
     "transport_profiles": [
-      "trusted-proxy-hmac-v1"
+      "trusted-proxy-hmac-v2"
     ],
     "enrollment_mode": "attested-key",
     "delegation": false

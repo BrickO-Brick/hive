@@ -86,18 +86,14 @@ Save these. Losing any of them is data loss. See NOTES.txt printed by `helm inst
 
 ## NIP-FI readiness
 
-This chart does not provision a NIP-FI trusted-edge topology, issuer
-integration, secret keys, or conformance runner. The relay's identity
-configuration document (`BUZZ_NIP_FI_V1_CONFIG_JSON`, see the
-[identity configuration contract](../../../docs/CORPORATE_IDENTITY.md)) can be
-supplied like any other relay environment variable — keep the whole document
-in `secrets.existingSecret` rather than values, because its
-`transport.active_secrets_base64url` entries are live secret material. Do not
-advertise or enforce NIP-FI from this chart, and do not use an ingress
-identity header or provider-specific sidecar as a fallback authority.
+This chart does not provision a NIP-FI runtime, trusted-edge topology, issuer
+integration, secret keys, or conformance runner. It makes no claim that the
+proposed `BUZZ_NIP_FI_V1_CONFIG_JSON` document is parsed or enforced. Do not
+advertise or enforce NIP-FI from this chart, and do not use an ingress identity
+header or provider-specific sidecar as a fallback authority.
 
 An activating deployment must pin an exact image, keep policy separate from
-secret values, isolate verifier ingress for `trusted-proxy-hmac-v1`, include
+secret values, isolate verifier ingress for `trusted-proxy-hmac-v2`, include
 every fail-closed dependency in readiness, and link an immutable exact-head
 behavioral report. A rendered chart and healthy pod do not prove those
 behaviors. See the

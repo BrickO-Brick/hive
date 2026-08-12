@@ -27,7 +27,8 @@ This NIP defines a provider-neutral contract. It does not standardize an identit
 - **authorization domain** (`D`): a boundary selected from authenticated server routing and configuration. A client-supplied domain, forwarded host value, assertion claim, or unsigned header cannot select `D`.
 - **target context** (`R_t`): the server-resolved method, authority, path and query, body digest, transport, operation, and resource for the request being admitted.
 - **request context** (`R`): `R_t` sealed with the acting key returned by Nostr-proof validation. Client input cannot supply or replace that key.
-- **verifier policy identity** (`policy_id`): a stable identifier for assertion semantics, including issuer, audience, allowed algorithms, authenticated key-source identity, claim and normalization rules, and time bounds. It MUST change when those semantics change and MUST NOT include transport, rotating signing-key contents, key-set order, cache timestamps, or a JWKS generation.
+- **verifier-contract fingerprint**: a versioned, implementation-supplied digest of every compiled assertion-acceptance rule that is not otherwise represented in configured policy, including protected-header handling, algorithm/key compatibility, claim normalization, and size behavior. A binary that changes any such rule MUST change this fingerprint.
+- **verifier policy identity** (`policy_id`): a stable digest of assertion semantics, including issuer, audience, allowed algorithms, authenticated key-source identity, claim and normalization rules, time and size bounds, and the verifier-contract fingerprint. It MUST change when those semantics change and MUST NOT include transport, rotating signing-key contents, key-set order, cache timestamps, or a JWKS generation.
 - **JWKS generation** (`g`): an opaque identifier for one effective verification-key snapshot. It MUST change whenever the accepted key identifiers or key material change.
 - **binding**: a durable, versioned record associating one identity with one 32-byte Nostr public key in `D`. Its immutable provenance is `attested-key`, `provisioned`, or `tofu`. It MAY carry a separately authorized administrative `binding_not_after` bound. It MUST NOT derive that bound from assertion `exp` or `iat`.
 - **retired pair**: a durable denial fact for one exact `(D, i, k)` pair. Ordinary authorization can never recreate that pair.
@@ -35,8 +36,10 @@ This NIP defines a provider-neutral contract. It does not standardize an identit
 - **revoked key**: a durable denial fact that prevents a key from authorizing or binding to any identity in `D`.
 - **pending replacement**: durable lineage identifying an old key and binding version that a separately authorized recovery or re-enablement transition may consume once.
 - **Nostr proof**: a valid NIP-42 AUTH event or NIP-98 event proving control of a key for the current connection or request.
-- **prepared authorization**: an immutable, non-authoritative, read-only result that seals verified evidence, server-owned context, state and policy witnesses, a possible enrollment proposal, and every expiry and invalidation dependency. Preparation creates no binding, lifecycle fact, replay claim, receipt, audit event, publication, lease, or application mutation.
+- **prepared authorization**: an immutable, non-authoritative, read-only result that seals verified evidence, server-owned context, state and policy witnesses, a possible enrollment proposal, and every expiry and invalidation dependency. Producing this result creates no binding, lifecycle fact, replay claim, receipt, audit event, publication, lease, or application mutation.
 - **committed authorization**: the result of revalidating a prepared authorization at final admission and atomically committing any allowed enrollment, replay claim, receipt, and required authorization audit evidence.
+- **authoritative state**: state used to decide, prove, replay, or apply authorization, including bindings, lifecycle facts, replay claims, leases, capabilities, authorization receipts, required authorization audit evidence, and application state.
+- **denial observation**: a capacity-bounded, non-authoritative record that a denial occurred. Its presence, absence, loss, or truncation cannot change an authorization decision or become authorization policy.
 - **lease**: a cached committed decision for one actor, domain, operation set, and exact dependency versions. A lease is never a binding and cannot extend one.
 
 Within a domain, active bindings form a partial bijection: one identity has at most one active key, and one key has at most one active identity.
@@ -53,49 +56,59 @@ This profile's discovery identifier is `client-attached`. The client sends exact
 
 ### Trusted-proxy HMAC profile
 
-This profile's discovery identifier is `trusted-proxy-hmac-v1`. The trusted proxy strips every inbound copy of all assertion and provenance fields, inserts exactly one `Nostr-Federated-Identity: Bearer <JWT>` field, and inserts exactly one `Nostr-Federated-Identity-Provenance` field. Header presence, source IP, or network topology alone is not trusted-proxy provenance. Unsigned forwarded identity MUST be rejected.
+This profile's discovery identifier is `trusted-proxy-hmac-v2`. The trusted proxy strips every inbound copy of all assertion, provenance, and client-peer fields, then inserts exactly one `Nostr-Federated-Identity: Bearer <JWT>` field, exactly one `Nostr-Federated-Identity-Provenance` field, and exactly one `Nostr-Federated-Identity-Client-Peer` field. Header presence, source IP, or network topology alone is not trusted-proxy provenance. Unsigned forwarded identity MUST be rejected.
 
 The provenance field has this exact ASCII form:
 
 ```text
-v1.<timestamp>.<nonce>.<mac>
+v2.<timestamp>.<nonce>.<mac>
 ```
 
 `timestamp` is canonical unsigned decimal without leading zeroes, except that zero is `0`. `nonce` and `mac` are canonical unpadded base64url. The trusted proxy generates each nonce with at least 128 bits from a cryptographically secure random source. A decoded nonce contains at least 16 bytes, and a decoded MAC contains exactly 32 bytes. The verifier applies configured finite maximum provenance-field and nonce sizes before decoding, lookup, or replay storage. Missing, repeated, comma-combined, oversized, non-canonical, or extra components are malformed.
 
+The client-peer field is the proxy-authenticated end-client IP address in canonical ASCII. IPv4 uses dotted decimal without leading zeroes. IPv6 uses lowercase RFC 5952 text; an IPv4-mapped IPv6 address is encoded as canonical IPv4. The field is at most 64 bytes. Empty, repeated, comma-combined, whitespace-padded, non-IP, or non-canonical values are rejected. After verification, an implementation MAY replace the address with a domain-separated keyed digest for bounded private admission state; the raw address is not an identity claim and MUST NOT enter public output.
+
 The stock profile uses HMAC-SHA-256 with a deployment secret of at least 256 bits. Let `LP(x)` be the eight-byte unsigned big-endian length of byte string `x`, followed by `x`. The MAC input is:
 
 ```text
-"NIP-FI-PROXY-1" ||
+"NIP-FI-PROXY-2" ||
 LP(timestamp) || LP(nonce) || LP(assertion_digest) ||
-LP(method) || LP(authority) || LP(path_and_query) || LP(body_digest)
+LP(authorization_domain_id) ||
+LP(method) || LP(authority) || LP(path_and_query) || LP(body_digest) ||
+LP(proof_transport_code) || LP(client_peer)
 ```
 
-For the MAC, parsed `timestamp` is encoded as an eight-byte unsigned big-endian value. `nonce`, `assertion_digest`, `body_digest`, and `mac` are their decoded bytes. `assertion_digest` is SHA-256 over the exact JWT octets after the Bearer scheme. `method` is the exact uppercase ASCII method token accepted by the endpoint. `authority` is the server-configured lowercase ASCII host, with an explicit decimal effective port and brackets around IPv6. `path_and_query` is the exact ASCII origin-form received after trusted routing: an empty path becomes `/`, the query includes its leading `?`, and percent-encoding, parameter order, and repeated parameters are preserved. It contains no fragment. A proxy rewrite is complete before these values are computed. Ambiguous or non-canonical values are rejected. `body_digest` is SHA-256 over the exact request body, including the empty body used by a WebSocket upgrade. The verifier compares the MAC in constant time.
+For the MAC, parsed `timestamp` is encoded as an eight-byte unsigned big-endian value. `nonce`, `assertion_digest`, `body_digest`, and `mac` are their decoded bytes. `assertion_digest` is SHA-256 over the exact JWT octets after the Bearer scheme. `authorization_domain_id` is the exact 16-byte opaque identifier selected by authenticated server routing and configuration. `method` is the exact uppercase ASCII method token accepted by the endpoint. `authority` is the server-configured lowercase ASCII host, with an explicit decimal effective port and brackets around IPv6. `path_and_query` is the exact ASCII origin-form received after trusted routing: an empty path becomes `/`, the query includes its leading `?`, and percent-encoding, parameter order, and repeated parameters are preserved. It contains no fragment. A proxy rewrite is complete before these values are computed. Ambiguous or non-canonical values are rejected. `body_digest` is SHA-256 over the exact request body, including the empty body used by a WebSocket upgrade. `proof_transport_code` is exactly one byte: `0x01` for NIP-42, `0x02` for NIP-98, `0x03` for a Git smart-HTTP session, or `0x04` for Blossom. `client_peer` is the exact canonical ASCII field value. The verifier compares the MAC in constant time.
 
 The profile configures a positive finite `maximum_provenance_age` and a non-negative finite `future_skew`. It accepts time only when `timestamp <= now + future_skew` and `now < timestamp + maximum_provenance_age`, using overflow-safe comparisons. Equality at the age bound is expired.
 
-The verifier MUST reject an absent, repeated, malformed, stale, future-dated, wrong-key, or mismatched provenance value. It MUST reject a committed nonce. A committed nonce is retained through at least `timestamp + maximum_provenance_age`; an applicable Nostr-proof replay identity is retained through its entire acceptance window. The nonce and proof replay identity become consumed only during final admission. The MAC therefore cannot be replayed across an assertion, method, authority, path, query, or body. Secret selection and rotation may try only a configured finite set of active secrets and fail closed when none verifies.
+For direct authorization through this profile, the lease deadline is no later than `min(assertion deadline, timestamp + maximum_provenance_age)`, in addition to every other applicable lease bound.
+
+The verifier MUST reject an absent, repeated, malformed, stale, future-dated, wrong-key, or mismatched provenance value. It MUST reject v1 envelopes and any absent or invalid client-peer field. It MUST reject a committed nonce. A committed nonce is retained through at least `timestamp + maximum_provenance_age`; replay uniqueness is scoped to the authorization domain and `trusted-proxy-hmac-v2` profile and is independent of which active secret verified the MAC. An applicable Nostr-proof replay identity is retained through its entire acceptance window. The nonce and proof replay identity become consumed only during final admission. The MAC therefore cannot be replayed across an assertion, authorization domain, proof transport, client peer, method, authority, path, query, or body. Secret selection and rotation may try only a configured finite set of active secrets and fail closed when none verifies.
 
 The proxy-to-verifier hop still requires confidentiality and integrity. Trusted listener and route configuration selects the profile in `R_t`. Direct ingress to a listener configured for this profile MUST reject assertion-bearing requests that lack valid provenance and MUST NOT fall back to `client-attached` after missing or rejected provenance.
 
 ## Assertion validation
 
-For each accepted issuer, the verifier has authenticated configuration for the exact issuer identifier, accepted audiences, allowed asymmetric algorithms, key source, required `sub` semantics, optional Nostr-key claim, finite maximum assertion age, and bounded clock skew. Transport adapters supply assertion bytes but cannot change this contract. Validation enforces all of the following:
+For each accepted issuer, the verifier has authenticated configuration for the exact issuer identifier, accepted audiences, allowed asymmetric algorithms, key source, optional Nostr-key claim, finite maximum assertion age, and bounded clock skew. Policy construction incorporates the running implementation's verifier-contract fingerprint; it is not a client field or an operator-selected weakening. Transport adapters supply assertion bytes but cannot change this contract. Validation enforces all of the following:
 
 1. The input is exactly one bounded compact JWS. Protected-header and claim member names are unambiguous. Unknown critical headers, `none`, symmetric algorithms, algorithm and key-type mismatch, and incompatible JWK `use` or `key_ops` are rejected before signature acceptance.
 2. The signature verifies under exactly one currently accepted asymmetric key and explicitly allowed algorithm. A duplicate or ambiguous `kid` fails. A missing `kid` is accepted only when policy deterministically selects exactly one compatible key.
 3. `iss` exactly equals the configured issuer used to select the policy and key source.
 4. At least one `aud` value exactly equals an accepted audience.
 5. `exp` and `iat` are finite numeric dates. The verifier requires `now < exp`, `iat <= now + skew`, and `now < iat + maximum_assertion_age`, using overflow-safe comparisons. An optional `nbf` requires `nbf <= now + skew`. Equality at an expiry or maximum-age bound is expired.
-6. `sub` is a non-empty exact string and the issuer contract guarantees that it is stable, opaque, non-reassignable, and not intentionally derived from a profile or personally identifying claim.
+6. `sub` is a non-empty exact string within the configured size bound.
 7. If a Nostr-key claim is configured and present, it resolves unambiguously to one 32-byte public key. Lowercase hexadecimal is canonical. Any additional accepted encoding must normalize to that value without ambiguity.
 
 The verifier bounds assertion, header, claim, subject, key-identifier, and configured key-set sizes before lookup or observability. Attacker-controlled values, including `kid`, are never emitted unsanitized.
 
+Subject stability is an issuer trust and deployment assumption, not a property that a signed request can prove. Before accepting an issuer, the operator MUST record authoritative evidence that its selected subject is opaque, stable for the account lifetime, never reassigned, and not intentionally derived from a profile or personally identifying claim. That record identifies the issuer policy version and review owner. If the issuer can reassign a subject, the same `(iss, sub)` can name a different principal and inherit identity-scoped lifecycle or recovery authority; the issuer policy MUST remain disabled until a separately authorized remediation establishes a new non-reassignable coordinate.
+
 The validated result seals `i`, an optional asserted key `k_a`, the assertion deadline, `policy_id`, JWKS generation `g`, the verification-key identity, the key snapshot's hard-validity deadline, and confidential revalidation material that can recover the exact compact-JWS bytes. Display names, email addresses, and other profile claims do not enter this result.
 
-Verifier-policy identity is independent of key rotation. Adding, overlapping, or removing issuer keys changes `g`, not `policy_id`. Final admission MUST deny if the current verifier policy identity differs from the prepared identity. Evidence prepared under generation `g_old` MUST be revalidated against the current key snapshot before final admission if the generation changed. Revalidation must reproduce the same identity, asserted key, policy identity, and live time bounds. A removed key, rollback to an unaccepted generation, unreadable current generation, or failed revalidation denies admission. A normal overlapping key rotation therefore does not require a new binding or policy lineage.
+Verifier-policy identity is independent of key rotation. Adding, overlapping, or removing issuer keys changes `g`, not `policy_id`. `policy_id` MUST be derived from a deterministic, versioned encoding of every configured semantic input plus the verifier-contract fingerprint; implementations MUST publish vectors showing that every semantic change advances it while a key-only rotation does not. Final admission MUST deny if the current verifier policy identity differs from the prepared identity. Evidence prepared under generation `g_old` MUST be revalidated against the currently authenticated key snapshot before final admission if the generation changed. Revalidation must reproduce the same identity, asserted key, policy identity, and live time bounds. A key absent from the current snapshot, unreadable current generation, or failed revalidation denies admission. A normal overlapping key rotation therefore does not require a new binding or policy lineage.
+
+This profile does not define durable JWKS anti-rollback state. If an authenticated key source republishes a previously removed key set, that document is the current snapshot and assertions under those keys may validate again. A deployment that promises rollback prevention MUST add a separately authenticated monotonic version or equivalent durable key floor and corresponding conformance evidence; otherwise key-source rollback remains residual issuer risk.
 
 Signing-key retrieval fails closed. Refresh work MUST be bounded and coalesced. An unknown `kid` cannot trigger unbounded per-request retrieval and has no stale-key fallback. A previously known key MAY be used after a soft refresh failure only under a documented finite stale-known-key policy and never after its hard maximum age.
 
@@ -159,7 +172,7 @@ PrepareAuthorization(request, assertion?, nostr_proof?, delegation?):
 
 An absent `binding_not_after` has no expiry. Assertion `exp`, `iat`, and maximum age never populate or extend it. Enrollment mode controls creation only; changing the mode does not rewrite or downgrade an existing eligible binding or its provenance.
 
-Preparation is read-only, including for Attested and TOFU first use. It creates or changes no binding, lifecycle, enrollment, replay, receipt, audit, observation, publication, last-seen, lease, or application state. A denial has the same no-mutation property.
+Preparation is read-only, including for Attested and TOFU first use. It creates or changes no authoritative state, publication, or last-seen value. A denied preparation or local-policy decision has the same authoritative no-mutation property and MUST NOT create an authorization receipt. After the decision is fixed, the implementation attempts the non-authoritative denial observation defined under [rejection semantics](#rejection-semantics).
 
 Final admission consumes the prepared value exactly once:
 
@@ -191,6 +204,8 @@ CommitAdmission(prepared, current_request):
 ```
 
 No committed authorization can be constructed directly from raw claims, a prepared value, cached policy, or earlier lease. A final-admission failure rolls back every authority mutation. Complete recomputation may accept only a semantically equivalent current result. If another request concurrently creates the identical eligible binding, this request may therefore recompute as `existing`; a conflicting winner denies. Storage failure or an unreadable committed result never falls back to allow.
+
+A denied or failed final admission MUST NOT create an authorization receipt. Its denial observation is outside the authorization transaction and cannot make a rolled-back decision authoritative.
 
 The admitted application operation runs only after committed authorization. If the operation cannot share the authorization transaction, the implementation must use a request-bound idempotent receipt or equivalent staging so a retry cannot create a second effect from the same proof.
 
@@ -254,6 +269,10 @@ Implementations may retain detailed private decision reasons for audit and confo
 
 Responses MUST NOT identify another principal or key, distinguish a conflict from a tombstone, expose issuer or claim details, echo bearer material, or reveal private policy state. An unavailable dependency never becomes an allow.
 
+For every denial, an implementation MUST attempt to emit an access-controlled denial observation with a stable private reason code and correlation identifier. The record contains only that code, the correlation identifier, a timestamp, a transport class, and bounded or keyed-hashed source coordinates. It MUST NOT contain raw tokens, HMAC values, or verbatim unverified claim values; failed `iss` or `sub` values are omitted, truncated, or keyed-hashed.
+
+The denial-observation channel is best-effort and MUST have a finite capacity bound separate from the non-reclaimable lifetime budget for required authorization audit evidence. When the channel is unavailable, full, or truncates a record, the denial still stands, authoritative state remains unchanged, and admission does not block, retry-loop, or latch on the observation write. Missing records therefore do not prove that no denial occurred. Denial observations are for monitoring and investigation only: authorization, lockout, and rate-limit policy MUST NOT derive from them. Implementations MUST monitor and alert on deny rate, dropped observations, and channel saturation.
+
 ## Discovery
 
 A relay SHOULD advertise support in its NIP-11 document under `limitation` as `"federated_identity": true`. It MAY include this top-level object:
@@ -261,20 +280,20 @@ A relay SHOULD advertise support in its NIP-11 document under `limitation` as `"
 ```json
 {
   "federated_identity": {
-    "transports": ["trusted-proxy-hmac-v1"],
+    "transports": ["trusted-proxy-hmac-v2"],
     "enrollment": "attested-key",
     "delegation": false
   }
 }
 ```
 
-`transports` contains only the exact identifiers `client-attached` and `trusted-proxy-hmac-v1` for profiles implemented completely. `enrollment` is exactly one configured mode. `delegation` is true only when owner-current resolution and a positive finite delegated maximum are configured. Unknown fields are ignored.
+`transports` contains only the exact identifiers `client-attached` and `trusted-proxy-hmac-v2` for profiles implemented completely. `enrollment` is exactly one configured mode. `delegation` is true only when owner-current resolution and a positive finite delegated maximum are configured. Unknown fields are ignored.
 
 A service MUST NOT enter enforcement or advertise support until every configured protected operation uses the same canonical final-admission authority, unknown protected routes fail closed, and all applicable conformance traces pass at one reviewed revision. Discovery is selected by the same server-owned domain policy as authorization. It MUST NOT expose private issuer URLs, audiences, claim names, tenant identifiers, HMAC key identifiers, or implementation-only policy detail.
 
 ## Privacy
 
-NIP-FI defines no public identity projection. Protocol events, tags, filters, discovery, errors, logs, metrics, and traces MUST NOT contain raw assertions or unredacted `iss`, `sub`, email, display name, or other private claims. Access-controlled binding, lifecycle, receipt, and audit state may retain the minimum identifiers required for enforcement and investigation.
+NIP-FI defines no public identity projection. Protocol events, tags, filters, discovery, errors, logs, metrics, traces, and denial observations MUST NOT contain raw assertions or unredacted `iss`, `sub`, email, display name, or other private claims. Access-controlled binding, lifecycle, receipt, and authorization-audit state may retain the minimum identifiers required for enforcement and investigation.
 
 Any separate presentation protocol is non-authoritative and cannot create, renew, prove, or revoke NIP-FI authorization. Implementations MUST bound metric and log cardinality and use redacted or pseudonymous correlation.
 
@@ -283,11 +302,11 @@ Any separate presentation protocol is non-authoritative and cannot create, renew
 - **Issuer compromise** can impersonate principals but cannot prove an uncompromised already-bound Nostr key. In `attested-key` mode it must also forge the matching key claim to enroll an arbitrary key.
 - **Assertion theft** cannot use an eligible existing binding without the bound key. TOFU intentionally retains first-use theft risk.
 - **Proxy spoofing and replay** are limited by request-bound HMAC provenance, bounded time, one-time nonce consumption, exact assertion and body digests, and exact server-resolved routing values.
-- **JWKS rotation and rollback** do not change stable policy identity. Final generation revalidation prevents a removed key or stale snapshot from authorizing.
+- **JWKS rotation** does not change stable policy identity. Final generation revalidation prevents a key absent from the currently authenticated snapshot from authorizing. The base profile has no durable anti-rollback oracle; authenticated key-source republication of an old set is residual issuer risk.
 - **Time-of-check/time-of-use races** are limited by read-only preparation and complete witness revalidation in final admission.
 - **Lifecycle replay** cannot erase retired-pair, disabled-identity, revoked-key, or pending-replacement facts. Ordinary assertions never reactivate them.
 - **Cross-domain and cross-request confusion** are prevented by server-owned context and exact evidence binding.
-- **Availability attacks** on issuer, key retrieval, policy, binding, replay, or audit state fail closed. Refresh, replay, and observability work must be bounded.
+- **Availability attacks** on issuer, key retrieval, policy, binding, replay, or authorization-audit state fail closed. Attacker-reachable denials can exhaust finite observation capacity, so denial records use a separate bound, never weaken or delay the denial, and expose saturation and drop signals.
 - **Delegation confusion** is limited by exact owner and delegate keys, owner binding version, relationship revision, capability intersection, target binding, and finite expiry.
 
 ## Stable conformance labels
@@ -298,9 +317,9 @@ The companion model and later executable matrix use these stable trace identifie
 |---|---|
 | `FI-TRACE-PROXY-SPOOF` | A valid assertion without valid proxy HMAC provenance, including direct ingress, denies. |
 | `FI-TRACE-PROXY-REPLAY` | Two final admissions using one proxy nonce produce at most one committed authorization; preparation consumes neither. |
-| `FI-TRACE-PROXY-CROSS-REQUEST` | Changing the assertion, method, authority, path/query, or body invalidates provenance and denies. |
+| `FI-TRACE-PROXY-CROSS-REQUEST` | Changing the assertion, domain, proof transport, authenticated client peer, method, authority, path/query, or body invalidates provenance and denies. |
 | `FI-TRACE-AUTHORITY-UNIFORM` | Every protected ingress uses the same current domain policy and final-admission authority. |
-| `FI-TRACE-VERIFIER-PARITY` | The same assertion, policy, time, and key snapshot produce the same verifier result on every transport. |
+| `FI-TRACE-VERIFIER-PARITY` | The same assertion, policy, time, and key snapshot produce the same verifier result on every transport; deterministic vectors prove semantic changes advance `policy_id` while key-only rotation does not. |
 | `FI-TRACE-DOMAIN-SPOOF` | Client-selected domain or forwarded authority cannot replace server-owned context. |
 | `FI-TRACE-ASSERTION-KEY-MISMATCH` | An asserted key different from the proven key denies before mutation. |
 | `FI-TRACE-BINDING-CONFLICT` | A pair that conflicts with either side of the active relation denies without replacement. |
@@ -308,9 +327,9 @@ The companion model and later executable matrix use these stable trace identifie
 | `FI-TRACE-ASSERTION-REFRESH` | A fresh assertion can authorize the same eligible durable binding after an earlier assertion expires. |
 | `FI-TRACE-ADMIN-EXPIRY` | A fresh assertion after administrative expiry denies; only an explicit privileged transition can restore access. |
 | `FI-TRACE-JWKS-ADD` | A generation change with the old key retained revalidates and may authorize the unchanged binding. |
-| `FI-TRACE-JWKS-REMOVE` | A generation change that removes the signing key denies prepared evidence and leases signed by it. |
+| `FI-TRACE-JWKS-REMOVE` | A generation change that removes the signing key denies prepared evidence and leases while that key is absent from the current authenticated snapshot; an A→B→A sequence proves the deployment's declared rollback behavior. |
 | `FI-TRACE-PREPARED-STALE` | Changed request or decision witnesses deny or require a complete recomputation before admission. |
-| `FI-TRACE-FINAL-DENIAL-NO-MUTATION` | Preparation, denied local policy, and denied final admission create no binding, audit or denial observation, replay claim, receipt, lease, or application mutation. |
+| `FI-TRACE-FINAL-DENIAL-NO-MUTATION` | Denied preparation, local policy, and final admission create no authoritative mutation or authorization receipt. An available denial channel records one bounded observation; an unavailable or exhausted channel leaves the denial and authoritative stores unchanged. |
 | `FI-TRACE-CONCURRENT-ENROLLMENT` | Identical eligible first uses converge on one binding version; conflicting first uses commit at most one winner. |
 | `FI-TRACE-TOFU-THEFT` | Stolen-assertion first use denies except under explicit risk-labelled TOFU. |
 | `FI-TRACE-DELEGATE-OWNER-ROTATED` | Owner rotation makes an old-owner delegation non-current and denies without inheritance. |
