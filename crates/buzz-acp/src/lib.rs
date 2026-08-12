@@ -1569,12 +1569,20 @@ fn native_steer_preparation_is_stale(
     prepared_generation: u64,
 ) -> bool {
     removed_channels.contains(&channel_id)
-        || membership_generations
-            .get(&channel_id)
-            .copied()
-            .unwrap_or(0)
-            != prepared_generation
+        || native_steer_ack_is_stale(membership_generations, channel_id, prepared_generation)
         || !queue.has_native_steer_reservation(channel_id, event_id)
+}
+
+fn native_steer_ack_is_stale(
+    membership_generations: &HashMap<Uuid, u64>,
+    channel_id: Uuid,
+    sent_generation: u64,
+) -> bool {
+    membership_generations
+        .get(&channel_id)
+        .copied()
+        .unwrap_or(0)
+        != sent_generation
 }
 
 /// Reserve an edit before its asynchronous enrichment starts, returning the
@@ -1618,6 +1626,10 @@ fn readd_channel_after_membership_change(removed_channels: &mut HashSet<Uuid>, c
 struct SteerAckEvent {
     channel_id: Uuid,
     event_id: String,
+    /// Membership generation in which the steer was sent. Late acknowledgements
+    /// from an earlier membership epoch must have no queue, ledger, or fallback
+    /// effects after removal/re-add.
+    membership_generation: u64,
     /// `Ok` if the read loop sent any of the locked `SteerAck` variants.
     /// `Err` if the oneshot was dropped without a send — should not happen
     /// under the current read-loop drains, but if it ever does the main
@@ -3153,6 +3165,10 @@ Typing(Uuid, String, ThreadTags),
                                                 buzz_event.channel_id,
                                                 event_for_steer,
                                                 prompt_blocks,
+                                                membership_generations
+                                                    .get(&buzz_event.channel_id)
+                                                    .copied()
+                                                    .unwrap_or(0),
                                                 &steer_ack_tx,
                                             )
                                         }
@@ -3436,6 +3452,7 @@ Typing(Uuid, String, ThreadTags),
                     channel_id,
                     event.clone(),
                     prompt_blocks,
+                    membership_generation,
                     &steer_ack_tx,
                 ) {
                     release_prepared_native_steer_fallback(
@@ -3452,8 +3469,22 @@ Typing(Uuid, String, ThreadTags),
             Some(PoolEvent::SteerAck(SteerAckEvent {
                 channel_id,
                 event_id,
+                membership_generation,
                 ack,
             })) => {
+                if native_steer_ack_is_stale(
+                    &membership_generations,
+                    channel_id,
+                    membership_generation,
+                ) {
+                    tracing::debug!(
+                        %channel_id,
+                        %event_id,
+                        membership_generation,
+                        "discarding native steer acknowledgement from stale membership generation"
+                    );
+                    continue;
+                }
                 // Mid-turn steer attempt resolved (either transport:
                 // `_goose/unstable/session/steer` or `_session/steering`).
                 // Locked semantics (Eva + Max + Perci, unanimous on Option X):
@@ -3965,6 +3996,7 @@ fn try_native_steer(
     channel_id: uuid::Uuid,
     event: nostr::Event,
     prompt_blocks: Vec<String>,
+    membership_generation: u64,
     steer_ack_tx: &mpsc::UnboundedSender<SteerAckEvent>,
 ) -> bool {
     let event_id_hex = event.id.to_hex();
@@ -3995,6 +4027,7 @@ fn try_native_steer(
                 let _ = ack_tx_clone.send(SteerAckEvent {
                     channel_id,
                     event_id: event_id_for_watcher,
+                    membership_generation,
                     ack,
                 });
             });
@@ -4227,6 +4260,10 @@ fn handle_prompt_result(
     pool.task_map_mut()
         .retain(|_, meta| meta.agent_index != agent_index);
     debug_assert_eq!(before, pool.task_map().len() + 1);
+    // Membership removal records invalidation against checked-out ownership,
+    // not current membership. Apply it before acknowledging successful steer
+    // delivery so remove/re-add cannot resurrect the earlier epoch's session.
+    pool.invalidate_checked_out_sessions(&mut result.agent);
     if let PromptSource::Channel(channel_id) = &result.source {
         // The task may have invalidated this session before returning. Never
         // resurrect delivery state for a dead session; its replacement must
@@ -9479,6 +9516,33 @@ mod native_edit_membership_lifecycle_tests {
             "a missing queue entry must not panic or claim a native attempt"
         );
         assert!(queue.flush_next().is_none());
+    }
+
+    #[test]
+    fn sent_steer_ack_is_discarded_across_remove_then_readd() {
+        let channel_id = Uuid::new_v4();
+        let mut queue = EventQueue::new(config::DedupMode::Queue);
+        let mut generations = HashMap::new();
+        let sent_generation = generations.get(&channel_id).copied().unwrap_or(0);
+        let mut removed_channels = HashSet::new();
+
+        remove_channel_for_membership_change(
+            &mut queue,
+            &mut removed_channels,
+            &mut generations,
+            channel_id,
+        );
+        readd_channel_after_membership_change(&mut removed_channels, channel_id);
+
+        assert!(native_steer_ack_is_stale(
+            &generations,
+            channel_id,
+            sent_generation
+        ));
+        assert!(
+            !removed_channels.contains(&channel_id),
+            "staleness survives re-add for both successful and failed late acks"
+        );
     }
 
     #[test]
