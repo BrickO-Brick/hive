@@ -123,6 +123,89 @@ test("disables autocapitalization in the workflow form", async ({ page }) => {
   );
 });
 
+test("configures common schedules and exposes custom cron", async ({
+  page,
+}) => {
+  await navigateToWorkflows(page);
+
+  await page.getByRole("button", { name: "Create Workflow" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("button", { name: /^Trigger:/ }).click();
+  const inspector = dialog.getByTestId("workflow-node-inspector");
+  await inspector.getByLabel("Trigger event").click();
+  await page.getByRole("menuitem", { name: "Schedule" }).click();
+
+  const repeatOptions = inspector.getByRole("radio");
+  await expect(repeatOptions).toHaveCount(7);
+  await expect(repeatOptions.first()).toHaveAccessibleName("Every 15 minutes");
+  await expect(repeatOptions.last()).toHaveAccessibleName("Custom");
+  await expect(inspector.getByRole("radio", { name: "Daily" })).toBeChecked();
+  await expect(inspector.getByLabel("Run time (UTC)")).toHaveValue("09:00");
+
+  await inspector.getByText("Monthly", { exact: true }).click();
+  await inspector.getByLabel("Day of month").selectOption("31");
+  await expect(
+    inspector.getByText(
+      "Day 31 does not occur in every month, so this schedule will skip shorter months.",
+    ),
+  ).toBeVisible();
+  await dialog.getByRole("tab", { name: "YAML" }).click();
+  await expect(dialog.getByLabel("Workflow YAML")).toHaveValue(
+    /cron: 0 9 31 \* \*/,
+  );
+  await dialog.getByRole("tab", { name: "Form" }).click();
+  await dialog.getByRole("button", { name: /^Trigger:/ }).click();
+
+  await inspector.getByText("Weekly", { exact: true }).click();
+  const weekdayPicker = inspector.getByRole("group", { name: "Repeat on" });
+  await weekdayPicker.getByText("T", { exact: true }).nth(1).click();
+  await expect(
+    weekdayPicker.getByRole("checkbox", { name: "Monday" }),
+  ).toBeChecked();
+  await expect(
+    weekdayPicker.getByRole("checkbox", { name: "Thursday" }),
+  ).toBeChecked();
+  await inspector.getByLabel("Run time (UTC)").fill("14:30");
+  await dialog.getByRole("tab", { name: "YAML" }).click();
+  await expect(dialog.getByLabel("Workflow YAML")).toHaveValue(
+    /cron: 30 14 \* \* 1,4/,
+  );
+  await dialog.getByRole("tab", { name: "Form" }).click();
+  await dialog.getByRole("button", { name: /^Trigger:/ }).click();
+  await dialog.getByText("Custom", { exact: true }).click();
+  const cronInput = inspector.getByRole("group", { name: "Cron expression" });
+  const minuteField = cronInput.getByRole("textbox", { name: "Minute" });
+  await expect(cronInput).toBeVisible();
+  await expect(minuteField).toHaveValue("30");
+  await expect(cronInput.getByRole("textbox", { name: "Hour" })).toHaveValue(
+    "14",
+  );
+  await expect(cronInput.getByRole("textbox", { name: "Weekday" })).toHaveValue(
+    "1,4",
+  );
+
+  await minuteField.fill("60");
+  await expect(
+    inspector.getByText("Minute must be between 0 and 59."),
+  ).toBeVisible();
+
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.evaluate(() => navigator.clipboard.writeText("0 */2 * * 1,3,5"));
+  await minuteField.press("ControlOrMeta+V");
+  await expect(minuteField).toHaveValue("0");
+  await expect(cronInput.getByRole("textbox", { name: "Hour" })).toHaveValue(
+    "*/2",
+  );
+  await expect(cronInput.getByRole("textbox", { name: "Weekday" })).toHaveValue(
+    "1,3,5",
+  );
+
+  await dialog.getByRole("tab", { name: "YAML" }).click();
+  await expect(dialog.getByLabel("Workflow YAML")).toHaveValue(
+    /cron: 0 \*\/2 \* \* 1,3,5/,
+  );
+});
+
 test("switches an empty workflow between form and YAML modes", async ({
   page,
 }) => {

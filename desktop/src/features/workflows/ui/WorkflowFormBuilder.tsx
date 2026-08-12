@@ -14,6 +14,7 @@ import {
 import { Input } from "@/shared/ui/input";
 import { Switch } from "@/shared/ui/switch";
 import { Textarea } from "@/shared/ui/textarea";
+import { WorkflowScheduleFields } from "./WorkflowScheduleFields";
 import { WorkflowStepCard } from "./WorkflowStepCard";
 import { FieldLabel } from "./workflowFormPrimitives";
 import {
@@ -32,11 +33,14 @@ import type {
   TriggerConfig,
   WorkflowFormState,
 } from "./workflowFormTypes";
+import { defaultScheduleTrigger } from "./workflowSchedule";
 
 function TriggerConfigFields({
+  disabled,
   trigger,
   onUpdate,
 }: {
+  disabled?: boolean;
   trigger: TriggerConfig;
   onUpdate: (trigger: TriggerConfig) => void;
 }) {
@@ -87,39 +91,11 @@ function TriggerConfigFields({
       );
     case "schedule":
       return (
-        <div className="space-y-3">
-          <div className="space-y-1.5">
-            <FieldLabel htmlFor="wf-trigger-cron">
-              Cron expression (optional)
-            </FieldLabel>
-            <Input
-              autoCapitalize="off"
-              id="wf-trigger-cron"
-              onChange={(event) =>
-                onUpdate({ ...trigger, cron: event.target.value })
-              }
-              placeholder="e.g. 0 9 * * 1-5 (weekdays at 9am UTC)"
-              value={trigger.cron ?? ""}
-            />
-          </div>
-          <div className="space-y-1.5">
-            <FieldLabel htmlFor="wf-trigger-interval">
-              Interval (optional)
-            </FieldLabel>
-            <Input
-              autoCapitalize="off"
-              id="wf-trigger-interval"
-              onChange={(event) =>
-                onUpdate({ ...trigger, interval: event.target.value })
-              }
-              placeholder="e.g. 1h, 30m"
-              value={trigger.interval ?? ""}
-            />
-          </div>
-          <p className="text-xs text-muted-foreground">
-            Use either cron or interval.
-          </p>
-        </div>
+        <WorkflowScheduleFields
+          disabled={disabled}
+          onUpdate={onUpdate}
+          trigger={trigger}
+        />
       );
     default:
       return null;
@@ -587,7 +563,10 @@ export function WorkflowFormBuilder({
                               onChange={(triggerType) =>
                                 updateFormState({
                                   ...formState,
-                                  trigger: { on: triggerType },
+                                  trigger:
+                                    triggerType === "schedule"
+                                      ? defaultScheduleTrigger()
+                                      : { on: triggerType },
                                 })
                               }
                               options={TRIGGER_TYPES}
@@ -663,6 +642,7 @@ export function WorkflowFormBuilder({
                             {selectedNode.type === "trigger" ? (
                               <div>
                                 <TriggerConfigFields
+                                  disabled={disabled}
                                   onUpdate={(trigger) =>
                                     updateFormState({ ...formState, trigger })
                                   }
