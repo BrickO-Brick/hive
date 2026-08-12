@@ -2557,9 +2557,14 @@ Typing(Uuid, String, ThreadTags),
             // called on relay events or pool results, neither of which
             // arrive when the channel is silent.
             if queue.has_flushable_work() {
-                for (channel_id, thread_tags) in
-                    dispatch_pending(&mut pool, &mut queue, &ctx, &typing_tx, &mut last_activity)
-                {
+                for (channel_id, thread_tags) in dispatch_pending(
+                    &mut pool,
+                    &mut queue,
+                    &ctx,
+                    &membership_generations,
+                    &typing_tx,
+                    &mut last_activity,
+                ) {
                     typing_channels.insert(channel_id, thread_tags);
                 }
             }
@@ -2609,9 +2614,14 @@ Typing(Uuid, String, ThreadTags),
         // this, batches requeued during crash recovery sit idle until the
         // next relay event arrives — which can be minutes on quiet channels.
         if respawn_collected {
-            for (channel_id, thread_tags) in
-                dispatch_pending(&mut pool, &mut queue, &ctx, &typing_tx, &mut last_activity)
-            {
+            for (channel_id, thread_tags) in dispatch_pending(
+                &mut pool,
+                &mut queue,
+                &ctx,
+                &membership_generations,
+                &typing_tx,
+                &mut last_activity,
+            ) {
                 typing_channels.insert(channel_id, thread_tags);
             }
         }
@@ -3107,7 +3117,13 @@ Typing(Uuid, String, ThreadTags),
                                             // and drive fallback/dispatch as needed.
                                             sent_steer_pending
                                         } else if is_edit
-                                            && pool.native_steer_available(buzz_event.channel_id)
+                                            && pool.native_steer_available(
+                                                buzz_event.channel_id,
+                                                membership_generations
+                                                    .get(&buzz_event.channel_id)
+                                                    .copied()
+                                                    .unwrap_or(0),
+                                            )
                                         {
                                             let event_id = event_for_steer.id.to_hex();
                                             let channel_id = buzz_event.channel_id;
@@ -3186,8 +3202,8 @@ Typing(Uuid, String, ThreadTags),
                             }
                             if pool_ready {
                                 for (channel_id, thread_tags) in
-                                    dispatch_pending(&mut pool, &mut queue, &ctx, &typing_tx, &mut last_activity)
-                                {
+                                    dispatch_pending(&mut pool, &mut queue, &ctx, &membership_generations, &typing_tx, &mut last_activity)
+                                                        {
                                     typing_channels.insert(channel_id, thread_tags);
                                 }
                             }
@@ -3286,8 +3302,8 @@ Typing(Uuid, String, ThreadTags),
                     } else if queue.has_flushable_work() {
                         tracing::debug!("heartbeat_skipped_events");
                         for (channel_id, thread_tags) in
-                            dispatch_pending(&mut pool, &mut queue, &ctx, &typing_tx, &mut last_activity)
-                        {
+                            dispatch_pending(&mut pool, &mut queue, &ctx, &membership_generations, &typing_tx, &mut last_activity)
+                                        {
                             typing_channels.insert(channel_id, thread_tags);
                         }
                     } else if pool.any_idle() {
@@ -3360,6 +3376,7 @@ Typing(Uuid, String, ThreadTags),
                     *result,
                     &mut heartbeat_in_flight,
                     &removed_channels,
+                    &membership_generations,
                     &mut crash_history,
                     &respawn_tx,
                     &mut respawn_tasks,
@@ -3375,6 +3392,7 @@ Typing(Uuid, String, ThreadTags),
                     &config,
                     &mut heartbeat_in_flight,
                     &removed_channels,
+                    &membership_generations,
                     &mut typing_channels,
                     &mut crash_history,
                     &respawn_tx,
@@ -3384,9 +3402,14 @@ Typing(Uuid, String, ThreadTags),
                 {
                     break;
                 }
-                for (channel_id, thread_tags) in
-                    dispatch_pending(&mut pool, &mut queue, &ctx, &typing_tx, &mut last_activity)
-                {
+                for (channel_id, thread_tags) in dispatch_pending(
+                    &mut pool,
+                    &mut queue,
+                    &ctx,
+                    &membership_generations,
+                    &typing_tx,
+                    &mut last_activity,
+                ) {
                     typing_channels.insert(channel_id, thread_tags);
                 }
             }
@@ -3399,6 +3422,7 @@ Typing(Uuid, String, ThreadTags),
                     join_error,
                     &mut heartbeat_in_flight,
                     &removed_channels,
+                    &membership_generations,
                     &mut typing_channels,
                     &mut crash_history,
                     &respawn_tx,
@@ -3409,9 +3433,14 @@ Typing(Uuid, String, ThreadTags),
                     tracing::error!("all agents dead — exiting");
                     break;
                 }
-                for (channel_id, thread_tags) in
-                    dispatch_pending(&mut pool, &mut queue, &ctx, &typing_tx, &mut last_activity)
-                {
+                for (channel_id, thread_tags) in dispatch_pending(
+                    &mut pool,
+                    &mut queue,
+                    &ctx,
+                    &membership_generations,
+                    &typing_tx,
+                    &mut last_activity,
+                ) {
                     typing_channels.insert(channel_id, thread_tags);
                 }
             }
@@ -3461,6 +3490,8 @@ Typing(Uuid, String, ThreadTags),
                         channel_id,
                         &event.id.to_hex(),
                         &ctx,
+                        &membership_generations,
+                        &typing_tx,
                         &mut last_activity,
                         &mut typing_channels,
                     );
@@ -3629,9 +3660,14 @@ Typing(Uuid, String, ThreadTags),
                 // tear down the in-flight task; on its completion the
                 // queue drains. We still try here in case the in-flight
                 // task has already returned.
-                for (channel_id, thread_tags) in
-                    dispatch_pending(&mut pool, &mut queue, &ctx, &typing_tx, &mut last_activity)
-                {
+                for (channel_id, thread_tags) in dispatch_pending(
+                    &mut pool,
+                    &mut queue,
+                    &ctx,
+                    &membership_generations,
+                    &typing_tx,
+                    &mut last_activity,
+                ) {
                     typing_channels.insert(channel_id, thread_tags);
                 }
             }
@@ -3661,6 +3697,7 @@ Typing(Uuid, String, ThreadTags),
                             &mut pool,
                             &mut queue,
                             &ctx,
+                            &membership_generations,
                             &typing_tx,
                             &mut last_activity,
                         ) {
@@ -4007,7 +4044,7 @@ fn try_native_steer(
         ack_tx,
     };
 
-    match pool.send_steer(channel_id, request) {
+    match pool.send_steer(channel_id, membership_generation, request) {
         Ok(()) => {
             // Ordinary events are withheld after send. Edit preparation reserves
             // its event before leaving the main loop, so this is idempotent.
@@ -4048,18 +4085,28 @@ fn try_native_steer(
 /// was withheld before asynchronous preparation, so release it, request the
 /// universal cancel+merge fallback, and immediately try dispatch in case the
 /// original turn already ended.
+#[allow(clippy::too_many_arguments)]
 fn release_prepared_native_steer_fallback(
     pool: &mut AgentPool,
     queue: &mut EventQueue,
     channel_id: Uuid,
     event_id: &str,
     ctx: &Arc<PromptContext>,
+    membership_generations: &HashMap<Uuid, u64>,
+    typing_tx: &mpsc::UnboundedSender<(Uuid, ThreadTags)>,
     last_activity: &mut tokio::time::Instant,
     typing_channels: &mut HashMap<Uuid, ThreadTags>,
 ) {
     queue.release_native_steer(channel_id, event_id);
     signal_in_flight_task(pool, channel_id, ControlSignal::Steer);
-    for (channel_id, thread_tags) in dispatch_pending(pool, queue, ctx, last_activity) {
+    for (channel_id, thread_tags) in dispatch_pending(
+        pool,
+        queue,
+        ctx,
+        membership_generations,
+        typing_tx,
+        last_activity,
+    ) {
         typing_channels.insert(channel_id, thread_tags);
     }
 }
@@ -4087,6 +4134,7 @@ fn dispatch_pending(
     pool: &mut AgentPool,
     queue: &mut EventQueue,
     ctx: &Arc<PromptContext>,
+    membership_generations: &HashMap<Uuid, u64>,
     typing_tx: &mpsc::UnboundedSender<(Uuid, String, ThreadTags)>,
     last_activity: &mut tokio::time::Instant,
 ) -> Vec<(Uuid, ThreadTags)> {
@@ -4163,6 +4211,12 @@ fn dispatch_pending(
             pool::TaskMeta {
                 agent_index,
                 channel_id: Some(channel_id),
+                membership_generation: Some(
+                    membership_generations
+                        .get(&channel_id)
+                        .copied()
+                        .unwrap_or(0),
+                ),
                 turn_id,
                 recoverable_batch,
                 control_tx: Some(control_tx),
@@ -4243,6 +4297,7 @@ fn handle_prompt_result(
     mut result: PromptResult,
     heartbeat_in_flight: &mut bool,
     removed_channels: &HashSet<Uuid>,
+    membership_generations: &HashMap<Uuid, u64>,
     crash_history: &mut [SlotCircuit],
     respawn_tx: &mpsc::Sender<RespawnResult>,
     respawn_tasks: &mut tokio::task::JoinSet<()>,
@@ -4251,12 +4306,22 @@ fn handle_prompt_result(
 ) -> LoopAction {
     let before = pool.task_map().len();
     let agent_index = result.agent.index;
-    let successful_steer_deliveries = pool
+    let task_meta = pool
         .task_map()
         .values()
-        .find(|meta| meta.agent_index == agent_index)
+        .find(|meta| meta.agent_index == agent_index);
+    let successful_steer_deliveries = task_meta
         .map(|meta| meta.successful_steer_deliveries.clone())
         .unwrap_or_default();
+    let task_membership_is_current = task_meta
+        .and_then(|meta| meta.channel_id.zip(meta.membership_generation))
+        .is_none_or(|(channel_id, generation)| {
+            membership_generations
+                .get(&channel_id)
+                .copied()
+                .unwrap_or(0)
+                == generation
+        });
     pool.task_map_mut()
         .retain(|_, meta| meta.agent_index != agent_index);
     debug_assert_eq!(before, pool.task_map().len() + 1);
@@ -4295,9 +4360,10 @@ fn handle_prompt_result(
     // every retry starts at attempt 1 — defeating exponential backoff and
     // dead-letter protection.
     if let Some(batch) = result.batch.take() {
-        // Don't requeue batches for channels the agent was removed from —
-        // those events are stale and should be silently dropped.
-        if !removed_channels.contains(&batch.channel_id) {
+        // Don't requeue batches from a removed membership generation. Re-add
+        // clears the current removal marker, but the task generation remains
+        // stale and its pre-removal work must not cross into the new epoch.
+        if !removed_channels.contains(&batch.channel_id) && task_membership_is_current {
             if matches!(
                 result.outcome,
                 PromptOutcome::Cancelled | PromptOutcome::CancelDrainTimeout(_)
@@ -4391,9 +4457,10 @@ fn handle_prompt_result(
             tracing::debug!(
                 channel_id = %batch.channel_id,
                 events = batch.events.len(),
-                "dropping failed batch for removed channel"
+                task_membership_is_current,
+                "dropping failed batch from removed or stale membership generation"
             );
-            hard_timeout_fate_suffix = Some(" — batch dropped (channel removed)");
+            hard_timeout_fate_suffix = Some(" — batch dropped (channel membership changed)");
         }
     }
 
@@ -4636,6 +4703,7 @@ fn recover_panicked_agent(
     join_error: tokio::task::JoinError,
     heartbeat_in_flight: &mut bool,
     removed_channels: &HashSet<Uuid>,
+    membership_generations: &HashMap<Uuid, u64>,
     typing_channels: &mut HashMap<Uuid, ThreadTags>,
     crash_history: &mut [SlotCircuit],
     respawn_tx: &mpsc::Sender<RespawnResult>,
@@ -4655,7 +4723,10 @@ fn recover_panicked_agent(
     // Requeue BEFORE mark_complete (same rationale as handle_prompt_result).
     if let Some(batch) = meta.recoverable_batch {
         if let Some(ch) = meta.channel_id {
-            if !removed_channels.contains(&ch) {
+            if !removed_channels.contains(&ch)
+                && meta.membership_generation
+                    == Some(membership_generations.get(&ch).copied().unwrap_or(0))
+            {
                 // Dead-letter on exhaustion is logged inside requeue(); a
                 // panic path has no outcome to report, so no notice here.
                 let _ = queue.requeue(batch);
@@ -4737,6 +4808,7 @@ fn drain_ready_join_results(
     config: &Config,
     heartbeat_in_flight: &mut bool,
     removed_channels: &HashSet<Uuid>,
+    membership_generations: &HashMap<Uuid, u64>,
     typing_channels: &mut HashMap<Uuid, ThreadTags>,
     crash_history: &mut [SlotCircuit],
     respawn_tx: &mpsc::Sender<RespawnResult>,
@@ -4753,6 +4825,7 @@ fn drain_ready_join_results(
                 join_error,
                 heartbeat_in_flight,
                 removed_channels,
+                membership_generations,
                 typing_channels,
                 crash_history,
                 respawn_tx,
@@ -4809,6 +4882,7 @@ fn dispatch_heartbeat(
         pool::TaskMeta {
             agent_index,
             channel_id: None,
+            membership_generation: None,
             turn_id,
             recoverable_batch: None,
             control_tx: None,
@@ -5646,6 +5720,7 @@ mod owner_control_command_tests {
             pool::TaskMeta {
                 agent_index: 0,
                 channel_id: Some(channel_id),
+                membership_generation: None,
                 turn_id: "test-turn-id".to_string(),
                 recoverable_batch: None,
                 control_tx: Some(control_tx),
@@ -7772,6 +7847,7 @@ mod error_outcome_emission_tests {
             crate::pool::TaskMeta {
                 agent_index: 0,
                 channel_id: Some(channel_id),
+                membership_generation: None,
                 turn_id: "test-turn-id".into(),
                 recoverable_batch: None,
                 control_tx: None,
@@ -7811,6 +7887,7 @@ mod error_outcome_emission_tests {
             result,
             &mut heartbeat_in_flight,
             &removed_channels,
+            &HashMap::new(),
             &mut crash_history,
             &respawn_tx,
             &mut respawn_tasks,
@@ -7844,6 +7921,7 @@ mod error_outcome_emission_tests {
             crate::pool::TaskMeta {
                 agent_index: 0,
                 channel_id: Some(channel_id),
+                membership_generation: None,
                 turn_id: "test-turn-id".into(),
                 recoverable_batch: None,
                 control_tx: None,
@@ -7883,6 +7961,7 @@ mod error_outcome_emission_tests {
             result,
             &mut heartbeat_in_flight,
             &removed_channels,
+            &HashMap::new(),
             &mut crash_history,
             &respawn_tx,
             &mut respawn_tasks,
@@ -7959,6 +8038,7 @@ mod error_outcome_emission_tests {
             crate::pool::TaskMeta {
                 agent_index: 0,
                 channel_id: Some(channel_id),
+                membership_generation: None,
                 turn_id: "test-turn-id".into(),
                 recoverable_batch: None,
                 control_tx: None,
@@ -7997,6 +8077,7 @@ mod error_outcome_emission_tests {
             result,
             &mut heartbeat_in_flight,
             &removed_channels,
+            &HashMap::new(),
             &mut crash_history,
             &respawn_tx,
             &mut respawn_tasks,
@@ -8024,6 +8105,7 @@ mod error_outcome_emission_tests {
             crate::pool::TaskMeta {
                 agent_index: 0,
                 channel_id: None,
+                membership_generation: None,
                 turn_id: "test-turn-id".to_string(),
                 recoverable_batch: None,
                 control_tx: None,
@@ -8060,6 +8142,7 @@ mod error_outcome_emission_tests {
             result,
             &mut heartbeat_in_flight,
             &removed_channels,
+            &HashMap::new(),
             &mut crash_history,
             &respawn_tx,
             &mut respawn_tasks,
@@ -8101,6 +8184,7 @@ mod error_outcome_emission_tests {
             crate::pool::TaskMeta {
                 agent_index: 0,
                 channel_id: Some(channel_id),
+                membership_generation: None,
                 turn_id: "panic-turn-id".to_string(),
                 recoverable_batch: None,
                 control_tx: None,
@@ -8133,6 +8217,7 @@ mod error_outcome_emission_tests {
             join_error,
             &mut heartbeat_in_flight,
             &removed_channels,
+            &HashMap::new(),
             &mut typing_channels,
             &mut crash_history,
             &respawn_tx,
@@ -8194,6 +8279,7 @@ mod error_outcome_emission_tests {
                 crate::pool::TaskMeta {
                     agent_index: 0,
                     channel_id: None,
+                    membership_generation: None,
                     turn_id: "test-turn-id".to_string(),
                     recoverable_batch: None,
                     control_tx: None,
@@ -8227,6 +8313,7 @@ mod error_outcome_emission_tests {
                 result,
                 &mut heartbeat_in_flight,
                 &removed_channels,
+                &HashMap::new(),
                 &mut crash_history,
                 &respawn_tx,
                 &mut respawn_tasks,
@@ -8286,6 +8373,7 @@ mod error_outcome_emission_tests {
                 crate::pool::TaskMeta {
                     agent_index: 0,
                     channel_id: None,
+                    membership_generation: None,
                     turn_id: "test-turn-id".to_string(),
                     recoverable_batch: None,
                     control_tx: None,
@@ -8318,6 +8406,7 @@ mod error_outcome_emission_tests {
                 result,
                 &mut heartbeat_in_flight,
                 &removed_channels,
+                &HashMap::new(),
                 &mut crash_history,
                 &respawn_tx,
                 &mut respawn_tasks,
@@ -8392,6 +8481,7 @@ mod error_outcome_emission_tests {
                 crate::pool::TaskMeta {
                     agent_index: 0,
                     channel_id: None,
+                    membership_generation: None,
                     turn_id: "test-turn-id".to_string(),
                     recoverable_batch: None,
                     control_tx: None,
@@ -8424,6 +8514,7 @@ mod error_outcome_emission_tests {
                 result,
                 &mut heartbeat_in_flight,
                 &removed_channels,
+                &HashMap::new(),
                 &mut crash_history,
                 &respawn_tx,
                 &mut respawn_tasks,
@@ -8469,6 +8560,7 @@ mod error_outcome_emission_tests {
             crate::pool::TaskMeta {
                 agent_index: 0,
                 channel_id: None,
+                membership_generation: None,
                 turn_id: "test-turn-id".to_string(),
                 recoverable_batch: None,
                 control_tx: None,
@@ -8516,6 +8608,7 @@ mod error_outcome_emission_tests {
             result,
             &mut heartbeat_in_flight,
             &removed_channels,
+            &HashMap::new(),
             &mut crash_history,
             &respawn_tx,
             &mut respawn_tasks,
@@ -8564,6 +8657,7 @@ mod error_outcome_emission_tests {
             crate::pool::TaskMeta {
                 agent_index: 0,
                 channel_id: None,
+                membership_generation: None,
                 turn_id: "test-turn-id".to_string(),
                 recoverable_batch: None,
                 control_tx: None,
@@ -8610,6 +8704,7 @@ mod error_outcome_emission_tests {
             result,
             &mut heartbeat_in_flight,
             &removed_channels,
+            &HashMap::new(),
             &mut crash_history,
             &respawn_tx,
             &mut respawn_tasks,
@@ -8681,6 +8776,7 @@ mod error_outcome_emission_tests {
             crate::pool::TaskMeta {
                 agent_index: 0,
                 channel_id: None,
+                membership_generation: None,
                 turn_id: "test-turn-id".to_string(),
                 recoverable_batch: None,
                 control_tx: None,
@@ -8726,6 +8822,7 @@ mod error_outcome_emission_tests {
             result,
             &mut heartbeat_in_flight,
             &removed_channels,
+            &HashMap::new(),
             &mut crash_history,
             &respawn_tx,
             &mut respawn_tasks,
@@ -8821,6 +8918,7 @@ mod error_outcome_emission_tests {
             crate::pool::TaskMeta {
                 agent_index: 0,
                 channel_id: None,
+                membership_generation: None,
                 turn_id: "test-turn-id".to_string(),
                 recoverable_batch: None,
                 control_tx: None,
@@ -8859,6 +8957,7 @@ mod error_outcome_emission_tests {
             result,
             &mut heartbeat_in_flight,
             &removed_channels,
+            &HashMap::new(),
             &mut crash_history,
             &respawn_tx,
             &mut respawn_tasks,
@@ -9010,6 +9109,7 @@ mod error_outcome_emission_tests {
             crate::pool::TaskMeta {
                 agent_index: 0,
                 channel_id: None,
+                membership_generation: None,
                 turn_id: "test-turn-id".to_string(),
                 recoverable_batch: None,
                 control_tx: None,
@@ -9042,6 +9142,7 @@ mod error_outcome_emission_tests {
             result,
             &mut heartbeat_in_flight,
             &removed_channels,
+            &HashMap::new(),
             &mut crash_history,
             &respawn_tx,
             &mut respawn_tasks,
@@ -9096,6 +9197,7 @@ mod error_outcome_emission_tests {
             crate::pool::TaskMeta {
                 agent_index: 0,
                 channel_id: None,
+                membership_generation: None,
                 turn_id: "test-turn-id".to_string(),
                 recoverable_batch: None,
                 control_tx: None,
@@ -9128,6 +9230,7 @@ mod error_outcome_emission_tests {
             result,
             &mut heartbeat_in_flight,
             &removed_channels,
+            &HashMap::new(),
             &mut crash_history,
             &respawn_tx,
             &mut respawn_tasks,
@@ -9489,9 +9592,11 @@ mod native_edit_membership_lifecycle_tests {
             channel_id,
             &event_id,
             &prompt_context(),
+            &HashMap::new(),
             &mut last_activity,
             &mut typing_channels,
-        );
+        )
+        .await;
 
         assert!(typing_channels.contains_key(&channel_id));
         assert_eq!(
