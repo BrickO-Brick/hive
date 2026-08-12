@@ -1253,7 +1253,7 @@ test("prominent active tab is opt-in and switches selection surfaces", async ({
         PROMINENT_ACTIVE_TAB_STORAGE_KEY,
       ),
     )
-    .toBe("true");
+    .toBe("false");
 
   await toggle.click();
   await expect(toggle).toBeChecked();
