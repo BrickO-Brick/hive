@@ -1,3 +1,10 @@
+// Issue assignment mirrors PR review requests (projectPullRequests.mjs):
+// a kind:1 comment labeled with this `t` tag whose `p` tags are the
+// assignees. Labeled text notes stay readable for any client that treats
+// them as plain comments, and the `p` tags route the assignment into the
+// assignee's mention feed (inbox) for free.
+export const ISSUE_ASSIGNMENT_LABEL = "assignment";
+
 export const PROJECT_ISSUE_STATUS = {
   TRIAGE: "Triage",
   BACKLOG: "Backlog",
@@ -73,6 +80,48 @@ function statusFromEvent(issue, statusEvent) {
   return PROJECT_ISSUE_STATUS.BACKLOG;
 }
 
+/**
+ * Assignees resolve from two trusted sources:
+ *
+ * 1. The issue event's own `p` tags: the author "sends" an issue to
+ *    people by p-tagging them (which routes it to their inbox), and the
+ *    author is a trusted assigner — so those recipients count as
+ *    assignees. The repo owner's `p` tag is excluded because every
+ *    issue carries it for routing (see `buildGitIssueTags`), not as an
+ *    assignment; owners get assigned via an explicit assignment event.
+ * 2. `p` tags of trusted assignment comments (kind:1 labeled
+ *    `t: assignment`). Trusted signers are the issue author and repo
+ *    owner (who may assign anyone), plus any community member whose
+ *    assignment names only themselves — self-assignment is safe to open
+ *    up because a signer can only volunteer for work, never route it to
+ *    someone else.
+ */
+function assigneesForIssue(issue, commentEvents) {
+  const allowedActors = allowedActorsForRoot(issue);
+  const assignees = new Set();
+  const repoOwner = repoOwnerFromAddress(getTag(issue, "a"));
+  for (const recipient of getAllTags(issue, "p")) {
+    const normalized = recipient.toLowerCase();
+    if (normalized !== repoOwner) assignees.add(normalized);
+  }
+  for (const event of commentEvents) {
+    if (!event.tags.some((tag) => tag[0] === "e" && tag[1] === issue.id)) {
+      continue;
+    }
+    if (!getAllTags(event, "t").includes(ISSUE_ASSIGNMENT_LABEL)) continue;
+    const signer = event.pubkey.toLowerCase();
+    const pubkeys = getAllTags(event, "p").map((pubkey) =>
+      pubkey.toLowerCase(),
+    );
+    const isSelfAssignment = pubkeys.length === 1 && pubkeys[0] === signer;
+    if (!allowedActors.has(signer) && !isSelfAssignment) continue;
+    for (const pubkey of pubkeys) {
+      assignees.add(pubkey);
+    }
+  }
+  return [...assignees];
+}
+
 function commentsForIssue(issueId, commentEvents) {
   return commentEvents
     .filter((event) =>
@@ -114,6 +163,7 @@ export function eventToProjectIssue(
     originAgentName: getTag(issue, "buzz-origin-agent") ?? null,
     labels: getAllTags(issue, "t"),
     recipients: getAllTags(issue, "p"),
+    assignees: assigneesForIssue(issue, commentEvents),
     status: statusFromEvent(issue, latestStatus),
     statusEventId: latestStatus?.id ?? null,
     updatedAt:

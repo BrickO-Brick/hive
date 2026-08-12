@@ -18,6 +18,7 @@ import { Button } from "@/shared/ui/button";
 import { Card } from "@/shared/ui/card";
 import { DropdownMenuItem } from "@/shared/ui/dropdown-menu";
 import { CopyShareLinkMenuItem } from "./CopyShareLinkMenuItem";
+import { IssueAssigneeFacepile } from "./IssueAssigneesRow";
 import { ProjectAuthorIdentity } from "./ProjectAuthorIdentity";
 import { ProjectEventTypeIcon } from "./ProjectEventTypeIcon";
 import { ProjectListRowMenu } from "./ProjectListRowMenu";
@@ -214,6 +215,10 @@ function IssueListRow({
           project={project}
         />
         <div className={PROJECT_LIST_ROW_TRAILING_CLASS}>
+          <IssueAssigneeFacepile
+            assignees={issue.assignees}
+            profiles={profiles}
+          />
           <span className={PROJECT_LIST_ROW_STATUS_CLASS}>{issue.status}</span>
           <div className="hidden w-14 shrink-0 justify-end md:flex">
             {issue.comments.length > 0 ? (

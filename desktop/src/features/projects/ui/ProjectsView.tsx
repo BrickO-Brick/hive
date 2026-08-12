@@ -467,13 +467,17 @@ export function ProjectsView() {
 
   const visibleIssues = React.useMemo(() => {
     const issues = projectsWorkItemsQuery.data?.issues.items ?? [];
+    const viewer = currentPubkey ? normalizePubkey(currentPubkey) : null;
     const scopedIssues =
-      issueScope === "mine" && currentPubkey
-        ? issues.filter(
-            ({ issue }) =>
-              normalizePubkey(issue.author) === normalizePubkey(currentPubkey),
-          )
-        : issues;
+      issueScope === "mine" && viewer
+        ? issues.filter(({ issue }) => normalizePubkey(issue.author) === viewer)
+        : issueScope === "assigned" && viewer
+          ? issues.filter(({ issue }) =>
+              issue.assignees.some(
+                (assignee) => normalizePubkey(assignee) === viewer,
+              ),
+            )
+          : issues;
     return [...scopedIssues].sort((left, right) => {
       if (sort === "name") {
         return left.issue.title.localeCompare(right.issue.title);

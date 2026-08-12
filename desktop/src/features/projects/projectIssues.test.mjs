@@ -6,6 +6,7 @@ import {
   eventToProjectIssue,
   getAllTags,
   getTag,
+  ISSUE_ASSIGNMENT_LABEL,
   nextProjectIssueCommentCreatedAt,
   PROJECT_ISSUE_STATUS,
 } from "./projectIssues.mjs";
@@ -149,6 +150,78 @@ test("parses public and private-safe issue provenance", () => {
   assert.equal(publicIssue.originAgentName, null);
   assert.equal(privateIssue.channelId, null);
   assert.equal(privateIssue.originAgentName, "Builder");
+});
+
+test("assignees come from trusted assignment comments only", () => {
+  const assignee = "d".repeat(64);
+  const otherAssignee = "f".repeat(64);
+  const volunteer = "5".repeat(64);
+  const assignmentComment = (pubkey, assignees, id) => ({
+    id,
+    kind: 1,
+    pubkey,
+    created_at: 200,
+    content: "Assigned this issue",
+    tags: [
+      ["e", "e".repeat(64), "", "root"],
+      ["a", REPO_ADDRESS],
+      ...assignees.map((value) => ["p", value]),
+      ["t", ISSUE_ASSIGNMENT_LABEL],
+    ],
+  });
+
+  const issue = eventToProjectIssue(
+    issueEvent(),
+    [],
+    [
+      // Author assigns (self-assignment included) — trusted.
+      assignmentComment(AUTHOR, [assignee.toUpperCase(), AUTHOR], "assign-1"),
+      // Repo owner assigns — trusted; duplicate assignee dedupes.
+      assignmentComment(OWNER, [assignee, otherAssignee], "assign-2"),
+      // Any member self-assigning (sole p tag is the signer) — trusted.
+      assignmentComment(volunteer, [volunteer], "assign-3"),
+      // Untrusted signer assigning someone else — ignored.
+      assignmentComment(ATTACKER, ["a".repeat(64)], "assign-4"),
+      // Untrusted signer sneaking themselves in alongside others — ignored.
+      assignmentComment(ATTACKER, [ATTACKER, "b".repeat(64)], "assign-5"),
+      // Trusted plain comment without the label adds nothing.
+      {
+        id: "plain-comment",
+        kind: 1,
+        pubkey: AUTHOR,
+        created_at: 201,
+        content: "Just a comment",
+        tags: [
+          ["e", "e".repeat(64), "", "root"],
+          ["p", ATTACKER],
+        ],
+      },
+    ],
+  );
+
+  assert.deepEqual(
+    issue.assignees.sort(),
+    [AUTHOR, assignee, otherAssignee, volunteer].sort(),
+  );
+});
+
+test("issue recipients count as author-declared assignees, minus repo owner", () => {
+  const recipient = "d".repeat(64);
+  const otherRecipient = "f".repeat(64);
+  const issue = eventToProjectIssue(
+    issueEvent({
+      tags: [
+        ["a", REPO_ADDRESS],
+        ["subject", "Something is broken"],
+        // Routing tag every issue carries — not an assignment.
+        ["p", OWNER],
+        ["p", recipient.toUpperCase()],
+        ["p", otherRecipient],
+      ],
+    }),
+  );
+
+  assert.deepEqual(issue.assignees.sort(), [recipient, otherRecipient].sort());
 });
 
 test("builds repository-scoped issue creation tags", () => {

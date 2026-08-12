@@ -59,17 +59,6 @@ pub struct ProjectPullRequestMergeInput {
     expected_commit: String,
 }
 
-/// Repository-scoped metadata for an agent-signed review request.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProjectPullRequestReviewRequestInput {
-    target_owner: String,
-    repo_address: String,
-    pull_request_id: String,
-    reviewers: Vec<String>,
-    reviewer_label: String,
-}
-
 /// Repository-scoped metadata for an agent-signed lifecycle status.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -94,17 +83,17 @@ fn normalize_commit(value: &str) -> Option<String> {
     clean_commit(Some(value.trim().to_ascii_lowercase()))
 }
 
-fn normalize_event_id(value: &str) -> Option<String> {
+pub(crate) fn normalize_event_id(value: &str) -> Option<String> {
     let value = value.trim().to_ascii_lowercase();
     (value.len() == 64 && value.chars().all(|c| c.is_ascii_hexdigit())).then_some(value)
 }
 
-struct ProjectOwnerIdentity {
-    keys: Keys,
-    auth_tag: Option<String>,
+pub(crate) struct ProjectOwnerIdentity {
+    pub(crate) keys: Keys,
+    pub(crate) auth_tag: Option<String>,
 }
 
-fn project_owner_identity(
+pub(crate) fn project_owner_identity(
     app: &AppHandle,
     state: &AppState,
     target_owner: &str,
@@ -143,7 +132,7 @@ fn project_owner_identity(
     })
 }
 
-fn validate_repo_address(repo_address: &str, owner: &str) -> Result<(), String> {
+pub(crate) fn validate_repo_address(repo_address: &str, owner: &str) -> Result<(), String> {
     let prefix = format!("30617:{owner}:");
     if repo_address.strip_prefix(&prefix).is_none_or(str::is_empty) {
         return Err("Repository address does not match the repository owner.".to_string());
@@ -241,63 +230,6 @@ fn build_pull_request_status_event(
         .sign_with_keys(keys)
         .map(|event| event.as_json())
         .map_err(|error| format!("sign pull request status: {error}"))
-}
-
-fn build_review_request_event(
-    keys: &Keys,
-    repo_address: &str,
-    pull_request_id: &str,
-    reviewers: &[String],
-    reviewer_label: &str,
-) -> Result<String, String> {
-    let owner = keys.public_key().to_hex();
-    validate_repo_address(repo_address, &owner)?;
-    let pull_request_id = normalize_event_id(pull_request_id)
-        .ok_or_else(|| "Invalid pull request event ID.".to_string())?;
-    if reviewers.is_empty() || reviewers.len() > 50 {
-        return Err("Select between 1 and 50 reviewers.".to_string());
-    }
-    let mut reviewers = reviewers
-        .iter()
-        .map(|reviewer| {
-            normalize_event_id(reviewer).ok_or_else(|| "Invalid reviewer pubkey.".to_string())
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    reviewers.sort();
-    reviewers.dedup();
-    let reviewer_label = reviewer_label.trim();
-    if reviewer_label.is_empty() || reviewer_label.chars().count() > 128 {
-        return Err("Reviewer label must be between 1 and 128 characters.".to_string());
-    }
-
-    let mut raw_tags = vec![
-        vec![
-            "e".to_string(),
-            pull_request_id,
-            String::new(),
-            "root".to_string(),
-        ],
-        vec!["a".to_string(), repo_address.to_string()],
-    ];
-    raw_tags.extend(
-        reviewers
-            .into_iter()
-            .map(|reviewer| vec!["p".to_string(), reviewer]),
-    );
-    raw_tags.push(vec!["t".to_string(), "review-request".to_string()]);
-    let tags = raw_tags
-        .into_iter()
-        .map(Tag::parse)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("build review request tags: {error}"))?;
-    EventBuilder::new(
-        Kind::TextNote,
-        format!("Requested a review from {reviewer_label}"),
-    )
-    .tags(tags)
-    .sign_with_keys(keys)
-    .map(|event| event.as_json())
-    .map_err(|error| format!("sign pull request review request: {error}"))
 }
 
 fn same_repository(left: &str, right: &str) -> bool {
@@ -447,30 +379,6 @@ pub async fn sign_project_pull_request_status(
         input.created_at,
     )?)
     .map_err(|error| format!("parse signed pull request status: {error}"))?;
-    submit_signed_event_with_keys(&event, &state, &identity.keys, identity.auth_tag.as_deref())
-        .await?;
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn sign_project_pull_request_review_request(
-    input: ProjectPullRequestReviewRequestInput,
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
-    let target_owner = input.target_owner.trim().to_ascii_lowercase();
-    if normalize_event_id(&target_owner).is_none() {
-        return Err("Invalid target repository owner.".to_string());
-    }
-    let identity = project_owner_identity(&app, &state, &target_owner)?;
-    let event = Event::from_json(build_review_request_event(
-        &identity.keys,
-        &input.repo_address,
-        &input.pull_request_id,
-        &input.reviewers,
-        &input.reviewer_label,
-    )?)
-    .map_err(|error| format!("parse signed review request: {error}"))?;
     submit_signed_event_with_keys(&event, &state, &identity.keys, identity.auth_tag.as_deref())
         .await?;
     Ok(())
@@ -683,8 +591,7 @@ pub async fn merge_project_pull_request(
 mod tests {
     use super::{
         align_unborn_head_branch, build_merged_status_event, build_pull_request_status_event,
-        build_review_request_event, normalize_commit, same_repository,
-        validate_merge_status_metadata,
+        normalize_commit, same_repository, validate_merge_status_metadata,
     };
     use crate::commands::project_git_exec::{build_test_git_auth_config, run_git};
     use nostr::{Event, JsonUtil, Keys, Timestamp};
@@ -849,37 +756,5 @@ mod tests {
             Timestamp::now().as_secs(),
         )
         .is_err());
-    }
-
-    #[test]
-    fn review_request_is_signed_by_repository_owner() {
-        let keys = Keys::generate();
-        let owner = keys.public_key().to_hex();
-        let reviewer = "b".repeat(64);
-        let repo_address = format!("30617:{owner}:buzz");
-        let event = Event::from_json(
-            build_review_request_event(
-                &keys,
-                &repo_address,
-                &"d".repeat(64),
-                std::slice::from_ref(&reviewer),
-                "Bob",
-            )
-            .unwrap(),
-        )
-        .unwrap();
-
-        assert_eq!(event.pubkey, keys.public_key());
-        assert_eq!(event.kind, nostr::Kind::TextNote);
-        assert_eq!(event.content, "Requested a review from Bob");
-        assert!(event
-            .tags
-            .iter()
-            .any(|tag| tag.as_slice() == ["p", reviewer.as_str()]));
-        assert!(event
-            .tags
-            .iter()
-            .any(|tag| tag.as_slice() == ["t", "review-request"]));
-        assert!(event.verify().is_ok());
     }
 }

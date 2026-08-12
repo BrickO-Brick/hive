@@ -28,11 +28,14 @@ export type ProjectIssue = {
   originAgentName: string | null;
   labels: string[];
   recipients: string[];
+  assignees: string[];
   status: ProjectIssueStatus;
   statusEventId: string | null;
   updatedAt: number;
   comments: ProjectIssueComment[];
 };
+
+export const ISSUE_ASSIGNMENT_LABEL: "assignment";
 
 export const PROJECT_ISSUE_STATUS: {
   TRIAGE: "Triage";

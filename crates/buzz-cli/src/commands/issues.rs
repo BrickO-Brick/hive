@@ -40,6 +40,47 @@ pub async fn cmd_create_issue(
     Ok(())
 }
 
+/// Publish an issue assignment: a kind:1 comment on the issue whose `p`
+/// tags are the assignees, labeled `t: assignment` (same event shape the
+/// Desktop app writes). Clients trust it when signed by the issue author
+/// or repo owner, or when it is a self-assignment.
+pub async fn cmd_assign_issue(
+    client: &BuzzClient,
+    issue: &str,
+    repo_owner: &str,
+    repo_id: &str,
+    assignees: &[String],
+    label: Option<&str>,
+) -> Result<(), CliError> {
+    validate_hex64(issue)?;
+    validate_hex64(repo_owner)?;
+    validate_repo_id(repo_id)?;
+    for assignee in assignees {
+        validate_hex64(assignee)?;
+    }
+
+    let label = match label.map(str::trim) {
+        Some(label) if !label.is_empty() => label.to_string(),
+        _ => assignees
+            .iter()
+            .map(|assignee| format!("{}…", &assignee[..8]))
+            .collect::<Vec<_>>()
+            .join(", "),
+    };
+    let content = format!("Assigned this issue to {label}");
+
+    let repo = GitRepoCoord {
+        owner: repo_owner.to_string(),
+        id: repo_id.to_string(),
+    };
+    let builder =
+        buzz_sdk::build_git_issue_assignment(&repo, issue, assignees, &content).map_err(sdk_err)?;
+    let event = client.sign_event(builder)?;
+    let resp = client.submit_event(event).await?;
+    println!("{resp}");
+    Ok(())
+}
+
 pub async fn cmd_get_issue(client: &BuzzClient, event: &str) -> Result<(), CliError> {
     validate_hex64(event)?;
     let filter = serde_json::json!({
@@ -199,6 +240,23 @@ pub async fn dispatch(cmd: crate::IssuesCmd, client: &BuzzClient) -> Result<(), 
                 repo_id.as_deref(),
                 euc.as_deref(),
                 &to,
+            )
+            .await
+        }
+        IssuesCmd::Assign {
+            issue,
+            repo_owner,
+            repo_id,
+            assignee,
+            label,
+        } => {
+            cmd_assign_issue(
+                client,
+                &issue,
+                &repo_owner,
+                &repo_id,
+                &assignee,
+                label.as_deref(),
             )
             .await
         }
