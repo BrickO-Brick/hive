@@ -359,9 +359,15 @@ export function PullRequestDetailHeader({
           testId="project-pull-request-copy-link"
         />
       </h3>
-      <p className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
-        <GitPullRequest className="h-3.5 w-3.5" />
-        <span className="flex min-w-0 items-center gap-1">
+      <p
+        className="flex flex-wrap items-center gap-x-1 gap-y-1 text-xs font-medium text-muted-foreground"
+        data-testid="project-pull-request-detail-metadata"
+      >
+        <GitPullRequest className="h-3.5 w-3.5 shrink-0" />
+        <span
+          className="flex min-w-0 items-center gap-1"
+          data-project-metadata-phrase
+        >
           <AuthorIdentity
             avatarSize="xs"
             profiles={profiles}
@@ -372,7 +378,11 @@ export function PullRequestDetailHeader({
             {authorLabel}
           </ProfileAuthorName>
         </span>
-        <span title={formatExactTimestamp(pullRequest.createdAt)}>
+        <span
+          className="shrink-0 whitespace-nowrap"
+          data-project-metadata-phrase
+          title={formatExactTimestamp(pullRequest.createdAt)}
+        >
           created {relativeTime(pullRequest.createdAt)}
         </span>
         <ProjectOriginReference
