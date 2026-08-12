@@ -13,6 +13,7 @@ const SHOTS = "test-results/entity-link-recipient-cards";
 // the message carries no link-preview tags.
 
 const ALICE_PUBKEY = TEST_IDENTITIES.alice.pubkey;
+const DEFAULT_MOCK_PUBKEY = "deadbeef".repeat(8);
 const REPO_ADDRESS = `30617:${ALICE_PUBKEY}:relay-tools`;
 const PR_ID = `e0${"ca4d".repeat(15)}ff`; // 64-hex event id
 const PR_SUBJECT = "Restore recipient-side entity cards";
@@ -164,4 +165,52 @@ test("desktop composer shows entity card and send is not blocked by missing snap
     animations: "disabled",
     path: `${SHOTS}/03-sent-entity-card.png`,
   });
+});
+
+test("reopening the same entity link reapplies its workspace tab", async ({
+  page,
+}) => {
+  await installMockBridge(page);
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await expect(page.getByTestId("open-projects-view")).toBeVisible();
+  const link = `buzz://repo?owner=${DEFAULT_MOCK_PUBKEY}&d=buzz&tab=prs`;
+  const emitEntityLink = async () => {
+    await page.waitForFunction(
+      () => typeof window.__TAURI_INTERNALS__?.invoke === "function",
+    );
+    await page.evaluate(
+      (href) =>
+        window.__TAURI_INTERNALS__?.invoke?.("plugin:event|emit", {
+          event: "deep-link-entity",
+          payload: href,
+        }),
+      link,
+    );
+  };
+
+  await emitEntityLink();
+  const pullRequestsTab = page.getByRole("tab", {
+    name: "Pull Request",
+    exact: true,
+  });
+  await expect(pullRequestsTab).toHaveAttribute("aria-selected", "true");
+
+  const breadcrumb = page.getByRole("navigation", {
+    name: "Project breadcrumb",
+  });
+  await breadcrumb.getByRole("button").nth(1).click();
+  await expect(page.getByRole("tab", { name: "Overview" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+
+  await emitEntityLink();
+  await expect(pullRequestsTab).toHaveAttribute("aria-selected", "true");
+
+  const filesTab = page.getByRole("tab", { name: "Files", exact: true });
+  await filesTab.click();
+  await expect(filesTab).toHaveAttribute("aria-selected", "true");
+
+  await emitEntityLink();
+  await expect(pullRequestsTab).toHaveAttribute("aria-selected", "true");
 });

@@ -10,7 +10,7 @@
 //! `validate_repo_id`); the identifier charsets need no URL encoding.
 //!
 //! Coordinate links additionally accept an optional `&tab=<tab>` parameter
-//! (`files|commits|issues|prs|contributors`) selecting a workspace tab on
+//! (`files|commits|issues|prs|contributors|channels`) selecting a workspace tab on
 //! the receiving side. The CLI builders emit the canonical no-tab form
 //! (overview); the parameter exists for the desktop's tab-aware copy-link
 //! button.
@@ -56,46 +56,49 @@ pub fn issue_link(event_id: &str, owner: &str, repo_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
-    const OWNER: &str = "71d67180ba17e749ee825fc8819c9c6ee7003617e1c126504f9b658070ab9224";
-    const EVENT_ID: &str = "c3b589fa5713ba25bad6dc095e2de00a4ac8f50050fdea00fc6444e603be1dd1";
+    fn golden() -> Value {
+        serde_json::from_str(include_str!("../../../test-fixtures/entity-links.json"))
+            .expect("valid entity-links golden fixture")
+    }
 
-    // Golden strings shared with desktop/src/shared/lib/entityLink.test.mjs
-    // ("builders emit the canonical cross-language link format").
     #[test]
     fn golden_format_matches_desktop() {
+        let golden = golden();
+        let owner = golden["owner"].as_str().unwrap();
+        let event_id = golden["eventId"].as_str().unwrap();
+        let dtag = golden["dtag"].as_str().unwrap();
         assert_eq!(
-            pull_request_link(EVENT_ID, OWNER, "buzz-world"),
-            format!("buzz://pr?id={EVENT_ID}&owner={OWNER}&d=buzz-world")
+            pull_request_link(event_id, owner, dtag),
+            golden["links"]["pullRequest"].as_str().unwrap()
         );
         assert_eq!(
-            issue_link(EVENT_ID, OWNER, "buzz-world"),
-            format!("buzz://issue?id={EVENT_ID}&owner={OWNER}&d=buzz-world")
+            issue_link(event_id, owner, dtag),
+            golden["links"]["issue"].as_str().unwrap()
         );
         assert_eq!(
-            repo_link(OWNER, "buzz-world"),
-            format!("buzz://repo?owner={OWNER}&d=buzz-world")
+            repo_link(owner, dtag),
+            golden["links"]["repository"].as_str().unwrap()
         );
         assert_eq!(
-            project_link(OWNER, "buzz-world"),
-            format!("buzz://project?owner={OWNER}&d=buzz-world")
+            project_link(owner, dtag),
+            golden["links"]["project"].as_str().unwrap()
         );
     }
 
     #[test]
     fn linkable_dtag_matches_the_desktop_charset() {
-        for ok in ["buzz-world", "a", "a.b_c-d", &"a".repeat(64)] {
+        let golden = golden();
+        for ok in golden["validDtags"].as_array().unwrap() {
+            let ok = ok.as_str().unwrap();
             assert!(is_linkable_dtag(ok), "{ok:?} should be linkable");
         }
-        for bad in [
-            "",
-            ".hidden",
-            "a..b",
-            "has space",
-            "sl/ash",
-            &"a".repeat(65),
-        ] {
+        assert!(is_linkable_dtag(&"a".repeat(64)));
+        for bad in golden["invalidDtags"].as_array().unwrap() {
+            let bad = bad.as_str().unwrap();
             assert!(!is_linkable_dtag(bad), "{bad:?} should not be linkable");
         }
+        assert!(!is_linkable_dtag(&"a".repeat(65)));
     }
 }

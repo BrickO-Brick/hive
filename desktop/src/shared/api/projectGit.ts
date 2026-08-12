@@ -604,8 +604,20 @@ export async function signProjectIssueAssignment(input: {
   issueId: string;
   assignees: string[];
   assigneeLabel: string;
+  createdAt: number;
 }): Promise<void> {
   await invokeTauri<void>("sign_project_issue_assignment", { input });
+}
+
+export async function signProjectIssueUnassignment(input: {
+  targetOwner: string;
+  repoAddress: string;
+  issueId: string;
+  assignees: string[];
+  assigneeLabel: string;
+  createdAt: number;
+}): Promise<void> {
+  await invokeTauri<void>("sign_project_issue_unassignment", { input });
 }
 
 export async function signProjectPullRequestStatus(input: {

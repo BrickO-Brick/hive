@@ -1,9 +1,12 @@
+import { sortEvents } from "../../shared/api/relayClientShared.ts";
+
 // Issue assignment mirrors PR review requests (projectPullRequests.mjs):
 // a kind:1 comment labeled with this `t` tag whose `p` tags are the
 // assignees. Labeled text notes stay readable for any client that treats
 // them as plain comments, and the `p` tags route the assignment into the
 // assignee's mention feed (inbox) for free.
 export const ISSUE_ASSIGNMENT_LABEL = "assignment";
+export const ISSUE_UNASSIGNMENT_LABEL = "unassignment";
 
 export const PROJECT_ISSUE_STATUS = {
   TRIAGE: "Triage",
@@ -81,62 +84,53 @@ function statusFromEvent(issue, statusEvent) {
 }
 
 /**
- * Assignees resolve from two trusted sources:
+ * Assignment state is reduced from trusted kind:1 operations in chronological
+ * order. `t: assignment` adds each `p` tag and `t: unassignment` removes it.
+ * The issue root's `p` tags are notification routing only.
  *
- * 1. The issue event's own `p` tags: the author "sends" an issue to
- *    people by p-tagging them (which routes it to their inbox), and the
- *    author is a trusted assigner — so those recipients count as
- *    assignees. The repo owner's `p` tag is excluded because every
- *    issue carries it for routing (see `buildGitIssueTags`), not as an
- *    assignment; owners get assigned via an explicit assignment event.
- * 2. `p` tags of trusted assignment comments (kind:1 labeled
- *    `t: assignment`). Trusted signers are the issue author and repo
- *    owner (who may assign anyone), plus any community member whose
- *    assignment names only themselves — self-assignment is safe to open
- *    up because a signer can only volunteer for work, never route it to
- *    someone else.
+ * Trusted signers are the issue author and repo owner (who may change anyone),
+ * plus any community member whose operation names only themselves. Same-second
+ * events use their id as a deterministic tie-breaker because relay result order
+ * is not stable.
  */
-function assigneesForIssue(issue, commentEvents) {
+function assigneesForIssue(issue, issueCommentEvents) {
   const allowedActors = allowedActorsForRoot(issue);
   const assignees = new Set();
-  const repoOwner = repoOwnerFromAddress(getTag(issue, "a"));
-  for (const recipient of getAllTags(issue, "p")) {
-    const normalized = recipient.toLowerCase();
-    if (normalized !== repoOwner) assignees.add(normalized);
-  }
-  for (const event of commentEvents) {
-    if (!event.tags.some((tag) => tag[0] === "e" && tag[1] === issue.id)) {
-      continue;
-    }
-    if (!getAllTags(event, "t").includes(ISSUE_ASSIGNMENT_LABEL)) continue;
+  const operations = sortEvents(
+    issueCommentEvents.filter((event) =>
+      event.tags.some((tag) => tag[0] === "e" && tag[1] === issue.id),
+    ),
+  );
+  for (const event of operations) {
+    const labels = getAllTags(event, "t");
+    const isAssignment = labels.includes(ISSUE_ASSIGNMENT_LABEL);
+    const isUnassignment = labels.includes(ISSUE_UNASSIGNMENT_LABEL);
+    if (isAssignment === isUnassignment) continue;
     const signer = event.pubkey.toLowerCase();
     const pubkeys = getAllTags(event, "p").map((pubkey) =>
       pubkey.toLowerCase(),
     );
-    const isSelfAssignment = pubkeys.length === 1 && pubkeys[0] === signer;
-    if (!allowedActors.has(signer) && !isSelfAssignment) continue;
+    const isSelfOperation = pubkeys.length === 1 && pubkeys[0] === signer;
+    if (!allowedActors.has(signer) && !isSelfOperation) continue;
     for (const pubkey of pubkeys) {
-      assignees.add(pubkey);
+      if (isAssignment) {
+        assignees.add(pubkey);
+      } else {
+        assignees.delete(pubkey);
+      }
     }
   }
   return [...assignees];
 }
 
-function commentsForIssue(issueId, commentEvents) {
-  return commentEvents
-    .filter((event) =>
-      event.tags.some(
-        (tag) => (tag[0] === "e" || tag[0] === "E") && tag[1] === issueId,
-      ),
-    )
-    .sort((left, right) => left.created_at - right.created_at)
-    .map((event) => ({
-      id: event.id,
-      content: event.content,
-      tags: getImetaTags(event),
-      author: event.pubkey,
-      createdAt: event.created_at,
-    }));
+function commentsForIssue(issueCommentEvents) {
+  return sortEvents(issueCommentEvents).map((event) => ({
+    id: event.id,
+    content: event.content,
+    tags: getImetaTags(event),
+    author: event.pubkey,
+    createdAt: event.created_at,
+  }));
 }
 
 export function eventToProjectIssue(
@@ -145,7 +139,12 @@ export function eventToProjectIssue(
   commentEvents = [],
 ) {
   const latestStatus = latestStatusForIssue(issue, statusEvents);
-  const comments = commentsForIssue(issue.id, commentEvents);
+  const issueCommentEvents = commentEvents.filter((event) =>
+    event.tags.some(
+      (tag) => (tag[0] === "e" || tag[0] === "E") && tag[1] === issue.id,
+    ),
+  );
+  const comments = commentsForIssue(issueCommentEvents);
   const title =
     getTag(issue, "subject") ||
     issue.content.split("\n")[0] ||
@@ -163,7 +162,7 @@ export function eventToProjectIssue(
     originAgentName: getTag(issue, "buzz-origin-agent") ?? null,
     labels: getAllTags(issue, "t"),
     recipients: getAllTags(issue, "p"),
-    assignees: assigneesForIssue(issue, commentEvents),
+    assignees: assigneesForIssue(issue, issueCommentEvents),
     status: statusFromEvent(issue, latestStatus),
     statusEventId: latestStatus?.id ?? null,
     updatedAt:

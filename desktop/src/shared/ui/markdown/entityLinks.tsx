@@ -21,12 +21,19 @@ export function useOpenEntityLink(): (link: ParsedEntityLink) => void {
   const { goProject } = useAppNavigation();
   return React.useCallback(
     (link: ParsedEntityLink) => {
+      const tab =
+        (link.type === "repo" || link.type === "project") && link.tab
+          ? link.tab
+          : undefined;
       void goProject(entityLinkProjectRouteId(link), {
+        ...(tab
+          ? {
+              entityNavigationId: crypto.randomUUID(),
+              tab,
+            }
+          : {}),
         ...(link.type === "pr" ? { pullRequestId: link.id } : {}),
         ...(link.type === "issue" ? { issueId: link.id } : {}),
-        ...((link.type === "repo" || link.type === "project") && link.tab
-          ? { tab: link.tab }
-          : {}),
       });
     },
     [goProject],

@@ -8,7 +8,7 @@ use super::project_git_workflow::{
 };
 use crate::app_state::AppState;
 use crate::relay::submit_signed_event_with_keys;
-use nostr::{Event, EventBuilder, JsonUtil, Keys, Kind, Tag};
+use nostr::{Event, EventBuilder, JsonUtil, Keys, Kind, Tag, Timestamp};
 use serde::Deserialize;
 use tauri::{AppHandle, State};
 
@@ -23,15 +23,38 @@ pub struct ProjectPullRequestReviewRequestInput {
     reviewer_label: String,
 }
 
-/// Repository-scoped metadata for an agent-signed issue assignment.
+/// Repository-scoped metadata for an agent-signed issue assignee operation.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ProjectIssueAssignmentInput {
+pub struct ProjectIssueAssigneeOperationInput {
     target_owner: String,
     repo_address: String,
     issue_id: String,
     assignees: Vec<String>,
     assignee_label: String,
+    created_at: u64,
+}
+
+#[derive(Clone, Copy)]
+enum IssueAssigneeOperation {
+    Assign,
+    Unassign,
+}
+
+impl IssueAssigneeOperation {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Assign => "assignment",
+            Self::Unassign => "unassignment",
+        }
+    }
+
+    fn content(self, assignee_label: &str) -> String {
+        match self {
+            Self::Assign => format!("Assigned this issue to {assignee_label}"),
+            Self::Unassign => format!("Unassigned {assignee_label} from this issue"),
+        }
+    }
 }
 
 /// Parameters for [`build_labeled_recipient_note_event`].
@@ -43,6 +66,7 @@ struct LabeledRecipientNote<'a> {
     recipient_noun: &'a str,
     label: &'a str,
     content: String,
+    created_at: Option<u64>,
 }
 
 /// Shared builder for labeled kind:1 notes tagging recipients (`p`) on a
@@ -60,6 +84,7 @@ fn build_labeled_recipient_note_event(
         recipient_noun,
         label,
         content,
+        created_at,
     } = note;
     let owner = keys.public_key().to_hex();
     validate_repo_address(repo_address, &owner)?;
@@ -91,8 +116,11 @@ fn build_labeled_recipient_note_event(
         .map(Tag::parse)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("build {label} tags: {error}"))?;
-    EventBuilder::new(Kind::TextNote, content)
-        .tags(tags)
+    let mut builder = EventBuilder::new(Kind::TextNote, content).tags(tags);
+    if let Some(created_at) = created_at {
+        builder = builder.custom_created_at(Timestamp::from_secs(created_at));
+    }
+    builder
         .sign_with_keys(keys)
         .map(|event| event.as_json())
         .map_err(|error| format!("sign {label} note: {error}"))
@@ -119,16 +147,60 @@ fn build_review_request_event(
             recipient_noun: "reviewer",
             label: "review-request",
             content: format!("Requested a review from {reviewer_label}"),
+            created_at: None,
         },
     )
 }
 
+#[cfg(test)]
 fn build_issue_assignment_event(
     keys: &Keys,
     repo_address: &str,
     issue_id: &str,
     assignees: &[String],
     assignee_label: &str,
+    created_at: Option<u64>,
+) -> Result<String, String> {
+    build_issue_assignee_operation_event(
+        keys,
+        repo_address,
+        issue_id,
+        assignees,
+        assignee_label,
+        created_at,
+        IssueAssigneeOperation::Assign,
+    )
+}
+
+#[cfg(test)]
+fn build_issue_unassignment_event(
+    keys: &Keys,
+    repo_address: &str,
+    issue_id: &str,
+    assignees: &[String],
+    assignee_label: &str,
+    created_at: Option<u64>,
+) -> Result<String, String> {
+    build_issue_assignee_operation_event(
+        keys,
+        repo_address,
+        issue_id,
+        assignees,
+        assignee_label,
+        created_at,
+        IssueAssigneeOperation::Unassign,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_issue_assignee_operation_event(
+    keys: &Keys,
+    repo_address: &str,
+    issue_id: &str,
+    assignees: &[String],
+    assignee_label: &str,
+    created_at: Option<u64>,
+    operation: IssueAssigneeOperation,
 ) -> Result<String, String> {
     let assignee_label = assignee_label.trim();
     if assignee_label.is_empty() || assignee_label.chars().count() > 128 {
@@ -142,8 +214,9 @@ fn build_issue_assignment_event(
             root_id_error: "Invalid issue event ID.",
             recipients: assignees,
             recipient_noun: "assignee",
-            label: "assignment",
-            content: format!("Assigned this issue to {assignee_label}"),
+            label: operation.label(),
+            content: operation.content(assignee_label),
+            created_at,
         },
     )
 }
@@ -174,7 +247,25 @@ pub async fn sign_project_pull_request_review_request(
 
 #[tauri::command]
 pub async fn sign_project_issue_assignment(
-    input: ProjectIssueAssignmentInput,
+    input: ProjectIssueAssigneeOperationInput,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    sign_project_issue_assignee_operation(input, IssueAssigneeOperation::Assign, app, state).await
+}
+
+#[tauri::command]
+pub async fn sign_project_issue_unassignment(
+    input: ProjectIssueAssigneeOperationInput,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    sign_project_issue_assignee_operation(input, IssueAssigneeOperation::Unassign, app, state).await
+}
+
+async fn sign_project_issue_assignee_operation(
+    input: ProjectIssueAssigneeOperationInput,
+    operation: IssueAssigneeOperation,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
@@ -183,14 +274,16 @@ pub async fn sign_project_issue_assignment(
         return Err("Invalid target repository owner.".to_string());
     }
     let identity = project_owner_identity(&app, &state, &target_owner)?;
-    let event = Event::from_json(build_issue_assignment_event(
+    let event = Event::from_json(build_issue_assignee_operation_event(
         &identity.keys,
         &input.repo_address,
         &input.issue_id,
         &input.assignees,
         &input.assignee_label,
+        Some(input.created_at),
+        operation,
     )?)
-    .map_err(|error| format!("parse signed issue assignment: {error}"))?;
+    .map_err(|error| format!("parse signed issue {}: {error}", operation.label()))?;
     submit_signed_event_with_keys(&event, &state, &identity.keys, identity.auth_tag.as_deref())
         .await?;
     Ok(())
@@ -198,7 +291,9 @@ pub async fn sign_project_issue_assignment(
 
 #[cfg(test)]
 mod tests {
-    use super::{build_issue_assignment_event, build_review_request_event};
+    use super::{
+        build_issue_assignment_event, build_issue_unassignment_event, build_review_request_event,
+    };
     use nostr::{Event, JsonUtil, Keys};
 
     #[test]
@@ -214,6 +309,7 @@ mod tests {
                 &"d".repeat(64),
                 std::slice::from_ref(&assignee),
                 "Bob",
+                None,
             )
             .unwrap(),
         )
@@ -239,16 +335,22 @@ mod tests {
         let owner = keys.public_key().to_hex();
         let repo_address = format!("30617:{owner}:buzz");
 
-        assert!(
-            build_issue_assignment_event(&keys, &repo_address, &"d".repeat(64), &[], "Bob")
-                .is_err()
-        );
+        assert!(build_issue_assignment_event(
+            &keys,
+            &repo_address,
+            &"d".repeat(64),
+            &[],
+            "Bob",
+            None,
+        )
+        .is_err());
         assert!(build_issue_assignment_event(
             &keys,
             &repo_address,
             &"d".repeat(64),
             &["b".repeat(64)],
             "  ",
+            None,
         )
         .is_err());
         assert!(build_issue_assignment_event(
@@ -257,8 +359,41 @@ mod tests {
             "not-an-event-id",
             &["b".repeat(64)],
             "Bob",
+            None,
         )
         .is_err());
+    }
+
+    #[test]
+    fn issue_unassignment_is_signed_by_repository_owner() {
+        let keys = Keys::generate();
+        let owner = keys.public_key().to_hex();
+        let assignee = "b".repeat(64);
+        let repo_address = format!("30617:{owner}:buzz");
+        let event = Event::from_json(
+            build_issue_unassignment_event(
+                &keys,
+                &repo_address,
+                &"d".repeat(64),
+                std::slice::from_ref(&assignee),
+                "Bob",
+                Some(123),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(event.content, "Unassigned Bob from this issue");
+        assert_eq!(event.created_at.as_secs(), 123);
+        assert!(event
+            .tags
+            .iter()
+            .any(|tag| tag.as_slice() == ["p", assignee.as_str()]));
+        assert!(event
+            .tags
+            .iter()
+            .any(|tag| tag.as_slice() == ["t", "unassignment"]));
+        assert!(event.verify().is_ok());
     }
 
     #[test]

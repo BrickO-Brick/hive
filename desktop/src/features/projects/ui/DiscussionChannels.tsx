@@ -20,7 +20,9 @@ import type { SearchHit } from "@/shared/api/searchTypes";
 import { cn } from "@/shared/lib/cn";
 import { UserAvatar } from "@/shared/ui/UserAvatar";
 
-const DISCUSSION_SEARCH_LIMIT = 100;
+// Relay search caps a page at 500. Use the full page and surface a lower-bound
+// marker when it fills rather than silently presenting partial totals as exact.
+const DISCUSSION_SEARCH_LIMIT = 500;
 const COLLAPSED_MENTION_ROWS = 3;
 
 /**
@@ -34,7 +36,7 @@ export function useDiscussionChannels(query: string): {
   channels: DiscussionChannel[];
   hits: SearchHit[];
   isLoading: boolean;
-  profiles: UserProfileLookup | undefined;
+  isTruncated: boolean;
 } {
   const search = useSearchMessagesQuery(query, {
     limit: DISCUSSION_SEARCH_LIMIT,
@@ -45,15 +47,11 @@ export function useDiscussionChannels(query: string): {
     [search.data],
   );
   const channels = React.useMemo(() => groupDiscussionChannels(hits), [hits]);
-  const profilesQuery = useUsersBatchQuery(
-    hits.map((hit) => hit.pubkey),
-    { enabled: hits.length > 0 },
-  );
   return {
     channels,
     hits,
     isLoading: search.isLoading,
-    profiles: profilesQuery.data?.profiles,
+    isTruncated: hits.length >= DISCUSSION_SEARCH_LIMIT,
   };
 }
 
@@ -93,10 +91,18 @@ export function DiscussedInChannels({
   query: string;
   testId?: string;
 }) {
-  const { channels, hits, profiles } = useDiscussionChannels(query);
+  const { channels, hits, isTruncated } = useDiscussionChannels(query);
   const { goChannel, openSearchHit } = useAppNavigation();
   const [expanded, setExpanded] = React.useState(false);
   const channelName = useChannelNameLookup(channels.length > 0);
+  const visible = expanded
+    ? channels
+    : channels.slice(0, COLLAPSED_MENTION_ROWS);
+  const profilesQuery = useUsersBatchQuery(
+    visible.flatMap((channel) => channel.participants),
+    { enabled: visible.length > 0 },
+  );
+  const profiles = profilesQuery.data?.profiles;
   // Hits are sorted newest first, so the first hit per channel is the one a
   // click should land on (and the one worth quoting).
   const latestHitByChannel = React.useMemo(() => {
@@ -110,9 +116,6 @@ export function DiscussedInChannels({
   }, [hits]);
   if (channels.length === 0) return null;
 
-  const visible = expanded
-    ? channels
-    : channels.slice(0, COLLAPSED_MENTION_ROWS);
   const hiddenCount = channels.length - visible.length;
 
   return (
@@ -184,6 +187,11 @@ export function DiscussedInChannels({
         >
           Show {hiddenCount} more {hiddenCount === 1 ? "channel" : "channels"}
         </button>
+      ) : null}
+      {isTruncated ? (
+        <p className="border-t border-border/40 px-3 py-1.5 text-xs text-muted-foreground">
+          Showing mentions from the 500 most recent search results.
+        </p>
       ) : null}
     </div>
   );
@@ -307,9 +315,14 @@ function ParticipantFacepile({
  * people who discussed it there.
  */
 export function DiscussionChannelsPanel({ query }: { query: string }) {
-  const { channels, isLoading, profiles } = useDiscussionChannels(query);
+  const { channels, isLoading, isTruncated } = useDiscussionChannels(query);
   const { goChannel } = useAppNavigation();
   const channelName = useChannelNameLookup(channels.length > 0);
+  const profilesQuery = useUsersBatchQuery(
+    channels.flatMap((channel) => channel.participants),
+    { enabled: channels.length > 0 },
+  );
+  const profiles = profilesQuery.data?.profiles;
 
   if (isLoading) {
     return (
@@ -328,45 +341,57 @@ export function DiscussionChannelsPanel({ query }: { query: string }) {
   }
 
   return (
-    <ul className="divide-y divide-border/50" data-testid="discussion-channels">
-      {channels.map((channel) => {
-        const name = channelName(channel.id, channel.name);
-        const speakers = channel.participants
-          .slice(0, 2)
-          .map((pubkey) => resolveUserLabel({ profiles, pubkey }));
-        const others = channel.participants.length - speakers.length;
-        return (
-          <li className="relative" key={channel.id}>
-            <button
-              className="flex w-full min-w-0 items-center gap-2.5 px-4 py-2.5 text-left transition-colors hover:bg-muted/30"
-              onClick={() => void goChannel(channel.id)}
-              type="button"
-            >
-              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-muted/50">
-                <Hash className="h-4 w-4 text-muted-foreground" />
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-sm font-medium text-foreground">
-                  #{name}
+    <div>
+      <ul
+        className="divide-y divide-border/50"
+        data-testid="discussion-channels"
+      >
+        {channels.map((channel) => {
+          const name = channelName(channel.id, channel.name);
+          const speakers = channel.participants
+            .slice(0, 2)
+            .map((pubkey) => resolveUserLabel({ profiles, pubkey }));
+          const others = channel.participants.length - speakers.length;
+          return (
+            <li className="relative" key={channel.id}>
+              <button
+                className="flex w-full min-w-0 items-center gap-2.5 px-4 py-2.5 text-left transition-colors hover:bg-muted/30"
+                onClick={() => void goChannel(channel.id)}
+                type="button"
+              >
+                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-muted/50">
+                  <Hash className="h-4 w-4 text-muted-foreground" />
                 </span>
-                <span className="block truncate text-xs text-muted-foreground">
-                  {speakers.join(", ")}
-                  {others > 0
-                    ? ` and ${others} ${others === 1 ? "other" : "others"}`
-                    : ""}{" "}
-                  · {channel.messageCount}{" "}
-                  {channel.messageCount === 1 ? "message" : "messages"} · last
-                  activity {relativeTime(channel.lastActivityAt)}
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-medium text-foreground">
+                    #{name}
+                  </span>
+                  <span className="block truncate text-xs text-muted-foreground">
+                    {speakers.join(", ")}
+                    {others > 0
+                      ? ` and ${others} ${others === 1 ? "other" : "others"}`
+                      : ""}{" "}
+                    · {channel.messageCount}
+                    {isTruncated ? "+" : ""}{" "}
+                    {channel.messageCount === 1 ? "message" : "messages"} · last
+                    activity {relativeTime(channel.lastActivityAt)}
+                  </span>
                 </span>
-              </span>
-              <ParticipantFacepile
-                participants={channel.participants}
-                profiles={profiles}
-              />
-            </button>
-          </li>
-        );
-      })}
-    </ul>
+                <ParticipantFacepile
+                  participants={channel.participants}
+                  profiles={profiles}
+                />
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+      {isTruncated ? (
+        <p className="border-t border-border/50 px-4 py-2 text-xs text-muted-foreground">
+          Showing the latest {DISCUSSION_SEARCH_LIMIT} mentions; totals may be
+          higher.
+        </p>
+      ) : null}
+    </div>
   );
 }

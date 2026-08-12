@@ -89,6 +89,7 @@ import {
 
 type ProjectDetailScreenProps = {
   commitHash?: string;
+  entityNavigationId?: string;
   projectId: string;
   pullRequestId?: string;
   issueId?: string;
@@ -110,8 +111,15 @@ const PROJECT_REPOSITORY_SEARCH_KEYS = [
 ] as const;
 
 export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
-  const { commitHash, projectId, pullRequestId, issueId, repositoryId, tab } =
-    props;
+  const {
+    commitHash,
+    entityNavigationId,
+    projectId,
+    pullRequestId,
+    issueId,
+    repositoryId,
+    tab,
+  } = props;
   const { goChannel, goProject, goProjects } = useAppNavigation();
   const { activeCommunity } = useCommunities();
   const mainInsetRef = useMainInsetRef();
@@ -184,16 +192,14 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
     () => setSelectedCommitHash(commitHash ?? null),
     [commitHash],
   );
-  // Bumped when breadcrumb navigation should land on the project Overview
-  // tab; remounts WorkspaceTabs, which owns the selected-tab state.
+  // Remounts WorkspaceTabs when breadcrumb navigation should open Overview.
   const [tabsResetKey, setTabsResetKey] = React.useState(0);
-  // Tab requested by a share link (`?tab=`), mirrored into local state like
-  // the work-item ids above so breadcrumb/repository resets can drop it —
-  // WorkspaceTabs remounts must not re-apply a stale link tab.
+  // Local state lets breadcrumb and repository resets drop a share-link tab.
   const [requestedTab, setRequestedTab] = React.useState<
     EntityLinkTab | undefined
   >(tab);
-  React.useEffect(() => setRequestedTab(tab), [tab]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the transient request ID deliberately reapplies an unchanged share-link tab.
+  React.useEffect(() => setRequestedTab(tab), [entityNavigationId, tab]);
   // Mirror of the WorkspaceTabs selection so the breadcrumb can name the
   // active sub-tab. The Overview (readme) tab is "home" and gets no crumb.
   const [activeTab, setActiveTab] = React.useState("overview");
@@ -499,6 +505,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
     const issuePubkeys = (issuesQuery.data ?? []).flatMap((issue) => [
       issue.author,
       ...issue.recipients,
+      ...issue.assignees,
       ...issue.comments.map((comment) => comment.author),
     ]);
     return [
@@ -887,6 +894,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
                     ? workspaceTabForShareTab(requestedTab)
                     : undefined
                 }
+                initialTabRequestKey={entityNavigationId}
                 commitDiff={commitDiffQuery.data}
                 commitDiffError={commitDiffQuery.error}
                 commitDiffLoading={commitDiffQuery.isLoading}

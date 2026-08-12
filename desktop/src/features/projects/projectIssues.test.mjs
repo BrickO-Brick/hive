@@ -7,6 +7,7 @@ import {
   getAllTags,
   getTag,
   ISSUE_ASSIGNMENT_LABEL,
+  ISSUE_UNASSIGNMENT_LABEL,
   nextProjectIssueCommentCreatedAt,
   PROJECT_ISSUE_STATUS,
 } from "./projectIssues.mjs";
@@ -152,21 +153,30 @@ test("parses public and private-safe issue provenance", () => {
   assert.equal(privateIssue.originAgentName, "Builder");
 });
 
-test("assignees come from trusted assignment comments only", () => {
+test("assignees follow trusted assignment operations in deterministic order", () => {
   const assignee = "d".repeat(64);
   const otherAssignee = "f".repeat(64);
   const volunteer = "5".repeat(64);
-  const assignmentComment = (pubkey, assignees, id) => ({
+  const assignmentComment = (
+    pubkey,
+    assignees,
+    id,
+    label = ISSUE_ASSIGNMENT_LABEL,
+    createdAt = 200,
+  ) => ({
     id,
     kind: 1,
     pubkey,
-    created_at: 200,
-    content: "Assigned this issue",
+    created_at: createdAt,
+    content:
+      label === ISSUE_ASSIGNMENT_LABEL
+        ? "Assigned this issue"
+        : "Unassigned this issue",
     tags: [
       ["e", "e".repeat(64), "", "root"],
       ["a", REPO_ADDRESS],
       ...assignees.map((value) => ["p", value]),
-      ["t", ISSUE_ASSIGNMENT_LABEL],
+      ["t", label],
     ],
   });
 
@@ -184,6 +194,40 @@ test("assignees come from trusted assignment comments only", () => {
       assignmentComment(ATTACKER, ["a".repeat(64)], "assign-4"),
       // Untrusted signer sneaking themselves in alongside others — ignored.
       assignmentComment(ATTACKER, [ATTACKER, "b".repeat(64)], "assign-5"),
+      // A volunteer may remove only themselves.
+      assignmentComment(
+        volunteer,
+        [volunteer],
+        "unassign-1",
+        ISSUE_UNASSIGNMENT_LABEL,
+        201,
+      ),
+      // An untrusted signer cannot remove somebody else.
+      assignmentComment(
+        ATTACKER,
+        [otherAssignee],
+        "unassign-2",
+        ISSUE_UNASSIGNMENT_LABEL,
+        202,
+      ),
+      // Repo owner may remove any assignee.
+      assignmentComment(
+        OWNER,
+        [otherAssignee],
+        "unassign-3",
+        ISSUE_UNASSIGNMENT_LABEL,
+        203,
+      ),
+      // Same-second operations use event id as a stable tie-breaker:
+      // assign sorts before unassign here, leaving the assignee removed.
+      assignmentComment(OWNER, [otherAssignee], "a-assign", undefined, 204),
+      assignmentComment(
+        OWNER,
+        [otherAssignee],
+        "z-unassign",
+        ISSUE_UNASSIGNMENT_LABEL,
+        204,
+      ),
       // Trusted plain comment without the label adds nothing.
       {
         id: "plain-comment",
@@ -199,13 +243,10 @@ test("assignees come from trusted assignment comments only", () => {
     ],
   );
 
-  assert.deepEqual(
-    issue.assignees.sort(),
-    [AUTHOR, assignee, otherAssignee, volunteer].sort(),
-  );
+  assert.deepEqual(issue.assignees.sort(), [AUTHOR, assignee].sort());
 });
 
-test("issue recipients count as author-declared assignees, minus repo owner", () => {
+test("issue recipients remain notification routing, not assignments", () => {
   const recipient = "d".repeat(64);
   const otherRecipient = "f".repeat(64);
   const issue = eventToProjectIssue(
@@ -221,7 +262,7 @@ test("issue recipients count as author-declared assignees, minus repo owner", ()
     }),
   );
 
-  assert.deepEqual(issue.assignees.sort(), [recipient, otherRecipient].sort());
+  assert.deepEqual(issue.assignees, []);
 });
 
 test("builds repository-scoped issue creation tags", () => {

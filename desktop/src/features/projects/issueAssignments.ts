@@ -1,62 +1,114 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
 
-import { signProjectIssueAssignment } from "@/shared/api/projectGit";
+import {
+  signProjectIssueAssignment,
+  signProjectIssueUnassignment,
+} from "@/shared/api/projectGit";
 import { relayClient } from "@/shared/api/relayClient";
 import { signRelayEvent } from "@/shared/api/tauri";
 import { KIND_TEXT_NOTE } from "@/shared/constants/kinds";
 import type { Repository as Project } from "./hooks";
-import { ISSUE_ASSIGNMENT_LABEL, type ProjectIssue } from "./projectIssues.mjs";
+import {
+  ISSUE_ASSIGNMENT_LABEL,
+  ISSUE_UNASSIGNMENT_LABEL,
+  nextProjectIssueCommentCreatedAt,
+  type ProjectIssue,
+} from "./projectIssues.mjs";
 
-// Issue assignments mirror PR review requests (pullRequestReviews.ts):
-// labeled kind:1 comments whose `p` tags are the assignees. Parsing
-// trusts assignments signed by the issue author or repo owner, plus
-// self-assignments (the sole `p` tag is the signer). The `p` tags land
-// the assignment in the assignee's mention feed (inbox).
-async function assignProjectIssue({
-  assignees,
-  assigneeLabel,
-  issue,
-  project,
-  signAsManagedOwner,
-}: {
+function nextAssignmentOperationCreatedAt(
+  issue: ProjectIssue,
+  project: Project,
+  signAsManagedOwner: boolean,
+  signerPubkey: string,
+) {
+  const signer = signAsManagedOwner ? project.owner : signerPubkey;
+  return nextProjectIssueCommentCreatedAt(
+    issue,
+    Math.floor(Date.now() / 1_000),
+    signer,
+  );
+}
+
+function normalizedAssigneeLabel(label: string) {
+  const normalized = label.trim();
+  if (normalized.length === 0 || Array.from(normalized).length > 128) {
+    throw new Error("Assignee label must be between 1 and 128 characters.");
+  }
+  return normalized;
+}
+
+type IssueAssignmentOperation = "assign" | "unassign";
+type IssueAssignmentMutationInput = {
   assignees: string[];
   assigneeLabel: string;
   issue: ProjectIssue;
-  project: Project;
+  signerPubkey: string;
   signAsManagedOwner: boolean;
+};
+
+async function writeProjectIssueAssignment({
+  assignees,
+  assigneeLabel,
+  issue,
+  operation,
+  project,
+  signerPubkey,
+  signAsManagedOwner,
+}: IssueAssignmentMutationInput & {
+  operation: IssueAssignmentOperation;
+  project: Project;
 }): Promise<void> {
   if (assignees.length === 0) {
     throw new Error("Select at least one assignee.");
   }
+  const normalizedLabel = normalizedAssigneeLabel(assigneeLabel);
   const assigneePubkeys = [
     ...new Set(assignees.map((pubkey) => pubkey.toLowerCase())),
   ];
+  const createdAt = nextAssignmentOperationCreatedAt(
+    issue,
+    project,
+    signAsManagedOwner,
+    signerPubkey,
+  );
+  const isAssignment = operation === "assign";
+  const content = isAssignment
+    ? `Assigned this issue to ${normalizedLabel}`
+    : `Unassigned ${normalizedLabel} from this issue`;
+  const label = isAssignment
+    ? ISSUE_ASSIGNMENT_LABEL
+    : ISSUE_UNASSIGNMENT_LABEL;
   if (signAsManagedOwner) {
-    await signProjectIssueAssignment({
+    const signManagedOperation = isAssignment
+      ? signProjectIssueAssignment
+      : signProjectIssueUnassignment;
+    await signManagedOperation({
       targetOwner: project.owner,
       repoAddress: project.repoAddress,
       issueId: issue.id,
       assignees: assigneePubkeys,
-      assigneeLabel,
+      assigneeLabel: normalizedLabel,
+      createdAt,
     });
     return;
   }
   const event = await signRelayEvent({
     kind: KIND_TEXT_NOTE,
-    content: `Assigned this issue to ${assigneeLabel}`,
+    content,
+    createdAt,
     tags: [
       ["e", issue.id, "", "root"],
       ["a", project.repoAddress],
       ...assigneePubkeys.map((pubkey) => ["p", pubkey]),
-      ["t", ISSUE_ASSIGNMENT_LABEL],
+      ["t", label],
     ],
   });
 
   await relayClient.publishEvent(
     event,
-    "Timed out assigning issue.",
-    "Failed to assign issue.",
+    `Timed out ${operation}ing issue.`,
+    `Failed to ${operation} issue.`,
   );
 }
 
@@ -77,32 +129,33 @@ export function useProjectIssueWriteInvalidation(
   }, [project?.id, queryClient]);
 }
 
-export function useAssignProjectIssueMutation(
+function useProjectIssueAssignmentMutation(
   project: Project | null | undefined,
+  operation: IssueAssignmentOperation,
 ) {
   const invalidate = useProjectIssueWriteInvalidation(project);
 
   return useMutation({
-    mutationFn: ({
-      assignees,
-      assigneeLabel,
-      issue,
-      signAsManagedOwner,
-    }: {
-      assignees: string[];
-      assigneeLabel: string;
-      issue: ProjectIssue;
-      signAsManagedOwner: boolean;
-    }) => {
+    mutationFn: (input: IssueAssignmentMutationInput) => {
       if (!project) throw new Error("No project selected.");
-      return assignProjectIssue({
-        assignees,
-        assigneeLabel,
-        issue,
+      return writeProjectIssueAssignment({
+        ...input,
+        operation,
         project,
-        signAsManagedOwner,
       });
     },
     onSuccess: invalidate,
   });
+}
+
+export function useAssignProjectIssueMutation(
+  project: Project | null | undefined,
+) {
+  return useProjectIssueAssignmentMutation(project, "assign");
+}
+
+export function useUnassignProjectIssueMutation(
+  project: Project | null | undefined,
+) {
+  return useProjectIssueAssignmentMutation(project, "unassign");
 }

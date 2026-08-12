@@ -1,5 +1,5 @@
 import * as React from "react";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useLocation } from "@tanstack/react-router";
 
 import { usePreviewFeatureWarning } from "@/shared/features";
 import { isEntityLinkTab } from "@/shared/lib/entityLink";
@@ -31,11 +31,20 @@ function ProjectDetailRouteComponent() {
   const { projectId } = Route.useParams();
   const { commitHash, pullRequestId, issueId, repositoryId, tab } =
     Route.useSearch();
+  const entityNavigationId = useLocation({
+    select: (location) => {
+      const value = (
+        location.state as { entityNavigationId?: unknown } | undefined
+      )?.entityNavigationId;
+      return typeof value === "string" ? value : undefined;
+    },
+  });
 
   return (
     <React.Suspense fallback={<ViewLoadingFallback kind="projects" />}>
       <ProjectDetailScreen
         commitHash={commitHash}
+        entityNavigationId={entityNavigationId}
         issueId={issueId}
         projectId={projectId}
         pullRequestId={pullRequestId}

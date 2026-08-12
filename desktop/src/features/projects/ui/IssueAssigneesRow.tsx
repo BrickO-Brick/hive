@@ -1,10 +1,13 @@
-import { Search } from "lucide-react";
+import { Search, X } from "lucide-react";
 import * as React from "react";
 import { toast } from "sonner";
 
 import { useIsArchivedPredicate } from "@/features/identity-archive/hooks";
 import type { Repository as Project } from "@/features/projects/hooks";
-import { useAssignProjectIssueMutation } from "@/features/projects/issueAssignments";
+import {
+  useAssignProjectIssueMutation,
+  useUnassignProjectIssueMutation,
+} from "@/features/projects/issueAssignments";
 import type { ProjectIssue } from "@/features/projects/projectIssues.mjs";
 import { useUserSearchQuery } from "@/features/profile/hooks";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
@@ -104,8 +107,9 @@ export function IssueAssigneesRow({
 }) {
   const [pickerOpen, setPickerOpen] = React.useState(false);
   const [assigneeQuery, setAssigneeQuery] = React.useState("");
-  const assignInFlightRef = React.useRef(false);
+  const assignmentOperationInFlightRef = React.useRef(false);
   const assignMutation = useAssignProjectIssueMutation(project);
+  const unassignMutation = useUnassignProjectIssueMutation(project);
   const deferredAssigneeQuery = React.useDeferredValue(assigneeQuery.trim());
   const currentAssignees = React.useMemo(
     () => new Set(issue.assignees.map(normalizePubkey)),
@@ -127,6 +131,8 @@ export function IssueAssigneesRow({
       }),
     [currentAssignees, isArchivedDiscovery, userSearchQuery.data],
   );
+  const viewer = viewerPubkey ? normalizePubkey(viewerPubkey) : null;
+  const operationSigner = viewer ?? project.owner;
 
   const handleAssign = React.useCallback(
     async (
@@ -134,13 +140,15 @@ export function IssueAssigneesRow({
       assigneeLabel: string,
       options?: { asManagedOwner?: boolean },
     ) => {
-      if (assignMutation.isPending || assignInFlightRef.current) return;
-      assignInFlightRef.current = true;
+      if (assignMutation.isPending || assignmentOperationInFlightRef.current)
+        return;
+      assignmentOperationInFlightRef.current = true;
       try {
         await assignMutation.mutateAsync({
           assignees: [pubkey],
           assigneeLabel,
           issue,
+          signerPubkey: operationSigner,
           signAsManagedOwner: options?.asManagedOwner ?? false,
         });
         setPickerOpen(false);
@@ -151,17 +159,41 @@ export function IssueAssigneesRow({
           error instanceof Error ? error.message : "Failed to assign issue.",
         );
       } finally {
-        assignInFlightRef.current = false;
+        assignmentOperationInFlightRef.current = false;
       }
     },
-    [assignMutation, issue],
+    [assignMutation, issue, operationSigner],
+  );
+
+  const handleUnassign = React.useCallback(
+    async (pubkey: string, assigneeLabel: string) => {
+      if (unassignMutation.isPending || assignmentOperationInFlightRef.current)
+        return;
+      assignmentOperationInFlightRef.current = true;
+      try {
+        await unassignMutation.mutateAsync({
+          assignees: [pubkey],
+          assigneeLabel,
+          issue,
+          signerPubkey: operationSigner,
+          signAsManagedOwner,
+        });
+        toast.success("Issue unassigned.");
+      } catch (error) {
+        toast.error(
+          error instanceof Error ? error.message : "Failed to unassign issue.",
+        );
+      } finally {
+        assignmentOperationInFlightRef.current = false;
+      }
+    },
+    [issue, operationSigner, signAsManagedOwner, unassignMutation],
   );
 
   React.useEffect(() => {
     if (!pickerOpen) setAssigneeQuery("");
   }, [pickerOpen]);
 
-  const viewer = viewerPubkey ? normalizePubkey(viewerPubkey) : null;
   const canSelfAssign =
     viewer !== null && !canAssignOthers && !currentAssignees.has(viewer);
 
@@ -174,19 +206,43 @@ export function IssueAssigneesRow({
       {issue.assignees.map((pubkey) => {
         const profile = profileForPubkey(pubkey, profiles);
         const label = labelForPubkey(pubkey, profiles);
+        const canUnassign =
+          canAssignOthers ||
+          (viewer !== null && normalizePubkey(pubkey) === viewer);
+        const avatar = (
+          <UserAvatar
+            accent={profile?.isAgent === true}
+            avatarUrl={profile?.avatarUrl ?? null}
+            displayName={label}
+            size="xs"
+          />
+        );
         return (
           <Tooltip key={pubkey}>
             <TooltipTrigger asChild>
-              <span className="inline-flex">
-                <UserAvatar
-                  accent={profile?.isAgent === true}
-                  avatarUrl={profile?.avatarUrl ?? null}
-                  displayName={label}
-                  size="xs"
-                />
-              </span>
+              {canUnassign ? (
+                <button
+                  aria-label={`Unassign ${label}`}
+                  className="group relative inline-flex rounded-full"
+                  data-testid={`project-issue-unassign-${normalizePubkey(pubkey)}`}
+                  disabled={unassignMutation.isPending}
+                  onClick={() => {
+                    void handleUnassign(pubkey, label);
+                  }}
+                  type="button"
+                >
+                  {avatar}
+                  <span className="absolute inset-0 flex items-center justify-center rounded-full bg-background/80 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+                    <X className="h-3 w-3 text-foreground" />
+                  </span>
+                </button>
+              ) : (
+                <span className="inline-flex">{avatar}</span>
+              )}
             </TooltipTrigger>
-            <TooltipContent>{label} — assigned</TooltipContent>
+            <TooltipContent>
+              {canUnassign ? `Unassign ${label}` : `${label} — assigned`}
+            </TooltipContent>
           </Tooltip>
         );
       })}
@@ -194,7 +250,7 @@ export function IssueAssigneesRow({
         <Button
           className="h-6 px-1 text-xs text-muted-foreground hover:text-foreground"
           data-testid="project-issue-self-assign"
-          disabled={assignMutation.isPending}
+          disabled={assignMutation.isPending || unassignMutation.isPending}
           onClick={() => {
             void handleAssign(viewer, labelForPubkey(viewer, profiles));
           }}
@@ -211,7 +267,7 @@ export function IssueAssigneesRow({
             <Button
               className="h-6 px-1 text-xs text-muted-foreground hover:text-foreground"
               data-testid="project-issue-assign"
-              disabled={assignMutation.isPending}
+              disabled={assignMutation.isPending || unassignMutation.isPending}
               size="xs"
               type="button"
               variant="ghost"

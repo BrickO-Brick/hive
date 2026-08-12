@@ -489,52 +489,71 @@ mod tests {
     use super::{
         parse_add_community_deep_link, parse_entity_deep_link, parse_join_deep_link,
         parse_message_deep_link, parse_nostr_bind_deep_link, PendingCommunityDeepLink,
-        PendingCommunityDeepLinks,
+        PendingCommunityDeepLinks, ENTITY_LINK_TABS,
     };
 
-    const OWNER: &str = "71d67180ba17e749ee825fc8819c9c6ee7003617e1c126504f9b658070ab9224";
-    const EVENT_ID: &str = "c3b589fa5713ba25bad6dc095e2de00a4ac8f50050fdea00fc6444e603be1dd1";
+    fn entity_link_golden() -> serde_json::Value {
+        serde_json::from_str(include_str!("../../../test-fixtures/entity-links.json"))
+            .expect("valid entity-links golden fixture")
+    }
 
     #[test]
     fn parse_entity_deep_link_accepts_every_share_link_shape() {
-        for raw in [
-            format!("buzz://repo?owner={OWNER}&d=buzz-world"),
-            format!("buzz://project?owner={OWNER}&d=buzz-world"),
-            format!("buzz://repo?owner={OWNER}&d=buzz-world&tab=prs"),
-            format!("buzz://project?owner={OWNER}&d=buzz-world&tab=issues"),
-            format!("buzz://pr?id={EVENT_ID}&owner={OWNER}&d=buzz-world"),
-            format!("buzz://issue?id={EVENT_ID}&owner={OWNER}&d=buzz-world"),
-        ] {
+        let golden = entity_link_golden();
+        let owner = golden["owner"].as_str().unwrap();
+        let dtag = golden["dtag"].as_str().unwrap();
+        for raw in golden["links"]
+            .as_object()
+            .unwrap()
+            .values()
+            .map(|value| value.as_str().unwrap().to_owned())
+            .chain(golden["tabs"].as_array().unwrap().iter().map(|tab| {
+                format!(
+                    "buzz://repo?owner={owner}&d={dtag}&tab={}",
+                    tab.as_str().unwrap()
+                )
+            }))
+        {
             assert!(
                 parse_entity_deep_link(&Url::parse(&raw).unwrap()).is_some(),
                 "{raw}"
             );
         }
+        let expected_tabs = golden["tabs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tab| tab.as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(ENTITY_LINK_TABS.as_slice(), expected_tabs);
     }
 
     #[test]
     fn parse_entity_deep_link_rejects_malformed_and_non_canonical_links() {
+        let golden = entity_link_golden();
+        let owner = golden["owner"].as_str().unwrap();
+        let event_id = golden["eventId"].as_str().unwrap();
         for raw in [
             // Missing or malformed identifiers.
-            format!("buzz://repo?owner={OWNER}"),
+            format!("buzz://repo?owner={owner}"),
             "buzz://repo?owner=nope&d=buzz-world".to_owned(),
-            format!("buzz://repo?owner={OWNER}&d=.hidden"),
-            format!("buzz://repo?owner={OWNER}&d=has%20space"),
-            format!("buzz://pr?owner={OWNER}&d=buzz-world"),
-            format!("buzz://pr?id=short&owner={OWNER}&d=buzz-world"),
+            format!("buzz://repo?owner={owner}&d=.hidden"),
+            format!("buzz://repo?owner={owner}&d=has%20space"),
+            format!("buzz://pr?owner={owner}&d=buzz-world"),
+            format!("buzz://pr?id=short&owner={owner}&d=buzz-world"),
             // Coordinate links take no event id.
-            format!("buzz://repo?id={EVENT_ID}&owner={OWNER}&d=buzz-world"),
+            format!("buzz://repo?id={event_id}&owner={owner}&d=buzz-world"),
             // Non-canonical: unknown param, duplicate param, path, fragment.
-            format!("buzz://repo?owner={OWNER}&d=buzz-world&relay=wss%3A%2F%2Fx.example"),
-            format!("buzz://repo?owner={OWNER}&owner={OWNER}&d=buzz-world"),
+            format!("buzz://repo?owner={owner}&d=buzz-world&relay=wss%3A%2F%2Fx.example"),
+            format!("buzz://repo?owner={owner}&owner={owner}&d=buzz-world"),
             // Unknown tab value, duplicate tab, and tab on an event link.
-            format!("buzz://repo?owner={OWNER}&d=buzz-world&tab=overview"),
-            format!("buzz://repo?owner={OWNER}&d=buzz-world&tab=prs&tab=prs"),
-            format!("buzz://pr?id={EVENT_ID}&owner={OWNER}&d=buzz-world&tab=prs"),
-            format!("buzz://repo/extra?owner={OWNER}&d=buzz-world"),
-            format!("buzz://repo?owner={OWNER}&d=buzz-world#top"),
+            format!("buzz://repo?owner={owner}&d=buzz-world&tab=overview"),
+            format!("buzz://repo?owner={owner}&d=buzz-world&tab=prs&tab=prs"),
+            format!("buzz://pr?id={event_id}&owner={owner}&d=buzz-world&tab=prs"),
+            format!("buzz://repo/extra?owner={owner}&d=buzz-world"),
+            format!("buzz://repo?owner={owner}&d=buzz-world#top"),
             // Not an entity host.
-            format!("buzz://message?owner={OWNER}&d=buzz-world"),
+            format!("buzz://message?owner={owner}&d=buzz-world"),
         ] {
             assert!(
                 parse_entity_deep_link(&Url::parse(&raw).unwrap()).is_none(),

@@ -91,6 +91,7 @@ export function WorkspaceTabs({
   createPullRequestAction,
   updatePullRequestAction,
   initialTab,
+  initialTabRequestKey,
   localSnapshot,
   localSnapshotError,
   localSnapshotLoading,
@@ -132,6 +133,8 @@ export function WorkspaceTabs({
   updatePullRequestAction?: UpdatePullRequestAction;
   /** Tab to open on mount (workspace vocabulary), e.g. from a share link. */
   initialTab?: string;
+  /** Changes for every entity-link activation, including repeated links. */
+  initialTabRequestKey?: string;
   localSnapshot: ProjectLocalRepoSnapshot | null | undefined;
   localSnapshotError: unknown;
   localSnapshotLoading: boolean;
@@ -227,9 +230,10 @@ export function WorkspaceTabs({
   );
   // Follow later share-link navigations to the same project (the search
   // param changes without a remount).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: request key intentionally retriggers an unchanged tab.
   React.useEffect(() => {
     if (initialTab) setSelectedTab(initialTab);
-  }, [initialTab]);
+  }, [initialTab, initialTabRequestKey]);
   const [pullRequestCommentTarget, setPullRequestCommentTarget] =
     React.useState<{
       anchor: ProjectPullRequestCommentAnchor;
