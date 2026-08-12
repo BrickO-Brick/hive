@@ -21,6 +21,15 @@ async function navigateToWorkflows(page: import("@playwright/test").Page) {
   await expect(page.getByTestId("workflows-view")).toBeVisible();
 }
 
+async function selectFirstChannel(dialog: import("@playwright/test").Locator) {
+  await dialog.getByRole("combobox", { name: "Channel" }).click();
+  await dialog
+    .getByTestId("channel-combobox-list")
+    .getByRole("button")
+    .first()
+    .click();
+}
+
 async function createWorkflow(
   page: import("@playwright/test").Page,
   name: string,
@@ -36,6 +45,11 @@ async function createWorkflow(
   await page.getByRole("button", { name: "Create Workflow" }).click();
   const dialog = page.getByRole("dialog");
   await expect(dialog).toBeVisible();
+  await expect(dialog.getByText("Choose a channel")).toBeVisible();
+  await expect(
+    dialog.getByRole("button", { name: "Create workflow" }),
+  ).toBeDisabled();
+  await selectFirstChannel(dialog);
 
   await dialog.getByLabel("Workflow name").fill(name);
   if (options?.description) {
@@ -122,6 +136,27 @@ test("switches an empty workflow between form and YAML modes", async ({
 
   await dialog.getByRole("tab", { name: "Form" }).click();
   await expect(dialog.getByLabel("Workflow name")).toBeVisible();
+});
+
+test("confirms before discarding workflow changes", async ({ page }) => {
+  await navigateToWorkflows(page);
+
+  await page.getByRole("button", { name: "Create Workflow" }).click();
+  const dialog = page.getByRole("dialog", { name: "Create workflow" });
+  await dialog.getByLabel("Workflow name").fill("unfinished_workflow");
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+
+  const confirmation = page.getByRole("alertdialog");
+  await expect(confirmation).toContainText("Discard changes?");
+  await confirmation.getByRole("button", { name: "Keep editing" }).click();
+  await expect(confirmation).not.toBeVisible();
+  await expect(dialog.getByLabel("Workflow name")).toHaveValue(
+    "unfinished_workflow",
+  );
+
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await confirmation.getByRole("button", { name: "Discard changes" }).click();
+  await expect(dialog).not.toBeVisible();
 });
 
 test("scrolls the channel list with the mouse wheel", async ({ page }) => {
@@ -314,6 +349,7 @@ test("duplicates a workflow", async ({ page }) => {
   await expect(page.getByText("Duplicate workflow")).toBeVisible();
 
   // Submit the duplicate
+  await selectFirstChannel(page.getByRole("dialog"));
   await page.getByRole("button", { name: "Create copy" }).click();
   await expect(page.getByRole("dialog")).not.toBeVisible();
 

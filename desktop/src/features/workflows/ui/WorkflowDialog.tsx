@@ -8,6 +8,16 @@ import {
 } from "@/features/workflows/hooks";
 import type { Channel, Workflow } from "@/shared/api/types";
 import { getRelayHttpUrl } from "@/shared/api/tauri";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/shared/ui/alert-dialog";
 import { Button } from "@/shared/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/shared/ui/tabs";
 import {
@@ -78,9 +88,7 @@ export function WorkflowDialog({
   workflow,
 }: WorkflowDialogProps) {
   const channelId =
-    mode === "edit" && workflow?.channelId
-      ? workflow.channelId
-      : (channels[0]?.id ?? "");
+    mode === "edit" && workflow?.channelId ? workflow.channelId : "";
 
   const [selectedChannelId, setSelectedChannelId] = React.useState(channelId);
   const [yamlDefinition, setYamlDefinition] = React.useState(() =>
@@ -99,6 +107,12 @@ export function WorkflowDialog({
     webhookSecret: string;
     workflowId: string;
   } | null>(null);
+  const [discardConfirmationOpen, setDiscardConfirmationOpen] =
+    React.useState(false);
+  const initialValuesRef = React.useRef({
+    channelId,
+    yaml: getInitialYaml(mode, workflow),
+  });
 
   const createMutation = useCreateWorkflowMutation(selectedChannelId);
   const updateMutation = useUpdateWorkflowMutation(workflow?.id ?? "");
@@ -107,7 +121,6 @@ export function WorkflowDialog({
   const selectedChannel =
     channels.find((c) => c.id === selectedChannelId) ?? null;
 
-  const defaultChannelId = channels[0]?.id ?? "";
   const workflowChannelId = workflow?.channelId ?? null;
   const resetCreate = createMutation.reset;
   const resetUpdate = updateMutation.reset;
@@ -116,37 +129,45 @@ export function WorkflowDialog({
   React.useEffect(() => {
     if (open) {
       const newChannelId =
-        mode === "edit" && workflowChannelId
-          ? workflowChannelId
-          : defaultChannelId;
+        mode === "edit" && workflowChannelId ? workflowChannelId : "";
       setSelectedChannelId(newChannelId);
       const initialYaml = getInitialYaml(mode, workflow);
+      initialValuesRef.current = {
+        channelId: newChannelId,
+        yaml: initialYaml,
+      };
       setYamlDefinition(initialYaml);
       setEditorMode(getInitialEditorMode(initialYaml));
       setEditorParseError(null);
       setSavedWebhookInfo(null);
+      setDiscardConfirmationOpen(false);
       resetCreate();
       resetUpdate();
     }
-  }, [
-    open,
-    mode,
-    workflow,
-    workflowChannelId,
-    defaultChannelId,
-    resetCreate,
-    resetUpdate,
-  ]);
+  }, [open, mode, workflow, workflowChannelId, resetCreate, resetUpdate]);
+
+  const closeDialog = React.useCallback(() => {
+    resetCreate();
+    resetUpdate();
+    setDiscardConfirmationOpen(false);
+    onOpenChange(false);
+  }, [onOpenChange, resetCreate, resetUpdate]);
+
+  const isDirty =
+    yamlDefinition !== initialValuesRef.current.yaml ||
+    selectedChannelId !== initialValuesRef.current.channelId;
 
   const handleOpenChange = React.useCallback(
     (nextOpen: boolean) => {
-      if (!nextOpen) {
-        resetCreate();
-        resetUpdate();
+      if (nextOpen) {
+        onOpenChange(true);
+      } else if (isDirty) {
+        setDiscardConfirmationOpen(true);
+      } else {
+        closeDialog();
       }
-      onOpenChange(nextOpen);
     },
-    [onOpenChange, resetCreate, resetUpdate],
+    [closeDialog, isDirty, onOpenChange],
   );
 
   async function handleSubmit() {
@@ -154,7 +175,7 @@ export function WorkflowDialog({
 
     try {
       const saved = await mutation.mutateAsync(yamlDefinition);
-      handleOpenChange(false);
+      closeDialog();
       if (saved.webhookSecret) {
         const relayHttpUrl = await getRelayHttpUrl();
         setSavedWebhookInfo({
@@ -195,8 +216,7 @@ export function WorkflowDialog({
     [editorMode, yamlDefinition],
   );
 
-  const showChannelSelector = mode !== "edit" && channels.length > 1;
-  const showChannelInfo = mode !== "edit" && channels.length === 1;
+  const showChannelSelector = mode !== "edit";
 
   return (
     <>
@@ -246,7 +266,7 @@ export function WorkflowDialog({
               parseError={editorParseError}
               scopeField={
                 showChannelSelector ? (
-                  <div>
+                  <div className="space-y-1">
                     <ChannelCombobox
                       channels={channels}
                       disabled={mutation.isPending}
@@ -257,13 +277,13 @@ export function WorkflowDialog({
                       }}
                       value={selectedChannelId}
                     />
-                    {!selectedChannel ? (
-                      <p className="text-xs text-muted-foreground">
+                    {channels.length === 0 ? (
+                      <p className="text-center text-xs text-muted-foreground">
                         Join or create a channel before adding a workflow.
                       </p>
                     ) : null}
                   </div>
-                ) : (showChannelInfo || mode === "edit") && selectedChannel ? (
+                ) : mode === "edit" && selectedChannel ? (
                   <div className="px-3 py-2">
                     <p className="text-lg font-semibold text-foreground">
                       {selectedChannel.name}
@@ -308,6 +328,32 @@ export function WorkflowDialog({
           </div>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog
+        onOpenChange={setDiscardConfirmationOpen}
+        open={discardConfirmationOpen}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Discard changes?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Your unsaved workflow changes will be lost.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel asChild>
+              <Button type="button" variant="outline">
+                Keep editing
+              </Button>
+            </AlertDialogCancel>
+            <AlertDialogAction asChild>
+              <Button onClick={closeDialog} type="button" variant="destructive">
+                Discard changes
+              </Button>
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {savedWebhookInfo ? (
         <WorkflowWebhookSecretDialog

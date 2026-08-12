@@ -102,7 +102,7 @@ export function ChannelCombobox({
           <span className="flex min-w-0 items-center justify-center gap-2">
             {selected ? <ChannelPrivacyIcon channel={selected} /> : null}
             <span className="truncate">
-              {selected ? selected.name : "Select a channel..."}
+              {selected ? selected.name : "Choose a channel"}
             </span>
             <ChevronDown className="ml-1 h-5 w-5 shrink-0 text-muted-foreground opacity-50 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
           </span>
