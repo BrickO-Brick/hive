@@ -2,14 +2,14 @@ use std::collections::HashMap;
 
 use tauri::AppHandle;
 
-use super::agent_env::build_buzz_agent_provider_defaults;
+use super::agent_env::{build_buzz_agent_provider_defaults, clear_inherited_provider_model_env};
 
 use crate::{
     managed_agents::{
-        append_log_marker, env_vars::DERIVED_PROVIDER_MODEL_ENV_KEYS, known_acp_runtime,
-        login_shell_path, managed_agent_log_path, missing_command_message, normalize_agent_args,
-        open_log_file, resolve_command, spawn_key_refusal, KnownAcpRuntime,
-        ManagedAgentPairRuntime, ManagedAgentRecord, ManagedAgentRuntimeKey, ManagedAgentSummary,
+        append_log_marker, known_acp_runtime, login_shell_path, managed_agent_log_path,
+        missing_command_message, normalize_agent_args, open_log_file, resolve_command,
+        spawn_key_refusal, KnownAcpRuntime, ManagedAgentPairRuntime, ManagedAgentRecord,
+        ManagedAgentRuntimeKey, ManagedAgentSummary,
     },
     util::now_iso,
 };
@@ -740,23 +740,7 @@ pub fn spawn_agent_child(
         resolve_session_title(record.display_name.as_deref(), &record.name),
     );
     build_buzz_agent_provider_defaults(&mut command);
-    // Clear inherited provider/model keys before deriving this agent's own.
-    //
-    // `DERIVED_PROVIDER_MODEL_ENV_KEYS` are refused at save time so a stale
-    // override cannot shadow the record's structured provider/model fields.
-    // That guard only covers env we *persist*: the child still inherits this
-    // process's environment, and Desktop inherits the user's login shell.
-    // A developer with goose installed exports `GOOSE_PROVIDER` there, and it
-    // reached the agent as if it were configuration — an agent set to OpenAI
-    // sent its OpenAI model to Anthropic and 404'd every turn while its
-    // settings still read "OpenAI" in the UI.
-    //
-    // Removing them here makes the record the only source: whatever
-    // `runtime_metadata_env_vars` derives below is what the child sees, and an
-    // agent with no configured provider gets none rather than the developer's.
-    for key in DERIVED_PROVIDER_MODEL_ENV_KEYS {
-        command.env_remove(key);
-    }
+    clear_inherited_provider_model_env(&mut command);
     if let Some(meta) = runtime_meta {
         for (key, value) in runtime_metadata_env_vars(
             meta.model_env_var,

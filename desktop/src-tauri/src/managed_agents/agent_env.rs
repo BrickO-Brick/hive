@@ -97,6 +97,29 @@ pub(crate) fn build_buzz_agent_provider_defaults(cmd: &mut std::process::Command
     }
 }
 
+/// Drop inherited provider/model env before an agent's own is derived.
+///
+/// `DERIVED_PROVIDER_MODEL_ENV_KEYS` are refused at save time so a stale
+/// override cannot shadow the record's structured provider/model fields. That
+/// guard only covers env we *persist*: the spawned child still inherits this
+/// process's environment, and Desktop inherits the user's login shell. A
+/// developer with goose installed exports `GOOSE_PROVIDER` there, and it
+/// reached the agent as if it were configuration — an agent set to OpenAI sent
+/// its OpenAI model to Anthropic and 404'd every turn while its settings still
+/// read "OpenAI" in the UI.
+///
+/// Clearing them makes the record the only source: whatever
+/// `runtime_metadata_env_vars` writes afterwards is what the child sees, and an
+/// agent with no configured provider gets none rather than the developer's.
+///
+/// Call AFTER `build_buzz_agent_provider_defaults` and BEFORE the record's own
+/// provider/model env.
+pub(crate) fn clear_inherited_provider_model_env(cmd: &mut std::process::Command) {
+    for key in super::env_vars::DERIVED_PROVIDER_MODEL_ENV_KEYS {
+        cmd.env_remove(key);
+    }
+}
+
 /// Parse newline-delimited `KEY=VALUE` lines from a baked env blob.
 /// Blank lines are skipped. Each non-blank line must contain `=`; the key
 /// is everything before the first `=`, the value is everything after (values
@@ -122,7 +145,7 @@ pub(crate) fn parse_agent_env_lines(raw: &str) -> Vec<(&str, &str)> {
 mod tests {
     use super::{
         baked_build_env, build_buzz_agent_provider_defaults, build_env_map,
-        discovery_env_with_baked_floor, parse_agent_env_lines,
+        clear_inherited_provider_model_env, discovery_env_with_baked_floor, parse_agent_env_lines,
     };
 
     #[test]
@@ -167,10 +190,8 @@ mod tests {
             cmd.env(key, "inherited-from-login-shell");
         }
 
-        // The clearing step under test, mirrored from `spawn_agent_child`.
-        for key in super::super::env_vars::DERIVED_PROVIDER_MODEL_ENV_KEYS {
-            cmd.env_remove(key);
-        }
+        // The clearing step under test, as `spawn_agent_child` calls it.
+        clear_inherited_provider_model_env(&mut cmd);
         // Then the record's own values, as `runtime_metadata_env_vars` writes.
         cmd.env("BUZZ_AGENT_PROVIDER", "openai");
         cmd.env("BUZZ_AGENT_MODEL", "gpt-5.6-sol");
