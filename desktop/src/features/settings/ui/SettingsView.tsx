@@ -3,6 +3,8 @@ import { getVersion } from "@tauri-apps/api/app";
 import { AlertCircle, ArrowLeft, LoaderCircle, RefreshCw } from "lucide-react";
 
 import { useMyRelayMembershipLookupQuery } from "@/features/community-members/hooks";
+import { useModerationNavResolution } from "@/features/admin-console/hooks";
+import { shouldShowModerationNav } from "@/features/admin-console/nav";
 import {
   canManageCommunityMembers,
   shouldWarnMissingMembershipSnapshot,
@@ -67,18 +69,11 @@ export const settingsNavGroups: Array<{
   },
   {
     label: "Communities",
-    sections: ["hosted-communities", "community-members"],
+    sections: ["hosted-communities", "community-members", "moderation"],
   },
   {
     label: "App",
-    sections: [
-      "agents",
-      "compute",
-      "experimental",
-      "mobile",
-      "updates",
-      "admin-console",
-    ],
+    sections: ["agents", "compute", "experimental", "mobile", "updates"],
   },
 ];
 
@@ -136,6 +131,7 @@ export function SettingsView({
 }: SettingsViewProps) {
   const { isMobile, open: sidebarOpen, setOpen: setSidebarOpen } = useSidebar();
   const myMembershipQuery = useMyRelayMembershipLookupQuery();
+  const moderationNav = useModerationNavResolution();
   const featureState = useFeatureSnapshot();
   const visibleSections = React.useMemo(() => {
     return settingsSections.filter((s) => {
@@ -153,9 +149,14 @@ export function SettingsView({
       if (s.value === "community-members") {
         return canManageCommunityMembers(myMembershipQuery.data);
       }
+      // Moderation surfaces the relay admin console. Hidden until the origin
+      // resolves (no flash of a dead entry); then gated by origin + probe.
+      if (s.value === "moderation") {
+        return moderationNav != null && shouldShowModerationNav(moderationNav);
+      }
       return true;
     });
-  }, [myMembershipQuery.data, featureState]);
+  }, [myMembershipQuery.data, moderationNav, featureState]);
 
   const [isLoaded, setIsLoaded] = React.useState(false);
   const [appVersion, setAppVersion] = React.useState<string | null>(null);

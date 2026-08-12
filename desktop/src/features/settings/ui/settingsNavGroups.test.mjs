@@ -3,22 +3,42 @@ import test from "node:test";
 
 import { settingsNavGroups } from "./SettingsView.tsx";
 
-test("admin-console is present in the App nav group", () => {
-  const appGroup = settingsNavGroups.find((g) => g.label === "App");
-  assert.ok(appGroup, "App group must exist in settingsNavGroups");
+test("moderation is wired into the Communities nav group", () => {
+  const communitiesGroup = settingsNavGroups.find(
+    (g) => g.label === "Communities",
+  );
   assert.ok(
-    appGroup.sections.includes("admin-console"),
-    `expected "admin-console" in App group sections, got: ${JSON.stringify(appGroup.sections)}`,
+    communitiesGroup,
+    "Communities group must exist in settingsNavGroups",
+  );
+  assert.ok(
+    communitiesGroup.sections.includes("moderation"),
+    `expected "moderation" in Communities group sections, got: ${JSON.stringify(communitiesGroup.sections)}`,
   );
 });
 
-test("admin-console is the last entry in the App nav group", () => {
-  const appGroup = settingsNavGroups.find((g) => g.label === "App");
-  assert.ok(appGroup, "App group must exist in settingsNavGroups");
-  const last = appGroup.sections.at(-1);
-  assert.equal(
-    last,
-    "admin-console",
-    `expected "admin-console" to be last in App group, got: ${last}`,
+test("moderation follows community-members in the Communities nav group", () => {
+  const communitiesGroup = settingsNavGroups.find(
+    (g) => g.label === "Communities",
   );
+  assert.ok(
+    communitiesGroup,
+    "Communities group must exist in settingsNavGroups",
+  );
+  const membersIndex = communitiesGroup.sections.indexOf("community-members");
+  const moderationIndex = communitiesGroup.sections.indexOf("moderation");
+  assert.ok(membersIndex !== -1, "community-members must be present");
+  assert.ok(
+    moderationIndex > membersIndex,
+    `expected "moderation" after "community-members", got: ${JSON.stringify(communitiesGroup.sections)}`,
+  );
+});
+
+test("the removed admin-console id is not wired into any nav group", () => {
+  for (const group of settingsNavGroups) {
+    assert.ok(
+      !group.sections.includes("admin-console"),
+      `"admin-console" must not appear in the "${group.label}" group`,
+    );
+  }
 });

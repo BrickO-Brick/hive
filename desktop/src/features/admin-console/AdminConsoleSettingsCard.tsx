@@ -23,6 +23,7 @@ import {
   AlertCircle,
   Check,
   CheckCircle2,
+  ChevronRight,
   Copy,
   Info,
   LoaderCircle,
@@ -228,8 +229,8 @@ export function AdminConsoleSettingsCard() {
       data-testid="settings-admin-console"
     >
       <SettingsSectionHeader
-        title="Admin console"
-        description="Connect to your relay's deployment admin API. Auto-detected from your relay when available — otherwise paste the value of BUZZ_ADMIN_HOST from your relay config."
+        title="Moderation"
+        description="Triage moderation reports and product feedback across every community on your relay. Auto-detected from your relay when available — otherwise open Advanced to paste the value of BUZZ_ADMIN_HOST from your relay config."
       />
       {pubkeyHex ? (
         <AdminConsoleSettingsSession key={pubkeyHex} pubkeyHex={pubkeyHex} />
@@ -412,58 +413,66 @@ function AdminConsoleSettingsSession({ pubkeyHex }: { pubkeyHex: string }) {
   return (
     <>
       <div className="mb-6 space-y-3">
-        <div className="flex gap-2">
-          <Input
-            autoComplete="off"
-            className="flex-1 font-mono text-sm"
-            data-testid="admin-origin-input"
-            disabled={isSaving}
-            onChange={(e) => {
-              setOriginInput(e.target.value);
-              // General reset: abort and clear probe state on every input
-              // change, not only when state is `probing`. This prevents a
-              // stale probe result from a previous value being committed.
-              abortAndResetProbe();
-            }}
-            placeholder="https://admin.yourrelay.example.com"
-            spellCheck={false}
-            type="url"
-            value={originInput}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") void handleSave();
-            }}
-          />
-          <Button
-            data-testid="admin-origin-save"
-            disabled={isSaving || !inputChanged}
-            onClick={() => void handleSave()}
-            size="sm"
-            type="button"
-            variant={inputChanged ? "default" : "outline"}
-          >
-            {isSaving ? (
-              <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              "Save"
-            )}
-          </Button>
-          {savedOrigin && (
-            <Button
-              className={cn(
-                "text-xs",
-                probeUiState.kind === "probing" && "opacity-50",
+        <details className="group/advanced rounded-md border border-border/60">
+          <summary className="flex cursor-pointer list-none items-center gap-1.5 px-3 py-2 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+            <ChevronRight className="h-3.5 w-3.5 shrink-0 transition-transform group-open/advanced:rotate-90" />
+            Advanced: admin origin
+          </summary>
+          <div className="space-y-3 px-3 pb-3">
+            <div className="flex gap-2">
+              <Input
+                autoComplete="off"
+                className="flex-1 font-mono text-sm"
+                data-testid="admin-origin-input"
+                disabled={isSaving}
+                onChange={(e) => {
+                  setOriginInput(e.target.value);
+                  // General reset: abort and clear probe state on every input
+                  // change, not only when state is `probing`. This prevents a
+                  // stale probe result from a previous value being committed.
+                  abortAndResetProbe();
+                }}
+                placeholder="https://admin.yourrelay.example.com"
+                spellCheck={false}
+                type="url"
+                value={originInput}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void handleSave();
+                }}
+              />
+              <Button
+                data-testid="admin-origin-save"
+                disabled={isSaving || !inputChanged}
+                onClick={() => void handleSave()}
+                size="sm"
+                type="button"
+                variant={inputChanged ? "default" : "outline"}
+              >
+                {isSaving ? (
+                  <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  "Save"
+                )}
+              </Button>
+              {savedOrigin && (
+                <Button
+                  className={cn(
+                    "text-xs",
+                    probeUiState.kind === "probing" && "opacity-50",
+                  )}
+                  data-testid="admin-probe-refresh"
+                  disabled={probeUiState.kind === "probing"}
+                  onClick={() => runProbe(savedOrigin)}
+                  size="sm"
+                  type="button"
+                  variant="ghost"
+                >
+                  Re-probe
+                </Button>
               )}
-              data-testid="admin-probe-refresh"
-              disabled={probeUiState.kind === "probing"}
-              onClick={() => runProbe(savedOrigin)}
-              size="sm"
-              type="button"
-              variant="ghost"
-            >
-              Re-probe
-            </Button>
-          )}
-        </div>
+            </div>
+          </div>
+        </details>
 
         <div className="min-h-[1.5rem]">
           <ProbeStatusBadge uiState={probeUiState} />

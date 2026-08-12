@@ -6,6 +6,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { AlertCircle, LoaderCircle } from "lucide-react";
 import { formatRelativeTime } from "../forum/lib/time";
 
@@ -172,4 +173,76 @@ export function parseImetaAttachments(tags: unknown): AttachmentMeta[] {
     result.push({ sha256, mime, size });
   }
   return result;
+}
+
+// ── Community grouping ─────────────────────────────────────────────────────
+
+/** A run of rows that share one community, tagged with its display host. */
+export type CommunityGroup<T> = {
+  /** Stable community identifier — used as the React key. */
+  communityId: string;
+  /** Human-facing host label rendered as the group heading. */
+  communityHost: string;
+  items: T[];
+};
+
+/**
+ * Group deployment-wide rows by community, preserving each community's
+ * first-seen order and the server's row order within it.
+ *
+ * The admin API returns reports and feedback across every community on the
+ * deployment; operators triage per community, so rows are bucketed by
+ * `communityId` (stable) and labelled by `communityHost` (display). A blank
+ * host falls back to the id so a group is never headed by an empty string.
+ */
+export function groupByCommunity<
+  T extends { communityId: string; communityHost: string },
+>(items: T[]): CommunityGroup<T>[] {
+  const groups: CommunityGroup<T>[] = [];
+  const byId = new Map<string, CommunityGroup<T>>();
+  for (const item of items) {
+    let group = byId.get(item.communityId);
+    if (!group) {
+      group = {
+        communityId: item.communityId,
+        communityHost: item.communityHost || item.communityId,
+        items: [],
+      };
+      byId.set(item.communityId, group);
+      groups.push(group);
+    }
+    group.items.push(item);
+  }
+  return groups;
+}
+
+/**
+ * Render community-grouped rows under per-community headings.
+ *
+ * A single community collapses to a flat list (no redundant heading); two or
+ * more render a labelled section each. `renderItem` produces the row for one
+ * entry — the caller owns row markup so navigation/testids are unchanged.
+ */
+export function CommunityGroupedList<
+  T extends { communityId: string; communityHost: string },
+>({ items, renderItem }: { items: T[]; renderItem: (item: T) => ReactNode }) {
+  const groups = groupByCommunity(items);
+  if (groups.length <= 1) {
+    return <ul className="space-y-1">{items.map(renderItem)}</ul>;
+  }
+  return (
+    <div className="space-y-4">
+      {groups.map((group) => (
+        <section key={group.communityId} data-testid="community-group">
+          <h4
+            className="mb-1.5 text-xs font-semibold text-muted-foreground"
+            data-testid="community-group-host"
+          >
+            {group.communityHost}
+          </h4>
+          <ul className="space-y-1">{group.items.map(renderItem)}</ul>
+        </section>
+      ))}
+    </div>
+  );
 }

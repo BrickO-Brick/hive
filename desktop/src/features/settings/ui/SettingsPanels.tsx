@@ -14,7 +14,6 @@ import {
   MonitorCog,
   Moon,
   ShieldAlert,
-  ShieldCheck,
   Smartphone,
   Smile,
   Sun,
@@ -67,7 +66,6 @@ import { ExperimentalFeaturesCard } from "./ExperimentalFeaturesCard";
 import { KeyboardShortcutsCard } from "./KeyboardShortcutsCard";
 import { MeshComputeSettingsCard } from "@/features/mesh-compute/ui/MeshComputeSettingsCard";
 import { MobilePairingCard } from "./MobilePairingCard";
-import { ModerationQueueCard } from "./ModerationQueueCard";
 import { NotificationSettingsCard } from "./NotificationSettingsCard";
 import { AgentsSettingsPanel } from "./AgentsSettingsPanel";
 import { HostedCommunitiesSettingsCard } from "./HostedCommunitiesSettingsCard";
@@ -96,7 +94,6 @@ export type SettingsSection =
   | "hosted-communities"
   | "community-members"
   | "moderation"
-  | "admin-console"
   | "custom-emoji"
   | "local-archive"
   | "mobile"
@@ -117,7 +114,6 @@ const SETTINGS_SECTION_VALUES: readonly SettingsSection[] = [
   "hosted-communities",
   "community-members",
   "moderation",
-  "admin-console",
   "custom-emoji",
   "local-archive",
   "mobile",
@@ -216,11 +212,6 @@ export const settingsSections: SettingsSectionDescriptor[] = [
     value: "moderation",
     label: "Moderation",
     icon: ShieldAlert,
-  },
-  {
-    value: "admin-console",
-    label: "Moderation console",
-    icon: ShieldCheck,
   },
   {
     value: "custom-emoji",
@@ -858,8 +849,6 @@ export function renderSettingsSection(
         <CommunityMembersSettingsCard currentPubkey={props.currentPubkey} />
       );
     case "moderation":
-      return <ModerationQueueCard />;
-    case "admin-console":
       return <AdminConsoleSettingsCard />;
     case "custom-emoji":
       return <CustomEmojiSettingsCard />;
