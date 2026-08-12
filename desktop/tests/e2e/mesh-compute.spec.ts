@@ -161,21 +161,15 @@ test("a consuming client can switch to sharing its saved local model", async ({
   });
 });
 
-test("Shared Compute sidebar row opens the Compute community view", async ({
-  page,
-}) => {
+test("Shared Compute is only available from Settings", async ({ page }) => {
   await installMockBridge(page);
   await page.goto("/");
 
-  await page.getByTestId("sidebar-mesh-compute-row").click();
+  await expect(page.getByTestId("sidebar-mesh-compute-row")).toHaveCount(0);
+  await page.getByTestId("open-settings").click();
+  await page.getByTestId("settings-nav-compute").click();
 
   await expect(page.getByTestId("settings-mesh-compute-page")).toBeVisible();
-  await expect(page.getByTestId("compute-tab-community")).toHaveAttribute(
-    "data-state",
-    "active",
-  );
-  await expect(page.getByTestId("community-compute-view")).toBeVisible();
-  await expect(page.getByTestId("mesh-compute-popover")).toHaveCount(0);
 });
 
 test("Community Compute shows live KPIs and the tutorial simulation", async ({

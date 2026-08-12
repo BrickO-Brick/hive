@@ -56,7 +56,7 @@ export default {
         "mesh-breath": {
           "0%, 100%": { fill: "hsl(var(--foreground))" },
           "50%": {
-            fill: "color-mix(in oklab, hsl(var(--foreground)) 25%, hsl(var(--background)))",
+            fill: "color-mix(in oklab, hsl(var(--foreground)) 18%, #ffd84d)",
           },
         },
       },

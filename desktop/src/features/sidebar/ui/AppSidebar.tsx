@@ -607,7 +607,6 @@ export function AppSidebar({
             >
               <AppSidebarPrimaryMenu
                 homeBadgeCount={homeBadgeCount}
-                onOpenComputeSettings={() => onSelectSettings("compute")}
                 onSelectAgents={onSelectAgents}
                 onSelectHome={onSelectHome}
                 onSelectProjects={onSelectProjects}

@@ -1,5 +1,7 @@
 import { Info, RefreshCw } from "lucide-react";
+import * as React from "react";
 
+import { useUsersBatchQuery } from "@/features/profile/hooks";
 import { Button } from "@/shared/ui/button";
 import type { MeshSnapshot } from "@/shared/api/tauriMesh";
 import {
@@ -35,6 +37,15 @@ export function MeshComputeCommunityView({
         .map((deployment) => deployment.id)
     : [];
   const observedAt = (snapshot as MeshSnapshot | null)?.observedAt;
+  const contributorPubkeys = React.useMemo(
+    () =>
+      model.deployments
+        .map((deployment) => deployment.source.memberPubkey?.trim() ?? "")
+        .filter(Boolean),
+    [model.deployments],
+  );
+  const contributorProfiles =
+    useUsersBatchQuery(contributorPubkeys).data?.profiles ?? {};
 
   return (
     <div className="space-y-5" data-testid="community-compute-view">
@@ -92,6 +103,7 @@ export function MeshComputeCommunityView({
           ) : null}
         </div>
         <CommunityComputeTerritoryMap
+          contributorProfiles={contributorProfiles}
           inferenceDeploymentIds={inferenceDeploymentIds}
           model={model}
         />

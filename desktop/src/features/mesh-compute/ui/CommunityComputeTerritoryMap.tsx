@@ -1,6 +1,8 @@
 import * as React from "react";
 
 import { cn } from "@/shared/lib/cn";
+import { getAvatarSnapshotUrl } from "@/shared/lib/animatedAvatar";
+import { rewriteRelayUrl } from "@/shared/lib/mediaUrl";
 import {
   hexTerritoryBoundaryEdges,
   layoutCommunityComputeHexTerritories,
@@ -19,6 +21,7 @@ export type CommunityComputeTerritoryMapProps = {
   className?: string;
   /** Tutorial-only simulated activity; live snapshots cannot attribute requests. */
   inferenceDeploymentIds?: readonly string[];
+  contributorProfiles?: ContributorProfiles;
 };
 
 type Point = { x: number; y: number };
@@ -46,6 +49,7 @@ export function CommunityComputeTerritoryMap({
   onSelectedDeploymentChange,
   className,
   inferenceDeploymentIds = [],
+  contributorProfiles = {},
 }: CommunityComputeTerritoryMapProps) {
   const [internalSelection, setInternalSelection] = React.useState<
     string | null
@@ -86,11 +90,37 @@ export function CommunityComputeTerritoryMap({
     [inferenceDeploymentIds],
   );
   const [hoveredId, setHoveredId] = React.useState<string | null>(null);
+  const lowerTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
   const [deploymentSearch, setDeploymentSearch] = React.useState("");
   const hoveredDeployment = hoveredId
     ? (deploymentById.get(hoveredId) ?? null)
     : null;
   const isHeroDeployment = model.deployments.length === 1;
+  const isDenseMap = model.deployments.length >= 50;
+
+  React.useEffect(
+    () => () => {
+      if (lowerTimerRef.current) clearTimeout(lowerTimerRef.current);
+    },
+    [],
+  );
+
+  function raiseTerritory(deploymentId: string, territoryElement: SVGGElement) {
+    if (lowerTimerRef.current) clearTimeout(lowerTimerRef.current);
+    // SVG paints in DOM order. Move the existing node rather than sorting the
+    // React children: sorting reconstructs animated SVG content and restarts
+    // its breathing phase whenever hover changes.
+    territoryElement.parentNode?.appendChild(territoryElement);
+    setHoveredId(deploymentId);
+  }
+
+  function lowerTerritory() {
+    if (lowerTimerRef.current) clearTimeout(lowerTimerRef.current);
+    // Delay only the contributor overlay; the CSS scale settles independently.
+    lowerTimerRef.current = setTimeout(() => setHoveredId(null), 280);
+  }
 
   function selectDeployment(deploymentId: string) {
     if (selectedDeploymentId === undefined) {
@@ -146,7 +176,8 @@ export function CommunityComputeTerritoryMap({
       )}
       data-testid="community-compute-territory-map"
     >
-      <div className="relative flex min-h-72 min-w-0 items-center justify-center overflow-hidden rounded-lg border border-border/50 bg-background/70 p-3 sm:min-h-96">
+      <div className="relative flex min-h-72 min-w-0 flex-col items-center justify-center gap-4 overflow-hidden rounded-lg border border-border/50 bg-background/70 p-3 sm:min-h-96">
+        <MapLegend dense={isDenseMap} />
         <svg
           aria-label={`${model.deployments.length} community compute deployments. Select a territory for details.`}
           className="h-auto max-h-[28rem] w-full overflow-visible"
@@ -165,7 +196,7 @@ export function CommunityComputeTerritoryMap({
               // biome-ignore lint/a11y/useSemanticElements: SVG has no native button element.
               <g
                 aria-label={territoryAccessibleLabel(deployment)}
-                className="cursor-pointer outline-hidden transition-opacity hover:opacity-90 focus-visible:opacity-80"
+                className="cursor-pointer origin-center outline-hidden [transform-box:fill-box] transition-[opacity,transform,filter] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] hover:scale-[var(--mesh-hover-scale)] hover:drop-shadow-[0_0_0.22rem_rgba(255,216,77,0.42)] focus-visible:scale-[var(--mesh-hover-scale)] focus-visible:opacity-90 motion-reduce:transition-none"
                 data-deployment-id={deployment.id}
                 data-health={deployment.health}
                 data-cell-count={deployment.cellCount}
@@ -180,15 +211,37 @@ export function CommunityComputeTerritoryMap({
                     selectDeployment(deployment.id);
                   }
                 }}
-                onMouseEnter={() => setHoveredId(deployment.id)}
-                onMouseLeave={() => setHoveredId(null)}
+                onBlur={lowerTerritory}
+                onFocus={(event) =>
+                  raiseTerritory(deployment.id, event.currentTarget)
+                }
+                onMouseEnter={(event) =>
+                  raiseTerritory(deployment.id, event.currentTarget)
+                }
+                onMouseLeave={lowerTerritory}
                 role="button"
+                style={territoryHoverStyle(
+                  territory.cells,
+                  viewBox,
+                  isDenseMap,
+                )}
                 tabIndex={0}
               >
                 <title>{territoryAccessibleLabel(deployment)}</title>
                 <TerritoryShape
+                  avatarUrl={contributorAvatarUrl(
+                    deployment.source.memberPubkey,
+                    contributorProfiles,
+                  )}
                   cells={territory.cells}
+                  contributorLabel={contributorLabel(
+                    deployment,
+                    contributorProfiles,
+                  )}
                   inferenceActive={inferenceActive}
+                  selected={selected}
+                  showContributor={!isDenseMap || hoveredId === deployment.id}
+                  territoryCenter={territory.center}
                 />
               </g>
             );
@@ -242,6 +295,34 @@ export function CommunityComputeTerritoryMap({
   );
 }
 
+function MapLegend({ dense }: { dense: boolean }) {
+  return (
+    <div
+      aria-label="Map legend"
+      role="note"
+      className="pointer-events-none z-10 flex w-fit max-w-full flex-wrap items-center justify-center gap-x-3 gap-y-1 self-end rounded-lg border border-border/60 bg-background/90 px-2.5 py-2 text-2xs text-muted-foreground shadow-sm backdrop-blur-sm"
+      data-testid="community-compute-map-legend"
+    >
+      <span className="flex items-center gap-1.5">
+        <span className="size-2.5 rotate-45 bg-foreground" />
+        Area = model memory
+      </span>
+      <span className="flex items-center gap-1.5">
+        <span className="size-2.5 animate-pulse rounded-full bg-[#f5b800] motion-reduce:animate-none" />
+        Gold breath = serving
+      </span>
+      <span className="flex items-center gap-1.5">
+        <span className="size-3 rounded-full border border-border bg-muted" />
+        {dense ? "Hover = contributor" : "Avatar = contributor"}
+      </span>
+      <span className="flex items-center gap-1.5">
+        <span className="size-2.5 rotate-45 border-2 border-[#ffd84d]" />
+        Gold border = selected
+      </span>
+    </div>
+  );
+}
+
 function HeroDeploymentOverlay({
   deployment,
   inferenceActive,
@@ -251,7 +332,7 @@ function HeroDeploymentOverlay({
 }) {
   return (
     <div
-      className="pointer-events-none absolute left-1/2 top-1/2 w-[min(19rem,calc(100%-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-background/20 bg-background/90 p-3 text-center shadow-xl backdrop-blur-md"
+      className="pointer-events-none absolute bottom-3 left-1/2 w-[min(19rem,calc(100%-2rem))] -translate-x-1/2 rounded-xl border border-background/20 bg-background/90 p-3 text-center shadow-xl backdrop-blur-md"
       data-testid="community-compute-hero-deployment"
     >
       <div className="flex items-center justify-center gap-2">
@@ -306,11 +387,21 @@ function HeroMetric({ label, value }: { label: string; value: string }) {
 }
 
 function TerritoryShape({
+  avatarUrl,
   cells,
+  contributorLabel,
   inferenceActive,
+  selected,
+  showContributor,
+  territoryCenter,
 }: {
+  avatarUrl: string | null;
   cells: readonly CommunityComputeHexCell[];
+  contributorLabel: string;
   inferenceActive: boolean;
+  selected: boolean;
+  showContributor: boolean;
+  territoryCenter: { q: number; r: number };
 }) {
   const boundary = hexTerritoryBoundaryEdges(cells);
   const fillClass = "fill-foreground";
@@ -320,8 +411,16 @@ function TerritoryShape({
         animationDelay: `${-((stableVisualHash(`${cells[0]?.deploymentId}:phase`) % 37) / 10)}s`,
       } as React.CSSProperties)
     : undefined;
+  const center = axialToPoint(territoryCenter.q, territoryCenter.r);
+  const avatarRadius = 0.42;
+  const avatarClipId = `contributor-${testId(cells[0]?.deploymentId ?? "unknown")}`;
   return (
     <g>
+      <defs>
+        <clipPath id={avatarClipId}>
+          <circle cx={center.x} cy={center.y} r={avatarRadius} />
+        </clipPath>
+      </defs>
       {cells.map((cell) => {
         const center = axialToPoint(cell.q, cell.r);
         return (
@@ -341,18 +440,74 @@ function TerritoryShape({
       })}
       <path
         className={cn(
-          "fill-none stroke-background transition-[opacity,stroke-width] duration-200 motion-reduce:transition-none",
-          fillClass,
+          "fill-none transition-[opacity,stroke-width] duration-200 motion-reduce:transition-none",
+          selected ? "stroke-[#f5b800]" : "stroke-background",
         )}
         d={edgesToPath(boundary)}
         data-testid="community-compute-territory-boundary"
         strokeLinecap="round"
         strokeLinejoin="round"
-        // A crisp opaque perimeter cuts an empty gutter between territories.
-        strokeWidth={TILE_EDGE_WIDTH}
+        // Selection uses Buzz gold while the normal perimeter cuts a clean gutter.
+        strokeWidth={selected ? TILE_EDGE_WIDTH * 2.1 : TILE_EDGE_WIDTH}
       />
+      {showContributor ? (
+        <circle
+          className={cn(
+            "fill-background stroke-background",
+            selected && "stroke-[#f5b800]",
+          )}
+          cx={center.x}
+          cy={center.y}
+          data-testid="community-compute-contributor-avatar"
+          r={avatarRadius + 0.09}
+          strokeWidth={0.09}
+        />
+      ) : null}
+      {showContributor && avatarUrl ? (
+        <image
+          aria-label={`${contributorLabel} avatar`}
+          clipPath={`url(#${avatarClipId})`}
+          height={avatarRadius * 2}
+          href={avatarUrl}
+          preserveAspectRatio="xMidYMid slice"
+          width={avatarRadius * 2}
+          x={center.x - avatarRadius}
+          y={center.y - avatarRadius}
+        />
+      ) : showContributor ? (
+        <text
+          className="pointer-events-none fill-foreground font-bold"
+          dominantBaseline="central"
+          fontSize={0.42}
+          textAnchor="middle"
+          x={center.x}
+          y={center.y}
+        >
+          {contributorInitials(contributorLabel)}
+        </text>
+      ) : null}
     </g>
   );
+}
+
+function territoryHoverStyle(
+  cells: readonly CommunityComputeHexCell[],
+  viewBox: ViewBox,
+  dense: boolean,
+): React.CSSProperties {
+  const centers = cells.map((cell) => axialToPoint(cell.q, cell.r));
+  const minX = Math.min(...centers.map(({ x }) => x)) - 1;
+  const maxX = Math.max(...centers.map(({ x }) => x)) + 1;
+  const minY = Math.min(...centers.map(({ y }) => y)) - 1;
+  const maxY = Math.max(...centers.map(({ y }) => y)) + 1;
+  const territorySpan = Math.max(maxX - minX, maxY - minY);
+  const mapSpan = Math.min(viewBox.width, viewBox.height);
+  // Normalize every hovered territory toward the same visual footprint. Dense
+  // maps therefore expand dramatically while already-large sparse territories
+  // receive only a restrained lift.
+  const targetSpan = mapSpan * (dense ? 0.18 : 0.16);
+  const scale = Math.max(1.06, Math.min(8, targetSpan / territorySpan));
+  return { "--mesh-hover-scale": scale } as React.CSSProperties;
 }
 
 function edgesToPath(
@@ -612,6 +767,45 @@ function stableVisualHash(value: string): number {
 function shortModelName(modelId: string): string {
   const tail = modelId.split("/").at(-1) ?? modelId;
   return tail.length > 34 ? `${tail.slice(0, 31)}…` : tail;
+}
+
+type ContributorProfiles = Record<
+  string,
+  { avatarUrl: string | null; displayName: string | null }
+>;
+
+function contributorProfile(
+  pubkey: string | null | undefined,
+  profiles: ContributorProfiles,
+) {
+  return pubkey ? profiles[pubkey.trim().toLowerCase()] : undefined;
+}
+
+function contributorAvatarUrl(
+  pubkey: string | null | undefined,
+  profiles: ContributorProfiles,
+): string | null {
+  const avatarUrl = contributorProfile(pubkey, profiles)?.avatarUrl ?? null;
+  const snapshotUrl = getAvatarSnapshotUrl(avatarUrl);
+  return snapshotUrl ? rewriteRelayUrl(snapshotUrl) : null;
+}
+
+function contributorLabel(
+  deployment: CommunityComputeDeployment,
+  profiles: ContributorProfiles,
+): string {
+  return (
+    contributorProfile(deployment.source.memberPubkey, profiles)?.displayName ??
+    (deployment.isSelf ? "You" : deployment.deviceLabel)
+  );
+}
+
+function contributorInitials(label: string): string {
+  const words = label.trim().split(/\s+/).filter(Boolean);
+  return words
+    .slice(0, 2)
+    .map((word) => word[0]?.toUpperCase() ?? "")
+    .join("");
 }
 
 function territoryAccessibleLabel(
