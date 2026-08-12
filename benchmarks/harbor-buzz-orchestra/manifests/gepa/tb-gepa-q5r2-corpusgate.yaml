@@ -1,0 +1,45 @@
+# GEPA per-problem probe Q5 ROUND 2 (filter-js-from-html, 0/9 lifetime incl
+# Q5-r1 0/4). Q5-r1 forensics: every trial passed ~415/~420 XSS vectors, died
+# on 2-4 survivors; 3/4 trials never dispatched Mie's red-team lane; the one
+# that did used a 56-vector memory corpus vs the grader's ~420 (downloaded from
+# public davidwagner/html-sanitizer-testbed at test time). Base: tb-gepa-q3-b
+# lineage. Single variable vs Q5-r1: red-team paragraph REWRITTEN as a
+# mandatory self-run corpus gate — fetch the canonical public testbed corpus,
+# drive ALL of it through the artifact, scan outputs for executable remnants,
+# fix by category, rerun to zero survivors. No Mie dependency (dispatch prose
+# failed 3/4 in r1).
+schema_version: "1"
+condition: tb-gepa-q5r2-corpusgate
+timing_signal: true
+roster:
+  - id: mia
+    kind: orchestrator
+    role: conn
+    require_reply: true
+    count: 1
+    endpoint: deepseek-ai/Deepseek-V4-Flash
+    model_revision: deepseek/deepseek-v4-flash-20260731
+    prompt:
+      path: personas/bench/gepa/mia-v6-corpusgate.md
+      sha256: 992e896a21600f2d681e7e4c6963683c67ef9abde9cc34cd23d6db7f9078d01f
+    generation:
+      thinking_effort: high
+  - id: mie
+    kind: worker
+    role: twin
+    count: 1
+    endpoint: deepseek-ai/Deepseek-V4-Flash
+    model_revision: deepseek/deepseek-v4-flash-20260731
+    prompt:
+      path: personas/bench/gepa/mie-v0.md
+      sha256: a4924e4c4507ac466a7500bb34a04a782618df41dba850b6f0f729787c48439b
+    generation:
+      thinking_effort: high
+prices:
+  deepseek-ai/Deepseek-V4-Flash:
+    input_per_million_usd: 0.14
+    cached_input_per_million_usd: 0.14
+    output_per_million_usd: 0.28
+    cache_read_rate: 0.0
+trial_budget:
+  timeout_seconds: 36000
