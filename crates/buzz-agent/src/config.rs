@@ -172,22 +172,44 @@ impl Config {
     ///
     /// Mirrors `goose_env.rs` from PR #1526.
     fn project_goose_env() {
-        // Provider: Buzz's `openai-compat` and `relay-mesh` are both
-        // OpenAI-wire-compatible, and Goose knows them as plain `openai`.
+        // Provider and model **override** any ambient `GOOSE_*`, they do not
+        // defer to it.
+        //
+        // `BUZZ_AGENT_PROVIDER` / `BUZZ_AGENT_MODEL` are not ambient config:
+        // the desktop derives them from the agent record's structured
+        // provider/model fields at spawn time, and deliberately refuses to
+        // persist `GOOSE_PROVIDER` / `GOOSE_MODEL` in an agent's own env so
+        // they cannot shadow those fields
+        // (`managed_agents/env_vars.rs:DERIVED_PROVIDER_MODEL_ENV_KEYS`).
+        //
+        // But the agent subprocess still inherits the desktop's environment,
+        // and the desktop inherits the user's login shell. Anyone with goose
+        // installed exports `GOOSE_PROVIDER`. With `set_if_absent` that
+        // inherited value won, so an agent configured for OpenAI sent its
+        // OpenAI model to Anthropic and got `404 model: gpt-…` on every turn
+        // — the agent looked broken while its settings looked correct.
+        // Observed in live testing, not hypothetical.
         if let Some(provider) = env_str("BUZZ_AGENT_PROVIDER") {
-            set_if_absent("GOOSE_PROVIDER", goose_provider_name(&provider));
+            std::env::set_var("GOOSE_PROVIDER", goose_provider_name(&provider));
         }
 
         if let Some(model) = env_str("BUZZ_AGENT_MODEL") {
-            set_if_absent("GOOSE_MODEL", &model);
+            std::env::set_var("GOOSE_MODEL", &model);
         }
 
-        // Key/base-url aliasing: native Goose names win if already present.
+        // Credentials override too, and for the same reason as the provider:
+        // the desktop hands the agent its configured key as
+        // `OPENAI_COMPAT_API_KEY`, while `OPENAI_API_KEY` is very commonly
+        // exported in a developer's login shell and inherited here. Deferring
+        // to the inherited one would bill and authenticate the agent as
+        // whoever that key belongs to rather than as configured — the same
+        // silent-wrong-target failure as the provider, with a credential
+        // instead of a hostname.
         if let Some(key) = env_str("OPENAI_COMPAT_API_KEY") {
-            set_if_absent("OPENAI_API_KEY", &key);
+            std::env::set_var("OPENAI_API_KEY", &key);
         }
         if let Some(base) = env_str("OPENAI_COMPAT_BASE_URL") {
-            set_if_absent("OPENAI_BASE_URL", &base);
+            std::env::set_var("OPENAI_BASE_URL", &base);
         }
 
         if let Some(effort) = env_str("BUZZ_AGENT_THINKING_EFFORT") {
@@ -229,6 +251,53 @@ mod tests {
         set_if_absent("BUZZ_TEST_MISSING", "translated");
         assert_eq!(std::env::var("BUZZ_TEST_MISSING").unwrap(), "translated");
         std::env::remove_var("BUZZ_TEST_MISSING");
+    }
+
+    /// The regression that made a live OpenAI agent 404 against Anthropic.
+    ///
+    /// The desktop refuses to persist `GOOSE_PROVIDER` in an agent's env
+    /// precisely so it cannot shadow the agent's configured provider — but the
+    /// subprocess still inherits it from the user's login shell if goose is
+    /// installed. Deferring to the inherited value silently reroutes the
+    /// agent's traffic to the wrong provider while its settings still read
+    /// correctly.
+    #[test]
+    fn the_agents_configured_provider_beats_an_inherited_goose_provider() {
+        // One test: `project_goose_env` mutates process-global env, so
+        // splitting these would race the rest of the suite.
+        let restore: Vec<(&str, Option<String>)> = [
+            "BUZZ_AGENT_PROVIDER",
+            "BUZZ_AGENT_MODEL",
+            "GOOSE_PROVIDER",
+            "GOOSE_MODEL",
+        ]
+        .iter()
+        .map(|key| (*key, std::env::var(key).ok()))
+        .collect();
+
+        std::env::set_var("GOOSE_PROVIDER", "anthropic");
+        std::env::set_var("GOOSE_MODEL", "claude-opus-5");
+        std::env::set_var("BUZZ_AGENT_PROVIDER", "openai");
+        std::env::set_var("BUZZ_AGENT_MODEL", "gpt-5.6-sol");
+
+        Config::project_goose_env();
+
+        assert_eq!(std::env::var("GOOSE_PROVIDER").unwrap(), "openai");
+        assert_eq!(std::env::var("GOOSE_MODEL").unwrap(), "gpt-5.6-sol");
+
+        // With no agent-configured provider there is nothing to override with,
+        // so an ambient value is still the best answer available.
+        std::env::remove_var("BUZZ_AGENT_PROVIDER");
+        std::env::set_var("GOOSE_PROVIDER", "anthropic");
+        Config::project_goose_env();
+        assert_eq!(std::env::var("GOOSE_PROVIDER").unwrap(), "anthropic");
+
+        for (key, value) in restore {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
     }
 
     #[test]
