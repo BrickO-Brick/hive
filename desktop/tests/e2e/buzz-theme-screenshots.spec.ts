@@ -494,9 +494,15 @@ test("appearance groups theme and preferences into labeled rows", async ({
 
   await expect(
     themeCard.getByRole("heading", {
-      name: "Theme · This community",
+      name: "Theme",
       exact: true,
     }),
+  ).toBeVisible();
+  await expect(
+    themeCard.getByText(
+      "Theme choices for this community sync across your devices.",
+      { exact: true },
+    ),
   ).toBeVisible();
   await expect(
     preferencesCard.getByRole("heading", {

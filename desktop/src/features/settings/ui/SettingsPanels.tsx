@@ -639,7 +639,8 @@ function ThemeSettingsCard() {
       <SettingsOptionGroupList>
         <SettingsOptionGroup
           data-testid="appearance-theme-card"
-          title="Theme · This community"
+          description="Theme choices for this community sync across your devices."
+          title="Theme"
         >
           <SettingsOptionRow data-testid="appearance-color-mode-row">
             <div className="min-w-0">
