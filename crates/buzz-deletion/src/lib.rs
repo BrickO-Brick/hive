@@ -10,7 +10,8 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use buzz_db::deletion::{
     ClaimedDeletion, DeletionRequest, DeletionStage, DeletionStore, FrozenInventory,
-    KeyStreamDigest, LeaseToken, PrefixManifest, StorageManifest, DEFAULT_LEASE_DURATION,
+    KeyStreamDigest, LeaseToken, PrefixManifest, SchemaManifest, StorageManifest,
+    DEFAULT_LEASE_DURATION,
 };
 use buzz_db::{Db, DbConfig};
 use buzz_media::{is_tenant_owned_key, tenant_prefixes, MediaStorage};
@@ -217,6 +218,15 @@ async fn acquire_serving_write_with_heartbeat(
 /// CLI-only whole-community deletion commands.
 #[derive(Subcommand)]
 pub enum Command {
+    /// Read live deletion targets without creating or changing durable state.
+    Preview {
+        /// Canonical community host. Defaults to RELAY_URL's authority.
+        #[arg(long)]
+        host: Option<String>,
+        /// Stream concrete object-store and Redis keys as NDJSON before the summary.
+        #[arg(long)]
+        include_keys: bool,
+    },
     /// Persist a deletion request and freeze its initial cross-store inventory.
     Submit {
         /// Canonical community host. Defaults to RELAY_URL's authority.
@@ -354,6 +364,39 @@ fn is_permanent_error(error: &anyhow::Error) -> bool {
 }
 
 #[derive(Debug, Serialize)]
+struct PreviewOutput {
+    record: &'static str,
+    advisory: bool,
+    observation_started_at: chrono::DateTime<chrono::Utc>,
+    observation_completed_at: chrono::DateTime<chrono::Utc>,
+    warning: &'static str,
+    community_id: String,
+    community_host: String,
+    postgres: SchemaManifest,
+    object_store: PreviewStorage,
+    redis: PreviewRedis,
+}
+
+#[derive(Debug, Serialize)]
+struct PreviewStorage {
+    manifest: StorageManifest,
+    keys_included: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct PreviewRedis {
+    observed_key_count: u64,
+    keys_included: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct PreviewKey<'a> {
+    record: &'static str,
+    store: &'static str,
+    key: &'a str,
+}
+
+#[derive(Debug, Serialize)]
 struct RunOutput {
     request_id: Uuid,
     stage: DeletionStage,
@@ -430,6 +473,55 @@ pub async fn run(command: Command) -> Result<i32> {
 
 async fn run_with_services(command: Command, services: Services) -> Result<i32> {
     match command {
+        Command::Preview { host, include_keys } => {
+            let observation_started_at = chrono::Utc::now();
+            let relay_url = std::env::var("RELAY_URL").ok();
+            let host = resolve_submit_host(host.as_deref(), relay_url.as_deref())?;
+            let (community_id, community_host) = services.store.preview_target(&host).await?;
+            let postgres = services.store.inventory_schema(community_id).await?;
+            let mut object_key_count = 0u64;
+            let object_store = enumerate_tenant_prefixes(
+                &services,
+                community_id,
+                None,
+                None,
+                include_keys.then_some(&mut object_key_count),
+            )
+            .await?;
+            if include_keys {
+                debug_assert_eq!(
+                    object_key_count,
+                    object_store
+                        .prefixes
+                        .iter()
+                        .map(|prefix| prefix.object_count)
+                        .sum::<u64>()
+                );
+            }
+            let redis =
+                preview_redis_namespace(&services.redis, community_id, include_keys).await?;
+            let output = PreviewOutput {
+                record: "deletion_preview_summary",
+                advisory: true,
+                observation_started_at,
+                observation_completed_at: chrono::Utc::now(),
+                warning: "live state may change after this read-only observation; execution freezes its authoritative manifest only after fence and drain",
+                community_id: community_id.to_string(),
+                community_host,
+                postgres,
+                object_store: PreviewStorage {
+                    manifest: object_store,
+                    keys_included: include_keys,
+                },
+                redis,
+            };
+            if include_keys {
+                print_ndjson(&output)?;
+            } else {
+                print_json(&output)?;
+            }
+            Ok(0)
+        }
         Command::Submit {
             host,
             requested_by,
@@ -658,7 +750,8 @@ async fn build_inventory(
         .store
         .inventory_schema(request.community_id)
         .await?;
-    let storage = enumerate_tenant_prefixes(services, request, None, None).await?;
+    let storage =
+        enumerate_tenant_prefixes(services, request.community_id, None, None, None).await?;
     Ok(FrozenInventory { schema, storage })
 }
 
@@ -693,19 +786,20 @@ async fn flush_chunk(services: &Services, sink: &mut ChunkSink<'_>, prefix: &str
 /// digests.
 async fn enumerate_tenant_prefixes(
     services: &Services,
-    request: &DeletionRequest,
+    community: buzz_core::CommunityId,
     heartbeat_lost: Option<&CancellationToken>,
     mut sink: Option<&mut ChunkSink<'_>>,
+    mut preview_key_count: Option<&mut u64>,
 ) -> Result<StorageManifest> {
     if services.media.bucket_versioning_detected().await? {
         return Err(permanent(
             "bucket versioning detected; deletion cannot prove logical absence with delete markers",
         ));
     }
-    let community = *request.community_id.as_uuid();
+    let community_uuid = *community.as_uuid();
     let chunk_keys = manifest_chunk_keys();
     let mut prefixes = Vec::new();
-    for prefix in tenant_prefixes(community) {
+    for prefix in tenant_prefixes(community_uuid) {
         let mut digest = KeyStreamDigest::new();
         let mut total_bytes: u64 = 0;
         let mut continuation = None;
@@ -718,13 +812,21 @@ async fn enumerate_tenant_prefixes(
                 .list_prefix_page(&prefix, continuation.take(), LIST_PAGE_SIZE)
                 .await?;
             for (key, size) in page.objects {
-                if !is_tenant_owned_key(community, &key) {
+                if !is_tenant_owned_key(community_uuid, &key) {
                     return Err(permanent(format!(
                         "key under a tenant prefix is outside the exact writer taxonomy: {key}"
                     )));
                 }
                 digest.fold(&key)?;
                 total_bytes = total_bytes.saturating_add(size);
+                if let Some(key_count) = preview_key_count.as_deref_mut() {
+                    print_ndjson(&PreviewKey {
+                        record: "deletion_preview_key",
+                        store: "object_store",
+                        key: &key,
+                    })?;
+                    *key_count = key_count.saturating_add(1);
+                }
                 if let Some(sink) = sink.as_deref_mut() {
                     sink.buffered.push(key);
                     if sink.buffered.len() >= chunk_keys {
@@ -779,8 +881,14 @@ async fn freeze_destructive_manifest(
         next_chunk_no: 0,
         buffered: Vec::new(),
     };
-    let manifest =
-        enumerate_tenant_prefixes(services, request, Some(heartbeat_lost), Some(&mut sink)).await?;
+    let manifest = enumerate_tenant_prefixes(
+        services,
+        request.community_id,
+        Some(heartbeat_lost),
+        Some(&mut sink),
+        None,
+    )
+    .await?;
     services
         .store
         .freeze_destructive_storage_manifest(token, &manifest)
@@ -1283,6 +1391,50 @@ async fn publish_disconnect_community(
     Ok(())
 }
 
+fn preview_redis_page(include_keys: bool, keys: &[String], key_count: &mut u64) -> Result<()> {
+    *key_count = key_count.saturating_add(keys.len() as u64);
+    if include_keys {
+        for key in keys {
+            print_ndjson(&PreviewKey {
+                record: "deletion_preview_key",
+                store: "redis",
+                key,
+            })?;
+        }
+    }
+    Ok(())
+}
+
+async fn preview_redis_namespace(
+    pool: &deadpool_redis::Pool,
+    community: buzz_core::CommunityId,
+    include_keys: bool,
+) -> Result<PreviewRedis> {
+    let mut connection = pool.get().await?;
+    let pattern = format!("buzz:{community}:*");
+    let mut cursor = 0u64;
+    let mut key_count = 0u64;
+    loop {
+        let (next, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+            .arg(cursor)
+            .arg("MATCH")
+            .arg(&pattern)
+            .arg("COUNT")
+            .arg(1000)
+            .query_async(&mut *connection)
+            .await?;
+        preview_redis_page(include_keys, &keys, &mut key_count)?;
+        if next == 0 {
+            break;
+        }
+        cursor = next;
+    }
+    Ok(PreviewRedis {
+        observed_key_count: key_count,
+        keys_included: include_keys,
+    })
+}
+
 async fn purge_redis_namespace(
     pool: &deadpool_redis::Pool,
     community: buzz_core::CommunityId,
@@ -1420,6 +1572,11 @@ fn run_output(request: DeletionRequest) -> RunOutput {
     }
 }
 
+fn print_ndjson(value: &impl Serialize) -> Result<()> {
+    println!("{}", serde_json::to_string(value)?);
+    Ok(())
+}
+
 fn print_json(value: &impl Serialize) -> Result<()> {
     println!("{}", serde_json::to_string_pretty(value)?);
     Ok(())
@@ -1428,6 +1585,14 @@ fn print_json(value: &impl Serialize) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preview_redis_count_saturates_without_retaining_keys() {
+        let keys = vec!["buzz:a:one".to_string(), "buzz:a:two".to_string()];
+        let mut count = u64::MAX - 1;
+        preview_redis_page(false, &keys, &mut count).expect("count preview page");
+        assert_eq!(count, u64::MAX);
+    }
 
     #[test]
     fn submit_host_prefers_explicit_host() {
