@@ -59,20 +59,26 @@ function nextStepLabel(status: ProjectIssue["status"]) {
   return "Open issue";
 }
 
+function issueLabelsSummary(issue: ProjectIssue) {
+  const visibleLabels = issue.labels.slice(0, 2);
+  if (visibleLabels.length === 0) return null;
+  const hiddenCount = issue.labels.length - visibleLabels.length;
+  return `${visibleLabels.join(", ")}${hiddenCount > 0 ? ` +${hiddenCount}` : ""}`;
+}
+
 function IssueHeader({
   authorTestId,
-  includeDate = true,
   issue,
   profiles,
-  project,
+  repository,
 }: {
   authorTestId?: string;
-  includeDate?: boolean;
   issue: ProjectIssue;
   profiles?: UserProfileLookup;
-  project: Project;
+  repository: Repository;
 }) {
   const authorLabel = resolveUserLabel({ profiles, pubkey: issue.author });
+  const labelsSummary = issueLabelsSummary(issue);
 
   return (
     <div className="-mt-0.5 min-w-0 flex-1">
@@ -84,34 +90,24 @@ function IssueHeader({
       <div
         className={`flex min-w-0 items-center gap-x-1.5 overflow-hidden whitespace-nowrap ${PROJECT_LIST_ROW_SUBTEXT_CLASS}`}
       >
-        <span>{project.name}</span>
-        {includeDate ? (
+        <ProjectAuthorIdentity
+          label={authorLabel}
+          profiles={profiles}
+          pubkey={issue.author}
+          testId={authorTestId}
+        />
+        <span aria-hidden>·</span>
+        <span className="truncate">{repository.name}</span>
+        {labelsSummary ? (
           <>
-            <span>·</span>
-            <span>created {relativeTime(issue.createdAt)}</span>
+            <span aria-hidden>·</span>
+            <span className="truncate">{labelsSummary}</span>
           </>
         ) : null}
-        <span>·</span>
-        <span className="inline-flex items-center gap-1">
-          <span>by</span>
-          <ProjectAuthorIdentity
-            label={authorLabel}
-            profiles={profiles}
-            pubkey={issue.author}
-            testId={authorTestId}
-          />
+        <span className="md:hidden" aria-hidden>
+          ·
         </span>
-        {includeDate ? (
-          <>
-            <span>·</span>
-            <span>{issue.status}</span>
-          </>
-        ) : (
-          <>
-            <span className="md:hidden">·</span>
-            <span className="md:hidden">{issue.status}</span>
-          </>
-        )}
+        <span className="md:hidden">{issue.status}</span>
       </div>
     </div>
   );
@@ -122,12 +118,16 @@ function IssueGridCard({
   onOpen,
   profiles,
   project,
+  repository,
 }: {
   issue: ProjectIssue;
   onOpen: (project: Project, issue: ProjectIssue) => void;
   profiles?: UserProfileLookup;
   project: Project;
+  repository: Repository;
 }) {
+  const authorLabel = resolveUserLabel({ profiles, pubkey: issue.author });
+
   return (
     <Card
       className="group relative flex min-h-40 flex-col overflow-hidden border-border/60 bg-transparent p-4 shadow-none transition-colors duration-150 hover:bg-muted/20"
@@ -138,12 +138,18 @@ function IssueGridCard({
         onClick={() => onOpen(project, issue)}
         type="button"
       >
-        <span className="sr-only">View {issue.title}</span>
+        <span className="sr-only">
+          View issue {issue.title} by {authorLabel} in {repository.name}
+        </span>
       </button>
       <div className="flex min-h-0 flex-1 flex-col gap-3">
         <div className="flex min-w-0 items-start gap-3">
           <ProjectEventTypeIcon className="h-5 w-5" kind="issue" />
-          <IssueHeader issue={issue} profiles={profiles} project={project} />
+          <IssueHeader
+            issue={issue}
+            profiles={profiles}
+            repository={repository}
+          />
           <Button
             className="relative z-10 h-7 shrink-0 px-2.5"
             onClick={(event) => {
@@ -166,9 +172,8 @@ function IssueGridCard({
 
         <div className="mt-auto border border-border/60 bg-muted/30 px-2.5 py-2">
           <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-foreground/80">
-            <span className="font-mono text-foreground">
-              #{issue.id.slice(0, 8)}
-            </span>
+            <span className="font-medium text-foreground">{issue.status}</span>
+            <span>created {relativeTime(issue.createdAt)}</span>
             {issue.comments.length > 0 ? (
               <span className="flex items-center gap-1">
                 <MessageSquare className="h-3.5 w-3.5" />
@@ -187,12 +192,16 @@ function IssueListRow({
   onOpen,
   profiles,
   project,
+  repository,
 }: {
   issue: ProjectIssue;
   onOpen: (project: Project, issue: ProjectIssue) => void;
   profiles?: UserProfileLookup;
   project: Project;
+  repository: Repository;
 }) {
+  const authorLabel = resolveUserLabel({ profiles, pubkey: issue.author });
+
   return (
     <div
       className={PROJECT_LIST_ROW_CLASS}
@@ -203,16 +212,17 @@ function IssueListRow({
         onClick={() => onOpen(project, issue)}
         type="button"
       >
-        <span className="sr-only">View {issue.title}</span>
+        <span className="sr-only">
+          View issue {issue.title} by {authorLabel} in {repository.name}
+        </span>
       </button>
       <div className={PROJECT_LIST_ROW_CONTENT_CLASS}>
         <ProjectEventTypeIcon className="h-5 w-5" kind="issue" />
         <IssueHeader
           authorTestId="projects-issue-author"
-          includeDate={false}
           issue={issue}
           profiles={profiles}
-          project={project}
+          repository={repository}
         />
         <div className={PROJECT_LIST_ROW_TRAILING_CLASS}>
           <IssueAssigneeFacepile
@@ -320,6 +330,7 @@ export function ProjectsIssuesList({
               }
               profiles={profiles}
               project={project}
+              repository={repository}
             />
           ))}
         </div>
@@ -345,6 +356,7 @@ export function ProjectsIssuesList({
             }
             profiles={profiles}
             project={project}
+            repository={repository}
           />
         ))}
       </div>
