@@ -155,9 +155,10 @@ pub async fn run_turn(
     let max_rounds = ctx.max_rounds.unwrap_or(DEFAULT_MAX_ROUNDS);
     let mut reflections = 0usize;
 
-    // First decision expressed as a goose `Operation` rather than inline
-    // control flow. The others follow one at a time; see
-    // `PLANS/BUZZ_OPERATIONS_MIGRATION.md` for the order and why.
+    // Every loop decision is a goose `Operation` -- see
+    // `PLANS/BUZZ_OPERATIONS_MIGRATION.md`. Two machines, because they run at
+    // different points: `start_machine` before inference, `machine` at the
+    // round gate and again when a turn wants to end.
     let outcome = crate::ops::Outcome::new();
     let machine = crate::ops::round_gate(
         max_rounds,
@@ -166,6 +167,16 @@ pub async fn run_turn(
         ctx.hook_extension
             .map(|extension| (Arc::clone(ctx.agent), extension.to_string())),
         ctx.require_reply,
+    );
+    let start_machine = crate::ops::round_start(
+        ctx.steers.clone(),
+        crate::ops::BuzzCompactionOperation::new(
+            ctx.model.clone(),
+            Arc::clone(ctx.agent),
+            ctx.hook_extension.map(str::to_string),
+            ctx.session_id.to_string(),
+        ),
+        ctx.cancel.clone(),
     );
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(16);
     // Operations may emit; nothing in this step does, but a dropped receiver
@@ -189,23 +200,24 @@ pub async fn run_turn(
                 let reason = outcome.take().unwrap_or(StopReason::EndTurn);
                 return (Ok(reason), tokens, state.conversation().messages().to_vec());
             }
-            Gate::Applied(messages) => {
-                for message in messages {
-                    state.push(message);
-                }
+            Gate::Applied(effects) => {
+                apply_effects(&mut state, effects);
             }
             Gate::Open => {}
         }
 
-        // Steers land here, at the round boundary — never mid-inference,
-        // where they would race a partially streamed response.
-        for message in ctx.steers.drain().await {
-            state.push(message);
-        }
-
-        // Compaction at the round boundary, never mid-stream.
-        if let Err(e) = maybe_compact(&ctx, &mut state).await {
-            tracing::warn!(error = %e, "compaction failed; continuing uncompacted");
+        // Steering and compaction, both at the round boundary and never
+        // mid-inference where they would race a partially streamed response.
+        // Run to exhaustion: `step` stops at the first operation that applies,
+        // so a turn that both steers and compacts needs more than one pass.
+        loop {
+            let Gate::Applied(effects) = gate(&start_machine, state.session(), &emitter).await
+            else {
+                break;
+            };
+            if !apply_effects(&mut state, effects) {
+                break;
+            }
         }
 
         match round(&ctx, &mut state, &mut tokens, &mut reflections).await {
@@ -231,21 +243,20 @@ pub async fn run_turn(
                 // cancel for no gain.
                 if !ctx.cancel.is_cancelled() {
                     match gate(&machine, state.session(), &emitter).await {
-                        Gate::Applied(messages) if !messages.is_empty() => {
-                            for message in messages {
-                                state.push(message);
+                        Gate::Applied(effects) => {
+                            if apply_effects(&mut state, effects) {
+                                continue;
                             }
-                            continue;
+                            // Applied without changing state: the model has no
+                            // new work, so the turn still ends rather than the
+                            // loop spinning.
                         }
                         Gate::Ended => {
                             let reason = outcome.take().unwrap_or(StopReason::EndTurn);
                             ctx.steers.clear().await;
                             return (Ok(reason), tokens, state.conversation().messages().to_vec());
                         }
-                        // An operation that applied without appending anything
-                        // has not given the model new work, so the turn still
-                        // ends -- otherwise the loop would spin.
-                        Gate::Applied(_) | Gate::Open => {}
+                        Gate::Open => {}
                     }
                 }
 
@@ -265,9 +276,9 @@ pub async fn run_turn(
 enum Gate {
     /// No operation applied; the loop proceeds.
     Open,
-    /// An operation applied and appended messages; the loop continues with
-    /// them in history rather than ending.
-    Applied(Vec<Message>),
+    /// An operation applied; the loop continues with its effects in state
+    /// rather than ending.
+    Applied(Vec<goose::agents::state_machine::StateEffect>),
     /// An operation ended the turn.
     Ended,
 }
@@ -284,22 +295,7 @@ async fn gate(
 ) -> Gate {
     match machine.step(session, emitter).await {
         Ok(Some(result)) if result.yield_to_client => Gate::Ended,
-        Ok(Some(result)) => Gate::Applied(
-            result
-                .effects
-                .into_iter()
-                .filter_map(|effect| match effect {
-                    goose::agents::state_machine::StateEffect::AppendMessage(message) => {
-                        Some(message)
-                    }
-                    // buzz's operations only append. Other effects belong to
-                    // goose's own operations (recipes, approval, extension
-                    // data) and have no meaning in this loop; ignoring them
-                    // is correct rather than lossy.
-                    _ => None,
-                })
-                .collect(),
-        ),
+        Ok(Some(result)) => Gate::Applied(result.effects),
         Ok(None) => Gate::Open,
         // A failing gate must not take the turn down with it: the operations
         // here are guards, and a guard that errors should let the round
@@ -309,6 +305,43 @@ async fn gate(
             Gate::Open
         }
     }
+}
+
+/// Apply an operation's effects to the turn's state.
+///
+/// buzz's operations produce two kinds: appended messages (objections,
+/// reminders, steers) and a whole replaced conversation (compaction). Other
+/// `StateEffect` variants belong to goose's own operations -- recipes,
+/// approval, extension data -- and have no meaning in this loop, so ignoring
+/// them is correct rather than lossy.
+///
+/// Returns whether anything was actually applied: an operation that applied
+/// without changing state has given the model no new work, and treating that
+/// as progress would spin the loop.
+fn apply_effects(
+    state: &mut crate::turn_state::TurnState,
+    effects: Vec<goose::agents::state_machine::StateEffect>,
+) -> bool {
+    use goose::agents::state_machine::StateEffect;
+
+    let mut changed = false;
+    for effect in effects {
+        match effect {
+            StateEffect::AppendMessage(message) => {
+                state.push(message);
+                changed = true;
+            }
+            StateEffect::ReplaceConversation { conversation, .. } => {
+                state.replace(conversation);
+                // The running total described a conversation that no longer
+                // exists; let goose re-estimate from the compacted messages.
+                state.set_total_tokens(None);
+                changed = true;
+            }
+            _ => {}
+        }
+    }
+    changed
 }
 
 /// One inference plus, if the model asked for them, one batch of tool calls.
@@ -508,59 +541,6 @@ fn push_tool_results(
         message = message.with_tool_response(id, result);
     }
     state.push(message);
-}
-
-/// Compact history when it is close to the context limit, then re-inject the
-/// state `_PostCompact` reports so a todo list survives the truncation.
-async fn maybe_compact(
-    ctx: &TurnContext<'_>,
-    state: &mut crate::turn_state::TurnState,
-) -> anyhow::Result<()> {
-    let conversation = state.conversation();
-    let provider = ctx.model.provider().await;
-
-    if !goose::context_mgmt::check_if_compaction_needed(
-        provider.as_ref(),
-        &conversation,
-        None,
-        state.session(),
-    )
-    .await?
-    {
-        return Ok(());
-    }
-
-    let model_config = ctx.model.config().await;
-    let result = goose::context_mgmt::compact_messages(
-        provider.as_ref(),
-        &model_config,
-        ctx.session_id,
-        &conversation,
-        false,
-    )
-    .await?;
-
-    state.replace(result.conversation);
-    // Compaction resets the context: the old running total describes a
-    // conversation that no longer exists, so drop it and let goose re-estimate
-    // from the compacted messages.
-    state.set_total_tokens(None);
-    tracing::info!(target: "buzz_agent::compaction", "history compacted");
-
-    // `_PostCompact` state is what buzz-agent's handoff existed to preserve.
-    if let Some(extension) = ctx.hook_extension {
-        if let Some(reported) =
-            crate::hooks::post_compact_state(ctx.agent, state.session(), extension).await
-        {
-            state.push(
-                Message::user()
-                    .with_text(format!("[PostCompact] {reported}"))
-                    .with_visibility(false, true),
-            );
-        }
-    }
-
-    Ok(())
 }
 
 /// Preserve buzz-agent's error taxonomy so the harness's JSON-RPC code mapping

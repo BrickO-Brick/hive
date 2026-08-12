@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 use async_trait::async_trait;
 use goose::agents::state_machine::{
-    applied, not_applicable, yielded, Emitter, Operation, OperationResult,
+    applied, not_applicable, yielded, Emitter, Operation, OperationResult, StateEffect,
 };
 use goose::agents::Agent;
 use goose::conversation::Conversation;
@@ -401,6 +401,148 @@ impl Operation for BuzzReplyGuardOperation {
     }
 }
 
+/// Drains `session/steer` messages into the conversation at the round
+/// boundary.
+///
+/// Steering is buzz's own: goose has an equivalent queue on `Agent`, but
+/// `drain_pending_steers` is `pub(crate)` — only `Agent::reply` can consume
+/// it, and buzz owns the loop. Expressing the drain as an operation puts it
+/// under the same gate as the other loop decisions instead of beside them.
+///
+/// Semantics are unchanged from the inline drain: messages land at the round
+/// boundary and never mid-inference, where they would race a partially
+/// streamed response.
+pub struct BuzzSteerOperation {
+    steers: crate::steer::SteerQueue,
+}
+
+impl BuzzSteerOperation {
+    pub fn new(steers: crate::steer::SteerQueue) -> Self {
+        Self { steers }
+    }
+}
+
+#[async_trait]
+impl Operation for BuzzSteerOperation {
+    fn name(&self) -> &'static str {
+        "buzz_steer"
+    }
+
+    async fn run(
+        &self,
+        _session: &Session,
+        _conversation: &Conversation,
+        _emit: &Emitter,
+    ) -> Result<OperationResult> {
+        let messages = self.steers.drain().await;
+        if messages.is_empty() {
+            return not_applicable();
+        }
+        tracing::info!(
+            count = messages.len(),
+            "steer messages drained into the turn"
+        );
+        applied(messages.into_iter().map(StateEffect::AppendMessage))
+    }
+}
+
+/// Compacts the conversation when it approaches the context limit.
+///
+/// The mechanism is entirely goose's (`check_if_compaction_needed` /
+/// `compact_messages`); this operation is the buzz-specific part around it:
+/// the `_PostCompact` hook that re-injects buzz-dev-mcp's todo state, which is
+/// what buzz-agent's old context-handoff existed to preserve.
+///
+/// Not goose's `CompactionOperation`: that one yields to the client and emits
+/// its own user-facing notification. In buzz a yield ends the turn and the
+/// notification would post into the channel, so a long conversation would stop
+/// mid-work and announce its own housekeeping to the humans watching.
+pub struct BuzzCompactionOperation {
+    model: crate::model::SessionModel,
+    agent: Arc<Agent>,
+    hook_extension: Option<String>,
+    session_id: String,
+}
+
+impl BuzzCompactionOperation {
+    pub fn new(
+        model: crate::model::SessionModel,
+        agent: Arc<Agent>,
+        hook_extension: Option<String>,
+        session_id: String,
+    ) -> Self {
+        Self {
+            model,
+            agent,
+            hook_extension,
+            session_id,
+        }
+    }
+}
+
+#[async_trait]
+impl Operation for BuzzCompactionOperation {
+    fn name(&self) -> &'static str {
+        "buzz_compaction"
+    }
+
+    async fn run(
+        &self,
+        session: &Session,
+        conversation: &Conversation,
+        _emit: &Emitter,
+    ) -> Result<OperationResult> {
+        let provider = self.model.provider().await;
+        if !goose::context_mgmt::check_if_compaction_needed(
+            provider.as_ref(),
+            conversation,
+            None,
+            session,
+        )
+        .await?
+        {
+            return not_applicable();
+        }
+
+        let model_config = self.model.config().await;
+        let result = goose::context_mgmt::compact_messages(
+            provider.as_ref(),
+            &model_config,
+            &self.session_id,
+            conversation,
+            false,
+        )
+        .await?;
+
+        tracing::info!(target: "buzz_agent::compaction", "history compacted");
+
+        let mut effects = vec![StateEffect::ReplaceConversation {
+            conversation: result.conversation,
+            // `None`, deliberately: the running total described a conversation
+            // that no longer exists, so goose re-estimates from the compacted
+            // messages rather than carrying a stale count forward.
+            usage: None,
+        }];
+
+        if let Some(extension) = &self.hook_extension {
+            if let Some(reported) =
+                crate::hooks::post_compact_state(&self.agent, session, extension).await
+            {
+                // `[PostCompact]` prefix preserved from the inline version:
+                // it is how the model tells re-injected state apart from a
+                // user turn, and dropping it would change what it reads.
+                effects.push(StateEffect::AppendMessage(
+                    Message::user()
+                        .with_text(format!("[PostCompact] {reported}"))
+                        .with_visibility(false, true),
+                ));
+            }
+        }
+
+        applied(effects)
+    }
+}
+
 /// The operations that gate the start of a round.
 ///
 /// One entry today. As `PLANS/BUZZ_OPERATIONS_MIGRATION.md` proceeds, the
@@ -437,6 +579,32 @@ pub fn round_gate(
         ))));
     }
     goose::agents::state_machine::StateMachine::new(steps, cancel)
+}
+
+/// The operations that run at the start of a round, before inference.
+///
+/// A separate machine from [`round_gate`] because these two sets run at
+/// different points and must not be confused: `round_gate` also runs when a
+/// turn wants to *end*, and draining steers or compacting there would change
+/// when they happen. `StateMachine::step` stops at the first operation that
+/// applies, so one combined machine could not express "do both".
+pub fn round_start(
+    steers: crate::steer::SteerQueue,
+    compaction: BuzzCompactionOperation,
+    cancel: tokio_util::sync::CancellationToken,
+) -> goose::agents::state_machine::StateMachine<'static> {
+    use goose::agents::state_machine::Step;
+
+    // Steer before compaction: a steer that arrives just as the window fills
+    // should be part of what gets summarised, not appended to a conversation
+    // that was compacted a moment earlier without it.
+    goose::agents::state_machine::StateMachine::new(
+        vec![
+            Step::Operation(Arc::new(BuzzSteerOperation::new(steers))),
+            Step::Operation(Arc::new(compaction)),
+        ],
+        cancel,
+    )
 }
 
 #[cfg(test)]
