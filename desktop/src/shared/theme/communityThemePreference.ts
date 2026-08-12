@@ -1,5 +1,12 @@
 import { normalizeRelayUrl } from "@/features/profile/lib/selfProfileStorage";
-import { ACCENT_COLORS } from "./ThemeProvider";
+import {
+  ACCENT_COLORS,
+  DEFAULT_GLASS_BACKGROUND,
+  DEFAULT_GLASS_OPACITY,
+  DEFAULT_PROMINENT_ACTIVE_TAB,
+  GLASS_OPACITY_MAX,
+  GLASS_OPACITY_MIN,
+} from "./ThemeProvider";
 import { SYNTAX_THEMES, type SyntaxThemeName } from "./theme-loader";
 
 const STORAGE_KEY_PREFIX = "buzz-community-theme.v1";
@@ -11,6 +18,9 @@ export type CommunityThemePreference = {
   theme: SyntaxThemeName;
   accent: string;
   followSystem: boolean;
+  glassBackground: boolean;
+  glassOpacity: number;
+  prominentActiveTab: boolean;
 };
 
 export const DEFAULT_COMMUNITY_THEME: CommunityThemePreference = Object.freeze({
@@ -18,6 +28,9 @@ export const DEFAULT_COMMUNITY_THEME: CommunityThemePreference = Object.freeze({
   theme: "buzz",
   accent: "#3b82f6",
   followSystem: true,
+  glassBackground: DEFAULT_GLASS_BACKGROUND,
+  glassOpacity: DEFAULT_GLASS_OPACITY,
+  prominentActiveTab: DEFAULT_PROMINENT_ACTIVE_TAB,
 });
 
 const THEME_NAMES = new Set<string>(SYNTAX_THEMES);
@@ -39,18 +52,33 @@ export function communityThemeOutboxKey(
 
 export function parseCommunityThemePreference(
   value: unknown,
+  legacyFallback: CommunityThemePreference = DEFAULT_COMMUNITY_THEME,
 ): CommunityThemePreference | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return null;
   }
   const candidate = value as Record<string, unknown>;
+  // These fields were added to the existing v1 payload. Fill older records
+  // from the pre-migration appearance so a user's former global glass and tab
+  // choices become the initial values for each existing community.
+  const glassBackground =
+    candidate.glassBackground ?? legacyFallback.glassBackground;
+  const glassOpacity = candidate.glassOpacity ?? legacyFallback.glassOpacity;
+  const prominentActiveTab =
+    candidate.prominentActiveTab ?? legacyFallback.prominentActiveTab;
   if (
     candidate.version !== 1 ||
     typeof candidate.theme !== "string" ||
     !THEME_NAMES.has(candidate.theme) ||
     typeof candidate.accent !== "string" ||
     !ACCENTS.has(candidate.accent) ||
-    typeof candidate.followSystem !== "boolean"
+    typeof candidate.followSystem !== "boolean" ||
+    typeof glassBackground !== "boolean" ||
+    typeof glassOpacity !== "number" ||
+    !Number.isInteger(glassOpacity) ||
+    glassOpacity < GLASS_OPACITY_MIN ||
+    glassOpacity > GLASS_OPACITY_MAX ||
+    typeof prominentActiveTab !== "boolean"
   ) {
     return null;
   }
@@ -59,18 +87,24 @@ export function parseCommunityThemePreference(
     theme: candidate.theme as SyntaxThemeName,
     accent: candidate.accent,
     followSystem: candidate.followSystem,
+    glassBackground,
+    glassOpacity,
+    prominentActiveTab,
   };
 }
 
 export function readCommunityThemePreference(
   pubkey: string,
   relayUrl: string,
+  legacyFallback: CommunityThemePreference = DEFAULT_COMMUNITY_THEME,
 ): CommunityThemePreference | null {
   try {
     const raw = window.localStorage.getItem(
       communityThemeStorageKey(pubkey, relayUrl),
     );
-    return raw ? parseCommunityThemePreference(JSON.parse(raw)) : null;
+    return raw
+      ? parseCommunityThemePreference(JSON.parse(raw), legacyFallback)
+      : null;
   } catch {
     return null;
   }
@@ -79,12 +113,15 @@ export function readCommunityThemePreference(
 export function readCommunityThemeOutbox(
   pubkey: string,
   relayUrl: string,
+  legacyFallback: CommunityThemePreference = DEFAULT_COMMUNITY_THEME,
 ): CommunityThemePreference | null {
   try {
     const raw = window.localStorage.getItem(
       communityThemeOutboxKey(pubkey, relayUrl),
     );
-    return raw ? parseCommunityThemePreference(JSON.parse(raw)) : null;
+    return raw
+      ? parseCommunityThemePreference(JSON.parse(raw), legacyFallback)
+      : null;
   } catch {
     return null;
   }
@@ -110,8 +147,9 @@ export function clearCommunityThemeOutbox(
   pubkey: string,
   relayUrl: string,
   acknowledged: CommunityThemePreference,
+  legacyFallback: CommunityThemePreference = DEFAULT_COMMUNITY_THEME,
 ): void {
-  const pending = readCommunityThemeOutbox(pubkey, relayUrl);
+  const pending = readCommunityThemeOutbox(pubkey, relayUrl, legacyFallback);
   if (!pending || !sameCommunityThemePreference(pending, acknowledged)) return;
   try {
     window.localStorage.removeItem(communityThemeOutboxKey(pubkey, relayUrl));
@@ -179,7 +217,10 @@ export function sameCommunityThemePreference(
   return (
     left.theme === right.theme &&
     left.accent === right.accent &&
-    left.followSystem === right.followSystem
+    left.followSystem === right.followSystem &&
+    left.glassBackground === right.glassBackground &&
+    left.glassOpacity === right.glassOpacity &&
+    left.prominentActiveTab === right.prominentActiveTab
   );
 }
 

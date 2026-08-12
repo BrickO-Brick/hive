@@ -8,6 +8,11 @@ import 'theme_catalog.dart';
 import 'theme_provider.dart' show effectiveTheme, schemeForAppearanceMode;
 
 const communityThemeDTag = 'community-theme';
+const defaultCommunityGlassBackground = false;
+const defaultCommunityGlassOpacity = 65;
+const minCommunityGlassOpacity = 30;
+const maxCommunityGlassOpacity = 90;
+const defaultCommunityProminentActiveTab = true;
 const defaultCommunityTheme = CommunityThemePreference(
   theme: 'buzz',
   accent: '#3b82f6',
@@ -19,12 +24,20 @@ class CommunityThemePreference {
   final String theme;
   final String accent;
   final bool followSystem;
+  // These appearance values are synced even though mobile cannot render
+  // desktop glass. Keeping them in the model makes mobile a lossless client.
+  final bool glassBackground;
+  final int glassOpacity;
+  final bool prominentActiveTab;
 
   const CommunityThemePreference({
     this.version = 1,
     required this.theme,
     required this.accent,
     required this.followSystem,
+    this.glassBackground = defaultCommunityGlassBackground,
+    this.glassOpacity = defaultCommunityGlassOpacity,
+    this.prominentActiveTab = defaultCommunityProminentActiveTab,
   });
 
   factory CommunityThemePreference.fromJson(Map<String, dynamic> json) {
@@ -36,10 +49,27 @@ class CommunityThemePreference {
         json['followSystem'] is! bool) {
       throw const FormatException('Invalid community theme preference');
     }
+    final glassBackground =
+        json['glassBackground'] ?? defaultCommunityGlassBackground;
+    final glassOpacity = json['glassOpacity'] ?? defaultCommunityGlassOpacity;
+    final prominentActiveTab =
+        json['prominentActiveTab'] ?? defaultCommunityProminentActiveTab;
+    if (glassBackground is! bool ||
+        glassOpacity is! num ||
+        !glassOpacity.isFinite ||
+        glassOpacity != glassOpacity.round() ||
+        glassOpacity < minCommunityGlassOpacity ||
+        glassOpacity > maxCommunityGlassOpacity ||
+        prominentActiveTab is! bool) {
+      throw const FormatException('Invalid community theme preference');
+    }
     return CommunityThemePreference(
       theme: json['theme'] as String,
       accent: json['accent'] as String,
       followSystem: json['followSystem'] as bool,
+      glassBackground: glassBackground,
+      glassOpacity: glassOpacity.toInt(),
+      prominentActiveTab: prominentActiveTab,
     );
   }
 
@@ -48,7 +78,27 @@ class CommunityThemePreference {
     'theme': theme,
     'accent': accent,
     'followSystem': followSystem,
+    'glassBackground': glassBackground,
+    'glassOpacity': glassOpacity,
+    'prominentActiveTab': prominentActiveTab,
   };
+
+  CommunityThemePreference copyWith({
+    String? theme,
+    String? accent,
+    bool? followSystem,
+    bool? glassBackground,
+    int? glassOpacity,
+    bool? prominentActiveTab,
+  }) => CommunityThemePreference(
+    version: version,
+    theme: theme ?? this.theme,
+    accent: accent ?? this.accent,
+    followSystem: followSystem ?? this.followSystem,
+    glassBackground: glassBackground ?? this.glassBackground,
+    glassOpacity: glassOpacity ?? this.glassOpacity,
+    prominentActiveTab: prominentActiveTab ?? this.prominentActiveTab,
+  );
 
   ThemeMode get mode {
     if (followSystem) return ThemeMode.system;
@@ -60,10 +110,20 @@ class CommunityThemePreference {
       other is CommunityThemePreference &&
       theme == other.theme &&
       accent == other.accent &&
-      followSystem == other.followSystem;
+      followSystem == other.followSystem &&
+      glassBackground == other.glassBackground &&
+      glassOpacity == other.glassOpacity &&
+      prominentActiveTab == other.prominentActiveTab;
 
   @override
-  int get hashCode => Object.hash(theme, accent, followSystem);
+  int get hashCode => Object.hash(
+    theme,
+    accent,
+    followSystem,
+    glassBackground,
+    glassOpacity,
+    prominentActiveTab,
+  );
 }
 
 class CommunityThemeStorage {

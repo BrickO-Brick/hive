@@ -493,7 +493,10 @@ test("appearance groups theme and preferences into labeled rows", async ({
   const preferencesCard = page.getByTestId("appearance-preferences-card");
 
   await expect(
-    themeCard.getByRole("heading", { name: "Theme", exact: true }),
+    themeCard.getByRole("heading", {
+      name: "Theme · This community",
+      exact: true,
+    }),
   ).toBeVisible();
   await expect(
     preferencesCard.getByRole("heading", {
@@ -521,7 +524,7 @@ test("appearance groups theme and preferences into labeled rows", async ({
   );
   await expect(themeStyleTrigger).toHaveAttribute(
     "aria-label",
-    "Theme style, Github Light",
+    "Color style, Github Light",
   );
   await expect(themeStyleTrigger).not.toContainText("Github Light");
   await expect(themeStyleTrigger).toHaveAttribute("aria-expanded", "false");
@@ -1244,7 +1247,7 @@ test("prominent active tab is opt-in and switches selection surfaces", async ({
         PROMINENT_ACTIVE_TAB_STORAGE_KEY,
       ),
     )
-    .toBeNull();
+    .toBe("true");
 
   await toggle.click();
   await expect(toggle).toBeChecked();
@@ -1542,7 +1545,7 @@ test("glass background keeps the content panel solid", async ({ page }) => {
         GLASS_BACKGROUND_STORAGE_KEY,
       ),
     )
-    .toBeNull();
+    .toBe("false");
   await expect(opacitySlider).toHaveCount(0);
   await expect(root).not.toHaveAttribute("data-glass-background", "");
   await expect(page.locator(".buzz-theme-gradient-underlay")).not.toHaveCSS(

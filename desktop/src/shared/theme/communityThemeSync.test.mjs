@@ -13,6 +13,9 @@ const preference = {
   theme: "houston",
   accent: "#3b82f6",
   followSystem: false,
+  glassBackground: true,
+  glassOpacity: 48,
+  prominentActiveTab: false,
 };
 
 function installFakeTimer() {
@@ -147,6 +150,7 @@ test("live replacement delivered during empty onboarding fetch prevents default 
         preference: remotePreference,
         createdAt: 456,
         eventId: "existing-theme",
+        needsUpgrade: false,
       },
     });
     assert.deepEqual(updates, [result.remote]);
@@ -263,6 +267,7 @@ test("hydration applies valid remote state and seeds only confirmed absence", ()
     preference,
     createdAt: 123,
     eventId: "remote-theme",
+    needsUpgrade: false,
   };
   assert.equal(
     communityThemeHydrationRemote({ status: "confirmed-absent" }),
@@ -277,6 +282,45 @@ test("hydration applies valid remote state and seeds only confirmed absence", ()
   assert.equal(shouldSeedCommunityTheme({ status: "confirmed-absent" }), true);
   assert.equal(shouldSeedCommunityTheme({ status: "invalid" }), false);
   assert.equal(shouldSeedCommunityTheme({ status: "unavailable" }), false);
+});
+
+test("fetch hydrates and marks older theme records for a full appearance upgrade", async () => {
+  const fallback = {
+    ...preference,
+    glassBackground: true,
+    glassOpacity: 53,
+    prominentActiveTab: false,
+  };
+  globalThis.window ??= {};
+  globalThis.window.__TAURI_INTERNALS__ = {
+    invoke(command) {
+      if (command === "nip44_decrypt_from_self") {
+        return Promise.resolve(
+          JSON.stringify({
+            version: 1,
+            theme: "houston",
+            accent: "#3b82f6",
+            followSystem: false,
+          }),
+        );
+      }
+      throw new Error(`unexpected command: ${command}`);
+    },
+  };
+  mock.method(relayClient, "fetchEvents", () =>
+    Promise.resolve([relayEvent()]),
+  );
+
+  try {
+    const manager = new CommunityThemeSyncManager("alice", undefined, fallback);
+    const result = await manager.fetchRemote();
+    assert.equal(result.status, "valid");
+    assert.deepEqual(result.remote?.preference, fallback);
+    assert.equal(result.remote?.needsUpgrade, true);
+  } finally {
+    delete globalThis.window.__TAURI_INTERNALS__;
+    mock.reset();
+  }
 });
 
 test("acknowledged coordinates use relay same-second ordering", () => {

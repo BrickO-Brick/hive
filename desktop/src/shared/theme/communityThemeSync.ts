@@ -7,6 +7,7 @@ import {
 import type { RelayEvent } from "@/shared/api/types";
 import { KIND_COMMUNITY_THEME } from "@/shared/constants/kinds";
 import {
+  DEFAULT_COMMUNITY_THEME,
   parseCommunityThemePreference,
   sameCommunityThemePreference,
   type CommunityThemePreference,
@@ -27,6 +28,7 @@ export type RemoteCommunityTheme = {
   preference: CommunityThemePreference;
   createdAt: number;
   eventId: string;
+  needsUpgrade: boolean;
 };
 
 export type RemoteCommunityThemeResult =
@@ -63,12 +65,24 @@ export function shouldSeedCommunityTheme(
 
 async function decryptAndParse(
   event: RelayEvent,
+  legacyFallback: CommunityThemePreference,
 ): Promise<RemoteCommunityTheme | null> {
   try {
     const plaintext = await nip44DecryptFromSelf(event.content);
-    const preference = parseCommunityThemePreference(JSON.parse(plaintext));
+    const parsed = JSON.parse(plaintext);
+    const preference = parseCommunityThemePreference(parsed, legacyFallback);
     return preference
-      ? { preference, createdAt: event.created_at, eventId: event.id }
+      ? {
+          preference,
+          createdAt: event.created_at,
+          eventId: event.id,
+          needsUpgrade:
+            typeof parsed === "object" &&
+            parsed !== null &&
+            (!Object.hasOwn(parsed, "glassBackground") ||
+              !Object.hasOwn(parsed, "glassOpacity") ||
+              !Object.hasOwn(parsed, "prominentActiveTab")),
+        }
       : null;
   } catch {
     return null;
@@ -89,13 +103,16 @@ export class CommunityThemeSyncManager {
   private publishRetryAttempt = 0;
   private readonly remoteProcessing = new Set<Promise<unknown>>();
   private readonly onPublished: (published: PublishedCommunityTheme) => void;
+  private readonly legacyFallback: CommunityThemePreference;
 
   constructor(
     pubkey: string,
     onPublished: (published: PublishedCommunityTheme) => void = () => {},
+    legacyFallback: CommunityThemePreference = DEFAULT_COMMUNITY_THEME,
   ) {
     this.pubkey = pubkey;
     this.onPublished = onPublished;
+    this.legacyFallback = legacyFallback;
   }
 
   async fetchRemote(): Promise<RemoteCommunityThemeResult> {
@@ -108,7 +125,7 @@ export class CommunityThemeSyncManager {
       });
       if (events.length === 0) return { status: "absent" };
       if (events[0].pubkey !== this.pubkey) return { status: "invalid" };
-      const processing = decryptAndParse(events[0]);
+      const processing = decryptAndParse(events[0], this.legacyFallback);
       this.trackRemoteProcessing(processing);
       const remote = await processing;
       if (!remote) return { status: "invalid" };
@@ -357,24 +374,26 @@ export class CommunityThemeSyncManager {
     onUpdate: (remote: RemoteCommunityTheme) => void,
   ): void {
     if (event.pubkey !== this.pubkey || this.destroyed) return;
-    const processing = decryptAndParse(event).then((remote) => {
-      if (this.destroyed) return;
-      if (!remote) {
-        this.observedInvalidLiveRemote = true;
-        return;
-      }
-      if (
-        isNewerCommunityThemeCoordinate(remote, {
-          createdAt: this.lastRemoteCreatedAt,
-          eventId: this.lastRemoteEventId,
-        })
-      ) {
-        this.lastRemoteCreatedAt = remote.createdAt;
-        this.lastRemoteEventId = remote.eventId;
-        this.latestRemote = remote;
-      }
-      onUpdate(remote);
-    });
+    const processing = decryptAndParse(event, this.legacyFallback).then(
+      (remote) => {
+        if (this.destroyed) return;
+        if (!remote) {
+          this.observedInvalidLiveRemote = true;
+          return;
+        }
+        if (
+          isNewerCommunityThemeCoordinate(remote, {
+            createdAt: this.lastRemoteCreatedAt,
+            eventId: this.lastRemoteEventId,
+          })
+        ) {
+          this.lastRemoteCreatedAt = remote.createdAt;
+          this.lastRemoteEventId = remote.eventId;
+          this.latestRemote = remote;
+        }
+        onUpdate(remote);
+      },
+    );
     this.trackRemoteProcessing(processing);
   }
 

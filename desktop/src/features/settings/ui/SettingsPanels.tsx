@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   Archive,
@@ -32,8 +32,6 @@ import { CommunityMembersSettingsCard } from "@/features/community-members/ui/Co
 import { CustomEmojiSettingsCard } from "@/features/custom-emoji/ui/CustomEmojiSettingsCard";
 import { LocalArchiveSettingsCard } from "@/features/local-archive/ui/LocalArchiveSettingsCard";
 import { cn } from "@/shared/lib/cn";
-import { useCommunities } from "@/features/communities/useCommunities";
-import { Badge } from "@/shared/ui/badge";
 import { isBuzzTheme, useTheme } from "@/shared/theme/ThemeProvider";
 import {
   LIGHT_THEMES,
@@ -52,7 +50,6 @@ import {
   useThemePreviewVars,
   withAccentPreviewVars,
 } from "@/shared/theme/useThemePreviewVars";
-import { appearanceCommunityLabel } from "../lib/appearanceScopeCopy";
 import {
   AccentPickerContent,
   ConversationDisplaySettings,
@@ -430,13 +427,6 @@ function ThemeSettingsCard() {
     setFollowSystem,
   } = useTheme();
 
-  // Per-community scoping labels only earn their place when the user is
-  // actually in more than one community; with a single community there is
-  // nothing to disambiguate.
-  const { activeCommunity, communities } = useCommunities();
-  const showCommunityScope = communities.length > 1;
-  const communityLabel = appearanceCommunityLabel(activeCommunity?.name);
-
   // Buzz themes pin a neutral accent (GitHub black in light, white in dark),
   // so the accent picker is hidden while a Buzz theme is active. `themeName` is
   // the effective theme, so this also covers System mode resolving to Buzz.
@@ -450,12 +440,17 @@ function ThemeSettingsCard() {
   // Determine the active mode from current state
   const activeMode: AppearanceMode = followSystem
     ? "system"
-    : isDark
-      ? "dark"
-      : "light";
+    : LIGHT_THEMES.has(selectedThemeName as SyntaxThemeName)
+      ? "light"
+      : "dark";
 
   const [selectedMode, setSelectedMode] = useState<AppearanceMode>(activeMode);
   const [themeStyleExpanded, setThemeStyleExpanded] = useState(false);
+
+  // Community sync can replace the appearance while this panel remains open.
+  // Mirror that external value so the segmented control never describes the
+  // previous community's color mode.
+  useEffect(() => setSelectedMode(activeMode), [activeMode]);
 
   const getVars = (name: SyntaxThemeName) =>
     withAccentPreviewVars(
@@ -644,27 +639,7 @@ function ThemeSettingsCard() {
       <SettingsOptionGroupList>
         <SettingsOptionGroup
           data-testid="appearance-theme-card"
-          headerAction={
-            showCommunityScope && activeCommunity ? (
-              <Badge
-                className="max-w-56 font-medium normal-case tracking-normal"
-                data-testid="appearance-community-badge"
-                variant="outline"
-              >
-                <span className="truncate">{communityLabel}</span>
-              </Badge>
-            ) : null
-          }
-          title={
-            <>
-              Theme
-              {showCommunityScope ? (
-                <span className="ml-1 font-normal text-muted-foreground">
-                  (per community)
-                </span>
-              ) : null}
-            </>
-          }
+          title="Theme · This community"
         >
           <SettingsOptionRow data-testid="appearance-color-mode-row">
             <div className="min-w-0">
@@ -693,7 +668,7 @@ function ThemeSettingsCard() {
 
           <SettingsOptionRow data-testid="theme-style-row">
             <div className="min-w-0">
-              <p className="text-sm font-medium">Theme style</p>
+              <p className="text-sm font-medium">Color style</p>
               <p
                 className="text-sm font-normal text-muted-foreground/70"
                 data-settings-subcopy
@@ -702,7 +677,7 @@ function ThemeSettingsCard() {
               </p>
             </div>
             <button
-              aria-label={`Theme style, ${selectedThemeLabel}`}
+              aria-label={`Color style, ${selectedThemeLabel}`}
               aria-controls="theme-style-options"
               aria-expanded={themeStyleExpanded}
               className="flex h-auto min-w-0 items-center gap-2 rounded-md bg-transparent p-0 text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"

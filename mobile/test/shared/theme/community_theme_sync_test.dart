@@ -10,6 +10,9 @@ void main() {
     theme: 'buzz',
     accent: '#3b82f6',
     followSystem: true,
+    glassBackground: true,
+    glassOpacity: 48,
+    prominentActiveTab: false,
   );
 
   test('confirmed absence seeds exact NIP-78 coordinate', () async {

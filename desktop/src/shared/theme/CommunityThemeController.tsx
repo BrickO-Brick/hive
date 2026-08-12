@@ -43,6 +43,9 @@ export function CommunityThemeController() {
     theme: theme.selectedThemeName as CommunityThemePreference["theme"],
     accent: theme.accentColor,
     followSystem: theme.followSystem,
+    glassBackground: theme.glassBackground,
+    glassOpacity: theme.glassOpacity,
+    prominentActiveTab: theme.prominentActiveTab,
   });
 
   const currentPreferenceRef = useRef<CommunityThemePreference>({
@@ -50,12 +53,18 @@ export function CommunityThemeController() {
     theme: theme.selectedThemeName as CommunityThemePreference["theme"],
     accent: theme.accentColor,
     followSystem: theme.followSystem,
+    glassBackground: theme.glassBackground,
+    glassOpacity: theme.glassOpacity,
+    prominentActiveTab: theme.prominentActiveTab,
   });
   currentPreferenceRef.current = {
     version: 1,
     theme: theme.selectedThemeName as CommunityThemePreference["theme"],
     accent: theme.accentColor,
     followSystem: theme.followSystem,
+    glassBackground: theme.glassBackground,
+    glassOpacity: theme.glassOpacity,
+    prominentActiveTab: theme.prominentActiveTab,
   };
 
   const applyPreference = useCallback(
@@ -71,8 +80,13 @@ export function CommunityThemeController() {
 
   useLayoutEffect(() => {
     if (!pubkey || !relayUrl) return;
-    const local = readCommunityThemePreference(pubkey, relayUrl);
-    const dirty = readCommunityThemeOutbox(pubkey, relayUrl);
+    const legacyFallback = initialPreferenceRef.current;
+    const local = readCommunityThemePreference(
+      pubkey,
+      relayUrl,
+      legacyFallback,
+    );
+    const dirty = readCommunityThemeOutbox(pubkey, relayUrl, legacyFallback);
     // Preserve the user's existing global appearance the first time this
     // feature sees their current community. Later missing/malformed target
     // records use the stable default so the previous community never leaks.
@@ -96,20 +110,34 @@ export function CommunityThemeController() {
   useEffect(() => {
     if (!pubkey || !relayUrl) return;
     const scope = `${pubkey}:${relayUrl}`;
+    const legacyFallback = initialPreferenceRef.current;
     scopeRef.current = scope;
     lastRemoteRef.current = { createdAt: 0, eventId: "" };
-    const manager = new CommunityThemeSyncManager(pubkey, (published) => {
-      const last = lastRemoteRef.current;
-      if (isNewerCommunityThemeCoordinate(published, last)) {
-        lastRemoteRef.current = {
-          createdAt: published.createdAt,
-          eventId: published.eventId,
-        };
-      }
-      clearCommunityThemeOutbox(pubkey, relayUrl, published.preference);
-    });
+    const manager = new CommunityThemeSyncManager(
+      pubkey,
+      (published) => {
+        const last = lastRemoteRef.current;
+        if (isNewerCommunityThemeCoordinate(published, last)) {
+          lastRemoteRef.current = {
+            createdAt: published.createdAt,
+            eventId: published.eventId,
+          };
+        }
+        clearCommunityThemeOutbox(
+          pubkey,
+          relayUrl,
+          published.preference,
+          legacyFallback,
+        );
+      },
+      legacyFallback,
+    );
     managerRef.current = manager;
-    const durablePending = readCommunityThemeOutbox(pubkey, relayUrl);
+    const durablePending = readCommunityThemeOutbox(
+      pubkey,
+      relayUrl,
+      legacyFallback,
+    );
     if (durablePending) manager.publish(durablePending);
 
     const applyRemote = (remote: RemoteCommunityTheme) => {
@@ -123,7 +151,7 @@ export function CommunityThemeController() {
         eventId: remote.eventId,
       };
       manager.acceptRemote(remote);
-      const dirty = readCommunityThemeOutbox(pubkey, relayUrl);
+      const dirty = readCommunityThemeOutbox(pubkey, relayUrl, legacyFallback);
       if (dirty) {
         manager.publish(dirty);
         return;
@@ -136,6 +164,12 @@ export function CommunityThemeController() {
         remote.preference,
         applyPreference,
       );
+      if (
+        remote.needsUpgrade &&
+        writeCommunityThemeOutbox(pubkey, relayUrl, remote.preference)
+      ) {
+        manager.publish(remote.preference);
+      }
     };
 
     let unsubscribe: (() => Promise<void>) | null = null;
@@ -153,8 +187,8 @@ export function CommunityThemeController() {
           markCommunityThemeMigrated(pubkey);
         } else if (shouldSeedCommunityTheme(result)) {
           const local =
-            readCommunityThemeOutbox(pubkey, relayUrl) ??
-            readCommunityThemePreference(pubkey, relayUrl) ??
+            readCommunityThemeOutbox(pubkey, relayUrl, legacyFallback) ??
+            readCommunityThemePreference(pubkey, relayUrl, legacyFallback) ??
             scopedPreferenceRef.current ??
             DEFAULT_COMMUNITY_THEME;
           writeCommunityThemePreference(pubkey, relayUrl, local);
@@ -172,7 +206,11 @@ export function CommunityThemeController() {
           return;
         }
         if (result.status !== "absent") return;
-        const pending = readCommunityThemeOutbox(pubkey, relayUrl);
+        const pending = readCommunityThemeOutbox(
+          pubkey,
+          relayUrl,
+          legacyFallback,
+        );
         if (pending) manager.publish(pending);
       });
     });
@@ -193,6 +231,9 @@ export function CommunityThemeController() {
       theme: theme.selectedThemeName as CommunityThemePreference["theme"],
       accent: theme.accentColor,
       followSystem: theme.followSystem,
+      glassBackground: theme.glassBackground,
+      glassOpacity: theme.glassOpacity,
+      prominentActiveTab: theme.prominentActiveTab,
     };
     const persistenceAction = communityThemePersistenceAction(
       expectedAppliedRef.current,
@@ -203,7 +244,11 @@ export function CommunityThemeController() {
       expectedAppliedRef.current = null;
       return;
     }
-    const stored = readCommunityThemePreference(pubkey, relayUrl);
+    const stored = readCommunityThemePreference(
+      pubkey,
+      relayUrl,
+      initialPreferenceRef.current,
+    );
     if (stored && sameCommunityThemePreference(stored, preference)) return;
     scopedPreferenceRef.current = preference;
     if (!writeCommunityThemePreference(pubkey, relayUrl, preference)) return;
@@ -215,6 +260,9 @@ export function CommunityThemeController() {
     theme.selectedThemeName,
     theme.accentColor,
     theme.followSystem,
+    theme.glassBackground,
+    theme.glassOpacity,
+    theme.prominentActiveTab,
   ]);
 
   return null;

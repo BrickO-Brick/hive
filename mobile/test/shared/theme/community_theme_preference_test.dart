@@ -6,22 +6,39 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
-  test('desktop v1 payload round-trips exactly', () {
+  test('complete desktop v1 payload round-trips exactly', () {
     final preference = CommunityThemePreference.fromJson({
       'version': 1,
       'theme': 'github-dark',
       'accent': '#c0a2f1',
       'followSystem': false,
+      'glassBackground': true,
+      'glassOpacity': 47,
+      'prominentActiveTab': false,
     });
 
     expect(preference.mode, ThemeMode.dark);
     expect(
       jsonEncode(preference.toJson()),
-      '{"version":1,"theme":"github-dark","accent":"#c0a2f1","followSystem":false}',
+      '{"version":1,"theme":"github-dark","accent":"#c0a2f1","followSystem":false,"glassBackground":true,"glassOpacity":47,"prominentActiveTab":false}',
     );
   });
 
-  test('rejects unknown themes, accents, and future versions', () {
+  test('older v1 payloads gain capability-independent defaults', () {
+    final preference = CommunityThemePreference.fromJson({
+      'version': 1,
+      'theme': 'buzz',
+      'accent': '#3b82f6',
+      'followSystem': true,
+    });
+
+    expect(preference.glassBackground, isFalse);
+    expect(preference.glassOpacity, 65);
+    expect(preference.prominentActiveTab, isTrue);
+    expect(preference.toJson(), containsPair('glassOpacity', 65));
+  });
+
+  test('rejects invalid theme and appearance values', () {
     for (final payload in [
       {
         'version': 2,
@@ -41,12 +58,51 @@ void main() {
         'accent': '#000000',
         'followSystem': true,
       },
+      {
+        'version': 1,
+        'theme': 'buzz',
+        'accent': '#3b82f6',
+        'followSystem': true,
+        'glassBackground': 'true',
+      },
+      {
+        'version': 1,
+        'theme': 'buzz',
+        'accent': '#3b82f6',
+        'followSystem': true,
+        'glassOpacity': 29,
+      },
+      {
+        'version': 1,
+        'theme': 'buzz',
+        'accent': '#3b82f6',
+        'followSystem': true,
+        'prominentActiveTab': 1,
+      },
     ]) {
       expect(
         () => CommunityThemePreference.fromJson(payload),
         throwsFormatException,
       );
     }
+  });
+
+  test('supported edits preserve appearance values mobile cannot render', () {
+    const desktopPreference = CommunityThemePreference(
+      theme: 'buzz',
+      accent: '#3b82f6',
+      followSystem: true,
+      glassBackground: true,
+      glassOpacity: 42,
+      prominentActiveTab: false,
+    );
+
+    final mobileEdit = desktopPreference.copyWith(theme: 'dracula');
+
+    expect(mobileEdit.theme, 'dracula');
+    expect(mobileEdit.glassBackground, isTrue);
+    expect(mobileEdit.glassOpacity, 42);
+    expect(mobileEdit.prominentActiveTab, isFalse);
   });
 
   test('storage is scoped by pubkey and normalized relay URL', () async {

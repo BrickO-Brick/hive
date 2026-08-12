@@ -12,6 +12,7 @@ import {
   parseCommunityThemePreference,
   readCommunityThemeOutbox,
   readCommunityThemePreference,
+  sameCommunityThemePreference,
   writeCommunityThemeOutbox,
   writeCommunityThemePreference,
 } from "./communityThemePreference.ts";
@@ -31,6 +32,9 @@ test("parses only the versioned stable appearance contract", () => {
     theme: "houston",
     accent: "#a855f7",
     followSystem: false,
+    glassBackground: true,
+    glassOpacity: 47,
+    prominentActiveTab: false,
   };
   assert.deepEqual(parseCommunityThemePreference(valid), valid);
   assert.equal(parseCommunityThemePreference({ ...valid, version: 2 }), null);
@@ -45,6 +49,64 @@ test("parses only the versioned stable appearance contract", () => {
   assert.equal(
     parseCommunityThemePreference({ ...valid, followSystem: "false" }),
     null,
+  );
+  assert.equal(
+    parseCommunityThemePreference({ ...valid, glassBackground: "true" }),
+    null,
+  );
+  assert.equal(
+    parseCommunityThemePreference({ ...valid, glassOpacity: 29 }),
+    null,
+  );
+  assert.equal(
+    parseCommunityThemePreference({ ...valid, prominentActiveTab: 1 }),
+    null,
+  );
+});
+
+test("older theme records inherit the pre-migration appearance controls", () => {
+  const legacy = {
+    version: 1,
+    theme: "houston",
+    accent: "#a855f7",
+    followSystem: false,
+  };
+  const fallback = {
+    ...DEFAULT_COMMUNITY_THEME,
+    glassBackground: true,
+    glassOpacity: 42,
+    prominentActiveTab: false,
+  };
+
+  assert.deepEqual(parseCommunityThemePreference(legacy, fallback), {
+    ...legacy,
+    glassBackground: true,
+    glassOpacity: 42,
+    prominentActiveTab: false,
+  });
+});
+
+test("appearance equality includes glass and prominent-tab choices", () => {
+  assert.equal(
+    sameCommunityThemePreference(DEFAULT_COMMUNITY_THEME, {
+      ...DEFAULT_COMMUNITY_THEME,
+      glassOpacity: DEFAULT_COMMUNITY_THEME.glassOpacity + 1,
+    }),
+    false,
+  );
+  assert.equal(
+    sameCommunityThemePreference(DEFAULT_COMMUNITY_THEME, {
+      ...DEFAULT_COMMUNITY_THEME,
+      glassBackground: !DEFAULT_COMMUNITY_THEME.glassBackground,
+    }),
+    false,
+  );
+  assert.equal(
+    sameCommunityThemePreference(DEFAULT_COMMUNITY_THEME, {
+      ...DEFAULT_COMMUNITY_THEME,
+      prominentActiveTab: !DEFAULT_COMMUNITY_THEME.prominentActiveTab,
+    }),
+    false,
   );
 });
 
