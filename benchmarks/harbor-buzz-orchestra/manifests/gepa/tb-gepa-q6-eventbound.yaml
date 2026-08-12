@@ -1,0 +1,41 @@
+# GEPA per-problem probe Q6 (video-processing, 0-pass lifetime: v2 full-89
+# frame 111 vs [219,223], Q4 arms 0/5: takeoff 224/225 = late-fire, 1 = degenerate).
+# Base: tb-gepa-q3-b (v3 lineage + mia-v4-selfcheck). Single variable vs that
+# base: mia-v5-eventbound prompt — physical event definition outranks detector
+# alarm; read raw per-frame series at the boundary; bias to physical edge;
+# time-shift invariance stress; degenerate output = method bug.
+schema_version: "1"
+condition: tb-gepa-q6-eventbound
+timing_signal: true
+roster:
+  - id: mia
+    kind: orchestrator
+    role: conn
+    require_reply: true
+    count: 1
+    endpoint: deepseek-ai/Deepseek-V4-Flash
+    model_revision: deepseek/deepseek-v4-flash-20260731
+    prompt:
+      path: personas/bench/gepa/mia-v5-eventbound.md
+      sha256: 0fdc2a5e3dfd9bd909c1445c155bac0b6242452a67d56c1fa11ea1c22dff78ab
+    generation:
+      thinking_effort: high
+  - id: mie
+    kind: worker
+    role: twin
+    count: 1
+    endpoint: deepseek-ai/Deepseek-V4-Flash
+    model_revision: deepseek/deepseek-v4-flash-20260731
+    prompt:
+      path: personas/bench/gepa/mie-v0.md
+      sha256: a4924e4c4507ac466a7500bb34a04a782618df41dba850b6f0f729787c48439b
+    generation:
+      thinking_effort: high
+prices:
+  deepseek-ai/Deepseek-V4-Flash:
+    input_per_million_usd: 0.14
+    cached_input_per_million_usd: 0.14
+    output_per_million_usd: 0.28
+    cache_read_rate: 0.0
+trial_budget:
+  timeout_seconds: 36000
