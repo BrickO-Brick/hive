@@ -1,4 +1,14 @@
-import { Plus, RefreshCw, SquareTerminal } from "lucide-react";
+import {
+  BookOpen,
+  CircleDot,
+  Files as FilesIcon,
+  GitCommitHorizontal,
+  GitPullRequest,
+  Hash,
+  RefreshCw,
+  SquareTerminal,
+  Users,
+} from "lucide-react";
 import * as React from "react";
 
 import type {
@@ -57,6 +67,7 @@ import {
   PROJECT_DETAIL_PANEL_CLASS,
   PROJECT_DETAIL_PANEL_MESSAGE_CLASS,
 } from "./projectPanelStyles";
+import { ProjectSectionHeader } from "./ProjectSectionHeader";
 import { CreatePullRequestDialog } from "./CreatePullRequestDialog";
 import {
   CreateIssueDialog,
@@ -304,27 +315,100 @@ export function WorkspaceTabs({
     },
     [selectedPullRequestId],
   );
+  const showRepositorySelection =
+    selectedTab === "overview" || selectedTab === "files";
+  const sectionHeader =
+    selectedTab === "overview" ? (
+      <ProjectSectionHeader icon={BookOpen} title="README" />
+    ) : selectedTab === "files" ? (
+      <ProjectSectionHeader icon={FilesIcon} title="Files" />
+    ) : selectedTab === "activity" && !selectedCommitHash ? (
+      <ProjectSectionHeader icon={GitCommitHorizontal} title="Commits" />
+    ) : selectedTab === "issues" && !selectedIssueId ? (
+      <ProjectSectionHeader
+        action={{
+          disabled: createIssueAction.pending,
+          label: "New issue",
+          onClick: () => setCreateIssueOpen(true),
+        }}
+        icon={CircleDot}
+        title="Issues"
+      />
+    ) : selectedTab === "prs" ? (
+      <ProjectSectionHeader
+        action={{
+          disabled:
+            !createPullRequestAction ||
+            createPullRequestAction.projects.length === 0,
+          label: "New pull request",
+          onClick: () => setCreatePullRequestOpen(true),
+          title:
+            "New pull request — choose a repository and branches to compare",
+        }}
+        icon={GitPullRequest}
+        title="Pull Requests"
+      />
+    ) : selectedTab === "channels" ? (
+      <ProjectSectionHeader icon={Hash} title="Channels" />
+    ) : selectedTab === "contributors" ? (
+      <ProjectSectionHeader icon={Users} title="Contributors" />
+    ) : null;
 
   return (
     <Tabs
-      className="min-w-0"
+      className="min-w-0 space-y-3"
       onValueChange={handleTabChange}
       value={selectedTab}
     >
-      {/* Single workspace box: selection header (repository / source /
-          branch), then the tab strip, then the active panel. Inner panels
-          keep their own PROJECT_DETAIL_PANEL_CLASS for standalone use, so
-          their border + radius are neutralized here via the data attribute
-          they all carry. */}
+      {repositoryLoaded ? (
+        <div
+          className="flex h-10 min-w-0 items-center gap-1"
+          data-testid="project-workspace-tab-menu"
+        >
+          <ProjectTabsList prsActive={isPullRequestSelected} />
+          {onOpenTerminal ? (
+            <Button
+              aria-label="Open terminal"
+              className="h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground"
+              onClick={() => onOpenTerminal()}
+              size="icon"
+              title={terminalTitle ?? "Open terminal"}
+              variant="ghost"
+            >
+              <SquareTerminal className="h-[1.125rem] w-[1.125rem]" />
+            </Button>
+          ) : null}
+          {updatePullRequestAction ? (
+            <Button
+              className="h-8 shrink-0 gap-1.5"
+              disabled={updatePullRequestAction.pending}
+              onClick={updatePullRequestAction.onUpdate}
+              size="sm"
+              title="Publish the pushed commit to this pull request"
+              variant="outline"
+            >
+              <RefreshCw className="h-4 w-4" />
+              {updatePullRequestAction.pending ? "Updating…" : "Update PR"}
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+      {/* The bordered workspace starts with repository / source / branch
+          controls only for README and Files, then the active panel. Inner
+          panels retain standalone chrome, neutralized here. */}
       <div
         className={cn(
           PROJECT_DETAIL_PANEL_CLASS,
           "[&_[data-project-detail-panel]]:rounded-none [&_[data-project-detail-panel]]:border-0",
         )}
         data-project-detail-panel
+        data-testid="project-workspace-panel"
       >
-        {repositoryControls || sourceControls ? (
-          <div className="flex min-h-12 min-w-0 flex-wrap items-center gap-1.5 border-border/50 border-b px-3 py-2">
+        {showRepositorySelection && (repositoryControls || sourceControls) ? (
+          <div
+            className="flex min-h-12 min-w-0 flex-wrap items-center gap-1.5 border-border/50 border-b px-3 py-2"
+            data-testid="project-repository-selection-row"
+          >
             {repositoryControls}
             {sourceControls ? (
               <>
@@ -350,65 +434,7 @@ export function WorkspaceTabs({
             ) : null}
           </div>
         ) : null}
-        {repositoryLoaded ? (
-          <div className="flex h-10 min-w-0 items-center gap-1 border-border/50 border-b px-2">
-            <ProjectTabsList prsActive={isPullRequestSelected} />
-            {selectedTab === "issues" ? (
-              <Button
-                aria-label="New issue"
-                className="h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground"
-                disabled={createIssueAction.pending}
-                onClick={() => setCreateIssueOpen(true)}
-                size="icon"
-                title="New issue"
-                variant="ghost"
-              >
-                <Plus className="h-4 w-4" />
-              </Button>
-            ) : null}
-            {selectedTab === "prs" ? (
-              <Button
-                aria-label="New pull request"
-                className="h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground"
-                disabled={
-                  !createPullRequestAction ||
-                  createPullRequestAction.projects.length === 0
-                }
-                onClick={() => setCreatePullRequestOpen(true)}
-                size="icon"
-                title="New pull request — choose a repository and branches to compare"
-                variant="ghost"
-              >
-                <Plus className="h-4 w-4" />
-              </Button>
-            ) : null}
-            {onOpenTerminal ? (
-              <Button
-                aria-label="Open terminal"
-                className="h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground"
-                onClick={() => onOpenTerminal()}
-                size="icon"
-                title={terminalTitle ?? "Open terminal"}
-                variant="ghost"
-              >
-                <SquareTerminal className="h-[1.125rem] w-[1.125rem]" />
-              </Button>
-            ) : null}
-            {updatePullRequestAction ? (
-              <Button
-                className="h-8 shrink-0 gap-1.5"
-                disabled={updatePullRequestAction.pending}
-                onClick={updatePullRequestAction.onUpdate}
-                size="sm"
-                title="Publish the pushed commit to this pull request"
-                variant="outline"
-              >
-                <RefreshCw className="h-4 w-4" />
-                {updatePullRequestAction.pending ? "Updating…" : "Update PR"}
-              </Button>
-            ) : null}
-          </div>
-        ) : null}
+        {sectionHeader}
         {selectedPullRequest ? (
           <div className={PROJECT_DETAIL_PANEL_CLASS} data-project-detail-panel>
             {/* Two full-height columns: the meta rail runs all the way to the
@@ -588,15 +614,15 @@ export function WorkspaceTabs({
           />
         </TabsContent>
 
+        <TabsContent className="m-0" value="channels">
+          <DiscussionChannelsPanel query={repositoryDiscussionQuery(project)} />
+        </TabsContent>
+
         <TabsContent className="m-0" value="contributors">
           <ContributorsPanel
             profiles={profiles}
             repoContributors={displayedContributors}
           />
-        </TabsContent>
-
-        <TabsContent className="m-0" value="channels">
-          <DiscussionChannelsPanel query={repositoryDiscussionQuery(project)} />
         </TabsContent>
       </div>
       {createPullRequestAction && createPullRequestOpen ? (

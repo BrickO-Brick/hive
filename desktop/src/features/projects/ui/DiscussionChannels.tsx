@@ -355,14 +355,14 @@ export function DiscussionChannelsPanel({ query }: { query: string }) {
           return (
             <li className="relative" key={channel.id}>
               <button
-                className="flex w-full min-w-0 items-center gap-2.5 px-4 py-2.5 text-left transition-colors hover:bg-muted/30"
+                className="flex w-full min-w-0 items-center gap-2.5 px-4 py-3 text-left transition-colors hover:bg-muted/30"
                 onClick={() => void goChannel(channel.id)}
                 type="button"
               >
                 <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-muted/50">
                   <Hash className="h-4 w-4 text-muted-foreground" />
                 </span>
-                <span className="min-w-0 flex-1">
+                <span className="min-w-0 flex-1 space-y-1">
                   <span className="block truncate text-sm font-medium text-foreground">
                     #{name}
                   </span>
@@ -373,14 +373,22 @@ export function DiscussionChannelsPanel({ query }: { query: string }) {
                       : ""}{" "}
                     · {channel.messageCount}
                     {isTruncated ? "+" : ""}{" "}
-                    {channel.messageCount === 1 ? "message" : "messages"} · last
-                    activity {relativeTime(channel.lastActivityAt)}
+                    {channel.messageCount === 1 ? "message" : "messages"}
                   </span>
                 </span>
                 <ParticipantFacepile
                   participants={channel.participants}
                   profiles={profiles}
                 />
+                <span
+                  className="hidden w-20 shrink-0 text-right text-xs text-muted-foreground sm:block"
+                  data-testid="project-channel-row-date"
+                  title={new Date(
+                    channel.lastActivityAt * 1_000,
+                  ).toLocaleString()}
+                >
+                  {relativeTime(channel.lastActivityAt)}
+                </span>
               </button>
             </li>
           );

@@ -307,9 +307,9 @@ test("unsupported relays keep the initial repository accessible", async ({
   await projectEntry
     .getByRole("button", { name: "View legacy-fallback" })
     .click();
-  await expect(page.getByTestId("project-repository-picker")).toContainText(
-    "legacy-fallback",
-  );
+  const repositoryPicker = page.getByTestId("project-repository-picker");
+  await expect(repositoryPicker).toBeVisible();
+  await expect(repositoryPicker).toContainText("legacy-fallback");
   await waitForAnimations(page);
   await page.screenshot({
     path: `${SHOTS}/06-single-repository-add.png`,
@@ -432,7 +432,10 @@ test("multi-repository projects switch the active repository", async ({
     new RegExp(`repositoryId=${TEST_IDENTITIES.alice.pubkey}%3Arelay-tools`),
   );
 
+  await picker.click();
   await page.getByTestId("add-project-repository").click();
+  await expect(page.getByTestId("create-project-repository")).toBeVisible();
+  await expect(page.getByTestId("attach-project-repository")).toBeVisible();
   await page.getByTestId("create-project-repository").click();
   await page.getByTestId("add-project-repository-name").fill("mobile-app");
   await page.getByTestId("add-project-repository-submit").click();
@@ -456,6 +459,7 @@ test("multi-repository projects switch the active repository", async ({
     addedEvents.find((event) => event.kind === 30617)?.tags,
   ).toContainEqual(["buzz-channel", "9a1657ac-f7aa-5db0-b632-d8bbeb6dfb50"]);
 
+  await picker.click();
   await page.getByTestId("add-project-repository").click();
   await page.getByTestId("attach-project-repository").click();
   await expect(
@@ -671,6 +675,8 @@ test("adding a repository retries and reports an error when the 30617 publicatio
     .first()
     .click();
 
+  const picker = page.getByTestId("project-repository-picker");
+  await picker.click();
   await page.getByTestId("add-project-repository").click();
   await page.getByTestId("create-project-repository").click();
   await page.getByTestId("add-project-repository-name").fill("rejected-repo");
@@ -738,6 +744,7 @@ test("adding a repository treats a lost 30617 acknowledgement as success", async
 
   const picker = page.getByTestId("project-repository-picker");
 
+  await picker.click();
   await page.getByTestId("add-project-repository").click();
   await page.getByTestId("create-project-repository").click();
   await page.getByTestId("add-project-repository-name").fill("lost-ack-repo");
@@ -803,6 +810,8 @@ test("adding a repository blocks when a standalone 30617 already exists at that 
     .first()
     .click();
 
+  const picker = page.getByTestId("project-repository-picker");
+  await picker.click();
   await page.getByTestId("add-project-repository").click();
   await page.getByTestId("create-project-repository").click();
   // Use the same name — the dtag will match the seeded standalone 30617.

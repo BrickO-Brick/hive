@@ -205,10 +205,7 @@ function PullRequestCommitRow({
           />
           <span className="truncate">
             <ProfileAuthorName pubkey={author}>{authorLabel}</ProfileAuthorName>{" "}
-            authored{" "}
-            <span title={formatExactTimestamp(createdAt)}>
-              {relativeTime(createdAt)}
-            </span>
+            authored
           </span>
           {branch ? (
             <span className="inline-flex min-w-0 items-center gap-1 rounded-full border border-border/60 px-1.5 py-0.5 font-mono text-2xs">
@@ -222,16 +219,25 @@ function PullRequestCommitRow({
       testId="project-pull-request-commit-row"
       title={message}
       trailing={
-        hash ? (
-          <ProjectFeedRowCluster>
-            <ProjectFeedRowMonoCell
-              label={hash.slice(0, 7)}
-              onClick={openCommit}
-              title={`View commit ${hash.slice(0, 7)}`}
-            />
-            <CopyCommitHashButton hash={hash} />
-          </ProjectFeedRowCluster>
-        ) : undefined
+        <>
+          {hash ? (
+            <ProjectFeedRowCluster>
+              <ProjectFeedRowMonoCell
+                label={hash.slice(0, 7)}
+                onClick={openCommit}
+                title={`View commit ${hash.slice(0, 7)}`}
+              />
+              <CopyCommitHashButton hash={hash} />
+            </ProjectFeedRowCluster>
+          ) : null}
+          <span
+            className="hidden w-20 shrink-0 text-right text-xs text-muted-foreground sm:block"
+            data-testid="project-pull-request-commit-row-date"
+            title={formatExactTimestamp(createdAt)}
+          >
+            {relativeTime(createdAt)}
+          </span>
+        </>
       }
     />
   );
@@ -272,10 +278,7 @@ function PullRequestRow({
             <ProfileAuthorName pubkey={pullRequest.author}>
               {authorLabel}
             </ProfileAuthorName>{" "}
-            created this pull request{" "}
-            <span title={formatExactTimestamp(pullRequest.createdAt)}>
-              {relativeTime(pullRequest.createdAt)}
-            </span>
+            created this pull request
           </span>
           {pullRequest.branchName ? (
             <span className="inline-flex min-w-0 items-center gap-1 rounded-full border border-border/60 px-1.5 py-0.5 font-mono text-2xs">
@@ -316,6 +319,13 @@ function PullRequestRow({
               title="View pull request"
             />
           </ProjectFeedRowCluster>
+          <span
+            className="hidden w-20 shrink-0 text-right text-xs text-muted-foreground sm:block"
+            data-testid="project-pull-request-row-date"
+            title={formatExactTimestamp(pullRequest.createdAt)}
+          >
+            {relativeTime(pullRequest.createdAt)}
+          </span>
         </>
       }
     />

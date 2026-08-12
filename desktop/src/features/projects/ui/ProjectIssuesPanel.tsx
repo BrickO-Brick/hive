@@ -104,7 +104,7 @@ function IssueRow({
           />
           <span className="truncate text-foreground/80">
             <span className="font-medium">{authorLabel}</span> created this
-            issue {relativeTime(issue.createdAt)}
+            issue
           </span>
           <span>·</span>
           <span>{issue.status}</span>
@@ -149,6 +149,13 @@ function IssueRow({
               title="View issue"
             />
           </ProjectFeedRowCluster>
+          <span
+            className="hidden w-20 shrink-0 text-right text-xs text-muted-foreground sm:block"
+            data-testid="project-issue-row-date"
+            title={new Date(issue.createdAt * 1_000).toLocaleString()}
+          >
+            {relativeTime(issue.createdAt)}
+          </span>
         </>
       }
     />
