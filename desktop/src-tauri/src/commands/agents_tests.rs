@@ -9,6 +9,7 @@ fn bare_agent_record(
     use crate::managed_agents::{BackendKind, RespondTo};
     use std::collections::BTreeMap;
     ManagedAgentRecord {
+        definition_permission_policy: None,
         pubkey: "agent".to_string(),
         name: "Agent".to_string(),
         persona_id: persona_id.map(str::to_string),
@@ -69,6 +70,7 @@ fn bare_agent_record(
 fn persona_record(id: &str, model: Option<&str>, provider: Option<&str>) -> AgentDefinition {
     use std::collections::BTreeMap;
     AgentDefinition {
+        permission_policy: None,
         id: id.to_string(),
         display_name: "Test Persona".to_string(),
         avatar_url: None,

@@ -1475,6 +1475,7 @@ mod tests {
         );
 
         let record = crate::managed_agents::types::ManagedAgentRecord {
+            definition_permission_policy: None,
             pubkey: "test-pubkey".to_string(),
             name: "test-agent".to_string(),
             persona_id: None,

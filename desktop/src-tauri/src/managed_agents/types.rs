@@ -87,6 +87,14 @@ pub struct AgentDefinition {
     pub respond_to_allowlist: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parallelism: Option<u32>,
+    /// Definition-level default permission policy — the middle tier of
+    /// `resolve_effective_permission_policy` (instance override → THIS →
+    /// global → built-in `ask`). Unlike `respond_to`/`parallelism`, it is
+    /// NOT mint-copied onto instances and NOT published to the catalog
+    /// (`persona_event_content` omits it): it is a live-resolved authority
+    /// grant that stays local. `None` = defer to the global/built-in tier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_policy: Option<super::permission_policy::PermissionPolicy>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -149,6 +157,7 @@ impl AgentDefinition {
             definition_respond_to: self.respond_to,
             definition_respond_to_allowlist: self.respond_to_allowlist,
             definition_parallelism: self.parallelism,
+            definition_permission_policy: self.permission_policy,
             relay_mesh: None,
             permission_policy: None,
             applied_permission_policy: None,
@@ -186,6 +195,7 @@ impl ManagedAgentRecord {
             respond_to: self.definition_respond_to.clone(),
             respond_to_allowlist: self.definition_respond_to_allowlist.clone(),
             parallelism: self.definition_parallelism,
+            permission_policy: self.definition_permission_policy,
             created_at: self.created_at.clone(),
             updated_at: self.updated_at.clone(),
         })
@@ -426,6 +436,15 @@ pub struct ManagedAgentRecord {
     pub definition_respond_to_allowlist: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub definition_parallelism: Option<u32>,
+    /// Definition-level default permission policy, distinct from the
+    /// instance-side `permission_policy` override above: this is what a
+    /// *definition* advertises as its default, resolved as tier 2 of
+    /// `resolve_effective_permission_policy` (below the per-instance override,
+    /// above the global default). Projected to/from the `AgentDefinition`
+    /// view's `permission_policy` field. NOT mint-copied onto instances and
+    /// NOT published to the catalog — a live-resolved local authority grant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub definition_permission_policy: Option<super::permission_policy::PermissionPolicy>,
     /// Typed marker for relay-mesh agents. `Some(_)` means this agent runs its
     /// inference through Buzz's relay-mesh local endpoint; the `model_ref` is
     /// the served model id to route to. `None` is a normal agent.

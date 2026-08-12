@@ -5,6 +5,7 @@ use crate::managed_agents::{BackendKind, ManagedAgentRecord, RespondTo};
 /// state right after creation, before any snapshot apply.
 pub(super) fn sample_record() -> ManagedAgentRecord {
     ManagedAgentRecord {
+        definition_permission_policy: None,
         pubkey: "p".repeat(64),
         name: "agent".into(),
         persona_id: Some("test-persona".into()),
@@ -143,6 +144,7 @@ fn preview_passes_through_unchanged_when_persona_missing() {
 
 pub(super) fn sample_persona() -> AgentDefinition {
     AgentDefinition {
+        permission_policy: None,
         id: "test-persona".to_string(),
         display_name: "Test Persona".to_string(),
         avatar_url: Some("https://example.com/avatar.png".to_string()),
@@ -370,6 +372,7 @@ fn content_matches_nip_ap_vector() {
     // signed content, so a second implementer following the spec computes
     // the same NIP-01 id.
     let record = AgentDefinition {
+        permission_policy: None,
         id: "test-agent".to_string(),
         display_name: "Test Agent".to_string(),
         avatar_url: Some("https://example.com/avatar.png".to_string()),
@@ -401,6 +404,7 @@ fn content_matches_nip_ap_vector() {
 #[test]
 fn round_trip_minimal_persona() {
     let record = AgentDefinition {
+        permission_policy: None,
         id: "minimal".to_string(),
         display_name: "Minimal".to_string(),
         avatar_url: None,
@@ -498,6 +502,7 @@ fn behavioral_defaults_survive_record_round_trip() {
 #[test]
 fn quad_absent_definition_hash_stable_across_activation() {
     let record = AgentDefinition {
+        permission_policy: None,
         id: "quad-absent".to_string(),
         display_name: "Test".to_string(),
         avatar_url: None,
@@ -538,10 +543,53 @@ fn quad_absent_definition_hash_stable_across_activation() {
     );
 }
 
+/// The definition permission policy is a local authority grant, never
+/// published (Q4 local-only). `persona_content_hash` — the drift-badge basis
+/// and republish trigger — is computed over `PersonaEventContent`, which has
+/// no policy field. So flipping the definition's policy must not move the
+/// hash: no deployed instance shows a spurious drift badge and no republish
+/// wave fires when an owner edits the default. This pins that at the hash.
+#[test]
+fn definition_permission_policy_does_not_affect_content_hash() {
+    let base = AgentDefinition {
+        permission_policy: None,
+        id: "policy-hash".to_string(),
+        display_name: "Test".to_string(),
+        avatar_url: None,
+        system_prompt: "Hello".to_string(),
+        runtime: Some("goose".to_string()),
+        model: Some("gpt-oss".to_string()),
+        provider: None,
+        name_pool: vec!["nib".to_string()],
+        is_builtin: false,
+        is_active: true,
+        shared: false,
+        source_team: None,
+        source_team_persona_slug: None,
+        catalog_source: None,
+        env_vars: BTreeMap::new(),
+        respond_to: Some("anyone".to_string()),
+        respond_to_allowlist: Vec::new(),
+        parallelism: Some(2),
+        created_at: "2026-01-01T00:00:00Z".to_string(),
+        updated_at: "2026-01-01T00:00:00Z".to_string(),
+    };
+    let mut with_policy = base.clone();
+    with_policy.permission_policy =
+        Some(crate::managed_agents::permission_policy::PermissionPolicy::Allow);
+
+    assert_eq!(
+        persona_content_hash(&persona_event_content(&base)),
+        persona_content_hash(&persona_event_content(&with_policy)),
+        "setting a definition permission policy must not change the published content hash"
+    );
+}
+
 /// Test-only bridge: build an AgentDefinition from parsed content the same
 /// way `persona_from_event` maps fields, without needing a signed event.
 fn persona_from_event_content_for_test(content: PersonaEventContent) -> AgentDefinition {
     AgentDefinition {
+        permission_policy: None,
         id: "staged".to_string(),
         display_name: content.display_name,
         avatar_url: content.avatar_url,

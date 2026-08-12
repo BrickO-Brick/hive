@@ -271,7 +271,7 @@ pub(crate) fn prospective_spawn_config_snapshot(
         model: model.as_deref(),
         provider: provider.as_deref(),
         permission_policy: super::permission_policy::resolve_effective_permission_policy(
-            record, global,
+            record, personas, global,
         )
         .0,
     })

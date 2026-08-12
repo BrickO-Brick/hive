@@ -582,6 +582,9 @@ pub async fn confirm_agent_snapshot_import(
             respond_to: respond_to_wire.clone(),
             respond_to_allowlist: minted.respond_to_allowlist.clone(),
             parallelism: minted_parallelism,
+            // Definition policy is a local authority grant, never carried in a
+            // shared snapshot; an imported persona starts with no default.
+            permission_policy: None,
             created_at: now.clone(),
             updated_at: now.clone(),
         };
@@ -651,6 +654,7 @@ pub async fn confirm_agent_snapshot_import(
             definition_respond_to: respond_to_wire.clone(),
             definition_respond_to_allowlist: minted.respond_to_allowlist.clone(),
             definition_parallelism: minted_parallelism,
+            definition_permission_policy: None,
             relay_mesh: None,
             runtime: snapshot.definition.runtime.clone(),
             name_pool: snapshot.definition.name_pool.clone(),

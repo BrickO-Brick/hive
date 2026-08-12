@@ -25,7 +25,7 @@ function deployedAgent(overrides) {
 
 function render(agent) {
   return renderToStaticMarkup(
-    React.createElement(AgentPermissionPolicyField, { agent, disabled: false }),
+    React.createElement(AgentPermissionPolicyField, { agent }),
   );
 }
 
@@ -80,10 +80,10 @@ test("test_remote_absent_applied_renders_no_drift_row", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Local agent: editable select, never a drift row even if applied differs
+// Local agent: display-only, never editable, never a drift row
 // ---------------------------------------------------------------------------
 
-test("test_local_agent_renders_editable_select_and_no_drift_row", () => {
+test("test_local_agent_renders_display_only_and_no_drift_row", () => {
   const html = render({
     backend: { type: "local" },
     backendAgentId: null,
@@ -93,12 +93,39 @@ test("test_local_agent_renders_editable_select_and_no_drift_row", () => {
   });
 
   assert.ok(
-    html.includes("<select"),
-    "local agent must render the editable policy select",
+    !html.includes("<select"),
+    "policy is edited on the definition — no instance-side select",
+  );
+  assert.ok(
+    html.includes("agent definition"),
+    "local agent must point the owner to the definition surface",
   );
   assert.ok(
     !html.includes("Applied policy:"),
     "local agent must never show a drift row",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Definition source resolves to a human label, not the raw enum
+// ---------------------------------------------------------------------------
+
+test("test_definition_source_renders_agent_definition_label", () => {
+  const html = render(
+    deployedAgent({
+      permissionPolicy: "allow",
+      permissionPolicySource: "definition",
+      appliedPermissionPolicy: "allow",
+    }),
+  );
+
+  assert.ok(
+    html.includes("from agent definition"),
+    "definition source must render its human label",
+  );
+  assert.ok(
+    !html.includes("from definition"),
+    "raw enum value must not leak into the label",
   );
 });
 

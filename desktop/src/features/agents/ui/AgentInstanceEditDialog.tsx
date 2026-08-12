@@ -14,7 +14,6 @@ import {
 import { useAgentAccessOwnerOnlyQuery } from "@/features/agents/useAgentAccessOwnerOnly";
 import { isManagedAgentActive } from "@/features/agents/lib/managedAgentControlActions";
 import { AgentPermissionPolicyField } from "./AgentPermissionPolicyField";
-import type { AgentPermissionPolicyFieldHandle } from "./AgentPermissionPolicyField";
 import { useRespondToField } from "./OwnerOnlyAccessField";
 import type { ManagedAgent, UpdateManagedAgentInput } from "@/shared/api/types";
 import type { EditAgentFocusTarget } from "@/features/agents/openEditAgentEvent";
@@ -152,8 +151,6 @@ export function AgentInstanceEditDialog({
   );
   const inheritedEnvVars = linkedPersona?.envVars ?? {};
   const rto = useRespondToField(agent);
-  const permissionPolicyRef =
-    React.useRef<AgentPermissionPolicyFieldHandle>(null);
   const [showAdvancedFields, setShowAdvancedFields] = React.useState(false);
   const [avatarUrl, setAvatarUrl] = React.useState(agent.avatarUrl ?? "");
   const [isAvatarUploadPending, setIsAvatarUploadPending] =
@@ -187,7 +184,6 @@ export function AgentInstanceEditDialog({
       setEnvVars(agent.envVars);
       setAutoRestartOnConfigChange(agent.autoRestartOnConfigChange);
       rto.reset();
-      permissionPolicyRef.current?.reset();
       setAvatarUrl(agent.avatarUrl ?? "");
       setShowAdvancedFields(false);
       setIsAvatarUploadPending(false);
@@ -719,7 +715,9 @@ export function AgentInstanceEditDialog({
             agent.respondToAllowlist.join(",")
             ? rto.respondToAllowlist
             : undefined,
-        permissionPolicy: permissionPolicyRef.current?.getUpdate(),
+        // Permission policy is set on the agent definition, not here — the
+        // instance surface is display-only (effective value + drift row), so
+        // this update never touches the stored per-instance override.
       };
 
       const result = await updateMutation.mutateAsync(input);
@@ -939,11 +937,7 @@ export function AgentInstanceEditDialog({
               onAllowlistChange={rto.setRespondToAllowlist}
               onModeChange={rto.setRespondTo}
             />
-            <AgentPermissionPolicyField
-              ref={permissionPolicyRef}
-              agent={agent}
-              disabled={updateMutation.isPending}
-            />
+            <AgentPermissionPolicyField agent={agent} />
             <RunOnSummarySection backend={agent.backend} />
 
             {/* Provider (runtime) */}

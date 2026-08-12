@@ -898,6 +898,9 @@ pub async fn create_managed_agent(
             definition_respond_to: None,
             definition_respond_to_allowlist: Vec::new(),
             definition_parallelism: None,
+            // Instances carry no definition-scoped policy; the tier-2 resolver
+            // reads it live from the linked definition, not this snapshot.
+            definition_permission_policy: None,
             relay_mesh: if effective_provider.as_deref()
                 == Some(crate::managed_agents::RELAY_MESH_PROVIDER_ID)
             {

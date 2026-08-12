@@ -298,7 +298,7 @@ pub fn build_managed_agent_summary(
         .to_string();
 
     let (effective_permission_policy_summary, effective_permission_policy_source) =
-        resolve_effective_permission_policy(record, global_config);
+        resolve_effective_permission_policy(record, personas, global_config);
 
     Ok(ManagedAgentSummary {
         pubkey: record.pubkey.clone(),
@@ -770,7 +770,8 @@ pub fn spawn_agent_child(
 
     // Inject BUZZ_ACP_PERMISSION_POLICY — resolved here so the running process
     // and the UI-visible setting are always in sync.
-    let (effective_permission_policy, _) = resolve_effective_permission_policy(record, &global);
+    let (effective_permission_policy, _) =
+        resolve_effective_permission_policy(record, &personas, &global);
     command.env(
         "BUZZ_ACP_PERMISSION_POLICY",
         effective_permission_policy.as_str(),

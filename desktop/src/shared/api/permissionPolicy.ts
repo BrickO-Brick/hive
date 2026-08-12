@@ -12,10 +12,15 @@ export type PermissionPolicy = "ask" | "allow" | "reject";
  * Where the effective permission policy value came from.
  *
  * - `agent`: Per-agent override set on this specific agent record.
+ * - `definition`: Inherited from the linked persona definition's default policy.
  * - `global_default`: Fleet-wide default from the global agent config.
  * - `built_in`: Neither layer had a value; the desktop built-in default (`ask`) applies.
  */
-export type PermissionPolicySource = "agent" | "global_default" | "built_in";
+export type PermissionPolicySource =
+  | "agent"
+  | "definition"
+  | "global_default"
+  | "built_in";
 
 export type CancelManagedAgentTurnResult = {
   status: "sent" | "no_active_turn";

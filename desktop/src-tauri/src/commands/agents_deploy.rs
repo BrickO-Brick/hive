@@ -109,7 +109,7 @@ pub(super) fn build_launch_block(
     // Permission policy: use the caller-resolved value (per-agent → global →
     // built-in), falling back to the built-in default if the caller did not
     // provide one. Tests pass `None`; production callers pass the result of
-    // `resolve_effective_permission_policy(record, global_config)`.
+    // `resolve_effective_permission_policy(record, personas, global_config)`.
     {
         let policy = effective_permission_policy.unwrap_or_else(
             crate::managed_agents::permission_policy::PermissionPolicy::desktop_default,
@@ -170,7 +170,7 @@ pub(super) fn build_deploy_payload(
     let owner_pubkey = super::workspace_owner_hex(state)?;
     let (effective_policy, _) =
         crate::managed_agents::permission_policy::resolve_effective_permission_policy(
-            record, &global,
+            record, &personas, &global,
         );
     let launch = build_launch_block(
         record,
@@ -605,7 +605,9 @@ mod tests {
         };
         let (effective_policy, _) =
             crate::managed_agents::permission_policy::resolve_effective_permission_policy(
-                &record, &global,
+                &record,
+                &[],
+                &global,
             );
         let launch = build_launch_block(
             &record,
