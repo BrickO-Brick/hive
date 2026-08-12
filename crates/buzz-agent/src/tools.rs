@@ -110,6 +110,15 @@ async fn run_one(
 /// content block as the failure, rather than as a separate steer message
 /// arriving at an unrelated point in the conversation. Capped so a tool
 /// failing in a loop cannot flood the context.
+///
+/// **Deliberately not a goose `Operation`**, unlike the other loop decisions.
+/// An operation cannot reach inside a tool result: `StateEffect` can append a
+/// message or patch a request's *metadata*
+/// (`PatchToolRequestMeta`, which goose applies through `SessionManager` --
+/// the store buzz does not write to), but nothing edits result *content*. As
+/// an operation the reflection would arrive as a separate message after the
+/// result instead of inside it, which is the arrangement this deliberately
+/// moved away from. Structure follows behaviour, not the other way round.
 fn reflect_on_failure(
     result: ToolResult<CallToolResult>,
     reflections: &mut usize,

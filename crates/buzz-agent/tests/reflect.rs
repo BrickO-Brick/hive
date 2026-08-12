@@ -1,15 +1,15 @@
 //! Proves `[Reflect]`: a failed tool result must nudge the model to diagnose
 //! before retrying.
 //!
-//! buzz-agent appended the text to the tool result itself (`agent.rs:364`).
-//! Goose gives no interception point for that — `PostToolUseFailure` is
-//! fire-and-forget and its output is discarded (`agent.rs:589-620`) — so we
-//! deliver the same text via `steer()`, which goose drains at the round
-//! boundary.
+//! buzz-agent appends the text to the failed tool result itself, which is
+//! where the model reads it in context. An earlier draft of this port
+//! delivered it as a steer instead, because `Agent::reply` owned the tool
+//! result and gave no interception point; owning the loop put it back on the
+//! result. This comment described that intermediate state and no longer did.
 //!
-//! Observable consequence: the reflection must appear in the *next* request
-//! the provider receives. That is what this asserts, rather than trusting that
-//! `steer()` was called.
+//! Observable consequence either way: the reflection must appear in the *next*
+//! request the provider receives. That is what this asserts, rather than
+//! trusting that any particular delivery mechanism was invoked.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
