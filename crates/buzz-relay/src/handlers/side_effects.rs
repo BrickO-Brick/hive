@@ -3106,68 +3106,22 @@ pub async fn reconcile_channel_events(
     Ok(())
 }
 
-fn next_snapshot_timestamp(now: u64, current: Option<u64>) -> u64 {
-    current
-        .map(|created_at| created_at.saturating_add(1).max(now))
-        .unwrap_or(now)
-}
-
 /// Publish a kind:13535 archived identities list event (NIP-IA).
 ///
-/// Queries all current archived identities and emits a relay-signed,
-/// NIP-70-protected replaceable-by-convention snapshot with bare `p` tags.
+/// The canonical archive-state read, timestamp allocation, and replacement are
+/// serialized inside the database under the event's advisory lock. That durable
+/// boundary prevents overlapping publishers on different relay nodes from
+/// capturing different states at the same replacement timestamp.
 pub async fn publish_nipia_archival_list(
     tenant: &TenantContext,
     state: &Arc<AppState>,
 ) -> anyhow::Result<()> {
-    let archived = state.db.list_archived(tenant.community()).await?;
-    let relay_pubkey = state.relay_keypair.public_key();
-    let relay_pubkey_hex = relay_pubkey.to_hex();
-
-    let mut tags: Vec<Tag> = Vec::with_capacity(archived.len() + 1);
-    tags.push(Tag::parse(["-"]).map_err(|e| anyhow::anyhow!("failed to build '-' tag: {e}"))?);
-
-    for identity in &archived {
-        tags.push(
-            Tag::parse(["p", &identity.pubkey])
-                .map_err(|e| anyhow::anyhow!("failed to build p tag: {e}"))?,
-        );
-    }
-
-    // Nostr timestamps have one-second resolution, while archive and unarchive
-    // can complete within the same second. A same-second snapshot would enter
-    // NIP-16's event-id tie-break and could lose to the prior snapshot, leaving
-    // clients with stale archive state. Advance strictly past the stored head so
-    // every accepted identity-state transition produces the authoritative head.
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let existing = state
+    let relay_pubkey_hex = state.relay_keypair.public_key().to_hex();
+    let (stored, was_inserted, archived_count) = state
         .db
-        .get_latest_global_replaceable(
-            tenant.community(),
-            KIND_IA_ARCHIVED_LIST as i32,
-            relay_pubkey.to_bytes().as_slice(),
-        )
+        .publish_nipia_archival_list_locked(tenant.community(), &state.relay_keypair)
         .await?;
-    let created_at = next_snapshot_timestamp(
-        now,
-        existing
-            .as_ref()
-            .map(|stored| stored.event.created_at.as_secs()),
-    );
 
-    let event = EventBuilder::new(Kind::Custom(KIND_IA_ARCHIVED_LIST as u16), "")
-        .tags(tags)
-        .custom_created_at(nostr::Timestamp::from(created_at))
-        .sign_with_keys(&state.relay_keypair)
-        .map_err(|e| anyhow::anyhow!("failed to sign kind:{KIND_IA_ARCHIVED_LIST}: {e}"))?;
-
-    let (stored, was_inserted) = state
-        .db
-        .replace_addressable_event(tenant.community(), &event, None)
-        .await?;
     if was_inserted {
         dispatch_persistent_event(
             tenant,
@@ -3180,10 +3134,7 @@ pub async fn publish_nipia_archival_list(
         .await;
     }
 
-    info!(
-        archived_count = archived.len(),
-        "NIP-IA archived identities list published"
-    );
+    info!(archived_count, "NIP-IA archived identities list published");
     Ok(())
 }
 
@@ -3403,23 +3354,6 @@ fn topic_for_subscription(channel_id: Option<Uuid>) -> EventTopic {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn identity_archive_snapshot_advances_past_same_second_head() {
-        assert_eq!(next_snapshot_timestamp(1_000, Some(1_000)), 1_001);
-        assert_eq!(next_snapshot_timestamp(1_000, Some(1_001)), 1_002);
-    }
-
-    #[test]
-    fn identity_archive_snapshot_uses_wall_clock_when_it_is_newer() {
-        assert_eq!(next_snapshot_timestamp(1_001, Some(1_000)), 1_001);
-        assert_eq!(next_snapshot_timestamp(1_001, None), 1_001);
-    }
-
-    #[test]
-    fn identity_archive_snapshot_timestamp_saturates() {
-        assert_eq!(next_snapshot_timestamp(u64::MAX, Some(u64::MAX)), u64::MAX);
-    }
 
     #[test]
     fn delete_tombstone_omits_absent_moderation_metadata() {

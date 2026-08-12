@@ -4960,6 +4960,129 @@ impl Db {
         Ok(snapshot_members != canonical_members)
     }
 
+    /// Atomically publish a NIP-IA archived-identities snapshot under the
+    /// replaceable event's transaction-scoped advisory lock.
+    ///
+    /// The lock is acquired before canonical archive state and the prior event
+    /// head are read, so concurrent publishers cannot capture different states,
+    /// choose the same timestamp, and fall back to event-ID ordering.
+    #[datastore_span(name = "publish_nipia_archival_list_locked", system = "postgresql")]
+    pub async fn publish_nipia_archival_list_locked(
+        &self,
+        community_id: CommunityId,
+        relay_keypair: &nostr::Keys,
+    ) -> Result<(StoredEvent, bool, usize)> {
+        use nostr::{EventBuilder, Kind, Tag};
+
+        let kind_i32 = buzz_core::kind::KIND_IA_ARCHIVED_LIST as i32;
+        let pubkey_bytes = relay_keypair.public_key().to_bytes();
+        let lock_key =
+            event_replacement_lock_key(community_id, kind_i32, pubkey_bytes.as_slice(), None);
+        let mut tx = self.pool.begin().await?;
+
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(lock_key)
+            .execute(&mut *tx)
+            .await?;
+
+        let archived_pubkeys: Vec<String> = sqlx::query_scalar(
+            "SELECT pubkey FROM archived_identities \
+             WHERE community_id = $1 ORDER BY archived_at ASC",
+        )
+        .bind(community_id.as_uuid())
+        .fetch_all(&mut *tx)
+        .await?;
+
+        let existing_created_at: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
+            "SELECT created_at FROM events \
+             WHERE community_id = $1 AND kind = $2 AND pubkey = $3 \
+             AND channel_id IS NULL AND deleted_at IS NULL \
+             ORDER BY created_at DESC, id ASC LIMIT 1",
+        )
+        .bind(community_id.as_uuid())
+        .bind(kind_i32)
+        .bind(pubkey_bytes.as_slice())
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        let now = chrono::Utc::now().timestamp().max(0);
+        let created_at = existing_created_at
+            .map(|timestamp| timestamp.timestamp().saturating_add(1).max(now))
+            .unwrap_or(now);
+
+        let mut tags = Vec::with_capacity(archived_pubkeys.len() + 1);
+        tags.push(
+            Tag::parse(["-"])
+                .map_err(|e| DbError::InvalidData(format!("failed to build '-' tag: {e}")))?,
+        );
+        for pubkey in &archived_pubkeys {
+            tags.push(
+                Tag::parse(["p", pubkey])
+                    .map_err(|e| DbError::InvalidData(format!("failed to build p tag: {e}")))?,
+            );
+        }
+
+        let event = EventBuilder::new(Kind::Custom(kind_i32 as u16), "")
+            .tags(tags)
+            .custom_created_at(nostr::Timestamp::from(created_at as u64))
+            .sign_with_keys(relay_keypair)
+            .map_err(|e| DbError::InvalidData(format!("failed to sign kind:{kind_i32}: {e}")))?;
+        let event_created_at = chrono::DateTime::from_timestamp(created_at, 0)
+            .ok_or(DbError::InvalidTimestamp(created_at))?;
+        let sig_bytes = event.sig.serialize();
+        let tags_json = serde_json::to_value(&event.tags)?;
+        let received_at = chrono::Utc::now();
+
+        sqlx::query(
+            "UPDATE events SET deleted_at = NOW() \
+             WHERE community_id = $1 AND kind = $2 AND pubkey = $3 \
+             AND channel_id IS NULL AND deleted_at IS NULL",
+        )
+        .bind(community_id.as_uuid())
+        .bind(kind_i32)
+        .bind(pubkey_bytes.as_slice())
+        .execute(&mut *tx)
+        .await?;
+
+        let insert_result = sqlx::query(
+            "INSERT INTO events (community_id, id, pubkey, created_at, kind, tags, content, sig, received_at, channel_id, d_tag) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NULL, NULL) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(community_id.as_uuid())
+        .bind(event.id.as_bytes().as_slice())
+        .bind(pubkey_bytes.as_slice())
+        .bind(event_created_at)
+        .bind(kind_i32)
+        .bind(&tags_json)
+        .bind(&event.content)
+        .bind(sig_bytes.as_slice())
+        .bind(received_at)
+        .execute(&mut *tx)
+        .await?;
+
+        let was_inserted = insert_result.rows_affected() > 0;
+        if !was_inserted {
+            tx.rollback().await?;
+            return Ok((
+                StoredEvent::with_received_at(event, received_at, None, false),
+                false,
+                archived_pubkeys.len(),
+            ));
+        }
+
+        tx.commit().await?;
+        if let Err(e) = crate::insert_mentions(&self.pool, community_id, &event, None).await {
+            tracing::warn!(event_id = %event.id, "Failed to insert mentions: {e}");
+        }
+
+        Ok((
+            StoredEvent::with_received_at(event, received_at, None, true),
+            true,
+            archived_pubkeys.len(),
+        ))
+    }
+
     /// Atomically publish a NIP-43 membership snapshot under a single
     /// transaction-scoped advisory lock.
     ///
@@ -5436,6 +5559,97 @@ mod tests {
             .await
             .expect("insert community");
         id
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn nipia_snapshot_publication_serializes_state_capture_with_replacement() {
+        use nostr::Keys;
+
+        let db = setup_db().await;
+        let community = CommunityId::from_uuid(make_community(&db.pool).await);
+        let relay_keys = Keys::generate();
+        let target = Keys::generate().public_key().to_hex();
+
+        db.publish_nipia_archival_list_locked(community, &relay_keys)
+            .await
+            .expect("publish initial empty snapshot");
+        db.archive(
+            community,
+            &target,
+            "owner",
+            &"a".repeat(64),
+            None,
+            None,
+            &"b".repeat(64),
+        )
+        .await
+        .expect("archive target");
+
+        let lock_key = event_replacement_lock_key(
+            community,
+            buzz_core::kind::KIND_IA_ARCHIVED_LIST as i32,
+            relay_keys.public_key().to_bytes().as_slice(),
+            None,
+        );
+        let mut gate = db.pool.begin().await.expect("begin publication gate");
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(lock_key)
+            .execute(&mut *gate)
+            .await
+            .expect("hold publication lock");
+
+        let first_db = db.clone();
+        let first_keys = relay_keys.clone();
+        let first = tokio::spawn(async move {
+            first_db
+                .publish_nipia_archival_list_locked(community, &first_keys)
+                .await
+        });
+
+        // The first publisher is blocked before canonical state capture. Model
+        // the final transition while it waits, then queue its publisher too.
+        tokio::task::yield_now().await;
+        db.unarchive(community, &target)
+            .await
+            .expect("unarchive target");
+        let second_db = db.clone();
+        let second_keys = relay_keys.clone();
+        let second = tokio::spawn(async move {
+            second_db
+                .publish_nipia_archival_list_locked(community, &second_keys)
+                .await
+        });
+
+        gate.commit().await.expect("release publication gate");
+        first
+            .await
+            .expect("join first publisher")
+            .expect("first publish");
+        second
+            .await
+            .expect("join second publisher")
+            .expect("second publish");
+
+        let stored = db
+            .get_latest_global_replaceable(
+                community,
+                buzz_core::kind::KIND_IA_ARCHIVED_LIST as i32,
+                relay_keys.public_key().to_bytes().as_slice(),
+            )
+            .await
+            .expect("query snapshot")
+            .expect("stored snapshot");
+        let archived_tags = stored
+            .event
+            .tags
+            .iter()
+            .filter(|tag| tag.as_slice().first().map(String::as_str) == Some("p"))
+            .count();
+        assert_eq!(
+            archived_tags, 0,
+            "snapshot must match final unarchived state"
+        );
     }
 
     #[tokio::test]
