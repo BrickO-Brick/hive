@@ -474,6 +474,12 @@ type E2eConfig = {
       code?: string | null;
       name?: string | null;
     }>;
+    // Entity links captured before React mounts. The app drains and acknowledges
+    // this mocked Rust-side queue after installing its event listener.
+    pendingEntityDeepLinks?: Array<{
+      id: string;
+      href: string;
+    }>;
     // When true, `get_identity` returns `lost: true` until `persist_current_identity`
     // or `import_identity` is called. Drives the identity-lost recovery UX in tests.
     identityLost?: boolean;
@@ -4354,6 +4360,14 @@ function resetMockPendingCommunityDeepLinks(config: E2eConfig | null) {
     code: pending.code ?? null,
     name: pending.name ?? null,
   }));
+}
+
+let mockPendingEntityDeepLinks: Array<{ id: string; href: string }> = [];
+
+function resetMockPendingEntityDeepLinks(config: E2eConfig | null) {
+  mockPendingEntityDeepLinks = (config?.mock?.pendingEntityDeepLinks ?? []).map(
+    (pending) => ({ ...pending }),
+  );
 }
 
 function recordMockUserStatus(event: RelayEvent) {
@@ -10151,6 +10165,7 @@ export function maybeInstallE2eTauriMocks() {
   resetMockPersonaCatalogEvents(config);
   resetMockSaveSubscriptions(config);
   resetMockPendingCommunityDeepLinks(config);
+  resetMockPendingEntityDeepLinks(config);
   initializeMockHuddle(config.mock?.huddle, config);
   mockWebsocketSendMutexWedged = false;
   if (config.mock?.windowLabel) {
@@ -11980,6 +11995,16 @@ export function maybeInstallE2eTauriMocks() {
           return false;
         }
         mockPendingCommunityDeepLinks.splice(index, 1);
+        return true;
+      }
+      case "take_pending_entity_deep_link":
+        return mockPendingEntityDeepLinks[0] ?? null;
+      case "acknowledge_pending_entity_deep_link": {
+        const { id } = payload as { id: string };
+        if (mockPendingEntityDeepLinks[0]?.id !== id) {
+          return false;
+        }
+        mockPendingEntityDeepLinks.shift();
         return true;
       }
       case "get_relay_http_url":

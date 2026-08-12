@@ -21,9 +21,11 @@ export function useEntityDeepLinks(enabled = true) {
 
     let cancelled = false;
     const unlistenPromise = listenForEntityDeepLinks((href) => {
-      if (cancelled) return;
+      if (cancelled) return false;
       const parsed = parseEntityLink(href);
-      if (parsed.ok) openEntityLink(parsed.value);
+      if (!parsed.ok) return false;
+      openEntityLink(parsed.value);
+      return true;
     });
     return () => {
       cancelled = true;

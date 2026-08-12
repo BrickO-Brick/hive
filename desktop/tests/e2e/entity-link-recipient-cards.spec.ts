@@ -276,3 +276,28 @@ test("reopening the same entity link reapplies its workspace state", async ({
   await emitEntityLink(issueLink);
   await expect(issueHeading).toBeVisible();
 });
+
+test("cold-start entity links drain after the React listener mounts", async ({
+  page,
+}) => {
+  const href = `buzz://repo?owner=${DEFAULT_MOCK_PUBKEY}&d=buzz&tab=prs`;
+  await installMockBridge(page, {
+    pendingEntityDeepLinks: [{ id: "cold-start-project", href }],
+  });
+
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+
+  await expect(
+    page.getByRole("tab", { name: "Pull Request", exact: true }),
+  ).toHaveAttribute("aria-selected", "true");
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        window.__TAURI_INTERNALS__?.invoke?.(
+          "take_pending_entity_deep_link",
+          {},
+        ),
+      ),
+    )
+    .toBeNull();
+});

@@ -54,6 +54,49 @@ impl PendingCommunityDeepLinks {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PendingEntityDeepLink {
+    id: String,
+    href: String,
+}
+
+#[derive(Default)]
+pub(crate) struct PendingEntityDeepLinks(Mutex<VecDeque<PendingEntityDeepLink>>);
+
+impl PendingEntityDeepLinks {
+    fn enqueue(&self, href: String) -> PendingEntityDeepLink {
+        let mut queue = self.0.lock().expect("pending deep-link queue poisoned");
+        if let Some(existing) = queue.iter().find(|item| item.href == href) {
+            return existing.clone();
+        }
+        let pending = PendingEntityDeepLink {
+            id: uuid::Uuid::new_v4().to_string(),
+            href,
+        };
+        queue.push_back(pending.clone());
+        pending
+    }
+
+    fn first(&self) -> Option<PendingEntityDeepLink> {
+        self.0
+            .lock()
+            .expect("pending deep-link queue poisoned")
+            .front()
+            .cloned()
+    }
+
+    fn acknowledge(&self, id: &str) -> bool {
+        let mut queue = self.0.lock().expect("pending deep-link queue poisoned");
+        if queue.front().is_some_and(|item| item.id == id) {
+            queue.pop_front();
+            true
+        } else {
+            false
+        }
+    }
+}
+
 #[tauri::command]
 pub(crate) fn take_pending_community_deep_link(
     pending: State<'_, PendingCommunityDeepLinks>,
@@ -65,6 +108,21 @@ pub(crate) fn take_pending_community_deep_link(
 pub(crate) fn acknowledge_pending_community_deep_link(
     id: String,
     pending: State<'_, PendingCommunityDeepLinks>,
+) -> bool {
+    pending.acknowledge(&id)
+}
+
+#[tauri::command]
+pub(crate) fn take_pending_entity_deep_link(
+    pending: State<'_, PendingEntityDeepLinks>,
+) -> Option<PendingEntityDeepLink> {
+    pending.first()
+}
+
+#[tauri::command]
+pub(crate) fn acknowledge_pending_entity_deep_link(
+    id: String,
+    pending: State<'_, PendingEntityDeepLinks>,
 ) -> bool {
     pending.acknowledge(&id)
 }
@@ -88,6 +146,10 @@ fn queue_community_deep_link(
         });
 }
 
+fn queue_entity_deep_link(app: &tauri::AppHandle, href: String) -> PendingEntityDeepLink {
+    app.state::<PendingEntityDeepLinks>().enqueue(href)
+}
+
 fn activate_main_window(app: &tauri::AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
         return;
@@ -101,6 +163,29 @@ fn activate_main_window(app: &tauri::AppHandle) {
     }
     if let Err(error) = window.set_focus() {
         eprintln!("buzz-desktop: failed to focus main window for deep link: {error}");
+    }
+}
+
+#[cfg(desktop)]
+pub(crate) fn install_deep_link_handlers(app: &mut tauri::App) {
+    use tauri_plugin_deep_link::DeepLinkExt;
+
+    let dl_handle = app.handle().clone();
+    app.deep_link().on_open_url(move |event| {
+        for url in event.urls() {
+            handle_deep_link_url(&dl_handle, url.as_str());
+        }
+    });
+
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    match app.deep_link().get_current() {
+        Ok(Some(urls)) => {
+            for url in urls {
+                handle_deep_link_url(app.handle(), url.as_str());
+            }
+        }
+        Ok(None) => {}
+        Err(error) => eprintln!("buzz-desktop: failed to read launch deep link: {error}"),
     }
 }
 
@@ -462,7 +547,8 @@ pub(crate) fn handle_deep_link_url(app: &tauri::AppHandle, url_str: &str) {
                 return;
             }
             activate_main_window(app);
-            let _ = app.emit("deep-link-entity", url_str.to_owned());
+            let pending = queue_entity_deep_link(app, url_str.to_owned());
+            let _ = app.emit("deep-link-entity", pending);
         }
         Some("nostr-bind") => match parse_nostr_bind_deep_link(&url) {
             Ok(payload) => {
@@ -489,7 +575,7 @@ mod tests {
     use super::{
         parse_add_community_deep_link, parse_entity_deep_link, parse_join_deep_link,
         parse_message_deep_link, parse_nostr_bind_deep_link, PendingCommunityDeepLink,
-        PendingCommunityDeepLinks, ENTITY_LINK_TABS,
+        PendingCommunityDeepLinks, PendingEntityDeepLinks, ENTITY_LINK_TABS,
     };
 
     fn entity_link_golden() -> serde_json::Value {
@@ -599,6 +685,30 @@ mod tests {
         queue.enqueue(pending("first", "wss://one.example", Some("one")));
         queue.enqueue(pending("duplicate", "wss://one.example", Some("one")));
         assert!(queue.acknowledge("first"));
+        assert!(queue.first().is_none());
+    }
+
+    #[test]
+    fn pending_entity_links_survive_until_acknowledged_in_order() {
+        let queue = PendingEntityDeepLinks::default();
+        let first = queue.enqueue("buzz://project?owner=aa&d=first".to_owned());
+        let second = queue.enqueue("buzz://project?owner=aa&d=second".to_owned());
+
+        assert_eq!(queue.first(), Some(first.clone()));
+        assert!(!queue.acknowledge(&second.id));
+        assert!(queue.acknowledge(&first.id));
+        assert_eq!(queue.first(), Some(second));
+    }
+
+    #[test]
+    fn pending_entity_links_dedupe_launch_and_open_callbacks() {
+        let queue = PendingEntityDeepLinks::default();
+        let href = "buzz://project?owner=aa&d=buzz".to_owned();
+        let first = queue.enqueue(href.clone());
+        let duplicate = queue.enqueue(href);
+
+        assert_eq!(duplicate.id, first.id);
+        assert!(queue.acknowledge(&first.id));
         assert!(queue.first().is_none());
     }
 
