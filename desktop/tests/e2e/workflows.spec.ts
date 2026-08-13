@@ -72,7 +72,11 @@ async function createWorkflow(
     await dialog.getByLabel("Name (optional)").fill(options.stepName);
   }
   if (options?.stepCondition) {
-    await dialog.getByLabel("Condition (optional)").fill(options.stepCondition);
+    await dialog
+      .getByRole("group", { name: "Condition (optional)" })
+      .getByRole("button", { name: "Custom" })
+      .click();
+    await dialog.getByLabel("Custom expression").fill(options.stepCondition);
   }
   if (options?.stepTimeoutSecs) {
     await dialog.getByLabel("Timeout (seconds)").fill(options.stepTimeoutSecs);
@@ -202,6 +206,90 @@ test("configures common schedules and exposes custom cron", async ({
   await expect(dialog.getByLabel("Workflow YAML")).toHaveValue(
     /cron: 0 \*\/2 \* \* 1,3,5/,
   );
+});
+
+test("builds a valid trigger condition from plain-language choices", async ({
+  page,
+}) => {
+  await navigateToWorkflows(page);
+
+  await page.getByRole("button", { name: "Create Workflow" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("button", { name: /^Trigger:/ }).click();
+  const inspector = dialog.getByTestId("workflow-node-inspector");
+
+  const conditionFields = inspector.getByRole("group", {
+    name: "Condition (optional)",
+  });
+  const conditionOptions = conditionFields.getByRole("button");
+  await expect(conditionOptions).toHaveCount(5);
+  await expect(
+    conditionFields.getByRole("button", { name: "Message text" }),
+  ).toHaveAttribute("aria-pressed", "false");
+  for (const name of ["Author pubkey", "Channel ID", "Message ID", "Custom"]) {
+    await expect(conditionFields.getByRole("button", { name })).toBeVisible();
+  }
+
+  await conditionFields.getByRole("button", { name: "Message text" }).click();
+  await inspector.getByLabel("Text to match").fill('deploy "buzz"');
+  await dialog.getByRole("tab", { name: "YAML" }).click();
+  await expect(dialog.getByLabel("Workflow YAML")).toHaveValue(
+    /str_contains\(trigger_text, "deploy \\"buzz\\""\)/,
+  );
+
+  await dialog.getByRole("tab", { name: "Form" }).click();
+  await dialog.getByRole("button", { name: /^Trigger:/ }).click();
+  const roundTrippedFields = inspector.getByRole("group", {
+    name: "Condition (optional)",
+  });
+  await expect(
+    roundTrippedFields.getByRole("button", { name: "Message text" }),
+  ).toHaveAttribute("aria-pressed", "true");
+  const customCondition = roundTrippedFields.getByRole("button", {
+    name: "Custom",
+  });
+  await customCondition.click();
+  await expect(inspector.getByLabel("Custom expression")).toHaveValue(
+    'str_contains(trigger_text, "deploy \\"buzz\\"")',
+  );
+  await expect(inspector.getByText(/Use an evalexpr expression/)).toBeVisible();
+  await customCondition.click();
+  await expect(customCondition).toHaveAttribute("aria-pressed", "false");
+  await expect(inspector.getByLabel("Custom expression")).not.toBeVisible();
+});
+
+test("chooses and clears a reaction trigger with the app emoji picker", async ({
+  page,
+}) => {
+  await navigateToWorkflows(page);
+
+  await page.getByRole("button", { name: "Create Workflow" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("button", { name: /^Trigger:/ }).click();
+  const inspector = dialog.getByTestId("workflow-node-inspector");
+  await inspector.getByLabel("Trigger event").click();
+  await page.getByRole("menuitem", { name: "Reaction Added" }).click();
+
+  const trigger = inspector.getByRole("button", {
+    name: "Choose emoji filter",
+  });
+  await expect(trigger).toContainText("Choose a reaction");
+  await trigger.click();
+
+  const picker = page.locator("em-emoji-picker");
+  await picker.locator("input[type='search']").fill("buzz");
+  await picker.getByRole("button", { name: ":buzz:" }).first().click();
+
+  await expect(trigger).toContainText(":buzz:");
+  await dialog.getByRole("tab", { name: "YAML" }).click();
+  await expect(dialog.getByLabel("Workflow YAML")).toHaveValue(/:buzz:/);
+
+  await dialog.getByRole("tab", { name: "Form" }).click();
+  await dialog.getByRole("button", { name: /^Trigger:/ }).click();
+  await dialog.getByRole("button", { name: "Clear emoji filter" }).click();
+  await expect(
+    dialog.getByRole("button", { name: "Choose emoji filter" }),
+  ).toContainText("Choose a reaction");
 });
 
 test("switches an empty workflow between form and YAML modes", async ({

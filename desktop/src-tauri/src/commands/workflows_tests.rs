@@ -189,6 +189,28 @@ fn workflow_wire_serializes_with_snake_case_keys() {
 }
 
 #[test]
+fn multi_channel_workflow_query_uses_one_filter_per_channel() {
+    let other_channel = "33333333-3333-3333-3333-333333333333";
+    let filters = channel_workflow_filters(vec![CHAN.to_string(), other_channel.to_string()]);
+
+    assert_eq!(filters.len(), 2);
+    assert_eq!(
+        filters[0],
+        serde_json::json!({
+            "kinds": [30620],
+            "#h": [CHAN],
+        })
+    );
+    assert_eq!(
+        filters[1],
+        serde_json::json!({
+            "kinds": [30620],
+            "#h": [other_channel],
+        })
+    );
+}
+
+#[test]
 fn trigger_response_uses_persisted_run_id_contract() {
     let wire = trigger_wire_from_message(
         WF.to_string(),

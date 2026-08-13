@@ -4,6 +4,7 @@ import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
 import { Input } from "@/shared/ui/input";
 import { Textarea } from "@/shared/ui/textarea";
+import { WorkflowConditionBuilder } from "./WorkflowConditionBuilder";
 import { FieldLabel, FormSelect } from "./workflowFormPrimitives";
 import { WorkflowWebhookHeadersEditor } from "./WorkflowWebhookHeadersEditor";
 import type { StepFormState, TriggerType } from "./workflowFormTypes";
@@ -353,18 +354,13 @@ export function WorkflowStepCard({
 
       <section className="space-y-4 border-t border-border/50 py-5">
         <SectionHeading title="Run controls" />
-        <div className="space-y-1.5">
-          <FieldLabel htmlFor={`${prefix}-condition`}>
-            Condition (optional)
-          </FieldLabel>
-          <Input
-            autoCapitalize="off"
+        <div>
+          <WorkflowConditionBuilder
             disabled={disabled}
-            id={`${prefix}-condition`}
-            onChange={(event) =>
-              onUpdate({ ...step, condition: event.target.value })
-            }
-            placeholder='e.g. str_contains(trigger_text, "deploy")'
+            idPrefix={`${prefix}-condition`}
+            matchAllHint="Leave empty to run this step every time the workflow starts."
+            onChange={(condition) => onUpdate({ ...step, condition })}
+            triggerType={triggerType}
             value={step.condition ?? ""}
           />
         </div>

@@ -854,19 +854,20 @@ fn filters_are_nip43_membership_only(filters: &[Filter]) -> bool {
         })
 }
 
-/// Extract a channel UUID from a single filter's `#h` tag.
+/// Extract the single channel UUID from a filter's `#h` tag.
+///
+/// A multi-value `#h` filter has NIP-01 OR semantics, so it cannot be reduced
+/// to one `EventQuery::channel_id` without dropping matches from the other
+/// channels. Return `None` in that case and let the caller apply the accessible
+/// channel set in SQL before the full filter is evaluated in Rust.
 fn extract_channel_id_from_filter(filter: &Filter) -> Option<uuid::Uuid> {
-    for (tag_key, tag_values) in filter.generic_tags.iter() {
-        let key = tag_key.to_string();
-        if key == "h" {
-            for val in tag_values {
-                if let Ok(id) = val.parse::<uuid::Uuid>() {
-                    return Some(id);
-                }
-            }
-        }
+    let h_tag = nostr::SingleLetterTag::lowercase(nostr::Alphabet::H);
+    let values = filter.generic_tags.get(&h_tag)?;
+    if values.len() != 1 {
+        return None;
     }
-    None
+
+    values.iter().next()?.parse::<uuid::Uuid>().ok()
 }
 
 /// Convert a single NIP-01 filter into an [`EventQuery`] for the database.
@@ -1549,6 +1550,28 @@ mod tests {
         let channel_id = uuid::Uuid::new_v4();
         let filters = vec![filter_with_channel(channel_id)];
         assert_eq!(extract_channel_id_from_filters(&filters), Some(channel_id));
+    }
+
+    #[test]
+    fn extract_channel_id_from_multi_value_filter_returns_none() {
+        let channel_a = uuid::Uuid::new_v4();
+        let channel_b = uuid::Uuid::new_v4();
+        let filter: Filter = serde_json::from_value(serde_json::json!({
+            "#h": [channel_a.to_string(), channel_b.to_string()],
+        }))
+        .unwrap();
+
+        assert_eq!(extract_channel_id_from_filter(&filter), None);
+        assert_eq!(
+            filter_to_query_params(
+                &filter,
+                extract_channel_id_from_filter(&filter),
+                buzz_core::tenant::CommunityId::from_uuid(uuid::Uuid::nil()),
+            )
+            .channel_id,
+            None,
+            "multi-channel OR filters must not be narrowed to their first channel",
+        );
     }
 
     #[test]
