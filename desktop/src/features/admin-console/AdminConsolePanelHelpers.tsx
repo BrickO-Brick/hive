@@ -186,6 +186,10 @@ export type CommunityGroup<T> = {
   items: T[];
 };
 
+/** React key + heading for rows whose source community has been purged. */
+const SEVERED_COMMUNITY_KEY = "__severed__";
+const SEVERED_COMMUNITY_HOST = "(source community removed)";
+
 /**
  * Group deployment-wide rows by community, preserving each community's
  * first-seen order and the server's row order within it.
@@ -194,21 +198,30 @@ export type CommunityGroup<T> = {
  * deployment; operators triage per community, so rows are bucketed by
  * `communityId` (stable) and labelled by `communityHost` (display). A blank
  * host falls back to the id so a group is never headed by an empty string.
+ *
+ * Feedback whose source community was purged carries a `null` `communityId`
+ * (tenant provenance severed, the row retained as operator evidence). Those
+ * rows bucket into a single "source community removed" group so a null key
+ * never collapses distinct rows or heads a group with an empty string.
  */
 export function groupByCommunity<
-  T extends { communityId: string; communityHost: string },
+  T extends { communityId: string | null; communityHost: string | null },
 >(items: T[]): CommunityGroup<T>[] {
   const groups: CommunityGroup<T>[] = [];
   const byId = new Map<string, CommunityGroup<T>>();
   for (const item of items) {
-    let group = byId.get(item.communityId);
+    const key = item.communityId ?? SEVERED_COMMUNITY_KEY;
+    let group = byId.get(key);
     if (!group) {
       group = {
-        communityId: item.communityId,
-        communityHost: item.communityHost || item.communityId,
+        communityId: key,
+        communityHost:
+          item.communityId == null
+            ? SEVERED_COMMUNITY_HOST
+            : item.communityHost || item.communityId,
         items: [],
       };
-      byId.set(item.communityId, group);
+      byId.set(key, group);
       groups.push(group);
     }
     group.items.push(item);
@@ -224,7 +237,7 @@ export function groupByCommunity<
  * entry — the caller owns row markup so navigation/testids are unchanged.
  */
 export function CommunityGroupedList<
-  T extends { communityId: string; communityHost: string },
+  T extends { communityId: string | null; communityHost: string | null },
 >({ items, renderItem }: { items: T[]; renderItem: (item: T) => ReactNode }) {
   const groups = groupByCommunity(items);
   if (groups.length <= 1) {

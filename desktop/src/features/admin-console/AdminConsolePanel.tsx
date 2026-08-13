@@ -38,6 +38,7 @@ import { cn } from "@/shared/lib/cn";
 import {
   getAdminReport,
   listAdminReports,
+  cancelAdminReport,
   reopenAdminReport,
   resolveAdminReport,
   type AdminPrincipalRole,
@@ -152,12 +153,20 @@ function actionVariant(
 
 /**
  * Inline enforcement-state block shown on `processing` reports and after a
- * failed enforcement action. Shows the action record's state and offers
- * retry/cancel where appropriate.
+ * failed enforcement action. Shows the action record's state and offers cancel
+ * on a `failed` action.
  *
- * Cancel is only offered when the server permits it (pre-mutation failures).
- * A rejected cancel is treated as authoritative — the server knows whether
- * the mutation has landed.
+ * A `failed` action is always pre-mutation (the relay only records `failed`
+ * before the enforcement side effect lands), so it is always cancellable.
+ * Cancel is the only recovery path: it returns the report to `open` for a
+ * fresh resolution. There is no client-side "retry" — composing cancel + a new
+ * resolve would imply an atomicity the relay does not provide, leaving a window
+ * where the report is open with no explanation if the second call is lost.
+ *
+ * `pending`/`enforcing` actions are NOT cancellable over HTTP — the relay's
+ * recovery worker owns their convergence — so no button is offered there.
+ * A rejected cancel (409) is authoritative: the action already advanced or
+ * someone else cancelled it, so reload detail rather than retrying.
  */
 function EnforcementStateBlock({
   activeAction,
@@ -184,45 +193,26 @@ function EnforcementStateBlock({
     cancelled: "Enforcement cancelled",
   };
 
-  const handleRetry = async () => {
-    setError(null);
-    setIsWorking(true);
-    try {
-      // Retry reuses the same requestId so the server returns the existing
-      // action record rather than creating a new claim.
-      await resolveAdminReport(origin, reportId, {
-        action: activeAction.action,
-        requestId: activeAction.requestId,
-        reason: activeAction.reason ?? undefined,
-      });
-      toast.success("Enforcement retried");
-      onActionComplete();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setIsWorking(false);
-    }
-  };
-
   const handleCancel = async () => {
     setError(null);
     setIsWorking(true);
     try {
-      // Cancel via the same resolve endpoint with action="dismiss".
-      // The server rejects cancel if mutation has already landed.
-      await resolveAdminReport(origin, reportId, {
-        action: "dismiss",
-        requestId: crypto.randomUUID(),
-        reason: "cancelled",
+      // Fence the cancel to the exact failed action the operator observed. On
+      // success the report returns to `open`; the detail reload then serves
+      // `activeAction: null` and re-exposes the resolve form for a fresh attempt.
+      await cancelAdminReport(origin, reportId, {
+        actionId: activeAction.id,
       });
-      toast.success("Enforcement cancelled");
+      toast.success("Enforcement cancelled — report reopened");
       onActionComplete();
     } catch (e) {
-      // A rejected cancel is authoritative — the enforcement may have landed.
-      // Surface the error but do not retry.
+      // A 409 means the action is no longer cancellable (already cancelled,
+      // superseded, or past the mutation point). Reload detail rather than
+      // retry — the message is informational, the reload shows current state.
       setError(
         `Cancel rejected: ${e instanceof Error ? e.message : String(e)}`,
       );
+      onActionComplete();
     } finally {
       setIsWorking(false);
     }
@@ -244,33 +234,26 @@ function EnforcementStateBlock({
           {activeAction.action}
         </span>
       </div>
+      {activeAction.errorMessage && (
+        <p className="text-xs text-muted-foreground break-words">
+          {activeAction.errorMessage}
+        </p>
+      )}
       {actionStatus === "failed" && (
-        <div className="flex gap-2">
-          <Button
-            data-testid="enforcement-retry-btn"
-            disabled={isWorking}
-            onClick={() => void handleRetry()}
-            size="sm"
-            type="button"
-            variant="outline"
-          >
-            {isWorking ? (
-              <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              "Retry"
-            )}
-          </Button>
-          <Button
-            data-testid="enforcement-cancel-btn"
-            disabled={isWorking}
-            onClick={() => void handleCancel()}
-            size="sm"
-            type="button"
-            variant="ghost"
-          >
-            Cancel
-          </Button>
-        </div>
+        <Button
+          data-testid="enforcement-cancel-btn"
+          disabled={isWorking}
+          onClick={() => void handleCancel()}
+          size="sm"
+          type="button"
+          variant="outline"
+        >
+          {isWorking ? (
+            <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            "Cancel & reopen"
+          )}
+        </Button>
       )}
       {error && <p className="text-xs text-destructive">{error}</p>}
     </div>
@@ -684,7 +667,6 @@ function ReportDetail({
   );
 
   const data = detailState.status === "ok" ? detailState.data : null;
-  const isProcessing = data?.status === "processing";
   const isOpen = data?.status === "open";
   const isReopenable =
     data?.status === "resolved" ||
@@ -709,21 +691,28 @@ function ReportDetail({
       {detailState.status === "ok" && (
         <>
           <ReportFields data={detailState.data} />
-          {/* Enforcement state: present on processing reports or failed actions */}
-          {activeAction &&
-            (isProcessing ||
-              activeAction.status === "failed" ||
-              activeAction.status === "pending" ||
-              activeAction.status === "enforcing") && (
-              <EnforcementStateBlock
-                activeAction={activeAction}
-                origin={origin}
-                reportId={reportId}
-                onActionComplete={() => setResolveGen((g) => g + 1)}
-              />
-            )}
-          {/* Resolve form: only for open (non-processing) reports */}
-          {isOpen && !activeAction && (
+          {/* Enforcement state / history. The detail LATERAL returns an action
+              whenever one governs the report: a live action (pending/enforcing)
+              or a cancellable failed action while processing, or a succeeded
+              action as executed-enforcement history on a terminal or reopened
+              report (honest history — a later dismissal/reopen does not
+              un-happen the ban that ran). Cancel is offered only on failed,
+              inside the block. A cancelled action never reaches this read. */}
+          {activeAction && (
+            <EnforcementStateBlock
+              activeAction={activeAction}
+              origin={origin}
+              reportId={reportId}
+              onActionComplete={() => setResolveGen((g) => g + 1)}
+            />
+          )}
+          {/* Resolve form: shown for open reports. A reopened-after-enforcement
+              report is open yet carries a succeeded activeAction (history);
+              the form must still show so the operator can re-triage — the
+              enforcement block above renders that history alongside it. Only a
+              live/failed action keeps the report `processing` (not open), so
+              `isOpen` alone never surfaces the form on an in-flight action. */}
+          {isOpen && (
             <ResolveReportForm
               report={detailState.data}
               origin={origin}

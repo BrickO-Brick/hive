@@ -53,6 +53,9 @@ pub enum AdminRoute {
     ReportReopen {
         id: uuid::Uuid,
     },
+    ReportCancel {
+        id: uuid::Uuid,
+    },
     FeedbackList,
     FeedbackDetail {
         id: uuid::Uuid,
@@ -105,6 +108,7 @@ impl AdminRoute {
             AdminRoute::ReportDetail { id } => format!("/reports/{id}"),
             AdminRoute::ReportResolve { id } => format!("/reports/{id}/resolve"),
             AdminRoute::ReportReopen { id } => format!("/reports/{id}/reopen"),
+            AdminRoute::ReportCancel { id } => format!("/reports/{id}/cancel"),
             AdminRoute::FeedbackList => "/feedback".to_string(),
             AdminRoute::FeedbackDetail { id } => format!("/feedback/{id}"),
             AdminRoute::FeedbackAttachment { id, sha256 } => {
@@ -256,6 +260,15 @@ mod tests {
         assert_eq!(
             AdminRoute::ReportReopen { id }.path(),
             "/reports/00000000-0000-0000-0000-000000000003/reopen"
+        );
+    }
+
+    #[test]
+    fn report_cancel_path() {
+        let id = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000004").unwrap();
+        assert_eq!(
+            AdminRoute::ReportCancel { id }.path(),
+            "/reports/00000000-0000-0000-0000-000000000004/cancel"
         );
     }
 
