@@ -54,6 +54,7 @@ import {
   CommunityGroupedList,
   formatTimestamp,
   useAsyncLoad,
+  adminErrorMessage,
 } from "./AdminConsolePanelHelpers";
 import { FeedbackTab } from "./AdminConsoleFeedbackTab";
 import { StaffingTab } from "./AdminConsoleStaffingTab";
@@ -179,7 +180,6 @@ function EnforcementStateBlock({
   reportId: string;
   onActionComplete: () => void;
 }) {
-  const [error, setError] = useState<string | null>(null);
   const [isWorking, setIsWorking] = useState(false);
 
   const actionStatus = activeAction.status;
@@ -194,7 +194,6 @@ function EnforcementStateBlock({
   };
 
   const handleCancel = async () => {
-    setError(null);
     setIsWorking(true);
     try {
       // Fence the cancel to the exact failed action the operator observed. On
@@ -208,10 +207,8 @@ function EnforcementStateBlock({
     } catch (e) {
       // A 409 means the action is no longer cancellable (already cancelled,
       // superseded, or past the mutation point). Reload detail rather than
-      // retry — the message is informational, the reload shows current state.
-      setError(
-        `Cancel rejected: ${e instanceof Error ? e.message : String(e)}`,
-      );
+      // retry — the toast is informational, the reload shows current state.
+      toast.error(`Cancel rejected: ${adminErrorMessage(e)}`);
       onActionComplete();
     } finally {
       setIsWorking(false);
@@ -255,7 +252,6 @@ function EnforcementStateBlock({
           )}
         </Button>
       )}
-      {error && <p className="text-xs text-destructive">{error}</p>}
     </div>
   );
 }
@@ -285,15 +281,18 @@ function ResolveReportForm({
   const [reason, setReason] = useState("");
   const [expirationSecs, setExpirationSecs] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   // Stable requestId per submission; regenerated on each new submit attempt.
   const requestIdRef = useRef<string | null>(null);
 
-  const allowedActions = allowedActionsForTargetKind(report.targetKind ?? "");
+  // Kick removes the target from the report's associated channel, so the
+  // relay rejects it (400 invalid_action_for_target) when the report carries
+  // no channel. Suppress it client-side rather than offer a guaranteed failure.
+  const allowedActions = allowedActionsForTargetKind(
+    report.targetKind ?? "",
+  ).filter((a) => a !== "kick" || report.channelId != null);
 
   const handleSubmit = async () => {
     if (!selectedAction) return;
-    setError(null);
     setIsSubmitting(true);
 
     // Generate a fresh requestId for this submission attempt (v4 amendment 2).
@@ -321,7 +320,7 @@ function ResolveReportForm({
       if (!msg.includes("409") && !msg.includes("processing")) {
         requestIdRef.current = null;
       }
-      setError(msg);
+      toast.error(adminErrorMessage(e));
     } finally {
       setIsSubmitting(false);
     }
@@ -405,8 +404,6 @@ function ResolveReportForm({
           )}
         </Button>
       )}
-
-      {error && <p className="text-xs text-destructive">{error}</p>}
     </div>
   );
 }
@@ -437,7 +434,6 @@ function ReopenReportForm({
 }) {
   const [reason, setReason] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   // Stable requestId per attempt; reused on retry after a lost response.
   const requestIdRef = useRef<string | null>(null);
 
@@ -445,7 +441,6 @@ function ReopenReportForm({
   const wasEnforced = report.actionId != null;
 
   const handleSubmit = async () => {
-    setError(null);
     setIsSubmitting(true);
 
     if (!requestIdRef.current) {
@@ -467,7 +462,7 @@ function ReopenReportForm({
       if (!msg.includes("409") && !msg.includes("processing")) {
         requestIdRef.current = null;
       }
-      setError(msg);
+      toast.error(adminErrorMessage(e));
     } finally {
       setIsSubmitting(false);
     }
@@ -513,8 +508,6 @@ function ReopenReportForm({
           "Reopen report"
         )}
       </Button>
-
-      {error && <p className="text-xs text-destructive">{error}</p>}
     </div>
   );
 }
@@ -531,11 +524,14 @@ function ReportsTab({
   generation: number;
 }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // List refresh fence: bumped whenever a mutation completes in the detail
+  // view, so returning to the list shows fresh status without a tab switch.
+  const [listGen, setListGen] = useState(0);
 
   const listState = useAsyncLoad(
     () => listAdminReports(origin),
     [origin, pubkey],
-    generation,
+    generation + listGen,
   );
 
   if (selectedId) {
@@ -546,6 +542,7 @@ function ReportsTab({
         generation={generation}
         reportId={selectedId}
         onBack={() => setSelectedId(null)}
+        onMutated={() => setListGen((g) => g + 1)}
       />
     );
   }
@@ -650,15 +647,25 @@ function ReportDetail({
   generation,
   reportId,
   onBack,
+  onMutated,
 }: {
   origin: string;
   pubkey: string;
   generation: number;
   reportId: string;
   onBack: () => void;
+  /** Called after any mutation completes so the parent list can refetch. */
+  onMutated: () => void;
 }) {
   // Resolution generation: bump to reload detail after an action completes.
   const [resolveGen, setResolveGen] = useState(0);
+
+  // Reload the detail AND signal the parent list on every completed mutation,
+  // so back-nav shows fresh status without the tab-switch workaround.
+  const handleMutated = () => {
+    setResolveGen((g) => g + 1);
+    onMutated();
+  };
 
   const detailState = useAsyncLoad(
     () => getAdminReport(origin, reportId),
@@ -703,7 +710,7 @@ function ReportDetail({
               activeAction={activeAction}
               origin={origin}
               reportId={reportId}
-              onActionComplete={() => setResolveGen((g) => g + 1)}
+              onActionComplete={handleMutated}
             />
           )}
           {/* Resolve form: shown for open reports. A reopened-after-enforcement
@@ -716,7 +723,7 @@ function ReportDetail({
             <ResolveReportForm
               report={detailState.data}
               origin={origin}
-              onResolved={() => setResolveGen((g) => g + 1)}
+              onResolved={handleMutated}
             />
           )}
           {/* Reopen form: only for terminal (resolved/dismissed/escalated) reports */}
@@ -724,7 +731,7 @@ function ReportDetail({
             <ReopenReportForm
               report={detailState.data}
               origin={origin}
-              onReopened={() => setResolveGen((g) => g + 1)}
+              onReopened={handleMutated}
             />
           )}
         </>

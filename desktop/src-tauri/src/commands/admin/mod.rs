@@ -36,6 +36,10 @@ pub(crate) mod routes;
 /// can reach the 256 KiB event-content cap. Sized for the worst case.
 const SUCCESS_JSON_CAP: u64 = 52_428_800; // 50 MiB
 
+/// Probe-response cap: `/probe` returns a tiny fixed-shape JSON envelope.
+/// 8 KiB is far more than the payload needs while bounding a hostile body.
+const PROBE_JSON_CAP: u64 = 8_192; // 8 KiB
+
 /// Error-body cap: relay error responses are brief JSON envelopes.
 const ERROR_BODY_CAP: u64 = 65_536; // 64 KiB
 
@@ -104,13 +108,13 @@ type SignFn = Box<dyn Fn(&str) -> Result<String, String> + Send + Sync>;
 /// current app keypair is authorized.
 ///
 /// Algorithm:
-/// 1. Send an unauthenticated GET to `/api/admin/v1/reports?limit=1`.
+/// 1. Send an unauthenticated GET to `/api/admin/v1/probe`.
 /// 2. Detect HTML/interception pages (Cloudflare Access, captive portals)
 ///    from Content-Type and final URL host → `NetworkOrIntercepted`.
-/// 3. 200 + valid JSON list shape → `Disabled` (admin accessible without cred).
+/// 3. 200 + valid `ProbeResponse` with `authMode: "disabled"` → `Disabled`.
 /// 4. 401 + `WWW-Authenticate: Nostr` → NIP-98 mode. Retry with a freshly
-///    signed kind-27235. 200 + valid list shape → `Nip98Authorized`;
-///    non-200 → `Nip98Denied`.
+///    signed kind-27235. 200 + valid `ProbeResponse` → `Nip98Authorized`
+///    carrying the relay-resolved `role`/`source`; non-200 → `Nip98Denied`.
 /// 5. 401 + `WWW-Authenticate: Bearer` → `TokenMode`.
 /// 6. 403/404 or other non-401 → `NotAdminApi`.
 /// 7. Network/redirect/TLS error → `NetworkOrIntercepted`.
@@ -144,13 +148,7 @@ async fn admin_probe_inner(
     sign: Option<impl Fn(&str) -> Result<String, String>>,
 ) -> Result<AdminProbeResult, String> {
     let origin = origin::AdminOrigin::parse(origin)?;
-    let url = origin.route_url(
-        &routes::AdminRoute::ReportsList,
-        &routes::AdminQuery {
-            limit: Some(1),
-            ..Default::default()
-        },
-    );
+    let url = origin.route_url(&routes::AdminRoute::Probe, &routes::AdminQuery::default());
 
     let http_client = client::ADMIN_CLIENT
         .get()
@@ -174,15 +172,16 @@ async fn admin_probe_inner(
         return Ok(AdminProbeResult::NetworkOrIntercepted);
     }
 
-    // Step 3: success without auth → disabled mode (if body is a valid list).
+    // Step 3: success without auth → disabled mode (if body is a valid probe).
     if resp.status().is_success() {
         let content_type = response_content_type(&resp);
-        let bytes = read_bounded(resp, SUCCESS_JSON_CAP).await?;
-        return if looks_like_admin_list(&content_type, &bytes) {
-            Ok(AdminProbeResult::Disabled)
-        } else {
-            Ok(AdminProbeResult::NotAdminApi)
-        };
+        let bytes = read_bounded(resp, PROBE_JSON_CAP).await?;
+        return Ok(match parse_probe(&content_type, &bytes) {
+            Some(p) if p.auth_mode == "disabled" => AdminProbeResult::Disabled,
+            // A 200 in any other mode is a contract violation (token/nip98
+            // must 401 an unauthenticated caller); classify defensively.
+            _ => AdminProbeResult::NotAdminApi,
+        });
     }
 
     // Step 4–6: interpret 401.
@@ -221,21 +220,19 @@ async fn admin_probe_inner(
             }
 
             if auth_resp.status().is_success() {
-                // Validate the Nostr header shape was accepted (not just any 2xx).
                 let content_type = response_content_type(&auth_resp);
-                let bytes = read_bounded(auth_resp, SUCCESS_JSON_CAP).await?;
-                return if looks_like_admin_list(&content_type, &bytes) {
-                    // Extract role and source from probe response headers if present.
-                    // The relay includes X-Admin-Role and X-Admin-Source on the
-                    // authenticated probe response once the principal is resolved.
-                    Ok(AdminProbeResult::Nip98Authorized {
-                        role: None,
-                        source: None,
-                    })
-                } else {
-                    // Endpoint exists but didn't return the expected list shape.
-                    Ok(AdminProbeResult::NotAdminApi)
-                };
+                let bytes = read_bounded(auth_resp, PROBE_JSON_CAP).await?;
+                return Ok(match parse_probe(&content_type, &bytes) {
+                    // Relay resolves role/source for the authenticated
+                    // principal; carry them through for the staffing tab.
+                    Some(p) => AdminProbeResult::Nip98Authorized {
+                        role: p.role,
+                        source: p.source,
+                    },
+                    // 2xx but not a probe shape: endpoint exists but isn't
+                    // the admin API.
+                    None => AdminProbeResult::NotAdminApi,
+                });
             }
             return Ok(AdminProbeResult::Nip98Denied);
         }
@@ -296,83 +293,42 @@ async fn read_bounded(resp: reqwest::Response, cap: u64) -> Result<Vec<u8>, Stri
     Ok(bytes)
 }
 
-/// Returns true when `content_type` is JSON and `bytes` deserialises to a
-/// JSON array matching the `/api/admin/v1/reports` shape.
+/// The relay's `/probe` response contract (`ProbeResponse` in the relay's
+/// `api/admin/mod.rs`, serialised `rename_all = "camelCase"`).
 ///
-/// Rules:
-/// - Content-Type must start with `application/json` (case-insensitive).
-/// - Body must be a JSON array.
-/// - Non-empty arrays must have every element deserialise against the
-///   `AdminReport` wire contract (camelCase, `rename_all = "camelCase"`).
-///   An empty array is valid — a fresh relay with no reports returns `[]`.
-/// - Partial / garbage elements (`{"id":null}`, `7`, `"garbage"`) are rejected.
+/// Only the fields the desktop consumes are typed. `role`/`source` are
+/// present (non-null) only in nip98 mode with a resolved principal; they are
+/// `null` in token/disabled modes.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProbeWire {
+    #[allow(dead_code)]
+    status: String,
+    auth_mode: String,
+    role: Option<String>,
+    source: Option<String>,
+    #[allow(dead_code)]
+    can_act: bool,
+    #[allow(dead_code)]
+    can_staff: bool,
+}
+
+/// Parse a `/probe` response body into a [`ProbeWire`], returning `None` when
+/// the Content-Type is not JSON or the body does not match the probe contract.
 ///
-/// This prevents unrelated endpoints that return JSON arrays from being
-/// misclassified as the admin API.
-fn looks_like_admin_list(content_type: &str, bytes: &[u8]) -> bool {
-    // Require JSON Content-Type.
+/// Strict typing rejects unrelated JSON endpoints: a response missing any
+/// required field (`status`, `authMode`, `canAct`, `canStaff`) or carrying a
+/// wrong-typed field fails to deserialise and yields `None`, so a non-admin
+/// origin that happens to return JSON is classified `NotAdminApi` rather than
+/// mistaken for the admin API.
+fn parse_probe(content_type: &str, bytes: &[u8]) -> Option<ProbeWire> {
     if !content_type
         .to_ascii_lowercase()
         .starts_with("application/json")
     {
-        return false;
+        return None;
     }
-    // Body must be a JSON array.
-    let arr = match serde_json::from_slice::<serde_json::Value>(bytes) {
-        Ok(serde_json::Value::Array(a)) => a,
-        _ => return false,
-    };
-    // Empty array is valid (fresh relay with no reports).
-    if arr.is_empty() {
-        return true;
-    }
-    // Non-empty: every element must deserialise against the AdminReport probe DTO.
-    // The wire shape is camelCase (serde rename_all = "camelCase").
-    arr.iter()
-        .all(|v| serde_json::from_value::<AdminReportProbeDto>(v.clone()).is_ok())
-}
-
-/// Full `AdminReport` wire contract used for probe validation.
-///
-/// Mirrors the camelCase serialisation of `AdminReport` in
-/// `crates/buzz-db/src/admin_moderation.rs:24-55` exactly — required fields
-/// are typed strictly, optional fields use `Option<T>` with real types.
-/// This ensures that a response with `createdAt: null` or a malformed optional
-/// field (e.g. `channelId: 7`) is rejected, not silently classified as the
-/// admin API.
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AdminReportProbeDto {
-    #[allow(dead_code)]
-    id: uuid::Uuid,
-    #[allow(dead_code)]
-    community_id: uuid::Uuid,
-    #[allow(dead_code)]
-    community_host: String,
-    #[allow(dead_code)]
-    report_event_id: String,
-    #[allow(dead_code)]
-    reporter_pubkey: String,
-    #[allow(dead_code)]
-    target_kind: String,
-    #[allow(dead_code)]
-    target: String,
-    #[allow(dead_code)]
-    channel_id: Option<uuid::Uuid>,
-    #[allow(dead_code)]
-    report_type: String,
-    #[allow(dead_code)]
-    note: Option<String>,
-    #[allow(dead_code)]
-    status: String,
-    #[allow(dead_code)]
-    resolved_by: Option<String>,
-    #[allow(dead_code)]
-    resolved_at: Option<chrono::DateTime<chrono::Utc>>,
-    #[allow(dead_code)]
-    action_id: Option<uuid::Uuid>,
-    #[allow(dead_code)]
-    created_at: chrono::DateTime<chrono::Utc>,
+    serde_json::from_slice::<ProbeWire>(bytes).ok()
 }
 
 /// Extract the normalised Content-Type base value (strips parameters).

@@ -43,6 +43,9 @@ impl AttachmentHash {
 /// are validated hex strings.
 #[derive(Debug)]
 pub enum AdminRoute {
+    /// Auth-mode/role/capability discovery. Requires no DB and returns role
+    /// `null` in token/disabled modes.
+    Probe,
     ReportsList,
     ReportDetail {
         id: uuid::Uuid,
@@ -104,6 +107,7 @@ impl AdminRoute {
     /// Return the URL path component (not including the `/api/admin/v1` prefix).
     pub fn path(&self) -> String {
         match self {
+            AdminRoute::Probe => "/probe".to_string(),
             AdminRoute::ReportsList => "/reports".to_string(),
             AdminRoute::ReportDetail { id } => format!("/reports/{id}"),
             AdminRoute::ReportResolve { id } => format!("/reports/{id}/resolve"),
@@ -243,6 +247,11 @@ mod tests {
     #[test]
     fn reports_list_path() {
         assert_eq!(AdminRoute::ReportsList.path(), "/reports");
+    }
+
+    #[test]
+    fn probe_path() {
+        assert_eq!(AdminRoute::Probe.path(), "/probe");
     }
 
     #[test]

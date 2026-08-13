@@ -93,6 +93,13 @@ toast.success = (msg) => {
   return 0;
 };
 
+/** @type {string[]} */
+const capturedErrorToasts = [];
+toast.error = (msg) => {
+  capturedErrorToasts.push(String(msg));
+  return 0;
+};
+
 // ── Deferred promise helper ──────────────────────────────────────────────────
 
 function deferred() {
@@ -174,6 +181,7 @@ async function settle(ms = 20) {
 afterEach(() => {
   clearIpcHandlers();
   capturedToasts.length = 0;
+  capturedErrorToasts.length = 0;
 });
 
 // ── origin-edit ──────────────────────────────────────────────────────────────
@@ -2366,16 +2374,14 @@ test("reopen-409-preserves-requestId: a not-reopenable conflict reuses the same 
   );
 
   // No success toast on a 409.
-  assert.deepEqual(
-    capturedToasts,
-    [],
+  assert.ok(
+    !capturedToasts.some((m) => m.toLowerCase().includes("reopen")),
     `no success toast on a 409; got: ${JSON.stringify(capturedToasts)}`,
   );
-  // The error is surfaced.
-  const text = container.textContent ?? "";
+  // The error is surfaced via toast.error with the parsed relay message.
   assert.ok(
-    text.includes("not reopenable"),
-    `the 409 error message must surface; got: ${text.slice(0, 400)}`,
+    capturedErrorToasts.some((m) => m.includes("not reopenable")),
+    `the 409 error message must surface via toast.error; got: ${JSON.stringify(capturedErrorToasts)}`,
   );
 
   await unmount();
@@ -2764,6 +2770,331 @@ test("feedback-severed-community: a purged-source feedback row renders in list a
   assert.ok(
     (fields.textContent ?? "").includes("—"),
     `absent community fields must render as em-dash; got: ${fields.textContent}`,
+  );
+
+  await unmount();
+});
+
+// ── D3a: kick suppressed when the report carries no channel ────────────────
+
+test("kick-suppressed-when-channel-null: an event report without a channel hides the Kick action", async () => {
+  // Kick removes the target from the report's associated channel, so the relay
+  // 400s (invalid_action_for_target) when the report has no channelId. The
+  // resolve form must not offer an action guaranteed to fail. Other event
+  // actions (ban/timeout/dismiss/delete/escalate) stay available.
+  //
+  // Mutation evidence: drop the `.filter((a) => a !== "kick" || channelId
+  // != null)` guard → action-btn-kick renders and the null-channel assertion
+  // goes red.
+
+  const origin = "https://admin.example.com";
+  const pubkey = "d3".repeat(32);
+
+  const item = {
+    id: "00000000-0000-0000-0000-0000000000d3",
+    communityId: "comm-1",
+    communityHost: "alpha.example.com",
+    reportEventId: "aa",
+    reporterPubkey: "bb",
+    targetKind: "event",
+    target: "cc",
+    reportType: "spam",
+    status: "open",
+    createdAt: "2024-06-01T12:00:00Z",
+  };
+  const detail = {
+    ...item,
+    channelId: null,
+    note: null,
+    resolvedBy: null,
+    resolvedAt: null,
+    actionId: null,
+    message: null,
+  };
+
+  setIpcHandler("admin_list_reports", () => Promise.resolve([item]));
+  setIpcHandler("admin_get_report", () => Promise.resolve(detail));
+  setIpcHandler("admin_list_feedback", () => Promise.resolve([]));
+
+  const { container, doRender, unmount } = mountPanel({ origin, pubkey });
+  await doRender();
+  await settle(30);
+  await openFirstReportDetail(container);
+  await settle(20);
+
+  assert.ok(
+    container.querySelector("[data-testid='resolve-report-form']"),
+    "resolve form must render for an open report",
+  );
+  assert.equal(
+    container.querySelector("[data-testid='action-btn-kick']"),
+    null,
+    "Kick must be suppressed when the report has no channelId",
+  );
+  // Sibling event actions remain available — only Kick is gated.
+  assert.ok(
+    container.querySelector("[data-testid='action-btn-ban']"),
+    "Ban must still be offered on an event report",
+  );
+
+  await unmount();
+});
+
+test("kick-offered-when-channel-set: an event report with a channel offers the Kick action", async () => {
+  // The paired case: when the report carries a channelId, Kick is a valid
+  // action (the relay can enforce it) and must be offered.
+
+  const origin = "https://admin.example.com";
+  const pubkey = "d4".repeat(32);
+
+  const item = {
+    id: "00000000-0000-0000-0000-0000000000d4",
+    communityId: "comm-1",
+    communityHost: "alpha.example.com",
+    reportEventId: "aa",
+    reporterPubkey: "bb",
+    targetKind: "event",
+    target: "cc",
+    reportType: "spam",
+    status: "open",
+    createdAt: "2024-06-01T12:00:00Z",
+  };
+  const detail = {
+    ...item,
+    channelId: "00000000-0000-0000-0000-0000000000ff",
+    note: null,
+    resolvedBy: null,
+    resolvedAt: null,
+    actionId: null,
+    message: null,
+  };
+
+  setIpcHandler("admin_list_reports", () => Promise.resolve([item]));
+  setIpcHandler("admin_get_report", () => Promise.resolve(detail));
+  setIpcHandler("admin_list_feedback", () => Promise.resolve([]));
+
+  const { container, doRender, unmount } = mountPanel({ origin, pubkey });
+  await doRender();
+  await settle(30);
+  await openFirstReportDetail(container);
+  await settle(20);
+
+  assert.ok(
+    container.querySelector("[data-testid='action-btn-kick']"),
+    "Kick must be offered when the report carries a channelId",
+  );
+
+  await unmount();
+});
+
+// ── D2: lists refetch on back-nav after a mutation ─────────────────────────
+
+test("reports-list-refetches-on-back-after-mutation: resolving a report then navigating back shows fresh list status", async () => {
+  // A mutation in the detail bumps a list generation fence propagated to the
+  // ReportsTab, so returning to the list refetches instead of serving the
+  // stale cached rows (Will's tab-switch workaround). Evidence is a second
+  // admin_list_reports call after back-nav returning the updated status.
+  //
+  // Mutation evidence: drop the onMutated → setListGen wiring → the list
+  // query key never changes, admin_list_reports is called once, and the
+  // second-call assertion goes red.
+
+  const origin = "https://admin.example.com";
+  const pubkey = "d5".repeat(32);
+
+  const openItem = {
+    id: "00000000-0000-0000-0000-0000000000d5",
+    communityId: "comm-1",
+    communityHost: "alpha.example.com",
+    reportEventId: "aa",
+    reporterPubkey: "bb",
+    targetKind: "pubkey",
+    target: "cc",
+    reportType: "spam",
+    status: "open",
+    createdAt: "2024-06-01T12:00:00Z",
+  };
+  const openDetail = {
+    ...openItem,
+    channelId: null,
+    note: null,
+    resolvedBy: null,
+    resolvedAt: null,
+    actionId: null,
+    message: null,
+  };
+
+  // The list returns "open" first, then "dismissed" after the mutation — the
+  // refetch must surface the new status.
+  let listCalls = 0;
+  setIpcHandler("admin_list_reports", () => {
+    listCalls += 1;
+    return Promise.resolve([
+      { ...openItem, status: listCalls === 1 ? "open" : "dismissed" },
+    ]);
+  });
+  setIpcHandler("admin_get_report", () => Promise.resolve(openDetail));
+  setIpcHandler("admin_list_feedback", () => Promise.resolve([]));
+  setIpcHandler("admin_resolve_report", () =>
+    Promise.resolve({ status: "dismissed" }),
+  );
+
+  const { container, doRender, unmount } = mountPanel({ origin, pubkey });
+  await doRender();
+  await settle(30);
+
+  await openFirstReportDetail(container);
+  await settle(20);
+  const callsBeforeBack = listCalls;
+
+  // Dismiss the report.
+  const dismissBtn = container.querySelector(
+    "[data-testid='action-btn-dismiss']",
+  );
+  assert.ok(dismissBtn, "dismiss action must be present");
+  await act(async () => {
+    fireEvent.click(dismissBtn);
+    await new Promise((r) => setTimeout(r, 10));
+  });
+  const submit = container.querySelector("[data-testid='resolve-submit-btn']");
+  assert.ok(
+    submit,
+    "resolve submit button must appear after selecting dismiss",
+  );
+  await act(async () => {
+    fireEvent.click(submit);
+    await new Promise((r) => setTimeout(r, 30));
+  });
+  await settle(20);
+
+  // Navigate back to the list.
+  const backBtn = Array.from(container.querySelectorAll("button")).find((b) =>
+    b.textContent?.includes("Back to reports"),
+  );
+  assert.ok(backBtn, "back-to-reports button must be present");
+  await act(async () => {
+    fireEvent.click(backBtn);
+    await new Promise((r) => setTimeout(r, 30));
+  });
+  await settle(20);
+
+  assert.ok(
+    listCalls > callsBeforeBack,
+    `the list must refetch after back-nav following a mutation; before=${callsBeforeBack} after=${listCalls}`,
+  );
+  assert.ok(
+    (container.textContent ?? "").includes("dismissed"),
+    `the refetched list must show the updated status; got: ${(container.textContent ?? "").slice(0, 400)}`,
+  );
+
+  await unmount();
+});
+
+test("feedback-list-refetches-on-back-after-mutation: changing status then navigating back shows fresh list status", async () => {
+  // Same fence for the Feedback tab: a status change in the detail bumps the
+  // FeedbackTab list generation so back-nav refetches.
+  //
+  // Mutation evidence: drop the FeedbackDetail onMutated → setListGen wiring →
+  // admin_list_feedback is called once and the second-call assertion goes red.
+
+  const origin = "https://admin.example.com";
+  const pubkey = "d6".repeat(32);
+
+  const summary = {
+    id: "00000000-0000-0000-0000-0000000000d6",
+    communityId: "00000000-0000-0000-0000-000000000022",
+    communityHost: "relay.example.com",
+    submitterPubkey: "submitter",
+    category: "bug",
+    bodySummary: "App crashes on startup",
+    status: "new",
+    receivedAt: "2024-05-01T09:00:05Z",
+  };
+  const detail = {
+    id: summary.id,
+    communityId: summary.communityId,
+    communityHost: summary.communityHost,
+    eventId: "feedevent",
+    submitterPubkey: summary.submitterPubkey,
+    category: "bug",
+    body: "App crashes on startup — full detail",
+    status: "new",
+    tags: [],
+    eventCreatedAt: "2024-05-01T09:00:00Z",
+    receivedAt: "2024-05-01T09:00:05Z",
+  };
+
+  let listCalls = 0;
+  setIpcHandler("admin_list_reports", () => Promise.resolve([]));
+  setIpcHandler("admin_list_feedback", () => {
+    listCalls += 1;
+    return Promise.resolve([
+      { ...summary, status: listCalls === 1 ? "new" : "reviewed" },
+    ]);
+  });
+  setIpcHandler("admin_get_feedback", () => Promise.resolve(detail));
+  setIpcHandler("admin_patch_feedback", () =>
+    Promise.resolve({ status: "reviewed" }),
+  );
+
+  const { container, doRender, unmount } = mountPanel({ origin, pubkey });
+  await doRender();
+  await settle(30);
+
+  // Switch to the Feedback tab.
+  const feedbackTab = container.querySelector(
+    "[data-testid='admin-tab-feedback']",
+  );
+  assert.ok(feedbackTab, "Feedback tab must be present");
+  await act(async () => {
+    fireEvent.click(feedbackTab);
+    await new Promise((r) => setTimeout(r, 30));
+  });
+  await settle(20);
+  assert.equal(listCalls, 1, "feedback list is fetched once on tab open");
+
+  // Open the first feedback row.
+  const row = Array.from(container.querySelectorAll("button")).find(
+    (b) =>
+      !(b.getAttribute("data-testid") ?? "").startsWith("admin-tab") &&
+      b.textContent?.includes("App crashes"),
+  );
+  assert.ok(row, "feedback row must be present");
+  await act(async () => {
+    fireEvent.click(row);
+    await new Promise((r) => setTimeout(r, 30));
+  });
+  await settle(20);
+
+  // Mark reviewed.
+  const reviewedBtn = container.querySelector(
+    "[data-testid='feedback-status-btn-reviewed']",
+  );
+  assert.ok(reviewedBtn, "reviewed status button must be present");
+  await act(async () => {
+    fireEvent.click(reviewedBtn);
+    await new Promise((r) => setTimeout(r, 30));
+  });
+  await settle(20);
+
+  // Navigate back to the feedback list.
+  const backBtn = Array.from(container.querySelectorAll("button")).find((b) =>
+    b.textContent?.includes("Back to feedback"),
+  );
+  assert.ok(backBtn, "back-to-feedback button must be present");
+  await act(async () => {
+    fireEvent.click(backBtn);
+    await new Promise((r) => setTimeout(r, 30));
+  });
+  await settle(20);
+
+  assert.ok(
+    listCalls >= 2,
+    `the feedback list must refetch after back-nav following a status change; listCalls=${listCalls}`,
+  );
+  assert.ok(
+    (container.textContent ?? "").includes("reviewed"),
+    `the refetched feedback list must show the updated status; got: ${(container.textContent ?? "").slice(0, 400)}`,
   );
 
   await unmount();

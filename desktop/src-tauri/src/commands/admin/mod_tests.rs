@@ -94,150 +94,63 @@ fn content_type_matching_is_case_insensitive_and_strips_params() {
     assert_eq!(normalised, "image/png");
 }
 
-// ── looks_like_admin_list ─────────────────────────────────────────────────
+// ── parse_probe ───────────────────────────────────────────────────────────
 
-fn valid_admin_report_json(id: &str) -> String {
+/// A well-formed `/probe` response body. `role`/`source` are JSON literals
+/// (`"operator"`, `null`, …) so the helper can build both nip98 and
+/// token/disabled shapes.
+fn probe_json(auth_mode: &str, role: &str, source: &str, can_act: bool, can_staff: bool) -> String {
     format!(
-        r#"{{
-            "id": "{id}",
-            "communityId": "00000000-0000-0000-0000-000000000002",
-            "communityHost": "relay.example.com",
-            "reportEventId": "aabbcc",
-            "reporterPubkey": "ddeeff",
-            "targetKind": "message",
-            "target": "112233",
-            "channelId": null,
-            "reportType": "spam",
-            "note": null,
-            "status": "open",
-            "resolvedBy": null,
-            "resolvedAt": null,
-            "actionId": null,
-            "createdAt": "2024-01-01T00:00:00Z"
-        }}"#
+        r#"{{"status":"ok","authMode":"{auth_mode}","role":{role},"source":{source},"canAct":{can_act},"canStaff":{can_staff}}}"#
     )
 }
 
 #[test]
-fn looks_like_admin_list_empty_array_with_json_ct() {
-    assert!(looks_like_admin_list("application/json", b"[]"));
+fn parse_probe_operator_nip98() {
+    let body = probe_json("nip98", r#""operator""#, r#""config""#, true, true);
+    let p = parse_probe("application/json", body.as_bytes()).expect("valid operator probe");
+    assert_eq!(p.auth_mode, "nip98");
+    assert_eq!(p.role.as_deref(), Some("operator"));
+    assert_eq!(p.source.as_deref(), Some("config"));
 }
 
 #[test]
-fn looks_like_admin_list_valid_report_element() {
-    let body = format!(
-        "[{}]",
-        valid_admin_report_json("00000000-0000-0000-0000-000000000001")
-    );
-    assert!(
-        looks_like_admin_list("application/json", body.as_bytes()),
-        "single valid AdminReport element must classify as admin list"
-    );
+fn parse_probe_disabled_has_null_role() {
+    let body = probe_json("disabled", "null", "null", false, false);
+    let p = parse_probe("application/json", body.as_bytes()).expect("valid disabled probe");
+    assert_eq!(p.auth_mode, "disabled");
+    assert_eq!(p.role, None);
+    assert_eq!(p.source, None);
 }
 
 #[test]
-fn looks_like_admin_list_rejects_id_null() {
-    // {"id":null} passes the old `contains_key("id")` check but must be rejected
-    // because `null` is not a valid UUID.
-    assert!(!looks_like_admin_list(
-        "application/json",
-        b"[{\"id\":null}]"
-    ));
+fn parse_probe_rejects_non_json_content_type() {
+    let body = probe_json("nip98", r#""operator""#, r#""config""#, true, true);
+    assert!(parse_probe("text/html", body.as_bytes()).is_none());
+    assert!(parse_probe("", body.as_bytes()).is_none());
 }
 
 #[test]
-fn looks_like_admin_list_rejects_created_at_null() {
-    // Full-shape element with `createdAt: null` must be rejected — the wire
-    // contract requires a real RFC-3339 timestamp for `createdAt`.
-    let body = r#"[{
-            "id": "00000000-0000-0000-0000-000000000001",
-            "communityId": "00000000-0000-0000-0000-000000000002",
-            "communityHost": "relay.example.com",
-            "reportEventId": "aabbcc",
-            "reporterPubkey": "ddeeff",
-            "targetKind": "message",
-            "target": "112233",
-            "channelId": null,
-            "reportType": "spam",
-            "note": null,
-            "status": "open",
-            "resolvedBy": null,
-            "resolvedAt": null,
-            "actionId": null,
-            "createdAt": null
-        }]"#;
-    assert!(
-        !looks_like_admin_list("application/json", body.as_bytes()),
-        "full-shape element with createdAt: null must not classify as admin list"
-    );
+fn parse_probe_rejects_missing_required_field() {
+    // Missing `canStaff` — an unrelated JSON endpoint must not classify as the
+    // admin API.
+    let body =
+        r#"{"status":"ok","authMode":"nip98","role":"operator","source":"config","canAct":true}"#;
+    assert!(parse_probe("application/json", body.as_bytes()).is_none());
 }
 
 #[test]
-fn looks_like_admin_list_rejects_malformed_optional_field() {
-    // Full-shape element with a malformed optional UUID field (`channelId: 7`)
-    // must be rejected — the wire contract requires Option<Uuid> for channelId.
-    let body = r#"[{
-            "id": "00000000-0000-0000-0000-000000000001",
-            "communityId": "00000000-0000-0000-0000-000000000002",
-            "communityHost": "relay.example.com",
-            "reportEventId": "aabbcc",
-            "reporterPubkey": "ddeeff",
-            "targetKind": "message",
-            "target": "112233",
-            "channelId": 7,
-            "reportType": "spam",
-            "note": null,
-            "status": "open",
-            "resolvedBy": null,
-            "resolvedAt": null,
-            "actionId": null,
-            "createdAt": "2024-01-01T00:00:00Z"
-        }]"#;
-    assert!(
-        !looks_like_admin_list("application/json", body.as_bytes()),
-        "full-shape element with channelId: 7 (not a UUID) must not classify as admin list"
-    );
+fn parse_probe_rejects_wrong_typed_field() {
+    // `canAct` as a string, not a bool.
+    let body = r#"{"status":"ok","authMode":"nip98","role":"operator","source":"config","canAct":"yes","canStaff":true}"#;
+    assert!(parse_probe("application/json", body.as_bytes()).is_none());
 }
 
 #[test]
-fn looks_like_admin_list_rejects_garbage_fixture() {
-    // Pinned fixture from the spec: [{"id":null}, 7, "garbage"] must be rejected.
-    assert!(!looks_like_admin_list(
-        "application/json",
-        b"[{\"id\":null}, 7, \"garbage\"]"
-    ));
-}
-
-#[test]
-fn looks_like_admin_list_rejects_primitive_array() {
-    assert!(!looks_like_admin_list("application/json", b"[1]"));
-    assert!(!looks_like_admin_list(
-        "application/json",
-        b"[\"unrelated\"]"
-    ));
-    assert!(!looks_like_admin_list(
-        "application/json",
-        b"[{\"notId\":true}]"
-    ));
-}
-
-#[test]
-fn looks_like_admin_list_rejects_non_json_content_type() {
-    assert!(!looks_like_admin_list("text/html", b"[]"));
-    assert!(!looks_like_admin_list("", b"[]"));
-    assert!(!looks_like_admin_list("text/plain", b"[]"));
-}
-
-#[test]
-fn looks_like_admin_list_rejects_non_array() {
-    assert!(!looks_like_admin_list("application/json", b"{}"));
-    assert!(!looks_like_admin_list("application/json", b"\"string\""));
-    assert!(!looks_like_admin_list("application/json", b"null"));
-    assert!(!looks_like_admin_list(
-        "application/json",
-        b"<html>captive portal</html>"
-    ));
-    assert!(!looks_like_admin_list("application/json", b"not json"));
+fn parse_probe_rejects_non_object() {
+    assert!(parse_probe("application/json", b"[]").is_none());
+    assert!(parse_probe("application/json", b"\"string\"").is_none());
+    assert!(parse_probe("application/json", b"not json").is_none());
 }
 
 // ── Storage core through production code ─────────────────────────────────
@@ -570,29 +483,31 @@ async fn probe_html_200_classified_as_intercepted() {
 
 #[tokio::test]
 async fn probe_json_200_not_classified_as_intercepted() {
-    let resp = fake_response(200, "Content-Type: application/json\r\n", "[]").await;
+    let resp = fake_response(
+        200,
+        "Content-Type: application/json\r\n",
+        r#"{"status":"ok","authMode":"disabled","role":null,"source":null,"canAct":false,"canStaff":false}"#,
+    )
+    .await;
     assert!(!is_probe_response_intercepted(&resp));
 }
 
 #[tokio::test]
-async fn probe_json_200_with_valid_report_looks_like_admin_list() {
-    let body = format!(
-        "[{}]",
-        valid_admin_report_json("00000000-0000-0000-0000-000000000001")
-    );
+async fn probe_json_200_with_valid_probe_parses() {
+    let body = probe_json("nip98", r#""operator""#, r#""config""#, true, true);
     let resp = fake_response(200, "Content-Type: application/json\r\n", &body).await;
     assert!(!is_probe_response_intercepted(&resp));
     let ct = response_content_type(&resp);
-    let bytes = read_bounded(resp, SUCCESS_JSON_CAP).await.unwrap();
-    assert!(looks_like_admin_list(&ct, &bytes));
+    let bytes = read_bounded(resp, PROBE_JSON_CAP).await.unwrap();
+    assert!(parse_probe(&ct, &bytes).is_some());
 }
 
 #[tokio::test]
-async fn probe_json_200_bare_array_of_garbage_not_admin_api() {
+async fn probe_json_200_bare_garbage_not_admin_api() {
     let resp = fake_response(200, "Content-Type: application/json\r\n", "[1,2,3]").await;
     let ct = response_content_type(&resp);
-    let bytes = read_bounded(resp, SUCCESS_JSON_CAP).await.unwrap();
-    assert!(!looks_like_admin_list(&ct, &bytes));
+    let bytes = read_bounded(resp, PROBE_JSON_CAP).await.unwrap();
+    assert!(parse_probe(&ct, &bytes).is_none());
 }
 
 // ── admin_probe_inner end-to-end state machine ────────────────────────────
@@ -632,8 +547,15 @@ async fn probe_inner_malformed_json_200_is_not_admin_api() {
 }
 
 #[tokio::test]
-async fn probe_inner_json_empty_array_200_is_disabled() {
-    let addr = serve_sequence(vec![("200 OK", "Content-Type: application/json\r\n", "[]")]).await;
+async fn probe_inner_disabled_probe_200_is_disabled() {
+    let body = probe_json("disabled", "null", "null", false, false);
+    let body_static: &'static str = Box::leak(body.into_boxed_str());
+    let addr = serve_sequence(vec![(
+        "200 OK",
+        "Content-Type: application/json\r\n",
+        body_static,
+    )])
+    .await;
     let result = admin_probe_inner(
         &format!("http://{addr}"),
         None::<fn(&str) -> Result<String, String>>,
@@ -644,8 +566,30 @@ async fn probe_inner_json_empty_array_200_is_disabled() {
 }
 
 #[tokio::test]
-async fn probe_inner_bare_array_of_garbage_is_not_admin_api() {
-    // Non-empty arrays without valid AdminReport elements must not classify as admin API.
+async fn probe_inner_nip98_authmode_200_without_auth_is_not_admin_api() {
+    // A relay must 401 an unauthenticated caller in nip98/token mode. A 200
+    // carrying `authMode: "nip98"` (no 401 challenge) is a contract violation
+    // and must not be classified as Disabled.
+    let body = probe_json("nip98", r#""operator""#, r#""config""#, true, true);
+    let body_static: &'static str = Box::leak(body.into_boxed_str());
+    let addr = serve_sequence(vec![(
+        "200 OK",
+        "Content-Type: application/json\r\n",
+        body_static,
+    )])
+    .await;
+    let result = admin_probe_inner(
+        &format!("http://{addr}"),
+        None::<fn(&str) -> Result<String, String>>,
+    )
+    .await
+    .unwrap();
+    assert!(matches!(result, AdminProbeResult::NotAdminApi));
+}
+
+#[tokio::test]
+async fn probe_inner_bare_garbage_200_is_not_admin_api() {
+    // A JSON body that isn't a probe envelope must not classify as admin API.
     let addr = serve_sequence(vec![(
         "200 OK",
         "Content-Type: application/json\r\n",
@@ -659,27 +603,6 @@ async fn probe_inner_bare_array_of_garbage_is_not_admin_api() {
     .await
     .unwrap();
     assert!(matches!(result, AdminProbeResult::NotAdminApi));
-}
-
-#[tokio::test]
-async fn probe_inner_garbage_fixture_id_null_and_primitives_is_not_admin_api() {
-    // Pinned fixture from the spec: must be rejected.
-    let addr = serve_sequence(vec![(
-        "200 OK",
-        "Content-Type: application/json\r\n",
-        "[{\"id\":null}, 7, \"garbage\"]",
-    )])
-    .await;
-    let result = admin_probe_inner(
-        &format!("http://{addr}"),
-        None::<fn(&str) -> Result<String, String>>,
-    )
-    .await
-    .unwrap();
-    assert!(
-        matches!(result, AdminProbeResult::NotAdminApi),
-        "garbage fixture must be NotAdminApi, got {result:?}"
-    );
 }
 
 #[tokio::test]
@@ -712,10 +635,7 @@ async fn probe_inner_nip98_challenge_then_json_200_is_authorized_and_asserts_aut
     let expected_token = "Nostr dGVzdA==".to_string();
     let expected_token_for_sign = expected_token.clone();
 
-    let valid_body = format!(
-        "[{}]",
-        valid_admin_report_json("00000000-0000-0000-0000-000000000003")
-    );
+    let valid_body = probe_json("nip98", r#""operator""#, r#""config""#, true, true);
     let valid_body_static: &'static str = Box::leak(valid_body.into_boxed_str());
 
     // serve_gated_nip98: slot 0 always challenges; slot 1 checks the Authorization
@@ -727,9 +647,15 @@ async fn probe_inner_nip98_challenge_then_json_200_is_authorized_and_asserts_aut
         .await
         .unwrap();
 
+    // The relay-resolved role/source must be carried through to the UI so the
+    // Staffing tab renders for an operator.
     assert!(
-        matches!(result, AdminProbeResult::Nip98Authorized { .. }),
-        "expected Nip98Authorized, got {result:?}"
+        matches!(
+            &result,
+            AdminProbeResult::Nip98Authorized { role, source }
+                if role.as_deref() == Some("operator") && source.as_deref() == Some("config")
+        ),
+        "expected Nip98Authorized operator/config, got {result:?}"
     );
 
     let records = records.lock().unwrap();
@@ -742,8 +668,8 @@ async fn probe_inner_nip98_challenge_then_json_200_is_authorized_and_asserts_aut
         records[0].method
     );
     assert!(
-        records[0].path.contains("/api/admin/v1/reports"),
-        "slot-0 must target the reports endpoint; got {:?}",
+        records[0].path.contains("/api/admin/v1/probe"),
+        "slot-0 must target the probe endpoint; got {:?}",
         records[0].path
     );
     assert!(
@@ -761,8 +687,8 @@ async fn probe_inner_nip98_challenge_then_json_200_is_authorized_and_asserts_aut
         records[1].method
     );
     assert!(
-        records[1].path.contains("/api/admin/v1/reports"),
-        "slot-1 must target the reports endpoint; got {:?}",
+        records[1].path.contains("/api/admin/v1/probe"),
+        "slot-1 must target the probe endpoint; got {:?}",
         records[1].path
     );
     assert_eq!(

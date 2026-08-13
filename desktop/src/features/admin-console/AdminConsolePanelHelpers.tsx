@@ -63,6 +63,31 @@ export function useAsyncLoad<T>(
   return state;
 }
 
+// ── Admin error message parsing ───────────────────────────────────────────
+
+/**
+ * Extract a human-readable message from an admin mutation error.
+ *
+ * Native admin commands reject with `admin API error: {json}` where the JSON
+ * is the relay's error envelope (`{"error":{"code","message","requestId"}}`).
+ * This strips the prefix and returns the envelope's `message` field so the UI
+ * can surface "action kick requires the report to have an associated channel"
+ * instead of the raw JSON. Falls back to the raw string when the payload is
+ * not the expected shape (network errors, non-JSON bodies).
+ */
+export function adminErrorMessage(e: unknown): string {
+  const raw = e instanceof Error ? e.message : String(e);
+  const jsonStart = raw.indexOf("{");
+  if (jsonStart === -1) return raw;
+  try {
+    const parsed = JSON.parse(raw.slice(jsonStart));
+    const message = parsed?.error?.message;
+    return typeof message === "string" && message.length > 0 ? message : raw;
+  } catch {
+    return raw;
+  }
+}
+
 // ── Shared UI helpers ─────────────────────────────────────────────────────
 
 export function LoadingSpinner() {

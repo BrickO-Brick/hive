@@ -46,11 +46,15 @@ export function FeedbackTab({
   generation: number;
 }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // List refresh fence: bumped when a feedback status change completes in the
+  // detail view, so returning to the list shows fresh status without a tab
+  // switch.
+  const [listGen, setListGen] = useState(0);
 
   const listState: AsyncState<AdminFeedbackSummaryDto[]> = useAsyncLoad(
     () => listAdminFeedback(origin),
     [origin, pubkey],
-    generation,
+    generation + listGen,
   );
 
   if (selectedId) {
@@ -61,6 +65,7 @@ export function FeedbackTab({
         origin={origin}
         pubkey={pubkey}
         generation={generation}
+        onMutated={() => setListGen((g) => g + 1)}
       />
     );
   }
@@ -383,12 +388,15 @@ export function FeedbackDetail({
   generation,
   feedbackId,
   onBack,
+  onMutated,
 }: {
   origin: string;
   pubkey: string;
   generation: number;
   feedbackId: string;
   onBack: () => void;
+  /** Called after a status change completes so the parent list can refetch. */
+  onMutated: () => void;
 }) {
   // Local status state: initialized from server, updated on PATCH.
   const [localStatus, setLocalStatus] = useState<AdminFeedbackStatus | null>(
@@ -439,7 +447,10 @@ export function FeedbackDetail({
             feedbackId={feedbackId}
             currentStatus={localStatus}
             origin={origin}
-            onStatusChanged={setLocalStatus}
+            onStatusChanged={(newStatus) => {
+              setLocalStatus(newStatus);
+              onMutated();
+            }}
           />
           {attachments.length > 0 && (
             <div className="space-y-3">
