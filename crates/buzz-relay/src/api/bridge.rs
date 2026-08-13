@@ -286,6 +286,19 @@ fn extract_depth_limit(raw: &Value) -> Option<u32> {
         .and_then(|n| u32::try_from(n).ok())
 }
 
+/// Optional thread traversal order. Unknown or absent values preserve the
+/// historical oldest-first behavior.
+fn extract_thread_order(raw: &Value) -> buzz_db::thread::ThreadOrder {
+    match raw
+        .get("thread_order")
+        .or_else(|| raw.get("threadOrder"))
+        .and_then(Value::as_str)
+    {
+        Some("newest") => buzz_db::thread::ThreadOrder::Newest,
+        _ => buzz_db::thread::ThreadOrder::Oldest,
+    }
+}
+
 /// Extract a thread pagination cursor from the raw filter JSON.
 ///
 /// The desktop pages `get_thread_replies` forward with a keyset cursor derived
@@ -1179,21 +1192,24 @@ async fn query_events_authed(
         let limit = filter
             .limit
             .unwrap_or(100)
-            .min(BRIDGE_THREAD_MAX_LIMIT as usize) as u32;
+            .min(BRIDGE_THREAD_MAX_LIMIT as usize)
+            .max(1) as u32;
         let thread_cursor = extract_thread_cursor(raw);
-        let thread_replies = state
+        let thread_order = extract_thread_order(raw);
+        let thread_page = state
             .db
-            .get_thread_replies(
+            .get_thread_replies_ordered(
                 tenant.community(),
                 &root_bytes,
                 Some(depth),
                 limit,
                 thread_cursor.as_deref(),
+                thread_order,
             )
             .await
             .map_err(|e| internal_error(&format!("thread query error: {e}")))?;
 
-        for reply in thread_replies {
+        for reply in thread_page.replies {
             let se = reply.stored_event;
             if !event_in_accessible_channel(&se, &accessible_channels) {
                 continue;
@@ -1208,6 +1224,45 @@ async fn query_events_authed(
                 events.push(v);
             }
         }
+
+        // Relay-signed, query-time pagination authority. The cursor describes
+        // the raw scan position, not the last event that happened to survive
+        // reconstruction or authorization filtering.
+        let next_cursor = thread_page.next_cursor.as_ref().map(|(ts, id)| {
+            serde_json::json!({
+                "created_at": ts.timestamp(),
+                "id": hex::encode(id),
+            })
+        });
+        let content = serde_json::json!({
+            "has_more": thread_page.has_more,
+            "next_cursor": next_cursor,
+        });
+        let order = match thread_order {
+            buzz_db::thread::ThreadOrder::Oldest => "oldest",
+            buzz_db::thread::ThreadOrder::Newest => "newest",
+        };
+        let request_cursor = thread_cursor
+            .as_deref()
+            .map(hex::encode)
+            .unwrap_or_else(|| "head".to_owned());
+        let tags = vec![
+            nostr::Tag::parse(["e", root_hex])
+                .map_err(|e| internal_error(&format!("thread bounds e tag: {e}")))?,
+            nostr::Tag::parse(["d", &format!("{root_hex}:{order}:{request_cursor}")])
+                .map_err(|e| internal_error(&format!("thread bounds d tag: {e}")))?,
+        ];
+        let overlay = nostr::EventBuilder::new(
+            nostr::Kind::Custom(buzz_core::kind::KIND_THREAD_BOUNDS as u16),
+            content.to_string(),
+        )
+        .tags(tags)
+        .sign_with_keys(&state.relay_keypair)
+        .map_err(|e| internal_error(&format!("thread bounds sign: {e}")))?;
+        events.push(
+            serde_json::to_value(&overlay)
+                .map_err(|e| internal_error(&format!("thread bounds serialize: {e}")))?,
+        );
         handled.insert(idx);
     }
 
@@ -3070,6 +3125,28 @@ mod tests {
     fn extract_depth_limit_valid() {
         let raw = serde_json::json!({ "depth_limit": 3 });
         assert_eq!(extract_depth_limit(&raw), Some(3));
+    }
+
+    #[test]
+    fn extract_thread_order_defaults_oldest_and_accepts_both_field_styles() {
+        use buzz_db::thread::ThreadOrder;
+
+        assert_eq!(
+            extract_thread_order(&serde_json::json!({})),
+            ThreadOrder::Oldest
+        );
+        assert_eq!(
+            extract_thread_order(&serde_json::json!({ "thread_order": "newest" })),
+            ThreadOrder::Newest
+        );
+        assert_eq!(
+            extract_thread_order(&serde_json::json!({ "threadOrder": "newest" })),
+            ThreadOrder::Newest
+        );
+        assert_eq!(
+            extract_thread_order(&serde_json::json!({ "thread_order": "future" })),
+            ThreadOrder::Oldest
+        );
     }
 
     #[test]

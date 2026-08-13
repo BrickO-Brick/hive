@@ -2910,7 +2910,45 @@ impl Db {
         depth_limit: Option<u32>,
         limit: u32,
         cursor: Option<&[u8]>,
-    ) -> Result<Vec<thread::ThreadReply>> {
+    ) -> Result<thread::ThreadPage> {
+        self.get_thread_replies_ordered(
+            community_id,
+            root_event_id,
+            depth_limit,
+            limit,
+            cursor,
+            thread::ThreadOrder::Oldest,
+        )
+        .await
+    }
+
+    /// Fetch replies under a root event in the requested traversal order.
+    pub async fn get_thread_replies_ordered(
+        &self,
+        community_id: CommunityId,
+        root_event_id: &[u8],
+        depth_limit: Option<u32>,
+        limit: u32,
+        cursor: Option<&[u8]>,
+        order: thread::ThreadOrder,
+    ) -> Result<thread::ThreadPage> {
+        if order == thread::ThreadOrder::Newest {
+            // Descending pages can contain rows newer than their tail cursor;
+            // the ascending fence proof cannot establish that shape safely.
+            // Keep newest-first traversal writer-authoritative.
+            Self::record_route("thread_newest", "writer", "predicate");
+            return thread::get_thread_replies_ordered(
+                &self.pool,
+                community_id,
+                root_event_id,
+                depth_limit,
+                limit,
+                cursor,
+                order,
+            )
+            .await;
+        }
+
         let (path, predicate): (&'static str, RoutePredicate) = match cursor {
             Some(_) => (
                 "thread_cursor",
@@ -2923,29 +2961,34 @@ impl Db {
         if let RouteDecision::Replica(mut tx, entry, reason) =
             self.route_read(path, predicate).await
         {
-            match thread::get_thread_replies_on(
+            match thread::get_thread_replies_ordered_on(
                 &mut tx,
                 community_id,
                 root_event_id,
                 depth_limit,
                 limit,
                 cursor,
+                order,
             )
             .await
             {
-                Ok(replies) => {
+                Ok(page) => {
                     if cursor.is_none() {
                         // Predicate A: bounded-stale head page, served as proved.
                         Self::record_route(path, "replica", reason);
-                        return Ok(replies);
+                        return Ok(page);
                     }
-                    let full = replies.len() >= limit as usize;
-                    let below_fence = replies
-                        .last()
-                        .is_some_and(|tail| tail.created_at <= entry.fence_wall);
-                    if full && below_fence {
+                    // Only a non-terminal page whose raw scan cursor is at or
+                    // below the proved wall can be trusted from a replica. A
+                    // delivered-event tail is not authoritative: corrupt rows
+                    // may make it empty or older than the actual scan position.
+                    let below_fence = page
+                        .next_cursor
+                        .as_ref()
+                        .is_some_and(|(ts, _)| *ts <= entry.fence_wall);
+                    if page.has_more && below_fence {
                         Self::record_route(path, "replica", reason);
-                        return Ok(replies);
+                        return Ok(page);
                     }
                     // Candidate terminal page, or page reaching above the
                     // proved wall — verify against the writer. Recorded as
@@ -2965,13 +3008,14 @@ impl Db {
                 }
             }
         }
-        thread::get_thread_replies(
+        thread::get_thread_replies_ordered(
             &self.pool,
             community_id,
             root_event_id,
             depth_limit,
             limit,
             cursor,
+            order,
         )
         .await
     }

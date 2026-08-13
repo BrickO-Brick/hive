@@ -15,6 +15,46 @@ use crate::{error::Result, event::row_to_stored_event};
 
 // -- Structs ------------------------------------------------------------------
 
+/// Traversal order for a thread page.
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
+pub enum ThreadOrder {
+    /// Preserve the historical oldest-to-newest traversal.
+    #[default]
+    Oldest,
+    /// Traverse newest-to-oldest so recent replies can be presented first.
+    Newest,
+}
+
+/// One authoritative page of thread replies.
+#[derive(Debug, Clone)]
+pub struct ThreadPage {
+    /// Reconstructable replies from the scanned raw rows.
+    pub replies: Vec<ThreadReply>,
+    /// Whether another raw row exists beyond this page.
+    pub has_more: bool,
+    /// Composite scan cursor `(created_at, event_id)` of the last raw row
+    /// retained for this page. Captured before reconstruction, so corrupt rows
+    /// cannot stall or prematurely terminate traversal. `Some` iff `has_more`.
+    pub next_cursor: Option<(DateTime<Utc>, Vec<u8>)>,
+}
+
+impl std::ops::Deref for ThreadPage {
+    type Target = [ThreadReply];
+
+    fn deref(&self) -> &Self::Target {
+        &self.replies
+    }
+}
+
+impl IntoIterator for ThreadPage {
+    type Item = ThreadReply;
+    type IntoIter = std::vec::IntoIter<ThreadReply>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.replies.into_iter()
+    }
+}
+
 /// A single reply within a thread, joined with event content.
 #[derive(Debug, Clone)]
 pub struct ThreadReply {
@@ -349,15 +389,38 @@ pub async fn get_thread_replies(
     depth_limit: Option<u32>,
     limit: u32,
     cursor: Option<&[u8]>,
-) -> Result<Vec<ThreadReply>> {
+) -> Result<ThreadPage> {
+    get_thread_replies_ordered(
+        pool,
+        community_id,
+        root_event_id,
+        depth_limit,
+        limit,
+        cursor,
+        ThreadOrder::Oldest,
+    )
+    .await
+}
+
+/// Fetch a thread page in the requested traversal order.
+pub async fn get_thread_replies_ordered(
+    pool: &PgPool,
+    community_id: CommunityId,
+    root_event_id: &[u8],
+    depth_limit: Option<u32>,
+    limit: u32,
+    cursor: Option<&[u8]>,
+    order: ThreadOrder,
+) -> Result<ThreadPage> {
     let mut conn = pool.acquire().await?;
-    get_thread_replies_on(
+    get_thread_replies_ordered_on(
         &mut conn,
         community_id,
         root_event_id,
         depth_limit,
         limit,
         cursor,
+        order,
     )
     .await
 }
@@ -366,14 +429,15 @@ pub async fn get_thread_replies(
 /// runs the page on the exact reader connection whose heartbeat observation
 /// proved coverage (the proof is connection-local; a different pooled
 /// session may sit at a different replay position).
-pub(crate) async fn get_thread_replies_on(
+pub(crate) async fn get_thread_replies_ordered_on(
     conn: &mut sqlx::PgConnection,
     community_id: CommunityId,
     root_event_id: &[u8],
     depth_limit: Option<u32>,
     limit: u32,
     cursor: Option<&[u8]>,
-) -> Result<Vec<ThreadReply>> {
+    order: ThreadOrder,
+) -> Result<ThreadPage> {
     // Decode cursor bytes -> keyset (timestamp, optional event_id) for the
     // WHERE condition. Layout: 8-byte BE i64 seconds, then the raw event_id.
     // An 8-byte-only cursor is legacy timestamp-only paging (no tiebreak).
@@ -430,25 +494,37 @@ pub(crate) async fn get_thread_replies_on(
     }
     match &cursor_key {
         Some((_, Some(_))) => {
-            // Composite keyset: strict row comparison with an event_id tiebreak
-            // so same-second replies paginate without gaps or duplicates.
+            // Composite keyset with an event_id tiebreak so same-second replies
+            // paginate without gaps or duplicates in either direction.
             let ts_idx = param_idx;
             let id_idx = param_idx + 1;
+            let op = match order {
+                ThreadOrder::Oldest => ">",
+                ThreadOrder::Newest => "<",
+            };
             sql.push_str(&format!(
-                " AND (tm.event_created_at, tm.event_id) > (${ts_idx}, ${id_idx})"
+                " AND (tm.event_created_at, tm.event_id) {op} (${ts_idx}, ${id_idx})"
             ));
             param_idx += 2;
         }
         Some((_, None)) => {
             // Legacy timestamp-only cursor (no tiebreak).
-            sql.push_str(&format!(" AND tm.event_created_at > ${param_idx}"));
+            let op = match order {
+                ThreadOrder::Oldest => ">",
+                ThreadOrder::Newest => "<",
+            };
+            sql.push_str(&format!(" AND tm.event_created_at {op} ${param_idx}"));
             param_idx += 1;
         }
         None => {}
     }
 
+    let direction = match order {
+        ThreadOrder::Oldest => "ASC",
+        ThreadOrder::Newest => "DESC",
+    };
     sql.push_str(&format!(
-        " ORDER BY tm.event_created_at ASC, tm.event_id ASC LIMIT ${param_idx}"
+        " ORDER BY tm.event_created_at {direction}, tm.event_id {direction} LIMIT ${param_idx}"
     ));
 
     let mut q = sqlx::query(sqlx::AssertSqlSafe(sql))
@@ -467,9 +543,23 @@ pub(crate) async fn get_thread_replies_on(
         }
         None => {}
     }
-    q = q.bind(limit as i32);
+    // One extra raw row is the server's authoritative evidence of continuation.
+    q = q.bind(limit as i64 + 1);
 
-    let rows = q.fetch_all(&mut *conn).await?;
+    let mut rows = q.fetch_all(&mut *conn).await?;
+    let has_more = rows.len() > limit as usize;
+    rows.truncate(limit as usize);
+    let next_cursor = if has_more {
+        match rows.last() {
+            Some(row) => Some((
+                row.try_get::<DateTime<Utc>, _>("event_created_at")?,
+                row.try_get::<Vec<u8>, _>("event_id")?,
+            )),
+            None => None,
+        }
+    } else {
+        None
+    };
 
     let mut replies = Vec::with_capacity(rows.len());
     for row in rows {
@@ -506,7 +596,11 @@ pub(crate) async fn get_thread_replies_on(
         });
     }
 
-    Ok(replies)
+    Ok(ThreadPage {
+        replies,
+        has_more,
+        next_cursor,
+    })
 }
 
 /// Fetch aggregated thread stats for a single event, plus up to 10 participant pubkeys.
@@ -1215,6 +1309,37 @@ mod tests {
         let mut expected_sorted = expected_ids.clone();
         expected_sorted.sort();
         assert_eq!(unique, expected_sorted, "paged set != inserted tied set");
+
+        // The optional reverse traversal must converge over the same tied set
+        // while issuing cursors from the last raw row of each descending page.
+        let mut newest_ids = Vec::new();
+        let mut newest_cursor: Option<Vec<u8>> = None;
+        loop {
+            let page = get_thread_replies_ordered(
+                &pool,
+                community,
+                root.id.as_bytes(),
+                Some(10),
+                page_limit,
+                newest_cursor.as_deref(),
+                ThreadOrder::Newest,
+            )
+            .await
+            .expect("fetch newest page");
+            newest_ids.extend(page.replies.iter().map(|reply| reply.event_id.clone()));
+            if !page.has_more {
+                assert!(page.next_cursor.is_none());
+                break;
+            }
+            let (ts, id) = page.next_cursor.expect("has_more implies cursor");
+            let mut next = ts.timestamp().to_be_bytes().to_vec();
+            next.extend_from_slice(&id);
+            newest_cursor = Some(next);
+        }
+        let mut newest_unique = newest_ids;
+        newest_unique.sort();
+        newest_unique.dedup();
+        assert_eq!(newest_unique, expected_sorted);
     }
 
     /// Nested replies (depth >= 2) must be reachable in a subtree read. Every
@@ -1417,7 +1542,15 @@ mod tests {
             .expect("insert root event");
 
         // Two replies under the same root: one stays valid, one we corrupt.
-        let good = make_stream_event(&author, "good");
+        // Pin ordering so the corrupt row is the entire first raw page and the
+        // valid row is beyond it. This exercises zero delivered events with
+        // `has_more = true`, not merely skip-and-continue within one page.
+        let bad_secs = root.created_at.as_secs() + 1;
+        let good_secs = bad_secs + 1;
+        let good = EventBuilder::new(Kind::Custom(9), "good")
+            .custom_created_at(nostr::Timestamp::from(good_secs))
+            .sign_with_keys(&author)
+            .expect("sign good reply");
         let good_id = good.id.to_hex();
         let good_created_at = event_created_at(&good);
         insert_event_with_thread_metadata(
@@ -1440,7 +1573,10 @@ mod tests {
         .await
         .expect("insert good reply");
 
-        let bad = make_stream_event(&author, "bad");
+        let bad = EventBuilder::new(Kind::Custom(9), "bad")
+            .custom_created_at(nostr::Timestamp::from(bad_secs))
+            .sign_with_keys(&author)
+            .expect("sign bad reply");
         let bad_created_at = event_created_at(&bad);
         insert_event_with_thread_metadata(
             &pool,
@@ -1474,15 +1610,40 @@ mod tests {
             .rows_affected();
         assert_eq!(rows_changed, 1, "expected to corrupt exactly one row");
 
-        let replies = get_thread_replies(&pool, community, root.id.as_bytes(), Some(10), 10, None)
+        let first = get_thread_replies(&pool, community, root.id.as_bytes(), Some(10), 1, None)
             .await
-            .expect("fetch thread replies must succeed despite a corrupt row");
+            .expect("fetch corrupt first page");
+        assert!(
+            first.replies.is_empty(),
+            "corrupt raw row must not be delivered"
+        );
+        assert!(
+            first.has_more,
+            "the valid row beyond the corrupt page remains"
+        );
+        let (cursor_ts, cursor_id) = first
+            .next_cursor
+            .expect("has_more page must expose its raw scan cursor");
+        assert_eq!(cursor_ts, bad_created_at);
+        assert_eq!(cursor_id, bad.id.as_bytes());
 
-        // The corrupt reply is skipped; the valid one survives. The whole
-        // query does NOT 500 on a single unreconstructable row.
-        assert_eq!(replies.len(), 1);
-        assert_eq!(replies[0].stored_event.event.id.to_hex(), good_id);
-        assert_eq!(replies[0].stored_event.event.content, "good");
+        let mut cursor = cursor_ts.timestamp().to_be_bytes().to_vec();
+        cursor.extend_from_slice(&cursor_id);
+        let second = get_thread_replies(
+            &pool,
+            community,
+            root.id.as_bytes(),
+            Some(10),
+            1,
+            Some(&cursor),
+        )
+        .await
+        .expect("fetch valid second page");
+        assert!(!second.has_more);
+        assert!(second.next_cursor.is_none());
+        assert_eq!(second.replies.len(), 1);
+        assert_eq!(second.replies[0].stored_event.event.id.to_hex(), good_id);
+        assert_eq!(second.replies[0].stored_event.event.content, "good");
     }
 
     /// Insert one top-level event (root metadata, broadcast) into a channel.
