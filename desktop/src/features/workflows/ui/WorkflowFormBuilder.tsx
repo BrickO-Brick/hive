@@ -1,4 +1,12 @@
-import { Check, ChevronDown, Plus, Trash2, X, Zap } from "lucide-react";
+import {
+  Check,
+  ChevronDown,
+  Plus,
+  Trash2,
+  TriangleAlert,
+  X,
+  Zap,
+} from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import * as React from "react";
 import { createPortal } from "react-dom";
@@ -25,6 +33,7 @@ import {
   ACTION_TYPES,
   TRIGGER_LABELS,
   TRIGGER_TYPES,
+  UNSUPPORTED_ACTION_TYPES,
   formStateToYaml,
   nextStepId,
   yamlToFormState,
@@ -135,6 +144,7 @@ function InspectorTypeMenu<T extends string>({
   labels,
   onChange,
   options,
+  warningOptions = [],
   value,
 }: {
   ariaLabel: string;
@@ -142,6 +152,7 @@ function InspectorTypeMenu<T extends string>({
   labels: Record<T, string>;
   onChange: (value: T) => void;
   options: readonly T[];
+  warningOptions?: readonly T[];
   value: T;
 }) {
   return (
@@ -167,11 +178,22 @@ function InspectorTypeMenu<T extends string>({
                 option === value ? "opacity-100" : "opacity-0",
               )}
             />
-            {labels[option]}
+            <span>{labels[option]}</span>
+            {warningOptions.includes(option) ? <UnsupportedActionIcon /> : null}
           </DropdownMenuItem>
         ))}
       </DropdownMenuContent>
     </DropdownMenu>
+  );
+}
+
+function UnsupportedActionIcon() {
+  return (
+    <TriangleAlert
+      aria-label="Not supported yet"
+      className="ml-auto h-4 w-4 shrink-0 text-amber-500"
+      role="img"
+    />
   );
 }
 
@@ -287,7 +309,10 @@ function WorkflowNode({
                 key={action}
                 onSelect={() => onAddAfter(action)}
               >
-                {ACTION_LABELS[action]}
+                <span>{ACTION_LABELS[action]}</span>
+                {UNSUPPORTED_ACTION_TYPES.includes(action) ? (
+                  <UnsupportedActionIcon />
+                ) : null}
               </DropdownMenuItem>
             ))}
           </DropdownMenuContent>
@@ -579,6 +604,7 @@ export function WorkflowFormBuilder({
                                 updateStep(selectedNode.index, next);
                               }}
                               options={ACTION_TYPES}
+                              warningOptions={UNSUPPORTED_ACTION_TYPES}
                               value={selectedStep.action}
                             />
                           ) : null}

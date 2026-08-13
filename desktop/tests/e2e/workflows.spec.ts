@@ -30,6 +30,41 @@ async function selectFirstChannel(dialog: import("@playwright/test").Locator) {
     .click();
 }
 
+async function expectUnsupportedActionWarnings(
+  menu: import("@playwright/test").Locator,
+) {
+  await expect(menu.getByRole("menuitem")).toHaveText([
+    "Delay",
+    "Send Message",
+    "Call Webhook",
+    "Send DM",
+    "Request Approval",
+    "Add Reaction",
+    "Set Channel Topic",
+  ]);
+
+  for (const label of [
+    "Send DM",
+    "Request Approval",
+    "Add Reaction",
+    "Set Channel Topic",
+  ]) {
+    await expect(
+      menu
+        .getByRole("menuitem", { name: label })
+        .getByRole("img", { name: "Not supported yet" }),
+    ).toBeVisible();
+  }
+
+  for (const label of ["Delay", "Send Message", "Call Webhook"]) {
+    await expect(
+      menu
+        .getByRole("menuitem", { name: label, exact: true })
+        .getByRole("img", { name: "Not supported yet" }),
+    ).toHaveCount(0);
+  }
+}
+
 async function createWorkflow(
   page: import("@playwright/test").Page,
   name: string,
@@ -300,12 +335,16 @@ test("chooses an add-reaction step emoji with the app emoji picker", async ({
   await page.getByRole("button", { name: "Create Workflow" }).click();
   const dialog = page.getByRole("dialog");
   await dialog.getByRole("button", { name: "Add step" }).click();
+  await expectUnsupportedActionWarnings(page.getByRole("menu"));
   await page.getByRole("menuitem", { name: "Add Reaction" }).click();
 
   const inspector = dialog.getByTestId("workflow-node-inspector");
   await expect(inspector).toContainText(
     "Backend note: `add_reaction` is not executed yet, so runs fail at this step.",
   );
+  await inspector.getByRole("button", { name: "Action", exact: true }).click();
+  await expectUnsupportedActionWarnings(page.getByRole("menu"));
+  await page.keyboard.press("Escape");
   const stepEmoji = inspector.getByRole("button", {
     name: "Choose reaction emoji",
   });

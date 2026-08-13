@@ -12,13 +12,20 @@ export type TriggerType = (typeof TRIGGER_TYPES)[number];
 export const ACTION_TYPES = [
   "delay",
   "send_message",
-  "send_dm",
   "call_webhook",
+  "send_dm",
   "request_approval",
   "add_reaction",
   "set_channel_topic",
 ] as const;
 export type ActionType = (typeof ACTION_TYPES)[number];
+
+export const UNSUPPORTED_ACTION_TYPES: readonly ActionType[] = [
+  "send_dm",
+  "request_approval",
+  "add_reaction",
+  "set_channel_topic",
+];
 
 export type TriggerConfig = {
   on: TriggerType;
