@@ -87,6 +87,9 @@ pub struct FlushBatch {
     /// [`Steer`](CancelReason::Steer) framing if a merge somehow lacks a reason
     /// (see [`MergeFraming::for_reason`]).
     pub cancel_reason: Option<CancelReason>,
+    /// Thread routing resolved while constructing an edit-triggered prompt.
+    /// Terminal failure notices must use the same visible routing authority.
+    pub failure_thread_tags: Option<ThreadTags>,
 }
 
 /// Per-channel event queue with per-channel in-flight enforcement.
@@ -360,6 +363,7 @@ impl EventQueue {
                             events: cancelled,
                             cancelled_events: vec![],
                             cancel_reason,
+                            failure_thread_tags: None,
                         });
                     }
                     None => return None,
@@ -429,6 +433,7 @@ impl EventQueue {
             events,
             cancelled_events,
             cancel_reason,
+            failure_thread_tags: None,
         })
     }
 
@@ -1699,6 +1704,22 @@ pub struct ResolvedEdit {
     pub target_thread_tags: ThreadTags,
 }
 
+impl ResolvedEdit {
+    /// Visible reply destination for notices tied to this edit. Threaded
+    /// originals retain their root/parent; a top-level original becomes both
+    /// so the notice replies to it rather than publishing at channel root.
+    pub fn reply_thread_tags(&self) -> ThreadTags {
+        if self.target_thread_tags.root_event_id.is_some() {
+            return self.target_thread_tags.clone();
+        }
+        ThreadTags {
+            root_event_id: Some(self.target_event_id.clone()),
+            parent_event_id: Some(self.target_event_id.clone()),
+            mentioned_pubkeys: self.target_thread_tags.mentioned_pubkeys.clone(),
+        }
+    }
+}
+
 /// Arguments for [`format_prompt`] beyond the required [`FlushBatch`].
 #[derive(Default)]
 pub struct FormatPromptArgs<'a> {
@@ -2325,6 +2346,7 @@ mod tests {
             }],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         };
 
         let prompt = format_prompt(&batch, &FormatPromptArgs::default()).join("\n\n");
@@ -2359,6 +2381,7 @@ mod tests {
                 received_at: Instant::now(),
             }],
             cancel_reason: reason,
+            failure_thread_tags: None,
         }
     }
 
@@ -2497,6 +2520,7 @@ mod tests {
                 received_at: Instant::now(),
             }],
             cancel_reason: Some(CancelReason::Steer),
+            failure_thread_tags: None,
         };
         let prompt = format_prompt(&batch, &FormatPromptArgs::default()).join("\n\n");
         assert!(prompt.contains("New messages — arrived while you were working — 2 events]"));
@@ -2547,6 +2571,7 @@ mod tests {
                 received_at: Instant::now(),
             }],
             cancel_reason: Some(CancelReason::Steer),
+            failure_thread_tags: None,
         };
 
         let prompt = format_prompt(&batch, &FormatPromptArgs::default()).join("\n\n");
@@ -2726,6 +2751,7 @@ mod tests {
             ],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         };
 
         let prompt = format_prompt(&batch, &FormatPromptArgs::default()).join("\n\n");
@@ -2754,6 +2780,7 @@ mod tests {
             }],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         };
 
         let prompt = format_prompt(&batch, &FormatPromptArgs::default()).join("\n\n");
@@ -2777,6 +2804,7 @@ mod tests {
             }],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         };
         let core = "[Agent Memory — core]\nbe helpful";
         let prompt = format_prompt(
@@ -2809,6 +2837,7 @@ mod tests {
             }],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         };
         let prompt = format_prompt(
             &batch,
@@ -2839,6 +2868,7 @@ mod tests {
             }],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         };
         let core = "[Agent Memory — core]\nbe helpful";
         let prompt = format_prompt(
@@ -2866,6 +2896,7 @@ mod tests {
             }],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         };
 
         // format_prompt no longer accepts or emits base_prompt/system_prompt.
@@ -2890,6 +2921,7 @@ mod tests {
             }],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         };
 
         let core = "[Agent Memory — core]\nremember this";
@@ -2948,6 +2980,7 @@ mod tests {
             }],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         };
         let canvas = "[Channel Canvas]\ncanvas content";
         let core = "[Agent Memory — core]\nremember this";
@@ -3000,6 +3033,7 @@ mod tests {
             }],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         };
 
         let prompt = format_prompt(
@@ -3038,6 +3072,7 @@ mod tests {
             }],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         };
 
         let ctx = ConversationContext::Thread {
@@ -3556,6 +3591,7 @@ mod tests {
             }],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         };
         let ci = PromptChannelInfo {
             name: "engineering".into(),
@@ -3588,6 +3624,7 @@ mod tests {
             }],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         };
         let ci = PromptChannelInfo {
             name: "DM".into(),
@@ -3627,6 +3664,7 @@ mod tests {
             }],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         };
 
         let prompt = format_prompt(&batch, &FormatPromptArgs::default()).join("\n\n");
@@ -3655,6 +3693,7 @@ mod tests {
             }],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         };
         let ctx = ConversationContext::Thread {
             messages: vec![
@@ -3701,6 +3740,7 @@ mod tests {
             }],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         };
         let ci = PromptChannelInfo {
             name: "DM".into(),
@@ -3752,6 +3792,7 @@ mod tests {
             }],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         };
         let ctx = ConversationContext::Thread {
             messages: vec![ContextMessage {
@@ -3960,6 +4001,7 @@ mod tests {
             }],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         };
         let ci = PromptChannelInfo {
             name: "DM".into(),
@@ -4027,6 +4069,7 @@ mod tests {
             }],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         };
 
         let trigger_only_prompt = format_prompt(&batch, &FormatPromptArgs::default()).join("\n\n");
@@ -4060,6 +4103,7 @@ mod tests {
             }],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         };
         let ci = PromptChannelInfo {
             name: "DM".into(),
@@ -4109,6 +4153,7 @@ mod tests {
             }],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         };
         let ci = PromptChannelInfo {
             name: "DM".into(),
@@ -4150,6 +4195,7 @@ mod tests {
             }],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         };
 
         let prompt = format_prompt(&batch, &FormatPromptArgs::default()).join("\n\n");
@@ -4174,6 +4220,7 @@ mod tests {
             }],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         };
 
         let prompt = format_prompt(&batch, &FormatPromptArgs::default()).join("\n\n");
@@ -4197,6 +4244,7 @@ mod tests {
             }],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         };
 
         let prompt = format_prompt(&batch, &FormatPromptArgs::default()).join("\n\n");
@@ -4625,6 +4673,7 @@ mod tests {
             }],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         };
 
         // No profile lookup → sender treated as human → human-facing thread
@@ -4667,6 +4716,7 @@ mod tests {
             }],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         };
         let ci = PromptChannelInfo {
             name: "DM".into(),
@@ -4702,6 +4752,7 @@ mod tests {
             }],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         };
 
         // Top-level human message (no lookup → human): the reply opens a new
@@ -4731,6 +4782,7 @@ mod tests {
             }],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         };
         let ci = PromptChannelInfo {
             name: "DM".into(),
@@ -4774,6 +4826,7 @@ mod tests {
             }],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         };
 
         // Human-facing (no lookup) deep reply: anchor to the thread ROOT to
@@ -4810,6 +4863,7 @@ mod tests {
             }],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         };
 
         let prompt = format_prompt(&batch, &FormatPromptArgs::default()).join("\n\n");
@@ -4852,6 +4906,7 @@ mod tests {
             ],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         };
 
         // Scope derives from the last (threaded) event; human-facing → anchor
@@ -4889,6 +4944,7 @@ mod tests {
             ],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         };
 
         // Last event is top-level and human-facing → opens a new thread
@@ -4915,6 +4971,7 @@ mod tests {
             }],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         }
     }
 
@@ -5194,6 +5251,8 @@ mod tests {
             ch,
             &event_id,
             0,
+            "expired-turn",
+            Some("replacement-turn"),
         ));
     }
 
@@ -5425,6 +5484,7 @@ mod tests {
             }],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         };
         let prompt = format_prompt(
             &batch,
@@ -5454,6 +5514,7 @@ mod tests {
             }],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         };
         let prompt = format_prompt(
             &batch,
@@ -5482,6 +5543,7 @@ mod tests {
             }],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         };
         let prompt = format_prompt(&batch, &FormatPromptArgs::default()).join("\n\n");
         assert!(
@@ -5713,6 +5775,7 @@ mod tests {
             }],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         }
     }
 
@@ -5854,6 +5917,8 @@ mod tests {
             ch,
             &event_id,
             0,
+            "expired-turn",
+            Some("replacement-turn"),
         ));
 
         // A late preparation is discarded by the main loop. Its reservation
@@ -5885,6 +5950,8 @@ mod tests {
             ch,
             &event_id,
             prepared_generation,
+            "pre-removal-turn",
+            Some("replacement-turn"),
         ));
     }
 
@@ -6084,6 +6151,7 @@ mod tests {
             }],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         }
     }
 
