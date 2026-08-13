@@ -231,11 +231,12 @@ fn collect_restart_candidates(
             // because Phase 2 will stop-then-start unconditionally.
             let env_changed = old_ready && old_effective.env != new_effective.env;
 
-            should_restart_on_config_change(
+            should_restart_on_config_change_for(
+                record,
+                &all_personas,
                 old_ready,
                 new_ready,
                 env_changed,
-                effective_secrets_unavailable(record, &all_personas),
             )
         })
         .map(|r| r.pubkey.clone())
@@ -339,16 +340,27 @@ async fn restart_local_agent_on_config_change(
         let new_ready = matches!(agent_readiness(&new_effective), AgentReadiness::Ready);
         // Under lock, the alive check was already done above via process_is_running.
         let env_changed = old_ready && old_effective.env != new_effective.env;
-        if !should_restart_on_config_change(
+        if !should_restart_on_config_change_for(
+            record,
+            &personas_owned,
             old_ready,
             new_ready,
             env_changed,
-            effective_secrets_unavailable(record, &personas_owned),
         ) {
             return Err(format!(
                 "agent {pubkey_owned} restart condition no longer valid under lock"
             ));
         }
+
+        // Strict re-read of the committed global under lock: the phase-1
+        // `old_global`/`new_global` snapshots drive the readiness comparison
+        // above, but they cannot attest the committed global ref is still
+        // hydratable NOW. `spawn_agent_child` reloads it strictly, so an
+        // unreadable global here means respawn would refuse after the stop
+        // (`FailedAfterStop`). Refuse before the stop.
+        super::agent_discovery::refuse_restart_on_unavailable_global(load_global_agent_config(
+            &app_for_stop,
+        ))?;
 
         // Stop the process.
         let record_mut = find_managed_agent_mut(&mut records, &pubkey_owned)?;
@@ -452,6 +464,30 @@ fn should_restart_on_config_change(
     secrets_unavailable: bool,
 ) -> bool {
     !secrets_unavailable && ((!old_ready && new_ready) || (old_ready && env_changed))
+}
+
+/// Composed config-change restart-eligibility seam: the single production entry
+/// point that both consults `effective_secrets_unavailable` for `record` and
+/// applies the pure structural predicate. Both the pre-scan
+/// (`collect_restart_candidates`) and the under-lock recheck
+/// (`restart_local_agent_on_config_change`) call this instead of wiring
+/// `effective_secrets_unavailable` at the call site, so the secret consultation
+/// lives in one AppHandle-free place that is unit-testable with real records
+/// (mutating the `effective_secrets_unavailable` call here turns a regression
+/// red).
+fn should_restart_on_config_change_for(
+    record: &crate::managed_agents::ManagedAgentRecord,
+    personas: &[crate::managed_agents::AgentDefinition],
+    old_ready: bool,
+    new_ready: bool,
+    env_changed: bool,
+) -> bool {
+    should_restart_on_config_change(
+        old_ready,
+        new_ready,
+        env_changed,
+        effective_secrets_unavailable(record, personas),
+    )
 }
 
 /// Fail closed when the CURRENTLY committed global config cannot load before an
@@ -609,6 +645,67 @@ mod tests {
         assert!(
             !should_restart_on_config_change(true, true, true, true),
             "a running agent with changed env but unavailable secrets must NOT be restarted"
+        );
+    }
+
+    // ── Production-seam binding: should_restart_on_config_change_for ──────
+    //
+    // Both the pre-scan (`collect_restart_candidates`) and the under-lock
+    // recheck (`restart_local_agent_on_config_change`) call this seam, which is
+    // the ONLY production place that consults `effective_secrets_unavailable`
+    // in this flow. These drive the seam with real records so dropping the
+    // consultation (hardcoding it `false`) turns a regression red — the gap
+    // Thufir found was that the raw call sites were not bound.
+
+    use crate::managed_agents::ManagedAgentRecord;
+
+    /// Minimal local record with no persona link or harness pin. With
+    /// `secrets_unavailable=false` and empty personas, every tier of
+    /// `effective_secrets_unavailable` is false — the healthy baseline.
+    fn local_record() -> ManagedAgentRecord {
+        serde_json::from_str(&format!(
+            r#"{{
+                "pubkey": "{}",
+                "name": "config-restart-gate-test",
+                "relay_url": "",
+                "acp_command": "buzz-acp",
+                "agent_command": "goose",
+                "agent_args": [],
+                "mcp_command": "",
+                "turn_timeout_seconds": 320,
+                "system_prompt": "",
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z"
+            }}"#,
+            "aa".repeat(32)
+        ))
+        .unwrap()
+    }
+
+    /// A healthy record whose readiness unblocked (NotReady → Ready) → restart.
+    /// Positive control: with these structural inputs fixed, the seam's result
+    /// is exactly `!effective_secrets_unavailable(record, personas)`.
+    #[test]
+    fn should_restart_on_config_change_for_healthy_record_is_candidate() {
+        let record = local_record();
+        assert!(
+            super::should_restart_on_config_change_for(&record, &[], false, true, false),
+            "a healthy record that became Ready must be a restart candidate"
+        );
+    }
+
+    /// Same structural inputs, but the record's instance tier is unavailable →
+    /// NOT a candidate. Mutation check: replace the
+    /// `effective_secrets_unavailable(..)` call in
+    /// `should_restart_on_config_change_for` with `false` and this flips to true
+    /// while the control above stays green — binds both config-change sites.
+    #[test]
+    fn should_restart_on_config_change_for_unavailable_record_is_not_candidate() {
+        let mut record = local_record();
+        record.secrets_unavailable = true;
+        assert!(
+            !super::should_restart_on_config_change_for(&record, &[], false, true, false),
+            "a record with unavailable secrets must NOT be a restart candidate even when unblocked"
         );
     }
 }

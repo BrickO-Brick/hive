@@ -422,6 +422,70 @@ fn should_restart_after_install(
     is_local && pid_alive && runtime_matches && setup_mode && now_ready && !secrets_unavailable
 }
 
+/// Composed post-install restart-eligibility seam: the single production entry
+/// point that both consults `effective_secrets_unavailable` for `record` and
+/// applies the pure structural predicate. The pre-scan calls this instead of
+/// wiring `effective_secrets_unavailable` into `should_restart_after_install`
+/// at the call site, so the secret consultation lives in one AppHandle-free
+/// place that is unit-testable with real records (mutating the
+/// `effective_secrets_unavailable` call here turns a regression red).
+fn should_restart_after_install_for(
+    record: &crate::managed_agents::ManagedAgentRecord,
+    personas: &[crate::managed_agents::AgentDefinition],
+    is_local: bool,
+    pid_alive: bool,
+    runtime_matches: bool,
+    setup_mode: bool,
+    now_ready: bool,
+) -> bool {
+    should_restart_after_install(
+        is_local,
+        pid_alive,
+        runtime_matches,
+        setup_mode,
+        now_ready,
+        crate::managed_agents::effective_secrets_unavailable(record, personas),
+    )
+}
+
+/// Under-lock secret-availability gate for the post-install bounce: refuse
+/// before the stop when any record-derivable secret tier is unavailable. An
+/// unavailable tier hydrates to an empty env that looks `Ready`, so this is the
+/// sole signal separating a bounce that would succeed from one that stops a
+/// live process only to hit the spawn refusal (`FailedAfterStop`). Extracted as
+/// the AppHandle-free seam so the refusal is unit-testable; mutating the
+/// `effective_secrets_unavailable` consultation here turns a regression red.
+fn refuse_restart_on_unavailable_secrets(
+    record: &crate::managed_agents::ManagedAgentRecord,
+    personas: &[crate::managed_agents::AgentDefinition],
+) -> Result<(), String> {
+    if crate::managed_agents::effective_secrets_unavailable(record, personas) {
+        return Err(format!(
+            "agent {} secrets unavailable from keyring under lock — not bouncing",
+            record.pubkey
+        ));
+    }
+    Ok(())
+}
+
+/// Fail closed when the committed global config cannot load at a restart
+/// boundary. `spawn_agent_child` reloads the global config strictly
+/// (`load_global_agent_config(app)?`), so a restart authorized while the global
+/// ref is unavailable — even for an unrelated secret — would stop a live
+/// process and only discover the refusal at respawn (`FailedAfterStop`). Global
+/// availability is not derivable from a record, so it is a separate strict
+/// `Result` gate rather than a fourth arm of `effective_secrets_unavailable`.
+/// Mirrors `global_agent_config::refuse_save_on_unavailable_current`; extracted
+/// as the AppHandle-free seam so the refusal is unit-testable (the callers pass
+/// the `Result` from `load_global_agent_config(&app)`).
+pub(super) fn refuse_restart_on_unavailable_global(
+    global_load: Result<crate::managed_agents::GlobalAgentConfig, String>,
+) -> Result<crate::managed_agents::GlobalAgentConfig, String> {
+    global_load.map_err(|e| {
+        format!("global agent config unavailable at restart boundary — not bouncing: {e}")
+    })
+}
+
 /// Restart all setup-mode agents whose runtime matches `runtime_id` and whose
 /// readiness now computes Ready.  Returns `(restarted_count, failed_restart_count)`.
 async fn restart_setup_mode_agents_after_install(
@@ -431,9 +495,9 @@ async fn restart_setup_mode_agents_after_install(
     use crate::{
         app_state::AppState,
         managed_agents::{
-            agent_readiness, effective_secrets_unavailable, known_acp_runtime,
-            load_global_agent_config, load_managed_agents, load_personas, record_agent_command,
-            resolve_effective_agent_env, AgentReadiness, BackendKind,
+            agent_readiness, known_acp_runtime, load_global_agent_config, load_managed_agents,
+            load_personas, record_agent_command, resolve_effective_agent_env, AgentReadiness,
+            BackendKind,
         },
     };
     use tauri::Manager;
@@ -444,7 +508,18 @@ async fn restart_setup_mode_agents_after_install(
     let candidates = tokio::task::spawn_blocking(move || {
         let records = load_managed_agents(&app_for_scan).unwrap_or_default();
         let personas = load_personas(&app_for_scan).unwrap_or_default();
-        let global = load_global_agent_config(&app_for_scan).unwrap_or_default();
+        // Strict global load: if the committed global ref cannot hydrate, a
+        // restart authorized now would stop a live process only to hit the
+        // strict reload at spawn (`FailedAfterStop`), so treat an unreadable
+        // global as zero candidates for this scan.
+        let global =
+            match refuse_restart_on_unavailable_global(load_global_agent_config(&app_for_scan)) {
+                Ok(global) => global,
+                Err(e) => {
+                    eprintln!("buzz-desktop: install_acp_runtime: skipping restart scan — {e}");
+                    return Vec::new();
+                }
+            };
 
         // Read the runtimes map to check setup_mode stamps.
         let state_inner = app_for_scan.state::<AppState>();
@@ -476,13 +551,14 @@ async fn restart_setup_mode_agents_after_install(
                     key.pubkey.eq_ignore_ascii_case(&record.pubkey)
                         && crate::managed_agents::process_is_running(runtime.child.id())
                 });
-                should_restart_after_install(
+                should_restart_after_install_for(
+                    record,
+                    &personas,
                     is_local,
                     pid_alive,
                     runtime_matches,
                     setup_mode,
                     now_ready,
-                    effective_secrets_unavailable(record, &personas),
                 )
             })
             .map(|r| r.pubkey.clone())
@@ -523,11 +599,10 @@ async fn restart_single_agent_after_install(
     use crate::{
         app_state::AppState,
         managed_agents::{
-            agent_readiness, current_instance_id, effective_secrets_unavailable,
-            find_managed_agent_mut, known_acp_runtime, load_global_agent_config,
-            load_managed_agents, load_personas, record_agent_command, resolve_effective_agent_env,
-            save_managed_agents, stop_managed_agent_process, sync_managed_agent_processes,
-            AgentReadiness, BackendKind,
+            agent_readiness, current_instance_id, find_managed_agent_mut, known_acp_runtime,
+            load_global_agent_config, load_managed_agents, load_personas, record_agent_command,
+            resolve_effective_agent_env, save_managed_agents, stop_managed_agent_process,
+            sync_managed_agent_processes, AgentReadiness, BackendKind,
         },
     };
     use tauri::Manager;
@@ -578,7 +653,10 @@ async fn restart_single_agent_after_install(
         }
 
         let personas = load_personas(&app_for_stop).unwrap_or_default();
-        let global = load_global_agent_config(&app_for_stop).unwrap_or_default();
+        // Strict global load under lock: `spawn_agent_child` reloads it
+        // strictly, so an unreadable global here means the respawn would refuse
+        // after we already stopped the process. Refuse before the stop.
+        let global = refuse_restart_on_unavailable_global(load_global_agent_config(&app_for_stop))?;
 
         let effective_cmd = record_agent_command(record, &personas);
         let runtime_matches =
@@ -610,11 +688,7 @@ async fn restart_single_agent_after_install(
 
         // Fail-closed under lock: an unavailable secret tier makes the empty
         // hydrated env look Ready, so re-check before the stop (never after).
-        if effective_secrets_unavailable(record, &personas) {
-            return Err(format!(
-                "agent {pubkey_owned} secrets unavailable from keyring under lock — not bouncing"
-            ));
-        }
+        refuse_restart_on_unavailable_secrets(record, &personas)?;
 
         // Stop the process.
         let record_mut = find_managed_agent_mut(&mut records, &pubkey_owned)?;

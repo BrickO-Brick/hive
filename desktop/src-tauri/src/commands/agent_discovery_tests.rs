@@ -269,6 +269,134 @@ fn test_should_restart_after_install_secrets_unavailable_is_not_candidate() {
     );
 }
 
+// ── Production-seam binding: should_restart_after_install_for ─────────────
+//
+// The pre-scan calls `should_restart_after_install_for(record, personas, ..)`,
+// which is the ONLY production place that consults
+// `effective_secrets_unavailable`. These drive that seam with real records so
+// dropping the consultation (hardcoding it `false`) turns a regression red —
+// the gap Thufir found was that the raw call site was not bound.
+
+/// Minimal local `ManagedAgentRecord`: local backend, no persona link, no
+/// harness pin. With `secrets_unavailable=false` and empty personas, every
+/// tier of `effective_secrets_unavailable` is false — the healthy baseline
+/// that makes the unavailable-tier assertions below meaningful.
+fn local_record() -> crate::managed_agents::ManagedAgentRecord {
+    serde_json::from_str(&format!(
+        r#"{{
+            "pubkey": "{}",
+            "name": "restart-gate-test",
+            "relay_url": "",
+            "acp_command": "buzz-acp",
+            "agent_command": "goose",
+            "agent_args": [],
+            "mcp_command": "",
+            "turn_timeout_seconds": 320,
+            "system_prompt": "",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z"
+        }}"#,
+        "aa".repeat(32)
+    ))
+    .unwrap()
+}
+
+/// All structural inputs true + a healthy record → eligible. Positive control
+/// for the two seam tests below: with these structural inputs fixed, the seam's
+/// result is exactly `!effective_secrets_unavailable(record, personas)`, so the
+/// negative case isolates the secret consultation.
+#[test]
+fn test_should_restart_after_install_for_healthy_record_is_candidate() {
+    let record = local_record();
+    assert!(
+        should_restart_after_install_for(&record, &[], true, true, true, true, true),
+        "a healthy record with all structural inputs true must be a restart candidate"
+    );
+}
+
+/// Same structural inputs, but the record's instance tier is unavailable → NOT
+/// eligible. Mutation check: replace the `effective_secrets_unavailable(..)`
+/// call in `should_restart_after_install_for` with `false` and this flips to
+/// true while the control above stays green — binds the pre-scan call site.
+#[test]
+fn test_should_restart_after_install_for_unavailable_record_is_not_candidate() {
+    let mut record = local_record();
+    record.secrets_unavailable = true;
+    assert!(
+        !should_restart_after_install_for(&record, &[], true, true, true, true, true),
+        "a record with unavailable secrets must NOT be a restart candidate even when otherwise eligible"
+    );
+}
+
+// ── Production-seam binding: refuse_restart_on_unavailable_secrets ────────
+//
+// The under-lock recheck calls this before the stop. Drive it with real
+// records so dropping the consultation turns a regression red.
+
+/// A healthy record passes the under-lock secret gate (Ok → proceed to stop).
+#[test]
+fn test_refuse_restart_on_unavailable_secrets_allows_healthy_record() {
+    let record = local_record();
+    assert!(
+        refuse_restart_on_unavailable_secrets(&record, &[]).is_ok(),
+        "a healthy record must pass the under-lock secret gate"
+    );
+}
+
+/// An unavailable record is refused BEFORE the stop (Err). Mutation check:
+/// replace the `effective_secrets_unavailable(..)` call with `false` and this
+/// flips to Ok while the control above stays green — binds the under-lock call
+/// site (the destructive stop-then-fail path Thufir flagged).
+#[test]
+fn test_refuse_restart_on_unavailable_secrets_refuses_unavailable_record() {
+    let mut record = local_record();
+    record.secrets_unavailable = true;
+    let out = refuse_restart_on_unavailable_secrets(&record, &[]);
+    let err = out.expect_err("an unavailable record must be refused before the stop");
+    assert!(
+        err.contains("secrets unavailable"),
+        "the refusal must name the secret-unavailable cause: {err}"
+    );
+}
+
+// ── Production-seam binding: refuse_restart_on_unavailable_global ─────────
+//
+// Both post-install sites and the global-config under-lock recheck route the
+// strict global load through this seam. Bind it directly so restoring
+// `unwrap_or_default()` (an Err mapped to Ok(default)) turns a regression red.
+
+/// A global-load Err (committed ref unhydratable) must refuse the restart
+/// rather than fall through to `unwrap_or_default()` — the pre-`FailedAfterStop`
+/// class Thufir found for the global tier. Mutation check: swap the seam body
+/// for `Ok(global_load.unwrap_or_default())` and this fails — Ok not Err.
+#[test]
+fn test_refuse_restart_on_unavailable_global_refuses_on_load_error() {
+    let out = super::refuse_restart_on_unavailable_global(Err(
+        "global env_vars unavailable: gen abc123 not found in keyring".to_string(),
+    ));
+    let err = out.expect_err("an unavailable global must refuse the restart before the stop");
+    assert!(
+        err.contains("global agent config unavailable") && err.contains("not found in keyring"),
+        "the refusal must explain the restart is blocked and carry the loader cause: {err}"
+    );
+}
+
+/// A successful global load passes through unchanged so the caller reuses it
+/// for env resolution. Pins that only the Err arm is mapped.
+#[test]
+fn test_refuse_restart_on_unavailable_global_passes_through_available_global() {
+    let global = crate::managed_agents::GlobalAgentConfig {
+        model: Some("gpt-5".to_string()),
+        ..Default::default()
+    };
+    let out = super::refuse_restart_on_unavailable_global(Ok(global.clone()));
+    assert_eq!(
+        out.expect("an available global must pass through").model,
+        global.model,
+        "the seam must return the loaded config unchanged on success"
+    );
+}
+
 // ── badge availability-drift (Phase 2) ───────────────────────────────────
 //
 // `availability_drift` is a pure predicate over two `Option` values —
