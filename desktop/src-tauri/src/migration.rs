@@ -192,6 +192,7 @@ fn run_boot_migrations_inner(app: &tauri::AppHandle, reset_completed: bool) {
     reconcile_databricks_v1_to_v2(app);
     materialize_agent_runtimes(app);
     migrate_inline_secrets_to_keyring(app); // keyring extraction — after all raw-JSON migrations
+    migrate_harness_secrets_to_keyring(app); // custom-harness env extraction — same phase
     #[cfg(debug_assertions)] // dev-build only; runs after extraction so keys exist in the source
     if is_dev {
         crate::managed_agents::migrate_agent_secrets_to_dev_service(app);
@@ -1279,6 +1280,8 @@ mod migration_secrets;
 use migration_secrets::migrate_inline_secrets_to_keyring;
 mod databricks_reconcile;
 use databricks_reconcile::reconcile_databricks_v1_to_v2;
+mod migration_harness_secrets;
+use migration_harness_secrets::migrate_harness_secrets_to_keyring;
 #[cfg(test)]
 #[path = "migration_avatar_tests.rs"]
 mod avatar_tests;

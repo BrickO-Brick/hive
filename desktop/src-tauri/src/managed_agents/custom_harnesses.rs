@@ -18,6 +18,12 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::managed_agents::secret_projection::{
+    cancel_gc_candidacy, deserialize_env_map, load_secret, serialize_env_map, write_secret,
+    ProjectionStore, WriteOutcome,
+};
+use crate::managed_agents::secret_seam::{migrate_inline_field, FieldMigration};
+
 /// Regex-equivalent predicate for a valid harness ID.
 ///
 /// IDs must match `[a-z0-9_][a-z0-9_-]*` — lowercase alphanumeric plus
@@ -59,8 +65,20 @@ pub(crate) struct HarnessDefinition {
     /// Environment variables injected at spawn time. Definition env is applied
     /// first and LOSES on conflict with Buzz-injected vars — `BUZZ_MANAGED_AGENT`
     /// is always authoritative and cannot be overridden here.
+    ///
+    /// Secret-projection contract (mirrors `ManagedAgentRecord.env_vars`): on a
+    /// keyring-backed save this map is stripped to the OS keyring and left empty
+    /// on disk, with [`env_ref`](Self::env_ref) pointing at the generation. When
+    /// non-empty on disk it is the authoritative inline-fallback state (keyring
+    /// unavailable) and wins over any stale `env_ref` on hydration.
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// Generation reference for the keyring-projected `env` map, set when the
+    /// inline `env` was stripped into the keyring under `harness:<id>:env:<gen>`.
+    /// Non-secret pointer only. Absent when the definition carries no env, or on
+    /// a keyless build where env stays inline in the `0o600` JSON.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env_ref: Option<String>,
     /// Link to external docs for manual install/setup instructions.
     #[serde(default)]
     pub install_instructions_url: String,
@@ -69,7 +87,133 @@ pub(crate) struct HarnessDefinition {
     pub install_hint: String,
 }
 
-/// Scan `dir` for `*.json` files and deserialize each into a `HarnessDefinition`.
+/// Keyring blob coordinate for a harness definition's projected `env` map.
+///
+/// The `harness:` namespace is deliberately distinct from the agent-store
+/// namespaces (`global:env:` / `agent:…` / `definition:…`) that
+/// [`crate::managed_agents::secret_projection::is_projection_key`] matches, so
+/// the agent-store GC sweeps never touch harness generations. Harness env edits
+/// are rare, so the un-reclaimed generations are a bounded, encrypted-at-rest
+/// cost documented as a known limitation.
+pub(crate) fn harness_env_key(id: &str, gen: &str) -> String {
+    format!("harness:{id}:env:{gen}")
+}
+
+// ── Env secret projection (mirrors the agent-store `secret_seam`) ────────────
+//
+// A harness definition carries a single `env` map that can hold provider
+// secrets (e.g. `ANTHROPIC_API_KEY`). These three helpers move it between the
+// on-disk JSON and the OS keyring under the `harness:<id>:env:<gen>` coordinate.
+// Each is generic over [`ProjectionStore`] so tests drive a fake and never the
+// live OS keyring (the default `system-keyring` feature makes the live store
+// real under `cargo test`).
+
+/// Save-path strip: project a non-empty inline `env` into the keyring under a
+/// fresh generation and clear it on disk; an empty inline `env` clears the ref
+/// (a UI save carries the user's full intent — empty means "no env"). On a
+/// keyring write failure the value stays inline (`0o600` fallback) with the ref
+/// cleared. Mutates `def` in place.
+///
+/// Unlike the agent seam there is no `secrets_unavailable` guard: a harness save
+/// is always a fresh, complete UI submission, never a re-save of a partially
+/// hydrated record, so empty inline is unambiguously a user-clear here.
+fn strip_harness_env<S: ProjectionStore>(store: &S, def: &mut HarnessDefinition) {
+    let id = def.id.clone();
+    let inline_env = if !def.env.is_empty() {
+        serialize_env_map(&def.env).ok()
+    } else {
+        None
+    };
+    match write_secret(
+        store,
+        |gen| harness_env_key(&id, gen),
+        inline_env.as_deref(),
+        &format!("harness:{id} env"),
+    ) {
+        WriteOutcome::Persisted { gen } => {
+            cancel_gc_candidacy(store, &harness_env_key(&id, &gen));
+            def.env.clear();
+            def.env_ref = Some(gen);
+        }
+        WriteOutcome::KeptInline { .. } | WriteOutcome::Nothing => {
+            def.env_ref = None;
+        }
+    }
+}
+
+/// Load-path hydrate: fill an empty on-disk `env` from the keyring generation
+/// named by `env_ref`. A non-empty inline `env` is the authoritative
+/// keyring-unavailable fallback and wins over any ref. A hydration failure is
+/// logged and leaves `env` empty — harness env is optional (unlike an agent
+/// nsec), so the harness still resolves rather than failing the whole load.
+fn hydrate_harness_env<S: ProjectionStore>(store: &S, def: &mut HarnessDefinition) {
+    if !def.env.is_empty() {
+        return; // inline fallback is authoritative
+    }
+    let id = def.id.clone();
+    match load_secret(
+        store,
+        def.env_ref.as_deref(),
+        |gen| harness_env_key(&id, gen),
+        &format!("harness:{id} env"),
+    ) {
+        Ok(Some(s)) => match deserialize_env_map(&s) {
+            Ok(map) => def.env = map,
+            Err(e) => {
+                tracing::warn!("custom_harnesses: harness {id} env deserialize failed: {e}")
+            }
+        },
+        Ok(None) => {}
+        Err(e) => tracing::warn!("custom_harnesses: {e}"),
+    }
+}
+
+/// Boot-migration transition: W1-safe field migration of one definition's
+/// `env`. An absent inline value here means "already projected on a prior
+/// launch," so an existing ref is preserved rather than cleared (the
+/// distinction from [`strip_harness_env`], which reads empty as a user-clear).
+/// Returns `true` when the ref changed and the file must be rewritten.
+///
+/// Shares the single W1-safe seam
+/// ([`crate::managed_agents::secret_seam::migrate_inline_field`]) with the agent
+/// tiers so the two surfaces cannot diverge on the empty-inline semantics.
+pub(crate) fn migrate_harness_env<S: ProjectionStore>(
+    store: &S,
+    def: &mut HarnessDefinition,
+) -> bool {
+    let id = def.id.clone();
+    let inline_env = if !def.env.is_empty() {
+        serialize_env_map(&def.env).ok()
+    } else {
+        None
+    };
+    match migrate_inline_field(
+        store,
+        |gen| harness_env_key(&id, gen),
+        inline_env.as_deref(),
+        def.env_ref.as_deref(),
+        &format!("harness:{id} env"),
+    ) {
+        FieldMigration::Projected { gen } => {
+            def.env.clear();
+            def.env_ref = Some(gen);
+            true
+        }
+        FieldMigration::Preserved | FieldMigration::Cleared => false,
+    }
+}
+
+/// Resolve the live secret-projection store, or `None` on a keyless build.
+///
+/// Consumes the agent-store resolver so harness env shares the exact same
+/// `SecretStore` instance (one cache, one mutex) as every other projected
+/// secret — never a second handle that could race on the blob.
+fn live_projection_store() -> Option<&'static crate::secret_store::SecretStore> {
+    crate::managed_agents::storage::agent_secret_store_pub()
+}
+
+/// Scan `dir` for `*.json` files and deserialize each into a `HarnessDefinition`,
+/// hydrating each definition's `env` from the live keyring.
 ///
 /// Errors per file are logged with `tracing::warn` and skipped — a single
 /// malformed file never fails discovery for the rest.  Returns only
@@ -86,6 +230,28 @@ pub(crate) struct HarnessDefinition {
 /// call** — this function performs no caching, mirroring goose's
 /// `refresh_custom_providers()` pattern.
 pub(crate) fn load_custom_harnesses(dir: &Path) -> Vec<HarnessDefinition> {
+    load_custom_harnesses_with(live_projection_store(), dir)
+}
+
+/// Testable core of [`load_custom_harnesses`], generic over the projection
+/// store so tests drive a [`ProjectionStore`] fake instead of the live keyring.
+/// Scans + validates the directory, then hydrates each definition's `env`.
+pub(crate) fn load_custom_harnesses_with<S: ProjectionStore>(
+    store: Option<&S>,
+    dir: &Path,
+) -> Vec<HarnessDefinition> {
+    let mut definitions = load_custom_harnesses_from_disk(dir);
+    if let Some(store) = store {
+        for def in &mut definitions {
+            hydrate_harness_env(store, def);
+        }
+    }
+    definitions
+}
+
+/// Raw directory scan + per-file validation, WITHOUT env hydration. The
+/// store-independent half of [`load_custom_harnesses_with`].
+fn load_custom_harnesses_from_disk(dir: &Path) -> Vec<HarnessDefinition> {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return vec![],
@@ -397,18 +563,9 @@ pub(crate) struct SaveOutcome {
     pub removed_old_path: Option<std::path::PathBuf>,
 }
 
-/// Write a harness definition to `dir/<id>.json` using a backup-swap strategy
-/// that is safe on all platforms (including Windows where `fs::rename` over an
-/// existing file fails with "access denied"):
-///
-/// 1. Serialize the definition and write it to a unique temp file via
-///    `atomic_write_file`.
-/// 2. If the target already exists, rename it to `<target>.bak` (the backup).
-/// 3. `commit()` the temp file (renames temp → target).
-///    * On success: delete `.bak` (best-effort; a stale `.bak` is harmless).
-///    * On failure: restore `.bak` → target so the original is never lost.
-/// 4. If `rename_old_id` is `Some`, remove `<dir>/<old_id>.json` after the
-///    new file is committed (non-fatal if NotFound).
+/// Write a harness definition to `dir/<id>.json`, projecting its `env` secrets
+/// into the OS keyring first. The resolved live [`ProjectionStore`] is used;
+/// see [`save_custom_harness_to_dir_with`] for the store-injected core.
 ///
 /// The caller is responsible for full validation (id, env, etc.) BEFORE
 /// calling this function — no validation is performed here.
@@ -417,18 +574,64 @@ pub(crate) fn save_custom_harness_to_dir(
     definition: &HarnessDefinition,
     rename_old_id: Option<&str>,
 ) -> Result<SaveOutcome, String> {
+    save_custom_harness_to_dir_with(live_projection_store(), dir, definition, rename_old_id)
+}
+
+/// Store-injected core of [`save_custom_harness_to_dir`]: strip `env` secrets
+/// into `store`, then write the stripped definition to `dir/<id>.json` using a
+/// backup-swap strategy that is safe on all platforms (including Windows where
+/// `fs::rename` over an existing file fails with "access denied"):
+///
+/// 1. Serialize the STRIPPED definition and write it to a unique temp file via
+///    `atomic_write_file`, created `0o600` before any bytes hit disk (the JSON
+///    carries inline env in the keyless / keyring-unavailable fallback).
+/// 2. If the target already exists, rename it to `<target>.bak` (the backup).
+/// 3. `commit()` the temp file (renames temp → target).
+///    * On success: delete `.bak` (best-effort; a stale `.bak` is harmless).
+///    * On failure: restore `.bak` → target so the original is never lost.
+/// 4. If `rename_old_id` is `Some`, remove `<dir>/<old_id>.json` after the
+///    new file is committed (non-fatal if NotFound).
+///
+/// `definition` is NOT mutated — a clone is stripped so the caller keeps the
+/// full `env` for the returned catalog entry (edit round-trip). On a keyless
+/// build (`store` is `None`) the `env` stays inline in the `0o600` JSON.
+///
+/// No cross-process secret-transaction lock is taken here: the `harness:`
+/// keyring namespace is deliberately excluded from the agent-store GC
+/// ([`crate::managed_agents::secret_projection::is_projection_key`]), so no
+/// concurrent sweep can ever delete a harness generation between its write and
+/// its JSON commit — the window that lock exists to close does not exist here.
+pub(crate) fn save_custom_harness_to_dir_with<S: ProjectionStore>(
+    store: Option<&S>,
+    dir: &Path,
+    definition: &HarnessDefinition,
+    rename_old_id: Option<&str>,
+) -> Result<SaveOutcome, String> {
     use atomic_write_file::AtomicWriteFile;
     use std::io::Write;
 
-    let json = serde_json::to_string_pretty(definition)
+    // Strip env → keyring on a clone. The keyring write happens BEFORE the
+    // atomic JSON commit (the commit point), mirroring the agent-store seam.
+    let mut to_write = definition.clone();
+    if let Some(store) = store {
+        strip_harness_env(store, &mut to_write);
+    }
+
+    let json = serde_json::to_string_pretty(&to_write)
         .map_err(|e| format!("failed to serialize harness definition: {e}"))?;
 
-    let target_path = dir.join(format!("{}.json", definition.id));
-    let bak_path = dir.join(format!("{}.json.bak", definition.id));
+    let target_path = dir.join(format!("{}.json", to_write.id));
+    let bak_path = dir.join(format!("{}.json.bak", to_write.id));
 
-    // Stage write to temp file.
+    // Stage write to temp file, owner-only before any bytes hit disk.
     let mut file = AtomicWriteFile::open(&target_path)
         .map_err(|e| format!("failed to open {}: {e}", target_path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("failed to set {} permissions: {e}", target_path.display()))?;
+    }
     file.write_all(json.as_bytes())
         .map_err(|e| format!("failed to write harness definition: {e}"))?;
 

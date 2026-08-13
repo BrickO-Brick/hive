@@ -1608,6 +1608,7 @@ fn deleted_harness_summary_display_and_spawn_sentence_agree() {
         command: "doomed-bin".to_string(),
         args: vec![],
         env: Default::default(),
+        env_ref: None,
         install_instructions_url: String::new(),
         install_hint: String::new(),
     };
@@ -1752,6 +1753,7 @@ fn harness_def(
         command: command.to_string(),
         args: vec![],
         env: Default::default(),
+        env_ref: None,
         install_instructions_url: String::new(),
         install_hint: String::new(),
     }

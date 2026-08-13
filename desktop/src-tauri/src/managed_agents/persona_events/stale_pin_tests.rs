@@ -128,6 +128,7 @@ fn apply_persona_snapshot_goose_to_custom_harness_drops_stale_goose_pin() {
         command: "my-custom-bin".to_string(),
         args: vec![],
         env: BTreeMap::new(),
+        env_ref: None,
         install_instructions_url: String::new(),
         install_hint: String::new(),
     }]);

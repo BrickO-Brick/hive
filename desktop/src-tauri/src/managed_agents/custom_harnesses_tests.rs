@@ -257,6 +257,7 @@ fn make_def(id: &str, label: &str) -> HarnessDefinition {
         command: format!("{id}-bin"),
         args: vec![],
         env: BTreeMap::new(),
+        env_ref: None,
         install_instructions_url: String::new(),
         install_hint: String::new(),
     }
@@ -355,30 +356,246 @@ fn save_to_dir_rename_nonexistent_old_id_is_non_fatal() {
     assert!(load_custom_harnesses(dir.path()).len() == 1);
 }
 
-#[test]
-fn save_to_dir_roundtrip_with_env_preserves_values() {
-    let dir = tempfile::tempdir().unwrap();
+// ── Env secret projection (save strips → keyring; load hydrates) ─────────
+//
+// These drive the store-injected `*_with` seams against an in-memory fake so
+// they are deterministic and never touch the live OS keyring (the default
+// `system-keyring` feature makes the live store real under `cargo test`).
+// The fake mirrors `secret_seam_tests::FakeProjectionStore`.
+
+use crate::managed_agents::secret_projection::{deserialize_env_map, ProjectionStore};
+use std::cell::RefCell;
+use std::collections::HashMap;
+
+/// In-memory projection store: every write succeeds and is recoverable.
+struct FakeProjectionStore {
+    data: RefCell<HashMap<String, String>>,
+}
+
+impl FakeProjectionStore {
+    fn new() -> Self {
+        Self {
+            data: RefCell::new(HashMap::new()),
+        }
+    }
+    fn len(&self) -> usize {
+        self.data.borrow().len()
+    }
+}
+
+impl ProjectionStore for FakeProjectionStore {
+    fn write_and_verify(&self, key: &str, value: &str) -> Result<(), String> {
+        self.data
+            .borrow_mut()
+            .insert(key.to_string(), value.to_string());
+        Ok(())
+    }
+    fn load_key(&self, key: &str) -> Result<Option<String>, String> {
+        Ok(self.data.borrow().get(key).cloned())
+    }
+    fn load_all(&self) -> Result<Option<HashMap<String, String>>, String> {
+        Ok(Some(self.data.borrow().clone()))
+    }
+    fn store_batch(&self, entries: &HashMap<String, String>) -> Result<(), String> {
+        for (k, v) in entries {
+            self.data.borrow_mut().insert(k.clone(), v.clone());
+        }
+        Ok(())
+    }
+    fn remove_batch(&self, keys: &[&str]) -> Result<(), String> {
+        for k in keys {
+            self.data.borrow_mut().remove(*k);
+        }
+        Ok(())
+    }
+}
+
+/// Projection store whose writes always fail — models a keyring outage that
+/// forces the inline `0o600` fallback (`WriteOutcome::KeptInline`).
+struct FailingWriteStore;
+
+impl ProjectionStore for FailingWriteStore {
+    fn write_and_verify(&self, _key: &str, _value: &str) -> Result<(), String> {
+        Err("simulated keyring write failure".to_string())
+    }
+    fn load_key(&self, _key: &str) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+    fn load_all(&self) -> Result<Option<HashMap<String, String>>, String> {
+        Ok(Some(HashMap::new()))
+    }
+    fn store_batch(&self, _entries: &HashMap<String, String>) -> Result<(), String> {
+        Ok(())
+    }
+    fn remove_batch(&self, _keys: &[&str]) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+fn env_harness_def() -> HarnessDefinition {
     let mut env = BTreeMap::new();
-    env.insert("MY_KEY".to_string(), "my_value".to_string());
-    let def = HarnessDefinition {
+    env.insert("ANTHROPIC_API_KEY".to_string(), "sk-ant-secret".to_string());
+    HarnessDefinition {
         id: "env-harness".to_string(),
         label: "Env Harness".to_string(),
         command: "env-bin".to_string(),
         args: vec!["--flag".to_string()],
         env,
+        env_ref: None,
         install_instructions_url: "https://example.com".to_string(),
         install_hint: "Install from example.com".to_string(),
-    };
+    }
+}
 
-    save_custom_harness_to_dir(dir.path(), &def, None).unwrap();
+#[test]
+fn save_projects_env_to_keyring_and_leaves_no_plaintext_on_disk() {
+    let store = FakeProjectionStore::new();
+    let dir = tempfile::tempdir().unwrap();
+    let def = env_harness_def();
 
-    let loaded = load_custom_harnesses(dir.path());
+    let outcome = save_custom_harness_to_dir_with(Some(&store), dir.path(), &def, None).unwrap();
+
+    let raw = fs::read_to_string(&outcome.target_path).unwrap();
+    assert!(
+        !raw.contains("sk-ant-secret"),
+        "the secret value must never be written to disk in plaintext"
+    );
+    // The on-disk record carries an env_ref and an empty inline env.
+    let on_disk: HarnessDefinition = serde_json::from_str(&raw).unwrap();
+    assert!(
+        on_disk.env.is_empty(),
+        "inline env must be stripped on disk"
+    );
+    let gen = on_disk
+        .env_ref
+        .expect("env_ref must point at the projected gen");
+    // The keyring fake holds the env verbatim under the harness coordinate.
+    let stored = store
+        .load_key(&harness_env_key("env-harness", &gen))
+        .unwrap()
+        .expect("keyring must hold the projected env");
+    assert_eq!(
+        deserialize_env_map(&stored)
+            .unwrap()
+            .get("ANTHROPIC_API_KEY"),
+        Some(&"sk-ant-secret".to_string())
+    );
+}
+
+#[test]
+fn save_then_load_with_same_fake_roundtrips_env_values() {
+    let store = FakeProjectionStore::new();
+    let dir = tempfile::tempdir().unwrap();
+    let def = env_harness_def();
+
+    save_custom_harness_to_dir_with(Some(&store), dir.path(), &def, None).unwrap();
+
+    let loaded = load_custom_harnesses_with(Some(&store), dir.path());
     assert_eq!(loaded.len(), 1);
     assert_eq!(loaded[0].args, vec!["--flag"]);
     assert_eq!(
-        loaded[0].env.get("MY_KEY").map(String::as_str),
-        Some("my_value"),
-        "env must round-trip through save_custom_harness_to_dir"
+        loaded[0].env.get("ANTHROPIC_API_KEY").map(String::as_str),
+        Some("sk-ant-secret"),
+        "env must hydrate back from the keyring on load"
+    );
+}
+
+#[test]
+fn save_does_not_mutate_the_caller_definition() {
+    // The catalog entry the UI keeps after a save must retain the full env for
+    // the edit round-trip — the seam strips a clone, never the caller's def.
+    let store = FakeProjectionStore::new();
+    let dir = tempfile::tempdir().unwrap();
+    let def = env_harness_def();
+
+    save_custom_harness_to_dir_with(Some(&store), dir.path(), &def, None).unwrap();
+
+    assert_eq!(
+        def.env.get("ANTHROPIC_API_KEY").map(String::as_str),
+        Some("sk-ant-secret"),
+        "caller's definition must keep its full env after save"
+    );
+    assert!(def.env_ref.is_none(), "caller's def must be untouched");
+}
+
+#[test]
+fn save_empty_env_writes_no_ref_and_no_keyring_entry() {
+    let store = FakeProjectionStore::new();
+    let dir = tempfile::tempdir().unwrap();
+    let def = make_def("bare", "Bare"); // env is empty
+
+    let outcome = save_custom_harness_to_dir_with(Some(&store), dir.path(), &def, None).unwrap();
+
+    assert_eq!(
+        store.len(),
+        0,
+        "an empty env must not mint a keyring generation"
+    );
+    let on_disk: HarnessDefinition =
+        serde_json::from_str(&fs::read_to_string(&outcome.target_path).unwrap()).unwrap();
+    assert!(on_disk.env.is_empty());
+    assert!(on_disk.env_ref.is_none(), "no env means no env_ref on disk");
+}
+
+#[test]
+fn save_keyring_write_failure_keeps_env_inline_with_ref_cleared() {
+    // A keyring outage must fall back to the inline `0o600` JSON so the harness
+    // still resolves — with env_ref cleared (inline is authoritative).
+    let store = FailingWriteStore;
+    let dir = tempfile::tempdir().unwrap();
+    let def = env_harness_def();
+
+    let outcome = save_custom_harness_to_dir_with(Some(&store), dir.path(), &def, None).unwrap();
+
+    let on_disk: HarnessDefinition =
+        serde_json::from_str(&fs::read_to_string(&outcome.target_path).unwrap()).unwrap();
+    assert_eq!(
+        on_disk.env.get("ANTHROPIC_API_KEY").map(String::as_str),
+        Some("sk-ant-secret"),
+        "on a keyring write failure the env stays inline as the fallback"
+    );
+    assert!(
+        on_disk.env_ref.is_none(),
+        "the ref must be cleared so inline wins on the next hydrate"
+    );
+}
+
+/// Inline env survives even without a store (keyless build): the env is written
+/// inline to the `0o600` JSON and hydrates straight from disk.
+#[test]
+fn save_without_store_keeps_env_inline_and_roundtrips() {
+    let dir = tempfile::tempdir().unwrap();
+    let def = env_harness_def();
+
+    save_custom_harness_to_dir_with::<FakeProjectionStore>(None, dir.path(), &def, None).unwrap();
+
+    let loaded = load_custom_harnesses_with::<FakeProjectionStore>(None, dir.path());
+    assert_eq!(loaded.len(), 1);
+    assert_eq!(
+        loaded[0].env.get("ANTHROPIC_API_KEY").map(String::as_str),
+        Some("sk-ant-secret"),
+        "keyless build must keep env inline and round-trip it"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn save_written_file_is_owner_only_0o600() {
+    use std::os::unix::fs::PermissionsExt;
+    let store = FakeProjectionStore::new();
+    let dir = tempfile::tempdir().unwrap();
+    let def = env_harness_def();
+
+    let outcome = save_custom_harness_to_dir_with(Some(&store), dir.path(), &def, None).unwrap();
+
+    let mode = fs::metadata(&outcome.target_path)
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(
+        mode & 0o777,
+        0o600,
+        "harness file must be created owner-only before any bytes hit disk"
     );
 }
 
@@ -397,6 +614,7 @@ fn validate_rejects_malformed_key_with_equals_sign() {
         command: "bad-bin".to_string(),
         args: vec![],
         env,
+        env_ref: None,
         install_instructions_url: String::new(),
         install_hint: String::new(),
     };
@@ -426,6 +644,7 @@ fn validate_rejects_reserved_key_buzz_managed_agent() {
         command: "bad-bin".to_string(),
         args: vec![],
         env,
+        env_ref: None,
         install_instructions_url: String::new(),
         install_hint: String::new(),
     };
@@ -447,6 +666,7 @@ fn validate_rejects_reserved_key_case_insensitive() {
         command: "ci-bin".to_string(),
         args: vec![],
         env,
+        env_ref: None,
         install_instructions_url: String::new(),
         install_hint: String::new(),
     };
@@ -468,6 +688,7 @@ fn validate_rejects_nul_byte_in_value() {
         command: "nul-bin".to_string(),
         args: vec![],
         env,
+        env_ref: None,
         install_instructions_url: String::new(),
         install_hint: String::new(),
     };
@@ -490,6 +711,7 @@ fn validate_rejects_value_over_per_value_size_limit() {
         command: "big-bin".to_string(),
         args: vec![],
         env,
+        env_ref: None,
         install_instructions_url: String::new(),
         install_hint: String::new(),
     };
@@ -511,6 +733,7 @@ fn validate_accepts_well_formed_env() {
         command: "good-bin".to_string(),
         args: vec![],
         env,
+        env_ref: None,
         install_instructions_url: String::new(),
         install_hint: String::new(),
     };

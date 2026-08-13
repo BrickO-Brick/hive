@@ -192,6 +192,7 @@ pub(crate) fn preset_harness_definitions(
                 command: preset.command.to_string(),
                 args: preset.args.iter().map(|arg| arg.to_string()).collect(),
                 env: Default::default(),
+                env_ref: None,
                 install_instructions_url: preset.install_instructions_url.to_string(),
                 install_hint: preset.install_hint.to_string(),
             },
