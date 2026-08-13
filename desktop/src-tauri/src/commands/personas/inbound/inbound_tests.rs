@@ -557,6 +557,74 @@ fn inbound_30177_no_linkage_change_applies_even_when_projected() {
     );
 }
 
+// ── §2.8 convergence: corrective re-retain is not best-effort (P1-I1) ─────
+
+/// The healthy convergence path re-retains the LOCAL record's authoritative
+/// projection under its coordinate, queued for publish — this is the row that
+/// makes the relay head converge back after a frozen inbound event was
+/// retained.
+#[test]
+fn converge_frozen_linkage_re_retains_local_head_pending() {
+    use crate::managed_agents::retention::{get_retained_event, open_retention_db};
+    let dir = tempfile::TempDir::new().unwrap();
+    let conn = open_retention_db(&dir.path().join("retention.db")).unwrap();
+    let keys = nostr::Keys::generate();
+    let agents = vec![local_agent()];
+
+    converge_frozen_linkage(&conn, &keys, &agents, AGENT_PUBKEY).unwrap();
+
+    let row = get_retained_event(
+        &conn,
+        buzz_core_pkg::kind::KIND_MANAGED_AGENT,
+        &keys.public_key().to_hex(),
+        AGENT_PUBKEY,
+    )
+    .unwrap()
+    .expect("convergence must retain the local head");
+    assert!(row.pending_sync, "corrective row must queue for publish");
+    assert!(
+        row.content.contains("Local Agent"),
+        "retained row must be the local authoritative projection",
+    );
+}
+
+/// A failed corrective re-retain MUST propagate as `Err`, never be swallowed.
+/// The inbound event is already the retained head when this runs; if it were
+/// swallowed the command would report success while a non-authoritative head
+/// stayed retained (and replay is dead — the same event re-arriving is
+/// `Skipped` at the equal-`created_at` guard). A connection with no
+/// `persona_events` table models the retention write failing after the inbound
+/// retain: `retain_agent_record`'s first query fails.
+#[test]
+fn converge_frozen_linkage_errs_when_retain_fails() {
+    let poisoned = rusqlite::Connection::open_in_memory().unwrap();
+    let keys = nostr::Keys::generate();
+    let agents = vec![local_agent()];
+
+    let err = converge_frozen_linkage(&poisoned, &keys, &agents, AGENT_PUBKEY).unwrap_err();
+    assert!(
+        err.contains("convergence"),
+        "a failed corrective re-retain must surface as an error: {err}"
+    );
+}
+
+/// A frozen classification with no matching local record is an internal
+/// inconsistency (the freeze was decided against a record that must exist) and
+/// fails closed rather than silently no-oping the convergence.
+#[test]
+fn converge_frozen_linkage_errs_when_record_missing() {
+    use crate::managed_agents::retention::open_retention_db;
+    let dir = tempfile::TempDir::new().unwrap();
+    let conn = open_retention_db(&dir.path().join("retention.db")).unwrap();
+    let keys = nostr::Keys::generate();
+
+    let err = converge_frozen_linkage(&conn, &keys, &[], AGENT_PUBKEY).unwrap_err();
+    assert!(
+        err.contains("not found"),
+        "a missing frozen record must fail closed: {err}"
+    );
+}
+
 // ── Team (30176) inbound ─────────────────────────────────────────────────
 
 const TEAM_ID: &str = "team-local-id";

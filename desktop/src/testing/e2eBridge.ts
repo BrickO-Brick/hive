@@ -11853,7 +11853,9 @@ export function maybeInstallE2eTauriMocks() {
         }
         // Mirror the real Rust backend: emit "agents-data-changed" after reconcile.
         await emit("agents-data-changed");
-        return undefined;
+        // Mirror the typed InboundReconcileOutcome — the e2e mock never
+        // exercises the §2.8 frozen-linkage path, so degradation is always null.
+        return { degradation: null };
       }
       case "set_persona_active":
         return handleSetPersonaActive(

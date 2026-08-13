@@ -37,11 +37,24 @@ export function startPersonaSync(
 ): () => Promise<void> {
   const reconcile = (event: RelayEvent) => {
     if (event.pubkey !== pubkey) return;
-    void reconcileInboundPersonaEvent(JSON.stringify(event), relayUrl).catch(
-      (error) => {
+    void reconcileInboundPersonaEvent(JSON.stringify(event), relayUrl)
+      .then((outcome) => {
+        // §2.8 interim posture: a frozen-linkage reconcile re-retained the
+        // local head to converge the relay back. Surface the typed degradation
+        // rather than letting it vanish — no UI is wired in this phase, so a
+        // console warning is the minimal observable surface. A rejected invoke
+        // (below) means the corrective re-retain FAILED and the non-authoritative
+        // head is still retained; the boot-time reconcile is the durable retry.
+        if (outcome.degradation) {
+          console.warn(
+            "[usePersonaSync] inbound linkage frozen (§2.8):",
+            outcome.degradation.message,
+          );
+        }
+      })
+      .catch((error) => {
         console.warn("[usePersonaSync] reconcile failed:", error);
-      },
-    );
+      });
   };
 
   // One-shot backfill of existing heads + tombstones (closes the fresh-start

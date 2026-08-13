@@ -56,7 +56,7 @@ pub async fn reconcile_inbound_persona_event(
     event_json: String,
     arrival_relay_url: String,
     app: AppHandle,
-) -> Result<(), String> {
+) -> Result<InboundReconcileOutcome, String> {
     tokio::task::spawn_blocking(move || {
         reconcile_inbound_persona_event_blocking(event_json, arrival_relay_url, app)
     })
@@ -68,7 +68,7 @@ fn reconcile_inbound_persona_event_blocking(
     event_json: String,
     arrival_relay_url: String,
     app: AppHandle,
-) -> Result<(), String> {
+) -> Result<InboundReconcileOutcome, String> {
     use crate::managed_agents::{
         agent_events::managed_agent_content_from_event,
         load_managed_agents, load_teams,
@@ -93,11 +93,12 @@ fn reconcile_inbound_persona_event_blocking(
     // in its `a` tag (`<target_kind>:<owner>:<d_tag>`). Handled before the
     // upsert dispatch because its coordinate and retention key differ.
     if kind == KIND_DELETION {
-        return reconcile_inbound_tombstone(&event, &arrival_relay_url, &app, &state);
+        return reconcile_inbound_tombstone(&event, &arrival_relay_url, &app, &state)
+            .map(|()| InboundReconcileOutcome::default());
     }
 
     if !matches!(kind, KIND_PERSONA | KIND_TEAM | KIND_MANAGED_AGENT) {
-        return Ok(());
+        return Ok(InboundReconcileOutcome::default());
     }
 
     // The d-tag identifies the record within its kind. Persona derives it from
@@ -132,7 +133,7 @@ fn reconcile_inbound_persona_event_blocking(
         &arrival_owner_pubkey,
     )?
     else {
-        return Ok(());
+        return Ok(InboundReconcileOutcome::default());
     };
 
     // Library-projection preflight (§2.7): a projected persona is
@@ -149,7 +150,7 @@ fn reconcile_inbound_persona_event_blocking(
         if MutationRoute::for_persona_d_tag(&raw_definitions, &d_tag)
             == MutationRoute::LibraryProjected
         {
-            return Ok(());
+            return Ok(InboundReconcileOutcome::default());
         }
     }
 
@@ -167,9 +168,10 @@ fn reconcile_inbound_persona_event_blocking(
         },
     )?;
     if outcome == InboundOutcome::Skipped {
-        return Ok(());
+        return Ok(InboundReconcileOutcome::default());
     }
 
+    let mut result = InboundReconcileOutcome::default();
     match kind {
         KIND_PERSONA => {
             let mut personas = load_personas(&app)?;
@@ -206,19 +208,19 @@ fn reconcile_inbound_persona_event_blocking(
             // mechanism §2.7's 30175 rule uses. The frozen record still exists
             // (only its linkage was left intact), so it always has a projection
             // to reassert.
+            //
+            // The corrective retain is NOT best-effort: if it fails, the
+            // non-authoritative inbound head is left retained and ordinary
+            // replay cannot repair it (the same event re-arriving is `Skipped`
+            // at the equal-`created_at` guard above). Propagating the error is
+            // what keeps the command from reporting success over a divergent
+            // head — the durable retry owner is the boot-time
+            // `reconcile_agents_to_events` pass, which re-diffs the
+            // still-authoritative on-disk record against the retained head every
+            // launch and re-queues this same corrective row.
             if let InboundAgentLinkage::Frozen(reason) = linkage {
-                if let Some(local) = agents.iter().find(|record| record.pubkey == d_tag) {
-                    if let Err(e) = crate::managed_agents::reconcile::retain_agent_record(
-                        &conn,
-                        &scope.owner_keys,
-                        local,
-                    ) {
-                        eprintln!(
-                            "buzz-desktop: inbound 30177 convergence re-retain failed for \
-                             {d_tag}: {e}"
-                        );
-                    }
-                }
+                converge_frozen_linkage(&conn, &scope.owner_keys, &agents, &d_tag)?;
+                result.degradation = Some(LinkageDegradation::new(reason, &d_tag));
                 eprintln!("buzz-desktop: {}", reason.note(&d_tag));
             }
         }
@@ -230,7 +232,7 @@ fn reconcile_inbound_persona_event_blocking(
     // land on disk silently, leaving the Agents tab stale until restart.
     let _ = app.emit("agents-data-changed", ());
 
-    Ok(())
+    Ok(result)
 }
 
 /// Parse an inbound wire event and enforce the signature gate. Everything
@@ -438,6 +440,45 @@ fn apply_inbound_persona(personas: &mut Vec<AgentDefinition>, inbound: AgentDefi
     }
 }
 
+/// The typed result of an inbound persona/team/managed-agent reconcile.
+///
+/// Non-agent kinds, no-match, and admissible-linkage reconciles return the
+/// default (`degradation: None`). Only a §2.8 frozen-linkage reconcile sets
+/// `degradation`, so the frontend can observe the interim posture rather than
+/// having it discarded to stderr. No new UI is wired in this phase — the field
+/// is a surface the frontend CAN consume.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InboundReconcileOutcome {
+    /// Set when an inbound kind:30177 event's linkage authorship was rejected
+    /// under the §2.8 canonical-linkage rule and the local head was re-retained
+    /// to converge the relay back.
+    pub degradation: Option<LinkageDegradation>,
+}
+
+/// A typed, frontend-consumable description of a frozen-linkage degradation
+/// (§2.8). Carries the machine-readable reason and the affected agent pubkey.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkageDegradation {
+    /// Machine-readable freeze reason.
+    pub reason: LinkageFreezeReason,
+    /// The affected managed-agent pubkey (the event's d-tag).
+    pub agent_pubkey: String,
+    /// Human-readable note, identical to the log line.
+    pub message: String,
+}
+
+impl LinkageDegradation {
+    fn new(reason: LinkageFreezeReason, agent_pubkey: &str) -> Self {
+        Self {
+            reason,
+            agent_pubkey: agent_pubkey.to_string(),
+            message: reason.note(agent_pubkey),
+        }
+    }
+}
+
 /// The outcome of applying an inbound kind:30177 event under the §2.8
 /// canonical-linkage rule.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -457,8 +498,9 @@ enum InboundAgentLinkage {
 /// Why an inbound kind:30177 event's linkage authorship was rejected (§2.8).
 /// Typed so the convergence + degradation surfacing at the call site is not a
 /// bare string.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LinkageFreezeReason {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LinkageFreezeReason {
     /// The matched instance is currently linked to a library-projected
     /// definition and the inbound event would clear or re-point its
     /// `persona_id`. Linkage is owned by the library machinery — the same
@@ -581,6 +623,39 @@ fn apply_inbound_managed_agent(
         local.persona_source_version = inbound.persona_source_version;
     }
     InboundAgentLinkage::Applied
+}
+
+/// §2.8 convergence: re-retain the local managed-agent record's projection at a
+/// monotonically newer `created_at` so the relay head converges back to the
+/// library-authoritative linkage after a frozen inbound event was retained.
+///
+/// This is the corrective step that must NOT be best-effort. The inbound event
+/// is already the retained head (retained before the store apply); if this
+/// re-retain fails, that non-authoritative head is left in place and ordinary
+/// replay cannot repair it — the same event re-arriving is `Skipped` at the
+/// equal-`created_at` guard before the convergence branch runs. Propagating the
+/// error keeps the command from reporting success over a divergent head; the
+/// durable retry owner is the boot-time `reconcile_agents_to_events` pass, which
+/// re-diffs the still-authoritative on-disk record and re-queues this same row.
+///
+/// The frozen record still exists (only its linkage was left intact), so it
+/// always has a projection to reassert; a missing local record would mean the
+/// freeze classification and the store diverged and is treated as an error.
+fn converge_frozen_linkage(
+    conn: &rusqlite::Connection,
+    owner_keys: &nostr::Keys,
+    agents: &[ManagedAgentRecord],
+    d_tag: &str,
+) -> Result<(), String> {
+    let local = agents
+        .iter()
+        .find(|record| record.pubkey == d_tag)
+        .ok_or_else(|| {
+            format!("inbound 30177 convergence: frozen record {d_tag} not found locally")
+        })?;
+    crate::managed_agents::reconcile::retain_agent_record(conn, owner_keys, local)
+        .map_err(|e| format!("inbound 30177 convergence re-retain failed for {d_tag}: {e}"))?;
+    Ok(())
 }
 
 /// Merge an inbound kind:30176 team projection into the local set.
