@@ -274,16 +274,26 @@ export type AdminResolveReportBody = {
 
 /**
  * The action record returned in the resolve response (or from the report detail
- * when status is `processing`).
+ * when status is `processing`/`failed`).
+ *
+ * Field-for-field the relay's serialized action record. In practice `action` is
+ * always an enforcement action (`delete`/`kick`/`ban`/`timeout`) — `dismiss` and
+ * `escalate` terminalise the report without creating a record, so they surface as
+ * `activeAction: null`, never here.
+ *
+ * `expiresAt` is the absolute enforcement expiry (`timeout_until`), null except for
+ * `timeout`. It is distinct from the resolve request's `expirationSecs` input.
  */
 export type AdminActionRecordDto = {
   id: string;
-  reportId: string;
+  requestId: string;
+  actorPubkey: string;
+  actorRole: AdminPrincipalRole;
   action: AdminReportAction;
   status: "pending" | "enforcing" | "succeeded" | "failed" | "cancelled";
-  requestId: string;
-  expirationSecs?: number | null;
   reason?: string | null;
+  expiresAt?: string | null;
+  errorMessage?: string | null;
   createdAt: string;
   updatedAt: string;
 };

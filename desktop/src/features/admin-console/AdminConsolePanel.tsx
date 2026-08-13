@@ -193,7 +193,6 @@ function EnforcementStateBlock({
       await resolveAdminReport(origin, reportId, {
         action: activeAction.action,
         requestId: activeAction.requestId,
-        expirationSecs: activeAction.expirationSecs ?? undefined,
         reason: activeAction.reason ?? undefined,
       });
       toast.success("Enforcement retried");
