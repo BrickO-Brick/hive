@@ -2445,18 +2445,17 @@ pub async fn run_prompt_task(
                 let _ = tx.send((b.channel_id, turn_id.clone(), scope));
             }
         }
-        b.failure_thread_tags = crate::queue::edit_target_id(
-            &b.events.last().expect("non-empty batch").event,
-        )
-        .map(|target_event_id| {
-            resolved_edit
-                .as_ref()
-                .map(crate::queue::ResolvedEdit::reply_thread_tags)
-                .unwrap_or_else(|| crate::queue::ThreadTags {
-                    root_event_id: Some(target_event_id.clone()),
-                    parent_event_id: Some(target_event_id),
-                    mentioned_pubkeys: Vec::new(),
-                })
+        b.failure_thread_tags = b.events.last().and_then(|event| {
+            crate::queue::edit_target_id(&event.event).map(|target_event_id| {
+                resolved_edit
+                    .as_ref()
+                    .map(crate::queue::ResolvedEdit::reply_thread_tags)
+                    .unwrap_or_else(|| crate::queue::ThreadTags {
+                        root_event_id: Some(target_event_id.clone()),
+                        parent_event_id: Some(target_event_id),
+                        mentioned_pubkeys: Vec::new(),
+                    })
+            })
         });
 
         // Build prompt from batch with context enrichment.
