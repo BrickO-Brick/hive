@@ -592,6 +592,32 @@ pub(crate) fn unavailable_harness_id(
         .map(|def| def.id.clone())
 }
 
+/// Whether ANY secret tier for `record` is currently unavailable — its ref is
+/// present but could not be hydrated from the keyring (missing, unreadable, or
+/// malformed generation). ORs the three registry-derivable tiers that every
+/// fail-closed spawn seam already consults individually:
+///
+/// - the instance tier (`record.secrets_unavailable`),
+/// - the definition tier ([`crate::managed_agents::unavailable_definition_id`]),
+/// - the harness tier ([`unavailable_harness_id`]).
+///
+/// This is the single predicate the restart-eligibility boundaries call before
+/// any `stop_managed_agent_process`: an unavailable record's hydrated env is
+/// empty and therefore indistinguishable from an intentionally-empty one at the
+/// `agent_readiness`/`resolve_effective_agent_env` layer, so those raw signals
+/// cannot be trusted to gate a destructive stop-then-respawn. Gating here keeps
+/// a running/setup process alive rather than stopping it and only discovering
+/// the refusal at respawn (`FailedAfterStop`). The global tier is not
+/// registry-derivable from a record and is covered by the spawn-time gate.
+pub(crate) fn effective_secrets_unavailable(
+    record: &ManagedAgentRecord,
+    personas: &[AgentDefinition],
+) -> bool {
+    record.secrets_unavailable
+        || crate::managed_agents::unavailable_definition_id(record, personas).is_some()
+        || unavailable_harness_id(record, personas).is_some()
+}
+
 /// Warm the loaded-harness registry synchronously from `custom_dir`.
 ///
 /// Must be called **before** `restore_managed_agents_on_launch` so that cold

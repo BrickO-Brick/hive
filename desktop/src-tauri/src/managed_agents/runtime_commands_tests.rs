@@ -473,3 +473,82 @@ fn harness_available_spawn_predicate_does_not_fire() {
         "spawn must not refuse a record whose effective harness is available"
     );
 }
+
+// ── effective_secrets_unavailable: the restart-eligibility predicate ─────────
+//
+// The restart-eligibility boundaries (post-install bounce, global-config
+// bounce) gate on this single predicate, which ORs the three
+// registry-derivable tiers. These tests prove each tier flips it independently
+// and a fully-healthy record does not, so the restart flows fail closed on ANY
+// unavailable tier — not just the harness one.
+
+use crate::managed_agents::effective_secrets_unavailable;
+
+#[test]
+fn effective_secrets_unavailable_false_for_healthy_record() {
+    // Positive control: a linked record with an available definition and no
+    // harness pin (builtin) has no unavailable tier — the predicate is false,
+    // so the negative-tier assertions below are meaningful.
+    let _lock = registry_test_lock();
+    update_loaded_harness_registry(vec![]);
+
+    let record = linked_record();
+    let def = available_definition();
+
+    let out = effective_secrets_unavailable(&record, std::slice::from_ref(&def));
+
+    assert!(
+        !out,
+        "a record with all tiers available must not be flagged unavailable"
+    );
+}
+
+#[test]
+fn effective_secrets_unavailable_true_for_instance_tier() {
+    // Instance tier: the record's own secrets_unavailable set (its env_vars_ref
+    // failed to hydrate). Mutation check: drop `record.secrets_unavailable`
+    // from the OR and this fails.
+    let _lock = registry_test_lock();
+    update_loaded_harness_registry(vec![]);
+
+    let mut record = linked_record();
+    record.secrets_unavailable = true;
+    let def = available_definition();
+
+    assert!(
+        effective_secrets_unavailable(&record, std::slice::from_ref(&def)),
+        "an instance whose own secrets are unavailable must fire the predicate"
+    );
+}
+
+#[test]
+fn effective_secrets_unavailable_true_for_definition_tier() {
+    // Definition tier: a linked persona whose secrets_unavailable is set.
+    // Mutation check: drop the `unavailable_definition_id(..).is_some()` arm.
+    let _lock = registry_test_lock();
+    update_loaded_harness_registry(vec![]);
+
+    let record = linked_record();
+    let def = unavailable_definition();
+
+    assert!(
+        effective_secrets_unavailable(&record, std::slice::from_ref(&def)),
+        "a record linked to a definition with unavailable secrets must fire the predicate"
+    );
+}
+
+#[test]
+fn effective_secrets_unavailable_true_for_harness_tier() {
+    // Harness tier: the effective harness carries an unhydratable env_ref.
+    // Mutation check: drop the `unavailable_harness_id(..).is_some()` arm.
+    let _lock = registry_test_lock();
+    update_loaded_harness_registry(vec![harness_def(true)]);
+
+    let out = effective_secrets_unavailable(&ready_harness_record(), &[]);
+
+    update_loaded_harness_registry(vec![]);
+    assert!(
+        out,
+        "a record whose effective harness env is unavailable must fire the predicate"
+    );
+}

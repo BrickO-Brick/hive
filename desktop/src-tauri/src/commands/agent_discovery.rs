@@ -405,16 +405,21 @@ enum InstallRestartOutcome {
 /// An agent qualifies iff:
 /// - it is a local backend with a live PID (`pid_alive`),
 /// - its effective command maps to `runtime_id`,
-/// - it was **spawned in setup-listener mode** (`setup_mode`), AND
-/// - its readiness **now computes `Ready`** (install fixed the blocker).
+/// - it was **spawned in setup-listener mode** (`setup_mode`),
+/// - its readiness **now computes `Ready`** (install fixed the blocker), AND
+/// - none of its secret tiers are unavailable (`!secrets_unavailable`) — an
+///   unavailable tier's empty hydrated env looks `Ready`, so without this a
+///   stop-then-respawn would stop a live setup process only to hit the spawn
+///   refusal (`FailedAfterStop`).
 fn should_restart_after_install(
     is_local: bool,
     pid_alive: bool,
     runtime_matches: bool,
     setup_mode: bool,
     now_ready: bool,
+    secrets_unavailable: bool,
 ) -> bool {
-    is_local && pid_alive && runtime_matches && setup_mode && now_ready
+    is_local && pid_alive && runtime_matches && setup_mode && now_ready && !secrets_unavailable
 }
 
 /// Restart all setup-mode agents whose runtime matches `runtime_id` and whose
@@ -426,9 +431,9 @@ async fn restart_setup_mode_agents_after_install(
     use crate::{
         app_state::AppState,
         managed_agents::{
-            agent_readiness, known_acp_runtime, load_global_agent_config, load_managed_agents,
-            load_personas, record_agent_command, resolve_effective_agent_env, AgentReadiness,
-            BackendKind,
+            agent_readiness, effective_secrets_unavailable, known_acp_runtime,
+            load_global_agent_config, load_managed_agents, load_personas, record_agent_command,
+            resolve_effective_agent_env, AgentReadiness, BackendKind,
         },
     };
     use tauri::Manager;
@@ -477,6 +482,7 @@ async fn restart_setup_mode_agents_after_install(
                     runtime_matches,
                     setup_mode,
                     now_ready,
+                    effective_secrets_unavailable(record, &personas),
                 )
             })
             .map(|r| r.pubkey.clone())
@@ -517,10 +523,11 @@ async fn restart_single_agent_after_install(
     use crate::{
         app_state::AppState,
         managed_agents::{
-            agent_readiness, current_instance_id, find_managed_agent_mut, known_acp_runtime,
-            load_global_agent_config, load_managed_agents, load_personas, record_agent_command,
-            resolve_effective_agent_env, save_managed_agents, stop_managed_agent_process,
-            sync_managed_agent_processes, AgentReadiness, BackendKind,
+            agent_readiness, current_instance_id, effective_secrets_unavailable,
+            find_managed_agent_mut, known_acp_runtime, load_global_agent_config,
+            load_managed_agents, load_personas, record_agent_command, resolve_effective_agent_env,
+            save_managed_agents, stop_managed_agent_process, sync_managed_agent_processes,
+            AgentReadiness, BackendKind,
         },
     };
     use tauri::Manager;
@@ -598,6 +605,14 @@ async fn restart_single_agent_after_install(
         if !matches!(agent_readiness(&effective), AgentReadiness::Ready) {
             return Err(format!(
                 "agent {pubkey_owned} readiness is still NotReady after install — not bouncing"
+            ));
+        }
+
+        // Fail-closed under lock: an unavailable secret tier makes the empty
+        // hydrated env look Ready, so re-check before the stop (never after).
+        if effective_secrets_unavailable(record, &personas) {
+            return Err(format!(
+                "agent {pubkey_owned} secrets unavailable from keyring under lock — not bouncing"
             ));
         }
 
@@ -1261,7 +1276,7 @@ mod tests {
     #[test]
     fn test_should_restart_after_install_setup_mode_now_ready_is_candidate() {
         assert!(
-            should_restart_after_install(true, true, true, true, true),
+            should_restart_after_install(true, true, true, true, true, false),
             "setup-mode codex agent that became Ready must be restarted after install"
         );
     }
@@ -1270,7 +1285,7 @@ mod tests {
     #[test]
     fn test_should_restart_after_install_still_not_ready_is_not_candidate() {
         assert!(
-            !should_restart_after_install(true, true, true, true, false),
+            !should_restart_after_install(true, true, true, true, false, false),
             "setup-mode agent still NotReady must NOT be restarted (would re-enter setup mode)"
         );
     }
@@ -1279,7 +1294,7 @@ mod tests {
     #[test]
     fn test_should_restart_after_install_healthy_agent_is_not_candidate() {
         assert!(
-            !should_restart_after_install(true, true, true, false, true),
+            !should_restart_after_install(true, true, true, false, true, false),
             "healthy in-pool agent (setup_mode=false) must NOT be bounced on install"
         );
     }
@@ -1288,7 +1303,7 @@ mod tests {
     #[test]
     fn test_should_restart_after_install_different_runtime_is_not_candidate() {
         assert!(
-            !should_restart_after_install(true, true, false, true, true),
+            !should_restart_after_install(true, true, false, true, true, false),
             "agent on a different runtime must NOT be restarted by this install"
         );
     }
@@ -1297,7 +1312,7 @@ mod tests {
     #[test]
     fn test_should_restart_after_install_non_local_is_not_candidate() {
         assert!(
-            !should_restart_after_install(false, true, true, true, true),
+            !should_restart_after_install(false, true, true, true, true, false),
             "non-local (provider-backend) agent must NOT be restarted"
         );
     }
@@ -1306,8 +1321,23 @@ mod tests {
     #[test]
     fn test_should_restart_after_install_dead_pid_is_not_candidate() {
         assert!(
-            !should_restart_after_install(true, false, true, true, true),
+            !should_restart_after_install(true, false, true, true, true, false),
             "agent whose process is no longer running must NOT be restarted"
+        );
+    }
+
+    /// A setup-mode agent that would otherwise be a candidate (all five prior
+    /// inputs true) but whose secrets are unavailable → NO restart. An
+    /// unavailable tier's empty hydrated env makes readiness compute `Ready`,
+    /// so this is the only input distinguishing a bounce that would succeed
+    /// from one that would stop the process and hit the spawn refusal
+    /// (`FailedAfterStop`). Mutation check: drop `&& !secrets_unavailable` from
+    /// the predicate and this test fails while the positive control stays green.
+    #[test]
+    fn test_should_restart_after_install_secrets_unavailable_is_not_candidate() {
+        assert!(
+            !should_restart_after_install(true, true, true, true, true, true),
+            "an otherwise-eligible setup-mode agent with unavailable secrets must NOT be bounced"
         );
     }
 

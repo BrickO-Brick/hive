@@ -16,11 +16,11 @@ use tauri::AppHandle;
 use crate::{
     app_state::AppState,
     managed_agents::{
-        agent_readiness, current_instance_id, find_managed_agent_mut, known_acp_runtime,
-        load_global_agent_config, load_managed_agents, load_personas, record_agent_command,
-        resolve_effective_agent_env, save_global_agent_config, save_managed_agents,
-        stop_managed_agent_process, sync_managed_agent_processes, validate_global_config,
-        AgentReadiness, BackendKind, GlobalAgentConfig,
+        agent_readiness, current_instance_id, effective_secrets_unavailable,
+        find_managed_agent_mut, known_acp_runtime, load_global_agent_config, load_managed_agents,
+        load_personas, record_agent_command, resolve_effective_agent_env, save_global_agent_config,
+        save_managed_agents, stop_managed_agent_process, sync_managed_agent_processes,
+        validate_global_config, AgentReadiness, BackendKind, GlobalAgentConfig,
     },
 };
 
@@ -231,7 +231,12 @@ fn collect_restart_candidates(
             // because Phase 2 will stop-then-start unconditionally.
             let env_changed = old_ready && old_effective.env != new_effective.env;
 
-            should_restart_on_config_change(old_ready, new_ready, env_changed)
+            should_restart_on_config_change(
+                old_ready,
+                new_ready,
+                env_changed,
+                effective_secrets_unavailable(record, &all_personas),
+            )
         })
         .map(|r| r.pubkey.clone())
         .collect();
@@ -334,7 +339,12 @@ async fn restart_local_agent_on_config_change(
         let new_ready = matches!(agent_readiness(&new_effective), AgentReadiness::Ready);
         // Under lock, the alive check was already done above via process_is_running.
         let env_changed = old_ready && old_effective.env != new_effective.env;
-        if !should_restart_on_config_change(old_ready, new_ready, env_changed) {
+        if !should_restart_on_config_change(
+            old_ready,
+            new_ready,
+            env_changed,
+            effective_secrets_unavailable(record, &personas_owned),
+        ) {
             return Err(format!(
                 "agent {pubkey_owned} restart condition no longer valid under lock"
             ));
@@ -429,8 +439,19 @@ fn persist_last_error(app: &AppHandle, pubkey: &str, error: &str) -> Result<(), 
 /// restart would not repair the missing auth token. If the binary disappears,
 /// the process would already be dead and the PID alive-check in the candidate
 /// scan would have excluded it.
-fn should_restart_on_config_change(old_ready: bool, new_ready: bool, env_changed: bool) -> bool {
-    (!old_ready && new_ready) || (old_ready && env_changed)
+///
+/// **Fail-closed on unavailable secrets:** when any secret tier is unavailable
+/// (`secrets_unavailable`) the record's empty hydrated env can look `Ready` and
+/// its env can differ from the old config for unrelated reasons, so restart is
+/// refused — a stop-then-respawn would stop a live process only to hit the
+/// spawn refusal (`FailedAfterStop`).
+fn should_restart_on_config_change(
+    old_ready: bool,
+    new_ready: bool,
+    env_changed: bool,
+    secrets_unavailable: bool,
+) -> bool {
+    !secrets_unavailable && ((!old_ready && new_ready) || (old_ready && env_changed))
 }
 
 /// Fail closed when the CURRENTLY committed global config cannot load before an
@@ -500,7 +521,7 @@ mod tests {
     fn env_changed_running_agent_is_candidate() {
         // old_ready=true, new_ready=true, env_changed=true
         assert!(
-            should_restart_on_config_change(true, true, true),
+            should_restart_on_config_change(true, true, true, false),
             "running agent with changed env must be restarted"
         );
     }
@@ -510,7 +531,7 @@ mod tests {
     fn unchanged_running_agent_is_not_candidate() {
         // old_ready=true, new_ready=true, env_changed=false
         assert!(
-            !should_restart_on_config_change(true, true, false),
+            !should_restart_on_config_change(true, true, false, false),
             "running agent with identical env must NOT be restarted"
         );
     }
@@ -520,7 +541,7 @@ mod tests {
     fn not_ready_to_ready_is_candidate() {
         // old_ready=false, new_ready=true, env_changed=false (env_changed irrelevant)
         assert!(
-            should_restart_on_config_change(false, true, false),
+            should_restart_on_config_change(false, true, false, false),
             "NotReady → Ready must be a restart candidate"
         );
     }
@@ -531,7 +552,7 @@ mod tests {
     fn ready_to_not_ready_env_changed_is_candidate() {
         // old_ready=true (had key), new_ready=false (key removed), env_changed=true
         assert!(
-            should_restart_on_config_change(true, false, true),
+            should_restart_on_config_change(true, false, true, false),
             "Ready → NotReady with env change must be a restart candidate"
         );
     }
@@ -541,7 +562,7 @@ mod tests {
     fn both_not_ready_unchanged_is_not_candidate() {
         // old_ready=false, new_ready=false, env_changed=false
         assert!(
-            !should_restart_on_config_change(false, false, false),
+            !should_restart_on_config_change(false, false, false, false),
             "both NotReady with no env change must NOT be a candidate"
         );
     }
@@ -552,7 +573,7 @@ mod tests {
         // Changed one unrelated env var but still missing the required key.
         // old_ready=false, new_ready=false, env_changed=true
         assert!(
-            !should_restart_on_config_change(false, false, true),
+            !should_restart_on_config_change(false, false, true, false),
             "NotReady→NotReady (env changed but still broken) must NOT be a candidate"
         );
     }
@@ -566,8 +587,28 @@ mod tests {
     fn not_ready_to_ready_with_env_change_is_candidate() {
         // old_ready=false, new_ready=true, env_changed=true
         assert!(
-            should_restart_on_config_change(false, true, true),
+            should_restart_on_config_change(false, true, true, false),
             "NotReady → Ready (with env change) must be a restart candidate"
+        );
+    }
+
+    /// An agent that would otherwise be a restart candidate (`NotReady → Ready`,
+    /// or Ready with env changed) but whose secrets are unavailable → NO
+    /// restart. An unavailable tier's empty hydrated env can make readiness
+    /// compute `Ready` and can differ from the old config for unrelated
+    /// reasons, so this flag is the sole guard against stopping a live process
+    /// only to hit the spawn refusal (`FailedAfterStop`). Mutation check: drop
+    /// the leading `!secrets_unavailable &&` and both asserts below flip while
+    /// the healthy-restart controls above stay green.
+    #[test]
+    fn secrets_unavailable_is_never_a_candidate() {
+        assert!(
+            !should_restart_on_config_change(false, true, false, true),
+            "an unblocked (NotReady → Ready) agent with unavailable secrets must NOT be restarted"
+        );
+        assert!(
+            !should_restart_on_config_change(true, true, true, true),
+            "a running agent with changed env but unavailable secrets must NOT be restarted"
         );
     }
 }
