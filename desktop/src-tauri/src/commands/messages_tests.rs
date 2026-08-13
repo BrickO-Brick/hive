@@ -146,7 +146,7 @@ fn thread_replies_filter_carries_non_p_gated_kinds_to_clear_the_gate() {
     // and every kind MUST be non-p-gated (else the gate still fires). The
     // Playwright mock does not model p-gating, so this unit test is the
     // only guard against the client/relay auth contract drifting.
-    let filter = build_thread_replies_filter("root-hex", Some("channel-1"), 64, 200, None);
+    let filter = build_thread_replies_filter("root-hex", Some("channel-1"), 64, 200, None, None);
 
     let kinds = filter
         .get("kinds")
@@ -175,7 +175,9 @@ fn thread_replies_filter_pages_with_composite_cursor() {
         created_at: 1_700_000_000,
         event_id: "abcd".to_string(),
     };
-    let filter = build_thread_replies_filter("root-hex", None, 64, 200, Some(&cursor));
+    let filter =
+        build_thread_replies_filter("root-hex", None, 64, 200, Some("newest"), Some(&cursor));
+    assert_eq!(filter["thread_order"], serde_json::json!("newest"));
     assert_eq!(filter["thread_cursor"], serde_json::json!(1_700_000_000));
     assert_eq!(filter["thread_cursor_id"], serde_json::json!("abcd"));
     assert!(

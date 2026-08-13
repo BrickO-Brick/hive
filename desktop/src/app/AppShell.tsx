@@ -33,6 +33,7 @@ import {
 import { useUnreadChannels } from "@/features/channels/useUnreadChannels";
 import { useMembershipNotifications } from "@/features/channels/useMembershipNotifications";
 import { useFeedItemState } from "@/features/home/useFeedItemState";
+import { markChannelSelectionPerformance } from "@/features/messages/useMessagePerformance";
 import { useThreadFollows } from "@/features/messages/lib/useThreadFollows";
 import {
   useHomeFeedNotifications,
@@ -847,7 +848,13 @@ export function AppShell() {
                           await goChannel(directMessage.id);
                         }}
                         onSelectAgents={() => void goAgents()}
-                        onSelectChannel={handleSidebarChannelSelect}
+                        onSelectChannel={(channelId) => {
+                          markChannelSelectionPerformance(
+                            channelId,
+                            selectedChannelId,
+                          );
+                          handleSidebarChannelSelect(channelId);
+                        }}
                         onOpenSearchResult={handleOpenSearchResult}
                         searchChannels={channels}
                         searchFocusRequests={[

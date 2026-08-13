@@ -2,6 +2,7 @@ use nostr::{Event, EventId, Keys, PublicKey};
 use tauri::{AppHandle, State};
 
 mod forum;
+mod thread_page;
 
 use forum::{
     apply_link_preview_suppression, fetch_agent_owner_pubkeys, link_preview_suppression_targets,
@@ -251,6 +252,7 @@ pub async fn get_thread_replies(
     channel_id: Option<String>,
     limit: Option<u32>,
     depth_limit: Option<u32>,
+    thread_order: Option<String>,
     cursor: Option<crate::models::ThreadCursor>,
     state: State<'_, AppState>,
 ) -> Result<ThreadRepliesResponse, String> {
@@ -260,32 +262,12 @@ pub async fn get_thread_replies(
         channel_id.as_deref(),
         depth_limit.unwrap_or(64),
         cap,
+        thread_order.as_deref(),
         cursor.as_ref(),
     );
 
     let events = query_relay(&state, &[serde_json::Value::Object(filter)]).await?;
-
-    // A full page implies there may be more; hand back the last event's
-    // composite key as the next cursor (the DB returns replies strictly after
-    // it, tiebroken by event_id so same-second replies are not skipped).
-    let next_cursor = if events.len() as u32 >= cap {
-        events.last().map(|ev| crate::models::ThreadCursor {
-            created_at: ev.created_at.as_secs() as i64,
-            event_id: ev.id.to_hex(),
-        })
-    } else {
-        None
-    };
-
-    let event_values: Vec<serde_json::Value> = events
-        .iter()
-        .filter_map(|ev| serde_json::to_value(ev).ok())
-        .collect();
-
-    Ok(ThreadRepliesResponse {
-        events: event_values,
-        next_cursor,
-    })
+    thread_page::parse(events, &root_event_id)
 }
 
 /// Build the relay `/query` filter for the server-side thread-subtree read.
@@ -308,6 +290,7 @@ fn build_thread_replies_filter(
     channel_id: Option<&str>,
     depth_limit: u32,
     cap: u32,
+    thread_order: Option<&str>,
     cursor: Option<&crate::models::ThreadCursor>,
 ) -> serde_json::Map<String, serde_json::Value> {
     let mut filter = serde_json::Map::new();
@@ -317,6 +300,9 @@ fn build_thread_replies_filter(
     // defaults it to a deep-but-bounded value so nested replies aren't dropped.
     filter.insert("depth_limit".to_string(), serde_json::json!(depth_limit));
     filter.insert("limit".to_string(), serde_json::json!(cap));
+    if matches!(thread_order, Some("newest")) {
+        filter.insert("thread_order".to_string(), serde_json::json!("newest"));
+    }
     if let Some(cid) = channel_id {
         filter.insert("#h".to_string(), serde_json::json!([cid]));
     }

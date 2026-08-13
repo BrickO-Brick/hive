@@ -18,11 +18,17 @@ export type TimelineQueryStatus = {
 export function selectTimelineLoadingState(
   status: TimelineQueryStatus,
   hasSettled = true,
+  hasAuthoritativeCache = false,
 ): boolean {
   if (status.isPending) {
     return true;
   }
   if (!hasSettled) {
+    // A populated authoritative window proves these rows came from a previous
+    // settled load, not from the live subscription's partial pre-settle seed.
+    if (hasAuthoritativeCache && (status.dataLength ?? 0) > 0) {
+      return false;
+    }
     // Placeholder rows are a previously-settled timeline (React-Query cache on
     // revisit, or a persisted snapshot) — paint them stale-then-revalidate
     // instead of holding a skeleton over known content.

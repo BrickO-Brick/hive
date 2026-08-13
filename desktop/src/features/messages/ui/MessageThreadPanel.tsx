@@ -1,6 +1,5 @@
 import * as React from "react";
 import { ArrowDown } from "lucide-react";
-
 import { useKnownAgentPubkeys } from "@/features/agents/useKnownAgentPubkeys";
 import { HuddleTranscriptIntro } from "@/features/huddle/components/HuddleTranscriptIntro";
 import { orderMentionPubkeysByText } from "@/features/messages/lib/orderMentionPubkeys";
@@ -52,7 +51,7 @@ import { useComposerHeightPadding } from "./useComposerHeightPadding";
 import { useStableSendToChannel } from "./useStableSendToChannel";
 import { useAnchoredScroll } from "./useAnchoredScroll";
 import { selectDeferredListRenderState } from "@/features/messages/lib/timelineSnapshot";
-
+import { useThreadPerformance } from "@/features/messages/useMessagePerformance";
 type MessageThreadPanelProps = ThreadPanelLayoutProps & {
   channel: Channel | null;
   channelId: string | null;
@@ -343,9 +342,6 @@ export function MessageThreadPanel({
     }
   }, [collapsedThreadHeadId, scrollTargetIsVisibleReply, threadHeadId]);
 
-  // Which of the three states the reply region paints this frame. Delegated to
-  // a pure helper so the "don't flash empty over an incoming list" rule is
-  // covered in the lib test suite (see selectDeferredListRenderState).
   const repliesRenderState = selectDeferredListRenderState(
     deferredThreadReplies.length,
     threadReplies.length,
@@ -363,11 +359,6 @@ export function MessageThreadPanel({
   const visibleThreadHeadSummary = isThreadHeadRepliesCollapsed
     ? threadHeadSummary
     : null;
-  // Focus mode gives the thread a subject/body structure: the head is what the
-  // thread is about, the replies are the conversation about it. Only draw the
-  // rule when there is actually conversation under it — the "no replies yet"
-  // card and the streaming-in `pending` state would both leave a rule hanging
-  // over an empty region or a placeholder.
   const showThreadHeadDivider =
     !isHuddleTranscript &&
     isFocusMode &&
@@ -524,6 +515,15 @@ export function MessageThreadPanel({
     "padding",
     settleAtBottomAfterLayout,
   );
+  useThreadPerformance({
+    bodyRef: threadBodyRef,
+    ready:
+      repliesRenderState === "list" &&
+      !threadRepliesPending &&
+      !isRepliesPending,
+    replyCount: deferredThreadReplies.length,
+    threadHeadId,
+  });
   const knownAgentPubkeys = useKnownAgentPubkeys();
   const initialAgentPubkeys = React.useMemo(() => {
     if (
@@ -647,7 +647,9 @@ export function MessageThreadPanel({
           className={cn(THREAD_PANEL_MESSAGE_GUTTER_CLASS, "pb-3 pt-0")}
           data-testid="message-thread-replies"
         >
-          {threadRepliesPending && !isHuddleTranscript ? (
+          {threadRepliesPending &&
+          !isHuddleTranscript &&
+          deferredThreadReplies.length === 0 ? (
             <div
               className="space-y-2.5 pt-1"
               data-testid="message-thread-replies-loading"
@@ -655,7 +657,8 @@ export function MessageThreadPanel({
               <ThreadMessageSkeleton />
               <ThreadMessageSkeleton />
             </div>
-          ) : repliesRenderState === "list" ? (
+          ) : repliesRenderState === "list" ||
+            deferredThreadReplies.length > 0 ? (
             visibleThreadHeadSummary ? (
               <div
                 className="space-y-0"

@@ -5,9 +5,18 @@ import {
   isRenderedTimelineBehindHistoryPrepend,
   selectTimelineBodySurface,
   selectTimelineIntroSurface,
+  selectTimelineRenderSource,
 } from "@/features/messages/lib/timelineSnapshot";
 import { preloadTimelineImages } from "@/features/messages/lib/timelineImagePreload";
 import type { TimelineMessage } from "@/features/messages/types";
+import {
+  useChannelRowsPaintedPerformanceMeasure,
+  useChannelViewportSettledPerformanceMeasure,
+} from "@/features/messages/useMessagePerformance";
+import {
+  CHANNEL_VIRTUALIZER_CALLBACK_MARK,
+  recordPerformanceMark,
+} from "@/features/messages/lib/messagePerformance";
 import type { MainTimelineEntry } from "@/features/messages/lib/threadPanel";
 import type { ChannelWindowThreadSummary } from "@/features/messages/lib/channelWindowStore";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
@@ -254,7 +263,45 @@ const MessageTimelineBase = React.forwardRef<
     liveSnapshot,
     EMPTY_TIMELINE_SNAPSHOT,
   );
-  const deferredMessages = deferredSnapshot.messages;
+  // Cold loads keep the deferred markdown gate. Once a channel has committed,
+  // a warm revisit can paint its cached snapshot immediately while refresh
+  // work continues behind it.
+  const requiresDeferredSettleRef = React.useRef(new Map<string, boolean>());
+  const snapshotChannelId = liveSnapshot.channelId;
+  if (snapshotChannelId) {
+    if (!requiresDeferredSettleRef.current.has(snapshotChannelId)) {
+      requiresDeferredSettleRef.current.set(snapshotChannelId, isLoading);
+    } else if (isLoading) {
+      requiresDeferredSettleRef.current.set(snapshotChannelId, true);
+    }
+    if (
+      !isLoading &&
+      deferredSnapshot.channelId === snapshotChannelId &&
+      messages.length > 0
+    ) {
+      requiresDeferredSettleRef.current.set(snapshotChannelId, false);
+    }
+  }
+  const renderSource = selectTimelineRenderSource({
+    deferredChannelId: deferredSnapshot.channelId,
+    liveChannelId: snapshotChannelId,
+    preferLiveSnapshot:
+      !isLoading &&
+      messages.length > 0 &&
+      (snapshotChannelId === null ||
+        requiresDeferredSettleRef.current.get(snapshotChannelId) === false),
+  });
+  const renderedSnapshot =
+    renderSource === "live"
+      ? liveSnapshot
+      : renderSource === "deferred"
+        ? deferredSnapshot
+        : EMPTY_TIMELINE_SNAPSHOT;
+  const deferredMessages = renderedSnapshot.messages;
+  useChannelRowsPaintedPerformanceMeasure(
+    channelId ?? null,
+    deferredMessages.length,
+  );
   const imagePreloadStateRef = React.useRef({
     activeImages: new Set<HTMLImageElement>(),
     requestedUrls: new Set<string>(),
@@ -262,11 +309,13 @@ const MessageTimelineBase = React.forwardRef<
   React.useEffect(() => {
     preloadTimelineImages(messages, imagePreloadStateRef.current);
   }, [messages]);
-  const isDeferredSnapshotStale = isDeferredTimelineSnapshotStale({
-    deferredSnapshot,
-    liveSnapshot,
-  });
-  const isRenderPending = deferredSnapshot !== liveSnapshot;
+  const isDeferredSnapshotStale =
+    renderSource === null &&
+    isDeferredTimelineSnapshotStale({
+      deferredSnapshot,
+      liveSnapshot,
+    });
+  const isRenderPending = renderedSnapshot !== liveSnapshot;
   const scrollRestorationId = targetMessageId
     ? `message-timeline:${channelId ?? "none"}:target:${targetMessageId}`
     : `message-timeline:${channelId ?? "none"}`;
@@ -339,7 +388,7 @@ const MessageTimelineBase = React.forwardRef<
   } = useSettleGatedPrependMessages({
     channelId,
     messages: bufferedTimeline.messages,
-    meta: deferredSnapshot.historyExhausted,
+    meta: renderedSnapshot.historyExhausted,
     scrollElementRef: activeScrollContainerRef,
   });
 
@@ -637,8 +686,20 @@ const MessageTimelineBase = React.forwardRef<
   );
 
   const handleVirtualizerRangeChanged = React.useCallback(() => {
+    recordPerformanceMark(CHANNEL_VIRTUALIZER_CALLBACK_MARK, {
+      channelId: channelId ?? null,
+    });
     bumpVirtualizerRenderVersion();
-  }, []);
+  }, [channelId]);
+  useChannelViewportSettledPerformanceMeasure({
+    channelId: channelId ?? null,
+    ready:
+      showMessageList &&
+      renderedMessages.length > 0 &&
+      !isRenderPending &&
+      !isHoldingPrepend,
+    settleVersion: virtualizerRenderVersion,
+  });
 
   const timelineList = showMessageList ? (
     <TimelineMessageList
@@ -792,7 +853,12 @@ const MessageTimelineBase = React.forwardRef<
                 )}
               >
                 {showTimelineSkeleton ? (
-                  <TimelineSkeleton rows={timelineSkeletonRows} />
+                  <div
+                    className="contents"
+                    data-testid="message-timeline-loading"
+                  >
+                    <TimelineSkeleton rows={timelineSkeletonRows} />
+                  </div>
                 ) : null}
                 {activeDirectMessageIntro ? (
                   <div

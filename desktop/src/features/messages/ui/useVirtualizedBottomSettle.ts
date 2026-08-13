@@ -1,5 +1,9 @@
 import * as React from "react";
 import type { VListHandle } from "virtua";
+import {
+  CHANNEL_SCROLL_WRITE_MARK,
+  recordPerformanceMark,
+} from "@/features/messages/lib/messagePerformance";
 
 const SCROLL_INTENT_KEYS = new Set([
   "ArrowDown",
@@ -44,6 +48,7 @@ export function useVirtualizedBottomSettle(
     const scroller = hostRef.current?.firstElementChild;
     const lastIndex = itemsLengthRef.current - 1;
     if (!(scroller instanceof HTMLDivElement) || lastIndex < 0) return;
+    recordPerformanceMark(CHANNEL_SCROLL_WRITE_MARK, { lastIndex });
     listRef.current?.scrollToIndex(lastIndex, { align: "end" });
   }, [hostRef, itemsLengthRef, listRef]);
 

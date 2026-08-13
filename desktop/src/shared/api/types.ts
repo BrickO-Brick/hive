@@ -1,7 +1,6 @@
 export type ChannelType = "stream" | "forum" | "dm";
 export type ChannelVisibility = "open" | "private";
 export type ChannelRole = "owner" | "admin" | "member" | "guest" | "bot";
-
 export type Channel = {
   id: string;
   name: string;
@@ -20,7 +19,6 @@ export type Channel = {
   ttlSeconds: number | null;
   ttlDeadline: string | null;
 };
-
 export type ChannelDetail = Channel & {
   createdBy: string;
   createdAt: string;
@@ -965,9 +963,11 @@ export type ThreadCursor = {
 };
 
 export type ThreadRepliesResponse = {
-  /** The reply subtree (chronological, oldest first), depth >= 1. Excludes the root event (relay keys on `root_event_id`, which a root row lacks); the caller already holds the root. */
+  /** Page events; callers merge chronologically. */
   events: RelayEvent[];
-  /** Present only when a full page was returned — pass back to fetch the next page. */
+  /** Relay-authoritative; never infer from event count. */
+  hasMore: boolean;
+  /** Raw-scan continuation, present exactly with `hasMore`. */
   nextCursor: ThreadCursor | null;
 };
 

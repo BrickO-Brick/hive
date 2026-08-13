@@ -14,6 +14,7 @@ import {
   selectLatestMessageKey,
   selectTimelineBodySurface,
   selectTimelineIntroSurface,
+  selectTimelineRenderSource,
 } from "./timelineSnapshot.ts";
 
 // Local-midnight unix-second timestamps so isSameDay (local time) is stable
@@ -369,6 +370,39 @@ test("classifyTimelineMessageDelta: unchanged snapshots do not count as arrivals
 // painted (deferred) snapshot lags the live one for a frame. selectDeferredList
 // RenderState picks which of three states the reply region paints so we never
 // flash "No replies" over a list that's streaming in on the deferred commit.
+
+test("timeline-render-source: keeps a cold channel deferred until it commits", () => {
+  assert.equal(
+    selectTimelineRenderSource({
+      deferredChannelId: "old-channel",
+      liveChannelId: "cold-channel",
+      preferLiveSnapshot: false,
+    }),
+    null,
+  );
+});
+
+test("timeline-render-source: paints a settled channel cache during revisit", () => {
+  assert.equal(
+    selectTimelineRenderSource({
+      deferredChannelId: "other-channel",
+      liveChannelId: "cached-channel",
+      preferLiveSnapshot: true,
+    }),
+    "live",
+  );
+});
+
+test("timeline-render-source: uses the matching deferred snapshot", () => {
+  assert.equal(
+    selectTimelineRenderSource({
+      deferredChannelId: "channel-a",
+      liveChannelId: "channel-a",
+      preferLiveSnapshot: false,
+    }),
+    "deferred",
+  );
+});
 
 test("deferred-render: paints the list whenever the deferred snapshot has rows", () => {
   // deferred caught up — normal steady state.

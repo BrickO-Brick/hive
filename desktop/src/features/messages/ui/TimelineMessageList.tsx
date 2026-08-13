@@ -22,6 +22,10 @@ import type { MainTimelineEntry } from "@/features/messages/lib/threadPanel";
 import type { ChannelWindowThreadSummary } from "@/features/messages/lib/channelWindowStore";
 import { buildVideoReviewContextsByMessageId } from "@/features/messages/lib/videoReviewContext";
 import type { TimelineMessage } from "@/features/messages/types";
+import {
+  CHANNEL_RESIZE_OBSERVER_CALLBACK_MARK,
+  recordPerformanceMark,
+} from "@/features/messages/lib/messagePerformance";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import type { ChannelType } from "@/shared/api/types";
 import { cn } from "@/shared/lib/cn";
@@ -695,7 +699,10 @@ function VirtualizedTimelineRows({
       setOffscreenBufferSize(host.clientHeight * 3);
     };
     updateBufferSize();
-    const resizeObserver = new ResizeObserver(updateBufferSize);
+    const resizeObserver = new ResizeObserver(() => {
+      recordPerformanceMark(CHANNEL_RESIZE_OBSERVER_CALLBACK_MARK);
+      updateBufferSize();
+    });
     resizeObserver.observe(host);
     return () => resizeObserver.disconnect();
   }, []);

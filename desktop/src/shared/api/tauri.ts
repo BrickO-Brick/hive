@@ -7,7 +7,10 @@ import {
   fromRawInstallRuntimeResult,
   type RawInstallRuntimeResult,
 } from "@/shared/api/installTypes";
-import type { RawSendChannelMessageResult } from "@/shared/api/tauriMessageTypes";
+import type {
+  RawSendChannelMessageResult,
+  RawThreadRepliesResponse,
+} from "@/shared/api/tauriMessageTypes";
 import type {
   AddChannelMembersInput,
   AddChannelMembersResult,
@@ -471,16 +474,6 @@ export async function getEventById(eventId: string): Promise<RelayEvent> {
   return JSON.parse(eventJson) as RelayEvent;
 }
 
-type RawThreadCursor = {
-  created_at: number;
-  event_id: string;
-};
-
-type RawThreadRepliesResponse = {
-  events: RelayEvent[];
-  next_cursor: RawThreadCursor | null;
-};
-
 /**
  * Fetch the full reply subtree under a thread root, server-side.
  *
@@ -504,6 +497,7 @@ export async function getThreadReplies(
     limit?: number;
     depthLimit?: number;
     cursor?: ThreadCursor | null;
+    order?: "oldest" | "newest";
   },
 ): Promise<ThreadRepliesResponse> {
   const response = await invokeTauri<RawThreadRepliesResponse>(
@@ -513,6 +507,7 @@ export async function getThreadReplies(
       channelId: channelId ?? null,
       limit: options?.limit ?? null,
       depthLimit: options?.depthLimit ?? null,
+      threadOrder: options?.order ?? null,
       cursor: options?.cursor
         ? {
             created_at: options.cursor.createdAt,
@@ -524,6 +519,7 @@ export async function getThreadReplies(
 
   return {
     events: response.events,
+    hasMore: response.has_more,
     nextCursor: response.next_cursor
       ? {
           createdAt: response.next_cursor.created_at,

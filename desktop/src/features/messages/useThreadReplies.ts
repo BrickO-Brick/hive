@@ -89,15 +89,22 @@ async function loadThreadReplies(
     const response = await getThreadReplies(rootId, channelId, {
       limit: THREAD_PAGE_LIMIT,
       cursor,
+      order: "newest",
     });
-    replies.push(...response.events);
-    if (!response.nextCursor) {
-      const fetched = await withThreadAux(channelId, rootId, replies);
+    const pageWithAux = await withThreadAux(channelId, rootId, response.events);
+    replies.push(...pageWithAux);
+    queryClient.setQueryData<RelayEvent[]>(queryKey, (current = []) =>
+      sortMessages([...current, ...pageWithAux]),
+    );
+    if (!response.hasMore) {
       const current = queryClient.getQueryData<RelayEvent[]>(queryKey) ?? [];
       const receivedInFlight = current.filter(
         (event) => !idsAtStart.has(event.id),
       );
-      return sortMessages([...fetched, ...receivedInFlight]);
+      return sortMessages([...replies, ...receivedInFlight]);
+    }
+    if (!response.nextCursor) {
+      throw new Error(`Thread ${rootId} returned hasMore without a cursor.`);
     }
     cursor = response.nextCursor;
   }

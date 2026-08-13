@@ -321,6 +321,7 @@ pub struct ThreadCursor {
 #[derive(Serialize, Deserialize)]
 pub struct ThreadRepliesResponse {
     pub events: Vec<serde_json::Value>,
+    pub has_more: bool,
     pub next_cursor: Option<ThreadCursor>,
 }
 

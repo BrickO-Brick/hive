@@ -1,6 +1,7 @@
 import * as React from "react";
 import { useAppShell } from "@/app/AppShellContext";
 import { useAppNavigation } from "@/app/navigation/useAppNavigation";
+import { useMeasuredOpenThread } from "@/features/messages/useMessagePerformance";
 import { useActiveChannelHeader } from "@/features/channels/useActiveChannelHeader";
 import { useChannelPaneHandlers } from "@/features/channels/useChannelPaneHandlers";
 import { useMessageEventProfilePubkeys } from "@/features/channels/useMessageEventProfilePubkeys";
@@ -595,6 +596,9 @@ export function ChannelScreen({
   const settledChannelIdRef = React.useRef<string | null>(null);
   const hasSettledThisChannel =
     activeChannelId !== null && settledChannelIdRef.current === activeChannelId;
+  const hasAuthoritativeTimelineCache = Boolean(
+    windowQuery.data && windowQuery.data.pages.length > 0,
+  );
   const timelineLoadingNow =
     activeChannel !== null &&
     activeChannel.channelType !== "forum" &&
@@ -606,6 +610,7 @@ export function ChannelScreen({
         dataLength: messagesQuery.data?.length ?? null,
       },
       hasSettledThisChannel,
+      hasAuthoritativeTimelineCache,
     );
   const { settledChannelId, isLoading: isTimelineLoading } =
     resolveTimelineLoadingLatch(
@@ -673,6 +678,10 @@ export function ChannelScreen({
       channelManagementOpen,
   );
   const displayedThreadHeadMessage = threadPanelData.threadHead;
+  const handleMeasuredOpenThread = useMeasuredOpenThread(
+    effectiveOpenThreadHeadId,
+    handleOpenThreadAndCloseAgentSession,
+  );
   const displayedThreadAllMessages = threadPanelData.messages;
   const displayedThreadMessages = threadPanelData.visibleReplies;
   const displayedThreadReplyTargetMessage = threadPanelData.replyTargetMessage;
@@ -914,7 +923,7 @@ export function ChannelScreen({
                   onOpenProfilePanel={handleOpenProfilePanel}
                   onResetThreadPanelWidth={handleThreadPanelWidthReset}
                   onCloseProfilePanel={handleCloseProfilePanel}
-                  onOpenThread={handleOpenThreadAndCloseAgentSession}
+                  onOpenThread={handleMeasuredOpenThread}
                   onSelectThreadReplyTarget={handleSelectThreadReplyTarget}
                   onSendMessage={handleSendMessage}
                   onSendToChannel={handleSendToChannel}

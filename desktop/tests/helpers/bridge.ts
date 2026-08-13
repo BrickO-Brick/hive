@@ -293,7 +293,11 @@ type MockBridgeOptions = {
   /** Delay (ms) after snapshotting a thread-replies page so E2E tests can
    * deliver live reply/aux events while an older response is in flight. */
   threadRepliesDelayMs?: number;
+  /** Hold page 2 until the E2E release seam is called. */
+  holdThreadRepliesPage2?: boolean;
   usersBatchDelayMs?: number;
+  /** Delay (ms) for initial channel-window requests. */
+  initialChannelWindowDelayMs?: number;
   /** Delay (ms) for older-history fetches; see e2eBridge mock config. */
   channelWindowDelayMs?: number;
   profileReadDelayMs?: number;

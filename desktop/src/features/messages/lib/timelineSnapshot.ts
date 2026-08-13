@@ -181,6 +181,22 @@ export function selectDeferredListRenderState(
   return "pending";
 }
 
+export type TimelineRenderSource = "live" | "deferred" | null;
+
+/** Keep cold loads deferred, but let an already-settled channel repaint cache. */
+export function selectTimelineRenderSource({
+  deferredChannelId,
+  liveChannelId,
+  preferLiveSnapshot,
+}: {
+  deferredChannelId: string | null;
+  liveChannelId: string | null;
+  preferLiveSnapshot: boolean;
+}): TimelineRenderSource {
+  if (deferredChannelId === liveChannelId) return "deferred";
+  return preferLiveSnapshot ? "live" : null;
+}
+
 export type TimelineBodySurface = "skeleton" | "empty" | "list";
 
 export function selectTimelineBodySurface({

@@ -339,7 +339,11 @@ type E2eConfig = {
     /** Delay (ms) after snapshotting a thread-replies page so E2E tests can
      *  deliver live reply/aux events while an older response is in flight. */
     threadRepliesDelayMs?: number;
+    /** Hold the first continuation page until the E2E release seam is called. */
+    holdThreadRepliesPage2?: boolean;
     usersBatchDelayMs?: number;
+    /** Delay (ms) applied only to initial channel-window requests. */
+    initialChannelWindowDelayMs?: number;
     /** Delay (ms) applied to continuation channel-window requests so e2e
      *  tests can observe the in-flight prepend window. 0/undefined = instant. */
     channelWindowDelayMs?: number;
@@ -1111,6 +1115,16 @@ declare global {
       command: string;
       payload: unknown;
     }>;
+    /** Start/end timestamps for deterministic message-performance assertions. */
+    __BUZZ_E2E_MESSAGE_REQUEST_LOG__?: Array<{
+      command: "get_channel_window" | "get_thread_replies";
+      endedAt: number | null;
+      payload: unknown;
+      requestId: number;
+      startedAt: number;
+    }>;
+    /** Release the held thread continuation page in the disposable A/B probe. */
+    __BUZZ_E2E_RELEASE_THREAD_PAGE_2__?: () => void;
     /** Release a mock media proxy held at port 0 and return its ready port. */
     __BUZZ_E2E_RELEASE_MEDIA_PROXY__?: () => number;
     /** Release mock send events that were stored but withheld from live subscribers. */
@@ -4607,6 +4621,7 @@ type RawThreadCursor = {
 
 type RawThreadRepliesResponse = {
   events: RelayEvent[];
+  has_more: boolean;
   next_cursor: RawThreadCursor | null;
 };
 
@@ -4626,6 +4641,7 @@ async function handleGetThreadReplies(
     limit?: number | null;
     depthLimit?: number | null;
     cursor?: RawThreadCursor | null;
+    threadOrder?: "oldest" | "newest" | null;
   },
   config: E2eConfig | undefined,
 ): Promise<RawThreadRepliesResponse> {
@@ -4699,23 +4715,35 @@ async function handleGetThreadReplies(
             event_id: events[events.length - 1].id,
           }
         : null;
-    return { events, next_cursor: nextCursor };
+    return {
+      events,
+      has_more: nextCursor !== null,
+      next_cursor: nextCursor,
+    };
   }
 
   // Mock mode paging: sort by the composite key, then slice strictly after the
   // cursor so same-second ties can never be skipped across a page boundary.
-  subtree.sort(
-    (left, right) =>
-      left.created_at - right.created_at || left.id.localeCompare(right.id),
-  );
+  const order = args.threadOrder ?? "oldest";
+  subtree.sort((left, right) => {
+    const chronological =
+      left.created_at - right.created_at || left.id.localeCompare(right.id);
+    if (order === "oldest") return chronological;
+    return (
+      right.created_at - left.created_at || right.id.localeCompare(left.id)
+    );
+  });
   let start = 0;
   if (args.cursor) {
     const cursor = args.cursor;
-    start = subtree.findIndex(
-      (event) =>
-        event.created_at > cursor.created_at ||
-        (event.created_at === cursor.created_at &&
-          event.id.localeCompare(cursor.event_id) > 0),
+    start = subtree.findIndex((event) =>
+      order === "oldest"
+        ? event.created_at > cursor.created_at ||
+          (event.created_at === cursor.created_at &&
+            event.id.localeCompare(cursor.event_id) > 0)
+        : event.created_at < cursor.created_at ||
+          (event.created_at === cursor.created_at &&
+            event.id.localeCompare(cursor.event_id) < 0),
     );
     if (start < 0) {
       start = subtree.length;
@@ -4729,12 +4757,31 @@ async function handleGetThreadReplies(
           event_id: page[page.length - 1].id,
         }
       : null;
+  if (
+    config?.mock?.holdThreadRepliesPage2 &&
+    args.cursor &&
+    window.__BUZZ_E2E_MESSAGE_REQUEST_LOG__?.filter(
+      (request) => request.command === "get_thread_replies",
+    ).length === 2 &&
+    window.__BUZZ_E2E_RELEASE_THREAD_PAGE_2__ === undefined
+  ) {
+    await new Promise<void>((resolve) => {
+      window.__BUZZ_E2E_RELEASE_THREAD_PAGE_2__ = () => {
+        delete window.__BUZZ_E2E_RELEASE_THREAD_PAGE_2__;
+        resolve();
+      };
+    });
+  }
   const delayMs = config?.mock?.threadRepliesDelayMs ?? 0;
   if (delayMs > 0) {
     await new Promise((resolve) => window.setTimeout(resolve, delayMs));
   }
 
-  return { events: page, next_cursor: nextCursor };
+  return {
+    events: page,
+    has_more: nextCursor !== null,
+    next_cursor: nextCursor,
+  };
 }
 
 const TIMELINE_KINDS = new Set([
@@ -5092,10 +5139,6 @@ async function handleGetChannelWindow(
     return relayQuery(config, [filter]);
   };
 
-  if (!args.cursor) {
-    return execute();
-  }
-
   const probe = window as unknown as {
     __CHANNEL_WINDOW_FETCH_COUNT__?: number;
     __CHANNEL_WINDOW_INFLIGHT__?: number;
@@ -5104,7 +5147,9 @@ async function handleGetChannelWindow(
   probe.__CHANNEL_WINDOW_FETCH_COUNT__ =
     (probe.__CHANNEL_WINDOW_FETCH_COUNT__ ?? 0) + 1;
 
-  const delayMs = getConfig()?.mock?.channelWindowDelayMs ?? 0;
+  const delayMs = args.cursor
+    ? (getConfig()?.mock?.channelWindowDelayMs ?? 0)
+    : (getConfig()?.mock?.initialChannelWindowDelayMs ?? 0);
   if (delayMs <= 0) {
     return execute();
   }
@@ -10166,6 +10211,7 @@ export function maybeInstallE2eTauriMocks() {
   window.__BUZZ_E2E_COMMANDS__ = [];
   window.__BUZZ_E2E_COMMAND_PAYLOADS__ = [];
   window.__BUZZ_E2E_COMMAND_LOG__ = [];
+  window.__BUZZ_E2E_MESSAGE_REQUEST_LOG__ = [];
   mockMediaProxyPort = config.mock?.mediaProxyInitiallyUnavailable
     ? 0
     : MOCK_MEDIA_PROXY_PORT;
@@ -13166,11 +13212,37 @@ export function maybeInstallE2eTauriMocks() {
         throw new Error(`Unsupported mocked Tauri command: ${command}`);
     }
   };
+  const invokeMockCommand = async (
+    command: string,
+    payload: unknown,
+  ): Promise<unknown> => {
+    const messageCommand =
+      command === "get_channel_window" || command === "get_thread_replies"
+        ? command
+        : null;
+    if (!messageCommand) return handleMockCommand(command, payload);
+
+    const messageRequest: NonNullable<
+      typeof window.__BUZZ_E2E_MESSAGE_REQUEST_LOG__
+    >[number] = {
+      command: messageCommand,
+      endedAt: null,
+      payload,
+      requestId: window.__BUZZ_E2E_MESSAGE_REQUEST_LOG__?.length ?? 0,
+      startedAt: performance.now(),
+    };
+    window.__BUZZ_E2E_MESSAGE_REQUEST_LOG__?.push(messageRequest);
+    try {
+      return await handleMockCommand(command, payload);
+    } finally {
+      messageRequest.endedAt = performance.now();
+    }
+  };
   window.__BUZZ_E2E_INVOKE_MOCK_COMMAND__ = (command, payload) =>
-    handleMockCommand(command, payload ?? null);
+    invokeMockCommand(command, payload ?? null);
   window.__BUZZ_E2E_EMIT_TAURI_EVENT__ = (event, payload) =>
     emit(event, payload);
-  mockIPC(handleMockCommand, { shouldMockEvents: true });
+  mockIPC(invokeMockCommand, { shouldMockEvents: true });
   const tauriInternals = (
     window as typeof window & {
       __TAURI_INTERNALS__: {
