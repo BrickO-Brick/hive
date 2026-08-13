@@ -10,6 +10,7 @@ import 'package:uuid/uuid.dart';
 import '../../../shared/crypto/nip44.dart';
 import '../../../shared/relay/relay.dart';
 import '../../../shared/read_state/read_state_time.dart';
+import 'section_workspace_sync.dart';
 import 'channel_sections_storage.dart';
 
 const _uuid = Uuid();
@@ -38,6 +39,7 @@ class ChannelSectionsManager {
   final RelaySessionNotifier? _relaySession;
   final SignedEventRelay? _signedEventRelay;
   final bool _remoteEnabled;
+  final SectionWorkspaceSyncManager? _workspaceSync;
   final VoidCallback _onChanged;
 
   ChannelSectionStore _store;
@@ -51,6 +53,7 @@ class ChannelSectionsManager {
   /// Base delay for the startup-sync retry backoff. Overridable in tests.
   final Duration _startupRetryBaseDelay;
   Timer? _startupRetryTimer;
+  Timer? _workspaceRetryTimer;
   int _startupRetryAttempt = 0;
   bool _startupFetchSucceeded = false;
   Future<void>? _syncInFlight;
@@ -64,22 +67,165 @@ class ChannelSectionsManager {
     required RelaySessionNotifier? relaySession,
     required SignedEventRelay? signedEventRelay,
     required bool remoteEnabled,
+    SectionWorkspaceSyncManager? workspaceSync,
     required VoidCallback onChanged,
     @visibleForTesting
     Duration startupRetryBaseDelay = const Duration(seconds: 2),
-  }) : _storage = ChannelSectionsStorage(prefs),
+  }) : _storage = ChannelSectionsStorage(
+         prefs,
+         relayAuthority: workspaceSync?.relayStorageScope,
+       ),
        _crypto = crypto,
        _relaySession = relaySession,
        _signedEventRelay = signedEventRelay,
        _remoteEnabled = remoteEnabled,
+       _workspaceSync = workspaceSync,
        _onChanged = onChanged,
        _startupRetryBaseDelay = startupRetryBaseDelay,
-       _store = ChannelSectionsStorage(prefs).read(pubkey);
+       _store = ChannelSectionsStorage(
+         prefs,
+         relayAuthority: workspaceSync?.relayStorageScope,
+       ).read(pubkey);
 
   ChannelSectionStore get store => _store;
 
+  bool applyWorkspaceProjection(SectionWorkspaceProjection projection) {
+    if (_disposed) return false;
+    try {
+      final key = SectionWorkspaceKeyEnvelopeCrypto(
+        nsec: _workspaceNsec,
+        ownerPubkey: projection.ownerPubkey,
+      ).unwrap(projection.readerKeyEnvelope);
+      final metadata = SectionWorkspaceMetadataCrypto(key);
+      final sections = <ChannelSection>[];
+      final projectedSections = projection.sections.toList()
+        ..sort((a, b) => a.rank.compareTo(b.rank));
+      for (final projected in projectedSections) {
+        final name = metadata.decrypt(
+          envelope: projected.encryptedLabel,
+          community: _workspaceAuthority,
+          ownerPubkey: projection.ownerPubkey,
+          sectionId: projected.id,
+          keyEpoch: projection.keyEpoch,
+          purpose: 'label',
+        );
+        final icon = projected.encryptedIcon == null
+            ? null
+            : metadata.decrypt(
+                envelope: projected.encryptedIcon!,
+                community: _workspaceAuthority,
+                ownerPubkey: projection.ownerPubkey,
+                sectionId: projected.id,
+                keyEpoch: projection.keyEpoch,
+                purpose: 'icon',
+              );
+        sections.add(
+          ChannelSection(
+            id: projected.id,
+            name: name,
+            icon: icon,
+            order: projected.rank,
+          ),
+        );
+      }
+      // Workspace state is read-only in Stage 1. Do not overwrite the local
+      // legacy store when rendering a verified projection; it remains the
+      // rollback source used to construct an import until cutover completes.
+      _store = ChannelSectionStore(
+        sections: sections,
+        assignments: {
+          for (final assignment in projection.assignments)
+            assignment.channelId: assignment.sectionId,
+        },
+      );
+      _onChanged();
+      return true;
+    } catch (error) {
+      debugPrint(
+        '[ChannelSectionsManager] workspace projection rejected: $error',
+      );
+      return false;
+    }
+  }
+
+  String get _workspaceNsec => _workspaceSync?.nsec ?? '';
+  String get _workspaceAuthority => _workspaceSync?.relayAuthority ?? '';
+
+  bool get _legacyMutationAllowed =>
+      _workspaceSync == null || _workspaceSync.legacyReadAllowed;
+
+  void stopLegacySync() {
+    if (_disposed) return;
+    _startupRetryTimer?.cancel();
+    _startupRetryTimer = null;
+    _workspaceRetryTimer?.cancel();
+    _workspaceRetryTimer = null;
+    _publishDebounce?.cancel();
+    _publishDebounce = null;
+    _unsubscribe?.call();
+    _unsubscribe = null;
+    _subscriptionGeneration++;
+    _startupFetchSucceeded = true;
+    _syncAgain = false;
+  }
+
+  Future<void> retryWorkspaceSubscription() async {
+    if (_disposed || _workspaceSync == null) return;
+    if (!_workspaceSync.probeCompleted) {
+      await _workspaceSync.probe();
+      if (_workspaceSync.workspaceKnown) {
+        stopLegacySync();
+        _onChanged();
+        return;
+      }
+      if (!_workspaceSync.probeCompleted) {
+        scheduleWorkspaceRetry();
+        return;
+      }
+    }
+    if (_workspaceSync.subscriptionActive) {
+      await _workspaceSync.retryPendingImport();
+      return;
+    }
+    final subscribed = await _workspaceSync.startSubscription();
+    if (subscribed) {
+      await _workspaceSync.retryPendingImport();
+    } else {
+      scheduleWorkspaceRetry();
+    }
+  }
+
+  void scheduleWorkspaceRetry() {
+    if (_disposed || _workspaceRetryTimer != null) return;
+    _workspaceRetryTimer = Timer(_startupRetryBaseDelay, () {
+      _workspaceRetryTimer = null;
+      unawaited(retryWorkspaceSubscription());
+    });
+  }
+
   Future<void> initialize() async {
     if (_disposed) return;
+    if (_workspaceSync != null) {
+      // Render the last verified projection before touching the network.
+      if (_workspaceSync.cache != null &&
+          applyWorkspaceProjection(_workspaceSync.cache!.projection)) {
+        _workspaceSync.markCacheVerified();
+      }
+      if (_remoteEnabled && _relaySession != null) {
+        await _workspaceSync.probe();
+        final subscribed = await _workspaceSync.startSubscription();
+        if (!subscribed) scheduleWorkspaceRetry();
+        await _workspaceSync.retryPendingImport();
+      }
+      // A verified cache or projection is authoritative. Do not even open a
+      // legacy subscription after cutover; the old blob is a read-only
+      // rollback artifact, not a second source of truth.
+      if (_workspaceSync.workspaceKnown) {
+        stopLegacySync();
+        _onChanged();
+        return;
+      }
+    }
 
     if (!_remoteEnabled || _relaySession == null) {
       _onChanged();
@@ -120,10 +266,29 @@ class ChannelSectionsManager {
   }
 
   Future<void> _runSyncWithRelay() async {
+    if (_workspaceSync != null && !_workspaceSync.probeCompleted) {
+      await _workspaceSync.probe();
+      await _workspaceSync.startSubscription();
+      if (_disposed) return;
+      if (_workspaceSync.workspaceKnown) {
+        stopLegacySync();
+        _onChanged();
+        return;
+      }
+    }
     if (!_startupFetchSucceeded) {
       final fetched = await _fetchAndMerge();
       if (_disposed) return;
       _startupFetchSucceeded = fetched;
+    }
+    // A live workspace projection can arrive while the legacy history fetch is
+    // in flight. Re-check the cutover boundary before opening any legacy
+    // subscription; otherwise a projection callback could stop a subscription
+    // that this continuation immediately recreates.
+    if (_workspaceSync?.workspaceKnown == true) {
+      stopLegacySync();
+      _onChanged();
+      return;
     }
 
     final subscribed = _unsubscribe != null || await _startLiveSubscription();
@@ -170,11 +335,14 @@ class ChannelSectionsManager {
   void dispose({bool flushPending = true}) {
     if (_disposed) return;
     _disposed = true;
+    _workspaceSync?.dispose();
     _subscriptionGeneration++;
     _syncAgain = false;
 
     _startupRetryTimer?.cancel();
     _startupRetryTimer = null;
+    _workspaceRetryTimer?.cancel();
+    _workspaceRetryTimer = null;
 
     final hadPending = _publishDebounce != null;
     _publishDebounce?.cancel();
@@ -189,7 +357,7 @@ class ChannelSectionsManager {
   }
 
   void createSection(String name) {
-    if (_disposed) return;
+    if (_disposed || !_legacyMutationAllowed) return;
     final maxOrder = _store.sections.fold<int>(
       -1,
       (max, s) => s.order > max ? s.order : max,
@@ -208,7 +376,7 @@ class ChannelSectionsManager {
   }
 
   void renameSection(String sectionId, String newName) {
-    if (_disposed) return;
+    if (_disposed || !_legacyMutationAllowed) return;
     _store = ChannelSectionStore(
       sections: [
         for (final s in _store.sections)
@@ -229,7 +397,7 @@ class ChannelSectionsManager {
   }
 
   void deleteSection(String sectionId) {
-    if (_disposed) return;
+    if (_disposed || !_legacyMutationAllowed) return;
     final updatedAssignments = Map<String, String>.from(_store.assignments)
       ..removeWhere((_, sid) => sid == sectionId);
     _store = ChannelSectionStore(
@@ -244,7 +412,7 @@ class ChannelSectionsManager {
   }
 
   void moveSectionUp(String sectionId) {
-    if (_disposed) return;
+    if (_disposed || !_legacyMutationAllowed) return;
     final sorted = _sortedSections();
     final idx = sorted.indexWhere((s) => s.id == sectionId);
     if (idx <= 0) return;
@@ -253,7 +421,7 @@ class ChannelSectionsManager {
   }
 
   void moveSectionDown(String sectionId) {
-    if (_disposed) return;
+    if (_disposed || !_legacyMutationAllowed) return;
     final sorted = _sortedSections();
     final idx = sorted.indexWhere((s) => s.id == sectionId);
     if (idx < 0 || idx >= sorted.length - 1) return;
@@ -262,7 +430,7 @@ class ChannelSectionsManager {
   }
 
   void assignChannel(String channelId, String sectionId) {
-    if (_disposed) return;
+    if (_disposed || !_legacyMutationAllowed) return;
     final updated = Map<String, String>.from(_store.assignments)
       ..[channelId] = sectionId;
     _store = ChannelSectionStore(
@@ -274,7 +442,7 @@ class ChannelSectionsManager {
   }
 
   void unassignChannel(String channelId) {
-    if (_disposed) return;
+    if (_disposed || !_legacyMutationAllowed) return;
     final updated = Map<String, String>.from(_store.assignments)
       ..remove(channelId);
     _store = ChannelSectionStore(
@@ -286,7 +454,7 @@ class ChannelSectionsManager {
   }
 
   void markDirty() {
-    if (!_remoteEnabled || _disposed) return;
+    if (!_remoteEnabled || _disposed || !_legacyMutationAllowed) return;
     _publishDebounce?.cancel();
     _publishDebounce = Timer(const Duration(seconds: 5), () {
       _publishDebounce = null;
@@ -311,7 +479,12 @@ class ChannelSectionsManager {
       );
       if (_disposed && !allowDisposed) return false;
       _mergeEvents(events);
-      _persist();
+      // A workspace projection or migration marker can become authoritative
+      // while the legacy fetch is in flight. Never write the rendered
+      // workspace state back into the legacy blob after that boundary.
+      if (_workspaceSync == null || _workspaceSync.legacyReadAllowed) {
+        _persist();
+      }
       if (!_disposed) _onChanged();
       return true;
     } catch (error) {
@@ -375,16 +548,53 @@ class ChannelSectionsManager {
   }
 
   void _mergeEvent(NostrEvent event) {
-    // Only process channel-sections d-tag events.
-    final dTag = event.getTagValue('d');
-    if (dTag != 'channel-sections') return;
+    if (event.pubkey != pubkey || event.kind != EventKind.readState) return;
+    final pendingSource =
+        _workspaceSync?.isPendingImportSource(event.id) ?? false;
+    if (_workspaceSync != null &&
+        !_workspaceSync.legacyReadAllowed &&
+        !pendingSource) {
+      return;
+    }
+    if (_workspaceSync?.workspaceKnown == true) return;
+    if (_workspaceSync?.migrationStarted == true && !pendingSource) {
+      return;
+    }
+    // A persisted import command is already the exact retry source. Do not
+    // re-render or persist the legacy event while the one-way cutover is
+    // pending; this keeps the workspace/import lane authoritative.
+    if (pendingSource) {
+      unawaited(_workspaceSync!.retryPendingImport());
+      return;
+    }
+
+    // Only process exactly one channel-sections d-tag event.
+    final dTags = event.tags
+        .where(
+          (tag) =>
+              tag.length == 2 && tag[0] == 'd' && tag[1] == 'channel-sections',
+        )
+        .length;
+    if (dTags != 1) return;
 
     try {
       final plaintext = _crypto.decrypt(event.content);
-      final parsed = jsonDecode(plaintext);
+      final parsed = parseSectionWorkspaceJson(plaintext);
       if (parsed is! Map<String, dynamic>) return;
 
       final incoming = ChannelSectionStore.fromJson(parsed);
+
+      if (_workspaceSync != null &&
+          _workspaceSync.probeCompleted &&
+          !_workspaceSync.workspaceKnown) {
+        unawaited(
+          _workspaceSync.tryImportLegacy(
+            event: event,
+            plaintext: parsed,
+            store: incoming,
+          ),
+        );
+      }
 
       // Last-write-wins: newer createdAt wins; tie-break by event ID.
       final isNewer =
@@ -396,7 +606,9 @@ class ChannelSectionsManager {
         _lastRemoteCreatedAt = event.createdAt;
         _lastRemoteEventId = event.id;
         _store = incoming;
-        _persist();
+        if (_workspaceSync == null || _workspaceSync.legacyReadAllowed) {
+          _persist();
+        }
       }
     } catch (_) {
       // Decryption failure or parse error — keep existing state.
@@ -433,12 +645,22 @@ class ChannelSectionsManager {
   Future<void> _publish({bool allowDisposed = false}) async {
     if ((!allowDisposed && _disposed) ||
         !_remoteEnabled ||
-        _signedEventRelay == null) {
+        _signedEventRelay == null ||
+        (_workspaceSync != null && !_workspaceSync.legacyPublishAllowed)) {
       return;
     }
 
     // Read-before-write: merge remote state before publishing
     await _fetchAndMerge(allowDisposed: allowDisposed);
+    // Probe/subscription callbacks can discover a workspace while the legacy
+    // fetch is in flight. Recheck immediately before signing so migration
+    // never races with a legacy whole-blob write.
+    if ((_workspaceSync != null &&
+            (!_workspaceSync.legacyPublishAllowed ||
+                _workspaceSync.workspaceKnown)) ||
+        (!_remoteEnabled && !allowDisposed)) {
+      return;
+    }
 
     // No-op suppression: skip if nothing changed
     if (_isIdenticalToLastPublished()) return;

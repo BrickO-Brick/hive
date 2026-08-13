@@ -1,9 +1,12 @@
+import 'dart:async';
+
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:nostr/nostr.dart' as nostr;
 
 import '../../../shared/relay/relay.dart';
 import '../../../shared/theme/theme_provider.dart';
 import '../../../shared/community/community_provider.dart';
+import 'section_workspace_sync.dart';
 import 'channel_sections_manager.dart';
 import 'channel_sections_storage.dart';
 
@@ -56,8 +59,30 @@ class ChannelSectionsNotifier extends Notifier<ChannelSectionsState> {
       session: ref.read(relaySessionProvider.notifier),
       nsec: nsec,
     );
-
     late final ChannelSectionsManager manager;
+    final workspaceSync = SectionWorkspaceSyncManager(
+      ownerPubkey: pubkey,
+      nsec: nsec,
+      prefs: prefs,
+      relaySession: ref.read(relaySessionProvider.notifier),
+      signedEventRelay: signedRelay,
+      relayAuthority:
+          ref.read(activeCommunityProvider).value?.relayUrl ??
+          relayConfig.baseUrl,
+      onWorkspaceDiscovered: () {
+        if (_manager != manager) return;
+        manager.stopLegacySync();
+        _emitManagerState(manager);
+      },
+      onSubscriptionLost: () {
+        if (_manager != manager) return;
+        manager.scheduleWorkspaceRetry();
+      },
+      onProjection: (projection) {
+        if (_manager != manager) return false;
+        return manager.applyWorkspaceProjection(projection);
+      },
+    );
     manager = ChannelSectionsManager(
       pubkey: pubkey,
       prefs: prefs,
@@ -65,6 +90,7 @@ class ChannelSectionsNotifier extends Notifier<ChannelSectionsState> {
       relaySession: ref.read(relaySessionProvider.notifier),
       signedEventRelay: signedRelay,
       remoteEnabled: sessionState.status == SessionStatus.connected,
+      workspaceSync: workspaceSync,
       onChanged: () => _emitManagerState(manager),
     );
     _manager = manager;

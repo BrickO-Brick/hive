@@ -1,8 +1,18 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
-String channelSectionsKey(String pubkey) => 'buzz.channel-sections.v1:$pubkey';
+String channelSectionsKey(String pubkey, {String? relayAuthority}) {
+  if (relayAuthority == null || relayAuthority.isEmpty) {
+    return 'buzz.channel-sections.v1:$pubkey';
+  }
+  final normalized = relayAuthority
+      .trim()
+      .replaceAll(RegExp(r'/+$'), '')
+      .toLowerCase();
+  return 'buzz.channel-sections.v1:$pubkey:${Uri.encodeComponent(normalized)}';
+}
 
 class ChannelSection {
   final String id;
@@ -86,31 +96,55 @@ class ChannelSectionStore {
 }
 
 class ChannelSectionsStorage {
+  final String? _relayAuthority;
   final SharedPreferences _prefs;
 
-  ChannelSectionsStorage(this._prefs);
+  ChannelSectionsStorage(this._prefs, {String? relayAuthority})
+    : _relayAuthority = relayAuthority;
 
   ChannelSectionStore read(String pubkey) {
-    final raw = _prefs.getString(channelSectionsKey(pubkey));
-    if (raw == null || raw.isEmpty) {
-      return const ChannelSectionStore();
+    final key = channelSectionsKey(pubkey, relayAuthority: _relayAuthority);
+    var raw = _prefs.getString(key);
+    if ((raw == null || raw.isEmpty) &&
+        _relayAuthority != null &&
+        _relayAuthority.isNotEmpty) {
+      final legacyKey = channelSectionsKey(pubkey);
+      final legacyRaw = _prefs.getString(legacyKey);
+      final legacyStore = _parse(legacyRaw);
+      if (legacyStore != null) {
+        final scopedPersisted = _prefs.setString(
+          key,
+          jsonEncode(legacyStore.toJson()),
+        );
+        unawaited(
+          scopedPersisted.then((persisted) {
+            if (persisted) unawaited(_prefs.remove(legacyKey));
+          }),
+        );
+        return legacyStore;
+      }
+      raw = legacyRaw;
     }
+    return _parse(raw) ?? const ChannelSectionStore();
+  }
 
+  ChannelSectionStore? _parse(String? raw) {
+    if (raw == null || raw.isEmpty) return null;
     try {
       final parsed = jsonDecode(raw);
-      if (parsed is! Map<String, dynamic>) {
-        return const ChannelSectionStore();
-      }
-      if (parsed['version'] != 1) {
-        return const ChannelSectionStore();
+      if (parsed is! Map<String, dynamic> || parsed['version'] != 1) {
+        return null;
       }
       return ChannelSectionStore.fromJson(parsed);
     } catch (_) {
-      return const ChannelSectionStore();
+      return null;
     }
   }
 
   void write(String pubkey, ChannelSectionStore store) {
-    _prefs.setString(channelSectionsKey(pubkey), jsonEncode(store.toJson()));
+    _prefs.setString(
+      channelSectionsKey(pubkey, relayAuthority: _relayAuthority),
+      jsonEncode(store.toJson()),
+    );
   }
 }
