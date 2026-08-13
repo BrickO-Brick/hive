@@ -187,12 +187,40 @@ fn reconcile_inbound_persona_event_blocking(
         }
         KIND_MANAGED_AGENT => {
             let mut agents = load_managed_agents(&app)?;
-            apply_inbound_managed_agent(
+            // §2.8 canonical linkage is resolved against the raw keyless
+            // definition store (`library_ref` is not wire-carried).
+            let definitions = load_agent_definitions(&app)?;
+            let linkage = apply_inbound_managed_agent(
                 &mut agents,
+                &definitions,
                 &d_tag,
                 managed_agent_content_from_event(&event)?,
             );
             save_managed_agents(&app, &agents)?;
+
+            // §2.8 convergence: a frozen linkage means the retained head (the
+            // inbound event, retained above) authored a library-owned or
+            // inadmissible linkage change. Re-retain the LOCAL record's
+            // projection at a monotonically newer `created_at` so the relay head
+            // converges back to the library-authoritative linkage — the same
+            // mechanism §2.7's 30175 rule uses. The frozen record still exists
+            // (only its linkage was left intact), so it always has a projection
+            // to reassert.
+            if let InboundAgentLinkage::Frozen(reason) = linkage {
+                if let Some(local) = agents.iter().find(|record| record.pubkey == d_tag) {
+                    if let Err(e) = crate::managed_agents::reconcile::retain_agent_record(
+                        &conn,
+                        &scope.owner_keys,
+                        local,
+                    ) {
+                        eprintln!(
+                            "buzz-desktop: inbound 30177 convergence re-retain failed for \
+                             {d_tag}: {e}"
+                        );
+                    }
+                }
+                eprintln!("buzz-desktop: {}", reason.note(&d_tag));
+            }
         }
         _ => unreachable!("kind gated above"),
     }
@@ -410,7 +438,60 @@ fn apply_inbound_persona(personas: &mut Vec<AgentDefinition>, inbound: AgentDefi
     }
 }
 
-/// Merge an inbound kind:30177 managed-agent projection into the local set.
+/// The outcome of applying an inbound kind:30177 event under the §2.8
+/// canonical-linkage rule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum InboundAgentLinkage {
+    /// No local match, or any linkage change the event carried was admissible:
+    /// the event applied exactly as at head.
+    Applied,
+    /// The event tried to author or clear a library-owned linkage, or to admit
+    /// a projected link that only the Phase-4b coordinator may admit. The
+    /// linkage change (and the definition quad it derives) was IGNORED and only
+    /// safe per-instance fields were applied. The caller must re-retain the
+    /// local record at a newer `created_at` so the relay head converges back
+    /// (§2.8, mirroring §2.7's 30175 rule) and surface the typed reason.
+    Frozen(LinkageFreezeReason),
+}
+
+/// Why an inbound kind:30177 event's linkage authorship was rejected (§2.8).
+/// Typed so the convergence + degradation surfacing at the call site is not a
+/// bare string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LinkageFreezeReason {
+    /// The matched instance is currently linked to a library-projected
+    /// definition and the inbound event would clear or re-point its
+    /// `persona_id`. Linkage is owned by the library machinery — the same
+    /// OUTPUT-ONLY discipline §2.7 applies to projected definition metadata.
+    OwnedByLibrary,
+    /// The inbound event would newly link a plain instance to a projected
+    /// definition. Admitting a projected link requires the coordinator's
+    /// `admit_instance_link()` step (Phase 4b); until it lands the interim
+    /// posture fails the new link closed.
+    InadmissibleNewLink,
+}
+
+impl LinkageFreezeReason {
+    /// A human-readable degradation note for logging (§2.8 surfacing). The
+    /// coordinator (Phase 4b) will replace this interim posture with an
+    /// admission decision.
+    fn note(self, agent_pubkey: &str) -> String {
+        match self {
+            Self::OwnedByLibrary => format!(
+                "inbound kind:30177 for {agent_pubkey}: refused to re-point/clear a \
+                 library-owned linkage; safe fields applied, re-retaining local head (§2.8)"
+            ),
+            Self::InadmissibleNewLink => format!(
+                "inbound kind:30177 for {agent_pubkey}: refused to newly link a plain \
+                 instance to a library-projected definition (needs the Phase-4b \
+                 coordinator); safe fields applied, re-retaining local head (§2.8)"
+            ),
+        }
+    }
+}
+
+/// Merge an inbound kind:30177 managed-agent projection into the local set
+/// under the §2.8 canonical-linkage rule.
 ///
 /// Matches the local record whose `pubkey` equals the event's d-tag (the d-tag
 /// IS the agent pubkey — see `build_agent_event`). On match, overwrite ONLY the
@@ -420,35 +501,86 @@ fn apply_inbound_persona(personas: &mut Vec<AgentDefinition>, inbound: AgentDefi
 /// untouched. The projection type carries none of them, so they cannot be
 /// reached here even if a foreign event tried to inject them.
 ///
+/// # §2.8 canonical linkage
+///
+/// A library-linked instance's `persona_id` is owned by the library machinery,
+/// not the relay. `definitions` is the raw keyless definition store, resolved
+/// through the [`MutationRoute::for_linked_definition`] read-side resolver so
+/// this arm and every other library mechanism discover the instance↔definition
+/// relationship one way. Two linkage changes fail closed (returning
+/// [`InboundAgentLinkage::Frozen`], applying only safe per-instance fields):
+/// - the matched instance is currently linked to a projected definition and the
+///   event would clear or re-point `persona_id` ([`OwnedByLibrary`]);
+/// - the event would newly link a currently-plain instance to a projected
+///   definition ([`InadmissibleNewLink`]) — a Phase-4b coordinator admission.
+///
+/// Every other case (no local match, no linkage change, or a plain↔plain
+/// relink) applies exactly as at head.
+///
 /// No match is a no-op: managed agents carry device-local secrets and are never
 /// minted from a relay event — an agent that does not already exist locally has
 /// no secret key to run with, so inserting a secretless shell would be useless
 /// and misleading. This diverges from the persona path, which DOES insert on no
 /// match (personas are secretless definitions). Flagged in the reconcile docs.
+///
+/// [`OwnedByLibrary`]: LinkageFreezeReason::OwnedByLibrary
+/// [`InadmissibleNewLink`]: LinkageFreezeReason::InadmissibleNewLink
 fn apply_inbound_managed_agent(
     agents: &mut [ManagedAgentRecord],
+    definitions: &[ManagedAgentRecord],
     d_tag: &str,
     inbound: ManagedAgentEventContent,
-) {
-    if let Some(local) = agents.iter_mut().find(|record| record.pubkey == d_tag) {
-        local.name = inbound.name;
-        // Mirror of the slimmed writer (agent_event_content): a
-        // definition-linked event omits the definition quad because those
-        // fields resolve through the kind:30175 definition — absent means
-        // "not carried", never "clear". Definition-less events still carry
-        // the quad and apply it unconditionally (including clears).
-        let definition_linked = inbound.persona_id.is_some();
-        local.persona_id = inbound.persona_id;
-        if !definition_linked {
-            local.system_prompt = inbound.system_prompt;
-            local.model = inbound.model;
-            local.provider = inbound.provider;
-            local.persona_source_version = inbound.persona_source_version;
-        }
-        local.parallelism = inbound.parallelism;
-        local.respond_to = inbound.respond_to;
-        local.respond_to_allowlist = inbound.respond_to_allowlist;
+) -> InboundAgentLinkage {
+    let Some(local) = agents.iter_mut().find(|record| record.pubkey == d_tag) else {
+        return InboundAgentLinkage::Applied;
+    };
+
+    // Safe per-instance fields apply as at head regardless of the linkage
+    // decision — they are genuinely instance-local and never library-authored.
+    local.name = inbound.name;
+    local.parallelism = inbound.parallelism;
+    local.respond_to = inbound.respond_to;
+    local.respond_to_allowlist = inbound.respond_to_allowlist;
+
+    // §2.8 canonical-linkage classification, resolved through the read-side
+    // resolver against the raw keyless definition store. `library_ref` is not
+    // wire-carried; the linkage's library status can only be read from the
+    // definition the instance's `persona_id` resolves to.
+    let linkage_changes = local.persona_id.as_deref() != inbound.persona_id.as_deref();
+    let freeze = if !linkage_changes {
+        None
+    } else if MutationRoute::for_linked_definition(definitions, local.persona_id.as_deref())
+        == MutationRoute::LibraryProjected
+    {
+        Some(LinkageFreezeReason::OwnedByLibrary)
+    } else if MutationRoute::for_linked_definition(definitions, inbound.persona_id.as_deref())
+        == MutationRoute::LibraryProjected
+    {
+        Some(LinkageFreezeReason::InadmissibleNewLink)
+    } else {
+        None
+    };
+
+    if let Some(reason) = freeze {
+        // Linkage authorship rejected: leave `persona_id` and the
+        // definition-resolved quad exactly as the local record holds them. The
+        // caller re-retains this record so the relay head converges back.
+        return InboundAgentLinkage::Frozen(reason);
     }
+
+    // Admissible: head behavior. A definition-linked event omits the definition
+    // quad because those fields resolve through the kind:30175 definition —
+    // absent means "not carried", never "clear". Definition-less events still
+    // carry the quad and apply it unconditionally (including clears).
+    let definition_linked = inbound.persona_id.is_some();
+    local.persona_id = inbound.persona_id;
+    if !definition_linked {
+        local.system_prompt = inbound.system_prompt;
+        local.model = inbound.model;
+        local.provider = inbound.provider;
+        local.persona_source_version = inbound.persona_source_version;
+    }
+    InboundAgentLinkage::Applied
 }
 
 /// Merge an inbound kind:30176 team projection into the local set.

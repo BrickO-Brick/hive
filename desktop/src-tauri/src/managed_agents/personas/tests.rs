@@ -649,6 +649,67 @@ fn mutation_route_for_persona_d_tag_catches_projected_team_slug_that_for_slug_mi
     );
 }
 
+/// §2.8 relation-resolver read side: `for_linked_definition` classifies an
+/// instance's linkage by resolving its `persona_id` against the raw keyless
+/// definition store. A `persona_id` pointing at a projected definition is
+/// `LibraryProjected`; one pointing at a plain definition, at no definition (a
+/// stale link), or `None` (a definition-less instance) is `Plain`. This is the
+/// canonical join the inbound kind:30177 rule consults — the same `persona_id →
+/// slug` derivation every library mechanism uses, resolved one way.
+#[test]
+fn for_linked_definition_classifies_projected_plain_absent_and_none() {
+    let definitions = vec![
+        projected_record("shared", 3),
+        custom_persona("custom:plain", "Plain").into_agent_record(),
+    ];
+
+    // Instance linked to a projected definition → LibraryProjected.
+    assert_eq!(
+        super::MutationRoute::for_linked_definition(&definitions, Some("shared")),
+        super::MutationRoute::LibraryProjected,
+    );
+    // Instance linked to a plain definition → Plain.
+    assert_eq!(
+        super::MutationRoute::for_linked_definition(&definitions, Some("custom:plain")),
+        super::MutationRoute::Plain,
+    );
+    // Instance whose persona_id resolves to no definition (a stale link) → Plain.
+    assert_eq!(
+        super::MutationRoute::for_linked_definition(&definitions, Some("does-not-exist")),
+        super::MutationRoute::Plain,
+    );
+    // Definition-less instance (`persona_id == None`) → Plain.
+    assert_eq!(
+        super::MutationRoute::for_linked_definition(&definitions, None),
+        super::MutationRoute::Plain,
+    );
+}
+
+/// §2.8 resolver vs. `persona_d_tag`: the instance→definition join keys on the
+/// definition's UUID `slug` (== the instance `persona_id`), NOT the team-
+/// derived d-tag. A team-sourced projected definition whose `persona_id`/`slug`
+/// is a UUID but whose d-tag is the pack slug must still resolve as projected
+/// through `for_linked_definition` — the resolver and the inbound d-tag
+/// preflight key on different fields for different callers, and this pins that
+/// the linkage join uses the slug.
+#[test]
+fn for_linked_definition_keys_on_slug_not_persona_d_tag() {
+    let mut definition = projected_record("uuid-shared", 5);
+    definition.source_team_persona_slug = Some("codereviewer".to_string());
+    let definitions = vec![definition];
+
+    // The instance's `persona_id` is the definition's UUID slug — resolves.
+    assert_eq!(
+        super::MutationRoute::for_linked_definition(&definitions, Some("uuid-shared")),
+        super::MutationRoute::LibraryProjected,
+    );
+    // The team d-tag is NOT the slug — it does not resolve the linkage join.
+    assert_eq!(
+        super::MutationRoute::for_linked_definition(&definitions, Some("codereviewer")),
+        super::MutationRoute::Plain,
+    );
+}
+
 /// The fingerprint narrowing (F3): a plain persona save may freely change a
 /// projected record's SCOPE-LOCAL fields (`is_active`, `env_vars`) — these are
 /// not library-authoritative, so the shared fingerprint is unchanged and the

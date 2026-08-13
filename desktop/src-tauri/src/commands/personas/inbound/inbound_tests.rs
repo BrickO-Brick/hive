@@ -265,7 +265,7 @@ fn inbound_managed_agent_drops_injected_secrets_and_harness() {
     let content =
         crate::managed_agents::agent_events::managed_agent_content_from_event(&event).unwrap();
     let mut agents = vec![local_agent()];
-    apply_inbound_managed_agent(&mut agents, AGENT_PUBKEY, content);
+    apply_inbound_managed_agent(&mut agents, &[], AGENT_PUBKEY, content);
 
     let a = &agents[0];
     // Secrets / harness / runtime — every one preserved from the local record.
@@ -356,7 +356,7 @@ fn inbound_definition_less_agent_applies_quad() {
     let content =
         crate::managed_agents::agent_events::managed_agent_content_from_event(&event).unwrap();
     let mut agents = vec![local_agent()];
-    apply_inbound_managed_agent(&mut agents, AGENT_PUBKEY, content);
+    apply_inbound_managed_agent(&mut agents, &[], AGENT_PUBKEY, content);
 
     let a = &agents[0];
     assert_eq!(a.persona_id, None);
@@ -376,13 +376,184 @@ fn inbound_managed_agent_no_match_is_noop() {
     let content =
         crate::managed_agents::agent_events::managed_agent_content_from_event(&event).unwrap();
     let mut agents = vec![local_agent()];
-    apply_inbound_managed_agent(&mut agents, "someotheragentpubkey", content);
+    apply_inbound_managed_agent(&mut agents, &[], "someotheragentpubkey", content);
 
     // No agent minted from a relay event — it would have no secret key.
     assert_eq!(agents.len(), 1);
     assert_eq!(
         agents[0].name, "Local Agent",
         "unmatched inbound must not touch the local record"
+    );
+}
+
+// ── §2.8 canonical-linkage rule (kind:30177) ─────────────────────────────
+
+/// A keyless definition (former persona) for the linkage resolver: `into_
+/// agent_record` sets `slug = id`, and a projected one carries `library_ref`.
+fn definition(slug: &str, projected: bool) -> ManagedAgentRecord {
+    let mut record = inbound_for(slug, "Definition").into_agent_record();
+    if projected {
+        record.library_ref = Some(format!("lib-{slug}"));
+        record.library_applied_revision = Some(1);
+    }
+    record
+}
+
+/// Inbound kind:30177 content carrying an explicit `persona_id` (or `None`).
+/// Mirrors the wire shape `managed_agent_content_from_event` produces.
+fn agent_content(name: &str, persona_id: Option<&str>) -> ManagedAgentEventContent {
+    ManagedAgentEventContent {
+        name: name.to_string(),
+        persona_id: persona_id.map(str::to_string),
+        system_prompt: None,
+        model: None,
+        provider: None,
+        persona_source_version: None,
+        parallelism: 4,
+        respond_to: crate::managed_agents::RespondTo::OwnerOnly,
+        respond_to_allowlist: vec![],
+    }
+}
+
+/// A local instance linked to `persona_id`, keyed by `AGENT_PUBKEY`.
+fn linked_agent(persona_id: &str) -> ManagedAgentRecord {
+    let mut agent = local_agent();
+    agent.persona_id = Some(persona_id.to_string());
+    agent
+}
+
+/// An inbound event that would re-point a library-owned linkage is frozen:
+/// `persona_id` stays on the local library-projected definition, safe fields
+/// still apply, and the caller is told to converge the relay head back (§2.8).
+#[test]
+fn inbound_30177_freezes_repoint_of_library_owned_linkage() {
+    let definitions = vec![definition("shared-def", true)];
+    let mut agents = vec![linked_agent("shared-def")];
+
+    // Inbound tries to re-point the linkage to a different definition.
+    let outcome = apply_inbound_managed_agent(
+        &mut agents,
+        &definitions,
+        AGENT_PUBKEY,
+        agent_content("Renamed", Some("other-def")),
+    );
+
+    assert_eq!(
+        outcome,
+        InboundAgentLinkage::Frozen(LinkageFreezeReason::OwnedByLibrary),
+        "re-pointing a library-owned linkage must freeze",
+    );
+    let a = &agents[0];
+    assert_eq!(
+        a.persona_id,
+        Some("shared-def".to_string()),
+        "linkage must stay on the local library-owned definition",
+    );
+    assert_eq!(a.name, "Renamed", "safe per-instance fields still apply");
+    assert_eq!(a.parallelism, 4, "safe per-instance fields still apply");
+}
+
+/// An inbound event that would CLEAR a library-owned linkage
+/// (`persona_id: None`) is frozen the same way — clearing is authorship too.
+#[test]
+fn inbound_30177_freezes_clear_of_library_owned_linkage() {
+    let definitions = vec![definition("shared-def", true)];
+    let mut agents = vec![linked_agent("shared-def")];
+
+    let outcome = apply_inbound_managed_agent(
+        &mut agents,
+        &definitions,
+        AGENT_PUBKEY,
+        agent_content("Renamed", None),
+    );
+
+    assert_eq!(
+        outcome,
+        InboundAgentLinkage::Frozen(LinkageFreezeReason::OwnedByLibrary),
+    );
+    assert_eq!(
+        agents[0].persona_id,
+        Some("shared-def".to_string()),
+        "a definition-less inbound must not clear a library-owned linkage",
+    );
+}
+
+/// An inbound event that would newly link a currently-plain instance to a
+/// library-projected definition is frozen as an inadmissible new link — only
+/// the Phase-4b coordinator may admit a projected link (§2.8, P6-C1 interim).
+#[test]
+fn inbound_30177_freezes_inadmissible_new_link_to_projected_definition() {
+    let definitions = vec![definition("shared-def", true)];
+    // Local instance is definition-less (plain).
+    let mut agents = vec![linked_agent("")];
+    agents[0].persona_id = None;
+
+    let outcome = apply_inbound_managed_agent(
+        &mut agents,
+        &definitions,
+        AGENT_PUBKEY,
+        agent_content("Renamed", Some("shared-def")),
+    );
+
+    assert_eq!(
+        outcome,
+        InboundAgentLinkage::Frozen(LinkageFreezeReason::InadmissibleNewLink),
+        "a new link to a projected definition must fail closed",
+    );
+    assert_eq!(
+        agents[0].persona_id, None,
+        "the inadmissible new link must not be authored",
+    );
+}
+
+/// A linkage change that touches only plain definitions applies as at head —
+/// the §2.8 rule freezes ONLY library-owned or projected-target changes, never
+/// an ordinary plain relink.
+#[test]
+fn inbound_30177_applies_plain_relink_unchanged() {
+    let definitions = vec![definition("plain-a", false), definition("plain-b", false)];
+    let mut agents = vec![linked_agent("plain-a")];
+
+    let outcome = apply_inbound_managed_agent(
+        &mut agents,
+        &definitions,
+        AGENT_PUBKEY,
+        agent_content("Renamed", Some("plain-b")),
+    );
+
+    assert_eq!(outcome, InboundAgentLinkage::Applied);
+    assert_eq!(
+        agents[0].persona_id,
+        Some("plain-b".to_string()),
+        "a plain→plain relink applies exactly as at head",
+    );
+}
+
+/// An inbound event that leaves the linkage unchanged is never frozen even when
+/// the linked definition is library-projected — the definition quad is still
+/// correctly omitted (linked), and safe fields apply. Freezing keys on a
+/// linkage CHANGE, not on the linked definition's library status alone.
+#[test]
+fn inbound_30177_no_linkage_change_applies_even_when_projected() {
+    let definitions = vec![definition("shared-def", true)];
+    let mut agents = vec![linked_agent("shared-def")];
+    agents[0].system_prompt = Some("local prompt".to_string());
+
+    let outcome = apply_inbound_managed_agent(
+        &mut agents,
+        &definitions,
+        AGENT_PUBKEY,
+        agent_content("Renamed", Some("shared-def")),
+    );
+
+    assert_eq!(outcome, InboundAgentLinkage::Applied);
+    let a = &agents[0];
+    assert_eq!(a.persona_id, Some("shared-def".to_string()));
+    assert_eq!(a.name, "Renamed");
+    assert_eq!(
+        a.system_prompt,
+        Some("local prompt".to_string()),
+        "a linked inbound omits the definition quad — the local snapshot survives",
     );
 }
 

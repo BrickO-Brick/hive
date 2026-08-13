@@ -561,6 +561,31 @@ impl MutationRoute {
         }))
     }
 
+    /// The route for the DEFINITION a keyed instance links to — the read side
+    /// of the §2.8 definition–instance relation resolver. An instance's
+    /// `persona_id` IS the linked definition's slug (they are assigned in
+    /// lockstep: `into_agent_record` sets `slug = id`, and every linked
+    /// instance carries `persona_id == definition.slug`). This is the ONE
+    /// canonical join every library mechanism uses to discover an
+    /// instance↔definition relationship — the inbound kind:30177 canonical-
+    /// linkage rule consults it to decide whether an instance's linkage is
+    /// library-owned; nothing re-derives the `persona_id` join ad hoc.
+    ///
+    /// A definition-less instance (`persona_id == None`) links to no definition
+    /// and is always [`Plain`](Self::Plain), as is a `persona_id` that resolves
+    /// to a plain definition or to no definition at all (a create, or a stale
+    /// link). Only a `persona_id` resolving to a `library_ref`-carrying
+    /// definition is [`LibraryProjected`](Self::LibraryProjected).
+    pub(crate) fn for_linked_definition(
+        definitions: &[ManagedAgentRecord],
+        persona_id: Option<&str>,
+    ) -> Self {
+        match persona_id {
+            Some(slug) => Self::for_slug(definitions, slug),
+            None => Self::Plain,
+        }
+    }
+
     /// Refuse a plain-path mutation whose target `slug` resolves to a
     /// library-projected record (§2.7). The command boundaries that key by slug
     /// — `delete_persona` and snapshot/team import — call this on the RAW
