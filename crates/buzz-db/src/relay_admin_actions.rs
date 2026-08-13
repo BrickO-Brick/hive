@@ -963,9 +963,19 @@ pub async fn record_failure(pool: &PgPool, action_id: Uuid, error: &str) -> Resu
     Ok(())
 }
 
-/// Cancel a failed action (pre-mutation only). Clears the claim so the report
-/// returns to 'open'. Returns false if the action was not in 'failed' state
-/// or had a step_marker (post-mutation cancel is forbidden).
+/// Cancel a failed action (pre-mutation only) and return its report to 'open'.
+///
+/// This is one atomic, ownership-fenced transition: the action is cancelled
+/// only if it is `failed`/pre-mutation AND belongs to the path `report_id` +
+/// `community_id`, and the report is reopened only if it is still `processing`
+/// and still points at this exact action. Both updates must each affect
+/// exactly one row; any mismatch rolls the whole transaction back and returns
+/// `false`.
+///
+/// Returns `false` (→ 409 at the HTTP layer, no state change) when the action
+/// is not `failed`, has a `step_marker` (post-mutation cancel is forbidden),
+/// does not belong to the path report/community (cross-report cancel), or the
+/// report moved underneath the cancel.
 pub async fn cancel_action(
     pool: &PgPool,
     action_id: Uuid,
@@ -974,29 +984,44 @@ pub async fn cancel_action(
 ) -> Result<bool> {
     let mut tx = pool.begin().await?;
 
-    // Only cancel from pre-mutation failed state.
+    // Cancel only a pre-mutation `failed` action that BELONGS to the path
+    // report and community. Fencing on report_id + report_community_id is what
+    // blocks cross-report cancellation: `/reports/A/cancel {actionId:B}` matches
+    // zero rows because B's report_id is not A.
     let updated = sqlx::query(
         r#"
         UPDATE relay_admin_actions
         SET state = 'cancelled', updated_at = now()
-        WHERE id = $1 AND state = 'failed' AND step_marker IS NULL
+        WHERE id = $1
+          AND report_id = $2
+          AND report_community_id = $3
+          AND state = 'failed'
+          AND step_marker IS NULL
         "#,
     )
     .bind(action_id)
+    .bind(report_id)
+    .bind(community_id.as_uuid())
     .execute(&mut *tx)
     .await?;
 
-    if updated.rows_affected() == 0 {
+    if updated.rows_affected() != 1 {
         tx.rollback().await?;
         return Ok(false);
     }
 
-    // Clear the claim on the report → back to open.
-    sqlx::query(
+    // Return the report to `open`, fenced on it still being `processing` and
+    // still pointing at this exact action. Must affect exactly one row — any
+    // mismatch means the report moved underneath us, so roll back the action
+    // cancel too. This is what makes the handler's `"status":"open"` legitimate.
+    let reopened = sqlx::query(
         r#"
         UPDATE moderation_reports
         SET status = 'open', active_action_id = NULL
-        WHERE community_id = $1 AND id = $2 AND active_action_id = $3
+        WHERE community_id = $1
+          AND id = $2
+          AND status = 'processing'
+          AND active_action_id = $3
         "#,
     )
     .bind(community_id.as_uuid())
@@ -1004,6 +1029,11 @@ pub async fn cancel_action(
     .bind(action_id)
     .execute(&mut *tx)
     .await?;
+
+    if reopened.rows_affected() != 1 {
+        tx.rollback().await?;
+        return Ok(false);
+    }
 
     tx.commit().await?;
     Ok(true)

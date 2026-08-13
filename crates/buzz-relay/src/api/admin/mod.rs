@@ -3377,6 +3377,131 @@ mod tests {
         cleanup_admin_host_report(&pool, report_id).await;
     }
 
+    #[tokio::test]
+    #[ignore = "requires Postgres — cross-report cancel is rejected without side effects"]
+    async fn cancel_route_rejects_cross_report_action_id_with_409_and_no_side_effects() {
+        // Ownership fence: POST /reports/A/cancel {actionId: B's action} must be
+        // rejected (409) and leave BOTH reports and BOTH actions untouched. The
+        // two reports share a community, so only the report_id fence — not the
+        // community fence — can block this: it is the sharper negative case.
+        let keys = nostr::Keys::generate();
+        let state = nip98_state(vec![keys.public_key().to_hex()]).await;
+        let pool = sqlx::PgPool::connect(
+            &std::env::var("BUZZ_TEST_DATABASE_URL")
+                .unwrap_or_else(|_| "postgres://buzz:buzz_dev@localhost:5432/buzz".to_string()),
+        )
+        .await
+        .expect("connect to test DB");
+
+        // Two reports on the same admin.example community, each driven to
+        // `processing` with its own distinct pre-mutation `failed` action.
+        let report_a = seed_admin_host_report(&pool, "open").await;
+        let report_b = seed_admin_host_report(&pool, "open").await;
+        let community_id: Uuid =
+            sqlx::query_scalar("SELECT community_id FROM moderation_reports WHERE id = $1")
+                .bind(report_a)
+                .fetch_one(&pool)
+                .await
+                .expect("community id");
+        let cid = buzz_core::CommunityId::from_uuid(community_id);
+
+        let seed_failed_action = |report_id: Uuid| {
+            let pool = pool.clone();
+            async move {
+                let action_id = match buzz_db::relay_admin_actions::claim_report(
+                    &pool,
+                    cid,
+                    report_id,
+                    Uuid::new_v4(),
+                    &[2u8; 32],
+                    "operator",
+                    "ban",
+                    None,
+                    None,
+                    "resolve:ban",
+                    "relay_operator",
+                    Some(&[1u8; 32]),
+                    None,
+                    None,
+                )
+                .await
+                .expect("claim")
+                {
+                    buzz_db::relay_admin_actions::ClaimResult::Claimed(a) => a.id,
+                    other => panic!("expected Claimed, got {other:?}"),
+                };
+                buzz_db::relay_admin_actions::begin_enforcing(&pool, action_id)
+                    .await
+                    .expect("begin_enforcing");
+                buzz_db::relay_admin_actions::record_failure(&pool, action_id, "boom")
+                    .await
+                    .expect("record_failure");
+                action_id
+            }
+        };
+        let action_a = seed_failed_action(report_a).await;
+        let action_b = seed_failed_action(report_b).await;
+
+        // Cross-report cancel: cancel report A citing report B's action id.
+        let body = serde_json::json!({ "actionId": action_b }).to_string();
+        let path = format!("/reports/{report_a}/cancel");
+        let auth = make_nostr_auth_post(&keys, &path, body.as_bytes());
+        let response = status_for(
+            state,
+            Request::builder()
+                .method("POST")
+                .uri(&path)
+                .header(header::HOST, "admin.example")
+                .header(header::AUTHORIZATION, auth)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body))
+                .expect("request"),
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::CONFLICT,
+            "cross-report cancel must be 409"
+        );
+
+        // No side effects: both reports still `processing` pointing at their own
+        // action, and both actions still `failed`.
+        let read_state = |report_id: Uuid, action_id: Uuid| {
+            let pool = pool.clone();
+            async move {
+                let (r_status, r_active): (String, Option<Uuid>) = sqlx::query_as(
+                    "SELECT status, active_action_id FROM moderation_reports WHERE id = $1",
+                )
+                .bind(report_id)
+                .fetch_one(&pool)
+                .await
+                .expect("read report");
+                let a_state: String =
+                    sqlx::query_scalar("SELECT state FROM relay_admin_actions WHERE id = $1")
+                        .bind(action_id)
+                        .fetch_one(&pool)
+                        .await
+                        .expect("read action");
+                (r_status, r_active, a_state)
+            }
+        };
+        let (a_status, a_active, a_action_state) = read_state(report_a, action_a).await;
+        let (b_status, b_active, b_action_state) = read_state(report_b, action_b).await;
+        assert_eq!(
+            (a_status.as_str(), a_active, a_action_state.as_str()),
+            ("processing", Some(action_a), "failed"),
+            "report A and its action must be unchanged"
+        );
+        assert_eq!(
+            (b_status.as_str(), b_active, b_action_state.as_str()),
+            ("processing", Some(action_b), "failed"),
+            "report B and its action must be unchanged — B is the cancel victim guarded against"
+        );
+
+        cleanup_admin_host_report(&pool, report_a).await;
+        cleanup_admin_host_report(&pool, report_b).await;
+    }
+
     async fn cleanup_admin_host_report(pool: &sqlx::PgPool, report_id: Uuid) {
         sqlx::query("DELETE FROM relay_admin_actions WHERE report_id = $1")
             .bind(report_id)
