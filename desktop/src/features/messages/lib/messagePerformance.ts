@@ -44,8 +44,13 @@ export function recordPerformanceMark(
   name: string,
   detail?: Record<string, unknown>,
 ): void {
+  const current = listeners.get(name);
+  // Callback evidence exists only while a settle measurement is active. This
+  // keeps normal scrolling/resizing from filling the User Timing buffer or
+  // doing instrumentation work for the rest of the session.
+  if (!current?.size) return;
   performance.mark(name, detail ? { detail } : undefined);
-  for (const listener of listeners.get(name) ?? []) listener();
+  for (const listener of current) listener();
 }
 export function finishPerformanceMeasure(input: {
   startMark: string;
