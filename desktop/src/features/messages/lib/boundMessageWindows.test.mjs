@@ -30,7 +30,6 @@ import {
   emptyChannelWindowStore,
   mergeLiveChannelWindowEvent,
 } from "./channelWindowStore.ts";
-import { shouldRefreshChannelWindowAfterSubscribe } from "./projectChannelWindow.ts";
 import {
   enforceMessageWindowBounds,
   MAX_RETAINED_MESSAGE_CHANNELS,
@@ -192,12 +191,19 @@ describe("enforceMessageWindowBounds", () => {
   it("test_evicted_channel_reads_absent_so_revisit_refetches", () => {
     for (let i = 0; i <= CHAN_CAP; i += 1) seedChannel(`chan-${i}`, i);
     enforceMessageWindowBounds(client);
-    // Freshness seam: an evicted channel has no messages state, so a resubscribe
-    // must refresh (returns true) rather than reading a stale window as fresh.
+    // An evicted channel's keys read back absent, so its messages query has no
+    // cached state to short-circuit against and re-fetches fresh on revisit
+    // (the post-subscribe refresh runs unconditionally). Removal, not stale
+    // retention, is what makes the revisit a cache miss rather than data loss.
     assert.equal(
-      shouldRefreshChannelWindowAfterSubscribe(client, "chan-0"),
-      true,
-      "evicted channel must refetch on revisit",
+      client.getQueryState(channelMessagesKey("chan-0")),
+      undefined,
+      "evicted channel messages key must read absent on revisit",
+    );
+    assert.equal(
+      client.getQueryState(channelWindowKey("chan-0")),
+      undefined,
+      "evicted channel window key must read absent on revisit",
     );
   });
 
