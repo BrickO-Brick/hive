@@ -57,38 +57,32 @@ void main() {
     },
   );
 
-  test(
-    'subscribes per-channel with #h tags (only joined, non-archived)',
-    () async {
-      final session = _FakeRelaySession(
-        memberships: [
-          _membership(_channelA, myPk),
-          _membership(_channelB, myPk),
-          _membership(_channelD, myPk),
-        ],
-        metadata: [
-          _meta(id: _channelA, name: 'general'),
-          _meta(id: _channelB, name: 'random'),
-          // channelD metadata missing -> won't appear in channel list
-        ],
-      );
-      final container = _buildContainer(session: session);
-      addTearDown(container.dispose);
+  test('subscribes once for all joined, non-archived channel ids', () async {
+    final session = _FakeRelaySession(
+      memberships: [
+        _membership(_channelA, myPk),
+        _membership(_channelB, myPk),
+        _membership(_channelD, myPk),
+      ],
+      metadata: [
+        _meta(id: _channelA, name: 'general'),
+        _meta(id: _channelB, name: 'random'),
+        // channelD metadata missing -> won't appear in channel list
+      ],
+    );
+    final container = _buildContainer(session: session);
+    addTearDown(container.dispose);
 
-      await container.read(channelsProvider.future);
+    await container.read(channelsProvider.future);
 
-      // One subscription per joined, non-archived channel.
-      expect(session.subscribeFilters, hasLength(2));
-      expect(
-        session.subscribeFilters.map((f) => f.tags['#h']?.single).toSet(),
-        {_channelA, _channelB},
-      );
-      for (final filter in session.subscribeFilters) {
-        expect(filter.kinds, EventKind.channelEventKinds);
-        expect(filter.limit, 0);
-      }
-    },
-  );
+    expect(session.subscribeFilters, hasLength(1));
+    expect(session.subscribeFilters.single.tags['#h']?.toSet(), {
+      _channelA,
+      _channelB,
+    });
+    expect(session.subscribeFilters.single.kinds, EventKind.channelEventKinds);
+    expect(session.subscribeFilters.single.limit, 0);
+  });
 
   test('retains channel-list member snapshots for immediate reuse', () async {
     final joinedAt = DateTime.fromMillisecondsSinceEpoch(1000, isUtc: true);
@@ -132,7 +126,7 @@ void main() {
 
       expect(session.totalSubscribeCount, initialSubscribeCount);
       expect(session.unsubscribeCount, 0);
-      expect(session.subscribeFilters, hasLength(2));
+      expect(session.subscribeFilters, hasLength(1));
     },
   );
 
@@ -164,14 +158,12 @@ void main() {
 
       await container.read(channelsProvider.notifier).refresh();
 
-      expect(session.totalSubscribeCount, 3);
+      expect(session.totalSubscribeCount, 2);
       expect(session.unsubscribeCount, 1);
-      expect(
-        session.subscribeFilters
-            .map((filter) => filter.tags['#h']!.single)
-            .toSet(),
-        {_channelB, _channelD},
-      );
+      expect(session.subscribeFilters.single.tags['#h']!.toSet(), {
+        _channelB,
+        _channelD,
+      });
     },
   );
 
@@ -199,7 +191,7 @@ void main() {
 
       expect(session.activeChannels, isEmpty);
       expect(session.activeSubscriptionCount, 0);
-      expect(session.unsubscribeCount, 2);
+      expect(session.unsubscribeCount, 1);
     },
   );
 
@@ -239,7 +231,7 @@ void main() {
       await Future.wait([firstRefresh, secondRefresh]);
 
       expect(session.activeChannels, {_channelA, _channelB, _channelD});
-      expect(session.activeSubscriptionCount, 3);
+      expect(session.activeSubscriptionCount, 1);
     },
   );
 
@@ -686,7 +678,7 @@ class _FakeRelaySession extends RelaySessionNotifier {
   int totalSubscribeCount = 0;
 
   Set<String> get activeChannels => {
-    for (final (filter, _) in _subscriptions.values) ?filter.tags['#h']?.single,
+    for (final (filter, _) in _subscriptions.values) ...?filter.tags['#h'],
   };
 
   int get activeSubscriptionCount => _subscriptions.length;
@@ -745,6 +737,18 @@ class _FakeRelaySession extends RelaySessionNotifier {
       return metadata.where((e) => ids.contains(e.getTagValue('d'))).toList();
     }
     return const [];
+  }
+
+  @override
+  Future<List<NostrEvent>> queryRelay(
+    List<NostrFilter> filters, {
+    Duration timeout = const Duration(seconds: 8),
+  }) async {
+    final events = <NostrEvent>[];
+    for (final filter in filters) {
+      events.addAll(await fetchHistory(filter, timeout: timeout));
+    }
+    return events;
   }
 
   @override

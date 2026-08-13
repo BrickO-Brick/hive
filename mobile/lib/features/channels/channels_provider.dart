@@ -20,6 +20,8 @@ import 'unread_badge/should_notify_for_event.dart';
 
 const _channelTypeOrder = {'stream': 0, 'forum': 1, 'dm': 2};
 const _unreadCatchUpLimit = 1000;
+const _unreadCatchUpDelay = Duration(seconds: 2);
+const _unreadCatchUpInterRequestDelay = Duration(milliseconds: 250);
 const _participatedRootIdsPrefix = 'buzz-thread-participation.v1';
 const _authoredRootIdsPrefix = 'buzz-thread-authored.v1';
 
@@ -36,13 +38,15 @@ const _authoredRootIdsPrefix = 'buzz-thread-authored.v1';
 class ChannelsNotifier extends AsyncNotifier<List<Channel>> {
   static const _backstopInterval = Duration(seconds: 60);
 
-  final Map<String, void Function()> _unsubscribersByChannel = {};
+  void Function()? _liveUnsubscribe;
   Future<void> _liveSubscriptionQueue = Future.value();
   List<Channel> _desiredLiveChannels = const [];
   Set<String> _desiredLiveChannelIds = const {};
+  Set<String> _subscribedLiveChannelIds = const {};
   int _subscriptionVersion = 0;
   String? _subscriptionRelayBaseUrl;
   Timer? _backstopTimer;
+  Timer? _unreadCatchUpTimer;
   final Map<String, int> _latestObservedByChannel = {};
   final Map<String, Map<String, ObservedUnreadEvent>>
   _observedUnreadEventsByChannel = {};
@@ -110,6 +114,8 @@ class ChannelsNotifier extends AsyncNotifier<List<Channel>> {
       _observedUnreadEventsByChannel.clear();
       _backstopTimer?.cancel();
       _backstopTimer = null;
+      _unreadCatchUpTimer?.cancel();
+      _unreadCatchUpTimer = null;
     });
 
     if (sessionState.status != SessionStatus.connected) {
@@ -279,53 +285,46 @@ class ChannelsNotifier extends AsyncNotifier<List<Channel>> {
     // see every channel as having no messages. Skipped on backstop refreshes since
     // live subscriptions keep lastMessageAt current after the initial load.
     if (fetchLastMessage) {
-      final lastMessageResults = await Future.wait(
-        channels.map((channel) async {
-          if (!channel.isMember || channel.isArchived) return null;
-          try {
-            if (channel.isDm) {
-              final events = await session.fetchHistory(
-                NostrFilter(
-                  kinds: EventKind.channelMessageEventKinds,
-                  tags: {
-                    '#h': [channel.id],
-                  },
-                  limit: 1,
-                ),
-              );
-              if (events.isEmpty) return null;
-              return MapEntry(channel.id, events.first.createdAt);
-            }
-            final events = await session.fetchHistory(
-              NostrFilter(
-                kinds: EventKind.channelMessageEventKinds,
-                tags: {
-                  '#h': [channel.id],
-                },
-                limit: 20,
-              ),
-            );
-            for (final event in events) {
-              if (shouldNotifyForEvent(
+      final activeChannels = [
+        for (final channel in channels)
+          if (channel.isMember && !channel.isArchived) channel,
+      ];
+      final activeChannelsById = {
+        for (final channel in activeChannels) channel.id: channel,
+      };
+      final lastMessageMap = <String, int>{};
+      try {
+        final events = await session.queryRelay([
+          for (final channel in activeChannels)
+            NostrFilter(
+              kinds: EventKind.channelMessageEventKinds,
+              tags: {
+                '#h': [channel.id],
+              },
+              limit: channel.isDm ? 1 : 20,
+            ),
+        ]);
+        for (final event in events) {
+          final channelId = event.channelId;
+          if (channelId == null) continue;
+          final channel = activeChannelsById[channelId];
+          if (channel == null) continue;
+          if (!channel.isDm &&
+              !shouldNotifyForEvent(
                 event,
                 myPk,
                 mutedChannelIds: _mutedChannelIds(),
-                channelId: channel.id,
+                channelId: channelId,
               )) {
-                return MapEntry(channel.id, event.createdAt);
-              }
-            }
-            return null;
-          } catch (_) {
-            return null;
+            continue;
           }
-        }),
-      );
-
-      final lastMessageMap = <String, int>{};
-      for (final entry
-          in lastMessageResults.whereType<MapEntry<String, int>>()) {
-        lastMessageMap[entry.key] = entry.value;
+          final current = lastMessageMap[channelId];
+          if (current == null || event.createdAt > current) {
+            lastMessageMap[channelId] = event.createdAt;
+          }
+        }
+      } catch (error) {
+        debugPrint('[ChannelsNotifier] last-message fetch failed: $error');
       }
 
       for (var i = 0; i < channels.length; i++) {
@@ -524,76 +523,54 @@ class ChannelsNotifier extends AsyncNotifier<List<Channel>> {
       return;
     }
 
-    if (_subscriptionRelayBaseUrl != relayBaseUrl) {
-      for (final unsubscribe in _unsubscribersByChannel.values) {
-        unsubscribe();
-      }
-      _unsubscribersByChannel.clear();
+    if (ref.read(relayConfigProvider).baseUrl != relayBaseUrl) return;
+    final channelIds = _desiredLiveChannelIds;
+    if (_subscriptionRelayBaseUrl != relayBaseUrl ||
+        !_sameStringSet(_subscribedLiveChannelIds, channelIds)) {
+      _liveUnsubscribe?.call();
+      _liveUnsubscribe = null;
+      _subscribedLiveChannelIds = const {};
       _subscriptionRelayBaseUrl = relayBaseUrl;
+
+      if (channelIds.isNotEmpty) {
+        final session = ref.read(relaySessionProvider.notifier);
+        try {
+          final unsubscribe = await session.subscribe(
+            NostrFilter(
+              kinds: EventKind.channelEventKinds,
+              tags: {'#h': channelIds.toList()},
+              limit: 0,
+            ),
+            _handleLiveEvent,
+          );
+          if (subscriptionVersion != _subscriptionVersion ||
+              ref.read(relaySessionProvider).status !=
+                  SessionStatus.connected ||
+              ref.read(relayConfigProvider).baseUrl != relayBaseUrl) {
+            unsubscribe();
+            return;
+          }
+          _liveUnsubscribe = unsubscribe;
+          _subscribedLiveChannelIds = Set.unmodifiable(channelIds);
+        } catch (error) {
+          debugPrint('[ChannelsNotifier] live subscription failed: $error');
+        }
+      }
     }
-    if (ref.read(relayConfigProvider).baseUrl != relayBaseUrl) {
+
+    if (subscriptionVersion != _subscriptionVersion ||
+        ref.read(relaySessionProvider).status != SessionStatus.connected) {
       return;
     }
-    final session = ref.read(relaySessionProvider.notifier);
-    final channelIds = _desiredLiveChannelIds;
 
-    for (final entry in _unsubscribersByChannel.entries.toList()) {
-      if (channelIds.contains(entry.key)) continue;
-      _unsubscribersByChannel.remove(entry.key);
-      entry.value();
-    }
-
-    for (final channelId in channelIds) {
-      if (ref.read(relaySessionProvider).status != SessionStatus.connected) {
+    _unreadCatchUpTimer?.cancel();
+    _unreadCatchUpTimer = Timer(_unreadCatchUpDelay, () {
+      if (subscriptionVersion != _subscriptionVersion ||
+          ref.read(relaySessionProvider).status != SessionStatus.connected) {
         return;
       }
-      if (_unsubscribersByChannel.containsKey(channelId)) continue;
-      try {
-        final unsubscribe = await session.subscribe(
-          NostrFilter(
-            kinds: EventKind.channelEventKinds,
-            tags: {
-              '#h': [channelId],
-            },
-            limit: 0,
-          ),
-          _handleLiveEvent,
-        );
-        if (ref.read(relaySessionProvider).status != SessionStatus.connected ||
-            !_desiredLiveChannelIds.contains(channelId) ||
-            ref.read(relayConfigProvider).baseUrl != relayBaseUrl ||
-            _subscriptionRelayBaseUrl != relayBaseUrl) {
-          unsubscribe();
-          return;
-        }
-        final replaced = _unsubscribersByChannel[channelId];
-        if (replaced != null) {
-          unsubscribe();
-          continue;
-        }
-        _unsubscribersByChannel[channelId] = unsubscribe;
-      } catch (error) {
-        debugPrint(
-          '[ChannelsNotifier] live subscription failed for $channelId: $error',
-        );
-      }
-    }
-
-    if (ref.read(relaySessionProvider).status != SessionStatus.connected) {
-      return;
-    }
-
-    if (subscriptionVersion != _subscriptionVersion) {
-      final desiredChannelIds = _desiredLiveChannelIds;
-      for (final entry in _unsubscribersByChannel.entries.toList()) {
-        if (desiredChannelIds.contains(entry.key)) continue;
-        _unsubscribersByChannel.remove(entry.key);
-        entry.value();
-      }
-      return;
-    }
-
-    unawaited(_catchUpUnreadEvents(channels));
+      unawaited(_catchUpUnreadEvents(channels));
+    });
 
     _backstopTimer?.cancel();
     _backstopTimer = Timer.periodic(
@@ -615,13 +592,14 @@ class ChannelsNotifier extends AsyncNotifier<List<Channel>> {
       debugPrint('[ChannelsNotifier] unread catch-up skipped: $error');
       return;
     }
-    final futures = <Future<void>>[];
+    final tasks = <Future<void> Function()>[];
 
     for (final channel in channels) {
       if (!channel.isMember || channel.isArchived) continue;
       final readAt = readState.effectiveTimestamp(channel.id);
-      futures.add(
-        _catchUpUnreadEventsForChannel(
+      if (readAt == null) continue;
+      tasks.add(
+        () => _catchUpUnreadEventsForChannel(
           session,
           channel,
           myPk,
@@ -631,9 +609,12 @@ class ChannelsNotifier extends AsyncNotifier<List<Channel>> {
       );
     }
 
-    const batchSize = 5;
-    for (var i = 0; i < futures.length; i += batchSize) {
-      await Future.wait(futures.sublist(i, min(i + batchSize, futures.length)));
+    for (final task in tasks) {
+      if (ref.read(relaySessionProvider).status != SessionStatus.connected) {
+        return;
+      }
+      await task();
+      await Future<void>.delayed(_unreadCatchUpInterRequestDelay);
     }
 
     state = state.whenData((channels) => List<Channel>.of(channels));
@@ -861,19 +842,23 @@ class ChannelsNotifier extends AsyncNotifier<List<Channel>> {
     _subscriptionVersion++;
     _desiredLiveChannels = const [];
     _desiredLiveChannelIds = const {};
-    for (final unsubscribe in _unsubscribersByChannel.values) {
-      unsubscribe();
-    }
-    _unsubscribersByChannel.clear();
+    _liveUnsubscribe?.call();
+    _liveUnsubscribe = null;
+    _subscribedLiveChannelIds = const {};
     _subscriptionRelayBaseUrl = null;
     _backstopTimer?.cancel();
     _backstopTimer = null;
+    _unreadCatchUpTimer?.cancel();
+    _unreadCatchUpTimer = null;
   }
 }
 
 final channelsProvider = AsyncNotifierProvider<ChannelsNotifier, List<Channel>>(
   ChannelsNotifier.new,
 );
+
+bool _sameStringSet(Set<String> left, Set<String> right) =>
+    left.length == right.length && left.containsAll(right);
 
 String? _observedUnreadRootId(NostrEvent event) =>
     _isBroadcastReply(event) ? null : event.threadReference.rootId;
