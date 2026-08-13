@@ -1552,6 +1552,10 @@ struct NativeSteerPrepared {
     /// Membership generation captured when this edit was reserved. A removal
     /// advances the generation even if the agent is subsequently re-added.
     membership_generation: u64,
+    /// Turn that owned the channel when preparation started. Membership alone
+    /// is insufficient: the turn can complete and a replacement can start in
+    /// the same membership generation while enrichment is outstanding.
+    originating_turn_id: String,
     event: nostr::Event,
     prompt_blocks: Vec<String>,
 }
@@ -1560,6 +1564,7 @@ struct NativeSteerPrepared {
 /// its queue reservation was recovered/consumed. Such prepared work is stale:
 /// it must never be forwarded into a removed/later membership period or into a
 /// replacement turn that already received the recovered edit.
+#[allow(clippy::too_many_arguments)]
 fn native_steer_preparation_is_stale(
     queue: &EventQueue,
     removed_channels: &HashSet<Uuid>,
@@ -1567,9 +1572,12 @@ fn native_steer_preparation_is_stale(
     channel_id: Uuid,
     event_id: &str,
     prepared_generation: u64,
+    originating_turn_id: &str,
+    current_turn_id: Option<&str>,
 ) -> bool {
     removed_channels.contains(&channel_id)
         || native_steer_ack_is_stale(membership_generations, channel_id, prepared_generation)
+        || current_turn_id != Some(originating_turn_id)
         || !queue.has_native_steer_reservation(channel_id, event_id)
 }
 
@@ -3142,6 +3150,15 @@ Typing(Uuid, String, ThreadTags),
                                                 &event_id,
                                             ) {
                                                 Some(membership_generation) => {
+                                                    // No await or other pool mutation occurs
+                                                    // between the availability check and this
+                                                    // capture, so the same task still owns it.
+                                                    let originating_turn_id = pool
+                                                        .native_steer_turn_id(
+                                                            channel_id,
+                                                            membership_generation,
+                                                        )
+                                                        .expect("available native steer has a turn");
                                                     let tx = native_steer_tx.clone();
                                                     let ctx = Arc::clone(&ctx);
                                                     tokio::spawn(async move {
@@ -3155,6 +3172,7 @@ Typing(Uuid, String, ThreadTags),
                                                         let _ = tx.send(NativeSteerPrepared {
                                                             channel_id,
                                                             membership_generation,
+                                                            originating_turn_id,
                                                             event: event_for_steer,
                                                             prompt_blocks,
                                                         });
@@ -3468,10 +3486,14 @@ Typing(Uuid, String, ThreadTags),
             Some(PoolEvent::NativeSteerPrepared(NativeSteerPrepared {
                 channel_id,
                 membership_generation,
+                originating_turn_id,
                 event,
                 prompt_blocks,
             })) => {
                 let event_id = event.id.to_hex();
+                let current_turn_id = pool
+                    .channel_turn_id(channel_id, membership_generation)
+                    .map(str::to_owned);
                 if native_steer_preparation_is_stale(
                     &queue,
                     &removed_channels,
@@ -3479,12 +3501,38 @@ Typing(Uuid, String, ThreadTags),
                     channel_id,
                     &event_id,
                     membership_generation,
+                    &originating_turn_id,
+                    current_turn_id.as_deref(),
                 ) {
                     tracing::debug!(
                         %channel_id,
                         %event_id,
                         "discarding native steer prepared after its reservation became stale"
                     );
+                    // If only the owning turn changed, the reserved edit still
+                    // needs normal delivery. Release it and steer/cancel the
+                    // replacement turn rather than either injecting it into
+                    // that turn or leaving it orphaned in the side table.
+                    if !removed_channels.contains(&channel_id)
+                        && !native_steer_ack_is_stale(
+                            &membership_generations,
+                            channel_id,
+                            membership_generation,
+                        )
+                        && queue.has_native_steer_reservation(channel_id, &event_id)
+                    {
+                        release_prepared_native_steer_fallback(
+                            &mut pool,
+                            &mut queue,
+                            channel_id,
+                            &event_id,
+                            &ctx,
+                            &membership_generations,
+                            &typing_tx,
+                            &mut last_activity,
+                            &mut typing_channels,
+                        );
+                    }
                     continue;
                 }
                 if !try_native_steer(
@@ -4323,17 +4371,23 @@ fn is_auth_error(error: &acp::AcpError) -> bool {
 ///
 /// Shared by the hard-cap immediate dead-letter path and the retries-exhausted
 /// dead-letter path so neither duplicates the tokio::spawn block.
+fn failure_notice_thread_tags(batch: &FlushBatch) -> ThreadTags {
+    batch.failure_thread_tags.clone().unwrap_or_else(|| {
+        batch
+            .events
+            .last()
+            .map(|be| queue::parse_thread_tags(&be.event))
+            .unwrap_or_default()
+    })
+}
+
 fn spawn_failure_notice(
     rest_client: Option<&relay::RestClient>,
     batch: &FlushBatch,
     content: String,
 ) {
     if let Some(rest) = rest_client {
-        let thread_tags = batch
-            .events
-            .last()
-            .map(|be| queue::parse_thread_tags(&be.event))
-            .unwrap_or_default();
+        let thread_tags = failure_notice_thread_tags(batch);
         let rest = rest.clone();
         let channel_id = batch.channel_id;
         tokio::spawn(async move {
@@ -8475,6 +8529,7 @@ mod error_outcome_emission_tests {
                 }],
                 cancelled_events: vec![],
                 cancel_reason: None,
+                failure_thread_tags: None,
             }
         };
 
@@ -8584,6 +8639,7 @@ mod error_outcome_emission_tests {
                 }],
                 cancelled_events: vec![],
                 cancel_reason: None,
+                failure_thread_tags: None,
             }
         };
 
@@ -8707,6 +8763,7 @@ mod error_outcome_emission_tests {
             }],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         };
         let result = PromptResult {
             agent,
@@ -8803,6 +8860,7 @@ mod error_outcome_emission_tests {
             }],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         };
         let result = PromptResult {
             agent,
@@ -8882,6 +8940,7 @@ mod error_outcome_emission_tests {
             }],
             cancelled_events: vec![],
             cancel_reason: Some(CancelReason::Steer),
+            failure_thread_tags: None,
         };
 
         let agent = dummy_agent(0).await;
@@ -9209,6 +9268,7 @@ mod error_outcome_emission_tests {
             }],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         };
 
         let auth_error = acp::AcpError::AgentError {
@@ -9297,6 +9357,7 @@ mod error_outcome_emission_tests {
             }],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         };
 
         // Usage-credits error — AgentError but NOT an auth error.
@@ -9682,6 +9743,33 @@ mod native_edit_membership_lifecycle_tests {
         })
     }
 
+    #[test]
+    fn failure_notice_prefers_resolved_edit_thread_routing() {
+        let channel_id = Uuid::new_v4();
+        let root = "cd".repeat(32);
+        let parent = "ef".repeat(32);
+        let resolved = ThreadTags {
+            root_event_id: Some(root.clone()),
+            parent_event_id: Some(parent.clone()),
+            mentioned_pubkeys: vec![],
+        };
+        let batch = FlushBatch {
+            channel_id,
+            events: vec![queue::BatchEvent {
+                event: edit_event(&"ab".repeat(32)),
+                prompt_tag: "@mention".into(),
+                received_at: std::time::Instant::now(),
+            }],
+            cancelled_events: vec![],
+            cancel_reason: None,
+            failure_thread_tags: Some(resolved),
+        };
+
+        let actual = failure_notice_thread_tags(&batch);
+        assert_eq!(actual.root_event_id.as_deref(), Some(root.as_str()));
+        assert_eq!(actual.parent_event_id.as_deref(), Some(parent.as_str()));
+    }
+
     #[tokio::test]
     async fn prepared_native_steer_rejection_releases_and_dispatches_immediately() {
         let channel_id = Uuid::new_v4();
@@ -9702,6 +9790,7 @@ mod native_edit_membership_lifecycle_tests {
         let mut pool = AgentPool::from_slots(vec![Some(dummy_agent(0).await)]);
         let mut last_activity = tokio::time::Instant::now();
         let mut typing_channels = HashMap::new();
+        let (typing_tx, _typing_rx) = mpsc::unbounded_channel();
         release_prepared_native_steer_fallback(
             &mut pool,
             &mut queue,
@@ -9709,10 +9798,10 @@ mod native_edit_membership_lifecycle_tests {
             &event_id,
             &prompt_context(),
             &HashMap::new(),
+            &typing_tx,
             &mut last_activity,
             &mut typing_channels,
-        )
-        .await;
+        );
 
         assert!(typing_channels.contains_key(&channel_id));
         assert_eq!(
@@ -9770,6 +9859,39 @@ mod native_edit_membership_lifecycle_tests {
     }
 
     #[test]
+    fn prepared_edit_is_stale_after_replacement_turn_starts() {
+        let channel_id = Uuid::new_v4();
+        let event = edit_event(&"ab".repeat(32));
+        let event_id = event.id.to_hex();
+        let mut queue = EventQueue::new(config::DedupMode::Queue);
+        assert!(queue.push(QueuedEvent {
+            channel_id,
+            event,
+            received_at: std::time::Instant::now(),
+            prompt_tag: "@mention".into(),
+        }));
+        let generations = HashMap::new();
+        let generation =
+            reserve_native_edit_preparation(&mut queue, &generations, channel_id, &event_id)
+                .expect("edit reservation");
+
+        assert!(native_steer_preparation_is_stale(
+            &queue,
+            &HashSet::new(),
+            &generations,
+            channel_id,
+            &event_id,
+            generation,
+            "originating-turn",
+            Some("replacement-turn"),
+        ));
+        assert!(
+            queue.has_native_steer_reservation(channel_id, &event_id),
+            "replacement-turn staleness preserves the reservation for fallback delivery"
+        );
+    }
+
+    #[test]
     fn late_prepared_edit_is_discarded_across_remove_then_readd() {
         let channel_id = Uuid::new_v4();
         let event = edit_event(&"ab".repeat(32));
@@ -9813,6 +9935,8 @@ mod native_edit_membership_lifecycle_tests {
             channel_id,
             &event_id,
             prepared_generation,
+            "originating-turn",
+            Some("originating-turn"),
         ));
         queue.release_native_steer(channel_id, &event_id);
         assert!(queue.flush_next().is_none());

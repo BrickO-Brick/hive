@@ -761,14 +761,41 @@ impl AgentPool {
     /// still change while enrichment runs, so callers must retain the normal
     /// send-time fallback.
     pub fn native_steer_available(&self, channel_id: Uuid, membership_generation: u64) -> bool {
+        self.native_steer_turn_id(channel_id, membership_generation)
+            .is_some()
+    }
+
+    /// Return the exact turn currently accepting native steers for this
+    /// channel membership. Async preparation captures this identity so a late
+    /// completion cannot cross into a replacement turn in the same generation.
+    pub fn native_steer_turn_id(
+        &self,
+        channel_id: Uuid,
+        membership_generation: u64,
+    ) -> Option<String> {
         self.task_map
             .values()
             .find(|meta| {
                 meta.channel_id == Some(channel_id)
                     && meta.membership_generation == Some(membership_generation)
             })
-            .and_then(|meta| meta.steer_tx.as_ref())
-            .is_some_and(|tx| !tx.is_closed() && tx.capacity() > 0)
+            .filter(|meta| {
+                meta.steer_tx
+                    .as_ref()
+                    .is_some_and(|tx| !tx.is_closed() && tx.capacity() > 0)
+            })
+            .map(|meta| meta.turn_id.clone())
+    }
+
+    /// Return the identity of the task currently owning this channel epoch.
+    pub fn channel_turn_id(&self, channel_id: Uuid, membership_generation: u64) -> Option<&str> {
+        self.task_map
+            .values()
+            .find(|meta| {
+                meta.channel_id == Some(channel_id)
+                    && meta.membership_generation == Some(membership_generation)
+            })
+            .map(|meta| meta.turn_id.as_str())
     }
 
     /// Try to send a goose-native steer request to the in-flight task for
@@ -1834,7 +1861,7 @@ fn send_prompt_result(
 #[allow(clippy::too_many_arguments)]
 pub async fn run_prompt_task(
     mut agent: OwnedAgent,
-    batch: Option<FlushBatch>,
+    mut batch: Option<FlushBatch>,
     prompt_text: Option<String>,
     ctx: Arc<PromptContext>,
     result_tx: mpsc::UnboundedSender<PromptResult>,
@@ -2404,7 +2431,7 @@ pub async fn run_prompt_task(
             )
         };
         vec![text]
-    } else if let Some(ref b) = batch {
+    } else if let Some(ref mut b) = batch {
         // Resolve edit routing once inside the prompt task. This keeps the
         // network lookup off the shared relay loop and gives typing, prompt,
         // reply, reaction, and failure routing one authority.
@@ -2418,6 +2445,19 @@ pub async fn run_prompt_task(
                 let _ = tx.send((b.channel_id, turn_id.clone(), scope));
             }
         }
+        b.failure_thread_tags = crate::queue::edit_target_id(
+            &b.events.last().expect("non-empty batch").event,
+        )
+        .map(|target_event_id| {
+            resolved_edit
+                .as_ref()
+                .map(crate::queue::ResolvedEdit::reply_thread_tags)
+                .unwrap_or_else(|| crate::queue::ThreadTags {
+                    root_event_id: Some(target_event_id.clone()),
+                    parent_event_id: Some(target_event_id),
+                    mentioned_pubkeys: Vec::new(),
+                })
+        });
 
         // Build prompt from batch with context enrichment.
         // Try startup cache first; lazy-fetch via REST for dynamic channels.
@@ -3483,6 +3523,7 @@ pub(crate) async fn format_native_steer_prompt(
         }],
         cancelled_events: Vec::new(),
         cancel_reason: None,
+        failure_thread_tags: None,
     };
     if crate::queue::edit_target_id(&batch.events[0].event).is_none() {
         let (header, closing) = crate::queue::native_steer_framing();
@@ -6162,6 +6203,7 @@ mod tests {
             }],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         };
         let context = ConversationContext::Thread {
             messages: vec![ContextMessage {
@@ -6410,6 +6452,7 @@ done"#
                 }],
                 cancelled_events: vec![],
                 cancel_reason: None,
+                failure_thread_tags: None,
             };
             run_prompt_task(
                 agent,
@@ -6497,6 +6540,7 @@ done"#
                 received_at: std::time::Instant::now(),
             }],
             cancel_reason: Some(crate::queue::CancelReason::Steer),
+            failure_thread_tags: None,
         };
         let next_batch = FlushBatch {
             channel_id,
@@ -6507,6 +6551,7 @@ done"#
             }],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         };
 
         // Return both merged events as DM history. They must be excluded from
@@ -6663,6 +6708,7 @@ done"#
             }],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         };
 
         // The local REST bridge returns the already-delivered steer as DM
@@ -7171,6 +7217,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             }],
             cancelled_events: vec![],
             cancel_reason: None,
+            failure_thread_tags: None,
         }
     }
 
