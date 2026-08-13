@@ -147,6 +147,26 @@ pub trait ProjectionStore {
     fn load_all(&self) -> Result<Option<HashMap<String, String>>, String>;
     fn store_batch(&self, entries: &HashMap<String, String>) -> Result<(), String>;
     fn remove_batch(&self, keys: &[&str]) -> Result<(), String>;
+
+    /// Commit `entries` in a single blob mutation, then confirm each key holds
+    /// its value with a durable, cache-bypassing read — the batched analogue of
+    /// [`write_and_verify`](Self::write_and_verify).
+    ///
+    /// The default verifies via [`load_key`](Self::load_key), which is exact for
+    /// stores with no cache/durable split (the test fakes). [`SecretStore`]
+    /// overrides it with a raw keychain read so a backend that acknowledges a
+    /// write it did not persist is still caught, exactly as the per-key path
+    /// does.
+    fn store_batch_verified(&self, entries: &HashMap<String, String>) -> Result<(), String> {
+        self.store_batch(entries)?;
+        for (key, value) in entries {
+            match self.load_key(key)? {
+                Some(ref stored) if stored == value => {}
+                _ => return Err(format!("keyring read-back verify failed for {key}")),
+            }
+        }
+        Ok(())
+    }
 }
 
 impl ProjectionStore for SecretStore {
@@ -174,6 +194,24 @@ impl ProjectionStore for SecretStore {
     fn remove_batch(&self, keys: &[&str]) -> Result<(), String> {
         for key in keys {
             self.delete(key)?;
+        }
+        Ok(())
+    }
+
+    /// Override the default so verification bypasses the in-process cache: after
+    /// `store_all` advances the cache to the written state, a cached `load`
+    /// would pass even when the OS keychain write silently failed.
+    /// [`verify_stored_raw`](SecretStore::verify_stored_raw) reads the raw blob
+    /// direct from the backend, proving the round-trip the same way the per-key
+    /// `write_and_verify` does.
+    fn store_batch_verified(&self, entries: &HashMap<String, String>) -> Result<(), String> {
+        self.store_all(entries)?;
+        for (key, value) in entries {
+            match self.verify_stored_raw(key, value) {
+                Ok(true) => {}
+                Ok(false) => return Err(format!("keyring read-back verify failed for {key}")),
+                Err(e) => return Err(format!("keyring read-back verify error for {key}: {e}")),
+            }
         }
         Ok(())
     }
@@ -221,6 +259,126 @@ pub fn write_secret<S: ProjectionStore>(
             WriteOutcome::KeptInline { reason: e }
         }
     }
+}
+
+// ── Batched write-with-reuse ───────────────────────────────────────────────
+
+/// One field's contribution to a batched secret save.
+///
+/// The coordinate builder is `&dyn Fn` so a single [`write_secrets_batched`]
+/// call can carry fields from different namespaces (env / auth_tag /
+/// provider_config) without monomorphizing over each closure type.
+pub struct FieldSave<'a> {
+    /// Builds the full blob coordinate for a given generation id.
+    pub coord_key_fn: &'a dyn Fn(&str) -> String,
+    /// The serialized inline value, or `None` when the field is empty/absent.
+    pub value: Option<&'a str>,
+    /// The generation currently referenced on disk, if any — the reuse anchor.
+    pub existing_ref: Option<&'a str>,
+    /// Human-readable context for diagnostics.
+    pub context: &'a str,
+}
+
+/// Persist several secret fields in a SINGLE blob mutation, reusing the live
+/// generation for any field whose bytes are unchanged.
+///
+/// Returns one [`WriteOutcome`] per input field, in order, so the seam applies
+/// the same per-field record mutation it always has:
+///
+/// - `value == None` → [`WriteOutcome::Nothing`] (no write).
+/// - `value` byte-equal to what `existing_ref` already stores →
+///   [`WriteOutcome::Persisted`] with the SAME generation and **no write**: no
+///   new UUID is minted, no blob mutation happens, and the generation never
+///   becomes GC-eligible, so a metadata-only save is free of churn.
+/// - `value` changed (or no prior ref, or the prior value is unreadable) → a
+///   fresh generation is staged and committed with every other changed field in
+///   ONE [`store_batch_verified`](ProjectionStore::store_batch_verified). On
+///   success each is [`WriteOutcome::Persisted`] with its new gen; if the single
+///   mutation fails, ALL staged fields become [`WriteOutcome::KeptInline`]
+///   together (the blob write is atomic — there is no torn partial state).
+///
+/// # Why the old generation is safe
+///
+/// Like [`write_secret`], this never deletes a prior generation: a changed field
+/// mints a NEW coordinate and leaves the old one untouched, so a subsequent
+/// failed JSON commit still finds the on-disk ref's generation live. Retirement
+/// stays with the two-cycle GC.
+///
+/// # Why no `cancel_gc_candidacy`
+///
+/// The per-field seam cancelled candidacy after each write. That is redundant on
+/// this path and is deliberately dropped so the save is exactly one mutation:
+/// every save holds the cross-process transaction lock, under which GC cannot
+/// run, and a freshly-minted UUID generation has never been observed by a sweep
+/// (so it carries no candidate marker), while a REUSED generation is a live JSON
+/// ref that `mark_gc_candidates` skips by construction. Neither a new nor a
+/// reused generation can hold a candidate marker at save time, so there is
+/// nothing to cancel. (The boot-migration path keeps its cancel: it is
+/// contract-frozen and its semantics are proven elsewhere.)
+pub fn write_secrets_batched<S: ProjectionStore>(
+    store: &S,
+    fields: &[FieldSave<'_>],
+) -> Vec<WriteOutcome> {
+    let mut outcomes: Vec<Option<WriteOutcome>> = Vec::with_capacity(fields.len());
+    let mut batch: HashMap<String, String> = HashMap::new();
+    // (field index, freshly-minted gen) for each field staged into `batch`,
+    // finalized after the one write resolves.
+    let mut pending: Vec<(usize, String)> = Vec::new();
+
+    for (idx, field) in fields.iter().enumerate() {
+        let Some(value) = field.value else {
+            outcomes.push(Some(WriteOutcome::Nothing));
+            continue;
+        };
+        // Gen-reuse: if the live ref already stores these exact bytes, keep the
+        // generation and write nothing. A load error or absent value falls
+        // through to a fresh write (which, on a real outage, fails closed to
+        // KeptInline) — never a silent reuse of an unverified generation.
+        if let Some(existing) = field.existing_ref {
+            if matches!(
+                store.load_key(&(field.coord_key_fn)(existing)),
+                Ok(Some(ref stored)) if stored == value
+            ) {
+                outcomes.push(Some(WriteOutcome::Persisted {
+                    gen: existing.to_string(),
+                }));
+                continue;
+            }
+        }
+        let gen = new_gen_id();
+        batch.insert((field.coord_key_fn)(&gen), value.to_string());
+        pending.push((idx, gen));
+        outcomes.push(None); // finalized after the batched write
+    }
+
+    if !batch.is_empty() {
+        match store.store_batch_verified(&batch) {
+            Ok(()) => {
+                for (idx, gen) in pending {
+                    outcomes[idx] = Some(WriteOutcome::Persisted { gen });
+                }
+            }
+            Err(e) => {
+                let contexts: Vec<&str> = pending
+                    .iter()
+                    .map(|(idx, _)| fields[*idx].context)
+                    .collect();
+                eprintln!(
+                    "buzz-desktop: batched keyring write failed ({e}); keeping \
+                     inline in 0o600 JSON (retry on next boot): {}",
+                    contexts.join(", ")
+                );
+                for (idx, _) in pending {
+                    outcomes[idx] = Some(WriteOutcome::KeptInline { reason: e.clone() });
+                }
+            }
+        }
+    }
+
+    outcomes
+        .into_iter()
+        .map(|o| o.expect("every field assigned an outcome"))
+        .collect()
 }
 
 // ── Load-with-availability ─────────────────────────────────────────────────
@@ -786,3 +944,7 @@ pub fn deserialize_provider_config(s: &str) -> Result<serde_json::Value, String>
 #[cfg(test)]
 #[path = "secret_projection_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "secret_projection_batched_tests.rs"]
+mod batched_tests;

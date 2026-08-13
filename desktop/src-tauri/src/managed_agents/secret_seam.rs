@@ -9,7 +9,8 @@ use crate::managed_agents::{
     secret_projection::{
         agent_auth_tag_key, agent_env_key, agent_provider_config_key, cancel_gc_candidacy,
         definition_env_key, deserialize_env_map, deserialize_provider_config, load_secret,
-        serialize_env_map, serialize_provider_config, write_secret, ProjectionStore, WriteOutcome,
+        serialize_env_map, serialize_provider_config, write_secret, write_secrets_batched,
+        FieldSave, ProjectionStore, WriteOutcome,
     },
     BackendKind, ManagedAgentRecord,
 };
@@ -105,21 +106,70 @@ pub(crate) fn strip_and_persist_agent_secrets_with<S: ProjectionStore>(
 ) {
     let unavailable = record.secrets_unavailable;
     let pubkey = record.pubkey.clone();
+
+    // Serialize each field's inline value once. `None` means "field empty" and
+    // maps to WriteOutcome::Nothing (no write, no reuse).
     let inline_env = if !record.env_vars.is_empty() {
         serialize_env_map(&record.env_vars).ok()
     } else {
         None
     };
-    match write_secret(
-        store,
-        |gen| agent_env_key(&pubkey, gen),
-        inline_env.as_deref(),
-        &format!("agent:{pubkey} env_vars"),
-    ) {
+    let auth_val = record.auth_tag.clone();
+    let provider = match &record.backend {
+        BackendKind::Provider { id, config } => {
+            let serialized = if !config.is_null() {
+                serialize_provider_config(config).ok()
+            } else {
+                None
+            };
+            Some((id.clone(), serialized))
+        }
+        _ => None,
+    };
+
+    // Coordinate builders borrow `pubkey`; contexts are owned so they outlive
+    // the batched call. Both are dropped before `record` is mutated below.
+    let env_key = |gen: &str| agent_env_key(&pubkey, gen);
+    let auth_key = |gen: &str| agent_auth_tag_key(&pubkey, gen);
+    let pc_key = |gen: &str| agent_provider_config_key(&pubkey, gen);
+    let env_ctx = format!("agent:{pubkey} env_vars");
+    let auth_ctx = format!("agent:{pubkey} auth_tag");
+    let pc_ctx = provider
+        .as_ref()
+        .map(|(id, _)| format!("agent:{pubkey} provider_config ({id})"));
+
+    let mut fields = vec![
+        FieldSave {
+            coord_key_fn: &env_key,
+            value: inline_env.as_deref(),
+            existing_ref: record.env_vars_ref.as_deref(),
+            context: &env_ctx,
+        },
+        FieldSave {
+            coord_key_fn: &auth_key,
+            value: auth_val.as_deref(),
+            existing_ref: record.auth_tag_ref.as_deref(),
+            context: &auth_ctx,
+        },
+    ];
+    if let Some((_, serialized)) = &provider {
+        fields.push(FieldSave {
+            coord_key_fn: &pc_key,
+            value: serialized.as_deref(),
+            existing_ref: record.provider_config_ref.as_deref(),
+            context: pc_ctx.as_deref().unwrap_or_default(),
+        });
+    }
+
+    // ONE blob mutation for every changed field; unchanged fields reuse their
+    // live generation and write nothing.
+    let outcomes = write_secrets_batched(store, &fields);
+    drop(fields); // end the immutable borrow of `record` before mutating it.
+
+    match &outcomes[0] {
         WriteOutcome::Persisted { gen } => {
-            cancel_gc_candidacy(store, &agent_env_key(&pubkey, &gen));
             record.env_vars.clear();
-            record.env_vars_ref = Some(gen);
+            record.env_vars_ref = Some(gen.clone());
         }
         // Empty projection: preserve an existing ref when unavailable so a
         // failed-hydrate save does not orphan the live generation.
@@ -128,43 +178,23 @@ pub(crate) fn strip_and_persist_agent_secrets_with<S: ProjectionStore>(
             record.env_vars_ref = None;
         }
     }
-    let auth_val = record.auth_tag.clone();
-    match write_secret(
-        store,
-        |gen| agent_auth_tag_key(&pubkey, gen),
-        auth_val.as_deref(),
-        &format!("agent:{pubkey} auth_tag"),
-    ) {
+    match &outcomes[1] {
         WriteOutcome::Persisted { gen } => {
-            cancel_gc_candidacy(store, &agent_auth_tag_key(&pubkey, &gen));
             record.auth_tag = None;
-            record.auth_tag_ref = Some(gen);
+            record.auth_tag_ref = Some(gen.clone());
         }
         WriteOutcome::Nothing if unavailable => {}
         WriteOutcome::KeptInline { .. } | WriteOutcome::Nothing => {
             record.auth_tag_ref = None;
         }
     }
-    if let BackendKind::Provider {
-        ref id,
-        ref mut config,
-    } = record.backend
-    {
-        let serialized = if !config.is_null() {
-            serialize_provider_config(config).ok()
-        } else {
-            None
-        };
-        match write_secret(
-            store,
-            |gen| agent_provider_config_key(&pubkey, gen),
-            serialized.as_deref(),
-            &format!("agent:{pubkey} provider_config ({id})"),
-        ) {
+    if provider.is_some() {
+        match &outcomes[2] {
             WriteOutcome::Persisted { gen } => {
-                cancel_gc_candidacy(store, &agent_provider_config_key(&pubkey, &gen));
-                *config = serde_json::Value::Null;
-                record.provider_config_ref = Some(gen);
+                if let BackendKind::Provider { config, .. } = &mut record.backend {
+                    *config = serde_json::Value::Null;
+                }
+                record.provider_config_ref = Some(gen.clone());
             }
             WriteOutcome::Nothing if unavailable => {}
             WriteOutcome::KeptInline { .. } | WriteOutcome::Nothing => {
@@ -223,16 +253,19 @@ pub(crate) fn strip_and_persist_definition_secrets_with<S: ProjectionStore>(
     } else {
         None
     };
-    match write_secret(
-        store,
-        |gen| definition_env_key(&slug, gen),
-        inline_env.as_deref(),
-        &format!("definition:{slug} env_vars"),
-    ) {
+    let env_key = |gen: &str| definition_env_key(&slug, gen);
+    let env_ctx = format!("definition:{slug} env_vars");
+    let fields = [FieldSave {
+        coord_key_fn: &env_key,
+        value: inline_env.as_deref(),
+        existing_ref: record.env_vars_ref.as_deref(),
+        context: &env_ctx,
+    }];
+    let outcomes = write_secrets_batched(store, &fields);
+    match &outcomes[0] {
         WriteOutcome::Persisted { gen } => {
-            cancel_gc_candidacy(store, &definition_env_key(&slug, &gen));
             record.env_vars.clear();
-            record.env_vars_ref = Some(gen);
+            record.env_vars_ref = Some(gen.clone());
         }
         WriteOutcome::Nothing if unavailable => {}
         WriteOutcome::KeptInline { .. } | WriteOutcome::Nothing => {
