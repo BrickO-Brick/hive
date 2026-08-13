@@ -17,13 +17,11 @@ import {
   triggerWorkflow,
 } from "@/shared/api/tauriWorkflows";
 import { Button } from "@/shared/ui/button";
-import { Card } from "@/shared/ui/card";
 import { Skeleton } from "@/shared/ui/skeleton";
 
 type WorkflowsViewProps = {
   channels: Channel[];
   onCloseWorkflow: () => void;
-  onSelectWorkflow: (workflowId: string) => void;
   selectedWorkflowId: string | null;
 };
 
@@ -40,28 +38,25 @@ type DialogState =
 
 function WorkflowsListSkeleton() {
   return (
-    <div className="space-y-2">
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
       {["first", "second", "third", "fourth"].map((card) => (
-        <Card className="p-4" key={card}>
-          <div className="flex items-start justify-between gap-4">
-            <div className="min-w-0 flex-1 space-y-3">
-              <div className="flex items-center gap-2">
-                <Skeleton className="h-5 w-44" />
-                <Skeleton className="h-5 w-16 rounded-full" />
-              </div>
-              <Skeleton className="h-4 w-full max-w-2xl" />
-              <div className="flex flex-wrap gap-2">
-                <Skeleton className="h-5 w-20 rounded-full" />
-                <Skeleton className="h-5 w-24 rounded-full" />
-                <Skeleton className="h-5 w-16 rounded-full" />
-              </div>
+        <div
+          className="flex min-h-60 flex-col rounded-2xl border bg-card p-5"
+          key={card}
+        >
+          <div className="flex items-start justify-between">
+            <div className="flex items-center gap-2">
+              <Skeleton className="h-9 w-9 rounded-xl" />
+              <Skeleton className="h-4 w-4" />
+              <Skeleton className="h-9 w-9 rounded-xl" />
             </div>
-            <div className="hidden shrink-0 gap-2 sm:flex">
-              <Skeleton className="h-8 w-8 rounded-lg" />
-              <Skeleton className="h-8 w-8 rounded-lg" />
-            </div>
+            <Skeleton className="h-6 w-16 rounded-full" />
           </div>
-        </Card>
+          <Skeleton className="mt-5 h-3 w-28" />
+          <Skeleton className="mt-2 h-6 w-full" />
+          <Skeleton className="mt-2 h-6 w-4/5" />
+          <Skeleton className="mt-auto h-4 w-32" />
+        </div>
       ))}
     </div>
   );
@@ -70,7 +65,6 @@ function WorkflowsListSkeleton() {
 export function WorkflowsView({
   channels,
   onCloseWorkflow,
-  onSelectWorkflow,
   selectedWorkflowId,
 }: WorkflowsViewProps) {
   const [dialogState, setDialogState] = React.useState<DialogState>({
@@ -174,23 +168,28 @@ export function WorkflowsView({
       data-testid="workflows-view"
     >
       <div
-        className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pb-4 pt-4"
+        className="flex min-h-0 flex-1 flex-col overflow-y-auto px-5 pb-5 pt-5"
         data-scroll-restoration-id="workflows-list"
       >
-        <div className="mb-4 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <h2 className="text-lg font-semibold">Workflows</h2>
-            <Button
-              aria-label="Refresh workflows"
-              disabled={allWorkflowsQuery.isFetching}
-              onClick={() => void allWorkflowsQuery.refetch()}
-              size="icon"
-              variant="ghost"
-            >
-              <RefreshCw
-                className={`h-4 w-4 ${allWorkflowsQuery.isFetching ? "animate-spin" : ""}`}
-              />
-            </Button>
+        <div className="mb-5 flex items-start justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2">
+              <h2 className="text-xl font-bold tracking-tight">Workflows</h2>
+              <Button
+                aria-label="Refresh workflows"
+                disabled={allWorkflowsQuery.isFetching}
+                onClick={() => void allWorkflowsQuery.refetch()}
+                size="icon"
+                variant="ghost"
+              >
+                <RefreshCw
+                  className={`h-4 w-4 ${allWorkflowsQuery.isFetching ? "animate-spin" : ""}`}
+                />
+              </Button>
+            </div>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              Automations that keep your community moving.
+            </p>
           </div>
           <Button onClick={() => setDialogState({ mode: "create" })} size="sm">
             <Plus className="mr-1 h-4 w-4" />
@@ -225,7 +224,13 @@ export function WorkflowsView({
             </Button>
           </div>
         ) : (
-          <div className="space-y-2">
+          <div
+            className={
+              selectedWorkflowId
+                ? "grid grid-cols-1 gap-3 xl:grid-cols-2"
+                : "grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3"
+            }
+          >
             {allWorkflows.map(({ workflow, channelName }) => (
               <WorkflowCard
                 channelName={channelName}
@@ -234,7 +239,6 @@ export function WorkflowsView({
                 onDelete={handleDelete}
                 onDuplicate={handleDuplicate}
                 onEdit={handleEdit}
-                onSelect={onSelectWorkflow}
                 onTrigger={handleTrigger}
                 workflow={workflow}
               />

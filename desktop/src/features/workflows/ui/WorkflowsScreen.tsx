@@ -11,14 +11,12 @@ const WorkflowsView = React.lazy(async () => {
 type WorkflowsScreenProps = {
   channels: Channel[];
   onCloseWorkflow: () => void;
-  onSelectWorkflow: (workflowId: string) => void;
   selectedWorkflowId: string | null;
 };
 
 export function WorkflowsScreen({
   channels,
   onCloseWorkflow,
-  onSelectWorkflow,
   selectedWorkflowId,
 }: WorkflowsScreenProps) {
   return (
@@ -27,7 +25,6 @@ export function WorkflowsScreen({
         <WorkflowsView
           channels={channels}
           onCloseWorkflow={onCloseWorkflow}
-          onSelectWorkflow={onSelectWorkflow}
           selectedWorkflowId={selectedWorkflowId}
         />
       </React.Suspense>

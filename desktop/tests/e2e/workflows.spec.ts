@@ -551,6 +551,7 @@ test("captures disabled diff workflows in the list UI", async ({ page }) => {
     .filter({ hasText: workflowName })
     .first();
   await expect(card).toContainText(workflowName);
+  await expect(card).toContainText("When a diff is posted, wait for a moment");
   await expect(card).toContainText(description);
   await expect(card).toContainText("Diff Posted");
   await expect(card).toContainText("disabled");
@@ -653,35 +654,16 @@ test("deletes a workflow with confirmation", async ({ page }) => {
   await expect(page.getByText("No workflows yet")).toBeVisible();
 });
 
-test("triggers a workflow from the detail panel", async ({ page }) => {
-  const workflowName = `trigger_test_${Date.now()}`;
+test("opens a workflow in the edit modal from its card", async ({ page }) => {
+  const workflowName = `open_edit_test_${Date.now()}`;
 
   await navigateToWorkflows(page);
   await createWorkflow(page, workflowName);
 
-  // Click on the workflow card to open the detail panel
-  await page.getByRole("button", { name: `View ${workflowName}` }).click();
-  await expect(page.getByTestId("workflow-detail-panel")).toBeVisible();
+  await page.getByRole("button", { name: `Edit ${workflowName}` }).click();
 
-  // Click the Trigger button
-  await page
-    .getByTestId("workflow-detail-panel")
-    .getByRole("button", { name: "Trigger" })
-    .click();
-
-  // Wait for the trigger to complete (button text changes back from "Triggering...")
-  await expect(
-    page
-      .getByTestId("workflow-detail-panel")
-      .getByRole("button", { name: "Trigger" }),
-  ).toBeVisible();
-
-  await expect(
-    page
-      .getByTestId("workflow-detail-panel")
-      .getByTestId("workflow-selected-run"),
-  ).toBeVisible();
-  await expect(
-    page.getByTestId("workflow-detail-panel").getByTestId("workflow-run-trace"),
-  ).toContainText("step_1");
+  const dialog = page.getByRole("dialog", { name: "Edit workflow" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByLabel("Workflow name")).toHaveValue(workflowName);
+  await expect(page.getByTestId("workflow-detail-panel")).not.toBeVisible();
 });
