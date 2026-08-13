@@ -1180,12 +1180,15 @@ test("processing-report-navigable-suppresses-resolve-form: a processing report o
     actionId: null,
     activeAction: {
       id: "00000000-0000-0000-0000-0000000000e1",
-      reportId: processingItem.id,
+      requestId: "00000000-0000-0000-0000-0000000000e2",
+      actorPubkey:
+        "1111111111111111111111111111111111111111111111111111111111111111",
+      actorRole: "operator",
       action: "ban",
       status: "enforcing",
-      requestId: "00000000-0000-0000-0000-0000000000e2",
-      expirationSecs: null,
       reason: null,
+      expiresAt: null,
+      errorMessage: null,
       createdAt: "2024-01-01T00:00:00Z",
       updatedAt: "2024-01-01T00:00:01Z",
     },
