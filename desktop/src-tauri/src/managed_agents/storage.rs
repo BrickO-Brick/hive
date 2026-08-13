@@ -336,14 +336,34 @@ fn hydrate_keys_with(store: &impl KeyStore, records: &mut [ManagedAgentRecord]) 
 /// before the wholesale rewrite so a definition is never dropped by an
 /// instance-side save (and vice versa via [`save_agent_definitions`]).
 pub fn save_managed_agents(app: &AppHandle, records: &[ManagedAgentRecord]) -> Result<(), String> {
-    // Lock FIRST — the definition half re-read below must be under the lock
-    // (Race 1); see `acquire_secret_txn_lock` for span + residual.
-    let _txn = acquire_secret_txn_lock(app)?;
-    save_managed_agents_at(
+    save_managed_agents_locked_at(
         &managed_agents_store_path(app)?,
         agent_secret_store(),
         records,
     )
+}
+
+/// Lock-owning path-based entry point for the instance-side save: acquires the
+/// cross-process secret transaction lock on the store directory, then runs the
+/// definition-preserving [`save_managed_agents_at`] under it. The lock and the
+/// mutation it protects live in ONE seam — the same one the interleave test
+/// drives — so the wiring is provable: delete the acquisition here and the
+/// concurrent-save regression stops observing exclusion. See
+/// [`acquire_secret_txn_lock`] for the lock span + residual.
+fn save_managed_agents_locked_at<S>(
+    store_path: &Path,
+    store: Option<&S>,
+    records: &[ManagedAgentRecord],
+) -> Result<(), String>
+where
+    S: KeyStore + crate::managed_agents::secret_projection::ProjectionStore,
+{
+    // Lock FIRST — the definition half re-read inside `save_managed_agents_at`
+    // must be under the lock (Race 1).
+    let _txn = crate::secret_store::transaction_lock_at(&crate::secret_store::store_txn_lock_dir(
+        store_path,
+    ))?;
+    save_managed_agents_at(store_path, store, records)
 }
 
 /// Path-based core of [`save_managed_agents`]: merges the caller's instance
@@ -399,14 +419,32 @@ pub(crate) fn save_agent_definitions(
     app: &AppHandle,
     definitions: &[ManagedAgentRecord],
 ) -> Result<(), String> {
-    // Lock FIRST — the instance half re-read below must be under the lock
-    // (Race 1); mirror of `save_managed_agents`. Leaf-level.
-    let _txn = acquire_secret_txn_lock(app)?;
-    save_agent_definitions_at(
+    save_agent_definitions_locked_at(
         &managed_agents_store_path(app)?,
         agent_secret_store(),
         definitions,
     )
+}
+
+/// Lock-owning path-based entry point for the definition-side save — the mirror
+/// of [`save_managed_agents_locked_at`]. Acquires the cross-process secret
+/// transaction lock on the store directory, then runs [`save_agent_definitions_at`]
+/// under it, so the lock and the instance-half re-read it protects are one seam
+/// the interleave test drives directly.
+fn save_agent_definitions_locked_at<S>(
+    store_path: &Path,
+    store: Option<&S>,
+    definitions: &[ManagedAgentRecord],
+) -> Result<(), String>
+where
+    S: crate::managed_agents::secret_projection::ProjectionStore,
+{
+    // Lock FIRST — the instance half re-read inside `save_agent_definitions_at`
+    // must be under the lock (Race 1); mirror of `save_managed_agents`.
+    let _txn = crate::secret_store::transaction_lock_at(&crate::secret_store::store_txn_lock_dir(
+        store_path,
+    ))?;
+    save_agent_definitions_at(store_path, store, definitions)
 }
 
 /// Path-based core of [`save_agent_definitions`]: merges the caller's definition
@@ -678,6 +716,17 @@ pub(crate) fn acquire_secret_txn_lock(
     }
     let dir = crate::secret_store::store_txn_lock_dir(&managed_agents_store_path(app)?);
     crate::secret_store::transaction_lock_at(&dir).map(Some)
+}
+
+/// Resolve the store-directory lock target the secret transaction lock uses,
+/// from the same `managed-agents.json` path [`acquire_secret_txn_lock`] resolves.
+/// Exposed so the identity-persist seam ([`crate::commands::identity::persist_identity_locked`])
+/// contends on the exact directory inode every agent save takes — keeping the
+/// lock-target resolution in one place.
+pub(crate) fn secret_txn_lock_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(crate::secret_store::store_txn_lock_dir(
+        &managed_agents_store_path(app)?,
+    ))
 }
 
 /// Atomic, symlink-preserving JSON write.
