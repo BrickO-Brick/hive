@@ -44,6 +44,8 @@ pub fn router(state: Arc<crate::state::AppState>) -> Router {
         .route("/reports", get(reports))
         .route("/reports/{id}", get(report_detail))
         .route("/reports/{id}/resolve", axum::routing::post(resolve_report))
+        .route("/reports/{id}/reopen", axum::routing::post(reopen_report))
+        .route("/reports/{id}/cancel", axum::routing::post(cancel_report))
         .route("/feedback", get(feedback))
         .route("/feedback/{id}", get(feedback_detail))
         .route("/feedback/{id}", patch(update_feedback_status))
@@ -256,11 +258,15 @@ async fn report_detail(
 #[serde(rename_all = "camelCase")]
 struct FeedbackSummary {
     id: Uuid,
-    community_id: Uuid,
-    community_host: String,
+    /// `None` once the source community has been purged (provenance severed).
+    community_id: Option<Uuid>,
+    /// `None` when `community_id` is severed — feedback retained without origin.
+    community_host: Option<String>,
     submitter_pubkey: String,
     category: Option<String>,
     body_summary: String,
+    /// Operator-managed lifecycle status: `"new"` | `"reviewed"` | `"archived"`.
+    status: String,
     received_at: DateTime<Utc>,
 }
 
@@ -292,6 +298,7 @@ async fn feedback(
                 submitter_pubkey: item.submitter_pubkey,
                 category: item.category,
                 body_summary,
+                status: item.status,
                 received_at: item.received_at,
             }
         })
@@ -346,20 +353,30 @@ async fn feedback_attachment(
         .admin_get_feedback(id)
         .await?
         .ok_or_else(ApiError::not_found)?;
-    if !feedback_references_hash(&feedback.tags, &feedback.community_host, &sha256) {
+
+    // A severed feedback row (source community purged, community_id NULL) has no
+    // tenant to bind and no tenant-scoped media to serve — its attachment bytes
+    // were purged with the community. Fail closed to 404.
+    let (Some(community_host), Some(community_id)) =
+        (feedback.community_host.as_deref(), feedback.community_id)
+    else {
+        return Err(ApiError::not_found());
+    };
+
+    if !feedback_references_hash(&feedback.tags, community_host, &sha256) {
         return Err(ApiError::not_found());
     }
 
     // Resolve the tenant from server-owned feedback provenance, then assert the
     // resolved row still agrees with the feedback FK. Client input never names
     // a community, host, object key, extension, or upstream URL.
-    let tenant = crate::tenant::bind_community(&state.db, &feedback.community_host)
+    let tenant = crate::tenant::bind_community(&state.db, community_host)
         .await
         .map_err(|_| ApiError::not_found())?;
-    if tenant.community().as_uuid() != &feedback.community_id {
+    if tenant.community().as_uuid() != &community_id {
         tracing::warn!(
             feedback_id = %feedback.id,
-            feedback_community_id = %feedback.community_id,
+            feedback_community_id = %community_id,
             resolved_community_id = %tenant.community(),
             "admin feedback attachment tenant provenance mismatch"
         );
@@ -374,7 +391,7 @@ async fn feedback_attachment(
         })?;
     tracing::info!(
         feedback_id = %feedback.id,
-        community_id = %feedback.community_id,
+        community_id = %community_id,
         attachment_sha256 = %sha256,
         "admin feedback attachment read"
     );
@@ -522,7 +539,11 @@ async fn resolve_report(
                 .status(200)
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(axum::body::Body::from(
-                    serde_json::json!({"status": terminal_status}).to_string(),
+                    serde_json::json!({
+                        "status": terminal_status,
+                        "activeAction": serde_json::Value::Null,
+                    })
+                    .to_string(),
                 ))
                 .unwrap())
         }
@@ -535,7 +556,7 @@ async fn resolve_report(
                 )
             })?;
 
-            let result = resolve_report_with_enforcement(
+            resolve_report_with_enforcement(
                 &state,
                 &tenant,
                 &report_detail,
@@ -565,19 +586,202 @@ async fn resolve_report(
                 }
             })?;
 
+            // Re-read the report so the resolve response carries the same
+            // `status` + `activeAction` shape a later GET /reports/{id} returns —
+            // single source of truth for the enforcement DTO.
+            let detail = state
+                .db
+                .admin_get_report(report_id)
+                .await?
+                .ok_or_else(ApiError::internal)?;
+
             Ok(axum::http::Response::builder()
                 .status(200)
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(axum::body::Body::from(
                     serde_json::json!({
-                        "status": "resolved",
-                        "actionId": result.action_id.to_string(),
+                        "status": detail.report.status,
+                        "activeAction": detail.active_action,
                     })
                     .to_string(),
                 ))
                 .unwrap())
         }
     }
+}
+
+/// Request body for POST /reports/{id}/reopen.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ReopenReportBody {
+    /// Client-generated idempotency key. A retry with the same key returns the
+    /// same success without re-reopening a report that has since been re-resolved.
+    request_id: Uuid,
+    /// Optional operator reason, recorded on the reopen audit row.
+    reason: Option<String>,
+}
+
+/// POST /reports/{id}/reopen
+///
+/// Requires nip98 auth. Both Operator and Moderator may act.
+///
+/// Returns a terminal report (`resolved | dismissed | escalated`) to `open` and
+/// records a durable `reopen` audit row. `409` if the report is not terminal.
+async fn reopen_report(
+    State(state): State<Arc<crate::state::AppState>>,
+    uri: Uri,
+    headers: HeaderMap,
+    Path(report_id): Path<Uuid>,
+    body_bytes: Bytes,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    use buzz_db::relay_admin_actions::ReopenResult;
+
+    let principal_opt = authorize(
+        &state,
+        &headers,
+        uri.path_and_query()
+            .map_or_else(|| uri.path(), |pq| pq.as_str()),
+        "POST",
+        Some(&body_bytes),
+    )
+    .await?;
+
+    let principal = require_mutation_principal(principal_opt)?;
+
+    let body: ReopenReportBody = serde_json::from_slice(&body_bytes)
+        .map_err(|_| ApiError::bad_request("invalid_body", "invalid JSON body"))?;
+
+    // Load report globally to derive tenant provenance.
+    let report_detail = state
+        .db
+        .admin_get_report(report_id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+
+    // Bind tenant from server-owned report provenance (never from client input).
+    let tenant = crate::tenant::bind_community(&state.db, &report_detail.report.community_host)
+        .await
+        .map_err(|_| ApiError::internal())?;
+
+    let actor_pubkey: Vec<u8> = principal.pubkey.to_vec();
+    let actor_role_str = match principal.role {
+        AdminRole::Operator => "operator",
+        AdminRole::Moderator => "moderator",
+    };
+
+    let result = state
+        .db
+        .reopen_report(
+            tenant.community(),
+            report_id,
+            body.request_id,
+            &actor_pubkey,
+            actor_role_str,
+            body.reason.as_deref(),
+        )
+        .await?;
+
+    match result {
+        // AlreadyReopened returns the same success as the original reopen: the
+        // request_id identifies the reopen outcome, not a fresh status read.
+        ReopenResult::Reopened | ReopenResult::AlreadyReopened => {
+            Ok(Json(serde_json::json!({"status": "open"})))
+        }
+        ReopenResult::NotReopenable(status) => Err(ApiError::conflict(&format!(
+            "report is not reopenable (current status: {status})"
+        ))),
+        ReopenResult::NotFound => Err(ApiError::not_found()),
+    }
+}
+
+/// Request body for POST /reports/{id}/cancel.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CancelReportBody {
+    /// The failed action to cancel — the `activeAction.id` the client observed.
+    /// Fences the cancel to exactly that action: a mismatch (already cancelled,
+    /// superseded by a newer claim, or past the mutation point) resolves to 409.
+    action_id: Uuid,
+}
+
+/// POST /reports/{id}/cancel
+///
+/// Requires nip98 auth. Both Operator and Moderator may act.
+///
+/// Cancels a pre-mutation `failed` enforcement action, returning the report to
+/// `open`. Cancel is the only recovery path for a failed action (no composed
+/// client-side retry). `409` if the action is not cancellable — treat as
+/// "refresh detail" (someone else likely cancelled or the action advanced).
+///
+/// The response embeds the just-cancelled action DTO: this is the last look at
+/// that record, since a subsequent detail read (report back to `open`) serves
+/// `activeAction: null`.
+async fn cancel_report(
+    State(state): State<Arc<crate::state::AppState>>,
+    uri: Uri,
+    headers: HeaderMap,
+    Path(report_id): Path<Uuid>,
+    body_bytes: Bytes,
+) -> Result<axum::http::Response<axum::body::Body>, ApiError> {
+    let principal_opt = authorize(
+        &state,
+        &headers,
+        uri.path_and_query()
+            .map_or_else(|| uri.path(), |pq| pq.as_str()),
+        "POST",
+        Some(&body_bytes),
+    )
+    .await?;
+
+    let _principal = require_mutation_principal(principal_opt)?;
+
+    let body: CancelReportBody = serde_json::from_slice(&body_bytes)
+        .map_err(|_| ApiError::bad_request("invalid_body", "invalid JSON body"))?;
+
+    // Load report globally to derive tenant provenance.
+    let report_detail = state
+        .db
+        .admin_get_report(report_id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+
+    // Bind tenant from server-owned report provenance (never from client input).
+    let tenant = crate::tenant::bind_community(&state.db, &report_detail.report.community_host)
+        .await
+        .map_err(|_| ApiError::internal())?;
+
+    let cancelled = state
+        .db
+        .cancel_admin_action(body.action_id, tenant.community(), report_id)
+        .await?;
+
+    if !cancelled {
+        return Err(ApiError::conflict(
+            "action is not cancellable (already cancelled, superseded, or past the mutation point)",
+        ));
+    }
+
+    // Re-read the just-cancelled action for the last-look DTO. The report is now
+    // `open`, so a detail read serves activeAction: null — this response is the
+    // only place the cancelled record surfaces.
+    let record = state
+        .db
+        .get_admin_action(body.action_id)
+        .await?
+        .ok_or_else(ApiError::internal)?;
+    let dto = buzz_db::admin_moderation::AdminActionDto::from_record(&record);
+
+    Ok(axum::http::Response::builder()
+        .status(200)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(axum::body::Body::from(
+            serde_json::json!({
+                "status": "open",
+                "activeAction": dto,
+            })
+            .to_string(),
+        ))
+        .unwrap())
 }
 
 /// PATCH /feedback/{id}
@@ -2930,6 +3134,262 @@ mod tests {
         );
     }
 
+    // ── Item 9: HTTP → DB wiring for the reopen and cancel routes ─────────────
+    //
+    // reopen and cancel touch only `state.db` (no enforcement stack, Redis, or
+    // media), so a full `router().oneshot()` drive with nip98 auth exercises the
+    // real HTTP → handler → tenant-bind → DB path and reads the durable evidence
+    // back. This is the seeded action→HTTP→DB matrix for the two new routes.
+
+    /// Seed a community whose host is `admin.example` (the nip98 test host) plus
+    /// one report in the given status. Returns the report id.
+    async fn seed_admin_host_report(pool: &sqlx::PgPool, status: &str) -> Uuid {
+        // The nip98 test host must resolve to a community, so bind_community in
+        // the handler succeeds. `communities.host` is uniquely indexed on
+        // lower(host), so reuse an existing row rather than racing an insert.
+        let existing: Option<Uuid> =
+            sqlx::query_scalar("SELECT id FROM communities WHERE lower(host) = 'admin.example'")
+                .fetch_optional(pool)
+                .await
+                .expect("lookup admin.example community");
+        let community_id = match existing {
+            Some(id) => id,
+            None => sqlx::query_scalar(
+                "INSERT INTO communities (id, host) VALUES (gen_random_uuid(), 'admin.example') RETURNING id",
+            )
+            .fetch_one(pool)
+            .await
+            .expect("seed admin.example community"),
+        };
+
+        let uid = Uuid::new_v4();
+        let event_id: Vec<u8> = uid
+            .as_bytes()
+            .iter()
+            .chain(uid.as_bytes().iter())
+            .copied()
+            .collect();
+        let report_id: Uuid = sqlx::query_scalar(
+            r#"
+            INSERT INTO moderation_reports (
+                community_id, report_event_id, reporter_pubkey, target_kind,
+                target_pubkey, report_type, status
+            ) VALUES ($1, $2, $3, 'pubkey', $4, 'harassment', $5)
+            RETURNING id
+            "#,
+        )
+        .bind(community_id)
+        .bind(event_id)
+        .bind(vec![0u8; 32])
+        .bind(vec![1u8; 32])
+        .bind(status)
+        .fetch_one(pool)
+        .await
+        .expect("seed report");
+        report_id
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres — reopen HTTP route drives the DB"]
+    async fn reopen_route_returns_report_to_open_and_writes_audit_row() {
+        let keys = nostr::Keys::generate();
+        let state = nip98_state(vec![keys.public_key().to_hex()]).await;
+        let pool = sqlx::PgPool::connect(
+            &std::env::var("BUZZ_TEST_DATABASE_URL")
+                .unwrap_or_else(|_| "postgres://buzz:buzz_dev@localhost:5432/buzz".to_string()),
+        )
+        .await
+        .expect("connect to test DB");
+        let report_id = seed_admin_host_report(&pool, "resolved").await;
+
+        let request_id = Uuid::new_v4();
+        let body = serde_json::json!({ "requestId": request_id }).to_string();
+        let path = format!("/reports/{report_id}/reopen");
+        let auth = make_nostr_auth_post(&keys, &path, body.as_bytes());
+        let response = status_for(
+            state,
+            Request::builder()
+                .method("POST")
+                .uri(&path)
+                .header(header::HOST, "admin.example")
+                .header(header::AUTHORIZATION, auth)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body))
+                .expect("request"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        assert_eq!(json["status"], "open");
+
+        // DB evidence: report is open and a succeeded reopen audit row exists.
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM moderation_reports WHERE id = $1")
+                .bind(report_id)
+                .fetch_one(&pool)
+                .await
+                .expect("read status");
+        assert_eq!(status, "open");
+        let (action, state_col): (String, String) = sqlx::query_as(
+            "SELECT action, state FROM relay_admin_actions WHERE report_id = $1 AND request_id = $2",
+        )
+        .bind(report_id)
+        .bind(request_id)
+        .fetch_one(&pool)
+        .await
+        .expect("reopen audit row");
+        assert_eq!(
+            (action.as_str(), state_col.as_str()),
+            ("reopen", "succeeded")
+        );
+
+        cleanup_admin_host_report(&pool, report_id).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres — reopen of an open report is 409"]
+    async fn reopen_route_rejects_non_terminal_report_with_409() {
+        let keys = nostr::Keys::generate();
+        let state = nip98_state(vec![keys.public_key().to_hex()]).await;
+        let pool = sqlx::PgPool::connect(
+            &std::env::var("BUZZ_TEST_DATABASE_URL")
+                .unwrap_or_else(|_| "postgres://buzz:buzz_dev@localhost:5432/buzz".to_string()),
+        )
+        .await
+        .expect("connect to test DB");
+        let report_id = seed_admin_host_report(&pool, "open").await;
+
+        let body = serde_json::json!({ "requestId": Uuid::new_v4() }).to_string();
+        let path = format!("/reports/{report_id}/reopen");
+        let auth = make_nostr_auth_post(&keys, &path, body.as_bytes());
+        let response = status_for(
+            state,
+            Request::builder()
+                .method("POST")
+                .uri(&path)
+                .header(header::HOST, "admin.example")
+                .header(header::AUTHORIZATION, auth)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body))
+                .expect("request"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+
+        cleanup_admin_host_report(&pool, report_id).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres — cancel HTTP route drives the DB"]
+    async fn cancel_route_returns_open_and_embeds_the_cancelled_action_dto() {
+        let keys = nostr::Keys::generate();
+        let state = nip98_state(vec![keys.public_key().to_hex()]).await;
+        let pool = sqlx::PgPool::connect(
+            &std::env::var("BUZZ_TEST_DATABASE_URL")
+                .unwrap_or_else(|_| "postgres://buzz:buzz_dev@localhost:5432/buzz".to_string()),
+        )
+        .await
+        .expect("connect to test DB");
+        let report_id = seed_admin_host_report(&pool, "open").await;
+        let community_id: Uuid =
+            sqlx::query_scalar("SELECT community_id FROM moderation_reports WHERE id = $1")
+                .bind(report_id)
+                .fetch_one(&pool)
+                .await
+                .expect("community id");
+        let cid = buzz_core::CommunityId::from_uuid(community_id);
+
+        // Claim → fail (pre-mutation) leaves a cancellable failed action.
+        let action_id = match buzz_db::relay_admin_actions::claim_report(
+            &pool,
+            cid,
+            report_id,
+            Uuid::new_v4(),
+            &[2u8; 32],
+            "operator",
+            "ban",
+            None,
+            None,
+            "resolve:ban",
+            "relay_operator",
+            Some(&[1u8; 32]),
+            None,
+            None,
+        )
+        .await
+        .expect("claim")
+        {
+            buzz_db::relay_admin_actions::ClaimResult::Claimed(a) => a.id,
+            other => panic!("expected Claimed, got {other:?}"),
+        };
+        // pending → enforcing → failed (pre-mutation): the only cancellable state.
+        buzz_db::relay_admin_actions::begin_enforcing(&pool, action_id)
+            .await
+            .expect("begin_enforcing");
+        buzz_db::relay_admin_actions::record_failure(&pool, action_id, "boom")
+            .await
+            .expect("record_failure");
+
+        let body = serde_json::json!({ "actionId": action_id }).to_string();
+        let path = format!("/reports/{report_id}/cancel");
+        let auth = make_nostr_auth_post(&keys, &path, body.as_bytes());
+        let response = status_for(
+            state,
+            Request::builder()
+                .method("POST")
+                .uri(&path)
+                .header(header::HOST, "admin.example")
+                .header(header::AUTHORIZATION, auth)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body))
+                .expect("request"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        assert_eq!(json["status"], "open");
+        // The last-look DTO embeds the just-cancelled action with status cancelled.
+        assert_eq!(json["activeAction"]["id"], action_id.to_string());
+        assert_eq!(json["activeAction"]["status"], "cancelled");
+
+        // DB evidence: action is cancelled and the report is back to open.
+        let (state_col, report_status): (String, String) = sqlx::query_as(
+            r#"
+            SELECT a.state, r.status
+            FROM relay_admin_actions a
+            JOIN moderation_reports r ON r.id = a.report_id
+            WHERE a.id = $1
+            "#,
+        )
+        .bind(action_id)
+        .fetch_one(&pool)
+        .await
+        .expect("read action + report");
+        assert_eq!(state_col, "cancelled");
+        assert_eq!(report_status, "open");
+
+        cleanup_admin_host_report(&pool, report_id).await;
+    }
+
+    async fn cleanup_admin_host_report(pool: &sqlx::PgPool, report_id: Uuid) {
+        sqlx::query("DELETE FROM relay_admin_actions WHERE report_id = $1")
+            .bind(report_id)
+            .execute(pool)
+            .await
+            .expect("delete actions");
+        sqlx::query("DELETE FROM moderation_reports WHERE id = $1")
+            .bind(report_id)
+            .execute(pool)
+            .await
+            .expect("delete report");
+    }
+
     #[tokio::test]
     #[ignore = "requires Postgres — worker crash re-drive convergence"]
     async fn worker_crash_redrive_converges_to_exactly_one_enforcement() {
@@ -3234,6 +3694,7 @@ mod tests {
                 created_at: chrono::Utc::now(),
             },
             message: None,
+            active_action: None,
         }
     }
 

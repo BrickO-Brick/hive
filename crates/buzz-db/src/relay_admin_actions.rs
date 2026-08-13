@@ -1009,6 +1009,129 @@ pub async fn cancel_action(
     Ok(true)
 }
 
+/// Result of attempting to reopen a terminal report.
+#[derive(Debug)]
+pub enum ReopenResult {
+    /// Report was terminal and is now `open`; a `reopen` audit row was inserted.
+    Reopened,
+    /// This exact `request_id` already reopened the report — idempotent replay.
+    /// No state changed; the earlier reopen stands.
+    AlreadyReopened,
+    /// The report is not in a terminal state. Carries its current status.
+    NotReopenable(String),
+    /// The report was not found globally.
+    NotFound,
+}
+
+/// Reopen a terminal report (`resolved | dismissed | escalated` → `open`) in a
+/// single transaction, recording a durable `reopen` audit row.
+///
+/// The audit row is written to `relay_admin_actions` with `action = 'reopen'`
+/// and `state = 'succeeded'`: `succeeded` keeps the stranded-action recovery
+/// worker (which claims `state IN ('pending','enforcing')`) from ever driving
+/// it, and the `action` value keeps it out of the enforcement DTO join (which
+/// filters `action IN ('delete','kick','ban','timeout')`).
+///
+/// Idempotency is keyed on `request_id`: a replay after the report has been
+/// reopened (and possibly re-resolved) returns [`ReopenResult::AlreadyReopened`]
+/// without mutating, so a client network retry never re-reopens a
+/// freshly-resolved report.
+pub async fn reopen_report(
+    pool: &PgPool,
+    community_id: CommunityId,
+    report_id: Uuid,
+    request_id: Uuid,
+    actor_pubkey: &[u8],
+    actor_role: &str,
+    reason: Option<&str>,
+) -> Result<ReopenResult> {
+    let mut tx = pool.begin().await?;
+
+    // Lock the report row to serialize concurrent reopen/resolve on it.
+    let report_row = sqlx::query(
+        r#"
+        SELECT status
+        FROM moderation_reports
+        WHERE community_id = $1 AND id = $2
+        FOR UPDATE
+        "#,
+    )
+    .bind(community_id.as_uuid())
+    .bind(report_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    let Some(report_row) = report_row else {
+        return Ok(ReopenResult::NotFound);
+    };
+
+    // Idempotent replay: this request_id already reopened the report. Checked
+    // before the terminal-status gate so a retry after a re-resolve still
+    // returns success rather than a spurious NotReopenable.
+    let existing = sqlx::query_scalar::<_, Uuid>(
+        r#"
+        SELECT id FROM relay_admin_actions
+        WHERE report_community_id = $1 AND report_id = $2
+          AND request_id = $3 AND action = 'reopen'
+        "#,
+    )
+    .bind(community_id.as_uuid())
+    .bind(report_id)
+    .bind(request_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    if existing.is_some() {
+        tx.rollback().await?;
+        return Ok(ReopenResult::AlreadyReopened);
+    }
+
+    let status: String = report_row.try_get("status")?;
+    if !matches!(status.as_str(), "resolved" | "dismissed" | "escalated") {
+        tx.rollback().await?;
+        return Ok(ReopenResult::NotReopenable(status));
+    }
+
+    // Return the report to the queue. Clear the resolution stamp so an open
+    // report never carries a stale resolver/timestamp; active_action_id is
+    // already NULL on a terminal report but clear it defensively.
+    sqlx::query(
+        r#"
+        UPDATE moderation_reports
+        SET status = 'open', resolved_by = NULL, resolved_at = NULL,
+            active_action_id = NULL
+        WHERE community_id = $1 AND id = $2
+          AND status IN ('resolved', 'dismissed', 'escalated')
+        "#,
+    )
+    .bind(community_id.as_uuid())
+    .bind(report_id)
+    .execute(&mut *tx)
+    .await?;
+
+    // Durable audit row. Inserted as 'succeeded' so the recovery worker never
+    // claims it; 'reopen' keeps it out of the enforcement DTO join.
+    sqlx::query(
+        r#"
+        INSERT INTO relay_admin_actions (
+            report_id, report_community_id, request_id, actor_pubkey, actor_role,
+            action, reason, state
+        ) VALUES ($1, $2, $3, $4, $5, 'reopen', $6, 'succeeded')
+        "#,
+    )
+    .bind(report_id)
+    .bind(community_id.as_uuid())
+    .bind(request_id)
+    .bind(actor_pubkey)
+    .bind(actor_role)
+    .bind(reason)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(ReopenResult::Reopened)
+}
+
 /// Fetch an action record by ID.
 pub async fn get_action(pool: &PgPool, action_id: Uuid) -> Result<Option<AdminActionRecord>> {
     let row = sqlx::query(
@@ -2288,6 +2411,269 @@ mod tests {
             r2,
             KickResult::AlreadyGone,
             "second kick must return AlreadyGone"
+        );
+    }
+
+    // ── Reopen: terminal → open CAS + durable audit row ───────────────────────
+
+    async fn set_report_status(pool: &PgPool, community_id: Uuid, report_id: Uuid, status: &str) {
+        sqlx::query(
+            "UPDATE moderation_reports SET status = $3 WHERE community_id = $1 AND id = $2",
+        )
+        .bind(community_id)
+        .bind(report_id)
+        .bind(status)
+        .execute(pool)
+        .await
+        .expect("set report status");
+    }
+
+    async fn report_status(pool: &PgPool, community_id: Uuid, report_id: Uuid) -> String {
+        sqlx::query_scalar(
+            "SELECT status FROM moderation_reports WHERE community_id = $1 AND id = $2",
+        )
+        .bind(community_id)
+        .bind(report_id)
+        .fetch_one(pool)
+        .await
+        .expect("read report status")
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn reopen_terminal_report_returns_open_and_records_succeeded_audit_row() {
+        let pool = setup_pool().await;
+        let community_id = make_community(&pool).await;
+        let cid = CommunityId::from_uuid(community_id);
+
+        for terminal in ["resolved", "dismissed", "escalated"] {
+            let report_id = make_report(&pool, community_id).await;
+            set_report_status(&pool, community_id, report_id, terminal).await;
+
+            let request_id = Uuid::new_v4();
+            let result = reopen_report(
+                &pool,
+                cid,
+                report_id,
+                request_id,
+                &actor(),
+                "operator",
+                Some("re-triage"),
+            )
+            .await
+            .expect("reopen_report");
+            assert!(
+                matches!(result, ReopenResult::Reopened),
+                "reopen of {terminal} must return Reopened, got {result:?}"
+            );
+            assert_eq!(
+                report_status(&pool, community_id, report_id).await,
+                "open",
+                "report must be open after reopen from {terminal}"
+            );
+
+            // The audit row is state='succeeded' and action='reopen' so the
+            // recovery worker never claims it and the DTO join never surfaces it.
+            let row = sqlx::query(
+                "SELECT action, state FROM relay_admin_actions WHERE report_id = $1 AND request_id = $2",
+            )
+            .bind(report_id)
+            .bind(request_id)
+            .fetch_one(&pool)
+            .await
+            .expect("reopen audit row exists");
+            assert_eq!(row.try_get::<String, _>("action").unwrap(), "reopen");
+            assert_eq!(row.try_get::<String, _>("state").unwrap(), "succeeded");
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn reopen_open_report_is_rejected_as_not_reopenable() {
+        let pool = setup_pool().await;
+        let community_id = make_community(&pool).await;
+        let report_id = make_report(&pool, community_id).await; // starts 'open'
+
+        let result = reopen_report(
+            &pool,
+            CommunityId::from_uuid(community_id),
+            report_id,
+            Uuid::new_v4(),
+            &actor(),
+            "moderator",
+            None,
+        )
+        .await
+        .expect("reopen_report");
+        assert!(
+            matches!(result, ReopenResult::NotReopenable(ref s) if s == "open"),
+            "reopen of an open report must return NotReopenable(open), got {result:?}"
+        );
+
+        // No audit row written on a rejected reopen.
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM relay_admin_actions WHERE report_id = $1")
+                .bind(report_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count");
+        assert_eq!(count, 0, "rejected reopen must not write an audit row");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn reopen_processing_report_is_rejected_as_not_reopenable() {
+        let pool = setup_pool().await;
+        let community_id = make_community(&pool).await;
+        let report_id = make_report(&pool, community_id).await;
+        // A live enforcement claim moves the report to 'processing'.
+        let _ = do_claim(&pool, community_id, report_id, Uuid::new_v4()).await;
+
+        let result = reopen_report(
+            &pool,
+            CommunityId::from_uuid(community_id),
+            report_id,
+            Uuid::new_v4(),
+            &actor(),
+            "operator",
+            None,
+        )
+        .await
+        .expect("reopen_report");
+        assert!(
+            matches!(result, ReopenResult::NotReopenable(ref s) if s == "processing"),
+            "reopen of a processing report must return NotReopenable(processing), got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn reopen_is_idempotent_on_request_id_even_after_reresolve() {
+        let pool = setup_pool().await;
+        let community_id = make_community(&pool).await;
+        let cid = CommunityId::from_uuid(community_id);
+        let report_id = make_report(&pool, community_id).await;
+        set_report_status(&pool, community_id, report_id, "resolved").await;
+
+        let request_id = Uuid::new_v4();
+        let first = reopen_report(
+            &pool,
+            cid,
+            report_id,
+            request_id,
+            &actor(),
+            "operator",
+            None,
+        )
+        .await
+        .expect("first reopen");
+        assert!(matches!(first, ReopenResult::Reopened));
+
+        // The report gets re-resolved (a fresh terminal cycle) before the client's
+        // network retry of the SAME reopen request lands.
+        set_report_status(&pool, community_id, report_id, "resolved").await;
+
+        let replay = reopen_report(
+            &pool,
+            cid,
+            report_id,
+            request_id,
+            &actor(),
+            "operator",
+            None,
+        )
+        .await
+        .expect("reopen replay");
+        assert!(
+            matches!(replay, ReopenResult::AlreadyReopened),
+            "same request_id replay must return AlreadyReopened, got {replay:?}"
+        );
+
+        // The replay must NOT have re-reopened the freshly re-resolved report.
+        assert_eq!(
+            report_status(&pool, community_id, report_id).await,
+            "resolved",
+            "idempotent replay must not re-reopen a re-resolved report"
+        );
+
+        // Exactly one reopen audit row exists for this request_id.
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM relay_admin_actions WHERE report_id = $1 AND request_id = $2 AND action = 'reopen'",
+        )
+        .bind(report_id)
+        .bind(request_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count");
+        assert_eq!(
+            count, 1,
+            "idempotent replay must not write a second audit row"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn reopen_missing_report_returns_not_found() {
+        let pool = setup_pool().await;
+        let community_id = make_community(&pool).await;
+
+        let result = reopen_report(
+            &pool,
+            CommunityId::from_uuid(community_id),
+            Uuid::new_v4(), // no such report
+            Uuid::new_v4(),
+            &actor(),
+            "operator",
+            None,
+        )
+        .await
+        .expect("reopen_report");
+        assert!(
+            matches!(result, ReopenResult::NotFound),
+            "reopen of a missing report must return NotFound, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn reopen_audit_row_is_never_claimed_by_recovery_worker() {
+        let pool = setup_pool().await;
+        let community_id = make_community(&pool).await;
+        let cid = CommunityId::from_uuid(community_id);
+        let report_id = make_report(&pool, community_id).await;
+        set_report_status(&pool, community_id, report_id, "dismissed").await;
+
+        let request_id = Uuid::new_v4();
+        reopen_report(
+            &pool,
+            cid,
+            report_id,
+            request_id,
+            &actor(),
+            "operator",
+            None,
+        )
+        .await
+        .expect("reopen");
+
+        // The stranded-action recovery worker claims state IN ('pending','enforcing').
+        // A 'succeeded' reopen row must never appear in its batch — otherwise the
+        // worker would try to drive an enforcement mutation for a reopen.
+        let lease_until = chrono::Utc::now() + chrono::Duration::seconds(30);
+        let batch = claim_stranded_action_batch(&pool, "recovery-worker", lease_until, 1000)
+            .await
+            .expect("claim batch");
+        let reopen_action_id: Uuid = sqlx::query_scalar(
+            "SELECT id FROM relay_admin_actions WHERE report_id = $1 AND request_id = $2",
+        )
+        .bind(report_id)
+        .bind(request_id)
+        .fetch_one(&pool)
+        .await
+        .expect("reopen action id");
+        assert!(
+            !batch.iter().any(|c| c.record.id == reopen_action_id),
+            "reopen audit row (state=succeeded) must never be claimed by the recovery worker"
         );
     }
 }

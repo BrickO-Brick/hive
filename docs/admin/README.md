@@ -326,6 +326,24 @@ Feedback search and filters run over the bounded browser result set; the
   Body: `{"action": "delete|kick|ban|timeout|dismiss|escalate", "expirationSecs": <number>, "reason": "<string>", "requestId": "<uuid>"}`
   `expirationSecs` required for `timeout`, rejected for all others.
   Target/channel are always derived from server-owned report provenance.
+  Response: `{"status": "<terminal>", "activeAction": <action | null>}`. Enforcement
+  actions return the governing action record; `dismiss`/`escalate` return `null`.
+- `POST /api/admin/v1/reports/:id/reopen`
+  Body: `{"requestId": "<uuid>", "reason": "<string>"}`
+  Returns a terminal report (`resolved`, `dismissed`, or `escalated`) to `open` and
+  records a durable `reopen` audit row. Idempotent on `requestId`: a retry after the
+  report has been reopened (and possibly re-resolved) returns the same `200` without
+  re-reopening. Returns `{"status": "open"}` on success, `409` if the report is not
+  in a terminal state, `404` if it does not exist.
+- `POST /api/admin/v1/reports/:id/cancel`
+  Body: `{"actionId": "<uuid>"}`
+  Cancels a pre-mutation `failed` enforcement action, returning the report to `open`.
+  Cancel is the only recovery path for a failed action. `actionId` fences the cancel
+  to exactly the action the client observed. Returns `{"status": "open", "activeAction":
+  <cancelled action>}` — the embedded record is the last look at that action, since a
+  subsequent detail read (report back to `open`) serves `activeAction: null`. Returns
+  `409` if the action is not cancellable (already cancelled, superseded, or past the
+  mutation point) — treat as "refresh detail".
 - `PATCH /api/admin/v1/feedback/:id`
   Body: `{"status": "new|reviewed|archived"}`
 
@@ -357,6 +375,13 @@ in that row's persisted `imeta` tag. It then reads the tenant-scoped media
 sidecar before accessing the shared content-addressed blob. Unknown feedback,
 unreferenced hashes, malformed paths, and cross-community substitutions all
 collapse to `404`.
+
+Product feedback is deployment-global operator evidence: when its source community
+is purged, the row's `community_id` is severed to `NULL` (the row survives, its
+provenance does not). List and detail reads still return such rows with
+`communityId` and `communityHost` as `null`. Their attachments, however, were
+purged with the tenant, so the attachment route fails closed to `404` for any
+severed feedback — there is no tenant to bind and no tenant-scoped media to serve.
 
 Only `GET` and `HEAD` are routed. Community `/media/*` reads always require
 Blossom authorization and relay membership; the browser receives no reusable

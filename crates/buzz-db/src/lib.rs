@@ -4724,6 +4724,29 @@ impl Db {
         relay_admin_actions::cancel_action(&self.pool, action_id, community_id, report_id).await
     }
 
+    /// Reopen a terminal report (resolved|dismissed|escalated → open) with a
+    /// durable `reopen` audit row, keyed idempotent on `request_id`.
+    pub async fn reopen_report(
+        &self,
+        community_id: CommunityId,
+        report_id: uuid::Uuid,
+        request_id: uuid::Uuid,
+        actor_pubkey: &[u8],
+        actor_role: &str,
+        reason: Option<&str>,
+    ) -> Result<relay_admin_actions::ReopenResult> {
+        relay_admin_actions::reopen_report(
+            &self.pool,
+            community_id,
+            report_id,
+            request_id,
+            actor_pubkey,
+            actor_role,
+            reason,
+        )
+        .await
+    }
+
     /// Fetch an action record by ID.
     pub async fn get_admin_action(
         &self,
