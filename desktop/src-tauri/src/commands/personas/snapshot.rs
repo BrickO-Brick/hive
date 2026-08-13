@@ -23,6 +23,8 @@ use crate::{
 };
 
 pub(crate) mod import;
+mod import_preview;
+mod import_setup;
 
 // Re-export import-side commands so callers see a flat `snapshot::` namespace.
 pub use import::{confirm_agent_snapshot_import, preview_agent_snapshot_import};
@@ -331,7 +333,8 @@ pub(crate) async fn materialize_snapshot_bytes(
 }
 
 /// Choose bytes for the PNG image body without changing the source avatar the
-/// manifest preserves for import.
+/// manifest preserves for import. The export UI normally supplies the fully
+/// flattened trading card here; older callers may still supply just an avatar.
 fn resolve_png_body_avatar_bytes(
     avatar_png_data_url: Option<&str>,
     store_avatar_bytes: Option<Vec<u8>>,

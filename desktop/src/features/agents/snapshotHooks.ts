@@ -22,16 +22,18 @@ export function useExportAgentSnapshotMutation() {
       format,
       memorySourcePubkey,
       avatarUrl,
+      cardPngDataUrl,
     }: {
       id: string;
       memoryLevel: SnapshotMemoryLevel;
       format: SnapshotFormat;
       memorySourcePubkey?: string | null;
       avatarUrl?: string | null;
+      cardPngDataUrl?: string;
     }) => {
       const avatarPngDataUrl =
         format === "png"
-          ? await resolveSnapshotAvatarPng(avatarUrl)
+          ? (cardPngDataUrl ?? (await resolveSnapshotAvatarPng(avatarUrl)))
           : undefined;
       return exportAgentSnapshot(
         id,

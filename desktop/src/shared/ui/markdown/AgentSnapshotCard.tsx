@@ -24,10 +24,9 @@ export type AgentSnapshotCardProps = {
   /** Discriminant used to label the card and route the import. */
   snapshotKind: "agent" | "team";
   /**
-   * Optional thumbnail URL for the card icon — the agent's avatar image.
-   * When present, renders in place of the generic Bot icon. Falls back to
-   * the Bot icon when absent, when the URL is a non-image MIME, or when
-   * the image fails to load.
+   * Optional thumbnail URL for the card icon. Agent PNG snapshots use their
+   * complete trading-card image; other snapshot types retain their existing
+   * icon treatment. Falls back to the Bot icon when the image fails to load.
    */
   thumb?: string;
   /**
@@ -108,6 +107,7 @@ export function AgentSnapshotCard({
   const isFetching = importState.phase === "fetching";
   const SnapshotIcon = snapshotKind === "team" ? Users : Bot;
   const showThumb = !!thumb && !thumbError;
+  const showTradingCard = snapshotKind === "agent" && showThumb;
   const formattedSize =
     size == null
       ? null
@@ -128,13 +128,29 @@ export function AgentSnapshotCard({
     >
       <AttachmentMedia
         className={cn(
-          showThumb
-            ? "relative h-9 w-9"
-            : "bg-primary/10 text-primary ring-1 ring-primary/20 dark:bg-primary/15",
+          showTradingCard
+            ? "relative rounded-lg"
+            : showThumb
+              ? "relative h-9 w-9"
+              : "bg-primary/10 text-primary ring-1 ring-primary/20 dark:bg-primary/15",
         )}
+        style={
+          showTradingCard
+            ? { aspectRatio: "1227 / 1839", height: "5rem", width: "auto" }
+            : undefined
+        }
         variant={showThumb ? "image" : "icon"}
       >
-        {showThumb ? (
+        {showTradingCard ? (
+          <img
+            alt=""
+            className="h-full w-full object-cover"
+            data-testid="agent-snapshot-card-thumb"
+            src={thumb}
+            referrerPolicy="no-referrer"
+            onError={() => setThumbError(true)}
+          />
+        ) : showThumb ? (
           <>
             <img
               alt=""
