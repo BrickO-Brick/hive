@@ -2096,18 +2096,17 @@ pub async fn run_prompt_task(
             Some(event) => resolve_edit_routing(&event.event, &ctx.rest_client).await,
             None => None,
         };
-        b.failure_thread_tags = crate::queue::edit_target_id(
-            &b.events.last().expect("non-empty batch").event,
-        )
-        .map(|target_event_id| {
-            resolved_edit
-                .as_ref()
-                .map(crate::queue::ResolvedEdit::reply_thread_tags)
-                .unwrap_or_else(|| crate::queue::ThreadTags {
-                    root_event_id: Some(target_event_id.clone()),
-                    parent_event_id: Some(target_event_id),
-                    mentioned_pubkeys: Vec::new(),
-                })
+        b.failure_thread_tags = b.events.last().and_then(|event| {
+            crate::queue::edit_target_id(&event.event).map(|target_event_id| {
+                resolved_edit
+                    .as_ref()
+                    .map(crate::queue::ResolvedEdit::reply_thread_tags)
+                    .unwrap_or_else(|| crate::queue::ThreadTags {
+                        root_event_id: Some(target_event_id.clone()),
+                        parent_event_id: Some(target_event_id),
+                        mentioned_pubkeys: Vec::new(),
+                    })
+            })
         });
 
         let conversation_context = if ctx.context_message_limit > 0 {

@@ -1470,6 +1470,9 @@ fn readd_channel_after_membership_change(removed_channels: &mut HashSet<Uuid>, c
 struct SteerAckEvent {
     channel_id: Uuid,
     event_id: String,
+    /// Visible message that owns lifecycle reactions for this delivery. Edits
+    /// react on their original target rather than on the auxiliary edit event.
+    reaction_event_id: String,
     /// Membership generation in which the steer was sent. Late acknowledgements
     /// from an earlier membership epoch must have no queue, ledger, or fallback
     /// effects after removal/re-add.
@@ -2934,32 +2937,47 @@ async fn tokio_main() -> Result<()> {
                                                 Some(membership_generation) => {
                                                     // No await or other pool mutation occurs
                                                     // between the availability check and this
-                                                    // capture, so the same task still owns it.
-                                                    let originating_turn_id = pool
+                                                    // capture. Still fail closed if the task
+                                                    // disappears: release the preparation so
+                                                    // the caller's cancel+merge fallback owns
+                                                    // delivery rather than aborting the harness.
+                                                    if let Some(originating_turn_id) = pool
                                                         .native_steer_turn_id(
                                                             channel_id,
                                                             membership_generation,
                                                         )
-                                                        .expect("available native steer has a turn");
-                                                    let tx = native_steer_tx.clone();
-                                                    let ctx = Arc::clone(&ctx);
-                                                    tokio::spawn(async move {
-                                                        let prompt_blocks = pool::format_native_steer_prompt(
-                                                            channel_id,
-                                                            event_for_steer.clone(),
-                                                            prompt_tag_for_steer,
-                                                            &ctx,
-                                                        )
-                                                        .await;
-                                                        let _ = tx.send(NativeSteerPrepared {
-                                                            channel_id,
-                                                            membership_generation,
-                                                            originating_turn_id,
-                                                            event: event_for_steer,
-                                                            prompt_blocks,
+                                                    {
+                                                        let tx = native_steer_tx.clone();
+                                                        let ctx = Arc::clone(&ctx);
+                                                        tokio::spawn(async move {
+                                                            let prompt_blocks = pool::format_native_steer_prompt(
+                                                                channel_id,
+                                                                event_for_steer.clone(),
+                                                                prompt_tag_for_steer,
+                                                                &ctx,
+                                                            )
+                                                            .await;
+                                                            let _ = tx.send(NativeSteerPrepared {
+                                                                channel_id,
+                                                                membership_generation,
+                                                                originating_turn_id,
+                                                                event: event_for_steer,
+                                                                prompt_blocks,
+                                                            });
                                                         });
-                                                    });
-                                                    true
+                                                        true
+                                                    } else {
+                                                        queue.release_native_steer(
+                                                            channel_id,
+                                                            &event_id,
+                                                        );
+                                                        tracing::debug!(
+                                                            %channel_id,
+                                                            %event_id,
+                                                            "native edit steer turn disappeared during reservation; falling back to cancel+merge"
+                                                        );
+                                                        false
+                                                    }
                                                 }
                                                 None => {
                                                     tracing::warn!(
@@ -3329,6 +3347,7 @@ async fn tokio_main() -> Result<()> {
             Some(PoolEvent::SteerAck(SteerAckEvent {
                 channel_id,
                 event_id,
+                reaction_event_id,
                 membership_generation,
                 ack,
             })) => {
@@ -3470,6 +3489,11 @@ async fn tokio_main() -> Result<()> {
                 }
                 if drop_withheld {
                     queue.remove_event(channel_id, &event_id);
+                    let rest = ctx.rest_client.clone();
+                    tokio::spawn(async move {
+                        pool::reaction_remove(&rest, &reaction_event_id, "👀").await;
+                        pool::reaction_remove(&rest, &reaction_event_id, "💬").await;
+                    });
                 }
                 if release_withheld {
                     queue.release_native_steer(channel_id, &event_id);
@@ -3802,6 +3826,10 @@ fn signal_in_flight_task_matching(
 ///
 /// The withheld event is NOT released here on `false` because no withhold
 /// was established: `mark_native_steer_pending` only runs on `Ok(())`.
+fn native_steer_reaction_target(event: &nostr::Event) -> String {
+    queue::reaction_target_id(event)
+}
+
 fn try_native_steer(
     pool: &mut AgentPool,
     queue: &mut EventQueue,
@@ -3812,6 +3840,7 @@ fn try_native_steer(
     steer_ack_tx: &mpsc::UnboundedSender<SteerAckEvent>,
 ) -> bool {
     let event_id_hex = event.id.to_hex();
+    let reaction_event_id = native_steer_reaction_target(&event);
 
     let (ack_tx, ack_rx) = tokio::sync::oneshot::channel::<pool::SteerAck>();
     let request = pool::SteerRequest {
@@ -3839,6 +3868,7 @@ fn try_native_steer(
                 let _ = ack_tx_clone.send(SteerAckEvent {
                     channel_id,
                     event_id: event_id_for_watcher,
+                    reaction_event_id,
                     membership_generation,
                     ack,
                 });
@@ -9009,6 +9039,12 @@ mod native_edit_membership_lifecycle_tests {
             harness_name: "goose".into(),
             relay_url: "ws://127.0.0.1:0".into(),
         })
+    }
+
+    #[test]
+    fn native_steer_edit_cleans_reactions_on_original_target() {
+        let target = "ab".repeat(32);
+        assert_eq!(native_steer_reaction_target(&edit_event(&target)), target);
     }
 
     #[test]
