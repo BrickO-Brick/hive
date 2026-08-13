@@ -149,6 +149,45 @@ fn empty_default_global_would_drop_inherited_config_hence_export_must_refuse() {
     );
 }
 
+/// The refusal path itself: a global loader `Err` (a committed `env_vars_ref`
+/// that could not hydrate) must propagate as a snapshot refusal — the export
+/// never reaches `materialize_portable_runtime_defaults` with a degraded
+/// config. This is the seam `materialize_snapshot_bytes` consumes; the test
+/// above proves the degradation such a fall-through would cause, this one
+/// proves the fall-through cannot happen. Mutation check: replace the seam's
+/// body with `global_load.or_else(|_| Ok(Default::default()))` (the
+/// `unwrap_or_default()` regression) and this fails — `Ok` instead of `Err`.
+#[test]
+fn snapshot_global_loader_err_refuses_export() {
+    let out = resolve_snapshot_global(Err(
+        "global env_vars unavailable: gen abc123 not found in keyring".to_string(),
+    ));
+    let err = out.expect_err("a global loader Err must refuse the snapshot export");
+    assert!(
+        err.contains("cannot export this agent snapshot") && err.contains("not found in keyring"),
+        "refusal must explain the export is blocked and carry the loader cause: {err}"
+    );
+}
+
+/// The happy path: a successful load passes through untouched so the caller
+/// reuses it for `materialize_portable_runtime_defaults`. Pins that the seam
+/// only maps the `Err` arm and never rewrites a good config.
+#[test]
+fn snapshot_global_loader_ok_passes_through() {
+    let global = crate::managed_agents::GlobalAgentConfig {
+        preferred_runtime: Some("goose".to_string()),
+        provider: Some("databricks_v2".to_string()),
+        model: Some("databricks-gpt-5-6-sol".to_string()),
+        ..Default::default()
+    };
+    let out = resolve_snapshot_global(Ok(global.clone()));
+    assert_eq!(
+        out.expect("a successful load must pass through").model,
+        global.model,
+        "the seam must return the loaded global unchanged on success"
+    );
+}
+
 #[test]
 fn explicit_runtime_provider_and_model_win_over_global_defaults() {
     let mut record = make_definition("wren");

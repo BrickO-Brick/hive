@@ -169,6 +169,16 @@ pub fn build_managed_agent_summary(
 
     let (persona_out_of_date, persona_orphaned) = persona_drift_state(record, personas);
 
+    // Degraded-empty on load failure is deliberate here. Among the consumers
+    // that gate a *launch decision* on the global config, this is the lone one
+    // that degrades instead of failing closed — its siblings all block the
+    // launch when a global env ref cannot be resolved: the readiness rows
+    // (`status_for*`, which capture `global_unavailable` and force
+    // local_setup=false) and the spawn/deploy gates (`spawn_agent_child`,
+    // `deploy`, which propagate with `?`). This summary is not a launch gate:
+    // it only derives the effective model/provider/prompt for display, so on
+    // load failure the fields read as unresolved — the correct degraded view,
+    // which never authorizes a launch.
     let global_for_summary =
         crate::managed_agents::load_global_agent_config(app).unwrap_or_default();
     let effective_cfg = crate::managed_agents::effective_config::resolve_effective_config(

@@ -866,3 +866,13 @@ fn save_managed_agents_propagates_store_parse_error_instead_of_dropping_definiti
         "the error must surface the parse failure"
     );
 }
+
+// The concurrent instance/definition-save interleave test lives in the sibling
+// `storage_interleave_tests.rs` — a child of this `tests` module so it reuses
+// the `FakeCombinedStore` and `record_with_pubkey_and_key` helpers above
+// without duplication, while keeping this file under the desktop file-size
+// gate. Unix-only + `system-keyring`: it drives `libc::flock` and the real
+// cross-process transaction lock.
+#[cfg(all(unix, feature = "system-keyring"))]
+#[path = "storage_interleave_tests.rs"]
+mod interleave;

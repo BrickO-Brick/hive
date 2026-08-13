@@ -88,21 +88,11 @@ pub async fn set_global_agent_config(
 
         validate_global_config(&config)?;
 
-        // Fail closed when the CURRENTLY committed global config cannot load:
-        // its `env_vars_ref` points at a keyring entry that is missing or
-        // unreadable this boot. `unwrap_or_default()` here would silently
-        // replace a dangling-but-live committed ref with the caller's config,
-        // orphaning the generation the ref still points at. No destructive
-        // "replace despite unavailability" action is modeled, so refusing is
-        // the only correct arm — retry once the keyring is reachable.
-        let old_global = load_global_agent_config(&app_for_write).map_err(|e| {
-            format!(
-                "cannot save global agent config: the current global config has \
-                 secrets that could not be loaded from the keyring ({e}). \
-                 Refusing to overwrite it while its secrets are unavailable; \
-                 retry once the keyring is reachable."
-            )
-        })?;
+        // Fail closed when the CURRENTLY committed global config cannot load —
+        // see `refuse_save_on_unavailable_current` for why `unwrap_or_default()`
+        // here would orphan a live-but-dangling generation.
+        let old_global =
+            refuse_save_on_unavailable_current(load_global_agent_config(&app_for_write))?;
 
         save_global_agent_config(&app_for_write, &config)?;
 
@@ -443,9 +433,67 @@ fn should_restart_on_config_change(old_ready: bool, new_ready: bool, env_changed
     (!old_ready && new_ready) || (old_ready && env_changed)
 }
 
+/// Fail closed when the CURRENTLY committed global config cannot load before an
+/// overwrite: its `env_vars_ref` points at a keyring entry that is missing or
+/// unreadable this boot. `unwrap_or_default()` here would silently replace a
+/// dangling-but-live committed ref with the caller's config, orphaning the
+/// generation the ref still points at. No destructive "replace despite
+/// unavailability" action is modeled, so refusing is the only correct arm —
+/// retry once the keyring is reachable.
+///
+/// Extracted as the AppHandle-free seam so the refusal is unit-testable (the
+/// command obtains its `Result` from `load_global_agent_config(&app)`).
+fn refuse_save_on_unavailable_current(
+    current_load: Result<GlobalAgentConfig, String>,
+) -> Result<GlobalAgentConfig, String> {
+    current_load.map_err(|e| {
+        format!(
+            "cannot save global agent config: the current global config has \
+             secrets that could not be loaded from the keyring ({e}). \
+             Refusing to overwrite it while its secrets are unavailable; \
+             retry once the keyring is reachable."
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::should_restart_on_config_change;
+    use super::{refuse_save_on_unavailable_current, GlobalAgentConfig};
+
+    /// A global loader `Err` (the current committed `env_vars_ref` could not
+    /// hydrate) must refuse the overwrite rather than fall through to
+    /// `unwrap_or_default()`, which would orphan the live-but-dangling
+    /// generation. Mutation check: swap the seam's body for
+    /// `Ok(current_load.unwrap_or_default())` and this fails — `Ok` not `Err`.
+    #[test]
+    fn save_refuses_when_current_global_unavailable() {
+        let out = refuse_save_on_unavailable_current(Err(
+            "global env_vars unavailable: gen abc123 not found in keyring".to_string(),
+        ));
+        let err = out.expect_err("an unavailable current global must refuse the save");
+        assert!(
+            err.contains("cannot save global agent config") && err.contains("not found in keyring"),
+            "refusal must explain the save is blocked and carry the loader cause: {err}"
+        );
+    }
+
+    /// A successful load passes through so the caller reuses it as `old_global`
+    /// for the restart-candidate scan. Pins that only the `Err` arm is mapped.
+    #[test]
+    fn save_passes_through_available_current_global() {
+        let current = GlobalAgentConfig {
+            model: Some("gpt-5".to_string()),
+            ..Default::default()
+        };
+        let out = refuse_save_on_unavailable_current(Ok(current.clone()));
+        assert_eq!(
+            out.expect("an available current global must pass through")
+                .model,
+            current.model,
+            "the seam must return the loaded config unchanged on success"
+        );
+    }
 
     /// Running agent (Ready) whose effective env changed → restart candidate.
     #[test]

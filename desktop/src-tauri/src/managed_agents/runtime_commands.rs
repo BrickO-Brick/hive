@@ -814,6 +814,25 @@ mod tests {
         rec
     }
 
+    /// A linked record whose effective env satisfies the `buzz-agent` readiness
+    /// gate, so `agent_readiness` returns `Ready`. This makes the linked
+    /// definition's `secrets_unavailable` flag the SOLE remaining input to
+    /// `local_setup` — without a Ready baseline, `local_setup` is false for
+    /// unrelated reasons (empty env) and the definition gate cannot be observed.
+    /// The command resolves to `buzz-agent` (persona runtime absent →
+    /// `default_agent_command`), and these three non-reserved env vars survive
+    /// into the effective env via the record's own `env_vars` layer.
+    fn ready_linked_record() -> super::super::ManagedAgentRecord {
+        let mut rec = linked_record();
+        rec.env_vars
+            .insert("BUZZ_AGENT_PROVIDER".into(), "anthropic".into());
+        rec.env_vars
+            .insert("BUZZ_AGENT_MODEL".into(), "claude-opus-4-5".into());
+        rec.env_vars
+            .insert("ANTHROPIC_API_KEY".into(), "sk-test".into());
+        rec
+    }
+
     fn available_definition() -> super::super::AgentDefinition {
         let mut d = super::super::AgentDefinition {
             id: "def-slug".to_string(),
@@ -833,12 +852,40 @@ mod tests {
         d
     }
 
+    /// Positive control for the two tests below: with a Ready baseline and an
+    /// AVAILABLE definition, `local_setup` is true. This is what makes the
+    /// negative assertions meaningful — it proves the `false` outcomes there
+    /// are caused by the definition-unavailable gate, not by the record failing
+    /// readiness for some other reason. If the readiness recipe ever drifts and
+    /// this record stops being Ready, this test fails first and loudly.
+    #[test]
+    fn ready_linked_record_with_available_definition_is_local_setup_true() {
+        let record = ready_linked_record();
+        let def = available_definition();
+
+        let status = unkeyable_failed_status(
+            &record,
+            "wss://relay.example".to_string(),
+            "test error".to_string(),
+            std::slice::from_ref(&def),
+            &super::super::GlobalAgentConfig::default(),
+            false,
+        );
+        assert!(
+            status.local_setup,
+            "a Ready record linked to an available definition must show local_setup=true"
+        );
+    }
+
     #[test]
     fn definition_unavailable_forces_local_setup_false() {
         // A linked instance whose definition's env_vars ref could not be
         // hydrated must show local_setup=false — spawn will refuse, so
-        // advertising readiness would promise a launch we cannot honor.
-        let record = linked_record();
+        // advertising readiness would promise a launch we cannot honor. The
+        // record is otherwise Ready (see the positive control above), so the
+        // only thing forcing false here is the definition-unavailable gate:
+        // remove `&& !definition_unavailable` from `local_setup` and this fails.
+        let record = ready_linked_record();
         let def = unavailable_definition();
 
         let status = unkeyable_failed_status(
@@ -856,39 +903,16 @@ mod tests {
     }
 
     #[test]
-    fn definition_available_does_not_force_local_setup_false() {
-        // Same record, same configuration, but definition is available —
-        // `local_setup` is determined by the runtime's credential check,
-        // not by definition unavailability.
-        let record = linked_record();
-        let def = available_definition();
-
-        let status = unkeyable_failed_status(
-            &record,
-            "wss://relay.example".to_string(),
-            "test error".to_string(),
-            std::slice::from_ref(&def),
-            &super::super::GlobalAgentConfig::default(),
-            false,
-        );
-        // An unkeyable record has no private_key_nsec → local_setup is still
-        // false for that independent reason. The test assertion only verifies
-        // the definition_unavailable flag alone: ensure the `false` outcome
-        // is not being set by this flag when the definition IS available.
-        // We verify by confirming the definition check returns false when
-        // unavailable vs when available — the combined result may still be
-        // false for other reasons (no credentials), which is fine.
-        let _ = status; // outcome depends on readiness; we test the flag's isolation above.
-    }
-
-    #[test]
     fn unlinked_instance_ignores_definition_unavailability() {
-        // An agent with no persona_id is not linked to any definition; a
-        // definition slice with an unavailable definition must not affect it.
-        let mut record = record_with_relay("");
-        assert!(record.persona_id.is_none());
+        // An agent with no persona_id is not linked to any definition; an
+        // unavailable definition in the slice must not force its local_setup
+        // false. The record is Ready, so local_setup stays true — proving the
+        // gate keys on persona_id and does not blindly scan the slice. Break
+        // the predicate to match any unavailable definition and this fails.
+        let mut record = ready_linked_record();
+        record.persona_id = None;
 
-        let def = unavailable_definition(); // should be invisible to unlinked record
+        let def = unavailable_definition(); // must be invisible to the unlinked record
         let status = unkeyable_failed_status(
             &record,
             "wss://relay.example".to_string(),
@@ -897,22 +921,9 @@ mod tests {
             &super::super::GlobalAgentConfig::default(),
             false,
         );
-        // The unavailable definition has a different id — no match → ignored.
-        // We rely on the fact that record.persona_id == None means no lookup.
-        let _ = status;
-        // Compile-time guard: ensure definition_unavailable is computed from
-        // persona_id, not blindly from any definition in the slice.
-        record.persona_id = None;
-        let status2 = unkeyable_failed_status(
-            &record,
-            "wss://relay.example".to_string(),
-            "other error".to_string(),
-            std::slice::from_ref(&def),
-            &super::super::GlobalAgentConfig::default(),
-            false,
+        assert!(
+            status.local_setup,
+            "an unlinked record must ignore an unavailable definition and stay Ready"
         );
-        // definition_unavailable=false (no persona_id) + record.secrets_unavailable=false +
-        // global_unavailable=false → readiness gate is the only factor. Should compile cleanly.
-        drop(status2);
     }
 }

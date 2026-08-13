@@ -183,9 +183,12 @@ struct DevMigrationPlan {
     conflict_keys: Vec<String>,
     write_marker: bool,
     /// `conflict:<coord>` marker keys to REMOVE this run: coordinates that
-    /// previously carried a conflict marker but no longer conflict (source and
-    /// destination now agree, or one side dropped the coordinate). Clearing the
-    /// marker lets the coordinate hydrate normally again.
+    /// previously carried a conflict marker whose conflict is now provably
+    /// resolved — either source and destination converged on the same value, or
+    /// the coordinate is proven no longer live in canonical JSON (nothing
+    /// references it). A source that merely dropped the coordinate while the
+    /// destination still holds the conflicting value does NOT clear the marker.
+    /// Clearing the marker lets the coordinate hydrate normally again.
     conflict_markers_to_clear: Vec<String>,
 }
 
@@ -197,10 +200,11 @@ struct DevMigrationPlan {
 /// it is NOT copied and counts toward `conflict_count`. A `conflict:<coord>`
 /// marker is written into the batch so `load_secret` fails closed for that
 /// coordinate — the conflicted value must not be hydrated or consumed while
-/// unresolved. The marker is included only when `conflict_count == 0` — an
-/// unclean run must be retried on the next boot after the user resolves the
-/// conflict, so the non-conflicting keys are still written (partial progress
-/// persists) but the marker is withheld.
+/// unresolved. The COMPLETION marker (`DEV_SECRETS_MIGRATION_MARKER`) is
+/// included only when `conflict_count == 0`: an unclean run still writes its
+/// non-conflicting keys AND the per-coordinate conflict markers (partial
+/// progress persists), but withholds the completion marker so the migration is
+/// retried on the next boot after the user resolves the conflict.
 ///
 /// A coordinate that previously carried a conflict marker and no longer
 /// conflicts is added to `conflict_markers_to_clear` so the availability block

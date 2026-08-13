@@ -402,31 +402,49 @@ pub(crate) fn save_agent_definitions(
     // Lock FIRST — the instance half re-read below must be under the lock
     // (Race 1); mirror of `save_managed_agents`. Leaf-level.
     let _txn = acquire_secret_txn_lock(app)?;
-    let mut instances = load_agent_store(app)?;
+    save_agent_definitions_at(
+        &managed_agents_store_path(app)?,
+        agent_secret_store(),
+        definitions,
+    )
+}
+
+/// Path-based core of [`save_agent_definitions`]: merges the caller's definition
+/// records with the instance half re-read from disk and commits the unified
+/// store — the definition-side mirror of [`save_managed_agents_at`]. Split out
+/// so the instance-preservation contract can be exercised over a tempdir
+/// without an `AppHandle`.
+///
+/// The instance half is re-read RAW ([`load_agent_store_at`] + retain): a
+/// definition-side save must never drop a concurrently-committed instance, and
+/// the raw records already carry their secrets as `*_ref` (keys in the keyring,
+/// inline blanked), so writing them back cannot re-inline anything. The parse
+/// error propagates with `?` rather than collapsing into an empty instance half
+/// — the wholesale rewrite below would otherwise delete every instance.
+fn save_agent_definitions_at<S>(
+    store_path: &Path,
+    store: Option<&S>,
+    definitions: &[ManagedAgentRecord],
+) -> Result<(), String>
+where
+    S: crate::managed_agents::secret_projection::ProjectionStore,
+{
+    let mut instances = load_agent_store_at(store_path)?;
     instances.retain(|record| !record.pubkey.is_empty());
     let mut definitions = definitions.to_vec();
     definitions.retain(|record| record.pubkey.is_empty());
 
     // Persist definition env_vars to the keyring before writing JSON.
-    if let Some(store) = agent_secret_store() {
+    if let Some(store) = store {
         strip_and_persist_all_for_records(store, &mut definitions);
     }
 
-    write_agent_store(app, definitions, instances)
+    write_agent_store_at(store_path, definitions, instances)
 }
 
 /// Serialize definitions + instances into the single unified store file.
 /// Definitions sort first (by slug) for stable diffs; instances keep the
 /// name/pubkey order their save path established.
-fn write_agent_store(
-    app: &AppHandle,
-    definitions: Vec<ManagedAgentRecord>,
-    instances: Vec<ManagedAgentRecord>,
-) -> Result<(), String> {
-    write_agent_store_at(&managed_agents_store_path(app)?, definitions, instances)
-}
-
-/// Path-based core of [`write_agent_store`].
 fn write_agent_store_at(
     path: &Path,
     mut definitions: Vec<ManagedAgentRecord>,

@@ -597,13 +597,14 @@ impl SecretStore {
     /// Atomically load the blob, apply `f` to a candidate map, write back if
     /// changed, and only then advance the cache.
     ///
-    /// **Cross-process safety**: acquires an exclusive advisory file lock
-    /// (`flock(2)` on Unix, `LockFileEx` on Windows) before reading, mutating,
-    /// and writing. The lock is keyed by service name and stored in the system
-    /// temp directory, making it reachable from both the signed DMG build and
-    /// unsigned dev builds. Inside the lock a fresh `read_blob_raw()` is always
-    /// performed (even when the cache is warm) so a concurrent process's write
-    /// is never silently dropped.
+    /// **Cross-process safety**: acquires an exclusive cross-process lock
+    /// (`flock(2)` on a service-keyed lockfile in the system temp directory on
+    /// Unix, a named kernel mutex via `CreateMutexW` on Windows — see
+    /// [`BlobLockGuard`]) before reading, mutating, and writing. The Unix
+    /// lockfile is reachable from both the signed DMG build and unsigned dev
+    /// builds. Inside the lock a fresh `read_blob_raw()` is always performed
+    /// (even when the cache is warm) so a concurrent process's write is never
+    /// silently dropped.
     ///
     /// **Idempotent**: when `f` leaves the candidate equal to the freshly-read
     /// map, `write_blob_raw` is skipped entirely. On macOS the legacy
