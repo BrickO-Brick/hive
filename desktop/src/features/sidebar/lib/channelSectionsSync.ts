@@ -28,6 +28,12 @@ export type RemoteSections = {
   eventId: string;
 };
 
+export type LegacySectionSource = {
+  event: RelayEvent;
+  plaintext: string;
+  store: ChannelSectionStore;
+};
+
 async function decryptAndParse(
   event: RelayEvent,
 ): Promise<RemoteSections | null> {
@@ -56,6 +62,26 @@ export class ChannelSectionSyncManager {
     // Hydrate from localStorage so we never seed-publish if a remote blob has
     // been seen in a prior session.
     this.lastRemoteCreatedAt = readWatermark(pubkey, BLOB_TYPE, relayUrl);
+  }
+
+  async fetchLegacySource(): Promise<LegacySectionSource | null> {
+    try {
+      const events = await relayClient.fetchEvents({
+        kinds: [KIND_CHANNEL_SECTIONS],
+        authors: [this.pubkey],
+        "#d": [D_TAG],
+        limit: 1,
+      });
+      if (events.length === 0 || events[0].pubkey !== this.pubkey) return null;
+      const event = events[0];
+      this.recordRemoteHead(event.created_at);
+      const plaintext = await nip44DecryptFromSelf(event.content);
+      const store = parseChannelSectionPayload(JSON.parse(plaintext));
+      if (!store) return null;
+      return { event, plaintext, store };
+    } catch {
+      return null;
+    }
   }
 
   async fetchRemoteSections(): Promise<FetchResult<RemoteSections>> {

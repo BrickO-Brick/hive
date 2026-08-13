@@ -12,6 +12,8 @@ import { ChannelSectionSyncManager } from "./channelSectionsSync";
 import type { RemoteSections } from "./channelSectionsSync";
 import { swapSectionOrder } from "./channelSectionsHelpers";
 
+import { SectionWorkspaceSyncManager } from "./sectionWorkspace";
+
 export type { ChannelSection } from "./channelSectionsStorage";
 
 import type {
@@ -42,6 +44,9 @@ export function useChannelSections(
   });
 
   const managerRef = React.useRef<ChannelSectionSyncManager | null>(null);
+  const workspaceManagerRef = React.useRef<SectionWorkspaceSyncManager | null>(
+    null,
+  );
   const lastAppliedRemoteTs = React.useRef(0);
   const lastAppliedEventId = React.useRef("");
 
@@ -56,9 +61,15 @@ export function useChannelSections(
     lastAppliedRemoteTs.current = 0;
     lastAppliedEventId.current = "";
     managerRef.current = new ChannelSectionSyncManager(pubkey, relayUrl);
+    workspaceManagerRef.current = new SectionWorkspaceSyncManager(
+      pubkey,
+      relayUrl,
+    );
     return () => {
       managerRef.current?.destroy();
       managerRef.current = null;
+      workspaceManagerRef.current?.destroy();
+      workspaceManagerRef.current = null;
     };
   }, [pubkey, relayUrl]);
 
@@ -105,19 +116,56 @@ export function useChannelSections(
   React.useEffect(() => {
     if (!pubkey || !relayUrl) return;
     let cancelled = false;
-    const local = readChannelSectionsStore(pubkey, relayUrl);
-    void managerRef.current?.bootstrap(local).then((result) => {
+    void (async () => {
+      const workspaceManager = workspaceManagerRef.current;
+      const legacyManager = managerRef.current;
+      if (!workspaceManager || !legacyManager) return;
+      const workspaceStore = await workspaceManager.bootstrap(async () => {
+        const legacy = await legacyManager.fetchLegacySource();
+        return legacy;
+      });
+      if (cancelled) return;
+      if (workspaceStore) setStore(workspaceStore);
+      if (workspaceManager.isCanonical()) {
+        legacyManager.cancelPendingPublish();
+        return;
+      }
+      const result = await legacyManager.bootstrap(
+        readChannelSectionsStore(pubkey, relayUrl),
+      );
       if (cancelled) return;
       if (result.action === "apply-remote") {
         setStore(applyRemote(result.data));
       }
-      // "hold": seed already performed by bootstrap (if first-sync), or
-      // blocked (failed fetch / prior watermark). Hook does nothing.
-    });
+    })();
     return () => {
       cancelled = true;
     };
   }, [pubkey, relayUrl, applyRemote]);
+
+  React.useEffect(() => {
+    if (!pubkey || !relayUrl) return;
+    let unsub: (() => Promise<void>) | null = null;
+    let cancelled = false;
+    void workspaceManagerRef.current
+      ?.subscribe((workspaceStore) => {
+        if (workspaceManagerRef.current?.isCanonical()) {
+          managerRef.current?.cancelPendingPublish();
+        }
+        if (!cancelled) setStore(workspaceStore);
+      })
+      .then((dispose) => {
+        if (cancelled) {
+          void dispose();
+        } else {
+          unsub = dispose;
+        }
+      });
+    return () => {
+      cancelled = true;
+      if (unsub) void unsub();
+    };
+  }, [pubkey, relayUrl]);
 
   React.useEffect(() => {
     if (!pubkey) return;
@@ -187,6 +235,10 @@ export function useChannelSections(
           sections: [...current.sections, section],
         });
         if (!writeChannelSectionsStore(pubkey, next, relayUrl)) return current;
+        if (workspaceManagerRef.current?.isCanonical()) {
+          managerRef.current?.cancelPendingPublish();
+          return next;
+        }
         managerRef.current?.publishSections(next);
         return next;
       });
@@ -217,6 +269,10 @@ export function useChannelSections(
         if (!writeChannelSectionsStore(pubkey, next, relayUrl)) {
           return prev;
         }
+        if (workspaceManagerRef.current?.isCanonical()) {
+          managerRef.current?.cancelPendingPublish();
+          return next;
+        }
         managerRef.current?.publishSections(next);
         return next;
       });
@@ -244,6 +300,10 @@ export function useChannelSections(
         if (!writeChannelSectionsStore(pubkey, next, relayUrl)) {
           return prev;
         }
+        if (workspaceManagerRef.current?.isCanonical()) {
+          managerRef.current?.cancelPendingPublish();
+          return next;
+        }
         managerRef.current?.publishSections(next);
         return next;
       });
@@ -258,6 +318,10 @@ export function useChannelSections(
         const next = swapSectionOrder(prev, sectionId, "up");
         if (!next || !writeChannelSectionsStore(pubkey, next, relayUrl))
           return prev;
+        if (workspaceManagerRef.current?.isCanonical()) {
+          managerRef.current?.cancelPendingPublish();
+          return next;
+        }
         managerRef.current?.publishSections(next);
         return next;
       });
@@ -272,6 +336,10 @@ export function useChannelSections(
         const next = swapSectionOrder(prev, sectionId, "down");
         if (!next || !writeChannelSectionsStore(pubkey, next, relayUrl))
           return prev;
+        if (workspaceManagerRef.current?.isCanonical()) {
+          managerRef.current?.cancelPendingPublish();
+          return next;
+        }
         managerRef.current?.publishSections(next);
         return next;
       });
@@ -289,6 +357,10 @@ export function useChannelSections(
         });
         const next: ChannelSectionStore = { ...prev, sections };
         if (!writeChannelSectionsStore(pubkey, next, relayUrl)) return prev;
+        if (workspaceManagerRef.current?.isCanonical()) {
+          managerRef.current?.cancelPendingPublish();
+          return next;
+        }
         managerRef.current?.publishSections(next);
         return next;
       });
@@ -312,6 +384,10 @@ export function useChannelSections(
         if (!writeChannelSectionsStore(pubkey, next, relayUrl)) {
           return prev;
         }
+        if (workspaceManagerRef.current?.isCanonical()) {
+          managerRef.current?.cancelPendingPublish();
+          return next;
+        }
         managerRef.current?.publishSections(next);
         return next;
       });
@@ -330,6 +406,10 @@ export function useChannelSections(
         const next: ChannelSectionStore = { ...prev, assignments };
         if (!writeChannelSectionsStore(pubkey, next, relayUrl)) {
           return prev;
+        }
+        if (workspaceManagerRef.current?.isCanonical()) {
+          managerRef.current?.cancelPendingPublish();
+          return next;
         }
         managerRef.current?.publishSections(next);
         return next;

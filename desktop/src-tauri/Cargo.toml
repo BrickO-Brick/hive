@@ -69,6 +69,7 @@ user-idle = { version = "0.6", default-features = false }
 
 [dependencies]
 atomic-write-file = "0.3"
+aes-gcm = "0.10"
 anyhow = "1"
 dirs = "6"
 tauri = { version = "2", features = ["macos-private-api", "tray-icon"] }

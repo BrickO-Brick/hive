@@ -1083,6 +1083,7 @@ dependencies = [
 name = "buzz-desktop"
 version = "0.5.11"
 dependencies = [
+ "aes-gcm",
  "anyhow",
  "arboard",
  "atomic-write-file",
