@@ -587,7 +587,11 @@ pub(crate) fn save_custom_harness_to_dir(
 ///    carries inline env in the keyless / keyring-unavailable fallback).
 /// 2. If the target already exists, rename it to `<target>.bak` (the backup).
 /// 3. `commit()` the temp file (renames temp → target).
-///    * On success: delete `.bak` (best-effort; a stale `.bak` is harmless).
+///    * On success: delete `.bak` (best-effort). A leaked `.bak` is harmless
+///      when the file it backs up had its env projected into the keyring, but
+///      carries inline secrets in the keyring-unavailable fallback — which is
+///      why the boot migration scrubs `*.json.bak` (see
+///      [`crate::migration::migration_harness_secrets`]).
 ///    * On failure: restore `.bak` → target so the original is never lost.
 /// 4. If `rename_old_id` is `Some`, remove `<dir>/<old_id>.json` after the
 ///    new file is committed (non-fatal if NotFound).
@@ -665,7 +669,9 @@ pub(crate) fn save_custom_harness_to_dir_with<S: ProjectionStore>(
         return Err(format!("failed to finalize harness definition: {e}"));
     }
 
-    // Commit succeeded — remove the backup (best-effort; stale .bak is harmless).
+    // Commit succeeded — remove the backup (best-effort). A leaked `.bak` is
+    // harmless once env was projected to the keyring, but secret-bearing in the
+    // inline fallback; the boot migration scrubs `*.json.bak` for that case.
     if had_backup {
         let _ = std::fs::remove_file(&bak_path);
     }
