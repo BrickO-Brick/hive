@@ -362,6 +362,14 @@ pub async fn import_identity(
         let key_path = data_dir.join("identity.key");
 
         let (pubkey, storage) = commit_imported_identity(&state, &data_dir, keys, |keys| {
+            // Serialize the shared-keyring blob write against a concurrent
+            // agent save/GC, which hold the same transaction lock across their
+            // full span: identity and agent secrets share one SecretStore, so
+            // an unserialized identity persist could interleave with a
+            // projection transaction on the same blob. Held across the persist
+            // span only — the in-memory key swap that follows this closure
+            // touches no keyring blob.
+            let _txn = crate::managed_agents::storage::acquire_secret_txn_lock(&app_handle)?;
             // Persist into the OS keyring first (store → read-back verify →
             // marker → delete file). Falls back to the 0o600 file when the
             // keyring is unavailable; returns Err only when both backends fail.
@@ -494,8 +502,13 @@ pub async fn persist_current_identity(
         let key_path = data_dir.join("identity.key");
 
         let store = crate::secret_store::SecretStore::shared(crate::app_state::keyring_service());
-        let storage =
-            crate::app_state::persist_imported_identity(store, &keys, &key_path, &data_dir)?;
+        let storage = {
+            // Serialize the shared-keyring blob write against a concurrent agent
+            // save/GC on the same SecretStore. Scoped to the persist span only —
+            // the identity_lost clear that follows touches no keyring blob.
+            let _txn = crate::managed_agents::storage::acquire_secret_txn_lock(&app_handle)?;
+            crate::app_state::persist_imported_identity(store, &keys, &key_path, &data_dir)?
+        };
 
         // Keys are already the live identity. Record where the durable write
         // landed before clearing identity_lost.
@@ -788,3 +801,7 @@ mod nostr_identity_binding_tests {
 #[cfg(test)]
 #[path = "identity_key_backup_tests.rs"]
 mod identity_key_backup_tests;
+
+#[cfg(test)]
+#[path = "identity_txn_lock_tests.rs"]
+mod identity_txn_lock_tests;
