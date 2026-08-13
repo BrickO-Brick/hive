@@ -21,12 +21,19 @@ import {
 import {
   compareObserverEvents,
   isObserverEventAfter,
+  mergeObserverEventBatch,
   unwrapObserverBatch,
 } from "./observerEventOrdering";
+import {
+  clearLatestLiveSessions,
+  getLatestLiveSessionId,
+  recordLatestLiveSession,
+} from "./latestLiveSession";
 // Re-export the channel-activity read and the event-ordering helpers off the
 // observer store's public surface; their storage/logic now lives in dedicated
 // modules but callers keep importing them from here.
 export { compareObserverEvents, getAgentChannelActivity, isObserverEventAfter };
+export { getLatestLiveSessionId };
 import { agentConfigSurfaceQueryKey } from "@/features/agents/hooks";
 import type {
   ConnectionState,
@@ -217,40 +224,9 @@ function truncateUnpinnedAgentWindow(key: string): void {
   notifyListeners();
 }
 
-// Per-agent, per-channel latest-live-session-id.
-// Key: `${normalizePubkey(agentPubkey)}:${channelId}`.
-// Set when a live relay observer event with a sessionId arrives.
-// Cleared in resetAgentObserverStore.
-//
-// "Latest-live" means: the sessionId that most recently appeared via the
-// live relay path (handleRelayObserverEvent). It is NOT derived from
-// connectionState or an ever-live Set — an ever-live Set would incorrectly
-// mark session A as "current" after session B has started (Thufir Pass 3).
-//
-// Stored as `{ sessionId, timestamp, seq }` so that late-arriving live frames
-// from an older session never regress the latest-live id. We only advance when
-// the parsed event sorts strictly AFTER the stored one, using the same
-// two-key ordering as `compareObserverEvents`: timestamp first, then seq on a
-// tie — so a higher-seq frame at equal timestamp still advances the entry.
-type LatestLiveEntry = { sessionId: string; timestamp: string; seq: number };
-const latestLiveSessionByAgentChannel = new Map<string, LatestLiveEntry>();
-
-function liveSessionKey(agentPubkey: string, channelId: string | null): string {
-  return `${normalizePubkey(agentPubkey)}:${channelId ?? ""}`;
-}
-
-/** Read the latest-live-session-id for a (agent, channel) pair. */
-export function getLatestLiveSessionId(
-  agentPubkey: string | null | undefined,
-  channelId: string | null | undefined,
-): string | null {
-  if (!agentPubkey) return null;
-  return (
-    latestLiveSessionByAgentChannel.get(
-      liveSessionKey(agentPubkey, channelId ?? null),
-    )?.sessionId ?? null
-  );
-}
+// Per-agent, per-channel latest-live-session-id lives in latestLiveSession.ts
+// (recorded on the live path, cleared on reset); its reader is re-exported off
+// the store's public surface below.
 
 // Per-agent listeners for `control_result` frames. The ModelPicker subscribes
 // here to learn the async outcome of a `switch_model` frame (the send is
@@ -359,46 +335,26 @@ function appendAgentEvents(
   if (events.length === 0) return false;
 
   const key = normalizePubkey(agentPubkey);
-  recordChannelActivity(key, event);
+  for (const event of events) recordChannelActivity(key, event);
   const current = eventsByAgent.get(key) ?? [];
-  const seen = new Set(
-    current.map(
-      (event) => `${event.timestamp.length}:${event.timestamp}:${event.seq}`,
-    ),
-  );
-  const added: ObserverEvent[] = [];
-  for (const event of events) {
-    const eventKey = `${event.timestamp.length}:${event.timestamp}:${event.seq}`;
-    if (seen.has(eventKey)) continue;
-    seen.add(eventKey);
-    added.push(event);
-  }
-  if (added.length === 0) return false;
+  const merged = mergeObserverEventBatch(current, events, agentEventCap(key));
+  if (!merged) return false;
 
-  const sortedAdded = added.sort(compareObserverEvents);
-  const sorted = [...current, ...sortedAdded].sort(compareObserverEvents);
-  const cap = agentEventCap(key);
-  const trimmed = sorted.length > cap;
-  const final = trimmed ? sorted.slice(sorted.length - cap) : sorted;
-  eventsByAgent.set(key, final);
+  eventsByAgent.set(key, merged.final);
 
   // The common live path appends a sorted batch after the retained window. Fold
   // that batch through the transcript state once without rebuilding history.
   // Out-of-order arrivals and cap eviction rebuild from the final window so
   // stateful tool/permission relationships remain correct.
-  const currentLast = current.at(-1);
-  const allAtEnd =
-    !currentLast ||
-    sortedAdded.every((event) => compareObserverEvents(event, currentLast) > 0);
-  if (allAtEnd && !trimmed) {
+  if (merged.canFoldIncrementally) {
     let transcriptState =
       transcriptByAgent.get(key) ?? createEmptyTranscriptState();
-    for (const event of sortedAdded) {
+    for (const event of merged.addedInOrder) {
       transcriptState = processTranscriptEvent(transcriptState, event);
     }
     transcriptByAgent.set(key, transcriptState);
   } else {
-    transcriptByAgent.set(key, buildTranscriptState(final));
+    transcriptByAgent.set(key, buildTranscriptState(merged.final));
   }
 
   invalidateSnapshot(key);
@@ -414,7 +370,7 @@ function appendAgentEvent(agentPubkey: string, event: ObserverEvent) {
 /**
  * Compose the map key for the channel-scoped archive transcript.
  * Separates agent identity from channel with `:` — the same delimiter used by
- * liveSessionKey so all composite keys in this module are consistently shaped.
+ * the latest-live-session key so composite keys are consistently shaped.
  */
 function archiveChannelKey(agentPubkey: string, channelId: string): string {
   return `${normalizePubkey(agentPubkey)}:${channelId}`;
@@ -526,25 +482,10 @@ function processLiveObserverEvents(
   const observerChanged = appendAgentEvents(agentPubkey, events);
 
   for (const parsed of events) {
-    // Track the latest-live-session-id per (agent, channel) on the live path.
-    // Only set when the parsed event carries both a sessionId and channelId,
-    // so we never attribute a session to the wrong channel.
-    if (parsed.sessionId && parsed.channelId) {
-      const key = liveSessionKey(agentPubkey, parsed.channelId);
-      const stored = latestLiveSessionByAgentChannel.get(key);
-      // Advance only when this event sorts strictly AFTER the stored one via
-      // isObserverEventAfter (timestamp then seq — same ordering as
-      // compareObserverEvents). This prevents late-arriving live frames from
-      // older sessions from regressing the latest-live id, while also
-      // correctly advancing on a same-timestamp frame with a higher seq.
-      if (!stored || isObserverEventAfter(parsed, stored)) {
-        latestLiveSessionByAgentChannel.set(key, {
-          sessionId: parsed.sessionId,
-          timestamp: parsed.timestamp,
-          seq: parsed.seq,
-        });
-      }
-    }
+    // Advance the latest-live-session-id for this (agent, channel) on the live
+    // path (no-op unless the frame carries a sessionId + channelId and sorts
+    // after the stored entry).
+    recordLatestLiveSession(agentPubkey, parsed);
     const managementRequest = parseAgentManagementRequest(parsed.payload);
     if (managementRequest) {
       for (const listener of agentManagementListeners) {
@@ -987,7 +928,7 @@ export function resetAgentObserverStore() {
   knownAgentPubkeys.clear();
   knownAgentsBySubscription.clear();
   pendingUnknownAgentFrames.length = 0;
-  latestLiveSessionByAgentChannel.clear();
+  clearLatestLiveSessions();
   agentManagementListeners.clear();
   onSessionConfigCaptured = null;
   connectionState = "idle";

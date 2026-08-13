@@ -293,7 +293,6 @@ export function UserProfilePopover({
     viewerIsOwner,
   });
 
-
   React.useEffect(() => {
     return clearHoverTimer;
   }, [clearHoverTimer]);

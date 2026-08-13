@@ -401,4 +401,3 @@ test("test_projection_aligns_an_existing_messages_key", () => {
 
   assert.deepEqual(contents(harness), ["initial", "live"]);
 });
-

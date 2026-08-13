@@ -64,3 +64,57 @@ export function unwrapObserverBatch(parsed: ObserverEvent): ObserverEvent[] {
     : null;
   return events && events.length > 0 ? events : [parsed];
 }
+
+/** Dedup identity for a retained event: length-prefixed timestamp plus seq. */
+function eventDedupKey(event: ObserverEvent): string {
+  return `${event.timestamp.length}:${event.timestamp}:${event.seq}`;
+}
+
+export type ObserverEventBatchMerge = {
+  /** The retained window after dedup, merge, and cap trim. */
+  final: ObserverEvent[];
+  /** The newly added events in ascending order, for an incremental fold. */
+  addedInOrder: ObserverEvent[];
+  /**
+   * True when every added event sorts after the prior tail and no cap trim
+   * fired, so the transcript can fold the batch instead of rebuilding.
+   */
+  canFoldIncrementally: boolean;
+};
+
+/**
+ * Merge an incoming event batch into a retained window: drop events already
+ * present by `(timestamp, seq)`, sort the additions, splice them into `current`
+ * in total order, and trim to `cap` (keeping the most recent). Returns `null`
+ * when every incoming event was a duplicate (no state change). Pure — the store
+ * owns the map writes and transcript state.
+ */
+export function mergeObserverEventBatch(
+  current: readonly ObserverEvent[],
+  incoming: readonly ObserverEvent[],
+  cap: number,
+): ObserverEventBatchMerge | null {
+  const seen = new Set(current.map(eventDedupKey));
+  const added: ObserverEvent[] = [];
+  for (const event of incoming) {
+    const key = eventDedupKey(event);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    added.push(event);
+  }
+  if (added.length === 0) return null;
+
+  const addedInOrder = added.sort(compareObserverEvents);
+  const sorted = [...current, ...addedInOrder].sort(compareObserverEvents);
+  const trimmed = sorted.length > cap;
+  const final = trimmed ? sorted.slice(sorted.length - cap) : sorted;
+
+  const currentLast = current.at(-1);
+  const canFoldIncrementally =
+    !trimmed &&
+    (!currentLast ||
+      addedInOrder.every(
+        (event) => compareObserverEvents(event, currentLast) > 0,
+      ));
+  return { final, addedInOrder, canFoldIncrementally };
+}
