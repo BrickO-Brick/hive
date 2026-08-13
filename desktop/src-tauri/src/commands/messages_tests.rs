@@ -178,6 +178,7 @@ fn thread_replies_filter_carries_non_p_gated_kinds_to_clear_the_gate() {
     }
     assert_eq!(filter["#e"], serde_json::json!(["root-hex"]));
     assert_eq!(filter["depth_limit"], serde_json::json!(64));
+    assert_eq!(filter["thread_bounds"], serde_json::json!(true));
     assert_eq!(filter["#h"], serde_json::json!(["channel-1"]));
 }
 

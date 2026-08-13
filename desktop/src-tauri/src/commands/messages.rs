@@ -300,6 +300,9 @@ fn build_thread_replies_filter(
     // defaults it to a deep-but-bounded value so nested replies aren't dropped.
     filter.insert("depth_limit".to_string(), serde_json::json!(depth_limit));
     filter.insert("limit".to_string(), serde_json::json!(cap));
+    // Opt into the relay's authoritative raw-scan bounds overlay. Older clients
+    // do not understand protocol events in this response and must not receive it.
+    filter.insert("thread_bounds".to_string(), serde_json::json!(true));
     if matches!(thread_order, Some("newest")) {
         filter.insert("thread_order".to_string(), serde_json::json!("newest"));
     }

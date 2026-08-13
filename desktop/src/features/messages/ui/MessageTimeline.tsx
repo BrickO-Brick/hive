@@ -265,31 +265,48 @@ const MessageTimelineBase = React.forwardRef<
   );
   // Cold loads keep the deferred markdown gate. Once a channel has committed,
   // a warm revisit can paint its cached snapshot immediately while refresh
-  // work continues behind it.
-  const requiresDeferredSettleRef = React.useRef(new Map<string, boolean>());
+  // work continues behind it. Update this bounded session cache after commit,
+  // not during render: render-phase mutation made sibling timeline effects see
+  // a source that had never actually settled.
+  const [settledChannelIds, setSettledChannelIds] = React.useState<
+    ReadonlySet<string>
+  >(() => new Set());
   const snapshotChannelId = liveSnapshot.channelId;
-  if (snapshotChannelId) {
-    if (!requiresDeferredSettleRef.current.has(snapshotChannelId)) {
-      requiresDeferredSettleRef.current.set(snapshotChannelId, isLoading);
-    } else if (isLoading) {
-      requiresDeferredSettleRef.current.set(snapshotChannelId, true);
-    }
+  React.useEffect(() => {
     if (
-      !isLoading &&
-      deferredSnapshot.channelId === snapshotChannelId &&
-      messages.length > 0
+      !snapshotChannelId ||
+      isLoading ||
+      deferredSnapshot.channelId !== snapshotChannelId ||
+      messages.length === 0
     ) {
-      requiresDeferredSettleRef.current.set(snapshotChannelId, false);
+      return;
     }
-  }
+    setSettledChannelIds((current) => {
+      if (current.has(snapshotChannelId)) return current;
+      const next = new Set(current);
+      next.add(snapshotChannelId);
+      // Channel ids are only a warm-paint hint. Bound their session lifetime so
+      // traversing many channels cannot grow this component state forever.
+      while (next.size > 32) {
+        const oldest = next.values().next().value;
+        if (oldest === undefined) break;
+        next.delete(oldest);
+      }
+      return next;
+    });
+  }, [
+    deferredSnapshot.channelId,
+    isLoading,
+    messages.length,
+    snapshotChannelId,
+  ]);
   const renderSource = selectTimelineRenderSource({
     deferredChannelId: deferredSnapshot.channelId,
     liveChannelId: snapshotChannelId,
     preferLiveSnapshot:
       !isLoading &&
       messages.length > 0 &&
-      (snapshotChannelId === null ||
-        requiresDeferredSettleRef.current.get(snapshotChannelId) === false),
+      (snapshotChannelId === null || settledChannelIds.has(snapshotChannelId)),
   });
   const renderedSnapshot =
     renderSource === "live"

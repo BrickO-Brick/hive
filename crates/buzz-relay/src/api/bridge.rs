@@ -1196,6 +1196,7 @@ async fn query_events_authed(
             .max(1) as u32;
         let thread_cursor = extract_thread_cursor(raw);
         let thread_order = extract_thread_order(raw);
+        let include_thread_bounds = extension_flag(raw, "thread_bounds");
         let thread_page = state
             .db
             .get_thread_replies_ordered(
@@ -1225,44 +1226,47 @@ async fn query_events_authed(
             }
         }
 
-        // Relay-signed, query-time pagination authority. The cursor describes
-        // the raw scan position, not the last event that happened to survive
-        // reconstruction or authorization filtering.
-        let next_cursor = thread_page.next_cursor.as_ref().map(|(ts, id)| {
-            serde_json::json!({
-                "created_at": ts.timestamp(),
-                "id": hex::encode(id),
-            })
-        });
-        let content = serde_json::json!({
-            "has_more": thread_page.has_more,
-            "next_cursor": next_cursor,
-        });
-        let order = match thread_order {
-            buzz_db::thread::ThreadOrder::Oldest => "oldest",
-            buzz_db::thread::ThreadOrder::Newest => "newest",
-        };
-        let request_cursor = thread_cursor
-            .as_deref()
-            .map(hex::encode)
-            .unwrap_or_else(|| "head".to_owned());
-        let tags = vec![
-            nostr::Tag::parse(["e", root_hex])
-                .map_err(|e| internal_error(&format!("thread bounds e tag: {e}")))?,
-            nostr::Tag::parse(["d", &format!("{root_hex}:{order}:{request_cursor}")])
-                .map_err(|e| internal_error(&format!("thread bounds d tag: {e}")))?,
-        ];
-        let overlay = nostr::EventBuilder::new(
-            nostr::Kind::Custom(buzz_core::kind::KIND_THREAD_BOUNDS as u16),
-            content.to_string(),
-        )
-        .tags(tags)
-        .sign_with_keys(&state.relay_keypair)
-        .map_err(|e| internal_error(&format!("thread bounds sign: {e}")))?;
-        events.push(
-            serde_json::to_value(&overlay)
-                .map_err(|e| internal_error(&format!("thread bounds serialize: {e}")))?,
-        );
+        // Relay-signed, query-time pagination authority, explicitly requested
+        // by clients that understand the overlay. Legacy clients page by the
+        // last returned reply, so appending a protocol event unconditionally
+        // would turn that overlay into their cursor and truncate large threads.
+        if include_thread_bounds {
+            let next_cursor = thread_page.next_cursor.as_ref().map(|(ts, id)| {
+                serde_json::json!({
+                    "created_at": ts.timestamp(),
+                    "id": hex::encode(id),
+                })
+            });
+            let content = serde_json::json!({
+                "has_more": thread_page.has_more,
+                "next_cursor": next_cursor,
+            });
+            let order = match thread_order {
+                buzz_db::thread::ThreadOrder::Oldest => "oldest",
+                buzz_db::thread::ThreadOrder::Newest => "newest",
+            };
+            let request_cursor = thread_cursor
+                .as_deref()
+                .map(hex::encode)
+                .unwrap_or_else(|| "head".to_owned());
+            let tags = vec![
+                nostr::Tag::parse(["e", root_hex])
+                    .map_err(|e| internal_error(&format!("thread bounds e tag: {e}")))?,
+                nostr::Tag::parse(["d", &format!("{root_hex}:{order}:{request_cursor}")])
+                    .map_err(|e| internal_error(&format!("thread bounds d tag: {e}")))?,
+            ];
+            let overlay = nostr::EventBuilder::new(
+                nostr::Kind::Custom(buzz_core::kind::KIND_THREAD_BOUNDS as u16),
+                content.to_string(),
+            )
+            .tags(tags)
+            .sign_with_keys(&state.relay_keypair)
+            .map_err(|e| internal_error(&format!("thread bounds sign: {e}")))?;
+            events.push(
+                serde_json::to_value(&overlay)
+                    .map_err(|e| internal_error(&format!("thread bounds serialize: {e}")))?,
+            );
+        }
         handled.insert(idx);
     }
 
@@ -3069,6 +3073,18 @@ mod tests {
         assert!(!extension_flag(
             &serde_json::json!({ "top_level": 1 }),
             "top_level"
+        ));
+        assert!(extension_flag(
+            &serde_json::json!({ "thread_bounds": true }),
+            "thread_bounds"
+        ));
+        assert!(!extension_flag(
+            &serde_json::json!({ "thread_bounds": false }),
+            "thread_bounds"
+        ));
+        assert!(!extension_flag(
+            &serde_json::json!({ "thread_bounds": "true" }),
+            "thread_bounds"
         ));
     }
 
