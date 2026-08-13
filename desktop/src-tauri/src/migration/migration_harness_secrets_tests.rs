@@ -99,6 +99,7 @@ fn harness_def(
         args: vec![],
         env,
         env_ref,
+        env_unavailable: false,
         install_instructions_url: String::new(),
         install_hint: String::new(),
     }

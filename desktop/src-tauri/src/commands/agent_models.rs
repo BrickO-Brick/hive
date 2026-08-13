@@ -78,6 +78,19 @@ pub async fn get_agent_models(
             load_global_agent_config(&app),
         )?;
 
+        // Harness tier: model discovery layers the harness definition's env
+        // (provider keys) into the probe env, so an unavailable harness env
+        // projection would query with a silently-incomplete env. Refuse before
+        // any credentialed request (mirrors the spawn/deploy harness gate).
+        // Card mint / profile signing do not consume harness env, so this gate
+        // lives here rather than in `require_effective_secrets_available`.
+        if let Some(hid) = crate::managed_agents::unavailable_harness_id(record, &personas) {
+            return Err(model_discovery_error(
+                &pubkey,
+                &format!("harness ({hid}) env could not be loaded from the keyring"),
+            ));
+        }
+
         // Single pure helper — descriptor + authoritative model/provider
         // resolver, packaged so the linked-agent regression test binds the
         // exact values this command consumes. Returns Err on dangling harness

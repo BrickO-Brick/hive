@@ -258,6 +258,7 @@ fn make_def(id: &str, label: &str) -> HarnessDefinition {
         args: vec![],
         env: BTreeMap::new(),
         env_ref: None,
+        env_unavailable: false,
         install_instructions_url: String::new(),
         install_hint: String::new(),
     }
@@ -442,6 +443,7 @@ fn env_harness_def() -> HarnessDefinition {
         args: vec!["--flag".to_string()],
         env,
         env_ref: None,
+        env_unavailable: false,
         install_instructions_url: "https://example.com".to_string(),
         install_hint: "Install from example.com".to_string(),
     }
@@ -599,6 +601,11 @@ fn save_written_file_is_owner_only_0o600() {
     );
 }
 
+// `env_unavailable` marker tests (hydrate/save/rename) live in a sibling file
+// so this module stays under the desktop file-size ratchet.
+#[path = "env_unavailable_tests.rs"]
+mod env_unavailable_tests;
+
 // ── B-3: env validation boundary (validate_harness_definition_pub integration) ──
 
 #[test]
@@ -615,6 +622,7 @@ fn validate_rejects_malformed_key_with_equals_sign() {
         args: vec![],
         env,
         env_ref: None,
+        env_unavailable: false,
         install_instructions_url: String::new(),
         install_hint: String::new(),
     };
@@ -645,6 +653,7 @@ fn validate_rejects_reserved_key_buzz_managed_agent() {
         args: vec![],
         env,
         env_ref: None,
+        env_unavailable: false,
         install_instructions_url: String::new(),
         install_hint: String::new(),
     };
@@ -667,6 +676,7 @@ fn validate_rejects_reserved_key_case_insensitive() {
         args: vec![],
         env,
         env_ref: None,
+        env_unavailable: false,
         install_instructions_url: String::new(),
         install_hint: String::new(),
     };
@@ -689,6 +699,7 @@ fn validate_rejects_nul_byte_in_value() {
         args: vec![],
         env,
         env_ref: None,
+        env_unavailable: false,
         install_instructions_url: String::new(),
         install_hint: String::new(),
     };
@@ -712,6 +723,7 @@ fn validate_rejects_value_over_per_value_size_limit() {
         args: vec![],
         env,
         env_ref: None,
+        env_unavailable: false,
         install_instructions_url: String::new(),
         install_hint: String::new(),
     };
@@ -734,6 +746,7 @@ fn validate_accepts_well_formed_env() {
         args: vec![],
         env,
         env_ref: None,
+        env_unavailable: false,
         install_instructions_url: String::new(),
         install_hint: String::new(),
     };

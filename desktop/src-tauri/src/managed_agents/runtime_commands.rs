@@ -7,8 +7,8 @@ use super::{
     load_global_agent_config, load_managed_agents, load_personas, managed_agent_runtime_log_path,
     process_is_running, record_agent_command, resolve_effective_agent_env, save_managed_agents,
     spawn_agent_child, terminate_process, terminate_untracked_pair_runtime,
-    unavailable_definition_id, write_agent_runtime_receipt, AgentReadiness, BackendKind,
-    ManagedAgentPairRuntime, ManagedAgentRuntimeKey, ManagedAgentRuntimeLifecycle,
+    unavailable_definition_id, unavailable_harness_id, write_agent_runtime_receipt, AgentReadiness,
+    BackendKind, ManagedAgentPairRuntime, ManagedAgentRuntimeKey, ManagedAgentRuntimeLifecycle,
     ManagedAgentRuntimeReceipt, ManagedAgentRuntimeStatus,
 };
 use crate::app_state::AppState;
@@ -79,10 +79,14 @@ fn status_for_with(
     // in `spawn_agent_child` when the global env_vars ref cannot be resolved.
     // `definition_unavailable` is the third tier: a linked instance whose
     // definition's env could not be hydrated is refused at spawn time.
+    // `harness_unavailable` is the fourth tier: the effective harness's own
+    // `env_ref` could not be hydrated, which `spawn_agent_child` also refuses.
     let definition_unavailable = unavailable_definition_id(record, personas).is_some();
+    let harness_unavailable = unavailable_harness_id(record, personas).is_some();
     let local_setup = !record.secrets_unavailable
         && !global_unavailable
         && !definition_unavailable
+        && !harness_unavailable
         && matches!(agent_readiness(&effective), AgentReadiness::Ready);
     ManagedAgentRuntimeStatus {
         pubkey: key.pubkey.clone(),
@@ -467,6 +471,7 @@ fn unkeyable_failed_status(
     let metadata = super::known_acp_runtime(&command);
     let effective = resolve_effective_agent_env(record, personas, metadata, global);
     let definition_unavailable = unavailable_definition_id(record, personas).is_some();
+    let harness_unavailable = unavailable_harness_id(record, personas).is_some();
     ManagedAgentRuntimeStatus {
         pubkey: record.pubkey.clone(),
         relay_url: requested.clone(),
@@ -474,6 +479,7 @@ fn unkeyable_failed_status(
         local_setup: !record.secrets_unavailable
             && !global_unavailable
             && !definition_unavailable
+            && !harness_unavailable
             && matches!(agent_readiness(&effective), AgentReadiness::Ready),
         lifecycle: ManagedAgentRuntimeLifecycle::Failed,
         pid: None,
@@ -614,316 +620,5 @@ pub async fn reconcile_managed_agent_runtimes(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn payload(
-        relay_url: &str,
-        lifecycle: ManagedAgentRuntimeLifecycle,
-        error: Option<&str>,
-    ) -> super::super::ManagedAgentRuntimeLifecycleObserverPayload {
-        super::super::ManagedAgentRuntimeLifecycleObserverPayload {
-            pubkey: "aa".repeat(32),
-            relay_url: relay_url.into(),
-            start_nonce: "test-generation".into(),
-            lifecycle,
-            error: error.map(str::to_owned),
-        }
-    }
-
-    fn record_with_relay(relay_url: &str) -> super::super::ManagedAgentRecord {
-        serde_json::from_str(&format!(
-            r#"{{
-                "pubkey": "{}",
-                "name": "pin-test",
-                "relay_url": "{relay_url}",
-                "acp_command": "buzz-acp",
-                "agent_command": "goose",
-                "agent_args": [],
-                "mcp_command": "",
-                "turn_timeout_seconds": 320,
-                "system_prompt": "",
-                "created_at": "2026-01-01T00:00:00Z",
-                "updated_at": "2026-01-01T00:00:00Z"
-            }}"#,
-            "aa".repeat(32)
-        ))
-        .unwrap()
-    }
-
-    #[test]
-    fn legacy_relay_pin_is_ignored_for_fan_out() {
-        // Zero-touch cutover (#2122): a record carrying a creation-era
-        // `relay_url` pin must fan out exactly like an unpinned one — the
-        // stored field is parsed but never consulted. See
-        // `effective_agent_relay_url`.
-        let unpinned = record_with_relay("");
-        let pinned = record_with_relay("wss://one.example");
-        for record in [&unpinned, &pinned] {
-            assert_eq!(
-                crate::relay::effective_agent_relay_url(&record.relay_url, "wss://two.example"),
-                "wss://two.example"
-            );
-        }
-    }
-
-    #[test]
-    fn unkeyable_relay_degrades_to_failed_row() {
-        // A requested URL that cannot form a pair key must still yield a
-        // Failed row keyed by the raw requested string, so one bad community
-        // never aborts the rest of the reconcile batch.
-        let record = record_with_relay("");
-        let status = unkeyable_failed_status(
-            &record,
-            "not a url".to_string(),
-            "relay access probe timed out".to_string(),
-            &[],
-            &super::super::GlobalAgentConfig::default(),
-            false,
-        );
-        assert!(matches!(
-            status.lifecycle,
-            ManagedAgentRuntimeLifecycle::Failed
-        ));
-        assert_eq!(status.relay_url, "not a url");
-        assert_eq!(status.requested_relay_url.as_deref(), Some("not a url"));
-        assert_eq!(status.pubkey, record.pubkey);
-        assert_eq!(
-            status.error.as_deref(),
-            Some("relay access probe timed out")
-        );
-        assert!(status.pid.is_none());
-    }
-
-    #[test]
-    fn runtime_key_rejects_non_hex_pubkeys() {
-        assert!(ManagedAgentRuntimeKey::new("../not-a-key", "wss://relay.example").is_err());
-        assert!(ManagedAgentRuntimeKey::new("gg".repeat(32), "wss://relay.example").is_err());
-    }
-
-    #[test]
-    fn runtime_key_canonicalizes_hex_pubkeys() {
-        let key = ManagedAgentRuntimeKey::new("AA".repeat(32), "wss://relay.example").unwrap();
-        assert_eq!(key.pubkey, "aa".repeat(32));
-    }
-
-    #[test]
-    fn observer_lifecycle_key_preserves_exact_canonical_pair() {
-        let first = payload(
-            "WSS://Relay.Example:443/",
-            ManagedAgentRuntimeLifecycle::Ready,
-            None,
-        );
-        let key = observer_lifecycle_key(&first.pubkey, &first).unwrap();
-        assert_eq!(key.pubkey, first.pubkey);
-        assert_eq!(key.relay_url, "wss://relay.example");
-
-        let other = payload(
-            "wss://other.example",
-            ManagedAgentRuntimeLifecycle::Ready,
-            None,
-        );
-        assert_ne!(key, observer_lifecycle_key(&other.pubkey, &other).unwrap());
-    }
-
-    #[test]
-    fn observer_lifecycle_rejects_cross_agent_and_desktop_states() {
-        let ready = payload(
-            "wss://relay.example",
-            ManagedAgentRuntimeLifecycle::Ready,
-            None,
-        );
-        assert!(observer_lifecycle_key(&"bb".repeat(32), &ready).is_err());
-
-        let stopped = payload(
-            "wss://relay.example",
-            ManagedAgentRuntimeLifecycle::Stopped,
-            None,
-        );
-        assert!(observer_lifecycle_key(&stopped.pubkey, &stopped).is_err());
-    }
-
-    #[test]
-    fn observer_lifecycle_enforces_failed_error_contract() {
-        let failed = payload(
-            "wss://relay.example",
-            ManagedAgentRuntimeLifecycle::Failed,
-            None,
-        );
-        assert!(observer_lifecycle_key(&failed.pubkey, &failed).is_err());
-
-        let ready_with_error = payload(
-            "wss://relay.example",
-            ManagedAgentRuntimeLifecycle::Ready,
-            Some("unexpected"),
-        );
-        assert!(observer_lifecycle_key(&ready_with_error.pubkey, &ready_with_error).is_err());
-    }
-
-    #[test]
-    fn secrets_unavailable_forces_local_setup_false() {
-        // When `secrets_unavailable` is true on a record, `local_setup` must
-        // be false regardless of what `agent_readiness` would return for the
-        // effective env — spawn will refuse, and the UI must reflect that.
-        let mut record = record_with_relay("");
-        record.secrets_unavailable = true;
-
-        let status = unkeyable_failed_status(
-            &record,
-            "wss://relay.example".to_string(),
-            "test error".to_string(),
-            &[],
-            &super::super::GlobalAgentConfig::default(),
-            false,
-        );
-        assert!(
-            !status.local_setup,
-            "local_setup must be false when secrets_unavailable is true"
-        );
-    }
-
-    #[test]
-    fn global_unavailable_forces_local_setup_false() {
-        // When the global env_vars ref cannot be resolved from the keyring,
-        // spawn refuses in `spawn_agent_child`. A record with fully-available
-        // per-agent secrets must still read not-ready so the UI never
-        // advertises a local_setup the agent cannot honor.
-        let record = record_with_relay("");
-        assert!(
-            !record.secrets_unavailable,
-            "guard: this test isolates the global-tier gate, not the record gate"
-        );
-
-        let status = unkeyable_failed_status(
-            &record,
-            "wss://relay.example".to_string(),
-            "test error".to_string(),
-            &[],
-            &super::super::GlobalAgentConfig::default(),
-            true, // global_unavailable
-        );
-        assert!(
-            !status.local_setup,
-            "local_setup must be false when the global config is unavailable"
-        );
-    }
-
-    fn linked_record() -> super::super::ManagedAgentRecord {
-        let mut rec = record_with_relay("");
-        rec.persona_id = Some("def-slug".to_string());
-        rec
-    }
-
-    /// A linked record whose effective env satisfies the `buzz-agent` readiness
-    /// gate, so `agent_readiness` returns `Ready`. This makes the linked
-    /// definition's `secrets_unavailable` flag the SOLE remaining input to
-    /// `local_setup` — without a Ready baseline, `local_setup` is false for
-    /// unrelated reasons (empty env) and the definition gate cannot be observed.
-    /// The command resolves to `buzz-agent` (persona runtime absent →
-    /// `default_agent_command`), and these three non-reserved env vars survive
-    /// into the effective env via the record's own `env_vars` layer.
-    fn ready_linked_record() -> super::super::ManagedAgentRecord {
-        let mut rec = linked_record();
-        rec.env_vars
-            .insert("BUZZ_AGENT_PROVIDER".into(), "anthropic".into());
-        rec.env_vars
-            .insert("BUZZ_AGENT_MODEL".into(), "claude-opus-4-5".into());
-        rec.env_vars
-            .insert("ANTHROPIC_API_KEY".into(), "sk-test".into());
-        rec
-    }
-
-    fn available_definition() -> super::super::AgentDefinition {
-        let mut d = super::super::AgentDefinition {
-            id: "def-slug".to_string(),
-            display_name: "Def".to_string(),
-            system_prompt: "prompt".to_string(),
-            created_at: "2026-01-01".to_string(),
-            updated_at: "2026-01-01".to_string(),
-            ..Default::default()
-        };
-        d.secrets_unavailable = false;
-        d
-    }
-
-    fn unavailable_definition() -> super::super::AgentDefinition {
-        let mut d = available_definition();
-        d.secrets_unavailable = true;
-        d
-    }
-
-    /// Positive control for the two tests below: with a Ready baseline and an
-    /// AVAILABLE definition, `local_setup` is true. This is what makes the
-    /// negative assertions meaningful — it proves the `false` outcomes there
-    /// are caused by the definition-unavailable gate, not by the record failing
-    /// readiness for some other reason. If the readiness recipe ever drifts and
-    /// this record stops being Ready, this test fails first and loudly.
-    #[test]
-    fn ready_linked_record_with_available_definition_is_local_setup_true() {
-        let record = ready_linked_record();
-        let def = available_definition();
-
-        let status = unkeyable_failed_status(
-            &record,
-            "wss://relay.example".to_string(),
-            "test error".to_string(),
-            std::slice::from_ref(&def),
-            &super::super::GlobalAgentConfig::default(),
-            false,
-        );
-        assert!(
-            status.local_setup,
-            "a Ready record linked to an available definition must show local_setup=true"
-        );
-    }
-
-    #[test]
-    fn definition_unavailable_forces_local_setup_false() {
-        // A linked instance whose definition's env_vars ref could not be
-        // hydrated must show local_setup=false — spawn will refuse, so
-        // advertising readiness would promise a launch we cannot honor. The
-        // record is otherwise Ready (see the positive control above), so the
-        // only thing forcing false here is the definition-unavailable gate:
-        // remove `&& !definition_unavailable` from `local_setup` and this fails.
-        let record = ready_linked_record();
-        let def = unavailable_definition();
-
-        let status = unkeyable_failed_status(
-            &record,
-            "wss://relay.example".to_string(),
-            "test error".to_string(),
-            std::slice::from_ref(&def),
-            &super::super::GlobalAgentConfig::default(),
-            false,
-        );
-        assert!(
-            !status.local_setup,
-            "local_setup must be false when the linked definition is unavailable"
-        );
-    }
-
-    #[test]
-    fn unlinked_instance_ignores_definition_unavailability() {
-        // An agent with no persona_id is not linked to any definition; an
-        // unavailable definition in the slice must not force its local_setup
-        // false. The record is Ready, so local_setup stays true — proving the
-        // gate keys on persona_id and does not blindly scan the slice. Break
-        // the predicate to match any unavailable definition and this fails.
-        let mut record = ready_linked_record();
-        record.persona_id = None;
-
-        let def = unavailable_definition(); // must be invisible to the unlinked record
-        let status = unkeyable_failed_status(
-            &record,
-            "wss://relay.example".to_string(),
-            "test error".to_string(),
-            std::slice::from_ref(&def),
-            &super::super::GlobalAgentConfig::default(),
-            false,
-        );
-        assert!(
-            status.local_setup,
-            "an unlinked record must ignore an unavailable definition and stay Ready"
-        );
-    }
-}
+#[path = "runtime_commands_tests.rs"]
+mod tests;

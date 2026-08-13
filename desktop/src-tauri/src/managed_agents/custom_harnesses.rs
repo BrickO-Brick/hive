@@ -23,6 +23,7 @@ use crate::managed_agents::secret_projection::{
     ProjectionStore, WriteOutcome,
 };
 use crate::managed_agents::secret_seam::{migrate_inline_field, FieldMigration};
+use crate::managed_agents::types::{AgentDefinition, ManagedAgentRecord};
 
 /// Regex-equivalent predicate for a valid harness ID.
 ///
@@ -79,6 +80,15 @@ pub(crate) struct HarnessDefinition {
     /// a keyless build where env stays inline in the `0o600` JSON.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env_ref: Option<String>,
+    /// Runtime-only marker: set when [`env_ref`](Self::env_ref) is present but
+    /// its keyring generation could not be hydrated (missing, unreadable, or
+    /// malformed bytes). Never serialized — reconstructed on every load by
+    /// [`hydrate_harness_env`], mirroring `ManagedAgentRecord::secrets_unavailable`.
+    /// Distinguishes a keyring outage from a genuinely-empty `env`: the spawn,
+    /// deploy, readiness, and model-discovery gates fail closed on it, and a
+    /// metadata save preserves the raw persisted ref instead of erasing it.
+    #[serde(skip)]
+    pub env_unavailable: bool,
     /// Link to external docs for manual install/setup instructions.
     #[serde(default)]
     pub install_instructions_url: String,
@@ -93,8 +103,8 @@ pub(crate) struct HarnessDefinition {
 /// namespaces (`global:env:` / `agent:…` / `definition:…`) that
 /// [`crate::managed_agents::secret_projection::is_projection_key`] matches, so
 /// the agent-store GC sweeps never touch harness generations. Harness env edits
-/// are rare, so the un-reclaimed generations are a bounded, encrypted-at-rest
-/// cost documented as a known limitation.
+/// are rare, so the un-reclaimed generations accrete slowly (there is no harness
+/// namespace GC) as an encrypted-at-rest cost documented as a known limitation.
 pub(crate) fn harness_env_key(id: &str, gen: &str) -> String {
     format!("harness:{id}:env:{gen}")
 }
@@ -109,15 +119,29 @@ pub(crate) fn harness_env_key(id: &str, gen: &str) -> String {
 // real under `cargo test`).
 
 /// Save-path strip: project a non-empty inline `env` into the keyring under a
-/// fresh generation and clear it on disk; an empty inline `env` clears the ref
-/// (a UI save carries the user's full intent — empty means "no env"). On a
-/// keyring write failure the value stays inline (`0o600` fallback) with the ref
-/// cleared. Mutates `def` in place.
+/// fresh generation and clear it on disk. Mutates `def` in place.
 ///
-/// Unlike the agent seam there is no `secrets_unavailable` guard: a harness save
-/// is always a fresh, complete UI submission, never a re-save of a partially
-/// hydrated record, so empty inline is unambiguously a user-clear here.
-fn strip_harness_env<S: ProjectionStore>(store: &S, def: &mut HarnessDefinition) {
+/// # Empty inline `env`: clear vs. preserve
+///
+/// An empty inline `env` is normally a user-clear (a UI save carries the user's
+/// full intent — empty means "no env") and clears the ref. But the TS edit form
+/// never round-trips `env_ref`, and it seeds its env from the catalog entry —
+/// which is EMPTY for a record whose keyring env could not be hydrated. Saving
+/// that partially-hydrated view would erase the still-live ref, turning a
+/// keyring outage into permanent pointer loss. So `preserved_ref` carries the
+/// raw persisted ref of an on-disk record that is currently `env_unavailable`
+/// (computed by [`persisted_unavailable_env_ref`]): on the empty-projection
+/// branch it is kept instead of cleared, mirroring the agent seam's
+/// `WriteOutcome::Nothing if unavailable` guard. A genuine clear of a healthy
+/// record passes `None` and clears normally.
+///
+/// On a keyring write failure the value stays inline (`0o600` fallback) with the
+/// ref cleared (the inline map is now the authoritative fallback state).
+fn strip_harness_env<S: ProjectionStore>(
+    store: &S,
+    def: &mut HarnessDefinition,
+    preserved_ref: Option<&str>,
+) {
     let id = def.id.clone();
     let inline_env = if !def.env.is_empty() {
         serialize_env_map(&def.env).ok()
@@ -135,17 +159,59 @@ fn strip_harness_env<S: ProjectionStore>(store: &S, def: &mut HarnessDefinition)
             def.env.clear();
             def.env_ref = Some(gen);
         }
-        WriteOutcome::KeptInline { .. } | WriteOutcome::Nothing => {
+        // Empty inline env. Preserve the ref when the persisted record was
+        // `env_unavailable` (a save over a partially-hydrated view is not a
+        // user-clear); otherwise this is a genuine clear.
+        WriteOutcome::Nothing => {
+            def.env_ref = preserved_ref.map(str::to_string);
+        }
+        // Keyring write of a non-empty env failed: value kept inline, ref cleared.
+        WriteOutcome::KeptInline { .. } => {
             def.env_ref = None;
         }
     }
 }
 
+/// Re-read the on-disk record for `id` and rehydrate it, returning its raw
+/// `env_ref` **iff** that record is currently `env_unavailable` (a ref is
+/// present but its keyring generation could not be hydrated). Returns `None`
+/// when the file is absent, healthy, or carries no ref.
+///
+/// This is the save-path signal that distinguishes a keyring outage from a
+/// genuine user-clear. The TS edit form never round-trips `env_ref` (it always
+/// arrives `None`) and seeds its env from the catalog entry — which is empty
+/// for an unavailable record — so without this the naive empty-env save would
+/// erase the live ref. Taking `dir` as a parameter (rather than a global
+/// lookup) keeps the store-injected save tests hermetic.
+fn persisted_unavailable_env_ref<S: ProjectionStore>(
+    store: &S,
+    dir: &Path,
+    id: &str,
+) -> Option<String> {
+    let path = dir.join(format!("{id}.json"));
+    let contents = std::fs::read_to_string(&path).ok()?;
+    let mut def: HarnessDefinition = serde_json::from_str(&contents).ok()?;
+    let raw_ref = def.env_ref.clone();
+    hydrate_harness_env(store, &mut def);
+    if def.env_unavailable {
+        raw_ref
+    } else {
+        None
+    }
+}
+
 /// Load-path hydrate: fill an empty on-disk `env` from the keyring generation
 /// named by `env_ref`. A non-empty inline `env` is the authoritative
-/// keyring-unavailable fallback and wins over any ref. A hydration failure is
-/// logged and leaves `env` empty — harness env is optional (unlike an agent
-/// nsec), so the harness still resolves rather than failing the whole load.
+/// keyring-unavailable fallback and wins over any ref.
+///
+/// When `env_ref` is present but its generation cannot be hydrated — missing,
+/// unreadable, or malformed bytes — this sets [`HarnessDefinition::env_unavailable`]
+/// and leaves `env` empty. That marker is distinct from a genuinely-empty `env`
+/// (no ref): the spawn/deploy/readiness/model-discovery gates fail closed on it,
+/// and the save path preserves the raw ref rather than erasing it. Mirrors the
+/// agent tier's `secrets_unavailable`, which `hydrate_all_secrets_for_records`
+/// sets on the same failure. The load still succeeds so a single unavailable
+/// harness never fails discovery for the rest.
 fn hydrate_harness_env<S: ProjectionStore>(store: &S, def: &mut HarnessDefinition) {
     if !def.env.is_empty() {
         return; // inline fallback is authoritative
@@ -160,11 +226,15 @@ fn hydrate_harness_env<S: ProjectionStore>(store: &S, def: &mut HarnessDefinitio
         Ok(Some(s)) => match deserialize_env_map(&s) {
             Ok(map) => def.env = map,
             Err(e) => {
-                tracing::warn!("custom_harnesses: harness {id} env deserialize failed: {e}")
+                tracing::warn!("custom_harnesses: harness {id} env deserialize failed: {e}");
+                def.env_unavailable = true;
             }
         },
         Ok(None) => {}
-        Err(e) => tracing::warn!("custom_harnesses: {e}"),
+        Err(e) => {
+            tracing::warn!("custom_harnesses: {e}");
+            def.env_unavailable = true;
+        }
     }
 }
 
@@ -474,6 +544,54 @@ pub(crate) fn lookup_loaded_harness_by_id(id: &str) -> Option<Arc<HarnessDefinit
     guard.iter().find(|d| d.id == id).cloned()
 }
 
+/// The effective harness runtime id for `record`: an explicit per-record
+/// `runtime` pin wins, else the linked persona's `runtime`, else `""`.
+///
+/// This is the single source of the resolution order that
+/// [`crate::managed_agents::resolve_effective_harness_descriptor`] and
+/// [`crate::managed_agents::resolve_effective_agent_env`] use to find the
+/// harness definition, so the fail-closed [`unavailable_harness_id`] gate
+/// consults exactly the harness a spawn would launch — never a different one.
+pub(crate) fn effective_runtime_id<'a>(
+    record: &'a ManagedAgentRecord,
+    personas: &'a [AgentDefinition],
+) -> &'a str {
+    record
+        .runtime
+        .as_deref()
+        .or_else(|| {
+            record.persona_id.as_deref().and_then(|pid| {
+                personas
+                    .iter()
+                    .find(|p| p.id == pid)
+                    .and_then(|p| p.runtime.as_deref())
+            })
+        })
+        .unwrap_or("")
+}
+
+/// The effective harness id when that harness's projected `env` is unavailable —
+/// its `env_ref` is present but could not be hydrated from the keyring
+/// (missing, unreadable, or malformed generation).
+///
+/// This is the harness tier of the fail-closed spawn gate, alongside
+/// [`crate::managed_agents::spawn_key_refusal`]'s instance-tier check,
+/// [`crate::managed_agents::unavailable_definition_id`]'s definition tier, and
+/// the global-tier check in `spawn_agent_child`. Returns the offending id
+/// (rather than a bool) so the spawn path can name it in the refusal without a
+/// second lookup; status callers use `.is_some()`. A record whose effective
+/// harness is a healthy definition, a builtin (no registry entry), or a
+/// dangling id yields `None`.
+pub(crate) fn unavailable_harness_id(
+    record: &ManagedAgentRecord,
+    personas: &[AgentDefinition],
+) -> Option<String> {
+    let runtime_id = effective_runtime_id(record, personas);
+    lookup_loaded_harness_by_id(runtime_id)
+        .filter(|def| def.env_unavailable)
+        .map(|def| def.id.clone())
+}
+
 /// Warm the loaded-harness registry synchronously from `custom_dir`.
 ///
 /// Must be called **before** `restore_managed_agents_on_launch` so that cold
@@ -600,6 +718,11 @@ pub(crate) fn save_custom_harness_to_dir(
 /// full `env` for the returned catalog entry (edit round-trip). On a keyless
 /// build (`store` is `None`) the `env` stays inline in the `0o600` JSON.
 ///
+/// Renaming a record whose env is currently `env_unavailable` (a live keyring
+/// ref that could not be hydrated) is refused with an error: the ref is keyed by
+/// id, so a rename can neither re-read it under the new id nor safely carry it
+/// forward without stranding it at an unwritten coordinate.
+///
 /// No cross-process secret-transaction lock is taken here: the `harness:`
 /// keyring namespace is deliberately excluded from the agent-store GC
 /// ([`crate::managed_agents::secret_projection::is_projection_key`]), so no
@@ -618,7 +741,31 @@ pub(crate) fn save_custom_harness_to_dir_with<S: ProjectionStore>(
     // atomic JSON commit (the commit point), mirroring the agent-store seam.
     let mut to_write = definition.clone();
     if let Some(store) = store {
-        strip_harness_env(store, &mut to_write);
+        // Preserve a live-but-unhydrated ref across a same-id metadata save; the
+        // TS form round-trips neither the ref nor the marker and seeds `env`
+        // from the (empty) catalog entry, so without this the empty-env save
+        // would erase the ref — turning a keyring outage into pointer loss.
+        //
+        // A rename of an `env_unavailable` record has no safe outcome: the ref
+        // is keyed by id (`harness:<id>:env:<gen>`), so re-reading under the new
+        // id sees "new harness, empty env" (ref erased), and carrying the ref
+        // forward would resolve to `harness:<new_id>:env:<gen>` — a coordinate
+        // that was never written, leaving the record permanently unavailable.
+        // Refuse it until the keyring hydrates or the env is re-entered.
+        let preserved_ref = match rename_old_id {
+            Some(old_id) => {
+                if persisted_unavailable_env_ref(store, dir, old_id).is_some() {
+                    return Err(format!(
+                        "cannot rename harness {old_id:?}: its keyring env is currently \
+                         unavailable, so the ref cannot be carried to the new id \
+                         (retry once the keyring hydrates or re-enter the env)"
+                    ));
+                }
+                None
+            }
+            None => persisted_unavailable_env_ref(store, dir, &to_write.id),
+        };
+        strip_harness_env(store, &mut to_write, preserved_ref.as_deref());
     }
 
     let json = serde_json::to_string_pretty(&to_write)

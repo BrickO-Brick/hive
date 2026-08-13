@@ -1609,6 +1609,7 @@ fn deleted_harness_summary_display_and_spawn_sentence_agree() {
         args: vec![],
         env: Default::default(),
         env_ref: None,
+        env_unavailable: false,
         install_instructions_url: String::new(),
         install_hint: String::new(),
     };
@@ -1754,6 +1755,7 @@ fn harness_def(
         args: vec![],
         env: Default::default(),
         env_ref: None,
+        env_unavailable: false,
         install_instructions_url: String::new(),
         install_hint: String::new(),
     }

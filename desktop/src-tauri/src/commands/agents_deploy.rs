@@ -147,6 +147,17 @@ pub(super) fn build_deploy_payload(
             record.pubkey
         ));
     }
+    // Fail closed on an unavailable harness env projection: the effective
+    // harness's `env_ref` could not be hydrated, so its definition env would
+    // deploy empty (harness tier, mirrors the instance/definition/global gates).
+    if let Some(hid) = crate::managed_agents::unavailable_harness_id(record, &personas) {
+        return Err(format!(
+            "agent {} cannot be deployed: its harness ({hid}) env could not be loaded \
+             from the keyring. Refusing to deploy with missing harness env; \
+             retry once the keyring is reachable.",
+            record.pubkey
+        ));
+    }
     let teams = crate::managed_agents::load_teams(app).unwrap_or_default();
     let persona_env =
         crate::managed_agents::live_persona_env(&personas, record.persona_id.as_deref());

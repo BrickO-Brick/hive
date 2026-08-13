@@ -132,21 +132,9 @@ pub(crate) fn resolve_effective_harness_descriptor(
 
     // Look up the harness definition once — used for both args and env.
     // Resolution order: record.runtime → persona.runtime → "".
-    let harness_def = {
-        let runtime_id = record
-            .runtime
-            .as_deref()
-            .or_else(|| {
-                record.persona_id.as_deref().and_then(|pid| {
-                    personas
-                        .iter()
-                        .find(|p| p.id == pid)
-                        .and_then(|p| p.runtime.as_deref())
-                })
-            })
-            .unwrap_or("");
-        crate::managed_agents::custom_harnesses::lookup_loaded_harness_by_id(runtime_id)
-    };
+    let harness_def = crate::managed_agents::custom_harnesses::lookup_loaded_harness_by_id(
+        crate::managed_agents::custom_harnesses::effective_runtime_id(record, personas),
+    );
 
     // Args: explicit non-empty instance args win; otherwise use definition args.
     let args = {
@@ -192,21 +180,9 @@ pub(crate) fn resolve_effective_agent_env(
     // Look up the harness definition for definition-level env (preset/custom).
     // Same resolution logic as spawn_agent_child: record runtime id first, then
     // persona runtime id, then nothing.
-    let harness_def = {
-        let runtime_id = record
-            .runtime
-            .as_deref()
-            .or_else(|| {
-                record.persona_id.as_deref().and_then(|pid| {
-                    personas
-                        .iter()
-                        .find(|p| p.id == pid)
-                        .and_then(|p| p.runtime.as_deref())
-                })
-            })
-            .unwrap_or("");
-        crate::managed_agents::custom_harnesses::lookup_loaded_harness_by_id(runtime_id)
-    };
+    let harness_def = crate::managed_agents::custom_harnesses::lookup_loaded_harness_by_id(
+        crate::managed_agents::custom_harnesses::effective_runtime_id(record, personas),
+    );
 
     resolve_effective_agent_env_with_def(record, personas, runtime, global, harness_def)
 }

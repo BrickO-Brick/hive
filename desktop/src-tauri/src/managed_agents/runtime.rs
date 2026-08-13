@@ -411,6 +411,16 @@ pub fn spawn_agent_child(
             record.pubkey
         ));
     }
+    // Fail-closed on an unavailable harness env projection: the effective
+    // harness carries an `env_ref` that could not be hydrated (missing,
+    // unreadable, or malformed), so its definition env would layer in empty.
+    // The harness tier of the instance/definition/global fail-closed gate.
+    if let Some(hid) = crate::managed_agents::unavailable_harness_id(record, &personas) {
+        return Err(format!(
+            "agent {} cannot start: harness ({hid}) env unavailable from keyring",
+            record.pubkey
+        ));
+    }
     // Load global config; fail closed if a ref cannot be resolved.
     let global = crate::managed_agents::load_global_agent_config(app)?;
 
