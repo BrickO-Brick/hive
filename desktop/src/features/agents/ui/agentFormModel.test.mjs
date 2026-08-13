@@ -598,3 +598,76 @@ test("test_emitAgentFormDiff_routes_respondTo_change_to_personaInput_via_fieldOw
     "agentInput must be null — no instance in definition-only context",
   );
 });
+
+// ── D-section tuning/API-key env writes route to the DEFINITION layer ─────────
+//
+// The restored D-section Advanced knobs (numeric tuning, effort, provider API
+// key) all mutate the same `envVars` model field — the definition env layer.
+// Paul's parity mandate: definition fields → personaInput, instance fields →
+// agentInput. These probe that a D-env edit lands in personaInput.envVars and
+// never leaks into the instance overlay (agentInput.envVars), in both contexts
+// where the D-section renders (linked and definition-only).
+
+test("test_definition_tuning_env_edit_routes_to_personaInput_not_instance_overlay", () => {
+  // Linked agent: the D-section edits the definition env, while the instance
+  // keeps its own overlay. A tuning-knob write must reach personaInput.envVars
+  // and leave the instance overlay (and agentInput) untouched.
+  const definition = makeDefinition({ runtime: "buzz-agent", envVars: {} });
+  const instance = makeInstance({ envVars: { PER_INSTANCE: "keep" } });
+  const ctx = { kind: "instance-with-definition", definition, instance };
+  const seed = seedAgentFormModel(ctx);
+
+  // User sets a numeric tuning knob (writes to the D-env layer, `envVars`).
+  const next = {
+    ...seed,
+    envVars: { ...seed.envVars, GOOSE_MAX_OUTPUT_TOKENS: "8192" },
+  };
+  const emit = emitAgentFormDiff(seed, next, ctx);
+
+  assert.ok(emit.personaInput, "a D-env tuning edit must emit a personaInput");
+  assert.equal(
+    emit.personaInput.envVars?.GOOSE_MAX_OUTPUT_TOKENS,
+    "8192",
+    "the tuning value must land in personaInput.envVars (definition layer)",
+  );
+  assert.equal(
+    emit.agentInput,
+    null,
+    "the instance overlay is untouched, so no agentInput is emitted",
+  );
+});
+
+test("test_definition_api_key_env_edit_routes_to_personaInput_in_definition_only", () => {
+  // Definition-only edit: the restored provider API-key field writes the secret
+  // into the definition env. It must travel as personaInput.envVars — there is
+  // no instance layer to leak into.
+  const definition = makeDefinition({
+    runtime: "buzz-agent",
+    provider: "anthropic",
+    envVars: {},
+  });
+  const ctx = { kind: "definition-only", definition };
+  const seed = seedAgentFormModel(ctx);
+
+  // User types the provider API key (writes ANTHROPIC_API_KEY into `envVars`).
+  const next = {
+    ...seed,
+    envVars: { ...seed.envVars, ANTHROPIC_API_KEY: "sk-live-xyz" },
+  };
+  const emit = emitAgentFormDiff(seed, next, ctx);
+
+  assert.ok(
+    emit.personaInput,
+    "a definition-only API-key edit must emit a personaInput",
+  );
+  assert.equal(
+    emit.personaInput.envVars?.ANTHROPIC_API_KEY,
+    "sk-live-xyz",
+    "the API key must land in personaInput.envVars (definition layer)",
+  );
+  assert.equal(
+    emit.agentInput,
+    null,
+    "definition-only context has no instance, so agentInput must be null",
+  );
+});

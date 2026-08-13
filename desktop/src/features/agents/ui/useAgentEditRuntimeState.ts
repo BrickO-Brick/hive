@@ -49,6 +49,42 @@ import type { AgentPersona } from "@/shared/api/types";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+/**
+ * Definition-context advanced state for the D-section (parity with main's
+ * `AgentDefinitionDialog` edit mode + `PersonaAdvancedFields`).
+ *
+ * Every field here is derived from the DEFINITION's runtime/provider/env
+ * (`definitionRuntimeId`, the D-layer provider, and the D-env `envVars`) —
+ * independent of the instance harness pin. In linked context the instance
+ * overlay (I-section) keeps using the prospective-runtime state; the D-section
+ * uses this bundle so its tuning knobs, env-key highlighting, and API-key field
+ * reflect the definition, not the instance.
+ *
+ * Bundled into a single object so the parent threads one prop into the
+ * D-section rather than a dozen — the merged dialog file sits against the
+ * desktop line-size gate.
+ */
+export type DSectionAdvancedState = {
+  /** Definition runtime id — drives the buzz-agent effort-tuning gate. */
+  runtimeId: string;
+  /** Catalog entry for the definition runtime — drives numeric descriptors and the parallelism cap hint. */
+  selectedRuntime: AcpRuntimeCatalogEntry | undefined;
+  /** Effective definition provider (agent value → global fallback) — for tuning-field filtering and the API-key label. */
+  effectiveProvider: string;
+  /** Inherited env layer for tuning-field placeholders (global / template defaults). */
+  inheritedEnvVars: Record<string, string>;
+  /** Required non-secret env keys highlighted in the env editor (secret key excluded — it renders as the API-key field). */
+  advancedRequiredEnvKeys: readonly string[];
+  /** Required keys already satisfied by the runtime file layer (shown as info rows). */
+  fileSatisfiedEnvKeys: readonly string[];
+  /** Definition-level provider secret env var, or null when the provider has none. */
+  topLevelSecretEnvVar: string | null;
+  apiKeyValue: string;
+  apiKeyIsInherited: boolean;
+  apiKeyInheritedLabel: string;
+  apiKeyIsRequired: boolean;
+};
+
 export type AgentEditRuntimeStateInputs = {
   open: boolean;
   showDef: boolean;
@@ -120,6 +156,12 @@ export type AgentEditRuntimeStateResult = {
    * Matches AgentDefinitionDialog's blankRuntimeModelProviderEditable contract.
    */
   blankRuntimeModelProviderEditable: boolean;
+  /**
+   * Definition-context advanced state consumed by the D-section (tuning knobs,
+   * env-key highlighting, provider API-key field). Derived from the definition
+   * runtime/provider/env so the D-section matches main's PersonaAdvancedFields.
+   */
+  dAdvanced: DSectionAdvancedState;
 };
 
 // ── Hook ──────────────────────────────────────────────────────────────────────
@@ -323,6 +365,46 @@ export function useAgentEditRuntimeState({
     { enabled: open },
   );
 
+  // ── Definition-context advanced state (D-section parity) ───────────────────
+  // The instance-side credential/api-key state above is gated on `showInst`, so
+  // in definition-only context it starves the D-section. Compute the definition
+  // layer independently from `definitionRuntimeId` + the D provider + the D env,
+  // mirroring main's AgentDefinitionDialog. Runs in every context (the query is
+  // `enabled: open`); the D-section only consumes it when `showDef`.
+  const defSelectedRuntime = runtimes.find((r) => r.id === definitionRuntimeId);
+  const defEffectiveProvider =
+    provider.trim() || inheritedProviderDefault.value;
+  const defRequired = useRequiredCredentialState({
+    open,
+    prospectiveRuntimeId: definitionRuntimeId,
+    provider: defEffectiveProvider,
+    globalProvider: inheritedProviderDefault.value,
+    envVars,
+    globalEnvVars: globalConfig.env_vars,
+  });
+  const defApiKeyState = useProviderApiKeyFieldState({
+    bakedEnvKeys,
+    effectiveEnvVars: envVars,
+    envVars,
+    fileSatisfiedEnvKeys: defRequired.fileSatisfiedEnvKeys,
+    globalEnvVars: globalConfig.env_vars,
+    provider: defEffectiveProvider,
+    requiredEnvKeys: defRequired.requiredEnvKeys,
+  });
+  const dAdvanced: DSectionAdvancedState = {
+    runtimeId: definitionRuntimeId,
+    selectedRuntime: defSelectedRuntime,
+    effectiveProvider: defEffectiveProvider,
+    inheritedEnvVars: inheritedEnvVarsForAdvanced,
+    advancedRequiredEnvKeys: defApiKeyState.advancedRequiredEnvKeys,
+    fileSatisfiedEnvKeys: defRequired.fileSatisfiedEnvKeys,
+    topLevelSecretEnvVar: defApiKeyState.secretEnvVar,
+    apiKeyValue: defApiKeyState.value,
+    apiKeyIsInherited: defApiKeyState.isInherited,
+    apiKeyInheritedLabel: defApiKeyState.inheritedLabel,
+    apiKeyIsRequired: defApiKeyState.isRequired,
+  };
+
   const effectiveProvider =
     (inheritedSubmission.provider ?? "").trim() ||
     inheritedProviderDefault.value;
@@ -501,6 +583,7 @@ export function useAgentEditRuntimeState({
       definitionRuntimeId === "custom" &&
       ((linkedPersona?.model ?? def?.model ?? "").trim().length > 0 ||
         (linkedPersona?.provider ?? def?.provider ?? "").trim().length > 0),
+    dAdvanced,
   };
 }
 

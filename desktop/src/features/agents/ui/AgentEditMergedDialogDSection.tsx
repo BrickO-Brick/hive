@@ -20,6 +20,8 @@ import { Button } from "@/shared/ui/button";
 import type { RespondToMode } from "@/shared/api/types";
 
 import {
+  CARD_MINT_KEY_ANNOTATIONS,
+  getProviderApiKeyLabel,
   PERSONA_FIELD_CONTROL_CLASS,
   PERSONA_FIELD_SHELL_CLASS,
   PERSONA_LABEL_OPTIONAL_CLASS,
@@ -28,9 +30,24 @@ import {
 import { AgentHarnessField } from "./AgentHarnessField";
 import { PersonaDropdownField } from "./PersonaDropdownField";
 import { PersonaModelCombobox } from "./PersonaModelCombobox";
+import { PersonaProviderApiKeyField } from "./PersonaProviderApiKeyField";
 import { EnvVarsEditor, type EnvVarsValue } from "./EnvVarsEditor";
 import { OwnerOnlyAccessField } from "./OwnerOnlyAccessField";
+import {
+  BuzzAgentModelTuningFields,
+  NumericTuningFields,
+} from "./buzzAgentModelTuningFields";
+import {
+  isBuzzAgentRuntime,
+  BUZZ_AGENT_THINKING_EFFORT,
+} from "./buzzAgentConfig";
+import {
+  deriveNumericDescriptors,
+  structuredEnvKeys,
+} from "../lib/agentConfigCore";
+import { parallelismCapHint } from "../lib/agentParallelism";
 import type { AgentFormModel } from "./agentFormModel";
+import type { DSectionAdvancedState } from "./useAgentEditRuntimeState";
 
 const advancedFieldsTransition = { duration: 0.18, ease: "easeInOut" } as const;
 
@@ -95,6 +112,12 @@ export type AgentEditMergedDSectionProps = {
   agentAccessOwnerOnly: boolean | undefined;
   parallelism: string;
   onParallelismChange: (value: string) => void;
+  /**
+   * Definition-context advanced state (tuning knobs, env-key highlighting,
+   * provider API-key field) derived from the definition runtime/provider/env.
+   * Consumed by the Advanced section to match main's PersonaAdvancedFields.
+   */
+  dAdvanced: DSectionAdvancedState;
 };
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -138,8 +161,70 @@ export function AgentEditMergedDSection({
   agentAccessOwnerOnly,
   parallelism,
   onParallelismChange,
+  dAdvanced,
 }: AgentEditMergedDSectionProps) {
   const [showAdvanced, setShowAdvanced] = React.useState(false);
+
+  // Numeric tuning descriptors — gate on catalog status so loading/error never
+  // collapses to "no controls": keys stay visible as generic rows. Derived from
+  // the DEFINITION runtime (dAdvanced.selectedRuntime), matching main's
+  // PersonaAdvancedFields.
+  const numericDescriptors = React.useMemo(
+    () =>
+      runtimeCatalogStatus === "ready"
+        ? deriveNumericDescriptors(dAdvanced.selectedRuntime)
+        : [],
+    [runtimeCatalogStatus, dAdvanced.selectedRuntime],
+  );
+
+  // Effective hidden keys: the provider secret (rendered as the API-key field)
+  // + the buzz-agent effort key (rendered by BuzzAgentModelTuningFields) + the
+  // structured numeric keys — none of these should appear as generic env rows.
+  const effectiveHiddenKeys = React.useMemo(
+    () => [
+      ...(dAdvanced.topLevelSecretEnvVar
+        ? [dAdvanced.topLevelSecretEnvVar]
+        : []),
+      ...(isBuzzAgentRuntime(dAdvanced.runtimeId)
+        ? [BUZZ_AGENT_THINKING_EFFORT]
+        : []),
+      ...structuredEnvKeys(numericDescriptors),
+    ],
+    [dAdvanced.topLevelSecretEnvVar, dAdvanced.runtimeId, numericDescriptors],
+  );
+
+  // Parallelism cap hint: the definition keeps a portable requested value; when
+  // the selected harness has a cap and the draft exceeds it, explain the agent
+  // will run at the cap — without clamping the stored value.
+  const parallelismHint = React.useMemo(() => {
+    const runtime = dAdvanced.selectedRuntime;
+    if (runtime?.maxParallelism === undefined || parallelism === "") {
+      return null;
+    }
+    const requested = parseInt(parallelism, 10);
+    if (Number.isNaN(requested)) return null;
+    return parallelismCapHint(runtime.label, runtime.maxParallelism, requested);
+  }, [dAdvanced.selectedRuntime, parallelism]);
+
+  // Env-var mutation shared by both tuning-field groups: delete on empty so a
+  // cleared knob reverts to the inherited placeholder rather than persisting "".
+  const onTuningEnvVarChange = React.useCallback(
+    (key: string, value: string) => {
+      const next = { ...envVars };
+      if (value === "") {
+        delete next[key];
+      } else {
+        next[key] = value;
+      }
+      onEnvVarsChange(next);
+    },
+    [envVars, onEnvVarsChange],
+  );
+
+  // Bind the definition secret key to a local so the truthy guard narrows it
+  // to `string` inside the API-key field's onValueChange closure (a property
+  // access on `dAdvanced` would not narrow through the closure).
+  const defSecretEnvVar = dAdvanced.topLevelSecretEnvVar;
 
   return (
     <>
@@ -252,6 +337,26 @@ export function AgentEditMergedDSection({
         </div>
       ) : null}
 
+      {/* Provider API key — D-field. Matches AgentDefinitionDialog edit mode:
+          rendered when the provider is custom and exposes a top-level secret.
+          Writes to the definition env layer (envVars → personaInput.envVars). */}
+      {llmProviderFieldVisible && defSecretEnvVar ? (
+        <PersonaProviderApiKeyField
+          disabled={isSaving || !fieldEditable("envVars")}
+          envVarName={defSecretEnvVar}
+          isInherited={dAdvanced.apiKeyIsInherited}
+          inheritedLabel={dAdvanced.apiKeyInheritedLabel}
+          isRequired={dAdvanced.apiKeyIsRequired}
+          label={
+            getProviderApiKeyLabel(dAdvanced.effectiveProvider) ?? "API key"
+          }
+          onValueChange={(next) => {
+            onEnvVarsChange({ ...envVars, [defSecretEnvVar]: next });
+          }}
+          value={dAdvanced.apiKeyValue}
+        />
+      ) : null}
+
       {/* Model — D-field */}
       <div className="space-y-1.5">
         <label
@@ -337,6 +442,11 @@ export function AgentEditMergedDSection({
                 value={parallelism}
               />
             </div>
+            {parallelismHint !== null ? (
+              <p className="text-xs text-amber-600 dark:text-amber-400">
+                {parallelismHint}
+              </p>
+            ) : null}
           </div>
         </>
       ) : null}
@@ -389,7 +499,10 @@ export function AgentEditMergedDSection({
                 </p>
               </div>
 
-              {/* Definition env vars — D-field (row 8) */}
+              {/* Definition env vars — D-field (row 8). Full prop set matches
+                  main's PersonaAdvancedFields: required-key highlighting,
+                  file-satisfied indicators, mint-key annotation, and hidden
+                  structured keys (secret + effort + numeric descriptors). */}
               <div className="space-y-1.5">
                 <p className="text-sm font-medium text-foreground">
                   Environment variables
@@ -397,10 +510,37 @@ export function AgentEditMergedDSection({
                 </p>
                 <EnvVarsEditor
                   disabled={isSaving || !fieldEditable("envVars")}
+                  fileSatisfiedKeys={dAdvanced.fileSatisfiedEnvKeys}
+                  hiddenKeys={effectiveHiddenKeys}
+                  keyAnnotations={CARD_MINT_KEY_ANNOTATIONS}
                   onChange={onEnvVarsChange}
+                  requiredKeys={dAdvanced.advancedRequiredEnvKeys}
                   value={envVars}
                 />
               </div>
+
+              {/* Descriptor-driven numeric tuning knobs — shown when the catalog
+                  has settled and the definition runtime exposes numeric env-var
+                  fields. Writes route to the definition env layer. */}
+              {numericDescriptors.length > 0 ? (
+                <NumericTuningFields
+                  descriptors={numericDescriptors}
+                  envVars={envVars}
+                  inheritedEnvVars={dAdvanced.inheritedEnvVars}
+                  onEnvVarChange={onTuningEnvVarChange}
+                />
+              ) : null}
+
+              {/* Effort-tuning knob — only shown for buzz-agent runtimes. */}
+              {isBuzzAgentRuntime(dAdvanced.runtimeId) ? (
+                <BuzzAgentModelTuningFields
+                  envVars={envVars}
+                  inheritedEnvVars={dAdvanced.inheritedEnvVars}
+                  model={model}
+                  onEnvVarChange={onTuningEnvVarChange}
+                  provider={dAdvanced.effectiveProvider}
+                />
+              ) : null}
             </motion.div>
           ) : null}
         </AnimatePresence>

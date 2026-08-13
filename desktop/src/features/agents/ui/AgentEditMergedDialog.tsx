@@ -422,6 +422,7 @@ export function AgentEditMergedDialog({
     apiKeyIsRequired,
     topLevelSecretEnvVar,
     advancedRequiredEnvKeys,
+    dAdvanced,
   } = useAgentEditRuntimeState({
     open,
     showDef,
@@ -826,6 +827,7 @@ export function AgentEditMergedDialog({
                 agentAccessOwnerOnly={agentAccessOwnerOnly}
                 parallelism={parallelism}
                 onParallelismChange={setParallelism}
+                dAdvanced={dAdvanced}
               />
             ) : null}
 
