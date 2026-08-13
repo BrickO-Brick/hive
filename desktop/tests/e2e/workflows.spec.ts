@@ -303,6 +303,9 @@ test("chooses an add-reaction step emoji with the app emoji picker", async ({
   await page.getByRole("menuitem", { name: "Add Reaction" }).click();
 
   const inspector = dialog.getByTestId("workflow-node-inspector");
+  await expect(inspector).toContainText(
+    "Backend note: `add_reaction` is not executed yet, so runs fail at this step.",
+  );
   const stepEmoji = inspector.getByRole("button", {
     name: "Choose reaction emoji",
   });

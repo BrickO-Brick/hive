@@ -33,6 +33,13 @@ function BackendSupportHint({ action }: { action: StepFormState["action"] }) {
           records are not persisted yet.
         </p>
       );
+    case "add_reaction":
+      return (
+        <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-xs text-amber-700">
+          Backend note: `add_reaction` is not executed yet, so runs fail at this
+          step.
+        </p>
+      );
     default:
       return null;
   }
@@ -254,7 +261,8 @@ function StepConfigFields({
       );
     case "add_reaction":
       return (
-        <div className="space-y-1.5">
+        <div className="space-y-2">
+          <BackendSupportHint action={step.action} />
           <FieldLabel htmlFor={`${prefix}-emoji`}>Emoji</FieldLabel>
           <WorkflowEmojiField
             ariaLabel="Choose reaction emoji"
