@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   Archive,
@@ -444,13 +444,7 @@ function ThemeSettingsCard() {
       ? "light"
       : "dark";
 
-  const [selectedMode, setSelectedMode] = useState<AppearanceMode>(activeMode);
   const [themeStyleExpanded, setThemeStyleExpanded] = useState(false);
-
-  // Community sync can replace the appearance while this panel remains open.
-  // Mirror that external value so the segmented control never describes the
-  // previous community's color mode.
-  useEffect(() => setSelectedMode(activeMode), [activeMode]);
 
   const getVars = (name: SyntaxThemeName) =>
     withAccentPreviewVars(
@@ -473,7 +467,6 @@ function ThemeSettingsCard() {
   }, [pairedLight, darkOnly]);
 
   const handleModeSelect = (mode: AppearanceMode) => {
-    setSelectedMode(mode);
     if (mode === "system") {
       setFollowSystem(true);
       // If the current theme is unpaired, resolveSystemTheme can't switch it
@@ -511,7 +504,7 @@ function ThemeSettingsCard() {
 
   const handleSelectTheme = (name: SyntaxThemeName) => {
     setTheme(name);
-    if (selectedMode === "system") {
+    if (activeMode === "system") {
       setFollowSystem(true);
     } else {
       setFollowSystem(false);
@@ -524,7 +517,7 @@ function ThemeSettingsCard() {
     return selectedThemeName === lightName || selectedThemeName === darkName;
   };
   const selectedPairedTheme =
-    selectedMode === "system" ? pairedLight.find(isPairActive) : undefined;
+    activeMode === "system" ? pairedLight.find(isPairActive) : undefined;
   const selectedTheme = selectedThemeName as SyntaxThemeName;
   const selectedPairedDarkTheme = selectedPairedTheme
     ? getThemePair(selectedPairedTheme)
@@ -585,7 +578,7 @@ function ThemeSettingsCard() {
         ) : null}
         <div className="max-h-[430px] overflow-y-auto rounded-lg pt-2">
           <div className="flex flex-wrap gap-4 p-1">
-            {selectedMode === "system" &&
+            {activeMode === "system" &&
               pairedLight.map((lightName) => {
                 const darkName = getThemePair(lightName);
                 if (!darkName) return null;
@@ -600,7 +593,7 @@ function ThemeSettingsCard() {
                   />
                 );
               })}
-            {selectedMode === "light" &&
+            {activeMode === "light" &&
               allLightThemes.map((name) => (
                 <SingleThemeTile
                   isActive={selectedThemeName === name}
@@ -610,7 +603,7 @@ function ThemeSettingsCard() {
                   vars={getVars(name)}
                 />
               ))}
-            {selectedMode === "dark" &&
+            {activeMode === "dark" &&
               allDarkThemes.map((name) => (
                 <SingleThemeTile
                   isActive={selectedThemeName === name}

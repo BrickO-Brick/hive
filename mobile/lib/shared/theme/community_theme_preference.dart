@@ -29,6 +29,9 @@ class CommunityThemePreference {
   final bool glassBackground;
   final int glassOpacity;
   final bool prominentActiveTab;
+  final bool includesGlassBackground;
+  final bool includesGlassOpacity;
+  final bool includesProminentActiveTab;
 
   const CommunityThemePreference({
     this.version = 1,
@@ -38,6 +41,9 @@ class CommunityThemePreference {
     this.glassBackground = defaultCommunityGlassBackground,
     this.glassOpacity = defaultCommunityGlassOpacity,
     this.prominentActiveTab = defaultCommunityProminentActiveTab,
+    this.includesGlassBackground = true,
+    this.includesGlassOpacity = true,
+    this.includesProminentActiveTab = true,
   });
 
   factory CommunityThemePreference.fromJson(Map<String, dynamic> json) {
@@ -49,13 +55,16 @@ class CommunityThemePreference {
         json['followSystem'] is! bool) {
       throw const FormatException('Invalid community theme preference');
     }
-    final glassBackground = json.containsKey('glassBackground')
+    final includesGlassBackground = json.containsKey('glassBackground');
+    final includesGlassOpacity = json.containsKey('glassOpacity');
+    final includesProminentActiveTab = json.containsKey('prominentActiveTab');
+    final glassBackground = includesGlassBackground
         ? json['glassBackground']
         : defaultCommunityGlassBackground;
-    final glassOpacity = json.containsKey('glassOpacity')
+    final glassOpacity = includesGlassOpacity
         ? json['glassOpacity']
         : defaultCommunityGlassOpacity;
-    final prominentActiveTab = json.containsKey('prominentActiveTab')
+    final prominentActiveTab = includesProminentActiveTab
         ? json['prominentActiveTab']
         : defaultCommunityProminentActiveTab;
     if (glassBackground is! bool ||
@@ -74,6 +83,9 @@ class CommunityThemePreference {
       glassBackground: glassBackground,
       glassOpacity: glassOpacity.toInt(),
       prominentActiveTab: prominentActiveTab,
+      includesGlassBackground: includesGlassBackground,
+      includesGlassOpacity: includesGlassOpacity,
+      includesProminentActiveTab: includesProminentActiveTab,
     );
   }
 
@@ -82,9 +94,9 @@ class CommunityThemePreference {
     'theme': theme,
     'accent': accent,
     'followSystem': followSystem,
-    'glassBackground': glassBackground,
-    'glassOpacity': glassOpacity,
-    'prominentActiveTab': prominentActiveTab,
+    if (includesGlassBackground) 'glassBackground': glassBackground,
+    if (includesGlassOpacity) 'glassOpacity': glassOpacity,
+    if (includesProminentActiveTab) 'prominentActiveTab': prominentActiveTab,
   };
 
   CommunityThemePreference copyWith({
@@ -102,6 +114,10 @@ class CommunityThemePreference {
     glassBackground: glassBackground ?? this.glassBackground,
     glassOpacity: glassOpacity ?? this.glassOpacity,
     prominentActiveTab: prominentActiveTab ?? this.prominentActiveTab,
+    includesGlassBackground: glassBackground != null || includesGlassBackground,
+    includesGlassOpacity: glassOpacity != null || includesGlassOpacity,
+    includesProminentActiveTab:
+        prominentActiveTab != null || includesProminentActiveTab,
   );
 
   ThemeMode get mode {
@@ -117,7 +133,10 @@ class CommunityThemePreference {
       followSystem == other.followSystem &&
       glassBackground == other.glassBackground &&
       glassOpacity == other.glassOpacity &&
-      prominentActiveTab == other.prominentActiveTab;
+      prominentActiveTab == other.prominentActiveTab &&
+      includesGlassBackground == other.includesGlassBackground &&
+      includesGlassOpacity == other.includesGlassOpacity &&
+      includesProminentActiveTab == other.includesProminentActiveTab;
 
   @override
   int get hashCode => Object.hash(
@@ -127,6 +146,9 @@ class CommunityThemePreference {
     glassBackground,
     glassOpacity,
     prominentActiveTab,
+    includesGlassBackground,
+    includesGlassOpacity,
+    includesProminentActiveTab,
   );
 }
 

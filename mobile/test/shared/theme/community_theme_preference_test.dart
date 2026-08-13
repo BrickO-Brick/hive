@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:buzz/shared/theme/theme.dart';
 import 'package:flutter/material.dart';
@@ -24,7 +25,7 @@ void main() {
     );
   });
 
-  test('older v1 payloads gain capability-independent defaults', () {
+  test('older v1 payloads retain missing desktop-only fields', () {
     final preference = CommunityThemePreference.fromJson({
       'version': 1,
       'theme': 'buzz',
@@ -35,7 +36,56 @@ void main() {
     expect(preference.glassBackground, isFalse);
     expect(preference.glassOpacity, 65);
     expect(preference.prominentActiveTab, isFalse);
-    expect(preference.toJson(), containsPair('glassOpacity', 65));
+    expect(preference.toJson(), isNot(contains('glassBackground')));
+    expect(preference.toJson(), isNot(contains('glassOpacity')));
+    expect(preference.toJson(), isNot(contains('prominentActiveTab')));
+  });
+
+  test('mobile edits do not widen legacy appearance fields with defaults', () {
+    final legacy = CommunityThemePreference.fromJson({
+      'version': 1,
+      'theme': 'buzz',
+      'accent': '#3b82f6',
+      'followSystem': true,
+    });
+
+    final edited = legacy.copyWith(accent: '#ef4444');
+
+    expect(edited.toJson(), {
+      'version': 1,
+      'theme': 'buzz',
+      'accent': '#ef4444',
+      'followSystem': true,
+    });
+
+    expect(legacy.copyWith(glassOpacity: 70).toJson(), {
+      'version': 1,
+      'theme': 'buzz',
+      'accent': '#3b82f6',
+      'followSystem': true,
+      'glassOpacity': 70,
+    });
+  });
+
+  test('mobile appearance limits match the shared wire contract', () {
+    final contract =
+        jsonDecode(File('../schema/community-theme-v1.json').readAsStringSync())
+            as Map<String, dynamic>;
+    final properties = contract['properties'] as Map<String, dynamic>;
+    final glassBackground =
+        properties['glassBackground'] as Map<String, dynamic>;
+    final glassOpacity = properties['glassOpacity'] as Map<String, dynamic>;
+    final prominentActiveTab =
+        properties['prominentActiveTab'] as Map<String, dynamic>;
+
+    expect(defaultCommunityGlassBackground, glassBackground['default'] as bool);
+    expect(defaultCommunityGlassOpacity, glassOpacity['default'] as int);
+    expect(minCommunityGlassOpacity, glassOpacity['minimum'] as int);
+    expect(maxCommunityGlassOpacity, glassOpacity['maximum'] as int);
+    expect(
+      defaultCommunityProminentActiveTab,
+      prominentActiveTab['default'] as bool,
+    );
   });
 
   test('rejects invalid theme and appearance values', () {

@@ -11,6 +11,65 @@ import 'package:nostr/nostr.dart' as nostr;
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  test(
+    'mobile edit preserves omitted desktop-only fields from a legacy cache',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+      final keys = nostr.Keys.generate();
+      final storage = CommunityThemeStorage(prefs);
+      await prefs.setString(
+        storage.key(keys.public, 'https://relay.example'),
+        jsonEncode({
+          'version': 1,
+          'theme': 'buzz',
+          'accent': '#3b82f6',
+          'followSystem': true,
+        }),
+      );
+      final session = _ThemeRelaySession(
+        keys.nsec,
+        keys.public,
+        initialStatus: SessionStatus.reconnecting,
+      );
+      final container = ProviderContainer(
+        overrides: [
+          communityThemeStorageProvider.overrideWithValue(storage),
+          relayConfigProvider.overrideWith(() => _RelayConfig(keys.nsec)),
+          relaySessionProvider.overrideWith(() => session),
+        ],
+      );
+      addTearDown(container.dispose);
+      container.listen(
+        communityThemeProvider,
+        (_, _) {},
+        fireImmediately: true,
+      );
+
+      container
+          .read(communityThemeProvider.notifier)
+          .setAccent(accentIndexForWireValue('#ef4444')!);
+
+      await _waitUntil(() {
+        final raw = prefs.getString(
+          storage.key(keys.public, 'https://relay.example'),
+        );
+        if (raw == null) return false;
+        return (jsonDecode(raw) as Map<String, dynamic>)['accent'] == '#ef4444';
+      });
+      final persisted =
+          jsonDecode(
+                prefs.getString(
+                  storage.key(keys.public, 'https://relay.example'),
+                )!,
+              )
+              as Map<String, dynamic>;
+      expect(persisted, isNot(contains('glassBackground')));
+      expect(persisted, isNot(contains('glassOpacity')));
+      expect(persisted, isNot(contains('prominentActiveTab')));
+    },
+  );
+
   test('mobile edits retain desktop-only appearance preferences', () async {
     SharedPreferences.setMockInitialValues({});
     final prefs = await SharedPreferences.getInstance();

@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/block/buzz/schema/community-theme-v1.json",
+  "title": "Buzz community theme preference v1",
+  "description": "Canonical completed payload. Clients also accept the original three-field v1 form during migration.",
+  "type": "object",
+  "required": [
+    "version",
+    "theme",
+    "accent",
+    "followSystem",
+    "glassBackground",
+    "glassOpacity",
+    "prominentActiveTab"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "theme": {
+      "type": "string"
+    },
+    "accent": {
+      "type": "string"
+    },
+    "followSystem": {
+      "type": "boolean"
+    },
+    "glassBackground": {
+      "type": "boolean",
+      "default": false
+    },
+    "glassOpacity": {
+      "type": "integer",
+      "minimum": 30,
+      "maximum": 90,
+      "default": 65
+    },
+    "prominentActiveTab": {
+      "type": "boolean",
+      "default": false
+    }
+  }
+}

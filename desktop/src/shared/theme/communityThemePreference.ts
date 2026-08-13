@@ -12,6 +12,8 @@ import { SYNTAX_THEMES, type SyntaxThemeName } from "./theme-loader";
 const STORAGE_KEY_PREFIX = "buzz-community-theme.v1";
 const OUTBOX_KEY_PREFIX = "buzz-community-theme-outbox.v1";
 const MIGRATION_KEY_PREFIX = "buzz-community-theme-migrated.v1";
+const APPEARANCE_MIGRATION_KEY_PREFIX =
+  "buzz-community-theme-appearance-migrated.v1";
 
 export type CommunityThemePreference = {
   version: 1;
@@ -181,6 +183,29 @@ export function markCommunityThemeMigrated(pubkey: string): void {
   }
 }
 
+export function hasMigratedCommunityThemeAppearance(pubkey: string): boolean {
+  try {
+    return (
+      window.localStorage.getItem(
+        `${APPEARANCE_MIGRATION_KEY_PREFIX}:${pubkey}`,
+      ) === "true"
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function markCommunityThemeAppearanceMigrated(pubkey: string): void {
+  try {
+    window.localStorage.setItem(
+      `${APPEARANCE_MIGRATION_KEY_PREFIX}:${pubkey}`,
+      "true",
+    );
+  } catch {
+    // The expanded preference remains usable in memory when storage is full.
+  }
+}
+
 export function writeCommunityThemePreference(
   pubkey: string,
   relayUrl: string,
@@ -208,6 +233,19 @@ export function cacheAndApplyCommunityTheme(
 }
 
 export function communityThemeScopeFallback(
+  migrated: boolean,
+  inherited: CommunityThemePreference,
+): CommunityThemePreference {
+  return migrated ? DEFAULT_COMMUNITY_THEME : inherited;
+}
+
+/**
+ * Choose values for appearance fields missing from the original v1 payload.
+ * This migration is independent from the older per-community scope migration:
+ * profiles that already completed scoping still need one chance to retain
+ * their former global glass and prominent-tab preferences.
+ */
+export function communityThemeAppearanceFallback(
   migrated: boolean,
   inherited: CommunityThemePreference,
 ): CommunityThemePreference {

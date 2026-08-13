@@ -3,13 +3,15 @@ import { useCommunities } from "@/features/communities/useCommunities";
 import { relayClient } from "@/shared/api/relayClient";
 import { useIdentityQuery } from "@/shared/api/hooks";
 import {
-  DEFAULT_COMMUNITY_THEME,
   cacheAndApplyCommunityTheme,
   clearCommunityThemeOutbox,
+  communityThemeAppearanceFallback,
   communityThemeApplyExpectation,
   communityThemePersistenceAction,
   communityThemeScopeFallback,
   hasMigratedCommunityTheme,
+  hasMigratedCommunityThemeAppearance,
+  markCommunityThemeAppearanceMigrated,
   markCommunityThemeMigrated,
   readCommunityThemeOutbox,
   readCommunityThemePreference,
@@ -80,21 +82,28 @@ export function CommunityThemeController() {
 
   useLayoutEffect(() => {
     if (!pubkey || !relayUrl) return;
-    const legacyFallback = communityThemeScopeFallback(
+    const scopeFallback = communityThemeScopeFallback(
       hasMigratedCommunityTheme(pubkey),
+      initialPreferenceRef.current,
+    );
+    const appearanceFallback = communityThemeAppearanceFallback(
+      hasMigratedCommunityThemeAppearance(pubkey),
       initialPreferenceRef.current,
     );
     const local = readCommunityThemePreference(
       pubkey,
       relayUrl,
-      legacyFallback,
+      appearanceFallback,
     );
-    const dirty = readCommunityThemeOutbox(pubkey, relayUrl, legacyFallback);
-    // Preserve the user's existing global appearance the first time this
-    // feature sees their current community. Later missing/malformed target
-    // records use the stable default so the previous community never leaks.
-    const fallback = legacyFallback;
-    const scopedPreference = dirty ?? local ?? fallback;
+    const dirty = readCommunityThemeOutbox(
+      pubkey,
+      relayUrl,
+      appearanceFallback,
+    );
+    // Scope migration decides whether an entirely empty community inherits the
+    // outer appearance. Appearance migration separately fills fields missing
+    // from an existing three-field record.
+    const scopedPreference = dirty ?? local ?? scopeFallback;
     scopedPreferenceRef.current = scopedPreference;
     applyPreference(scopedPreference);
     // Initialization is programmatic even when the provider already exposes
@@ -110,7 +119,25 @@ export function CommunityThemeController() {
   useEffect(() => {
     if (!pubkey || !relayUrl) return;
     const scope = `${pubkey}:${relayUrl}`;
-    const legacyFallback = communityThemeScopeFallback(
+    const appearanceFallback = communityThemeAppearanceFallback(
+      hasMigratedCommunityThemeAppearance(pubkey),
+      initialPreferenceRef.current,
+    );
+    const local = readCommunityThemePreference(
+      pubkey,
+      relayUrl,
+      appearanceFallback,
+    );
+    const durablePending = readCommunityThemeOutbox(
+      pubkey,
+      relayUrl,
+      appearanceFallback,
+    );
+    // A value already cached for this relay is the safest fallback for a later
+    // incomplete event. Without one, use the one-time appearance migration
+    // seed, which is never taken from a previous community after migration.
+    const legacyFallback = durablePending ?? local ?? appearanceFallback;
+    const scopeFallback = communityThemeScopeFallback(
       hasMigratedCommunityTheme(pubkey),
       initialPreferenceRef.current,
     );
@@ -136,11 +163,6 @@ export function CommunityThemeController() {
       legacyFallback,
     );
     managerRef.current = manager;
-    const durablePending = readCommunityThemeOutbox(
-      pubkey,
-      relayUrl,
-      legacyFallback,
-    );
     if (durablePending) manager.publish(durablePending);
 
     const applyRemote = (remote: RemoteCommunityTheme) => {
@@ -188,16 +210,18 @@ export function CommunityThemeController() {
         if (remote) {
           applyRemote(remote);
           markCommunityThemeMigrated(pubkey);
+          markCommunityThemeAppearanceMigrated(pubkey);
         } else if (shouldSeedCommunityTheme(result)) {
-          const local =
+          const seed =
             readCommunityThemeOutbox(pubkey, relayUrl, legacyFallback) ??
             readCommunityThemePreference(pubkey, relayUrl, legacyFallback) ??
             scopedPreferenceRef.current ??
-            DEFAULT_COMMUNITY_THEME;
-          writeCommunityThemePreference(pubkey, relayUrl, local);
-          writeCommunityThemeOutbox(pubkey, relayUrl, local);
+            scopeFallback;
+          writeCommunityThemePreference(pubkey, relayUrl, seed);
+          writeCommunityThemeOutbox(pubkey, relayUrl, seed);
           markCommunityThemeMigrated(pubkey);
-          manager.publish(local);
+          markCommunityThemeAppearanceMigrated(pubkey);
+          manager.publish(seed);
         }
         // Invalid or unavailable hydration keeps the already-applied fallback
         // without publishing over relay state we could not establish safely.
@@ -250,8 +274,8 @@ export function CommunityThemeController() {
     const stored = readCommunityThemePreference(
       pubkey,
       relayUrl,
-      communityThemeScopeFallback(
-        hasMigratedCommunityTheme(pubkey),
+      communityThemeAppearanceFallback(
+        hasMigratedCommunityThemeAppearance(pubkey),
         initialPreferenceRef.current,
       ),
     );

@@ -1,14 +1,20 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   DEFAULT_COMMUNITY_THEME,
   cacheAndApplyCommunityTheme,
   clearCommunityThemeOutbox,
+  communityThemeAppearanceFallback,
   communityThemeApplyExpectation,
   communityThemeOutboxKey,
   communityThemePersistenceAction,
   communityThemeScopeFallback,
   communityThemeStorageKey,
+  hasMigratedCommunityTheme,
+  hasMigratedCommunityThemeAppearance,
+  markCommunityThemeAppearanceMigrated,
+  markCommunityThemeMigrated,
   parseCommunityThemePreference,
   readCommunityThemeOutbox,
   readCommunityThemePreference,
@@ -16,6 +22,7 @@ import {
   writeCommunityThemeOutbox,
   writeCommunityThemePreference,
 } from "./communityThemePreference.ts";
+import { GLASS_OPACITY_MAX, GLASS_OPACITY_MIN } from "./ThemeProvider.tsx";
 
 function localStorageStub() {
   const data = new Map();
@@ -98,7 +105,7 @@ test("older theme records inherit the pre-migration appearance controls", () => 
   });
 });
 
-test("later legacy records use stable defaults instead of a prior community", () => {
+test("completed appearance migration uses stable defaults", () => {
   const priorCommunity = {
     ...DEFAULT_COMMUNITY_THEME,
     glassBackground: true,
@@ -115,9 +122,83 @@ test("later legacy records use stable defaults instead of a prior community", ()
   assert.deepEqual(
     parseCommunityThemePreference(
       olderRecord,
-      communityThemeScopeFallback(true, priorCommunity),
+      communityThemeAppearanceFallback(true, priorCommunity),
     ),
     { ...DEFAULT_COMMUNITY_THEME, ...olderRecord },
+  );
+});
+
+test("appearance widening is independent from community scoping", () => {
+  globalThis.window = { localStorage: localStorageStub() };
+  const inherited = {
+    ...DEFAULT_COMMUNITY_THEME,
+    glassBackground: true,
+    glassOpacity: 80,
+    prominentActiveTab: true,
+  };
+  const legacy = {
+    version: 1,
+    theme: "houston",
+    accent: "#a855f7",
+    followSystem: false,
+  };
+  window.localStorage.setItem(
+    communityThemeStorageKey("alice", "wss://relay.example"),
+    JSON.stringify(legacy),
+  );
+
+  markCommunityThemeMigrated("alice");
+  assert.equal(hasMigratedCommunityTheme("alice"), true);
+  assert.equal(hasMigratedCommunityThemeAppearance("alice"), false);
+  assert.deepEqual(
+    readCommunityThemePreference(
+      "alice",
+      "wss://relay.example",
+      communityThemeAppearanceFallback(
+        hasMigratedCommunityThemeAppearance("alice"),
+        inherited,
+      ),
+    ),
+    {
+      ...legacy,
+      glassBackground: true,
+      glassOpacity: 80,
+      prominentActiveTab: true,
+    },
+  );
+
+  markCommunityThemeAppearanceMigrated("alice");
+  assert.equal(hasMigratedCommunityThemeAppearance("alice"), true);
+  assert.deepEqual(
+    communityThemeAppearanceFallback(
+      hasMigratedCommunityThemeAppearance("alice"),
+      inherited,
+    ),
+    DEFAULT_COMMUNITY_THEME,
+  );
+});
+
+test("desktop appearance limits match the shared wire contract", () => {
+  const contract = JSON.parse(
+    readFileSync(
+      new URL("../../../../schema/community-theme-v1.json", import.meta.url),
+      "utf8",
+    ),
+  );
+
+  assert.equal(
+    DEFAULT_COMMUNITY_THEME.glassBackground,
+    contract.properties.glassBackground.default,
+  );
+  assert.equal(
+    DEFAULT_COMMUNITY_THEME.glassOpacity,
+    contract.properties.glassOpacity.default,
+  );
+  assert.equal(GLASS_OPACITY_MIN, contract.properties.glassOpacity.minimum);
+  assert.equal(GLASS_OPACITY_MAX, contract.properties.glassOpacity.maximum);
+  assert.equal(
+    DEFAULT_COMMUNITY_THEME.prominentActiveTab,
+    contract.properties.prominentActiveTab.default,
   );
 });
 
