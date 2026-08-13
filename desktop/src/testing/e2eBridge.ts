@@ -341,6 +341,8 @@ type E2eConfig = {
     threadRepliesDelayMs?: number;
     /** Hold the first continuation page until the E2E release seam is called. */
     holdThreadRepliesPage2?: boolean;
+    /** Hold the second continuation page until the E2E release seam is called. */
+    holdThreadRepliesPage3?: boolean;
     usersBatchDelayMs?: number;
     /** Delay (ms) applied only to initial channel-window requests. */
     initialChannelWindowDelayMs?: number;
@@ -1123,8 +1125,10 @@ declare global {
       requestId: number;
       startedAt: number;
     }>;
-    /** Release the held thread continuation page in the disposable A/B probe. */
+    /** Release the held first thread continuation page. */
     __BUZZ_E2E_RELEASE_THREAD_PAGE_2__?: () => void;
+    /** Release the held second thread continuation page. */
+    __BUZZ_E2E_RELEASE_THREAD_PAGE_3__?: () => void;
     /** Release a mock media proxy held at port 0 and return its ready port. */
     __BUZZ_E2E_RELEASE_MEDIA_PROXY__?: () => number;
     /** Release mock send events that were stored but withheld from live subscribers. */
@@ -4757,17 +4761,22 @@ async function handleGetThreadReplies(
           event_id: page[page.length - 1].id,
         }
       : null;
-  if (
-    config?.mock?.holdThreadRepliesPage2 &&
-    args.cursor &&
+  const requestNumber =
     window.__BUZZ_E2E_MESSAGE_REQUEST_LOG__?.filter(
       (request) => request.command === "get_thread_replies",
-    ).length === 2 &&
-    window.__BUZZ_E2E_RELEASE_THREAD_PAGE_2__ === undefined
-  ) {
+    ).length ?? 0;
+  const holdReleaseKey =
+    config?.mock?.holdThreadRepliesPage2 && args.cursor && requestNumber === 2
+      ? "__BUZZ_E2E_RELEASE_THREAD_PAGE_2__"
+      : config?.mock?.holdThreadRepliesPage3 &&
+          args.cursor &&
+          requestNumber === 3
+        ? "__BUZZ_E2E_RELEASE_THREAD_PAGE_3__"
+        : null;
+  if (holdReleaseKey && window[holdReleaseKey] === undefined) {
     await new Promise<void>((resolve) => {
-      window.__BUZZ_E2E_RELEASE_THREAD_PAGE_2__ = () => {
-        delete window.__BUZZ_E2E_RELEASE_THREAD_PAGE_2__;
+      window[holdReleaseKey] = () => {
+        delete window[holdReleaseKey];
         resolve();
       };
     });

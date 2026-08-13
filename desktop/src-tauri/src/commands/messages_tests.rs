@@ -1,4 +1,19 @@
 use super::*;
+use nostr::{EventBuilder, Kind, Tag};
+
+fn thread_page_event(kind: u32, content: &str, root: Option<&str>) -> Event {
+    let tags = root
+        .map(|root| vec![Tag::parse(["e", root]).expect("valid root tag")])
+        .unwrap_or_default();
+    EventBuilder::new(Kind::Custom(kind as u16), content)
+        .tags(tags)
+        .sign_with_keys(&Keys::generate())
+        .expect("test event should sign")
+}
+
+fn bounds_event(root: &str, content: &str) -> Event {
+    thread_page_event(buzz_core_pkg::kind::KIND_THREAD_BOUNDS, content, Some(root))
+}
 
 #[test]
 fn marker_author_scope_validates_scope_and_required_pubkey() {
@@ -184,6 +199,91 @@ fn thread_replies_filter_pages_with_composite_cursor() {
         !filter.contains_key("#h"),
         "no channel_id -> no #h scope in the filter"
     );
+}
+
+#[test]
+fn thread_page_parser_accepts_valid_empty_and_non_empty_pages() {
+    let empty = thread_page::parse(
+        vec![bounds_event(
+            "root",
+            r#"{"has_more":false,"next_cursor":null}"#,
+        )],
+        "root",
+    )
+    .expect("valid terminal page should parse");
+    assert!(empty.events.is_empty());
+    assert!(!empty.has_more);
+    assert!(empty.next_cursor.is_none());
+
+    let reply = thread_page_event(9, "reply", Some("root"));
+    let reply_id = reply.id.to_hex();
+    let page = thread_page::parse(
+        vec![
+            reply,
+            bounds_event(
+                "root",
+                r#"{"has_more":true,"next_cursor":{"created_at":1700000000,"id":"cursor-id"}}"#,
+            ),
+        ],
+        "root",
+    )
+    .expect("valid continuing page should parse");
+    assert_eq!(page.events.len(), 1);
+    assert_eq!(page.events[0]["id"], serde_json::json!(reply_id));
+    assert!(page.has_more);
+    let cursor = page.next_cursor.expect("continuing page needs a cursor");
+    assert_eq!(cursor.created_at, 1_700_000_000);
+    assert_eq!(cursor.event_id, "cursor-id");
+}
+
+#[test]
+fn thread_page_parser_rejects_missing_duplicate_and_wrong_root_bounds() {
+    let reply = thread_page_event(9, "reply", Some("root"));
+    assert!(thread_page::parse(vec![reply], "root")
+        .err()
+        .expect("missing bounds must fail closed")
+        .contains("omitted"));
+
+    let terminal = r#"{"has_more":false,"next_cursor":null}"#;
+    assert!(thread_page::parse(
+        vec![
+            bounds_event("root", terminal),
+            bounds_event("root", terminal)
+        ],
+        "root",
+    )
+    .err()
+    .expect("duplicate bounds must fail closed")
+    .contains("multiple"));
+
+    assert!(
+        thread_page::parse(vec![bounds_event("other-root", terminal)], "root")
+            .err()
+            .expect("mismatched root must fail closed")
+            .contains("does not match")
+    );
+}
+
+#[test]
+fn thread_page_parser_rejects_malformed_and_inconsistent_bounds() {
+    assert!(
+        thread_page::parse(vec![bounds_event("root", "not-json")], "root")
+            .err()
+            .expect("malformed bounds must fail closed")
+            .contains("Invalid thread bounds")
+    );
+
+    for content in [
+        r#"{"has_more":true,"next_cursor":null}"#,
+        r#"{"has_more":false,"next_cursor":{"created_at":1700000000,"id":"cursor-id"}}"#,
+    ] {
+        assert!(
+            thread_page::parse(vec![bounds_event("root", content)], "root")
+                .err()
+                .expect("cursor presence must agree with has_more")
+                .contains("disagree")
+        );
+    }
 }
 
 #[test]

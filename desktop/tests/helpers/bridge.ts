@@ -295,6 +295,8 @@ type MockBridgeOptions = {
   threadRepliesDelayMs?: number;
   /** Hold page 2 until the E2E release seam is called. */
   holdThreadRepliesPage2?: boolean;
+  /** Hold page 3 until the E2E release seam is called. */
+  holdThreadRepliesPage3?: boolean;
   usersBatchDelayMs?: number;
   /** Delay (ms) for initial channel-window requests. */
   initialChannelWindowDelayMs?: number;

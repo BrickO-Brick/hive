@@ -409,6 +409,15 @@ test("401-reply thread paints page 1, preserves a live arrival, and converges", 
   await expect(panel.getByTestId("message-thread-replies-loading")).toHaveCount(
     0,
   );
+  const threadBody = panel.getByTestId("message-thread-body");
+  await expect
+    .poll(() =>
+      threadBody.evaluate(
+        (element) =>
+          element.scrollHeight - element.clientHeight - element.scrollTop,
+      ),
+    )
+    .toBeLessThanOrEqual(2);
 
   const liveReply = await page.evaluate((parentEventId) => {
     const emit = window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__;
@@ -480,4 +489,125 @@ test("401-reply thread paints page 1, preserves a live arrival, and converges", 
     total: 402,
     unique: 402,
   });
+  await expect
+    .poll(() =>
+      threadBody.evaluate(
+        (element) =>
+          element.scrollHeight - element.clientHeight - element.scrollTop,
+      ),
+    )
+    .toBeLessThanOrEqual(2);
+});
+
+test("later-page thread target settles and survives subsequent prepends", async ({
+  page,
+}) => {
+  await installMockBridge(page, {
+    holdThreadRepliesPage2: true,
+    holdThreadRepliesPage3: true,
+    threadRepliesDelayMs: 25,
+  });
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+  await expect(page.getByTestId("chat-title")).toHaveText("general");
+
+  const seeded = await page.evaluate(() => {
+    const emit = window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__;
+    if (!emit) throw new Error("mock message emitter is unavailable");
+    const root = emit({ channelName: "random", content: "Target thread root" });
+    const replies = Array.from({ length: 401 }, (_, index) =>
+      emit({
+        channelName: "random",
+        content: `Target thread reply ${index}`,
+        createdAt: 1_700_100_000 + index,
+        parentEventId: root.id,
+      }),
+    );
+    return { rootId: root.id, targetId: replies[150].id };
+  });
+
+  await page.getByTestId("channel-random").click();
+  await expect(page.getByTestId("chat-title")).toHaveText("random");
+  const root = page.locator(`[data-message-id="${seeded.rootId}"]`);
+  await expect(root).toBeVisible();
+  const panel = await openThread(root, page);
+  await expect
+    .poll(() => readMessageRequests(page, "get_thread_replies"))
+    .toHaveLength(2);
+  await expect(
+    panel.locator(`[data-message-id="${seeded.targetId}"]`),
+  ).toHaveCount(0);
+  await page.evaluate(() => window.__BUZZ_E2E_RELEASE_THREAD_PAGE_2__?.());
+  await expect
+    .poll(async () => {
+      const requests = await readMessageRequests(page, "get_thread_replies");
+      return requests.length === 3 && requests[2]?.endedAt === null;
+    })
+    .toBe(true);
+
+  // Aim at the old reply only after page 2 makes it available. This exercises
+  // the same route target state used by deep links while page 3 is still held.
+  await page.evaluate(({ rootId, targetId }) => {
+    const hash = window.location.hash.replace(/^#/, "") || "/";
+    const [path, query = ""] = hash.split("?");
+    const params = new URLSearchParams(query);
+    params.set("messageId", targetId);
+    params.set("thread", rootId);
+    window.history.pushState(
+      {},
+      "",
+      `${window.location.pathname}#${path}?${params}`,
+    );
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  }, seeded);
+
+  const target = panel.locator(`[data-message-id="${seeded.targetId}"]`);
+  const body = panel.getByTestId("message-thread-body");
+  await expect
+    .poll(async () => {
+      if (!(await target.count())) return false;
+      return body.evaluate((element, targetId) => {
+        const row = element.querySelector(
+          `[data-message-id="${CSS.escape(targetId)}"]`,
+        );
+        if (!row) return false;
+        const bodyRect = element.getBoundingClientRect();
+        const rowRect = row.getBoundingClientRect();
+        return rowRect.top >= bodyRect.top && rowRect.bottom <= bodyRect.bottom;
+      }, seeded.targetId);
+    })
+    .toBe(true);
+
+  // Page 3 is now held after page 2 exposed and settled the target. Releasing
+  // it prepends more history; the target must remain the visible anchor.
+  await expect
+    .poll(async () => {
+      const requests = await readMessageRequests(page, "get_thread_replies");
+      return requests.length === 3 && requests[2]?.endedAt === null;
+    })
+    .toBe(true);
+  await page.evaluate(() => window.__BUZZ_E2E_RELEASE_THREAD_PAGE_3__?.());
+  await expect
+    .poll(async () => {
+      const requests = await readMessageRequests(page, "get_thread_replies");
+      return (
+        requests.length === 3 &&
+        requests.every((request) => request.endedAt !== null)
+      );
+    })
+    .toBe(true);
+  await expect
+    .poll(() =>
+      body.evaluate((element, targetId) => {
+        const row = element.querySelector(
+          `[data-message-id="${CSS.escape(targetId)}"]`,
+        );
+        if (!row) return false;
+        const bodyRect = element.getBoundingClientRect();
+        const rowRect = row.getBoundingClientRect();
+        return rowRect.top >= bodyRect.top && rowRect.bottom <= bodyRect.bottom;
+      }, seeded.targetId),
+    )
+    .toBe(true);
 });
