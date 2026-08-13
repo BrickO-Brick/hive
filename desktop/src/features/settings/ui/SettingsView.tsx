@@ -171,10 +171,18 @@ export function SettingsView({
   }, []);
 
   React.useEffect(() => {
+    // Defer section normalization while a direct link (`?section=moderation`)
+    // targets the Moderation entry and its visibility is still unresolved.
+    // That entry's visibility depends on an async origin+probe resolver
+    // (`moderationNav` is `undefined` until it resolves); redirecting first
+    // would bounce a valid direct link before the probe can authorize.
+    if (section === "moderation" && moderationNav === undefined) {
+      return;
+    }
     if (!visibleSections.some((entry) => entry.value === section)) {
       onSectionChange(visibleSections[0]?.value ?? "appearance");
     }
-  }, [onSectionChange, section, visibleSections]);
+  }, [moderationNav, onSectionChange, section, visibleSections]);
 
   React.useEffect(() => {
     if (!isMobile && !sidebarOpen) {

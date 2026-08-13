@@ -167,6 +167,8 @@ export type AdminFeedbackDto = {
   submitterPubkey: string;
   category?: string | null;
   body: string;
+  /** Triage status: `"new"` | `"reviewed"` | `"archived"`. Always present. */
+  status: AdminFeedbackStatus;
   /** Full source tags — consumed as imeta attachment metadata. */
   tags: unknown;
   eventCreatedAt: string;
@@ -188,8 +190,8 @@ export type AdminFeedbackSummaryDto = {
   submitterPubkey: string;
   category?: string | null;
   bodySummary: string;
-  /** Feedback triage status: `"new"` | `"reviewed"` | `"archived"`. */
-  status?: AdminFeedbackStatus | null;
+  /** Triage status: `"new"` | `"reviewed"` | `"archived"`. Always present. */
+  status: AdminFeedbackStatus;
   receivedAt: string;
 };
 
@@ -349,13 +351,21 @@ export async function reopenAdminReport(
 
 export type AdminFeedbackStatus = "new" | "reviewed" | "archived";
 
+/**
+ * The PATCH /api/admin/v1/feedback/{id} response — the relay echoes only the
+ * updated `status`, not a full feedback record.
+ */
+export type AdminFeedbackStatusResult = {
+  status: AdminFeedbackStatus;
+};
+
 /** Update feedback status — PATCH /api/admin/v1/feedback/{id}. */
 export async function patchAdminFeedback(
   origin: string,
   id: string,
   status: AdminFeedbackStatus,
-): Promise<AdminFeedbackSummaryDto> {
-  return invokeTauri<AdminFeedbackSummaryDto>("admin_patch_feedback", {
+): Promise<AdminFeedbackStatusResult> {
+  return invokeTauri<AdminFeedbackStatusResult>("admin_patch_feedback", {
     origin,
     id,
     body: { status },
