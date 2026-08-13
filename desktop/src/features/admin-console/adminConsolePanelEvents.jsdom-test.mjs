@@ -75,9 +75,23 @@ import { createRoot } from "react-dom/client";
 import { act } from "react";
 import { fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { toast } from "sonner";
 
 import { AdminConsoleSettingsCard } from "./AdminConsoleSettingsCard.tsx";
 import { AdminConsolePanel } from "./AdminConsolePanel.tsx";
+
+// ── Success-toast capture ────────────────────────────────────────────────────
+//
+// sonner's `toast` is a shared singleton object across import paths (verified),
+// so replacing `toast.success` here is observed by the production components.
+// Captured messages are asserted by the toast tests and cleared in afterEach.
+
+/** @type {string[]} */
+const capturedToasts = [];
+toast.success = (msg) => {
+  capturedToasts.push(String(msg));
+  return 0;
+};
 
 // ── Deferred promise helper ──────────────────────────────────────────────────
 
@@ -159,6 +173,7 @@ async function settle(ms = 20) {
 
 afterEach(() => {
   clearIpcHandlers();
+  capturedToasts.length = 0;
 });
 
 // ── origin-edit ──────────────────────────────────────────────────────────────
@@ -1818,6 +1833,341 @@ test("feedback-grouped-by-community: multi-community feedback renders per-commun
     hosts,
     ["alpha.example.com", "beta.example.com"],
     `feedback group headings must show each community host; got: ${JSON.stringify(hosts)}`,
+  );
+
+  await unmount();
+});
+
+// ── reopen ────────────────────────────────────────────────────────────────
+
+/**
+ * Mount the panel, wait for the list, then click the first non-tab report row
+ * to open its detail. Returns after the detail has settled.
+ */
+async function openFirstReportDetail(container) {
+  const allButtons = container.querySelectorAll("button");
+  for (const btn of allButtons) {
+    const testid = btn.getAttribute("data-testid") ?? "";
+    if (testid.startsWith("admin-tab")) continue;
+    await act(async () => {
+      fireEvent.click(btn);
+      await new Promise((r) => setTimeout(r, 30));
+    });
+    return;
+  }
+  throw new Error("no navigable report row found");
+}
+
+test("reopen-form-gated-by-status: resolved report shows the reopen form, open report does not", async () => {
+  // The reopen form must render only for terminal reports
+  // (resolved | dismissed | escalated) and never for an open report — an open
+  // report shows the resolve form instead.
+  //
+  // Mutation evidence: drop the `isReopenable` gate → the form renders for
+  // open reports too and the second assertion goes red.
+
+  const origin = "https://admin.example.com";
+  const pubkey = "c1".repeat(32);
+
+  const resolvedItem = {
+    id: "00000000-0000-0000-0000-0000000000c1",
+    communityId: "comm-1",
+    communityHost: "alpha.example.com",
+    reportEventId: "aa",
+    reporterPubkey: "bb",
+    targetKind: "event",
+    target: "cc",
+    reportType: "spam",
+    status: "resolved",
+    createdAt: "2024-06-01T12:00:00Z",
+  };
+  const resolvedDetail = {
+    ...resolvedItem,
+    channelId: null,
+    note: null,
+    resolvedBy: "mod_pubkey",
+    resolvedAt: "2024-06-02T08:00:00Z",
+    actionId: null,
+    message: null,
+  };
+
+  setIpcHandler("admin_list_reports", () => Promise.resolve([resolvedItem]));
+  setIpcHandler("admin_get_report", () => Promise.resolve(resolvedDetail));
+  setIpcHandler("admin_list_feedback", () => Promise.resolve([]));
+
+  const { container, doRender, unmount } = mountPanel({ origin, pubkey });
+  await doRender();
+  await settle(30);
+  await openFirstReportDetail(container);
+  await settle(20);
+
+  assert.ok(
+    container.querySelector("[data-testid='reopen-report-form']"),
+    "reopen form must render for a resolved report",
+  );
+  assert.equal(
+    container.querySelector("[data-testid='resolve-report-form']"),
+    null,
+    "resolve form must NOT render for a resolved report",
+  );
+
+  await unmount();
+});
+
+test("reopen-submit: calls admin_reopen_report with requestId+reason, toasts, and refreshes", async () => {
+  // The reopen submit must POST {requestId, reason} to admin_reopen_report,
+  // fire a success toast, and bump the resolve generation so the detail
+  // reloads (verified here by a second admin_get_report call returning the
+  // now-open report, which flips the UI to the resolve form).
+  //
+  // Mutation evidence: remove `onReopened()` → no reload, detail stays
+  // resolved, and the resolve-form assertion goes red. Remove the toast →
+  // capturedToasts assertion goes red.
+
+  const origin = "https://admin.example.com";
+  const pubkey = "c2".repeat(32);
+
+  const base = {
+    id: "00000000-0000-0000-0000-0000000000c2",
+    communityId: "comm-1",
+    communityHost: "alpha.example.com",
+    reportEventId: "aa",
+    reporterPubkey: "bb",
+    targetKind: "event",
+    target: "cc",
+    reportType: "spam",
+    createdAt: "2024-06-01T12:00:00Z",
+  };
+  const dismissedItem = { ...base, status: "dismissed" };
+  const dismissedDetail = {
+    ...dismissedItem,
+    channelId: null,
+    note: null,
+    resolvedBy: "mod_pubkey",
+    resolvedAt: "2024-06-02T08:00:00Z",
+    actionId: null,
+    message: null,
+  };
+  const openDetail = {
+    ...base,
+    status: "open",
+    channelId: null,
+    note: null,
+    resolvedBy: null,
+    resolvedAt: null,
+    actionId: null,
+    message: null,
+  };
+
+  setIpcHandler("admin_list_reports", () => Promise.resolve([dismissedItem]));
+  // First detail load: dismissed. After reopen, the generation bump reloads
+  // and the report is now open.
+  let detailCalls = 0;
+  setIpcHandler("admin_get_report", () => {
+    detailCalls += 1;
+    return Promise.resolve(detailCalls === 1 ? dismissedDetail : openDetail);
+  });
+  setIpcHandler("admin_list_feedback", () => Promise.resolve([]));
+
+  let reopenArgs = null;
+  setIpcHandler("admin_reopen_report", (args) => {
+    reopenArgs = args;
+    return Promise.resolve({ status: "open" });
+  });
+
+  const { container, doRender, unmount } = mountPanel({ origin, pubkey });
+  await doRender();
+  await settle(30);
+  await openFirstReportDetail(container);
+  await settle(20);
+
+  // Type a reason.
+  const reasonInput = container.querySelector(
+    "[data-testid='reopen-reason-input']",
+  );
+  assert.ok(reasonInput, "reopen reason input must be present");
+  await act(async () => {
+    fireEvent.change(reasonInput, { target: { value: "new evidence" } });
+    await new Promise((r) => setTimeout(r, 5));
+  });
+
+  // Submit.
+  const submit = container.querySelector("[data-testid='reopen-submit-btn']");
+  assert.ok(submit, "reopen submit button must be present");
+  await act(async () => {
+    fireEvent.click(submit);
+    await new Promise((r) => setTimeout(r, 30));
+  });
+  await settle(20);
+
+  assert.ok(reopenArgs, "admin_reopen_report must be invoked");
+  assert.equal(reopenArgs.origin, origin, "origin must be forwarded");
+  assert.equal(reopenArgs.id, base.id, "report id must be forwarded");
+  assert.equal(
+    reopenArgs.body?.reason,
+    "new evidence",
+    "reason must be forwarded in the body",
+  );
+  assert.ok(
+    typeof reopenArgs.body?.requestId === "string" &&
+      reopenArgs.body.requestId.length > 0,
+    `requestId must be a non-empty string; got: ${JSON.stringify(reopenArgs.body?.requestId)}`,
+  );
+
+  assert.ok(
+    capturedToasts.some((m) => m.toLowerCase().includes("reopen")),
+    `a reopen success toast must fire; got: ${JSON.stringify(capturedToasts)}`,
+  );
+
+  // Refresh: detail reloaded (call 2) and the report is now open → resolve form.
+  assert.ok(
+    detailCalls >= 2,
+    "detail must reload after reopen (generation bump)",
+  );
+  assert.ok(
+    container.querySelector("[data-testid='resolve-report-form']"),
+    "after reopen, the now-open report must show the resolve form",
+  );
+
+  await unmount();
+});
+
+test("reopen-enforced-copy: a report with an actionId warns enforcement is not reversed", async () => {
+  // Reopen is re-triage only. When the report carries an actionId (enforcement
+  // was applied), the copy must say the enforcement is not reversed.
+  //
+  // Mutation evidence: collapse the `wasEnforced` branch to the generic copy →
+  // the "not reversed" wording for un-ban/un-timeout/restore disappears.
+
+  const origin = "https://admin.example.com";
+  const pubkey = "c3".repeat(32);
+
+  const escalatedItem = {
+    id: "00000000-0000-0000-0000-0000000000c3",
+    communityId: "comm-1",
+    communityHost: "alpha.example.com",
+    reportEventId: "aa",
+    reporterPubkey: "bb",
+    targetKind: "pubkey",
+    target: "cc",
+    reportType: "abuse",
+    status: "escalated",
+    createdAt: "2024-06-01T12:00:00Z",
+  };
+  const escalatedDetail = {
+    ...escalatedItem,
+    channelId: null,
+    note: null,
+    resolvedBy: "mod_pubkey",
+    resolvedAt: "2024-06-02T08:00:00Z",
+    actionId: "00000000-0000-0000-0000-0000000000ff",
+    message: null,
+  };
+
+  setIpcHandler("admin_list_reports", () => Promise.resolve([escalatedItem]));
+  setIpcHandler("admin_get_report", () => Promise.resolve(escalatedDetail));
+  setIpcHandler("admin_list_feedback", () => Promise.resolve([]));
+
+  const { container, doRender, unmount } = mountPanel({ origin, pubkey });
+  await doRender();
+  await settle(30);
+  await openFirstReportDetail(container);
+  await settle(20);
+
+  const form = container.querySelector("[data-testid='reopen-report-form']");
+  assert.ok(form, "reopen form must render for an escalated report");
+  const text = form.textContent ?? "";
+  assert.ok(
+    text.toLowerCase().includes("not reversed"),
+    `enforced-report copy must state the action is not reversed; got: ${text}`,
+  );
+
+  await unmount();
+});
+
+test("reopen-409-preserves-requestId: a not-reopenable conflict reuses the same requestId on retry", async () => {
+  // A 409 (report is not reopenable — e.g. it moved to processing) is an
+  // idempotency-relevant failure: the same requestId must be reused on retry
+  // so the relay can dedupe. A non-409 failure resets it.
+  //
+  // Mutation evidence: drop the 409 branch in the catch → requestId resets and
+  // the two attempts carry different ids, going red.
+
+  const origin = "https://admin.example.com";
+  const pubkey = "c4".repeat(32);
+
+  const resolvedItem = {
+    id: "00000000-0000-0000-0000-0000000000c4",
+    communityId: "comm-1",
+    communityHost: "alpha.example.com",
+    reportEventId: "aa",
+    reporterPubkey: "bb",
+    targetKind: "event",
+    target: "cc",
+    reportType: "spam",
+    status: "resolved",
+    createdAt: "2024-06-01T12:00:00Z",
+  };
+  const resolvedDetail = {
+    ...resolvedItem,
+    channelId: null,
+    note: null,
+    resolvedBy: "mod_pubkey",
+    resolvedAt: "2024-06-02T08:00:00Z",
+    actionId: null,
+    message: null,
+  };
+
+  setIpcHandler("admin_list_reports", () => Promise.resolve([resolvedItem]));
+  setIpcHandler("admin_get_report", () => Promise.resolve(resolvedDetail));
+  setIpcHandler("admin_list_feedback", () => Promise.resolve([]));
+
+  const requestIds = [];
+  setIpcHandler("admin_reopen_report", (args) => {
+    requestIds.push(args?.body?.requestId);
+    return Promise.reject(
+      new Error("409 report is not reopenable (current status: processing)"),
+    );
+  });
+
+  const { container, doRender, unmount } = mountPanel({ origin, pubkey });
+  await doRender();
+  await settle(30);
+  await openFirstReportDetail(container);
+  await settle(20);
+
+  const submit = container.querySelector("[data-testid='reopen-submit-btn']");
+  assert.ok(submit, "reopen submit button must be present");
+
+  // First attempt → 409.
+  await act(async () => {
+    fireEvent.click(submit);
+    await new Promise((r) => setTimeout(r, 20));
+  });
+  // Second attempt → 409 again; requestId must be identical.
+  await act(async () => {
+    fireEvent.click(submit);
+    await new Promise((r) => setTimeout(r, 20));
+  });
+
+  assert.equal(requestIds.length, 2, "two reopen attempts must have been made");
+  assert.equal(
+    requestIds[0],
+    requestIds[1],
+    `requestId must be preserved across a 409 retry; got: ${JSON.stringify(requestIds)}`,
+  );
+
+  // No success toast on a 409.
+  assert.deepEqual(
+    capturedToasts,
+    [],
+    `no success toast on a 409; got: ${JSON.stringify(capturedToasts)}`,
+  );
+  // The error is surfaced.
+  const text = container.textContent ?? "";
+  assert.ok(
+    text.includes("not reopenable"),
+    `the 409 error message must surface; got: ${text.slice(0, 400)}`,
   );
 
   await unmount();

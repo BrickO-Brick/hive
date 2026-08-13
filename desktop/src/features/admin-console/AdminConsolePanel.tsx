@@ -31,12 +31,14 @@ import {
   ShieldAlert,
   Users,
 } from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "@/shared/ui/button";
 import { Badge } from "@/shared/ui/badge";
 import { cn } from "@/shared/lib/cn";
 import {
   getAdminReport,
   listAdminReports,
+  reopenAdminReport,
   resolveAdminReport,
   type AdminPrincipalRole,
   type AdminPrincipalSource,
@@ -194,6 +196,7 @@ function EnforcementStateBlock({
         expirationSecs: activeAction.expirationSecs ?? undefined,
         reason: activeAction.reason ?? undefined,
       });
+      toast.success("Enforcement retried");
       onActionComplete();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -213,6 +216,7 @@ function EnforcementStateBlock({
         requestId: crypto.randomUUID(),
         reason: "cancelled",
       });
+      toast.success("Enforcement cancelled");
       onActionComplete();
     } catch (e) {
       // A rejected cancel is authoritative — the enforcement may have landed.
@@ -325,6 +329,7 @@ function ResolveReportForm({
             : undefined,
         reason: reason.trim() || undefined,
       });
+      toast.success(`Report resolved: ${actionLabel(selectedAction)}`);
       onResolved();
     } catch (e) {
       // On error, reset requestId so the next submit generates a new one.
@@ -418,6 +423,114 @@ function ResolveReportForm({
           )}
         </Button>
       )}
+
+      {error && <p className="text-xs text-destructive">{error}</p>}
+    </div>
+  );
+}
+
+// ── Reopen report form ────────────────────────────────────────────────────
+
+/**
+ * Reopen form — shown on terminal reports (`resolved` | `dismissed` |
+ * `escalated`). Moves the report back to `open` for re-triage.
+ *
+ * Reopen is re-triage only: it does NOT reverse any enforcement already taken
+ * (no un-ban, no un-timeout, no message restore). The copy states this
+ * explicitly, and more emphatically when the report carries an `actionId`
+ * (an enforcement action was applied while it was resolved).
+ *
+ * A `requestId` is generated per attempt and reused on retry so a lost
+ * response is idempotent, mirroring the resolve flow. A 409 (report not
+ * reopenable — e.g. it moved to `processing`) preserves the `requestId`.
+ */
+function ReopenReportForm({
+  report,
+  origin,
+  onReopened,
+}: {
+  report: AdminReportDto;
+  origin: string;
+  onReopened: () => void;
+}) {
+  const [reason, setReason] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // Stable requestId per attempt; reused on retry after a lost response.
+  const requestIdRef = useRef<string | null>(null);
+
+  // An enforcement action was applied while this report was resolved.
+  const wasEnforced = report.actionId != null;
+
+  const handleSubmit = async () => {
+    setError(null);
+    setIsSubmitting(true);
+
+    if (!requestIdRef.current) {
+      requestIdRef.current = crypto.randomUUID();
+    }
+
+    try {
+      await reopenAdminReport(origin, report.id, {
+        requestId: requestIdRef.current,
+        reason: reason.trim() || undefined,
+      });
+      toast.success("Report reopened");
+      onReopened();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      // A 409 means the report is not reopenable (e.g. it moved to
+      // `processing`). Preserve the requestId so a genuine retry reuses it;
+      // reset otherwise so the next attempt generates a fresh one.
+      if (!msg.includes("409") && !msg.includes("processing")) {
+        requestIdRef.current = null;
+      }
+      setError(msg);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <div
+      className="rounded-md border border-border/60 px-3 py-2.5 space-y-3"
+      data-testid="reopen-report-form"
+    >
+      <div className="space-y-1">
+        <p className="text-xs font-medium text-muted-foreground">
+          Reopen report
+        </p>
+        <p className="text-xs text-muted-foreground">
+          Moves this report back to the open queue for re-triage.{" "}
+          {wasEnforced
+            ? "The enforcement action already taken is not reversed — reopening does not un-ban, un-timeout, or restore a deleted message."
+            : "Reopening does not reverse any enforcement action."}
+        </p>
+      </div>
+
+      <input
+        className="w-full rounded-md border border-border/60 bg-background px-2 py-1 text-xs"
+        data-testid="reopen-reason-input"
+        onChange={(e) => setReason(e.target.value)}
+        placeholder="Reason (optional)"
+        type="text"
+        value={reason}
+      />
+
+      <Button
+        data-testid="reopen-submit-btn"
+        disabled={isSubmitting}
+        onClick={() => void handleSubmit()}
+        size="sm"
+        type="button"
+        variant="outline"
+      >
+        {isSubmitting ? (
+          <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+        ) : (
+          "Reopen report"
+        )}
+      </Button>
 
       {error && <p className="text-xs text-destructive">{error}</p>}
     </div>
@@ -575,6 +688,10 @@ function ReportDetail({
   const data = detailState.status === "ok" ? detailState.data : null;
   const isProcessing = data?.status === "processing";
   const isOpen = data?.status === "open";
+  const isReopenable =
+    data?.status === "resolved" ||
+    data?.status === "dismissed" ||
+    data?.status === "escalated";
   const activeAction = data?.activeAction ?? null;
 
   return (
@@ -613,6 +730,14 @@ function ReportDetail({
               report={detailState.data}
               origin={origin}
               onResolved={() => setResolveGen((g) => g + 1)}
+            />
+          )}
+          {/* Reopen form: only for terminal (resolved/dismissed/escalated) reports */}
+          {isReopenable && (
+            <ReopenReportForm
+              report={detailState.data}
+              origin={origin}
+              onReopened={() => setResolveGen((g) => g + 1)}
             />
           )}
         </>

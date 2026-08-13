@@ -870,6 +870,7 @@ pub fn run() {
             admin_get_feedback,
             admin_fetch_feedback_attachment,
             admin_resolve_report,
+            admin_reopen_report,
             admin_patch_feedback,
             admin_list_operators,
             admin_put_operator,

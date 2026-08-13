@@ -305,6 +305,46 @@ export async function resolveAdminReport(
   });
 }
 
+/**
+ * Body for POST /api/admin/v1/reports/{id}/reopen.
+ *
+ * `requestId` is a client-generated UUID; generate once per reopen attempt and
+ * reuse the **same** UUID on retry after a lost response, mirroring resolve
+ * idempotency.
+ */
+export type AdminReopenReportBody = {
+  requestId: string;
+  reason?: string;
+};
+
+/** The status returned by a successful reopen — always `"open"`. */
+export type AdminReopenReportResult = {
+  status: string;
+};
+
+/**
+ * Reopen a resolved report — POST /api/admin/v1/reports/{id}/reopen.
+ *
+ * Moves a `resolved` | `dismissed` | `escalated` report back to `open` for
+ * re-triage. A `processing` report is not reopenable and yields 409. Reopen
+ * does **not** reverse enforcement (no un-ban, no un-delete) — it only
+ * re-queues the report.
+ *
+ * The caller must generate a UUID `requestId` per reopen attempt and reuse the
+ * **same** UUID on retry after a lost response.
+ */
+export async function reopenAdminReport(
+  origin: string,
+  id: string,
+  body: AdminReopenReportBody,
+): Promise<AdminReopenReportResult> {
+  return invokeTauri<AdminReopenReportResult>("admin_reopen_report", {
+    origin,
+    id,
+    body,
+  });
+}
+
 // ── Feedback status ───────────────────────────────────────────────────────
 
 export type AdminFeedbackStatus = "new" | "reviewed" | "archived";

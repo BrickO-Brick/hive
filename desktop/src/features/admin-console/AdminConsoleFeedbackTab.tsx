@@ -8,6 +8,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertCircle, ChevronLeft, Download, LoaderCircle } from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "@/shared/ui/button";
 import { Badge } from "@/shared/ui/badge";
 import { cn } from "@/shared/lib/cn";
@@ -335,6 +336,7 @@ function FeedbackStatusControl({
     setIsWorking(true);
     try {
       await patchAdminFeedback(origin, feedbackId, newStatus);
+      toast.success(`Feedback marked ${newStatus}`);
       onStatusChanged(newStatus);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
