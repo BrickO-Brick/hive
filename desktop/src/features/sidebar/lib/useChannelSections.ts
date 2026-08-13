@@ -49,6 +49,9 @@ export function useChannelSections(
   );
   const lastAppliedRemoteTs = React.useRef(0);
   const lastAppliedEventId = React.useRef("");
+  const legacySubscriptionRef = React.useRef<(() => Promise<void>) | null>(
+    null,
+  );
 
   React.useEffect(() => {
     if (!pubkey || !relayUrl) {
@@ -68,6 +71,10 @@ export function useChannelSections(
     return () => {
       managerRef.current?.destroy();
       managerRef.current = null;
+      if (legacySubscriptionRef.current) {
+        void legacySubscriptionRef.current();
+        legacySubscriptionRef.current = null;
+      }
       workspaceManagerRef.current?.destroy();
       workspaceManagerRef.current = null;
     };
@@ -79,7 +86,7 @@ export function useChannelSections(
     }
     const key = storageKey(pubkey, relayUrl);
     const handler = (e: StorageEvent) => {
-      if (e.key !== key) {
+      if (e.key !== key || workspaceManagerRef.current?.isCanonical()) {
         return;
       }
       setStore(readChannelSectionsStore(pubkey, relayUrl));
@@ -124,6 +131,11 @@ export function useChannelSections(
         const legacy = await legacyManager.fetchLegacySource();
         return legacy;
       });
+      if (workspaceManager.isCanonical() && legacySubscriptionRef.current) {
+        void legacySubscriptionRef.current();
+        legacySubscriptionRef.current = null;
+        legacyManager.cancelPendingPublish();
+      }
       if (cancelled) return;
       if (workspaceStore) setStore(workspaceStore);
       if (workspaceManager.isCanonical()) {
@@ -134,6 +146,7 @@ export function useChannelSections(
         readChannelSectionsStore(pubkey, relayUrl),
       );
       if (cancelled) return;
+      if (workspaceManager.isCanonical()) return;
       if (result.action === "apply-remote") {
         setStore(applyRemote(result.data));
       }
@@ -169,23 +182,25 @@ export function useChannelSections(
 
   React.useEffect(() => {
     if (!pubkey) return;
-    let unsub: (() => Promise<void>) | null = null;
     let cancelled = false;
     void managerRef.current
       ?.subscribeToSections((remote) => {
-        if (cancelled) return;
+        if (cancelled || workspaceManagerRef.current?.isCanonical()) return;
         setStore(applyRemote(remote));
       })
       .then((dispose) => {
-        if (cancelled) {
+        if (cancelled || workspaceManagerRef.current?.isCanonical()) {
           void dispose();
         } else {
-          unsub = dispose;
+          legacySubscriptionRef.current = dispose;
         }
       });
     return () => {
       cancelled = true;
-      if (unsub) void unsub();
+      if (legacySubscriptionRef.current) {
+        void legacySubscriptionRef.current();
+        legacySubscriptionRef.current = null;
+      }
     };
   }, [pubkey, applyRemote]);
 
@@ -193,11 +208,16 @@ export function useChannelSections(
     if (!pubkey) return;
     let cancelled = false;
     const unsub = relayClient.subscribeToReconnects(() => {
+      if (workspaceManagerRef.current?.isCanonical()) {
+        managerRef.current?.cancelPendingPublish();
+        return;
+      }
       void managerRef.current?.fetchRemoteSections().then((result) => {
-        if (cancelled) return;
+        if (cancelled || workspaceManagerRef.current?.isCanonical()) return;
         if (result.status === "found") {
           setStore(applyRemote(result.data));
         }
+        if (workspaceManagerRef.current?.isCanonical()) return;
         const pending = managerRef.current?.getPendingStore();
         if (pending) {
           managerRef.current?.publishSections(pending);
@@ -218,6 +238,7 @@ export function useChannelSections(
   const createSection = React.useCallback(
     (name: string, icon?: string): ChannelSection | null => {
       if (!pubkey) return null;
+      if (workspaceManagerRef.current?.isCanonical()) return null;
       const prev = readChannelSectionsStore(pubkey, relayUrl);
       const maxOrder =
         prev.sections.length > 0
@@ -252,6 +273,7 @@ export function useChannelSections(
       if (!pubkey) {
         return;
       }
+      if (workspaceManagerRef.current?.isCanonical()) return;
       setStore((prev) => {
         const next: ChannelSectionStore = {
           ...prev,
@@ -285,6 +307,7 @@ export function useChannelSections(
       if (!pubkey) {
         return;
       }
+      if (workspaceManagerRef.current?.isCanonical()) return;
       setStore((prev) => {
         const assignments = { ...prev.assignments };
         for (const channelId of Object.keys(assignments)) {
@@ -314,6 +337,7 @@ export function useChannelSections(
   const moveSectionUp = React.useCallback(
     (sectionId: string) => {
       if (!pubkey) return;
+      if (workspaceManagerRef.current?.isCanonical()) return;
       setStore((prev) => {
         const next = swapSectionOrder(prev, sectionId, "up");
         if (!next || !writeChannelSectionsStore(pubkey, next, relayUrl))
@@ -332,6 +356,7 @@ export function useChannelSections(
   const moveSectionDown = React.useCallback(
     (sectionId: string) => {
       if (!pubkey) return;
+      if (workspaceManagerRef.current?.isCanonical()) return;
       setStore((prev) => {
         const next = swapSectionOrder(prev, sectionId, "down");
         if (!next || !writeChannelSectionsStore(pubkey, next, relayUrl))
@@ -350,6 +375,7 @@ export function useChannelSections(
   const reorderSections = React.useCallback(
     (orderedIds: string[]) => {
       if (!pubkey) return;
+      if (workspaceManagerRef.current?.isCanonical()) return;
       setStore((prev) => {
         const sections = prev.sections.map((s) => {
           const newOrder = orderedIds.indexOf(s.id);
@@ -373,6 +399,7 @@ export function useChannelSections(
       if (!pubkey) {
         return;
       }
+      if (workspaceManagerRef.current?.isCanonical()) return;
       setStore((prev) => {
         const assignments = { ...prev.assignments };
         delete assignments[channelId];
@@ -400,6 +427,7 @@ export function useChannelSections(
       if (!pubkey) {
         return;
       }
+      if (workspaceManagerRef.current?.isCanonical()) return;
       setStore((prev) => {
         const assignments = { ...prev.assignments };
         delete assignments[channelId];

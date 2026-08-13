@@ -16,7 +16,15 @@ import {
 
 import type { RelayEvent } from "@/shared/api/types";
 import type { LegacySectionSource } from "./channelSectionsSync";
+import { getRelaySelf } from "@/features/moderation/lib/relaySelf";
 import { normalizeRelayUrl } from "@/shared/lib/normalizeRelayUrl";
+import {
+  hasImportMarker,
+  readStoredImportAction,
+  readStoredImportCommand,
+  clearImportAction,
+  writeImportState,
+} from "./sectionWorkspaceStorage";
 import {
   KIND_SECTION_WORKSPACE_IMPORT,
   KIND_SECTION_WORKSPACE_PROJECTION,
@@ -36,9 +44,6 @@ const MAX_ASSIGNMENTS = 1_000;
 const MAX_ENCRYPTED_METADATA_BYTES = 65_535;
 const MAX_KEY_ENVELOPE_BYTES = 4_096;
 const CACHE_PREFIX = "buzz-section-workspace.v1";
-const IMPORT_ACTION_PREFIX = `${CACHE_PREFIX}:import-action`;
-const IMPORT_COMMAND_PREFIX = `${CACHE_PREFIX}:import-command`;
-
 type ProjectionSection = {
   id: string;
   rank: number;
@@ -471,53 +476,19 @@ export function canonicalJson(input: unknown): string {
     .map((key) => `${JSON.stringify(key)}:${canonicalJson(input[key])}`)
     .join(",")}}`;
 }
+export function canonicalRelayAuthority(relayUrl: string): string {
+  const parsed = new URL(relayUrl.trim());
+  if (
+    !["ws:", "wss:", "http:", "https:"].includes(parsed.protocol) ||
+    !parsed.hostname
+  ) {
+    throw new Error("invalid relay URL");
+  }
+  return parsed.host.toLowerCase();
+}
+
 function cacheKey(pubkey: string, relayUrl: string): string {
   return `${CACHE_PREFIX}:${pubkey}:${encodeURIComponent(normalizeRelayUrl(relayUrl))}`;
-}
-function importActionKey(pubkey: string, relayUrl: string): string {
-  return `${IMPORT_ACTION_PREFIX}:${pubkey}:${encodeURIComponent(normalizeRelayUrl(relayUrl))}`;
-}
-function importCommandKey(pubkey: string, relayUrl: string): string {
-  return `${IMPORT_COMMAND_PREFIX}:${pubkey}:${encodeURIComponent(normalizeRelayUrl(relayUrl))}`;
-}
-function readStoredValue(key: string): string | null {
-  try {
-    return window.localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
-function readStoredImportCommand(
-  pubkey: string,
-  relayUrl: string,
-): string | null {
-  return readStoredValue(importCommandKey(pubkey, relayUrl));
-}
-function hasImportMarker(pubkey: string, relayUrl: string): boolean {
-  return (
-    readStoredValue(importActionKey(pubkey, relayUrl)) !== null ||
-    readStoredImportCommand(pubkey, relayUrl) !== null
-  );
-}
-function markImportStarted(
-  pubkey: string,
-  relayUrl: string,
-  actionId: string,
-): void {
-  try {
-    window.localStorage.setItem(importActionKey(pubkey, relayUrl), actionId);
-  } catch {}
-}
-function writeImportState(
-  pubkey: string,
-  relayUrl: string,
-  actionId: string,
-  command: string,
-): void {
-  try {
-    window.localStorage.setItem(importCommandKey(pubkey, relayUrl), command);
-    window.localStorage.setItem(importActionKey(pubkey, relayUrl), actionId);
-  } catch {}
 }
 function readCache(pubkey: string, relayUrl: string): WorkspaceCache | null {
   try {
@@ -600,7 +571,13 @@ async function encryptMetadata(
     await encryptWorkspaceMetadata({
       keyHex: key,
       plaintext: value,
-      aad: aad(community, owner, section.id, 1, purpose),
+      aad: aad(
+        canonicalRelayAuthority(community),
+        owner,
+        section.id,
+        1,
+        purpose,
+      ),
     }),
     "encrypted_metadata",
     MAX_ENCRYPTED_METADATA_BYTES,
@@ -618,7 +595,13 @@ async function decryptMetadata(
   return decryptWorkspaceMetadata({
     keyHex: key,
     envelope: value,
-    aad: aad(community, owner, sectionId, epoch, purpose),
+    aad: aad(
+      canonicalRelayAuthority(community),
+      owner,
+      sectionId,
+      epoch,
+      purpose,
+    ),
   });
 }
 async function projectionStore(
@@ -683,10 +666,10 @@ function validateEventRouting(event: RelayEvent, owner: string): void {
     throw new Error("projection routing mismatch");
 }
 
-function projectionFromEvent(
+async function projectionFromEvent(
   event: RelayEvent,
   owner: string,
-): SectionWorkspaceProjection {
+): Promise<SectionWorkspaceProjection> {
   if (
     event.id.length !== 64 ||
     !/^[0-9a-f]{64}$/.test(event.id) ||
@@ -703,6 +686,14 @@ function projectionFromEvent(
     })
   )
     throw new Error("invalid projection event signature");
+  let relaySelf: string | null;
+  try {
+    relaySelf = await getRelaySelf();
+  } catch {
+    throw new Error("relay signer is untrusted");
+  }
+  if (!relaySelf || relaySelf !== event.pubkey)
+    throw new Error("invalid projection relay signer");
   const projection = parseSectionWorkspaceProjection(
     parseStrictJson(event.content),
   );
@@ -776,23 +767,14 @@ async function submitImport(
     sha256(new TextEncoder().encode(canonicalPlaintext)),
   );
   let actionId: string;
-  let command: string | null;
-  try {
-    command = window.localStorage.getItem(
-      importCommandKey(pubkey, normalizedRelay),
-    );
-  } catch {
-    command = null;
-  }
+  let command: string | null = readStoredImportCommand(pubkey, normalizedRelay);
   if (command) {
     const parsed = parseStrictJson(command);
     const imported = parseWorkspaceImport(parsed);
     actionId = imported.action_id;
   } else {
     actionId =
-      window.localStorage.getItem(importActionKey(pubkey, normalizedRelay)) ??
-      crypto.randomUUID();
-    markImportStarted(pubkey, normalizedRelay, actionId);
+      readStoredImportAction(pubkey, normalizedRelay) ?? crypto.randomUUID();
     const key = await generateWorkspaceKey();
     const sections: ImportSection[] = [];
     const sectionIds = new Set<string>();
@@ -850,7 +832,9 @@ async function submitImport(
     };
     command = canonicalJson(imported);
     parseWorkspaceImport(parseStrictJson(command));
-    writeImportState(pubkey, normalizedRelay, actionId, command);
+    if (!writeImportState(pubkey, normalizedRelay, actionId, command)) {
+      throw new Error("cannot durably persist workspace import command");
+    }
   }
   await publishImportCommand(pubkey, actionId, command);
 }
@@ -928,12 +912,17 @@ export class SectionWorkspaceSyncManager {
         return this.acceptProjection(projection);
       }
       if (this.migrationStarted) {
-        const replayed = await replayStoredImport(this.pubkey, this.relayUrl);
-        if (replayed) return this.getCachedStore();
-        if (readStoredValue(importActionKey(this.pubkey, this.relayUrl))) {
+        const command = readStoredImportCommand(this.pubkey, this.relayUrl);
+        if (command) {
+          const replayed = await replayStoredImport(this.pubkey, this.relayUrl);
+          if (replayed) return this.getCachedStore();
+        }
+        const actionOnly = readStoredImportAction(this.pubkey, this.relayUrl);
+        if (actionOnly && clearImportAction(this.pubkey, this.relayUrl)) {
+          this.migrationStarted = false;
+        } else {
           return this.getCachedStore();
         }
-        this.migrationStarted = false;
       }
       if (this.pubkey && !this.destroyed) {
         const legacy = await legacyFetch();
@@ -967,7 +956,7 @@ export class SectionWorkspaceSyncManager {
         if (this.destroyed) return;
         void (async () => {
           try {
-            let remote = projectionFromEvent(event, this.pubkey);
+            let remote = await projectionFromEvent(event, this.pubkey);
             let action = projectionRevisionAction(
               this.projection?.revision ?? null,
               remote.revision,

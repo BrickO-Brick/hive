@@ -24,6 +24,8 @@ const OWNER_BYTES = new Uint8Array(32).fill(1);
 const OWNER =
   "1111111111111111111111111111111111111111111111111111111111111111";
 const RELAY = "wss://Relay.Example/";
+const RELAY_SELF =
+  "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f";
 const PROJECTION_EVENT = {
   id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   pubkey: "9999999999999999999999999999999999999999999999999999999999999999",
@@ -149,6 +151,7 @@ test("projection is decrypted, cached by normalized relay, and rendered during o
     subscribeLive: async () => async () => {},
   });
   const restoreWindow = installWindow(storage, async (command, args) => {
+    if (command === "get_relay_self") return RELAY_SELF;
     if (command === "nip44_decrypt_from_self") return "workspace-key";
     if (command === "decrypt_workspace_metadata") {
       if (args.envelope === "ciphertext-alpha") return "Alpha";
