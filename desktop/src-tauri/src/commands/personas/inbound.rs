@@ -7,9 +7,9 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::{
     app_state::AppState,
     managed_agents::{
-        agent_events::ManagedAgentEventContent, load_personas, persona_events::persona_d_tag,
-        save_personas, team_events::TeamEventContent, try_regenerate_nest, AgentDefinition,
-        ManagedAgentRecord, TeamRecord,
+        agent_events::ManagedAgentEventContent, load_agent_definitions, load_personas,
+        persona_events::persona_d_tag, save_personas, team_events::TeamEventContent,
+        try_regenerate_nest, AgentDefinition, ManagedAgentRecord, MutationRoute, TeamRecord,
     },
     util::now_iso,
 };
@@ -134,6 +134,25 @@ fn reconcile_inbound_persona_event_blocking(
     else {
         return Ok(());
     };
+
+    // Library-projection preflight (§2.7): a projected persona is
+    // library-authoritative, so an inbound plain-persona upsert targeting it must
+    // NOT overwrite the local cache OR advance the retention head — the future
+    // library-aware inbound handler owns that coordinate. Return WITHOUT retaining
+    // (Ok, unretained), so once that handler lands the event is reprocessed;
+    // retaining here would move the head and make the retry look stale. Routes on
+    // `persona_d_tag` (the exact match key `apply_inbound_persona` uses) against
+    // the RAW keyless record — `library_ref` is not view-carried. Only KIND_PERSONA
+    // targets the persona store; team/agent projections are out of scope here.
+    if kind == KIND_PERSONA {
+        let raw_definitions = load_agent_definitions(&app)?;
+        if MutationRoute::for_persona_d_tag(&raw_definitions, &d_tag)
+            == MutationRoute::LibraryProjected
+        {
+            return Ok(());
+        }
+    }
+
     let conn = open_retention_db(&scope.db_path)?;
     let outcome = retain_inbound_event(
         &conn,
@@ -278,6 +297,25 @@ fn reconcile_inbound_tombstone(
     else {
         return Ok(());
     };
+
+    // Library-projection preflight (§2.7): a projected persona is
+    // library-authoritative, so an inbound tombstone targeting it must NOT delete
+    // the local record OR advance the retention head — the future library-aware
+    // handler owns removing that coordinate (as a §3.4 workspace-remove). Return
+    // WITHOUT retaining (Ok, unretained) so the tombstone is reprocessed once that
+    // handler lands. Routes on the tombstone's `target_d_tag` — the same
+    // `persona_d_tag`-derived key the KIND_PERSONA `retain` below matches on —
+    // against the RAW keyless record. Only KIND_PERSONA tombstones touch the
+    // persona store; team/agent removals are out of scope here.
+    if target_kind == KIND_PERSONA {
+        let raw_definitions = load_agent_definitions(app)?;
+        if MutationRoute::for_persona_d_tag(&raw_definitions, &target_d_tag)
+            == MutationRoute::LibraryProjected
+        {
+            return Ok(());
+        }
+    }
+
     let conn = open_retention_db(&scope.db_path)?;
     let outcome = retain_inbound_event(
         &conn,

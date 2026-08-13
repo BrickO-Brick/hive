@@ -498,10 +498,10 @@ pub(crate) fn save_personas_at(
 
 /// The canonical raw-record-by-slug lookup (§2.7, §8 Phase 0). One place
 /// resolves a slug to its authoritative on-disk record so the library-aware
-/// routing decision below is identical for delete, inbound upsert/tombstone,
-/// and snapshot/team import. Consumed by §3's removal and inbound branches once
-/// the projection state machine lands; used by [`MutationRoute::for_slug`] now.
-#[allow(dead_code)]
+/// routing decision is identical for delete, inbound upsert/tombstone, and
+/// snapshot/team import. Command preflights consult it BEFORE any destructive
+/// effect (`library_ref` is not view-carried, so the route can only be read
+/// from the raw store, never from an inbound/import view).
 pub(crate) fn raw_record_by_slug<'a>(
     records: &'a [ManagedAgentRecord],
     slug: &str,
@@ -539,10 +539,84 @@ impl MutationRoute {
     }
 
     /// The route for a mutation targeting `slug` against the raw store — the
-    /// decision delete/inbound/import consult before taking the plain path.
-    #[allow(dead_code)]
+    /// decision delete and snapshot/team import consult before taking the plain
+    /// path. The slug is the persona `id`, which is the raw record's `slug`.
     pub(crate) fn for_slug(records: &[ManagedAgentRecord], slug: &str) -> Self {
         Self::for_record(raw_record_by_slug(records, slug))
+    }
+
+    /// The route for an inbound mutation identified by its persona d-tag. The
+    /// inbound apply/tombstone arms match a local record by
+    /// [`persona_d_tag`](crate::managed_agents::persona_events::persona_d_tag),
+    /// NOT by slug — an in-app persona's d-tag is its `id`, but a team-sourced
+    /// persona keys on `source_team_persona_slug`. Routing must consult the raw
+    /// record under the SAME derivation the apply/tombstone uses, or a projected
+    /// team persona would slip past a slug-only check. `library_ref` is not
+    /// view-carried, so the route can only be read from the raw store.
+    pub(crate) fn for_persona_d_tag(records: &[ManagedAgentRecord], d_tag: &str) -> Self {
+        Self::for_record(records.iter().find(|record| {
+            record.to_definition_view().is_some_and(|view| {
+                crate::managed_agents::persona_events::persona_d_tag(&view) == d_tag
+            })
+        }))
+    }
+
+    /// Refuse a plain-path mutation whose target `slug` resolves to a
+    /// library-projected record (§2.7). The command boundaries that key by slug
+    /// — `delete_persona` and snapshot/team import — call this on the RAW
+    /// keyless store BEFORE any destructive effect, so a projected target fails
+    /// closed with one uniform refusal until §3's state machine routes it. A
+    /// plain or unknown slug (a fresh insert) returns `Ok`.
+    pub(crate) fn reject_projected_slug(
+        records: &[ManagedAgentRecord],
+        slug: &str,
+    ) -> Result<(), String> {
+        if Self::for_slug(records, slug) == Self::LibraryProjected {
+            return Err(format!(
+                "persona {slug} is a library projection: route it through the library, \
+                 not a plain persona save (§2.7)"
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// The shared-definition slots (§2.2 allowlist) of a record, borrowed for
+/// equality comparison. A plain persona save may freely change a projected
+/// record's SCOPE-LOCAL fields (`is_active`, `env_vars`, timestamps), but
+/// changing any of these library-authoritative slots is a shared-definition
+/// edit that must route through the library — so the merge seam compares only
+/// this fingerprint, never the whole record. The field set mirrors
+/// [`SharedDefinition`](crate::managed_agents::library::SharedDefinition), the
+/// sole writer of these slots.
+#[derive(PartialEq)]
+struct SharedSlotFingerprint<'a> {
+    display_name: &'a Option<String>,
+    avatar_url: &'a Option<String>,
+    system_prompt: &'a Option<String>,
+    runtime: &'a Option<String>,
+    model: &'a Option<String>,
+    provider: &'a Option<String>,
+    name_pool: &'a [String],
+    respond_to: &'a Option<String>,
+    respond_to_allowlist: &'a [String],
+    parallelism: &'a Option<u32>,
+}
+
+impl<'a> SharedSlotFingerprint<'a> {
+    fn of(record: &'a ManagedAgentRecord) -> Self {
+        Self {
+            display_name: &record.display_name,
+            avatar_url: &record.avatar_url,
+            system_prompt: &record.system_prompt,
+            runtime: &record.runtime,
+            model: &record.model,
+            provider: &record.provider,
+            name_pool: &record.name_pool,
+            respond_to: &record.definition_respond_to,
+            respond_to_allowlist: &record.definition_respond_to_allowlist,
+            parallelism: &record.definition_parallelism,
+        }
     }
 }
 
@@ -568,17 +642,19 @@ impl MutationRoute {
 /// record must not be mutated by this plain path:
 /// - a projected record absent from `views` is a deletion that must advance the
 ///   §3.4 `ExcludePending` state machine, not silently drop the row;
-/// - a `views` entry that would change a projected record's shared slots is a
-///   shared-definition edit (ruling 3a) or a library-linked inbound upsert
-///   (P4-C2) that must route through the library, not overwrite the local cache
-///   with no revision.
+/// - a `views` entry that would change a projected record's SHARED slots (the
+///   [`shared_slot_fingerprint`] allowlist) is a shared-definition edit (ruling
+///   3a) or a library-linked inbound upsert (P4-C2) that must route through the
+///   library, not overwrite the local cache with no revision.
 ///
-/// Both fail closed until §3 wires the state machine. A view that leaves a
-/// projected record unchanged (an unrelated writer re-passing the projected
-/// view, stripped of its metadata) is not a mutation and rides through intact —
-/// the reason `library_ref` survives every writer above. No production path
-/// authors `library_ref` at Phase 0, so the projected branch is an unreachable
-/// guard rail until §3 populates it.
+/// Both fail closed. A view that touches only a projected record's SCOPE-LOCAL
+/// fields (`is_active`, `env_vars`, timestamps) leaves the shared fingerprint
+/// unchanged and rides through the plain path — the reason a legitimate local
+/// toggle on a projected agent is not blocked. This save-seam guard is
+/// defense-in-depth: each command boundary (delete, inbound upsert/tombstone,
+/// snapshot/team import) runs its own [`MutationRoute::for_slug`] preflight
+/// BEFORE any destructive effect, so a projected target never reaches a
+/// half-applied state even though the seam would also reject it here.
 ///
 /// [`LibraryProjected`]: MutationRoute::LibraryProjected
 fn merge_preserving_definitions(
@@ -597,17 +673,24 @@ fn merge_preserving_definitions(
                 if MutationRoute::for_record(Some(&record)) == MutationRoute::LibraryProjected {
                     let mut candidate = record.clone();
                     candidate.apply_definition_view(view);
-                    if candidate != record {
+                    if SharedSlotFingerprint::of(&candidate) != SharedSlotFingerprint::of(&record) {
                         return Err(format!(
                             "persona '{}' is a library projection: shared-content edits must \
                              route through the library, not a plain persona save (§2.7)",
                             view.id
                         ));
                     }
+                    // Only scope-local slots (`is_active`, `env_vars`,
+                    // timestamps) changed — apply them. `candidate` carries the
+                    // edit and keeps the projection metadata intact, because
+                    // `apply_definition_view` never writes `library_ref` or its
+                    // siblings. A local toggle on a shared agent must take
+                    // effect, not be silently dropped.
+                    merged.push(candidate);
                 } else {
                     record.apply_definition_view(view);
+                    merged.push(record);
                 }
-                merged.push(record);
             }
             None => merged.push(view.clone().into_agent_record()),
         }

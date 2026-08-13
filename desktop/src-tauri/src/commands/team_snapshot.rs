@@ -24,10 +24,10 @@ use crate::{
     },
     managed_agents::{
         agent_snapshot::{build_snapshot, AgentSnapshot, AgentSnapshotMemoryEntry, MemoryLevel},
-        load_managed_agents, load_managed_agents_at, load_personas, load_personas_at, load_teams,
-        load_teams_readonly, managed_agents_store_path_at, save_managed_agents_at,
-        save_personas_at, save_teams_at, teams_store_path_at, AgentDefinition, ManagedAgentRecord,
-        TeamRecord,
+        load_agent_definitions_at, load_managed_agents, load_managed_agents_at, load_personas,
+        load_personas_at, load_teams, load_teams_readonly, managed_agents_store_path_at,
+        save_managed_agents_at, save_personas_at, save_teams_at, teams_store_path_at,
+        AgentDefinition, ManagedAgentRecord, MutationRoute, TeamRecord,
     },
     relay::{effective_agent_relay_url, sync_managed_agent_profile},
     util::now_iso,
@@ -683,6 +683,9 @@ where
         )?;
 
         let existing_records = load_managed_agents_at(&definitions_dir)?;
+        // §2.7 projection guard rail, consulted in the pre-write pubkey-collision
+        // loop (unreachable today — imports mint fresh UUIDs — but uniform).
+        let raw_definitions = load_agent_definitions_at(&definitions_dir)?;
         for m in &minted {
             if existing_records.iter().any(|r| r.pubkey == m.pubkey) {
                 return Err(format!(
@@ -690,6 +693,7 @@ where
                     m.pubkey
                 ));
             }
+            MutationRoute::reject_projected_slug(&raw_definitions, &m.definition.id)?;
         }
 
         let agents_store_path = managed_agents_store_path_at(&definitions_dir);

@@ -383,6 +383,87 @@ fn test_same_owner_agent_reuse_across_entries_stays_healthy() {
 }
 
 #[test]
+fn test_noncanonical_agent_spelling_cannot_alias_across_owners() {
+    let dir = tempdir().unwrap();
+    let owner_a = Keys::generate();
+    let owner_b = Keys::generate();
+    let agent = Keys::generate();
+    // Entry A binds agent P (canonical lowercase) under owner A. Entry B binds
+    // the SAME P but spelled UPPERCASE under owner B, with a still-VALID auth
+    // tag (computed over the canonical key). Before the fix, the raw-string
+    // index saw two distinct agent keys and quarantined neither — the §2.5
+    // cross-owner process-global alias. Now B fails canonical validation at
+    // pass 1 (the only rejection cause is the encoding), so the alias can never
+    // reach the healthy set; A stays usable.
+    let a = value_of(&entry(
+        "lib-canon-a",
+        "scope-a",
+        "aria",
+        Some((&owner_a, &agent)),
+    ));
+    let mut e_b = entry("lib-canon-b", "scope-b", "bram", Some((&owner_b, &agent)));
+    for binding in e_b.identity_bindings.values_mut() {
+        binding.agent_pubkey = binding.agent_pubkey.to_uppercase();
+    }
+    let b = value_of(&e_b);
+    write_doc(dir.path(), &doc(vec![a.clone(), b.clone()]));
+
+    match load_library(dir.path()) {
+        LibraryLoad::Loaded(loaded) => {
+            assert_eq!(loaded.healthy.len(), 1);
+            assert_eq!(loaded.healthy[0].library_id, "lib-canon-a");
+            assert!(loaded.quarantined.contains(&b));
+            assert!(loaded.degradations.iter().any(|d| d.contains("canonical")));
+        }
+        other => panic!("expected Loaded, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_same_owner_noncanonical_spelling_is_not_a_false_cross_owner_collision() {
+    let dir = tempdir().unwrap();
+    let owner = Keys::generate();
+    let agent = Keys::generate();
+    // ONE owner, spelled canonically in entry A and UPPERCASE (re-keyed) in
+    // entry B. A raw-string index would read the two owner spellings as two
+    // different owners and falsely group-quarantine the healthy same-owner
+    // reuse. Under canonical enforcement B is rejected for its encoding and A
+    // survives — the valid reuse is NOT dragged down by a phantom collision.
+    let a = value_of(&entry(
+        "lib-owner-canon-a",
+        "scope-a",
+        "aria",
+        Some((&owner, &agent)),
+    ));
+    let mut e_b = entry(
+        "lib-owner-canon-b",
+        "scope-b",
+        "bram",
+        Some((&owner, &agent)),
+    );
+    let (owner_hex, binding) = e_b
+        .identity_bindings
+        .iter()
+        .next()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .expect("one binding");
+    e_b.identity_bindings.clear();
+    e_b.identity_bindings
+        .insert(owner_hex.to_uppercase(), binding);
+    let b = value_of(&e_b);
+    write_doc(dir.path(), &doc(vec![a, b.clone()]));
+
+    match load_library(dir.path()) {
+        LibraryLoad::Loaded(loaded) => {
+            assert_eq!(loaded.healthy.len(), 1);
+            assert_eq!(loaded.healthy[0].library_id, "lib-owner-canon-a");
+            assert!(loaded.quarantined.contains(&b));
+        }
+        other => panic!("expected Loaded, got {other:?}"),
+    }
+}
+
+#[test]
 fn test_duplicate_library_id_group_quarantines_all_colliders() {
     let dir = tempdir().unwrap();
     let a = value_of(&entry("lib-dup", "scope-1", "one", None));

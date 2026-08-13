@@ -156,13 +156,17 @@ pub(crate) struct LibraryEntry {
     /// PERMANENT journaled retirement markers in v1 (P17-C1): no v1 path
     /// discharges them; their presence keeps `key_archive_protected(pubkey)`
     /// true. SET semantics on `(library_id, scope_id, agent_pubkey)`
-    /// (`library_id` is fixed per entry). Insert ONLY through
-    /// [`upsert_deferred_archive`](LibraryEntry::upsert_deferred_archive) — every
-    /// append is an upsert (P15-MINOR) — and read through
-    /// [`deferred_archive_obligations`](LibraryEntry::deferred_archive_obligations),
-    /// which collapses legacy duplicate rows to one obligation.
+    /// (`library_id` is fixed per entry). PRIVATE by construction — the ONLY
+    /// access outside this module is [`upsert_deferred_archive`] (every append
+    /// an upsert, P15-MINOR) and [`deferred_archive_obligations`] (reads legacy
+    /// duplicate rows as one obligation), so no crate caller can `.push()` a
+    /// duplicate or observe multiplicity. Serde and the child-module tests reach
+    /// the field directly by module ancestry, not visibility.
+    ///
+    /// [`upsert_deferred_archive`]: LibraryEntry::upsert_deferred_archive
+    /// [`deferred_archive_obligations`]: LibraryEntry::deferred_archive_obligations
     #[serde(default)]
-    pub deferred_archives: Vec<DeferredArchive>,
+    deferred_archives: Vec<DeferredArchive>,
     /// Authoritative per-scope membership — sole source for delete-confirm
     /// enumeration, tombstone completion, and key lifetime.
     pub projections: BTreeMap<String, ProjectionEntry>,
@@ -453,21 +457,47 @@ fn classify_entries(document: LibraryDocument) -> LoadedLibrary {
     }
 }
 
+/// A binding pubkey must be its own canonical `to_hex()` encoding: exactly 64
+/// lowercase hex chars that parse as a valid curve point (§2.5). Production
+/// writers only ever emit `to_hex()` output, so a non-canonical spelling is
+/// hand-edited data and fails closed into the quarantine ladder. This is what
+/// makes the RAW-string identity indexes in [`identity_collisions`] sound: one
+/// agent key cannot survive under two different spellings, so a cross-owner
+/// alias can never evade the document-wide check by re-casing its hex. Mirrors
+/// the tree's `agent_snapshot_envelope::parse_canonical_pubkey` rule — including
+/// its explicit `xonly()` curve validation, since nostr's `PublicKey::from_hex`
+/// only decodes 32 bytes and defers lift-x, so a non-point like `"f" * 64` would
+/// otherwise pass structurally — kept library-local so the error text is
+/// domain-appropriate.
+fn parse_canonical_binding_pubkey(field: &str, value: &str) -> Result<PublicKey, String> {
+    if value.len() != 64
+        || !value
+            .chars()
+            .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
+    {
+        return Err(format!(
+            "binding {field} {value} is not canonical (expected 64 lowercase hex chars)"
+        ));
+    }
+    let pubkey = PublicKey::from_hex(value)
+        .map_err(|_| format!("binding {field} {value} is not a valid pubkey"))?;
+    pubkey
+        .xonly()
+        .map_err(|_| format!("binding {field} {value} is not a curve point"))?;
+    Ok(pubkey)
+}
+
 /// Semantic binding validation (§2.5 read validation): every binding's auth tag
 /// must verify against its `agent_pubkey` AND embed exactly the owner pubkey it
 /// is keyed under. Also rejects an entry that binds one `agent_pubkey` under two
-/// different owners. Malformed pubkeys/tags fail closed.
+/// different owners. Non-canonical or malformed pubkeys and bad tags fail closed;
+/// canonical encoding is required so the document-wide identity index can key on
+/// raw strings safely (see [`parse_canonical_binding_pubkey`]).
 fn validate_entry_bindings(entry: &LibraryEntry) -> Result<(), String> {
     let mut seen_agents: HashMap<String, String> = HashMap::new();
     for (owner_hex, binding) in &entry.identity_bindings {
-        let owner = PublicKey::from_hex(owner_hex)
-            .map_err(|_| format!("binding owner {owner_hex} is not a valid pubkey"))?;
-        let agent = PublicKey::from_hex(&binding.agent_pubkey).map_err(|_| {
-            format!(
-                "binding agent {} is not a valid pubkey",
-                binding.agent_pubkey
-            )
-        })?;
+        let owner = parse_canonical_binding_pubkey("owner", owner_hex)?;
+        let agent = parse_canonical_binding_pubkey("agent", &binding.agent_pubkey)?;
         let embedded =
             buzz_sdk_pkg::nip_oa::verify_auth_tag(&binding.auth_tag, &agent).map_err(|e| {
                 format!(

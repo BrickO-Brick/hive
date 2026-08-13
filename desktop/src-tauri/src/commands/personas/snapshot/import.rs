@@ -565,6 +565,17 @@ where
         let now = now_iso();
         let persona_id = uuid::Uuid::new_v4().to_string();
 
+        // Library-projection guard rail (§2.7): the import mints a fresh UUID
+        // slug (`persona_id` above), so it can never target an existing projected
+        // record — but the route is consulted before any store write to keep the
+        // §2.7 invariant uniform across every command boundary. If a future
+        // change ever reused a slug, this refuses before `save_personas_at` and
+        // before any key is persisted. Reads the RAW keyless definitions (where
+        // `library_ref` lives — it is not view-carried), loaded under this lock.
+        let raw_definitions =
+            crate::managed_agents::storage::load_agent_definitions_at(&definitions_dir)?;
+        crate::managed_agents::MutationRoute::reject_projected_slug(&raw_definitions, &persona_id)?;
+
         let persona = AgentDefinition {
             id: persona_id.clone(),
             display_name: display_name.clone(),

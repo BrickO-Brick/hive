@@ -3,10 +3,11 @@ use tauri::AppHandle;
 use crate::{
     app_state::AppState,
     managed_agents::{
-        current_instance_id, delete_agent_key, load_managed_agents, load_persona_views,
-        load_personas, load_teams, save_managed_agents, save_personas, stop_managed_agent_process,
-        sync_managed_agent_processes, try_regenerate_nest, validate_persona_activation_change,
-        validate_persona_deletion, AgentDefinition, ManagedAgentRecord, PersonaView,
+        current_instance_id, delete_agent_key, load_agent_definitions, load_managed_agents,
+        load_persona_views, load_personas, load_teams, save_managed_agents, save_personas,
+        stop_managed_agent_process, sync_managed_agent_processes, try_regenerate_nest,
+        validate_persona_activation_change, validate_persona_deletion, AgentDefinition,
+        ManagedAgentRecord, MutationRoute, PersonaView,
     },
     util::now_iso,
 };
@@ -154,6 +155,18 @@ pub async fn delete_persona(id: String, app: AppHandle) -> Result<(), String> {
             // reached for non-builtin, non-team personas (both rejected above),
             // so every deleted persona here is one this owner published.
             let d_tag = crate::managed_agents::persona_events::persona_d_tag(persona);
+
+            // Library-projection preflight (§2.7): a projected persona's delete
+            // is a §3.4 workspace-remove that must journal an `ExcludePending`
+            // intent, NOT a local cascade that destroys the linked instances. The
+            // route is read from the RAW keyless record (`library_ref` is not
+            // view-carried), under the store lock, BEFORE any runtime stop,
+            // `commit_cascade_agents`, keyring deletion, or tombstone — so a
+            // projected target reaches none of them. The save-seam guard would
+            // also reject the persona save, but only after the cascade already
+            // ran; this refusal is what keeps the delete atomic.
+            let raw_definitions = load_agent_definitions(&app)?;
+            MutationRoute::reject_projected_slug(&raw_definitions, &id)?;
 
             // ── Phase 1: Stage ─────────────────────────────────────────────
             //
