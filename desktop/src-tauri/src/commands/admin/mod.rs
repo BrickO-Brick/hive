@@ -488,6 +488,33 @@ pub async fn admin_resolve_report(
     serde_json::from_slice(&bytes).map_err(|e| format!("invalid JSON from relay: {e}"))
 }
 
+/// Reopen a resolved report — POST /api/admin/v1/reports/{id}/reopen.
+///
+/// Body: `{request_id, reason?}`. The `request_id` is a client-generated UUID
+/// for idempotency; the caller must generate once per reopen attempt and reuse
+/// on retry. Reopen is re-triage only — it moves a `resolved`/`dismissed`/
+/// `escalated` report back to `open` and does not reverse any enforcement
+/// action (bans, deletions) taken while it was resolved.
+#[tauri::command]
+pub async fn admin_reopen_report(
+    origin: String,
+    id: String,
+    body: serde_json::Value,
+    state: tauri::State<'_, crate::app_state::AppState>,
+) -> Result<serde_json::Value, String> {
+    let origin = origin::AdminOrigin::parse(&origin)?;
+    let id =
+        uuid::Uuid::parse_str(&id).map_err(|_| "report id must be a valid UUID".to_string())?;
+    let url = origin.route_url(
+        &routes::AdminRoute::ReportReopen { id },
+        &routes::AdminQuery::default(),
+    );
+    let body_bytes =
+        serde_json::to_vec(&body).map_err(|e| format!("failed to serialise request body: {e}"))?;
+    let bytes = post_admin_json(&url, &body_bytes, SUCCESS_JSON_CAP, &state).await?;
+    serde_json::from_slice(&bytes).map_err(|e| format!("invalid JSON from relay: {e}"))
+}
+
 /// Update feedback status — PATCH /api/admin/v1/feedback/{id}.
 ///
 /// Body: `{status}` where status ∈ {"new","reviewed","archived"}.

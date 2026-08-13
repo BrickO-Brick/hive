@@ -50,6 +50,9 @@ pub enum AdminRoute {
     ReportResolve {
         id: uuid::Uuid,
     },
+    ReportReopen {
+        id: uuid::Uuid,
+    },
     FeedbackList,
     FeedbackDetail {
         id: uuid::Uuid,
@@ -101,6 +104,7 @@ impl AdminRoute {
             AdminRoute::ReportsList => "/reports".to_string(),
             AdminRoute::ReportDetail { id } => format!("/reports/{id}"),
             AdminRoute::ReportResolve { id } => format!("/reports/{id}/resolve"),
+            AdminRoute::ReportReopen { id } => format!("/reports/{id}/reopen"),
             AdminRoute::FeedbackList => "/feedback".to_string(),
             AdminRoute::FeedbackDetail { id } => format!("/feedback/{id}"),
             AdminRoute::FeedbackAttachment { id, sha256 } => {
@@ -243,6 +247,15 @@ mod tests {
         assert_eq!(
             AdminRoute::ReportDetail { id }.path(),
             "/reports/00000000-0000-0000-0000-000000000001"
+        );
+    }
+
+    #[test]
+    fn report_reopen_path() {
+        let id = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000003").unwrap();
+        assert_eq!(
+            AdminRoute::ReportReopen { id }.path(),
+            "/reports/00000000-0000-0000-0000-000000000003/reopen"
         );
     }
 
