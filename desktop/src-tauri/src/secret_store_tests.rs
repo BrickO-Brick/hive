@@ -186,6 +186,112 @@ fn test_blob_lock_acquire_and_release() {
     );
 }
 
+// ── W6-B: blob lockfile hardening against tmp-cleaner unlink/recreate ──────
+//
+// The blob lock is a service-keyed `/tmp` lockfile (distinct from the
+// directory-inode transaction lock). A tmp cleaner can unlink it while a holder
+// keeps its `flock`, after which a recreate under the same pathname is a fresh
+// inode a second process can lock in parallel — the classic split. The fix is
+// an inode recheck after the lock is granted: a holder whose locked inode no
+// longer matches the live pathname re-acquires against the live one, so all
+// contenders converge on a single inode.
+
+#[cfg(all(unix, feature = "system-keyring"))]
+#[test]
+fn test_locked_inode_is_live_true_for_untouched_file() {
+    // A freshly opened lockfile that no one has churned must read as live.
+    let path = std::env::temp_dir().join(format!("buzz-w6b-live-{}.lock", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let file = std::fs::File::create(&path).expect("create lockfile");
+    assert!(
+        locked_inode_is_live(&file, &path),
+        "an untouched lockfile must resolve to its own locked inode"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[cfg(all(unix, feature = "system-keyring"))]
+#[test]
+fn test_locked_inode_is_live_false_after_unlink_recreate() {
+    // A held fd whose pathname was unlinked and recreated points at a dead
+    // inode while the pathname resolves to a fresh one — the split condition
+    // the recheck exists to catch.
+    let path = std::env::temp_dir().join(format!("buzz-w6b-churn-{}.lock", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let held = std::fs::File::create(&path).expect("create original lockfile");
+    std::fs::remove_file(&path).expect("unlink original");
+    std::fs::File::create(&path).expect("recreate lockfile (fresh inode)");
+    assert!(
+        !locked_inode_is_live(&held, &path),
+        "a recreated pathname must NOT match the dead inode a holder still owns"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[cfg(all(unix, feature = "system-keyring"))]
+#[test]
+fn test_locked_inode_is_live_false_when_pathname_absent() {
+    // Unlinked with no recreate: the pathname does not resolve, so the holder's
+    // inode cannot be the live one. The acquire loop must then re-create it.
+    let path = std::env::temp_dir().join(format!("buzz-w6b-gone-{}.lock", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let held = std::fs::File::create(&path).expect("create lockfile");
+    std::fs::remove_file(&path).expect("unlink lockfile");
+    assert!(
+        !locked_inode_is_live(&held, &path),
+        "an absent pathname must read as not-live"
+    );
+}
+
+#[cfg(all(unix, feature = "system-keyring"))]
+#[test]
+fn test_blob_lock_converges_on_live_inode_after_recreate() {
+    // End-to-end: a holder acquires the lock, a tmp cleaner unlinks+recreates
+    // the lockfile (leaving the first guard on a dead inode), and a second
+    // acquire must land on the LIVE inode — not the dead one — so a peer
+    // process contending on that live pathname is still excluded.
+    use std::os::unix::fs::MetadataExt;
+    use std::os::unix::io::AsRawFd;
+
+    let service = format!("buzz-w6b-converge-{}", std::process::id());
+    let path = blob_lockfile_path(&service);
+    let _ = std::fs::remove_file(&path);
+
+    let first = acquire_blob_lock(&service).expect("first acquire");
+    let dead_ino = first.file.metadata().expect("first meta").ino();
+
+    // Tmp cleaner churns the pathname out from under the first holder.
+    std::fs::remove_file(&path).expect("unlink lockfile");
+    std::fs::File::create(&path).expect("recreate lockfile");
+    let live_ino = std::fs::metadata(&path).expect("live meta").ino();
+    assert_ne!(dead_ino, live_ino, "recreate must yield a fresh inode");
+
+    // A second acquire (the analog of process B) converges on the live inode.
+    let second = acquire_blob_lock(&service).expect("second acquire");
+    assert_eq!(
+        second.file.metadata().expect("second meta").ino(),
+        live_ino,
+        "the hardened acquire must lock the LIVE inode, not the dead one"
+    );
+
+    // A peer opening the live pathname must be excluded while `second` holds.
+    let peer = std::fs::File::open(&path).expect("peer opens live lockfile");
+    let rc = unsafe { libc::flock(peer.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    assert_eq!(
+        rc, -1,
+        "a peer must NOT acquire the live inode while the hardened guard holds it"
+    );
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::EWOULDBLOCK),
+        "peer exclusion must fail with EWOULDBLOCK"
+    );
+
+    drop(second);
+    drop(first);
+    let _ = std::fs::remove_file(&path);
+}
+
 // ── F5a: cross-process transaction lock (directory-inode based) ───────
 
 #[test]

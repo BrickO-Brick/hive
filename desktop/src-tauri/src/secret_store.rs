@@ -127,6 +127,37 @@ pub fn store_txn_lock_dir(store_file: &std::path::Path) -> PathBuf {
         .unwrap_or_else(|| store_file.to_path_buf())
 }
 
+/// Upper bound on lockfile re-acquisition attempts when a tmp cleaner keeps
+/// unlinking the blob lockfile out from under us. Reaching it means the file is
+/// being churned faster than we can lock a live inode — fail loudly rather than
+/// spin forever.
+#[cfg(all(unix, feature = "system-keyring"))]
+const MAX_BLOB_LOCK_REACQUIRE: u32 = 100;
+
+/// True iff `file` (an open, `flock`-held fd) is locked on the same inode the
+/// pathname currently resolves to.
+///
+/// Called after the lock is granted to detect a tmp-cleaner unlink/recreate: a
+/// mismatch means our fd holds a lock on a now-nameless dead inode while the
+/// live pathname is a *different* inode another process can lock in parallel —
+/// two processes each "holding" the lock over different inodes, mutual
+/// exclusion lost. A missing pathname (`stat` fails) counts as not-live so the
+/// caller re-creates and re-locks the live inode.
+#[cfg(all(unix, feature = "system-keyring"))]
+fn locked_inode_is_live(file: &std::fs::File, path: &std::path::Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(locked) = file.metadata() else {
+        return false;
+    };
+    // Compare (dev, ino): inode numbers are only unique within a device, and
+    // the open fd pins its inode number so a recreate under the same pathname
+    // is guaranteed a different one.
+    matches!(
+        std::fs::metadata(path),
+        Ok(live) if live.dev() == locked.dev() && live.ino() == locked.ino()
+    )
+}
+
 /// Acquire an exclusive advisory file lock for the blob identified by `service`.
 ///
 /// Opens (or creates) the lockfile and blocks until the lock is acquired.
@@ -160,20 +191,40 @@ impl BlobLockGuard {
     fn acquire(path: &std::path::Path) -> Result<Self, String> {
         #[cfg(unix)]
         {
-            let file = std::fs::OpenOptions::new()
-                .create(true)
-                .truncate(false)
-                .write(true)
-                .open(path)
-                .map_err(|e| format!("blob lock open {}: {e}", path.display()))?;
             use std::os::unix::io::AsRawFd;
-            // LOCK_EX blocks until the lock is acquired (no LOCK_NB).
-            let ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
-            if ret != 0 {
-                let err = std::io::Error::last_os_error();
-                return Err(format!("blob lock flock: {err}"));
+            // Loop to survive a tmp cleaner unlinking the lockfile out from
+            // under us. The classic `/tmp` lock split: we `flock` an inode, the
+            // pathname is unlinked and recreated as a fresh inode, and a second
+            // process locks that fresh inode — both "hold" the lock over
+            // different inodes. Defeat it by rechecking, after the lock is
+            // granted, that the pathname still resolves to the inode we locked.
+            // If it does not, our lock is on a dead inode: drop it and retry so
+            // we contend on the live one. LOCK_EX blocks until granted, so a
+            // stable inode converges in one pass.
+            for _ in 0..MAX_BLOB_LOCK_REACQUIRE {
+                let file = std::fs::OpenOptions::new()
+                    .create(true)
+                    .truncate(false)
+                    .write(true)
+                    .open(path)
+                    .map_err(|e| format!("blob lock open {}: {e}", path.display()))?;
+                // LOCK_EX blocks until the lock is acquired (no LOCK_NB).
+                let ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+                if ret != 0 {
+                    let err = std::io::Error::last_os_error();
+                    return Err(format!("blob lock flock: {err}"));
+                }
+                if locked_inode_is_live(&file, path) {
+                    return Ok(BlobLockGuard { file });
+                }
+                // Stale inode: the pathname was unlinked/recreated while we
+                // blocked. Drop this fd (releasing the dead-inode lock) and
+                // retry against the live pathname.
             }
-            return Ok(BlobLockGuard { file });
+            return Err(format!(
+                "blob lock: pathname {} churned {MAX_BLOB_LOCK_REACQUIRE} times without a stable inode",
+                path.display()
+            ));
         }
 
         #[cfg(windows)]
