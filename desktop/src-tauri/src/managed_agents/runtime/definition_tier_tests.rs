@@ -42,11 +42,12 @@ fn persona_v(
     }
 }
 
-/// Test the pure definition-unavailable predicate that `spawn_agent_child`
-/// uses before reaching the `require_resolved` or AppHandle-dependent paths.
+/// The pure definition-unavailable predicate that `spawn_agent_child`,
+/// `runtime_status`, and `unkeyable_failed_status` all consult before reaching
+/// any AppHandle-dependent path.
 ///
 /// `spawn_agent_child` gates on:
-///   if let Some(pid) = record.persona_id { if def.secrets_unavailable → Err }
+///   if let Some(pid) = unavailable_definition_id(record, personas) { → Err }
 ///
 /// This mirrors the test shape of `orphaned_linked_instance_returns_error` in
 /// the same file: we test the predicate directly without a full AppHandle.
@@ -61,24 +62,17 @@ fn definition_unavailable_spawn_predicate_fires() {
     pin_persona(&mut record, &def);
     assert_eq!(record.persona_id.as_deref(), Some("def-slug"));
 
-    // Simulate the spawn predicate: look up the persona in the personas slice.
     let personas = std::slice::from_ref(&def);
-    let definition_unavailable = record
-        .persona_id
-        .as_deref()
-        .and_then(|pid| personas.iter().find(|p| p.id == pid))
-        .map(|d| d.secrets_unavailable)
-        .unwrap_or(false);
-
-    assert!(
-        definition_unavailable,
-        "spawn must detect unavailable definition via secrets_unavailable flag"
+    assert_eq!(
+        crate::managed_agents::unavailable_definition_id(&record, personas),
+        Some("def-slug"),
+        "spawn must detect unavailable definition and name it via the shared predicate"
     );
 }
 
 #[test]
 fn definition_available_spawn_predicate_does_not_fire() {
-    // Same setup but the definition is available — the predicate must return false.
+    // Same setup but the definition is available — the predicate must return None.
     let mut def = persona_v("def-slug", "prompt", &[("ANTHROPIC_API_KEY", "secret")]);
     def.secrets_unavailable = false;
 
@@ -86,16 +80,51 @@ fn definition_available_spawn_predicate_does_not_fire() {
     pin_persona(&mut record, &def);
 
     let personas = std::slice::from_ref(&def);
-    let definition_unavailable = record
-        .persona_id
-        .as_deref()
-        .and_then(|pid| personas.iter().find(|p| p.id == pid))
-        .map(|d| d.secrets_unavailable)
-        .unwrap_or(false);
-
-    assert!(
-        !definition_unavailable,
+    assert_eq!(
+        crate::managed_agents::unavailable_definition_id(&record, personas),
+        None,
         "spawn must not refuse a linked instance whose definition is available"
+    );
+}
+
+#[test]
+fn unlinked_record_never_matches_a_definition() {
+    // A record with no persona_id is not linked to any definition; even an
+    // unavailable definition in the slice must not make the predicate fire.
+    let def = {
+        let mut d = persona_v("def-slug", "prompt", &[("ANTHROPIC_API_KEY", "secret")]);
+        d.secrets_unavailable = true;
+        d
+    };
+    let mut record = fixture(RespondTo::Anyone, vec![], Some("tag".into()));
+    record.persona_id = None;
+
+    assert_eq!(
+        crate::managed_agents::unavailable_definition_id(&record, std::slice::from_ref(&def)),
+        None,
+        "an unlinked record must never match a definition's unavailability"
+    );
+}
+
+#[test]
+fn linked_definition_absent_from_slice_yields_none() {
+    // A record linked to a persona that is not present in the slice must yield
+    // None rather than treating the missing definition as unavailable.
+    let unavailable_other = persona_v(
+        "some-other-slug",
+        "prompt",
+        &[("ANTHROPIC_API_KEY", "secret")],
+    );
+    let mut record = fixture(RespondTo::Anyone, vec![], Some("tag".into()));
+    record.persona_id = Some("linked-but-missing".to_string());
+
+    assert_eq!(
+        crate::managed_agents::unavailable_definition_id(
+            &record,
+            std::slice::from_ref(&unavailable_other)
+        ),
+        None,
+        "a definition absent from the slice must not fire the predicate"
     );
 }
 

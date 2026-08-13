@@ -10,7 +10,7 @@ use tauri::{AppHandle, Manager};
 use crate::app_state::keyring_service;
 use crate::managed_agents::{
     secret_seam::{hydrate_all_secrets_for_records, strip_and_persist_all_for_records},
-    ManagedAgentRecord,
+    AgentDefinition, ManagedAgentRecord,
 };
 use crate::secret_store::{KeyringProbe, SecretStore};
 
@@ -168,6 +168,27 @@ pub(crate) fn spawn_key_refusal(record: &ManagedAgentRecord) -> Option<String> {
         ));
     }
     None
+}
+
+/// The linked definition's id when that definition's secrets are unavailable —
+/// its `env_vars_ref` is present but could not be hydrated from the keyring.
+///
+/// This is the definition tier of the fail-closed spawn gate, alongside
+/// [`spawn_key_refusal`]'s instance-tier `secrets_unavailable` check and the
+/// global-tier check in `spawn_agent_child`. Returning the offending id (rather
+/// than a bool) lets the spawn path name it in the refusal message without a
+/// second lookup; status callers use `.is_some()`. An unlinked record, or one
+/// whose linked definition is absent from `personas`, yields `None`.
+pub(crate) fn unavailable_definition_id<'a>(
+    record: &'a ManagedAgentRecord,
+    personas: &[AgentDefinition],
+) -> Option<&'a str> {
+    let pid = record.persona_id.as_deref()?;
+    personas
+        .iter()
+        .find(|p| p.id == pid)
+        .filter(|d| d.secrets_unavailable)
+        .map(|_| pid)
 }
 
 /// Read the raw unified store — keyed instances AND key-less definitions —

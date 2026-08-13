@@ -7,9 +7,9 @@ use super::{
     load_global_agent_config, load_managed_agents, load_personas, managed_agent_runtime_log_path,
     process_is_running, record_agent_command, resolve_effective_agent_env, save_managed_agents,
     spawn_agent_child, terminate_process, terminate_untracked_pair_runtime,
-    write_agent_runtime_receipt, AgentReadiness, BackendKind, ManagedAgentPairRuntime,
-    ManagedAgentRuntimeKey, ManagedAgentRuntimeLifecycle, ManagedAgentRuntimeReceipt,
-    ManagedAgentRuntimeStatus,
+    unavailable_definition_id, write_agent_runtime_receipt, AgentReadiness, BackendKind,
+    ManagedAgentPairRuntime, ManagedAgentRuntimeKey, ManagedAgentRuntimeLifecycle,
+    ManagedAgentRuntimeReceipt, ManagedAgentRuntimeStatus,
 };
 use crate::app_state::AppState;
 
@@ -79,12 +79,7 @@ fn status_for_with(
     // in `spawn_agent_child` when the global env_vars ref cannot be resolved.
     // `definition_unavailable` is the third tier: a linked instance whose
     // definition's env could not be hydrated is refused at spawn time.
-    let definition_unavailable = record
-        .persona_id
-        .as_deref()
-        .and_then(|pid| personas.iter().find(|p| p.id == pid))
-        .map(|def| def.secrets_unavailable)
-        .unwrap_or(false);
+    let definition_unavailable = unavailable_definition_id(record, personas).is_some();
     let local_setup = !record.secrets_unavailable
         && !global_unavailable
         && !definition_unavailable
@@ -471,12 +466,7 @@ fn unkeyable_failed_status(
     let command = record_agent_command(record, personas);
     let metadata = super::known_acp_runtime(&command);
     let effective = resolve_effective_agent_env(record, personas, metadata, global);
-    let definition_unavailable = record
-        .persona_id
-        .as_deref()
-        .and_then(|pid| personas.iter().find(|p| p.id == pid))
-        .map(|def| def.secrets_unavailable)
-        .unwrap_or(false);
+    let definition_unavailable = unavailable_definition_id(record, personas).is_some();
     ManagedAgentRuntimeStatus {
         pubkey: record.pubkey.clone(),
         relay_url: requested.clone(),

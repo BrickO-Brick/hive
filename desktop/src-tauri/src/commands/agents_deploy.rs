@@ -138,18 +138,14 @@ pub(super) fn build_deploy_payload(
     // Fail closed on a definition with unavailable secrets: refuse deploy if
     // the linked definition's env_vars could not be hydrated (definition tier,
     // mirrors the instance-tier `spawn_key_refusal` and global-tier gates above).
-    if let Some(pid) = record.persona_id.as_deref() {
-        if let Some(def) = personas.iter().find(|p| p.id == pid) {
-            if def.secrets_unavailable {
-                return Err(format!(
-                    "agent {} cannot be deployed: its definition ({pid}) has one or more secrets \
-                     that could not be loaded from the keyring. \
-                     Refusing to deploy with missing definition secrets; \
-                     retry once the keyring is reachable.",
-                    record.pubkey
-                ));
-            }
-        }
+    if let Some(pid) = crate::managed_agents::unavailable_definition_id(record, &personas) {
+        return Err(format!(
+            "agent {} cannot be deployed: its definition ({pid}) has one or more secrets \
+             that could not be loaded from the keyring. \
+             Refusing to deploy with missing definition secrets; \
+             retry once the keyring is reachable.",
+            record.pubkey
+        ));
     }
     let teams = crate::managed_agents::load_teams(app).unwrap_or_default();
     let persona_env =

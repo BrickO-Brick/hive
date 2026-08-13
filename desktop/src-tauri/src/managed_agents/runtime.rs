@@ -8,8 +8,8 @@ use crate::{
     managed_agents::{
         append_log_marker, known_acp_runtime, login_shell_path, managed_agent_log_path,
         missing_command_message, normalize_agent_args, open_log_file, resolve_command,
-        spawn_key_refusal, KnownAcpRuntime, ManagedAgentPairRuntime, ManagedAgentRecord,
-        ManagedAgentRuntimeKey, ManagedAgentSummary,
+        spawn_key_refusal, unavailable_definition_id, KnownAcpRuntime, ManagedAgentPairRuntime,
+        ManagedAgentRecord, ManagedAgentRuntimeKey, ManagedAgentSummary,
     },
     util::now_iso,
 };
@@ -395,18 +395,11 @@ pub fn spawn_agent_child(
     let teams = super::load_teams(app).unwrap_or_default();
     // Fail-closed on unavailable definition secrets: mirrors `spawn_key_refusal`
     // and the global-config gate below — refuse rather than launch empty.
-    if let Some(pid) = record.persona_id.as_deref() {
-        if personas
-            .iter()
-            .find(|p| p.id == pid)
-            .map(|d| d.secrets_unavailable)
-            .unwrap_or(false)
-        {
-            return Err(format!(
-                "agent {} cannot start: definition ({pid}) secrets unavailable from keyring",
-                record.pubkey
-            ));
-        }
+    if let Some(pid) = unavailable_definition_id(record, &personas) {
+        return Err(format!(
+            "agent {} cannot start: definition ({pid}) secrets unavailable from keyring",
+            record.pubkey
+        ));
     }
     // Load global config; fail closed if a ref cannot be resolved.
     let global = crate::managed_agents::load_global_agent_config(app)?;
