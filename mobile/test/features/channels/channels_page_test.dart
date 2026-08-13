@@ -194,6 +194,52 @@ void main() {
     expect(sectionTitle.style?.fontWeight, FontWeight.w600);
   });
 
+  testWidgets('lazily builds channel rows near the viewport', (tester) async {
+    tester.view.physicalSize = const Size(320, 480);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final manyChannels = List.generate(
+      300,
+      (index) => Channel(
+        id: 'channel-$index',
+        name: 'channel-${index.toString().padLeft(3, '0')}',
+        channelType: 'stream',
+        visibility: 'open',
+        description: '',
+        createdBy: 'abc',
+        createdAt: DateTime(2025),
+        memberCount: 1,
+        isMember: true,
+      ),
+    );
+
+    await tester.pumpWidget(
+      buildTestable(
+        overrides: [
+          channelsProvider.overrideWith(() => _FakeNotifier(manyChannels)),
+        ],
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('channel-000'), findsOneWidget);
+    expect(find.text('channel-299'), findsNothing);
+
+    final scrollable = tester.state<ScrollableState>(
+      find
+          .descendant(
+            of: find.byType(CustomScrollView),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
+    scrollable.position.jumpTo(scrollable.position.maxScrollExtent);
+    await tester.pumpAndSettle();
+
+    expect(find.text('channel-000'), findsNothing);
+    expect(find.text('channel-299'), findsOneWidget);
+  });
+
   testWidgets('sizes the community header for accessible text', (tester) async {
     await tester.pumpWidget(
       buildTestable(

@@ -2,90 +2,6 @@ part of '../channels_page.dart';
 
 const _sectionMenuItemPadding = EdgeInsets.fromLTRB(Grid.xs, 0, Grid.twelve, 0);
 
-class _CustomChannelSection extends StatelessWidget {
-  final ChannelSection section;
-  final List<Channel> channels;
-  final Set<String> unreadChannelIds;
-  final Set<String> mutedChannelIds;
-  final String? currentPubkey;
-  final bool expanded;
-  final bool isFirst;
-  final bool isLast;
-  final bool showTopDivider;
-  final VoidCallback onToggle;
-  final VoidCallback onRename;
-  final VoidCallback onDelete;
-  final VoidCallback onMoveUp;
-  final VoidCallback onMoveDown;
-  final ChannelSortMode sortMode;
-  final ValueChanged<ChannelSortMode> onSortModeChange;
-  final Future<void> Function(Channel channel) onSelectChannel;
-  final void Function(Channel channel) onMarkChannelRead;
-
-  const _CustomChannelSection({
-    required this.section,
-    required this.channels,
-    required this.unreadChannelIds,
-    required this.mutedChannelIds,
-    required this.currentPubkey,
-    required this.expanded,
-    required this.isFirst,
-    required this.isLast,
-    required this.showTopDivider,
-    required this.onToggle,
-    required this.onRename,
-    required this.onDelete,
-    required this.onMoveUp,
-    required this.onMoveDown,
-    required this.sortMode,
-    required this.onSortModeChange,
-    required this.onSelectChannel,
-    required this.onMarkChannelRead,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        if (showTopDivider) const _SectionDivider(),
-        _CustomSectionHeader(
-          section: section,
-          expanded: expanded,
-          isFirst: isFirst,
-          isLast: isLast,
-          onToggle: onToggle,
-          onRename: onRename,
-          onDelete: onDelete,
-          onMoveUp: onMoveUp,
-          onMoveDown: onMoveDown,
-          sortMode: sortMode,
-          onSortModeChange: onSortModeChange,
-        ),
-        _AnimatedSectionBody(
-          expanded: expanded,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              for (final channel in channels)
-                _ChannelTile(
-                  channel: channel,
-                  isUnread: unreadChannelIds.contains(channel.id),
-                  isMuted: mutedChannelIds.contains(channel.id),
-                  currentPubkey: currentPubkey,
-                  onTap: () => onSelectChannel(channel),
-                  onMarkRead: () => onMarkChannelRead(channel),
-                  sectionId: section.id,
-                ),
-              const SizedBox(height: _kExpandedSectionTrailingPadding),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-}
-
 class _CustomSectionHeader extends ConsumerWidget {
   final ChannelSection section;
   final bool expanded;
@@ -370,89 +286,26 @@ List<PopupMenuEntry<String>> _sortMenuItems(
   ),
 ];
 
-class _ChannelSection extends StatelessWidget {
-  final String title;
-  final IconData icon;
-  final bool expanded;
-  final VoidCallback onToggle;
-  final List<Channel> channels;
-  final bool showTopDivider;
-  final Set<String> unreadChannelIds;
-  final Set<String> mutedChannelIds;
-  final String? currentPubkey;
-  final String emptyLabel;
-  final ChannelSortMode? sortMode;
-  final ValueChanged<ChannelSortMode>? onSortModeChange;
-  final Future<void> Function(Channel channel) onSelectChannel;
+class _EmptySectionLabel extends StatelessWidget {
+  final String label;
 
-  const _ChannelSection({
-    required this.title,
-    required this.icon,
-    required this.expanded,
-    required this.onToggle,
-    required this.channels,
-    required this.showTopDivider,
-    required this.unreadChannelIds,
-    required this.mutedChannelIds,
-    required this.currentPubkey,
-    required this.emptyLabel,
-    this.sortMode,
-    this.onSortModeChange,
-    required this.onSelectChannel,
-  });
+  const _EmptySectionLabel({required this.label});
 
   @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        if (showTopDivider) const _SectionDivider(),
-        _SectionHeader(
-          label: title,
-          icon: icon,
-          expanded: expanded,
-          onToggle: onToggle,
-          sortMode: sortMode,
-          onSortModeChange: onSortModeChange,
-        ),
-        _AnimatedSectionBody(
-          expanded: expanded,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (channels.isEmpty)
-                Padding(
-                  padding: const EdgeInsets.only(
-                    left: _kChannelLabelInset,
-                    right: _kChannelSectionInset,
-                    top: Grid.half,
-                    bottom: Grid.half,
-                  ),
-                  child: Text(
-                    emptyLabel,
-                    style: contentListBodyTextStyle.copyWith(
-                      color: context.colors.onSurfaceVariant,
-                    ),
-                  ),
-                )
-              else
-                for (final channel in channels)
-                  _ChannelTile(
-                    channel: channel,
-                    isUnread: unreadChannelIds.contains(channel.id),
-                    isMuted: mutedChannelIds.contains(channel.id),
-                    currentPubkey: currentPubkey,
-                    onTap: () => onSelectChannel(channel),
-                    onMarkRead: null,
-                    sectionId: null,
-                  ),
-              const SizedBox(height: _kExpandedSectionTrailingPadding),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(
+      left: _kChannelLabelInset,
+      right: _kChannelSectionInset,
+      top: Grid.half,
+      bottom: Grid.half,
+    ),
+    child: Text(
+      label,
+      style: contentListBodyTextStyle.copyWith(
+        color: context.colors.onSurfaceVariant,
+      ),
+    ),
+  );
 }
 
 class _EmptyState extends StatelessWidget {
@@ -616,101 +469,6 @@ class _SectionChevron extends StatelessWidget {
         LucideIcons.chevronDown,
         size: _kChannelIconSize,
         color: color,
-      ),
-    );
-  }
-}
-
-class _AnimatedSectionBody extends HookWidget {
-  final bool expanded;
-  final Widget child;
-
-  const _AnimatedSectionBody({required this.expanded, required this.child});
-
-  @override
-  Widget build(BuildContext context) {
-    final reducedMotion = MediaQuery.of(context).disableAnimations;
-    final controller = useAnimationController(
-      duration: reducedMotion ? Duration.zero : _kSectionExpandDuration,
-      reverseDuration: reducedMotion
-          ? Duration.zero
-          : _kSectionCollapseDuration,
-      initialValue: expanded ? 1 : 0,
-    );
-    final curvedAnimation = useMemoized(
-      () => CurvedAnimation(
-        parent: controller,
-        curve: _kSectionExpandCurve,
-        reverseCurve: _kSectionCollapseCurve,
-      ),
-      [controller],
-    );
-    final shouldRender = useState(expanded);
-
-    useEffect(() => curvedAnimation.dispose, [curvedAnimation]);
-
-    useEffect(() {
-      void handleStatus(AnimationStatus status) {
-        if (status == AnimationStatus.dismissed && !expanded) {
-          shouldRender.value = false;
-        }
-      }
-
-      controller.addStatusListener(handleStatus);
-      return () => controller.removeStatusListener(handleStatus);
-    }, [controller, expanded]);
-
-    useEffect(() {
-      controller.duration = reducedMotion
-          ? Duration.zero
-          : _kSectionExpandDuration;
-      controller.reverseDuration = reducedMotion
-          ? Duration.zero
-          : _kSectionCollapseDuration;
-
-      if (expanded) {
-        shouldRender.value = true;
-        if (reducedMotion) {
-          controller.value = 1;
-        } else {
-          unawaited(controller.forward());
-        }
-      } else if (reducedMotion) {
-        controller.value = 0;
-        shouldRender.value = false;
-      } else {
-        unawaited(controller.reverse());
-      }
-
-      return null;
-    }, [controller, expanded, reducedMotion]);
-
-    return ClipRect(
-      child: AnimatedBuilder(
-        animation: curvedAnimation,
-        child: shouldRender.value ? child : const SizedBox.shrink(),
-        builder: (context, child) {
-          final value = curvedAnimation.value.clamp(0.0, 1.0);
-          final scaleY =
-              _kSectionCollapsedScaleY +
-              ((1 - _kSectionCollapsedScaleY) * value);
-
-          return Align(
-            alignment: Alignment.topCenter,
-            heightFactor: value,
-            child: Opacity(
-              opacity: value,
-              child: Transform.scale(
-                alignment: Alignment.topCenter,
-                scaleY: scaleY,
-                child: ExcludeSemantics(
-                  excluding: !expanded,
-                  child: IgnorePointer(ignoring: !expanded, child: child),
-                ),
-              ),
-            ),
-          );
-        },
       ),
     );
   }

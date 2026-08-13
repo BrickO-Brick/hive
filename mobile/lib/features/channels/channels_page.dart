@@ -95,10 +95,7 @@ const double _kTopSectionBottomPadding = Grid.xxs;
 /// near the channel-icon column.
 const double _kTopSectionInset = Grid.twelve;
 const Duration _kSectionExpandDuration = Duration(milliseconds: 220);
-const Duration _kSectionCollapseDuration = Duration(milliseconds: 170);
 const Curve _kSectionExpandCurve = Cubic(0.23, 1, 0.32, 1);
-const Curve _kSectionCollapseCurve = Curves.easeInCubic;
-const double _kSectionCollapsedScaleY = 0.98;
 const double _kHeaderFrostScrollDistance = Grid.xxl;
 const double _kHeaderFrostMaxBlurSigma = 23.12;
 

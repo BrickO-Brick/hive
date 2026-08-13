@@ -22,6 +22,7 @@ class _ChannelTile extends ConsumerWidget {
     this.isMuted = false,
     this.onMarkRead,
     this.sectionId,
+    super.key,
   });
 
   @override
