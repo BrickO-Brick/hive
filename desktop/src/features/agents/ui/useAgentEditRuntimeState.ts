@@ -42,7 +42,10 @@ import {
   relayMeshModelPickerState,
 } from "./relayMeshModelPicker";
 import { resolveModelFieldStatusMessage } from "./agentConfigControls";
-import { resolveInheritedRuntimeSubmission } from "./personaRuntimeModel";
+import {
+  resolveInheritedRuntimeSubmission,
+  hasMissingRequiredEnvKey,
+} from "./personaRuntimeModel";
 import { useRuntimeFileConfigQuery } from "../hooks";
 import type { AcpRuntimeCatalogEntry, ManagedAgent } from "@/shared/api/types";
 import type { AgentPersona } from "@/shared/api/types";
@@ -83,6 +86,18 @@ export type DSectionAdvancedState = {
   apiKeyIsInherited: boolean;
   apiKeyInheritedLabel: string;
   apiKeyIsRequired: boolean;
+  /**
+   * Any required credential key (secret or non-secret) is still unset for the
+   * definition runtime/provider. Gates Save whenever the definition is editable,
+   * mirroring main's `localModeSatisfied` credential arm.
+   */
+  requiredEnvKeyMissing: boolean;
+  /**
+   * A non-secret required env key (rendered as a generic Advanced row, not the
+   * API-key field) is still missing. Drives the collapsed-Advanced "Required"
+   * badge, matching main's `missingEnvKeys ∩ advancedRequiredEnvKeys`.
+   */
+  advancedRequiredEnvKeyMissing: boolean;
 };
 
 export type AgentEditRuntimeStateInputs = {
@@ -271,19 +286,17 @@ export function useAgentEditRuntimeState({
     inst,
   ]);
 
-  const llmProviderFieldVisible = React.useMemo(() => {
-    // In linked context (showDef && showInst), the D-section provider/model
-    // picker is driven by the definition's runtime (definitionRuntimeId), not by
-    // the instance's harness pin (prospectiveRuntimeId). Using prospectiveRuntimeId
-    // here would make the D-section picker visible whenever the instance's
-    // agentCommand matches a provider-supporting runtime, even if the definition
-    // has no runtime configured — a phantom provider field exposure.
-    // Instance-only context (showInst && !showDef) correctly uses prospectiveRuntimeId
-    // because the instance's harness is the only runtime in scope.
-    // D-only context falls through to definitionRuntimeId via selectedRuntimeId (they equal).
-    const activeRuntimeId =
-      showInst && !showDef ? prospectiveRuntimeId : definitionRuntimeId;
+  // The active provider/model layer, chosen ONCE for every provider/model
+  // derivation below (visibility, provider options, model discovery, scope
+  // clearing): the DEFINITION runtime whenever a definition is present (linked
+  // or definition-only — its picker is the one rendered), and the instance
+  // harness pin only for unlinked instance-only agents. Main splits this across
+  // two dialogs; the merged hook selects the layer here so the D-section picker
+  // follows the definition and the I-section follows the instance pin, instead
+  // of both multiplexing on `showInst` per call site.
+  const activeRuntimeId = showDef ? definitionRuntimeId : prospectiveRuntimeId;
 
+  const llmProviderFieldVisible = React.useMemo(() => {
     if (runtimeSupportsLlmProviderSelection(activeRuntimeId)) return true;
 
     // blankRuntimeModelProviderEditable: for an edit context (not create), when the
@@ -302,17 +315,15 @@ export function useAgentEditRuntimeState({
     }
 
     return false;
-  }, [
-    showInst,
-    showDef,
-    prospectiveRuntimeId,
-    definitionRuntimeId,
-    linkedPersona,
-    def,
-  ]);
+  }, [activeRuntimeId, showDef, linkedPersona, def]);
   const prospectiveRuntime = runtimes.find(
     (r) => r.id === prospectiveRuntimeId,
   );
+  // The catalog entry for the active provider/model layer (definition when a
+  // definition is present, instance harness pin otherwise). Every provider/model
+  // derivation below reads this so the D-section follows the definition runtime
+  // and the I-section follows the instance pin — never cross-contaminated.
+  const activeRuntime = runtimes.find((r) => r.id === activeRuntimeId);
 
   const inheritedEnvVars = linkedPersona?.envVars ?? {};
   const inheritedSubmission = React.useMemo(() => {
@@ -374,6 +385,14 @@ export function useAgentEditRuntimeState({
   const defSelectedRuntime = runtimes.find((r) => r.id === definitionRuntimeId);
   const defEffectiveProvider =
     provider.trim() || inheritedProviderDefault.value;
+  // D-only inherited env layer: global + build defaults with NO persona env.
+  // Main's AgentDefinitionDialog calls useAgentDialogDefaults({ open }) with no
+  // persona env, so a definition tuning value that is cleared falls back to the
+  // global/build default — never to the definition's own just-deleted value.
+  // The instance overlay keeps the persona-inclusive `inheritedEnvVarsForAdvanced`.
+  const { inheritedEnvVars: dInheritedEnvVars } = useAgentDialogDefaults({
+    open,
+  });
   const defRequired = useRequiredCredentialState({
     open,
     prospectiveRuntimeId: definitionRuntimeId,
@@ -395,7 +414,7 @@ export function useAgentEditRuntimeState({
     runtimeId: definitionRuntimeId,
     selectedRuntime: defSelectedRuntime,
     effectiveProvider: defEffectiveProvider,
-    inheritedEnvVars: inheritedEnvVarsForAdvanced,
+    inheritedEnvVars: dInheritedEnvVars,
     advancedRequiredEnvKeys: defApiKeyState.advancedRequiredEnvKeys,
     fileSatisfiedEnvKeys: defRequired.fileSatisfiedEnvKeys,
     topLevelSecretEnvVar: defApiKeyState.secretEnvVar,
@@ -403,6 +422,11 @@ export function useAgentEditRuntimeState({
     apiKeyIsInherited: defApiKeyState.isInherited,
     apiKeyInheritedLabel: defApiKeyState.inheritedLabel,
     apiKeyIsRequired: defApiKeyState.isRequired,
+    requiredEnvKeyMissing: defRequired.requiredEnvKeyMissing,
+    advancedRequiredEnvKeyMissing: hasMissingRequiredEnvKey(
+      defApiKeyState.advancedRequiredEnvKeys,
+      envVars,
+    ),
   };
 
   const effectiveProvider =
@@ -424,7 +448,7 @@ export function useAgentEditRuntimeState({
     modelFieldVisible: true,
     open,
     provider: providerForDiscovery,
-    selectedRuntime: showInst ? prospectiveRuntime : selectedRuntime,
+    selectedRuntime: activeRuntime,
   });
 
   const hideProviderIds = React.useMemo(
@@ -437,7 +461,7 @@ export function useAgentEditRuntimeState({
 
   const providerOptions = getPersonaProviderOptions(
     provider.trim(),
-    showInst ? (selectedRuntime?.id ?? "") : selectedRuntimeId,
+    activeRuntimeId,
     inheritedProviderDefault.source === "global"
       ? inheritedProviderDefault.value
       : "",
@@ -524,7 +548,7 @@ export function useAgentEditRuntimeState({
       !shouldClearKnownModelForSelectionScope({
         model,
         provider: providerForDiscovery,
-        runtime: showInst ? prospectiveRuntimeId : selectedRuntimeId,
+        runtime: activeRuntimeId,
       })
     )
       return;
@@ -535,9 +559,7 @@ export function useAgentEditRuntimeState({
     model,
     open,
     providerForDiscovery,
-    selectedRuntimeId,
-    prospectiveRuntimeId,
-    showInst,
+    activeRuntimeId,
     setModel,
     setIsCustomModelEditing,
   ]);

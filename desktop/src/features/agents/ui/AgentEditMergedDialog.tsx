@@ -542,6 +542,12 @@ export function AgentEditMergedDialog({
     !isAvatarUploadPending &&
     displayName.trim().length > 0 &&
     providerValid &&
+    // D-side credential gate: whenever the definition is editable, its required
+    // credential keys must be satisfied — independent of the instance gate, so a
+    // linked instance pin can't unblock a definition that main would reject.
+    // Team-managed definitions (defReadOnly) never block: the user can't change
+    // their credentials, so their readiness is not this form's concern.
+    (!showDef || defReadOnly || !dAdvanced.requiredEnvKeyMissing) &&
     (showInst
       ? !requiredEnvKeyMissing &&
         (parsedParallelism > 0 || parallelism === "") &&

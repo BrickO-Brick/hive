@@ -31,6 +31,7 @@ import { AgentHarnessField } from "./AgentHarnessField";
 import { PersonaDropdownField } from "./PersonaDropdownField";
 import { PersonaModelCombobox } from "./PersonaModelCombobox";
 import { PersonaProviderApiKeyField } from "./PersonaProviderApiKeyField";
+import { AdvancedRequiredBadge } from "./AdvancedRequiredBadge";
 import { EnvVarsEditor, type EnvVarsValue } from "./EnvVarsEditor";
 import { OwnerOnlyAccessField } from "./OwnerOnlyAccessField";
 import {
@@ -455,12 +456,17 @@ export function AgentEditMergedDSection({
       <div className="space-y-2">
         <Button
           className="flex items-center gap-1 px-0 text-sm text-muted-foreground hover:text-foreground"
+          data-testid="persona-advanced-toggle"
           disabled={isSaving || !fieldEditable("namePool")}
           onClick={() => setShowAdvanced((v) => !v)}
           type="button"
           variant="ghost"
         >
           Advanced
+          <AdvancedRequiredBadge
+            show={dAdvanced.advancedRequiredEnvKeyMissing}
+            testId="persona-advanced-required-badge"
+          />
         </Button>
         <AnimatePresence initial={false}>
           {showAdvanced ? (
