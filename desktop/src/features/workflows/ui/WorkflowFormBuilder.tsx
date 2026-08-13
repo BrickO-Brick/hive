@@ -1,21 +1,10 @@
-import {
-  Check,
-  ChevronDown,
-  Plus,
-  SmilePlus,
-  Trash2,
-  X,
-  Zap,
-} from "lucide-react";
+import { Check, ChevronDown, Plus, Trash2, X, Zap } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import * as React from "react";
 import { createPortal } from "react-dom";
 
-import { EmojiPicker } from "@/features/custom-emoji/ui/EmojiPicker";
-import { StatusEmoji } from "@/features/user-status/ui/StatusEmoji";
 import { Button } from "@/shared/ui/button";
 import { cn } from "@/shared/lib/cn";
-import { emojiDisplayName } from "@/shared/lib/emojiName";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -23,10 +12,10 @@ import {
   DropdownMenuTrigger,
 } from "@/shared/ui/dropdown-menu";
 import { Input } from "@/shared/ui/input";
-import { Popover, PopoverContent, PopoverTrigger } from "@/shared/ui/popover";
 import { Switch } from "@/shared/ui/switch";
 import { Textarea } from "@/shared/ui/textarea";
 import { WorkflowConditionBuilder } from "./WorkflowConditionBuilder";
+import { WorkflowEmojiField } from "./WorkflowEmojiField";
 import { WorkflowScheduleFields } from "./WorkflowScheduleFields";
 import { WorkflowStepCard } from "./WorkflowStepCard";
 import { FieldLabel } from "./workflowFormPrimitives";
@@ -57,8 +46,6 @@ function TriggerConfigFields({
   trigger: TriggerConfig;
   onUpdate: (trigger: TriggerConfig) => void;
 }) {
-  const [emojiPickerOpen, setEmojiPickerOpen] = React.useState(false);
-
   switch (trigger.on) {
     case "message_posted":
     case "diff_posted":
@@ -80,62 +67,14 @@ function TriggerConfigFields({
           <FieldLabel htmlFor="wf-trigger-emoji">
             Emoji filter (optional)
           </FieldLabel>
-          <div className="flex gap-2">
-            <Popover onOpenChange={setEmojiPickerOpen} open={emojiPickerOpen}>
-              <PopoverTrigger asChild>
-                <Button
-                  aria-label="Choose emoji filter"
-                  className="flex-1 justify-start px-3 font-normal"
-                  disabled={disabled}
-                  id="wf-trigger-emoji"
-                  type="button"
-                  variant="outline"
-                >
-                  {trigger.emoji ? (
-                    <>
-                      <StatusEmoji
-                        className="h-5 w-5 text-base"
-                        value={trigger.emoji}
-                      />
-                      <span>{emojiDisplayName(trigger.emoji)}</span>
-                    </>
-                  ) : (
-                    <>
-                      <SmilePlus className="text-muted-foreground" />
-                      <span className="text-muted-foreground">
-                        Choose a reaction
-                      </span>
-                    </>
-                  )}
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent
-                align="start"
-                className="w-auto overflow-hidden rounded-2xl border-0 bg-transparent p-0 shadow-none"
-                sideOffset={4}
-              >
-                <EmojiPicker
-                  autoFocus
-                  onSelect={(emoji) => {
-                    onUpdate({ ...trigger, emoji });
-                    setEmojiPickerOpen(false);
-                  }}
-                />
-              </PopoverContent>
-            </Popover>
-            {trigger.emoji ? (
-              <Button
-                aria-label="Clear emoji filter"
-                disabled={disabled}
-                onClick={() => onUpdate({ ...trigger, emoji: undefined })}
-                size="icon"
-                type="button"
-                variant="ghost"
-              >
-                <X />
-              </Button>
-            ) : null}
-          </div>
+          <WorkflowEmojiField
+            ariaLabel="Choose emoji filter"
+            clearAriaLabel="Clear emoji filter"
+            disabled={disabled}
+            id="wf-trigger-emoji"
+            onChange={(emoji) => onUpdate({ ...trigger, emoji })}
+            value={trigger.emoji}
+          />
         </div>
       );
     case "webhook":

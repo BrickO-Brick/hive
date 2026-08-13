@@ -292,6 +292,66 @@ test("chooses and clears a reaction trigger with the app emoji picker", async ({
   ).toContainText("Choose a reaction");
 });
 
+test("chooses an add-reaction step emoji with the app emoji picker", async ({
+  page,
+}) => {
+  await navigateToWorkflows(page);
+
+  await page.getByRole("button", { name: "Create Workflow" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("button", { name: "Add step" }).click();
+  await page.getByRole("menuitem", { name: "Add Reaction" }).click();
+
+  const inspector = dialog.getByTestId("workflow-node-inspector");
+  const stepEmoji = inspector.getByRole("button", {
+    name: "Choose reaction emoji",
+  });
+  await expect(stepEmoji).toContainText("Choose a reaction");
+  await stepEmoji.click();
+
+  const picker = page.locator("em-emoji-picker");
+  await picker.locator("input[type='search']").fill("buzz");
+  await picker.getByRole("button", { name: ":buzz:" }).first().click();
+
+  await expect(stepEmoji).toContainText(":buzz:");
+  await dialog.getByRole("tab", { name: "YAML" }).click();
+  await expect(dialog.getByLabel("Workflow YAML")).toHaveValue(
+    /action: add_reaction[\s\S]*emoji: ":buzz:"/,
+  );
+});
+
+test("chooses a reaction emoji condition with the app emoji picker", async ({
+  page,
+}) => {
+  await navigateToWorkflows(page);
+
+  await page.getByRole("button", { name: "Create Workflow" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("button", { name: /^Trigger:/ }).click();
+  let inspector = dialog.getByTestId("workflow-node-inspector");
+  await inspector.getByLabel("Trigger event").click();
+  await page.getByRole("menuitem", { name: "Reaction Added" }).click();
+
+  await dialog.getByRole("button", { name: "Add step" }).click();
+  await page.getByRole("menuitem", { name: "Delay" }).click();
+  inspector = dialog.getByTestId("workflow-node-inspector");
+  await inspector.getByRole("button", { name: "Reaction emoji" }).click();
+
+  const conditionEmoji = inspector.getByRole("button", {
+    name: "Choose condition emoji",
+  });
+  await conditionEmoji.click();
+  const picker = page.locator("em-emoji-picker");
+  await picker.locator("input[type='search']").fill("buzz");
+  await picker.getByRole("button", { name: ":buzz:" }).first().click();
+
+  await expect(conditionEmoji).toContainText(":buzz:");
+  await dialog.getByRole("tab", { name: "YAML" }).click();
+  await expect(dialog.getByLabel("Workflow YAML")).toHaveValue(
+    /trigger_emoji[\s\S]*:buzz:/,
+  );
+});
+
 test("switches an empty workflow between form and YAML modes", async ({
   page,
 }) => {

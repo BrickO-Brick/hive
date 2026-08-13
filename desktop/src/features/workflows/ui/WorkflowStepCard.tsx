@@ -5,6 +5,7 @@ import { Button } from "@/shared/ui/button";
 import { Input } from "@/shared/ui/input";
 import { Textarea } from "@/shared/ui/textarea";
 import { WorkflowConditionBuilder } from "./WorkflowConditionBuilder";
+import { WorkflowEmojiField } from "./WorkflowEmojiField";
 import { FieldLabel, FormSelect } from "./workflowFormPrimitives";
 import { WorkflowWebhookHeadersEditor } from "./WorkflowWebhookHeadersEditor";
 import type { StepFormState, TriggerType } from "./workflowFormTypes";
@@ -255,14 +256,11 @@ function StepConfigFields({
       return (
         <div className="space-y-1.5">
           <FieldLabel htmlFor={`${prefix}-emoji`}>Emoji</FieldLabel>
-          <Input
-            autoCapitalize="off"
+          <WorkflowEmojiField
+            ariaLabel="Choose reaction emoji"
             disabled={disabled}
             id={`${prefix}-emoji`}
-            onChange={(event) =>
-              onUpdate({ ...step, emoji: event.target.value })
-            }
-            placeholder="e.g. thumbsup"
+            onChange={(emoji) => onUpdate({ ...step, emoji })}
             value={step.emoji ?? ""}
           />
         </div>

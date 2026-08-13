@@ -2,6 +2,7 @@ import * as React from "react";
 
 import { cn } from "@/shared/lib/cn";
 import { Input } from "@/shared/ui/input";
+import { WorkflowEmojiField } from "./WorkflowEmojiField";
 import { FieldLabel, FormSelect } from "./workflowFormPrimitives";
 import {
   buildConditionExpression,
@@ -68,8 +69,6 @@ function valuePlaceholder(field: string): string {
       return "Paste a channel UUID";
     case "trigger_message_id":
       return "Paste a message event ID";
-    case "trigger_emoji":
-      return "e.g. 👍";
     case "trigger_timestamp":
       return "e.g. 1723507200";
     default:
@@ -265,21 +264,34 @@ export function WorkflowConditionBuilder({
                   ? "Value"
                   : valueLabel(editor.field)}
               </FieldLabel>
-              <Input
-                autoCapitalize="off"
-                autoCorrect="off"
-                disabled={disabled}
-                id={`${idPrefix}-value`}
-                onChange={(event) =>
-                  emitEditor({ ...editor, value: event.target.value })
-                }
-                placeholder={
-                  editor.field === "webhook_field"
-                    ? "Value to match"
-                    : valuePlaceholder(editor.field)
-                }
-                value={editor.value}
-              />
+              {editor.field === "trigger_emoji" ? (
+                <WorkflowEmojiField
+                  ariaLabel="Choose condition emoji"
+                  clearAriaLabel="Clear condition emoji"
+                  disabled={disabled}
+                  id={`${idPrefix}-value`}
+                  onChange={(emoji) =>
+                    emitEditor({ ...editor, value: emoji ?? "" })
+                  }
+                  value={editor.value}
+                />
+              ) : (
+                <Input
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  disabled={disabled}
+                  id={`${idPrefix}-value`}
+                  onChange={(event) =>
+                    emitEditor({ ...editor, value: event.target.value })
+                  }
+                  placeholder={
+                    editor.field === "webhook_field"
+                      ? "Value to match"
+                      : valuePlaceholder(editor.field)
+                  }
+                  value={editor.value}
+                />
+              )}
             </div>
           ) : null}
         </>
