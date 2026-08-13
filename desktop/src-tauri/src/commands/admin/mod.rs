@@ -515,6 +515,33 @@ pub async fn admin_reopen_report(
     serde_json::from_slice(&bytes).map_err(|e| format!("invalid JSON from relay: {e}"))
 }
 
+/// Cancel a failed enforcement action — POST /api/admin/v1/reports/{id}/cancel.
+///
+/// Body: `{actionId}`. Cancel is the only recovery path for a pre-mutation
+/// `failed` action: it returns the report to `open` for a fresh resolution.
+/// The `actionId` fences the cancel to the failed action the operator observed;
+/// a mismatch (already cancelled, superseded, or past the mutation point) is a
+/// 409, which the caller treats as "refresh detail".
+#[tauri::command]
+pub async fn admin_cancel_report(
+    origin: String,
+    id: String,
+    body: serde_json::Value,
+    state: tauri::State<'_, crate::app_state::AppState>,
+) -> Result<serde_json::Value, String> {
+    let origin = origin::AdminOrigin::parse(&origin)?;
+    let id =
+        uuid::Uuid::parse_str(&id).map_err(|_| "report id must be a valid UUID".to_string())?;
+    let url = origin.route_url(
+        &routes::AdminRoute::ReportCancel { id },
+        &routes::AdminQuery::default(),
+    );
+    let body_bytes =
+        serde_json::to_vec(&body).map_err(|e| format!("failed to serialise request body: {e}"))?;
+    let bytes = post_admin_json(&url, &body_bytes, SUCCESS_JSON_CAP, &state).await?;
+    serde_json::from_slice(&bytes).map_err(|e| format!("invalid JSON from relay: {e}"))
+}
+
 /// Update feedback status — PATCH /api/admin/v1/feedback/{id}.
 ///
 /// Body: `{status}` where status ∈ {"new","reviewed","archived"}.

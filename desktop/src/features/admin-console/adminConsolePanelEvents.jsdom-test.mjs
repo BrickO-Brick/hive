@@ -2380,3 +2380,391 @@ test("reopen-409-preserves-requestId: a not-reopenable conflict reuses the same 
 
   await unmount();
 });
+
+test("cancel-on-failed: a failed action offers Cancel, POSTs {actionId} to admin_cancel_report, and reloads to open", async () => {
+  // Cancel-then-resolve is the only recovery from a failed enforcement. The
+  // block offers Cancel on `status: "failed"`, fences it on the action id, and
+  // on success the report returns to `open` — the detail reload then serves
+  // activeAction: null and re-exposes the resolve form for a fresh attempt.
+  //
+  // Mutation evidence: revert handleCancel to the old resolve-with-dismiss
+  // masquerade → admin_cancel_report is never called and cancelArgs stays null.
+  // Restore the `!activeAction` gate on the resolve form → the reopened report
+  // still carries no action here, so this test isolates the cancel wiring.
+
+  const origin = "https://admin.example.com";
+  const pubkey = "e5".repeat(32);
+
+  const base = {
+    id: "00000000-0000-0000-0000-0000000000e5",
+    communityId: "00000000-0000-0000-0000-000000000002",
+    communityHost: "relay.example.com",
+    reportEventId: "aa",
+    reporterPubkey: "bb",
+    targetKind: "event",
+    target: "cc",
+    reportType: "spam",
+    createdAt: "2024-06-01T12:00:00Z",
+  };
+  const actionId = "00000000-0000-0000-0000-0000000000f1";
+  const failedDetail = {
+    ...base,
+    status: "processing",
+    channelId: null,
+    note: null,
+    resolvedBy: null,
+    resolvedAt: null,
+    actionId: null,
+    activeAction: {
+      id: actionId,
+      requestId: "00000000-0000-0000-0000-0000000000f2",
+      actorPubkey:
+        "1111111111111111111111111111111111111111111111111111111111111111",
+      actorRole: "operator",
+      action: "ban",
+      status: "failed",
+      reason: null,
+      expiresAt: null,
+      errorMessage: "adapter timeout",
+      createdAt: "2024-06-01T12:00:00Z",
+      updatedAt: "2024-06-01T12:00:05Z",
+    },
+    message: null,
+  };
+  const openDetail = {
+    ...base,
+    status: "open",
+    channelId: null,
+    note: null,
+    resolvedBy: null,
+    resolvedAt: null,
+    actionId: null,
+    activeAction: null,
+    message: null,
+  };
+
+  setIpcHandler("admin_list_reports", () =>
+    Promise.resolve([{ ...base, status: "processing" }]),
+  );
+  let detailCalls = 0;
+  setIpcHandler("admin_get_report", () => {
+    detailCalls += 1;
+    return Promise.resolve(detailCalls === 1 ? failedDetail : openDetail);
+  });
+  setIpcHandler("admin_list_feedback", () => Promise.resolve([]));
+
+  let cancelArgs = null;
+  setIpcHandler("admin_cancel_report", (args) => {
+    cancelArgs = args;
+    return Promise.resolve({
+      status: "open",
+      activeAction: { ...failedDetail.activeAction, status: "cancelled" },
+    });
+  });
+  // The dismiss-masquerade path must be gone: resolve must never be called.
+  let resolveCalled = false;
+  setIpcHandler("admin_resolve_report", () => {
+    resolveCalled = true;
+    return Promise.reject(new Error("resolve must not be called by cancel"));
+  });
+
+  const { container, doRender, unmount } = mountPanel({ origin, pubkey });
+  await doRender();
+  await settle(30);
+  await openFirstReportDetail(container);
+  await settle(20);
+
+  // The failed action surfaces the error message and a single Cancel button.
+  const block = container.querySelector(
+    "[data-testid='enforcement-state-block']",
+  );
+  assert.ok(block, "enforcement-state-block must render for a failed action");
+  assert.ok(
+    (block.textContent ?? "").includes("adapter timeout"),
+    `the failure errorMessage must render; got: ${block.textContent}`,
+  );
+  assert.equal(
+    container.querySelector("[data-testid='enforcement-retry-btn']"),
+    null,
+    "the composed-retry button must be gone (Cancel-only on failed)",
+  );
+  const cancelBtn = container.querySelector(
+    "[data-testid='enforcement-cancel-btn']",
+  );
+  assert.ok(cancelBtn, "the Cancel button must render on a failed action");
+
+  await act(async () => {
+    fireEvent.click(cancelBtn);
+    await new Promise((r) => setTimeout(r, 30));
+  });
+  await settle(20);
+
+  assert.ok(cancelArgs, "admin_cancel_report must be invoked");
+  assert.equal(cancelArgs.origin, origin, "origin must be forwarded");
+  assert.equal(cancelArgs.id, base.id, "report id must be forwarded");
+  assert.equal(
+    cancelArgs.body?.actionId,
+    actionId,
+    "cancel must be fenced on the observed action id",
+  );
+  assert.equal(
+    resolveCalled,
+    false,
+    "cancel must NOT go through the resolve endpoint (no dismiss masquerade)",
+  );
+  assert.ok(
+    capturedToasts.some((m) => m.toLowerCase().includes("cancel")),
+    `a cancel success toast must fire; got: ${JSON.stringify(capturedToasts)}`,
+  );
+  // Detail reloaded; the now-open report shows the resolve form for re-triage.
+  assert.ok(detailCalls >= 2, "detail must reload after cancel");
+  assert.ok(
+    container.querySelector("[data-testid='resolve-report-form']"),
+    "after cancel the reopened report must show the resolve form",
+  );
+
+  await unmount();
+});
+
+test("no-cancel-on-in-flight: pending and enforcing actions offer no cancel button", async () => {
+  // Only a pre-mutation `failed` action is cancellable over HTTP. A stuck
+  // `pending`/`enforcing` action is owned by the relay's recovery worker; the
+  // UI must not offer a button that 409s by design.
+  //
+  // Mutation evidence: change the button gate from `=== "failed"` to include
+  // enforcing → the assertion that no cancel button renders goes red.
+
+  const origin = "https://admin.example.com";
+  const pubkey = "e6".repeat(32);
+
+  const base = {
+    id: "00000000-0000-0000-0000-0000000000e6",
+    communityId: "00000000-0000-0000-0000-000000000002",
+    communityHost: "relay.example.com",
+    reportEventId: "aa",
+    reporterPubkey: "bb",
+    targetKind: "event",
+    target: "cc",
+    reportType: "spam",
+    createdAt: "2024-06-01T12:00:00Z",
+  };
+  const enforcingDetail = {
+    ...base,
+    status: "processing",
+    channelId: null,
+    note: null,
+    resolvedBy: null,
+    resolvedAt: null,
+    actionId: null,
+    activeAction: {
+      id: "00000000-0000-0000-0000-0000000000f3",
+      requestId: "00000000-0000-0000-0000-0000000000f4",
+      actorPubkey:
+        "1111111111111111111111111111111111111111111111111111111111111111",
+      actorRole: "operator",
+      action: "ban",
+      status: "enforcing",
+      reason: null,
+      expiresAt: null,
+      errorMessage: null,
+      createdAt: "2024-06-01T12:00:00Z",
+      updatedAt: "2024-06-01T12:00:01Z",
+    },
+    message: null,
+  };
+
+  setIpcHandler("admin_list_reports", () =>
+    Promise.resolve([{ ...base, status: "processing" }]),
+  );
+  setIpcHandler("admin_get_report", () => Promise.resolve(enforcingDetail));
+  setIpcHandler("admin_list_feedback", () => Promise.resolve([]));
+
+  const { container, doRender, unmount } = mountPanel({ origin, pubkey });
+  await doRender();
+  await settle(30);
+  await openFirstReportDetail(container);
+  await settle(20);
+
+  assert.ok(
+    container.querySelector("[data-testid='enforcement-state-block']"),
+    "enforcement-state-block must render for an enforcing action",
+  );
+  assert.equal(
+    container.querySelector("[data-testid='enforcement-cancel-btn']"),
+    null,
+    "no cancel button on an in-flight (enforcing) action",
+  );
+  // And the resolve form must stay suppressed on a processing report.
+  assert.equal(
+    container.querySelector("[data-testid='resolve-report-form']"),
+    null,
+    "resolve form must not render on a processing report",
+  );
+
+  await unmount();
+});
+
+test("reopened-after-enforcement: an open report carrying a succeeded action shows both history and the resolve form", async () => {
+  // Honest history: a report enforced then reopened is `open` yet the detail
+  // LATERAL still returns the succeeded action (the ban actually ran — a later
+  // reopen does not un-happen it). The UI must render that action as executed
+  // history AND still offer the resolve form, because the report is open for
+  // re-triage. Cancel must NOT appear — cancel is failed-only.
+  //
+  // Mutation evidence: restore the `isOpen && !activeAction` gate → the resolve
+  // form vanishes on this report and the operator is stranded, going red.
+
+  const origin = "https://admin.example.com";
+  const pubkey = "e7".repeat(32);
+
+  const reopenedDetail = {
+    id: "00000000-0000-0000-0000-0000000000e7",
+    communityId: "00000000-0000-0000-0000-000000000002",
+    communityHost: "relay.example.com",
+    reportEventId: "aa",
+    reporterPubkey: "bb",
+    targetKind: "event",
+    target: "cc",
+    reportType: "spam",
+    status: "open",
+    channelId: null,
+    note: null,
+    resolvedBy: null,
+    resolvedAt: null,
+    actionId: null,
+    activeAction: {
+      id: "00000000-0000-0000-0000-0000000000f5",
+      requestId: "00000000-0000-0000-0000-0000000000f6",
+      actorPubkey:
+        "1111111111111111111111111111111111111111111111111111111111111111",
+      actorRole: "operator",
+      action: "ban",
+      status: "succeeded",
+      reason: "confirmed spam",
+      expiresAt: null,
+      errorMessage: null,
+      createdAt: "2024-06-01T12:00:00Z",
+      updatedAt: "2024-06-01T12:00:03Z",
+    },
+    message: null,
+    createdAt: "2024-06-01T11:00:00Z",
+  };
+
+  setIpcHandler("admin_list_reports", () =>
+    Promise.resolve([{ ...reopenedDetail, activeAction: undefined }]),
+  );
+  setIpcHandler("admin_get_report", () => Promise.resolve(reopenedDetail));
+  setIpcHandler("admin_list_feedback", () => Promise.resolve([]));
+
+  const { container, doRender, unmount } = mountPanel({ origin, pubkey });
+  await doRender();
+  await settle(30);
+  await openFirstReportDetail(container);
+  await settle(20);
+
+  // Executed-enforcement history renders.
+  const block = container.querySelector(
+    "[data-testid='enforcement-state-block']",
+  );
+  assert.ok(block, "the succeeded action must render as enforcement history");
+  assert.ok(
+    (block.textContent ?? "").toLowerCase().includes("succeeded"),
+    `history must show the succeeded state; got: ${block.textContent}`,
+  );
+  // Cancel is failed-only — never on a succeeded action.
+  assert.equal(
+    container.querySelector("[data-testid='enforcement-cancel-btn']"),
+    null,
+    "no cancel button on a succeeded action",
+  );
+  // The resolve form must still show — the report is open for re-triage.
+  assert.ok(
+    container.querySelector("[data-testid='resolve-report-form']"),
+    "an open reopened-after-enforcement report must still show the resolve form",
+  );
+
+  await unmount();
+});
+
+test("feedback-severed-community: a purged-source feedback row renders in list and detail without its community", async () => {
+  // Item 5 (desktop): feedback whose source community was purged carries a
+  // null communityId/communityHost (tenant provenance severed, row retained as
+  // operator evidence). The list must still render it (grouped under a
+  // "source community removed" bucket) and the detail must show em-dashes for
+  // the absent community fields — never crash on the null.
+  //
+  // Mutation evidence: narrow AdminFeedbackDto.communityId back to `string` →
+  // typecheck breaks; restore the `communityId: string` grouping constraint →
+  // the null key throws in groupByCommunity.
+
+  const origin = "https://admin.example.com";
+  const pubkey = "e8".repeat(32);
+
+  const severedSummary = {
+    id: "00000000-0000-0000-0000-0000000000e8",
+    communityId: null,
+    communityHost: null,
+    submitterPubkey: "sub-severed",
+    category: "bug",
+    bodySummary: "Feedback from a since-purged community",
+    status: "new",
+    receivedAt: "2024-06-01T09:00:00Z",
+  };
+  const severedDetail = {
+    id: severedSummary.id,
+    communityId: null,
+    communityHost: null,
+    eventId: "sevevent",
+    submitterPubkey: severedSummary.submitterPubkey,
+    category: "bug",
+    body: "Feedback from a since-purged community — full body",
+    status: "new",
+    tags: [],
+    eventCreatedAt: "2024-06-01T09:00:00Z",
+    receivedAt: "2024-06-01T09:00:00Z",
+  };
+
+  setIpcHandler("admin_list_reports", () => Promise.resolve([]));
+  setIpcHandler("admin_list_feedback", () => Promise.resolve([severedSummary]));
+  setIpcHandler("admin_get_feedback", () => Promise.resolve(severedDetail));
+
+  const { container, doRender, unmount } = mountPanel({ origin, pubkey });
+  await doRender();
+  await settle(30);
+
+  const feedbackTab = container.querySelector(
+    "[data-testid='admin-tab-feedback']",
+  );
+  assert.ok(feedbackTab, "Feedback tab must be present");
+  await act(async () => {
+    fireEvent.click(feedbackTab);
+    await new Promise((r) => setTimeout(r, 30));
+  });
+  await settle(30);
+
+  // The severed row still renders in the list (did not throw / vanish).
+  const listRow = Array.from(container.querySelectorAll("button")).find(
+    (btn) =>
+      !(btn.getAttribute("data-testid") ?? "").startsWith("admin-tab") &&
+      btn.textContent?.includes("since-purged community"),
+  );
+  assert.ok(listRow, "the severed feedback row must render in the list");
+
+  await act(async () => {
+    fireEvent.click(listRow);
+    await new Promise((r) => setTimeout(r, 30));
+  });
+  await settle(30);
+
+  // Detail renders; the community fields show the em-dash placeholder.
+  const fields = container.querySelector(
+    "[data-testid='feedback-detail-fields']",
+  );
+  assert.ok(fields, "feedback detail must render for a severed row");
+  assert.ok(
+    (fields.textContent ?? "").includes("—"),
+    `absent community fields must render as em-dash; got: ${fields.textContent}`,
+  );
+
+  await unmount();
+});

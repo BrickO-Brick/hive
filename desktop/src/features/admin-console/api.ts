@@ -161,8 +161,13 @@ export type AdminReportDetailDto = AdminReportDto & {
 /** Deployment-global product feedback entry. */
 export type AdminFeedbackDto = {
   id: string;
-  communityId: string;
-  communityHost: string;
+  /**
+   * Source community. Both are `null` once the source community has been
+   * purged: feedback is deployment-global operator evidence whose
+   * `communityId` is severed to NULL on tenant purge, not cascade-deleted.
+   */
+  communityId: string | null;
+  communityHost: string | null;
   eventId: string;
   submitterPubkey: string;
   category?: string | null;
@@ -185,8 +190,9 @@ export type AdminFeedbackDto = {
  */
 export type AdminFeedbackSummaryDto = {
   id: string;
-  communityId: string;
-  communityHost: string;
+  /** Source community — `null` on a severed (purged-source) row. */
+  communityId: string | null;
+  communityHost: string | null;
   submitterPubkey: string;
   category?: string | null;
   bodySummary: string;
@@ -291,11 +297,25 @@ export type AdminActionRecordDto = {
   actorRole: AdminPrincipalRole;
   action: AdminReportAction;
   status: "pending" | "enforcing" | "succeeded" | "failed" | "cancelled";
-  reason?: string | null;
-  expiresAt?: string | null;
-  errorMessage?: string | null;
+  reason: string | null;
+  expiresAt: string | null;
+  errorMessage: string | null;
   createdAt: string;
   updatedAt: string;
+};
+
+/**
+ * Uniform envelope returned by resolve and cancel: the report's new terminal
+ * status plus the governing action record. `activeAction` is null for
+ * decision-only resolutions (`dismiss`/`escalate`, which create no record).
+ *
+ * Both endpoints re-read the report so this shape matches a subsequent
+ * `GET /reports/{id}` — the console reloads detail after a mutation rather than
+ * consuming this body, so it is a wire contract, not a render source.
+ */
+export type AdminReportResolution = {
+  status: string;
+  activeAction: AdminActionRecordDto | null;
 };
 
 /**
@@ -309,8 +329,43 @@ export async function resolveAdminReport(
   origin: string,
   id: string,
   body: AdminResolveReportBody,
-): Promise<AdminActionRecordDto> {
-  return invokeTauri<AdminActionRecordDto>("admin_resolve_report", {
+): Promise<AdminReportResolution> {
+  return invokeTauri<AdminReportResolution>("admin_resolve_report", {
+    origin,
+    id,
+    body,
+  });
+}
+
+/**
+ * Body for POST /api/admin/v1/reports/{id}/cancel.
+ *
+ * `actionId` fences the cancel to exactly the failed action the operator
+ * observed. A mismatch — already cancelled, superseded by a newer claim, or
+ * past the mutation point — resolves to 409.
+ */
+export type AdminCancelReportBody = {
+  actionId: string;
+};
+
+/**
+ * Cancel a failed enforcement action — POST /api/admin/v1/reports/{id}/cancel.
+ *
+ * The only recovery path for a `failed` action: it returns the report to
+ * `open` for a fresh resolution attempt (there is no composed client-side
+ * retry — that would imply an atomicity the relay does not provide). A `409`
+ * means the action is no longer cancellable; treat it as "refresh detail" —
+ * someone else likely cancelled it or it advanced past the mutation point.
+ *
+ * The response embeds the just-cancelled action as a last look; a subsequent
+ * detail read serves `activeAction: null`.
+ */
+export async function cancelAdminReport(
+  origin: string,
+  id: string,
+  body: AdminCancelReportBody,
+): Promise<AdminReportResolution> {
+  return invokeTauri<AdminReportResolution>("admin_cancel_report", {
     origin,
     id,
     body,
