@@ -679,7 +679,9 @@ CREATE TABLE moderation_reports (
     -- Reporter's optional free-text context (mod-queue-only; never public).
     note                TEXT,
     status              TEXT NOT NULL DEFAULT 'open'
-                        CHECK (status IN ('open', 'resolved', 'dismissed', 'escalated')),
+                        CHECK (status IN ('open', 'processing', 'resolved', 'dismissed', 'escalated')),
+    -- Non-null when status='processing': the relay_admin_actions row that claimed this report.
+    active_action_id    UUID,
     resolved_by         BYTEA,
     resolved_at         TIMESTAMPTZ,
     -- moderation_actions row that resolved this report, if any.
@@ -761,6 +763,9 @@ CREATE TABLE moderation_actions (
     -- NIP-OA: which principal matched a ban ('self' | 'owner'); audit-only,
     -- the client never learns which.
     matched_principal TEXT CHECK (matched_principal IS NULL OR matched_principal IN ('self', 'owner')),
+    -- Deployment authority type for HTTP-initiated actions.
+    actor_authority   TEXT NOT NULL DEFAULT 'community'
+                      CHECK (actor_authority IN ('community', 'relay_operator', 'relay_moderator')),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (community_id, id),
     FOREIGN KEY (community_id, channel_id) REFERENCES channels (community_id, id)
@@ -828,6 +833,8 @@ CREATE TABLE product_feedback (
     tags JSONB NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(tags) = 'array'),
     event_created_at TIMESTAMPTZ NOT NULL,
     received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- Operator-managed lifecycle status.
+    status TEXT NOT NULL DEFAULT 'new' CHECK (status IN ('new', 'reviewed', 'archived')),
     UNIQUE (event_id)
 );
 CREATE INDEX idx_product_feedback_received
@@ -1667,3 +1674,93 @@ SELECT attach_community_write_fence('users');
 SELECT attach_community_write_fence('workflow_approvals');
 SELECT attach_community_write_fence('workflow_runs');
 SELECT attach_community_write_fence('workflows');
+
+-- ── Relay operator/moderator roster ──────────────────────────────────────────
+-- Deployment-level principals staffed via the admin API. Config-backed operators
+-- (RELAY_OPERATOR_PUBKEYS, RELAY_OWNER_PUBKEY owner-fallback) are NOT seeded here;
+-- they are authoritative in config and outrank any DB row.
+
+CREATE TABLE relay_operators (
+    pubkey      BYTEA NOT NULL PRIMARY KEY CHECK (length(pubkey) = 32),
+    role        TEXT NOT NULL CHECK (role IN ('operator', 'moderator')),
+    added_by    BYTEA NOT NULL CHECK (length(added_by) = 32),
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+INSERT INTO _operator_global_tables (table_name, reason) VALUES
+    ('relay_operators', 'deployment-global operator/moderator roster; no community_id intentionally');
+
+-- ── Relay admin actions (HTTP enforcement state machine) ──────────────────────
+-- One row per HTTP report-resolution enforcement action. Tracks the durable
+-- state machine from claim → enforcing → succeeded|failed|cancelled.
+
+CREATE TABLE relay_admin_actions (
+    id              UUID NOT NULL PRIMARY KEY DEFAULT gen_random_uuid(),
+    report_id       UUID NOT NULL,
+    report_community_id UUID NOT NULL,
+    -- Client-generated idempotency key (signed in NIP-98 request body).
+    request_id      UUID NOT NULL,
+    -- Principal who claimed the report.
+    actor_pubkey    BYTEA NOT NULL CHECK (length(actor_pubkey) = 32),
+    actor_role      TEXT NOT NULL CHECK (actor_role IN ('operator', 'moderator')),
+    -- The enforcement action requested.
+    action          TEXT NOT NULL,
+    reason          TEXT,
+    -- Timeout expiration for timeout actions; NULL otherwise.
+    timeout_until   TIMESTAMPTZ,
+    -- Durable state machine: pending → enforcing → succeeded|failed|cancelled.
+    state           TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (state IN ('pending', 'enforcing', 'succeeded', 'failed', 'cancelled')),
+    -- Step marker: the last durably committed mutation step (NULL = none yet).
+    -- Values: 'mutation_committed' (core DB mutation done), 'artifacts_done' (tombstone/notice done).
+    step_marker     TEXT CHECK (step_marker IN ('mutation_committed', 'artifacts_done')),
+    -- Error from the last failure, if any.
+    error_message   TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- Report-scoped idempotency: one action per (report, request_id).
+    UNIQUE (report_community_id, report_id, request_id),
+    FOREIGN KEY (report_community_id, report_id)
+        REFERENCES moderation_reports (community_id, id)
+);
+
+CREATE INDEX idx_relay_admin_actions_report
+    ON relay_admin_actions (report_community_id, report_id);
+CREATE INDEX idx_relay_admin_actions_state
+    ON relay_admin_actions (state)
+    WHERE state IN ('pending', 'enforcing');
+
+INSERT INTO _operator_global_tables (table_name, reason) VALUES
+    ('relay_admin_actions', 'deployment-global enforcement state machine; community_id is embedded in report FK');
+
+-- ── Relay admin outbox (durable enforcement delivery) ────────────────────────
+-- Transactional outbox for durable artifact/notice delivery.
+
+CREATE TABLE relay_admin_outbox (
+    id          UUID NOT NULL PRIMARY KEY DEFAULT gen_random_uuid(),
+    action_id   UUID NOT NULL REFERENCES relay_admin_actions(id),
+    -- Delivery task type: 'tombstone' | 'system_message' | 'reporter_notice'.
+    task_type   TEXT NOT NULL,
+    -- Task payload (JSON).
+    payload     JSONB NOT NULL DEFAULT '{}'::jsonb,
+    -- Lease-based delivery: held_by identifies the worker pod.
+    held_by     TEXT,
+    lease_expires_at TIMESTAMPTZ,
+    -- Delivery state: pending → delivered | failed.
+    state       TEXT NOT NULL DEFAULT 'pending'
+                CHECK (state IN ('pending', 'delivered', 'failed')),
+    -- Deduplication key: prevents re-creating an artifact after delivery.
+    dedup_key   TEXT UNIQUE,
+    error_message TEXT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_relay_admin_outbox_action
+    ON relay_admin_outbox (action_id);
+CREATE INDEX idx_relay_admin_outbox_pending
+    ON relay_admin_outbox (lease_expires_at)
+    WHERE state = 'pending';
+
+INSERT INTO _operator_global_tables (table_name, reason) VALUES
+    ('relay_admin_outbox', 'deployment-global enforcement artifact delivery queue');

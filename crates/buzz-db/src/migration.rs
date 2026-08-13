@@ -412,6 +412,9 @@ mod tests {
             "storage_taxonomy_sweeps",
             "community_serving_write_leases",
             "community_deletion_executor_heartbeats",
+            "relay_operators",
+            "relay_admin_actions",
+            "relay_admin_outbox",
         ] {
             if normalized[insert_pos..].contains(&format!("'{value}'")) {
                 globals.insert(value.to_owned());
@@ -625,7 +628,7 @@ mod tests {
         let mut migrations: Vec<_> = MIGRATOR.iter().collect();
         migrations.sort_by_key(|migration| migration.version);
 
-        assert_eq!(migrations.len(), 30);
+        assert_eq!(migrations.len(), 34);
         assert_eq!(migrations[0].version, 1);
         assert_eq!(&*migrations[0].description, "initial schema");
         assert!(migrations[0]
@@ -1036,6 +1039,63 @@ mod tests {
         assert_eq!(migrations[29].version, 30);
         let deletion_recovery = migrations[29].sql.as_str();
         assert!(deletion_recovery.contains("SET LOCAL lock_timeout = '5s'"));
+
+        assert_eq!(migrations[30].version, 31);
+        let relay_operators = migrations[30].sql.as_str();
+        assert!(
+            relay_operators.contains("CREATE TABLE relay_operators"),
+            "migration 31 must create relay_operators"
+        );
+        assert!(
+            relay_operators.contains("_operator_global_tables"),
+            "migration 31 must register relay_operators in _operator_global_tables"
+        );
+        assert!(
+            relay_operators.contains("actor_authority"),
+            "migration 31 must add actor_authority to moderation_actions"
+        );
+        assert!(
+            relay_operators.contains("processing"),
+            "migration 31 must add processing status to moderation_reports"
+        );
+
+        assert_eq!(migrations[31].version, 32);
+        let relay_admin_actions = migrations[31].sql.as_str();
+        assert!(
+            relay_admin_actions.contains("CREATE TABLE relay_admin_actions"),
+            "migration 32 must create relay_admin_actions"
+        );
+        assert!(
+            relay_admin_actions.contains("CREATE TABLE relay_admin_outbox"),
+            "migration 32 must create relay_admin_outbox"
+        );
+        assert!(
+            relay_admin_actions.contains("request_id"),
+            "migration 32 relay_admin_actions must include request_id for idempotency"
+        );
+        assert!(
+            relay_admin_actions.contains("step_marker"),
+            "migration 32 relay_admin_actions must include step_marker for crash recovery"
+        );
+
+        assert_eq!(migrations[32].version, 33);
+        let action_lease = migrations[32].sql.as_str();
+        assert!(
+            action_lease.contains("action_lease_token"),
+            "migration 33 must add action_lease_token to relay_admin_actions"
+        );
+        assert!(
+            action_lease.contains("action_lease_expires_at"),
+            "migration 33 must add action_lease_expires_at to relay_admin_actions"
+        );
+        assert!(
+            action_lease.contains("attempt_count"),
+            "migration 33 must add attempt_count to relay_admin_outbox"
+        );
+        assert!(
+            action_lease.contains("retry_after"),
+            "migration 33 must add retry_after to relay_admin_outbox"
+        );
     }
 
     #[test]
