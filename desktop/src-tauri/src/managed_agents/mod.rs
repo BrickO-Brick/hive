@@ -11,6 +11,7 @@ pub(crate) use agent_env::{
 mod backend;
 pub(crate) mod config_bridge;
 pub(crate) mod custom_harnesses;
+mod definition_validation;
 #[cfg(debug_assertions)]
 mod dev_service_migration;
 #[cfg(debug_assertions)]
@@ -57,6 +58,9 @@ pub(crate) fn lock_path_mutex() -> std::sync::MutexGuard<'static, ()> {
 }
 
 pub use backend::*;
+pub(crate) use definition_validation::{
+    validate_agent_definition_text, validate_managed_agent_definition_text,
+};
 pub use discovery::*;
 pub use env_vars::*;
 #[cfg(windows)]
