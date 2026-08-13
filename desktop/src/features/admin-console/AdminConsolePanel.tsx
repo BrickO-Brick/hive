@@ -591,15 +591,14 @@ function ReportsTab({
         const isProcessing = status === "processing";
         return (
           <li key={id}>
+            {/* Processing rows stay navigable: the enforcement state (progress,
+                retry, cancel) lives inside the detail view, so disabling the row
+                would hide exactly the controls an operator needs while an action
+                is pending. Detail suppresses only the resolve form for a
+                non-open report. */}
             <button
-              className={cn(
-                "w-full rounded-md border border-border/60 px-3 py-2.5 text-left text-sm hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                isProcessing && "opacity-60 cursor-default",
-              )}
-              disabled={isProcessing}
-              onClick={() => {
-                if (!isProcessing) setSelectedId(id);
-              }}
+              className="w-full rounded-md border border-border/60 px-3 py-2.5 text-left text-sm hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              onClick={() => setSelectedId(id)}
               type="button"
             >
               <span className="block font-medium">{summary}</span>

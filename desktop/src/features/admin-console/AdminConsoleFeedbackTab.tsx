@@ -93,7 +93,7 @@ export function FeedbackTab({
             >
               <div className="flex items-center gap-2 mb-0.5">
                 <span className="block font-medium line-clamp-2">{text}</span>
-                {status && status !== "new" && (
+                {status !== "new" && (
                   <Badge className="shrink-0" variant="secondary">
                     {status}
                   </Badge>
@@ -321,7 +321,7 @@ function FeedbackStatusControl({
   onStatusChanged,
 }: {
   feedbackId: string;
-  currentStatus: AdminFeedbackStatus | null | undefined;
+  currentStatus: AdminFeedbackStatus | null;
   origin: string;
   onStatusChanged: (newStatus: AdminFeedbackStatus) => void;
 }) {
@@ -391,9 +391,9 @@ export function FeedbackDetail({
   onBack: () => void;
 }) {
   // Local status state: initialized from server, updated on PATCH.
-  const [localStatus, setLocalStatus] = useState<
-    AdminFeedbackStatus | null | undefined
-  >(undefined);
+  const [localStatus, setLocalStatus] = useState<AdminFeedbackStatus | null>(
+    null,
+  );
 
   const detailState: AsyncState<AdminFeedbackDto> = useAsyncLoad(
     () => getAdminFeedback(origin, feedbackId),
@@ -402,16 +402,12 @@ export function FeedbackDetail({
   );
 
   // Sync localStatus from server data on load (but not on every re-render).
+  // `status` is a required wire field — read it directly, never default a
+  // missing value to "new" (that would misreport a reviewed/archived entry).
   // biome-ignore lint/correctness/useExhaustiveDependencies: intentional — sync once when data arrives
   useEffect(() => {
     if (detailState.status === "ok") {
-      setLocalStatus(
-        (
-          detailState.data as AdminFeedbackDto & {
-            status?: AdminFeedbackStatus;
-          }
-        ).status ?? "new",
-      );
+      setLocalStatus(detailState.data.status);
     }
   }, [detailState.status === "ok"]);
 

@@ -1145,6 +1145,101 @@ test("report-detail-renders-structured-fields: ReportDetail shows field layout, 
   await unmount();
 });
 
+test("processing-report-navigable-suppresses-resolve-form: a processing report opens into detail, shows enforcement state, and hides the resolve form", async () => {
+  // Thufir finding 4: processing rows must stay navigable. The enforcement
+  // state (progress/retry/cancel) lives inside the detail view, so disabling
+  // the row hides exactly the UI an operator needs while an action is pending.
+  // "Not actionable" means suppress the resolve form, not block navigation.
+  //
+  // Mutation evidence: re-add `disabled={isProcessing}` to the ReportsTab row →
+  // the click never opens detail, report-detail-fields never renders → red.
+  // Drop the `isOpen` gate on ResolveReportForm → the resolve form renders for
+  // a processing report → the resolve-form-absent assertion goes red.
+
+  const origin = "https://admin.example.com";
+  const pubkey = "f5".repeat(32);
+
+  const processingItem = {
+    id: "00000000-0000-0000-0000-000000000010",
+    communityId: "00000000-0000-0000-0000-000000000002",
+    communityHost: "relay.example.com",
+    reportEventId: "aabb",
+    reporterPubkey: "ccdd",
+    targetKind: "event",
+    target: "eeff",
+    reportType: "spam",
+    status: "processing",
+    createdAt: "2024-01-01T00:00:00Z",
+  };
+  const processingDetail = {
+    ...processingItem,
+    channelId: null,
+    note: null,
+    resolvedBy: null,
+    resolvedAt: null,
+    actionId: null,
+    activeAction: {
+      id: "00000000-0000-0000-0000-0000000000e1",
+      reportId: processingItem.id,
+      action: "ban",
+      status: "enforcing",
+      requestId: "00000000-0000-0000-0000-0000000000e2",
+      expirationSecs: null,
+      reason: null,
+      createdAt: "2024-01-01T00:00:00Z",
+      updatedAt: "2024-01-01T00:00:01Z",
+    },
+    message: null,
+  };
+
+  setIpcHandler("admin_list_reports", () => Promise.resolve([processingItem]));
+  setIpcHandler("admin_get_report", () => Promise.resolve(processingDetail));
+  setIpcHandler("admin_list_feedback", () => Promise.resolve([]));
+
+  const { container, doRender, unmount } = mountPanel({ origin, pubkey });
+  await doRender();
+  await settle(30);
+
+  // The processing row must be a navigable (non-disabled) button.
+  const rowButtons = Array.from(container.querySelectorAll("button")).filter(
+    (btn) => !(btn.getAttribute("data-testid") ?? "").startsWith("admin-tab"),
+  );
+  const processingRow = rowButtons.find((btn) =>
+    btn.textContent?.includes("spam"),
+  );
+  assert.ok(processingRow, "processing report row must be present");
+  assert.ok(
+    !processingRow.disabled,
+    "processing report row must stay navigable (not disabled)",
+  );
+
+  // Navigate into the detail.
+  await act(async () => {
+    fireEvent.click(processingRow);
+    await new Promise((r) => setTimeout(r, 30));
+  });
+  await settle(30);
+
+  // Detail renders (navigation succeeded).
+  assert.ok(
+    container.querySelector("[data-testid='report-detail-fields']"),
+    "report-detail-fields must render after navigating into a processing report",
+  );
+  // Enforcement state block is shown for a processing report with an action.
+  assert.ok(
+    container.querySelector("[data-testid='enforcement-state-block']"),
+    "enforcement-state-block must render for a processing report",
+  );
+  // The resolve form must be suppressed for a non-open (processing) report.
+  assert.equal(
+    container.querySelector("[data-testid='resolve-report-form']"),
+    null,
+    "resolve form must NOT render for a processing report",
+  );
+
+  await unmount();
+});
+
 test("feedback-detail-renders-structured-fields: FeedbackDetail shows field layout, not raw JSON", async () => {
   // Verifies item 3: the feedback detail view renders data-testid='feedback-detail-fields'.
   // Lives here (jsdom) because tab switching and item navigation require fireEvent.click.
@@ -1163,6 +1258,7 @@ test("feedback-detail-renders-structured-fields: FeedbackDetail shows field layo
     submitterPubkey: "submitter001pubkey",
     category: "bug",
     bodySummary: "App crashes on startup",
+    status: "new",
     receivedAt: "2024-05-01T09:00:05Z",
   };
 
@@ -1175,6 +1271,7 @@ test("feedback-detail-renders-structured-fields: FeedbackDetail shows field layo
     submitterPubkey: "submitter001pubkey",
     category: "bug",
     body: "App crashes on startup — full detail body text",
+    status: "new",
     tags: [],
     eventCreatedAt: "2024-05-01T09:00:00Z",
     receivedAt: "2024-05-01T09:00:05Z",
@@ -1795,6 +1892,7 @@ test("feedback-grouped-by-community: multi-community feedback renders per-commun
       submitterPubkey: "sub1",
       category: "bug",
       bodySummary: "Alpha feedback body",
+      status: "new",
       receivedAt: "2024-06-01T09:00:00Z",
     },
     {
@@ -1804,6 +1902,7 @@ test("feedback-grouped-by-community: multi-community feedback renders per-commun
       submitterPubkey: "sub2",
       category: "idea",
       bodySummary: "Beta feedback body",
+      status: "new",
       receivedAt: "2024-06-02T09:00:00Z",
     },
   ];
@@ -1833,6 +1932,112 @@ test("feedback-grouped-by-community: multi-community feedback renders per-commun
     hosts,
     ["alpha.example.com", "beta.example.com"],
     `feedback group headings must show each community host; got: ${JSON.stringify(hosts)}`,
+  );
+
+  await unmount();
+});
+
+test("feedback-status-honest: a reviewed detail reports reviewed, never defaulting to new", async () => {
+  // Thufir finding 5 (desktop half): `status` is a required wire field. A
+  // reviewed/archived entry must render its real status after reload, not be
+  // silently presented as "new". The status control must also initialize its
+  // selected state from the server value.
+  //
+  // Mutation evidence: reinstate `detailState.data.status ?? "new"` in
+  // FeedbackDetail → a reviewed entry would still show, but re-adding the
+  // absent-defaulting cast and feeding an entry with no status would present
+  // it as new; here we assert the reviewed value round-trips and its button
+  // is the active (default-variant) one.
+
+  const origin = "https://admin.example.com";
+  const pubkey = "d5".repeat(32);
+
+  const reviewedSummary = {
+    id: "00000000-0000-0000-0000-0000000000d5",
+    communityId: "comm-1",
+    communityHost: "alpha.example.com",
+    submitterPubkey: "sub-reviewed",
+    category: "bug",
+    bodySummary: "Already-triaged feedback",
+    status: "reviewed",
+    receivedAt: "2024-06-01T09:00:00Z",
+  };
+  const reviewedDetail = {
+    id: reviewedSummary.id,
+    communityId: reviewedSummary.communityId,
+    communityHost: reviewedSummary.communityHost,
+    eventId: "revevent",
+    submitterPubkey: reviewedSummary.submitterPubkey,
+    category: "bug",
+    body: "Already-triaged feedback full body",
+    status: "reviewed",
+    tags: [],
+    eventCreatedAt: "2024-06-01T09:00:00Z",
+    receivedAt: "2024-06-01T09:00:00Z",
+  };
+
+  setIpcHandler("admin_list_reports", () => Promise.resolve([]));
+  setIpcHandler("admin_list_feedback", () =>
+    Promise.resolve([reviewedSummary]),
+  );
+  setIpcHandler("admin_get_feedback", () => Promise.resolve(reviewedDetail));
+
+  const { container, doRender, unmount } = mountPanel({ origin, pubkey });
+  await doRender();
+  await settle(30);
+
+  // Switch to the Feedback tab.
+  const feedbackTab = container.querySelector(
+    "[data-testid='admin-tab-feedback']",
+  );
+  assert.ok(feedbackTab, "Feedback tab must be present");
+  await act(async () => {
+    fireEvent.click(feedbackTab);
+    await new Promise((r) => setTimeout(r, 30));
+  });
+  await settle(30);
+
+  // List row shows the "reviewed" badge (status !== "new").
+  const listText = container.textContent ?? "";
+  assert.ok(
+    listText.includes("reviewed"),
+    `list row must show the reviewed badge; got: ${listText.slice(0, 400)}`,
+  );
+
+  // Navigate into the feedback detail.
+  const listRow = Array.from(container.querySelectorAll("button")).find(
+    (btn) =>
+      !(btn.getAttribute("data-testid") ?? "").startsWith("admin-tab") &&
+      btn.textContent?.includes("Already-triaged feedback"),
+  );
+  assert.ok(listRow, "feedback list row must be present");
+  await act(async () => {
+    fireEvent.click(listRow);
+    await new Promise((r) => setTimeout(r, 30));
+  });
+  await settle(30);
+
+  // The status control initializes from the server value: the "reviewed"
+  // button is the active (default-variant) selection, not "new".
+  const control = container.querySelector(
+    "[data-testid='feedback-status-control']",
+  );
+  assert.ok(control, "feedback status control must render");
+  const reviewedBtn = container.querySelector(
+    "[data-testid='feedback-status-btn-reviewed']",
+  );
+  const newBtn = container.querySelector(
+    "[data-testid='feedback-status-btn-new']",
+  );
+  assert.ok(reviewedBtn && newBtn, "status buttons must render");
+  // The active status is styled with a ring highlight (see FeedbackStatusControl).
+  assert.ok(
+    (reviewedBtn.className ?? "").includes("ring-2"),
+    `the reviewed button must be marked active; got className: ${reviewedBtn.className}`,
+  );
+  assert.ok(
+    !(newBtn.className ?? "").includes("ring-2"),
+    `the new button must NOT be active for a reviewed entry; got className: ${newBtn.className}`,
   );
 
   await unmount();
