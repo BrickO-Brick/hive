@@ -145,9 +145,7 @@ test("configures common schedules and exposes custom cron", async ({
   await inspector.getByText("Monthly", { exact: true }).click();
   await inspector.getByLabel("Day of month").selectOption("31");
   await expect(
-    inspector.getByText(
-      "Day 31 does not occur in every month, so this schedule will skip shorter months.",
-    ),
+    inspector.getByText("This schedule won’t run in some months."),
   ).toBeVisible();
   await dialog.getByRole("tab", { name: "YAML" }).click();
   await expect(dialog.getByLabel("Workflow YAML")).toHaveValue(

@@ -28,16 +28,9 @@ const WEEKDAYS = [
 const MONTH_DAYS = Array.from({ length: 31 }, (_, index) => String(index + 1));
 
 function monthlyDayWarning(monthDay: string): string | null {
-  switch (monthDay) {
-    case "29":
-      return "Day 29 does not occur in February every year, so this schedule will occasionally skip a month.";
-    case "30":
-      return "Day 30 does not occur in February, so this schedule will skip February.";
-    case "31":
-      return "Day 31 does not occur in every month, so this schedule will skip shorter months.";
-    default:
-      return null;
-  }
+  return Number(monthDay) > 28
+    ? "This schedule won’t run in some months."
+    : null;
 }
 
 function customCronSeed(schedule: ScheduleFormState): string {
