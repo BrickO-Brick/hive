@@ -1,0 +1,43 @@
+# GEPA per-problem probe Q6 ROUND 4 (video-processing). Best prior arm is
+# Q6-r1 eventbound at 2/4: its winners verified boundaries visually with
+# contact sheets/crops and shipped takeoff = F-1, while failures across rounds
+# shipped F itself. Q6-r3's arithmetic without perception fell to 1/6.
+# Base: mia-v5-eventbound. Single variable: one mandatory visual-boundary gate
+# that names F from consecutive crops, records F-1/contact and F/airborne, and
+# checks the delivered takeoff is F-1. Promotion bar: >=4/6 at tm=1.0.
+schema_version: "1"
+condition: tb-gepa-q6r4-video-hybrid
+# The timing signal is inherited from the v2 lineage and stays enabled.
+timing_signal: true
+roster:
+  - id: mia
+    kind: orchestrator
+    role: conn
+    require_reply: true
+    count: 1
+    endpoint: deepseek-ai/Deepseek-V4-Flash
+    model_revision: deepseek/deepseek-v4-flash-20260731
+    prompt:
+      path: personas/bench/gepa/mia-v10-video-hybrid.md
+      sha256: 9ff7a2fd67a86ddd37cee86832f2b48c52ee1f32fe65fd14203d2d392627c6fb
+    generation:
+      thinking_effort: high
+  - id: mie
+    kind: worker
+    role: twin
+    count: 1
+    endpoint: deepseek-ai/Deepseek-V4-Flash
+    model_revision: deepseek/deepseek-v4-flash-20260731
+    prompt:
+      path: personas/bench/gepa/mie-v0.md
+      sha256: a4924e4c4507ac466a7500bb34a04a782618df41dba850b6f0f729787c48439b
+    generation:
+      thinking_effort: high
+prices:
+  deepseek-ai/Deepseek-V4-Flash:
+    input_per_million_usd: 0.14
+    cached_input_per_million_usd: 0.14
+    output_per_million_usd: 0.28
+    cache_read_rate: 0.0
+trial_budget:
+  timeout_seconds: 36000
