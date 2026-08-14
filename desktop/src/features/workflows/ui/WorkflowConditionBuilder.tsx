@@ -1,9 +1,11 @@
-import { ChevronRight } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { ChevronRight, LoaderCircle } from "lucide-react";
 import * as React from "react";
 
 import { useUsersBatchQuery } from "@/features/profile/hooks";
 import { ProfileAvatar } from "@/features/profile/ui/ProfileAvatar";
 import { useIdentityQuery } from "@/shared/api/hooks";
+import { getEventById } from "@/shared/api/tauri";
 import type { Channel, UserProfileSummary } from "@/shared/api/types";
 import { cn } from "@/shared/lib/cn";
 import { truncatePubkey } from "@/shared/lib/pubkey";
@@ -155,6 +157,49 @@ function authorSummaryLabel(
     profile?.name?.trim() ||
     profile?.nip05Handle?.trim() ||
     truncatePubkey(pubkey)
+  );
+}
+
+function messageSummaryContent(content: string): string {
+  const normalized = content.trim().replaceAll(/\s+/g, " ");
+  return normalized || "No message body";
+}
+
+function MessageConditionSummary({
+  content,
+  editor,
+  loading,
+}: {
+  content?: string;
+  editor: ParsedConditionExpression;
+  loading: boolean;
+}) {
+  if (loading) {
+    return (
+      <LoaderCircle
+        aria-label="Loading selected message"
+        className="h-4 w-4 shrink-0 animate-spin text-muted-foreground"
+      />
+    );
+  }
+
+  const operator = operatorLabel(
+    editor.field,
+    editor.operator,
+    conditionOperatorsForField(editor.field).length === 2,
+  );
+  const message =
+    content === undefined
+      ? compactValue(editor.value)
+      : messageSummaryContent(content);
+
+  return (
+    <span
+      className="max-w-40 truncate text-sm text-muted-foreground"
+      title={content === undefined ? undefined : message}
+    >
+      {operator} “{message}”
+    </span>
   );
 }
 
@@ -430,6 +475,19 @@ export function WorkflowConditionBuilder({
   const selectedAuthorProfile = selectedAuthorPubkey
     ? selectedAuthorProfileQuery.data?.profiles[selectedAuthorPubkey]
     : undefined;
+  const selectedMessageId = editorState.custom
+    ? ""
+    : (editorState.editors
+        .find((editor) => editor.field === "trigger_message_id")
+        ?.value.trim() ?? "");
+  const normalizedSelectedMessageId = selectedMessageId.toLowerCase();
+  const selectedMessageQuery = useQuery({
+    enabled: Boolean(normalizedSelectedMessageId),
+    queryKey: ["workflow-message-id", channelId, normalizedSelectedMessageId],
+    queryFn: () => getEventById(normalizedSelectedMessageId),
+    retry: false,
+    staleTime: 60_000,
+  });
 
   React.useEffect(() => {
     if (previousTriggerType.current === triggerType) return;
@@ -593,6 +651,12 @@ export function WorkflowConditionBuilder({
                         <AuthorConditionSummary
                           editor={editor}
                           profile={selectedAuthorProfile}
+                        />
+                      ) : editor?.field === "trigger_message_id" ? (
+                        <MessageConditionSummary
+                          content={selectedMessageQuery.data?.content}
+                          editor={editor}
+                          loading={selectedMessageQuery.isLoading}
                         />
                       ) : (
                         <span className="max-w-40 truncate text-sm text-muted-foreground">
