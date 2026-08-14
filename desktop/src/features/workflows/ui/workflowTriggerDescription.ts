@@ -50,7 +50,7 @@ function textConditionDescription(
       return `${eventPhrase} is not ${value}`;
     case "is_not_empty":
       return eventPhrase === "Message posted"
-        ? "Text message posted"
+        ? "Messaged posted with text"
         : `${eventPhrase} containing text`;
     case "is_empty":
       return `${eventPhrase} without text`;

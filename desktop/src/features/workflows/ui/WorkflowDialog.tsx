@@ -285,7 +285,7 @@ export function WorkflowDialog({
                     ) : null}
                   </div>
                 ) : mode === "edit" && selectedChannel ? (
-                  <div className="px-3 py-2">
+                  <div className="px-3 py-2 text-center">
                     <p className="text-lg font-semibold text-foreground">
                       {selectedChannel.name}
                     </p>

@@ -52,7 +52,7 @@ test("describes selected trigger conditions on the workflow canvas", () => {
       on: "message_posted",
       filter: "str_len(trigger_text) > 0",
     }),
-    "Text message posted",
+    "Messaged posted with text",
   );
 
   assert.equal(
