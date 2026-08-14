@@ -277,7 +277,6 @@ test("builds a valid trigger condition from plain-language choices", async ({
   const inspector = dialog.getByTestId("workflow-node-inspector");
 
   const conditionFields = inspector.getByRole("group", { name: "Condition" });
-  await expect(inspector.getByText("Run when", { exact: true })).toBeVisible();
   const conditionOptions = conditionFields.getByRole("button");
   await expect(conditionOptions).toHaveCount(4);
   const allMessages = conditionFields.getByRole("button", {
@@ -328,6 +327,30 @@ test("builds a valid trigger condition from plain-language choices", async ({
     .click();
   await expect(customCondition).toHaveAttribute("aria-pressed", "false");
   await expect(inspector.getByLabel("Custom expression")).not.toBeVisible();
+});
+
+test("keeps a step condition separate from its action configuration", async ({
+  page,
+}) => {
+  await navigateToWorkflows(page);
+
+  await page.getByRole("button", { name: "Create Workflow" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("button", { name: "Add step" }).click();
+  await page.getByRole("menuitem", { name: "Send Message" }).click();
+
+  const inspector = dialog.getByTestId("workflow-node-inspector");
+  await expect(inspector.getByLabel("Message text")).toBeVisible();
+  await expect(
+    inspector.getByRole("heading", { name: "Step condition" }),
+  ).toBeVisible();
+  await inspector.getByRole("button", { name: "Message text" }).click();
+  await inspector.getByLabel("Text to match").fill("deploy");
+
+  await dialog.getByRole("tab", { name: "YAML" }).click();
+  await expect(dialog.getByLabel("Workflow YAML")).toHaveValue(
+    /if: str_contains\(trigger_text, "deploy"\)/,
+  );
 });
 
 test("chooses a trigger author condition from live user search", async ({
@@ -505,7 +528,7 @@ test("chooses a reaction emoji condition with the app emoji picker", async ({
 
   inspector = dialog.getByTestId("workflow-node-inspector");
   await expect(
-    inspector.getByRole("button", { name: "Reacted-to message ID" }),
+    inspector.getByRole("button", { name: "Message ID" }),
   ).toBeVisible();
   await expect(
     inspector.getByRole("button", { name: "Channel ID" }),
@@ -633,8 +656,15 @@ test("opens node configuration in a contextual inspector", async ({ page }) => {
     "send_message",
   );
   await expect(inspector.getByLabel("Message text")).toBeVisible();
+  await expect(
+    inspector.getByRole("heading", { name: "Step condition" }),
+  ).toBeVisible();
+  await expect(
+    inspector.getByRole("button", { name: "Always run this step" }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await expect(inspector.getByText(/skips only this step/)).toBeVisible();
   await expect(inspector.getByRole("group", { name: "Condition" })).toHaveCount(
-    0,
+    1,
   );
   await expect(
     inspector.getByRole("heading", { name: "Step timeout" }),

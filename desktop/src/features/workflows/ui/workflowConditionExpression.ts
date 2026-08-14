@@ -63,7 +63,7 @@ const FIELDS_BY_TRIGGER: Record<TriggerType, ConditionField[]> = {
   reaction_added: [
     { label: "Reaction emoji", value: "trigger_emoji" },
     AUTHOR_FIELD,
-    { label: "Reacted-to message ID", value: "trigger_message_id" },
+    { label: "Message ID", value: "trigger_message_id" },
   ],
   webhook: [{ label: "Webhook field…", value: "webhook_field" }],
   schedule: [{ label: "Scheduled timestamp", value: "trigger_timestamp" }],

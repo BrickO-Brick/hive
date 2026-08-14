@@ -179,9 +179,7 @@ export function WorkflowConditionBuilder({
   return (
     <div className="space-y-3">
       <fieldset aria-label="Condition">
-        <legend className="mb-2 text-sm font-medium text-foreground">
-          Run when
-        </legend>
+        <legend className="sr-only">Condition</legend>
         <div className="grid grid-cols-2 gap-2.5">
           {fieldOptions.map((field) => {
             const isMatchAll = field.value === "";
