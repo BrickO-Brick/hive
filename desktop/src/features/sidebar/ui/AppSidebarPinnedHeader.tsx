@@ -182,14 +182,27 @@ export function AppSidebarPrimaryMenu({
         <FeatureGate feature="workflows">
           <SidebarMenuItem>
             <SidebarMenuButton
+              className="data-[active=true]:font-normal"
               data-testid="open-workflows-view"
               isActive={selectedView === "workflows"}
               onClick={onSelectWorkflows}
               tooltip="Workflows"
               type="button"
             >
-              <Zap className="h-4 w-4" />
-              <SidebarMenuLabel>Workflows</SidebarMenuLabel>
+              <Zap
+                className={
+                  selectedView !== "workflows"
+                    ? "h-4 w-4 opacity-80"
+                    : "h-4 w-4"
+                }
+              />
+              <SidebarMenuLabel
+                className={
+                  selectedView !== "workflows" ? "opacity-80" : undefined
+                }
+              >
+                Workflows
+              </SidebarMenuLabel>
             </SidebarMenuButton>
           </SidebarMenuItem>
         </FeatureGate>
