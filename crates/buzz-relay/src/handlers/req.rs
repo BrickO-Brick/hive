@@ -1545,6 +1545,60 @@ mod tests {
     }
 
     #[test]
+    fn extracted_channel_scope_drives_live_fan_out() {
+        use crate::subscription::SubscriptionRegistry;
+        use buzz_core::StoredEvent;
+        use chrono::Utc;
+        use nostr::{EventBuilder, Keys, Kind, Tag};
+
+        fn stored_channel_event(channel_id: uuid::Uuid) -> StoredEvent {
+            let event = EventBuilder::new(Kind::TextNote, "test")
+                .tags([Tag::parse(["h", &channel_id.to_string()]).expect("valid h tag")])
+                .sign_with_keys(&Keys::generate())
+                .expect("sign");
+            StoredEvent::with_received_at(event, Utc::now(), Some(channel_id), true)
+        }
+
+        let channel_a = uuid::Uuid::new_v4();
+        let channel_b = uuid::Uuid::new_v4();
+        let channel_a_filter = filter_with_channel(channel_a).kind(Kind::TextNote);
+        let registry = SubscriptionRegistry::new();
+        let conn_id = uuid::Uuid::new_v4();
+        registry.register(
+            conn_id,
+            "channel-a".into(),
+            vec![channel_a_filter.clone()],
+            extract_channel_id_from_filters(std::slice::from_ref(&channel_a_filter)),
+        );
+
+        assert_eq!(
+            registry.fan_out(&stored_channel_event(channel_a)),
+            vec![(conn_id, "channel-a".into())],
+        );
+        assert!(registry
+            .fan_out(&stored_channel_event(channel_b))
+            .is_empty());
+
+        let aggregate_filter = Filter::new().kind(Kind::TextNote).custom_tags(
+            SingleLetterTag::lowercase(Alphabet::H),
+            [channel_a.to_string(), channel_b.to_string()],
+        );
+        let aggregate_registry = SubscriptionRegistry::new();
+        aggregate_registry.register(
+            uuid::Uuid::new_v4(),
+            "aggregate".into(),
+            vec![aggregate_filter.clone()],
+            extract_channel_id_from_filters(&[aggregate_filter]),
+        );
+        assert!(aggregate_registry
+            .fan_out(&stored_channel_event(channel_a))
+            .is_empty(),);
+        assert!(aggregate_registry
+            .fan_out(&stored_channel_event(channel_b))
+            .is_empty(),);
+    }
+
+    #[test]
     fn test_extract_channel_id_single_channel() {
         let channel_id = uuid::Uuid::new_v4();
         let filters = vec![filter_with_channel(channel_id)];

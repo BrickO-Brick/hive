@@ -749,6 +749,145 @@ void main() {
     },
   );
 
+  test(
+    'subscribeWhenReady stays pending across retryable CLOSED until retry EOSE',
+    () async {
+      final timers = <_ManualTimer>[];
+      final socket = _RecordingRelaySocket();
+      final session = RelaySessionNotifier(
+        retryTimerFactory: (duration, callback) {
+          final timer = _ManualTimer(duration, callback);
+          timers.add(timer);
+          return timer;
+        },
+      );
+      session.debugAttachSocketForTest(socket);
+      final events = <NostrEvent>[];
+      var ready = false;
+      final subscribe = session
+          .subscribeWhenReady(_channelFilter, events.add)
+          .whenComplete(() => ready = true);
+
+      session.debugHandleMessage(['CLOSED', 'l-1', 'error: relay overloaded']);
+      await Future<void>.delayed(Duration.zero);
+      expect(ready, isFalse);
+
+      timers.single.fire();
+      await Future<void>.delayed(Duration.zero);
+      expect(_reqs(socket).where((req) => req[1] == 'l-1'), hasLength(2));
+      expect(ready, isFalse);
+
+      final replayEvent = _event(createdAt: 30);
+      session.debugHandleMessage(['EVENT', 'l-1', replayEvent.toJson()]);
+      expect(events, isEmpty);
+      session.debugHandleMessage(['EOSE', 'l-1']);
+
+      final unsubscribe = await subscribe;
+      expect(events, [replayEvent]);
+      expect(ready, isTrue);
+      unsubscribe();
+    },
+  );
+
+  test(
+    'subscribeWhenReady stays pending across rate-limited CLOSED until retry EOSE',
+    () async {
+      final now = DateTime(2026);
+      final gateTimers = <_ManualTimer>[];
+      final retryTimers = <_ManualTimer>[];
+      final gate = RelayRateLimitGate(
+        now: () => now,
+        timerFactory: (duration, callback) {
+          final timer = _ManualTimer(duration, callback);
+          gateTimers.add(timer);
+          return timer;
+        },
+      );
+      final socket = _RecordingRelaySocket();
+      final session = RelaySessionNotifier(
+        rateLimitGate: gate,
+        retryTimerFactory: (duration, callback) {
+          final timer = _ManualTimer(duration, callback);
+          retryTimers.add(timer);
+          return timer;
+        },
+      );
+      session.debugAttachSocketForTest(socket);
+      var ready = false;
+      final subscribe = session
+          .subscribeWhenReady(_channelFilter, (_) {})
+          .whenComplete(() => ready = true);
+
+      session.debugHandleMessage([
+        'CLOSED',
+        'l-1',
+        'rate-limited: quota exceeded; retry in 4s',
+      ]);
+      await Future<void>.delayed(Duration.zero);
+      expect(ready, isFalse);
+
+      retryTimers.single.fire();
+      await Future<void>.delayed(Duration.zero);
+      expect(ready, isFalse);
+      gateTimers.single.fire();
+      await Future<void>.delayed(Duration.zero);
+      expect(_reqs(socket).where((req) => req[1] == 'l-1'), hasLength(2));
+      expect(ready, isFalse);
+
+      session.debugHandleMessage(['EOSE', 'l-1']);
+      final unsubscribe = await subscribe;
+      expect(ready, isTrue);
+      unsubscribe();
+    },
+  );
+
+  test(
+    'subscribeWhenReady cancellation removes the pending subscription',
+    () async {
+      final timers = <_ManualTimer>[];
+      final socket = _RecordingRelaySocket();
+      final session = RelaySessionNotifier(
+        retryTimerFactory: (duration, callback) {
+          final timer = _ManualTimer(duration, callback);
+          timers.add(timer);
+          return timer;
+        },
+      );
+      session.debugAttachSocketForTest(socket);
+      final cancelled = Completer<void>();
+      final subscribe = session.subscribeWhenReady(
+        _channelFilter,
+        (_) {},
+        cancelled: cancelled.future,
+      );
+      session.debugHandleMessage(['CLOSED', 'l-1', 'error: relay overloaded']);
+
+      cancelled.complete();
+      await expectLater(
+        subscribe,
+        throwsA(isA<RelaySubscriptionCancelledException>()),
+      );
+      expect(timers.single.isActive, isFalse);
+      expect(socket.messages, contains(equals(<dynamic>['CLOSE', 'l-1'])));
+
+      timers.single.fire();
+      await Future<void>.delayed(Duration.zero);
+      expect(_reqs(socket).where((req) => req[1] == 'l-1'), hasLength(1));
+    },
+  );
+
+  test('dispose fails a pending subscribeWhenReady', () async {
+    final session = RelaySessionNotifier();
+    final subscribe = session.subscribeWhenReady(_channelFilter, (_) {});
+
+    session.debugDispose();
+
+    await expectLater(
+      subscribe,
+      throwsA(isA<RelaySubscriptionCancelledException>()),
+    );
+  });
+
   test('CLOSED retries back off and reset after EOSE', () async {
     final timers = <_ManualTimer>[];
     final socket = _RecordingRelaySocket();

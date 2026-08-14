@@ -37,10 +37,18 @@ class _HistorySubscription {
   _HistorySubscription({required this.completer, required this.timeout});
 }
 
+class RelaySubscriptionCancelledException implements Exception {
+  const RelaySubscriptionCancelledException();
+
+  @override
+  String toString() => 'Relay subscription cancelled before ready';
+}
+
 class _LiveSubscription {
   final NostrFilter filter;
   final void Function(NostrEvent) onEvent;
   final void Function(String message)? onClosed;
+  final bool waitForRelayReady;
   Completer<void>? readyCompleter;
   int? lastSeenCreatedAt;
   int closedRetryAttempt = 0;
@@ -49,6 +57,7 @@ class _LiveSubscription {
   _LiveSubscription({
     required this.filter,
     required this.onEvent,
+    required this.waitForRelayReady,
     this.onClosed,
     this.readyCompleter,
   });
@@ -264,6 +273,30 @@ class RelaySessionNotifier extends Notifier<SessionState> {
     NostrFilter filter,
     void Function(NostrEvent) onEvent, {
     void Function(String message)? onClosed,
+  }) =>
+      _subscribe(filter, onEvent, onClosed: onClosed, waitForRelayReady: false);
+
+  /// Subscribe and resolve only after the relay confirms the REQ with EOSE.
+  /// Retryable CLOSED responses keep this pending across the scheduled retry.
+  Future<void Function()> subscribeWhenReady(
+    NostrFilter filter,
+    void Function(NostrEvent) onEvent, {
+    void Function(String message)? onClosed,
+    Future<void>? cancelled,
+  }) => _subscribe(
+    filter,
+    onEvent,
+    onClosed: onClosed,
+    waitForRelayReady: true,
+    cancelled: cancelled,
+  );
+
+  Future<void Function()> _subscribe(
+    NostrFilter filter,
+    void Function(NostrEvent) onEvent, {
+    required bool waitForRelayReady,
+    void Function(String message)? onClosed,
+    Future<void>? cancelled,
   }) async {
     if (_disposed) throw StateError('Relay session is disposed');
     final subId = _nextSubId('l');
@@ -272,26 +305,44 @@ class RelaySessionNotifier extends Notifier<SessionState> {
     _liveSubscriptions[subId] = _LiveSubscription(
       filter: filter,
       onEvent: onEvent,
+      waitForRelayReady: waitForRelayReady,
       onClosed: onClosed,
       readyCompleter: readyCompleter,
     );
 
     _sendReq(subId, filter);
 
-    // Wait for EOSE or a short fallback timeout.
-    try {
-      await readyCompleter.future.timeout(
-        const Duration(milliseconds: 500),
-        onTimeout: () {},
-      );
-    } catch (_) {
-      _liveSubscriptions.remove(subId);
-      _recentDeliveryKeys.removeWhere((key) => key.startsWith('$subId:'));
-      rethrow;
-    }
-    final liveSub = _liveSubscriptions[subId];
-    if (liveSub != null && liveSub.readyCompleter == readyCompleter) {
-      liveSub.readyCompleter = null;
+    if (waitForRelayReady) {
+      if (cancelled == null) {
+        await readyCompleter.future;
+      } else {
+        final cancelledBeforeReady = await Future.any([
+          readyCompleter.future.then((_) => false),
+          cancelled.then((_) => true),
+        ]);
+        if (cancelledBeforeReady) {
+          final liveSub = _liveSubscriptions[subId];
+          if (liveSub != null) _removeLiveSubscription(subId, liveSub);
+          _sendClose(subId);
+          throw const RelaySubscriptionCancelledException();
+        }
+      }
+    } else {
+      // Wait for EOSE or a short fallback timeout.
+      try {
+        await readyCompleter.future.timeout(
+          const Duration(milliseconds: 500),
+          onTimeout: () {},
+        );
+      } catch (_) {
+        _liveSubscriptions.remove(subId);
+        _recentDeliveryKeys.removeWhere((key) => key.startsWith('$subId:'));
+        rethrow;
+      }
+      final liveSub = _liveSubscriptions[subId];
+      if (liveSub != null && liveSub.readyCompleter == readyCompleter) {
+        liveSub.readyCompleter = null;
+      }
     }
 
     return () => _unsubscribe(subId);
@@ -694,7 +745,9 @@ class RelaySessionNotifier extends Notifier<SessionState> {
       _removeLiveSubscription(subId, liveSub);
       return;
     }
-    if (readyCompleter != null && !readyCompleter.isCompleted) {
+    if (!liveSub.waitForRelayReady &&
+        readyCompleter != null &&
+        !readyCompleter.isCompleted) {
       readyCompleter.complete();
       liveSub.readyCompleter = null;
     }
@@ -931,6 +984,12 @@ class RelaySessionNotifier extends Notifier<SessionState> {
     final subscriptions = _liveSubscriptions.values.toList();
     _liveSubscriptions.clear();
     for (final subscription in subscriptions) {
+      final readyCompleter = subscription.readyCompleter;
+      if (readyCompleter != null && !readyCompleter.isCompleted) {
+        readyCompleter.completeError(
+          const RelaySubscriptionCancelledException(),
+        );
+      }
       subscription.closedRetryTimer?.cancel();
       subscription.closedRetryTimer = null;
     }
