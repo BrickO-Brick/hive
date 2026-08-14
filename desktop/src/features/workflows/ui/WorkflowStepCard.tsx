@@ -254,7 +254,7 @@ function StepConfigFields({
             disabled={disabled}
             fallbackSeconds={DEFAULT_APPROVAL_TIMEOUT_SECONDS}
             id={`${prefix}-timeout`}
-            label="Timeout (optional)"
+            label="Timeout"
             onChange={(timeout) => onUpdate({ ...step, timeout })}
             placeholder="24h"
             value={step.timeout ?? ""}
@@ -297,10 +297,6 @@ function StepConfigFields({
     default:
       return null;
   }
-}
-
-function SectionHeading({ title }: { title: string }) {
-  return <h4 className="text-sm font-semibold text-foreground">{title}</h4>;
 }
 
 export function WorkflowStepCard({
@@ -356,7 +352,7 @@ export function WorkflowStepCard({
         </div>
       ) : null}
 
-      <section className="space-y-4 pb-5">
+      <section className="space-y-5 pb-5">
         <StepConfigFields
           channels={channels}
           disabled={disabled}
@@ -367,28 +363,18 @@ export function WorkflowStepCard({
           triggerType={triggerType}
           workflowChannelId={workflowChannelId}
         />
-      </section>
-
-      <section className="space-y-4 border-t border-border/50 py-5">
-        <SectionHeading title="Step timeout" />
-        <div className="space-y-2">
-          <WorkflowDurationField
-            disabled={disabled}
-            fallbackSeconds={DEFAULT_STEP_TIMEOUT_SECONDS}
-            id={`${prefix}-timeout-secs`}
-            label="Timeout (optional)"
-            onChange={(timeoutSecs) => onUpdate({ ...step, timeoutSecs })}
-            placeholder="5m"
-            value={step.timeoutSecs ?? ""}
-          />
-          <p className="text-xs text-muted-foreground">
-            Defaults to the workflow timeout.
-          </p>
-        </div>
+        <WorkflowDurationField
+          disabled={disabled}
+          fallbackSeconds={DEFAULT_STEP_TIMEOUT_SECONDS}
+          id={`${prefix}-timeout-secs`}
+          label="Timeout"
+          onChange={(timeoutSecs) => onUpdate({ ...step, timeoutSecs })}
+          placeholder="5m"
+          value={step.timeoutSecs ?? ""}
+        />
       </section>
 
       <section className="space-y-4 border-t border-border/50 pt-5">
-        <SectionHeading title="Step details" />
         <div className="space-y-1.5">
           <FieldLabel htmlFor={`${prefix}-name`}>Name (optional)</FieldLabel>
           <Input
