@@ -336,28 +336,31 @@ test("builds a valid trigger condition from plain-language choices", async ({
   await expect(inspector.getByLabel("Custom expression")).not.toBeVisible();
 });
 
-test("keeps a step condition separate from its action configuration", async ({
-  page,
-}) => {
+test("keeps conditions at the trigger level", async ({ page }) => {
   await navigateToWorkflows(page);
 
   await page.getByRole("button", { name: "Create Workflow" }).click();
   const dialog = page.getByRole("dialog");
-  await dialog.getByRole("button", { name: "Add step" }).click();
-  await page.getByRole("menuitem", { name: "Send message" }).click();
-
   const inspector = dialog.getByTestId("workflow-node-inspector");
-  await expect(inspector.getByLabel("Message text")).toBeVisible();
-  await expect(
-    inspector.getByRole("heading", { name: "Step condition" }),
-  ).toBeVisible();
   await inspector.getByRole("button", { name: "Message text" }).click();
   await inspector.getByLabel("Text to match").fill("deploy");
 
+  await dialog.getByRole("button", { name: "Add step" }).click();
+  await page.getByRole("menuitem", { name: "Send message" }).click();
+
+  await expect(inspector.getByLabel("Message text")).toBeVisible();
+  await expect(
+    inspector.getByRole("heading", { name: "Step condition" }),
+  ).toHaveCount(0);
+  await expect(inspector.getByRole("group", { name: "Condition" })).toHaveCount(
+    0,
+  );
+
   await dialog.getByRole("tab", { name: "YAML" }).click();
   await expect(dialog.getByLabel("Workflow YAML")).toHaveValue(
-    /if: str_contains\(trigger_text, "deploy"\)/,
+    /filter: str_contains\(trigger_text, "deploy"\)/,
   );
+  await expect(dialog.getByLabel("Workflow YAML")).not.toHaveValue(/\n\s+if:/);
 });
 
 test("chooses a trigger author condition from live user search", async ({
@@ -777,13 +780,9 @@ test("opens node configuration in a contextual inspector", async ({ page }) => {
   );
   await expect(
     inspector.getByRole("heading", { name: "Step condition" }),
-  ).toBeVisible();
-  await expect(
-    inspector.getByRole("button", { name: "Always run this step" }),
-  ).toHaveAttribute("aria-pressed", "true");
-  await expect(inspector.getByText(/skips only this step/)).toBeVisible();
+  ).toHaveCount(0);
   await expect(inspector.getByRole("group", { name: "Condition" })).toHaveCount(
-    1,
+    0,
   );
   await expect(
     inspector.getByRole("heading", { name: "Step timeout" }),
@@ -872,6 +871,24 @@ test("switches between the form and YAML editors", async ({ page }) => {
 
   await dialog.getByRole("tab", { name: "Form" }).click();
   await expect(nameInput).toHaveValue("yaml_round_trip");
+
+  await dialog.getByRole("tab", { name: "YAML" }).click();
+  await dialog.getByLabel("Workflow YAML").fill(`name: conditional_step
+trigger:
+  on: message_posted
+steps:
+  - id: notify
+    action: send_message
+    if: trigger_author == "abc"
+    text: hello
+`);
+  await dialog.getByRole("tab", { name: "Form" }).click();
+  await expect(
+    dialog.getByText(
+      "Cannot switch to form view: Step conditions are only available in the YAML editor",
+    ),
+  ).toBeVisible();
+  await expect(dialog.getByLabel("Workflow YAML")).toBeVisible();
 });
 
 test("captures disabled diff workflows in the list UI", async ({ page }) => {

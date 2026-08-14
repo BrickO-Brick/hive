@@ -45,7 +45,6 @@ export type StepFormState = {
   id: string;
   name?: string;
   action: ActionType;
-  condition?: string;
   timeoutSecs?: string;
   duration?: string;
   text?: string;
@@ -137,7 +136,6 @@ function parseTimeoutSecs(timeoutSecs: string | undefined): number | undefined {
 function actionFieldsForStep(step: StepFormState): Record<string, unknown> {
   const fields: Record<string, unknown> = {};
   if (step.name?.trim()) fields.name = step.name.trim();
-  if (step.condition?.trim()) fields.if = step.condition.trim();
   const timeoutSecs = parseTimeoutSecs(step.timeoutSecs);
   if (timeoutSecs !== undefined) fields.timeout_secs = timeoutSecs;
 
@@ -267,6 +265,12 @@ export function yamlToFormState(
           error: `Unsupported action type "${step.action}" — use the YAML editor`,
         };
       }
+      if (step.if !== undefined) {
+        return {
+          ok: false,
+          error: "Step conditions are only available in the YAML editor",
+        };
+      }
     }
 
     const steps: StepFormState[] = rawSteps.map(
@@ -274,7 +278,6 @@ export function yamlToFormState(
         id: (step.id as string) ?? `step_${index + 1}`,
         name: step.name as string | undefined,
         action: (step.action as ActionType) ?? ACTION_TYPES[0],
-        condition: step.if as string | undefined,
         timeoutSecs:
           step.timeout_secs !== undefined
             ? String(step.timeout_secs)

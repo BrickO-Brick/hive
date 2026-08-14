@@ -1,4 +1,3 @@
-import { useQuery } from "@tanstack/react-query";
 import {
   ArrowDown,
   CalendarClock,
@@ -19,11 +18,7 @@ import * as React from "react";
 import { createPortal } from "react-dom";
 
 import { useCustomEmoji } from "@/features/custom-emoji/hooks";
-import { useUsersBatchQuery } from "@/features/profile/hooks";
-import { resolveUserLabel } from "@/features/profile/lib/identity";
 import { reactionEmojiUrl } from "@/shared/api/customEmoji";
-import { useIdentityQuery } from "@/shared/api/hooks";
-import { getEventById } from "@/shared/api/tauri";
 import type { Channel } from "@/shared/api/types";
 import { Button } from "@/shared/ui/button";
 import { cn } from "@/shared/lib/cn";
@@ -44,10 +39,7 @@ import {
 } from "./WorkflowNodeDescriptions";
 import { WorkflowScheduleFields } from "./WorkflowScheduleFields";
 import { WorkflowStepCard } from "./WorkflowStepCard";
-import {
-  buildConditionExpression,
-  parseConditionExpressions,
-} from "./workflowConditionExpression";
+import { buildConditionExpression } from "./workflowConditionExpression";
 import { FieldLabel } from "./workflowFormPrimitives";
 import {
   DEFAULT_FORM_STATE,
@@ -68,8 +60,8 @@ import type {
   WorkflowFormState,
 } from "./workflowFormTypes";
 import { defaultScheduleTrigger } from "./workflowSchedule";
-import { workflowTriggerDescription } from "./workflowTriggerDescription";
 import { workflowStepDescription } from "./workflowStepDescription";
+import { useWorkflowTriggerPresentation } from "./useWorkflowTriggerPresentation";
 
 const TRIGGER_ICONS: Record<TriggerType, LucideIcon> = {
   diff_posted: GitPullRequest,
@@ -414,83 +406,16 @@ export function WorkflowFormBuilder({
   const [selectionDirection, setSelectionDirection] = React.useState<1 | -1>(1);
   const shouldReduceMotion = useReducedMotion();
   const previousModeRef = React.useRef(mode);
-  const identityQuery = useIdentityQuery();
   const customEmoji = useCustomEmoji();
-  const parsedTriggerConditions = React.useMemo(
-    () =>
-      formState.trigger.filter
-        ? parseConditionExpressions(
-            formState.trigger.filter,
-            formState.trigger.on,
-          )
-        : [],
-    [formState.trigger.filter, formState.trigger.on],
-  );
-  const triggerReactionCondition = parsedTriggerConditions?.find(
-    (condition) =>
-      condition.field === "trigger_emoji" && condition.operator === "equals",
-  );
-  const triggerReaction =
-    formState.trigger.on === "reaction_added"
-      ? triggerReactionCondition?.value || formState.trigger.emoji
-      : undefined;
+  const triggerPresentation = useWorkflowTriggerPresentation({
+    trigger: formState.trigger,
+    workflowChannelId,
+  });
+  const triggerReaction = triggerPresentation.emoji;
   const triggerReactionUrl = triggerReaction
     ? reactionEmojiUrl(triggerReaction, customEmoji)
     : undefined;
-  const triggerAuthorCondition = parsedTriggerConditions?.find(
-    (condition) => condition.field === "trigger_author",
-  );
-  const triggerAuthorPubkey =
-    triggerAuthorCondition &&
-    /^[0-9a-f]{64}$/i.test(triggerAuthorCondition.value)
-      ? triggerAuthorCondition.value
-      : null;
-  const triggerAuthorProfiles = useUsersBatchQuery(
-    triggerAuthorPubkey ? [triggerAuthorPubkey] : [],
-  );
-  const triggerAuthorProfile = triggerAuthorPubkey
-    ? triggerAuthorProfiles.data?.profiles[triggerAuthorPubkey.toLowerCase()]
-    : undefined;
-  const triggerAuthorLabel = triggerAuthorPubkey
-    ? resolveUserLabel({
-        currentPubkey: identityQuery.data?.pubkey,
-        profiles: triggerAuthorProfiles.data?.profiles,
-        pubkey: triggerAuthorPubkey,
-      })
-    : null;
-  const triggerMessageCondition = parsedTriggerConditions?.find(
-    (condition) => condition.field === "trigger_message_id",
-  );
-  const triggerMessageId =
-    triggerMessageCondition &&
-    /^[0-9a-f]{64}$/i.test(triggerMessageCondition.value)
-      ? triggerMessageCondition.value
-      : null;
-  const triggerMessageQuery = useQuery({
-    enabled: Boolean(triggerMessageId),
-    queryKey: ["workflow-trigger-message", workflowChannelId, triggerMessageId],
-    queryFn: () => getEventById(triggerMessageId ?? ""),
-    retry: false,
-    staleTime: 60_000,
-  });
-  const triggerMessage =
-    triggerMessageQuery.data &&
-    (!workflowChannelId ||
-      triggerMessageQuery.data.tags.some(
-        (tag) => tag[0] === "h" && tag[1] === workflowChannelId,
-      ))
-      ? triggerMessageQuery.data
-      : null;
-  const triggerMessageLabel = triggerMessage?.content.trim() || undefined;
-  const triggerMessageLoading =
-    Boolean(triggerMessageId) &&
-    triggerMessageQuery.isFetching &&
-    !triggerMessageQuery.data;
-  const triggerDescription = workflowTriggerDescription(formState.trigger, {
-    authorLabel: triggerAuthorLabel ?? undefined,
-    messageLabel: triggerMessageLabel,
-    messageLoading: triggerMessageLoading,
-  });
+  const triggerDescription = triggerPresentation.description;
   const TriggerIcon = TRIGGER_ICONS[formState.trigger.on];
 
   const updateFormState = React.useCallback(
@@ -658,10 +583,10 @@ export function WorkflowFormBuilder({
                     <WorkflowNode
                       description={
                         <TriggerNodeDescription
-                          authorAvatarUrl={triggerAuthorProfile?.avatarUrl}
-                          authorLabel={triggerAuthorLabel}
+                          authorAvatarUrl={triggerPresentation.authorAvatarUrl}
+                          authorLabel={triggerPresentation.authorLabel}
                           description={triggerDescription}
-                          messageLoading={triggerMessageLoading}
+                          messageLoading={triggerPresentation.messageLoading}
                         />
                       }
                       disabled={disabled}

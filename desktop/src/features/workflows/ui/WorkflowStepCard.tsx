@@ -6,7 +6,6 @@ import { Button } from "@/shared/ui/button";
 import { Input } from "@/shared/ui/input";
 import { Textarea } from "@/shared/ui/textarea";
 import { ChannelCombobox } from "./ChannelCombobox";
-import { WorkflowConditionBuilder } from "./WorkflowConditionBuilder";
 import { WorkflowEmojiField } from "./WorkflowEmojiField";
 import { WorkflowTemplateTextarea } from "./WorkflowTemplateTextarea";
 import { FieldLabel, FormSelect } from "./workflowFormPrimitives";
@@ -376,24 +375,6 @@ export function WorkflowStepCard({
           step={step}
           triggerType={triggerType}
           workflowChannelId={workflowChannelId}
-        />
-      </section>
-
-      <section className="space-y-4 border-t border-border/50 py-5">
-        <SectionHeading title="Step condition" />
-        <p className="text-xs text-muted-foreground">
-          Checked after the workflow starts. If it does not match, Buzz skips
-          only this step and continues the run.
-        </p>
-        <WorkflowConditionBuilder
-          channelId={workflowChannelId}
-          channels={channels}
-          disabled={disabled}
-          idPrefix={`${prefix}-condition`}
-          matchAllLabel="Always run this step"
-          onChange={(condition) => onUpdate({ ...step, condition })}
-          triggerType={triggerType}
-          value={step.condition ?? ""}
         />
       </section>
 
