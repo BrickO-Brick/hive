@@ -2,7 +2,6 @@ import {
   ArrowRight,
   CalendarClock,
   CircleCheckBig,
-  Clock3,
   Copy,
   GitPullRequest,
   Hash,
@@ -42,7 +41,6 @@ import {
   getWorkflowDisplayStatus,
   getWorkflowEnabled,
   getWorkflowPrimaryAction,
-  getWorkflowPrimaryActionChannel,
   getWorkflowPrimaryActionEmoji,
   getWorkflowTriggerConfig,
   getWorkflowTriggerSummary,
@@ -212,14 +210,8 @@ export function WorkflowCard({
       : getWorkflowTriggerSummary(workflow.definition);
   const triggerType = getWorkflowTriggerType(workflow.definition);
   const actionType = getWorkflowPrimaryAction(workflow.definition);
-  const actionChannel = getWorkflowPrimaryActionChannel(workflow.definition);
   const actionReaction = getWorkflowPrimaryActionEmoji(workflow.definition);
-  const actionChannelLabel =
-    channelName && (!actionChannel || actionChannel === workflow.channelId)
-      ? channelName
-      : undefined;
   const cardLabel = getWorkflowCardLabel(workflow.definition, {
-    actionChannelLabel,
     triggerDescription:
       configuredTrigger &&
       triggerPresentation.description !==
@@ -380,8 +372,7 @@ export function WorkflowCard({
               <p className="mt-0.5 truncate text-2xs">#{channelName}</p>
             ) : null}
           </div>
-          <span className="flex shrink-0 items-center gap-1 text-2xs">
-            <Clock3 className="h-3.5 w-3.5" />
+          <span className="shrink-0 text-2xs">
             {new Date(workflow.updatedAt * 1000).toLocaleDateString()}
           </span>
         </div>
