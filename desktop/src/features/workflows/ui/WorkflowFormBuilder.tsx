@@ -48,10 +48,12 @@ import type {
 import { defaultScheduleTrigger } from "./workflowSchedule";
 
 function TriggerConfigFields({
+  channels,
   disabled,
   trigger,
   onUpdate,
 }: {
+  channels: Channel[];
   disabled?: boolean;
   trigger: TriggerConfig;
   onUpdate: (trigger: TriggerConfig) => void;
@@ -62,6 +64,7 @@ function TriggerConfigFields({
       return (
         <div>
           <WorkflowConditionBuilder
+            channels={channels}
             disabled={disabled}
             idPrefix="wf-trigger-filter"
             matchAllHint="Leave empty to trigger on every message."
@@ -667,6 +670,7 @@ export function WorkflowFormBuilder({
                             {selectedNode.type === "trigger" ? (
                               <div>
                                 <TriggerConfigFields
+                                  channels={channels}
                                   disabled={disabled}
                                   onUpdate={(trigger) =>
                                     updateFormState({ ...formState, trigger })

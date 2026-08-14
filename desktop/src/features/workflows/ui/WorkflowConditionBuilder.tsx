@@ -1,7 +1,11 @@
 import * as React from "react";
 
+import { useIdentityQuery } from "@/shared/api/hooks";
+import type { Channel } from "@/shared/api/types";
 import { cn } from "@/shared/lib/cn";
 import { Input } from "@/shared/ui/input";
+import { AuthorGridPicker } from "./AuthorGridPicker";
+import { ChannelCombobox } from "./ChannelCombobox";
 import { WorkflowEmojiField } from "./WorkflowEmojiField";
 import { FieldLabel, FormSelect } from "./workflowFormPrimitives";
 import {
@@ -77,6 +81,7 @@ function valuePlaceholder(field: string): string {
 }
 
 export function WorkflowConditionBuilder({
+  channels,
   disabled,
   idPrefix,
   matchAllHint = "Leave empty to match every event.",
@@ -84,6 +89,7 @@ export function WorkflowConditionBuilder({
   triggerType,
   value,
 }: {
+  channels: Channel[];
   disabled?: boolean;
   idPrefix: string;
   matchAllHint?: string;
@@ -92,6 +98,39 @@ export function WorkflowConditionBuilder({
   value: string;
 }) {
   const fields = conditionFieldsForTrigger(triggerType);
+  const identityQuery = useIdentityQuery();
+  const knownAuthorPubkeys = React.useMemo(() => {
+    const selfPubkey = identityQuery.data?.pubkey.trim().toLowerCase();
+    const rankedPubkeys = new Set<string>();
+    const addPubkeys = (pubkeys: string[]) => {
+      for (const pubkey of pubkeys) {
+        const normalized = pubkey.trim().toLowerCase();
+        if (normalized && normalized !== selfPubkey) {
+          rankedPubkeys.add(normalized);
+        }
+      }
+    };
+
+    // DM counterparts are the strongest browse-time signal that the user is
+    // likely to recognize the author. Group DMs keep participant order and
+    // duplicates are removed before the shared-channel tier is appended.
+    for (const channel of channels) {
+      if (channel.channelType !== "dm") continue;
+      addPubkeys(
+        channel.participantPubkeys.length > 0
+          ? channel.participantPubkeys
+          : channel.memberPubkeys,
+      );
+    }
+
+    for (const channel of channels) {
+      if (channel.channelType === "dm") continue;
+      addPubkeys(channel.memberPubkeys);
+      addPubkeys(channel.participantPubkeys);
+    }
+
+    return [...rankedPubkeys];
+  }, [channels, identityQuery.data?.pubkey]);
   const [editor, setEditor] = React.useState(() =>
     initialEditorState(value, triggerType),
   );
@@ -264,7 +303,30 @@ export function WorkflowConditionBuilder({
                   ? "Value"
                   : valueLabel(editor.field)}
               </FieldLabel>
-              {editor.field === "trigger_emoji" ? (
+              {editor.field === "trigger_author" ? (
+                <AuthorGridPicker
+                  disabled={disabled}
+                  id={`${idPrefix}-value`}
+                  knownPubkeys={knownAuthorPubkeys}
+                  onChange={(pubkey) =>
+                    emitEditor({ ...editor, value: pubkey })
+                  }
+                  value={editor.value}
+                />
+              ) : editor.field === "trigger_channel_id" ? (
+                <ChannelCombobox
+                  ariaLabel="Channel ID"
+                  channels={channels}
+                  disabled={disabled}
+                  emptyLabel="Choose a channel"
+                  id={`${idPrefix}-value`}
+                  onChange={(channelId) =>
+                    emitEditor({ ...editor, value: channelId })
+                  }
+                  value={editor.value}
+                  variant="field"
+                />
+              ) : editor.field === "trigger_emoji" ? (
                 <WorkflowEmojiField
                   ariaLabel="Choose condition emoji"
                   clearAriaLabel="Clear condition emoji"

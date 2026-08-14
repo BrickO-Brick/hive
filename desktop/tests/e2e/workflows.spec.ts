@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { installMockBridge } from "../helpers/bridge";
+import { installMockBridge, TEST_IDENTITIES } from "../helpers/bridge";
 
 const TRIGGER_OPTION_LABELS: Record<string, string> = {
   diff_posted: "Diff Posted",
@@ -10,8 +10,30 @@ const TRIGGER_OPTION_LABELS: Record<string, string> = {
   webhook: "Webhook",
 };
 
-test.beforeEach(async ({ page }) => {
-  await installMockBridge(page);
+const WORKFLOW_AUTHOR_DIRECTORY = Array.from({ length: 60 }, (_, index) => {
+  const memberNumber = index + 1;
+  return {
+    pubkey: (10_000 + memberNumber).toString(16).padStart(64, "0"),
+    displayName: `Workflow member ${memberNumber.toString().padStart(2, "0")}`,
+  };
+});
+const PROFILELESS_WORKFLOW_MEMBER = "abcdef12".padEnd(64, "3");
+
+test.beforeEach(async ({ page }, testInfo) => {
+  const needsLargeAuthorDirectory =
+    testInfo.title ===
+    "chooses a trigger author condition from live user search";
+  await installMockBridge(
+    page,
+    needsLargeAuthorDirectory
+      ? {
+          additionalRelayMembers: WORKFLOW_AUTHOR_DIRECTORY.map(
+            ({ pubkey }) => ({ pubkey }),
+          ).concat({ pubkey: PROFILELESS_WORKFLOW_MEMBER }),
+          searchProfiles: WORKFLOW_AUTHOR_DIRECTORY,
+        }
+      : undefined,
+  );
 });
 
 async function navigateToWorkflows(page: import("@playwright/test").Page) {
@@ -293,6 +315,133 @@ test("builds a valid trigger condition from plain-language choices", async ({
   await expect(inspector.getByLabel("Custom expression")).not.toBeVisible();
 });
 
+test("chooses a trigger channel condition from the live channel list", async ({
+  page,
+}) => {
+  await navigateToWorkflows(page);
+
+  await page.getByRole("button", { name: "Create Workflow" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("button", { name: /^Trigger:/ }).click();
+  const inspector = dialog.getByTestId("workflow-node-inspector");
+
+  await inspector.getByRole("button", { name: "Channel ID" }).click();
+  const channelCondition = inspector.getByRole("combobox", {
+    name: "Channel ID",
+  });
+  await expect(channelCondition).toContainText("Choose a channel");
+  await channelCondition.click();
+
+  const channelList = page.getByTestId("channel-combobox-list");
+  await channelList.hover();
+  await page.mouse.wheel(0, 500);
+  await expect
+    .poll(() => channelList.evaluate((element) => element.scrollTop))
+    .toBeGreaterThan(0);
+
+  const search = page.getByPlaceholder("Search channels...");
+  await search.fill("random");
+  await page.getByRole("button", { name: "random · stream" }).click();
+  await expect(channelCondition).toContainText("random");
+
+  await dialog.getByRole("tab", { name: "YAML" }).click();
+  await expect(dialog.getByLabel("Workflow YAML")).toHaveValue(
+    /str_contains\(trigger_channel_id, "[0-9a-f-]{36}"\)/,
+  );
+});
+
+test("chooses a trigger author condition from live user search", async ({
+  page,
+}) => {
+  await navigateToWorkflows(page);
+
+  await page.getByRole("button", { name: "Create Workflow" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("button", { name: /^Trigger:/ }).click();
+  const inspector = dialog.getByTestId("workflow-node-inspector");
+
+  await inspector.getByRole("button", { name: "Author pubkey" }).click();
+  const authorPicker = inspector.getByTestId("author-grid-picker");
+  await expect(authorPicker).toBeVisible();
+  await expect
+    .poll(() =>
+      authorPicker
+        .locator("fieldset")
+        .evaluate(
+          (element) =>
+            getComputedStyle(element)
+              .gridTemplateColumns.split(" ")
+              .filter(Boolean).length,
+        ),
+    )
+    .toBe(3);
+  const authorList = authorPicker.getByTestId("author-grid-list");
+  const authorResults = page.getByTestId(/^workflow-author-result-/);
+  await expect.poll(() => authorResults.count()).toBeGreaterThanOrEqual(50);
+  await expect
+    .poll(() =>
+      authorResults.evaluateAll((elements) =>
+        elements
+          .slice(0, 3)
+          .map((element) =>
+            element
+              .getAttribute("data-testid")
+              ?.replace("workflow-author-result-", ""),
+          ),
+      ),
+    )
+    .toEqual([
+      TEST_IDENTITIES.alice.pubkey,
+      TEST_IDENTITIES.bob.pubkey,
+      TEST_IDENTITIES.charlie.pubkey,
+    ]);
+  await authorList.hover();
+  await page.mouse.wheel(0, 10_000);
+  await expect.poll(() => authorResults.count()).toBeGreaterThan(60);
+
+  await page
+    .getByPlaceholder("Search people or paste a public key...")
+    .fill("abcdef12");
+  await expect(
+    page.getByTestId(`workflow-author-result-${PROFILELESS_WORKFLOW_MEMBER}`),
+  ).toBeVisible();
+
+  await page
+    .getByPlaceholder("Search people or paste a public key...")
+    .fill("charlie");
+  await expect(authorList.getByText("charlie", { exact: true })).toBeVisible();
+
+  await page
+    .getByPlaceholder("Search people or paste a public key...")
+    .fill("outsider");
+  await expect(
+    page.getByTestId(
+      `workflow-author-result-${TEST_IDENTITIES.outsider.pubkey}`,
+    ),
+  ).toBeVisible();
+
+  await page
+    .getByPlaceholder("Search people or paste a public key...")
+    .fill("Workflow");
+  await expect(authorResults).toHaveCount(50);
+  await page.getByRole("button", { name: "Load more authors" }).click();
+  await expect(authorResults).toHaveCount(60);
+
+  await page
+    .getByPlaceholder("Search people or paste a public key...")
+    .fill("Workflow member 59");
+  const selectedAuthor = page.getByTestId(
+    `workflow-author-result-${WORKFLOW_AUTHOR_DIRECTORY[58].pubkey}`,
+  );
+  await selectedAuthor.click();
+  await expect(selectedAuthor).toHaveAttribute("aria-pressed", "true");
+
+  await dialog.getByRole("tab", { name: "YAML" }).click();
+  await expect(dialog.getByLabel("Workflow YAML")).toHaveValue(
+    /str_contains\(trigger_author,\s+"[0-9a-f]{64}"\)/,
+  );
+});
+
 test("chooses and clears a reaction trigger with the app emoji picker", async ({
   page,
 }) => {
@@ -447,35 +596,25 @@ test("scrolls the channel list with the mouse wheel", async ({ page }) => {
     .toBeGreaterThan(0);
 });
 
-test("selects a message destination from the channel lookup", async ({
-  page,
-}) => {
+test("omits destination controls for a channel workflow", async ({ page }) => {
   await navigateToWorkflows(page);
 
   await page.getByRole("button", { name: "Create Workflow" }).click();
   const dialog = page.getByRole("dialog");
   await selectFirstChannel(dialog);
+  await dialog.getByRole("button", { name: /^Trigger:/ }).click();
+  await dialog.getByLabel("Trigger event").click();
+  await page.getByRole("menuitem", { name: "Webhook" }).click();
   await dialog.getByRole("button", { name: "Add step" }).click();
   await page.getByRole("menuitem", { name: "Send Message" }).click();
 
-  const channelOverride = dialog.getByRole("combobox", {
-    name: "Channel override (optional)",
-  });
-  await expect(channelOverride).toContainText("Use workflow channel");
-  await channelOverride.click();
-
-  const search = page.getByPlaceholder("Search channels...");
-  await search.fill("random");
   await expect(
-    page.getByRole("button", { name: "random · stream" }),
-  ).toBeDisabled();
-
-  await search.fill("agents");
-  await page.getByRole("button", { name: "agents · stream" }).click();
-  await expect(channelOverride).toContainText("agents");
+    dialog.getByRole("combobox", { name: "Channel override (optional)" }),
+  ).toHaveCount(0);
+  await expect(dialog.getByText("Posting channel")).toHaveCount(0);
 
   await dialog.getByRole("tab", { name: "YAML" }).click();
-  await expect(dialog.getByLabel("Workflow YAML")).toHaveValue(
+  await expect(dialog.getByLabel("Workflow YAML")).not.toHaveValue(
     /channel: [0-9a-f-]{36}/,
   );
 });

@@ -158,6 +158,11 @@ type MockSearchProfileSeed = {
   isAgent?: boolean;
 };
 
+type MockRelayMemberSeed = {
+  pubkey: string;
+  role?: "owner" | "admin" | "member";
+};
+
 type MockHuddleMemberSeed = {
   pubkey: string;
   role: "owner" | "admin" | "member" | "guest" | "bot";
@@ -417,6 +422,8 @@ type E2eConfig = {
     /** Delay EOSE for membership snapshots after delivering the event. */
     relayMembershipEoseDelayMs?: number;
     relayRole?: "owner" | "admin" | "member" | null;
+    /** Additional members appended to the default NIP-43 roster. */
+    additionalRelayMembers?: MockRelayMemberSeed[];
     // Descriptors returned by the mocked `pick_and_upload_media` /
     // `upload_media_bytes` commands. Lets a spec drive the attachment flow
     // (e.g. a generic PDF) without a real upload pipeline. See
@@ -1765,6 +1772,19 @@ function resetMockRelayMembers(config: E2eConfig | undefined) {
       created_at: isoMinutesAgo(60),
     },
   ];
+
+  for (const member of config?.mock?.additionalRelayMembers ?? []) {
+    const memberPubkey = member.pubkey.toLowerCase();
+    if (mockRelayMembers.some((existing) => existing.pubkey === memberPubkey)) {
+      continue;
+    }
+    mockRelayMembers.push({
+      pubkey: memberPubkey,
+      role: member.role ?? "member",
+      added_by: activeRoleMember?.pubkey ?? null,
+      created_at: isoMinutesAgo(30),
+    });
+  }
 }
 
 function buildMockConfigSurface(pubkey: string): {

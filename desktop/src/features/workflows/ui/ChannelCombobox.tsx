@@ -4,6 +4,7 @@ import * as React from "react";
 import type { Channel } from "@/shared/api/types";
 import { cn } from "@/shared/lib/cn";
 import { Popover, PopoverContent, PopoverTrigger } from "@/shared/ui/popover";
+import { PortalledScrollArea } from "@/shared/ui/PortalledScrollArea";
 
 function ChannelPrivacyIcon({ channel }: { channel: Channel }) {
   const Icon = channel.visibility === "private" ? Lock : Hash;
@@ -160,7 +161,7 @@ export function ChannelCombobox({
             value={query}
           />
         </div>
-        <div
+        <PortalledScrollArea
           className="max-h-60 overflow-y-auto p-1"
           data-testid="channel-combobox-list"
         >
@@ -221,7 +222,7 @@ export function ChannelCombobox({
               );
             })
           )}
-        </div>
+        </PortalledScrollArea>
       </PopoverContent>
     </Popover>
   );

@@ -54,6 +54,11 @@ type MockSearchProfileSeed = {
   isAgent?: boolean;
 };
 
+type MockRelayMemberSeed = {
+  pubkey: string;
+  role?: "owner" | "admin" | "member";
+};
+
 type MockRelayAgentSeed = {
   pubkey: string;
   name: string;
@@ -374,6 +379,8 @@ type MockBridgeOptions = {
    * evaluates false).
    */
   relayRole?: "owner" | "admin" | "member" | null;
+  /** Additional members appended to the default NIP-43 roster. */
+  additionalRelayMembers?: MockRelayMemberSeed[];
   /**
    * Descriptors returned by the mocked `pick_and_upload_media` /
    * `upload_media_bytes` commands. When omitted, the bridge returns a single

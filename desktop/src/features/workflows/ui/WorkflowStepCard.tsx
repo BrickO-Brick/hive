@@ -101,42 +101,34 @@ function StepConfigFields({
               value={step.text ?? ""}
             />
           </div>
-          <div className="space-y-1.5">
-            <FieldLabel htmlFor={`${prefix}-channel`}>
-              Channel override (optional)
-            </FieldLabel>
-            <ChannelCombobox
-              allowEmpty
-              ariaLabel="Channel override (optional)"
-              channels={channels}
-              disabled={disabled}
-              emptyLabel={
-                workflowChannelId
-                  ? "Use workflow channel"
-                  : "Use trigger channel"
-              }
-              id={`${prefix}-channel`}
-              isChannelDisabled={(channel) =>
-                Boolean(workflowChannelId && channel.id !== workflowChannelId)
-              }
-              onChange={(channel) => onUpdate({ ...step, channel })}
-              value={step.channel ?? ""}
-              variant="field"
-            />
-            <p className="text-xs text-muted-foreground">
-              {workflowChannelId
-                ? "Defaults to this workflow's channel. Cross-channel posting is not permitted."
-                : "Defaults to the trigger channel. Webhook and manual triggers require a channel."}
-            </p>
-            {triggerType === "webhook" &&
-            !workflowChannelId &&
-            !(step.channel ?? "").trim() ? (
-              <p className="text-xs text-amber-700">
-                This step will fail for webhook-triggered runs until a channel
-                override is set.
+          {!workflowChannelId ? (
+            <div className="space-y-1.5">
+              <FieldLabel htmlFor={`${prefix}-channel`}>
+                Channel override (optional)
+              </FieldLabel>
+              <ChannelCombobox
+                allowEmpty
+                ariaLabel="Channel override (optional)"
+                channels={channels}
+                disabled={disabled}
+                emptyLabel="Use trigger channel"
+                id={`${prefix}-channel`}
+                onChange={(channel) => onUpdate({ ...step, channel })}
+                value={step.channel ?? ""}
+                variant="field"
+              />
+              <p className="text-xs text-muted-foreground">
+                Defaults to the channel that triggered the workflow. Webhook and
+                manual triggers require a channel.
               </p>
-            ) : null}
-          </div>
+              {triggerType === "webhook" && !(step.channel ?? "").trim() ? (
+                <p className="text-xs text-amber-700">
+                  This step will fail for webhook-triggered runs until a channel
+                  override is set.
+                </p>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       );
     case "send_dm":
@@ -391,6 +383,7 @@ export function WorkflowStepCard({
         <SectionHeading title="Run controls" />
         <div>
           <WorkflowConditionBuilder
+            channels={channels}
             disabled={disabled}
             idPrefix={`${prefix}-condition`}
             matchAllHint="Leave empty to run this step every time the workflow starts."
