@@ -298,6 +298,10 @@ test("builds a valid trigger condition from plain-language choices", async ({
   await conditionFields.getByRole("button", { name: "Message text" }).click();
   await expect(allMessages).toHaveAttribute("aria-pressed", "false");
   const matchSelect = inspector.getByLabel("Match");
+  await expect(matchSelect.locator('option[value="equals"]')).toHaveText("is");
+  await expect(matchSelect.locator('option[value="not_equals"]')).toHaveText(
+    "is not",
+  );
   await expect(matchSelect.locator('option[value="is_not_empty"]')).toHaveText(
     "has text",
   );
