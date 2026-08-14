@@ -228,14 +228,18 @@ export function readCommunityThemeAppearanceSnapshot(
   }
 }
 
+const inMemoryAppearanceSnapshots = new Map<string, CommunityThemeAppearance>();
+
 /**
  * Persist the profile's pre-migration appearance the first time it is seen and
  * return the durable snapshot. Writing once fixes the value while the live
  * global appearance keys are still authoritative, so later community switches —
  * which now rewrite those keys per community — cannot corrupt the seed the
  * per-record migration inherits from. Subsequent calls return the stored
- * snapshot unchanged; a full storage falls back to the live appearance for the
- * current session without pinning a wrong value.
+ * snapshot unchanged; a full storage falls back to a module-level in-memory
+ * cache so the profile's first-seen value still survives the per-community
+ * controller remount, rather than being re-captured from a later community's
+ * already-rewritten appearance.
  */
 export function captureCommunityThemeAppearanceSnapshot(
   pubkey: string,
@@ -243,6 +247,8 @@ export function captureCommunityThemeAppearanceSnapshot(
 ): CommunityThemeAppearance {
   const existing = readCommunityThemeAppearanceSnapshot(pubkey);
   if (existing) return existing;
+  const cached = inMemoryAppearanceSnapshots.get(pubkey);
+  if (cached) return cached;
   const snapshot: CommunityThemeAppearance = {
     glassBackground: appearance.glassBackground,
     glassOpacity: appearance.glassOpacity,
@@ -254,7 +260,43 @@ export function captureCommunityThemeAppearanceSnapshot(
       JSON.stringify(snapshot),
     );
   } catch {
-    // The live appearance still seeds this session even when storage is full.
+    // A full store cannot durably pin the snapshot, so retain it in memory for
+    // the life of this process. Without this the next community remount finds
+    // neither a stored snapshot nor this value and re-captures the current
+    // (previous community's) appearance as the seed.
+    inMemoryAppearanceSnapshots.set(pubkey, snapshot);
+  }
+  return snapshot;
+}
+
+/**
+ * Overwrite the profile's appearance snapshot with a later explicit user glass
+ * choice. The initial snapshot is frozen at the pre-migration appearance, but
+ * once the user changes glass/opacity/prominent-tab that former value is stale:
+ * a no-record community would otherwise resurrect it and republish it over the
+ * user's current choice. Callers refresh only on a genuine user edit, never on
+ * a programmatic per-community apply, so a community's own record can never
+ * leak into the profile-wide seed.
+ */
+export function refreshCommunityThemeAppearanceSnapshot(
+  pubkey: string,
+  appearance: CommunityThemeAppearance,
+): CommunityThemeAppearance {
+  const snapshot: CommunityThemeAppearance = {
+    glassBackground: appearance.glassBackground,
+    glassOpacity: appearance.glassOpacity,
+    prominentActiveTab: appearance.prominentActiveTab,
+  };
+  try {
+    window.localStorage.setItem(
+      communityThemeAppearanceSnapshotKey(pubkey),
+      JSON.stringify(snapshot),
+    );
+    inMemoryAppearanceSnapshots.delete(pubkey);
+  } catch {
+    // Retain the refreshed value in memory when the store is full, mirroring
+    // the capture path so the current choice still survives a remount.
+    inMemoryAppearanceSnapshots.set(pubkey, snapshot);
   }
   return snapshot;
 }

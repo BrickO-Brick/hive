@@ -138,15 +138,16 @@ class CommunityThemePreference {
       includesGlassOpacity &&
       includesProminentActiveTab;
 
-  /// Fold [source]'s desktop-only appearance into this preference. Used when
-  /// republishing a mobile edit that carries no desktop opinion so the relay
-  /// coordinate keeps the glass and prominent-tab values a desktop client
-  /// authored. A preference that already includes the fields is returned
-  /// unchanged; only the fields [source] actually carries are adopted.
+  /// Adopt [source]'s desktop-only appearance in place of this preference's.
+  /// Mobile has no UI that authors glass or prominent-tab, so those fields are
+  /// never a local opinion — they are only ever a copy of what was hydrated.
+  /// A cached "full" preference therefore carries stale desktop fields once
+  /// another client changes them, so republishing a mobile edit must take the
+  /// desktop-only fields from the latest observed coordinate rather than trust
+  /// its own cache; otherwise it silently replays stale glass over the relay.
   CommunityThemePreference mergeDesktopAppearanceFrom(
     CommunityThemePreference source,
   ) {
-    if (includesDesktopAppearance) return this;
     return CommunityThemePreference(
       version: version,
       theme: theme,

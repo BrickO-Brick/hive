@@ -14,6 +14,7 @@ import {
   markCommunityThemeMigrated,
   readCommunityThemeOutbox,
   readCommunityThemePreference,
+  refreshCommunityThemeAppearanceSnapshot,
   sameCommunityThemePreference,
   writeCommunityThemeOutbox,
   writeCommunityThemePreference,
@@ -289,6 +290,25 @@ export function CommunityThemeController() {
       communityThemeAppearanceFallback(appearanceSnapshotRef.current),
     );
     if (stored && sameCommunityThemePreference(stored, preference)) return;
+    // A genuine user edit that changes glass/opacity/prominent-tab is the
+    // user's current profile-wide appearance intent, so refresh the snapshot
+    // that seeds no-record communities. Without this the snapshot stays frozen
+    // at the pre-migration value and a later empty community resurrects it over
+    // the user's current choice. Only a changed appearance refreshes it, so an
+    // accent- or theme-only edit never leaks this community's glass into the
+    // profile-wide seed.
+    const priorScoped = scopedPreferenceRef.current;
+    if (
+      !priorScoped ||
+      priorScoped.glassBackground !== preference.glassBackground ||
+      priorScoped.glassOpacity !== preference.glassOpacity ||
+      priorScoped.prominentActiveTab !== preference.prominentActiveTab
+    ) {
+      appearanceSnapshotRef.current = refreshCommunityThemeAppearanceSnapshot(
+        pubkey,
+        preference,
+      );
+    }
     scopedPreferenceRef.current = preference;
     if (!writeCommunityThemePreference(pubkey, relayUrl, preference)) return;
     if (!writeCommunityThemeOutbox(pubkey, relayUrl, preference)) return;

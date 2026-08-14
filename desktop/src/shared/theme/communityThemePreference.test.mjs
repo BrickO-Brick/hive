@@ -16,6 +16,7 @@ import {
   readCommunityThemeAppearanceSnapshot,
   readCommunityThemeOutbox,
   readCommunityThemePreference,
+  refreshCommunityThemeAppearanceSnapshot,
   sameCommunityThemePreference,
   writeCommunityThemeOutbox,
   writeCommunityThemePreference,
@@ -235,6 +236,93 @@ test("a full store still yields the correct in-session appearance fallback", () 
     ...legacy,
     ...snapshot,
   });
+});
+
+test("a full store pins the snapshot across a controller remount", () => {
+  // The controller is remounted per community under a keyed provider, so a
+  // ref cannot carry the snapshot between mounts. When the store is full the
+  // capture must still return the profile's first-seen value on the next
+  // mount, rather than re-capturing the current (previous community's)
+  // appearance. This pins that the in-memory fallback has profile lifetime.
+  globalThis.window = {
+    localStorage: {
+      getItem: () => null,
+      setItem: () => {
+        throw new Error("quota exceeded");
+      },
+      removeItem: () => {},
+    },
+  };
+  const firstMount = {
+    ...DEFAULT_COMMUNITY_THEME,
+    glassBackground: true,
+    glassOpacity: 80,
+    prominentActiveTab: true,
+  };
+  const first = captureCommunityThemeAppearanceSnapshot(
+    "remount-pk",
+    firstMount,
+  );
+  assert.deepEqual(first, {
+    glassBackground: true,
+    glassOpacity: 80,
+    prominentActiveTab: true,
+  });
+
+  // The next mount is a different community whose applied appearance differs.
+  // Capture must return the pinned first value, not this community's.
+  const secondMount = {
+    ...DEFAULT_COMMUNITY_THEME,
+    glassBackground: false,
+    glassOpacity: 30,
+    prominentActiveTab: false,
+  };
+  assert.deepEqual(
+    captureCommunityThemeAppearanceSnapshot("remount-pk", secondMount),
+    first,
+  );
+});
+
+test("a user glass edit refreshes the snapshot for no-record communities", () => {
+  // The initial snapshot is frozen at the pre-migration appearance. Once the
+  // user changes glass, that former value is stale: a no-record community must
+  // inherit the new choice, not resurrect the old one. refresh overwrites the
+  // durable snapshot so the empty-scope fallback tracks the current choice.
+  globalThis.window = { localStorage: localStorageStub() };
+  const preMigration = {
+    ...DEFAULT_COMMUNITY_THEME,
+    glassBackground: true,
+    glassOpacity: 80,
+    prominentActiveTab: true,
+  };
+  const pinned = captureCommunityThemeAppearanceSnapshot(
+    "edit-pk",
+    preMigration,
+  );
+  assert.deepEqual(pinned, {
+    glassBackground: true,
+    glassOpacity: 80,
+    prominentActiveTab: true,
+  });
+
+  const edited = {
+    ...DEFAULT_COMMUNITY_THEME,
+    glassBackground: false,
+    glassOpacity: 40,
+    prominentActiveTab: false,
+  };
+  const refreshed = refreshCommunityThemeAppearanceSnapshot("edit-pk", edited);
+  assert.deepEqual(refreshed, {
+    glassBackground: false,
+    glassOpacity: 40,
+    prominentActiveTab: false,
+  });
+  // A subsequent capture (a later community mount) sees the refreshed value,
+  // so the no-record fallback carries the user's current choice.
+  assert.deepEqual(
+    captureCommunityThemeAppearanceSnapshot("edit-pk", preMigration),
+    refreshed,
+  );
 });
 
 test("desktop appearance limits match the shared wire contract", () => {
