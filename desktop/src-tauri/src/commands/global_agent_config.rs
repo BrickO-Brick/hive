@@ -16,11 +16,9 @@ use tauri::AppHandle;
 use crate::{
     app_state::AppState,
     managed_agents::{
-        agent_readiness, current_instance_id, effective_secrets_unavailable,
-        find_managed_agent_mut, known_acp_runtime, load_global_agent_config, load_managed_agents,
-        load_personas, record_agent_command, resolve_effective_agent_env, save_global_agent_config,
-        save_managed_agents, stop_managed_agent_process, sync_managed_agent_processes,
-        validate_global_config, AgentReadiness, BackendKind, GlobalAgentConfig,
+        current_instance_id, find_managed_agent_mut, load_global_agent_config, load_managed_agents,
+        load_personas, save_global_agent_config, save_managed_agents, stop_managed_agent_process,
+        sync_managed_agent_processes, validate_global_config, BackendKind, GlobalAgentConfig,
     },
 };
 
@@ -203,44 +201,18 @@ fn collect_restart_candidates(
         .lock()
         .unwrap_or_else(|error| error.into_inner());
 
-    let candidates = records
-        .iter()
-        .filter(|record| {
-            if record.backend != BackendKind::Local {
-                return false;
-            }
-            let has_live_runtime = runtimes.iter_mut().any(|(key, runtime)| {
+    let candidates = super::restart_ops::select_config_change_restart_candidates(
+        &records,
+        &all_personas,
+        old_global,
+        new_global,
+        |record| {
+            runtimes.iter_mut().any(|(key, runtime)| {
                 key.pubkey.eq_ignore_ascii_case(&record.pubkey)
                     && runtime.child.try_wait().ok().flatten().is_none()
-            });
-            if !has_live_runtime {
-                return false;
-            }
-            let effective_cmd = record_agent_command(record, &all_personas);
-            let runtime_meta = known_acp_runtime(&effective_cmd);
-            let old_effective =
-                resolve_effective_agent_env(record, &all_personas, runtime_meta, old_global);
-            let new_effective =
-                resolve_effective_agent_env(record, &all_personas, runtime_meta, new_global);
-            let old_ready = matches!(agent_readiness(&old_effective), AgentReadiness::Ready);
-            let new_ready = matches!(agent_readiness(&new_effective), AgentReadiness::Ready);
-            // For a Ready+running agent: the process must be alive now and the
-            // process-env map must differ.  The alive check avoids queuing a
-            // restart for a process that already exited between the pre-filter
-            // scan and Phase 2.  NotReady→Ready bypasses the alive check
-            // because Phase 2 will stop-then-start unconditionally.
-            let env_changed = old_ready && old_effective.env != new_effective.env;
-
-            should_restart_on_config_change_for(
-                record,
-                &all_personas,
-                old_ready,
-                new_ready,
-                env_changed,
-            )
-        })
-        .map(|r| r.pubkey.clone())
-        .collect();
+            })
+        },
+    );
 
     (candidates, all_personas)
 }
@@ -324,48 +296,28 @@ async fn restart_local_agent_on_config_change(
             ));
         }
 
-        // Re-check the eligibility predicate under lock:
-        //   (old NotReady && new Ready)  OR  (old Ready && env changed)
-        // TODO: busy/mid-turn deferral would slot in here
-        //
+        // Re-check eligibility and re-read the committed global strictly under
+        // lock, then stop — all inside `authorize_config_change_restart`, which
+        // owns the gate order and runs the injected stop only on full Ok.
         // Reuse personas_snapshot from Phase 1 — avoids loading personas again
         // per agent when the save-command personas haven't changed.
-        let effective_cmd = record_agent_command(record, &personas_owned);
-        let runtime_meta = known_acp_runtime(&effective_cmd);
-        let old_effective =
-            resolve_effective_agent_env(record, &personas_owned, runtime_meta, &old_global_clone);
-        let new_effective =
-            resolve_effective_agent_env(record, &personas_owned, runtime_meta, &new_global_clone);
-        let old_ready = matches!(agent_readiness(&old_effective), AgentReadiness::Ready);
-        let new_ready = matches!(agent_readiness(&new_effective), AgentReadiness::Ready);
-        // Under lock, the alive check was already done above via process_is_running.
-        let env_changed = old_ready && old_effective.env != new_effective.env;
-        if !should_restart_on_config_change_for(
-            record,
+        //
+        // The decision reads a cloned record (immutable); the stop closure
+        // re-finds the mutable record so the immutable-decision / mutable-stop
+        // borrow split stays clean.
+        let record = record.clone();
+        super::restart_ops::authorize_config_change_restart(
+            &record,
             &personas_owned,
-            old_ready,
-            new_ready,
-            env_changed,
-        ) {
-            return Err(format!(
-                "agent {pubkey_owned} restart condition no longer valid under lock"
-            ));
-        }
-
-        // Strict re-read of the committed global under lock: the phase-1
-        // `old_global`/`new_global` snapshots drive the readiness comparison
-        // above, but they cannot attest the committed global ref is still
-        // hydratable NOW. `spawn_agent_child` reloads it strictly, so an
-        // unreadable global here means respawn would refuse after the stop
-        // (`FailedAfterStop`). Refuse before the stop.
-        super::agent_discovery::refuse_restart_on_unavailable_global(load_global_agent_config(
-            &app_for_stop,
-        ))?;
-
-        // Stop the process.
-        let record_mut = find_managed_agent_mut(&mut records, &pubkey_owned)?;
-        stop_managed_agent_process(&app_for_stop, record_mut, &mut runtimes)?;
-        save_managed_agents(&app_for_stop, &records)?;
+            &old_global_clone,
+            &new_global_clone,
+            || load_global_agent_config(&app_for_stop),
+            || {
+                let record_mut = find_managed_agent_mut(&mut records, &pubkey_owned)?;
+                stop_managed_agent_process(&app_for_stop, record_mut, &mut runtimes)?;
+                save_managed_agents(&app_for_stop, &records)
+            },
+        )?;
 
         Ok(runtime_keys)
     })
@@ -457,37 +409,13 @@ fn persist_last_error(app: &AppHandle, pubkey: &str, error: &str) -> Result<(), 
 /// its env can differ from the old config for unrelated reasons, so restart is
 /// refused — a stop-then-respawn would stop a live process only to hit the
 /// spawn refusal (`FailedAfterStop`).
-fn should_restart_on_config_change(
+pub(super) fn should_restart_on_config_change(
     old_ready: bool,
     new_ready: bool,
     env_changed: bool,
     secrets_unavailable: bool,
 ) -> bool {
     !secrets_unavailable && ((!old_ready && new_ready) || (old_ready && env_changed))
-}
-
-/// Composed config-change restart-eligibility seam: the single production entry
-/// point that both consults `effective_secrets_unavailable` for `record` and
-/// applies the pure structural predicate. Both the pre-scan
-/// (`collect_restart_candidates`) and the under-lock recheck
-/// (`restart_local_agent_on_config_change`) call this instead of wiring
-/// `effective_secrets_unavailable` at the call site, so the secret consultation
-/// lives in one AppHandle-free place that is unit-testable with real records
-/// (mutating the `effective_secrets_unavailable` call here turns a regression
-/// red).
-fn should_restart_on_config_change_for(
-    record: &crate::managed_agents::ManagedAgentRecord,
-    personas: &[crate::managed_agents::AgentDefinition],
-    old_ready: bool,
-    new_ready: bool,
-    env_changed: bool,
-) -> bool {
-    should_restart_on_config_change(
-        old_ready,
-        new_ready,
-        env_changed,
-        effective_secrets_unavailable(record, personas),
-    )
 }
 
 /// Fail closed when the CURRENTLY committed global config cannot load before an
@@ -645,67 +573,6 @@ mod tests {
         assert!(
             !should_restart_on_config_change(true, true, true, true),
             "a running agent with changed env but unavailable secrets must NOT be restarted"
-        );
-    }
-
-    // ── Production-seam binding: should_restart_on_config_change_for ──────
-    //
-    // Both the pre-scan (`collect_restart_candidates`) and the under-lock
-    // recheck (`restart_local_agent_on_config_change`) call this seam, which is
-    // the ONLY production place that consults `effective_secrets_unavailable`
-    // in this flow. These drive the seam with real records so dropping the
-    // consultation (hardcoding it `false`) turns a regression red — the gap
-    // Thufir found was that the raw call sites were not bound.
-
-    use crate::managed_agents::ManagedAgentRecord;
-
-    /// Minimal local record with no persona link or harness pin. With
-    /// `secrets_unavailable=false` and empty personas, every tier of
-    /// `effective_secrets_unavailable` is false — the healthy baseline.
-    fn local_record() -> ManagedAgentRecord {
-        serde_json::from_str(&format!(
-            r#"{{
-                "pubkey": "{}",
-                "name": "config-restart-gate-test",
-                "relay_url": "",
-                "acp_command": "buzz-acp",
-                "agent_command": "goose",
-                "agent_args": [],
-                "mcp_command": "",
-                "turn_timeout_seconds": 320,
-                "system_prompt": "",
-                "created_at": "2026-01-01T00:00:00Z",
-                "updated_at": "2026-01-01T00:00:00Z"
-            }}"#,
-            "aa".repeat(32)
-        ))
-        .unwrap()
-    }
-
-    /// A healthy record whose readiness unblocked (NotReady → Ready) → restart.
-    /// Positive control: with these structural inputs fixed, the seam's result
-    /// is exactly `!effective_secrets_unavailable(record, personas)`.
-    #[test]
-    fn should_restart_on_config_change_for_healthy_record_is_candidate() {
-        let record = local_record();
-        assert!(
-            super::should_restart_on_config_change_for(&record, &[], false, true, false),
-            "a healthy record that became Ready must be a restart candidate"
-        );
-    }
-
-    /// Same structural inputs, but the record's instance tier is unavailable →
-    /// NOT a candidate. Mutation check: replace the
-    /// `effective_secrets_unavailable(..)` call in
-    /// `should_restart_on_config_change_for` with `false` and this flips to true
-    /// while the control above stays green — binds both config-change sites.
-    #[test]
-    fn should_restart_on_config_change_for_unavailable_record_is_not_candidate() {
-        let mut record = local_record();
-        record.secrets_unavailable = true;
-        assert!(
-            !super::should_restart_on_config_change_for(&record, &[], false, true, false),
-            "a record with unavailable secrets must NOT be a restart candidate even when unblocked"
         );
     }
 }

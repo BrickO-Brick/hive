@@ -269,13 +269,12 @@ fn test_should_restart_after_install_secrets_unavailable_is_not_candidate() {
     );
 }
 
-// ── Production-seam binding: should_restart_after_install_for ─────────────
+// ── Restart-gate fixtures ─────────────────────────────────────────────────
 //
-// The pre-scan calls `should_restart_after_install_for(record, personas, ..)`,
-// which is the ONLY production place that consults
-// `effective_secrets_unavailable`. These drive that seam with real records so
-// dropping the consultation (hardcoding it `false`) turns a regression red —
-// the gap Thufir found was that the raw call site was not bound.
+// `local_record()` is the healthy baseline for the under-lock secret-gate
+// tests below and (via the ops module) the production-seam binding tests. With
+// `secrets_unavailable=false` and empty personas, every tier of
+// `effective_secrets_unavailable` is false.
 
 /// Minimal local `ManagedAgentRecord`: local backend, no persona link, no
 /// harness pin. With `secrets_unavailable=false` and empty personas, every
@@ -299,33 +298,6 @@ fn local_record() -> crate::managed_agents::ManagedAgentRecord {
         "aa".repeat(32)
     ))
     .unwrap()
-}
-
-/// All structural inputs true + a healthy record → eligible. Positive control
-/// for the two seam tests below: with these structural inputs fixed, the seam's
-/// result is exactly `!effective_secrets_unavailable(record, personas)`, so the
-/// negative case isolates the secret consultation.
-#[test]
-fn test_should_restart_after_install_for_healthy_record_is_candidate() {
-    let record = local_record();
-    assert!(
-        should_restart_after_install_for(&record, &[], true, true, true, true, true),
-        "a healthy record with all structural inputs true must be a restart candidate"
-    );
-}
-
-/// Same structural inputs, but the record's instance tier is unavailable → NOT
-/// eligible. Mutation check: replace the `effective_secrets_unavailable(..)`
-/// call in `should_restart_after_install_for` with `false` and this flips to
-/// true while the control above stays green — binds the pre-scan call site.
-#[test]
-fn test_should_restart_after_install_for_unavailable_record_is_not_candidate() {
-    let mut record = local_record();
-    record.secrets_unavailable = true;
-    assert!(
-        !should_restart_after_install_for(&record, &[], true, true, true, true, true),
-        "a record with unavailable secrets must NOT be a restart candidate even when otherwise eligible"
-    );
 }
 
 // ── Production-seam binding: refuse_restart_on_unavailable_secrets ────────
