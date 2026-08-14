@@ -9,14 +9,14 @@ import { MessageIdPicker } from "./MessageIdPicker";
 import { WorkflowEmojiField } from "./WorkflowEmojiField";
 import { FieldLabel, FormSelect } from "./workflowFormPrimitives";
 import {
-  buildConditionExpression,
+  buildConditionExpressions,
   conditionFieldsForTrigger,
   conditionOperatorsForField,
   conditionOperatorNeedsValue,
   CUSTOM_CONDITION_FIELD,
   defaultConditionOperatorForField,
   normalizeWebhookField,
-  parseConditionExpression,
+  parseConditionExpressions,
 } from "./workflowConditionExpression";
 import type {
   ConditionOperator,
@@ -35,33 +35,39 @@ const OPERATOR_LABELS: Record<ConditionOperator, string> = {
   is_empty: "is empty",
 };
 
+type ConditionEditorState = {
+  custom: boolean;
+  editors: ParsedConditionExpression[];
+};
+
+function normalizedEditor(
+  editor: ParsedConditionExpression,
+): ParsedConditionExpression {
+  const supportedOperators = conditionOperatorsForField(editor.field);
+  return supportedOperators.includes(editor.operator)
+    ? editor
+    : {
+        ...editor,
+        operator: defaultConditionOperatorForField(editor.field),
+      };
+}
+
 function initialEditorState(
   value: string,
   triggerType: TriggerType,
-): ParsedConditionExpression {
-  const parsed = parseConditionExpression(value, triggerType);
+): ConditionEditorState {
+  const parsed = parseConditionExpressions(value, triggerType);
   if (parsed) {
-    const supportedOperators = conditionOperatorsForField(parsed.field);
-    return supportedOperators.includes(parsed.operator)
-      ? parsed
-      : {
-          ...parsed,
-          operator: defaultConditionOperatorForField(parsed.field),
-        };
+    return { custom: false, editors: parsed.map(normalizedEditor) };
   }
 
-  return {
-    field: value.trim() ? CUSTOM_CONDITION_FIELD : "",
-    operator: "contains",
-    value: "",
-    webhookField: "",
-  };
+  return { custom: value.trim().length > 0, editors: [] };
 }
 
 function valueLabel(field: string): string {
   switch (field) {
     case "trigger_author":
-      return "Pubkey";
+      return "Author";
     case "trigger_message_id":
       return "Message ID";
     case "trigger_emoji":
@@ -84,6 +90,148 @@ function valuePlaceholder(field: string): string {
     default:
       return "e.g. deploy";
   }
+}
+
+function ConditionEditorControls({
+  channelId,
+  disabled,
+  editor,
+  idPrefix,
+  knownAuthorPubkeys,
+  label,
+  onChange,
+}: {
+  channelId?: string | null;
+  disabled?: boolean;
+  editor: ParsedConditionExpression;
+  idPrefix: string;
+  knownAuthorPubkeys: string[];
+  label: string;
+  onChange: (editor: ParsedConditionExpression) => void;
+}) {
+  const needsValue = conditionOperatorNeedsValue(editor.operator);
+  const operatorOptions = conditionOperatorsForField(editor.field);
+  const usesExactMatchOperators = operatorOptions.length === 2;
+  const webhookFieldInvalid =
+    editor.field === "webhook_field" &&
+    editor.webhookField.length > 0 &&
+    normalizeWebhookField(editor.webhookField) === null;
+  const controlIdPrefix = `${idPrefix}-${editor.field}`;
+
+  return (
+    <fieldset
+      className="space-y-3 rounded-lg border border-border/60 bg-background/20 p-3"
+      data-testid={`workflow-condition-editor-${editor.field}`}
+    >
+      <legend className="px-1 text-xs font-semibold text-foreground">
+        {label}
+      </legend>
+      <div className="space-y-1.5">
+        <FieldLabel htmlFor={`${controlIdPrefix}-operator`}>Match</FieldLabel>
+        <FormSelect
+          disabled={disabled}
+          id={`${controlIdPrefix}-operator`}
+          onChange={(operator) =>
+            onChange({
+              ...editor,
+              operator: operator as ConditionOperator,
+            })
+          }
+          value={editor.operator}
+        >
+          {operatorOptions.map((operator) => (
+            <option key={operator} value={operator}>
+              {usesExactMatchOperators && operator === "equals"
+                ? "is"
+                : OPERATOR_LABELS[operator]}
+            </option>
+          ))}
+        </FormSelect>
+      </div>
+
+      {editor.field === "webhook_field" ? (
+        <div className="space-y-1.5">
+          <FieldLabel htmlFor={`${controlIdPrefix}-webhook-field`}>
+            JSON field name
+          </FieldLabel>
+          <Input
+            autoCapitalize="off"
+            autoCorrect="off"
+            disabled={disabled}
+            id={`${controlIdPrefix}-webhook-field`}
+            onChange={(event) =>
+              onChange({
+                ...editor,
+                webhookField: event.target.value,
+              })
+            }
+            placeholder="e.g. environment"
+            value={editor.webhookField}
+          />
+          {webhookFieldInvalid ? (
+            <p className="text-xs text-destructive">
+              Use letters, numbers, and underscores, starting with a letter or
+              underscore. Names cannot start with trigger_ or steps_.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
+      {needsValue ? (
+        <div className="space-y-1.5">
+          <FieldLabel htmlFor={`${controlIdPrefix}-value`}>
+            {editor.field === "webhook_field"
+              ? "Value"
+              : valueLabel(editor.field)}
+          </FieldLabel>
+          {editor.field === "trigger_author" ? (
+            <AuthorGridPicker
+              disabled={disabled}
+              id={`${controlIdPrefix}-value`}
+              knownPubkeys={knownAuthorPubkeys}
+              onChange={(pubkey) => onChange({ ...editor, value: pubkey })}
+              value={editor.value}
+            />
+          ) : editor.field === "trigger_emoji" ? (
+            <WorkflowEmojiField
+              ariaLabel="Choose condition emoji"
+              clearAriaLabel="Clear condition emoji"
+              disabled={disabled}
+              id={`${controlIdPrefix}-value`}
+              onChange={(emoji) => onChange({ ...editor, value: emoji ?? "" })}
+              value={editor.value}
+            />
+          ) : editor.field === "trigger_message_id" ? (
+            <MessageIdPicker
+              channelId={channelId}
+              disabled={disabled}
+              id={`${controlIdPrefix}-value`}
+              onChange={(messageId) =>
+                onChange({ ...editor, value: messageId })
+              }
+              value={editor.value}
+            />
+          ) : (
+            <Input
+              autoCapitalize="off"
+              autoCorrect="off"
+              disabled={disabled}
+              id={`${controlIdPrefix}-value`}
+              onChange={(event) =>
+                onChange({ ...editor, value: event.target.value })
+              }
+              placeholder={
+                editor.field === "webhook_field"
+                  ? "Value to match"
+                  : valuePlaceholder(editor.field)
+              }
+              value={editor.value}
+            />
+          )}
+        </div>
+      ) : null}
+    </fieldset>
+  );
 }
 
 export function WorkflowConditionBuilder({
@@ -139,7 +287,7 @@ export function WorkflowConditionBuilder({
 
     return [...rankedPubkeys];
   }, [channels, identityQuery.data?.pubkey]);
-  const [editor, setEditor] = React.useState(() =>
+  const [editorState, setEditorState] = React.useState(() =>
     initialEditorState(value, triggerType),
   );
   const previousTriggerType = React.useRef(triggerType);
@@ -147,27 +295,22 @@ export function WorkflowConditionBuilder({
   React.useEffect(() => {
     if (previousTriggerType.current === triggerType) return;
     previousTriggerType.current = triggerType;
-    setEditor(initialEditorState(value, triggerType));
+    setEditorState(initialEditorState(value, triggerType));
   }, [triggerType, value]);
 
-  const emitEditor = (next: ParsedConditionExpression) => {
-    setEditor(next);
-    const expression = buildConditionExpression({
-      field: next.field,
-      operator: next.operator,
-      value: next.value,
-      webhookField: next.webhookField,
-    });
-    onChange(expression ?? "");
+  const emitEditors = (editors: ParsedConditionExpression[]) => {
+    setEditorState({ custom: false, editors });
+    onChange(buildConditionExpressions(editors));
   };
 
-  const needsValue = conditionOperatorNeedsValue(editor.operator);
-  const operatorOptions = conditionOperatorsForField(editor.field);
-  const usesExactMatchOperators = operatorOptions.length === 2;
-  const webhookFieldInvalid =
-    editor.field === "webhook_field" &&
-    editor.webhookField.length > 0 &&
-    normalizeWebhookField(editor.webhookField) === null;
+  const updateEditor = (next: ParsedConditionExpression) => {
+    emitEditors(
+      editorState.editors.map((editor) =>
+        editor.field === next.field ? next : editor,
+      ),
+    );
+  };
+
   const evalexprFields = fields
     .map((field) =>
       field.value === "webhook_field" ? "trigger_<JSON field>" : field.value,
@@ -178,6 +321,9 @@ export function WorkflowConditionBuilder({
     ...fields,
     { label: "Custom", value: CUSTOM_CONDITION_FIELD },
   ];
+  const selectedFields = new Set(
+    editorState.editors.map((editor) => editor.field),
+  );
 
   return (
     <div className="space-y-3">
@@ -187,7 +333,11 @@ export function WorkflowConditionBuilder({
           {fieldOptions.map((field) => {
             const isMatchAll = field.value === "";
             const isCustom = field.value === CUSTOM_CONDITION_FIELD;
-            const isSelected = editor.field === field.value;
+            const isSelected = isMatchAll
+              ? !editorState.custom && editorState.editors.length === 0
+              : isCustom
+                ? editorState.custom
+                : selectedFields.has(field.value);
             return (
               <div
                 className={cn(
@@ -209,27 +359,34 @@ export function WorkflowConditionBuilder({
                   )}
                   disabled={disabled}
                   onClick={() => {
-                    if (isSelected) return;
                     if (isMatchAll) {
-                      setEditor({
-                        field: "",
-                        operator: "contains",
-                        value: "",
-                        webhookField: "",
-                      });
+                      setEditorState({ custom: false, editors: [] });
                       onChange("");
                       return;
                     }
                     if (isCustom) {
-                      setEditor({ ...editor, field: field.value });
+                      setEditorState({ custom: true, editors: [] });
                       return;
                     }
-                    emitEditor({
-                      field: field.value,
-                      operator: defaultConditionOperatorForField(field.value),
-                      value: "",
-                      webhookField: "",
-                    });
+                    if (isSelected) {
+                      emitEditors(
+                        editorState.editors.filter(
+                          (editor) => editor.field !== field.value,
+                        ),
+                      );
+                    } else {
+                      emitEditors([
+                        ...editorState.editors,
+                        {
+                          field: field.value,
+                          operator: defaultConditionOperatorForField(
+                            field.value,
+                          ),
+                          value: "",
+                          webhookField: "",
+                        },
+                      ]);
+                    }
                   }}
                   type="button"
                 >
@@ -241,7 +398,7 @@ export function WorkflowConditionBuilder({
         </div>
       </fieldset>
 
-      {editor.field === CUSTOM_CONDITION_FIELD ? (
+      {editorState.custom ? (
         <div className="space-y-1.5">
           <FieldLabel htmlFor={`${idPrefix}-custom-expression`}>
             Custom expression
@@ -259,118 +416,23 @@ export function WorkflowConditionBuilder({
             Use an evalexpr expression with <code>{evalexprFields}</code>.
           </p>
         </div>
-      ) : editor.field ? (
-        <>
-          <div className="space-y-1.5">
-            <FieldLabel htmlFor={`${idPrefix}-operator`}>Match</FieldLabel>
-            <FormSelect
-              disabled={disabled}
-              id={`${idPrefix}-operator`}
-              onChange={(operator) =>
-                emitEditor({
-                  ...editor,
-                  operator: operator as ConditionOperator,
-                })
-              }
-              value={editor.operator}
-            >
-              {operatorOptions.map((operator) => (
-                <option key={operator} value={operator}>
-                  {usesExactMatchOperators && operator === "equals"
-                    ? "is"
-                    : OPERATOR_LABELS[operator]}
-                </option>
-              ))}
-            </FormSelect>
-          </div>
-
-          {editor.field === "webhook_field" ? (
-            <div className="space-y-1.5">
-              <FieldLabel htmlFor={`${idPrefix}-webhook-field`}>
-                JSON field name
-              </FieldLabel>
-              <Input
-                autoCapitalize="off"
-                autoCorrect="off"
-                disabled={disabled}
-                id={`${idPrefix}-webhook-field`}
-                onChange={(event) =>
-                  emitEditor({
-                    ...editor,
-                    webhookField: event.target.value,
-                  })
-                }
-                placeholder="e.g. environment"
-                value={editor.webhookField}
-              />
-              {webhookFieldInvalid ? (
-                <p className="text-xs text-destructive">
-                  Use letters, numbers, and underscores, starting with a letter
-                  or underscore. Names cannot start with trigger_ or steps_.
-                </p>
-              ) : null}
-            </div>
-          ) : null}
-
-          {needsValue ? (
-            <div className="space-y-1.5">
-              <FieldLabel htmlFor={`${idPrefix}-value`}>
-                {editor.field === "webhook_field"
-                  ? "Value"
-                  : valueLabel(editor.field)}
-              </FieldLabel>
-              {editor.field === "trigger_author" ? (
-                <AuthorGridPicker
-                  disabled={disabled}
-                  id={`${idPrefix}-value`}
-                  knownPubkeys={knownAuthorPubkeys}
-                  onChange={(pubkey) =>
-                    emitEditor({ ...editor, value: pubkey })
-                  }
-                  value={editor.value}
-                />
-              ) : editor.field === "trigger_emoji" ? (
-                <WorkflowEmojiField
-                  ariaLabel="Choose condition emoji"
-                  clearAriaLabel="Clear condition emoji"
-                  disabled={disabled}
-                  id={`${idPrefix}-value`}
-                  onChange={(emoji) =>
-                    emitEditor({ ...editor, value: emoji ?? "" })
-                  }
-                  value={editor.value}
-                />
-              ) : editor.field === "trigger_message_id" ? (
-                <MessageIdPicker
-                  channelId={channelId}
-                  disabled={disabled}
-                  id={`${idPrefix}-value`}
-                  onChange={(messageId) =>
-                    emitEditor({ ...editor, value: messageId })
-                  }
-                  value={editor.value}
-                />
-              ) : (
-                <Input
-                  autoCapitalize="off"
-                  autoCorrect="off"
-                  disabled={disabled}
-                  id={`${idPrefix}-value`}
-                  onChange={(event) =>
-                    emitEditor({ ...editor, value: event.target.value })
-                  }
-                  placeholder={
-                    editor.field === "webhook_field"
-                      ? "Value to match"
-                      : valuePlaceholder(editor.field)
-                  }
-                  value={editor.value}
-                />
-              )}
-            </div>
-          ) : null}
-        </>
-      ) : null}
+      ) : (
+        editorState.editors.map((editor) => (
+          <ConditionEditorControls
+            channelId={channelId}
+            disabled={disabled}
+            editor={editor}
+            idPrefix={idPrefix}
+            key={editor.field}
+            knownAuthorPubkeys={knownAuthorPubkeys}
+            label={
+              fields.find((field) => field.value === editor.field)?.label ??
+              editor.field
+            }
+            onChange={updateEditor}
+          />
+        ))
+      )}
     </div>
   );
 }

@@ -288,7 +288,7 @@ test("builds a valid trigger condition from plain-language choices", async ({
   await expect(
     conditionFields.getByRole("button", { name: "Message text" }),
   ).toHaveAttribute("aria-pressed", "false");
-  for (const name of ["Author pubkey", "Custom"]) {
+  for (const name of ["Author", "Custom"]) {
     await expect(conditionFields.getByRole("button", { name })).toBeVisible();
   }
   for (const name of ["Channel ID", "Message ID"]) {
@@ -363,7 +363,7 @@ test("chooses a trigger author condition from live user search", async ({
   await dialog.getByRole("button", { name: /^Trigger:/ }).click();
   const inspector = dialog.getByTestId("workflow-node-inspector");
 
-  await inspector.getByRole("button", { name: "Author pubkey" }).click();
+  await inspector.getByRole("button", { name: "Author" }).click();
   const authorPicker = inspector.getByTestId("author-grid-picker");
   await expect(authorPicker).toBeVisible();
   await expect
@@ -438,6 +438,16 @@ test("chooses a trigger author condition from live user search", async ({
   );
   await selectedAuthor.click();
   await expect(selectedAuthor).toHaveAttribute("aria-pressed", "true");
+  const triggerNode = dialog.getByRole("button", {
+    name: "Trigger: Message posted by Workflow member 59",
+  });
+  await expect(triggerNode).toBeVisible();
+  await expect(
+    triggerNode.getByTestId("workflow-trigger-icon-message_posted"),
+  ).toBeVisible();
+  await expect(
+    triggerNode.locator('[data-testid^="workflow-trigger-author-avatar-"]'),
+  ).toBeVisible();
 
   await dialog.getByRole("tab", { name: "YAML" }).click();
   await expect(dialog.getByLabel("Workflow YAML")).toHaveValue(
@@ -456,9 +466,10 @@ test("chooses and clears a reaction trigger with the app emoji picker", async ({
   const inspector = dialog.getByTestId("workflow-node-inspector");
   await inspector.getByLabel("Trigger event").click();
   await page.getByRole("menuitem", { name: "Reaction Added" }).click();
+  await inspector.getByRole("button", { name: "Reaction emoji" }).click();
 
   const trigger = inspector.getByRole("button", {
-    name: "Choose emoji filter",
+    name: "Choose condition emoji",
   });
   await expect(trigger).toContainText("Choose a reaction");
   await trigger.click();
@@ -468,15 +479,23 @@ test("chooses and clears a reaction trigger with the app emoji picker", async ({
   await picker.getByRole("button", { name: ":buzz:" }).first().click();
 
   await expect(trigger).toContainText(":buzz:");
+  await expect(
+    dialog.getByRole("button", {
+      name: "Trigger: :buzz: reaction added",
+    }),
+  ).toBeVisible();
   await dialog.getByRole("tab", { name: "YAML" }).click();
   await expect(dialog.getByLabel("Workflow YAML")).toHaveValue(/:buzz:/);
 
   await dialog.getByRole("tab", { name: "Form" }).click();
   await dialog.getByRole("button", { name: /^Trigger:/ }).click();
-  await dialog.getByRole("button", { name: "Clear emoji filter" }).click();
+  await dialog.getByRole("button", { name: "Clear condition emoji" }).click();
   await expect(
-    dialog.getByRole("button", { name: "Choose emoji filter" }),
+    dialog.getByRole("button", { name: "Choose condition emoji" }),
   ).toContainText("Choose a reaction");
+  await expect(
+    dialog.getByRole("button", { name: "Trigger: Reaction Added" }),
+  ).toBeVisible();
 });
 
 test("chooses an add-reaction step emoji with the app emoji picker", async ({
@@ -565,7 +584,26 @@ test("chooses a reacted-to message from the workflow channel", async ({
   const inspector = dialog.getByTestId("workflow-node-inspector");
   await inspector.getByLabel("Trigger event").click();
   await page.getByRole("menuitem", { name: "Reaction Added" }).click();
-  await inspector.getByRole("button", { name: "Message ID" }).click();
+  const emojiField = inspector.getByRole("button", {
+    name: "Reaction emoji",
+  });
+  const authorField = inspector.getByRole("button", { name: "Author" });
+  const messageField = inspector.getByRole("button", { name: "Message ID" });
+
+  await emojiField.click();
+  await inspector
+    .getByRole("button", { name: "Choose condition emoji" })
+    .click();
+  const emojiPicker = page.locator("em-emoji-picker");
+  await emojiPicker.locator("input[type='search']").fill("buzz");
+  await emojiPicker.getByRole("button", { name: ":buzz:" }).first().click();
+
+  await authorField.click();
+  await page
+    .getByTestId(`workflow-author-result-${TEST_IDENTITIES.alice.pubkey}`)
+    .click();
+
+  await messageField.click();
 
   const search = inspector.getByLabel("Search messages or paste a message ID");
   const messageList = inspector.getByTestId("message-id-picker-list");
@@ -582,9 +620,22 @@ test("chooses a reacted-to message from the workflow channel", async ({
   await expect(targetMessage).toBeVisible();
   await targetMessage.click();
 
+  for (const field of [emojiField, authorField, messageField]) {
+    await expect(field).toHaveAttribute("aria-pressed", "true");
+  }
+  await expect(
+    dialog.getByRole("button", {
+      name: "Trigger: :buzz: reaction added by alice to “React to me with a custom emoji”",
+    }),
+  ).toBeVisible();
+
   await dialog.getByRole("tab", { name: "YAML" }).click();
-  await expect(dialog.getByLabel("Workflow YAML")).toHaveValue(
-    /filter: trigger_message_id ==\s+"[0-9a-f]{64}"/,
+  const workflowYaml = dialog.getByLabel("Workflow YAML");
+  await expect(workflowYaml).toHaveValue(
+    /filter: trigger_emoji == ":buzz:" && trigger_author ==\s+"[0-9a-f]{64}" &&\s+trigger_message_id ==\s+"[0-9a-f]{64}"/,
+  );
+  await expect(workflowYaml).toHaveValue(
+    new RegExp(TEST_IDENTITIES.alice.pubkey),
   );
 });
 

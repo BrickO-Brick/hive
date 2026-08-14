@@ -3,10 +3,12 @@ import { test } from "node:test";
 
 import {
   buildConditionExpression,
+  buildConditionExpressions,
   conditionFieldsForTrigger,
   conditionOperatorsForField,
   normalizeWebhookField,
   parseConditionExpression,
+  parseConditionExpressions,
 } from "./workflowConditionExpression.ts";
 
 test("builds the supported string conditions", () => {
@@ -132,6 +134,69 @@ test("parses generated conditions back into editor fields", () => {
       value: "prod",
       webhookField: "environment",
     },
+  );
+});
+
+test("builds and parses multiple trigger conditions joined by AND", () => {
+  const conditions = [
+    {
+      field: "trigger_emoji",
+      operator: "equals",
+      value: "👾",
+      webhookField: "",
+    },
+    {
+      field: "trigger_author",
+      operator: "equals",
+      value: "a".repeat(64),
+      webhookField: "",
+    },
+    {
+      field: "trigger_message_id",
+      operator: "equals",
+      value: "b".repeat(64),
+      webhookField: "",
+    },
+  ];
+  const expression = buildConditionExpressions(conditions);
+
+  assert.equal(
+    expression,
+    `trigger_emoji == "👾" && trigger_author == "${"a".repeat(64)}" && trigger_message_id == "${"b".repeat(64)}"`,
+  );
+  assert.deepEqual(
+    parseConditionExpressions(expression, "reaction_added"),
+    conditions,
+  );
+});
+
+test("does not split conjunction text inside strings or nested expressions", () => {
+  assert.deepEqual(
+    parseConditionExpressions(
+      'str_contains(trigger_text, "one && two") && trigger_author == "abc"',
+      "message_posted",
+    ),
+    [
+      {
+        field: "trigger_text",
+        operator: "contains",
+        value: "one && two",
+        webhookField: "",
+      },
+      {
+        field: "trigger_author",
+        operator: "equals",
+        value: "abc",
+        webhookField: "",
+      },
+    ],
+  );
+  assert.equal(
+    parseConditionExpressions(
+      '(trigger_emoji == "👾" && trigger_author == "abc")',
+      "reaction_added",
+    ),
+    null,
   );
 });
 

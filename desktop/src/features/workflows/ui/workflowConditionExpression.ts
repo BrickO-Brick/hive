@@ -50,7 +50,7 @@ export type ParsedConditionExpression = {
 export const CUSTOM_CONDITION_FIELD = "custom";
 
 const AUTHOR_FIELD: ConditionField = {
-  label: "Author pubkey",
+  label: "Author",
   value: "trigger_author",
 };
 
@@ -136,6 +136,16 @@ export function buildConditionExpression({
   }
 }
 
+/** Build a conjunction from every complete condition in the form editor. */
+export function buildConditionExpressions(
+  conditions: ParsedConditionExpression[],
+): string {
+  return conditions
+    .map((condition) => buildConditionExpression(condition))
+    .filter((condition): condition is string => condition !== null)
+    .join(" && ");
+}
+
 function unescapeEvalexprString(value: string): string {
   return value.replaceAll(/\\(["\\])/g, "$1");
 }
@@ -216,4 +226,73 @@ export function parseConditionExpression(
   }
 
   return null;
+}
+
+function splitTopLevelConjunctions(expression: string): string[] | null {
+  const parts: string[] = [];
+  let start = 0;
+  let parenthesisDepth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = 0; index < expression.length; index += 1) {
+    const character = expression[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\") {
+        escaped = true;
+      } else if (character === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (character === '"') {
+      inString = true;
+    } else if (character === "(") {
+      parenthesisDepth += 1;
+    } else if (character === ")") {
+      parenthesisDepth -= 1;
+      if (parenthesisDepth < 0) return null;
+    } else if (
+      character === "&" &&
+      expression[index + 1] === "&" &&
+      parenthesisDepth === 0
+    ) {
+      const part = expression.slice(start, index).trim();
+      if (!part) return null;
+      parts.push(part);
+      index += 1;
+      start = index + 1;
+    }
+  }
+
+  if (inString || parenthesisDepth !== 0) return null;
+  const finalPart = expression.slice(start).trim();
+  if (!finalPart) return null;
+  parts.push(finalPart);
+  return parts;
+}
+
+/** Parse a form-generated `&&` filter back into independently editable fields. */
+export function parseConditionExpressions(
+  expression: string,
+  triggerType: TriggerType,
+): ParsedConditionExpression[] | null {
+  const trimmed = expression.trim();
+  if (!trimmed) return [];
+
+  const parts = splitTopLevelConjunctions(trimmed);
+  if (!parts) return null;
+  const parsed = parts.map((part) =>
+    parseConditionExpression(part, triggerType),
+  );
+  if (parsed.some((condition) => condition === null)) return null;
+
+  const conditions = parsed.filter(
+    (condition): condition is ParsedConditionExpression => condition !== null,
+  );
+  const fields = new Set(conditions.map((condition) => condition.field));
+  return fields.size === conditions.length ? conditions : null;
 }

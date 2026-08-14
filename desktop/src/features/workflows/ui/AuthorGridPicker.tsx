@@ -50,7 +50,7 @@ function matchesPubkeyPrefix(pubkey: string, query: string) {
 }
 
 export function AuthorGridPicker({
-  ariaLabel = "Author pubkey",
+  ariaLabel = "Author",
   disabled,
   id,
   knownPubkeys = [],

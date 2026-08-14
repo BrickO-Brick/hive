@@ -1,17 +1,28 @@
+import { useQuery } from "@tanstack/react-query";
 import {
   ArrowDown,
+  CalendarClock,
   Check,
   ChevronDown,
+  GitPullRequest,
+  LoaderCircle,
+  MessageSquare,
   Plus,
+  SmilePlus,
   Trash2,
   TriangleAlert,
+  Webhook,
   X,
-  Zap,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import * as React from "react";
 import { createPortal } from "react-dom";
 
+import { useUsersBatchQuery } from "@/features/profile/hooks";
+import { resolveUserLabel } from "@/features/profile/lib/identity";
+import { useIdentityQuery } from "@/shared/api/hooks";
+import { getEventById } from "@/shared/api/tauri";
 import type { Channel } from "@/shared/api/types";
 import { Button } from "@/shared/ui/button";
 import { cn } from "@/shared/lib/cn";
@@ -24,10 +35,14 @@ import {
 import { Input } from "@/shared/ui/input";
 import { Switch } from "@/shared/ui/switch";
 import { Textarea } from "@/shared/ui/textarea";
+import { UserAvatar } from "@/shared/ui/UserAvatar";
 import { WorkflowConditionBuilder } from "./WorkflowConditionBuilder";
 import { WorkflowScheduleFields } from "./WorkflowScheduleFields";
 import { WorkflowStepCard } from "./WorkflowStepCard";
-import { buildConditionExpression } from "./workflowConditionExpression";
+import {
+  buildConditionExpression,
+  parseConditionExpressions,
+} from "./workflowConditionExpression";
 import { FieldLabel } from "./workflowFormPrimitives";
 import {
   DEFAULT_FORM_STATE,
@@ -44,9 +59,22 @@ import type {
   ActionType,
   StepFormState,
   TriggerConfig,
+  TriggerType,
   WorkflowFormState,
 } from "./workflowFormTypes";
 import { defaultScheduleTrigger } from "./workflowSchedule";
+import {
+  TRIGGER_MESSAGE_LOADING_LABEL,
+  workflowTriggerDescription,
+} from "./workflowTriggerDescription";
+
+const TRIGGER_ICONS: Record<TriggerType, LucideIcon> = {
+  diff_posted: GitPullRequest,
+  message_posted: MessageSquare,
+  reaction_added: SmilePlus,
+  schedule: CalendarClock,
+  webhook: Webhook,
+};
 
 function TriggerConfigFields({
   channels,
@@ -231,7 +259,7 @@ function WorkflowNode({
   terminal,
   title,
 }: {
-  description: string;
+  description: React.ReactNode;
   disabled?: boolean;
   icon?: React.ReactNode;
   label: string;
@@ -359,6 +387,90 @@ function WorkflowNode({
   );
 }
 
+function TriggerNodeDescription({
+  authorAvatarUrl,
+  authorLabel,
+  description,
+  messageLoading,
+}: {
+  authorAvatarUrl?: string | null;
+  authorLabel?: string | null;
+  description: string;
+  messageLoading?: boolean;
+}) {
+  const authorIndex = authorLabel ? description.lastIndexOf(authorLabel) : -1;
+  if (!authorLabel || authorIndex < 0) {
+    return (
+      <TriggerDescriptionText
+        messageLoading={messageLoading}
+        text={description}
+      />
+    );
+  }
+  const prefix = description.slice(0, authorIndex).trimEnd();
+  const suffix = description
+    .slice(authorIndex + authorLabel.length)
+    .trimStart();
+
+  return (
+    <span className="flex min-w-0 items-center gap-1.5">
+      <span className="shrink-0">{prefix}</span>
+      <UserAvatar
+        avatarUrl={authorAvatarUrl ?? null}
+        className="h-4 w-4"
+        displayName={authorLabel}
+        fallbackDelayMs={0}
+        size="xs"
+        testId="workflow-trigger-author-avatar"
+      />
+      <span className="min-w-0 truncate">
+        {authorLabel}{" "}
+        {suffix ? (
+          <TriggerDescriptionText
+            messageLoading={messageLoading}
+            text={suffix}
+          />
+        ) : null}
+      </span>
+    </span>
+  );
+}
+
+function TriggerDescriptionText({
+  messageLoading,
+  text,
+}: {
+  messageLoading?: boolean;
+  text: string;
+}) {
+  const loadingIndex = messageLoading
+    ? text.indexOf(TRIGGER_MESSAGE_LOADING_LABEL)
+    : -1;
+  if (loadingIndex < 0) return text;
+
+  const prefix = text.slice(0, loadingIndex);
+  const suffix = text.slice(
+    loadingIndex + TRIGGER_MESSAGE_LOADING_LABEL.length,
+  );
+  return (
+    <>
+      {prefix}
+      <motion.span
+        animate={{ opacity: 1 }}
+        aria-label="Loading message"
+        className="inline-flex align-text-bottom"
+        data-testid="workflow-trigger-message-loading"
+        initial={{ opacity: 0 }}
+        role="status"
+        transition={{ delay: 0.5, duration: 0.15 }}
+      >
+        <LoaderCircle aria-hidden="true" className="h-3.5 w-3.5 animate-spin" />
+      </motion.span>
+      {suffix}
+    </>
+  );
+}
+
 export function WorkflowFormBuilder({
   channels,
   disabled,
@@ -383,6 +495,72 @@ export function WorkflowFormBuilder({
   const [selectionDirection, setSelectionDirection] = React.useState<1 | -1>(1);
   const shouldReduceMotion = useReducedMotion();
   const previousModeRef = React.useRef(mode);
+  const identityQuery = useIdentityQuery();
+  const parsedTriggerConditions = React.useMemo(
+    () =>
+      formState.trigger.filter
+        ? parseConditionExpressions(
+            formState.trigger.filter,
+            formState.trigger.on,
+          )
+        : [],
+    [formState.trigger.filter, formState.trigger.on],
+  );
+  const triggerAuthorCondition = parsedTriggerConditions?.find(
+    (condition) => condition.field === "trigger_author",
+  );
+  const triggerAuthorPubkey =
+    triggerAuthorCondition &&
+    /^[0-9a-f]{64}$/i.test(triggerAuthorCondition.value)
+      ? triggerAuthorCondition.value
+      : null;
+  const triggerAuthorProfiles = useUsersBatchQuery(
+    triggerAuthorPubkey ? [triggerAuthorPubkey] : [],
+  );
+  const triggerAuthorProfile = triggerAuthorPubkey
+    ? triggerAuthorProfiles.data?.profiles[triggerAuthorPubkey.toLowerCase()]
+    : undefined;
+  const triggerAuthorLabel = triggerAuthorPubkey
+    ? resolveUserLabel({
+        currentPubkey: identityQuery.data?.pubkey,
+        profiles: triggerAuthorProfiles.data?.profiles,
+        pubkey: triggerAuthorPubkey,
+      })
+    : null;
+  const triggerMessageCondition = parsedTriggerConditions?.find(
+    (condition) => condition.field === "trigger_message_id",
+  );
+  const triggerMessageId =
+    triggerMessageCondition &&
+    /^[0-9a-f]{64}$/i.test(triggerMessageCondition.value)
+      ? triggerMessageCondition.value
+      : null;
+  const triggerMessageQuery = useQuery({
+    enabled: Boolean(triggerMessageId),
+    queryKey: ["workflow-trigger-message", workflowChannelId, triggerMessageId],
+    queryFn: () => getEventById(triggerMessageId ?? ""),
+    retry: false,
+    staleTime: 60_000,
+  });
+  const triggerMessage =
+    triggerMessageQuery.data &&
+    (!workflowChannelId ||
+      triggerMessageQuery.data.tags.some(
+        (tag) => tag[0] === "h" && tag[1] === workflowChannelId,
+      ))
+      ? triggerMessageQuery.data
+      : null;
+  const triggerMessageLabel = triggerMessage?.content.trim() || undefined;
+  const triggerMessageLoading =
+    Boolean(triggerMessageId) &&
+    triggerMessageQuery.isFetching &&
+    !triggerMessageQuery.data;
+  const triggerDescription = workflowTriggerDescription(formState.trigger, {
+    authorLabel: triggerAuthorLabel ?? undefined,
+    messageLabel: triggerMessageLabel,
+    messageLoading: triggerMessageLoading,
+  });
+  const TriggerIcon = TRIGGER_ICONS[formState.trigger.on];
 
   const updateFormState = React.useCallback(
     (next: WorkflowFormState) => {
@@ -547,10 +725,23 @@ export function WorkflowFormBuilder({
                   {scopeField ? <div className="mb-3">{scopeField}</div> : null}
                   <ol aria-label="Workflow sequence">
                     <WorkflowNode
-                      description={TRIGGER_LABELS[formState.trigger.on]}
+                      description={
+                        <TriggerNodeDescription
+                          authorAvatarUrl={triggerAuthorProfile?.avatarUrl}
+                          authorLabel={triggerAuthorLabel}
+                          description={triggerDescription}
+                          messageLoading={triggerMessageLoading}
+                        />
+                      }
                       disabled={disabled}
-                      icon={<Zap className="h-4 w-4" />}
-                      label={`Trigger: ${TRIGGER_LABELS[formState.trigger.on]}`}
+                      icon={
+                        <TriggerIcon
+                          aria-hidden="true"
+                          className="h-4 w-4"
+                          data-testid={`workflow-trigger-icon-${formState.trigger.on}`}
+                        />
+                      }
+                      label={`Trigger: ${triggerDescription}`}
                       onAddAfter={(action) => insertStep(0, action)}
                       onClick={() => selectNode({ type: "trigger" })}
                       selected={selectedNode?.type === "trigger"}
