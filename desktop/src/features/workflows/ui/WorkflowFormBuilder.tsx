@@ -87,7 +87,7 @@ function TriggerConfigFields({
     case "message_posted":
     case "diff_posted":
       return (
-        <div>
+        <div className="h-full">
           <WorkflowConditionBuilder
             channelId={workflowChannelId}
             channels={channels}
@@ -147,7 +147,7 @@ function TriggerConfigFields({
 type WorkflowFormBuilderProps = {
   channels: Channel[];
   disabled?: boolean;
-  footerLeadingContainer?: HTMLElement | null;
+  headerTrailingContainer?: HTMLElement | null;
   mode: WorkflowEditorMode;
   onChange: (yaml: string) => void;
   onSelectedNodeChange: (node: WorkflowEditorPane) => void;
@@ -365,7 +365,7 @@ function WorkflowNode({
 export function WorkflowFormBuilder({
   channels,
   disabled,
-  footerLeadingContainer,
+  headerTrailingContainer,
   mode,
   onChange,
   onSelectedNodeChange,
@@ -765,6 +765,7 @@ export function WorkflowFormBuilder({
                         >
                           <motion.div
                             animate="center"
+                            className="h-full"
                             custom={selectionDirection}
                             exit="exit"
                             initial="enter"
@@ -781,7 +782,7 @@ export function WorkflowFormBuilder({
                             variants={inspectorContentVariants}
                           >
                             {selectedNode.type === "trigger" ? (
-                              <div>
+                              <div className="h-full">
                                 <TriggerConfigFields
                                   channels={channels}
                                   disabled={disabled}
@@ -823,7 +824,7 @@ export function WorkflowFormBuilder({
           </div>
         )}
       </div>
-      {mode === "form" && footerLeadingContainer
+      {mode === "form" && headerTrailingContainer
         ? createPortal(
             <div className="flex items-center gap-3">
               <label className="text-sm text-foreground" htmlFor="wf-enabled">
@@ -838,7 +839,7 @@ export function WorkflowFormBuilder({
                 }
               />
             </div>,
-            footerLeadingContainer,
+            headerTrailingContainer,
           )
         : null}
     </>

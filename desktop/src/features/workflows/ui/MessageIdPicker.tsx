@@ -189,8 +189,8 @@ export function MessageIdPicker({
     !pastedCandidate;
 
   return (
-    <div className="overflow-hidden rounded-lg border border-border/70 bg-background/35">
-      <div className="relative border-b border-border/70">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-lg border border-border/70 bg-background/35">
+      <div className="relative flex-shrink-0 border-b border-border/70">
         <Search
           aria-hidden="true"
           className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
@@ -219,13 +219,13 @@ export function MessageIdPicker({
       </div>
 
       {pastedEventInAnotherChannel ? (
-        <p className="border-b border-border/70 px-3 py-2 text-xs text-destructive">
+        <p className="flex-shrink-0 border-b border-border/70 px-3 py-2 text-xs text-destructive">
           That message is not available in this channel.
         </p>
       ) : null}
 
       <div
-        className="max-h-72 overflow-y-auto overscroll-contain p-2"
+        className="min-h-72 flex-1 overflow-y-auto overscroll-contain p-2"
         data-testid="message-id-picker-list"
         onScroll={(event) => {
           const element = event.currentTarget;

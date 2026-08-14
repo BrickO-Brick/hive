@@ -76,6 +76,10 @@ type ActiveConditionEditor = {
   draft: ParsedConditionExpression;
 };
 
+function conditionFieldUsesFullHeightPicker(field: string): boolean {
+  return field === "trigger_author" || field === "trigger_message_id";
+}
+
 function normalizedEditor(
   editor: ParsedConditionExpression,
 ): ParsedConditionExpression {
@@ -246,6 +250,42 @@ function AuthorConditionSummary({
   );
 }
 
+function EmojiConditionSummary({
+  editor,
+}: {
+  editor: ParsedConditionExpression;
+}) {
+  const emoji = editor.value.trim();
+  const isExcluded = editor.operator === "not_equals";
+
+  return (
+    <span className="relative flex h-6 w-6 shrink-0 items-center justify-center">
+      <span aria-hidden="true" className="text-2xl leading-none">
+        {emoji}
+      </span>
+      {isExcluded ? (
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0"
+        >
+          <span className="absolute inset-0 [clip-path:circle(50%_at_50%_50%)]">
+            <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+              <span className="block h-1 w-9 translate-y-0.5 -rotate-45 rounded-full bg-background/90" />
+            </span>
+          </span>
+          <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+            <span className="block h-0.5 w-8 -rotate-45 rounded-full bg-muted-foreground" />
+          </span>
+        </span>
+      ) : null}
+      <span className="sr-only">
+        {isExcluded ? "Excluded reaction emoji: " : "Selected reaction emoji: "}
+        {emoji}
+      </span>
+    </span>
+  );
+}
+
 function ConditionEditorFields({
   channelId,
   disabled,
@@ -269,6 +309,7 @@ function ConditionEditorFields({
     editor.webhookField.length > 0 &&
     normalizeWebhookField(editor.webhookField) === null;
   const controlIdPrefix = `${idPrefix}-${editor.field}`;
+  const usesFullHeightPicker = conditionFieldUsesFullHeightPicker(editor.field);
   const valueInput = (
     <Input
       aria-label={
@@ -290,7 +331,10 @@ function ConditionEditorFields({
 
   return (
     <div
-      className="space-y-3"
+      className={cn(
+        "space-y-3",
+        usesFullHeightPicker && "flex min-h-0 flex-1 flex-col space-y-0 gap-3",
+      )}
       data-testid={`workflow-condition-editor-${editor.field}`}
     >
       <fieldset>
@@ -361,7 +405,7 @@ function ConditionEditorFields({
       ) : null}
 
       {needsValue ? (
-        <div>
+        <div className={cn(usesFullHeightPicker && "min-h-0 flex-1")}>
           {editor.field === "trigger_author" ? (
             <AuthorGridPicker
               disabled={disabled}
@@ -462,6 +506,9 @@ export function WorkflowConditionBuilder({
   const [pendingBasicField, setPendingBasicField] = React.useState<
     (typeof fields)[number] | null
   >(null);
+  const fullHeightPickerExpanded =
+    editorMode === "basic" &&
+    conditionFieldUsesFullHeightPicker(activeEditor?.draft.field ?? "");
   const previousTriggerType = React.useRef(triggerType);
   const selectedAuthorPubkey = editorState.custom
     ? ""
@@ -598,7 +645,11 @@ export function WorkflowConditionBuilder({
   return (
     <>
       <Tabs
-        className="space-y-3"
+        className={cn(
+          "space-y-3",
+          fullHeightPickerExpanded &&
+            "flex h-full min-h-0 flex-col space-y-0 gap-3",
+        )}
         onValueChange={(nextMode) => {
           const mode = nextMode as ConditionEditorMode;
           setEditorMode(mode);
@@ -620,14 +671,23 @@ export function WorkflowConditionBuilder({
         </TabsList>
 
         {editorMode === "basic" ? (
-          <div>
+          <div
+            className={cn(
+              fullHeightPickerExpanded && "flex min-h-0 flex-1 flex-col",
+            )}
+          >
             {editorState.custom ? (
               <p className="border-b border-border/50 pb-3 text-xs text-muted-foreground">
                 An advanced expression is active. Choosing a basic filter will
                 replace it.
               </p>
             ) : null}
-            <div className="divide-y divide-border/50">
+            <div
+              className={cn(
+                "divide-y divide-border/50",
+                fullHeightPickerExpanded && "flex min-h-0 flex-1 flex-col",
+              )}
+            >
               {fields.map((field) => {
                 const editor = editorState.custom
                   ? undefined
@@ -636,7 +696,14 @@ export function WorkflowConditionBuilder({
                     );
                 const isExpanded = activeEditor?.draft.field === field.value;
                 return (
-                  <div key={field.value}>
+                  <div
+                    className={cn(
+                      isExpanded &&
+                        conditionFieldUsesFullHeightPicker(field.value) &&
+                        "flex min-h-0 flex-1 flex-col",
+                    )}
+                    key={field.value}
+                  >
                     <button
                       aria-expanded={isExpanded}
                       className="flex min-h-12 w-full items-center gap-3 py-3 text-left transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
@@ -658,6 +725,8 @@ export function WorkflowConditionBuilder({
                           editor={editor}
                           loading={selectedMessageQuery.isLoading}
                         />
+                      ) : editor?.field === "trigger_emoji" ? (
+                        <EmojiConditionSummary editor={editor} />
                       ) : (
                         <span className="max-w-40 truncate text-sm text-muted-foreground">
                           {editor
@@ -675,7 +744,14 @@ export function WorkflowConditionBuilder({
                     </button>
 
                     {isExpanded && activeEditor ? (
-                      <div className="animate-in space-y-4 pb-4 pt-1 fade-in slide-in-from-top-1 duration-150 motion-reduce:animate-none">
+                      <div
+                        className={cn(
+                          "animate-in space-y-4 pb-4 pt-1 fade-in slide-in-from-top-1 duration-150 motion-reduce:animate-none",
+                          conditionFieldUsesFullHeightPicker(
+                            activeEditor.draft.field,
+                          ) && "flex min-h-0 flex-1 flex-col space-y-0",
+                        )}
+                      >
                         <ConditionEditorFields
                           channelId={channelId}
                           disabled={disabled}

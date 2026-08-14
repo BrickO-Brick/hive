@@ -106,7 +106,7 @@ export function WorkflowDialog({
   const [editorParseError, setEditorParseError] = React.useState<string | null>(
     null,
   );
-  const [footerLeadingElement, setFooterLeadingElement] =
+  const [headerTrailingElement, setHeaderTrailingElement] =
     React.useState<HTMLDivElement | null>(null);
   const [savedWebhookInfo, setSavedWebhookInfo] = React.useState<{
     relayHttpUrl: string;
@@ -264,32 +264,14 @@ export function WorkflowDialog({
                     : "Automate actions when something happens in a channel."}
               </DialogDescription>
             </div>
-            <Tabs onValueChange={handleEditorModeChange} value={editorMode}>
-              <TabsList aria-label="Workflow editor mode" className="h-8 p-0.5">
-                <TabsTrigger
-                  className="h-7 px-3 text-xs"
-                  disabled={mutation.isPending}
-                  value="form"
-                >
-                  Form
-                </TabsTrigger>
-                <TabsTrigger
-                  className="h-7 gap-1.5 px-3 text-xs"
-                  disabled={mutation.isPending}
-                  value="yaml"
-                >
-                  <Code className="h-3.5 w-3.5" />
-                  YAML
-                </TabsTrigger>
-              </TabsList>
-            </Tabs>
+            <div ref={setHeaderTrailingElement} />
           </DialogHeader>
 
           <div className="min-h-0 flex-1">
             <WorkflowFormBuilder
               channels={channels}
               disabled={mutation.isPending}
-              footerLeadingContainer={footerLeadingElement}
+              headerTrailingContainer={headerTrailingElement}
               mode={editorMode}
               onChange={(yaml) => {
                 mutation.reset();
@@ -342,7 +324,25 @@ export function WorkflowDialog({
           ) : null}
 
           <div className="flex flex-shrink-0 items-center justify-between gap-4 border-t border-border px-6 py-4">
-            <div ref={setFooterLeadingElement} />
+            <Tabs onValueChange={handleEditorModeChange} value={editorMode}>
+              <TabsList aria-label="Workflow editor mode" className="h-8 p-0.5">
+                <TabsTrigger
+                  className="h-7 px-3 text-xs"
+                  disabled={mutation.isPending}
+                  value="form"
+                >
+                  Form
+                </TabsTrigger>
+                <TabsTrigger
+                  className="h-7 gap-1.5 px-3 text-xs"
+                  disabled={mutation.isPending}
+                  value="yaml"
+                >
+                  <Code className="h-3.5 w-3.5" />
+                  YAML
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
             <div className="flex items-center gap-2">
               <Button
                 onClick={() => handleOpenChange(false)}

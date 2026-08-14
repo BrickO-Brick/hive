@@ -12,6 +12,7 @@ import type { UserProfileSummary, UserSearchResult } from "@/shared/api/types";
 import { cn } from "@/shared/lib/cn";
 import { parsePubkeyInput } from "@/shared/lib/nostrUtils";
 import { truncatePubkey } from "@/shared/lib/pubkey";
+import { Input } from "@/shared/ui/input";
 import { PortalledScrollArea } from "@/shared/ui/PortalledScrollArea";
 
 const AUTHOR_PAGE_SIZE = 50;
@@ -193,17 +194,23 @@ export function AuthorGridPicker({
 
   return (
     <div
-      className={cn("space-y-1", disabled && "opacity-50")}
+      className={cn(
+        "flex h-full min-h-0 flex-col overflow-hidden rounded-lg border border-border/70 bg-background/35",
+        disabled && "opacity-50",
+      )}
       data-testid="author-grid-picker"
     >
-      <div className="flex items-center gap-2 rounded-lg border border-input/40 bg-background px-3 py-2">
-        <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
-        <input
+      <div className="relative flex-shrink-0 border-b border-border/70">
+        <Search
+          aria-hidden="true"
+          className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
+        />
+        <Input
           aria-label={`${ariaLabel} search`}
           autoCapitalize="none"
           autoComplete="off"
           autoCorrect="off"
-          className="min-w-0 flex-1 bg-transparent text-sm outline-hidden placeholder:text-muted-foreground disabled:cursor-not-allowed"
+          className="h-11 rounded-none border-0 bg-transparent pl-9 focus-visible:ring-0"
           disabled={disabled}
           id={id}
           onChange={(event) => setQuery(event.target.value)}
@@ -213,7 +220,7 @@ export function AuthorGridPicker({
         />
       </div>
       <PortalledScrollArea
-        className="h-72 overflow-y-auto rounded-lg border border-input/40 bg-background p-2"
+        className="min-h-72 flex-1 overflow-y-auto overscroll-contain p-2"
         data-testid="author-grid-list"
         onScroll={handleListScroll}
       >
