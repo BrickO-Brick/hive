@@ -8,7 +8,6 @@ import {
   Plus,
   SmilePlus,
   Trash2,
-  TriangleAlert,
   Webhook,
   X,
 } from "lucide-react";
@@ -44,10 +43,9 @@ import { FieldLabel } from "./workflowFormPrimitives";
 import {
   DEFAULT_FORM_STATE,
   ACTION_LABELS,
-  ACTION_TYPES,
+  SELECTABLE_ACTION_TYPES,
   TRIGGER_LABELS,
   TRIGGER_TYPES,
-  UNSUPPORTED_ACTION_TYPES,
   formStateToYaml,
   nextStepId,
   yamlToFormState,
@@ -186,7 +184,6 @@ function InspectorTypeMenu<T extends string>({
   labels,
   onChange,
   options,
-  warningOptions = [],
   value,
 }: {
   ariaLabel: string;
@@ -194,7 +191,6 @@ function InspectorTypeMenu<T extends string>({
   labels: Record<T, string>;
   onChange: (value: T) => void;
   options: readonly T[];
-  warningOptions?: readonly T[];
   value: T;
 }) {
   return (
@@ -221,21 +217,10 @@ function InspectorTypeMenu<T extends string>({
               )}
             />
             <span>{labels[option]}</span>
-            {warningOptions.includes(option) ? <UnsupportedActionIcon /> : null}
           </DropdownMenuItem>
         ))}
       </DropdownMenuContent>
     </DropdownMenu>
-  );
-}
-
-function UnsupportedActionIcon() {
-  return (
-    <TriangleAlert
-      aria-label="Not supported yet"
-      className="ml-auto h-4 w-4 shrink-0 text-amber-500"
-      role="img"
-    />
   );
 }
 
@@ -364,15 +349,12 @@ function WorkflowNode({
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="center" side="right" sideOffset={8}>
-            {ACTION_TYPES.map((action) => (
+            {SELECTABLE_ACTION_TYPES.map((action) => (
               <DropdownMenuItem
                 key={action}
                 onSelect={() => onAddAfter(action)}
               >
                 <span>{ACTION_LABELS[action]}</span>
-                {UNSUPPORTED_ACTION_TYPES.includes(action) ? (
-                  <UnsupportedActionIcon />
-                ) : null}
               </DropdownMenuItem>
             ))}
           </DropdownMenuContent>
@@ -733,8 +715,7 @@ export function WorkflowFormBuilder({
                                 }
                                 updateStep(selectedNode.index, next);
                               }}
-                              options={ACTION_TYPES}
-                              warningOptions={UNSUPPORTED_ACTION_TYPES}
+                              options={SELECTABLE_ACTION_TYPES}
                               value={selectedStep.action}
                             />
                           ) : null}

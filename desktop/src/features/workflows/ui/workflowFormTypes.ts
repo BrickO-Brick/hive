@@ -20,12 +20,13 @@ export const ACTION_TYPES = [
 ] as const;
 export type ActionType = (typeof ACTION_TYPES)[number];
 
-export const UNSUPPORTED_ACTION_TYPES: readonly ActionType[] = [
-  "send_dm",
-  "request_approval",
-  "add_reaction",
-  "set_channel_topic",
-];
+// Keep every recognized schema action above so existing YAML remains editable,
+// but only offer actions that can complete successfully in form selectors.
+export const SELECTABLE_ACTION_TYPES = [
+  "delay",
+  "send_message",
+  "call_webhook",
+] as const satisfies readonly ActionType[];
 
 export type TriggerConfig = {
   on: TriggerType;
