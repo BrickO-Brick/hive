@@ -34,6 +34,7 @@ type ChannelComboboxProps = {
   allowEmpty?: boolean;
   ariaLabel?: string;
   channels: Channel[];
+  defaultOpen?: boolean;
   disabled?: boolean;
   emptyLabel?: string;
   id?: string;
@@ -48,6 +49,7 @@ export function ChannelCombobox({
   allowEmpty = false,
   ariaLabel = "Channel",
   channels,
+  defaultOpen = false,
   disabled,
   emptyLabel = "Choose a channel",
   id,
@@ -57,7 +59,7 @@ export function ChannelCombobox({
   variant = "header",
   value,
 }: ChannelComboboxProps) {
-  const [open, setOpen] = React.useState(false);
+  const [open, setOpen] = React.useState(defaultOpen);
   const [query, setQuery] = React.useState("");
   const [highlightedIndex, setHighlightedIndex] = React.useState(0);
 

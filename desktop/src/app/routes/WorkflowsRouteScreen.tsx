@@ -4,13 +4,16 @@ import {
   type WorkflowEditorRoute,
   WorkflowsScreen,
 } from "@/features/workflows/ui/WorkflowsScreen";
+import type { WorkflowEditorPane } from "@/features/workflows/ui/workflowEditorPane";
 
 type WorkflowsRouteScreenProps = {
   editor?: WorkflowEditorRoute | null;
+  onEditorPaneChange: (pane: WorkflowEditorPane) => void;
 };
 
 export function WorkflowsRouteScreen({
   editor = null,
+  onEditorPaneChange,
 }: WorkflowsRouteScreenProps) {
   const {
     closeWorkflowEditor,
@@ -36,6 +39,7 @@ export function WorkflowsRouteScreen({
       onEditWorkflow={(workflowId) => {
         void goWorkflow(workflowId);
       }}
+      onEditorPaneChange={onEditorPaneChange}
     />
   );
 }

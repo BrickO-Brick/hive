@@ -155,6 +155,7 @@ export function useAppNavigation() {
           params: {
             workflowId,
           },
+          search: { pane: "trigger" },
         },
         behavior,
       ),
@@ -181,7 +182,7 @@ export function useAppNavigation() {
           params: {
             workflowId,
           },
-          search: { view: "duplicate" },
+          search: { pane: "trigger", view: "duplicate" },
         },
         behavior,
       ),
@@ -294,13 +295,8 @@ export function useAppNavigation() {
   }, [canGoBack, goHome, router.history]);
 
   const closeWorkflowEditor = React.useCallback(() => {
-    if (canGoBack) {
-      router.history.back();
-      return;
-    }
-
-    void goWorkflows({ replace: true });
-  }, [canGoBack, goWorkflows, router.history]);
+    void goWorkflows();
+  }, [goWorkflows]);
 
   const closeForumPost = React.useCallback(
     (channelId: string) => {

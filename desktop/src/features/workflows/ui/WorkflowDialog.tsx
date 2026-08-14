@@ -34,6 +34,7 @@ import {
   type WorkflowEditorMode,
 } from "./WorkflowFormBuilder";
 import { WorkflowWebhookSecretDialog } from "./WorkflowWebhookSecretDialog";
+import type { WorkflowEditorPane } from "./workflowEditorPane";
 import { yamlToFormState } from "./workflowFormTypes";
 
 type DialogMode = "create" | "edit" | "duplicate";
@@ -41,8 +42,10 @@ type DialogMode = "create" | "edit" | "duplicate";
 type WorkflowDialogProps = {
   channels: Channel[];
   mode: DialogMode;
+  onEditorPaneChange: (pane: WorkflowEditorPane) => void;
   onOpenChange: (open: boolean) => void;
   open: boolean;
+  pane: WorkflowEditorPane;
   workflow?: Workflow | null;
 };
 
@@ -84,8 +87,10 @@ const PENDING_LABELS: Record<DialogMode, string> = {
 export function WorkflowDialog({
   channels,
   mode,
+  onEditorPaneChange,
   onOpenChange,
   open,
+  pane,
   workflow,
 }: WorkflowDialogProps) {
   const channelId =
@@ -161,7 +166,14 @@ export function WorkflowDialog({
     selectedChannelId !== initialValuesRef.current.channelId;
   const navigationBlocker = useBlocker({
     enableBeforeUnload: isDirty,
-    shouldBlockFn: () => isDirty && !allowNavigationRef.current,
+    shouldBlockFn: ({ current, next }) => {
+      const currentSearch = current.search as { view?: unknown };
+      const nextSearch = next.search as { view?: unknown };
+      const staysInEditor =
+        current.pathname === next.pathname &&
+        currentSearch.view === nextSearch.view;
+      return isDirty && !allowNavigationRef.current && !staysInEditor;
+    },
     withResolver: true,
   });
 
@@ -283,17 +295,20 @@ export function WorkflowDialog({
                 mutation.reset();
                 setYamlDefinition(yaml);
               }}
+              onSelectedNodeChange={onEditorPaneChange}
               parseError={editorParseError}
               scopeField={
                 showChannelSelector ? (
                   <div className="space-y-1">
                     <ChannelCombobox
                       channels={channels}
+                      defaultOpen={mode === "create"}
                       disabled={mutation.isPending}
                       id="wf-channel-select"
                       onChange={(value) => {
                         mutation.reset();
                         setSelectedChannelId(value);
+                        if (value) onEditorPaneChange({ type: "trigger" });
                       }}
                       required
                       value={selectedChannelId}
@@ -312,6 +327,7 @@ export function WorkflowDialog({
                   </div>
                 ) : null
               }
+              selectedNode={pane}
               workflowChannelId={selectedChannelId || null}
               yaml={yamlDefinition}
             />

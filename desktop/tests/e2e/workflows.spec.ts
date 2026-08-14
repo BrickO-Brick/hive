@@ -1051,5 +1051,5 @@ test("opens a workflow in the edit modal from its card", async ({ page }) => {
   const dialog = page.getByRole("dialog", { name: "Edit workflow" });
   await expect(dialog).toBeVisible();
   await expect(dialog.getByLabel("Workflow name")).toHaveValue(workflowName);
-  await expect(page.getByTestId("workflow-detail-panel")).not.toBeVisible();
+  await expect(page).toHaveURL(/#\/workflows\/[^?]+\?pane=trigger/);
 });

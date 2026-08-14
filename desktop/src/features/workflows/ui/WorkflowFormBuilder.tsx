@@ -60,6 +60,7 @@ import type {
 import { defaultScheduleTrigger } from "./workflowSchedule";
 import { workflowStepDescription } from "./workflowStepDescription";
 import { useWorkflowTriggerPresentation } from "./useWorkflowTriggerPresentation";
+import type { WorkflowEditorPane } from "./workflowEditorPane";
 
 const TRIGGER_ICONS: Record<TriggerType, LucideIcon> = {
   diff_posted: GitPullRequest,
@@ -149,20 +150,17 @@ type WorkflowFormBuilderProps = {
   footerLeadingContainer?: HTMLElement | null;
   mode: WorkflowEditorMode;
   onChange: (yaml: string) => void;
+  onSelectedNodeChange: (node: WorkflowEditorPane) => void;
   parseError: string | null;
   scopeField?: React.ReactNode;
+  selectedNode: WorkflowEditorPane;
   yaml: string;
   workflowChannelId?: string | null;
 };
 
 export type WorkflowEditorMode = "form" | "yaml";
 
-type SelectedNode =
-  | { type: "trigger" }
-  | { type: "step"; index: number }
-  | null;
-
-function nodePosition(node: Exclude<SelectedNode, null>): number {
+function nodePosition(node: Exclude<WorkflowEditorPane, null>): number {
   return node.type === "trigger" ? 0 : node.index + 1;
 }
 
@@ -370,8 +368,10 @@ export function WorkflowFormBuilder({
   footerLeadingContainer,
   mode,
   onChange,
+  onSelectedNodeChange,
   parseError,
   scopeField,
+  selectedNode: selectedRouteNode,
   yaml,
   workflowChannelId,
 }: WorkflowFormBuilderProps) {
@@ -382,9 +382,13 @@ export function WorkflowFormBuilder({
       ? initialParseRef.current.state
       : DEFAULT_FORM_STATE,
   );
-  const [selectedNode, setSelectedNode] = React.useState<SelectedNode>({
-    type: "trigger",
-  });
+  const selectedNode =
+    mode === "form" &&
+    (selectedRouteNode?.type === "trigger" ||
+      (selectedRouteNode?.type === "step" &&
+        selectedRouteNode.index < formState.steps.length))
+      ? selectedRouteNode
+      : null;
   const [selectionDirection, setSelectionDirection] = React.useState<1 | -1>(1);
   const shouldReduceMotion = useReducedMotion();
   const previousModeRef = React.useRef(mode);
@@ -412,18 +416,14 @@ export function WorkflowFormBuilder({
     if (previousModeRef.current === mode) return;
     previousModeRef.current = mode;
 
-    if (mode === "yaml") {
-      setSelectedNode(null);
-      return;
-    }
+    if (mode === "yaml") return;
 
     const result = yamlToFormState(yaml);
     if (result.ok) setFormState(result.state);
-    setSelectedNode({ type: "trigger" });
   }, [mode, yaml]);
 
   const selectNode = React.useCallback(
-    (nextNode: Exclude<SelectedNode, null>) => {
+    (nextNode: Exclude<WorkflowEditorPane, null>) => {
       if (selectedNode) {
         const currentPosition = nodePosition(selectedNode);
         const nextPosition = nodePosition(nextNode);
@@ -431,9 +431,9 @@ export function WorkflowFormBuilder({
           setSelectionDirection(nextPosition < currentPosition ? -1 : 1);
         }
       }
-      setSelectedNode(nextNode);
+      onSelectedNodeChange(nextNode);
     },
-    [selectedNode],
+    [onSelectedNodeChange, selectedNode],
   );
 
   const insertStep = React.useCallback(
@@ -470,17 +470,20 @@ export function WorkflowFormBuilder({
 
       if (selectedNode.index === index) {
         setSelectionDirection(-1);
-        setSelectedNode(
+        onSelectedNodeChange(
           index === 0
             ? { type: "trigger" }
             : { type: "step", index: index - 1 },
         );
       } else if (selectedNode.index > index) {
         setSelectionDirection(-1);
-        setSelectedNode({ type: "step", index: selectedNode.index - 1 });
+        onSelectedNodeChange({
+          type: "step",
+          index: selectedNode.index - 1,
+        });
       }
     },
-    [formState, selectedNode, updateFormState],
+    [formState, onSelectedNodeChange, selectedNode, updateFormState],
   );
 
   const updateStep = React.useCallback(
@@ -744,7 +747,7 @@ export function WorkflowFormBuilder({
                           <Button
                             aria-label="Close inspector"
                             className="h-8 w-8"
-                            onClick={() => setSelectedNode(null)}
+                            onClick={() => onSelectedNodeChange(null)}
                             size="icon"
                             type="button"
                             variant="ghost"

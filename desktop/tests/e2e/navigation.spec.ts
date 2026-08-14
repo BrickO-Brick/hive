@@ -26,6 +26,12 @@ async function createWorkflow(
   await page.getByRole("button", { name: "Create Workflow" }).click();
   const dialog = page.getByRole("dialog");
   await expect(dialog).toBeVisible();
+  await dialog.getByRole("combobox", { name: "Channel" }).click();
+  await dialog
+    .getByTestId("channel-combobox-list")
+    .getByRole("button")
+    .first()
+    .click();
   await dialog.getByLabel("Workflow name").fill(name);
   await dialog.getByRole("button", { name: "Add step" }).click();
   await page.getByRole("menuitem", { name: "Delay" }).click();
@@ -106,7 +112,7 @@ test.fixme("direct forum thread links close back to the forum route", async ({
   ).toBeVisible();
 });
 
-test("direct workflow detail links close back to workflows", async ({
+test("direct workflow editor links close back to workflows", async ({
   page,
 }) => {
   const workflowName = `workflow_nav_${Date.now()}`;
@@ -123,13 +129,43 @@ test("direct workflow detail links close back to workflows", async ({
 
   expect(workflowId).toBeTruthy();
 
-  await page.goto(`/#/workflows/${workflowId}`);
+  await page.goto(`/#/workflows/${workflowId}?pane=trigger`);
 
-  await expect(page.getByTestId("workflow-detail-panel")).toBeVisible();
-  await page.getByRole("button", { name: "Close detail panel" }).click();
+  const editor = page.getByRole("dialog", { name: "Edit workflow" });
+  await expect(editor).toBeVisible();
+  await editor.getByRole("button", { name: "Close", exact: true }).click();
 
   await expect(page).toHaveURL(/#\/workflows$/);
   await expect(page.getByTestId("workflows-view")).toBeVisible();
+});
+
+test("back and forward traverse workflow inspector panes", async ({ page }) => {
+  await navigateToWorkflows(page);
+  await page.getByRole("button", { name: "Create Workflow" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "Create workflow" });
+  const inspector = dialog.getByTestId("workflow-node-inspector");
+  await expect(inspector).toContainText("Trigger");
+  await expect.poll(() => new URL(page.url()).hash).toContain("pane=trigger");
+
+  await dialog.getByRole("button", { name: "Add step" }).click();
+  await page.getByRole("menuitem", { name: "Delay" }).click();
+  await expect(inspector).toContainText("Step 1");
+  await expect.poll(() => new URL(page.url()).hash).toContain("pane=step-0");
+
+  await page.goBack();
+  await expect(inspector).toContainText("Trigger");
+  await expect.poll(() => new URL(page.url()).hash).toContain("pane=trigger");
+
+  await dialog.getByRole("button", { name: "Close inspector" }).click();
+  await expect(inspector).not.toBeVisible();
+  await expect.poll(() => new URL(page.url()).hash).not.toContain("pane=");
+
+  await page.goBack();
+  await expect(inspector).toContainText("Trigger");
+
+  await page.goForward();
+  await expect(inspector).not.toBeVisible();
 });
 
 test("forum reply deep links survive reload", async ({ page }) => {

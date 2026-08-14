@@ -12,6 +12,7 @@ import { WorkflowCard } from "@/features/workflows/ui/WorkflowCard";
 import { WorkflowDeleteDialog } from "@/features/workflows/ui/WorkflowDeleteDialog";
 import { WorkflowDialog } from "@/features/workflows/ui/WorkflowDialog";
 import type { WorkflowEditorRoute } from "@/features/workflows/ui/WorkflowsScreen";
+import type { WorkflowEditorPane } from "@/features/workflows/ui/workflowEditorPane";
 import {
   getWorkflowEnabled,
   withWorkflowEnabled,
@@ -34,6 +35,7 @@ type WorkflowsViewProps = {
   onCreateWorkflow: () => void;
   onDuplicateWorkflow: (workflowId: string) => void;
   onEditWorkflow: (workflowId: string) => void;
+  onEditorPaneChange: (pane: WorkflowEditorPane) => void;
 };
 
 type WorkflowWithChannel = {
@@ -88,6 +90,7 @@ export function WorkflowsView({
   onCreateWorkflow,
   onDuplicateWorkflow,
   onEditWorkflow,
+  onEditorPaneChange,
 }: WorkflowsViewProps) {
   const [deleteTarget, setDeleteTarget] = React.useState<Workflow | null>(null);
   const queryClient = useQueryClient();
@@ -282,10 +285,12 @@ export function WorkflowsView({
               : `${editor.mode}:${editor.workflowId}`
           }
           mode={editor.mode}
+          onEditorPaneChange={onEditorPaneChange}
           onOpenChange={(open) => {
             if (!open) onCloseEditor();
           }}
           open
+          pane={editor.pane}
           workflow={editorWorkflow}
         />
       ) : null}

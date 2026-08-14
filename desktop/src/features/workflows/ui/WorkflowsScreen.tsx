@@ -2,6 +2,7 @@ import * as React from "react";
 
 import type { Channel } from "@/shared/api/types";
 import { ViewLoadingFallback } from "@/shared/ui/ViewLoadingFallback";
+import type { WorkflowEditorPane } from "./workflowEditorPane";
 
 const WorkflowsView = React.lazy(async () => {
   const module = await import("@/features/workflows/ui/WorkflowsView");
@@ -9,8 +10,12 @@ const WorkflowsView = React.lazy(async () => {
 });
 
 export type WorkflowEditorRoute =
-  | { mode: "create" }
-  | { mode: "duplicate" | "edit"; workflowId: string };
+  | { mode: "create"; pane: WorkflowEditorPane }
+  | {
+      mode: "duplicate" | "edit";
+      pane: WorkflowEditorPane;
+      workflowId: string;
+    };
 
 type WorkflowsScreenProps = {
   channels: Channel[];
@@ -19,6 +24,7 @@ type WorkflowsScreenProps = {
   onCreateWorkflow: () => void;
   onDuplicateWorkflow: (workflowId: string) => void;
   onEditWorkflow: (workflowId: string) => void;
+  onEditorPaneChange: (pane: WorkflowEditorPane) => void;
 };
 
 export function WorkflowsScreen({
@@ -28,6 +34,7 @@ export function WorkflowsScreen({
   onCreateWorkflow,
   onDuplicateWorkflow,
   onEditWorkflow,
+  onEditorPaneChange,
 }: WorkflowsScreenProps) {
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
@@ -39,6 +46,7 @@ export function WorkflowsScreen({
           onCreateWorkflow={onCreateWorkflow}
           onDuplicateWorkflow={onDuplicateWorkflow}
           onEditWorkflow={onEditWorkflow}
+          onEditorPaneChange={onEditorPaneChange}
         />
       </React.Suspense>
     </div>

@@ -1,12 +1,17 @@
 import * as React from "react";
 import { createFileRoute } from "@tanstack/react-router";
 
+import {
+  parseWorkflowEditorPane,
+  serializeWorkflowEditorPane,
+} from "@/features/workflows/ui/workflowEditorPane";
 import { usePreviewFeatureWarning } from "@/shared/features";
 import { ViewLoadingFallback } from "@/shared/ui/ViewLoadingFallback";
 
 export const Route = createFileRoute("/workflows")({
   component: WorkflowsRouteComponent,
   validateSearch: (search: Record<string, unknown>) => ({
+    pane: serializeWorkflowEditorPane(parseWorkflowEditorPane(search.pane)),
     view: search.view === "create" ? search.view : undefined,
   }),
 });
@@ -18,12 +23,26 @@ const WorkflowsRouteScreen = React.lazy(async () => {
 
 function WorkflowsRouteComponent() {
   usePreviewFeatureWarning("workflows");
-  const { view } = Route.useSearch();
+  const navigate = Route.useNavigate();
+  const { pane, view } = Route.useSearch();
 
   return (
     <React.Suspense fallback={<ViewLoadingFallback kind="workflows" />}>
       <WorkflowsRouteScreen
-        editor={view === "create" ? { mode: "create" } : null}
+        editor={
+          view === "create"
+            ? { mode: "create", pane: parseWorkflowEditorPane(pane) }
+            : null
+        }
+        onEditorPaneChange={(nextPane) => {
+          void navigate({
+            resetScroll: false,
+            search: {
+              pane: serializeWorkflowEditorPane(nextPane),
+              view,
+            },
+          });
+        }}
       />
     </React.Suspense>
   );
