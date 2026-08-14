@@ -5,6 +5,7 @@ import type { Channel } from "@/shared/api/types";
 import { cn } from "@/shared/lib/cn";
 import { Input } from "@/shared/ui/input";
 import { AuthorGridPicker } from "./AuthorGridPicker";
+import { MessageIdPicker } from "./MessageIdPicker";
 import { WorkflowEmojiField } from "./WorkflowEmojiField";
 import { FieldLabel, FormSelect } from "./workflowFormPrimitives";
 import {
@@ -86,6 +87,7 @@ function valuePlaceholder(field: string): string {
 }
 
 export function WorkflowConditionBuilder({
+  channelId,
   channels,
   disabled,
   idPrefix,
@@ -94,6 +96,7 @@ export function WorkflowConditionBuilder({
   triggerType,
   value,
 }: {
+  channelId?: string | null;
   channels: Channel[];
   disabled?: boolean;
   idPrefix: string;
@@ -334,6 +337,16 @@ export function WorkflowConditionBuilder({
                   id={`${idPrefix}-value`}
                   onChange={(emoji) =>
                     emitEditor({ ...editor, value: emoji ?? "" })
+                  }
+                  value={editor.value}
+                />
+              ) : editor.field === "trigger_message_id" ? (
+                <MessageIdPicker
+                  channelId={channelId}
+                  disabled={disabled}
+                  id={`${idPrefix}-value`}
+                  onChange={(messageId) =>
+                    emitEditor({ ...editor, value: messageId })
                   }
                   value={editor.value}
                 />

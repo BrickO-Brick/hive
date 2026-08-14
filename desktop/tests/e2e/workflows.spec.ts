@@ -550,6 +550,44 @@ test("chooses a reaction emoji condition with the app emoji picker", async ({
   );
 });
 
+test("chooses a reacted-to message from the workflow channel", async ({
+  page,
+}) => {
+  await navigateToWorkflows(page);
+
+  await page.getByRole("button", { name: "Create Workflow" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("combobox", { name: "Channel" }).click();
+  await dialog
+    .getByTestId("channel-combobox-list")
+    .getByRole("button", { name: /general/i })
+    .click();
+  const inspector = dialog.getByTestId("workflow-node-inspector");
+  await inspector.getByLabel("Trigger event").click();
+  await page.getByRole("menuitem", { name: "Reaction Added" }).click();
+  await inspector.getByRole("button", { name: "Message ID" }).click();
+
+  const search = inspector.getByLabel("Search messages or paste a message ID");
+  const messageList = inspector.getByTestId("message-id-picker-list");
+  await expect(search).toBeVisible();
+  await expect(messageList).toHaveCSS("overflow-y", "auto");
+  await expect(
+    messageList.getByRole("button", { name: /Hey team — checking in\./ }),
+  ).toBeVisible();
+
+  await search.fill("custom emoji");
+  const targetMessage = messageList.getByRole("button", {
+    name: /React to me with a custom emoji/,
+  });
+  await expect(targetMessage).toBeVisible();
+  await targetMessage.click();
+
+  await dialog.getByRole("tab", { name: "YAML" }).click();
+  await expect(dialog.getByLabel("Workflow YAML")).toHaveValue(
+    /filter: trigger_message_id ==\s+"[0-9a-f]{64}"/,
+  );
+});
+
 test("switches an empty workflow between form and YAML modes", async ({
   page,
 }) => {

@@ -386,6 +386,7 @@ export function WorkflowStepCard({
           only this step and continues the run.
         </p>
         <WorkflowConditionBuilder
+          channelId={workflowChannelId}
           channels={channels}
           disabled={disabled}
           idPrefix={`${prefix}-condition`}

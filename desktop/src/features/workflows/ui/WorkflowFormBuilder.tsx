@@ -51,11 +51,13 @@ import { defaultScheduleTrigger } from "./workflowSchedule";
 function TriggerConfigFields({
   channels,
   disabled,
+  workflowChannelId,
   trigger,
   onUpdate,
 }: {
   channels: Channel[];
   disabled?: boolean;
+  workflowChannelId?: string | null;
   trigger: TriggerConfig;
   onUpdate: (trigger: TriggerConfig) => void;
 }) {
@@ -65,6 +67,7 @@ function TriggerConfigFields({
       return (
         <div>
           <WorkflowConditionBuilder
+            channelId={workflowChannelId}
             channels={channels}
             disabled={disabled}
             idPrefix="wf-trigger-filter"
@@ -80,6 +83,7 @@ function TriggerConfigFields({
     case "reaction_added":
       return (
         <WorkflowConditionBuilder
+          channelId={workflowChannelId}
           channels={channels}
           disabled={disabled}
           idPrefix="wf-trigger-filter"
@@ -700,6 +704,7 @@ export function WorkflowFormBuilder({
                                     updateFormState({ ...formState, trigger })
                                   }
                                   trigger={formState.trigger}
+                                  workflowChannelId={workflowChannelId}
                                 />
                               </div>
                             ) : selectedStep ? (
