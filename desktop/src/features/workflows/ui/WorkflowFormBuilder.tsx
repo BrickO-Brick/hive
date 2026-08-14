@@ -19,13 +19,16 @@ import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import * as React from "react";
 import { createPortal } from "react-dom";
 
+import { useCustomEmoji } from "@/features/custom-emoji/hooks";
 import { useUsersBatchQuery } from "@/features/profile/hooks";
 import { resolveUserLabel } from "@/features/profile/lib/identity";
+import { reactionEmojiUrl } from "@/shared/api/customEmoji";
 import { useIdentityQuery } from "@/shared/api/hooks";
 import { getEventById } from "@/shared/api/tauri";
 import type { Channel } from "@/shared/api/types";
 import { Button } from "@/shared/ui/button";
 import { cn } from "@/shared/lib/cn";
+import { rewriteRelayUrl } from "@/shared/lib/mediaUrl";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -496,6 +499,7 @@ export function WorkflowFormBuilder({
   const shouldReduceMotion = useReducedMotion();
   const previousModeRef = React.useRef(mode);
   const identityQuery = useIdentityQuery();
+  const customEmoji = useCustomEmoji();
   const parsedTriggerConditions = React.useMemo(
     () =>
       formState.trigger.filter
@@ -506,6 +510,17 @@ export function WorkflowFormBuilder({
         : [],
     [formState.trigger.filter, formState.trigger.on],
   );
+  const triggerReactionCondition = parsedTriggerConditions?.find(
+    (condition) =>
+      condition.field === "trigger_emoji" && condition.operator === "equals",
+  );
+  const triggerReaction =
+    formState.trigger.on === "reaction_added"
+      ? triggerReactionCondition?.value || formState.trigger.emoji
+      : undefined;
+  const triggerReactionUrl = triggerReaction
+    ? reactionEmojiUrl(triggerReaction, customEmoji)
+    : undefined;
   const triggerAuthorCondition = parsedTriggerConditions?.find(
     (condition) => condition.field === "trigger_author",
   );
@@ -735,11 +750,35 @@ export function WorkflowFormBuilder({
                       }
                       disabled={disabled}
                       icon={
-                        <TriggerIcon
-                          aria-hidden="true"
-                          className="h-4 w-4"
-                          data-testid={`workflow-trigger-icon-${formState.trigger.on}`}
-                        />
+                        triggerReaction ? (
+                          triggerReactionUrl ? (
+                            <img
+                              alt={triggerReaction}
+                              className="h-7 w-7 object-contain"
+                              data-testid="workflow-trigger-selected-reaction"
+                              draggable={false}
+                              src={rewriteRelayUrl(triggerReactionUrl)}
+                            />
+                          ) : (
+                            <span
+                              className={cn(
+                                "max-w-8 overflow-hidden leading-none",
+                                triggerReaction.startsWith(":")
+                                  ? "text-xs"
+                                  : "text-2xl",
+                              )}
+                              data-testid="workflow-trigger-selected-reaction"
+                            >
+                              {triggerReaction}
+                            </span>
+                          )
+                        ) : (
+                          <TriggerIcon
+                            aria-hidden="true"
+                            className="h-4 w-4"
+                            data-testid={`workflow-trigger-icon-${formState.trigger.on}`}
+                          />
+                        )
                       }
                       label={`Trigger: ${triggerDescription}`}
                       onAddAfter={(action) => insertStep(0, action)}

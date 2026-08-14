@@ -79,9 +79,9 @@ export const DEFAULT_FORM_STATE: WorkflowFormState = {
 };
 
 export const TRIGGER_LABELS: Record<TriggerType, string> = {
-  message_posted: "Message Posted",
-  reaction_added: "Reaction Added",
-  diff_posted: "Diff Posted",
+  message_posted: "Message posted",
+  reaction_added: "Reaction added",
+  diff_posted: "Diff posted",
   webhook: "Webhook",
   schedule: "Schedule",
 };

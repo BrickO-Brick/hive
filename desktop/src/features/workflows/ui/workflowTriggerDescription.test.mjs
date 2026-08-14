@@ -28,7 +28,7 @@ test("describes selected trigger conditions on the workflow canvas", () => {
       on: "reaction_added",
       filter: 'trigger_emoji == "🔥"',
     }),
-    "🔥 reaction added",
+    "Reaction added",
   );
 
   assert.equal(
@@ -50,20 +50,20 @@ test("describes selected trigger conditions on the workflow canvas", () => {
       },
       { authorLabel: "Carl", messageLabel: "hey yourself" },
     ),
-    "👾 reaction added by Carl to “hey yourself”",
+    "Reaction added by Carl to “hey yourself”",
   );
 });
 
 test("keeps the base label for unfiltered and custom triggers", () => {
   assert.equal(
     workflowTriggerDescription({ on: "message_posted" }),
-    "Message Posted",
+    "Message posted",
   );
   assert.equal(
     workflowTriggerDescription({
       on: "message_posted",
       filter: "custom_variable == 1",
     }),
-    "Message Posted",
+    "Message posted",
   );
 });

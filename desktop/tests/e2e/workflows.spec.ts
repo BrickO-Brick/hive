@@ -3,9 +3,9 @@ import { expect, test } from "@playwright/test";
 import { installMockBridge, TEST_IDENTITIES } from "../helpers/bridge";
 
 const TRIGGER_OPTION_LABELS: Record<string, string> = {
-  diff_posted: "Diff Posted",
-  message_posted: "Message Posted",
-  reaction_added: "Reaction Added",
+  diff_posted: "Diff posted",
+  message_posted: "Message posted",
+  reaction_added: "Reaction added",
   schedule: "Schedule",
   webhook: "Webhook",
 };
@@ -465,7 +465,7 @@ test("chooses and clears a reaction trigger with the app emoji picker", async ({
   await dialog.getByRole("button", { name: /^Trigger:/ }).click();
   const inspector = dialog.getByTestId("workflow-node-inspector");
   await inspector.getByLabel("Trigger event").click();
-  await page.getByRole("menuitem", { name: "Reaction Added" }).click();
+  await page.getByRole("menuitem", { name: "Reaction added" }).click();
   await inspector.getByRole("button", { name: "Reaction emoji" }).click();
 
   const trigger = inspector.getByRole("button", {
@@ -479,11 +479,13 @@ test("chooses and clears a reaction trigger with the app emoji picker", async ({
   await picker.getByRole("button", { name: ":buzz:" }).first().click();
 
   await expect(trigger).toContainText(":buzz:");
+  const triggerNode = dialog.getByRole("button", {
+    name: "Trigger: Reaction added",
+  });
+  await expect(triggerNode).toBeVisible();
   await expect(
-    dialog.getByRole("button", {
-      name: "Trigger: :buzz: reaction added",
-    }),
-  ).toBeVisible();
+    triggerNode.getByTestId("workflow-trigger-selected-reaction"),
+  ).toHaveAttribute("alt", ":buzz:");
   await dialog.getByRole("tab", { name: "YAML" }).click();
   await expect(dialog.getByLabel("Workflow YAML")).toHaveValue(/:buzz:/);
 
@@ -494,7 +496,9 @@ test("chooses and clears a reaction trigger with the app emoji picker", async ({
     dialog.getByRole("button", { name: "Choose condition emoji" }),
   ).toContainText("Choose a reaction");
   await expect(
-    dialog.getByRole("button", { name: "Trigger: Reaction Added" }),
+    dialog
+      .getByRole("button", { name: "Trigger: Reaction added" })
+      .getByTestId("workflow-trigger-icon-reaction_added"),
   ).toBeVisible();
 });
 
@@ -543,7 +547,7 @@ test("chooses a reaction emoji condition with the app emoji picker", async ({
   await dialog.getByRole("button", { name: /^Trigger:/ }).click();
   let inspector = dialog.getByTestId("workflow-node-inspector");
   await inspector.getByLabel("Trigger event").click();
-  await page.getByRole("menuitem", { name: "Reaction Added" }).click();
+  await page.getByRole("menuitem", { name: "Reaction added" }).click();
 
   inspector = dialog.getByTestId("workflow-node-inspector");
   await expect(
@@ -583,7 +587,7 @@ test("chooses a reacted-to message from the workflow channel", async ({
     .click();
   const inspector = dialog.getByTestId("workflow-node-inspector");
   await inspector.getByLabel("Trigger event").click();
-  await page.getByRole("menuitem", { name: "Reaction Added" }).click();
+  await page.getByRole("menuitem", { name: "Reaction added" }).click();
   const emojiField = inspector.getByRole("button", {
     name: "Reaction emoji",
   });
@@ -625,7 +629,7 @@ test("chooses a reacted-to message from the workflow channel", async ({
   }
   await expect(
     dialog.getByRole("button", {
-      name: "Trigger: :buzz: reaction added by alice to “React to me with a custom emoji”",
+      name: "Trigger: Reaction added by alice to “React to me with a custom emoji”",
     }),
   ).toBeVisible();
 
@@ -867,7 +871,7 @@ test("captures disabled diff workflows in the list UI", async ({ page }) => {
     "When a matching diff is posted, wait for a moment",
   );
   await expect(card).toContainText(description);
-  await expect(card).toContainText("Diff Posted");
+  await expect(card).toContainText("Diff posted");
   await expect(card).toContainText("disabled");
 });
 

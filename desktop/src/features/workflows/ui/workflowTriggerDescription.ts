@@ -73,7 +73,7 @@ export function workflowTriggerDescription(
     : [];
   if (!conditions || conditions.length === 0) {
     return trigger.on === "reaction_added" && trigger.emoji
-      ? `${trigger.emoji} reaction added`
+      ? eventPhrase
       : baseLabel;
   }
 
@@ -100,7 +100,7 @@ export function workflowTriggerDescription(
       description =
         emojiCondition.operator === "not_equals"
           ? `Any reaction except ${emojiCondition.value} added`
-          : `${emojiCondition.value} reaction added`;
+          : eventPhrase;
     }
     if (authorCondition) {
       const author =
@@ -138,7 +138,7 @@ export function workflowTriggerDescription(
   if (condition.field === "trigger_emoji") {
     return condition.operator === "not_equals"
       ? `Any reaction except ${condition.value} added`
-      : `${condition.value} reaction added`;
+      : eventPhrase;
   }
 
   if (condition.field === "trigger_message_id") {
