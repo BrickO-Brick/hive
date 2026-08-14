@@ -1,4 +1,4 @@
-import { Check, ChevronDown, Hash, Lock, Search } from "lucide-react";
+import { Asterisk, Check, ChevronDown, Hash, Lock, Search } from "lucide-react";
 import * as React from "react";
 
 import type { Channel } from "@/shared/api/types";
@@ -21,6 +21,7 @@ type ChannelComboboxProps = {
   id?: string;
   isChannelDisabled?: (channel: Channel) => boolean;
   onChange: (value: string) => void;
+  required?: boolean;
   variant?: "header" | "field";
   value: string;
 };
@@ -34,6 +35,7 @@ export function ChannelCombobox({
   id,
   isChannelDisabled,
   onChange,
+  required = false,
   variant = "header",
   value,
 }: ChannelComboboxProps) {
@@ -107,6 +109,7 @@ export function ChannelCombobox({
         <button
           aria-label={ariaLabel}
           aria-expanded={open}
+          aria-required={required}
           className={cn(
             "group flex w-full items-center rounded-lg px-3 py-2 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
             variant === "header" &&
@@ -126,7 +129,11 @@ export function ChannelCombobox({
               variant === "header" && "justify-center",
             )}
           >
-            {selected ? <ChannelPrivacyIcon channel={selected} /> : null}
+            {selected ? (
+              <ChannelPrivacyIcon channel={selected} />
+            ) : required && !value ? (
+              <Asterisk aria-hidden className="h-5 w-5 shrink-0 text-primary" />
+            ) : null}
             <span className="truncate">
               {selected
                 ? selected.name

@@ -7,10 +7,23 @@ import { useIdentityQuery } from "@/shared/api/hooks";
 import type { Channel, UserProfileSummary } from "@/shared/api/types";
 import { cn } from "@/shared/lib/cn";
 import { truncatePubkey } from "@/shared/lib/pubkey";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/shared/ui/alert-dialog";
+import { Button } from "@/shared/ui/button";
 import { Input } from "@/shared/ui/input";
+import { Tabs, TabsList, TabsTrigger } from "@/shared/ui/tabs";
 import { AuthorGridPicker } from "./AuthorGridPicker";
 import { MessageIdPicker } from "./MessageIdPicker";
 import { WorkflowEmojiField } from "./WorkflowEmojiField";
+import { FieldLabel } from "./workflowFormPrimitives";
 import {
   buildConditionExpressions,
   conditionFieldsForTrigger,
@@ -55,9 +68,12 @@ type ConditionEditorState = {
   editors: ParsedConditionExpression[];
 };
 
-type ActiveConditionEditor =
-  | { kind: "field"; draft: ParsedConditionExpression }
-  | { kind: "custom"; draft: string };
+type ConditionEditorMode = "basic" | "advanced";
+
+type ActiveConditionEditor = {
+  kind: "field";
+  draft: ParsedConditionExpression;
+};
 
 function normalizedEditor(
   editor: ParsedConditionExpression,
@@ -233,17 +249,6 @@ function ConditionEditorFields({
       className="space-y-3"
       data-testid={`workflow-condition-editor-${editor.field}`}
     >
-      {needsValue && editor.field === "trigger_text" ? valueInput : null}
-      {needsValue && editor.field === "trigger_author" ? (
-        <AuthorGridPicker
-          disabled={disabled}
-          id={`${controlIdPrefix}-value`}
-          knownPubkeys={knownAuthorPubkeys}
-          onChange={(pubkey) => onChange({ ...editor, value: pubkey })}
-          value={editor.value}
-        />
-      ) : null}
-
       <fieldset>
         <legend className="sr-only">Match</legend>
         <div className="grid grid-cols-2 gap-2.5">
@@ -287,6 +292,9 @@ function ConditionEditorFields({
 
       {editor.field === "webhook_field" ? (
         <div className="space-y-1.5">
+          <FieldLabel htmlFor={`${controlIdPrefix}-webhook-field`}>
+            JSON field name
+          </FieldLabel>
           <Input
             aria-label="JSON field name"
             autoCapitalize="off"
@@ -311,11 +319,22 @@ function ConditionEditorFields({
         </div>
       ) : null}
 
-      {needsValue &&
-      editor.field !== "trigger_text" &&
-      editor.field !== "trigger_author" ? (
-        <div>
-          {editor.field === "trigger_emoji" ? (
+      {needsValue ? (
+        <div className="space-y-1.5">
+          <FieldLabel htmlFor={`${controlIdPrefix}-value`}>
+            {editor.field === "webhook_field"
+              ? "Value"
+              : valueLabel(editor.field)}
+          </FieldLabel>
+          {editor.field === "trigger_author" ? (
+            <AuthorGridPicker
+              disabled={disabled}
+              id={`${controlIdPrefix}-value`}
+              knownPubkeys={knownAuthorPubkeys}
+              onChange={(pubkey) => onChange({ ...editor, value: pubkey })}
+              value={editor.value}
+            />
+          ) : editor.field === "trigger_emoji" ? (
             <WorkflowEmojiField
               ariaLabel="Choose condition emoji"
               clearAriaLabel="Clear condition emoji"
@@ -398,8 +417,15 @@ export function WorkflowConditionBuilder({
   const [editorState, setEditorState] = React.useState(() =>
     initialEditorState(value, triggerType),
   );
+  const [editorMode, setEditorMode] = React.useState<ConditionEditorMode>(() =>
+    initialEditorState(value, triggerType).custom ? "advanced" : "basic",
+  );
+  const [advancedDraft, setAdvancedDraft] = React.useState(value);
   const [activeEditor, setActiveEditor] =
     React.useState<ActiveConditionEditor | null>(null);
+  const [pendingBasicField, setPendingBasicField] = React.useState<
+    (typeof fields)[number] | null
+  >(null);
   const previousTriggerType = React.useRef(triggerType);
   const selectedAuthorPubkey = editorState.custom
     ? ""
@@ -417,13 +443,19 @@ export function WorkflowConditionBuilder({
   React.useEffect(() => {
     if (previousTriggerType.current === triggerType) return;
     previousTriggerType.current = triggerType;
-    setEditorState(initialEditorState(value, triggerType));
+    const nextEditorState = initialEditorState(value, triggerType);
+    setEditorState(nextEditorState);
+    setEditorMode(nextEditorState.custom ? "advanced" : "basic");
+    setAdvancedDraft(value);
     setActiveEditor(null);
+    setPendingBasicField(null);
   }, [triggerType, value]);
 
   const emitEditors = (editors: ParsedConditionExpression[]) => {
+    const expression = buildConditionExpressions(editors);
     setEditorState({ custom: false, editors });
-    onChange(buildConditionExpressions(editors));
+    setAdvancedDraft(expression);
+    onChange(expression);
   };
 
   const evalexprFields = fields
@@ -431,11 +463,8 @@ export function WorkflowConditionBuilder({
       field.value === "webhook_field" ? "trigger_<JSON field>" : field.value,
     )
     .join(", ");
-  const openFieldEditor = (field: (typeof fields)[number]) => {
-    if (
-      activeEditor?.kind === "field" &&
-      activeEditor.draft.field === field.value
-    ) {
+  const showFieldEditor = (field: (typeof fields)[number]) => {
+    if (activeEditor?.draft.field === field.value) {
       setActiveEditor(null);
       return;
     }
@@ -445,6 +474,33 @@ export function WorkflowConditionBuilder({
     setActiveEditor({
       kind: "field",
       draft: existing ?? {
+        field: field.value,
+        operator: defaultConditionOperatorForField(field.value),
+        value: "",
+        webhookField: "",
+      },
+    });
+  };
+
+  const openFieldEditor = (field: (typeof fields)[number]) => {
+    if (editorState.custom && value.trim()) {
+      setPendingBasicField(field);
+      return;
+    }
+    showFieldEditor(field);
+  };
+
+  const replaceAdvancedExpression = () => {
+    const field = pendingBasicField;
+    setPendingBasicField(null);
+    if (!field) return;
+
+    setEditorState({ custom: false, editors: [] });
+    setAdvancedDraft("");
+    onChange("");
+    setActiveEditor({
+      kind: "field",
+      draft: {
         field: field.value,
         operator: defaultConditionOperatorForField(field.value),
         value: "",
@@ -480,10 +536,7 @@ export function WorkflowConditionBuilder({
 
   const updateCustomEditor = (draft: string) => {
     const trimmed = draft.trim();
-    setActiveEditor({
-      kind: "custom",
-      draft,
-    });
+    setAdvancedDraft(draft);
     if (trimmed) {
       setEditorState({ custom: true, editors: [] });
       onChange(trimmed);
@@ -494,115 +547,149 @@ export function WorkflowConditionBuilder({
   };
 
   return (
-    <div className="divide-y divide-border/50">
-      {fields.map((field) => {
-        const editor = editorState.custom
-          ? undefined
-          : editorState.editors.find(
-              (candidate) => candidate.field === field.value,
-            );
-        const isExpanded =
-          activeEditor?.kind === "field" &&
-          activeEditor.draft.field === field.value;
-        return (
-          <div key={field.value}>
-            <button
-              aria-expanded={isExpanded}
-              className="flex min-h-12 w-full items-center gap-3 py-3 text-left transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={disabled}
-              onClick={() => openFieldEditor(field)}
-              type="button"
-            >
-              <span className="min-w-0 flex-1 truncate text-base font-medium">
-                {field.label}
-              </span>
-              {editor?.field === "trigger_author" ? (
-                <AuthorConditionSummary
-                  editor={editor}
-                  profile={selectedAuthorProfile}
-                />
-              ) : (
-                <span className="max-w-40 truncate text-sm text-muted-foreground">
-                  {editor
-                    ? editorSummary(editor)
-                    : field.value === "trigger_text"
-                      ? "Any"
-                      : "Off"}
-                </span>
-              )}
-              <ChevronRight
-                className={`h-4 w-4 shrink-0 text-muted-foreground/70 transition-transform duration-150 motion-reduce:transition-none ${
-                  isExpanded ? "rotate-90" : "rotate-0"
-                }`}
-              />
-            </button>
-
-            {isExpanded ? (
-              <div className="animate-in space-y-4 pb-4 pt-1 fade-in slide-in-from-top-1 duration-150 motion-reduce:animate-none">
-                <ConditionEditorFields
-                  channelId={channelId}
-                  disabled={disabled}
-                  editor={activeEditor.draft}
-                  idPrefix={idPrefix}
-                  knownAuthorPubkeys={knownAuthorPubkeys}
-                  onChange={updateFieldEditor}
-                />
-              </div>
-            ) : null}
-          </div>
-        );
-      })}
-
-      <div>
-        <button
-          aria-expanded={activeEditor?.kind === "custom"}
-          className="flex min-h-12 w-full items-center gap-3 py-3 text-left transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-          disabled={disabled}
-          onClick={() =>
-            setActiveEditor((current) =>
-              current?.kind === "custom"
-                ? null
-                : {
-                    kind: "custom",
-                    draft: editorState.custom ? value : "",
-                  },
-            )
-          }
-          type="button"
+    <>
+      <Tabs
+        className="space-y-3"
+        onValueChange={(nextMode) => {
+          const mode = nextMode as ConditionEditorMode;
+          setEditorMode(mode);
+          setActiveEditor(null);
+          if (mode === "advanced") setAdvancedDraft(value);
+        }}
+        value={editorMode}
+      >
+        <TabsList
+          aria-label="Condition editor mode"
+          className="grid h-9 w-full grid-cols-2 p-0.5"
         >
-          <span className="min-w-0 flex-1 truncate text-base font-medium">
-            Custom
-          </span>
-          <span className="max-w-40 truncate text-sm text-muted-foreground">
-            {editorState.custom ? compactValue(value) : "Off"}
-          </span>
-          <ChevronRight
-            className={`h-4 w-4 shrink-0 text-muted-foreground/70 transition-transform duration-150 motion-reduce:transition-none ${
-              activeEditor?.kind === "custom" ? "rotate-90" : "rotate-0"
-            }`}
-          />
-        </button>
+          <TabsTrigger className="h-8" disabled={disabled} value="basic">
+            Basic
+          </TabsTrigger>
+          <TabsTrigger className="h-8" disabled={disabled} value="advanced">
+            Advanced
+          </TabsTrigger>
+        </TabsList>
 
-        {activeEditor?.kind === "custom" ? (
-          <div className="animate-in space-y-4 pb-4 pt-1 fade-in slide-in-from-top-1 duration-150 motion-reduce:animate-none">
-            <div className="space-y-2">
-              <Input
-                aria-label="Expression"
-                autoCapitalize="off"
-                autoCorrect="off"
-                disabled={disabled}
-                id={`${idPrefix}-custom-expression`}
-                onChange={(event) => updateCustomEditor(event.target.value)}
-                placeholder='e.g. str_contains(trigger_text, "deploy")'
-                value={activeEditor.draft}
-              />
-              <p className="text-xs text-muted-foreground">
-                Use an evalexpr expression with <code>{evalexprFields}</code>.
+        {editorMode === "basic" ? (
+          <div>
+            {editorState.custom ? (
+              <p className="border-b border-border/50 pb-3 text-xs text-muted-foreground">
+                An advanced expression is active. Choosing a basic filter will
+                replace it.
               </p>
+            ) : null}
+            <div className="divide-y divide-border/50">
+              {fields.map((field) => {
+                const editor = editorState.custom
+                  ? undefined
+                  : editorState.editors.find(
+                      (candidate) => candidate.field === field.value,
+                    );
+                const isExpanded = activeEditor?.draft.field === field.value;
+                return (
+                  <div key={field.value}>
+                    <button
+                      aria-expanded={isExpanded}
+                      className="flex min-h-12 w-full items-center gap-3 py-3 text-left transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                      disabled={disabled}
+                      onClick={() => openFieldEditor(field)}
+                      type="button"
+                    >
+                      <span className="min-w-0 flex-1 truncate text-base font-medium">
+                        {field.label}
+                      </span>
+                      {editor?.field === "trigger_author" ? (
+                        <AuthorConditionSummary
+                          editor={editor}
+                          profile={selectedAuthorProfile}
+                        />
+                      ) : (
+                        <span className="max-w-40 truncate text-sm text-muted-foreground">
+                          {editor
+                            ? editorSummary(editor)
+                            : field.value === "trigger_text"
+                              ? "Any"
+                              : "Off"}
+                        </span>
+                      )}
+                      <ChevronRight
+                        className={`h-4 w-4 shrink-0 text-muted-foreground/70 transition-transform duration-150 motion-reduce:transition-none ${
+                          isExpanded ? "rotate-90" : "rotate-0"
+                        }`}
+                      />
+                    </button>
+
+                    {isExpanded && activeEditor ? (
+                      <div className="animate-in space-y-4 pb-4 pt-1 fade-in slide-in-from-top-1 duration-150 motion-reduce:animate-none">
+                        <ConditionEditorFields
+                          channelId={channelId}
+                          disabled={disabled}
+                          editor={activeEditor.draft}
+                          idPrefix={idPrefix}
+                          knownAuthorPubkeys={knownAuthorPubkeys}
+                          onChange={updateFieldEditor}
+                        />
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
             </div>
           </div>
-        ) : null}
-      </div>
-    </div>
+        ) : (
+          <div className="animate-in space-y-2 fade-in duration-150 motion-reduce:animate-none">
+            <FieldLabel htmlFor={`${idPrefix}-advanced-expression`}>
+              Expression
+            </FieldLabel>
+            <Input
+              aria-label="Advanced expression"
+              autoCapitalize="off"
+              autoCorrect="off"
+              disabled={disabled}
+              id={`${idPrefix}-advanced-expression`}
+              onChange={(event) => updateCustomEditor(event.target.value)}
+              placeholder='e.g. str_contains(trigger_text, "deploy")'
+              value={advancedDraft}
+            />
+            <p className="text-xs text-muted-foreground">
+              Use an evalexpr expression with <code>{evalexprFields}</code>.
+            </p>
+          </div>
+        )}
+      </Tabs>
+
+      <AlertDialog
+        onOpenChange={(open) => {
+          if (!open) setPendingBasicField(null);
+        }}
+        open={pendingBasicField !== null}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Replace advanced expression?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Choosing a basic filter will replace the entire advanced
+              expression. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel asChild>
+              <Button type="button" variant="outline">
+                Keep advanced expression
+              </Button>
+            </AlertDialogCancel>
+            <AlertDialogAction asChild>
+              <Button
+                onClick={replaceAdvancedExpression}
+                type="button"
+                variant="destructive"
+              >
+                Replace expression
+              </Button>
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   );
 }

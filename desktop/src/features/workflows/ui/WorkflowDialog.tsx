@@ -276,6 +276,7 @@ export function WorkflowDialog({
                         mutation.reset();
                         setSelectedChannelId(value);
                       }}
+                      required
                       value={selectedChannelId}
                     />
                     {channels.length === 0 ? (
