@@ -76,6 +76,11 @@ import {
 } from "./usePersonaModelDiscovery";
 import { PersonaProviderApiKeyField } from "./PersonaProviderApiKeyField";
 import {
+  OPENAI_COMPAT_BASE_URL,
+  OpenAiCompatibleBaseUrlField,
+  openAiCompatibleBaseUrlError,
+} from "./OpenAiCompatibleBaseUrlField";
+import {
   getBakedModelInheritLabel,
   getBakedProviderInheritLabel,
 } from "./bakedEnvHelpers";
@@ -392,12 +397,10 @@ export function AgentInstanceEditDialog({
       globalEnvVars: globalConfig.env_vars,
       personaEnvVars: inheritHarness ? inheritedEnvVars : undefined,
     });
-
   const { data: bakedEnvKeys } = useBakedBuildEnvKeysQuery({ enabled: open });
   const { data: agentAccessOwnerOnly } = useAgentAccessOwnerOnlyQuery({
     enabled: open,
   });
-
   // Merge global env as the base layer so credential keys satisfied via global
   // config (e.g. ANTHROPIC_API_KEY) are available to model discovery. Use
   // `inheritedSubmission.envVars` (the same snapshot the credential gate
@@ -412,7 +415,6 @@ export function AgentInstanceEditDialog({
     (inheritedSubmission.provider ?? "").trim() ||
     inheritedProviderDefault.value;
   const providerForDiscovery = llmProviderFieldVisible ? effectiveProvider : "";
-
   const {
     discoveredModelOptions,
     modelDiscoveryLoading,
@@ -426,10 +428,12 @@ export function AgentInstanceEditDialog({
     selectedRuntime,
   });
 
+
   // D2/D3: the top-level API key owns display while the readiness gate keeps the
   // complete required-key list; advancedRequiredEnvKeys drives EnvVarsEditor
   // display only. The effective snapshot covers persona inheritance during an
   // instance inherit transition.
+
   const providerApiKeyEnvVar = getProviderApiKeyEnvVar(effectiveProvider);
   const personaSatisfied =
     providerApiKeyEnvVar != null &&
@@ -466,7 +470,6 @@ export function AgentInstanceEditDialog({
     ) {
       return;
     }
-
     setModel("");
     setIsCustomModelEditing(false);
   }, [
@@ -477,7 +480,6 @@ export function AgentInstanceEditDialog({
     selectedRuntime,
     selectedRuntimeId,
   ]);
-
   const selection: RuntimeModelProviderSelection = {
     provider,
     model,
@@ -485,7 +487,6 @@ export function AgentInstanceEditDialog({
     isCustomModelEditing,
     envVars,
   };
-
   function applySelection(next: RuntimeModelProviderSelection) {
     setProvider(next.provider);
     setModel(next.model);
@@ -493,7 +494,6 @@ export function AgentInstanceEditDialog({
     setIsCustomModelEditing(next.isCustomModelEditing);
     setEnvVars(next.envVars);
   }
-
   function handleRuntimeDropdownChange(nextValue: string) {
     const action = runtimeDropdownAction(nextValue);
     if (action.kind === "add-custom-harness") {
@@ -503,16 +503,12 @@ export function AgentInstanceEditDialog({
     const nextRuntimeId = action.runtimeId;
     const previousRuntimeId = selectedRuntimeId;
     const nextRuntime = runtimes.find((r) => r.id === nextRuntimeId);
-
     // Mark that the user has made an explicit runtime choice. The catalog-arrival
     // effect will no longer overwrite selectedRuntimeId after this point.
     runtimeTouched.current = true;
-
     const resolvedRuntimeId = nextRuntimeId || "custom";
     setSelectedRuntimeId(resolvedRuntimeId);
-
     const isCustomCommand = resolvedRuntimeId === "custom";
-
     // Only pin the harness when the selection can actually supply a command:
     //   - "Custom command": the Advanced command input becomes editable, so the
     //     user provides the command.
@@ -526,7 +522,6 @@ export function AgentInstanceEditDialog({
     if (isCustomCommand || nextRuntime?.command) {
       setInheritHarness(false);
     }
-
     // When switching to a catalog-known runtime, update the agent command to
     // its resolved command so the command field stays consistent.
     if (nextRuntime?.command) {
@@ -534,7 +529,6 @@ export function AgentInstanceEditDialog({
       const newArgs = nextRuntime.defaultArgs.join(",");
       setAgentArgs(newArgs);
     }
-
     applySelection(
       selectionOnRuntimeChange(selection, {
         previousRuntime: previousRuntimeId,
@@ -546,7 +540,6 @@ export function AgentInstanceEditDialog({
       }),
     );
   }
-
   // Routed through the normal change handler so a harness registered inline
   // pins its command and resets model/provider like a hand-picked one. Scoped
   // to `open` so a pending id can't outlive the dialog that started the
@@ -556,7 +549,6 @@ export function AgentInstanceEditDialog({
     handleRuntimeDropdownChange,
     open,
   );
-
   function handleProviderDropdownChange(nextValue: string) {
     const nextProvider =
       nextValue === AUTO_PROVIDER_DROPDOWN_VALUE ? "" : nextValue;
@@ -576,7 +568,6 @@ export function AgentInstanceEditDialog({
       model: nextProvider === "relay-mesh" ? "auto" : nextSelection.model,
     });
   }
-
   function handleModelDropdownChange(nextValue: string) {
     applySelection(
       selectionOnModelDropdownChange(selection, {
@@ -586,11 +577,9 @@ export function AgentInstanceEditDialog({
       }),
     );
   }
-
   function handleOpenChange(next: boolean) {
     onOpenChange(next);
   }
-
   const providerValid = isEditAgentProviderSaveValid({
     llmProviderFieldVisible,
     currentProvider: provider,
@@ -598,7 +587,17 @@ export function AgentInstanceEditDialog({
     globalProvider: inheritedProviderDefault.value,
     originalRuntimeSupportsProvider,
   });
-
+  const compatibleBaseUrl = envVars[OPENAI_COMPAT_BASE_URL] ?? "";
+  const compatibleBaseUrlInherited =
+    !(OPENAI_COMPAT_BASE_URL in envVars) &&
+    ((inheritedSubmission.envVars[OPENAI_COMPAT_BASE_URL] ?? "").trim().length >
+      0 ||
+      (globalConfig.env_vars[OPENAI_COMPAT_BASE_URL] ?? "").trim().length > 0 ||
+      fileSatisfiedEnvKeys.includes(OPENAI_COMPAT_BASE_URL));
+  const compatibleBaseUrlValid =
+    effectiveProvider !== "openai-compat" ||
+    compatibleBaseUrlInherited ||
+    openAiCompatibleBaseUrlError(compatibleBaseUrl) === null;
   const canSubmit =
     computeEditAgentFormValidity({
       name,
@@ -613,9 +612,9 @@ export function AgentInstanceEditDialog({
       requiredEnvKeyMissing,
     }) &&
     providerValid &&
+    compatibleBaseUrlValid &&
     !updateMutation.isPending &&
     !isAvatarUploadPending;
-
   async function handleSubmit() {
     try {
       const parsedParallelism = Number.parseInt(parallelism, 10);
@@ -627,7 +626,6 @@ export function AgentInstanceEditDialog({
       // provider-backed inherit-transition carries the persona model (readiness
       // requires one) and a deliberate local model still wins.
       const normalizedModel = inheritedSubmission.model;
-
       // Harness pin resolution — see resolveAgentCommandUpdate for the full
       // sentinel/pin/no-op contract, including the inherit→pin transition where
       // the prefilled command equals the original but must still be pinned.
@@ -637,7 +635,6 @@ export function AgentInstanceEditDialog({
         originalAgentCommand: agent.agentCommand,
         agentCommandOverride: agent.agentCommandOverride ?? null,
       });
-
       // Classify the effective post-submit runtime's provider capability as a
       // tri-state: "capable" persists the provider, "locked" clears it (only
       // when we KNOW it's provider-locked, e.g. Claude), "unknown" OMITS it so a
@@ -650,7 +647,6 @@ export function AgentInstanceEditDialog({
         prospectiveRuntimeId,
         runtimeSupportsLlmProviderSelection(prospectiveRuntimeId),
       );
-
       // Provider + env to persist — the shared inherited-submission snapshot
       // (same values the credential gate validates), so gate ↔ record ↔ spawn
       // all agree. See resolveInheritedRuntimeSubmission.
@@ -724,7 +720,6 @@ export function AgentInstanceEditDialog({
             ? respondToAllowlist
             : undefined,
       };
-
       const result = await updateMutation.mutateAsync(input);
       if (autoRestartOnConfigChange !== agent.autoRestartOnConfigChange) {
         // Standalone setter (mirrors start-on-app-launch) — not part of
@@ -764,7 +759,6 @@ export function AgentInstanceEditDialog({
       // React Query stores the error; keep dialog open and render it inline.
     }
   }
-
   // Model and provider field derived state
   const normalizedConfig = configSurfaceQuery.data?.normalized;
   const modelRequired = isMissingRequiredDropdownField(
@@ -804,7 +798,6 @@ export function AgentInstanceEditDialog({
     loading: modelDiscoveryLoading,
     status: modelDiscoveryStatus,
   });
-
   // Provider field derived state
   const trimmedProvider = provider.trim();
   const hideProviderIds = React.useMemo(
@@ -838,13 +831,11 @@ export function AgentInstanceEditDialog({
     })),
     { label: "Custom provider...", value: CUSTOM_PROVIDER_DROPDOWN_VALUE },
   ];
-
   const previewLabel = name.trim() || "Agent name";
   const previewAvatarUrl = avatarUrl.trim() || null;
   const advancedFieldsTransition = shouldReduceMotion
     ? { duration: 0 }
     : ADVANCED_FIELDS_MOTION_TRANSITION;
-
   return (
     <Dialog onOpenChange={handleOpenChange} open={open}>
       <ChooserDialogContent
@@ -943,7 +934,6 @@ export function AgentInstanceEditDialog({
               onModeChange={setRespondTo}
             />
             <RunOnSummarySection backend={agent.backend} />
-
             {/* Provider (runtime) */}
             <div className="space-y-1.5">
               <label
@@ -1055,7 +1045,20 @@ export function AgentInstanceEditDialog({
                 ) : null}
               </div>
             ) : null}
-
+            {llmProviderFieldVisible &&
+            effectiveProvider === "openai-compat" ? (
+              <OpenAiCompatibleBaseUrlField
+                disabled={updateMutation.isPending}
+                inherited={compatibleBaseUrlInherited}
+                onValueChange={(next) =>
+                  setEnvVars((prev) => ({
+                    ...prev,
+                    [OPENAI_COMPAT_BASE_URL]: next,
+                  }))
+                }
+                value={compatibleBaseUrl}
+              />
+            ) : null}
             {llmProviderFieldVisible && topLevelSecretEnvVar ? (
               <PersonaProviderApiKeyField
                 disabled={updateMutation.isPending}
@@ -1073,7 +1076,6 @@ export function AgentInstanceEditDialog({
                 value={apiKeyValue}
               />
             ) : null}
-
             {/* Model */}
             <div className="space-y-1.5">
               <label
@@ -1126,7 +1128,9 @@ export function AgentInstanceEditDialog({
               ) : null}
             </div>
 
+
             <EffortPickerField agent={agent} config={configSurfaceQuery.data} />
+
 
             <AgentAiDefaultsNotice
               onEditDefaults={() => setAiDefaultsOpen(true)}
@@ -1136,13 +1140,11 @@ export function AgentInstanceEditDialog({
               inheritedModel={inheritedModelDefault}
               inheritedProvider={inheritedProviderDefault}
             />
-
             <AgentDefaultsDialog
               onOpenChange={setAiDefaultsOpen}
               open={aiDefaultsOpen}
               returnFocusRef={aiDefaultsTriggerRef}
             />
-
             {/* Advanced settings */}
             <div className="space-y-3">
               <button
@@ -1181,9 +1183,12 @@ export function AgentInstanceEditDialog({
                       disabled={updateMutation.isPending}
                       envVars={envVars}
                       fileSatisfiedEnvKeys={fileSatisfiedEnvKeys}
-                      hiddenEnvKeys={
-                        topLevelSecretEnvVar ? [topLevelSecretEnvVar] : []
-                      }
+                      hiddenEnvKeys={[
+                        ...(topLevelSecretEnvVar ? [topLevelSecretEnvVar] : []),
+                        ...(effectiveProvider === "openai-compat"
+                          ? [OPENAI_COMPAT_BASE_URL]
+                          : []),
+                      ]}
                       focusKey={
                         initialFocus?.type === "env_key"
                           ? initialFocus.key
@@ -1212,7 +1217,6 @@ export function AgentInstanceEditDialog({
                 ) : null}
               </AnimatePresence>
             </div>
-
             {/* Error */}
             {updateMutation.error instanceof Error ? (
               <p className="text-sm text-destructive">

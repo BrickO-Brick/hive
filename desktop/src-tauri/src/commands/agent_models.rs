@@ -11,7 +11,8 @@ use super::managed_agent_definition::apply_model_provider_prompt_update;
 #[cfg(test)]
 use super::agent_models_env::env_value;
 use super::agent_models_env::{
-    effective_discovery_provider, env_or_process_value, redaction_env_with_value, DiscoveryProvider,
+    effective_discovery_provider, env_or_process_override, env_or_process_value,
+    redaction_env_with_value, DiscoveryProvider,
 };
 use super::agent_update_rollback::{rollback_failed_agent_update, AgentUpdateRollback};
 
@@ -362,10 +363,24 @@ fn openai_compatible_models_url(env: &BTreeMap<String, String>) -> String {
     format!("{}/models", base_url.trim_end_matches('/'))
 }
 
-fn openai_compatible_models_url_for_discovery(env: &BTreeMap<String, String>) -> String {
-    let base_url = env_or_process_value(env, "OPENAI_COMPAT_BASE_URL")
-        .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
-    format!("{}/models", base_url.trim_end_matches('/'))
+fn openai_compatible_models_url_for_discovery(
+    provider: Option<&str>,
+    env: &BTreeMap<String, String>,
+) -> Result<String, String> {
+    let base_url = env_or_process_value(env, "OPENAI_COMPAT_BASE_URL");
+    let base_url = if provider.map(str::trim) == Some("openai-compat") {
+        base_url.ok_or_else(|| {
+            "OPENAI_COMPAT_BASE_URL required for OpenAI-compatible model discovery".to_string()
+        })?
+    } else {
+        base_url.unwrap_or_else(|| "https://api.openai.com/v1".to_string())
+    };
+    let parsed = url::Url::parse(base_url.trim())
+        .map_err(|_| "OPENAI_COMPAT_BASE_URL must be a valid HTTP(S) URL".to_string())?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+        return Err("OPENAI_COMPAT_BASE_URL must be a valid HTTP(S) URL".to_string());
+    }
+    Ok(format!("{}/models", base_url.trim().trim_end_matches('/')))
 }
 
 fn is_agent_text_model_id(id: &str) -> bool {
@@ -496,8 +511,11 @@ async fn discover_openai_compatible_models(
         return Ok(None);
     }
 
+    let is_compat = provider.as_deref().map(str::trim) == Some("openai-compat");
     let api_key = if relay_mesh {
         crate::managed_agents::RELAY_MESH_API_KEY_PLACEHOLDER.to_string()
+    } else if is_compat {
+        env_or_process_override(env, "OPENAI_COMPAT_API_KEY").unwrap_or_default()
     } else {
         match provider.required_env(env, "OPENAI_COMPAT_API_KEY")? {
             Some(api_key) => api_key,
@@ -508,11 +526,15 @@ async fn discover_openai_compatible_models(
     let url = if relay_mesh {
         format!("{}/models", crate::managed_agents::RELAY_MESH_API_BASE_URL)
     } else {
-        openai_compatible_models_url_for_discovery(env)
+        openai_compatible_models_url_for_discovery(provider.as_deref(), env)?
     };
-    let response = client
-        .get(&url)
-        .bearer_auth(&api_key)
+    let request = client.get(&url);
+    let request = if api_key.is_empty() {
+        request
+    } else {
+        request.bearer_auth(&api_key)
+    };
+    let response = request
         .send()
         .await
         .map_err(|error| format!("OpenAI model discovery request failed: {error}"))?;
@@ -673,7 +695,6 @@ async fn discover_anthropic_models(
     if models.is_empty() {
         return Err("Anthropic model discovery returned no models".to_string());
     }
-
     Ok(Some(AgentModelsResponse {
         agent_name: provider
             .as_deref()
@@ -687,7 +708,6 @@ async fn discover_anthropic_models(
         supports_switching: true,
     }))
 }
-
 #[path = "agent_models_databricks.rs"]
 mod databricks;
 #[cfg(test)]
@@ -702,8 +722,8 @@ mod update;
 pub use update::update_managed_agent;
 pub(super) use update::{flush_managed_agent_policy, managed_agent_access_policy_changed};
 
-// ── Model normalization ───────────────────────────────────────────────────────
 
+// ── Model normalization ───────────────────────────────────────────────────────
 /// Normalize raw `buzz-acp models --json` output into a typed DTO for the frontend.
 ///
 /// Merges models from both ACP paths (stable configOptions + unstable SessionModelState),
@@ -720,10 +740,8 @@ pub(super) fn normalize_agent_models(
         .as_str()
         .unwrap_or("unknown")
         .to_string();
-
     let mut models: Vec<AgentModelInfo> = Vec::new();
     let mut seen_ids: HashSet<String> = HashSet::new();
-
     // 1. Stable configOptions (preferred). Only entries with category "model"
     //    are model options — the CLI pre-filters, but we're defensive here.
     if let Some(config_options) = raw["stable"]["configOptions"].as_array() {
@@ -749,7 +767,6 @@ pub(super) fn normalize_agent_models(
             }
         }
     }
-
     // 2. Unstable availableModels (fallback — skip duplicates from stable).
     let mut agent_default_model: Option<String> = None;
     if let Some(unstable) = raw.get("unstable") {
@@ -771,9 +788,7 @@ pub(super) fn normalize_agent_models(
             }
         }
     }
-
     let supports_switching = !models.is_empty();
-
     AgentModelsResponse {
         agent_name,
         agent_version,
@@ -783,7 +798,6 @@ pub(super) fn normalize_agent_models(
         supports_switching,
     }
 }
-
 #[cfg(test)]
 #[path = "agent_models_tests.rs"]
 mod tests;
