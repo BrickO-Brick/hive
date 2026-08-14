@@ -52,3 +52,56 @@
   background: white;
   box-shadow: 0 1px 3px rgb(0 0 0 / 0.3);
 }
+
+/* ── Audio player scrubber (shared/ui/markdown/MarkdownAudioPlayer) ───── */
+.audio-progress-slider {
+  appearance: none;
+  height: 16px;
+  background: transparent;
+}
+
+.audio-progress-slider:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.audio-progress-slider::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 9999px;
+  background: linear-gradient(
+    to right,
+    currentColor var(--audio-progress-fill, 0%),
+    color-mix(in srgb, currentColor 20%, transparent)
+      var(--audio-progress-fill, 0%)
+  );
+}
+
+.audio-progress-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  margin-top: -4px;
+  height: 12px;
+  width: 12px;
+  border-radius: 9999px;
+  background: currentColor;
+}
+
+.audio-progress-slider::-moz-range-track {
+  height: 4px;
+  border-radius: 9999px;
+  background: color-mix(in srgb, currentColor 20%, transparent);
+}
+
+.audio-progress-slider::-moz-range-progress {
+  height: 4px;
+  border-radius: 9999px;
+  background: currentColor;
+}
+
+.audio-progress-slider::-moz-range-thumb {
+  border: none;
+  height: 12px;
+  width: 12px;
+  border-radius: 9999px;
+  background: currentColor;
+}

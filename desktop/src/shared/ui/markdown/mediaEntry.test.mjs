@@ -1,10 +1,31 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { isRelayDownloadable, isVideoMedia } from "./mediaEntry.ts";
+import {
+  isAudioMedia,
+  isRelayDownloadable,
+  isVideoMedia,
+} from "./mediaEntry.ts";
 
 const RELAY = "https://relay.example.com";
 const relayUrl = (name) => `${RELAY}/media/${name}`;
+
+// ── isAudioMedia: MIME-first classification ──────────────────────────────
+
+test("isAudioMedia: supported MIME classifies regardless of extension", () => {
+  assert.equal(isAudioMedia(relayUrl("abc"), "audio/mpeg"), true);
+  assert.equal(isAudioMedia(relayUrl("abc.jpg"), "audio/ogg"), true);
+  assert.equal(isAudioMedia(relayUrl("abc.wav"), "audio/x-wav"), true);
+  assert.equal(isAudioMedia(relayUrl("abc.mp3"), "audio/aac"), false);
+  assert.equal(isAudioMedia(relayUrl("abc.mp3"), "image/png"), false);
+});
+
+test("isAudioMedia: wav/mp3/ogg extensions support legacy events", () => {
+  assert.equal(isAudioMedia(relayUrl("abc.wav")), true);
+  assert.equal(isAudioMedia(relayUrl("abc.MP3?v=2")), true);
+  assert.equal(isAudioMedia(relayUrl("abc.ogg#t=10")), true);
+  assert.equal(isAudioMedia(relayUrl("abc.m4a")), false);
+});
 
 // ── isVideoMedia: MIME-first classification ──────────────────────────────
 

@@ -13,7 +13,8 @@
  * Kept DOM-free so the branch logic is unit-testable without a webview.
  */
 
-/** Legacy video extensions, used only when an imeta MIME type is absent. */
+/** Legacy media extensions, used only when an imeta MIME type is absent. */
+const AUDIO_EXTENSIONS = ["mp3", "ogg", "wav"] as const;
 const VIDEO_EXTENSIONS = ["mp4", "webm", "mov"] as const;
 
 /** The lowercased path extension of a URL, ignoring query strings and hashes. */
@@ -28,6 +29,27 @@ function urlPathExtension(src: string): string | undefined {
   const lastDot = pathname.lastIndexOf(".");
   if (lastDot < 0 || lastDot === pathname.length - 1) return undefined;
   return pathname.slice(lastDot + 1).toLowerCase();
+}
+
+/** Exact audio MIME types supported by the upload contract. */
+const AUDIO_MIME_TYPES = [
+  "audio/mpeg",
+  "audio/ogg",
+  "audio/wav",
+  "audio/x-wav",
+] as const;
+
+/** Whether `src` should render as audio. MIME is authoritative when present. */
+export function isAudioMedia(src: string, imetaMime?: string): boolean {
+  if (imetaMime) {
+    return (AUDIO_MIME_TYPES as readonly string[]).includes(
+      imetaMime.toLowerCase(),
+    );
+  }
+  const ext = urlPathExtension(src);
+  return (
+    ext !== undefined && (AUDIO_EXTENSIONS as readonly string[]).includes(ext)
+  );
 }
 
 /**

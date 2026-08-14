@@ -13,7 +13,7 @@
  *   - on edit-load, seed the composer's `pendingImeta` with the original
  *     event's imeta entries (full BlobDescriptor shape, so the send-path
  *     mediaTags builder works unchanged); strip any matching trailing
- *     `![image|video](url)` lines from the body so the user only sees text;
+ *     `![image|video|audio](url)` lines from the body so the user only sees text;
  *   - on submit, pass `mediaTags` (built from the current `pendingImeta`)
  *     alongside the edited content so the edit event carries a full new
  *     imeta tag set;
@@ -105,9 +105,9 @@ export function buildImetaTags(
 }
 
 const MEDIA_LINE_RE =
-  /^(?:\|\|)?!\[(?:image|video)\]\(([^)\s]+)\)(?:\|\|)?\s*$/;
+  /^(?:\|\|)?!\[(?:audio|image|video)\]\(([^)\s]+)\)(?:\|\|)?\s*$/;
 const SPOILERED_MEDIA_LINE_RE =
-  /^\|\|!\[(?:image|video)\]\(([^)\s]+)\)\|\|\s*$/;
+  /^\|\|!\[(?:audio|image|video)\]\(([^)\s]+)\)\|\|\s*$/;
 const BLOCK_SPOILER_DELIMITER_RE = /^\s*\|\|\s*$/;
 /**
  * Matches a generic file-attachment line `[label](url)` (no leading `!`, so it's
@@ -183,7 +183,7 @@ function findTrailingBlockSpoilerMediaStart(
 }
 
 /**
- * Remove trailing `![image|video](url)` lines whose URL matches an entry in
+ * Remove trailing `![image|video|audio](url)` lines whose URL matches an entry in
  * `imetaMedia`. Stops at the first non-matching/non-blank line so attachments
  * that have been moved or interleaved with text are left alone (the composer
  * only ever produces trailing lines, but defending against shape drift is
@@ -271,7 +271,7 @@ export function findSpoileredImetaMediaUrls(
 /**
  * Format a single imeta entry as a leading-newline markdown line.
  *
- * Images and video use `![image|video](url)` so the renderer draws them inline.
+ * Images, video, and audio use `![image|video|audio](url)` so the renderer draws them inline.
  * Generic files use a plain `[filename](url)` link — the renderer recognises the
  * href as a local media blob with a non-media MIME and upgrades it to a file
  * card. Agent snapshot PNGs deliberately use the file-link form despite their
@@ -286,6 +286,10 @@ export function formatImetaMediaLine(
   const lower = filename?.toLowerCase();
   const isSnapshotPng =
     lower?.endsWith(".agent.png") || lower?.endsWith(".team.png");
+  if (type.startsWith("audio/")) {
+    const line = `![audio](${url})`;
+    return options.spoiler ? `\n||${line}||` : `\n${line}`;
+  }
   if (type.startsWith("video/")) {
     const line = `![video](${url})`;
     return options.spoiler ? `\n||${line}||` : `\n${line}`;
@@ -308,7 +312,7 @@ export function formatImetaMediaLine(
 
 /**
  * Build the body + tags pair for an outgoing message (initial send or
- * edit). Appends `![image|video](url)` markdown lines for each attachment
+ * edit). Appends `![image|video|audio](url)` markdown lines for each attachment
  * to the body so the renderer (which keys on URLs literally present in
  * the content) draws them, and returns the matching imeta tag set.
  *

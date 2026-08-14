@@ -59,6 +59,7 @@ export default defineConfig({
         "**/pubkey-display-screenshots.spec.ts",
         "**/file-attachment.spec.ts",
         "**/image-attachment-gallery.spec.ts",
+        "**/audio-player-screenshots.spec.ts",
         "**/composer-image-draw.spec.ts",
         "**/video-attachment.spec.ts",
         "**/spoiler.spec.ts",

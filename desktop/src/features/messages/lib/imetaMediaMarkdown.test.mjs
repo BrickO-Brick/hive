@@ -181,6 +181,33 @@ test("buildImetaTags keeps media filenames in imeta", () => {
   );
 });
 
+test("formatImetaMediaLine: audio mime → ![audio] line (regardless of URL suffix)", () => {
+  assert.equal(
+    formatImetaMediaLine({ url: "https://cdn/blob/xyz", type: "audio/mpeg" }),
+    "\n![audio](https://cdn/blob/xyz)",
+  );
+});
+
+test("formatImetaMediaLine: spoilered audio → wrapped ![audio] line", () => {
+  assert.equal(
+    formatImetaMediaLine(
+      { url: "https://cdn/blob/xyz", type: "audio/ogg" },
+      { spoiler: true },
+    ),
+    "\n||![audio](https://cdn/blob/xyz)||",
+  );
+});
+
+test("audio round-trips through edit stripping and spoiler recovery", () => {
+  const media = [{ url: "https://b/audio", type: "audio/wav" }];
+  const body = "note\n||![audio](https://b/audio)||";
+  assert.deepEqual(
+    [...findSpoileredImetaMediaUrls(body, media)],
+    ["https://b/audio"],
+  );
+  assert.equal(stripImetaMediaLines(body, media), "note");
+});
+
 test("formatImetaMediaLine: video mime → ![video] line (regardless of URL suffix)", () => {
   assert.equal(
     formatImetaMediaLine({ url: "https://cdn/blob/xyz", type: "video/mp4" }),

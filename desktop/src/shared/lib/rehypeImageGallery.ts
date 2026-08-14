@@ -39,6 +39,12 @@ function isText(node: HastNode): node is HastText {
   return node.type === "text";
 }
 
+function isGalleryImage(node: HastNode): node is HastElement {
+  return (
+    isElement(node) && node.tagName === "img" && node.properties.alt !== "audio"
+  );
+}
+
 function isIgnorableImageSeparator(node: HastNode): boolean {
   return (
     (isText(node) && node.value.trim() === "") ||
@@ -56,8 +62,7 @@ function isImageOnlyParagraph(node: HastNode): node is HastElement {
   );
 
   return (
-    meaningful.length >= 1 &&
-    meaningful.every((child) => isElement(child) && child.tagName === "img")
+    meaningful.length >= 1 && meaningful.every((child) => isGalleryImage(child))
   );
 }
 
@@ -78,7 +83,7 @@ function splitTrailingImageRun(node: HastNode): HastNode[] {
 
   while (cursor >= 0) {
     const child = node.children[cursor];
-    if (isElement(child) && child.tagName === "img") {
+    if (isGalleryImage(child)) {
       trailingImages.unshift(child);
       cursor -= 1;
       continue;
@@ -119,7 +124,7 @@ export default function rehypeImageGallery() {
         const allImages: HastNode[] = [];
         for (const p of imageRun) {
           for (const child of p.children) {
-            if (isElement(child) && child.tagName === "img") {
+            if (isGalleryImage(child)) {
               allImages.push(child);
             }
           }

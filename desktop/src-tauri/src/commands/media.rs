@@ -299,8 +299,9 @@ pub(crate) fn sanitize_image_for_upload(body: Vec<u8>, mime: &str) -> Result<Vec
 }
 
 pub(crate) fn detect_and_validate_mime(body: &[u8]) -> Result<String, String> {
-    let mime = infer::get(body)
-        .map(|t| t.mime_type().to_string())
+    let mime = super::media_audio::sniff_audio_mime(body)
+        .map(str::to_string)
+        .or_else(|| infer::get(body).map(|t| t.mime_type().to_string()))
         .unwrap_or_else(|| "application/octet-stream".to_string());
     if BLOCKED_MIME.contains(&mime.as_str()) {
         return Err(format!("unsupported file type: {mime}"));
@@ -415,7 +416,7 @@ pub(crate) async fn upload_image_bytes(
     if !mime.starts_with("image/") {
         return Err("profile avatar must be an image".to_string());
     }
-    let body = sanitize_image_for_upload(body, &mime)?;
+    let body = super::media_audio::sanitize_for_upload(body, &mime)?;
     do_upload(body, &mime, state, None, None).await
 }
 
@@ -520,7 +521,7 @@ pub async fn upload_media(
     }
 
     let mime = detect_and_validate_mime(&body)?;
-    let body = sanitize_image_for_upload(body, &mime)?;
+    let body = super::media_audio::sanitize_for_upload(body, &mime)?;
     do_upload(body, &mime, &state, None, None).await
 }
 
@@ -592,7 +593,7 @@ async fn process_picked_path(
         .map_err(|e| format!("transcode task failed: {e}"))??;
 
     let mime = detect_and_validate_mime(&body)?;
-    let body = sanitize_image_for_upload(body, &mime)?;
+    let body = super::media_audio::sanitize_for_upload(body, &mime)?;
 
     // Image-only surfaces (e.g. "Send feedback"): reject anything that didn't
     // sniff as an image, BEFORE the upload leaves the client.
@@ -773,7 +774,7 @@ pub(super) async fn upload_media_bytes_inner(
     };
 
     let mime = detect_and_validate_mime(&body)?;
-    let body = sanitize_image_for_upload(body, &mime)?;
+    let body = super::media_audio::sanitize_for_upload(body, &mime)?;
 
     // Upload video first, then poster (best-effort).
     let progress = progress_id.as_ref().map(|id| (app.clone(), id.clone()));

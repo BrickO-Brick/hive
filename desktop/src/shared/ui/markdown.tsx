@@ -69,7 +69,7 @@ import {
   type MediaContextMenuPosition,
   useDismissMediaContextMenu,
 } from "./markdown/MediaContextMenu";
-import { isVideoMedia } from "./markdown/mediaEntry";
+import { isAudioMedia, isVideoMedia } from "./markdown/mediaEntry";
 import {
   clampImageLightboxZoom,
   type ImageGalleryDirection,
@@ -109,6 +109,7 @@ import {
   normalizedWheelDeltaY,
   visibleImageGalleryForTrigger,
 } from "./markdown/imageLightbox";
+import { MarkdownAudioAttachment } from "./markdown/MarkdownAudioPlayer";
 import { MarkdownTable } from "./markdown/MarkdownTable";
 import { ProgressiveImage } from "./markdown/ProgressiveImage";
 import { MessageLinkPill } from "./markdown/MessageLinkPill";
@@ -1505,10 +1506,17 @@ function createMarkdownComponents(
       const { imetaByUrl } = useMarkdownRuntime();
       const entry = src ? imetaByUrl?.get(src) : undefined;
       const isVideo = src ? isVideoMedia(src, entry?.m) : false;
+      const isAudio = src ? isAudioMedia(src, entry?.m) : false;
       if (!interactive) {
-        const fallbackLabel = isVideo ? "Video attachment" : "Image attachment";
+        const fallbackLabel = isAudio
+          ? "Audio attachment"
+          : isVideo
+            ? "Video attachment"
+            : "Image attachment";
         return <span>{alt?.trim() || fallbackLabel}</span>;
       }
+      if (isAudio)
+        return <MarkdownAudioAttachment alt={alt} entry={entry} src={src} />;
 
       const resolvedSrc = src ? rewriteRelayUrl(src) : src;
       if (isVideo && src && resolvedSrc) {
@@ -1547,15 +1555,8 @@ function createMarkdownComponents(
       <ol className={cn("list-decimal", listClassName)}>{children}</ol>
     ),
     p: ({ children }) => {
-      // Detect media-only paragraphs (images + <br> from remarkBreaks).
-      // Multi-image: render as a compact, count-aware mosaic. Two images split
-      // a row, three form a hero-and-stack triptych, and larger odd counts let
-      // the final image span both columns.
-      // Single media: render as a plain <div> to avoid invalid <p><div> nesting
-      // (the img component returns block-level wrappers for lightbox/video).
       const childArray = React.Children.toArray(children);
       const { imageChildren } = classifyChildren(childArray);
-
       if (isImageOnlyParagraph(childArray)) {
         return <ImageMosaic>{imageChildren}</ImageMosaic>;
       }
@@ -1563,7 +1564,6 @@ function createMarkdownComponents(
       if (hasBlockMedia(childArray)) {
         return <div>{children}</div>;
       }
-
       return <p>{children}</p>;
     },
     pre: ({ children }) => {

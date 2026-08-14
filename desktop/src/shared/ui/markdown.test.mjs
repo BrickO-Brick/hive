@@ -73,8 +73,15 @@ function isHastImageOnlyParagraph(node) {
     (child) => !isIgnorableImageSeparator(child),
   );
   return (
-    meaningful.length >= 1 &&
-    meaningful.every((child) => isHastElement(child) && child.tagName === "img")
+    meaningful.length >= 1 && meaningful.every((child) => isGalleryImage(child))
+  );
+}
+
+function isGalleryImage(node) {
+  return (
+    isHastElement(node) &&
+    node.tagName === "img" &&
+    node.properties.alt !== "audio"
   );
 }
 
@@ -92,7 +99,7 @@ function splitTrailingImageRun(node) {
   const trailingImages = [];
   while (cursor >= 0) {
     const child = node.children[cursor];
-    if (isHastElement(child) && child.tagName === "img") {
+    if (isGalleryImage(child)) {
       trailingImages.unshift(child);
       cursor -= 1;
       continue;
@@ -129,7 +136,7 @@ function rehypeImageGallery() {
         const allImages = [];
         for (const p of imageRun) {
           for (const child of p.children) {
-            if (isHastElement(child) && child.tagName === "img") {
+            if (isGalleryImage(child)) {
               allImages.push(child);
             }
           }
@@ -423,6 +430,23 @@ test("rehypeImageGallery: three consecutive images merge into one paragraph", ()
   rehypeImageGallery()(tree);
   assert.equal(tree.children.length, 1);
   assert.equal(tree.children[0].children.length, 3);
+});
+
+test("rehypeImageGallery: audio attachments are not grouped as images", () => {
+  const audio = (src) => ({
+    ...hastImg(src),
+    properties: { src, alt: "audio" },
+  });
+  const tree = {
+    type: "root",
+    children: [hastP(audio("a.mp3")), hastP(audio("b.ogg"))],
+  };
+
+  rehypeImageGallery()(tree);
+
+  assert.equal(tree.children.length, 2);
+  assert.equal(tree.children[0].children[0].properties.src, "a.mp3");
+  assert.equal(tree.children[1].children[0].properties.src, "b.ogg");
 });
 
 test("rehypeImageGallery: single image paragraph is not grouped", () => {

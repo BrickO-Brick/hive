@@ -27,6 +27,7 @@ mod legacy_storage;
 mod link_preview;
 pub(crate) mod media;
 mod media_animated;
+mod media_audio;
 mod media_download;
 mod media_gif;
 mod media_raw;
