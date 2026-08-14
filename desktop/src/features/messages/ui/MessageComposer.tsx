@@ -83,6 +83,8 @@ function MessageComposerImpl({
   onPrepareSendChannel,
   onPreparingMentionSendChange,
   onSend,
+  onStagePendingSend,
+  onRemovePendingSend,
   placeholder,
   profiles,
   replyTarget = null,
@@ -312,6 +314,8 @@ function MessageComposerImpl({
     mentions,
     onPrepareSendChannel,
     onSendRef,
+    onStagePendingSend,
+    onRemovePendingSend,
     richText,
     setContent: setComposerContent,
     setIsEmojiPickerOpen,
@@ -808,11 +812,9 @@ function MessageComposerImpl({
       media.pendingImeta.length === 0 &&
       media.queuedAttachments.length === 0);
   const handleCaptureSelection = React.useCallback(() => {}, []);
-
   const handlePaperclipClick = React.useCallback(() => {
     void media.handlePaperclip();
   }, [media.handlePaperclip]);
-
   const handleRemoveAttachment = React.useCallback(
     (url: string) => {
       setSpoileredAttachmentUrls((current) => {
@@ -825,14 +827,12 @@ function MessageComposerImpl({
     },
     [media.removeAttachment],
   );
-
   const { handleAttachmentEditSave, handleAttachmentRevert } =
     useAttachmentEditing({
       revertAttachment: media.revertAttachment,
       setSpoileredAttachmentUrls,
       uploadEditedAttachment: media.uploadEditedAttachment,
     });
-
   const handleToggleAttachmentSpoiler = React.useCallback((url: string) => {
     setSpoileredAttachmentUrls((current) => {
       const next = new Set(current);

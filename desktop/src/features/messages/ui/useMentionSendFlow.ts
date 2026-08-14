@@ -20,21 +20,14 @@ import { filterEffectiveExplicitAgentPubkeys } from "@/features/messages/lib/eff
 import {
   prepareBackgroundMediaUpload,
   saveQueuedAttachmentsForDraft,
-  type QueuedMediaAttachment,
 } from "@/features/messages/lib/backgroundMediaUploadStore";
-import type { UseChannelLinksResult } from "@/features/messages/lib/useChannelLinks";
-import type { UseEmojiAutocompleteResult } from "@/features/messages/lib/useEmojiAutocomplete";
 import {
   buildOutgoingMessage,
   type ImetaMedia,
 } from "@/features/messages/lib/imetaMediaMarkdown";
-import type { UseMentionsResult } from "@/features/messages/lib/useMentions";
-import type { UseRichTextEditorResult } from "@/features/messages/lib/useRichTextEditor";
-import type { UseDraftsResult } from "@/features/messages/lib/useDrafts";
 import { useActivePreparedLinkPreviews } from "./useActivePreparedLinkPreviews";
 import { invokeTauri } from "@/shared/api/tauri";
-import type { CustomEmoji } from "@/shared/lib/remarkCustomEmoji";
-import type { AcpRuntime, ChannelType, ManagedAgent } from "@/shared/api/types";
+import type { AcpRuntime, ManagedAgent } from "@/shared/api/types";
 import { normalizePubkey, truncatePubkey } from "@/shared/lib/pubkey";
 import { buildCustomEmojiTags } from "@/shared/lib/customEmojiTags";
 import {
@@ -48,50 +41,7 @@ import {
   resolvePreviewTags,
   uniqueNormalizedPubkeys,
 } from "./useMentionSendFlow.helpers";
-type UseMentionSendFlowOptions = {
-  channelId: string | null;
-  channelLinks: Pick<UseChannelLinksResult, "clearChannels">;
-  channelType: ChannelType | null;
-  contentRef: React.MutableRefObject<string>;
-  customEmoji: CustomEmoji[];
-  drafts: Pick<UseDraftsResult, "loadDraft" | "markDraftSent" | "persistDraft">;
-  emojiAutocomplete: Pick<UseEmojiAutocompleteResult, "clearEmojis">;
-  mentions: UseMentionsResult;
-  onPrepareSendChannel?: (pubkeys?: string[]) => Promise<string | null>;
-  onSendRef: React.MutableRefObject<
-    (
-      content: string,
-      mentionPubkeys: string[],
-      mediaTags?: string[][],
-      channelId?: string | null,
-      threadContext?: {
-        parentEventId: string | null;
-        threadHeadId: string | null;
-      } | null,
-      forceRest?: boolean,
-    ) => Promise<void>
-  >;
-  richText: Pick<
-    UseRichTextEditorResult,
-    "clearContent" | "setContent" | "restorePlainTextAndFocusEnd"
-  >;
-  setContent: (content: string) => void;
-  setIsEmojiPickerOpen: React.Dispatch<React.SetStateAction<boolean>>;
-  setPendingImeta: (pendingImeta: ImetaMedia[]) => void;
-  hasUnsavedMedia: () => boolean;
-  clearQueuedAttachments: () => void;
-  restoreQueuedAttachments: (attachments: QueuedMediaAttachment[]) => void;
-  setSpoileredAttachmentUrls?: React.Dispatch<
-    React.SetStateAction<Set<string>>
-  >;
-  onSuccessfulExplicitAgentAudience?: (audience: {
-    channelId: string;
-    expectedGeneration: number;
-    expectedRevision: number | null;
-    explicitAgentPubkeys: string[];
-  }) => void;
-  resolvePostSendContent?: (effectiveExplicitAgentPubkeys: string[]) => string;
-};
+import type { UseMentionSendFlowOptions } from "./useMentionSendFlow.types";
 export function useMentionSendFlow({
   channelId,
   channelLinks,
@@ -103,6 +53,8 @@ export function useMentionSendFlow({
   mentions,
   onPrepareSendChannel,
   onSendRef,
+  onStagePendingSend,
+  onRemovePendingSend,
   richText,
   setContent,
   setIsEmojiPickerOpen,
@@ -319,7 +271,6 @@ export function useMentionSendFlow({
       provisionPersonaAgentMutation,
     ],
   );
-
   const clearComposer = React.useCallback(
     (postSendContent = "") => {
       setPendingNonMemberSend(null);
@@ -494,6 +445,18 @@ export function useMentionSendFlow({
             mentionPubkeys,
           );
         const send = onSendRef.current;
+        let optimisticId: string | null = null;
+        const removePendingSend = () => {
+          if (optimisticId && sendChannelId) {
+            onRemovePendingSend?.(sendChannelId, optimisticId);
+            optimisticId = null;
+          }
+        };
+        const stopCancelledSend = () => {
+          if (!isSendCancelled()) return false;
+          removePendingSend();
+          return true;
+        };
         const persistCanceledDraft = () => {
           if (isSendCancelled() || !draft.recoveryDraftKey) return;
           const existing = drafts.loadDraft(draft.recoveryDraftKey);
@@ -519,6 +482,7 @@ export function useMentionSendFlow({
           );
         };
         const restoreComposerAfterFailure = () => {
+          removePendingSend();
           if (isSendCancelled()) return;
           persistCanceledDraft();
           const canRestoreCurrentComposer =
@@ -567,11 +531,14 @@ export function useMentionSendFlow({
             mediaTags,
             outgoingTags,
           );
-          if (!finalOutgoingTags || signal?.aborted || isSendCancelled())
+          if (!finalOutgoingTags) {
+            removePendingSend();
             return;
+          }
+          if (signal?.aborted || stopCancelledSend()) return;
           const revalidatedMentionPubkeys =
             await mentions.revalidateMentionPubkeys(mentionPubkeys);
-          if (signal?.aborted || isSendCancelled()) return;
+          if (signal?.aborted || stopCancelledSend()) return;
           const revalidatedExplicitAgentPubkeys =
             filterEffectiveExplicitAgentPubkeys(
               draft.explicitAgentPubkeys,
@@ -584,8 +551,9 @@ export function useMentionSendFlow({
             sendChannelId,
             draft.capturedThreadContext,
             draft.preparedLinkPreviews != null,
+            optimisticId ?? undefined,
           );
-          if (signal?.aborted || isSendCancelled()) return;
+          if (signal?.aborted || stopCancelledSend()) return;
           if (revalidatedExplicitAgentPubkeys.length > 0) {
             onSuccessfulExplicitAgentAudience?.({
               channelId: sendChannelId ?? draft.capturedChannelId ?? "",
@@ -604,6 +572,36 @@ export function useMentionSendFlow({
             );
           }
         };
+        if (!optimisticId && sendChannelId) {
+          const initialMessage = buildOutgoingMessage(
+            draft.trimmed,
+            draft.savedImeta,
+            draft.savedSpoileredAttachmentUrls,
+          );
+          const pendingPreparationTags = [
+            ...(draft.preparedLinkPreviews
+              ? [["client-pending", "link-preview"]]
+              : []),
+            ...draft.queuedAttachments.map((attachment) => [
+              "client-pending",
+              "media",
+              attachment.file.name,
+              attachment.file.type,
+            ]),
+          ];
+          optimisticId =
+            onStagePendingSend?.({
+              channelId: sendChannelId,
+              content: initialMessage.content,
+              mentionPubkeys,
+              parentEventId: draft.capturedThreadContext?.parentEventId ?? null,
+              mediaTags: [
+                ...(initialMessage.mediaTags ?? []),
+                ...(outgoingTags ?? []),
+                ...pendingPreparationTags,
+              ],
+            }) ?? null;
+        }
         if (preparedUpload) {
           uploadStarted = preparedUpload.start({
             onComplete: async (uploaded, signal) => {
@@ -665,6 +663,8 @@ export function useMentionSendFlow({
       mentions.revalidateMentionPubkeys,
       onPrepareSendChannel,
       onSendRef,
+      onStagePendingSend,
+      onRemovePendingSend,
       onSuccessfulExplicitAgentAudience,
       resolvePostSendContent,
       richText.setContent,

@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { QueryClient, QueryObserver } from "@tanstack/react-query";
 
-import { reconcileFetchedChannelWindow } from "../hooks.ts";
+import {
+  reconcileFetchedChannelWindow,
+  removeOptimisticChannelWindowMessage,
+} from "../hooks.ts";
 import { channelMessagesKey, channelWindowKey } from "./messageQueryKeys.ts";
 import {
   appendOlderChannelWindow,
@@ -231,6 +234,39 @@ test("test_reconciliation_retains_identical_pending_sends", () => {
   assert.deepEqual(
     projected.map((item) => item.id),
     [event("initial", 100), first, second].map((item) => item.id),
+  );
+});
+
+test("test_failed_identical_pending_send_removes_only_its_stable_key", () => {
+  const harness = createHarness();
+  const older = {
+    ...event("older-pending", 110),
+    content: "hello",
+    pending: true,
+  };
+  const newer = {
+    ...event("newer-pending", 111),
+    content: "hello",
+    pending: true,
+  };
+  appendLiveEvent(harness, older);
+  appendLiveEvent(harness, newer);
+
+  removeOptimisticChannelWindowMessage(
+    harness.client,
+    harness.channelId,
+    older.id,
+  );
+
+  assert.deepEqual(
+    harness.client.getQueryData(harness.messagesKey).map((item) => item.id),
+    [event("initial", 100), newer].map((item) => item.id),
+  );
+  assert.deepEqual(
+    harness.client
+      .getQueryData(harness.windowKey)
+      .liveOverlay.map((item) => item.id),
+    [newer.id],
   );
 });
 

@@ -386,8 +386,16 @@ test("canceling a background upload prevents the message from publishing", async
   await chooseLargeVideo(page);
   await page.getByTestId("send-message").click();
 
+  const pendingRow = page.getByTestId("message-row").last();
+  await expect(
+    pendingRow.getByTestId("message-preparation-status"),
+  ).toContainText("Preparing large-video.mp4…");
+  const pendingMessageId = await pendingRow.getAttribute("data-message-id");
+  expect(pendingMessageId).not.toBeNull();
   await page.getByTestId("composer-upload-cancel").click();
-  await expect(page.getByTestId("composer-upload-progress")).toHaveCount(0);
+  await expect(
+    page.locator(`[data-message-id="${pendingMessageId}"]`),
+  ).toHaveCount(0);
   await page.waitForTimeout(1_100);
   await expect(page.getByTestId("file-card")).toHaveCount(0);
 });

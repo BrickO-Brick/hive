@@ -979,7 +979,12 @@ test("Enter during an in-flight snapshot upload hands off and sends once", async
   await expect(card).toHaveAttribute("data-snapshot-tag-ready", "false");
 
   await input.press("Enter");
-  await expect(input).toHaveText("");
+  const pendingRow = page.getByTestId("message-row").last();
+  await expect(pendingRow).toContainText(previewUrl);
+  await expect(
+    pendingRow.getByTestId("message-preparation-status"),
+  ).toContainText("Preparing link preview…");
+
   const progress = page.getByTestId("composer-upload-progress");
   await expect(progress).toHaveAccessibleName("Preparing link preview");
   await expect(page.getByTestId("composer-upload-cancel")).toHaveText("Skip");

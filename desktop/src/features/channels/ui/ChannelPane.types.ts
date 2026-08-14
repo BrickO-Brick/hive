@@ -14,6 +14,7 @@ import type {
 } from "@/features/profile/ui/UserProfilePanel";
 import type { ProfilePanelOpenOptions } from "@/shared/context/ProfilePanelContext";
 import type { Channel } from "@/shared/api/types";
+import type { MessageComposerProps } from "@/features/messages/ui/MessageComposer.types";
 export type ChannelPaneProps = {
   activeChannel: Channel | null;
   activityAgents?: BotActivityAgent[];
@@ -115,7 +116,10 @@ export type ChannelPaneProps = {
       threadHeadId: string | null;
     } | null,
     forceRest?: boolean,
+    optimisticId?: string,
   ) => Promise<void>;
+  onStagePendingSend?: MessageComposerProps["onStagePendingSend"];
+  onRemovePendingSend?: MessageComposerProps["onRemovePendingSend"];
   onSendToChannel: (
     message: TimelineMessage,
     threadRoot: TimelineMessage,

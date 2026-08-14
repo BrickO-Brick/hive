@@ -919,6 +919,12 @@ export function ChannelScreen({
                   onOpenThread={handleOpenThreadAndCloseAgentSession}
                   onSelectThreadReplyTarget={handleSelectThreadReplyTarget}
                   onSendMessage={handleSendMessage}
+                  onStagePendingSend={
+                    sendMessageMutation.stageOptimisticMessage
+                  }
+                  onRemovePendingSend={
+                    sendMessageMutation.removeOptimisticMessage
+                  }
                   onSendToChannel={handleSendToChannel}
                   onSendVideoReviewComment={effectiveSendVideoReviewComment}
                   onSendThreadReply={handleSendThreadReply}

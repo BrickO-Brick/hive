@@ -125,6 +125,8 @@ export const ChannelPane = React.memo(function ChannelPane({
   onResetThreadPanelWidth,
   onSelectThreadReplyTarget,
   onSendMessage,
+  onStagePendingSend,
+  onRemovePendingSend,
   onSendToChannel,
   onSendVideoReviewComment,
   onSendThreadReply,
@@ -712,6 +714,8 @@ export const ChannelPane = React.memo(function ChannelPane({
                       : undefined
                   }
                   onSend={handleSendMessage}
+                  onStagePendingSend={onStagePendingSend}
+                  onRemovePendingSend={onRemovePendingSend}
                   profiles={profiles}
                   showBackgroundUploadProgress={false}
                   placeholder={
@@ -814,6 +818,8 @@ export const ChannelPane = React.memo(function ChannelPane({
                 onExpandReplies={onExpandThreadReplies}
                 onSelectReplyTarget={onSelectThreadReplyTarget}
                 onSend={onSendThreadReply}
+                onStagePendingSend={onStagePendingSend}
+                onRemovePendingSend={onRemovePendingSend}
                 onSendToChannel={
                   isComposerDisabled ? undefined : onSendToChannel
                 }

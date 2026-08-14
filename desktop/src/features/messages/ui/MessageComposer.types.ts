@@ -93,7 +93,17 @@ export type MessageComposerProps = {
     } | null,
     /** Route through the REST publisher even when best-effort enrichment settled empty. */
     forceRest?: boolean,
+    /** Stable key of a pending row inserted before preparation. */
+    optimisticId?: string,
   ) => Promise<void>;
+  onStagePendingSend?: (input: {
+    channelId: string;
+    content: string;
+    mentionPubkeys: string[];
+    parentEventId: string | null;
+    mediaTags: string[][];
+  }) => string | null;
+  onRemovePendingSend?: (channelId: string, optimisticId: string) => void;
   placeholder?: string;
   profiles?: UserProfileLookup;
   replyTarget?: {

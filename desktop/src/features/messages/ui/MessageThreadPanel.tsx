@@ -1,6 +1,5 @@
 import * as React from "react";
 import { ArrowDown } from "lucide-react";
-
 import { useKnownAgentPubkeys } from "@/features/agents/useKnownAgentPubkeys";
 import { HuddleTranscriptIntro } from "@/features/huddle/components/HuddleTranscriptIntro";
 import { orderMentionPubkeysByText } from "@/features/messages/lib/orderMentionPubkeys";
@@ -15,7 +14,10 @@ import {
   hasSameMessageAuthor,
   isWithinGroupingWindow,
 } from "@/features/messages/lib/messageGrouping";
-import type { MessageComposerEditTarget } from "@/features/messages/ui/MessageComposer.types";
+import type {
+  MessageComposerEditTarget,
+  MessageComposerProps,
+} from "@/features/messages/ui/MessageComposer.types";
 import { canManageMessageForCurrentUser } from "@/features/messages/lib/canManageMessage";
 import type { TimelineMessage } from "@/features/messages/types";
 import type { VideoReviewPresentation } from "@/features/messages/lib/videoReviewContext";
@@ -52,7 +54,6 @@ import { useComposerHeightPadding } from "./useComposerHeightPadding";
 import { useStableSendToChannel } from "./useStableSendToChannel";
 import { useAnchoredScroll } from "./useAnchoredScroll";
 import { selectDeferredListRenderState } from "@/features/messages/lib/timelineSnapshot";
-
 type MessageThreadPanelProps = ThreadPanelLayoutProps & {
   channel: Channel | null;
   channelId: string | null;
@@ -94,7 +95,10 @@ type MessageThreadPanelProps = ThreadPanelLayoutProps & {
       threadHeadId: string | null;
     } | null,
     forceRest?: boolean,
+    optimisticId?: string,
   ) => Promise<void>;
+  onStagePendingSend?: MessageComposerProps["onStagePendingSend"];
+  onRemovePendingSend?: MessageComposerProps["onRemovePendingSend"];
   onSendToChannel?: (
     message: TimelineMessage,
     threadRoot: TimelineMessage,
@@ -132,10 +136,8 @@ type MessageThreadPanelProps = ThreadPanelLayoutProps & {
   /** Called when the thread-composer auto-submit fires so the parent can clear the trigger. */
   onAutoSubmitComplete?: () => void;
 };
-
 const EMPTY_THREAD_REPLIES: MainTimelineEntry[] = [];
 const THREAD_PANEL_SUMMARY_INDENT_OFFSET_REM = 0;
-
 function hasLaterVisibleSibling(
   entries: readonly MainTimelineEntry[],
   entryIndex: number,
@@ -144,17 +146,14 @@ function hasLaterVisibleSibling(
   if (depth == null) {
     return false;
   }
-
   for (let index = entryIndex + 1; index < entries.length; index += 1) {
     const nextDepth = entries[index].message.depth;
     if (nextDepth <= depth) {
       return nextDepth === depth;
     }
   }
-
   return false;
 }
-
 function getActiveContinuationDepths({
   ancestors,
   entries,
@@ -167,12 +166,10 @@ function getActiveContinuationDepths({
   message: TimelineMessage;
 }): number[] {
   const depths: number[] = [];
-
   for (const ancestor of ancestors) {
     if (ancestor.message.depth === 0) {
       continue;
     }
-
     const childDepth = ancestor.message.depth + 1;
     const pathChild =
       message.depth === childDepth
@@ -221,6 +218,8 @@ export function MessageThreadPanel({
   onScrollTargetSettled,
   onSelectReplyTarget,
   onSend,
+  onStagePendingSend,
+  onRemovePendingSend,
   onSendToChannel,
   onToggleReaction,
   onUnfollowThread,
@@ -911,6 +910,7 @@ export function MessageThreadPanel({
               onEditLastOwnMessage={onEditLastOwnMessage}
               onEditSave={onEditSave}
               onSend={onSend}
+              {...{ onStagePendingSend, onRemovePendingSend }}
               placeholder={
                 isHuddleTranscript
                   ? "Message the huddle"

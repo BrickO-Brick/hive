@@ -1,4 +1,4 @@
-import { useEffect, useEffectEvent } from "react";
+import { useCallback, useEffect, useEffectEvent } from "react";
 import {
   type QueryClient,
   useMutation,
@@ -76,10 +76,11 @@ import {
 
 type MessageQueryContext = {
   optimisticId: string;
-  previousMessages: RelayEvent[];
-  previousWindow: ChannelWindowStore | undefined;
+  previousMessages?: RelayEvent[];
+  previousWindow?: ChannelWindowStore;
   channelId: string;
   queryKey: ReturnType<typeof channelMessagesKey>;
+  adopted: boolean;
 };
 
 const CHANNEL_TIMELINE_KINDS = new Set<number>(CHANNEL_TIMELINE_CONTENT_KINDS);
@@ -434,13 +435,38 @@ export function useChannelSubscription(channel: Channel | null) {
   }, [channelId, channelType]);
 }
 
+export function removeOptimisticChannelWindowMessage(
+  queryClient: QueryClient,
+  channelId: string,
+  optimisticId: string,
+) {
+  const windowKey = channelWindowKey(channelId);
+  const current =
+    queryClient.getQueryData<ChannelWindowStore>(windowKey) ??
+    emptyChannelWindowStore();
+  queryClient.setQueryData<RelayEvent[]>(
+    channelMessagesKey(channelId),
+    (messages = []) =>
+      messages.filter(
+        (event) => event.id !== optimisticId && event.localKey !== optimisticId,
+      ),
+  );
+  queryClient.setQueryData(windowKey, {
+    ...current,
+    liveOverlay: current.liveOverlay.filter(
+      (event) => event.id !== optimisticId,
+    ),
+  });
+  projectChannelWindowMessages(queryClient, channelId);
+}
+
 export function useSendMessageMutation(
   channel: Channel | null,
   identity: Identity | undefined,
 ) {
   const queryClient = useQueryClient();
 
-  return useMutation<
+  const mutation = useMutation<
     RelayEvent,
     Error,
     {
@@ -454,6 +480,8 @@ export function useSendMessageMutation(
       sentFromThreadRootId?: string | null;
       sentFromThreadRootExcerpt?: string | null;
       transport?: "auto" | "http";
+      /** Adopt a send-scoped pending row that was inserted before preparation. */
+      optimisticId?: string;
     },
     MessageQueryContext | undefined
   >({
@@ -610,6 +638,7 @@ export function useSendMessageMutation(
       mediaTags,
       sentFromThreadRootId,
       sentFromThreadRootExcerpt,
+      optimisticId,
     }) => {
       // Mirror mutationFn's target resolution so the optimistic message lands
       // in the cache for the same channel as the real send. A caller-supplied
@@ -631,6 +660,15 @@ export function useSendMessageMutation(
 
       const queryKey = channelMessagesKey(effectiveChannel.id);
       await queryClient.cancelQueries({ queryKey });
+
+      if (optimisticId) {
+        return {
+          optimisticId,
+          channelId: effectiveChannel.id,
+          queryKey,
+          adopted: true,
+        };
+      }
 
       const previousMessages =
         queryClient.getQueryData<RelayEvent[]>(queryKey) ?? [];
@@ -662,6 +700,7 @@ export function useSendMessageMutation(
         previousWindow,
         channelId: effectiveChannel.id,
         queryKey,
+        adopted: false,
       };
     },
     onError: (error, _variables, context) => {
@@ -673,7 +712,19 @@ export function useSendMessageMutation(
         return;
       }
 
-      queryClient.setQueryData(context.queryKey, context.previousMessages);
+      if (context.adopted) {
+        removeOptimisticChannelWindowMessage(
+          queryClient,
+          context.channelId,
+          context.optimisticId,
+        );
+        return;
+      }
+
+      queryClient.setQueryData(
+        context.queryKey,
+        context.previousMessages ?? [],
+      );
       queryClient.setQueryData(
         channelWindowKey(context.channelId),
         context.previousWindow,
@@ -705,6 +756,67 @@ export function useSendMessageMutation(
       projectChannelWindowMessages(queryClient, context.channelId);
     },
   });
+
+  const stageOptimisticMessage = useCallback(
+    ({
+      channelId: capturedChannelId,
+      content,
+      mentionPubkeys = [],
+      parentEventId = null,
+      mediaTags = [],
+    }: {
+      channelId?: string | null;
+      content: string;
+      mentionPubkeys?: string[];
+      parentEventId?: string | null;
+      mediaTags?: string[][];
+    }): string | null => {
+      const effectiveChannel = resolveSendChannel(
+        undefined,
+        capturedChannelId,
+        queryClient.getQueryData<Channel[]>(channelsQueryKey),
+        channel,
+      );
+      if (!effectiveChannel || !identity) return null;
+
+      const queryKey = channelMessagesKey(effectiveChannel.id);
+      const currentMessages =
+        queryClient.getQueryData<RelayEvent[]>(queryKey) ?? [];
+      const optimisticMessage = createOptimisticMessage(
+        effectiveChannel.id,
+        content.trim(),
+        identity,
+        currentMessages,
+        mentionPubkeys,
+        parentEventId,
+        mediaTags,
+      );
+      const windowKey = channelWindowKey(effectiveChannel.id);
+      const currentWindow =
+        queryClient.getQueryData<ChannelWindowStore>(windowKey) ??
+        emptyChannelWindowStore();
+      queryClient.setQueryData(
+        windowKey,
+        mergeLiveChannelWindowEvent(currentWindow, optimisticMessage),
+      );
+      projectChannelWindowMessages(queryClient, effectiveChannel.id);
+      return optimisticMessage.id;
+    },
+    [channel, identity, queryClient],
+  );
+
+  const removeOptimisticMessage = useCallback(
+    (channelId: string, optimisticId: string) => {
+      removeOptimisticChannelWindowMessage(
+        queryClient,
+        channelId,
+        optimisticId,
+      );
+    },
+    [queryClient],
+  );
+
+  return { ...mutation, removeOptimisticMessage, stageOptimisticMessage };
 }
 
 export function useToggleReactionMutation() {
