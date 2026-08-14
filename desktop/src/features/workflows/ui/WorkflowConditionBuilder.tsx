@@ -104,6 +104,28 @@ function initialEditorState(
   return { custom: value.trim().length > 0, editors: [] };
 }
 
+function initialActiveEditor(
+  editorState: ConditionEditorState,
+  triggerType: TriggerType,
+): ActiveConditionEditor | null {
+  if (editorState.custom) return null;
+
+  const firstField = conditionFieldsForTrigger(triggerType)[0];
+  if (!firstField) return null;
+
+  return {
+    kind: "field",
+    draft: editorState.editors.find(
+      (editor) => editor.field === firstField.value,
+    ) ?? {
+      field: firstField.value,
+      operator: defaultConditionOperatorForField(firstField.value),
+      value: "",
+      webhookField: "",
+    },
+  };
+}
+
 function valueLabel(field: string): string {
   switch (field) {
     case "trigger_author":
@@ -508,7 +530,10 @@ export function WorkflowConditionBuilder({
   );
   const [advancedDraft, setAdvancedDraft] = React.useState(value);
   const [activeEditor, setActiveEditor] =
-    React.useState<ActiveConditionEditor | null>(null);
+    React.useState<ActiveConditionEditor | null>(() => {
+      const initialState = initialEditorState(value, triggerType);
+      return initialActiveEditor(initialState, triggerType);
+    });
   const [pendingBasicField, setPendingBasicField] = React.useState<
     (typeof fields)[number] | null
   >(null);
@@ -549,7 +574,7 @@ export function WorkflowConditionBuilder({
     setEditorState(nextEditorState);
     setEditorMode(nextEditorState.custom ? "advanced" : "basic");
     setAdvancedDraft(value);
-    setActiveEditor(null);
+    setActiveEditor(initialActiveEditor(nextEditorState, triggerType));
     setPendingBasicField(null);
   }, [triggerType, value]);
 
