@@ -265,7 +265,10 @@ const MessageTimelineBase = React.forwardRef<
     if (!useTimelineVirtualizer) {
       setVirtualizerScrollParent(scrollContainerRef.current);
     }
-    setTimelineVirtualizerApi(null);
+    // Do not clear the child-registered virtualizer API here. This parent
+    // layout effect runs after child layout effects on a keyed channel mount;
+    // clearing it would leave target navigation waiting forever for APIs that
+    // the still-mounted child will not register again.
   }, [scrollContainerRef, scrollContainerDomKey]);
 
   const hasPersistentIntro =
