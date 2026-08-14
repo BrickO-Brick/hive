@@ -771,7 +771,8 @@ impl EventQueue {
     /// Also clears any `retry_after` throttle for the channel.
     ///
     /// Returns the visible event IDs that own lifecycle reactions for every
-    /// dropped event so the caller can clean up any 👀 added at queue-push time.
+    /// dropped queued or reserved event. Edit events therefore contribute
+    /// their original target IDs rather than their auxiliary kind:40003 IDs.
     pub fn drain_channel(&mut self, channel_id: Uuid) -> Vec<String> {
         let mut ids: HashSet<String> = HashSet::new();
         if let Some(events) = self.queues.remove(&channel_id) {
@@ -4320,6 +4321,25 @@ mod tests {
         let drained: HashSet<String> = q.drain_channel(ch).into_iter().collect();
         assert_eq!(drained, HashSet::from([queued_target, withheld_target]));
         assert!(q.withheld_native_steer.is_empty());
+    }
+
+    #[test]
+    fn drain_channel_returns_visible_reaction_targets_for_queued_and_reserved_edits() {
+        let mut q = EventQueue::new(DedupMode::Queue);
+        let ch = Uuid::new_v4();
+        let queued_target = "ab".repeat(32);
+        let reserved_target = "cd".repeat(32);
+
+        q.push(make_edit_queued_created_at(ch, &queued_target, 100));
+        let reserved = make_edit_queued_created_at(ch, &reserved_target, 101);
+        let reserved_id = reserved.event.id.to_hex();
+        q.push(reserved);
+        assert!(q.mark_native_steer_pending(ch, &reserved_id));
+
+        let drained: HashSet<String> = q.drain_channel(ch).into_iter().collect();
+        assert_eq!(drained, HashSet::from([queued_target, reserved_target]));
+        assert!(!q.has_native_steer_reservations(ch));
+        assert_eq!(pending_count(&q), 0);
     }
 
     #[test]

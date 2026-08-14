@@ -2410,7 +2410,7 @@ async fn tokio_main() -> Result<()> {
     //      withheld event in `EventQueue::withheld_native_steer` until
     //      `IN_FLIGHT_DEADLINE_SECS` expires.
     let (steer_ack_tx, mut steer_ack_rx) = mpsc::unbounded_channel::<SteerAckEvent>();
-let (typing_tx, mut typing_rx) = mpsc::unbounded_channel::<(Uuid, String, ThreadTags)>();
+    let (typing_tx, mut typing_rx) = mpsc::unbounded_channel::<(Uuid, String, ThreadTags)>();
     // Edit-aware native steer enrichment performs bounded REST lookups. Keep it
     // off the relay select arm, then return the immutable prompt payload here
     // for queue/pool mutation on the main loop.
@@ -2492,7 +2492,7 @@ let (typing_tx, mut typing_rx) = mpsc::unbounded_channel::<(Uuid, String, Thread
         Result(Box<PromptResult>),
         Panic(tokio::task::JoinError),
         SteerAck(SteerAckEvent),
-Typing(Uuid, String, ThreadTags),
+        Typing(Uuid, String, ThreadTags),
         NativeSteerPrepared(NativeSteerPrepared),
         Wake(u32, Result<AgentPool, String>),
     }
@@ -4215,7 +4215,7 @@ fn release_prepared_native_steer_fallback(
     event_id: &str,
     ctx: &Arc<PromptContext>,
     membership_generations: &HashMap<Uuid, u64>,
-    typing_tx: &mpsc::UnboundedSender<(Uuid, ThreadTags)>,
+    typing_tx: &mpsc::UnboundedSender<(Uuid, String, ThreadTags)>,
     last_activity: &mut tokio::time::Instant,
     typing_channels: &mut HashMap<Uuid, ThreadTags>,
 ) {
@@ -5817,6 +5817,7 @@ mod owner_control_command_tests {
             pool::TaskMeta {
                 agent_index: 0,
                 channel_id: Some(channel_id),
+                membership_generation: Some(0),
                 turn_id: turn_id.into(),
                 recoverable_batch: None,
                 control_tx: None,
@@ -9839,7 +9840,10 @@ mod native_edit_membership_lifecycle_tests {
             &mut typing_channels,
         );
 
-        assert!(typing_channels.contains_key(&channel_id));
+        assert!(
+            !typing_channels.contains_key(&channel_id),
+            "edit typing waits for the prompt task's resolved routing scope"
+        );
         assert_eq!(
             pool.task_map().len(),
             1,
@@ -9951,13 +9955,17 @@ mod native_edit_membership_lifecycle_tests {
         // drains the reservation and advances generation; re-add restores
         // access without revalidating old prepared work.
         let mut removed_channels = HashSet::new();
-        assert!(remove_channel_for_membership_change(
+        let drained = remove_channel_for_membership_change(
             &mut queue,
             &mut removed_channels,
             &mut generations,
             channel_id,
-        )
-        .is_empty());
+        );
+        assert_eq!(
+            drained,
+            vec!["ab".repeat(32)],
+            "removal returns the reserved edit's visible reaction target"
+        );
         readd_channel_after_membership_change(&mut removed_channels, channel_id);
 
         // This is the completion-arm guard. A false result would enter
