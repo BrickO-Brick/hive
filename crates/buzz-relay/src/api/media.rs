@@ -376,9 +376,9 @@ pub async fn upload_blob(
             } else {
                 // Non-video path: buffer the body (bounded by the larger of the image
                 // and generic-file caps), then decide image-vs-generic by sniffed MIME.
-                // Images go through the thumbnailing pipeline; non-media attachments
-                // (docs, archives, text, data) take the generic file path and are
-                // served as downloads. Recognized audio/video cannot fall through it.
+                // Images go through the thumbnailing pipeline; generic files and
+                // canonical MP3/WAV/Ogg take the file path. Unsupported or
+                // metadata-bearing media fails closed in that validator.
                 let max = state
                     .config
                     .media
