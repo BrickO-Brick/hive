@@ -49,9 +49,11 @@ function textConditionDescription(
     case "not_equals":
       return `${eventPhrase} not matching ${value}`;
     case "is_not_empty":
-      return `Non-empty ${eventPhrase.toLowerCase()}`;
+      return eventPhrase === "Message posted"
+        ? "Text message posted"
+        : `${eventPhrase} containing text`;
     case "is_empty":
-      return `Empty ${eventPhrase.toLowerCase()}`;
+      return `${eventPhrase} without text`;
   }
 }
 

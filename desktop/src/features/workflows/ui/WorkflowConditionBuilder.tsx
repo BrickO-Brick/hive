@@ -35,6 +35,19 @@ const OPERATOR_LABELS: Record<ConditionOperator, string> = {
   is_empty: "is empty",
 };
 
+function operatorLabel(
+  field: string,
+  operator: ConditionOperator,
+  usesExactMatchOperators: boolean,
+): string {
+  if (usesExactMatchOperators && operator === "equals") return "is";
+  if (field === "trigger_text") {
+    if (operator === "is_not_empty") return "has text";
+    if (operator === "is_empty") return "has no text";
+  }
+  return OPERATOR_LABELS[operator];
+}
+
 type ConditionEditorState = {
   custom: boolean;
   editors: ParsedConditionExpression[];
@@ -141,9 +154,7 @@ function ConditionEditorControls({
         >
           {operatorOptions.map((operator) => (
             <option key={operator} value={operator}>
-              {usesExactMatchOperators && operator === "equals"
-                ? "is"
-                : OPERATOR_LABELS[operator]}
+              {operatorLabel(editor.field, operator, usesExactMatchOperators)}
             </option>
           ))}
         </FormSelect>

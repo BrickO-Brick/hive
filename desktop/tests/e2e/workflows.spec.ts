@@ -297,6 +297,13 @@ test("builds a valid trigger condition from plain-language choices", async ({
 
   await conditionFields.getByRole("button", { name: "Message text" }).click();
   await expect(allMessages).toHaveAttribute("aria-pressed", "false");
+  const matchSelect = inspector.getByLabel("Match");
+  await expect(matchSelect.locator('option[value="is_not_empty"]')).toHaveText(
+    "has text",
+  );
+  await expect(matchSelect.locator('option[value="is_empty"]')).toHaveText(
+    "has no text",
+  );
   await inspector.getByLabel("Text to match").fill('deploy "buzz"');
   await dialog.getByRole("tab", { name: "YAML" }).click();
   await expect(dialog.getByLabel("Workflow YAML")).toHaveValue(

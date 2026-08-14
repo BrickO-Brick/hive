@@ -25,6 +25,22 @@ test("describes selected trigger conditions on the workflow canvas", () => {
 
   assert.equal(
     workflowTriggerDescription({
+      on: "message_posted",
+      filter: "str_len(trigger_text) == 0",
+    }),
+    "Message posted without text",
+  );
+
+  assert.equal(
+    workflowTriggerDescription({
+      on: "message_posted",
+      filter: "str_len(trigger_text) > 0",
+    }),
+    "Text message posted",
+  );
+
+  assert.equal(
+    workflowTriggerDescription({
       on: "reaction_added",
       filter: 'trigger_emoji == "🔥"',
     }),
