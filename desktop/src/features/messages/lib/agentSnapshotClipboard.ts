@@ -17,6 +17,8 @@ type SnapshotClipboardPayload = {
   size: number;
   type: string;
   url: string;
+  /** Optional agent avatar used only by the compact composer preview. */
+  thumb?: string;
 };
 
 function escapeHtml(value: string): string {
@@ -58,6 +60,7 @@ export function buildSnapshotClipboardHtml({
     size: attachment.size,
     type: attachment.type,
     url: attachment.url,
+    ...(attachment.thumb ? { thumb: attachment.thumb } : {}),
   };
   const encodedPayload = encodeURIComponent(JSON.stringify(payload));
 
@@ -132,7 +135,11 @@ export function parseSnapshotClipboardHtml(html: string): ImetaMedia | null {
     candidate.size > maxSnapshotBytes ||
     candidate.type !== "image/png" ||
     typeof candidate.url !== "string" ||
-    !isSafeSnapshotUrl(candidate.url)
+    !isSafeSnapshotUrl(candidate.url) ||
+    (candidate.thumb !== undefined &&
+      (typeof candidate.thumb !== "string" ||
+        candidate.thumb.length > 2_048 ||
+        !isSafeSnapshotUrl(candidate.thumb)))
   ) {
     return null;
   }
@@ -145,6 +152,7 @@ export function parseSnapshotClipboardHtml(html: string): ImetaMedia | null {
     type: "image/png",
     uploaded: 0,
     url: candidate.url,
+    ...(candidate.thumb ? { thumb: candidate.thumb } : {}),
   };
 }
 

@@ -2527,6 +2527,98 @@ test("custom personas share with people and keep export separate", async ({
   await expect(shareDialog).toHaveCount(0);
 });
 
+test("agent snapshot composer prefers the avatar while the message keeps the card", async ({
+  page,
+}) => {
+  const cardUrl = `https://example.com/media/${"9".repeat(64)}.png`;
+  const avatarUrl = "http://127.0.0.1:4173/onboarding/starter-team/fizz.png";
+  const cardBytes = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+    "base64",
+  );
+  await page.route(cardUrl, (route) =>
+    route.fulfill({ body: cardBytes, contentType: "image/png", status: 200 }),
+  );
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  await installMockBridge(page, {
+    personas: [
+      {
+        id: "custom:composer-avatar",
+        avatarUrl,
+        displayName: "Composer Avatar",
+        systemPrompt: "You verify attachment previews.",
+      },
+    ],
+    uploadDescriptors: [
+      {
+        url: cardUrl,
+        sha256: "9".repeat(64),
+        size: cardBytes.length,
+        type: "image/png",
+        uploaded: Math.floor(Date.now() / 1000),
+        filename: "composer-avatar.agent.png",
+      },
+    ],
+  });
+  await gotoApp(page);
+  await page.getByTestId("open-agents-view").click();
+  await page.getByLabel("Open actions for Composer Avatar").click();
+  await page.getByRole("menuitem", { name: "Share" }).click();
+  const shareDialog = page.getByTestId("persona-share-dialog");
+  await expect(shareDialog).toBeVisible();
+  await page.getByTestId("persona-share-copy-link").click();
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toBe(cardUrl);
+
+  const copied = await page.evaluate(() => {
+    const commands =
+      (
+        window as Window & {
+          __BUZZ_E2E_COMMAND_LOG__?: Array<{
+            command: string;
+            payload: { html?: string; text?: string };
+          }>;
+        }
+      ).__BUZZ_E2E_COMMAND_LOG__ ?? [];
+    return commands.findLast(
+      (entry) => entry.command === "copy_text_to_clipboard",
+    )?.payload;
+  });
+  expect(copied?.html).toContain("data-buzz-agent-snapshot");
+
+  await page.keyboard.press("Escape");
+  await expect(shareDialog).toHaveCount(0);
+  await page.getByTestId("channel-general").click();
+  await page.evaluate(async ({ html, text }) => {
+    await navigator.clipboard.write([
+      new ClipboardItem({
+        "text/html": new Blob([html ?? ""], { type: "text/html" }),
+        "text/plain": new Blob([text ?? ""], { type: "text/plain" }),
+      }),
+    ]);
+  }, copied ?? {});
+  await page
+    .getByTestId("message-composer")
+    .locator("[contenteditable='true']")
+    .click();
+  await page.keyboard.press("ControlOrMeta+V");
+
+  const composerCard = page.getByTestId("composer-agent-snapshot-card");
+  await expect(composerCard).toBeVisible();
+  await expect(
+    composerCard.getByTestId("composer-agent-snapshot-thumb"),
+  ).toHaveAttribute("src", avatarUrl);
+
+  await page.getByTestId("send-message").click();
+  const messageCard = page.getByTestId("agent-snapshot-card").last();
+  await expect(messageCard).toBeVisible();
+  await expect(messageCard).toHaveCSS("border-radius", "24px");
+  await expect(
+    messageCard.getByTestId("agent-snapshot-card-thumb"),
+  ).toHaveAttribute("src", cardUrl);
+});
+
 test("custom personas can be shared to the relay catalog", async ({ page }) => {
   const personaId = "custom:catalog-analyst";
   // Catalog heads must be signed by the active identity. Keep the real-key

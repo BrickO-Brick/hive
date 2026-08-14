@@ -134,11 +134,15 @@ function ComposerSnapshotCard({
   onRemove: (url: string) => void;
   snapshotKind: SnapshotKind;
 }) {
-  const [thumbError, setThumbError] = React.useState(false);
+  const [avatarThumbError, setAvatarThumbError] = React.useState(false);
+  const [cardThumbError, setCardThumbError] = React.useState(false);
   const isAgentPng =
     snapshotKind === "agent" &&
     attachment.filename?.toLowerCase().endsWith(".agent.png");
-  const showThumb = isAgentPng && !thumbError;
+  const avatarThumb = attachment.thumb?.trim();
+  const previewThumb =
+    avatarThumb && !avatarThumbError ? avatarThumb : attachment.url;
+  const showThumb = isAgentPng && !cardThumbError;
   const SnapshotIcon = snapshotKind === "team" ? Users : Bot;
   const fallbackLabel = snapshotKind === "team" ? "Team" : "Agent";
   const displayName =
@@ -174,13 +178,20 @@ function ComposerSnapshotCard({
                 alt=""
                 aria-hidden="true"
                 className="pointer-events-none absolute inset-0 h-full w-full scale-150 object-cover"
-                src={rewriteRelayUrl(attachment.url)}
+                src={rewriteRelayUrl(previewThumb)}
               />
               <img
                 alt=""
                 className="relative h-full w-full object-cover"
-                src={rewriteRelayUrl(attachment.url)}
-                onError={() => setThumbError(true)}
+                data-testid={`composer-${snapshotKind}-snapshot-thumb`}
+                src={rewriteRelayUrl(previewThumb)}
+                onError={() => {
+                  if (avatarThumb && !avatarThumbError) {
+                    setAvatarThumbError(true);
+                  } else {
+                    setCardThumbError(true);
+                  }
+                }}
               />
             </>
           ) : (

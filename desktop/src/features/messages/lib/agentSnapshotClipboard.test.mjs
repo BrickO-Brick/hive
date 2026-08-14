@@ -20,6 +20,7 @@ function buildHtml(overrides = {}) {
       type: "image/png",
       uploaded: 1,
       url: URL,
+      thumb: "https://relay.example/media/avatar.png",
       ...overrides,
     },
     displayName: "Animation Auditor",
@@ -35,6 +36,7 @@ test("copied agent HTML restores a labeled snapshot attachment", () => {
     type: "image/png",
     uploaded: 0,
     url: URL,
+    thumb: "https://relay.example/media/avatar.png",
   });
 });
 
@@ -118,6 +120,7 @@ test("invalid copied snapshot metadata falls through to normal paste", () => {
     buildHtml({ url: `${URL})[hidden](https://attacker.example` }),
     buildHtml({ url: `${URL}\n[hidden](https://attacker.example)` }),
     buildHtml({ url: `${URL} trailing` }),
+    buildHtml({ thumb: "javascript:alert(1)" }),
   ];
 
   for (const html of invalid) {

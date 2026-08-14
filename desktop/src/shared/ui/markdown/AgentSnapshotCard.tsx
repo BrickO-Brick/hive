@@ -122,7 +122,7 @@ export function AgentSnapshotCard({
 
   return (
     <Attachment
-      className="my-1 inline-flex w-fit max-w-full shadow-none"
+      className="my-1 inline-flex w-fit max-w-full rounded-3xl shadow-none"
       data-testid="agent-snapshot-card"
       state={importState.phase === "error" ? "error" : "done"}
     >
