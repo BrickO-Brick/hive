@@ -60,6 +60,7 @@ class CommunityThemeSyncManager {
   int _publishRetryAttempt = 0;
   bool _publishInFlight = false;
   bool _publishRequestedWhileInFlight = false;
+  bool _hydrationObserved = false;
   bool _disposed = false;
 
   CommunityThemeSyncManager({
@@ -124,6 +125,11 @@ class CommunityThemeSyncManager {
         CommunityThemeRemoteStatus.unavailable,
       );
     }
+    if (result.status == CommunityThemeRemoteStatus.absent) {
+      // A confirmed absence means the coordinate has been observed: there is no
+      // desktop record to preserve, so a gated incomplete edit may publish.
+      _observeHydration();
+    }
     return result;
   }
 
@@ -184,6 +190,10 @@ class CommunityThemeSyncManager {
     if (_disposed) return;
     if (result.status == CommunityThemeRemoteStatus.valid) {
       _accept(result.remote!);
+    } else if (result.status == CommunityThemeRemoteStatus.absent) {
+      // A confirmed absence here observes the coordinate too, releasing a gated
+      // incomplete edit if the initial fetch had been unavailable.
+      _observeHydration();
     }
   }
 
@@ -202,6 +212,25 @@ class CommunityThemeSyncManager {
     _publishRetryAttempt = 0;
     _publishTimer?.cancel();
     _publishTimer = null;
+  }
+
+  /// Record that the relay coordinate has been observed at least once (a valid
+  /// record or a confirmed absence) and release an edit held by the
+  /// pre-hydration gate in [flush]. Only an incomplete edit is ever gated, so
+  /// a complete edit's own scheduled publish is left untouched.
+  void _observeHydration() {
+    if (_hydrationObserved) return;
+    _hydrationObserved = true;
+    final pending = _pending;
+    if (!_disposed &&
+        pending != null &&
+        !pending.includesDesktopAppearance &&
+        !_publishInFlight) {
+      // Accelerate the held edit now that the coordinate is known. Any pending
+      // debounce timer is cancelled by _schedulePublish. A publish in flight is
+      // left to its own finally-block, which reschedules the pending edit.
+      _schedulePublish(Duration.zero);
+    }
   }
 
   void publish(CommunityThemePreference preference) {
@@ -238,6 +267,13 @@ class CommunityThemeSyncManager {
     }
     final preference = _pending;
     if (_disposed || preference == null) return;
+    // Hold an edit that carries no desktop appearance opinion until the relay
+    // coordinate has been observed, so a pre-hydration edit cannot replace a
+    // desktop-authored record before we have seen it. _observeHydration
+    // releases it. A complete edit is never gated.
+    if (!preference.includesDesktopAppearance && !_hydrationObserved) {
+      return;
+    }
     if (preference == _lastPublished) {
       _pending = null;
       onPublished(preference);
@@ -245,7 +281,15 @@ class CommunityThemeSyncManager {
     }
     _publishInFlight = true;
     try {
-      final content = crypto.encrypt(jsonEncode(preference.toJson()));
+      // Preserve the desktop-only fields the relay already holds when the local
+      // edit omits them, so publishing the replaceable coordinate does not strip
+      // a desktop client's glass and prominent-tab choices. Bookkeeping stays on
+      // the local `preference` so the outbox ack contract is unaffected.
+      final remote = _lastRemote?.preference;
+      final outgoing = remote == null
+          ? preference
+          : preference.mergeDesktopAppearanceFrom(remote);
+      final content = crypto.encrypt(jsonEncode(outgoing.toJson()));
       if (_disposed) return;
       final createdAt = max(
         DateTime.now().millisecondsSinceEpoch ~/ 1000,
@@ -336,6 +380,7 @@ class CommunityThemeSyncManager {
     _lastCreatedAt = remote.createdAt;
     _lastEventId = remote.eventId;
     _lastRemote = remote;
+    _observeHydration();
     if (_pending != null) {
       _lastPublished = null;
       return;

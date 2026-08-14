@@ -195,6 +195,48 @@ test("appearance snapshot is captured once and consumed per community", () => {
   );
 });
 
+test("a full store still yields the correct in-session appearance fallback", () => {
+  // The controller captures the snapshot once, then reuses the returned value
+  // across its effects via a ref. This pins the contract that reuse depends on:
+  // even when the snapshot write is rejected (a full store), capture returns
+  // the live pre-migration appearance, so a legacy record still inherits it.
+  globalThis.window = {
+    localStorage: {
+      getItem: () => null,
+      setItem: () => {
+        throw new Error("quota exceeded");
+      },
+      removeItem: () => {},
+    },
+  };
+  const inherited = {
+    ...DEFAULT_COMMUNITY_THEME,
+    glassBackground: true,
+    glassOpacity: 80,
+    prominentActiveTab: true,
+  };
+  const snapshot = captureCommunityThemeAppearanceSnapshot("alice", inherited);
+  assert.deepEqual(snapshot, {
+    glassBackground: true,
+    glassOpacity: 80,
+    prominentActiveTab: true,
+  });
+  // A re-read from storage collapses to defaults, which is exactly why the
+  // controller must reuse the captured value rather than re-reading it.
+  assert.equal(readCommunityThemeAppearanceSnapshot("alice"), null);
+  const legacy = {
+    version: 1,
+    theme: "houston",
+    accent: "#a855f7",
+    followSystem: false,
+  };
+  const fallback = communityThemeAppearanceFallback(snapshot);
+  assert.deepEqual(parseCommunityThemePreference(legacy, fallback), {
+    ...legacy,
+    ...snapshot,
+  });
+});
+
 test("desktop appearance limits match the shared wire contract", () => {
   const contract = JSON.parse(
     readFileSync(

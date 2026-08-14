@@ -130,6 +130,37 @@ class CommunityThemePreference {
     return findTheme(theme)?.isDark == true ? ThemeMode.dark : ThemeMode.light;
   }
 
+  /// Whether this preference carries a full desktop appearance opinion. A
+  /// preference parsed from a legacy three-field payload, or a fresh/legacy
+  /// mobile origin, omits these fields and must not replace a desktop record.
+  bool get includesDesktopAppearance =>
+      includesGlassBackground &&
+      includesGlassOpacity &&
+      includesProminentActiveTab;
+
+  /// Fold [source]'s desktop-only appearance into this preference. Used when
+  /// republishing a mobile edit that carries no desktop opinion so the relay
+  /// coordinate keeps the glass and prominent-tab values a desktop client
+  /// authored. A preference that already includes the fields is returned
+  /// unchanged; only the fields [source] actually carries are adopted.
+  CommunityThemePreference mergeDesktopAppearanceFrom(
+    CommunityThemePreference source,
+  ) {
+    if (includesDesktopAppearance) return this;
+    return CommunityThemePreference(
+      version: version,
+      theme: theme,
+      accent: accent,
+      followSystem: followSystem,
+      glassBackground: source.glassBackground,
+      glassOpacity: source.glassOpacity,
+      prominentActiveTab: source.prominentActiveTab,
+      includesGlassBackground: source.includesGlassBackground,
+      includesGlassOpacity: source.includesGlassOpacity,
+      includesProminentActiveTab: source.includesProminentActiveTab,
+    );
+  }
+
   @override
   bool operator ==(Object other) =>
       other is CommunityThemePreference &&

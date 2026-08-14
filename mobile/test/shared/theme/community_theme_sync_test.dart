@@ -388,6 +388,93 @@ void main() {
       expect(manager.pending, isNull);
     },
   );
+
+  test(
+    'gated incomplete edit holds until hydration then merges remote glass',
+    () async {
+      // A desktop client already published glass settings the mobile parser
+      // omits. A mobile edit made before hydration must not strip them.
+      const desktop = CommunityThemePreference(
+        theme: 'buzz',
+        accent: '#3b82f6',
+        followSystem: true,
+        glassBackground: true,
+        glassOpacity: 80,
+        prominentActiveTab: true,
+      );
+      const incompleteEdit = CommunityThemePreference(
+        theme: 'dracula',
+        accent: '#ef4444',
+        followSystem: false,
+        includesGlassBackground: false,
+        includesGlassOpacity: false,
+        includesProminentActiveTab: false,
+      );
+      final history = Completer<List<NostrEvent>>();
+      final session = _FakeSession(historyFuture: history.future);
+      final relay = _FakeSignedRelay();
+      final manager = _manager(session, relay);
+
+      final initializing = manager.initialize();
+      // Edit lands before the coordinate is observed: publishing is held.
+      manager.publish(incompleteEdit);
+      await manager.flush();
+      expect(relay.submissions, isEmpty);
+      expect(manager.pending, incompleteEdit);
+
+      // Hydration reveals the desktop record; the gate releases and the edit
+      // publishes with the desktop-only fields merged back in.
+      history.complete([
+        _event(
+          id: 'desktop',
+          createdAt: 100,
+          content: jsonEncode(desktop.toJson()),
+        ),
+      ]);
+      await initializing;
+      await _waitUntil(() => relay.submissions.isNotEmpty);
+
+      final published =
+          jsonDecode(relay.submissions.single.content) as Map<String, dynamic>;
+      expect(published['theme'], 'dracula');
+      expect(published['glassBackground'], true);
+      expect(published['glassOpacity'], 80);
+      expect(published['prominentActiveTab'], true);
+    },
+  );
+
+  test('confirmed absence releases a gated incomplete edit', () async {
+    const incompleteEdit = CommunityThemePreference(
+      theme: 'dracula',
+      accent: '#ef4444',
+      followSystem: false,
+      includesGlassBackground: false,
+      includesGlassOpacity: false,
+      includesProminentActiveTab: false,
+    );
+    final history = Completer<List<NostrEvent>>();
+    final session = _FakeSession(historyFuture: history.future);
+    final relay = _FakeSignedRelay();
+    final manager = _manager(session, relay);
+
+    final initializing = manager.initialize();
+    manager.publish(incompleteEdit);
+    await manager.flush();
+    expect(relay.submissions, isEmpty);
+
+    // No remote record exists; a confirmed absence is enough to release the
+    // gate, and with no desktop values to preserve the edit publishes as-is.
+    history.complete([]);
+    await initializing;
+    await _waitUntil(() => relay.submissions.isNotEmpty);
+
+    final published =
+        jsonDecode(relay.submissions.single.content) as Map<String, dynamic>;
+    expect(published['theme'], 'dracula');
+    expect(published.containsKey('glassBackground'), isFalse);
+    expect(published.containsKey('glassOpacity'), isFalse);
+    expect(published.containsKey('prominentActiveTab'), isFalse);
+  });
 }
 
 CommunityThemeSyncManager _manager(

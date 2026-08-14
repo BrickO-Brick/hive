@@ -12,12 +12,12 @@ import {
   communityThemeScopeFallback,
   hasMigratedCommunityTheme,
   markCommunityThemeMigrated,
-  readCommunityThemeAppearanceSnapshot,
   readCommunityThemeOutbox,
   readCommunityThemePreference,
   sameCommunityThemePreference,
   writeCommunityThemeOutbox,
   writeCommunityThemePreference,
+  type CommunityThemeAppearance,
   type CommunityThemePreference,
 } from "./communityThemePreference";
 import {
@@ -37,6 +37,7 @@ export function CommunityThemeController() {
   const relayUrl = activeCommunity?.relayUrl;
   const managerRef = useRef<CommunityThemeSyncManager | null>(null);
   const scopeRef = useRef("");
+  const appearanceSnapshotRef = useRef<CommunityThemeAppearance | null>(null);
   const expectedAppliedRef = useRef<CommunityThemePreference | null>(null);
   const scopedPreferenceRef = useRef<CommunityThemePreference | null>(null);
   const lastRemoteRef = useRef({ createdAt: 0, eventId: "" });
@@ -89,6 +90,7 @@ export function CommunityThemeController() {
       pubkey,
       initialPreferenceRef.current,
     );
+    appearanceSnapshotRef.current = snapshot;
     const appearanceFallback = communityThemeAppearanceFallback(snapshot);
     const scopeFallback: CommunityThemePreference = {
       ...communityThemeScopeFallback(
@@ -126,7 +128,11 @@ export function CommunityThemeController() {
   useEffect(() => {
     if (!pubkey || !relayUrl) return;
     const scope = `${pubkey}:${relayUrl}`;
-    const snapshot = readCommunityThemeAppearanceSnapshot(pubkey);
+    // Reuse the snapshot captured by the layout effect above. Re-reading from
+    // storage here would collapse to defaults when the snapshot write was
+    // rejected (a full store), even though the layout effect already resolved
+    // the correct in-session value.
+    const snapshot = appearanceSnapshotRef.current;
     const appearanceFallback = communityThemeAppearanceFallback(snapshot);
     const local = readCommunityThemePreference(
       pubkey,
@@ -280,9 +286,7 @@ export function CommunityThemeController() {
     const stored = readCommunityThemePreference(
       pubkey,
       relayUrl,
-      communityThemeAppearanceFallback(
-        readCommunityThemeAppearanceSnapshot(pubkey),
-      ),
+      communityThemeAppearanceFallback(appearanceSnapshotRef.current),
     );
     if (stored && sameCommunityThemePreference(stored, preference)) return;
     scopedPreferenceRef.current = preference;
