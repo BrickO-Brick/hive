@@ -241,7 +241,7 @@ export function WorkflowCard({
   return (
     <div
       className={cn(
-        "group relative min-h-60 w-full overflow-hidden rounded-2xl border p-5 text-left shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-lg",
+        "group relative min-h-60 w-full overflow-hidden rounded-2xl border p-5 text-left shadow-sm transition-shadow duration-200 hover:shadow-lg",
         theme ?? "border-slate-500/30 bg-slate-700 text-white",
         isActive &&
           "ring-2 ring-primary ring-offset-2 ring-offset-background shadow-lg",
@@ -250,7 +250,7 @@ export function WorkflowCard({
     >
       <div
         aria-hidden="true"
-        className="pointer-events-none absolute inset-0 bg-gradient-to-br from-white/10 via-transparent to-black/15"
+        className="pointer-events-none absolute inset-0 bg-gradient-to-br from-white/10 via-transparent to-black/15 transition-colors duration-200 group-hover:bg-white/5"
       />
       <button
         className="absolute inset-0 z-0 rounded-2xl focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white"
