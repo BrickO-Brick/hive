@@ -1,4 +1,4 @@
-import { Plus, RefreshCw, Zap } from "lucide-react";
+import { Plus, RefreshCw } from "lucide-react";
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { stringify as yamlStringify } from "yaml";
@@ -23,6 +23,7 @@ import {
   updateWorkflow,
 } from "@/shared/api/tauriWorkflows";
 import { Button } from "@/shared/ui/button";
+import { PageHeader } from "@/shared/ui/PageHeader";
 import { Skeleton } from "@/shared/ui/skeleton";
 
 type WorkflowsViewProps = {
@@ -65,6 +66,20 @@ function WorkflowsListSkeleton() {
         </div>
       ))}
     </div>
+  );
+}
+
+function CreateWorkflowCard({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      aria-label="Create Workflow"
+      className="group relative flex min-h-60 w-full min-w-0 items-center justify-center overflow-hidden rounded-2xl border border-dashed border-border/80 bg-transparent text-muted-foreground shadow-xs transition-colors hover:border-border hover:bg-muted/70 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+      data-testid="new-workflow-card"
+      onClick={onClick}
+      type="button"
+    >
+      <Plus className="h-7 w-7 transition-colors" />
+    </button>
   );
 }
 
@@ -200,13 +215,12 @@ export function WorkflowsView({
       data-testid="workflows-view"
     >
       <div
-        className="flex min-h-0 flex-1 flex-col overflow-y-auto px-5 pb-5 pt-5"
+        className="flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden overscroll-contain px-4 py-7 sm:px-6 sm:py-8"
         data-scroll-restoration-id="workflows-list"
       >
-        <div className="mb-5 flex items-start justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-2">
-              <h2 className="text-xl font-bold tracking-tight">Workflows</h2>
+        <div className="mx-auto w-full max-w-6xl space-y-8 [container-type:inline-size]">
+          <PageHeader
+            action={
               <Button
                 aria-label="Refresh workflows"
                 disabled={allWorkflowsQuery.isFetching}
@@ -218,70 +232,55 @@ export function WorkflowsView({
                   className={`h-4 w-4 ${allWorkflowsQuery.isFetching ? "animate-spin" : ""}`}
                 />
               </Button>
-            </div>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              Automations that keep your community moving.
-            </p>
-          </div>
-          <Button onClick={() => setDialogState({ mode: "create" })} size="sm">
-            <Plus className="mr-1 h-4 w-4" />
-            Create Workflow
-          </Button>
-        </div>
-
-        {allWorkflowsQuery.isLoading ? (
-          <WorkflowsListSkeleton />
-        ) : allWorkflowsQuery.isError ? (
-          <div className="flex flex-1 flex-col items-center justify-center gap-2 text-muted-foreground">
-            <p className="text-sm text-red-400">Failed to load workflows</p>
-            <Button
-              onClick={() => void allWorkflowsQuery.refetch()}
-              size="sm"
-              variant="outline"
-            >
-              Retry
-            </Button>
-          </div>
-        ) : allWorkflows.length === 0 ? (
-          <div className="flex flex-1 flex-col items-center justify-center gap-3 text-muted-foreground">
-            <Zap className="h-10 w-10 opacity-30" />
-            <p className="text-sm">No workflows yet</p>
-            <Button
-              onClick={() => setDialogState({ mode: "create" })}
-              size="sm"
-              variant="outline"
-            >
-              <Plus className="mr-1 h-4 w-4" />
-              Create your first workflow
-            </Button>
-          </div>
-        ) : (
-          <div
-            className={
-              selectedWorkflowId
-                ? "grid grid-cols-1 gap-3 xl:grid-cols-2"
-                : "grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3"
             }
-          >
-            {allWorkflows.map(({ workflow, channelName }) => (
-              <WorkflowCard
-                channelName={channelName}
-                isActive={selectedWorkflowId === workflow.id}
-                isTogglingEnabled={
-                  toggleEnabledMutation.isPending &&
-                  toggleEnabledMutation.variables?.id === workflow.id
-                }
-                key={workflow.id}
-                onDelete={handleDelete}
-                onDuplicate={handleDuplicate}
-                onEdit={handleEdit}
-                onToggleEnabled={handleToggleEnabled}
-                onTrigger={handleTrigger}
-                workflow={workflow}
+            description="Automations that keep your community moving."
+            title="Workflows"
+          />
+
+          {allWorkflowsQuery.isLoading ? (
+            <WorkflowsListSkeleton />
+          ) : allWorkflowsQuery.isError ? (
+            <div className="flex flex-col items-center justify-center gap-2 py-16 text-muted-foreground">
+              <p className="text-sm text-red-400">Failed to load workflows</p>
+              <Button
+                onClick={() => void allWorkflowsQuery.refetch()}
+                size="sm"
+                variant="outline"
+              >
+                Retry
+              </Button>
+            </div>
+          ) : (
+            <div
+              className={
+                selectedWorkflowId
+                  ? "grid grid-cols-1 gap-3 xl:grid-cols-2"
+                  : "grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3"
+              }
+            >
+              <CreateWorkflowCard
+                onClick={() => setDialogState({ mode: "create" })}
               />
-            ))}
-          </div>
-        )}
+              {allWorkflows.map(({ workflow, channelName }) => (
+                <WorkflowCard
+                  channelName={channelName}
+                  isActive={selectedWorkflowId === workflow.id}
+                  isTogglingEnabled={
+                    toggleEnabledMutation.isPending &&
+                    toggleEnabledMutation.variables?.id === workflow.id
+                  }
+                  key={workflow.id}
+                  onDelete={handleDelete}
+                  onDuplicate={handleDuplicate}
+                  onEdit={handleEdit}
+                  onToggleEnabled={handleToggleEnabled}
+                  onTrigger={handleTrigger}
+                  workflow={workflow}
+                />
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
       {selectedWorkflowId ? (
