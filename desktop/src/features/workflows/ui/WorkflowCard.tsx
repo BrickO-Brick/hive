@@ -11,6 +11,8 @@ import {
   MoreHorizontal,
   Pencil,
   Play,
+  Power,
+  PowerOff,
   Send,
   SmilePlus,
   Timer,
@@ -31,12 +33,14 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/shared/ui/dropdown-menu";
 import {
   getWorkflowCardLabel,
   getWorkflowDescription,
   getWorkflowDisplayStatus,
+  getWorkflowEnabled,
   getWorkflowPrimaryAction,
   getWorkflowPrimaryActionChannel,
   getWorkflowPrimaryActionEmoji,
@@ -50,7 +54,9 @@ type WorkflowCardProps = {
   workflow: Workflow;
   channelName?: string;
   isActive?: boolean;
+  isTogglingEnabled?: boolean;
   onTrigger: (workflowId: string) => void;
+  onToggleEnabled: (workflow: Workflow) => void;
   onEdit: (workflow: Workflow) => void;
   onDuplicate: (workflow: Workflow) => void;
   onDelete: (workflow: Workflow) => void;
@@ -182,12 +188,15 @@ export function WorkflowCard({
   workflow,
   channelName,
   isActive = false,
+  isTogglingEnabled = false,
   onTrigger,
+  onToggleEnabled,
   onEdit,
   onDuplicate,
   onDelete,
 }: WorkflowCardProps) {
   const customEmoji = useCustomEmoji();
+  const isEnabled = getWorkflowEnabled(workflow.definition);
   const displayStatus = getWorkflowDisplayStatus(workflow);
   const description = getWorkflowDescription(workflow.definition);
   const configuredTrigger = getWorkflowTriggerConfig(workflow.definition);
@@ -321,6 +330,18 @@ export function WorkflowCard({
                   <Copy className="mr-2 h-4 w-4" />
                   Duplicate
                 </DropdownMenuItem>
+                <DropdownMenuItem
+                  disabled={isTogglingEnabled}
+                  onClick={() => onToggleEnabled(workflow)}
+                >
+                  {isEnabled ? (
+                    <PowerOff className="mr-2 h-4 w-4" />
+                  ) : (
+                    <Power className="mr-2 h-4 w-4" />
+                  )}
+                  {isEnabled ? "Disable" : "Enable"}
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
                 <DropdownMenuItem
                   className="text-destructive"
                   onClick={() => onDelete(workflow)}

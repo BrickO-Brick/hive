@@ -362,6 +362,19 @@ export function getWorkflowEnabled(
   return definition.enabled !== false;
 }
 
+export function withWorkflowEnabled(
+  definition: Record<string, unknown>,
+  enabled: boolean,
+): Record<string, unknown> {
+  const updated = { ...definition };
+  if (enabled) {
+    delete updated.enabled;
+  } else {
+    updated.enabled = false;
+  }
+  return updated;
+}
+
 export function getWorkflowDisplayStatus(
   workflow: Workflow,
 ): Workflow["status"] | "disabled" {

@@ -922,6 +922,27 @@ test("captures disabled diff workflows in the list UI", async ({ page }) => {
   await expect(card).toContainText("disabled");
 });
 
+test("enables and disables a workflow from its card menu", async ({ page }) => {
+  const workflowName = `toggle_workflow_${Date.now()}`;
+
+  await navigateToWorkflows(page);
+  await createWorkflow(page, workflowName);
+
+  const card = page
+    .locator('[data-testid^="workflow-card-"]')
+    .filter({ hasText: workflowName })
+    .first();
+  const actions = card.getByRole("button", { name: "Workflow actions" });
+
+  await actions.click();
+  await page.getByRole("menuitem", { name: "Disable" }).click();
+  await expect(card.getByText("disabled", { exact: true })).toBeVisible();
+
+  await actions.click();
+  await page.getByRole("menuitem", { name: "Enable" }).click();
+  await expect(card.getByText("active", { exact: true })).toBeVisible();
+});
+
 test("shows the webhook secret dialog after saving a webhook workflow", async ({
   page,
 }) => {

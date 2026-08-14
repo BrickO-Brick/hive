@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   getWorkflowCardLabel,
   getWorkflowPrimaryActionEmoji,
+  withWorkflowEnabled,
 } from "./workflowDefinition.ts";
 
 test("builds a plain-language workflow card label", () => {
@@ -109,6 +110,23 @@ test("returns the primary add-reaction emoji for rich card rendering", () => {
     }),
     null,
   );
+});
+
+test("toggles workflow enabled state without mutating its definition", () => {
+  const definition = {
+    name: "deploy",
+    enabled: false,
+    trigger: { on: "message_posted" },
+    future_field: { keep: true },
+  };
+
+  assert.deepEqual(withWorkflowEnabled(definition, true), {
+    name: "deploy",
+    trigger: { on: "message_posted" },
+    future_field: { keep: true },
+  });
+  assert.deepEqual(withWorkflowEnabled(definition, false), definition);
+  assert.equal(definition.enabled, false);
 });
 
 test("summarizes common and custom schedules", () => {

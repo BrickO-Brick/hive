@@ -1,6 +1,7 @@
 import { Plus, RefreshCw, Zap } from "lucide-react";
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { stringify as yamlStringify } from "yaml";
 
 import {
   allWorkflowsQueryKey,
@@ -10,11 +11,16 @@ import { WorkflowCard } from "@/features/workflows/ui/WorkflowCard";
 import { WorkflowDeleteDialog } from "@/features/workflows/ui/WorkflowDeleteDialog";
 import { WorkflowDetailPanel } from "@/features/workflows/ui/WorkflowDetailPanel";
 import { WorkflowDialog } from "@/features/workflows/ui/WorkflowDialog";
+import {
+  getWorkflowEnabled,
+  withWorkflowEnabled,
+} from "@/features/workflows/ui/workflowDefinition";
 import type { Channel, Workflow } from "@/shared/api/types";
 import {
   deleteWorkflow,
   getChannelsWorkflows,
   triggerWorkflow,
+  updateWorkflow,
 } from "@/shared/api/tauriWorkflows";
 import { Button } from "@/shared/ui/button";
 import { Skeleton } from "@/shared/ui/skeleton";
@@ -126,6 +132,26 @@ export function WorkflowsView({
     },
   });
 
+  const toggleEnabledMutation = useMutation({
+    mutationFn: (workflow: Workflow) =>
+      updateWorkflow(
+        workflow.id,
+        yamlStringify(
+          withWorkflowEnabled(
+            workflow.definition,
+            !getWorkflowEnabled(workflow.definition),
+          ),
+        ),
+      ),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        predicate: (query) =>
+          query.queryKey[0] === "workflows" ||
+          query.queryKey[0] === "workflows-all",
+      });
+    },
+  });
+
   const triggerOne = triggerMutation.mutate;
   const handleTrigger = React.useCallback(
     (workflowId: string) => triggerOne(workflowId),
@@ -154,6 +180,12 @@ export function WorkflowsView({
   const handleDuplicate = React.useCallback(
     (workflow: Workflow) => setDialogState({ mode: "duplicate", workflow }),
     [],
+  );
+
+  const toggleEnabled = toggleEnabledMutation.mutate;
+  const handleToggleEnabled = React.useCallback(
+    (workflow: Workflow) => toggleEnabled(workflow),
+    [toggleEnabled],
   );
 
   const handleDialogOpenChange = React.useCallback((open: boolean) => {
@@ -235,10 +267,15 @@ export function WorkflowsView({
               <WorkflowCard
                 channelName={channelName}
                 isActive={selectedWorkflowId === workflow.id}
+                isTogglingEnabled={
+                  toggleEnabledMutation.isPending &&
+                  toggleEnabledMutation.variables?.id === workflow.id
+                }
                 key={workflow.id}
                 onDelete={handleDelete}
                 onDuplicate={handleDuplicate}
                 onEdit={handleEdit}
+                onToggleEnabled={handleToggleEnabled}
                 onTrigger={handleTrigger}
                 workflow={workflow}
               />
