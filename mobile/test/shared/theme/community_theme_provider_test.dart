@@ -227,8 +227,14 @@ void main() {
         theme: 'dracula',
         accent: '#3b82f6',
         followSystem: true,
+        // A fresh-community edit carries no desktop appearance opinion, so it
+        // must not serialize desktop-only fields over a real desktop record.
+        includesGlassBackground: false,
+        includesGlassOpacity: false,
+        includesProminentActiveTab: false,
       );
       expect(container.read(communityThemeProvider), local);
+      expect(local.toJson(), isNot(contains('glassBackground')));
 
       session.emit(session.remoteEvent(theme: 'houston', id: 'remote-z'));
       expect(container.read(communityThemeProvider), local);

@@ -12,8 +12,8 @@ import { SYNTAX_THEMES, type SyntaxThemeName } from "./theme-loader";
 const STORAGE_KEY_PREFIX = "buzz-community-theme.v1";
 const OUTBOX_KEY_PREFIX = "buzz-community-theme-outbox.v1";
 const MIGRATION_KEY_PREFIX = "buzz-community-theme-migrated.v1";
-const APPEARANCE_MIGRATION_KEY_PREFIX =
-  "buzz-community-theme-appearance-migrated.v1";
+const APPEARANCE_SNAPSHOT_KEY_PREFIX =
+  "buzz-community-theme-appearance-snapshot.v1";
 
 export type CommunityThemePreference = {
   version: 1;
@@ -24,6 +24,13 @@ export type CommunityThemePreference = {
   glassOpacity: number;
   prominentActiveTab: boolean;
 };
+
+// The appearance fields added to the existing v1 payload. Older records and
+// brand-new communities predate them and inherit these from the snapshot.
+export type CommunityThemeAppearance = Pick<
+  CommunityThemePreference,
+  "glassBackground" | "glassOpacity" | "prominentActiveTab"
+>;
 
 export const DEFAULT_COMMUNITY_THEME: CommunityThemePreference = Object.freeze({
   version: 1,
@@ -183,27 +190,73 @@ export function markCommunityThemeMigrated(pubkey: string): void {
   }
 }
 
-export function hasMigratedCommunityThemeAppearance(pubkey: string): boolean {
+export function communityThemeAppearanceSnapshotKey(pubkey: string): string {
+  return `${APPEARANCE_SNAPSHOT_KEY_PREFIX}:${pubkey}`;
+}
+
+function parseCommunityThemeAppearance(
+  value: unknown,
+): CommunityThemeAppearance | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const candidate = value as Record<string, unknown>;
+  const { glassBackground, glassOpacity, prominentActiveTab } = candidate;
+  if (
+    typeof glassBackground !== "boolean" ||
+    typeof glassOpacity !== "number" ||
+    !Number.isInteger(glassOpacity) ||
+    glassOpacity < GLASS_OPACITY_MIN ||
+    glassOpacity > GLASS_OPACITY_MAX ||
+    typeof prominentActiveTab !== "boolean"
+  ) {
+    return null;
+  }
+  return { glassBackground, glassOpacity, prominentActiveTab };
+}
+
+export function readCommunityThemeAppearanceSnapshot(
+  pubkey: string,
+): CommunityThemeAppearance | null {
   try {
-    return (
-      window.localStorage.getItem(
-        `${APPEARANCE_MIGRATION_KEY_PREFIX}:${pubkey}`,
-      ) === "true"
+    const raw = window.localStorage.getItem(
+      communityThemeAppearanceSnapshotKey(pubkey),
     );
+    return raw ? parseCommunityThemeAppearance(JSON.parse(raw)) : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
-export function markCommunityThemeAppearanceMigrated(pubkey: string): void {
+/**
+ * Persist the profile's pre-migration appearance the first time it is seen and
+ * return the durable snapshot. Writing once fixes the value while the live
+ * global appearance keys are still authoritative, so later community switches —
+ * which now rewrite those keys per community — cannot corrupt the seed the
+ * per-record migration inherits from. Subsequent calls return the stored
+ * snapshot unchanged; a full storage falls back to the live appearance for the
+ * current session without pinning a wrong value.
+ */
+export function captureCommunityThemeAppearanceSnapshot(
+  pubkey: string,
+  appearance: CommunityThemeAppearance,
+): CommunityThemeAppearance {
+  const existing = readCommunityThemeAppearanceSnapshot(pubkey);
+  if (existing) return existing;
+  const snapshot: CommunityThemeAppearance = {
+    glassBackground: appearance.glassBackground,
+    glassOpacity: appearance.glassOpacity,
+    prominentActiveTab: appearance.prominentActiveTab,
+  };
   try {
     window.localStorage.setItem(
-      `${APPEARANCE_MIGRATION_KEY_PREFIX}:${pubkey}`,
-      "true",
+      communityThemeAppearanceSnapshotKey(pubkey),
+      JSON.stringify(snapshot),
     );
   } catch {
-    // The expanded preference remains usable in memory when storage is full.
+    // The live appearance still seeds this session even when storage is full.
   }
+  return snapshot;
 }
 
 export function writeCommunityThemePreference(
@@ -240,16 +293,18 @@ export function communityThemeScopeFallback(
 }
 
 /**
- * Choose values for appearance fields missing from the original v1 payload.
- * This migration is independent from the older per-community scope migration:
- * profiles that already completed scoping still need one chance to retain
- * their former global glass and prominent-tab preferences.
+ * Build the fallback appearance for records that predate the widened fields.
+ * The snapshot is the profile's durable pre-migration appearance, captured
+ * once while the global keys were still authoritative, so every community's
+ * legacy record inherits the same former glass and prominent-tab choices no
+ * matter which community hydrates first.
  */
 export function communityThemeAppearanceFallback(
-  migrated: boolean,
-  inherited: CommunityThemePreference,
+  snapshot: CommunityThemeAppearance | null,
 ): CommunityThemePreference {
-  return migrated ? DEFAULT_COMMUNITY_THEME : inherited;
+  return snapshot
+    ? { ...DEFAULT_COMMUNITY_THEME, ...snapshot }
+    : DEFAULT_COMMUNITY_THEME;
 }
 
 export function sameCommunityThemePreference(

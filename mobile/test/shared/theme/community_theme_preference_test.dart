@@ -158,6 +158,23 @@ void main() {
     }
   });
 
+  test('a fresh community default omits desktop-only appearance fields', () {
+    // Regression: a pre-hydration mobile edit built from the default must not
+    // publish false/65/false over a real desktop record on the relay.
+    expect(defaultCommunityTheme.toJson(), {
+      'version': 1,
+      'theme': 'buzz',
+      'accent': '#3b82f6',
+      'followSystem': true,
+    });
+    expect(defaultCommunityTheme.copyWith(accent: '#ef4444').toJson(), {
+      'version': 1,
+      'theme': 'buzz',
+      'accent': '#ef4444',
+      'followSystem': true,
+    });
+  });
+
   test('supported edits preserve appearance values mobile cannot render', () {
     const desktopPreference = CommunityThemePreference(
       theme: 'buzz',
@@ -241,8 +258,16 @@ void main() {
         theme: 'dracula',
         accent: 'neutral',
         followSystem: false,
+        // The legacy mobile theme carries no desktop appearance opinion, so it
+        // must not serialize desktop-only defaults over a real desktop record.
+        includesGlassBackground: false,
+        includesGlassOpacity: false,
+        includesProminentActiveTab: false,
       ),
     );
+    expect(preference.toJson(), isNot(contains('glassBackground')));
+    expect(preference.toJson(), isNot(contains('glassOpacity')));
+    expect(preference.toJson(), isNot(contains('prominentActiveTab')));
     expect(preference.mode, ThemeMode.dark);
     expect(legacyAccentWireValue(6), '#a855f7');
     expect(legacyAccentWireValue(7), '#6366f1');

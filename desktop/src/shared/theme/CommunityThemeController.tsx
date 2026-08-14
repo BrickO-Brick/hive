@@ -4,15 +4,15 @@ import { relayClient } from "@/shared/api/relayClient";
 import { useIdentityQuery } from "@/shared/api/hooks";
 import {
   cacheAndApplyCommunityTheme,
+  captureCommunityThemeAppearanceSnapshot,
   clearCommunityThemeOutbox,
   communityThemeAppearanceFallback,
   communityThemeApplyExpectation,
   communityThemePersistenceAction,
   communityThemeScopeFallback,
   hasMigratedCommunityTheme,
-  hasMigratedCommunityThemeAppearance,
-  markCommunityThemeAppearanceMigrated,
   markCommunityThemeMigrated,
+  readCommunityThemeAppearanceSnapshot,
   readCommunityThemeOutbox,
   readCommunityThemePreference,
   sameCommunityThemePreference,
@@ -82,14 +82,21 @@ export function CommunityThemeController() {
 
   useLayoutEffect(() => {
     if (!pubkey || !relayUrl) return;
-    const scopeFallback = communityThemeScopeFallback(
-      hasMigratedCommunityTheme(pubkey),
+    // Capture the profile's pre-migration appearance once, before this mount
+    // rewrites the global glass keys. Every community then inherits the same
+    // former settings regardless of hydration order.
+    const snapshot = captureCommunityThemeAppearanceSnapshot(
+      pubkey,
       initialPreferenceRef.current,
     );
-    const appearanceFallback = communityThemeAppearanceFallback(
-      hasMigratedCommunityThemeAppearance(pubkey),
-      initialPreferenceRef.current,
-    );
+    const appearanceFallback = communityThemeAppearanceFallback(snapshot);
+    const scopeFallback: CommunityThemePreference = {
+      ...communityThemeScopeFallback(
+        hasMigratedCommunityTheme(pubkey),
+        initialPreferenceRef.current,
+      ),
+      ...snapshot,
+    };
     const local = readCommunityThemePreference(
       pubkey,
       relayUrl,
@@ -119,10 +126,8 @@ export function CommunityThemeController() {
   useEffect(() => {
     if (!pubkey || !relayUrl) return;
     const scope = `${pubkey}:${relayUrl}`;
-    const appearanceFallback = communityThemeAppearanceFallback(
-      hasMigratedCommunityThemeAppearance(pubkey),
-      initialPreferenceRef.current,
-    );
+    const snapshot = readCommunityThemeAppearanceSnapshot(pubkey);
+    const appearanceFallback = communityThemeAppearanceFallback(snapshot);
     const local = readCommunityThemePreference(
       pubkey,
       relayUrl,
@@ -134,13 +139,16 @@ export function CommunityThemeController() {
       appearanceFallback,
     );
     // A value already cached for this relay is the safest fallback for a later
-    // incomplete event. Without one, use the one-time appearance migration
-    // seed, which is never taken from a previous community after migration.
+    // incomplete event. Without one, use the durable appearance snapshot, which
+    // holds the profile's pre-migration glass and tab choices for every scope.
     const legacyFallback = durablePending ?? local ?? appearanceFallback;
-    const scopeFallback = communityThemeScopeFallback(
-      hasMigratedCommunityTheme(pubkey),
-      initialPreferenceRef.current,
-    );
+    const scopeFallback: CommunityThemePreference = {
+      ...communityThemeScopeFallback(
+        hasMigratedCommunityTheme(pubkey),
+        initialPreferenceRef.current,
+      ),
+      ...snapshot,
+    };
     scopeRef.current = scope;
     lastRemoteRef.current = { createdAt: 0, eventId: "" };
     const manager = new CommunityThemeSyncManager(
@@ -210,7 +218,6 @@ export function CommunityThemeController() {
         if (remote) {
           applyRemote(remote);
           markCommunityThemeMigrated(pubkey);
-          markCommunityThemeAppearanceMigrated(pubkey);
         } else if (shouldSeedCommunityTheme(result)) {
           const seed =
             readCommunityThemeOutbox(pubkey, relayUrl, legacyFallback) ??
@@ -220,7 +227,6 @@ export function CommunityThemeController() {
           writeCommunityThemePreference(pubkey, relayUrl, seed);
           writeCommunityThemeOutbox(pubkey, relayUrl, seed);
           markCommunityThemeMigrated(pubkey);
-          markCommunityThemeAppearanceMigrated(pubkey);
           manager.publish(seed);
         }
         // Invalid or unavailable hydration keeps the already-applied fallback
@@ -275,8 +281,7 @@ export function CommunityThemeController() {
       pubkey,
       relayUrl,
       communityThemeAppearanceFallback(
-        hasMigratedCommunityThemeAppearance(pubkey),
-        initialPreferenceRef.current,
+        readCommunityThemeAppearanceSnapshot(pubkey),
       ),
     );
     if (stored && sameCommunityThemePreference(stored, preference)) return;

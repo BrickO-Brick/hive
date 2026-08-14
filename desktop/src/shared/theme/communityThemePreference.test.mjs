@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   DEFAULT_COMMUNITY_THEME,
   cacheAndApplyCommunityTheme,
+  captureCommunityThemeAppearanceSnapshot,
   clearCommunityThemeOutbox,
   communityThemeAppearanceFallback,
   communityThemeApplyExpectation,
@@ -11,11 +12,8 @@ import {
   communityThemePersistenceAction,
   communityThemeScopeFallback,
   communityThemeStorageKey,
-  hasMigratedCommunityTheme,
-  hasMigratedCommunityThemeAppearance,
-  markCommunityThemeAppearanceMigrated,
-  markCommunityThemeMigrated,
   parseCommunityThemePreference,
+  readCommunityThemeAppearanceSnapshot,
   readCommunityThemeOutbox,
   readCommunityThemePreference,
   sameCommunityThemePreference,
@@ -105,13 +103,7 @@ test("older theme records inherit the pre-migration appearance controls", () => 
   });
 });
 
-test("completed appearance migration uses stable defaults", () => {
-  const priorCommunity = {
-    ...DEFAULT_COMMUNITY_THEME,
-    glassBackground: true,
-    glassOpacity: 42,
-    prominentActiveTab: true,
-  };
+test("appearance fallback uses the durable snapshot, else stable defaults", () => {
   const olderRecord = {
     version: 1,
     theme: "houston",
@@ -119,16 +111,32 @@ test("completed appearance migration uses stable defaults", () => {
     followSystem: false,
   };
 
+  // No snapshot: an upgrading record resolves to the stable defaults.
   assert.deepEqual(
     parseCommunityThemePreference(
       olderRecord,
-      communityThemeAppearanceFallback(true, priorCommunity),
+      communityThemeAppearanceFallback(null),
     ),
     { ...DEFAULT_COMMUNITY_THEME, ...olderRecord },
   );
+
+  // With a snapshot: the record inherits the profile's pre-migration glass
+  // and prominent-tab choices, never a previous community's live appearance.
+  const snapshot = {
+    glassBackground: true,
+    glassOpacity: 42,
+    prominentActiveTab: true,
+  };
+  assert.deepEqual(
+    parseCommunityThemePreference(
+      olderRecord,
+      communityThemeAppearanceFallback(snapshot),
+    ),
+    { ...olderRecord, ...snapshot },
+  );
 });
 
-test("appearance widening is independent from community scoping", () => {
+test("appearance snapshot is captured once and consumed per community", () => {
   globalThis.window = { localStorage: localStorageStub() };
   const inherited = {
     ...DEFAULT_COMMUNITY_THEME,
@@ -143,38 +151,47 @@ test("appearance widening is independent from community scoping", () => {
     followSystem: false,
   };
   window.localStorage.setItem(
-    communityThemeStorageKey("alice", "wss://relay.example"),
+    communityThemeStorageKey("alice", "wss://a.example"),
+    JSON.stringify(legacy),
+  );
+  window.localStorage.setItem(
+    communityThemeStorageKey("alice", "wss://b.example"),
     JSON.stringify(legacy),
   );
 
-  markCommunityThemeMigrated("alice");
-  assert.equal(hasMigratedCommunityTheme("alice"), true);
-  assert.equal(hasMigratedCommunityThemeAppearance("alice"), false);
+  // Snapshot is empty until first captured.
+  assert.equal(readCommunityThemeAppearanceSnapshot("alice"), null);
+  const snapshot = captureCommunityThemeAppearanceSnapshot("alice", inherited);
+  assert.deepEqual(snapshot, {
+    glassBackground: true,
+    glassOpacity: 80,
+    prominentActiveTab: true,
+  });
+
+  // A later community switch drifts the live appearance to defaults, but the
+  // snapshot stays pinned so every legacy record inherits the same values.
+  const drifted = {
+    ...DEFAULT_COMMUNITY_THEME,
+    glassBackground: false,
+    glassOpacity: 65,
+    prominentActiveTab: false,
+  };
   assert.deepEqual(
-    readCommunityThemePreference(
-      "alice",
-      "wss://relay.example",
-      communityThemeAppearanceFallback(
-        hasMigratedCommunityThemeAppearance("alice"),
-        inherited,
-      ),
-    ),
-    {
-      ...legacy,
-      glassBackground: true,
-      glassOpacity: 80,
-      prominentActiveTab: true,
-    },
+    captureCommunityThemeAppearanceSnapshot("alice", drifted),
+    snapshot,
   );
 
-  markCommunityThemeAppearanceMigrated("alice");
-  assert.equal(hasMigratedCommunityThemeAppearance("alice"), true);
+  const expected = { ...legacy, ...snapshot };
+  const fallback = communityThemeAppearanceFallback(
+    readCommunityThemeAppearanceSnapshot("alice"),
+  );
   assert.deepEqual(
-    communityThemeAppearanceFallback(
-      hasMigratedCommunityThemeAppearance("alice"),
-      inherited,
-    ),
-    DEFAULT_COMMUNITY_THEME,
+    readCommunityThemePreference("alice", "wss://a.example", fallback),
+    expected,
+  );
+  assert.deepEqual(
+    readCommunityThemePreference("alice", "wss://b.example", fallback),
+    expected,
   );
 });
 

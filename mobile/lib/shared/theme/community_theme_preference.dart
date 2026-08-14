@@ -17,6 +17,11 @@ const defaultCommunityTheme = CommunityThemePreference(
   theme: 'buzz',
   accent: '#3b82f6',
   followSystem: true,
+  // A fresh community carries no desktop appearance opinion, so it must not
+  // serialize the desktop-only fields and overwrite a real desktop record.
+  includesGlassBackground: false,
+  includesGlassOpacity: false,
+  includesProminentActiveTab: false,
 );
 
 class CommunityThemePreference {
@@ -245,6 +250,11 @@ class CommunityThemeStorage {
       theme: resolvedTheme,
       accent: legacyAccentWireValue(legacyAccent),
       followSystem: mode == ThemeMode.system,
+      // The pre-per-community mobile theme has no desktop appearance opinion,
+      // so it must not publish desktop-only defaults over a real desktop record.
+      includesGlassBackground: false,
+      includesGlassOpacity: false,
+      includesProminentActiveTab: false,
     );
   }
 }
