@@ -567,6 +567,7 @@ export function WorkflowFormBuilder({
                         <TriggerNodeDescription
                           authorAvatarUrl={triggerPresentation.authorAvatarUrl}
                           authorLabel={triggerPresentation.authorLabel}
+                          authorLoading={triggerPresentation.authorLoading}
                           description={triggerDescription}
                           messageLoading={triggerPresentation.messageLoading}
                         />

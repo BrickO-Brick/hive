@@ -11,6 +11,16 @@ const EVENT_PHRASES = {
 } as const;
 
 export const TRIGGER_MESSAGE_LOADING_LABEL = "loading message";
+export const TRIGGER_AUTHOR_LOADING_LABEL = "loading author";
+
+function authorReference(
+  condition: ParsedConditionExpression,
+  authorLabel?: string,
+  authorLoading?: boolean,
+): string {
+  if (authorLoading) return TRIGGER_AUTHOR_LOADING_LABEL;
+  return authorLabel ?? truncatePubkey(condition.value);
+}
 
 function quotedValue(value: string): string {
   const normalized = value.trim().replaceAll(/\s+/g, " ");
@@ -60,6 +70,7 @@ function textConditionDescription(
 export function workflowTriggerDescription(
   trigger: TriggerConfig,
   options: {
+    authorLoading?: boolean;
     authorLabel?: string;
     messageLabel?: string;
     messageLoading?: boolean;
@@ -104,8 +115,11 @@ export function workflowTriggerDescription(
           : eventPhrase;
     }
     if (authorCondition) {
-      const author =
-        options.authorLabel ?? truncatePubkey(authorCondition.value);
+      const author = authorReference(
+        authorCondition,
+        options.authorLabel,
+        options.authorLoading,
+      );
       const attribution =
         authorCondition.operator === "not_equals"
           ? ` by anyone except ${author}`
@@ -133,7 +147,11 @@ export function workflowTriggerDescription(
   }
 
   if (condition.field === "trigger_author") {
-    const author = options.authorLabel ?? truncatePubkey(condition.value);
+    const author = authorReference(
+      condition,
+      options.authorLabel,
+      options.authorLoading,
+    );
     return condition.operator === "not_equals"
       ? `${eventPhrase} by anyone except ${author}`
       : `${eventPhrase} by ${author}`;

@@ -1,8 +1,11 @@
+import { ChevronRight } from "lucide-react";
 import * as React from "react";
 
+import { useUsersBatchQuery } from "@/features/profile/hooks";
+import { ProfileAvatar } from "@/features/profile/ui/ProfileAvatar";
 import { useIdentityQuery } from "@/shared/api/hooks";
-import type { Channel } from "@/shared/api/types";
-import { cn } from "@/shared/lib/cn";
+import type { Channel, UserProfileSummary } from "@/shared/api/types";
+import { truncatePubkey } from "@/shared/lib/pubkey";
 import { Input } from "@/shared/ui/input";
 import { AuthorGridPicker } from "./AuthorGridPicker";
 import { MessageIdPicker } from "./MessageIdPicker";
@@ -13,7 +16,6 @@ import {
   conditionFieldsForTrigger,
   conditionOperatorsForField,
   conditionOperatorNeedsValue,
-  CUSTOM_CONDITION_FIELD,
   defaultConditionOperatorForField,
   normalizeWebhookField,
   parseConditionExpressions,
@@ -52,6 +54,10 @@ type ConditionEditorState = {
   custom: boolean;
   editors: ParsedConditionExpression[];
 };
+
+type ActiveConditionEditor =
+  | { kind: "field"; draft: ParsedConditionExpression }
+  | { kind: "custom"; draft: string };
 
 function normalizedEditor(
   editor: ParsedConditionExpression,
@@ -105,13 +111,87 @@ function valuePlaceholder(field: string): string {
   }
 }
 
-function ConditionEditorControls({
+function compactValue(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length <= 18) return trimmed;
+  return `${trimmed.slice(0, 10)}…${trimmed.slice(-5)}`;
+}
+
+function editorSummary(editor: ParsedConditionExpression): string {
+  const operator = operatorLabel(
+    editor.field,
+    editor.operator,
+    conditionOperatorsForField(editor.field).length === 2,
+  );
+  if (!conditionOperatorNeedsValue(editor.operator)) return operator;
+  const value = compactValue(editor.value);
+  if (!value) return "Off";
+  return editor.field === "trigger_text"
+    ? `${operator} “${value}”`
+    : `${operator} ${value}`;
+}
+
+function authorSummaryLabel(
+  pubkey: string,
+  profile?: UserProfileSummary | null,
+): string {
+  return (
+    profile?.displayName?.trim() ||
+    profile?.name?.trim() ||
+    profile?.nip05Handle?.trim() ||
+    truncatePubkey(pubkey)
+  );
+}
+
+function AuthorConditionSummary({
+  editor,
+  profile,
+}: {
+  editor: ParsedConditionExpression;
+  profile?: UserProfileSummary | null;
+}) {
+  const label = authorSummaryLabel(editor.value, profile);
+  const isExcluded = editor.operator === "not_equals";
+
+  return (
+    <span className="flex shrink-0 items-center">
+      <span className="relative shrink-0">
+        <ProfileAvatar
+          avatarUrl={profile?.avatarUrl ?? null}
+          className="h-6 w-6"
+          iconClassName="h-4 w-4"
+          label={label}
+        />
+        {isExcluded ? (
+          <span
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0"
+          >
+            <span className="absolute inset-0 [clip-path:circle(50%_at_50%_50%)]">
+              <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+                <span className="block h-1 w-9 translate-y-0.5 -rotate-45 rounded-full bg-background/90" />
+              </span>
+            </span>
+            <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+              <span className="block h-0.5 w-8 -rotate-45 rounded-full bg-muted-foreground" />
+            </span>
+          </span>
+        ) : null}
+      </span>
+      <span className="sr-only">
+        {isExcluded ? "Excluded author: " : "Selected author: "}
+        {label}
+      </span>
+    </span>
+  );
+}
+
+function ConditionEditorFields({
   channelId,
   disabled,
   editor,
   idPrefix,
   knownAuthorPubkeys,
-  label,
   onChange,
 }: {
   channelId?: string | null;
@@ -119,7 +199,6 @@ function ConditionEditorControls({
   editor: ParsedConditionExpression;
   idPrefix: string;
   knownAuthorPubkeys: string[];
-  label: string;
   onChange: (editor: ParsedConditionExpression) => void;
 }) {
   const needsValue = conditionOperatorNeedsValue(editor.operator);
@@ -132,13 +211,10 @@ function ConditionEditorControls({
   const controlIdPrefix = `${idPrefix}-${editor.field}`;
 
   return (
-    <fieldset
-      className="space-y-3 rounded-lg border border-border/60 bg-background/20 p-3"
+    <div
+      className="space-y-3"
       data-testid={`workflow-condition-editor-${editor.field}`}
     >
-      <legend className="px-1 text-xs font-semibold text-foreground">
-        {label}
-      </legend>
       <div className="space-y-1.5">
         <FieldLabel htmlFor={`${controlIdPrefix}-operator`}>Match</FieldLabel>
         <FormSelect
@@ -241,7 +317,7 @@ function ConditionEditorControls({
           )}
         </div>
       ) : null}
-    </fieldset>
+    </div>
   );
 }
 
@@ -250,7 +326,6 @@ export function WorkflowConditionBuilder({
   channels,
   disabled,
   idPrefix,
-  matchAllLabel = "All events",
   onChange,
   triggerType,
   value,
@@ -301,12 +376,27 @@ export function WorkflowConditionBuilder({
   const [editorState, setEditorState] = React.useState(() =>
     initialEditorState(value, triggerType),
   );
+  const [activeEditor, setActiveEditor] =
+    React.useState<ActiveConditionEditor | null>(null);
   const previousTriggerType = React.useRef(triggerType);
+  const selectedAuthorPubkey = editorState.custom
+    ? ""
+    : (editorState.editors
+        .find((editor) => editor.field === "trigger_author")
+        ?.value.trim()
+        .toLowerCase() ?? "");
+  const selectedAuthorProfileQuery = useUsersBatchQuery(
+    selectedAuthorPubkey ? [selectedAuthorPubkey] : [],
+  );
+  const selectedAuthorProfile = selectedAuthorPubkey
+    ? selectedAuthorProfileQuery.data?.profiles[selectedAuthorPubkey]
+    : undefined;
 
   React.useEffect(() => {
     if (previousTriggerType.current === triggerType) return;
     previousTriggerType.current = triggerType;
     setEditorState(initialEditorState(value, triggerType));
+    setActiveEditor(null);
   }, [triggerType, value]);
 
   const emitEditors = (editors: ParsedConditionExpression[]) => {
@@ -314,136 +404,185 @@ export function WorkflowConditionBuilder({
     onChange(buildConditionExpressions(editors));
   };
 
-  const updateEditor = (next: ParsedConditionExpression) => {
-    emitEditors(
-      editorState.editors.map((editor) =>
-        editor.field === next.field ? next : editor,
-      ),
-    );
-  };
-
   const evalexprFields = fields
     .map((field) =>
       field.value === "webhook_field" ? "trigger_<JSON field>" : field.value,
     )
     .join(", ");
-  const fieldOptions = [
-    { label: matchAllLabel, value: "" },
-    ...fields,
-    { label: "Custom", value: CUSTOM_CONDITION_FIELD },
-  ];
-  const selectedFields = new Set(
-    editorState.editors.map((editor) => editor.field),
-  );
+  const openFieldEditor = (field: (typeof fields)[number]) => {
+    if (
+      activeEditor?.kind === "field" &&
+      activeEditor.draft.field === field.value
+    ) {
+      setActiveEditor(null);
+      return;
+    }
+    const existing = editorState.editors.find(
+      (editor) => editor.field === field.value,
+    );
+    setActiveEditor({
+      kind: "field",
+      draft: existing ?? {
+        field: field.value,
+        operator: defaultConditionOperatorForField(field.value),
+        value: "",
+        webhookField: "",
+      },
+    });
+  };
+
+  const updateFieldEditor = (draft: ParsedConditionExpression) => {
+    const isComplete =
+      (draft.field !== "webhook_field" ||
+        normalizeWebhookField(draft.webhookField) !== null) &&
+      (!conditionOperatorNeedsValue(draft.operator) ||
+        draft.value.trim().length > 0);
+    setActiveEditor({ kind: "field", draft });
+    if (!isComplete) {
+      emitEditors(
+        editorState.editors.filter((editor) => editor.field !== draft.field),
+      );
+      return;
+    }
+    emitEditors(
+      editorState.custom
+        ? [draft]
+        : [
+            ...editorState.editors.filter(
+              (editor) => editor.field !== draft.field,
+            ),
+            draft,
+          ],
+    );
+  };
+
+  const updateCustomEditor = (draft: string) => {
+    const trimmed = draft.trim();
+    setActiveEditor({
+      kind: "custom",
+      draft,
+    });
+    if (trimmed) {
+      setEditorState({ custom: true, editors: [] });
+      onChange(trimmed);
+    } else {
+      setEditorState({ custom: false, editors: [] });
+      onChange("");
+    }
+  };
 
   return (
-    <div className="space-y-3">
-      <fieldset aria-label="Condition">
-        <legend className="sr-only">Condition</legend>
-        <div className="grid grid-cols-2 gap-2.5">
-          {fieldOptions.map((field) => {
-            const isMatchAll = field.value === "";
-            const isCustom = field.value === CUSTOM_CONDITION_FIELD;
-            const isSelected = isMatchAll
-              ? !editorState.custom && editorState.editors.length === 0
-              : isCustom
-                ? editorState.custom
-                : selectedFields.has(field.value);
-            return (
-              <div
-                className={cn(
-                  "relative",
-                  (isMatchAll || isCustom) && "col-span-2",
-                )}
-                key={field.value}
-              >
-                <button
-                  aria-pressed={isSelected}
-                  className={cn(
-                    "flex min-h-12 w-full cursor-pointer items-center justify-center rounded-lg border px-3 py-2 text-center text-sm font-medium",
-                    "outline-2 outline-offset-2 outline-transparent transition-[background-color,border-color,color,outline-color]",
-                    "focus-visible:ring-2 focus-visible:ring-ring",
-                    "disabled:cursor-not-allowed disabled:opacity-50",
-                    isSelected
-                      ? "border-border/0 bg-transparent text-foreground outline-foreground/45"
-                      : "border-border/70 bg-background/35 text-muted-foreground hover:border-border hover:bg-muted/55 hover:text-foreground hover:outline-muted-foreground/20",
-                  )}
-                  disabled={disabled}
-                  onClick={() => {
-                    if (isMatchAll) {
-                      setEditorState({ custom: false, editors: [] });
-                      onChange("");
-                      return;
-                    }
-                    if (isCustom) {
-                      setEditorState({ custom: true, editors: [] });
-                      return;
-                    }
-                    if (isSelected) {
-                      emitEditors(
-                        editorState.editors.filter(
-                          (editor) => editor.field !== field.value,
-                        ),
-                      );
-                    } else {
-                      emitEditors([
-                        ...editorState.editors,
-                        {
-                          field: field.value,
-                          operator: defaultConditionOperatorForField(
-                            field.value,
-                          ),
-                          value: "",
-                          webhookField: "",
-                        },
-                      ]);
-                    }
-                  }}
-                  type="button"
-                >
-                  {field.label}
-                </button>
-              </div>
+    <div className="divide-y divide-border/50">
+      {fields.map((field) => {
+        const editor = editorState.custom
+          ? undefined
+          : editorState.editors.find(
+              (candidate) => candidate.field === field.value,
             );
-          })}
-        </div>
-      </fieldset>
+        const isExpanded =
+          activeEditor?.kind === "field" &&
+          activeEditor.draft.field === field.value;
+        return (
+          <div key={field.value}>
+            <button
+              aria-expanded={isExpanded}
+              className="flex min-h-12 w-full items-center gap-3 py-3 text-left transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={disabled}
+              onClick={() => openFieldEditor(field)}
+              type="button"
+            >
+              <span className="min-w-0 flex-1 truncate text-base font-medium">
+                {field.label}
+              </span>
+              {editor?.field === "trigger_author" ? (
+                <AuthorConditionSummary
+                  editor={editor}
+                  profile={selectedAuthorProfile}
+                />
+              ) : (
+                <span className="max-w-40 truncate text-sm text-muted-foreground">
+                  {editor
+                    ? editorSummary(editor)
+                    : field.value === "trigger_text"
+                      ? "Any"
+                      : "Off"}
+                </span>
+              )}
+              <ChevronRight
+                className={`h-4 w-4 shrink-0 text-muted-foreground/70 transition-transform duration-150 motion-reduce:transition-none ${
+                  isExpanded ? "rotate-90" : "rotate-0"
+                }`}
+              />
+            </button>
 
-      {editorState.custom ? (
-        <div className="space-y-1.5">
-          <FieldLabel htmlFor={`${idPrefix}-custom-expression`}>
-            Custom expression
-          </FieldLabel>
-          <Input
-            autoCapitalize="off"
-            autoCorrect="off"
-            disabled={disabled}
-            id={`${idPrefix}-custom-expression`}
-            onChange={(event) => onChange(event.target.value)}
-            placeholder='e.g. str_contains(trigger_text, "deploy")'
-            value={value}
+            {isExpanded ? (
+              <div className="animate-in space-y-4 pb-4 pt-1 fade-in slide-in-from-top-1 duration-150 motion-reduce:animate-none">
+                <ConditionEditorFields
+                  channelId={channelId}
+                  disabled={disabled}
+                  editor={activeEditor.draft}
+                  idPrefix={idPrefix}
+                  knownAuthorPubkeys={knownAuthorPubkeys}
+                  onChange={updateFieldEditor}
+                />
+              </div>
+            ) : null}
+          </div>
+        );
+      })}
+
+      <div>
+        <button
+          aria-expanded={activeEditor?.kind === "custom"}
+          className="flex min-h-12 w-full items-center gap-3 py-3 text-left transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={disabled}
+          onClick={() =>
+            setActiveEditor((current) =>
+              current?.kind === "custom"
+                ? null
+                : {
+                    kind: "custom",
+                    draft: editorState.custom ? value : "",
+                  },
+            )
+          }
+          type="button"
+        >
+          <span className="min-w-0 flex-1 truncate text-base font-medium">
+            Custom
+          </span>
+          <span className="max-w-40 truncate text-sm text-muted-foreground">
+            {editorState.custom ? compactValue(value) : "Off"}
+          </span>
+          <ChevronRight
+            className={`h-4 w-4 shrink-0 text-muted-foreground/70 transition-transform duration-150 motion-reduce:transition-none ${
+              activeEditor?.kind === "custom" ? "rotate-90" : "rotate-0"
+            }`}
           />
-          <p className="text-xs text-muted-foreground">
-            Use an evalexpr expression with <code>{evalexprFields}</code>.
-          </p>
-        </div>
-      ) : (
-        editorState.editors.map((editor) => (
-          <ConditionEditorControls
-            channelId={channelId}
-            disabled={disabled}
-            editor={editor}
-            idPrefix={idPrefix}
-            key={editor.field}
-            knownAuthorPubkeys={knownAuthorPubkeys}
-            label={
-              fields.find((field) => field.value === editor.field)?.label ??
-              editor.field
-            }
-            onChange={updateEditor}
-          />
-        ))
-      )}
+        </button>
+
+        {activeEditor?.kind === "custom" ? (
+          <div className="animate-in space-y-4 pb-4 pt-1 fade-in slide-in-from-top-1 duration-150 motion-reduce:animate-none">
+            <div className="space-y-2">
+              <FieldLabel htmlFor={`${idPrefix}-custom-expression`}>
+                Expression
+              </FieldLabel>
+              <Input
+                autoCapitalize="off"
+                autoCorrect="off"
+                disabled={disabled}
+                id={`${idPrefix}-custom-expression`}
+                onChange={(event) => updateCustomEditor(event.target.value)}
+                placeholder='e.g. str_contains(trigger_text, "deploy")'
+                value={activeEditor.draft}
+              />
+              <p className="text-xs text-muted-foreground">
+                Use an evalexpr expression with <code>{evalexprFields}</code>.
+              </p>
+            </div>
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }

@@ -16,6 +16,17 @@ test("describes selected trigger conditions on the workflow canvas", () => {
   );
 
   assert.equal(
+    workflowTriggerDescription(
+      {
+        on: "message_posted",
+        filter: `trigger_author == "${"a".repeat(64)}"`,
+      },
+      { authorLoading: true },
+    ),
+    "Message posted by loading author",
+  );
+
+  assert.equal(
     workflowTriggerDescription({
       on: "message_posted",
       filter: 'str_contains(trigger_text, "deploy")',

@@ -145,7 +145,8 @@ export function AuthorGridPicker({
     );
 
   function selectAuthor(pubkey: string) {
-    onChange(pubkey.toLowerCase());
+    const normalizedPubkey = pubkey.toLowerCase();
+    onChange(normalizedPubkey === normalizedValue ? "" : normalizedPubkey);
   }
 
   function loadNextPage() {

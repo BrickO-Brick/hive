@@ -13,6 +13,7 @@ const FULL_HEX_ID = /^[0-9a-f]{64}$/i;
 export type WorkflowTriggerPresentation = {
   authorAvatarUrl?: string | null;
   authorLabel?: string;
+  authorLoading?: boolean;
   description: string;
   emoji?: string;
   messageLoading?: boolean;
@@ -48,13 +49,17 @@ export function useWorkflowTriggerPresentation({
   const authorProfile = authorPubkey
     ? profilesQuery.data?.profiles[authorPubkey.toLowerCase()]
     : undefined;
-  const authorLabel = authorPubkey
-    ? resolveUserLabel({
-        currentPubkey: identityQuery.data?.pubkey,
-        profiles: profilesQuery.data?.profiles,
-        pubkey: authorPubkey,
-      })
-    : undefined;
+  const authorLoading = Boolean(
+    authorPubkey && !authorProfile && profilesQuery.isFetching,
+  );
+  const authorLabel =
+    authorPubkey && !authorLoading
+      ? resolveUserLabel({
+          currentPubkey: identityQuery.data?.pubkey,
+          profiles: profilesQuery.data?.profiles,
+          pubkey: authorPubkey,
+        })
+      : undefined;
   const messageCondition = conditions?.find(
     (condition) => condition.field === "trigger_message_id",
   );
@@ -84,7 +89,9 @@ export function useWorkflowTriggerPresentation({
   return {
     authorAvatarUrl: authorProfile?.avatarUrl,
     authorLabel,
+    authorLoading,
     description: workflowTriggerDescription(trigger, {
+      authorLoading,
       authorLabel,
       messageLabel: message?.content.trim() || undefined,
       messageLoading,

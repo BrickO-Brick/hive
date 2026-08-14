@@ -46,6 +46,7 @@ import {
   getWorkflowTriggerSummary,
   getWorkflowTriggerType,
 } from "./workflowDefinition";
+import { TriggerDescriptionText } from "./WorkflowNodeDescriptions";
 import { useWorkflowTriggerPresentation } from "./useWorkflowTriggerPresentation";
 
 type WorkflowCardProps = {
@@ -180,6 +181,28 @@ function ReactionLabelText({
 
   if (cursor < text.length) parts.push(text.slice(cursor));
   return parts.length > 0 ? parts : text;
+}
+
+function TriggerCardText({
+  authorLoading,
+  messageLoading,
+  reactions,
+  text,
+}: {
+  authorLoading?: boolean;
+  messageLoading?: boolean;
+  reactions: ReadonlyArray<{ emoji: string; url?: string }>;
+  text: string;
+}) {
+  return authorLoading || messageLoading ? (
+    <TriggerDescriptionText
+      authorLoading={authorLoading}
+      messageLoading={messageLoading}
+      text={text}
+    />
+  ) : (
+    <ReactionLabelText reactions={reactions} text={text} />
+  );
 }
 
 export function WorkflowCard({
@@ -348,14 +371,21 @@ export function WorkflowCard({
 
         {triggerSummary ? (
           <p className="mt-4 line-clamp-1 text-xs font-semibold text-white/70">
-            <ReactionLabelText
+            <TriggerCardText
+              authorLoading={triggerPresentation.authorLoading}
+              messageLoading={triggerPresentation.messageLoading}
               reactions={cardReactions}
               text={triggerSummary}
             />
           </p>
         ) : null}
         <h3 className="mt-1 line-clamp-4 text-xl font-bold leading-tight tracking-tight">
-          <ReactionLabelText reactions={cardReactions} text={cardLabel} />
+          <TriggerCardText
+            authorLoading={triggerPresentation.authorLoading}
+            messageLoading={triggerPresentation.messageLoading}
+            reactions={cardReactions}
+            text={cardLabel}
+          />
         </h3>
         {description ? (
           <p className="mt-2 line-clamp-2 text-sm leading-relaxed text-white/75">
