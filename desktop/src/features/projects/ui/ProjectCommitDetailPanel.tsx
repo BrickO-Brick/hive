@@ -1,4 +1,4 @@
-import { GitCommitHorizontal } from "lucide-react";
+import { Calendar, GitCommitHorizontal, Hash } from "lucide-react";
 
 import {
   profileForCommit,
@@ -12,6 +12,11 @@ import { commitDiscussionQuery } from "@/features/projects/lib/discussionChannel
 import type { ProjectRepoCommit, ProjectRepoDiff } from "@/shared/api/types";
 import { DiscussedInChannels } from "./DiscussionChannels";
 import { CopyCommitHashButton } from "./ProjectCommitCopyButton";
+import {
+  ProjectDetailMetaList,
+  ProjectDetailMetaRow,
+} from "./ProjectDetailMeta";
+import { ProjectDetailSection } from "./ProjectDetailSection";
 import { PROJECT_DETAIL_PANEL_CLASS } from "./projectPanelStyles";
 import { ProfileIdentityButton } from "./ProjectProfileIdentity";
 import { ProjectDiffFilesPanel } from "./ProjectPullRequestFilesChangedPanel";
@@ -26,9 +31,8 @@ function commitDateLabel(timestamp: number) {
 }
 
 /**
- * Detail view for a single commit: header with author identity and hash,
- * followed by the commit-vs-parent diff rendered with the shared changed
- * files panel.
+ * Detail view for a single commit: title and meta header, then collapsible
+ * description and the commit-vs-parent diff.
  */
 export function ProjectCommitDetailPanel({
   commit,
@@ -61,82 +65,94 @@ export function ProjectCommitDetailPanel({
     ? resolveUserLabel({ pubkey: matchedProfile.pubkey, profiles })
     : (commit?.authorName ?? commit?.authorEmail ?? "Unknown author");
   const shortHash = commit?.shortHash ?? commitHash.slice(0, 7);
+  const fileCount = diff?.files.length;
 
   return (
-    <div className="space-y-3">
-      <header
-        className={`space-y-2 p-4 ${PROJECT_DETAIL_PANEL_CLASS}`}
-        data-project-detail-panel
-      >
-        <p className="flex flex-wrap items-center gap-1.5 text-xs font-medium text-muted-foreground">
-          <GitCommitHorizontal className="h-3.5 w-3.5" />
-          Commit from {authorLabel}
-          <ProjectOriginReference
-            agentName={originAgentName}
-            channelId={originChannelId}
-          />
-        </p>
-        <div className="flex min-w-0 items-start gap-3">
+    <div className={PROJECT_DETAIL_PANEL_CLASS} data-project-detail-panel>
+      <header className="space-y-1 px-4 pb-1 pt-3">
+        <h3 className="line-clamp-2 text-xl font-semibold text-foreground">
+          {commit?.subject ?? shortHash}
+        </h3>
+        <p className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs font-medium text-muted-foreground">
           <ProfileIdentityButton
-            avatarClassName="mt-0.5 shrink-0"
-            avatarSize="md"
+            avatarClassName="shrink-0"
+            avatarSize="xs"
             avatarUrl={matchedProfile?.profile.avatarUrl ?? null}
             isAgent={matchedProfile?.profile.isAgent === true}
             label={authorLabel}
             pubkey={matchedProfile?.pubkey ?? null}
             showLabel={false}
           />
-          <div className="min-w-0 flex-1 space-y-1">
-            <h3 className="line-clamp-2 text-base font-semibold text-foreground">
-              {commit?.subject ?? shortHash}
-            </h3>
-            <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs leading-4 text-muted-foreground">
-              <span className="flex items-center gap-0.5 font-mono">
-                {shortHash}
-                <CopyCommitHashButton
-                  className="h-6 w-6"
-                  hash={commit?.hash ?? commitHash}
-                />
-              </span>
-              {commit ? (
-                <>
-                  <span>·</span>
-                  <span>{commitDateLabel(commit.timestamp)}</span>
-                </>
-              ) : null}
-              {diff ? (
-                <>
-                  <span>·</span>
-                  <span className="text-green-500">+{diff.additions}</span>
-                  <span className="text-destructive">-{diff.deletions}</span>
-                </>
-              ) : null}
-            </div>
-          </div>
-        </div>
-        {diff?.commitBody ? (
+          <span className="font-medium text-foreground">{authorLabel}</span>
+          {commit ? (
+            <span
+              className="shrink-0 whitespace-nowrap"
+              title={commitDateLabel(commit.timestamp)}
+            >
+              {commitDateLabel(commit.timestamp)}
+            </span>
+          ) : null}
+          <ProjectOriginReference
+            agentName={originAgentName}
+            channelId={originChannelId}
+          />
+        </p>
+      </header>
+      <ProjectDetailMetaList>
+        <ProjectDetailMetaRow icon={Hash} label="Commit">
+          <span className="inline-flex min-w-0 items-center gap-1 font-mono text-xs">
+            {shortHash}
+            <CopyCommitHashButton
+              className="h-6 w-6"
+              hash={commit?.hash ?? commitHash}
+            />
+          </span>
+        </ProjectDetailMetaRow>
+        {commit ? (
+          <ProjectDetailMetaRow icon={Calendar} label="Date">
+            <span className="text-muted-foreground">
+              {commitDateLabel(commit.timestamp)}
+            </span>
+          </ProjectDetailMetaRow>
+        ) : null}
+        {diff ? (
+          <ProjectDetailMetaRow icon={GitCommitHorizontal} label="Changes">
+            <span className="flex items-center gap-1.5">
+              <span className="text-green-500">+{diff.additions}</span>
+              <span className="text-destructive">-{diff.deletions}</span>
+            </span>
+          </ProjectDetailMetaRow>
+        ) : null}
+      </ProjectDetailMetaList>
+      {diff?.commitBody ? (
+        <ProjectDetailSection defaultOpen title="Description">
           <ProjectRichContent
             content={diff.commitBody}
             hardLineBreaks={false}
           />
-        ) : null}
-        <DiscussedInChannels
-          entityLabel="this commit"
-          query={commitDiscussionQuery({
-            hash: commit?.hash ?? commitHash,
-            shortHash: commit?.shortHash,
-          })}
-          testId="commit-discussed-in"
-        />
-      </header>
-
-      <ProjectDiffFilesPanel
-        diff={diff}
-        error={diffError}
-        headerLabel={`${commit?.subject ?? "Commit"} · ${shortHash}`}
-        isLoading={diffLoading}
-        subjectLabel="commit"
+        </ProjectDetailSection>
+      ) : null}
+      <DiscussedInChannels
+        className="mx-4 mb-4"
+        entityLabel="this commit"
+        query={commitDiscussionQuery({
+          hash: commit?.hash ?? commitHash,
+          shortHash: commit?.shortHash,
+        })}
+        testId="commit-discussed-in"
       />
+      <ProjectDetailSection count={fileCount} defaultOpen title="Files changed">
+        <div className="-mx-4">
+          <ProjectDiffFilesPanel
+            diff={diff}
+            embedded
+            error={diffError}
+            headerLabel={`${commit?.subject ?? "Commit"} · ${shortHash}`}
+            isLoading={diffLoading}
+            subjectLabel="commit"
+          />
+        </div>
+      </ProjectDetailSection>
     </div>
   );
 }

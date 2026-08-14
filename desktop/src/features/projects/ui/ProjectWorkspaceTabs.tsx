@@ -53,18 +53,10 @@ import {
   type GitDataState,
   ProjectOverviewPanel,
 } from "./ProjectOverviewPanel";
-import {
-  PullRequestDetailHeader,
-  PullRequestMetaRail,
-  PullRequestsPanel,
-} from "./ProjectPullRequestsPanel";
-import {
-  ProjectTabsList,
-  PullRequestTabsList,
-} from "./ProjectWorkspaceTabList";
+import { PullRequestsPanel } from "./ProjectPullRequestsPanel";
+import { ProjectTabsList } from "./ProjectWorkspaceTabList";
 import { ProjectPullRequestFilesChangedPanel } from "./ProjectPullRequestFilesChangedPanel";
 import {
-  PROJECT_DETAIL_META_GRID_WIDE_CLASS,
   PROJECT_DETAIL_PANEL_CLASS,
   PROJECT_DETAIL_PANEL_MESSAGE_CLASS,
 } from "./projectPanelStyles";
@@ -264,16 +256,10 @@ export function WorkspaceTabs({
 
   React.useEffect(() => {
     if (isPullRequestSelected) {
-      setSelectedTab((currentTab) =>
-        currentTab.startsWith("pr-") ? currentTab : "pr-conversation",
-      );
+      setSelectedTab("prs");
       if (selectedPullRequest?.branchName) {
         onBranchChange(selectedPullRequest.branchName);
       }
-    } else {
-      setSelectedTab((currentTab) =>
-        currentTab.startsWith("pr-") ? "prs" : currentTab,
-      );
     }
   }, [isPullRequestSelected, onBranchChange, selectedPullRequest?.branchName]);
 
@@ -292,7 +278,7 @@ export function WorkspaceTabs({
   const handleTabChange = React.useCallback(
     (nextTab: string) => {
       setSelectedTab(nextTab);
-      if (!nextTab.startsWith("pr-")) {
+      if (nextTab !== "prs") {
         onSelectedPullRequestIdChange(null);
       }
       if (nextTab !== "issues") {
@@ -315,7 +301,6 @@ export function WorkspaceTabs({
         anchor: { ...anchor },
         pullRequestId: selectedPullRequestId,
       });
-      setSelectedTab("pr-files");
     },
     [selectedPullRequestId],
   );
@@ -338,7 +323,7 @@ export function WorkspaceTabs({
         icon={CircleDot}
         title="Tasks"
       />
-    ) : selectedTab === "prs" ? (
+    ) : selectedTab === "prs" && !selectedPullRequestId ? (
       <ProjectSectionHeader
         action={{
           disabled:
@@ -438,72 +423,6 @@ export function WorkspaceTabs({
           </div>
         ) : null}
         {sectionHeader}
-        {selectedPullRequest ? (
-          <div className={PROJECT_DETAIL_PANEL_CLASS} data-project-detail-panel>
-            {/* Two full-height columns: the meta rail runs all the way to the
-              top of the card, alongside the header and tabs. */}
-            <div className={cn("grid", PROJECT_DETAIL_META_GRID_WIDE_CLASS)}>
-              <div className="min-w-0">
-                <PullRequestDetailHeader
-                  profiles={profiles}
-                  pullRequest={selectedPullRequest}
-                />
-                <div className="border-b border-border/60 px-4">
-                  <PullRequestTabsList
-                    filesCount={repoDiff?.files.length ?? files.length}
-                    pullRequest={selectedPullRequest}
-                  />
-                </div>
-                {(["conversation", "commits", "checks"] as const).map(
-                  (mode) => (
-                    <TabsContent
-                      className="m-0"
-                      key={mode}
-                      value={`pr-${mode}`}
-                    >
-                      <PullRequestsPanel
-                        error={pullRequestsError}
-                        isLoading={pullRequestsLoading}
-                        mode={mode}
-                        onOpenInlineComment={handleOpenPullRequestComment}
-                        onOpenCommit={onSelectedCommitHashChange}
-                        onOpenTerminal={onOpenMergeRecoveryTerminal}
-                        onSelectedPullRequestIdChange={
-                          onSelectedPullRequestIdChange
-                        }
-                        profiles={profiles}
-                        project={project}
-                        pullRequests={pullRequests}
-                        selectedPullRequestId={selectedPullRequestId}
-                      />
-                    </TabsContent>
-                  ),
-                )}
-                <TabsContent className="m-0" value="pr-files">
-                  <ProjectPullRequestFilesChangedPanel
-                    diff={repoDiff}
-                    error={repoDiffError}
-                    focusedAnchor={
-                      pullRequestCommentTarget?.pullRequestId ===
-                      selectedPullRequestId
-                        ? pullRequestCommentTarget.anchor
-                        : null
-                    }
-                    isLoading={repoDiffLoading}
-                    profiles={profiles}
-                    project={project}
-                    pullRequest={selectedPullRequest}
-                  />
-                </TabsContent>
-              </div>
-              <PullRequestMetaRail
-                profiles={profiles}
-                project={project}
-                pullRequest={selectedPullRequest}
-              />
-            </div>
-          </div>
-        ) : null}
 
         <TabsContent className="m-0" value="overview">
           <ProjectOverviewPanel
@@ -566,9 +485,40 @@ export function WorkspaceTabs({
           value="prs"
         >
           <PullRequestsPanel
+            diffStats={
+              repoDiff
+                ? {
+                    additions: repoDiff.additions,
+                    deletions: repoDiff.deletions,
+                  }
+                : null
+            }
             error={pullRequestsError}
+            filesChanged={
+              selectedPullRequest ? (
+                <ProjectPullRequestFilesChangedPanel
+                  diff={repoDiff}
+                  error={repoDiffError}
+                  focusedAnchor={
+                    pullRequestCommentTarget?.pullRequestId ===
+                    selectedPullRequestId
+                      ? pullRequestCommentTarget.anchor
+                      : null
+                  }
+                  isLoading={repoDiffLoading}
+                  profiles={profiles}
+                  project={project}
+                  pullRequest={selectedPullRequest}
+                />
+              ) : undefined
+            }
+            filesCount={repoDiff?.files.length}
+            forceOpenFiles={
+              pullRequestCommentTarget?.pullRequestId === selectedPullRequestId
+            }
             isLoading={pullRequestsLoading}
             onOpenCommit={onSelectedCommitHashChange}
+            onOpenInlineComment={handleOpenPullRequestComment}
             onOpenTerminal={onOpenMergeRecoveryTerminal}
             onSelectedPullRequestIdChange={onSelectedPullRequestIdChange}
             profiles={profiles}

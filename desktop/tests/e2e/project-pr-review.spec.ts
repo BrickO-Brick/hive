@@ -544,7 +544,7 @@ test("reviewer can leave a commit-scoped inline diff comment", async ({
     .filter({ hasText: "alice" })
     .first();
   await aliceRow.getByRole("button", { name: /^#/ }).click();
-  await page.getByRole("tab", { name: /Files changed/ }).click();
+  await page.getByRole("button", { name: /^Files changed/ }).click();
 
   const diffLine = page
     .getByTestId("project-diff-line")
@@ -589,10 +589,6 @@ test("reviewer can leave a commit-scoped inline diff comment", async ({
     "Please add a type for this parameter.",
   );
 
-  await page.getByRole("tab", { name: "Conversation" }).click();
-  await expect(
-    page.getByTestId("project-pull-request-review-history-toggle"),
-  ).toHaveAttribute("aria-expanded", "true");
   await expect(
     page.getByText("Please add a type for this parameter."),
   ).toBeVisible();
@@ -611,8 +607,8 @@ test("reviewer can leave a commit-scoped inline diff comment", async ({
     })
     .click();
   await expect(
-    page.getByRole("tab", { name: /Files changed/ }),
-  ).toHaveAttribute("data-state", "active");
+    page.getByRole("button", { name: /^Files changed/ }),
+  ).toHaveAttribute("aria-expanded", "true");
   const focusedLine = page.getByTestId("project-diff-focused-line");
   await expect(focusedLine).toBeVisible();
   await expect(focusedLine).toHaveAttribute(

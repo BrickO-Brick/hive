@@ -248,7 +248,7 @@ export function IssueAssigneesRow({
       })}
       {canSelfAssign && viewer ? (
         <Button
-          className="h-6 px-1 text-xs text-muted-foreground hover:text-foreground"
+          className="h-5 px-1 text-xs text-muted-foreground hover:text-foreground"
           data-testid="project-issue-self-assign"
           disabled={assignMutation.isPending || unassignMutation.isPending}
           onClick={() => {
@@ -265,7 +265,7 @@ export function IssueAssigneesRow({
         <Dialog onOpenChange={setPickerOpen} open={pickerOpen}>
           <DialogTrigger asChild>
             <Button
-              className="h-6 px-1 text-xs text-muted-foreground hover:text-foreground"
+              className="h-5 px-1 text-xs text-muted-foreground hover:text-foreground"
               data-testid="project-issue-assign"
               disabled={assignMutation.isPending || unassignMutation.isPending}
               size="xs"
