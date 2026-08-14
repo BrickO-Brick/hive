@@ -320,11 +320,13 @@ export function WorkflowDialog({
                     ) : null}
                   </div>
                 ) : mode === "edit" && selectedChannel ? (
-                  <div className="px-3 py-2 text-center">
-                    <p className="text-lg font-semibold text-foreground">
-                      {selectedChannel.name}
-                    </p>
-                  </div>
+                  <ChannelCombobox
+                    channels={channels}
+                    id="wf-channel-select"
+                    onChange={setSelectedChannelId}
+                    readOnly
+                    value={selectedChannel.id}
+                  />
                 ) : null
               }
               selectedNode={pane}

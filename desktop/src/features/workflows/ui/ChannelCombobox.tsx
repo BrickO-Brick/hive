@@ -16,6 +16,7 @@ import type { Channel } from "@/shared/api/types";
 import { cn } from "@/shared/lib/cn";
 import { Popover, PopoverContent, PopoverTrigger } from "@/shared/ui/popover";
 import { PortalledScrollArea } from "@/shared/ui/PortalledScrollArea";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 
 function ChannelPrivacyIcon({ channel }: { channel: Channel }) {
   const Icon =
@@ -40,6 +41,8 @@ type ChannelComboboxProps = {
   id?: string;
   isChannelDisabled?: (channel: Channel) => boolean;
   onChange: (value: string) => void;
+  readOnly?: boolean;
+  readOnlyTooltip?: string;
   required?: boolean;
   variant?: "header" | "field";
   value: string;
@@ -55,13 +58,24 @@ export function ChannelCombobox({
   id,
   isChannelDisabled,
   onChange,
+  readOnly = false,
+  readOnlyTooltip = "The channel can't be changed after a workflow is created.",
   required = false,
   variant = "header",
   value,
 }: ChannelComboboxProps) {
-  const [open, setOpen] = React.useState(defaultOpen);
+  const [open, setOpen] = React.useState(false);
   const [query, setQuery] = React.useState("");
   const [highlightedIndex, setHighlightedIndex] = React.useState(0);
+
+  React.useEffect(() => {
+    if (!defaultOpen) return;
+
+    // Let the pointer interaction that mounted the containing dialog finish
+    // before installing Radix's outside-interaction listeners.
+    const frame = window.requestAnimationFrame(() => setOpen(true));
+    return () => window.cancelAnimationFrame(frame);
+  }, [defaultOpen]);
 
   const selected = channels.find((c) => c.id === value);
   const currentPubkey = useIdentityQuery().data?.pubkey;
@@ -150,6 +164,34 @@ export function ChannelCombobox({
     }
   }
 
+  const selectedLabel = selected
+    ? (channelLabels.get(selected.id) ?? selected.name)
+    : value
+      ? "Unavailable channel"
+      : emptyLabel;
+
+  if (readOnly) {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            aria-disabled="true"
+            aria-label={`${ariaLabel}: ${selectedLabel}. Read only.`}
+            className="flex w-full cursor-default items-center justify-center rounded-lg px-3 py-2 text-lg font-semibold text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+            id={id}
+            type="button"
+          >
+            <span className="flex min-w-0 items-center gap-2">
+              {selected ? <ChannelPrivacyIcon channel={selected} /> : null}
+              <span className="truncate">{selectedLabel}</span>
+            </span>
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="top">{readOnlyTooltip}</TooltipContent>
+      </Tooltip>
+    );
+  }
+
   return (
     <Popover onOpenChange={handleOpenChange} open={open}>
       <PopoverTrigger asChild>
@@ -181,13 +223,7 @@ export function ChannelCombobox({
             ) : required && !value ? (
               <Asterisk aria-hidden className="h-5 w-5 shrink-0 text-primary" />
             ) : null}
-            <span className="truncate">
-              {selected
-                ? (channelLabels.get(selected.id) ?? selected.name)
-                : value
-                  ? "Unavailable channel"
-                  : emptyLabel}
-            </span>
+            <span className="truncate">{selectedLabel}</span>
           </span>
           <ChevronDown className="ml-1 h-5 w-5 shrink-0 text-muted-foreground opacity-50 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
         </button>
@@ -222,7 +258,7 @@ export function ChannelCombobox({
           {allowEmpty && !query ? (
             <button
               className={cn(
-                "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent hover:text-accent-foreground",
+                "flex w-full cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent hover:text-accent-foreground",
                 !value && "bg-accent/50",
               )}
               onClick={() => selectChannel("")}
@@ -248,7 +284,7 @@ export function ChannelCombobox({
               return (
                 <button
                   className={cn(
-                    "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent hover:text-accent-foreground disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-transparent disabled:hover:text-foreground",
+                    "flex w-full cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent hover:text-accent-foreground disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-transparent disabled:hover:text-foreground",
                     channel.id === value && "bg-accent/50",
                     channel.id === selectable[highlightedIndex]?.id &&
                       !optionDisabled &&

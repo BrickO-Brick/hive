@@ -303,7 +303,7 @@ function WorkflowNode({
         {onRemove ? (
           <Button
             aria-label={`Remove ${title}`}
-            className="pointer-events-none absolute right-1 top-1/2 z-10 h-8 w-8 -translate-y-1/2 rounded-full bg-transparent opacity-0 transition-all duration-200 group-focus-within:pointer-events-auto group-focus-within:translate-x-12 group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:translate-x-12 group-hover:opacity-100 hover:bg-destructive/15 hover:text-destructive"
+            className="pointer-events-none absolute -right-8 top-1/2 z-10 h-8 w-8 -translate-y-1/2 rounded-full bg-transparent opacity-0 transition-all duration-200 group-focus-within:pointer-events-auto group-focus-within:translate-x-3 group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:translate-x-3 group-hover:opacity-100 hover:bg-destructive/15 hover:text-destructive"
             disabled={disabled}
             onClick={onRemove}
             size="icon"
