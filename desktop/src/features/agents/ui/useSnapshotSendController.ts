@@ -365,15 +365,11 @@ export type UseSnapshotSendControllerResult = {
    * false and sets error state if blocked, ineligible, or if any step fails.
    * Never throws.
    *
-   * `attachmentThumb`, when provided, is presentation metadata for compact
-   * composer previews; the uploaded snapshot remains the full card image.
-   *
    */
   beginSend: (
     encodeFn: () => Promise<{ fileBytes: number[]; fileName: string }>,
     resolveChannelId: () => Promise<string>,
     attachmentLabel?: string,
-    attachmentThumb?: string,
   ) => Promise<boolean | null>;
   reset: () => void;
 };
@@ -405,7 +401,6 @@ export function useSnapshotSendController(
     encodeFn: () => Promise<{ fileBytes: number[]; fileName: string }>,
     resolveChannelId: () => Promise<string>,
     attachmentLabel?: string,
-    attachmentThumb?: string,
   ): Promise<boolean | null> {
     // A duplicate action is intentionally ignored; distinguish it from a
     // failed send so the caller does not show a false failure toast.
@@ -424,14 +419,11 @@ export function useSnapshotSendController(
         sendFn: (args) => sendMutation.mutateAsync(args),
         setStateFn: setState,
         buildMessageFn: (descriptor) => {
-          const descriptorWithThumb = attachmentThumb
-            ? { ...descriptor, thumb: attachmentThumb }
-            : descriptor;
-          const message = buildOutgoingMessage("", [descriptorWithThumb]);
+          const message = buildOutgoingMessage("", [descriptor]);
           return attachmentLabel?.trim()
             ? {
                 ...message,
-                content: formatImetaMediaLine(descriptorWithThumb, {
+                content: formatImetaMediaLine(descriptor, {
                   label: attachmentLabel,
                 }),
               }

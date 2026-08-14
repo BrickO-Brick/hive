@@ -18,12 +18,12 @@ import {
   useOpenDmMutation,
   useUpsertCachedChannel,
 } from "@/features/channels/hooks";
+import { withAgentSnapshotAvatarPreview } from "@/features/messages/lib/agentSnapshotAttachmentPreview";
 import { buildSnapshotClipboardHtml } from "@/features/messages/lib/agentSnapshotClipboard";
 import { uploadMediaBytes, type BlobDescriptor } from "@/shared/api/tauri";
 import { copyTextToSystemClipboard } from "@/shared/api/tauriMedia";
 import type { SnapshotMemoryLevel } from "@/shared/api/tauriPersonas";
 import type { AgentPersona, UserSearchResult } from "@/shared/api/types";
-import { isSafeUrl } from "@/shared/lib/url";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -75,8 +75,6 @@ type SnapshotShareDialogProps = {
     memoryLevel: SnapshotMemoryLevel,
   ) => Promise<{ fileBytes: number[]; fileName: string }>;
   hasMemoryOptions: boolean;
-  /** Optional agent avatar shown by the compact composer attachment preview. */
-  previewThumb?: string;
   isPending: boolean;
   onExport: () => void;
   onOpenChange: (open: boolean) => void;
@@ -112,19 +110,6 @@ const COPY_BUTTON_LAYOUT_TRANSITION = {
 } as const;
 
 const COPY_FEEDBACK_RESET_MS = 1500;
-
-function snapshotPreviewThumb(value: string | null): string | undefined {
-  const candidate = value?.trim();
-  if (
-    !candidate ||
-    candidate.length > 2_048 ||
-    /[\s()]/u.test(candidate) ||
-    !isSafeUrl(candidate)
-  ) {
-    return undefined;
-  }
-  return candidate;
-}
 
 type CopyStatus = "idle" | "copying" | "copied";
 
@@ -248,7 +233,6 @@ export function SnapshotShareDialog({
   displayName,
   encodeSnapshot,
   hasMemoryOptions,
-  previewThumb,
   isPending,
   onExport,
   onOpenChange,
@@ -364,13 +348,13 @@ export function SnapshotShareDialog({
     );
     const { thumb: _thumb, ...uploadedWithoutThumb } = uploaded;
 
-    return {
+    const descriptor = {
       ...uploadedWithoutThumb,
       filename: encoded.fileName,
-      ...(snapshotKind === "agent" && previewThumb
-        ? { thumb: previewThumb }
-        : {}),
     };
+    return snapshotKind === "agent"
+      ? withAgentSnapshotAvatarPreview(descriptor, encoded.fileBytes)
+      : descriptor;
   }
 
   async function copyLink(memoryLevel: SnapshotMemoryLevel) {
@@ -407,7 +391,6 @@ export function SnapshotShareDialog({
         return directMessage.id;
       },
       displayName,
-      snapshotKind === "agent" ? previewThumb : undefined,
     );
 
     if (sent) {
@@ -708,7 +691,6 @@ export function PersonaShareDialog({
   persona,
 }: PersonaShareDialogProps) {
   const encodeSnapshotMutation = useEncodeAgentSnapshotForSendMutation();
-  const composerPreviewThumb = snapshotPreviewThumb(effectiveAvatarUrl);
   const encodeSnapshot = React.useCallback(
     async (memoryLevel: SnapshotMemoryLevel) => {
       const avatarPngDataUrl =
@@ -728,6 +710,7 @@ export function PersonaShareDialog({
         format: "png",
         memorySourcePubkey: linkedAgentPubkey,
         avatarPngDataUrl: cardPngDataUrl,
+        sourceAvatarPngDataUrl: avatarPngDataUrl,
       });
     },
     [
@@ -772,7 +755,6 @@ export function PersonaShareDialog({
       displayName={persona.displayName}
       encodeSnapshot={encodeSnapshot}
       hasMemoryOptions={linkedAgentPubkey !== null}
-      previewThumb={composerPreviewThumb}
       isPending={isPending}
       onExport={onExport}
       onOpenChange={onOpenChange}

@@ -426,6 +426,9 @@ type MockBridgeOptions = {
   snapshotFetchError?: string;
   /** Exact bytes returned for a successfully fetched snapshot attachment. */
   snapshotFetchBytes?: number[];
+  /** Avatar URLs returned by the mocked agent-snapshot preview. */
+  agentSnapshotPreviewAvatarUrl?: string | null;
+  agentSnapshotPreviewSourceAvatarUrl?: string | null;
   uploadDescriptors?: {
     url: string;
     sha256: string;

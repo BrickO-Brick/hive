@@ -198,6 +198,7 @@ export async function exportAgentSnapshot(
   format: SnapshotFormat,
   memorySourcePubkey?: string | null,
   avatarPngDataUrl?: string,
+  sourceAvatarPngDataUrl?: string,
 ): Promise<boolean> {
   return invokeTauri<boolean>("export_agent_snapshot", {
     id,
@@ -205,6 +206,7 @@ export async function exportAgentSnapshot(
     memoryLevel,
     format,
     avatarPngDataUrl: avatarPngDataUrl ?? null,
+    sourceAvatarPngDataUrl: sourceAvatarPngDataUrl ?? null,
   });
 }
 
@@ -230,6 +232,7 @@ export async function encodeAgentSnapshotForSend(
   format: SnapshotFormat,
   memorySourcePubkey?: string | null,
   avatarPngDataUrl?: string,
+  sourceAvatarPngDataUrl?: string,
 ): Promise<EncodedSnapshotPayload> {
   return invokeTauri<EncodedSnapshotPayload>("encode_agent_snapshot_for_send", {
     id,
@@ -237,6 +240,7 @@ export async function encodeAgentSnapshotForSend(
     memoryLevel,
     format,
     avatarPngDataUrl: avatarPngDataUrl ?? null,
+    sourceAvatarPngDataUrl: sourceAvatarPngDataUrl ?? null,
   });
 }
 
@@ -388,6 +392,8 @@ export type AgentSnapshotImportPreview = {
   systemPrompt: string | null;
   /** Effective avatar: data URL if present, source URL fallback otherwise. */
   avatarUrl: string | null;
+  /** Original manifest URL before a PNG body supplies a portable fallback. */
+  sourceAvatarUrl: string | null;
   namePool: string[];
   respondTo: string | null;
   parallelism: number | null;

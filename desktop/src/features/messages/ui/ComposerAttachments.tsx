@@ -134,14 +134,13 @@ function ComposerSnapshotCard({
   onRemove: (url: string) => void;
   snapshotKind: SnapshotKind;
 }) {
-  const [avatarThumbError, setAvatarThumbError] = React.useState(false);
+  const [avatarError, setAvatarError] = React.useState(false);
   const [cardThumbError, setCardThumbError] = React.useState(false);
   const isAgentPng =
     snapshotKind === "agent" &&
     attachment.filename?.toLowerCase().endsWith(".agent.png");
-  const avatarThumb = attachment.thumb?.trim();
-  const previewThumb =
-    avatarThumb && !avatarThumbError ? avatarThumb : attachment.url;
+  const avatarUrl = attachment.snapshotAvatarUrl?.trim();
+  const previewThumb = avatarUrl && !avatarError ? avatarUrl : attachment.url;
   const showThumb = isAgentPng && !cardThumbError;
   const SnapshotIcon = snapshotKind === "team" ? Users : Bot;
   const fallbackLabel = snapshotKind === "team" ? "Team" : "Agent";
@@ -173,27 +172,19 @@ function ComposerSnapshotCard({
           variant={showThumb ? "image" : "icon"}
         >
           {showThumb ? (
-            <>
-              <img
-                alt=""
-                aria-hidden="true"
-                className="pointer-events-none absolute inset-0 h-full w-full scale-150 object-cover"
-                src={rewriteRelayUrl(previewThumb)}
-              />
-              <img
-                alt=""
-                className="relative h-full w-full object-cover"
-                data-testid={`composer-${snapshotKind}-snapshot-thumb`}
-                src={rewriteRelayUrl(previewThumb)}
-                onError={() => {
-                  if (avatarThumb && !avatarThumbError) {
-                    setAvatarThumbError(true);
-                  } else {
-                    setCardThumbError(true);
-                  }
-                }}
-              />
-            </>
+            <img
+              alt=""
+              className="h-full w-full object-cover"
+              data-testid={`composer-${snapshotKind}-snapshot-thumb`}
+              src={rewriteRelayUrl(previewThumb)}
+              onError={() => {
+                if (avatarUrl && !avatarError) {
+                  setAvatarError(true);
+                } else {
+                  setCardThumbError(true);
+                }
+              }}
+            />
           ) : (
             <SnapshotIcon />
           )}

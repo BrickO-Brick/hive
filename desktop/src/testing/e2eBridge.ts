@@ -469,6 +469,8 @@ type E2eConfig = {
     /** Exact bytes returned by `fetch_snapshot_bytes` for attachment preview
      * tests. Defaults to the legacy JSON fixture when omitted. */
     snapshotFetchBytes?: number[];
+    agentSnapshotPreviewAvatarUrl?: string | null;
+    agentSnapshotPreviewSourceAvatarUrl?: string | null;
     uploadDescriptors?: RawBlobDescriptor[];
     // Seed rows returned by `list_save_subscriptions`. Each entry uses the same
     // snake_case wire shape the Rust backend returns so tests can drive the
@@ -12258,7 +12260,9 @@ export function maybeInstallE2eTauriMocks() {
           runtime: "goose",
           provider: "anthropic",
           systemPrompt: null,
-          avatarUrl: null,
+          avatarUrl: activeConfig?.mock?.agentSnapshotPreviewAvatarUrl ?? null,
+          sourceAvatarUrl:
+            activeConfig?.mock?.agentSnapshotPreviewSourceAvatarUrl ?? null,
           namePool: [],
           respondTo: null,
           parallelism: null,

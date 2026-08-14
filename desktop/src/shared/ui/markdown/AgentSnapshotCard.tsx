@@ -24,9 +24,9 @@ export type AgentSnapshotCardProps = {
   /** Discriminant used to label the card and route the import. */
   snapshotKind: "agent" | "team";
   /**
-   * Optional thumbnail URL for the card icon. Agent PNG snapshots use their
-   * complete trading-card image; other snapshot types retain their existing
-   * icon treatment. Falls back to the Bot icon when the image fails to load.
+   * Optional complete trading-card image URL for agent PNG snapshots. Other
+   * snapshot types retain their existing icon treatment. Falls back to the
+   * Bot icon when the image fails to load.
    */
   thumb?: string;
   /**
@@ -122,14 +122,15 @@ export function AgentSnapshotCard({
 
   return (
     <Attachment
-      className="my-1 inline-flex w-fit max-w-full rounded-3xl shadow-none"
+      className="my-1 inline-flex w-fit max-w-full overflow-visible rounded-3xl shadow-none"
       data-testid="agent-snapshot-card"
+      smoothCorners={false}
       state={importState.phase === "error" ? "error" : "done"}
     >
       <AttachmentMedia
         className={cn(
           showTradingCard
-            ? "relative rounded-lg"
+            ? "relative overflow-visible rounded-none bg-transparent"
             : showThumb
               ? "relative h-9 w-9"
               : "bg-primary/10 text-primary ring-1 ring-primary/20 dark:bg-primary/15",
@@ -144,7 +145,7 @@ export function AgentSnapshotCard({
         {showTradingCard ? (
           <img
             alt=""
-            className="h-full w-full object-cover"
+            className="h-full w-full object-contain"
             data-testid="agent-snapshot-card-thumb"
             src={thumb}
             referrerPolicy="no-referrer"

@@ -13,6 +13,7 @@ pub struct AgentSnapshotImportPreview {
     pub provider: Option<String>,
     pub system_prompt: Option<String>,
     pub avatar_url: Option<String>,
+    pub source_avatar_url: Option<String>,
     pub name_pool: Vec<String>,
     pub respond_to: Option<String>,
     pub parallelism: Option<u32>,
@@ -51,6 +52,7 @@ pub(crate) fn build_agent_snapshot_import_preview(
             .avatar_data_url
             .clone()
             .or_else(|| snapshot.profile.avatar_url.clone()),
+        source_avatar_url: snapshot.profile.avatar_url.clone(),
         name_pool: snapshot.definition.name_pool.clone(),
         respond_to: snapshot.definition.respond_to.clone(),
         parallelism: snapshot.definition.parallelism,

@@ -2559,6 +2559,7 @@ test("agent snapshot composer prefers the avatar while the message keeps the car
         filename: "composer-avatar.agent.png",
       },
     ],
+    agentSnapshotPreviewSourceAvatarUrl: avatarUrl,
   });
   await gotoApp(page);
   await page.getByTestId("open-agents-view").click();
@@ -2609,14 +2610,45 @@ test("agent snapshot composer prefers the avatar while the message keeps the car
   await expect(
     composerCard.getByTestId("composer-agent-snapshot-thumb"),
   ).toHaveAttribute("src", avatarUrl);
+  await expect(composerCard.locator("img")).toHaveCount(1);
 
   await page.getByTestId("send-message").click();
   const messageCard = page.getByTestId("agent-snapshot-card").last();
   await expect(messageCard).toBeVisible();
   await expect(messageCard).toHaveCSS("border-radius", "24px");
+  await expect(messageCard).toHaveCSS("overflow", "visible");
+  await expect(messageCard).toHaveCSS("clip-path", "none");
   await expect(
     messageCard.getByTestId("agent-snapshot-card-thumb"),
   ).toHaveAttribute("src", cardUrl);
+  await expect(messageCard.getByTestId("agent-snapshot-card-thumb")).toHaveCSS(
+    "object-fit",
+    "contain",
+  );
+
+  const sentContent = await page.evaluate(
+    () =>
+      (
+        (
+          window as Window & {
+            __BUZZ_E2E_COMMAND_LOG__?: Array<{
+              command: string;
+              payload: { content?: string };
+            }>;
+          }
+        ).__BUZZ_E2E_COMMAND_LOG__ ?? []
+      ).findLast((entry) => entry.command === "send_channel_message")?.payload
+        .content,
+  );
+  expect(sentContent).not.toContain("thumb ");
+
+  await page.getByRole("button", { name: "Attach file" }).click();
+  const importedComposerCard = page.getByTestId("composer-agent-snapshot-card");
+  await expect(importedComposerCard).toBeVisible();
+  await expect(importedComposerCard.locator("img")).toHaveCount(1);
+  await expect(
+    importedComposerCard.getByTestId("composer-agent-snapshot-thumb"),
+  ).toHaveAttribute("src", avatarUrl);
 });
 
 test("custom personas can be shared to the relay catalog", async ({ page }) => {
