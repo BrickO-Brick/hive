@@ -6,8 +6,14 @@ import {
   type Repository,
 } from "@/features/projects/hooks";
 import { isUnsupportedProjectKindError } from "@/features/projects/projectCreation";
-import { publishOwnedAgentProjectAnnouncements } from "@/features/projects/projectOwnerControl";
-import { buildAddedRepositoryEventTemplatesFromHead } from "@/features/projects/projectRepositoryCreation";
+import {
+  isDanglingProjectMemberPublish,
+  publishOwnedAgentProjectAnnouncements,
+} from "@/features/projects/projectOwnerControl";
+import {
+  buildAddedRepositoryEventTemplatesFromHead,
+  repositoryDtagFromName,
+} from "@/features/projects/projectRepositoryCreation";
 import {
   addRepositoryToProject,
   eventToRepository,
@@ -31,22 +37,40 @@ export type AddProjectRepositoryInput = {
   webUrl?: string;
 };
 
-async function addProjectRepository({
-  ownerControlAgentPubkey,
-  project,
-  ...input
-}: AddProjectRepositoryInput): Promise<{
+type FetchEventsInput = Parameters<(typeof relayClient)["fetchEvents"]>[0];
+
+/**
+ * Relay/publish seams injected by tests. The regression for the
+ * partial-publish heal must run the mutation itself — guards included — not
+ * just the template builder, so the whole flow takes its I/O through here.
+ */
+export type AddProjectRepositoryDeps = {
+  fetchEvents: (filter: FetchEventsInput) => Promise<RelayEvent[]>;
+  publishOwnedAgentAnnouncements: typeof publishOwnedAgentProjectAnnouncements;
+  publishOwnerAnnouncement: typeof publishProjectOwnerAnnouncement;
+};
+
+/** Exported for tests — production callers go through the mutation hook. */
+export async function addProjectRepository(
+  { ownerControlAgentPubkey, project, ...input }: AddProjectRepositoryInput,
+  deps?: Partial<AddProjectRepositoryDeps>,
+): Promise<{
   previousProjectId: string;
   project: Project;
   repository: Repository;
 }> {
+  const {
+    fetchEvents = relayClient.fetchEvents.bind(relayClient),
+    publishOwnedAgentAnnouncements = publishOwnedAgentProjectAnnouncements,
+    publishOwnerAnnouncement = publishProjectOwnerAnnouncement,
+  } = deps ?? {};
   const targetOwner = project.owner.toLowerCase();
 
   // Fetch the live signed project head immediately before mutating.
   // This prevents: (a) unknown-tag erasure from the cached UI projection,
   // (b) concurrent-write clobber when another session or the CLI advanced
   // the head after we loaded the page.
-  const liveHeads = await relayClient.fetchEvents({
+  const liveHeads = await fetchEvents({
     kinds: [KIND_PROJECT_ANNOUNCEMENT],
     authors: [targetOwner],
     "#d": [project.dtag],
@@ -59,36 +83,51 @@ async function addProjectRepository({
     );
   }
 
-  // Dominated-write guard: if the live head is newer than our cached snapshot,
-  // a concurrent session has already advanced the project — our mutation would
-  // overwrite their changes. Surface the conflict rather than silently clobbering.
-  if (liveHead.created_at > project.createdAt) {
-    throw new Error(
-      "This project was updated by another session while you were working. Refresh and try again.",
-    );
-  }
+  // Partial-publish detection must precede the dominated-write guard below:
+  // the project event can land while the repository event fails, leaving the
+  // live head referencing a coordinate with no repository head (a dangling
+  // member) — and a live head strictly newer than the cached snapshot,
+  // because the failed mutation never updated the cache. Probe for a
+  // repository head at the coordinate first so the template builder can
+  // distinguish "raced with another session" (throw) from "resume a partial
+  // publish" (heal by publishing only the missing event).
+  const repositoryDtag = repositoryDtagFromName(input.name.trim());
+  const existingRepoHeads = repositoryDtag
+    ? await fetchEvents({
+        kinds: [KIND_REPO_ANNOUNCEMENT],
+        authors: [targetOwner],
+        "#d": [repositoryDtag],
+        limit: 1,
+      })
+    : [];
 
   const templates = buildAddedRepositoryEventTemplatesFromHead({
     ...input,
     existingRepositoryAddresses: project.repositoryAddresses,
     liveHead,
     ownerPubkey: targetOwner,
+    repositoryHeadExists: existingRepoHeads.length > 0,
   });
 
   // Cross-project d-tag clobber guard: if the owner already has a 30617
   // at this coordinate — whether as a standalone repo or in another project —
-  // block the write unconditionally unless it is already a member of this
-  // project (in which case the earlier duplicate-address check would have
-  // thrown before we reach here).
-  const existingRepoHeads = await relayClient.fetchEvents({
-    kinds: [KIND_REPO_ANNOUNCEMENT],
-    authors: [targetOwner],
-    "#d": [templates.repositoryDtag],
-    limit: 1,
-  });
+  // block the write unconditionally. (A coordinate that is already a member
+  // of this project with a live repository head threw "already contains"
+  // inside the template builder before reaching here.)
   if (existingRepoHeads.length > 0) {
     throw new Error(
       `A repository named "${templates.repositoryDtag}" already exists (as a standalone repository or in another project). Choose a different name to avoid overwriting it.`,
+    );
+  }
+
+  // Dominated-write guard: if the live head is newer than our cached snapshot,
+  // a concurrent session has already advanced the project — our mutation would
+  // overwrite their changes. Surface the conflict rather than silently
+  // clobbering. Resume mode publishes no project head, so a moved head cannot
+  // be clobbered and must not block the heal.
+  if (!templates.resume && liveHead.created_at > project.createdAt) {
+    throw new Error(
+      "This project was updated by another session while you were working. Refresh and try again.",
     );
   }
 
@@ -97,16 +136,37 @@ async function addProjectRepository({
     liveHead.created_at + 1,
   );
   if (ownerControlAgentPubkey) {
-    const events = await publishOwnedAgentProjectAnnouncements(
-      ownerControlAgentPubkey,
-      [
-        { ...templates.project, createdAt: projectCreatedAt },
-        { ...templates.repository, createdAt: projectCreatedAt },
-      ],
-    );
-    const projectEvent = events.find(
-      (event) => event.kind === KIND_PROJECT_ANNOUNCEMENT,
-    );
+    // Resume mode: the live project head already references the coordinate,
+    // so republishing it would only advance created_at for nothing — send
+    // just the missing repository event.
+    let events: RelayEvent[];
+    try {
+      events = await publishOwnedAgentAnnouncements(
+        ownerControlAgentPubkey,
+        templates.resume
+          ? [{ ...templates.repository, createdAt: projectCreatedAt }]
+          : [
+              { ...templates.project, createdAt: projectCreatedAt },
+              { ...templates.repository, createdAt: projectCreatedAt },
+            ],
+      );
+    } catch (error) {
+      // Sequential publish failed partway: the project head landed but the
+      // repository event did not. Consume the partial-success metadata and
+      // resume immediately with just the missing event, instead of
+      // surfacing a dangling member for the user to retry.
+      if (!isDanglingProjectMemberPublish(error)) {
+        throw error;
+      }
+      const repositoryEvents = await publishOwnedAgentAnnouncements(
+        ownerControlAgentPubkey,
+        [{ ...templates.repository, createdAt: projectCreatedAt }],
+      );
+      events = [...error.publishedEvents, ...repositoryEvents];
+    }
+    const projectEvent = templates.resume
+      ? liveHead
+      : events.find((event) => event.kind === KIND_PROJECT_ANNOUNCEMENT);
     const repositoryEvent = events.find(
       (event) => event.kind === KIND_REPO_ANNOUNCEMENT,
     );
@@ -130,25 +190,31 @@ async function addProjectRepository({
   }
 
   let projectEvent: RelayEvent;
-  try {
-    // Confirm grouping support before publishing the repository so older
-    // relays cannot leave a new standalone repository behind.
-    const publication = await publishProjectOwnerAnnouncement({
-      ...templates.project,
-      createdAt: projectCreatedAt,
-      targetOwner,
-    });
-    projectEvent = publication.event;
-    if (publication.publicationError) {
-      throw new Error(publication.publicationError);
+  if (templates.resume) {
+    // The live head already references the coordinate — publishing the
+    // missing repository event below is the entire heal.
+    projectEvent = liveHead;
+  } else {
+    try {
+      // Confirm grouping support before publishing the repository so older
+      // relays cannot leave a new standalone repository behind.
+      const publication = await publishOwnerAnnouncement({
+        ...templates.project,
+        createdAt: projectCreatedAt,
+        targetOwner,
+      });
+      projectEvent = publication.event;
+      if (publication.publicationError) {
+        throw new Error(publication.publicationError);
+      }
+    } catch (error) {
+      if (isUnsupportedProjectKindError(error)) {
+        throw new Error(
+          `This relay does not support multi-repository projects (event kind ${KIND_PROJECT_ANNOUNCEMENT}).`,
+        );
+      }
+      throw error;
     }
-  } catch (error) {
-    if (isUnsupportedProjectKindError(error)) {
-      throw new Error(
-        `This relay does not support multi-repository projects (event kind ${KIND_PROJECT_ANNOUNCEMENT}).`,
-      );
-    }
-    throw error;
   }
 
   // If the repository publish fails, the project event is already live with a
@@ -166,7 +232,7 @@ async function addProjectRepository({
   let repository: Repository | null = null;
   let repositoryEvent: RelayEvent | null = null;
   const publishRepository = async (): Promise<RelayEvent> => {
-    const publication = await publishProjectOwnerAnnouncement({
+    const publication = await publishOwnerAnnouncement({
       ...templates.repository,
       createdAt: projectCreatedAt,
       targetOwner,
@@ -189,7 +255,7 @@ async function addProjectRepository({
     let alreadyStored = false;
     if (repositoryEvent) {
       try {
-        const stored = await relayClient.fetchEvents({
+        const stored = await fetchEvents({
           ids: [repositoryEvent.id],
           kinds: [KIND_REPO_ANNOUNCEMENT],
           limit: 1,
@@ -246,7 +312,8 @@ async function addProjectRepository({
 export function useAddProjectRepositoryMutation() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: addProjectRepository,
+    mutationFn: (input: AddProjectRepositoryInput) =>
+      addProjectRepository(input),
     onSuccess: ({ previousProjectId, project }) => {
       if (previousProjectId !== project.id) {
         queryClient.removeQueries({

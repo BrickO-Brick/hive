@@ -50,8 +50,10 @@ use builderlab::*;
 use commands::*;
 use deep_link::{
     acknowledge_pending_community_deep_link, acknowledge_pending_entity_deep_link,
+    acknowledge_pending_navigation_deep_link, clear_pending_navigation_deep_links,
     handle_deep_link_url, take_pending_community_deep_link, take_pending_entity_deep_link,
-    PendingCommunityDeepLinks, PendingEntityDeepLinks,
+    take_pending_navigation_deep_link, PendingCommunityDeepLinks, PendingEntityDeepLinks,
+    PendingNavigationDeepLinks,
 };
 use huddle::audio_output::{
     get_audio_output_device, list_audio_output_devices, set_audio_output_device,
@@ -292,7 +294,6 @@ pub fn run() {
     } else {
         builder.plugin(tauri_plugin_updater::Builder::new().build())
     };
-
     let app = app_menu::install(builder)
         .register_asynchronous_uri_scheme_protocol("buzz-media", |ctx, request, responder| {
             let app = ctx.app_handle().clone();
@@ -304,6 +305,7 @@ pub fn run() {
         .manage(build_app_state())
         .manage(ClipboardState::new())
         .manage(PendingCommunityDeepLinks::default())
+        .manage(PendingNavigationDeepLinks::default())
         .manage(PendingEntityDeepLinks::default())
         .manage(BuilderlabSession::default())
         .manage(BuilderlabLogin::default())
@@ -609,6 +611,9 @@ pub fn run() {
             terminal_runtime::terminal_focus,
             take_pending_community_deep_link,
             acknowledge_pending_community_deep_link,
+            take_pending_navigation_deep_link,
+            acknowledge_pending_navigation_deep_link,
+            clear_pending_navigation_deep_links,
             take_pending_entity_deep_link,
             acknowledge_pending_entity_deep_link,
             start_builderlab_login,
@@ -735,6 +740,7 @@ pub fn run() {
             upload_media_bytes,
             upload_media_bytes_raw,
             cancel_media_upload,
+            release_media_upload,
             download_image,
             save_png_data_url,
             download_file,

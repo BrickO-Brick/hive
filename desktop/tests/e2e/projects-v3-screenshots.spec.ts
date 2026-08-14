@@ -211,6 +211,8 @@ test("projects v3 work-item list metadata", async ({ page }) => {
   const pullRequestRow = page.getByTestId(/^projects-pr-row-/).first();
   await expect(pullRequestRow).toBeVisible();
   await expect(pullRequestRow).toContainText("Review");
+  await expect(pullRequestRow).toContainText("opened this in");
+  await expect(pullRequestRow).toContainText(/from\s*feature\/mock-2-0/);
   await expect(pullRequestRow).not.toContainText(/#[0-9a-f]{8}/);
   await waitForAnimations(page);
   await page.screenshot({ path: `${SHOTS}/05-pr-list-metadata.png` });
@@ -221,6 +223,7 @@ test("projects v3 work-item list metadata", async ({ page }) => {
   const issueRow = page.getByTestId(/^projects-issue-row-/).first();
   await expect(issueRow).toBeVisible();
   await expect(issueRow).toContainText("Issue");
+  await expect(issueRow).toContainText(/opened this in\s*relay-tools/);
   await expect(issueRow).not.toContainText(/#[0-9a-f]{8}/);
   await waitForAnimations(page);
   await page.screenshot({ path: `${SHOTS}/06-issue-list-metadata.png` });

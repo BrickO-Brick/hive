@@ -22,6 +22,7 @@ import { Button } from "@/shared/ui/button";
 import { Card } from "@/shared/ui/card";
 import { DropdownMenuItem } from "@/shared/ui/dropdown-menu";
 import { CopyShareLinkMenuItem } from "./CopyShareLinkMenuItem";
+import { IssueAssigneeFacepile } from "./IssueAssigneesRow";
 import { ProjectAuthorIdentity } from "./ProjectAuthorIdentity";
 import { ProjectEventTypeIcon } from "./ProjectEventTypeIcon";
 import { ProjectListRowMenu } from "./ProjectListRowMenu";
@@ -196,13 +197,16 @@ function IssueListRow({
   onOpen,
   profiles,
   project,
+  repository,
 }: {
   issue: ProjectIssue;
   onOpen: (project: Project, issue: ProjectIssue) => void;
   profiles?: UserProfileLookup;
   project: Project;
+  repository: Repository;
 }) {
   const authorLabel = resolveUserLabel({ profiles, pubkey: issue.author });
+  const labelsSummary = issueLabelsSummary(issue);
 
   return (
     <tr
@@ -232,10 +236,10 @@ function IssueListRow({
       <td className="min-w-0">
         <div className="flex min-w-0 items-start gap-2 text-left">
           <ProjectEventTypeIcon className="h-5 w-5" kind="issue" />
-          <div className="-mt-0.5 min-w-0">
+          <div className="-mt-0.5 min-w-0 flex-1">
             <p className={PROJECT_LIST_ROW_TITLE_CLASS}>{issue.title}</p>
             <div
-              className={`flex min-w-0 items-center gap-1 overflow-hidden whitespace-nowrap ${PROJECT_LIST_ROW_SUBTEXT_CLASS}`}
+              className={`flex min-w-0 items-center gap-x-1 overflow-hidden whitespace-nowrap ${PROJECT_LIST_ROW_SUBTEXT_CLASS}`}
             >
               <ProjectAuthorIdentity
                 label={authorLabel}
@@ -243,8 +247,21 @@ function IssueListRow({
                 pubkey={issue.author}
                 testId="projects-issue-author"
               />
+              <span>opened this in</span>
+              <span className="truncate">{repository.name}</span>
+              {labelsSummary ? (
+                <>
+                  <span>and tagged it</span>
+                  <span className="truncate">{labelsSummary}</span>
+                </>
+              ) : null}
+              <span className="-ml-1">.</span>
             </div>
           </div>
+          <IssueAssigneeFacepile
+            assignees={issue.assignees}
+            profiles={profiles}
+          />
         </div>
       </td>
       <td className="min-w-0">
@@ -386,6 +403,7 @@ export function ProjectsIssuesList({
               }
               profiles={profiles}
               project={project}
+              repository={repository}
             />
           ))}
         </tbody>
