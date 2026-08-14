@@ -68,19 +68,37 @@ test("normalizes safe webhook fields and rejects reserved or invalid names", () 
 test("shows trigger-relevant fields", () => {
   assert.deepEqual(
     conditionFieldsForTrigger("reaction_added").map((field) => field.value),
-    [
-      "trigger_emoji",
-      "trigger_author",
-      "trigger_channel_id",
-      "trigger_message_id",
-    ],
+    ["trigger_emoji", "trigger_author", "trigger_message_id"],
   );
   assert.equal(conditionFieldsForTrigger("webhook")[0].value, "webhook_field");
+  for (const triggerType of ["message_posted", "diff_posted"]) {
+    assert.equal(
+      conditionFieldsForTrigger(triggerType).some(
+        (field) => field.value === "trigger_message_id",
+      ),
+      false,
+    );
+  }
+  for (const triggerType of [
+    "message_posted",
+    "diff_posted",
+    "reaction_added",
+    "webhook",
+    "schedule",
+  ]) {
+    assert.equal(
+      conditionFieldsForTrigger(triggerType).some(
+        (field) => field.value === "trigger_channel_id",
+      ),
+      false,
+    );
+  }
 });
 
 test("limits opaque identifiers to equality operators", () => {
   for (const field of [
     "trigger_author",
+    "trigger_emoji",
     "trigger_channel_id",
     "trigger_message_id",
     "future_resource_id",

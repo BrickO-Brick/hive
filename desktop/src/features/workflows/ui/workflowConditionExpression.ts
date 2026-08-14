@@ -22,7 +22,9 @@ const EXACT_MATCH_OPERATORS = [
 export function conditionOperatorsForField(
   field: string,
 ): readonly ConditionOperator[] {
-  return field === "trigger_author" || field.endsWith("_id")
+  return field === "trigger_author" ||
+    field === "trigger_emoji" ||
+    field.endsWith("_id")
     ? EXACT_MATCH_OPERATORS
     : CONDITION_OPERATORS;
 }
@@ -47,33 +49,24 @@ export type ParsedConditionExpression = {
 
 export const CUSTOM_CONDITION_FIELD = "custom";
 
-const COMMON_FIELDS: ConditionField[] = [
-  { label: "Author pubkey", value: "trigger_author" },
-  { label: "Channel ID", value: "trigger_channel_id" },
-  { label: "Message ID", value: "trigger_message_id" },
-];
+const AUTHOR_FIELD: ConditionField = {
+  label: "Author pubkey",
+  value: "trigger_author",
+};
 
 const FIELDS_BY_TRIGGER: Record<TriggerType, ConditionField[]> = {
   message_posted: [
     { label: "Message text", value: "trigger_text" },
-    ...COMMON_FIELDS,
+    AUTHOR_FIELD,
   ],
-  diff_posted: [
-    { label: "Diff text", value: "trigger_text" },
-    ...COMMON_FIELDS,
-  ],
+  diff_posted: [{ label: "Diff text", value: "trigger_text" }, AUTHOR_FIELD],
   reaction_added: [
     { label: "Reaction emoji", value: "trigger_emoji" },
-    ...COMMON_FIELDS,
+    AUTHOR_FIELD,
+    { label: "Reacted-to message ID", value: "trigger_message_id" },
   ],
-  webhook: [
-    { label: "Webhook field…", value: "webhook_field" },
-    { label: "Channel ID", value: "trigger_channel_id" },
-  ],
-  schedule: [
-    { label: "Channel ID", value: "trigger_channel_id" },
-    { label: "Scheduled timestamp", value: "trigger_timestamp" },
-  ],
+  webhook: [{ label: "Webhook field…", value: "webhook_field" }],
+  schedule: [{ label: "Scheduled timestamp", value: "trigger_timestamp" }],
 };
 
 export function conditionFieldsForTrigger(

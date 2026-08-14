@@ -94,7 +94,7 @@ async function createWorkflow(
     description?: string;
     enabled?: boolean;
     trigger?: string;
-    stepCondition?: string;
+    triggerCondition?: string;
     stepName?: string;
     stepTimeoutSecs?: string;
   },
@@ -122,18 +122,19 @@ async function createWorkflow(
       .getByRole("menuitem", { name: TRIGGER_OPTION_LABELS[options.trigger] })
       .click();
   }
+  if (options?.triggerCondition) {
+    await dialog.getByRole("button", { name: /^Trigger:/ }).click();
+    await dialog
+      .getByRole("group", { name: "Condition" })
+      .getByRole("button", { name: "Custom" })
+      .click();
+    await dialog.getByLabel("Custom expression").fill(options.triggerCondition);
+  }
 
   await dialog.getByRole("button", { name: "Add step" }).click();
   await page.getByRole("menuitem", { name: "Delay" }).click();
   if (options?.stepName) {
     await dialog.getByLabel("Name (optional)").fill(options.stepName);
-  }
-  if (options?.stepCondition) {
-    await dialog
-      .getByRole("group", { name: "Condition" })
-      .getByRole("button", { name: "Custom" })
-      .click();
-    await dialog.getByLabel("Custom expression").fill(options.stepCondition);
   }
   if (options?.stepTimeoutSecs) {
     await dialog.getByLabel("Timeout (seconds)").fill(options.stepTimeoutSecs);
@@ -276,8 +277,9 @@ test("builds a valid trigger condition from plain-language choices", async ({
   const inspector = dialog.getByTestId("workflow-node-inspector");
 
   const conditionFields = inspector.getByRole("group", { name: "Condition" });
+  await expect(inspector.getByText("Run when", { exact: true })).toBeVisible();
   const conditionOptions = conditionFields.getByRole("button");
-  await expect(conditionOptions).toHaveCount(6);
+  await expect(conditionOptions).toHaveCount(4);
   const allMessages = conditionFields.getByRole("button", {
     name: "All messages",
   });
@@ -287,8 +289,11 @@ test("builds a valid trigger condition from plain-language choices", async ({
   await expect(
     conditionFields.getByRole("button", { name: "Message text" }),
   ).toHaveAttribute("aria-pressed", "false");
-  for (const name of ["Author pubkey", "Channel ID", "Message ID", "Custom"]) {
+  for (const name of ["Author pubkey", "Custom"]) {
     await expect(conditionFields.getByRole("button", { name })).toBeVisible();
+  }
+  for (const name of ["Channel ID", "Message ID"]) {
+    await expect(conditionFields.getByRole("button", { name })).toHaveCount(0);
   }
 
   await conditionFields.getByRole("button", { name: "Message text" }).click();
@@ -323,44 +328,6 @@ test("builds a valid trigger condition from plain-language choices", async ({
     .click();
   await expect(customCondition).toHaveAttribute("aria-pressed", "false");
   await expect(inspector.getByLabel("Custom expression")).not.toBeVisible();
-});
-
-test("chooses a trigger channel condition from the live channel list", async ({
-  page,
-}) => {
-  await navigateToWorkflows(page);
-
-  await page.getByRole("button", { name: "Create Workflow" }).click();
-  const dialog = page.getByRole("dialog");
-  await dialog.getByRole("button", { name: /^Trigger:/ }).click();
-  const inspector = dialog.getByTestId("workflow-node-inspector");
-
-  await inspector.getByRole("button", { name: "Channel ID" }).click();
-  const matchOperator = inspector.getByLabel("Match");
-  await expect(matchOperator).toHaveValue("equals");
-  await expect(matchOperator.locator("option")).toHaveText(["is", "is not"]);
-  const channelCondition = inspector.getByRole("combobox", {
-    name: "Channel ID",
-  });
-  await expect(channelCondition).toContainText("Choose a channel");
-  await channelCondition.click();
-
-  const channelList = page.getByTestId("channel-combobox-list");
-  await channelList.hover();
-  await page.mouse.wheel(0, 500);
-  await expect
-    .poll(() => channelList.evaluate((element) => element.scrollTop))
-    .toBeGreaterThan(0);
-
-  const search = page.getByPlaceholder("Search channels...");
-  await search.fill("random");
-  await page.getByRole("button", { name: "random · stream" }).click();
-  await expect(channelCondition).toContainText("random");
-
-  await dialog.getByRole("tab", { name: "YAML" }).click();
-  await expect(dialog.getByLabel("Workflow YAML")).toHaveValue(
-    /trigger_channel_id == "[0-9a-f-]{36}"/,
-  );
 });
 
 test("chooses a trigger author condition from live user search", async ({
@@ -536,9 +503,13 @@ test("chooses a reaction emoji condition with the app emoji picker", async ({
   await inspector.getByLabel("Trigger event").click();
   await page.getByRole("menuitem", { name: "Reaction Added" }).click();
 
-  await dialog.getByRole("button", { name: "Add step" }).click();
-  await page.getByRole("menuitem", { name: "Delay" }).click();
   inspector = dialog.getByTestId("workflow-node-inspector");
+  await expect(
+    inspector.getByRole("button", { name: "Reacted-to message ID" }),
+  ).toBeVisible();
+  await expect(
+    inspector.getByRole("button", { name: "Channel ID" }),
+  ).toHaveCount(0);
   await inspector.getByRole("button", { name: "Reaction emoji" }).click();
 
   const conditionEmoji = inspector.getByRole("button", {
@@ -552,7 +523,7 @@ test("chooses a reaction emoji condition with the app emoji picker", async ({
   await expect(conditionEmoji).toContainText(":buzz:");
   await dialog.getByRole("tab", { name: "YAML" }).click();
   await expect(dialog.getByLabel("Workflow YAML")).toHaveValue(
-    /trigger_emoji[\s\S]*:buzz:/,
+    /filter: trigger_emoji == ":buzz:"/,
   );
 });
 
@@ -639,15 +610,18 @@ test("opens node configuration in a contextual inspector", async ({ page }) => {
   const dialog = page.getByRole("dialog");
   const inspector = dialog.getByTestId("workflow-node-inspector");
 
-  await expect(inspector).not.toBeVisible();
-  await expect(dialog.getByText("End", { exact: true })).not.toBeVisible();
-
-  await dialog.getByRole("button", { name: /^Trigger:/ }).click();
   await expect(inspector).toBeVisible();
   await expect(inspector.getByLabel("Trigger event")).toHaveAttribute(
     "data-value",
     "message_posted",
   );
+  await expect(
+    inspector.getByRole("button", { name: "All messages" }),
+  ).toHaveAttribute("aria-pressed", "true");
+  const initialIngress = dialog.getByTestId("workflow-node-ingress");
+  await expect(initialIngress).toHaveAttribute("data-terminal", "true");
+  await expect(initialIngress.locator("svg.lucide-arrow-down")).toHaveCount(0);
+  await expect(initialIngress.getByLabel("Add step")).toBeVisible();
 
   await dialog.getByRole("button", { name: "Add step" }).click();
   await page.getByRole("menuitem", { name: "Send Message" }).click();
@@ -659,7 +633,41 @@ test("opens node configuration in a contextual inspector", async ({ page }) => {
     "send_message",
   );
   await expect(inspector.getByLabel("Message text")).toBeVisible();
-  await expect(dialog.getByText("End", { exact: true })).toBeVisible();
+  await expect(inspector.getByRole("group", { name: "Condition" })).toHaveCount(
+    0,
+  );
+  await expect(
+    inspector.getByRole("heading", { name: "Step timeout" }),
+  ).toBeVisible();
+  const ingresses = page.getByTestId("workflow-node-ingress");
+  await expect(ingresses).toHaveCount(2);
+  const betweenIngress = ingresses.first();
+  const terminalIngress = ingresses.last();
+  const betweenAddButton = betweenIngress.getByLabel("Add step");
+  const betweenArrow = betweenIngress.locator("svg.lucide-arrow-down");
+  await expect(betweenIngress).toHaveAttribute("data-terminal", "false");
+  await expect(terminalIngress).toHaveAttribute("data-terminal", "true");
+  await expect(terminalIngress.getByLabel("Add after Step 1")).toBeVisible();
+  await page.mouse.move(0, 0);
+  await expect(betweenArrow).toHaveCSS("opacity", "1");
+  await expect(betweenAddButton).toHaveCSS("opacity", "0");
+  await expect(betweenAddButton).toHaveCSS("scale", "1.25");
+  await expect(betweenAddButton).toHaveCSS("translate", "none");
+  await betweenIngress.hover();
+  await expect(betweenArrow).toHaveCSS("opacity", "0.1");
+  await expect(betweenAddButton).toHaveCSS("opacity", "1");
+  await expect(betweenAddButton).toHaveCSS("scale", "1");
+  await expect(betweenAddButton).toHaveCSS("translate", "none");
+  await betweenAddButton.click();
+  await expect(betweenIngress).toHaveAttribute("data-menu-open", "true");
+  await expect(page.getByRole("menuitem", { name: "Delay" })).toBeVisible();
+  await page.mouse.move(0, 0);
+  await expect(betweenArrow).toHaveCSS("opacity", "0.1");
+  await expect(betweenAddButton).toHaveCSS("opacity", "1");
+  await expect(betweenAddButton).toHaveCSS("scale", "1");
+  await page.keyboard.press("Escape");
+  await expect(betweenIngress).toHaveAttribute("data-menu-open", "false");
+  await expect(dialog.getByText("End", { exact: true })).toHaveCount(0);
   await expect(triggerNode).toHaveAttribute("aria-pressed", "false");
   await expect(stepNode).toHaveAttribute("aria-pressed", "true");
   expect(
@@ -697,7 +705,7 @@ test("opens node configuration in a contextual inspector", async ({ page }) => {
   await expect(stepNode).not.toBeVisible();
   await expect(inspector).toBeVisible();
   await expect(inspector.getByLabel("Trigger event")).toBeVisible();
-  await expect(dialog.getByText("End", { exact: true })).not.toBeVisible();
+  await expect(dialog.getByText("End", { exact: true })).toHaveCount(0);
 });
 
 test("switches between the form and YAML editors", async ({ page }) => {
@@ -727,7 +735,7 @@ test("captures disabled diff workflows in the list UI", async ({ page }) => {
     enabled: false,
     trigger: "diff_posted",
     stepName: "Notify reviewers",
-    stepCondition: 'str_contains(trigger_text, "src/")',
+    triggerCondition: 'str_contains(trigger_text, "src/")',
     stepTimeoutSecs: "45",
   });
 
@@ -736,7 +744,9 @@ test("captures disabled diff workflows in the list UI", async ({ page }) => {
     .filter({ hasText: workflowName })
     .first();
   await expect(card).toContainText(workflowName);
-  await expect(card).toContainText("When a diff is posted, wait for a moment");
+  await expect(card).toContainText(
+    "When a matching diff is posted, wait for a moment",
+  );
   await expect(card).toContainText(description);
   await expect(card).toContainText("Diff Posted");
   await expect(card).toContainText("disabled");

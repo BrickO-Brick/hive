@@ -181,7 +181,8 @@ export function formStateToYaml(state: WorkflowFormState): string {
   const trigger: Record<string, unknown> = { on: state.trigger.on };
   if (
     (state.trigger.on === "message_posted" ||
-      state.trigger.on === "diff_posted") &&
+      state.trigger.on === "diff_posted" ||
+      state.trigger.on === "reaction_added") &&
     state.trigger.filter
   ) {
     trigger.filter = state.trigger.filter;

@@ -6,7 +6,6 @@ import { Button } from "@/shared/ui/button";
 import { Input } from "@/shared/ui/input";
 import { Textarea } from "@/shared/ui/textarea";
 import { ChannelCombobox } from "./ChannelCombobox";
-import { WorkflowConditionBuilder } from "./WorkflowConditionBuilder";
 import { WorkflowEmojiField } from "./WorkflowEmojiField";
 import { WorkflowTemplateTextarea } from "./WorkflowTemplateTextarea";
 import { FieldLabel, FormSelect } from "./workflowFormPrimitives";
@@ -380,18 +379,7 @@ export function WorkflowStepCard({
       </section>
 
       <section className="space-y-4 border-t border-border/50 py-5">
-        <SectionHeading title="Run controls" />
-        <div>
-          <WorkflowConditionBuilder
-            channels={channels}
-            disabled={disabled}
-            idPrefix={`${prefix}-condition`}
-            matchAllLabel="Every run"
-            onChange={(condition) => onUpdate({ ...step, condition })}
-            triggerType={triggerType}
-            value={step.condition ?? ""}
-          />
-        </div>
+        <SectionHeading title="Step timeout" />
         <div className="space-y-1.5">
           <FieldLabel htmlFor={`${prefix}-timeout-secs`}>
             Timeout (seconds)

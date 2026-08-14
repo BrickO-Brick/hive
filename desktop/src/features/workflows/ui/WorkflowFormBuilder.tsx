@@ -1,4 +1,5 @@
 import {
+  ArrowDown,
   Check,
   ChevronDown,
   Plus,
@@ -24,9 +25,9 @@ import { Input } from "@/shared/ui/input";
 import { Switch } from "@/shared/ui/switch";
 import { Textarea } from "@/shared/ui/textarea";
 import { WorkflowConditionBuilder } from "./WorkflowConditionBuilder";
-import { WorkflowEmojiField } from "./WorkflowEmojiField";
 import { WorkflowScheduleFields } from "./WorkflowScheduleFields";
 import { WorkflowStepCard } from "./WorkflowStepCard";
+import { buildConditionExpression } from "./workflowConditionExpression";
 import { FieldLabel } from "./workflowFormPrimitives";
 import {
   DEFAULT_FORM_STATE,
@@ -78,19 +79,25 @@ function TriggerConfigFields({
       );
     case "reaction_added":
       return (
-        <div className="space-y-1.5">
-          <FieldLabel htmlFor="wf-trigger-emoji">
-            Emoji filter (optional)
-          </FieldLabel>
-          <WorkflowEmojiField
-            ariaLabel="Choose emoji filter"
-            clearAriaLabel="Clear emoji filter"
-            disabled={disabled}
-            id="wf-trigger-emoji"
-            onChange={(emoji) => onUpdate({ ...trigger, emoji })}
-            value={trigger.emoji}
-          />
-        </div>
+        <WorkflowConditionBuilder
+          channels={channels}
+          disabled={disabled}
+          idPrefix="wf-trigger-filter"
+          matchAllLabel="All reactions"
+          onChange={(filter) =>
+            onUpdate({ ...trigger, emoji: undefined, filter })
+          }
+          triggerType={trigger.on}
+          value={
+            trigger.filter ??
+            buildConditionExpression({
+              field: "trigger_emoji",
+              operator: "equals",
+              value: trigger.emoji ?? "",
+            }) ??
+            ""
+          }
+        />
       );
     case "webhook":
       return (
@@ -217,6 +224,7 @@ function WorkflowNode({
   selected,
   showTitle = true,
   subtitle,
+  terminal,
   title,
 }: {
   description: string;
@@ -230,9 +238,11 @@ function WorkflowNode({
   selected: boolean;
   showTitle?: boolean;
   subtitle?: string;
+  terminal: boolean;
   title: string;
 }) {
   const isNumbered = number !== undefined;
+  const [addMenuOpen, setAddMenuOpen] = React.useState(false);
 
   return (
     <li className="flex flex-col items-center">
@@ -295,14 +305,29 @@ function WorkflowNode({
         ) : null}
       </div>
 
-      <span className="relative flex h-18 items-center justify-center">
-        <DropdownMenu>
+      <div
+        className="group relative flex h-18 items-center justify-center"
+        data-menu-open={addMenuOpen}
+        data-terminal={terminal}
+        data-testid="workflow-node-ingress"
+      >
+        {terminal ? null : (
+          <ArrowDown
+            aria-hidden="true"
+            className="h-5 w-5 text-muted-foreground transition-opacity duration-200 ease-out group-hover:opacity-10 group-data-[menu-open=true]:opacity-10 group-has-[:focus-visible]:opacity-10 motion-reduce:transition-none"
+          />
+        )}
+        <DropdownMenu onOpenChange={setAddMenuOpen}>
           <DropdownMenuTrigger asChild>
             <Button
               aria-label={
                 title === "Trigger" ? "Add step" : `Add after ${title}`
               }
-              className="relative z-10 h-7 w-7 rounded-full bg-background shadow-sm"
+              className={cn(
+                "relative z-10 h-7 w-7 rounded-full bg-background shadow-sm",
+                !terminal &&
+                  "pointer-events-none absolute scale-125 opacity-0 transition-[opacity,transform,background-color,color,border-color,box-shadow] duration-200 ease-out group-hover:pointer-events-auto group-hover:scale-100 group-hover:opacity-100 group-data-[menu-open=true]:pointer-events-auto group-data-[menu-open=true]:scale-100 group-data-[menu-open=true]:opacity-100 focus-visible:pointer-events-auto focus-visible:scale-100 focus-visible:opacity-100 motion-reduce:transition-none",
+              )}
               disabled={disabled}
               size="icon"
               type="button"
@@ -325,7 +350,7 @@ function WorkflowNode({
             ))}
           </DropdownMenuContent>
         </DropdownMenu>
-      </span>
+      </div>
     </li>
   );
 }
@@ -348,7 +373,9 @@ export function WorkflowFormBuilder({
       ? initialParseRef.current.state
       : DEFAULT_FORM_STATE,
   );
-  const [selectedNode, setSelectedNode] = React.useState<SelectedNode>(null);
+  const [selectedNode, setSelectedNode] = React.useState<SelectedNode>({
+    type: "trigger",
+  });
   const [selectionDirection, setSelectionDirection] = React.useState<1 | -1>(1);
   const shouldReduceMotion = useReducedMotion();
   const previousModeRef = React.useRef(mode);
@@ -372,6 +399,7 @@ export function WorkflowFormBuilder({
 
     const result = yamlToFormState(yaml);
     if (result.ok) setFormState(result.state);
+    setSelectedNode({ type: "trigger" });
   }, [mode, yaml]);
 
   const selectNode = React.useCallback(
@@ -522,6 +550,7 @@ export function WorkflowFormBuilder({
                       onAddAfter={(action) => insertStep(0, action)}
                       onClick={() => selectNode({ type: "trigger" })}
                       selected={selectedNode?.type === "trigger"}
+                      terminal={formState.steps.length === 0}
                       title="Trigger"
                     />
 
@@ -545,18 +574,11 @@ export function WorkflowFormBuilder({
                           }
                           showTitle={false}
                           subtitle={stepName ? actionLabel : undefined}
+                          terminal={index === formState.steps.length - 1}
                           title={`Step ${index + 1}`}
                         />
                       );
                     })}
-
-                    {formState.steps.length > 0 ? (
-                      <li className="flex justify-center">
-                        <span className="rounded-full border border-border bg-muted/30 px-5 py-1.5 text-xs font-medium text-muted-foreground">
-                          End
-                        </span>
-                      </li>
-                    ) : null}
                   </ol>
                 </div>
               </div>

@@ -5,7 +5,6 @@ import type { Channel } from "@/shared/api/types";
 import { cn } from "@/shared/lib/cn";
 import { Input } from "@/shared/ui/input";
 import { AuthorGridPicker } from "./AuthorGridPicker";
-import { ChannelCombobox } from "./ChannelCombobox";
 import { WorkflowEmojiField } from "./WorkflowEmojiField";
 import { FieldLabel, FormSelect } from "./workflowFormPrimitives";
 import {
@@ -62,8 +61,6 @@ function valueLabel(field: string): string {
   switch (field) {
     case "trigger_author":
       return "Pubkey";
-    case "trigger_channel_id":
-      return "Channel ID";
     case "trigger_message_id":
       return "Message ID";
     case "trigger_emoji":
@@ -79,8 +76,6 @@ function valuePlaceholder(field: string): string {
   switch (field) {
     case "trigger_author":
       return "Paste a hex pubkey";
-    case "trigger_channel_id":
-      return "Paste a channel UUID";
     case "trigger_message_id":
       return "Paste a message event ID";
     case "trigger_timestamp":
@@ -183,8 +178,10 @@ export function WorkflowConditionBuilder({
 
   return (
     <div className="space-y-3">
-      <fieldset>
-        <legend className="sr-only">Condition</legend>
+      <fieldset aria-label="Condition">
+        <legend className="mb-2 text-sm font-medium text-foreground">
+          Run when
+        </legend>
         <div className="grid grid-cols-2 gap-2.5">
           {fieldOptions.map((field) => {
             const isMatchAll = field.value === "";
@@ -330,19 +327,6 @@ export function WorkflowConditionBuilder({
                     emitEditor({ ...editor, value: pubkey })
                   }
                   value={editor.value}
-                />
-              ) : editor.field === "trigger_channel_id" ? (
-                <ChannelCombobox
-                  ariaLabel="Channel ID"
-                  channels={channels}
-                  disabled={disabled}
-                  emptyLabel="Choose a channel"
-                  id={`${idPrefix}-value`}
-                  onChange={(channelId) =>
-                    emitEditor({ ...editor, value: channelId })
-                  }
-                  value={editor.value}
-                  variant="field"
                 />
               ) : editor.field === "trigger_emoji" ? (
                 <WorkflowEmojiField
