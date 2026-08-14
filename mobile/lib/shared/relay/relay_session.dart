@@ -3,9 +3,6 @@ import 'dart:convert';
 import 'dart:math';
 
 import 'package:http/http.dart' as http;
-import 'package:nostr/nostr.dart' as nostr;
-import 'package:pointycastle/digests/sha256.dart';
-import 'package:uuid/uuid.dart';
 
 import 'package:flutter/foundation.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
@@ -15,19 +12,12 @@ import 'nostr_models.dart';
 import 'relay_client.dart';
 import 'relay_closed_policy.dart';
 import 'relay_http_query_client.dart';
+import 'relay_nip98_auth.dart';
+export 'relay_nip98_auth.dart';
+import 'relay_session_state.dart';
 import 'relay_provider.dart';
 import 'relay_rate_limit_gate.dart';
 import 'relay_socket.dart';
-
-enum SessionStatus { disconnected, connecting, connected, reconnecting }
-
-@immutable
-class SessionState {
-  final SessionStatus status;
-  final int reconnectAttempt;
-
-  const SessionState({required this.status, this.reconnectAttempt = 0});
-}
 
 class _HistorySubscription {
   final List<NostrEvent> events = [];
@@ -1004,35 +994,3 @@ final relaySessionProvider =
     NotifierProvider<RelaySessionNotifier, SessionState>(
       RelaySessionNotifier.new,
     );
-
-String buildNip98AuthHeader({
-  required String method,
-  required String url,
-  required List<int> bodyBytes,
-  required String? nsec,
-}) {
-  if (nsec == null || nsec.isEmpty) {
-    throw Exception('Cannot query relay: no signing key available');
-  }
-  final privkeyHex = nostr.Nip19.decode(payload: nsec).data;
-  if (privkeyHex.isEmpty) {
-    throw Exception('Invalid nsec');
-  }
-  final payloadHash = SHA256Digest()
-      .process(Uint8List.fromList(bodyBytes))
-      .map((byte) => byte.toRadixString(16).padLeft(2, '0'))
-      .join();
-  final event = nostr.Event.from(
-    kind: 27235,
-    content: '',
-    tags: [
-      ['u', url],
-      ['method', method.toUpperCase()],
-      ['payload', payloadHash],
-      ['nonce', const Uuid().v4()],
-    ],
-    secretKey: privkeyHex,
-    verify: false,
-  );
-  return 'Nostr ${base64.encode(utf8.encode(event.toJson()))}';
-}

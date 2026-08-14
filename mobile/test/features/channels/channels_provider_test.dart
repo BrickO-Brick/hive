@@ -7,6 +7,7 @@ import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:buzz/features/channels/channel.dart';
 import 'package:buzz/features/channels/channel_management_provider.dart';
 import 'package:buzz/features/channels/channels_provider.dart';
+import 'package:buzz/features/channels/channel_sync.dart';
 import 'package:buzz/shared/relay/relay.dart';
 
 /// Tests for [ChannelsNotifier] in the pure-Nostr world.
@@ -126,6 +127,29 @@ void main() {
       DateTime.fromMillisecondsSinceEpoch(50000, isUtc: true),
     );
   });
+
+  test(
+    'small-account snapshot publishes without waiting for live EOSE',
+    () async {
+      final session = _FakeRelaySession(
+        memberships: [_membership(_channelA, myPk)],
+        metadata: [_meta(id: _channelA, name: 'general')],
+      );
+      session.pauseNextSubscribe();
+      final container = _buildContainer(session: session);
+      addTearDown(container.dispose);
+
+      final channelFuture = container.read(channelsProvider.future);
+      await session.nextSubscribeStarted;
+
+      final channels = await channelFuture.timeout(const Duration(seconds: 1));
+      expect(channels.single.id, _channelA);
+      expect(session.activeChannels, isEmpty);
+
+      session.resumePausedSubscribe();
+      await _waitUntil(() => session.activeChannels.contains(_channelA));
+    },
+  );
 
   test('loaded refresh preserves newer live timestamp', () async {
     final channelIds = List.generate(101, _generatedChannelId);
@@ -376,6 +400,7 @@ void main() {
       addTearDown(container.dispose);
 
       await container.read(channelsProvider.future);
+      await _waitUntil(() => session.activeSubscriptionCount == 2);
 
       // One subscription per joined, non-archived channel.
       expect(session.subscribeFilters, hasLength(2));
@@ -426,6 +451,7 @@ void main() {
       addTearDown(container.dispose);
 
       await container.read(channelsProvider.future);
+      await _waitUntil(() => session.activeSubscriptionCount == 2);
       final initialSubscribeCount = session.totalSubscribeCount;
 
       await container.read(channelsProvider.notifier).refresh();
@@ -497,7 +523,7 @@ void main() {
   );
 
   test(
-    'post-ready terminal close retries subscription and catches up gap',
+    'post-ready terminal close stays quarantined until explicit refresh',
     () async {
       final session = _FakeRelaySession(
         memberships: [_membership(_channelA, myPk)],
@@ -512,8 +538,13 @@ void main() {
 
       session.terminallyClose(_channelA);
       expect(session.activeChannels, isEmpty);
+      final subscribeCountAfterClose = session.totalSubscribeCount;
       final missedEvent = _message(_channelA, createdAt: 50);
       session.unreadEvents = [missedEvent];
+
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(session.totalSubscribeCount, subscribeCountAfterClose);
+      expect(session.activeChannels, isEmpty);
 
       await container.read(channelsProvider.notifier).refresh();
 
@@ -958,6 +989,7 @@ void main() {
 
       final initial = await container.read(channelsProvider.future);
       expect(initial.single.name, 'general');
+      await _waitUntil(() => session.activeSubscriptionCount == 1);
       expect(session.subscribeFilters, hasLength(1));
 
       session.setStatus(SessionStatus.reconnecting);
@@ -1417,7 +1449,8 @@ class _FakeRelaySession extends RelaySessionNotifier {
     void Function(NostrEvent) onEvent, {
     void Function(String message)? onClosed,
     Future<void>? cancelled,
-  }) => _subscribeFake(filter, onEvent, onClosed: onClosed);
+  }) =>
+      _subscribeFake(filter, onEvent, onClosed: onClosed, cancelled: cancelled);
 
   @override
   Future<void Function()> subscribe(
@@ -1430,6 +1463,7 @@ class _FakeRelaySession extends RelaySessionNotifier {
     NostrFilter filter,
     void Function(NostrEvent) onEvent, {
     void Function(String message)? onClosed,
+    Future<void>? cancelled,
   }) async {
     totalSubscribeCount++;
     subscribeFilters.add(filter);
@@ -1444,7 +1478,18 @@ class _FakeRelaySession extends RelaySessionNotifier {
     final paused = _pausedSubscribe;
     if (paused != null && !_subscribeStarted!.isCompleted) {
       _subscribeStarted!.complete();
-      await paused.future;
+      if (cancelled == null) {
+        await paused.future;
+      } else {
+        final wasCancelled = await Future.any([
+          paused.future.then((_) => false),
+          cancelled.then((_) => true),
+        ]);
+        if (wasCancelled) {
+          subscribeFilters.remove(filter);
+          throw const RelaySubscriptionCancelledException();
+        }
+      }
       _pausedSubscribe = null;
       _subscribeStarted = null;
     }
