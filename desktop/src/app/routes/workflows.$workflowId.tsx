@@ -7,6 +7,7 @@ import {
 } from "@/features/workflows/ui/workflowEditorPane";
 import { usePreviewFeatureWarning } from "@/shared/features";
 import { ViewLoadingFallback } from "@/shared/ui/ViewLoadingFallback";
+import { LazyWorkflowsRouteScreen } from "./lazyWorkflowsRouteScreen";
 
 export const Route = createFileRoute("/workflows/$workflowId")({
   component: WorkflowEditorRouteComponent,
@@ -14,11 +15,6 @@ export const Route = createFileRoute("/workflows/$workflowId")({
     pane: serializeWorkflowEditorPane(parseWorkflowEditorPane(search.pane)),
     view: search.view === "duplicate" ? search.view : undefined,
   }),
-});
-
-const WorkflowsRouteScreen = React.lazy(async () => {
-  const module = await import("./WorkflowsRouteScreen");
-  return { default: module.WorkflowsRouteScreen };
 });
 
 function WorkflowEditorRouteComponent() {
@@ -29,7 +25,7 @@ function WorkflowEditorRouteComponent() {
 
   return (
     <React.Suspense fallback={<ViewLoadingFallback kind="workflows" />}>
-      <WorkflowsRouteScreen
+      <LazyWorkflowsRouteScreen
         editor={{
           mode: view === "duplicate" ? "duplicate" : "edit",
           pane: parseWorkflowEditorPane(pane),

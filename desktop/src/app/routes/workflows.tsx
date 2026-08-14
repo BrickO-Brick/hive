@@ -7,6 +7,7 @@ import {
 } from "@/features/workflows/ui/workflowEditorPane";
 import { usePreviewFeatureWarning } from "@/shared/features";
 import { ViewLoadingFallback } from "@/shared/ui/ViewLoadingFallback";
+import { LazyWorkflowsRouteScreen } from "./lazyWorkflowsRouteScreen";
 
 export const Route = createFileRoute("/workflows")({
   component: WorkflowsRouteComponent,
@@ -16,11 +17,6 @@ export const Route = createFileRoute("/workflows")({
   }),
 });
 
-const WorkflowsRouteScreen = React.lazy(async () => {
-  const module = await import("./WorkflowsRouteScreen");
-  return { default: module.WorkflowsRouteScreen };
-});
-
 function WorkflowsRouteComponent() {
   usePreviewFeatureWarning("workflows");
   const navigate = Route.useNavigate();
@@ -28,7 +24,7 @@ function WorkflowsRouteComponent() {
 
   return (
     <React.Suspense fallback={<ViewLoadingFallback kind="workflows" />}>
-      <WorkflowsRouteScreen
+      <LazyWorkflowsRouteScreen
         editor={
           view === "create"
             ? { mode: "create", pane: parseWorkflowEditorPane(pane) }
