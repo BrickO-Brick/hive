@@ -1,15 +1,33 @@
-import { Asterisk, Check, ChevronDown, Hash, Lock, Search } from "lucide-react";
+import {
+  Asterisk,
+  Check,
+  ChevronDown,
+  Hash,
+  Lock,
+  MessageSquareMore,
+  Search,
+} from "lucide-react";
 import * as React from "react";
 
+import { useUsersBatchQuery } from "@/features/profile/hooks";
+import { resolveChannelDisplayLabel } from "@/features/sidebar/lib/channelLabels";
+import { useIdentityQuery } from "@/shared/api/hooks";
 import type { Channel } from "@/shared/api/types";
 import { cn } from "@/shared/lib/cn";
 import { Popover, PopoverContent, PopoverTrigger } from "@/shared/ui/popover";
 import { PortalledScrollArea } from "@/shared/ui/PortalledScrollArea";
 
 function ChannelPrivacyIcon({ channel }: { channel: Channel }) {
-  const Icon = channel.visibility === "private" ? Lock : Hash;
+  const Icon =
+    channel.channelType === "dm"
+      ? MessageSquareMore
+      : channel.visibility === "private"
+        ? Lock
+        : Hash;
 
-  return <Icon aria-hidden className="h-5 w-5 shrink-0" />;
+  return (
+    <Icon aria-hidden className="h-5 w-5 shrink-0 text-muted-foreground/60" />
+  );
 }
 
 type ChannelComboboxProps = {
@@ -44,17 +62,44 @@ export function ChannelCombobox({
   const [highlightedIndex, setHighlightedIndex] = React.useState(0);
 
   const selected = channels.find((c) => c.id === value);
+  const currentPubkey = useIdentityQuery().data?.pubkey;
+  const dmParticipantPubkeys = React.useMemo(() => {
+    const visibleDmChannels = open
+      ? channels.filter((channel) => channel.channelType === "dm")
+      : selected?.channelType === "dm"
+        ? [selected]
+        : [];
+
+    return visibleDmChannels.flatMap((channel) =>
+      channel.participantPubkeys.filter(
+        (pubkey) => pubkey.toLowerCase() !== currentPubkey?.toLowerCase(),
+      ),
+    );
+  }, [channels, currentPubkey, open, selected]);
+  const dmProfiles = useUsersBatchQuery(dmParticipantPubkeys, {
+    enabled: dmParticipantPubkeys.length > 0,
+  }).data?.profiles;
+  const channelLabels = React.useMemo(
+    () =>
+      new Map(
+        channels.map((channel) => [
+          channel.id,
+          resolveChannelDisplayLabel(channel, currentPubkey, dmProfiles),
+        ]),
+      ),
+    [channels, currentPubkey, dmProfiles],
+  );
 
   const filtered = React.useMemo(() => {
     if (!query) return channels;
     const q = query.toLowerCase();
     return channels.filter(
       (c) =>
-        c.name.toLowerCase().includes(q) ||
+        (channelLabels.get(c.id) ?? c.name).toLowerCase().includes(q) ||
         c.channelType?.toLowerCase().includes(q) ||
         c.id.toLowerCase().includes(q),
     );
-  }, [channels, query]);
+  }, [channelLabels, channels, query]);
   const selectable = React.useMemo(
     () => filtered.filter((channel) => !isChannelDisabled?.(channel)),
     [filtered, isChannelDisabled],
@@ -136,7 +181,7 @@ export function ChannelCombobox({
             ) : null}
             <span className="truncate">
               {selected
-                ? selected.name
+                ? (channelLabels.get(selected.id) ?? selected.name)
                 : value
                   ? "Unavailable channel"
                   : emptyLabel}
@@ -214,10 +259,10 @@ export function ChannelCombobox({
                 >
                   <ChannelPrivacyIcon channel={channel} />
                   <span className="truncate">
-                    {channel.name}{" "}
-                    <span className="text-muted-foreground">
-                      · {channel.channelType}
-                    </span>
+                    {channelLabels.get(channel.id) ?? channel.name}
+                    {channel.channelType === "dm" ? (
+                      <span className="text-muted-foreground"> · dm</span>
+                    ) : null}
                   </span>
                   <Check
                     className={cn(
