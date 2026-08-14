@@ -1,0 +1,46 @@
+# GEPA per-problem probe Q7 (raman-fitting, 0/3 lineage: v0 FAIL, v2 TIMEOUT,
+# v3 FAIL). Failure shape (v0+v3 transcripts): agent parses graphene.dat
+# (tab-separated, EUROPEAN DECIMAL COMMAS), fits Lorentzians at x0~19000 cm^-1
+# where graphene G sits at 1580.3 and 2D at 2670 — an order of magnitude off
+# textbook, rms residual ~ peak amplitude, and ships a confident DONE anyway.
+# Classic confident-wrong parse: comma-decimals silently scale values when
+# read naively. Base: mia-v3. Single variable: one appended paragraph — the
+# numeric-deliverable gate (state textbook range BEFORE fitting; treat
+# order-of-magnitude disagreement as own parse/units error, check decimal
+# separator first; verify parse against raw lines digit-by-digit; residual
+# must be small vs signal scale or the fit found nothing).
+schema_version: "1"
+condition: tb-gepa-q7-fitcheck
+timing_signal: true
+roster:
+  - id: mia
+    kind: orchestrator
+    role: conn
+    require_reply: true
+    count: 1
+    endpoint: deepseek-ai/Deepseek-V4-Flash
+    model_revision: deepseek/deepseek-v4-flash-20260731
+    prompt:
+      path: personas/bench/gepa/mia-v10-fitcheck.md
+      sha256: ea01e3de8871e53c71e1b752128ac68deb86ca2a5c97904fcde37a0f26ef8130
+    generation:
+      thinking_effort: high
+  - id: mie
+    kind: worker
+    role: twin
+    count: 1
+    endpoint: deepseek-ai/Deepseek-V4-Flash
+    model_revision: deepseek/deepseek-v4-flash-20260731
+    prompt:
+      path: personas/bench/gepa/mie-v0.md
+      sha256: a4924e4c4507ac466a7500bb34a04a782618df41dba850b6f0f729787c48439b
+    generation:
+      thinking_effort: high
+prices:
+  deepseek-ai/Deepseek-V4-Flash:
+    input_per_million_usd: 0.14
+    cached_input_per_million_usd: 0.14
+    output_per_million_usd: 0.28
+    cache_read_rate: 0.0
+trial_budget:
+  timeout_seconds: 36000
