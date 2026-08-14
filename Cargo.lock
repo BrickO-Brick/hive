@@ -977,6 +977,7 @@ dependencies = [
  "buzz-core",
  "buzz-persona",
  "buzz-sdk",
+ "buzz-secret-store",
  "buzz-ws-client",
  "bytes",
  "chrono",
@@ -997,6 +998,7 @@ dependencies = [
  "tokio",
  "url",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
@@ -1365,6 +1367,19 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "buzz-secret-store"
+version = "0.1.0"
+dependencies = [
+ "keyring",
+ "libc",
+ "security-framework 3.7.0",
+ "serde_json",
+ "thiserror 2.0.18",
+ "windows-sys 0.61.2",
+ "zeroize",
 ]
 
 [[package]]
