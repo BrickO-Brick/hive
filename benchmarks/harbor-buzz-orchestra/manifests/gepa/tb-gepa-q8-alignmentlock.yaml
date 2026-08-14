@@ -1,0 +1,46 @@
+# GEPA per-problem probe Q8 (sam-cell-seg). v0 and v3 are genuine confident
+# fails at 8/9 tests: every structural check passes, but worst-item IoU against
+# the reference is 0.4375 / 0.4691 (<0.5). Both agents self-validated only
+# relative/structural evidence and changed the reference semantics with
+# per-cell boundary prompts plus erosion/de-overlap cleanup. The public verifier
+# and solution reveal an exact pipeline: all boxes batched, three iterative
+# predict_torch rounds feeding low_res_logit back as mask_input, then score-mask
+# max suppression, threshold/largest contour, and suppression of those contours.
+# Base: mia-v3. Single variable: alignment-lock paragraph — copy the reference
+# pipeline literally and gate on minimum per-item verifier metric, not looks or
+# structural proxies. Promotion bar: >=4/6 at tm=1.0.
+schema_version: "1"
+condition: tb-gepa-q8-alignmentlock
+timing_signal: true
+roster:
+  - id: mia
+    kind: orchestrator
+    role: conn
+    require_reply: true
+    count: 1
+    endpoint: deepseek-ai/Deepseek-V4-Flash
+    model_revision: deepseek/deepseek-v4-flash-20260731
+    prompt:
+      path: personas/bench/gepa/mia-v13-alignmentlock.md
+      sha256: f9b4898e84507dba3cbde28735461996fe65670ae7896002ca3d9bd8f05d5bea
+    generation:
+      thinking_effort: high
+  - id: mie
+    kind: worker
+    role: twin
+    count: 1
+    endpoint: deepseek-ai/Deepseek-V4-Flash
+    model_revision: deepseek/deepseek-v4-flash-20260731
+    prompt:
+      path: personas/bench/gepa/mie-v0.md
+      sha256: a4924e4c4507ac466a7500bb34a04a782618df41dba850b6f0f729787c48439b
+    generation:
+      thinking_effort: high
+prices:
+  deepseek-ai/Deepseek-V4-Flash:
+    input_per_million_usd: 0.14
+    cached_input_per_million_usd: 0.14
+    output_per_million_usd: 0.28
+    cache_read_rate: 0.0
+trial_budget:
+  timeout_seconds: 36000
