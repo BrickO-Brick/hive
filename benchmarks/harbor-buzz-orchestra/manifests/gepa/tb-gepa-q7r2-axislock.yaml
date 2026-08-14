@@ -1,0 +1,45 @@
+# GEPA Q7 ROUND 2 (raman-fitting). r1 (fitcheck) 0/6: 5 timeouts + 1 genuine
+# fail. The genuine fail is the smoking gun: agent NOTICED comma-decimals,
+# found peaks at 3745/6329 = exactly 2.37x textbook 1580.3/2670.08, and
+# self-validated via the 2D/G RATIO (1.69~1.71) — ratios cancel scale errors,
+# so the gate passed on a wrong axis. Timeout family says r1's gate work blew
+# the 900s budget. Single variable vs mia-v3 (r1 paragraph REPLACED, not
+# stacked): absolute-agreement axis lock — textbook positions must match
+# absolutely, ratio/spacing match is never axis evidence, constant-multiple
+# offset IS the unapplied transform; checks bounded to cheap prints, fit in
+# first half of budget, no new installs/frameworks.
+schema_version: "1"
+condition: tb-gepa-q7r2-axislock
+timing_signal: true
+roster:
+  - id: mia
+    kind: orchestrator
+    role: conn
+    require_reply: true
+    count: 1
+    endpoint: deepseek-ai/Deepseek-V4-Flash
+    model_revision: deepseek/deepseek-v4-flash-20260731
+    prompt:
+      path: personas/bench/gepa/mia-v11-axislock.md
+      sha256: f29316130d3b41c3e43a9ff9134e3fe1bcc1d6980834f5df73ceb5bfc35d9aa1
+    generation:
+      thinking_effort: high
+  - id: mie
+    kind: worker
+    role: twin
+    count: 1
+    endpoint: deepseek-ai/Deepseek-V4-Flash
+    model_revision: deepseek/deepseek-v4-flash-20260731
+    prompt:
+      path: personas/bench/gepa/mie-v0.md
+      sha256: a4924e4c4507ac466a7500bb34a04a782618df41dba850b6f0f729787c48439b
+    generation:
+      thinking_effort: high
+prices:
+  deepseek-ai/Deepseek-V4-Flash:
+    input_per_million_usd: 0.14
+    cached_input_per_million_usd: 0.14
+    output_per_million_usd: 0.28
+    cache_read_rate: 0.0
+trial_budget:
+  timeout_seconds: 36000
