@@ -386,7 +386,7 @@ export function WorkflowStepCard({
             channels={channels}
             disabled={disabled}
             idPrefix={`${prefix}-condition`}
-            matchAllHint="Leave empty to run this step every time the workflow starts."
+            matchAllLabel="Every run"
             onChange={(condition) => onUpdate({ ...step, condition })}
             triggerType={triggerType}
             value={step.condition ?? ""}

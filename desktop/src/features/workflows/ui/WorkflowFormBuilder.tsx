@@ -67,7 +67,9 @@ function TriggerConfigFields({
             channels={channels}
             disabled={disabled}
             idPrefix="wf-trigger-filter"
-            matchAllHint="Leave empty to trigger on every message."
+            matchAllLabel={
+              trigger.on === "message_posted" ? "All messages" : "All diffs"
+            }
             onChange={(filter) => onUpdate({ ...trigger, filter })}
             triggerType={trigger.on}
             value={trigger.filter ?? ""}

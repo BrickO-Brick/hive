@@ -130,7 +130,7 @@ async function createWorkflow(
   }
   if (options?.stepCondition) {
     await dialog
-      .getByRole("group", { name: "Condition (optional)" })
+      .getByRole("group", { name: "Condition" })
       .getByRole("button", { name: "Custom" })
       .click();
     await dialog.getByLabel("Custom expression").fill(options.stepCondition);
@@ -275,11 +275,15 @@ test("builds a valid trigger condition from plain-language choices", async ({
   await dialog.getByRole("button", { name: /^Trigger:/ }).click();
   const inspector = dialog.getByTestId("workflow-node-inspector");
 
-  const conditionFields = inspector.getByRole("group", {
-    name: "Condition (optional)",
-  });
+  const conditionFields = inspector.getByRole("group", { name: "Condition" });
   const conditionOptions = conditionFields.getByRole("button");
-  await expect(conditionOptions).toHaveCount(5);
+  await expect(conditionOptions).toHaveCount(6);
+  const allMessages = conditionFields.getByRole("button", {
+    name: "All messages",
+  });
+  await expect(allMessages).toHaveAttribute("aria-pressed", "true");
+  await allMessages.click();
+  await expect(allMessages).toHaveAttribute("aria-pressed", "true");
   await expect(
     conditionFields.getByRole("button", { name: "Message text" }),
   ).toHaveAttribute("aria-pressed", "false");
@@ -288,6 +292,7 @@ test("builds a valid trigger condition from plain-language choices", async ({
   }
 
   await conditionFields.getByRole("button", { name: "Message text" }).click();
+  await expect(allMessages).toHaveAttribute("aria-pressed", "false");
   await inspector.getByLabel("Text to match").fill('deploy "buzz"');
   await dialog.getByRole("tab", { name: "YAML" }).click();
   await expect(dialog.getByLabel("Workflow YAML")).toHaveValue(
@@ -297,7 +302,7 @@ test("builds a valid trigger condition from plain-language choices", async ({
   await dialog.getByRole("tab", { name: "Form" }).click();
   await dialog.getByRole("button", { name: /^Trigger:/ }).click();
   const roundTrippedFields = inspector.getByRole("group", {
-    name: "Condition (optional)",
+    name: "Condition",
   });
   await expect(
     roundTrippedFields.getByRole("button", { name: "Message text" }),
@@ -311,6 +316,11 @@ test("builds a valid trigger condition from plain-language choices", async ({
   );
   await expect(inspector.getByText(/Use an evalexpr expression/)).toBeVisible();
   await customCondition.click();
+  await expect(customCondition).toHaveAttribute("aria-pressed", "true");
+  await expect(inspector.getByLabel("Custom expression")).toBeVisible();
+  await roundTrippedFields
+    .getByRole("button", { name: "All messages" })
+    .click();
   await expect(customCondition).toHaveAttribute("aria-pressed", "false");
   await expect(inspector.getByLabel("Custom expression")).not.toBeVisible();
 });

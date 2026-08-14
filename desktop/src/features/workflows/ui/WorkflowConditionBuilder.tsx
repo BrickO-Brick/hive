@@ -84,7 +84,7 @@ export function WorkflowConditionBuilder({
   channels,
   disabled,
   idPrefix,
-  matchAllHint = "Leave empty to match every event.",
+  matchAllLabel = "All events",
   onChange,
   triggerType,
   value,
@@ -92,7 +92,7 @@ export function WorkflowConditionBuilder({
   channels: Channel[];
   disabled?: boolean;
   idPrefix: string;
-  matchAllHint?: string;
+  matchAllLabel?: string;
   onChange: (value: string) => void;
   triggerType: TriggerType;
   value: string;
@@ -164,23 +164,26 @@ export function WorkflowConditionBuilder({
     )
     .join(", ");
   const fieldOptions = [
+    { label: matchAllLabel, value: "" },
     ...fields,
     { label: "Custom", value: CUSTOM_CONDITION_FIELD },
   ];
 
   return (
     <div className="space-y-3">
-      <fieldset className="space-y-1.5">
-        <legend className="text-xs font-medium text-muted-foreground">
-          Condition (optional)
-        </legend>
+      <fieldset>
+        <legend className="sr-only">Condition</legend>
         <div className="grid grid-cols-2 gap-2.5">
           {fieldOptions.map((field) => {
+            const isMatchAll = field.value === "";
             const isCustom = field.value === CUSTOM_CONDITION_FIELD;
             const isSelected = editor.field === field.value;
             return (
               <div
-                className={cn("relative", isCustom && "col-span-2")}
+                className={cn(
+                  "relative",
+                  (isMatchAll || isCustom) && "col-span-2",
+                )}
                 key={field.value}
               >
                 <button
@@ -196,7 +199,8 @@ export function WorkflowConditionBuilder({
                   )}
                   disabled={disabled}
                   onClick={() => {
-                    if (isSelected) {
+                    if (isSelected) return;
+                    if (isMatchAll) {
                       setEditor({
                         field: "",
                         operator: "contains",
@@ -358,8 +362,6 @@ export function WorkflowConditionBuilder({
           ) : null}
         </>
       ) : null}
-
-      <p className="text-xs text-muted-foreground">{matchAllHint}</p>
     </div>
   );
 }

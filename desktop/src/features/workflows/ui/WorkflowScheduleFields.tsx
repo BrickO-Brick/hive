@@ -78,20 +78,9 @@ export function WorkflowScheduleFields({
 
   return (
     <div className="space-y-3">
-      <div className="space-y-1.5">
-        <div className="flex items-center justify-between gap-3">
-          <p
-            className="text-xs font-medium text-muted-foreground"
-            id="wf-trigger-frequency-label"
-          >
-            Repeats
-          </p>
-        </div>
-        <div
-          aria-labelledby="wf-trigger-frequency-label"
-          className="grid grid-cols-2 gap-2.5"
-          role="radiogroup"
-        >
+      <fieldset>
+        <legend className="sr-only">Repeats</legend>
+        <div className="grid grid-cols-2 gap-2.5">
           {SCHEDULE_FREQUENCIES.map((frequency) => {
             const id = `wf-trigger-frequency-${frequency}`;
             return (
@@ -139,7 +128,7 @@ export function WorkflowScheduleFields({
             );
           })}
         </div>
-      </div>
+      </fieldset>
 
       {schedule.frequency === "weekly" ? (
         <fieldset className="space-y-1.5">
