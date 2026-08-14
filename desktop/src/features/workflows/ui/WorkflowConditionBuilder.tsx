@@ -5,12 +5,12 @@ import { useUsersBatchQuery } from "@/features/profile/hooks";
 import { ProfileAvatar } from "@/features/profile/ui/ProfileAvatar";
 import { useIdentityQuery } from "@/shared/api/hooks";
 import type { Channel, UserProfileSummary } from "@/shared/api/types";
+import { cn } from "@/shared/lib/cn";
 import { truncatePubkey } from "@/shared/lib/pubkey";
 import { Input } from "@/shared/ui/input";
 import { AuthorGridPicker } from "./AuthorGridPicker";
 import { MessageIdPicker } from "./MessageIdPicker";
 import { WorkflowEmojiField } from "./WorkflowEmojiField";
-import { FieldLabel, FormSelect } from "./workflowFormPrimitives";
 import {
   buildConditionExpressions,
   conditionFieldsForTrigger,
@@ -209,39 +209,86 @@ function ConditionEditorFields({
     editor.webhookField.length > 0 &&
     normalizeWebhookField(editor.webhookField) === null;
   const controlIdPrefix = `${idPrefix}-${editor.field}`;
+  const valueInput = (
+    <Input
+      aria-label={
+        editor.field === "webhook_field" ? "Value" : valueLabel(editor.field)
+      }
+      autoCapitalize="off"
+      autoCorrect="off"
+      disabled={disabled}
+      id={`${controlIdPrefix}-value`}
+      onChange={(event) => onChange({ ...editor, value: event.target.value })}
+      placeholder={
+        editor.field === "webhook_field"
+          ? "Value to match"
+          : valuePlaceholder(editor.field)
+      }
+      value={editor.value}
+    />
+  );
 
   return (
     <div
       className="space-y-3"
       data-testid={`workflow-condition-editor-${editor.field}`}
     >
-      <div className="space-y-1.5">
-        <FieldLabel htmlFor={`${controlIdPrefix}-operator`}>Match</FieldLabel>
-        <FormSelect
+      {needsValue && editor.field === "trigger_text" ? valueInput : null}
+      {needsValue && editor.field === "trigger_author" ? (
+        <AuthorGridPicker
           disabled={disabled}
-          id={`${controlIdPrefix}-operator`}
-          onChange={(operator) =>
-            onChange({
-              ...editor,
-              operator: operator as ConditionOperator,
-            })
-          }
-          value={editor.operator}
-        >
-          {operatorOptions.map((operator) => (
-            <option key={operator} value={operator}>
-              {operatorLabel(editor.field, operator, usesExactMatchOperators)}
-            </option>
-          ))}
-        </FormSelect>
-      </div>
+          id={`${controlIdPrefix}-value`}
+          knownPubkeys={knownAuthorPubkeys}
+          onChange={(pubkey) => onChange({ ...editor, value: pubkey })}
+          value={editor.value}
+        />
+      ) : null}
+
+      <fieldset>
+        <legend className="sr-only">Match</legend>
+        <div className="grid grid-cols-2 gap-2.5">
+          {operatorOptions.map((operator) => {
+            const id = `${controlIdPrefix}-operator-${operator}`;
+            return (
+              <div className="relative" key={operator}>
+                <input
+                  checked={editor.operator === operator}
+                  className="peer sr-only"
+                  disabled={disabled}
+                  id={id}
+                  name={`${controlIdPrefix}-operator`}
+                  onChange={() => onChange({ ...editor, operator })}
+                  type="radio"
+                  value={operator}
+                />
+                <label
+                  className={cn(
+                    "flex min-h-12 cursor-pointer items-center justify-center rounded-lg border px-3 py-2 text-center text-sm font-medium",
+                    "outline-2 outline-offset-2 outline-transparent transition-[background-color,border-color,color,outline-color]",
+                    "peer-focus-visible:ring-2 peer-focus-visible:ring-ring",
+                    "peer-disabled:cursor-not-allowed peer-disabled:opacity-50",
+                    editor.operator === operator
+                      ? "border-border/0 bg-transparent text-foreground outline-foreground/45"
+                      : "border-border/70 bg-background/35 text-muted-foreground hover:border-border hover:bg-muted/55 hover:text-foreground hover:outline-muted-foreground/20",
+                  )}
+                  htmlFor={id}
+                >
+                  {operatorLabel(
+                    editor.field,
+                    operator,
+                    usesExactMatchOperators,
+                  )}
+                </label>
+              </div>
+            );
+          })}
+        </div>
+      </fieldset>
 
       {editor.field === "webhook_field" ? (
         <div className="space-y-1.5">
-          <FieldLabel htmlFor={`${controlIdPrefix}-webhook-field`}>
-            JSON field name
-          </FieldLabel>
           <Input
+            aria-label="JSON field name"
             autoCapitalize="off"
             autoCorrect="off"
             disabled={disabled}
@@ -264,22 +311,11 @@ function ConditionEditorFields({
         </div>
       ) : null}
 
-      {needsValue ? (
-        <div className="space-y-1.5">
-          <FieldLabel htmlFor={`${controlIdPrefix}-value`}>
-            {editor.field === "webhook_field"
-              ? "Value"
-              : valueLabel(editor.field)}
-          </FieldLabel>
-          {editor.field === "trigger_author" ? (
-            <AuthorGridPicker
-              disabled={disabled}
-              id={`${controlIdPrefix}-value`}
-              knownPubkeys={knownAuthorPubkeys}
-              onChange={(pubkey) => onChange({ ...editor, value: pubkey })}
-              value={editor.value}
-            />
-          ) : editor.field === "trigger_emoji" ? (
+      {needsValue &&
+      editor.field !== "trigger_text" &&
+      editor.field !== "trigger_author" ? (
+        <div>
+          {editor.field === "trigger_emoji" ? (
             <WorkflowEmojiField
               ariaLabel="Choose condition emoji"
               clearAriaLabel="Clear condition emoji"
@@ -299,21 +335,7 @@ function ConditionEditorFields({
               value={editor.value}
             />
           ) : (
-            <Input
-              autoCapitalize="off"
-              autoCorrect="off"
-              disabled={disabled}
-              id={`${controlIdPrefix}-value`}
-              onChange={(event) =>
-                onChange({ ...editor, value: event.target.value })
-              }
-              placeholder={
-                editor.field === "webhook_field"
-                  ? "Value to match"
-                  : valuePlaceholder(editor.field)
-              }
-              value={editor.value}
-            />
+            valueInput
           )}
         </div>
       ) : null}
@@ -564,10 +586,8 @@ export function WorkflowConditionBuilder({
         {activeEditor?.kind === "custom" ? (
           <div className="animate-in space-y-4 pb-4 pt-1 fade-in slide-in-from-top-1 duration-150 motion-reduce:animate-none">
             <div className="space-y-2">
-              <FieldLabel htmlFor={`${idPrefix}-custom-expression`}>
-                Expression
-              </FieldLabel>
               <Input
+                aria-label="Expression"
                 autoCapitalize="off"
                 autoCorrect="off"
                 disabled={disabled}
