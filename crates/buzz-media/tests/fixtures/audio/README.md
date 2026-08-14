@@ -84,3 +84,46 @@ Every decoder ignores that field on header pages, so the file decoded, timed,
 and PCM-compared perfectly while being wire-invalid. An oracle is only as
 strong as its strictest clause; when the relay validator rejects something
 this script blesses, the script is what's wrong.
+
+## Instrument 5: truncation sweep (`dawn_trunc_sweep.rs`)
+
+Added 2026-08-14 after finding a remotely reachable panic in the relay's WAV
+validator (`validation.rs:252-258`): five raw `bytes[offset + N..]` indexes
+guarded only by the *declared* `fmt ` chunk length, never by bytes actually
+present. A 22-byte upload reached it; 14 of 16 truncation points in the fmt
+body panicked. Reachable before auth (`upload.rs:82-85` validates ahead of
+`verify_blossom_upload_auth`), and the repo has no `CatchPanicLayer`.
+
+### The vacuity trap — READ BEFORE WRITING A TRUNCATION SWEEP
+
+Truncating a real WAV leaves the RIFF size field stale, so
+`declared + 8 == bytes.len()` rejects every input a few lines into the walker
+and the sweep never reaches the code under test. Measured with a three-stage
+probe over 400 prefixes:
+
+```text
+naive          enter=396  past_size_gate=0    at_fmt_fields=0
+riff-repaired  enter=396  past_size_gate=388  at_fmt_fields=378
+```
+
+The naive sweep enters the function 396 times and reaches the vulnerable
+reads ZERO times. It reported a confident `OK` against a validator already
+proven to panic. **Any container with a self-describing length field must have
+that field repaired to match the truncated length**, or the sweep is vacuous
+while looking thorough. For WAV: rewrite `bytes[4..8] = (len - 8) as u32` after
+truncating. Keep BOTH arms in the test so the contrast stays visible.
+
+"Entered the function" is not "reached the code." Instrument the specific
+line you care about, not the function containing it.
+
+### Why MP3/Ogg were clean (construction, not luck)
+
+- MP3 (`:164-219`): every header via `.get(offset..offset + 4).ok_or(...)?`;
+  `frame_len` bounded with `checked_add` + `end > bytes.len()` before advancing.
+- Ogg (`:322-355`): binds `header` via `.get(offset..offset + 27).ok_or(...)?`
+  FIRST, so `header[6..14]` etc. are in-bounds off a checked slice.
+
+That is the pattern WAV is missing: it checks a prefix, then indexes the
+ORIGINAL buffer past it. Fix shape is one whole-body slice —
+`bytes.get(offset + 8..offset + 24).ok_or(MetadataForbidden)?` — then slice
+the six fields from it. Removes the class, not the instance.
