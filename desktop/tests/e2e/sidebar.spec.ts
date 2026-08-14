@@ -541,6 +541,25 @@ test("sidebar rail resizes without toggling the sidebar", async ({ page }) => {
   await expect(rail).toBeHidden();
 });
 
+test("adds the outer-frame gutter when the sidebar is collapsed", async ({
+  page,
+}) => {
+  await page.goto("/");
+
+  const contentSurface = page.locator("[data-buzz-content-surface]").first();
+  await expect(contentSurface).toHaveCSS("margin-left", "1px");
+
+  await page
+    .getByRole("button", { name: "Toggle Sidebar", exact: true })
+    .click();
+
+  await expect(page.getByTestId("app-sidebar").locator("..")).toHaveAttribute(
+    "data-state",
+    "collapsed",
+  );
+  await expect(contentSurface).toHaveCSS("margin-left", "8px");
+});
+
 test("resizes, persists, and snaps to the default sidebar width", async ({
   page,
 }) => {
