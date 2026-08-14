@@ -13,6 +13,26 @@ export const CONDITION_OPERATORS = [
 
 export type ConditionOperator = (typeof CONDITION_OPERATORS)[number];
 
+const EXACT_MATCH_OPERATORS = [
+  "equals",
+  "not_equals",
+] as const satisfies readonly ConditionOperator[];
+
+/** IDs and pubkeys are opaque identifiers, so partial string matching is not meaningful. */
+export function conditionOperatorsForField(
+  field: string,
+): readonly ConditionOperator[] {
+  return field === "trigger_author" || field.endsWith("_id")
+    ? EXACT_MATCH_OPERATORS
+    : CONDITION_OPERATORS;
+}
+
+export function defaultConditionOperatorForField(
+  field: string,
+): ConditionOperator {
+  return conditionOperatorsForField(field)[0];
+}
+
 export type ConditionField = {
   label: string;
   value: string;

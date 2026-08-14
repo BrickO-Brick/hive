@@ -4,6 +4,7 @@ import { test } from "node:test";
 import {
   buildConditionExpression,
   conditionFieldsForTrigger,
+  conditionOperatorsForField,
   normalizeWebhookField,
   parseConditionExpression,
 } from "./workflowConditionExpression.ts";
@@ -75,6 +76,21 @@ test("shows trigger-relevant fields", () => {
     ],
   );
   assert.equal(conditionFieldsForTrigger("webhook")[0].value, "webhook_field");
+});
+
+test("limits opaque identifiers to equality operators", () => {
+  for (const field of [
+    "trigger_author",
+    "trigger_channel_id",
+    "trigger_message_id",
+    "future_resource_id",
+  ]) {
+    assert.deepEqual(conditionOperatorsForField(field), [
+      "equals",
+      "not_equals",
+    ]);
+  }
+  assert.equal(conditionOperatorsForField("trigger_text").length, 8);
 });
 
 test("parses generated conditions back into editor fields", () => {

@@ -11,8 +11,10 @@ import { FieldLabel, FormSelect } from "./workflowFormPrimitives";
 import {
   buildConditionExpression,
   conditionFieldsForTrigger,
+  conditionOperatorsForField,
   conditionOperatorNeedsValue,
   CUSTOM_CONDITION_FIELD,
+  defaultConditionOperatorForField,
   normalizeWebhookField,
   parseConditionExpression,
 } from "./workflowConditionExpression";
@@ -38,7 +40,15 @@ function initialEditorState(
   triggerType: TriggerType,
 ): ParsedConditionExpression {
   const parsed = parseConditionExpression(value, triggerType);
-  if (parsed) return parsed;
+  if (parsed) {
+    const supportedOperators = conditionOperatorsForField(parsed.field);
+    return supportedOperators.includes(parsed.operator)
+      ? parsed
+      : {
+          ...parsed,
+          operator: defaultConditionOperatorForField(parsed.field),
+        };
+  }
 
   return {
     field: value.trim() ? CUSTOM_CONDITION_FIELD : "",
@@ -154,6 +164,8 @@ export function WorkflowConditionBuilder({
   };
 
   const needsValue = conditionOperatorNeedsValue(editor.operator);
+  const operatorOptions = conditionOperatorsForField(editor.field);
+  const usesExactMatchOperators = operatorOptions.length === 2;
   const webhookFieldInvalid =
     editor.field === "webhook_field" &&
     editor.webhookField.length > 0 &&
@@ -216,7 +228,7 @@ export function WorkflowConditionBuilder({
                     }
                     emitEditor({
                       field: field.value,
-                      operator: "contains",
+                      operator: defaultConditionOperatorForField(field.value),
                       value: "",
                       webhookField: "",
                     });
@@ -264,9 +276,11 @@ export function WorkflowConditionBuilder({
               }
               value={editor.operator}
             >
-              {Object.entries(OPERATOR_LABELS).map(([operator, label]) => (
+              {operatorOptions.map((operator) => (
                 <option key={operator} value={operator}>
-                  {label}
+                  {usesExactMatchOperators && operator === "equals"
+                    ? "is"
+                    : OPERATOR_LABELS[operator]}
                 </option>
               ))}
             </FormSelect>

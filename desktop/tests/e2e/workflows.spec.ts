@@ -336,6 +336,9 @@ test("chooses a trigger channel condition from the live channel list", async ({
   const inspector = dialog.getByTestId("workflow-node-inspector");
 
   await inspector.getByRole("button", { name: "Channel ID" }).click();
+  const matchOperator = inspector.getByLabel("Match");
+  await expect(matchOperator).toHaveValue("equals");
+  await expect(matchOperator.locator("option")).toHaveText(["is", "is not"]);
   const channelCondition = inspector.getByRole("combobox", {
     name: "Channel ID",
   });
@@ -356,7 +359,7 @@ test("chooses a trigger channel condition from the live channel list", async ({
 
   await dialog.getByRole("tab", { name: "YAML" }).click();
   await expect(dialog.getByLabel("Workflow YAML")).toHaveValue(
-    /str_contains\(trigger_channel_id, "[0-9a-f-]{36}"\)/,
+    /trigger_channel_id == "[0-9a-f-]{36}"/,
   );
 });
 
@@ -448,7 +451,7 @@ test("chooses a trigger author condition from live user search", async ({
 
   await dialog.getByRole("tab", { name: "YAML" }).click();
   await expect(dialog.getByLabel("Workflow YAML")).toHaveValue(
-    /str_contains\(trigger_author,\s+"[0-9a-f]{64}"\)/,
+    /trigger_author\s+==\s+"[0-9a-f]{64}"/,
   );
 });
 
