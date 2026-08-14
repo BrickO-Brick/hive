@@ -53,6 +53,11 @@ use helpers::{
     post_admin_json, put_admin_json,
 };
 
+// ── Typed mutation error ──────────────────────────────────────────────────
+
+pub(crate) mod error;
+pub use error::AdminMutationError;
+
 // ── Typed probe result ────────────────────────────────────────────────────
 
 /// Result of an `admin_probe` call. Each variant maps to a distinct UI state.
@@ -523,7 +528,7 @@ pub async fn admin_resolve_report(
     id: String,
     body: serde_json::Value,
     state: tauri::State<'_, crate::app_state::AppState>,
-) -> Result<serde_json::Value, String> {
+) -> Result<serde_json::Value, AdminMutationError> {
     let origin = origin::AdminOrigin::parse(&origin)?;
     let id =
         uuid::Uuid::parse_str(&id).map_err(|_| "report id must be a valid UUID".to_string())?;
@@ -534,7 +539,7 @@ pub async fn admin_resolve_report(
     let body_bytes =
         serde_json::to_vec(&body).map_err(|e| format!("failed to serialise request body: {e}"))?;
     let bytes = post_admin_json(&url, &body_bytes, SUCCESS_JSON_CAP, &state).await?;
-    serde_json::from_slice(&bytes).map_err(|e| format!("invalid JSON from relay: {e}"))
+    serde_json::from_slice(&bytes).map_err(|e| format!("invalid JSON from relay: {e}").into())
 }
 
 /// Reopen a resolved report — POST /api/admin/v1/reports/{id}/reopen.
@@ -550,7 +555,7 @@ pub async fn admin_reopen_report(
     id: String,
     body: serde_json::Value,
     state: tauri::State<'_, crate::app_state::AppState>,
-) -> Result<serde_json::Value, String> {
+) -> Result<serde_json::Value, AdminMutationError> {
     let origin = origin::AdminOrigin::parse(&origin)?;
     let id =
         uuid::Uuid::parse_str(&id).map_err(|_| "report id must be a valid UUID".to_string())?;
@@ -561,7 +566,7 @@ pub async fn admin_reopen_report(
     let body_bytes =
         serde_json::to_vec(&body).map_err(|e| format!("failed to serialise request body: {e}"))?;
     let bytes = post_admin_json(&url, &body_bytes, SUCCESS_JSON_CAP, &state).await?;
-    serde_json::from_slice(&bytes).map_err(|e| format!("invalid JSON from relay: {e}"))
+    serde_json::from_slice(&bytes).map_err(|e| format!("invalid JSON from relay: {e}").into())
 }
 
 /// Cancel a failed enforcement action — POST /api/admin/v1/reports/{id}/cancel.
@@ -577,7 +582,7 @@ pub async fn admin_cancel_report(
     id: String,
     body: serde_json::Value,
     state: tauri::State<'_, crate::app_state::AppState>,
-) -> Result<serde_json::Value, String> {
+) -> Result<serde_json::Value, AdminMutationError> {
     let origin = origin::AdminOrigin::parse(&origin)?;
     let id =
         uuid::Uuid::parse_str(&id).map_err(|_| "report id must be a valid UUID".to_string())?;
@@ -588,7 +593,7 @@ pub async fn admin_cancel_report(
     let body_bytes =
         serde_json::to_vec(&body).map_err(|e| format!("failed to serialise request body: {e}"))?;
     let bytes = post_admin_json(&url, &body_bytes, SUCCESS_JSON_CAP, &state).await?;
-    serde_json::from_slice(&bytes).map_err(|e| format!("invalid JSON from relay: {e}"))
+    serde_json::from_slice(&bytes).map_err(|e| format!("invalid JSON from relay: {e}").into())
 }
 
 /// Update feedback status — PATCH /api/admin/v1/feedback/{id}.
@@ -600,7 +605,7 @@ pub async fn admin_patch_feedback(
     id: String,
     body: serde_json::Value,
     state: tauri::State<'_, crate::app_state::AppState>,
-) -> Result<serde_json::Value, String> {
+) -> Result<serde_json::Value, AdminMutationError> {
     let origin = origin::AdminOrigin::parse(&origin)?;
     let id =
         uuid::Uuid::parse_str(&id).map_err(|_| "feedback id must be a valid UUID".to_string())?;
@@ -611,7 +616,7 @@ pub async fn admin_patch_feedback(
     let body_bytes =
         serde_json::to_vec(&body).map_err(|e| format!("failed to serialise request body: {e}"))?;
     let bytes = patch_admin_json(&url, &body_bytes, SUCCESS_JSON_CAP, &state).await?;
-    serde_json::from_slice(&bytes).map_err(|e| format!("invalid JSON from relay: {e}"))
+    serde_json::from_slice(&bytes).map_err(|e| format!("invalid JSON from relay: {e}").into())
 }
 
 /// List operators — GET /api/admin/v1/operators.
@@ -642,7 +647,7 @@ pub async fn admin_put_operator(
     pubkey: String,
     body: serde_json::Value,
     state: tauri::State<'_, crate::app_state::AppState>,
-) -> Result<serde_json::Value, String> {
+) -> Result<serde_json::Value, AdminMutationError> {
     let origin = origin::AdminOrigin::parse(&origin)?;
     let pubkey =
         routes::HexPubkey::parse(&pubkey).map_err(|e| format!("invalid operator pubkey: {e}"))?;
@@ -653,7 +658,7 @@ pub async fn admin_put_operator(
     let body_bytes =
         serde_json::to_vec(&body).map_err(|e| format!("failed to serialise request body: {e}"))?;
     let bytes = put_admin_json(&url, &body_bytes, SUCCESS_JSON_CAP, &state).await?;
-    serde_json::from_slice(&bytes).map_err(|e| format!("invalid JSON from relay: {e}"))
+    serde_json::from_slice(&bytes).map_err(|e| format!("invalid JSON from relay: {e}").into())
 }
 
 /// Remove an operator — DELETE /api/admin/v1/operators/{pubkey}.

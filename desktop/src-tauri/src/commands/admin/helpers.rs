@@ -4,7 +4,7 @@
 //! used by the Tauri command implementations in `mod.rs`.
 
 use super::client;
-use super::{ATTACHMENT_CAP, ERROR_BODY_CAP};
+use super::{AdminMutationError, ATTACHMENT_CAP, ERROR_BODY_CAP};
 
 /// Fetch a JSON endpoint with NIP-98 auth, one 401-retry, and a size cap.
 pub(super) async fn fetch_admin_json(
@@ -51,7 +51,7 @@ pub(super) async fn post_admin_json(
     body: &[u8],
     cap: u64,
     state: &tauri::State<'_, crate::app_state::AppState>,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, AdminMutationError> {
     mutation_admin_json(reqwest::Method::POST, url, body, cap, state).await
 }
 
@@ -61,7 +61,7 @@ pub(super) async fn patch_admin_json(
     body: &[u8],
     cap: u64,
     state: &tauri::State<'_, crate::app_state::AppState>,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, AdminMutationError> {
     mutation_admin_json(reqwest::Method::PATCH, url, body, cap, state).await
 }
 
@@ -71,7 +71,7 @@ pub(super) async fn put_admin_json(
     body: &[u8],
     cap: u64,
     state: &tauri::State<'_, crate::app_state::AppState>,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, AdminMutationError> {
     mutation_admin_json(reqwest::Method::PUT, url, body, cap, state).await
 }
 
@@ -115,13 +115,19 @@ pub(super) async fn delete_admin_json(
 }
 
 /// Shared implementation for POST/PATCH/PUT with NIP-98 payload sha256 binding.
+///
+/// Returns a typed [`AdminMutationError`] so the caller can distinguish a
+/// relay-authoritative failure (a status was received) from a transport or
+/// pre-send failure (no relay answer). `?` on the `String`-producing steps
+/// (auth build, `send()` classification) converts via `From<String>` to a
+/// no-status error, which is correct: none of those reached a relay verdict.
 pub(super) async fn mutation_admin_json(
     method: reqwest::Method,
     url: &str,
     body: &[u8],
     cap: u64,
     state: &tauri::State<'_, crate::app_state::AppState>,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, AdminMutationError> {
     use crate::relay::build_nip98_auth_header_for_keys;
 
     let keys = state.signing_keys()?;
@@ -153,10 +159,10 @@ pub(super) async fn mutation_admin_json(
         let resp2 = send_request(auth_header2)
             .await
             .map_err(|e| crate::relay::classify_request_error(&e))?;
-        return read_admin_response(resp2, cap, ERROR_BODY_CAP).await;
+        return read_admin_mutation_response(resp2, cap, ERROR_BODY_CAP).await;
     }
 
-    read_admin_response(resp, cap, ERROR_BODY_CAP).await
+    read_admin_mutation_response(resp, cap, ERROR_BODY_CAP).await
 }
 
 /// Stream and validate an attachment response, enforcing Content-Type, size,
@@ -266,6 +272,71 @@ pub(super) async fn read_admin_response(
     if !is_success {
         let body = String::from_utf8_lossy(&bytes);
         return Err(format!("admin API error: {body}"));
+    }
+
+    Ok(bytes)
+}
+
+/// Read a mutation response, preserving the relay's HTTP status in the error.
+///
+/// Mirrors [`read_admin_response`]'s size discipline and message wording so the
+/// UI's message parsing is unchanged, but on a non-2xx it returns an
+/// [`AdminMutationError`] tagged with the received status. A redirect or a
+/// body-read failure also carries the status: the relay answered (headers/
+/// status arrived), the body outcome is unknown, so the caller preserves the
+/// idempotency key and lets the retry dedupe against any commit that landed.
+async fn read_admin_mutation_response(
+    resp: reqwest::Response,
+    success_cap: u64,
+    error_cap: u64,
+) -> Result<Vec<u8>, AdminMutationError> {
+    use futures_util::StreamExt;
+
+    let status = resp.status();
+
+    if status.is_redirection() {
+        return Err(AdminMutationError::relay(
+            status,
+            format!("admin API returned a {status} redirect (not followed)"),
+        ));
+    }
+
+    let (is_success, cap) = if status.is_success() {
+        (true, success_cap)
+    } else {
+        (false, error_cap)
+    };
+
+    if let Some(cl) = resp.content_length() {
+        if cl > cap {
+            return Err(AdminMutationError::relay(
+                status,
+                format!("admin response too large ({cl} bytes, cap {cap} bytes)"),
+            ));
+        }
+    }
+
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| {
+            AdminMutationError::relay(status, format!("admin response stream error: {e}"))
+        })?;
+        if bytes.len() as u64 + chunk.len() as u64 > cap {
+            return Err(AdminMutationError::relay(
+                status,
+                format!("admin response too large (cap {cap} bytes)"),
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+
+    if !is_success {
+        let body = String::from_utf8_lossy(&bytes);
+        return Err(AdminMutationError::relay(
+            status,
+            format!("admin API error: {body}"),
+        ));
     }
 
     Ok(bytes)

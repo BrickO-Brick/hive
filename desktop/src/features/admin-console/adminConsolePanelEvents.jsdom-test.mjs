@@ -100,6 +100,21 @@ toast.error = (msg) => {
   return 0;
 };
 
+// ── Typed native mutation error ──────────────────────────────────────────────
+//
+// Admin mutation commands reject with a serialized Rust `AdminMutationError`
+// (`{message, relayStatus}`, camelCase). The real tauri bridge rejects with
+// that plain object and `toTauriError` wraps it into a `TauriInvokeError` whose
+// `.message` is the message and `.payload` is the whole object — from which the
+// UI reads `relayStatus` to decide idempotency-retry policy. Rejecting with a
+// plain object here (NOT an Error) reproduces that wire shape exactly.
+//
+// `relayStatus` is a number when the relay authoritatively answered, and `null`
+// for a transport/pre-send failure where no relay verdict exists.
+function mutationReject(message, relayStatus) {
+  return Promise.reject({ message, relayStatus });
+}
+
 // ── Deferred promise helper ──────────────────────────────────────────────────
 
 function deferred() {
@@ -2303,11 +2318,13 @@ test("reopen-enforced-copy: a report with an actionId warns enforcement is not r
 
 test("reopen-409-preserves-requestId: a not-reopenable conflict reuses the same requestId on retry", async () => {
   // A 409 (report is not reopenable — e.g. it moved to processing) is an
-  // idempotency-relevant failure: the same requestId must be reused on retry
-  // so the relay can dedupe. A non-409 failure resets it.
+  // idempotency-relevant failure: the relay has a claim, so the same requestId
+  // must be reused on retry to let the relay dedupe. The native command carries
+  // the relay's HTTP status on the rejected error (`relayStatus: 409`), and the
+  // UI's preserveRequestIdOnError reads it — no string-matching.
   //
-  // Mutation evidence: drop the 409 branch in the catch → requestId resets and
-  // the two attempts carry different ids, going red.
+  // Mutation evidence: make preserveRequestIdOnError reset on 409 → the two
+  // attempts carry different ids and this goes red.
 
   const origin = "https://admin.example.com";
   const pubkey = "c4".repeat(32);
@@ -2341,8 +2358,9 @@ test("reopen-409-preserves-requestId: a not-reopenable conflict reuses the same 
   const requestIds = [];
   setIpcHandler("admin_reopen_report", (args) => {
     requestIds.push(args?.body?.requestId);
-    return Promise.reject(
-      new Error("409 report is not reopenable (current status: processing)"),
+    return mutationReject(
+      "admin API error: 409 report is not reopenable (current status: processing)",
+      409,
     );
   });
 
@@ -2382,6 +2400,159 @@ test("reopen-409-preserves-requestId: a not-reopenable conflict reuses the same 
   assert.ok(
     capturedErrorToasts.some((m) => m.includes("not reopenable")),
     `the 409 error message must surface via toast.error; got: ${JSON.stringify(capturedErrorToasts)}`,
+  );
+
+  await unmount();
+});
+
+test("reopen-lost-response-preserves-requestId: an ambiguous transport failure reuses the requestId on retry", async () => {
+  // The bug this fixes: the native layer serializes a timeout/disconnect as
+  // `relay unreachable: …` and a lost response body as `admin response stream
+  // error` — neither contains "409"/"processing", so the old string-match
+  // cleared the requestId and the retry became a brand-new command. The
+  // concrete harm is a two-operator interleave: A's reopen COMMITS, the
+  // response is lost; B resolves the now-open report; A's retry with a fresh id
+  // reopens B's later resolution. Reusing the original id makes the retry hit
+  // the relay's idempotent path harmlessly.
+  //
+  // A lost-response failure carries no relay verdict (`relayStatus: null`), so
+  // preserveRequestIdOnError must keep the id. Mutation evidence: change the
+  // null-status branch to reset → the two attempts carry different ids, red.
+
+  const origin = "https://admin.example.com";
+  const pubkey = "c5".repeat(32);
+
+  const resolvedItem = {
+    id: "00000000-0000-0000-0000-0000000000c5",
+    communityId: "comm-1",
+    communityHost: "alpha.example.com",
+    reportEventId: "aa",
+    reporterPubkey: "bb",
+    targetKind: "event",
+    target: "cc",
+    reportType: "spam",
+    status: "resolved",
+    createdAt: "2024-06-01T12:00:00Z",
+  };
+  const resolvedDetail = {
+    ...resolvedItem,
+    channelId: null,
+    note: null,
+    resolvedBy: "mod_pubkey",
+    resolvedAt: "2024-06-02T08:00:00Z",
+    actionId: null,
+    message: null,
+  };
+
+  setIpcHandler("admin_list_reports", () => Promise.resolve([resolvedItem]));
+  setIpcHandler("admin_get_report", () => Promise.resolve(resolvedDetail));
+  setIpcHandler("admin_list_feedback", () => Promise.resolve([]));
+
+  const requestIds = [];
+  setIpcHandler("admin_reopen_report", (args) => {
+    requestIds.push(args?.body?.requestId);
+    // Transport failure: no relay answer, so no HTTP status.
+    return mutationReject("relay unreachable: network error", null);
+  });
+
+  const { container, doRender, unmount } = mountPanel({ origin, pubkey });
+  await doRender();
+  await settle(30);
+  await openFirstReportDetail(container);
+  await settle(20);
+
+  const submit = container.querySelector("[data-testid='reopen-submit-btn']");
+  assert.ok(submit, "reopen submit button must be present");
+
+  // First attempt → lost response.
+  await act(async () => {
+    fireEvent.click(submit);
+    await new Promise((r) => setTimeout(r, 20));
+  });
+  // Second attempt → same ambiguous failure; requestId must be identical.
+  await act(async () => {
+    fireEvent.click(submit);
+    await new Promise((r) => setTimeout(r, 20));
+  });
+
+  assert.equal(requestIds.length, 2, "two reopen attempts must have been made");
+  assert.equal(
+    requestIds[0],
+    requestIds[1],
+    `requestId must be preserved across a lost-response retry; got: ${JSON.stringify(requestIds)}`,
+  );
+
+  await unmount();
+});
+
+test("reopen-4xx-resets-requestId: a definitive pre-commit rejection uses a fresh requestId", async () => {
+  // A non-409 4xx (e.g. 400 bad request) is a definitive pre-commit rejection:
+  // the relay refused the input and committed nothing, so a corrected
+  // resubmission is a genuinely new command and a fresh requestId is correct.
+  // This is the ONLY case that resets — the counterpart to the ambiguous
+  // failures above.
+  //
+  // Mutation evidence: make preserveRequestIdOnError preserve on a 400 → the
+  // two attempts share an id and this goes red.
+
+  const origin = "https://admin.example.com";
+  const pubkey = "c6".repeat(32);
+
+  const resolvedItem = {
+    id: "00000000-0000-0000-0000-0000000000c6",
+    communityId: "comm-1",
+    communityHost: "alpha.example.com",
+    reportEventId: "aa",
+    reporterPubkey: "bb",
+    targetKind: "event",
+    target: "cc",
+    reportType: "spam",
+    status: "resolved",
+    createdAt: "2024-06-01T12:00:00Z",
+  };
+  const resolvedDetail = {
+    ...resolvedItem,
+    channelId: null,
+    note: null,
+    resolvedBy: "mod_pubkey",
+    resolvedAt: "2024-06-02T08:00:00Z",
+    actionId: null,
+    message: null,
+  };
+
+  setIpcHandler("admin_list_reports", () => Promise.resolve([resolvedItem]));
+  setIpcHandler("admin_get_report", () => Promise.resolve(resolvedDetail));
+  setIpcHandler("admin_list_feedback", () => Promise.resolve([]));
+
+  const requestIds = [];
+  setIpcHandler("admin_reopen_report", (args) => {
+    requestIds.push(args?.body?.requestId);
+    return mutationReject("admin API error: bad request", 400);
+  });
+
+  const { container, doRender, unmount } = mountPanel({ origin, pubkey });
+  await doRender();
+  await settle(30);
+  await openFirstReportDetail(container);
+  await settle(20);
+
+  const submit = container.querySelector("[data-testid='reopen-submit-btn']");
+  assert.ok(submit, "reopen submit button must be present");
+
+  await act(async () => {
+    fireEvent.click(submit);
+    await new Promise((r) => setTimeout(r, 20));
+  });
+  await act(async () => {
+    fireEvent.click(submit);
+    await new Promise((r) => setTimeout(r, 20));
+  });
+
+  assert.equal(requestIds.length, 2, "two reopen attempts must have been made");
+  assert.notEqual(
+    requestIds[0],
+    requestIds[1],
+    `a non-409 4xx must reset the requestId; got: ${JSON.stringify(requestIds)}`,
   );
 
   await unmount();
@@ -3136,16 +3307,15 @@ test("resolve-rejection-surfaces-parsed-message: a rejected resolve toasts the r
 
   const humanMessage =
     "action kick requires the report to have an associated channel";
-  // The native command rejects with `admin API error: {envelope}` — exactly the
-  // shape adminErrorMessage strips down to the envelope's `message`.
+  // The native command rejects with a typed AdminMutationError: message is
+  // `admin API error: {envelope}` (the shape adminErrorMessage strips to the
+  // envelope's `message`) and relayStatus is the relay's 400.
   const rawError = `admin API error: {"error":{"code":"invalid_action_for_target","message":"${humanMessage}","requestId":"00000000-0000-0000-0000-0000000000e7"}}`;
 
   setIpcHandler("admin_list_reports", () => Promise.resolve([openItem]));
   setIpcHandler("admin_get_report", () => Promise.resolve(openDetail));
   setIpcHandler("admin_list_feedback", () => Promise.resolve([]));
-  setIpcHandler("admin_resolve_report", () =>
-    Promise.reject(new Error(rawError)),
-  );
+  setIpcHandler("admin_resolve_report", () => mutationReject(rawError, 400));
 
   const { container, doRender, unmount } = mountPanel({ origin, pubkey });
   await doRender();

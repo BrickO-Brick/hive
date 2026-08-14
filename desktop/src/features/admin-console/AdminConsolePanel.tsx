@@ -55,6 +55,7 @@ import {
   formatTimestamp,
   useAsyncLoad,
   adminErrorMessage,
+  preserveRequestIdOnError,
 } from "./AdminConsolePanelHelpers";
 import { FeedbackTab } from "./AdminConsoleFeedbackTab";
 import { StaffingTab } from "./AdminConsoleStaffingTab";
@@ -313,11 +314,12 @@ function ResolveReportForm({
       toast.success(`Report resolved: ${actionLabel(selectedAction)}`);
       onResolved();
     } catch (e) {
-      // On error, reset requestId so the next submit generates a new one.
-      // But: if the error suggests a 409 (report already processing), the
-      // server has a claim — don't reset, let the parent handle it.
-      const msg = e instanceof Error ? e.message : String(e);
-      if (!msg.includes("409") && !msg.includes("processing")) {
+      // Preserve the requestId whenever the outcome is ambiguous (409,
+      // 5xx, a lost response, or a transport failure with no relay answer)
+      // so a retry reuses the same idempotency key and the relay dedupes.
+      // Reset only on a definitive pre-commit rejection (a non-409 4xx), where
+      // a corrected resubmission is a genuinely new command.
+      if (!preserveRequestIdOnError(e)) {
         requestIdRef.current = null;
       }
       toast.error(adminErrorMessage(e));
@@ -455,11 +457,11 @@ function ReopenReportForm({
       toast.success("Report reopened");
       onReopened();
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      // A 409 means the report is not reopenable (e.g. it moved to
-      // `processing`). Preserve the requestId so a genuine retry reuses it;
-      // reset otherwise so the next attempt generates a fresh one.
-      if (!msg.includes("409") && !msg.includes("processing")) {
+      // Preserve the requestId on an ambiguous outcome (409, 5xx, lost
+      // response, or a transport failure with no relay answer) so a retry
+      // reuses the same idempotency key; reset only on a definitive pre-commit
+      // rejection (a non-409 4xx).
+      if (!preserveRequestIdOnError(e)) {
         requestIdRef.current = null;
       }
       toast.error(adminErrorMessage(e));
