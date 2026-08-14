@@ -13,6 +13,7 @@ use crate::error::MediaError;
 /// through the image path (Content-Type spoofing), `infer::get()` detects
 /// `video/mp4` and `validate_content()` rejects it here.
 const ALLOWED_MIME_TYPES: &[&str] = &["image/jpeg", "image/png", "image/gif", "image/webp"];
+const ALLOWED_AUDIO_MIME_TYPES: &[&str] = &["audio/mpeg", "audio/wav", "audio/ogg"];
 
 const MP4_BRANDS: &[[u8; 4]] = &[
     *b"isom", *b"iso2", *b"iso3", *b"iso4", *b"iso5", *b"iso6", *b"iso7", *b"iso8", *b"iso9",
@@ -153,14 +154,280 @@ fn file_mime_to_ext(mime: &str) -> Option<&'static str> {
     Some(ext)
 }
 
-/// Validate uploaded bytes for the **generic file** upload path.
+/// Validate the canonical, metadata-free audio shape produced by clients.
 ///
-/// This is the catch-all path for non-media attachments (documents, archives,
-/// text, data). It enforces three things:
-///   1. A size cap (`config.max_file_bytes`).
-///   2. A *deny* list — known active-content and executable MIME types are
-///      rejected even though safe headers already neutralise them.
-///   3. Magic-byte sniffing where possible.
+/// MP3 accepts only a complete run of MPEG-1/2/2.5 Layer III frames, so ID3,
+/// APE, and arbitrary trailers cannot survive. WAV accepts exactly `fmt ` then
+/// `data`. Ogg accepts one CRC-valid Vorbis stream whose identification,
+/// canonical empty-comment, and setup packets occupy dedicated header pages.
+/// Audio payload bytes remain opaque, just as codec samples do in validated MP4.
+fn validate_mp3_metadata_free(bytes: &[u8]) -> Result<(), MediaError> {
+    let mut offset = 0;
+    while offset < bytes.len() {
+        let header: [u8; 4] = bytes
+            .get(offset..offset + 4)
+            .and_then(|value| value.try_into().ok())
+            .ok_or(MediaError::MetadataForbidden)?;
+        let bits = u32::from_be_bytes(header);
+        if bits >> 21 != 0x7ff || ((bits >> 17) & 3) != 1 {
+            return Err(MediaError::MetadataForbidden);
+        }
+        let version = (bits >> 19) & 3;
+        let bitrate_index = ((bits >> 12) & 0xf) as usize;
+        let sample_rate_index = ((bits >> 10) & 3) as usize;
+        if version == 1 || bitrate_index == 0 || bitrate_index == 15 || sample_rate_index == 3 {
+            return Err(MediaError::MetadataForbidden);
+        }
+        const MPEG1_BITRATES: [usize; 16] = [
+            0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0,
+        ];
+        const MPEG2_BITRATES: [usize; 16] = [
+            0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0,
+        ];
+        const SAMPLE_RATES: [[usize; 3]; 3] = [
+            [11_025, 12_000, 8_000],
+            [22_050, 24_000, 16_000],
+            [44_100, 48_000, 32_000],
+        ];
+        let version_row = match version {
+            0 => 0,
+            2 => 1,
+            3 => 2,
+            _ => unreachable!(),
+        };
+        let bitrate = if version == 3 {
+            MPEG1_BITRATES[bitrate_index]
+        } else {
+            MPEG2_BITRATES[bitrate_index]
+        } * 1000;
+        let sample_rate = SAMPLE_RATES[version_row][sample_rate_index];
+        let coefficient = if version == 3 { 144 } else { 72 };
+        let padding = ((bits >> 9) & 1) as usize;
+        let frame_len = coefficient * bitrate / sample_rate + padding;
+        if frame_len < 4
+            || offset
+                .checked_add(frame_len)
+                .is_none_or(|end| end > bytes.len())
+        {
+            return Err(MediaError::MetadataForbidden);
+        }
+        offset += frame_len;
+    }
+    (offset > 0)
+        .then_some(())
+        .ok_or(MediaError::MetadataForbidden)
+}
+
+fn validate_wav_metadata_free(bytes: &[u8]) -> Result<(), MediaError> {
+    if bytes.len() < 12 || &bytes[..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+        return Err(MediaError::MetadataForbidden);
+    }
+    let declared = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+    if declared.checked_add(8) != Some(bytes.len()) {
+        return Err(MediaError::MetadataForbidden);
+    }
+    let mut offset = 12;
+    for expected in [b"fmt ", b"data"] {
+        if bytes.get(offset..offset + 4) != Some(expected) {
+            return Err(MediaError::MetadataForbidden);
+        }
+        let len = u32::from_le_bytes(
+            bytes
+                .get(offset + 4..offset + 8)
+                .and_then(|value| value.try_into().ok())
+                .ok_or(MediaError::MetadataForbidden)?,
+        ) as usize;
+        if expected == b"fmt " {
+            // The sanitizer emits the base WAVEFORMAT body only; extensible or
+            // private format tails could carry arbitrary metadata.
+            if len != 16 {
+                return Err(MediaError::MetadataForbidden);
+            }
+            let format = u16::from_le_bytes(
+                bytes
+                    .get(offset + 8..offset + 10)
+                    .and_then(|value| value.try_into().ok())
+                    .ok_or(MediaError::MetadataForbidden)?,
+            );
+            let channels = u16::from_le_bytes(bytes[offset + 10..offset + 12].try_into().unwrap());
+            let sample_rate =
+                u32::from_le_bytes(bytes[offset + 12..offset + 16].try_into().unwrap());
+            let byte_rate = u32::from_le_bytes(bytes[offset + 16..offset + 20].try_into().unwrap());
+            let block_align =
+                u16::from_le_bytes(bytes[offset + 20..offset + 22].try_into().unwrap());
+            let bits = u16::from_le_bytes(bytes[offset + 22..offset + 24].try_into().unwrap());
+            let valid_bits = match format {
+                1 => matches!(bits, 8 | 16 | 24 | 32),
+                3 => matches!(bits, 32 | 64),
+                _ => false,
+            };
+            let expected_align = channels.checked_mul(bits / 8);
+            let expected_rate =
+                expected_align.and_then(|align| sample_rate.checked_mul(align.into()));
+            if !(1..=32).contains(&channels)
+                || sample_rate == 0
+                || !valid_bits
+                || expected_align != Some(block_align)
+                || expected_rate != Some(byte_rate)
+            {
+                return Err(MediaError::MetadataForbidden);
+            }
+        } else if len == 0 {
+            return Err(MediaError::MetadataForbidden);
+        }
+        offset = offset
+            .checked_add(8)
+            .and_then(|value| value.checked_add(len))
+            .ok_or(MediaError::MetadataForbidden)?;
+        if offset > bytes.len() {
+            return Err(MediaError::MetadataForbidden);
+        }
+        if len % 2 == 1 {
+            if bytes.get(offset) != Some(&0) {
+                return Err(MediaError::MetadataForbidden);
+            }
+            offset += 1;
+        }
+    }
+    (offset == bytes.len())
+        .then_some(())
+        .ok_or(MediaError::MetadataForbidden)
+}
+
+fn ogg_crc(bytes: &[u8]) -> u32 {
+    let mut crc = 0u32;
+    for byte in bytes {
+        crc ^= (*byte as u32) << 24;
+        for _ in 0..8 {
+            crc = if crc & 0x8000_0000 != 0 {
+                (crc << 1) ^ 0x04c1_1db7
+            } else {
+                crc << 1
+            };
+        }
+    }
+    crc
+}
+
+fn validate_ogg_metadata_free(bytes: &[u8]) -> Result<(), MediaError> {
+    const EMPTY_COMMENT: &[u8] = b"\x03vorbis\0\0\0\0\0\0\0\0\x01";
+    let mut offset = 0;
+    let mut serial = None;
+    let mut sequence = 0u32;
+    let mut packet = Vec::new();
+    let mut packets = 0usize;
+    let mut saw_eos = false;
+    while offset < bytes.len() {
+        let header = bytes
+            .get(offset..offset + 27)
+            .ok_or(MediaError::MetadataForbidden)?;
+        if &header[..4] != b"OggS" || header[4] != 0 || saw_eos {
+            return Err(MediaError::MetadataForbidden);
+        }
+        let flags = header[5];
+        let granule = u64::from_le_bytes(header[6..14].try_into().unwrap());
+        if flags & !7 != 0
+            || (offset == 0) != (flags & 2 != 0)
+            || (!packet.is_empty()) != (flags & 1 != 0)
+            || (packets < 3 && granule != 0)
+        {
+            return Err(MediaError::MetadataForbidden);
+        }
+        let page_serial = u32::from_le_bytes(header[14..18].try_into().unwrap());
+        let page_sequence = u32::from_le_bytes(header[18..22].try_into().unwrap());
+        if *serial.get_or_insert(page_serial) != page_serial || page_sequence != sequence {
+            return Err(MediaError::MetadataForbidden);
+        }
+        sequence = sequence
+            .checked_add(1)
+            .ok_or(MediaError::MetadataForbidden)?;
+        let segment_count = header[26] as usize;
+        let lacing = bytes
+            .get(offset + 27..offset + 27 + segment_count)
+            .ok_or(MediaError::MetadataForbidden)?;
+        let payload_len: usize = lacing.iter().map(|value| *value as usize).sum();
+        let page_len = 27 + segment_count + payload_len;
+        let page = bytes
+            .get(offset..offset + page_len)
+            .ok_or(MediaError::MetadataForbidden)?;
+        let expected_crc = u32::from_le_bytes(header[22..26].try_into().unwrap());
+        let mut crc_page = page.to_vec();
+        crc_page[22..26].fill(0);
+        if ogg_crc(&crc_page) != expected_crc {
+            return Err(MediaError::MetadataForbidden);
+        }
+        let mut payload_offset = 27 + segment_count;
+        let packets_before_page = packets;
+        for (segment_index, lace) in lacing.iter().enumerate() {
+            let end = payload_offset + *lace as usize;
+            packet.extend_from_slice(&page[payload_offset..end]);
+            payload_offset = end;
+            if *lace < 255 {
+                match packets {
+                    0 if packet.len() == 30 && packet.starts_with(b"\x01vorbis") => {}
+                    1 if packet == EMPTY_COMMENT => {}
+                    2 if packet.starts_with(b"\x05vorbis") => {}
+                    0..=2 => return Err(MediaError::MetadataForbidden),
+                    _ => {}
+                }
+                packets += 1;
+                packet.clear();
+                if packets <= 3 && segment_index + 1 != lacing.len() {
+                    return Err(MediaError::MetadataForbidden);
+                }
+            }
+        }
+        // The sanitizer emits each Vorbis header on dedicated page(s): the
+        // identification and empty-comment packets each occupy one page, while
+        // setup may span pages but never shares its terminal page with audio.
+        match packets_before_page {
+            0 if sequence != 1 || lacing.len() != 1 || packets != 1 => {
+                return Err(MediaError::MetadataForbidden)
+            }
+            1 if sequence != 2 || lacing != [EMPTY_COMMENT.len() as u8] || packets != 2 => {
+                return Err(MediaError::MetadataForbidden)
+            }
+            0 | 1 => {}
+            2 if packets > 3 => return Err(MediaError::MetadataForbidden),
+            _ => {}
+        }
+        saw_eos = flags & 4 != 0;
+        offset += page_len;
+    }
+    (saw_eos && packet.is_empty() && packets >= 4)
+        .then_some(())
+        .ok_or(MediaError::MetadataForbidden)
+}
+
+fn validate_audio_content(
+    bytes: &[u8],
+) -> Option<Result<(&'static str, &'static str), MediaError>> {
+    if bytes.starts_with(b"RIFF") {
+        return Some(validate_wav_metadata_free(bytes).map(|()| ("audio/wav", "wav")));
+    }
+    if bytes.starts_with(b"OggS") {
+        if infer::get(bytes).is_some_and(|kind| kind.mime_type() == "audio/opus") {
+            return Some(Err(MediaError::DisallowedContentType(
+                "audio/opus".to_string(),
+            )));
+        }
+        return Some(validate_ogg_metadata_free(bytes).map(|()| ("audio/ogg", "ogg")));
+    }
+    if bytes.starts_with(b"ID3") || bytes.starts_with(b"TAG") || bytes.starts_with(b"APETAGEX") {
+        return Some(Err(MediaError::MetadataForbidden));
+    }
+    if bytes.len() >= 2 && bytes[0] == 0xff && bytes[1] & 0xe0 == 0xe0 {
+        return Some(validate_mp3_metadata_free(bytes).map(|()| ("audio/mpeg", "mp3")));
+    }
+    None
+}
+
+/// Validate uploaded bytes for the **generic file or audio** upload path.
+///
+/// This is the catch-all path for attachments. It enforces the generic file
+/// deny-list and size cap, and accepts MP3/WAV/Ogg only when their bytes match
+/// the canonical metadata-free shapes produced by Buzz clients. Audio detection
+/// is structural and runs before `infer`, whose MP3 matcher misses MPEG-2/2.5.
 ///
 /// Files with no detectable signature (plain text, CSV, source code, JSON —
 /// none of which have magic bytes) are accepted as `application/octet-stream`.
@@ -180,6 +447,10 @@ pub fn validate_file_content(
         });
     }
 
+    if let Some(result) = validate_audio_content(bytes) {
+        return result.map(|(mime, ext)| (mime.to_string(), ext.to_string()));
+    }
+
     // ISO-BMFF permits arbitrary major brands, so `infer` cannot enumerate all
     // valid MP4 signatures. Never let an `ftyp` container fall through as an
     // opaque attachment merely because its brand is unfamiliar.
@@ -196,9 +467,9 @@ pub fn validate_file_content(
         Some(kind) => {
             let mime = kind.mime_type().to_string();
             // Recognized media must never fall through exact-byte attachment
-            // storage. Images and video use their canonical media validators;
-            // audio is rejected until Buzz has an explicit sanitizer and
-            // location-metadata validator for its container.
+            // storage. Images/video use canonical validators; supported audio
+            // was structurally validated above, so anything reaching this audio
+            // branch is outside the allowlist.
             if mime.starts_with("image/")
                 || mime.starts_with("video/")
                 || mime.starts_with("audio/")
@@ -226,7 +497,9 @@ pub fn validate_file_content(
 /// PDF is intentionally *not* inline yet — inline PDF preview is a planned
 /// fast-follow; until the renderer handles it, force download like any other file.
 pub fn serve_inline(mime: &str) -> bool {
-    mime.starts_with("image/") || mime.starts_with("video/")
+    mime.starts_with("image/")
+        || mime.starts_with("video/")
+        || ALLOWED_AUDIO_MIME_TYPES.contains(&mime)
 }
 
 /// Metadata extracted from a validated MP4 file.
@@ -1536,33 +1809,103 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_generic_file_path_rejects_recognized_audio() {
-        let config = test_config();
-        let fixtures: &[(&str, &[u8])] = &[
-            ("mp3", b"ID3\x04\x00\x00\x00\x00\x00\x00"),
-            ("flac", b"fLaC\x00\x00\x00\x22"),
-            ("wav", b"RIFF\x24\x00\x00\x00WAVEfmt "),
-            ("ogg", b"OggS\x00\x02\x00\x00\x00\x00\x00\x00"),
-            ("m4a", b"\x00\x00\x00\x18ftypM4A \x00\x00\x00\x00M4A "),
-            ("aac", b"\xff\xf1\x50\x80\x00\x1f\xfc"),
-        ];
+    fn mp3_frame(header: [u8; 4], len: usize) -> Vec<u8> {
+        let mut frame = vec![0; len];
+        frame[..4].copy_from_slice(&header);
+        frame
+    }
 
-        for (name, bytes) in fixtures {
-            let detected = infer::get(bytes)
-                .unwrap_or_else(|| panic!("{name} fixture must be recognized as audio"));
-            assert!(
-                detected.mime_type().starts_with("audio/"),
-                "{name} fixture detected as {}",
-                detected.mime_type()
+    fn canonical_wav() -> Vec<u8> {
+        let mut wav = b"RIFF\0\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x44\xac\0\0\x88\x58\x01\0\x02\0\x10\0data\x02\0\0\0\0\0".to_vec();
+        let size = (wav.len() - 8) as u32;
+        wav[4..8].copy_from_slice(&size.to_le_bytes());
+        wav
+    }
+
+    fn ogg_page(packet: &[u8], flags: u8, sequence: u32) -> Vec<u8> {
+        assert!(packet.len() < 255);
+        let mut page = Vec::with_capacity(28 + packet.len());
+        page.extend_from_slice(b"OggS\0");
+        page.push(flags);
+        page.extend_from_slice(&0u64.to_le_bytes());
+        page.extend_from_slice(&7u32.to_le_bytes());
+        page.extend_from_slice(&sequence.to_le_bytes());
+        page.extend_from_slice(&[0; 4]);
+        page.push(1);
+        page.push(packet.len() as u8);
+        page.extend_from_slice(packet);
+        let crc = ogg_crc(&page);
+        page[22..26].copy_from_slice(&crc.to_le_bytes());
+        page
+    }
+
+    fn canonical_ogg() -> Vec<u8> {
+        let mut identification = vec![0; 30];
+        identification[..7].copy_from_slice(b"\x01vorbis");
+        let packets: &[(&[u8], u8)] = &[
+            (&identification, 2),
+            (b"\x03vorbis\0\0\0\0\0\0\0\0\x01", 0),
+            (b"\x05vorbis\x01", 0),
+            (b"audio", 4),
+        ];
+        packets
+            .iter()
+            .enumerate()
+            .flat_map(|(sequence, (packet, flags))| ogg_page(packet, *flags, sequence as u32))
+            .collect()
+    }
+
+    #[test]
+    fn test_generic_file_path_accepts_only_canonical_mp3_wav_and_ogg() {
+        let config = test_config();
+        let mpeg1 = mp3_frame([0xff, 0xfb, 0x90, 0], 417);
+        let mpeg2 = mp3_frame([0xff, 0xf3, 0x80, 0], 208);
+        let mpeg25 = mp3_frame([0xff, 0xe3, 0x80, 0], 417);
+        let wav = canonical_wav();
+        let ogg = canonical_ogg();
+        for (name, bytes, mime, ext) in [
+            ("mpeg1", mpeg1.as_slice(), "audio/mpeg", "mp3"),
+            ("mpeg2", mpeg2.as_slice(), "audio/mpeg", "mp3"),
+            ("mpeg2.5", mpeg25.as_slice(), "audio/mpeg", "mp3"),
+            ("wav", wav.as_slice(), "audio/wav", "wav"),
+            ("ogg", ogg.as_slice(), "audio/ogg", "ogg"),
+        ] {
+            assert_eq!(
+                validate_file_content(bytes, &config)
+                    .unwrap_or_else(|error| panic!("{name}: {error}")),
+                (mime.to_string(), ext.to_string())
             );
-            assert!(
-                matches!(
-                    validate_file_content(bytes, &config),
-                    Err(MediaError::DisallowedContentType(mime)) if mime.starts_with("audio/")
-                ),
-                "generic path accepted {name}"
-            );
+        }
+    }
+
+    #[test]
+    fn test_audio_metadata_and_non_allowlisted_formats_are_rejected() {
+        let config = test_config();
+        let mut tagged_mp3 = b"ID3\x04\0\0\0\0\0\0".to_vec();
+        tagged_mp3.extend(mp3_frame([0xff, 0xfb, 0x90, 0], 417));
+        let mut wav_with_list = canonical_wav();
+        wav_with_list.extend_from_slice(b"LIST\0\0\0\0");
+        let size = (wav_with_list.len() - 8) as u32;
+        wav_with_list[4..8].copy_from_slice(&size.to_le_bytes());
+        let mut commented_ogg = canonical_ogg();
+        let second = ogg_page(b"\x03vorbis\x03\0\0\0gps\0\0\0\0\x01", 0, 1);
+        let first_len = ogg_page(&[b"\x01vorbis".as_slice(), &[0; 23]].concat(), 2, 0).len();
+        let old_second_len = ogg_page(b"\x03vorbis\0\0\0\0\0\0\0\0\x01", 0, 1).len();
+        commented_ogg.splice(first_len..first_len + old_second_len, second);
+
+        for bytes in [&tagged_mp3[..], &wav_with_list, &commented_ogg] {
+            assert!(matches!(
+                validate_file_content(bytes, &config),
+                Err(MediaError::MetadataForbidden)
+            ));
+        }
+        for bytes in [
+            b"fLaC\x00\x00\x00\x22".as_slice(),
+            b"\x00\x00\x00\x18ftypM4A \x00\x00\x00\x00M4A ".as_slice(),
+            b"\xff\xf1\x50\x80\x00\x1f\xfc".as_slice(),
+            b"OggS\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0OpusHead".as_slice(),
+        ] {
+            assert!(validate_file_content(bytes, &config).is_err());
         }
     }
 
@@ -2676,11 +3019,16 @@ mod tests {
         assert!(serve_inline("image/jpeg"));
         assert!(serve_inline("image/png"));
         assert!(serve_inline("video/mp4"));
-        // Generic files force download.
+        assert!(serve_inline("audio/mpeg"));
+        assert!(serve_inline("audio/wav"));
+        assert!(serve_inline("audio/ogg"));
+        // Generic files and every other audio MIME force download.
         assert!(!serve_inline("application/pdf"));
         assert!(!serve_inline("application/zip"));
         assert!(!serve_inline("application/octet-stream"));
-        assert!(!serve_inline("audio/mpeg"));
+        assert!(!serve_inline("audio/x-wav"));
+        assert!(!serve_inline("audio/opus"));
+        assert!(!serve_inline("audio/flac"));
         assert!(!serve_inline("text/plain"));
     }
 }
