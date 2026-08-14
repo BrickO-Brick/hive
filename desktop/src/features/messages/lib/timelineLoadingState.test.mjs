@@ -31,6 +31,33 @@ test("stale placeholder while refetching is loading", () => {
   );
 });
 
+test("authoritative warm empty stays visible while revalidating", () => {
+  assert.equal(
+    selectTimelineLoadingState({
+      ...settled,
+      isFetching: true,
+      hasAuthoritativePage: true,
+      dataLength: 0,
+    }),
+    false,
+  );
+});
+
+test("authoritative warm rows stay visible before the local latch settles", () => {
+  assert.equal(
+    selectTimelineLoadingState(
+      {
+        ...settled,
+        isFetching: true,
+        hasAuthoritativePage: true,
+        dataLength: 12,
+      },
+      false,
+    ),
+    false,
+  );
+});
+
 test("subscription-seeded empty cache while fetching is loading", () => {
   // The live subscription's setQueryData seeds [] before history settles, so
   // data is defined but empty and a fetch is still in flight.

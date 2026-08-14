@@ -12,6 +12,8 @@ export type TimelineQueryStatus = {
   isPending: boolean;
   isFetching: boolean;
   isPlaceholderData: boolean;
+  /** True once this channel has an authoritative page, including an empty one. */
+  hasAuthoritativePage?: boolean;
   dataLength: number | null;
 };
 
@@ -19,6 +21,12 @@ export function selectTimelineLoadingState(
   status: TimelineQueryStatus,
   hasSettled = true,
 ): boolean {
+  // Page provenance, not row count, distinguishes a warm empty channel from a
+  // cold cache seeded by the live subscription. Once a page exists, every
+  // subsequent fetch is background revalidation and must not cover the cache.
+  if (status.hasAuthoritativePage) {
+    return false;
+  }
   if (status.isPending) {
     return true;
   }

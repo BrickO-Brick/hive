@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { QueryClient, QueryObserver } from "@tanstack/react-query";
 
-import { reconcileFetchedChannelWindow } from "../hooks.ts";
+import {
+  reconcileFetchedChannelWindow,
+  reconcileFetchedChannelWindowPages,
+} from "../hooks.ts";
 import { channelMessagesKey, channelWindowKey } from "./messageQueryKeys.ts";
 import {
   appendOlderChannelWindow,
@@ -285,6 +288,61 @@ test("test_live_projection_retains_pending_send_and_non_broadcast_thread_reply",
     "thread-reply",
     "live",
   ]);
+});
+
+test("test_catch_up_atomically_replaces_the_full_retained_extent", () => {
+  const harness = createHarness();
+  const older = event("older", 50);
+  const firstCursor = { createdAt: 100, eventId: event("initial", 100).id };
+  const loaded = appendOlderChannelWindow(
+    replaceNewestChannelWindow(emptyChannelWindowStore(), {
+      ...newestPage([event("initial", 100)]),
+      nextCursor: firstCursor,
+      hasMore: true,
+    }),
+    {
+      startCursor: firstCursor,
+      rows: [{ event: older, thread: null }],
+      aux: [],
+      nextCursor: null,
+      hasMore: false,
+    },
+  );
+  harness.client.setQueryData(harness.windowKey, loaded);
+  harness.client.setQueryData(harness.messagesKey, [
+    older,
+    event("initial", 100),
+  ]);
+
+  const refreshedHead = {
+    startCursor: null,
+    rows: [event("gap", 110), event("initial", 100)].map((item) => ({
+      event: item,
+      thread: null,
+    })),
+    aux: [],
+    nextCursor: firstCursor,
+    hasMore: true,
+  };
+  const refreshedTail = {
+    startCursor: firstCursor,
+    rows: [{ event: older, thread: null }],
+    aux: [],
+    nextCursor: null,
+    hasMore: false,
+  };
+
+  const projected = reconcileFetchedChannelWindowPages(
+    harness.client,
+    harness.channelId,
+    [refreshedHead, refreshedTail],
+    harness.client.getQueryData(harness.messagesKey),
+    new AbortController().signal,
+  );
+  harness.client.setQueryData(harness.messagesKey, projected);
+
+  assert.equal(harness.client.getQueryData(harness.windowKey).pages.length, 2);
+  assert.deepEqual(contents(harness), ["older", "initial", "gap"]);
 });
 
 test("test_canceled_stale_fetch_cannot_overwrite_catch_up_window", async () => {

@@ -568,6 +568,7 @@ export const ChannelPane = React.memo(function ChannelPane({
         >
           {isHuddleTranscript ? null : header}
           <MessageTimeline
+            key={activeChannelId ?? "none"}
             ref={messageTimelineRef}
             channelId={activeChannel?.id}
             channelIntro={channelIntro}

@@ -219,7 +219,7 @@ function samePair(a, b) {
 
 function makeHarness(records, scroller) {
   return function Harness({ snapshot }) {
-    const deferredSnapshot = React.useDeferredValue(snapshot, EMPTY_SNAPSHOT);
+    const deferredSnapshot = React.useDeferredValue(snapshot, snapshot);
     const buffered = useBufferedTimelineMessages({
       channelId: deferredSnapshot.channelId,
       isAtBottom: false, // reader is scrolled up — the tear's regime
@@ -271,6 +271,27 @@ async function mount(Comp, snapshot) {
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
+
+test("warm snapshot is the first committed render, including its provenance", async () => {
+  const warm = {
+    channelId: "chan-warm",
+    messages: rows(["cached-a", "cached-b"]),
+    historyExhausted: true,
+  };
+  const records = [];
+  const handle = await mount(makeHarness(records, makeFakeScroller()), warm);
+
+  assert.deepEqual(
+    {
+      count: records[0].count,
+      firstId: records[0].firstId,
+      exhausted: records[0].exhausted,
+    },
+    { count: 2, firstId: "cached-a", exhausted: true },
+  );
+
+  await handle.unmount();
+});
 
 test("pass-1 landing: exhaustion proof can never pair with the stale row array", async () => {
   const CHANNEL = "chan-tear";

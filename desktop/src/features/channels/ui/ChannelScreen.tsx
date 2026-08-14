@@ -605,6 +605,7 @@ export function ChannelScreen({
         isPending: messagesQuery.isPending,
         isFetching: messagesQuery.isFetching,
         isPlaceholderData: messagesQuery.isPlaceholderData,
+        hasAuthoritativePage: (windowQuery.data?.pages.length ?? 0) > 0,
         dataLength: messagesQuery.data?.length ?? null,
       },
       hasSettledThisChannel,

@@ -146,12 +146,6 @@ type TimelineSnapshot = {
   historyExhausted: boolean;
 };
 
-const EMPTY_TIMELINE_SNAPSHOT: TimelineSnapshot = {
-  channelId: null,
-  messages: EMPTY_MESSAGES,
-  historyExhausted: false,
-};
-
 const MessageTimelineBase = React.forwardRef<
   MessageTimelineHandle,
   MessageTimelineProps
@@ -232,28 +226,16 @@ const MessageTimelineBase = React.forwardRef<
     [scrollContainerRef, virtualizerScrollParent],
   );
 
-  // Gate the heavy timeline render (each row runs a synchronous
-  // react-markdown parse) behind React concurrency. `useDeferredValue` lets the
-  // commit that rebuilds the message list yield to higher-priority work, so the
-  // main thread stops freezing and the OS no longer shows the busy cursor when
-  // entering a channel. We pass `initialValue: []` so even the FIRST render on
-  // channel entry stays light — the heavy list streams in on a deferred commit
-  // rather than blocking the initial paint. We deliberately drive BOTH the
-  // scroll manager and the rendered list off the same deferred value —
-  // scroll/autoscroll/deep-link logic reads the DOM (`scrollIntoView`,
-  // ResizeObserver on the content), so it must stay consistent with what's
-  // actually painted. You can't scroll to a row that hasn't committed yet.
-  // Channel id travels with the deferred message snapshot. Without that guard, a
-  // route change can paint the previous channel's deferred rows for a frame even
-  // though the sidebar/header already moved to the new channel.
+  // The timeline itself is keyed by channel, so this is the selected channel's
+  // route-matched cache on mount. Warm channels paint it immediately; cold
+  // channels still initialize cheaply because their snapshot is empty. Keeping
+  // rows and history provenance in the same initial value also prevents scroll
+  // and deep-link logic from observing a different generation than the DOM.
   const liveSnapshot = React.useMemo<TimelineSnapshot>(
     () => ({ channelId: channelId ?? null, messages, historyExhausted }),
     [channelId, historyExhausted, messages],
   );
-  const deferredSnapshot = React.useDeferredValue(
-    liveSnapshot,
-    EMPTY_TIMELINE_SNAPSHOT,
-  );
+  const deferredSnapshot = React.useDeferredValue(liveSnapshot, liveSnapshot);
   const deferredMessages = deferredSnapshot.messages;
   const imagePreloadStateRef = React.useRef({
     activeImages: new Set<HTMLImageElement>(),

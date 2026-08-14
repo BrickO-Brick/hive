@@ -55,6 +55,8 @@ import type { Channel, Identity, RelayEvent } from "@/shared/api/types";
 // from the on-render overlay.
 import { applyEditTagOverlay } from "@/features/messages/lib/applyEditTagOverlay.mjs";
 import {
+  appendOlderChannelWindow,
+  compareRelayOrder,
   emptyChannelWindowStore,
   mapChannelWindowEvents,
   mergeLiveChannelWindowEvent,
@@ -246,18 +248,94 @@ export function reconcileFetchedChannelWindow(
   previousMessages: RelayEvent[],
   signal: AbortSignal,
 ): RelayEvent[] {
+  return reconcileFetchedChannelWindowPages(
+    queryClient,
+    channelId,
+    [parseChannelWindowResponse(events, channelId, null)],
+    previousMessages,
+    signal,
+  );
+}
+
+export function reconcileFetchedChannelWindowPages(
+  queryClient: QueryClient,
+  channelId: string,
+  pages: ReturnType<typeof parseChannelWindowResponse>[],
+  previousMessages: RelayEvent[],
+  signal: AbortSignal,
+): RelayEvent[] {
   // Tauri invokes cannot be canceled after dispatch. A replacement refetch can
   // therefore win while this older request is still in flight. Never let that
   // canceled request commit its stale page into the authoritative window.
   signal.throwIfAborted();
   const windowKey = channelWindowKey(channelId);
-  const page = parseChannelWindowResponse(events, channelId, null);
   const current =
     queryClient.getQueryData<ChannelWindowStore>(windowKey) ??
     emptyChannelWindowStore();
-  const next = replaceNewestChannelWindow(current, page);
+  let next = replaceNewestChannelWindow(current, pages[0]);
+  for (const page of pages.slice(1)) {
+    next = appendOlderChannelWindow(next, page);
+  }
   queryClient.setQueryData(windowKey, next);
   return reconcileChannelWindowMessages(next, previousMessages);
+}
+
+const CHANNEL_WINDOW_PAGE_SIZE = 50;
+const CHANNEL_WINDOW_MAX_REQUEST_ROWS = 200;
+
+async function getRefreshedChannelWindowPages(
+  channelId: string,
+  retainedWindow: ChannelWindowStore | undefined,
+) {
+  const retainedRowCount =
+    retainedWindow?.pages.reduce(
+      (count, page) => count + page.rows.length,
+      0,
+    ) ?? 0;
+  const retainedOldest = retainedWindow?.pages.at(-1)?.rows.at(-1)?.event;
+  const targetRows = Math.max(CHANNEL_WINDOW_PAGE_SIZE, retainedRowCount);
+  const firstEvents = await getChannelWindowEvents(
+    channelId,
+    null,
+    Math.min(targetRows, CHANNEL_WINDOW_MAX_REQUEST_ROWS),
+  );
+  const firstPage = parseChannelWindowResponse(firstEvents, channelId, null);
+  const pages = [firstPage];
+  let rowCount = firstPage.rows.length;
+
+  const coversRetainedOldest = () => {
+    if (!retainedOldest) return true;
+    const refreshedOldest = pages.at(-1)?.rows.at(-1)?.event;
+    return (
+      refreshedOldest !== undefined &&
+      compareRelayOrder(refreshedOldest, retainedOldest) >= 0
+    );
+  };
+
+  while (
+    pages.at(-1)?.hasMore &&
+    (rowCount < targetRows || !coversRetainedOldest())
+  ) {
+    const tail = pages.at(-1);
+    if (!tail?.nextCursor) break;
+    const nextEvents = await getChannelWindowEvents(
+      channelId,
+      tail.nextCursor,
+      Math.min(
+        Math.max(CHANNEL_WINDOW_PAGE_SIZE, targetRows - rowCount),
+        CHANNEL_WINDOW_MAX_REQUEST_ROWS,
+      ),
+    );
+    const nextPage = parseChannelWindowResponse(
+      nextEvents,
+      channelId,
+      tail.nextCursor,
+    );
+    pages.push(nextPage);
+    rowCount += nextPage.rows.length;
+  }
+
+  return pages;
 }
 
 export function useChannelMessagesQuery(channel: Channel | null) {
@@ -271,11 +349,20 @@ export function useChannelMessagesQuery(channel: Channel | null) {
       if (!channel) throw new Error("No channel selected.");
       const previousMessages =
         queryClient.getQueryData<RelayEvent[]>(queryKey) ?? [];
-      const events = await getChannelWindowEvents(channel.id);
-      return reconcileFetchedChannelWindow(
+      const retainedWindow = queryClient.getQueryData<ChannelWindowStore>(
+        channelWindowKey(channel.id),
+      );
+      // A subscription/reconnect catch-up must cover the retained page extent.
+      // Refetching only the default head page would replace a multi-page window
+      // and delete the rows (and anchor) the reader is currently parked on.
+      const pages = await getRefreshedChannelWindowPages(
+        channel.id,
+        retainedWindow,
+      );
+      return reconcileFetchedChannelWindowPages(
         queryClient,
         channel.id,
-        events,
+        pages,
         previousMessages,
         signal,
       );
