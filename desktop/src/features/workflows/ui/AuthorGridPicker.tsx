@@ -71,7 +71,7 @@ export function AuthorGridPicker({
   const normalizedValue = parsePubkeyInput(value);
 
   const membersQuery = useRelayMembersQuery(true);
-  const memberPubkeys = React.useMemo(
+  const memberAuthorIds = React.useMemo(
     () => [
       ...new Set(
         [
@@ -85,8 +85,8 @@ export function AuthorGridPicker({
     [knownPubkeys, membersQuery.data],
   );
   const visibleMemberPubkeys = React.useMemo(
-    () => memberPubkeys.slice(0, visibleMemberCount),
-    [memberPubkeys, visibleMemberCount],
+    () => memberAuthorIds.slice(0, visibleMemberCount),
+    [memberAuthorIds, visibleMemberCount],
   );
   const visibleProfilesQuery = useUsersBatchQuery(visibleMemberPubkeys);
   const visibleMemberResults = React.useMemo(
@@ -124,8 +124,8 @@ export function AuthorGridPicker({
       resultsByPubkey.set(pubkey, { ...result, pubkey });
     }
 
-    if (memberPubkeys.length > 0) {
-      for (const pubkey of memberPubkeys) {
+    if (memberAuthorIds.length > 0) {
+      for (const pubkey of memberAuthorIds) {
         if (
           matchesPubkeyPrefix(pubkey, deferredQuery) &&
           !resultsByPubkey.has(pubkey)
@@ -136,7 +136,7 @@ export function AuthorGridPicker({
     }
 
     return [...resultsByPubkey.values()];
-  }, [deferredQuery, directoryResults, memberPubkeys, visibleMemberResults]);
+  }, [deferredQuery, directoryResults, memberAuthorIds, visibleMemberResults]);
   const directPubkey = parsePubkeyInput(deferredQuery);
   const showDirectPubkey =
     directPubkey !== null &&
@@ -150,9 +150,9 @@ export function AuthorGridPicker({
 
   function loadNextPage() {
     if (deferredQuery.length === 0) {
-      if (visibleMemberCount < memberPubkeys.length) {
+      if (visibleMemberCount < memberAuthorIds.length) {
         setVisibleMemberCount((count) =>
-          Math.min(count + AUTHOR_PAGE_SIZE, memberPubkeys.length),
+          Math.min(count + AUTHOR_PAGE_SIZE, memberAuthorIds.length),
         );
       }
       if (
@@ -180,7 +180,7 @@ export function AuthorGridPicker({
 
   const hasMoreResults =
     deferredQuery.length === 0
-      ? visibleMemberCount < memberPubkeys.length ||
+      ? visibleMemberCount < memberAuthorIds.length ||
         directorySearchQuery.hasNextPage
       : directorySearchQuery.hasNextPage;
   const isSettling = deferredQuery !== query.trim();
