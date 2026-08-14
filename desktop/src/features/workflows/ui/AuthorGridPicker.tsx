@@ -189,16 +189,14 @@ export function AuthorGridPicker({
     isSettling ||
     (searchResults.length === 0 &&
       (membersQuery.isLoading || directorySearchQuery.isLoading));
+  const hasVisibleResults = showDirectPubkey || searchResults.length > 0;
 
   return (
     <div
-      className={cn(
-        "overflow-hidden rounded-lg border border-input/40 bg-background",
-        disabled && "opacity-50",
-      )}
+      className={cn("space-y-2", disabled && "opacity-50")}
       data-testid="author-grid-picker"
     >
-      <div className="flex items-center gap-2 border-b border-border px-3 py-2">
+      <div className="flex items-center gap-2 rounded-lg border border-input/40 bg-background px-3 py-2">
         <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
         <input
           aria-label={`${ariaLabel} search`}
@@ -215,7 +213,7 @@ export function AuthorGridPicker({
         />
       </div>
       <PortalledScrollArea
-        className="max-h-72 overflow-y-auto p-2"
+        className="h-72 overflow-y-auto rounded-lg border border-input/40 bg-background p-2"
         data-testid="author-grid-list"
         onScroll={handleListScroll}
       >
@@ -258,7 +256,7 @@ export function AuthorGridPicker({
               No authors found.
             </p>
           )}
-          {!isLoading && hasMoreResults ? (
+          {!isLoading && hasVisibleResults && hasMoreResults ? (
             <button
               className="col-span-3 w-full rounded-lg border border-dashed border-border px-3 py-2 text-center text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground disabled:opacity-50"
               disabled={disabled || directorySearchQuery.isFetchingNextPage}
