@@ -1,7 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { formStateToYaml, yamlToFormState } from "./workflowFormTypes.ts";
+import {
+  DEFAULT_FORM_STATE,
+  formStateToYaml,
+  TRIGGER_TYPES,
+  yamlToFormState,
+} from "./workflowFormTypes.ts";
+
+test("defaults new workflows to the first-listed schedule trigger", () => {
+  assert.equal(TRIGGER_TYPES[0], "schedule");
+  assert.deepEqual(DEFAULT_FORM_STATE.trigger, {
+    on: "schedule",
+    cron: "0 9 * * *",
+  });
+});
 
 test("keeps workflows with step conditions in the YAML editor", () => {
   const result = yamlToFormState(`name: conditional_step

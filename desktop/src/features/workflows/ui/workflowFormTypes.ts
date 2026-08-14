@@ -3,13 +3,14 @@ import {
   formatDurationSeconds,
   parseDurationSeconds,
 } from "./workflowDuration";
+import { defaultScheduleTrigger } from "./workflowSchedule";
 
 export const TRIGGER_TYPES = [
+  "schedule",
   "message_posted",
   "reaction_added",
   "diff_posted",
   "webhook",
-  "schedule",
 ] as const;
 export type TriggerType = (typeof TRIGGER_TYPES)[number];
 
@@ -78,7 +79,7 @@ export const DEFAULT_FORM_STATE: WorkflowFormState = {
   name: "",
   description: "",
   enabled: true,
-  trigger: { on: "message_posted" },
+  trigger: defaultScheduleTrigger(),
   steps: [],
 };
 
