@@ -1,15 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { getWorkflowCardLabel } from "./workflowDefinition.ts";
+import {
+  getWorkflowCardLabel,
+  getWorkflowPrimaryActionEmoji,
+} from "./workflowDefinition.ts";
 
 test("builds a plain-language workflow card label", () => {
   assert.equal(
     getWorkflowCardLabel({
       trigger: { on: "message_posted" },
-      steps: [{ action: "send_message" }],
+      steps: [{ action: "send_message", text: "Deploying now" }],
     }),
-    "When a message is posted, send a channel message",
+    "When a message is posted, send “Deploying now”",
   );
 
   assert.equal(
@@ -21,6 +24,90 @@ test("builds a plain-language workflow card label", () => {
       ],
     }),
     "When someone reacts with 🔥, wait 5m, then 1 more step",
+  );
+
+  assert.equal(
+    getWorkflowCardLabel(
+      {
+        trigger: {
+          on: "reaction_added",
+          filter: 'trigger_emoji == "🫠"',
+        },
+        steps: [{ action: "add_reaction", emoji: "👍" }],
+      },
+      { triggerReaction: "🫠" },
+    ),
+    "When someone reacts with 🫠, add a 👍 reaction",
+  );
+
+  assert.equal(
+    getWorkflowCardLabel(
+      {
+        trigger: { on: "message_posted" },
+        steps: [{ action: "send_message", text: "Deploying now" }],
+      },
+      { actionChannelLabel: "releases" },
+    ),
+    "When a message is posted, send “Deploying now” in #releases",
+  );
+
+  assert.equal(
+    getWorkflowCardLabel(
+      {
+        trigger: {
+          on: "message_posted",
+          filter: `trigger_author == "${"a".repeat(64)}"`,
+        },
+        steps: [{ action: "send_message", text: "Deploying now" }],
+      },
+      { triggerDescription: "Message posted by Carl" },
+    ),
+    "When a message is posted by Carl, send “Deploying now”",
+  );
+
+  assert.equal(
+    getWorkflowCardLabel(
+      {
+        trigger: {
+          on: "message_posted",
+          filter: 'str_contains(trigger_text, "deploy")',
+        },
+        steps: [{ action: "call_webhook" }],
+      },
+      { triggerDescription: "Message contains “deploy”" },
+    ),
+    "When a message contains “deploy”, call a webhook",
+  );
+
+  assert.equal(
+    getWorkflowCardLabel(
+      {
+        trigger: {
+          on: "message_posted",
+          filter: `trigger_text == "FUCK" && trigger_author == "${"a".repeat(64)}"`,
+        },
+        steps: [{ action: "send_message", text: "{{trigger.text}} yourself" }],
+      },
+      {
+        triggerDescription: "Message “FUCK” is posted by Carl",
+      },
+    ),
+    "When “FUCK” is posted by Carl, send “{{trigger.text}} yourself”",
+  );
+});
+
+test("returns the primary add-reaction emoji for rich card rendering", () => {
+  assert.equal(
+    getWorkflowPrimaryActionEmoji({
+      steps: [{ action: "add_reaction", emoji: ":blob-wave:" }],
+    }),
+    ":blob-wave:",
+  );
+  assert.equal(
+    getWorkflowPrimaryActionEmoji({
+      steps: [{ action: "send_message", emoji: ":blob-wave:" }],
+    }),
+    null,
   );
 });
 

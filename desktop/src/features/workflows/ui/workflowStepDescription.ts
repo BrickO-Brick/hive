@@ -64,9 +64,9 @@ function configuredStepDetail(
 /** Build the concise action summary rendered on a workflow step node. */
 export function workflowStepDescription(
   step: StepFormState,
-  options: { channelLabel?: string } = {},
+  options: { channelLabel?: string; includeName?: boolean } = {},
 ): string {
-  const name = step.name?.trim();
+  const name = options.includeName === false ? undefined : step.name?.trim();
   const detail = configuredStepDetail(step, options.channelLabel);
   if (name && detail) return `${name} · ${detail}`;
   return name || detail || ACTION_LABELS[step.action];

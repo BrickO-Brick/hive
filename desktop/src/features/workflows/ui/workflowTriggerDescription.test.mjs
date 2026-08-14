@@ -20,7 +20,31 @@ test("describes selected trigger conditions on the workflow canvas", () => {
       on: "message_posted",
       filter: 'str_contains(trigger_text, "deploy")',
     }),
-    "Message posted containing “deploy”",
+    "Message contains “deploy”",
+  );
+
+  assert.equal(
+    workflowTriggerDescription({
+      on: "message_posted",
+      filter: '!str_contains(trigger_text, "deploy")',
+    }),
+    "Message doesn’t contain “deploy”",
+  );
+
+  assert.equal(
+    workflowTriggerDescription({
+      on: "message_posted",
+      filter: 'str_starts_with(trigger_text, "deploy")',
+    }),
+    "Message starts with “deploy”",
+  );
+
+  assert.equal(
+    workflowTriggerDescription({
+      on: "message_posted",
+      filter: 'str_ends_with(trigger_text, "done")',
+    }),
+    "Message ends with “done”",
   );
 
   assert.equal(
@@ -28,7 +52,7 @@ test("describes selected trigger conditions on the workflow canvas", () => {
       on: "message_posted",
       filter: 'trigger_text == "deploy"',
     }),
-    "Message posted is “deploy”",
+    "Message “deploy” is posted",
   );
 
   assert.equal(
@@ -36,7 +60,29 @@ test("describes selected trigger conditions on the workflow canvas", () => {
       on: "message_posted",
       filter: 'trigger_text != "deploy"',
     }),
-    "Message posted is not “deploy”",
+    "Message with text other than “deploy” posted",
+  );
+
+  assert.equal(
+    workflowTriggerDescription(
+      {
+        on: "message_posted",
+        filter: `trigger_text == "FUCK" && trigger_author == "${"a".repeat(64)}"`,
+      },
+      { authorLabel: "Carl" },
+    ),
+    "Message “FUCK” is posted by Carl",
+  );
+
+  assert.equal(
+    workflowTriggerDescription(
+      {
+        on: "message_posted",
+        filter: `str_contains(trigger_text, "deploy") && trigger_author == "${"a".repeat(64)}"`,
+      },
+      { authorLabel: "Carl" },
+    ),
+    "Message by Carl contains “deploy”",
   );
 
   assert.equal(
@@ -44,7 +90,7 @@ test("describes selected trigger conditions on the workflow canvas", () => {
       on: "message_posted",
       filter: "str_len(trigger_text) == 0",
     }),
-    "Message posted without text",
+    "Message without text posted",
   );
 
   assert.equal(
@@ -52,7 +98,7 @@ test("describes selected trigger conditions on the workflow canvas", () => {
       on: "message_posted",
       filter: "str_len(trigger_text) > 0",
     }),
-    "Messaged posted with text",
+    "Message with text posted",
   );
 
   assert.equal(

@@ -34,26 +34,25 @@ function textConditionDescription(
   eventPhrase: string,
   condition: ParsedConditionExpression,
 ): string {
+  const subject = eventPhrase.replace(/ posted$/, "");
   const value = quotedValue(condition.value);
   switch (condition.operator) {
     case "contains":
-      return `${eventPhrase} containing ${value}`;
+      return `${subject} contains ${value}`;
     case "not_contains":
-      return `${eventPhrase} without ${value}`;
+      return `${subject} doesn’t contain ${value}`;
     case "starts_with":
-      return `${eventPhrase} starting with ${value}`;
+      return `${subject} starts with ${value}`;
     case "ends_with":
-      return `${eventPhrase} ending with ${value}`;
+      return `${subject} ends with ${value}`;
     case "equals":
-      return `${eventPhrase} is ${value}`;
+      return `${subject} ${value} is posted`;
     case "not_equals":
-      return `${eventPhrase} is not ${value}`;
+      return `${subject} with text other than ${value} posted`;
     case "is_not_empty":
-      return eventPhrase === "Message posted"
-        ? "Messaged posted with text"
-        : `${eventPhrase} containing text`;
+      return `${subject} with text posted`;
     case "is_empty":
-      return `${eventPhrase} without text`;
+      return `${subject} without text posted`;
   }
 }
 
@@ -107,10 +106,17 @@ export function workflowTriggerDescription(
     if (authorCondition) {
       const author =
         options.authorLabel ?? truncatePubkey(authorCondition.value);
-      description +=
+      const attribution =
         authorCondition.operator === "not_equals"
           ? ` by anyone except ${author}`
           : ` by ${author}`;
+      const subject = eventPhrase.replace(/ posted$/, "");
+      description =
+        textCondition &&
+        description.startsWith(subject) &&
+        !/ (?:is )?posted$/.test(description)
+          ? `${subject}${attribution}${description.slice(subject.length)}`
+          : `${description}${attribution}`;
     }
     if (messageCondition) {
       const message = messageReference(

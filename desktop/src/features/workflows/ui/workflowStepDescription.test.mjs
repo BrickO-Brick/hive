@@ -84,3 +84,18 @@ test("falls back to the action label until a step is configured", () => {
     "Send message",
   );
 });
+
+test("can omit a custom step name when composing an index label", () => {
+  assert.equal(
+    workflowStepDescription(
+      {
+        id: "message",
+        action: "send_message",
+        name: "say hello",
+        text: "hey yourself",
+      },
+      { includeName: false },
+    ),
+    "“hey yourself”",
+  );
+});

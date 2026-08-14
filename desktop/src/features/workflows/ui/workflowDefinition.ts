@@ -3,9 +3,18 @@ import {
   scheduleFormFromTrigger,
   SCHEDULE_FREQUENCY_LABELS,
 } from "./workflowSchedule";
-import { ACTION_LABELS, TRIGGER_LABELS } from "./workflowFormTypes";
-import type { ActionType } from "./workflowFormTypes";
-import type { TriggerType } from "./workflowFormTypes";
+import {
+  ACTION_LABELS,
+  TRIGGER_LABELS,
+  TRIGGER_TYPES,
+} from "./workflowFormTypes";
+import type {
+  ActionType,
+  StepFormState,
+  TriggerConfig,
+  TriggerType,
+} from "./workflowFormTypes";
+import { workflowStepDescription } from "./workflowStepDescription";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -44,6 +53,41 @@ export function getWorkflowPrimaryAction(
   return nonEmptyString(getWorkflowSteps(definition)[0]?.action);
 }
 
+export function getWorkflowPrimaryActionChannel(
+  definition: Record<string, unknown>,
+): string | null {
+  return nonEmptyString(getWorkflowSteps(definition)[0]?.channel);
+}
+
+export function getWorkflowPrimaryActionEmoji(
+  definition: Record<string, unknown>,
+): string | null {
+  const step = getWorkflowSteps(definition)[0];
+  return step?.action === "add_reaction" ? nonEmptyString(step.emoji) : null;
+}
+
+export function getWorkflowTriggerConfig(
+  definition: Record<string, unknown>,
+): TriggerConfig | null {
+  const trigger = asRecord(definition.trigger);
+  const triggerType = nonEmptyString(trigger?.on);
+  if (
+    !trigger ||
+    !triggerType ||
+    !TRIGGER_TYPES.includes(triggerType as TriggerType)
+  ) {
+    return null;
+  }
+
+  return {
+    on: triggerType as TriggerType,
+    filter: nonEmptyString(trigger.filter) ?? undefined,
+    emoji: nonEmptyString(trigger.emoji) ?? undefined,
+    cron: nonEmptyString(trigger.cron) ?? undefined,
+    interval: nonEmptyString(trigger.interval) ?? undefined,
+  };
+}
+
 function getScheduleCardClause(trigger: Record<string, unknown>): string {
   const schedule = scheduleFormFromTrigger({
     on: "schedule",
@@ -69,7 +113,10 @@ function getScheduleCardClause(trigger: Record<string, unknown>): string {
   }
 }
 
-function getTriggerCardClause(definition: Record<string, unknown>): string {
+function getTriggerCardClause(
+  definition: Record<string, unknown>,
+  presentedReaction?: string,
+): string {
   const trigger = asRecord(definition.trigger);
   const triggerType = nonEmptyString(trigger?.on);
   if (!trigger || !triggerType) return "When this workflow starts";
@@ -80,7 +127,7 @@ function getTriggerCardClause(definition: Record<string, unknown>): string {
         ? "When a matching message is posted"
         : "When a message is posted";
     case "reaction_added": {
-      const emoji = nonEmptyString(trigger.emoji);
+      const emoji = nonEmptyString(presentedReaction ?? trigger.emoji);
       return emoji
         ? `When someone reacts with ${emoji}`
         : "When someone adds a reaction";
@@ -98,32 +145,187 @@ function getTriggerCardClause(definition: Record<string, unknown>): string {
   }
 }
 
-function getActionCardClause(step: Record<string, unknown>): string | null {
+function eventDescriptionCardClause(
+  description: string,
+  event: "message" | "diff",
+): string | null {
+  const subject = event === "message" ? "Message" : "Diff";
+  const eventPhrase = `${subject} posted`;
+  if (!description.startsWith(eventPhrase)) return null;
+
+  const detail = description.slice(eventPhrase.length);
+  if (!detail) return `When a ${event} is posted`;
+  if (detail.startsWith(" is ") || detail.startsWith(" is not ")) {
+    return `When a ${event}${detail}`;
+  }
+  if (
+    detail.startsWith(" containing ") ||
+    detail.startsWith(" without ") ||
+    detail.startsWith(" starting with ") ||
+    detail.startsWith(" ending with ") ||
+    detail === " with text"
+  ) {
+    return `When a ${event}${detail} is posted`;
+  }
+  return `When a ${event} is posted${detail}`;
+}
+
+function textDescriptionCardClause(
+  description: string,
+  event: "message" | "diff",
+): string | null {
+  const subject = event === "message" ? "Message" : "Diff";
+  if (!description.startsWith(`${subject} `)) return null;
+  return `When a ${event}${description.slice(subject.length)}`;
+}
+
+function postedValueCardClause(description: string): string | null {
+  const postedIndex = description.indexOf(" posted");
+  if (postedIndex < 1) return null;
+
+  const value = description.slice(0, postedIndex);
+  if (!value.startsWith("“") && !value.startsWith("Anything except ")) {
+    return null;
+  }
+  const normalizedValue = value.startsWith("Anything")
+    ? `anything${value.slice("Anything".length)}`
+    : value;
+  return `When ${normalizedValue} is posted${description.slice(postedIndex + " posted".length)}`;
+}
+
+function qualifiedPostedEventCardClause(
+  description: string,
+  event: "message" | "diff",
+): string | null {
+  const subject = event === "message" ? "Message" : "Diff";
+  const postedIndex = description.indexOf(" posted");
+  if (postedIndex < 1) return null;
+
+  const suffix = description.slice(postedIndex + " posted".length);
+  const otherTextPrefix = `${subject} with text other than `;
+  if (description.startsWith(otherTextPrefix)) {
+    const value = description.slice(otherTextPrefix.length, postedIndex);
+    return `When a ${event} with text other than ${value} is posted${suffix}`;
+  }
+
+  if (description.startsWith(`${subject} with text posted`)) {
+    return `When a ${event} with text is posted${suffix}`;
+  }
+  if (description.startsWith(`${subject} without text posted`)) {
+    return `When a ${event} without text is posted${suffix}`;
+  }
+  return null;
+}
+
+function exactValueEventCardClause(
+  description: string,
+  event: "message" | "diff",
+): string | null {
+  const subject = event === "message" ? "Message" : "Diff";
+  const prefix = `${subject} “`;
+  const postedMarker = " is posted";
+  if (!description.startsWith(prefix)) return null;
+
+  const postedIndex = description.indexOf(postedMarker);
+  if (postedIndex < prefix.length) return null;
+  const value = description.slice(subject.length + 1, postedIndex);
+  const suffix = description.slice(postedIndex + postedMarker.length);
+  return event === "message"
+    ? `When ${value} is posted${suffix}`
+    : `When a diff ${value} is posted${suffix}`;
+}
+
+function getPresentedTriggerCardClause(description?: string): string | null {
+  if (!description) return null;
+
+  const eventClause =
+    exactValueEventCardClause(description, "message") ??
+    exactValueEventCardClause(description, "diff") ??
+    qualifiedPostedEventCardClause(description, "message") ??
+    qualifiedPostedEventCardClause(description, "diff") ??
+    postedValueCardClause(description) ??
+    eventDescriptionCardClause(description, "message") ??
+    eventDescriptionCardClause(description, "diff") ??
+    textDescriptionCardClause(description, "message") ??
+    textDescriptionCardClause(description, "diff");
+  if (eventClause) return eventClause;
+
+  if (description.startsWith("Reaction added")) {
+    return `When a reaction is added${description.slice("Reaction added".length)}`;
+  }
+  if (
+    description.startsWith("Any reaction ") &&
+    description.endsWith(" added")
+  ) {
+    return `When ${description.slice(0, -" added".length).toLocaleLowerCase()} is added`;
+  }
+  return null;
+}
+
+function getActionCardClause(
+  step: Record<string, unknown>,
+  channelLabel?: string,
+): string | null {
   const action = nonEmptyString(step.action);
   if (!action) return null;
 
+  const actionLabel = ACTION_LABELS[action as ActionType];
+  const parsedStep: StepFormState | null = actionLabel
+    ? {
+        action: action as ActionType,
+        id: nonEmptyString(step.id) ?? "step_1",
+        duration: nonEmptyString(step.duration) ?? undefined,
+        emoji: nonEmptyString(step.emoji) ?? undefined,
+        from: nonEmptyString(step.from) ?? undefined,
+        message: nonEmptyString(step.message) ?? undefined,
+        method: nonEmptyString(step.method) ?? undefined,
+        name: nonEmptyString(step.name) ?? undefined,
+        text: nonEmptyString(step.text) ?? undefined,
+        to: nonEmptyString(step.to) ?? undefined,
+        topic: nonEmptyString(step.topic) ?? undefined,
+        url: nonEmptyString(step.url) ?? undefined,
+      }
+    : null;
+  const detail = parsedStep
+    ? workflowStepDescription(parsedStep, {
+        channelLabel,
+        includeName: false,
+      })
+    : null;
+  const configuredDetail = detail && detail !== actionLabel ? detail : null;
+
   switch (action) {
     case "delay": {
-      const duration = nonEmptyString(step.duration);
-      return duration ? `wait ${duration}` : "wait for a moment";
+      return configuredDetail
+        ? `wait ${configuredDetail}`
+        : "wait for a moment";
     }
     case "send_message":
-      return "send a channel message";
+      if (!configuredDetail) return "send a channel message";
+      return nonEmptyString(step.text)
+        ? `send ${configuredDetail}`
+        : `send a message in ${configuredDetail}`;
     case "call_webhook":
-      return "call a webhook";
+      return configuredDetail ? `call ${configuredDetail}` : "call a webhook";
     case "send_dm":
-      return "send a direct message";
+      return configuredDetail
+        ? `send ${configuredDetail}`
+        : "send a direct message";
     case "request_approval":
-      return "request approval";
+      return configuredDetail
+        ? `request approval: ${configuredDetail}`
+        : "request approval";
     case "add_reaction": {
-      const emoji = nonEmptyString(step.emoji);
-      return emoji ? `add a ${emoji} reaction` : "add a reaction";
+      return configuredDetail
+        ? `add a ${configuredDetail} reaction`
+        : "add a reaction";
     }
     case "set_channel_topic":
-      return "update the channel topic";
+      return configuredDetail
+        ? `set the channel topic to ${configuredDetail}`
+        : "update the channel topic";
     default: {
-      const knownLabel = ACTION_LABELS[action as ActionType];
-      return (knownLabel ?? humanizeIdentifier(action)).toLocaleLowerCase();
+      return (actionLabel ?? humanizeIdentifier(action)).toLocaleLowerCase();
     }
   }
 }
@@ -131,10 +333,19 @@ function getActionCardClause(step: Record<string, unknown>): string | null {
 /** Build a short plain-language label from the workflow's trigger and steps. */
 export function getWorkflowCardLabel(
   definition: Record<string, unknown>,
+  options: {
+    actionChannelLabel?: string;
+    triggerDescription?: string;
+    triggerReaction?: string;
+  } = {},
 ): string {
-  const triggerClause = getTriggerCardClause(definition);
+  const triggerClause =
+    getPresentedTriggerCardClause(options.triggerDescription) ??
+    getTriggerCardClause(definition, options.triggerReaction);
   const steps = getWorkflowSteps(definition);
-  const firstAction = steps[0] ? getActionCardClause(steps[0]) : null;
+  const firstAction = steps[0]
+    ? getActionCardClause(steps[0], options.actionChannelLabel)
+    : null;
   if (!firstAction) return triggerClause;
 
   const remainingStepCount = steps.length - 1;

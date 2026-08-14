@@ -20,8 +20,12 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
+import { useCustomEmoji } from "@/features/custom-emoji/hooks";
+import { reactionEmojiUrl } from "@/shared/api/customEmoji";
 import type { Workflow } from "@/shared/api/types";
 import { cn } from "@/shared/lib/cn";
+import { emojiDisplayName } from "@/shared/lib/emojiName";
+import { rewriteRelayUrl } from "@/shared/lib/mediaUrl";
 import { Button } from "@/shared/ui/button";
 import {
   DropdownMenu,
@@ -34,9 +38,13 @@ import {
   getWorkflowDescription,
   getWorkflowDisplayStatus,
   getWorkflowPrimaryAction,
+  getWorkflowPrimaryActionChannel,
+  getWorkflowPrimaryActionEmoji,
+  getWorkflowTriggerConfig,
   getWorkflowTriggerSummary,
   getWorkflowTriggerType,
 } from "./workflowDefinition";
+import { useWorkflowTriggerPresentation } from "./useWorkflowTriggerPresentation";
 
 type WorkflowCardProps = {
   workflow: Workflow;
@@ -89,6 +97,87 @@ function StatusBadge({ status }: { status: Workflow["status"] }) {
   );
 }
 
+function ReactionGlyph({
+  className,
+  emoji,
+  testId,
+  url,
+}: {
+  className: string;
+  emoji: string;
+  testId: string;
+  url?: string;
+}) {
+  return url ? (
+    <img
+      alt={emoji}
+      className={cn("inline-block object-contain", className)}
+      data-testid={testId}
+      draggable={false}
+      src={rewriteRelayUrl(url)}
+      title={emojiDisplayName(emoji)}
+    />
+  ) : (
+    <span
+      className={cn(
+        "inline-flex items-center justify-center leading-none",
+        emoji.startsWith(":") && "text-3xs",
+        className,
+      )}
+      data-testid={testId}
+      title={emojiDisplayName(emoji)}
+    >
+      {emoji}
+    </span>
+  );
+}
+
+function ReactionLabelText({
+  reactions,
+  text,
+}: {
+  reactions: ReadonlyArray<{ emoji: string; url?: string }>;
+  text: string;
+}) {
+  const candidates = [...reactions].sort(
+    (left, right) => right.emoji.length - left.emoji.length,
+  );
+  const parts: React.ReactNode[] = [];
+  let cursor = 0;
+
+  while (cursor < text.length) {
+    let nextIndex = -1;
+    let nextReaction: (typeof candidates)[number] | undefined;
+    for (const reaction of candidates) {
+      const matchIndex = text.indexOf(reaction.emoji, cursor);
+      if (matchIndex >= 0 && (nextIndex < 0 || matchIndex < nextIndex)) {
+        nextIndex = matchIndex;
+        nextReaction = reaction;
+      }
+    }
+    if (!nextReaction) break;
+
+    if (nextIndex > cursor) parts.push(text.slice(cursor, nextIndex));
+    parts.push(
+      nextReaction.url ? (
+        <ReactionGlyph
+          className="h-5 w-5 align-text-bottom"
+          emoji={nextReaction.emoji}
+          key={`${nextReaction.emoji}-${nextIndex}`}
+          testId="workflow-card-reaction-emoji"
+          url={nextReaction.url}
+        />
+      ) : (
+        nextReaction.emoji
+      ),
+    );
+    cursor = nextIndex + nextReaction.emoji.length;
+  }
+
+  if (cursor < text.length) parts.push(text.slice(cursor));
+  return parts.length > 0 ? parts : text;
+}
+
 export function WorkflowCard({
   workflow,
   channelName,
@@ -98,14 +187,54 @@ export function WorkflowCard({
   onDuplicate,
   onDelete,
 }: WorkflowCardProps) {
+  const customEmoji = useCustomEmoji();
   const displayStatus = getWorkflowDisplayStatus(workflow);
   const description = getWorkflowDescription(workflow.definition);
-  const triggerSummary = getWorkflowTriggerSummary(workflow.definition);
+  const configuredTrigger = getWorkflowTriggerConfig(workflow.definition);
+  const trigger = configuredTrigger ?? { on: "message_posted" as const };
+  const triggerPresentation = useWorkflowTriggerPresentation({
+    trigger,
+    workflowChannelId: workflow.channelId,
+  });
+  const triggerSummary =
+    configuredTrigger &&
+    ["diff_posted", "message_posted", "reaction_added"].includes(trigger.on)
+      ? triggerPresentation.description
+      : getWorkflowTriggerSummary(workflow.definition);
   const triggerType = getWorkflowTriggerType(workflow.definition);
   const actionType = getWorkflowPrimaryAction(workflow.definition);
-  const cardLabel = getWorkflowCardLabel(workflow.definition);
+  const actionChannel = getWorkflowPrimaryActionChannel(workflow.definition);
+  const actionReaction = getWorkflowPrimaryActionEmoji(workflow.definition);
+  const actionChannelLabel =
+    channelName && (!actionChannel || actionChannel === workflow.channelId)
+      ? channelName
+      : undefined;
+  const cardLabel = getWorkflowCardLabel(workflow.definition, {
+    actionChannelLabel,
+    triggerDescription:
+      configuredTrigger &&
+      triggerPresentation.description !==
+        getWorkflowTriggerSummary({ trigger: { on: configuredTrigger.on } })
+        ? triggerPresentation.description
+        : undefined,
+    triggerReaction: triggerPresentation.emoji,
+  });
+  const cardReactions = [
+    ...new Set([triggerPresentation.emoji, actionReaction]),
+  ]
+    .filter((emoji): emoji is string => Boolean(emoji))
+    .map((emoji) => ({
+      emoji,
+      url: reactionEmojiUrl(emoji, customEmoji),
+    }));
   const TriggerIcon = triggerType ? TRIGGER_ICONS[triggerType] : undefined;
   const ActionIcon = actionType ? ACTION_ICONS[actionType] : undefined;
+  const triggerReaction = cardReactions.find(
+    ({ emoji }) => emoji === triggerPresentation.emoji,
+  );
+  const actionReactionPresentation = cardReactions.find(
+    ({ emoji }) => emoji === actionReaction,
+  );
   const theme = triggerType ? TRIGGER_THEMES[triggerType] : undefined;
 
   return (
@@ -134,7 +263,14 @@ export function WorkflowCard({
         <div className="flex items-start justify-between gap-3">
           <div className="flex items-center gap-2" aria-hidden="true">
             <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-white/15 shadow-xs ring-1 ring-white/15">
-              {TriggerIcon ? (
+              {triggerReaction ? (
+                <ReactionGlyph
+                  className="h-6 w-6 text-2xl"
+                  emoji={triggerReaction.emoji}
+                  testId="workflow-card-trigger-reaction"
+                  url={triggerReaction.url}
+                />
+              ) : TriggerIcon ? (
                 <TriggerIcon className="h-5 w-5" />
               ) : (
                 <Zap className="h-5 w-5" />
@@ -144,7 +280,16 @@ export function WorkflowCard({
               <>
                 <ArrowRight className="h-4 w-4 text-white/60" />
                 <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-white/15 shadow-xs ring-1 ring-white/15">
-                  <ActionIcon className="h-5 w-5" />
+                  {actionReactionPresentation ? (
+                    <ReactionGlyph
+                      className="h-6 w-6 text-2xl"
+                      emoji={actionReactionPresentation.emoji}
+                      testId="workflow-card-action-reaction"
+                      url={actionReactionPresentation.url}
+                    />
+                  ) : (
+                    <ActionIcon className="h-5 w-5" />
+                  )}
                 </span>
               </>
             ) : null}
@@ -190,11 +335,14 @@ export function WorkflowCard({
 
         {triggerSummary ? (
           <p className="mt-4 line-clamp-1 text-xs font-semibold text-white/70">
-            {triggerSummary}
+            <ReactionLabelText
+              reactions={cardReactions}
+              text={triggerSummary}
+            />
           </p>
         ) : null}
         <h3 className="mt-1 line-clamp-4 text-xl font-bold leading-tight tracking-tight">
-          {cardLabel}
+          <ReactionLabelText reactions={cardReactions} text={cardLabel} />
         </h3>
         {description ? (
           <p className="mt-2 line-clamp-2 text-sm leading-relaxed text-white/75">
