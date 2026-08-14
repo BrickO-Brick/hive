@@ -26,6 +26,22 @@ test("describes selected trigger conditions on the workflow canvas", () => {
   assert.equal(
     workflowTriggerDescription({
       on: "message_posted",
+      filter: 'trigger_text == "deploy"',
+    }),
+    "Message posted is “deploy”",
+  );
+
+  assert.equal(
+    workflowTriggerDescription({
+      on: "message_posted",
+      filter: 'trigger_text != "deploy"',
+    }),
+    "Message posted is not “deploy”",
+  );
+
+  assert.equal(
+    workflowTriggerDescription({
+      on: "message_posted",
       filter: "str_len(trigger_text) == 0",
     }),
     "Message posted without text",

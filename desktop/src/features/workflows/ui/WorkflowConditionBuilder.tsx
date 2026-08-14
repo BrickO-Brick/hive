@@ -29,7 +29,7 @@ const OPERATOR_LABELS: Record<ConditionOperator, string> = {
   not_contains: "does not contain",
   starts_with: "starts with",
   ends_with: "ends with",
-  equals: "is exactly",
+  equals: "is",
   not_equals: "is not",
   is_not_empty: "is not empty",
   is_empty: "is empty",

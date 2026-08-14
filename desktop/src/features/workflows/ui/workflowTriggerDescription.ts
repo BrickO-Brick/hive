@@ -45,9 +45,9 @@ function textConditionDescription(
     case "ends_with":
       return `${eventPhrase} ending with ${value}`;
     case "equals":
-      return `${eventPhrase} matching ${value}`;
+      return `${eventPhrase} is ${value}`;
     case "not_equals":
-      return `${eventPhrase} not matching ${value}`;
+      return `${eventPhrase} is not ${value}`;
     case "is_not_empty":
       return eventPhrase === "Message posted"
         ? "Text message posted"
