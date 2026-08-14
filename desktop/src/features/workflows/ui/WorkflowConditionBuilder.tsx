@@ -23,7 +23,6 @@ import { Tabs, TabsList, TabsTrigger } from "@/shared/ui/tabs";
 import { AuthorGridPicker } from "./AuthorGridPicker";
 import { MessageIdPicker } from "./MessageIdPicker";
 import { WorkflowEmojiField } from "./WorkflowEmojiField";
-import { FieldLabel } from "./workflowFormPrimitives";
 import {
   buildConditionExpressions,
   conditionFieldsForTrigger,
@@ -292,9 +291,6 @@ function ConditionEditorFields({
 
       {editor.field === "webhook_field" ? (
         <div className="space-y-1.5">
-          <FieldLabel htmlFor={`${controlIdPrefix}-webhook-field`}>
-            JSON field name
-          </FieldLabel>
           <Input
             aria-label="JSON field name"
             autoCapitalize="off"
@@ -320,12 +316,7 @@ function ConditionEditorFields({
       ) : null}
 
       {needsValue ? (
-        <div className="space-y-1.5">
-          <FieldLabel htmlFor={`${controlIdPrefix}-value`}>
-            {editor.field === "webhook_field"
-              ? "Value"
-              : valueLabel(editor.field)}
-          </FieldLabel>
+        <div>
           {editor.field === "trigger_author" ? (
             <AuthorGridPicker
               disabled={disabled}
@@ -638,9 +629,6 @@ export function WorkflowConditionBuilder({
           </div>
         ) : (
           <div className="animate-in space-y-2 fade-in duration-150 motion-reduce:animate-none">
-            <FieldLabel htmlFor={`${idPrefix}-advanced-expression`}>
-              Expression
-            </FieldLabel>
             <Input
               aria-label="Advanced expression"
               autoCapitalize="off"

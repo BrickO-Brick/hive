@@ -193,7 +193,7 @@ export function AuthorGridPicker({
 
   return (
     <div
-      className={cn("space-y-2", disabled && "opacity-50")}
+      className={cn("space-y-1", disabled && "opacity-50")}
       data-testid="author-grid-picker"
     >
       <div className="flex items-center gap-2 rounded-lg border border-input/40 bg-background px-3 py-2">
