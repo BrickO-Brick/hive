@@ -8,16 +8,20 @@ import {
   clearCommunityThemeOutbox,
   communityThemeAppearanceFallback,
   communityThemeApplyExpectation,
+  communityThemeMigrationOutboxKey,
   communityThemeOutboxKey,
   communityThemePersistenceAction,
   communityThemeScopeFallback,
   communityThemeStorageKey,
   parseCommunityThemePreference,
   readCommunityThemeAppearanceSnapshot,
+  readCommunityThemeCurrentAppearance,
+  readCommunityThemeMigrationOutbox,
   readCommunityThemeOutbox,
   readCommunityThemePreference,
-  refreshCommunityThemeAppearanceSnapshot,
+  refreshCommunityThemeCurrentAppearance,
   sameCommunityThemePreference,
+  writeCommunityThemeMigrationOutbox,
   writeCommunityThemeOutbox,
   writeCommunityThemePreference,
 } from "./communityThemePreference.ts";
@@ -283,11 +287,9 @@ test("a full store pins the snapshot across a controller remount", () => {
   );
 });
 
-test("a user glass edit refreshes the snapshot for no-record communities", () => {
-  // The initial snapshot is frozen at the pre-migration appearance. Once the
-  // user changes glass, that former value is stale: a no-record community must
-  // inherit the new choice, not resurrect the old one. refresh overwrites the
-  // durable snapshot so the empty-scope fallback tracks the current choice.
+test("a user glass edit updates absent scopes without changing the legacy snapshot", () => {
+  // Empty communities track the latest explicit choice, but a legacy record
+  // must always inherit the immutable pre-migration appearance.
   globalThis.window = { localStorage: localStorageStub() };
   const preMigration = {
     ...DEFAULT_COMMUNITY_THEME,
@@ -299,11 +301,6 @@ test("a user glass edit refreshes the snapshot for no-record communities", () =>
     "edit-pk",
     preMigration,
   );
-  assert.deepEqual(pinned, {
-    glassBackground: true,
-    glassOpacity: 80,
-    prominentActiveTab: true,
-  });
 
   const edited = {
     ...DEFAULT_COMMUNITY_THEME,
@@ -311,17 +308,34 @@ test("a user glass edit refreshes the snapshot for no-record communities", () =>
     glassOpacity: 40,
     prominentActiveTab: false,
   };
-  const refreshed = refreshCommunityThemeAppearanceSnapshot("edit-pk", edited);
-  assert.deepEqual(refreshed, {
+  const current = refreshCommunityThemeCurrentAppearance("edit-pk", edited);
+  assert.deepEqual(current, {
     glassBackground: false,
     glassOpacity: 40,
     prominentActiveTab: false,
   });
-  // A subsequent capture (a later community mount) sees the refreshed value,
-  // so the no-record fallback carries the user's current choice.
   assert.deepEqual(
-    captureCommunityThemeAppearanceSnapshot("edit-pk", preMigration),
-    refreshed,
+    readCommunityThemeCurrentAppearance("edit-pk", pinned),
+    current,
+  );
+
+  // The next mount still sees the original snapshot for an older payload.
+  assert.deepEqual(
+    captureCommunityThemeAppearanceSnapshot("edit-pk", edited),
+    pinned,
+  );
+  const legacy = {
+    version: 1,
+    theme: "houston",
+    accent: "#a855f7",
+    followSystem: false,
+  };
+  assert.deepEqual(
+    parseCommunityThemePreference(
+      legacy,
+      communityThemeAppearanceFallback(pinned),
+    ),
+    { ...legacy, ...pinned },
   );
 });
 
@@ -433,6 +447,40 @@ test("dirty outbox survives restart and clears only its exact revision", () => {
   assert.notEqual(
     communityThemeOutboxKey("alice", "wss://a.example"),
     communityThemeStorageKey("alice", "wss://a.example"),
+  );
+});
+
+test("migration upgrades are isolated from user edits", () => {
+  globalThis.window = { localStorage: localStorageStub() };
+  const migration = { ...DEFAULT_COMMUNITY_THEME, theme: "houston" };
+  const userEdit = { ...DEFAULT_COMMUNITY_THEME, accent: "#ef4444" };
+
+  assert.equal(
+    writeCommunityThemeMigrationOutbox("alice", "wss://a.example", migration),
+    true,
+  );
+  assert.deepEqual(
+    readCommunityThemeMigrationOutbox("alice", "wss://a.example"),
+    migration,
+  );
+  assert.equal(readCommunityThemeOutbox("alice", "wss://a.example"), null);
+
+  // A genuine edit supersedes and clears the migration-only upgrade.
+  assert.equal(
+    writeCommunityThemeOutbox("alice", "wss://a.example", userEdit),
+    true,
+  );
+  assert.equal(
+    readCommunityThemeMigrationOutbox("alice", "wss://a.example"),
+    null,
+  );
+  assert.deepEqual(
+    readCommunityThemeOutbox("alice", "wss://a.example"),
+    userEdit,
+  );
+  assert.notEqual(
+    communityThemeMigrationOutboxKey("alice", "wss://a.example"),
+    communityThemeOutboxKey("alice", "wss://a.example"),
   );
 });
 

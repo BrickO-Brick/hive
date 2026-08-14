@@ -5,6 +5,7 @@ import { useIdentityQuery } from "@/shared/api/hooks";
 import {
   cacheAndApplyCommunityTheme,
   captureCommunityThemeAppearanceSnapshot,
+  clearCommunityThemeMigrationOutbox,
   clearCommunityThemeOutbox,
   communityThemeAppearanceFallback,
   communityThemeApplyExpectation,
@@ -12,10 +13,13 @@ import {
   communityThemeScopeFallback,
   hasMigratedCommunityTheme,
   markCommunityThemeMigrated,
+  readCommunityThemeCurrentAppearance,
+  readCommunityThemeMigrationOutbox,
   readCommunityThemeOutbox,
   readCommunityThemePreference,
-  refreshCommunityThemeAppearanceSnapshot,
+  refreshCommunityThemeCurrentAppearance,
   sameCommunityThemePreference,
+  writeCommunityThemeMigrationOutbox,
   writeCommunityThemeOutbox,
   writeCommunityThemePreference,
   type CommunityThemeAppearance,
@@ -92,13 +96,17 @@ export function CommunityThemeController() {
       initialPreferenceRef.current,
     );
     appearanceSnapshotRef.current = snapshot;
+    const currentAppearance = readCommunityThemeCurrentAppearance(
+      pubkey,
+      snapshot,
+    );
     const appearanceFallback = communityThemeAppearanceFallback(snapshot);
     const scopeFallback: CommunityThemePreference = {
       ...communityThemeScopeFallback(
         hasMigratedCommunityTheme(pubkey),
         initialPreferenceRef.current,
       ),
-      ...snapshot,
+      ...currentAppearance,
     };
     const local = readCommunityThemePreference(
       pubkey,
@@ -135,6 +143,10 @@ export function CommunityThemeController() {
     // the correct in-session value.
     const snapshot = appearanceSnapshotRef.current;
     const appearanceFallback = communityThemeAppearanceFallback(snapshot);
+    const currentAppearance = readCommunityThemeCurrentAppearance(
+      pubkey,
+      snapshot ?? appearanceFallback,
+    );
     const local = readCommunityThemePreference(
       pubkey,
       relayUrl,
@@ -146,15 +158,15 @@ export function CommunityThemeController() {
       appearanceFallback,
     );
     // A value already cached for this relay is the safest fallback for a later
-    // incomplete event. Without one, use the durable appearance snapshot, which
-    // holds the profile's pre-migration glass and tab choices for every scope.
+    // incomplete event. Without one, use the immutable pre-migration snapshot,
+    // never the mutable current-choice fallback used only for absent scopes.
     const legacyFallback = durablePending ?? local ?? appearanceFallback;
     const scopeFallback: CommunityThemePreference = {
       ...communityThemeScopeFallback(
         hasMigratedCommunityTheme(pubkey),
         initialPreferenceRef.current,
       ),
-      ...snapshot,
+      ...currentAppearance,
     };
     scopeRef.current = scope;
     lastRemoteRef.current = { createdAt: 0, eventId: "" };
@@ -174,11 +186,21 @@ export function CommunityThemeController() {
           published.preference,
           legacyFallback,
         );
+        clearCommunityThemeMigrationOutbox(pubkey, relayUrl);
       },
       legacyFallback,
     );
     managerRef.current = manager;
-    if (durablePending) manager.publish(durablePending);
+    if (durablePending) {
+      manager.publish(durablePending);
+    } else {
+      const migrationPending = readCommunityThemeMigrationOutbox(
+        pubkey,
+        relayUrl,
+        legacyFallback,
+      );
+      if (migrationPending) manager.publish(migrationPending);
+    }
 
     const applyRemote = (remote: RemoteCommunityTheme) => {
       if (scopeRef.current !== scope) return;
@@ -196,6 +218,10 @@ export function CommunityThemeController() {
         manager.publish(dirty);
         return;
       }
+      // Migration-only upgrades never outrank relay state. A newer complete
+      // coordinate cancels the pending upgrade rather than being overwritten by
+      // a legacy-derived republish two seconds later.
+      clearCommunityThemeMigrationOutbox(pubkey, relayUrl);
       scopedPreferenceRef.current = remote.preference;
       manager.cancelPendingPublish();
       cacheAndApplyCommunityTheme(
@@ -206,7 +232,7 @@ export function CommunityThemeController() {
       );
       if (
         remote.needsUpgrade &&
-        writeCommunityThemeOutbox(pubkey, relayUrl, remote.preference)
+        writeCommunityThemeMigrationOutbox(pubkey, relayUrl, remote.preference)
       ) {
         manager.publish(remote.preference);
       }
@@ -290,13 +316,11 @@ export function CommunityThemeController() {
       communityThemeAppearanceFallback(appearanceSnapshotRef.current),
     );
     if (stored && sameCommunityThemePreference(stored, preference)) return;
-    // A genuine user edit that changes glass/opacity/prominent-tab is the
-    // user's current profile-wide appearance intent, so refresh the snapshot
-    // that seeds no-record communities. Without this the snapshot stays frozen
-    // at the pre-migration value and a later empty community resurrects it over
-    // the user's current choice. Only a changed appearance refreshes it, so an
-    // accent- or theme-only edit never leaks this community's glass into the
-    // profile-wide seed.
+    // A genuine user edit that changes glass/opacity/prominent-tab updates the
+    // profile-wide fallback used only for a genuinely absent community. Keep
+    // that value separate from the immutable pre-migration snapshot used to
+    // hydrate older three-field records, or one community's explicit choice
+    // contaminates every still-legacy community.
     const priorScoped = scopedPreferenceRef.current;
     if (
       !priorScoped ||
@@ -304,10 +328,7 @@ export function CommunityThemeController() {
       priorScoped.glassOpacity !== preference.glassOpacity ||
       priorScoped.prominentActiveTab !== preference.prominentActiveTab
     ) {
-      appearanceSnapshotRef.current = refreshCommunityThemeAppearanceSnapshot(
-        pubkey,
-        preference,
-      );
+      refreshCommunityThemeCurrentAppearance(pubkey, preference);
     }
     scopedPreferenceRef.current = preference;
     if (!writeCommunityThemePreference(pubkey, relayUrl, preference)) return;

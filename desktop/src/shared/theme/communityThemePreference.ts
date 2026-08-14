@@ -11,9 +11,12 @@ import { SYNTAX_THEMES, type SyntaxThemeName } from "./theme-loader";
 
 const STORAGE_KEY_PREFIX = "buzz-community-theme.v1";
 const OUTBOX_KEY_PREFIX = "buzz-community-theme-outbox.v1";
+const MIGRATION_OUTBOX_KEY_PREFIX = "buzz-community-theme-migration-outbox.v1";
 const MIGRATION_KEY_PREFIX = "buzz-community-theme-migrated.v1";
 const APPEARANCE_SNAPSHOT_KEY_PREFIX =
   "buzz-community-theme-appearance-snapshot.v1";
+const CURRENT_APPEARANCE_KEY_PREFIX =
+  "buzz-community-theme-current-appearance.v1";
 
 export type CommunityThemePreference = {
   version: 1;
@@ -57,6 +60,13 @@ export function communityThemeOutboxKey(
   relayUrl: string,
 ): string {
   return `${OUTBOX_KEY_PREFIX}:${pubkey}:${encodeURIComponent(normalizeRelayUrl(relayUrl))}`;
+}
+
+export function communityThemeMigrationOutboxKey(
+  pubkey: string,
+  relayUrl: string,
+): string {
+  return `${MIGRATION_OUTBOX_KEY_PREFIX}:${pubkey}:${encodeURIComponent(normalizeRelayUrl(relayUrl))}`;
 }
 
 export function parseCommunityThemePreference(
@@ -150,9 +160,68 @@ export function writeCommunityThemeOutbox(
       communityThemeOutboxKey(pubkey, relayUrl),
       JSON.stringify(preference),
     );
+    clearCommunityThemeMigrationOutbox(pubkey, relayUrl);
     return true;
   } catch {
     return false;
+  }
+}
+
+export function readCommunityThemeMigrationOutbox(
+  pubkey: string,
+  relayUrl: string,
+  legacyFallback: CommunityThemePreference = DEFAULT_COMMUNITY_THEME,
+): CommunityThemePreference | null {
+  try {
+    const raw = window.localStorage.getItem(
+      communityThemeMigrationOutboxKey(pubkey, relayUrl),
+    );
+    return raw
+      ? parseCommunityThemePreference(JSON.parse(raw), legacyFallback)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export function writeCommunityThemeMigrationOutbox(
+  pubkey: string,
+  relayUrl: string,
+  preference: CommunityThemePreference,
+): boolean {
+  try {
+    window.localStorage.setItem(
+      communityThemeMigrationOutboxKey(pubkey, relayUrl),
+      JSON.stringify(preference),
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function clearCommunityThemeMigrationOutbox(
+  pubkey: string,
+  relayUrl: string,
+  acknowledged?: CommunityThemePreference,
+  legacyFallback: CommunityThemePreference = DEFAULT_COMMUNITY_THEME,
+): void {
+  if (acknowledged) {
+    const pending = readCommunityThemeMigrationOutbox(
+      pubkey,
+      relayUrl,
+      legacyFallback,
+    );
+    if (!pending || !sameCommunityThemePreference(pending, acknowledged)) {
+      return;
+    }
+  }
+  try {
+    window.localStorage.removeItem(
+      communityThemeMigrationOutboxKey(pubkey, relayUrl),
+    );
+  } catch {
+    // A later remote can safely cancel the migration-only upgrade again.
   }
 }
 
@@ -194,6 +263,10 @@ export function communityThemeAppearanceSnapshotKey(pubkey: string): string {
   return `${APPEARANCE_SNAPSHOT_KEY_PREFIX}:${pubkey}`;
 }
 
+export function communityThemeCurrentAppearanceKey(pubkey: string): string {
+  return `${CURRENT_APPEARANCE_KEY_PREFIX}:${pubkey}`;
+}
+
 function parseCommunityThemeAppearance(
   value: unknown,
 ): CommunityThemeAppearance | null {
@@ -229,6 +302,7 @@ export function readCommunityThemeAppearanceSnapshot(
 }
 
 const inMemoryAppearanceSnapshots = new Map<string, CommunityThemeAppearance>();
+const inMemoryCurrentAppearances = new Map<string, CommunityThemeAppearance>();
 
 /**
  * Persist the profile's pre-migration appearance the first time it is seen and
@@ -270,35 +344,47 @@ export function captureCommunityThemeAppearanceSnapshot(
 }
 
 /**
- * Overwrite the profile's appearance snapshot with a later explicit user glass
- * choice. The initial snapshot is frozen at the pre-migration appearance, but
- * once the user changes glass/opacity/prominent-tab that former value is stale:
- * a no-record community would otherwise resurrect it and republish it over the
- * user's current choice. Callers refresh only on a genuine user edit, never on
- * a programmatic per-community apply, so a community's own record can never
- * leak into the profile-wide seed.
+ * Persist the latest explicit user glass choice separately from the immutable
+ * migration snapshot. Empty communities may inherit this current choice, while
+ * legacy records must continue to inherit the original pre-migration value.
  */
-export function refreshCommunityThemeAppearanceSnapshot(
+export function refreshCommunityThemeCurrentAppearance(
   pubkey: string,
   appearance: CommunityThemeAppearance,
 ): CommunityThemeAppearance {
-  const snapshot: CommunityThemeAppearance = {
+  const current: CommunityThemeAppearance = {
     glassBackground: appearance.glassBackground,
     glassOpacity: appearance.glassOpacity,
     prominentActiveTab: appearance.prominentActiveTab,
   };
   try {
     window.localStorage.setItem(
-      communityThemeAppearanceSnapshotKey(pubkey),
-      JSON.stringify(snapshot),
+      communityThemeCurrentAppearanceKey(pubkey),
+      JSON.stringify(current),
     );
-    inMemoryAppearanceSnapshots.delete(pubkey);
+    inMemoryCurrentAppearances.delete(pubkey);
   } catch {
-    // Retain the refreshed value in memory when the store is full, mirroring
-    // the capture path so the current choice still survives a remount.
-    inMemoryAppearanceSnapshots.set(pubkey, snapshot);
+    inMemoryCurrentAppearances.set(pubkey, current);
   }
-  return snapshot;
+  return current;
+}
+
+export function readCommunityThemeCurrentAppearance(
+  pubkey: string,
+  fallback: CommunityThemeAppearance,
+): CommunityThemeAppearance {
+  try {
+    const raw = window.localStorage.getItem(
+      communityThemeCurrentAppearanceKey(pubkey),
+    );
+    if (raw) {
+      const current = parseCommunityThemeAppearance(JSON.parse(raw));
+      if (current) return current;
+    }
+  } catch {
+    // Fall through to the in-memory current choice or immutable snapshot.
+  }
+  return inMemoryCurrentAppearances.get(pubkey) ?? fallback;
 }
 
 export function writeCommunityThemePreference(
