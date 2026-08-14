@@ -8,24 +8,37 @@ const WorkflowsView = React.lazy(async () => {
   return { default: module.WorkflowsView };
 });
 
+export type WorkflowEditorRoute =
+  | { mode: "create" }
+  | { mode: "duplicate" | "edit"; workflowId: string };
+
 type WorkflowsScreenProps = {
   channels: Channel[];
-  onCloseWorkflow: () => void;
-  selectedWorkflowId: string | null;
+  editor: WorkflowEditorRoute | null;
+  onCloseEditor: () => void;
+  onCreateWorkflow: () => void;
+  onDuplicateWorkflow: (workflowId: string) => void;
+  onEditWorkflow: (workflowId: string) => void;
 };
 
 export function WorkflowsScreen({
   channels,
-  onCloseWorkflow,
-  selectedWorkflowId,
+  editor,
+  onCloseEditor,
+  onCreateWorkflow,
+  onDuplicateWorkflow,
+  onEditWorkflow,
 }: WorkflowsScreenProps) {
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       <React.Suspense fallback={<ViewLoadingFallback kind="workflows" />}>
         <WorkflowsView
           channels={channels}
-          onCloseWorkflow={onCloseWorkflow}
-          selectedWorkflowId={selectedWorkflowId}
+          editor={editor}
+          onCloseEditor={onCloseEditor}
+          onCreateWorkflow={onCreateWorkflow}
+          onDuplicateWorkflow={onDuplicateWorkflow}
+          onEditWorkflow={onEditWorkflow}
         />
       </React.Suspense>
     </div>

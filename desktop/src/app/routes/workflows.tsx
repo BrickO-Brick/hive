@@ -6,6 +6,9 @@ import { ViewLoadingFallback } from "@/shared/ui/ViewLoadingFallback";
 
 export const Route = createFileRoute("/workflows")({
   component: WorkflowsRouteComponent,
+  validateSearch: (search: Record<string, unknown>) => ({
+    view: search.view === "create" ? search.view : undefined,
+  }),
 });
 
 const WorkflowsRouteScreen = React.lazy(async () => {
@@ -15,9 +18,13 @@ const WorkflowsRouteScreen = React.lazy(async () => {
 
 function WorkflowsRouteComponent() {
   usePreviewFeatureWarning("workflows");
+  const { view } = Route.useSearch();
+
   return (
     <React.Suspense fallback={<ViewLoadingFallback kind="workflows" />}>
-      <WorkflowsRouteScreen selectedWorkflowId={null} />
+      <WorkflowsRouteScreen
+        editor={view === "create" ? { mode: "create" } : null}
+      />
     </React.Suspense>
   );
 }

@@ -5,7 +5,10 @@ import { usePreviewFeatureWarning } from "@/shared/features";
 import { ViewLoadingFallback } from "@/shared/ui/ViewLoadingFallback";
 
 export const Route = createFileRoute("/workflows/$workflowId")({
-  component: WorkflowDetailRouteComponent,
+  component: WorkflowEditorRouteComponent,
+  validateSearch: (search: Record<string, unknown>) => ({
+    view: search.view === "duplicate" ? search.view : undefined,
+  }),
 });
 
 const WorkflowsRouteScreen = React.lazy(async () => {
@@ -13,13 +16,19 @@ const WorkflowsRouteScreen = React.lazy(async () => {
   return { default: module.WorkflowsRouteScreen };
 });
 
-function WorkflowDetailRouteComponent() {
+function WorkflowEditorRouteComponent() {
   usePreviewFeatureWarning("workflows");
   const { workflowId } = Route.useParams();
+  const { view } = Route.useSearch();
 
   return (
     <React.Suspense fallback={<ViewLoadingFallback kind="workflows" />}>
-      <WorkflowsRouteScreen selectedWorkflowId={workflowId} />
+      <WorkflowsRouteScreen
+        editor={{
+          mode: view === "duplicate" ? "duplicate" : "edit",
+          workflowId,
+        }}
+      />
     </React.Suspense>
   );
 }

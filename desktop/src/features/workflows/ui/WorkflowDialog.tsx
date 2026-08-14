@@ -1,5 +1,6 @@
 import * as React from "react";
 import { Code } from "lucide-react";
+import { useBlocker } from "@tanstack/react-router";
 import { stringify as yamlStringify } from "yaml";
 
 import {
@@ -113,6 +114,8 @@ export function WorkflowDialog({
     channelId,
     yaml: getInitialYaml(mode, workflow),
   });
+  const allowNavigationRef = React.useRef(false);
+  const proceedingNavigationRef = React.useRef(false);
 
   const createMutation = useCreateWorkflowMutation(selectedChannelId);
   const updateMutation = useUpdateWorkflowMutation(workflow?.id ?? "");
@@ -156,6 +159,17 @@ export function WorkflowDialog({
   const isDirty =
     yamlDefinition !== initialValuesRef.current.yaml ||
     selectedChannelId !== initialValuesRef.current.channelId;
+  const navigationBlocker = useBlocker({
+    enableBeforeUnload: isDirty,
+    shouldBlockFn: () => isDirty && !allowNavigationRef.current,
+    withResolver: true,
+  });
+
+  React.useEffect(() => {
+    if (navigationBlocker.status === "blocked") {
+      setDiscardConfirmationOpen(true);
+    }
+  }, [navigationBlocker.status]);
 
   const handleOpenChange = React.useCallback(
     (nextOpen: boolean) => {
@@ -175,7 +189,6 @@ export function WorkflowDialog({
 
     try {
       const saved = await mutation.mutateAsync(yamlDefinition);
-      closeDialog();
       if (saved.webhookSecret) {
         const relayHttpUrl = await getRelayHttpUrl();
         setSavedWebhookInfo({
@@ -183,6 +196,9 @@ export function WorkflowDialog({
           webhookSecret: saved.webhookSecret,
           workflowId: saved.workflow.id,
         });
+      } else {
+        allowNavigationRef.current = true;
+        closeDialog();
       }
     } catch {
       // React Query stores the error; keep the dialog open.
@@ -220,7 +236,10 @@ export function WorkflowDialog({
 
   return (
     <>
-      <Dialog onOpenChange={handleOpenChange} open={open}>
+      <Dialog
+        onOpenChange={handleOpenChange}
+        open={open && savedWebhookInfo === null}
+      >
         <DialogContent className="flex h-[88vh] max-h-[88vh] w-[calc(100vw-2rem)] max-w-6xl flex-col gap-0 overflow-hidden p-0">
           <DialogHeader className="flex flex-shrink-0 flex-row items-center justify-between gap-6 border-b border-border px-6 py-5 pr-14 text-left">
             <div className="space-y-1.5">
@@ -333,7 +352,16 @@ export function WorkflowDialog({
       </Dialog>
 
       <AlertDialog
-        onOpenChange={setDiscardConfirmationOpen}
+        onOpenChange={(nextOpen) => {
+          setDiscardConfirmationOpen(nextOpen);
+          if (
+            !nextOpen &&
+            navigationBlocker.status === "blocked" &&
+            !proceedingNavigationRef.current
+          ) {
+            navigationBlocker.reset();
+          }
+        }}
         open={discardConfirmationOpen}
       >
         <AlertDialogContent>
@@ -350,7 +378,20 @@ export function WorkflowDialog({
               </Button>
             </AlertDialogCancel>
             <AlertDialogAction asChild>
-              <Button onClick={closeDialog} type="button" variant="destructive">
+              <Button
+                onClick={() => {
+                  setDiscardConfirmationOpen(false);
+                  if (navigationBlocker.status === "blocked") {
+                    proceedingNavigationRef.current = true;
+                    navigationBlocker.proceed();
+                    return;
+                  }
+                  allowNavigationRef.current = true;
+                  closeDialog();
+                }}
+                type="button"
+                variant="destructive"
+              >
                 Discard changes
               </Button>
             </AlertDialogAction>
@@ -362,7 +403,8 @@ export function WorkflowDialog({
         <WorkflowWebhookSecretDialog
           onOpenChange={(nextOpen) => {
             if (!nextOpen) {
-              setSavedWebhookInfo(null);
+              allowNavigationRef.current = true;
+              closeDialog();
             }
           }}
           open

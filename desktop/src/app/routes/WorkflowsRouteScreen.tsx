@@ -1,15 +1,23 @@
 import { useAppNavigation } from "@/app/navigation/useAppNavigation";
 import { useChannelsQuery } from "@/features/channels/hooks";
-import { WorkflowsScreen } from "@/features/workflows/ui/WorkflowsScreen";
+import {
+  type WorkflowEditorRoute,
+  WorkflowsScreen,
+} from "@/features/workflows/ui/WorkflowsScreen";
 
 type WorkflowsRouteScreenProps = {
-  selectedWorkflowId: string | null;
+  editor?: WorkflowEditorRoute | null;
 };
 
 export function WorkflowsRouteScreen({
-  selectedWorkflowId,
+  editor = null,
 }: WorkflowsRouteScreenProps) {
-  const { closeWorkflowDetail } = useAppNavigation();
+  const {
+    closeWorkflowEditor,
+    goDuplicateWorkflow,
+    goNewWorkflow,
+    goWorkflow,
+  } = useAppNavigation();
   const channelsQuery = useChannelsQuery();
   const channels = channelsQuery.data ?? [];
   const memberChannels = channels.filter((channel) => channel.isMember);
@@ -17,8 +25,17 @@ export function WorkflowsRouteScreen({
   return (
     <WorkflowsScreen
       channels={memberChannels}
-      onCloseWorkflow={closeWorkflowDetail}
-      selectedWorkflowId={selectedWorkflowId}
+      editor={editor}
+      onCloseEditor={closeWorkflowEditor}
+      onCreateWorkflow={() => {
+        void goNewWorkflow();
+      }}
+      onDuplicateWorkflow={(workflowId) => {
+        void goDuplicateWorkflow(workflowId);
+      }}
+      onEditWorkflow={(workflowId) => {
+        void goWorkflow(workflowId);
+      }}
     />
   );
 }

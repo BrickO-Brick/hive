@@ -52,7 +52,6 @@ import { useWorkflowTriggerPresentation } from "./useWorkflowTriggerPresentation
 type WorkflowCardProps = {
   workflow: Workflow;
   channelName?: string;
-  isActive?: boolean;
   isTogglingEnabled?: boolean;
   onTrigger: (workflowId: string) => void;
   onToggleEnabled: (workflow: Workflow) => void;
@@ -208,7 +207,6 @@ function TriggerCardText({
 export function WorkflowCard({
   workflow,
   channelName,
-  isActive = false,
   isTogglingEnabled = false,
   onTrigger,
   onToggleEnabled,
@@ -266,8 +264,6 @@ export function WorkflowCard({
       className={cn(
         "group relative min-h-60 w-full overflow-hidden rounded-2xl border p-5 text-left shadow-sm transition-shadow duration-200 hover:shadow-lg",
         theme ?? "border-slate-500/30 bg-slate-700 text-white",
-        isActive &&
-          "ring-2 ring-primary ring-offset-2 ring-offset-background shadow-lg",
       )}
       data-testid={`workflow-card-${workflow.id}`}
     >

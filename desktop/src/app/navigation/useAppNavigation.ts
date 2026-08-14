@@ -161,6 +161,33 @@ export function useAppNavigation() {
     [commitNavigation],
   );
 
+  const goNewWorkflow = React.useCallback(
+    (behavior?: NavigationBehavior) =>
+      commitNavigation(
+        {
+          to: "/workflows",
+          search: { view: "create" },
+        },
+        behavior,
+      ),
+    [commitNavigation],
+  );
+
+  const goDuplicateWorkflow = React.useCallback(
+    (workflowId: string, behavior?: NavigationBehavior) =>
+      commitNavigation(
+        {
+          to: "/workflows/$workflowId",
+          params: {
+            workflowId,
+          },
+          search: { view: "duplicate" },
+        },
+        behavior,
+      ),
+    [commitNavigation],
+  );
+
   const goChannel = React.useCallback(
     (
       channelId: string,
@@ -266,7 +293,7 @@ export function useAppNavigation() {
     void goHome({ replace: true });
   }, [canGoBack, goHome, router.history]);
 
-  const closeWorkflowDetail = React.useCallback(() => {
+  const closeWorkflowEditor = React.useCallback(() => {
     if (canGoBack) {
       router.history.back();
       return;
@@ -313,11 +340,13 @@ export function useAppNavigation() {
   return {
     closeForumPost,
     closeSettings,
-    closeWorkflowDetail,
+    closeWorkflowEditor,
     goAgents,
     goChannel,
     goForumPost,
     goHome,
+    goDuplicateWorkflow,
+    goNewWorkflow,
     goNewMessage,
     goProject,
     goProjects,
