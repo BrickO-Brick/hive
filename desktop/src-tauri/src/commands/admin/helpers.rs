@@ -281,10 +281,12 @@ pub(super) async fn read_admin_response(
 ///
 /// Mirrors [`read_admin_response`]'s size discipline and message wording so the
 /// UI's message parsing is unchanged, but on a non-2xx it returns an
-/// [`AdminMutationError`] tagged with the received status. A redirect or a
-/// body-read failure also carries the status: the relay answered (headers/
-/// status arrived), the body outcome is unknown, so the caller preserves the
-/// idempotency key and lets the retry dedupe against any commit that landed.
+/// [`AdminMutationError`] tagged with the received status and whether the full
+/// body was read. Only a status with a complete body (`authoritative`) is a
+/// verdict the UI treats as definitive; a redirect, an over-cap body, or a
+/// mid-stream read failure carries the status as `partial` — the relay answered
+/// but the outcome is unknown, so the caller preserves the idempotency key and
+/// lets the retry dedupe against any commit that landed.
 async fn read_admin_mutation_response(
     resp: reqwest::Response,
     success_cap: u64,
@@ -295,7 +297,7 @@ async fn read_admin_mutation_response(
     let status = resp.status();
 
     if status.is_redirection() {
-        return Err(AdminMutationError::relay(
+        return Err(AdminMutationError::partial(
             status,
             format!("admin API returned a {status} redirect (not followed)"),
         ));
@@ -309,7 +311,7 @@ async fn read_admin_mutation_response(
 
     if let Some(cl) = resp.content_length() {
         if cl > cap {
-            return Err(AdminMutationError::relay(
+            return Err(AdminMutationError::partial(
                 status,
                 format!("admin response too large ({cl} bytes, cap {cap} bytes)"),
             ));
@@ -320,10 +322,10 @@ async fn read_admin_mutation_response(
     let mut stream = resp.bytes_stream();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| {
-            AdminMutationError::relay(status, format!("admin response stream error: {e}"))
+            AdminMutationError::partial(status, format!("admin response stream error: {e}"))
         })?;
         if bytes.len() as u64 + chunk.len() as u64 > cap {
-            return Err(AdminMutationError::relay(
+            return Err(AdminMutationError::partial(
                 status,
                 format!("admin response too large (cap {cap} bytes)"),
             ));
@@ -333,7 +335,7 @@ async fn read_admin_mutation_response(
 
     if !is_success {
         let body = String::from_utf8_lossy(&bytes);
-        return Err(AdminMutationError::relay(
+        return Err(AdminMutationError::authoritative(
             status,
             format!("admin API error: {body}"),
         ));

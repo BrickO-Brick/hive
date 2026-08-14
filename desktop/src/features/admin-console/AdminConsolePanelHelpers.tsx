@@ -92,7 +92,7 @@ export function adminErrorMessage(e: unknown): string {
  * Extract the relay's HTTP status from a rejected admin mutation, or `null`.
  *
  * Native mutation commands reject with a typed `AdminMutationError`
- * (`{message, relayStatus}`); the Tauri bridge surfaces it as
+ * (`{message, relayStatus, bodyComplete}`); the Tauri bridge surfaces it as
  * `TauriInvokeError` whose `payload` is that object. `relayStatus` is a number
  * only when the relay actually answered — `null`/absent for a transport or
  * pre-send failure where no relay verdict exists.
@@ -109,30 +109,55 @@ export function adminMutationRelayStatus(e: unknown): number | null {
 }
 
 /**
+ * Whether the relay's full response body was read — an authoritative verdict.
+ *
+ * `AdminMutationError.bodyComplete` is `true` only when the relay answered AND
+ * its whole body was received. A status that arrives but whose body is lost
+ * mid-stream (or rejected over the size cap) is `false`: the outcome is
+ * unknown. Absent/non-boolean payloads (bare-string errors, non-typed
+ * rejections) read `false`, which is fail-safe — an unknown outcome preserves
+ * the idempotency key.
+ */
+export function adminMutationBodyComplete(e: unknown): boolean {
+  if (e && typeof e === "object" && "payload" in e) {
+    const payload = (e as { payload: unknown }).payload;
+    if (payload && typeof payload === "object" && "bodyComplete" in payload) {
+      const complete = (payload as { bodyComplete: unknown }).bodyComplete;
+      if (typeof complete === "boolean") return complete;
+    }
+  }
+  return false;
+}
+
+/**
  * Whether a failed mutation must reuse its idempotency `requestId` on retry.
  *
  * The id is preserved UNLESS the relay definitively rejected the request before
- * committing — a 4xx other than 409. Those (bad action, unauthorized, not
- * found) refuse the input pre-commit, so a corrected resubmission is a
- * genuinely new command and a fresh id is safe.
+ * committing — a non-409 4xx whose full body was read. Those (bad action,
+ * unauthorized, not found) refuse the input pre-commit, so a corrected
+ * resubmission is a genuinely new command and a fresh id is safe.
  *
  * Everything else preserves the id so the relay can dedupe against a commit
  * that may have landed:
  *   - 409 — an idempotency claim or in-progress action already exists;
  *   - 5xx — the relay may have committed before failing;
- *   - a lost response body (status arrived, outcome unknown);
+ *   - a lost or truncated response body (status arrived, `bodyComplete` false —
+ *     outcome unknown), including a truncated 4xx;
  *   - a transport or pre-send failure with no relay answer (`relayStatus` null).
  *
- * This replaces string-matching `"409"`/`"processing"` on the message — which
- * missed the native layer's transport errors (`relay unreachable: …`, `admin
- * response stream error`) and cleared the id on exactly the ambiguous
- * lost-response failures where reuse is required.
+ * Status alone is insufficient: a truncated 4xx carries a definitive-looking
+ * status without an authoritative body, so the `bodyComplete` bit gates the
+ * reset. This replaces string-matching `"409"`/`"processing"` on the message,
+ * which missed the native layer's transport errors and cleared the id on
+ * exactly the ambiguous lost-response failures where reuse is required.
  */
 export function preserveRequestIdOnError(e: unknown): boolean {
   const status = adminMutationRelayStatus(e);
   if (status === null) return true;
   if (status === 409) return true;
-  return status < 400 || status >= 500;
+  if (status < 400 || status >= 500) return true;
+  // A non-409 4xx resets only when the relay's full body confirmed the verdict.
+  return !adminMutationBodyComplete(e);
 }
 
 // ── Shared UI helpers ─────────────────────────────────────────────────────

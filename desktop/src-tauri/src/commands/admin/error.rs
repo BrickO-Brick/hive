@@ -10,12 +10,16 @@
 /// pre-send failure (auth build, body serialisation): the relay never
 /// committed anything, so a retry must reuse the same idempotency key.
 ///
-/// A body-read failure mid-stream keeps the status it was reading (the relay
-/// answered with headers/status but the body was lost) — the outcome is
-/// unknown, so the caller preserves idempotency and lets the retry dedupe.
+/// `bodyComplete` is `true` only when the relay's full response body was read —
+/// an authoritative verdict. A non-409 4xx with `bodyComplete: true` is a
+/// definitive pre-commit rejection, so the UI may mint a fresh idempotency key.
+/// A status that arrives but whose body is lost mid-stream (or rejected over
+/// the size cap) carries `bodyComplete: false`: the outcome is unknown, so the
+/// caller preserves idempotency and lets the retry dedupe even on a 4xx.
 ///
 /// Serialises `rename_all = "camelCase"`; the JS bridge surfaces it as the
-/// rejected `TauriInvokeError.payload`, from which the UI reads `relayStatus`.
+/// rejected `TauriInvokeError.payload`, from which the UI reads `relayStatus`
+/// and `bodyComplete`.
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AdminMutationError {
@@ -25,14 +29,29 @@ pub struct AdminMutationError {
     /// The relay's HTTP status when a response was received; `None` for a
     /// transport/pre-send failure where no relay answer exists.
     pub relay_status: Option<u16>,
+    /// Whether the relay's full response body was read. `true` only for an
+    /// authoritative verdict; `false` when the body was lost or truncated.
+    pub body_complete: bool,
 }
 
 impl AdminMutationError {
-    /// The relay answered with an HTTP status.
-    pub(super) fn relay(status: reqwest::StatusCode, message: String) -> Self {
+    /// The relay answered with an HTTP status and its full body was read — an
+    /// authoritative verdict.
+    pub(super) fn authoritative(status: reqwest::StatusCode, message: String) -> Self {
         Self {
             message,
             relay_status: Some(status.as_u16()),
+            body_complete: true,
+        }
+    }
+
+    /// The relay answered with an HTTP status but the body was not fully read
+    /// (redirect, over-cap, or a mid-stream read failure) — outcome unknown.
+    pub(super) fn partial(status: reqwest::StatusCode, message: String) -> Self {
+        Self {
+            message,
+            relay_status: Some(status.as_u16()),
+            body_complete: false,
         }
     }
 }
@@ -44,6 +63,7 @@ impl From<String> for AdminMutationError {
         Self {
             message,
             relay_status: None,
+            body_complete: false,
         }
     }
 }

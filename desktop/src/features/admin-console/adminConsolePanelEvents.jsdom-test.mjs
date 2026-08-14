@@ -103,16 +103,24 @@ toast.error = (msg) => {
 // ── Typed native mutation error ──────────────────────────────────────────────
 //
 // Admin mutation commands reject with a serialized Rust `AdminMutationError`
-// (`{message, relayStatus}`, camelCase). The real tauri bridge rejects with
-// that plain object and `toTauriError` wraps it into a `TauriInvokeError` whose
-// `.message` is the message and `.payload` is the whole object — from which the
-// UI reads `relayStatus` to decide idempotency-retry policy. Rejecting with a
-// plain object here (NOT an Error) reproduces that wire shape exactly.
+// (`{message, relayStatus, bodyComplete}`, camelCase). The real tauri bridge
+// rejects with that plain object and `toTauriError` wraps it into a
+// `TauriInvokeError` whose `.message` is the message and `.payload` is the
+// whole object — from which the UI reads `relayStatus`/`bodyComplete` to decide
+// idempotency-retry policy. Rejecting with a plain object here (NOT an Error)
+// reproduces that wire shape exactly.
 //
 // `relayStatus` is a number when the relay authoritatively answered, and `null`
-// for a transport/pre-send failure where no relay verdict exists.
-function mutationReject(message, relayStatus) {
-  return Promise.reject({ message, relayStatus });
+// for a transport/pre-send failure where no relay verdict exists. `bodyComplete`
+// is true only when the relay's full body was read; it defaults to `relayStatus
+// !== null` (a status with a fully-read body — the common authoritative case),
+// and callers pass `false` explicitly to model a truncated/lost-body response.
+function mutationReject(
+  message,
+  relayStatus,
+  bodyComplete = relayStatus !== null,
+) {
+  return Promise.reject({ message, relayStatus, bodyComplete });
 }
 
 // ── Deferred promise helper ──────────────────────────────────────────────────
@@ -2553,6 +2561,266 @@ test("reopen-4xx-resets-requestId: a definitive pre-commit rejection uses a fres
     requestIds[0],
     requestIds[1],
     `a non-409 4xx must reset the requestId; got: ${JSON.stringify(requestIds)}`,
+  );
+
+  await unmount();
+});
+
+test("resolve-lost-response-preserves-requestId: an ambiguous transport failure reuses the requestId on retry", async () => {
+  // The resolve path is the enforcement seam and carries the same stale-intent
+  // risk as reopen: a lost-response failure (`relayStatus: null`, no relay
+  // verdict) must reuse the idempotency requestId so a retry dedupes against a
+  // commit that may have landed — otherwise a retry with a fresh id re-applies
+  // an enforcement action over another operator's intervening state.
+  //
+  // Mutation evidence: replace the resolve catch's preservation branch with an
+  // unconditional `requestIdRef.current = null` → the two attempts carry
+  // different ids and this goes red (the helper and reopen path stay intact).
+
+  const origin = "https://admin.example.com";
+  const pubkey = "c7".repeat(32);
+
+  const openItem = {
+    id: "00000000-0000-0000-0000-0000000000c7",
+    communityId: "comm-1",
+    communityHost: "alpha.example.com",
+    reportEventId: "aa",
+    reporterPubkey: "bb",
+    targetKind: "event",
+    target: "cc",
+    reportType: "spam",
+    status: "open",
+    createdAt: "2024-06-01T12:00:00Z",
+  };
+  const openDetail = {
+    ...openItem,
+    channelId: null,
+    note: null,
+    resolvedBy: null,
+    resolvedAt: null,
+    actionId: null,
+    message: null,
+  };
+
+  setIpcHandler("admin_list_reports", () => Promise.resolve([openItem]));
+  setIpcHandler("admin_get_report", () => Promise.resolve(openDetail));
+  setIpcHandler("admin_list_feedback", () => Promise.resolve([]));
+
+  const requestIds = [];
+  setIpcHandler("admin_resolve_report", (args) => {
+    requestIds.push(args?.body?.requestId);
+    // Transport failure: no relay answer, so no HTTP status.
+    return mutationReject("relay unreachable: network error", null);
+  });
+
+  const { container, doRender, unmount } = mountPanel({ origin, pubkey });
+  await doRender();
+  await settle(30);
+  await openFirstReportDetail(container);
+  await settle(20);
+
+  // Select the dismiss action so the resolve submit button appears.
+  const dismissBtn = container.querySelector(
+    "[data-testid='action-btn-dismiss']",
+  );
+  assert.ok(dismissBtn, "dismiss action must be present");
+  await act(async () => {
+    fireEvent.click(dismissBtn);
+    await new Promise((r) => setTimeout(r, 10));
+  });
+  const submit = container.querySelector("[data-testid='resolve-submit-btn']");
+  assert.ok(
+    submit,
+    "resolve submit button must appear after selecting dismiss",
+  );
+
+  // First attempt → lost response.
+  await act(async () => {
+    fireEvent.click(submit);
+    await new Promise((r) => setTimeout(r, 20));
+  });
+  // Second attempt → same ambiguous failure; requestId must be identical.
+  await act(async () => {
+    fireEvent.click(submit);
+    await new Promise((r) => setTimeout(r, 20));
+  });
+
+  assert.equal(
+    requestIds.length,
+    2,
+    "two resolve attempts must have been made",
+  );
+  assert.equal(
+    requestIds[0],
+    requestIds[1],
+    `requestId must be preserved across a resolve lost-response retry; got: ${JSON.stringify(requestIds)}`,
+  );
+
+  await unmount();
+});
+
+test("resolve-4xx-resets-requestId: a definitive pre-commit rejection uses a fresh requestId", async () => {
+  // The resolve counterpart to reopen-4xx-resets: a non-409 4xx whose full body
+  // was read is a definitive pre-commit rejection, so a corrected resubmission
+  // is a genuinely new command and a fresh requestId is correct. Pins the
+  // resolve call-site's reset branch specifically.
+  //
+  // Mutation evidence: make the resolve catch preserve unconditionally → the
+  // two attempts share an id and this goes red.
+
+  const origin = "https://admin.example.com";
+  const pubkey = "c8".repeat(32);
+
+  const openItem = {
+    id: "00000000-0000-0000-0000-0000000000c8",
+    communityId: "comm-1",
+    communityHost: "alpha.example.com",
+    reportEventId: "aa",
+    reporterPubkey: "bb",
+    targetKind: "event",
+    target: "cc",
+    reportType: "spam",
+    status: "open",
+    createdAt: "2024-06-01T12:00:00Z",
+  };
+  const openDetail = {
+    ...openItem,
+    channelId: null,
+    note: null,
+    resolvedBy: null,
+    resolvedAt: null,
+    actionId: null,
+    message: null,
+  };
+
+  setIpcHandler("admin_list_reports", () => Promise.resolve([openItem]));
+  setIpcHandler("admin_get_report", () => Promise.resolve(openDetail));
+  setIpcHandler("admin_list_feedback", () => Promise.resolve([]));
+
+  const requestIds = [];
+  setIpcHandler("admin_resolve_report", (args) => {
+    requestIds.push(args?.body?.requestId);
+    // Full body read → authoritative pre-commit rejection.
+    return mutationReject("admin API error: bad request", 400);
+  });
+
+  const { container, doRender, unmount } = mountPanel({ origin, pubkey });
+  await doRender();
+  await settle(30);
+  await openFirstReportDetail(container);
+  await settle(20);
+
+  const dismissBtn = container.querySelector(
+    "[data-testid='action-btn-dismiss']",
+  );
+  assert.ok(dismissBtn, "dismiss action must be present");
+  await act(async () => {
+    fireEvent.click(dismissBtn);
+    await new Promise((r) => setTimeout(r, 10));
+  });
+  const submit = container.querySelector("[data-testid='resolve-submit-btn']");
+  assert.ok(
+    submit,
+    "resolve submit button must appear after selecting dismiss",
+  );
+
+  await act(async () => {
+    fireEvent.click(submit);
+    await new Promise((r) => setTimeout(r, 20));
+  });
+  await act(async () => {
+    fireEvent.click(submit);
+    await new Promise((r) => setTimeout(r, 20));
+  });
+
+  assert.equal(
+    requestIds.length,
+    2,
+    "two resolve attempts must have been made",
+  );
+  assert.notEqual(
+    requestIds[0],
+    requestIds[1],
+    `a definitive non-409 4xx must reset the resolve requestId; got: ${JSON.stringify(requestIds)}`,
+  );
+
+  await unmount();
+});
+
+test("reopen-truncated-4xx-preserves-requestId: a 4xx with a lost body reuses the requestId on retry", async () => {
+  // Status alone is not a verdict: a 4xx whose body was lost mid-stream
+  // (`bodyComplete: false`) is NOT a definitive pre-commit rejection — the
+  // relay answered with a status but the outcome is unknown, so the requestId
+  // must be preserved and the retry left to dedupe. Only a 4xx with a fully
+  // read body resets. This pins the `bodyComplete` discriminator: reset-on-
+  // status-alone would clear the key here and re-issue a fresh command.
+  //
+  // Mutation evidence: drop the `bodyComplete` gate (reset every non-409 4xx) →
+  // the two attempts carry different ids and this goes red.
+
+  const origin = "https://admin.example.com";
+  const pubkey = "c9".repeat(32);
+
+  const resolvedItem = {
+    id: "00000000-0000-0000-0000-0000000000c9",
+    communityId: "comm-1",
+    communityHost: "alpha.example.com",
+    reportEventId: "aa",
+    reporterPubkey: "bb",
+    targetKind: "event",
+    target: "cc",
+    reportType: "spam",
+    status: "resolved",
+    createdAt: "2024-06-01T12:00:00Z",
+  };
+  const resolvedDetail = {
+    ...resolvedItem,
+    channelId: null,
+    note: null,
+    resolvedBy: "mod_pubkey",
+    resolvedAt: "2024-06-02T08:00:00Z",
+    actionId: null,
+    message: null,
+  };
+
+  setIpcHandler("admin_list_reports", () => Promise.resolve([resolvedItem]));
+  setIpcHandler("admin_get_report", () => Promise.resolve(resolvedDetail));
+  setIpcHandler("admin_list_feedback", () => Promise.resolve([]));
+
+  const requestIds = [];
+  setIpcHandler("admin_reopen_report", (args) => {
+    requestIds.push(args?.body?.requestId);
+    // Status arrived but the body was lost mid-stream: outcome unknown.
+    return mutationReject(
+      "admin response stream error: connection reset",
+      400,
+      false,
+    );
+  });
+
+  const { container, doRender, unmount } = mountPanel({ origin, pubkey });
+  await doRender();
+  await settle(30);
+  await openFirstReportDetail(container);
+  await settle(20);
+
+  const submit = container.querySelector("[data-testid='reopen-submit-btn']");
+  assert.ok(submit, "reopen submit button must be present");
+
+  await act(async () => {
+    fireEvent.click(submit);
+    await new Promise((r) => setTimeout(r, 20));
+  });
+  await act(async () => {
+    fireEvent.click(submit);
+    await new Promise((r) => setTimeout(r, 20));
+  });
+
+  assert.equal(requestIds.length, 2, "two reopen attempts must have been made");
+  assert.equal(
+    requestIds[0],
+    requestIds[1],
+    `a truncated 4xx (bodyComplete false) must preserve the requestId; got: ${JSON.stringify(requestIds)}`,
   );
 
   await unmount();
