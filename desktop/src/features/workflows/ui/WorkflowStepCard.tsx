@@ -6,11 +6,15 @@ import { Button } from "@/shared/ui/button";
 import { Input } from "@/shared/ui/input";
 import { Textarea } from "@/shared/ui/textarea";
 import { ChannelCombobox } from "./ChannelCombobox";
+import { WorkflowDurationField } from "./WorkflowDurationField";
 import { WorkflowEmojiField } from "./WorkflowEmojiField";
 import { WorkflowTemplateTextarea } from "./WorkflowTemplateTextarea";
 import { FieldLabel, FormSelect } from "./workflowFormPrimitives";
 import { WorkflowWebhookHeadersEditor } from "./WorkflowWebhookHeadersEditor";
 import type { StepFormState, TriggerType } from "./workflowFormTypes";
+
+const DEFAULT_STEP_TIMEOUT_SECONDS = 5 * 60;
+const DEFAULT_APPROVAL_TIMEOUT_SECONDS = 24 * 60 * 60;
 
 function BackendSupportHint({ action }: { action: StepFormState["action"] }) {
   switch (action) {
@@ -69,19 +73,12 @@ function StepConfigFields({
   switch (step.action) {
     case "delay":
       return (
-        <div className="space-y-1.5">
-          <FieldLabel htmlFor={`${prefix}-duration`}>Duration</FieldLabel>
-          <Input
-            autoCapitalize="off"
-            disabled={disabled}
-            id={`${prefix}-duration`}
-            onChange={(event) =>
-              onUpdate({ ...step, duration: event.target.value })
-            }
-            placeholder="e.g. 5s, 1m, 1h"
-            value={step.duration ?? ""}
-          />
-        </div>
+        <WorkflowDurationField
+          disabled={disabled}
+          id={`${prefix}-duration`}
+          onChange={(duration) => onUpdate({ ...step, duration })}
+          value={step.duration ?? ""}
+        />
       );
     case "send_message":
       return (
@@ -253,21 +250,15 @@ function StepConfigFields({
               value={step.message ?? ""}
             />
           </div>
-          <div className="space-y-1.5">
-            <FieldLabel htmlFor={`${prefix}-timeout`}>
-              Timeout (optional)
-            </FieldLabel>
-            <Input
-              autoCapitalize="off"
-              disabled={disabled}
-              id={`${prefix}-timeout`}
-              onChange={(event) =>
-                onUpdate({ ...step, timeout: event.target.value })
-              }
-              placeholder="e.g. 24h"
-              value={step.timeout ?? ""}
-            />
-          </div>
+          <WorkflowDurationField
+            disabled={disabled}
+            fallbackSeconds={DEFAULT_APPROVAL_TIMEOUT_SECONDS}
+            id={`${prefix}-timeout`}
+            label="Timeout (optional)"
+            onChange={(timeout) => onUpdate({ ...step, timeout })}
+            placeholder="24h"
+            value={step.timeout ?? ""}
+          />
         </div>
       );
     case "add_reaction":
@@ -380,19 +371,14 @@ export function WorkflowStepCard({
 
       <section className="space-y-4 border-t border-border/50 py-5">
         <SectionHeading title="Step timeout" />
-        <div className="space-y-1.5">
-          <FieldLabel htmlFor={`${prefix}-timeout-secs`}>
-            Timeout (seconds)
-          </FieldLabel>
-          <Input
-            autoCapitalize="off"
+        <div className="space-y-2">
+          <WorkflowDurationField
             disabled={disabled}
+            fallbackSeconds={DEFAULT_STEP_TIMEOUT_SECONDS}
             id={`${prefix}-timeout-secs`}
-            inputMode="numeric"
-            onChange={(event) =>
-              onUpdate({ ...step, timeoutSecs: event.target.value })
-            }
-            placeholder="e.g. 300"
+            label="Timeout (optional)"
+            onChange={(timeoutSecs) => onUpdate({ ...step, timeoutSecs })}
+            placeholder="5m"
             value={step.timeoutSecs ?? ""}
           />
           <p className="text-xs text-muted-foreground">

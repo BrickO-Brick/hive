@@ -1,4 +1,8 @@
 import { truncatePubkey } from "@/shared/lib/pubkey";
+import {
+  formatDurationSecondsVerbose,
+  parseDurationSeconds,
+} from "./workflowDuration";
 import { ACTION_LABELS } from "./workflowFormTypes";
 import type { StepFormState } from "./workflowFormTypes";
 
@@ -29,8 +33,14 @@ function configuredStepDetail(
   channelLabel?: string,
 ): string | null {
   switch (step.action) {
-    case "delay":
-      return step.duration?.trim() || null;
+    case "delay": {
+      const duration = step.duration?.trim();
+      if (!duration) return null;
+      const seconds = parseDurationSeconds(duration);
+      return compact(
+        seconds === null ? duration : formatDurationSecondsVerbose(seconds),
+      );
+    }
     case "send_message": {
       const text = quoted(step.text);
       const channel = channelLabel ? `#${channelLabel}` : null;

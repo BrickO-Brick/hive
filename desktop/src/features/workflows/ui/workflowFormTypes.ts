@@ -1,4 +1,8 @@
 import { stringify as yamlStringify, parse as yamlParse } from "yaml";
+import {
+  formatDurationSeconds,
+  parseDurationSeconds,
+} from "./workflowDuration";
 
 export const TRIGGER_TYPES = [
   "message_posted",
@@ -128,10 +132,28 @@ function headersToRecord(
 
 function parseTimeoutSecs(timeoutSecs: string | undefined): number | undefined {
   if (!timeoutSecs) return undefined;
-  const trimmed = timeoutSecs.trim();
-  if (!/^\d+$/.test(trimmed)) return undefined;
-  const parsed = Number(trimmed);
-  return parsed > 0 ? parsed : undefined;
+  const parsed = parseDurationSeconds(timeoutSecs);
+  return parsed === null ? undefined : Math.max(1, parsed);
+}
+
+function presentDuration(duration: unknown): string | undefined {
+  if (typeof duration === "number") {
+    return Number.isSafeInteger(duration) && duration >= 0
+      ? formatDurationSeconds(duration)
+      : undefined;
+  }
+  if (typeof duration !== "string") return undefined;
+  const durationSeconds = parseDurationSeconds(duration.trim());
+  return durationSeconds === null
+    ? duration
+    : formatDurationSeconds(durationSeconds);
+}
+
+function serializeDuration(duration: string): string {
+  const durationSeconds = parseDurationSeconds(duration);
+  return durationSeconds === null
+    ? duration.trim()
+    : `${Math.max(1, durationSeconds)}s`;
 }
 
 function actionFieldsForStep(step: StepFormState): Record<string, unknown> {
@@ -142,7 +164,9 @@ function actionFieldsForStep(step: StepFormState): Record<string, unknown> {
 
   switch (step.action) {
     case "delay":
-      if (step.duration) fields.duration = step.duration;
+      if (step.duration) {
+        fields.duration = serializeDuration(step.duration);
+      }
       break;
     case "send_message":
       if (step.text) fields.text = step.text;
@@ -164,7 +188,7 @@ function actionFieldsForStep(step: StepFormState): Record<string, unknown> {
     case "request_approval":
       if (step.from) fields.from = step.from;
       if (step.message) fields.message = step.message;
-      if (step.timeout) fields.timeout = step.timeout;
+      if (step.timeout) fields.timeout = serializeDuration(step.timeout);
       break;
     case "add_reaction":
       if (step.emoji) fields.emoji = step.emoji;
@@ -281,9 +305,9 @@ export function yamlToFormState(
         action: (step.action as ActionType) ?? ACTION_TYPES[0],
         timeoutSecs:
           step.timeout_secs !== undefined
-            ? String(step.timeout_secs)
+            ? presentDuration(step.timeout_secs)
             : undefined,
-        duration: step.duration as string | undefined,
+        duration: presentDuration(step.duration),
         text: step.text as string | undefined,
         channel: step.channel as string | undefined,
         to: step.to as string | undefined,
@@ -298,7 +322,7 @@ export function yamlToFormState(
         topic: step.topic as string | undefined,
         from: step.from as string | undefined,
         message: step.message as string | undefined,
-        timeout: step.timeout as string | undefined,
+        timeout: presentDuration(step.timeout),
       }),
     );
 

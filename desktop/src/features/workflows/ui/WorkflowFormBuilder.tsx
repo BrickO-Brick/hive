@@ -443,6 +443,9 @@ export function WorkflowFormBuilder({
         id: nextStepId(formState.steps),
         action,
       };
+      if (action === "delay") {
+        newStep.duration = "1s";
+      }
       if (action === "call_webhook") {
         newStep.method = "POST";
       }
@@ -711,6 +714,9 @@ export function WorkflowFormBuilder({
                               labels={ACTION_LABELS}
                               onChange={(action) => {
                                 const next = { ...selectedStep, action };
+                                if (action === "delay" && !next.duration) {
+                                  next.duration = "1s";
+                                }
                                 if (action === "call_webhook" && !next.method) {
                                   next.method = "POST";
                                 }

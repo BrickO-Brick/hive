@@ -31,7 +31,15 @@ test("describes configured workflow steps on the canvas", () => {
       action: "delay",
       duration: "5m",
     }),
-    "5m",
+    "5 minutes",
+  );
+  assert.equal(
+    workflowStepDescription({
+      id: "long-delay",
+      action: "delay",
+      duration: "4w",
+    }),
+    "4 weeks",
   );
   assert.equal(
     workflowStepDescription({
