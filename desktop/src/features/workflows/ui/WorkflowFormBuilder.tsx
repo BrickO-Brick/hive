@@ -28,7 +28,6 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/shared/ui/dropdown-menu";
-import { Input } from "@/shared/ui/input";
 import { Switch } from "@/shared/ui/switch";
 import { Textarea } from "@/shared/ui/textarea";
 import { WorkflowConditionBuilder } from "./WorkflowConditionBuilder";
@@ -39,7 +38,6 @@ import {
 import { WorkflowScheduleFields } from "./WorkflowScheduleFields";
 import { WorkflowStepCard } from "./WorkflowStepCard";
 import { buildConditionExpression } from "./workflowConditionExpression";
-import { FieldLabel } from "./workflowFormPrimitives";
 import {
   DEFAULT_FORM_STATE,
   ACTION_LABELS,
@@ -424,6 +422,17 @@ export function WorkflowFormBuilder({
     if (result.ok) setFormState(result.state);
   }, [mode, yaml]);
 
+  React.useEffect(() => {
+    if (!yaml.trim()) return;
+    const result = yamlToFormState(yaml);
+    if (!result.ok) return;
+    setFormState((current) =>
+      current.name === result.state.name
+        ? current
+        : { ...current, name: result.state.name },
+    );
+  }, [yaml]);
+
   const selectNode = React.useCallback(
     (nextNode: Exclude<WorkflowEditorPane, null>) => {
       if (selectedNode) {
@@ -530,41 +539,6 @@ export function WorkflowFormBuilder({
           </div>
         ) : (
           <div className="flex min-h-0 flex-1 flex-col">
-            <div className="grid flex-shrink-0 grid-cols-2 items-end gap-3 border-b border-border bg-muted/10 px-6 py-4">
-              <div className="space-y-1.5">
-                <FieldLabel htmlFor="wf-name">Workflow name</FieldLabel>
-                <Input
-                  autoCapitalize="off"
-                  autoCorrect="off"
-                  disabled={disabled}
-                  id="wf-name"
-                  onChange={(event) =>
-                    updateFormState({ ...formState, name: event.target.value })
-                  }
-                  placeholder="e.g. deploy_notifier"
-                  value={formState.name}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <FieldLabel htmlFor="wf-description">
-                  Description (optional)
-                </FieldLabel>
-                <Input
-                  autoCapitalize="off"
-                  disabled={disabled}
-                  id="wf-description"
-                  onChange={(event) =>
-                    updateFormState({
-                      ...formState,
-                      description: event.target.value,
-                    })
-                  }
-                  placeholder="What does this workflow do?"
-                  value={formState.description}
-                />
-              </div>
-            </div>
-
             <div className="flex min-h-0 flex-1">
               <div className="min-h-0 min-w-0 flex-1 overflow-y-auto px-6 py-5">
                 <div className="mx-auto w-full max-w-sm">

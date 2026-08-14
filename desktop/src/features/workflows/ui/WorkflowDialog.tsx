@@ -1,12 +1,13 @@
 import * as React from "react";
-import { Code } from "lucide-react";
+import { Check, Code, Pencil } from "lucide-react";
 import { useBlocker } from "@tanstack/react-router";
-import { stringify as yamlStringify } from "yaml";
+import { isMap, parseDocument, stringify as yamlStringify } from "yaml";
 
 import {
   useCreateWorkflowMutation,
   useUpdateWorkflowMutation,
 } from "@/features/workflows/hooks";
+import { generateBackupPassphrase } from "@/shared/api/tauriIdentity";
 import type { Channel, Workflow } from "@/shared/api/types";
 import { getRelayHttpUrl } from "@/shared/api/tauri";
 import {
@@ -28,6 +29,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/shared/ui/dialog";
+import { Input } from "@/shared/ui/input";
 import { ChannelCombobox } from "./ChannelCombobox";
 import {
   WorkflowFormBuilder,
@@ -35,7 +37,11 @@ import {
 } from "./WorkflowFormBuilder";
 import { WorkflowWebhookSecretDialog } from "./WorkflowWebhookSecretDialog";
 import type { WorkflowEditorPane } from "./workflowEditorPane";
-import { yamlToFormState } from "./workflowFormTypes";
+import {
+  DEFAULT_FORM_STATE,
+  formStateToYaml,
+  yamlToFormState,
+} from "./workflowFormTypes";
 
 type DialogMode = "create" | "edit" | "duplicate";
 
@@ -84,6 +90,113 @@ const PENDING_LABELS: Record<DialogMode, string> = {
   duplicate: "Creating…",
 };
 
+function visibleWorkflowName(
+  yaml: string,
+  fallbackName: string | undefined,
+): string {
+  const parsed = yamlToFormState(yaml);
+  if (parsed.ok && parsed.state.name.trim()) return parsed.state.name.trim();
+  return fallbackName?.trim() ?? "";
+}
+
+function yamlWithWorkflowName(yaml: string, name: string): string | null {
+  if (!yaml.trim()) {
+    return formStateToYaml({ ...DEFAULT_FORM_STATE, name });
+  }
+
+  const document = parseDocument(yaml);
+  if (document.errors.length > 0 || !isMap(document.contents)) return null;
+  document.set("name", name);
+  return document.toString();
+}
+
+function WorkflowNameEditor({
+  disabled,
+  generating,
+  name,
+  onCommit,
+}: {
+  disabled: boolean;
+  generating: boolean;
+  name: string;
+  onCommit: (name: string) => boolean;
+}) {
+  const [editing, setEditing] = React.useState(false);
+  const [draft, setDraft] = React.useState(name);
+  const inputRef = React.useRef<HTMLInputElement>(null);
+
+  React.useEffect(() => {
+    if (!editing) setDraft(name);
+  }, [editing, name]);
+
+  React.useEffect(() => {
+    if (editing) inputRef.current?.select();
+  }, [editing]);
+
+  const commit = React.useCallback(() => {
+    const nextName = draft.trim();
+    if (!nextName || !onCommit(nextName)) return;
+    setEditing(false);
+  }, [draft, onCommit]);
+
+  if (editing) {
+    return (
+      <div className="flex h-7 items-center gap-1.5">
+        <Input
+          aria-label="Workflow name"
+          className="h-7 w-72 px-2 font-mono text-sm"
+          disabled={disabled}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              commit();
+            } else if (event.key === "Escape") {
+              event.preventDefault();
+              setDraft(name);
+              setEditing(false);
+            }
+          }}
+          ref={inputRef}
+          value={draft}
+        />
+        <Button
+          aria-label="Save workflow name"
+          className="text-muted-foreground"
+          disabled={disabled || !draft.trim()}
+          onClick={commit}
+          size="icon-xs"
+          title="Save workflow name"
+          type="button"
+          variant="ghost"
+        >
+          <Check />
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="inline-flex h-7 max-w-full min-w-0 items-center gap-1.5 font-mono text-sm text-muted-foreground">
+      <span className="min-w-0 truncate">
+        {generating ? "Generating name…" : name || "Untitled workflow"}
+      </span>
+      <Button
+        aria-label="Edit workflow name"
+        className="text-muted-foreground [&_svg]:size-3"
+        disabled={disabled || generating}
+        onClick={() => setEditing(true)}
+        size="icon-xs"
+        title="Edit workflow name"
+        type="button"
+        variant="ghost"
+      >
+        <Pencil />
+      </Button>
+    </div>
+  );
+}
+
 export function WorkflowDialog({
   channels,
   mode,
@@ -115,10 +228,12 @@ export function WorkflowDialog({
   } | null>(null);
   const [discardConfirmationOpen, setDiscardConfirmationOpen] =
     React.useState(false);
+  const [generatingName, setGeneratingName] = React.useState(false);
   const initialValuesRef = React.useRef({
     channelId,
     yaml: getInitialYaml(mode, workflow),
   });
+  const yamlDefinitionRef = React.useRef(yamlDefinition);
   const allowNavigationRef = React.useRef(false);
   const proceedingNavigationRef = React.useRef(false);
 
@@ -135,6 +250,7 @@ export function WorkflowDialog({
 
   // Re-initialize when dialog opens or workflow/mode changes
   React.useEffect(() => {
+    let active = true;
     if (open) {
       const newChannelId =
         mode === "edit" && workflowChannelId ? workflowChannelId : "";
@@ -144,6 +260,7 @@ export function WorkflowDialog({
         channelId: newChannelId,
         yaml: initialYaml,
       };
+      yamlDefinitionRef.current = initialYaml;
       setYamlDefinition(initialYaml);
       setEditorMode(getInitialEditorMode(initialYaml));
       setEditorParseError(null);
@@ -151,7 +268,37 @@ export function WorkflowDialog({
       setDiscardConfirmationOpen(false);
       resetCreate();
       resetUpdate();
+
+      if (mode === "create" && !workflow) {
+        setGeneratingName(true);
+        void generateBackupPassphrase({ words: 3, separator: "-" })
+          .then((name) => {
+            if (!active || yamlDefinitionRef.current.trim()) return;
+            const generatedYaml = formStateToYaml({
+              ...DEFAULT_FORM_STATE,
+              name,
+            });
+            yamlDefinitionRef.current = generatedYaml;
+            initialValuesRef.current = {
+              ...initialValuesRef.current,
+              yaml: generatedYaml,
+            };
+            setYamlDefinition(generatedYaml);
+          })
+          .catch(() => {
+            // Leave the editable "Untitled workflow" fallback in place.
+          })
+          .finally(() => {
+            if (active) setGeneratingName(false);
+          });
+      } else {
+        setGeneratingName(false);
+      }
     }
+
+    return () => {
+      active = false;
+    };
   }, [open, mode, workflow, workflowChannelId, resetCreate, resetUpdate]);
 
   const closeDialog = React.useCallback(() => {
@@ -244,6 +391,21 @@ export function WorkflowDialog({
     [editorMode, yamlDefinition],
   );
 
+  const workflowName = visibleWorkflowName(yamlDefinition, workflow?.name);
+  const canEditWorkflowName =
+    !yamlDefinition.trim() || yamlToFormState(yamlDefinition).ok;
+  const handleWorkflowNameCommit = React.useCallback(
+    (name: string) => {
+      const nextYaml = yamlWithWorkflowName(yamlDefinitionRef.current, name);
+      if (nextYaml === null) return false;
+      mutation.reset();
+      yamlDefinitionRef.current = nextYaml;
+      setYamlDefinition(nextYaml);
+      return true;
+    },
+    [mutation.reset],
+  );
+
   const showChannelSelector = mode !== "edit";
 
   return (
@@ -254,15 +416,21 @@ export function WorkflowDialog({
       >
         <DialogContent className="flex h-[88vh] max-h-[88vh] w-[calc(100vw-2rem)] max-w-6xl flex-col gap-0 overflow-hidden p-0">
           <DialogHeader className="flex flex-shrink-0 flex-row items-center justify-between gap-6 border-b border-border px-6 py-5 pr-14 text-left">
-            <div className="space-y-1.5">
+            <div className="space-y-0.5">
               <DialogTitle>{TITLES[mode]}</DialogTitle>
-              <DialogDescription>
+              <DialogDescription className="sr-only">
                 {mode === "edit"
                   ? "Update when this workflow runs and what it does."
                   : mode === "duplicate"
                     ? "Copy this workflow and adjust its details."
                     : "Automate actions when something happens in a channel."}
               </DialogDescription>
+              <WorkflowNameEditor
+                disabled={mutation.isPending || !canEditWorkflowName}
+                generating={generatingName}
+                name={workflowName}
+                onCommit={handleWorkflowNameCommit}
+              />
             </div>
             <div ref={setHeaderTrailingElement} />
           </DialogHeader>
@@ -275,6 +443,7 @@ export function WorkflowDialog({
               mode={editorMode}
               onChange={(yaml) => {
                 mutation.reset();
+                yamlDefinitionRef.current = yaml;
                 setYamlDefinition(yaml);
               }}
               onSelectedNodeChange={onEditorPaneChange}

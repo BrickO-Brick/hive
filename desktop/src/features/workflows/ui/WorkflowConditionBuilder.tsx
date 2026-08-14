@@ -752,7 +752,7 @@ export function WorkflowConditionBuilder({
                     {isExpanded && activeEditor ? (
                       <div
                         className={cn(
-                          "animate-in space-y-4 pb-4 pt-1 fade-in slide-in-from-top-1 duration-150 motion-reduce:animate-none",
+                          "animate-in space-y-4 pt-1 fade-in slide-in-from-top-1 duration-150 motion-reduce:animate-none",
                           conditionFieldUsesFullHeightPicker(
                             activeEditor.draft.field,
                           ) && "flex min-h-0 flex-1 flex-col space-y-0",

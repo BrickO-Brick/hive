@@ -37,7 +37,6 @@ import {
 } from "@/shared/ui/dropdown-menu";
 import {
   getWorkflowCardLabel,
-  getWorkflowDescription,
   getWorkflowDisplayStatus,
   getWorkflowEnabled,
   getWorkflowPrimaryAction,
@@ -217,7 +216,6 @@ export function WorkflowCard({
   const customEmoji = useCustomEmoji();
   const isEnabled = getWorkflowEnabled(workflow.definition);
   const displayStatus = getWorkflowDisplayStatus(workflow);
-  const description = getWorkflowDescription(workflow.definition);
   const configuredTrigger = getWorkflowTriggerConfig(workflow.definition);
   const trigger = configuredTrigger ?? { on: "message_posted" as const };
   const triggerPresentation = useWorkflowTriggerPresentation({
@@ -383,12 +381,6 @@ export function WorkflowCard({
             text={cardLabel}
           />
         </h3>
-        {description ? (
-          <p className="mt-2 line-clamp-2 text-sm leading-relaxed text-white/75">
-            {description}
-          </p>
-        ) : null}
-
         <div className="mt-auto flex min-w-0 items-end justify-between gap-3 pt-5 text-white/75">
           <div className="min-w-0">
             <p className="truncate text-xs font-semibold text-white">

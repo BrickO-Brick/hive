@@ -385,15 +385,6 @@ export function getWorkflowDisplayStatus(
   return getWorkflowEnabled(workflow.definition) ? workflow.status : "disabled";
 }
 
-export function getWorkflowDescription(
-  definition: Record<string, unknown>,
-): string | null {
-  const description = definition.description;
-  return typeof description === "string" && description.trim().length > 0
-    ? description.trim()
-    : null;
-}
-
 export function getWorkflowTriggerSummary(
   definition: Record<string, unknown>,
 ): string | null {
