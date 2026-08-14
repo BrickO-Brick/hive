@@ -179,21 +179,17 @@ pub fn load_desktop_release_identity() -> Result<Option<String>, ReadonlySecretE
 /// terminal-launched dev build resolve `/tmp` to the same inode, so they
 /// contend on the same lockfile and achieve mutual exclusion.
 ///
-/// On Windows the same name used for the kernel mutex is derived from the
-/// lockfile path, so the service-keyed uniqueness is preserved.
+/// On Windows the lockfile lives in the per-user temporary directory.
 #[cfg(feature = "system-keyring")]
 fn blob_lockfile_path(service: &str) -> PathBuf {
     #[cfg(unix)]
     {
         // Use the real UID so distinct users get distinct lockfiles.
-        // SAFETY: getuid() is always safe on Unix — it never fails.
-        let uid = unsafe { libc::getuid() };
+        let uid = rustix::process::getuid().as_raw();
         PathBuf::from(format!("/tmp/buzz-keychain-{uid}-{service}.lock"))
     }
     #[cfg(not(unix))]
     {
-        // Windows: no lockfile used (named mutex instead); this path is only
-        // used to derive the mutex name and for test assertions.
         std::env::temp_dir().join(format!("buzz-keychain-{service}.lock"))
     }
 }
@@ -203,7 +199,6 @@ fn blob_lockfile_path(service: &str) -> PathBuf {
 /// Opens (or creates) the lockfile and blocks until the lock is acquired.
 /// Returns the open `File`; the lock is released when the file is dropped.
 ///
-/// On non-Unix/non-Windows platforms this is a no-op that returns a stub.
 #[cfg(feature = "system-keyring")]
 fn acquire_blob_lock(service: &str) -> Result<BlobLockGuard, String> {
     let path = blob_lockfile_path(service);
@@ -212,114 +207,26 @@ fn acquire_blob_lock(service: &str) -> Result<BlobLockGuard, String> {
 
 /// RAII guard that holds an exclusive advisory file lock.
 ///
-/// On Unix, implemented via `flock(2)` on a lockfile in the system temp dir.
-/// On Windows, implemented via a named kernel mutex (cross-process, no file I/O
-/// needed). The Windows mutex handle is released on drop.
+/// Implemented by `fs4`, which uses `flock(2)` on Unix and `LockFileEx` on
+/// Windows. Closing the file releases the lock on both platforms.
 #[cfg(feature = "system-keyring")]
 struct BlobLockGuard {
-    /// The open lockfile. Never read — held purely for RAII: closing the fd
-    /// releases the `flock(LOCK_EX)` on Unix.
-    #[cfg(unix)]
+    /// The open lockfile. Never read; held purely for RAII.
     #[allow(dead_code)]
     file: std::fs::File,
-    #[cfg(windows)]
-    mutex_handle: windows_sys::Win32::Foundation::HANDLE,
 }
 
 #[cfg(feature = "system-keyring")]
 impl BlobLockGuard {
     fn acquire(path: &std::path::Path) -> Result<Self, String> {
-        #[cfg(unix)]
-        {
-            let file = std::fs::OpenOptions::new()
-                .create(true)
-                .truncate(false)
-                .write(true)
-                .open(path)
-                .map_err(|e| format!("blob lock open {}: {e}", path.display()))?;
-            use std::os::unix::io::AsRawFd;
-            // LOCK_EX blocks until the lock is acquired (no LOCK_NB).
-            let ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
-            if ret != 0 {
-                let err = std::io::Error::last_os_error();
-                return Err(format!("blob lock flock: {err}"));
-            }
-            return Ok(BlobLockGuard { file });
-        }
-
-        #[cfg(windows)]
-        {
-            // Named kernel mutexes are cross-process on Windows — no lockfile
-            // needed. Derive a unique mutex name from the lockfile path so
-            // distinct services get distinct mutexes.
-            let name_str = format!(
-                "Local\\BuzzKeychain-{}",
-                path.file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("default")
-            );
-            // Encode as null-terminated UTF-16.
-            let name_wide: Vec<u16> = name_str
-                .encode_utf16()
-                .chain(std::iter::once(0u16))
-                .collect();
-            use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
-            use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
-            use windows_sys::Win32::System::Threading::{
-                CreateMutexW, WaitForSingleObject, INFINITE,
-            };
-            // CreateMutexW: lpMutexAttributes = null (default security),
-            // bInitialOwner = FALSE (0), lpName = our mutex name.
-            let handle = unsafe {
-                CreateMutexW(
-                    std::ptr::null::<SECURITY_ATTRIBUTES>(),
-                    0,
-                    name_wide.as_ptr(),
-                )
-            };
-            // HANDLE = *mut c_void; null means creation failed.
-            if handle.is_null() {
-                let err = std::io::Error::last_os_error();
-                return Err(format!("blob lock CreateMutexW: {err}"));
-            }
-            let wait_result = unsafe { WaitForSingleObject(handle, INFINITE) };
-            if wait_result != WAIT_OBJECT_0 {
-                // Also accept WAIT_ABANDONED (0x80) — previous holder crashed;
-                // the mutex is still acquired and we own it.
-                if wait_result != windows_sys::Win32::Foundation::WAIT_ABANDONED {
-                    let err = std::io::Error::last_os_error();
-                    unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
-                    return Err(format!(
-                        "blob lock WaitForSingleObject: {wait_result} / {err}"
-                    ));
-                }
-            }
-            return Ok(BlobLockGuard {
-                mutex_handle: handle,
-            });
-        }
-
-        // Fallback for exotic platforms: no-op lock (only Unix/Windows ship).
-        #[allow(unreachable_code)]
-        Err("blob lock: unsupported platform".to_string())
-    }
-}
-
-#[cfg(feature = "system-keyring")]
-impl Drop for BlobLockGuard {
-    fn drop(&mut self) {
-        #[cfg(unix)]
-        {
-            // Dropping `self.file` closes the fd, which releases flock on Unix.
-            // Nothing explicit needed.
-        }
-        #[cfg(windows)]
-        {
-            unsafe {
-                windows_sys::Win32::System::Threading::ReleaseMutex(self.mutex_handle);
-                windows_sys::Win32::Foundation::CloseHandle(self.mutex_handle);
-            }
-        }
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(path)
+            .map_err(|e| format!("blob lock open {}: {e}", path.display()))?;
+        fs4::FileExt::lock(&file).map_err(|e| format!("blob lock acquire: {e}"))?;
+        Ok(BlobLockGuard { file })
     }
 }
 
@@ -1233,7 +1140,7 @@ mod tests {
         let path = blob_lockfile_path("buzz-desktop");
         #[cfg(unix)]
         {
-            let uid = unsafe { libc::getuid() };
+            let uid = rustix::process::getuid().as_raw();
             assert!(
                 path.starts_with("/tmp"),
                 "lockfile {path:?} must start with /tmp (not $TMPDIR)"
