@@ -104,26 +104,28 @@ function TriggerConfigFields({
       );
     case "reaction_added":
       return (
-        <WorkflowConditionBuilder
-          channelId={workflowChannelId}
-          channels={channels}
-          disabled={disabled}
-          idPrefix="wf-trigger-filter"
-          matchAllLabel="All reactions"
-          onChange={(filter) =>
-            onUpdate({ ...trigger, emoji: undefined, filter })
-          }
-          triggerType={trigger.on}
-          value={
-            trigger.filter ??
-            buildConditionExpression({
-              field: "trigger_emoji",
-              operator: "equals",
-              value: trigger.emoji ?? "",
-            }) ??
-            ""
-          }
-        />
+        <div className="h-full">
+          <WorkflowConditionBuilder
+            channelId={workflowChannelId}
+            channels={channels}
+            disabled={disabled}
+            idPrefix="wf-trigger-filter"
+            matchAllLabel="All reactions"
+            onChange={(filter) =>
+              onUpdate({ ...trigger, emoji: undefined, filter })
+            }
+            triggerType={trigger.on}
+            value={
+              trigger.filter ??
+              buildConditionExpression({
+                field: "trigger_emoji",
+                operator: "equals",
+                value: trigger.emoji ?? "",
+              }) ??
+              ""
+            }
+          />
+        </div>
       );
     case "webhook":
       return (

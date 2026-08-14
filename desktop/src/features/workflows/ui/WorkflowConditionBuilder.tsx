@@ -109,7 +109,7 @@ function valueLabel(field: string): string {
     case "trigger_author":
       return "Author";
     case "trigger_message_id":
-      return "Message ID";
+      return "Message";
     case "trigger_emoji":
       return "Emoji";
     case "trigger_timestamp":
@@ -187,22 +187,28 @@ function MessageConditionSummary({
     );
   }
 
-  const operator = operatorLabel(
-    editor.field,
-    editor.operator,
-    conditionOperatorsForField(editor.field).length === 2,
-  );
   const message =
     content === undefined
       ? compactValue(editor.value)
       : messageSummaryContent(content);
+  const isExcluded = editor.operator === "not_equals";
 
   return (
     <span
-      className="max-w-40 truncate text-sm text-muted-foreground"
+      className="min-w-0 shrink text-sm text-muted-foreground"
       title={content === undefined ? undefined : message}
     >
-      {operator} “{message}”
+      <span
+        aria-hidden="true"
+        className={cn("block max-w-40 truncate", isExcluded && "line-through")}
+        data-testid="message-condition-summary"
+      >
+        “{message}”
+      </span>
+      <span className="sr-only">
+        {isExcluded ? "Excluded message: " : "Selected message: "}
+        {message}
+      </span>
     </span>
   );
 }

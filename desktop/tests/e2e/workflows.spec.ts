@@ -291,9 +291,12 @@ test("builds a valid trigger condition from plain-language choices", async ({
   for (const name of ["Author", "Custom"]) {
     await expect(conditionFields.getByRole("button", { name })).toBeVisible();
   }
-  for (const name of ["Channel ID", "Message ID"]) {
-    await expect(conditionFields.getByRole("button", { name })).toHaveCount(0);
-  }
+  await expect(
+    conditionFields.getByRole("button", { name: "Channel ID" }),
+  ).toHaveCount(0);
+  await expect(
+    conditionFields.getByRole("button", { name: "Message", exact: true }),
+  ).toHaveCount(0);
 
   await conditionFields.getByRole("button", { name: "Message text" }).click();
   await expect(allMessages).toHaveAttribute("aria-pressed", "false");
@@ -572,7 +575,7 @@ test("chooses a reaction emoji condition with the app emoji picker", async ({
 
   inspector = dialog.getByTestId("workflow-node-inspector");
   await expect(
-    inspector.getByRole("button", { name: "Message ID" }),
+    inspector.getByRole("button", { name: "Message", exact: true }),
   ).toBeVisible();
   await expect(
     inspector.getByRole("button", { name: "Channel ID" }),
@@ -613,7 +616,9 @@ test("chooses a reacted-to message from the workflow channel", async ({
     name: "Reaction emoji",
   });
   const authorField = inspector.getByRole("button", { name: "Author" });
-  const messageField = inspector.getByRole("button", { name: "Message ID" });
+  const messageField = inspector.getByRole("button", {
+    name: /^Message(?:$| Selected message:| Excluded message:)/,
+  });
 
   await emojiField.click();
   await inspector
@@ -644,6 +649,19 @@ test("chooses a reacted-to message from the workflow channel", async ({
   });
   await expect(targetMessage).toBeVisible();
   await targetMessage.click();
+
+  const messageSummary = messageField.getByTestId("message-condition-summary");
+  await expect(messageSummary).toHaveText("“React to me with a custom emoji”");
+  const messageEditor = inspector.getByTestId(
+    "workflow-condition-editor-trigger_message_id",
+  );
+  await messageEditor.getByText("is not", { exact: true }).click();
+  await expect(messageSummary).toHaveCSS(
+    "text-decoration-line",
+    "line-through",
+  );
+  await messageEditor.getByText("is", { exact: true }).click();
+  await expect(messageSummary).toHaveCSS("text-decoration-line", "none");
 
   for (const field of [emojiField, authorField, messageField]) {
     await expect(field).toHaveAttribute("aria-pressed", "true");
