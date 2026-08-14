@@ -3375,6 +3375,7 @@ impl Db {
         pubkey_bytes: &[u8],
         accessible_channel_ids: &[Uuid],
         since: Option<DateTime<Utc>>,
+        until: Option<DateTime<Utc>>,
         limit: i64,
     ) -> Result<Vec<StoredEvent>> {
         feed::query_mentions(
@@ -3383,6 +3384,7 @@ impl Db {
             pubkey_bytes,
             accessible_channel_ids,
             since,
+            until,
             limit,
         )
         .await
@@ -3403,6 +3405,7 @@ impl Db {
         pubkey_bytes: &[u8],
         accessible_channel_ids: &[Uuid],
         since: Option<DateTime<Utc>>,
+        until: Option<DateTime<Utc>>,
         limit: i64,
     ) -> Result<Vec<StoredEvent>> {
         match self.route_read(path, RoutePredicate::Bounded).await {
@@ -3413,6 +3416,7 @@ impl Db {
                     pubkey_bytes,
                     accessible_channel_ids,
                     since,
+                    until,
                     limit,
                 )
                 .await
@@ -3430,6 +3434,7 @@ impl Db {
                             pubkey_bytes,
                             accessible_channel_ids,
                             since,
+                            until,
                             limit,
                         )
                         .await
@@ -3443,6 +3448,7 @@ impl Db {
                     pubkey_bytes,
                     accessible_channel_ids,
                     since,
+                    until,
                     limit,
                 )
                 .await
@@ -3458,6 +3464,7 @@ impl Db {
         pubkey_bytes: &[u8],
         accessible_channel_ids: &[Uuid],
         since: Option<DateTime<Utc>>,
+        until: Option<DateTime<Utc>>,
         limit: i64,
     ) -> Result<Vec<StoredEvent>> {
         feed::query_needs_action(
@@ -3466,6 +3473,7 @@ impl Db {
             pubkey_bytes,
             accessible_channel_ids,
             since,
+            until,
             limit,
         )
         .await
@@ -3482,6 +3490,7 @@ impl Db {
         pubkey_bytes: &[u8],
         accessible_channel_ids: &[Uuid],
         since: Option<DateTime<Utc>>,
+        until: Option<DateTime<Utc>>,
         limit: i64,
     ) -> Result<Vec<StoredEvent>> {
         match self.route_read(path, RoutePredicate::Bounded).await {
@@ -3492,6 +3501,7 @@ impl Db {
                     pubkey_bytes,
                     accessible_channel_ids,
                     since,
+                    until,
                     limit,
                 )
                 .await
@@ -3509,6 +3519,7 @@ impl Db {
                             pubkey_bytes,
                             accessible_channel_ids,
                             since,
+                            until,
                             limit,
                         )
                         .await
@@ -3522,6 +3533,7 @@ impl Db {
                     pubkey_bytes,
                     accessible_channel_ids,
                     since,
+                    until,
                     limit,
                 )
                 .await
@@ -3536,9 +3548,18 @@ impl Db {
         community: CommunityId,
         accessible_channel_ids: &[Uuid],
         since: Option<DateTime<Utc>>,
+        until: Option<DateTime<Utc>>,
         limit: i64,
     ) -> Result<Vec<StoredEvent>> {
-        feed::query_activity(&self.pool, community, accessible_channel_ids, since, limit).await
+        feed::query_activity(
+            &self.pool,
+            community,
+            accessible_channel_ids,
+            since,
+            until,
+            limit,
+        )
+        .await
     }
 
     /// [`Db::query_feed_activity`] with replica routing — BOUNDED arm only;
@@ -3551,6 +3572,7 @@ impl Db {
         community: CommunityId,
         accessible_channel_ids: &[Uuid],
         since: Option<DateTime<Utc>>,
+        until: Option<DateTime<Utc>>,
         limit: i64,
     ) -> Result<Vec<StoredEvent>> {
         match self.route_read(path, RoutePredicate::Bounded).await {
@@ -3560,6 +3582,7 @@ impl Db {
                     community,
                     accessible_channel_ids,
                     since,
+                    until,
                     limit,
                 )
                 .await
@@ -3576,6 +3599,7 @@ impl Db {
                             community,
                             accessible_channel_ids,
                             since,
+                            until,
                             limit,
                         )
                         .await
@@ -3583,8 +3607,15 @@ impl Db {
                 }
             }
             RouteDecision::Writer => {
-                feed::query_activity(&self.pool, community, accessible_channel_ids, since, limit)
-                    .await
+                feed::query_activity(
+                    &self.pool,
+                    community,
+                    accessible_channel_ids,
+                    since,
+                    until,
+                    limit,
+                )
+                .await
             }
         }
     }
@@ -8285,13 +8316,21 @@ mod tests {
         //      accessible — so only the community predicate can exclude B.
         let both = [chan_a, chan_b];
         let rows = db
-            .query_feed_mentions_routed("sep_feed", cid_a, &mentioned_bytes, &both, None, 50)
+            .query_feed_mentions_routed("sep_feed", cid_a, &mentioned_bytes, &both, None, None, 50)
             .await
             .expect("routed mentions");
         assert_a_only(&rows, "a-replica-only", "query_feed_mentions_routed");
 
         let rows = db
-            .query_feed_needs_action_routed("sep_feed", cid_a, &mentioned_bytes, &both, None, 50)
+            .query_feed_needs_action_routed(
+                "sep_feed",
+                cid_a,
+                &mentioned_bytes,
+                &both,
+                None,
+                None,
+                50,
+            )
             .await
             .expect("routed needs action");
         assert_a_only(
@@ -8301,7 +8340,7 @@ mod tests {
         );
 
         let rows = db
-            .query_feed_activity_routed("sep_feed", cid_a, &both, None, 50)
+            .query_feed_activity_routed("sep_feed", cid_a, &both, None, None, 50)
             .await
             .expect("routed activity");
         assert_a_only(&rows, "a-replica-only", "query_feed_activity_routed");
