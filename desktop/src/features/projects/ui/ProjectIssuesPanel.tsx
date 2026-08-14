@@ -17,6 +17,10 @@ import {
 import { entityDiscussionQuery } from "@/features/projects/lib/discussionChannels";
 import { issueShareLink } from "@/features/projects/lib/projectShareLinks";
 import { relativeTime } from "@/features/projects/lib/projectsViewHelpers";
+import {
+  projectTaskCategoryLabel,
+  projectTaskUserLabels,
+} from "@/features/projects/projectTaskCategories";
 import { useIdentityQuery } from "@/shared/api/hooks";
 import type { ChannelMember } from "@/shared/api/types";
 import { cn } from "@/shared/lib/cn";
@@ -33,6 +37,10 @@ import { ProjectOriginReference } from "./ProjectOriginReference";
 import { OverviewRailSection } from "./ProjectOverviewPanel";
 import { ProfileIdentityButton } from "./ProjectProfileIdentity";
 import { ProjectRichContent } from "./ProjectRichContent";
+import {
+  PROJECT_DETAIL_META_GRID_WIDE_CLASS,
+  PROJECT_DETAIL_META_RAIL_WIDE_BORDER_CLASS,
+} from "./projectPanelStyles";
 import { ShareLinkButton } from "./ShareLinkButton";
 
 export function issueStatusClassName(status: ProjectIssue["status"]) {
@@ -88,6 +96,7 @@ function IssueRow({
   const authorProfile = profiles?.[normalizePubkey(issue.author)];
   const authorLabel = resolveUserLabel({ profiles, pubkey: issue.author });
   const status = issueStatusVisual(issue.status);
+  const labels = projectTaskUserLabels(issue.labels);
 
   return (
     <ProjectFeedRow
@@ -103,12 +112,13 @@ function IssueRow({
             showLabel={false}
           />
           <span className="truncate text-foreground/80">
-            <span className="font-medium">{authorLabel}</span> created this
-            issue
+            <span className="font-medium">{authorLabel}</span> created this task
           </span>
           <span>·</span>
+          <span>{projectTaskCategoryLabel(issue.category)}</span>
+          <span>·</span>
           <span>{issue.status}</span>
-          {issue.labels.map((label) => (
+          {labels.map((label) => (
             <span
               className="rounded-full border border-border/60 px-1.5 py-0.5 text-2xs"
               key={label}
@@ -146,7 +156,7 @@ function IssueRow({
             <ProjectFeedRowMonoCell
               label={`#${issue.id.slice(0, 8)}`}
               onClick={onOpen}
-              title="View issue"
+              title="View task"
             />
           </ProjectFeedRowCluster>
           <span
@@ -208,7 +218,7 @@ export function ProjectIssueDetail({
     <div
       className={cn(
         "grid",
-        !stackMetaRail && "xl:grid-cols-[minmax(0,1fr)_18rem]",
+        !stackMetaRail && PROJECT_DETAIL_META_GRID_WIDE_CLASS,
       )}
     >
       <div className="min-w-0">
@@ -216,7 +226,7 @@ export function ProjectIssueDetail({
           <div className="min-w-0">
             <p className="flex flex-wrap items-center gap-1.5 text-xs font-medium text-muted-foreground">
               <CircleDot className="h-3.5 w-3.5" />
-              Issue from {authorLabel}
+              {projectTaskCategoryLabel(issue.category)} from {authorLabel}
               <ProjectOriginReference
                 agentName={issue.originAgentName}
                 channelId={issue.channelId}
@@ -229,7 +239,7 @@ export function ProjectIssueDetail({
               </span>
               <ShareLinkButton
                 className="ml-1 inline-flex h-6 w-6 align-text-bottom"
-                label="Copy issue link"
+                label="Copy task link"
                 link={issueShareLink(issue)}
                 testId="project-issue-copy-link"
               />
@@ -242,7 +252,7 @@ export function ProjectIssueDetail({
 
         <section className="space-y-3 p-4">
           <DiscussedInChannels
-            entityLabel="this issue"
+            entityLabel="this task"
             query={entityDiscussionQuery(issue.id)}
             testId="issue-discussed-in"
           />
@@ -292,6 +302,7 @@ function IssueMetaRail({
   const authorProfile = profiles?.[normalizePubkey(issue.author)];
   const authorLabel = resolveUserLabel({ profiles, pubkey: issue.author });
   const status = issueStatusVisual(issue.status);
+  const labels = projectTaskUserLabels(issue.labels);
   const viewerPubkey = identityQuery.data?.pubkey;
   const viewer = viewerPubkey ? normalizePubkey(viewerPubkey) : null;
   const isAuthor = viewer === normalizePubkey(issue.author);
@@ -307,7 +318,9 @@ function IssueMetaRail({
     <aside
       className={cn(
         "space-y-6 border-border/60 p-4",
-        stacked ? "border-t" : "border-t xl:border-l xl:border-t-0",
+        stacked
+          ? "border-t"
+          : cn("border-t", PROJECT_DETAIL_META_RAIL_WIDE_BORDER_CLASS),
       )}
     >
       <OverviewRailSection title="Status">
@@ -316,6 +329,11 @@ function IssueMetaRail({
         >
           <status.icon className="h-3.5 w-3.5" />
           {issue.status}
+        </span>
+      </OverviewRailSection>
+      <OverviewRailSection title="Category">
+        <span className="inline-flex rounded-md border border-border/60 px-2.5 py-1 text-xs font-medium text-foreground">
+          {projectTaskCategoryLabel(issue.category)}
         </span>
       </OverviewRailSection>
       {issue.assignees.length > 0 || viewer ? (
@@ -340,10 +358,10 @@ function IssueMetaRail({
           pubkey={issue.author}
         />
       </OverviewRailSection>
-      {issue.labels.length > 0 ? (
+      {labels.length > 0 ? (
         <OverviewRailSection title="Labels">
           <div className="flex flex-wrap gap-1.5">
-            {issue.labels.map((label) => (
+            {labels.map((label) => (
               <span
                 className="rounded-full border border-border/60 px-1.5 py-0.5 text-2xs text-muted-foreground"
                 key={label}
@@ -391,15 +409,15 @@ export function ProjectIssuesPanel({
     issues.find((issue) => issue.id === selectedIssueId) ?? null;
 
   if (issuesQuery.isLoading) {
-    return <p className="p-4 text-sm text-muted-foreground">Loading issues…</p>;
+    return <p className="p-4 text-sm text-muted-foreground">Loading tasks…</p>;
   }
 
   if (issues.length === 0) {
     return (
       <p className="p-4 text-sm text-muted-foreground">
         {issuesQuery.error
-          ? "Could not load issues for this repository."
-          : "No issues yet."}
+          ? "Could not load tasks for this repository."
+          : "No tasks yet."}
       </p>
     );
   }

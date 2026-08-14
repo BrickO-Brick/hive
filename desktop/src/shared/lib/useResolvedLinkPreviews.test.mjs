@@ -204,7 +204,7 @@ test("withEntityFallbacks re-adds previews dropped by null metadata", () => {
     href: `buzz://pr?id=${"ab".repeat(32)}&owner=${"cd".repeat(32)}&d=buzz`,
     provider: "Buzz",
     title: `buzz #${"ab".repeat(4)}`,
-    typeLabel: "PR",
+    typeLabel: "Review",
   };
 
   assert.deepEqual(withEntityFallbacks([entityPreview], []), [
@@ -225,7 +225,7 @@ test("withEntityFallbacks keeps resolved previews and preserves order", () => {
     href: `buzz://issue?id=${"ef".repeat(32)}&owner=${"cd".repeat(32)}&d=buzz`,
     provider: "Buzz",
     title: `buzz #${"ef".repeat(4)}`,
-    typeLabel: "issue",
+    typeLabel: "Task",
   };
   const resolvedSecond = {
     ...second,

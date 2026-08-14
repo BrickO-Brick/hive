@@ -24,7 +24,11 @@ import {
 import type { ProjectRepoUnavailableReason } from "@/features/projects/lib/projectRepoAvailability";
 import { normalizePubkey } from "@/shared/lib/pubkey";
 import { UserAvatar } from "@/shared/ui/UserAvatar";
-import { PROJECT_DETAIL_PANEL_CLASS } from "./projectPanelStyles";
+import {
+  PROJECT_DETAIL_META_GRID_WIDE_CLASS,
+  PROJECT_DETAIL_META_RAIL_WIDE_BORDER_CLASS,
+  PROJECT_DETAIL_PANEL_CLASS,
+} from "./projectPanelStyles";
 import { ReadmePanel } from "./ProjectReadmePanel";
 import type { RepoSourceHeaderControls } from "./ProjectRepositorySource";
 
@@ -172,7 +176,7 @@ export function ProjectOverviewPanel({
       className={cn(
         "grid",
         PROJECT_DETAIL_PANEL_CLASS,
-        !unavailableSplash && "xl:grid-cols-[minmax(0,1fr)_18rem]",
+        !unavailableSplash && PROJECT_DETAIL_META_GRID_WIDE_CLASS,
       )}
       data-project-detail-panel
     >
@@ -191,7 +195,12 @@ export function ProjectOverviewPanel({
         />
       </div>
       {!unavailableSplash ? (
-        <aside className="space-y-6 border-t border-border/60 p-4 xl:border-l xl:border-t-0">
+        <aside
+          className={cn(
+            "space-y-6 border-t border-border/60 p-4",
+            PROJECT_DETAIL_META_RAIL_WIDE_BORDER_CLASS,
+          )}
+        >
           <OverviewRailSection title="People">
             <div className="flex items-center justify-between gap-3">
               <PeopleAvatars people={people} profiles={profiles} />
@@ -218,7 +227,7 @@ export function ProjectOverviewPanel({
               <div className="flex items-center justify-between gap-3">
                 <dt className="flex items-center gap-1.5 text-muted-foreground">
                   <GitPullRequest className="h-3.5 w-3.5" />
-                  Pull Requests
+                  Reviews
                 </dt>
                 <dd className="font-medium text-foreground">
                   {pullRequests.length}

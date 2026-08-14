@@ -3,11 +3,18 @@ import type * as React from "react";
 import { THREAD_FOCUS_COLUMN_MAX_WIDTH_PX } from "@/features/channels/lib/threadFocusLayout";
 
 export type ThreadPanelLayoutProps = {
+  canResetWidth?: boolean;
   columnMaxWidthPx?: number;
+  enterMotion?: boolean;
   headerLeading?: React.ReactNode;
   isFocusMode: boolean;
   isSinglePanelView?: boolean;
   layout?: "standalone" | "split";
+  showBackButton?: boolean;
+  onResetWidth?: () => void;
+  onResizeStart?: React.PointerEventHandler<HTMLButtonElement>;
+  splitPaneClamp?: boolean;
+  testId?: string;
   transparentChrome?: boolean;
 };
 

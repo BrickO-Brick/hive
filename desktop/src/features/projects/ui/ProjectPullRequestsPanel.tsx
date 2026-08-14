@@ -5,7 +5,6 @@ import {
   FileCode2,
   GitBranch,
   GitCommitHorizontal,
-  GitMerge,
   GitPullRequest,
   History,
   MessageSquare,
@@ -16,7 +15,6 @@ import {
 import * as React from "react";
 import { toast } from "sonner";
 
-import { useIsManagedAgent } from "@/features/agent-memory/hooks";
 import { DiscussedInChannels } from "./DiscussionChannels";
 import { ProjectOriginReference } from "./ProjectOriginReference";
 import { ForumComposer } from "@/features/forum/ui/ForumComposer";
@@ -37,7 +35,6 @@ import { canReviewProjectPullRequest } from "@/features/projects/pullRequestRevi
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import { useIdentityQuery } from "@/shared/api/hooks";
 import type { ChannelMember } from "@/shared/api/types";
-import { cn } from "@/shared/lib/cn";
 import { normalizePubkey, truncatePubkey } from "@/shared/lib/pubkey";
 import {
   ProjectFeedRow,
@@ -46,15 +43,15 @@ import {
 } from "./ProjectFeedRow";
 import { CopyCommitHashButton } from "./ProjectCommitCopyButton";
 import type { OpenMergeRecoveryTerminal } from "./MergePullRequestButton";
-import { OverviewRailSection } from "./ProjectOverviewPanel";
 import {
   ProfileAuthorName,
   ProfileIdentityButton,
 } from "./ProjectProfileIdentity";
 import { ProjectRichContent } from "./ProjectRichContent";
-import { PullRequestReviewersRow } from "./PullRequestReviewersRow";
 import { PullRequestReviewCard } from "./PullRequestReviewCard";
 import { ShareLinkButton } from "./ShareLinkButton";
+
+export { PullRequestMetaRail } from "./PullRequestMetaRail";
 
 function profileForPubkey(pubkey: string, profiles?: UserProfileLookup) {
   return profiles?.[normalizePubkey(pubkey)] ?? null;
@@ -69,22 +66,11 @@ function labelForPubkey(pubkey: string, profiles?: UserProfileLookup) {
   );
 }
 
-function pluralize(count: number, singular: string, plural = `${singular}s`) {
-  return `${count} ${count === 1 ? singular : plural}`;
-}
-
 function pullRequestStatusClassName(status: ProjectPullRequest["status"]) {
   if (status === "Closed") return "text-destructive";
   if (status === "Draft") return "text-muted-foreground";
   if (status === "Merged") return "text-purple-400";
   return "text-green-500";
-}
-
-function pullRequestStatusBadgeClassName(status: ProjectPullRequest["status"]) {
-  if (status === "Closed") return "bg-destructive";
-  if (status === "Draft") return "bg-muted-foreground/80";
-  if (status === "Merged") return "bg-purple-600";
-  return "bg-green-600";
 }
 
 function pullRequestMembers(
@@ -278,7 +264,7 @@ function PullRequestRow({
             <ProfileAuthorName pubkey={pullRequest.author}>
               {authorLabel}
             </ProfileAuthorName>{" "}
-            created this pull request
+            created this review
           </span>
           {pullRequest.branchName ? (
             <span className="inline-flex min-w-0 items-center gap-1 rounded-full border border-border/60 px-1.5 py-0.5 font-mono text-2xs">
@@ -316,7 +302,7 @@ function PullRequestRow({
             <ProjectFeedRowMonoCell
               label={`#${pullRequest.id.slice(0, 8)}`}
               onClick={onOpen}
-              title="View pull request"
+              title="View review"
             />
           </ProjectFeedRowCluster>
           <span
@@ -354,7 +340,7 @@ export function PullRequestDetailHeader({
         </span>
         <ShareLinkButton
           className="ml-1 inline-flex h-7 w-7 align-text-bottom"
-          label="Copy pull request link"
+          label="Copy review link"
           link={pullRequestShareLink(pullRequest)}
           testId="project-pull-request-copy-link"
         />
@@ -391,113 +377,6 @@ export function PullRequestDetailHeader({
         />
       </p>
     </header>
-  );
-}
-
-/** Right-hand meta column for the PR detail view. */
-export function PullRequestMetaRail({
-  profiles,
-  project,
-  pullRequest,
-  stacked = false,
-}: {
-  profiles?: UserProfileLookup;
-  project: Project;
-  pullRequest: ProjectPullRequest;
-  stacked?: boolean;
-}) {
-  const identityQuery = useIdentityQuery();
-  const authorProfile = profileForPubkey(pullRequest.author, profiles);
-  const authorLabel = labelForPubkey(pullRequest.author, profiles);
-  const targetBranch =
-    pullRequest.targetBranch || project.defaultBranch || "default branch";
-  const sourceBranch = pullRequest.branchName || "unknown branch";
-  const commitCount = Math.max(1, pullRequest.updateCount + 1);
-  const viewerPubkey = identityQuery.data?.pubkey;
-  const viewer = viewerPubkey ? normalizePubkey(viewerPubkey) : null;
-  const isAuthor = viewer === normalizePubkey(pullRequest.author);
-  const isOwner = viewer === normalizePubkey(project.owner);
-  const isManagedAgentOwner = useIsManagedAgent(project.owner) === true;
-  const canRequestReview =
-    Boolean(viewer) && (isAuthor || isOwner || isManagedAgentOwner);
-
-  return (
-    <aside
-      className={cn(
-        "min-w-0 space-y-6 border-border/60 p-4",
-        stacked ? "border-t" : "border-t xl:border-l xl:border-t-0",
-      )}
-    >
-      <OverviewRailSection title="Status">
-        <span
-          className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium text-white ${pullRequestStatusBadgeClassName(pullRequest.status)}`}
-        >
-          {pullRequest.status === "Merged" ? (
-            <GitMerge className="h-3.5 w-3.5" />
-          ) : (
-            <GitPullRequest className="h-3.5 w-3.5" />
-          )}
-          {pullRequest.status}
-        </span>
-      </OverviewRailSection>
-      {pullRequest.reviewers.length > 0 || canRequestReview ? (
-        <OverviewRailSection title="Reviewers">
-          <PullRequestReviewersRow
-            canRequest={canRequestReview}
-            profiles={profiles}
-            project={project}
-            pullRequest={pullRequest}
-            signAsManagedOwner={isManagedAgentOwner && !isOwner}
-          />
-        </OverviewRailSection>
-      ) : null}
-      <OverviewRailSection title="Author">
-        <ProfileIdentityButton
-          align="center"
-          avatarSize="xs"
-          avatarUrl={authorProfile?.avatarUrl ?? null}
-          isAgent={authorProfile?.isAgent === true}
-          label={authorLabel}
-          pubkey={pullRequest.author}
-        />
-      </OverviewRailSection>
-      <OverviewRailSection title="Branches">
-        <div className="space-y-1.5 text-xs text-muted-foreground">
-          <p>Merges {pluralize(commitCount, "commit")}</p>
-          <p className="flex min-w-0 flex-wrap items-center gap-1.5">
-            <code className="rounded-sm bg-muted px-1.5 py-0.5 text-2xs text-foreground">
-              {sourceBranch}
-            </code>
-            <span aria-hidden>→</span>
-            <code className="rounded-sm bg-muted px-1.5 py-0.5 text-2xs text-foreground">
-              {targetBranch}
-            </code>
-          </p>
-        </div>
-      </OverviewRailSection>
-      <OverviewRailSection title="Activity">
-        <dl className="space-y-1.5 text-xs text-muted-foreground">
-          <div className="flex items-center justify-between gap-3">
-            <dt>Created</dt>
-            <dd
-              className="font-medium text-foreground"
-              title={formatExactTimestamp(pullRequest.createdAt)}
-            >
-              {relativeTime(pullRequest.createdAt)}
-            </dd>
-          </div>
-          <div className="flex items-center justify-between gap-3">
-            <dt>Updated</dt>
-            <dd
-              className="font-medium text-foreground"
-              title={formatExactTimestamp(pullRequest.updatedAt)}
-            >
-              {relativeTime(pullRequest.updatedAt)}
-            </dd>
-          </div>
-        </dl>
-      </OverviewRailSection>
-    </aside>
   );
 }
 
@@ -601,7 +480,7 @@ export function ProjectPullRequestDetail({
               createdAt={update.createdAt}
               hash={update.commit}
               key={update.id}
-              message={update.content.trim() || "Updated pull request branch"}
+              message={update.content.trim() || "Updated review branch"}
               onOpenCommit={onOpenCommit}
               profiles={profiles}
             />
@@ -614,7 +493,7 @@ export function ProjectPullRequestDetail({
   if (mode === "checks") {
     return (
       <p className="p-4 text-sm text-muted-foreground">
-        No checks have been reported for this pull request yet.
+        No checks have been reported for this review yet.
       </p>
     );
   }
@@ -696,7 +575,7 @@ export function ProjectPullRequestDetail({
 
       <section className="space-y-3 p-4">
         <DiscussedInChannels
-          entityLabel="this pull request"
+          entityLabel="this review"
           query={entityDiscussionQuery(pullRequest.id)}
           testId="pull-request-discussed-in"
         />
@@ -948,9 +827,7 @@ export function PullRequestsPanel({
 
   if (isLoading) {
     return (
-      <p className="p-4 text-sm text-muted-foreground">
-        Loading pull requests…
-      </p>
+      <p className="p-4 text-sm text-muted-foreground">Loading reviews…</p>
     );
   }
 
@@ -958,8 +835,8 @@ export function PullRequestsPanel({
     return (
       <p className="p-4 text-sm text-muted-foreground">
         {error
-          ? "Could not load pull requests for this repository."
-          : "No pull requests yet."}
+          ? "Could not load reviews for this repository."
+          : "No reviews yet."}
       </p>
     );
   }

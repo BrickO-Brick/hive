@@ -44,7 +44,7 @@ export function ProjectTabsList({ prsActive }: { prsActive?: boolean }) {
         <ProjectTabLabel>Commits</ProjectTabLabel>
       </TabsTrigger>
       <TabsTrigger className={PROJECT_TAB_TRIGGER_CLASS} value="issues">
-        <ProjectTabLabel>Issues</ProjectTabLabel>
+        <ProjectTabLabel>Tasks</ProjectTabLabel>
       </TabsTrigger>
       <TabsTrigger
         aria-current={prsActive ? "page" : undefined}
@@ -54,7 +54,7 @@ export function ProjectTabsList({ prsActive }: { prsActive?: boolean }) {
         )}
         value="prs"
       >
-        <ProjectTabLabel>Pull Request</ProjectTabLabel>
+        <ProjectTabLabel>Review</ProjectTabLabel>
       </TabsTrigger>
       <TabsTrigger className={PROJECT_TAB_TRIGGER_CLASS} value="channels">
         <ProjectTabLabel>Channels</ProjectTabLabel>

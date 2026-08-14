@@ -40,7 +40,7 @@ test("same-second request changes supersedes approval", async ({ page }) => {
   await installMockBridge(page);
   await openBuzzProject(page);
 
-  await page.getByRole("tab", { name: "Pull Request" }).click();
+  await page.getByRole("tab", { name: "Review" }).click();
   const aliceRow = page
     .getByTestId("project-pull-request-row")
     .filter({ hasText: "alice" })
@@ -50,7 +50,7 @@ test("same-second request changes supersedes approval", async ({ page }) => {
 
   await page.getByRole("button", { name: "Approve", exact: true }).click();
   const approveDialog = page.getByRole("dialog", {
-    name: "Approve pull request",
+    name: "Approve review",
   });
   await approveDialog
     .getByRole("textbox", { name: "Approval summary" })
@@ -58,7 +58,7 @@ test("same-second request changes supersedes approval", async ({ page }) => {
   await approveDialog
     .getByRole("button", { name: "Approve", exact: true })
     .click();
-  await expect(page.getByText("Pull request approved.")).toBeVisible();
+  await expect(page.getByText("Review approved.")).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Approve", exact: true }),
   ).toHaveCount(0);
@@ -106,7 +106,7 @@ test("PR creator/owner can toggle draft, request reviews, and approve", async ({
   await installMockBridge(page);
   await openBuzzProject(page);
 
-  await page.getByRole("tab", { name: "Pull Request" }).click();
+  await page.getByRole("tab", { name: "Review" }).click();
   const prRows = page.getByTestId("project-pull-request-row");
   await expect(prRows.first()).toBeVisible({ timeout: 10_000 });
 
@@ -118,6 +118,10 @@ test("PR creator/owner can toggle draft, request reviews, and approve", async ({
 
   const header = page.getByRole("heading", { level: 3 });
   await expect(header.first()).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Review", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByTestId("project-review-summary")).toBeVisible();
   const sourceChannelLink = page.getByRole("button", {
     name: "Open author-claimed origin channel #general",
     exact: true,
@@ -126,7 +130,7 @@ test("PR creator/owner can toggle draft, request reviews, and approve", async ({
 
   // Owner viewing an open PR: draft toggle and both review decisions are offered.
   const morePullRequestActions = page.getByRole("button", {
-    name: "More pull request actions",
+    name: "More review actions",
   });
   const approve = page.getByRole("button", { name: "Approve", exact: true });
   const commentComposer = page.getByTestId(
@@ -206,9 +210,9 @@ test("PR creator/owner can toggle draft, request reviews, and approve", async ({
       .getByTestId("project-pull-request-timeline-row")
       .filter({ hasText: "requested changes" }),
   ).toBeVisible({ timeout: 10_000 });
-  await expect(
-    page.getByText("Changes requested", { exact: true }),
-  ).toHaveCount(0);
+  await expect(page.getByTestId("project-review-summary")).toHaveText(
+    "Changes requested",
+  );
   const changeRequestEvent = await page.evaluate(() =>
     window.__BUZZ_E2E_SIGNED_EVENTS__
       ?.filter(
@@ -273,7 +277,7 @@ test("PR creator/owner can toggle draft, request reviews, and approve", async ({
   // remain tied to the current commit and their timestamps preserve order.
   await approve.click();
   const approveDialog = page.getByRole("dialog", {
-    name: "Approve pull request",
+    name: "Approve review",
   });
   await approveDialog
     .getByRole("textbox", { name: "Approval summary" })
@@ -281,11 +285,14 @@ test("PR creator/owner can toggle draft, request reviews, and approve", async ({
   await approveDialog
     .getByRole("button", { name: "Approve", exact: true })
     .click();
-  await expect(page.getByText("Pull request approved.")).toBeVisible();
+  await expect(page.getByText("Review approved.")).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Approve", exact: true }),
   ).toHaveCount(0);
-  await expect(page.getByText("Approved", { exact: true })).toHaveCount(0);
+  await expect(page.getByTestId("project-review-summary")).toHaveText(
+    "Awaiting review",
+  );
+  await expect(page.getByText("Approved", { exact: true })).toBeVisible();
   const approvalEvent = await page.evaluate(() =>
     window.__BUZZ_E2E_SIGNED_EVENTS__
       ?.filter(
@@ -366,18 +373,18 @@ test("PR creator/owner can toggle draft, request reviews, and approve", async ({
   // Closing is reversible, unlike merging: a closed PR can be reopened.
   await morePullRequestActions.click();
   const closePullRequest = page.getByRole("menuitem", {
-    name: "Close pull request",
+    name: "Close review",
   });
   await closePullRequest.click();
-  await expect(page.getByText("Pull request closed.")).toBeVisible();
+  await expect(page.getByText("Review closed.")).toBeVisible();
   const reopenPullRequest = page.getByRole("button", {
-    name: "Reopen pull request",
+    name: "Reopen review",
   });
   await expect(reopenPullRequest).toBeVisible({ timeout: 10_000 });
   await expect(closePullRequest).toHaveCount(0);
 
   await reopenPullRequest.click();
-  await expect(page.getByText("Pull request reopened.")).toBeVisible();
+  await expect(page.getByText("Review reopened.")).toBeVisible();
   await expect(morePullRequestActions).toBeVisible({ timeout: 10_000 });
 
   await page.getByRole("button", { name: "Merge", exact: true }).click();
@@ -406,9 +413,7 @@ test("PR creator/owner can toggle draft, request reviews, and approve", async ({
       exact: true,
     })
     .click();
-  await expect(
-    page.getByText("Published merged pull request status."),
-  ).toBeVisible();
+  await expect(page.getByText("Published merged review status.")).toBeVisible();
   await expect
     .poll(() =>
       page.evaluate(
@@ -470,7 +475,7 @@ test("merge conflicts offer persistent terminal recovery", async ({ page }) => {
     };
   });
 
-  await page.getByRole("tab", { name: "Pull Request" }).click();
+  await page.getByRole("tab", { name: "Review" }).click();
   const aliceRow = page
     .getByTestId("project-pull-request-row")
     .filter({ hasText: "alice" })
@@ -533,7 +538,7 @@ test("reviewer can leave a commit-scoped inline diff comment", async ({
   await installMockBridge(page);
   await openBuzzProject(page);
 
-  await page.getByRole("tab", { name: "Pull Request" }).click();
+  await page.getByRole("tab", { name: "Review" }).click();
   const aliceRow = page
     .getByTestId("project-pull-request-row")
     .filter({ hasText: "alice" })
@@ -639,7 +644,7 @@ test("managed agent repository owner can merge", async ({ page }) => {
   });
   await openBuzzProject(page);
 
-  await page.getByRole("tab", { name: "Pull Request" }).click();
+  await page.getByRole("tab", { name: "Review" }).click();
   const agentRow = page
     .getByTestId("project-pull-request-row")
     .filter({ hasText: "Brain" })
@@ -663,15 +668,15 @@ test("managed agent repository owner can merge", async ({ page }) => {
       targetOwner: TEST_IDENTITIES.alice.pubkey,
     },
   });
-  await page.getByRole("button", { name: "More pull request actions" }).click();
+  await page.getByRole("button", { name: "More review actions" }).click();
   const closePullRequest = page.getByRole("menuitem", {
-    name: "Close pull request",
+    name: "Close review",
   });
   await expect(closePullRequest).toBeVisible();
   await closePullRequest.click();
-  await expect(page.getByText("Pull request closed.")).toBeVisible();
-  await page.getByRole("button", { name: "Reopen pull request" }).click();
-  await expect(page.getByText("Pull request reopened.")).toBeVisible();
+  await expect(page.getByText("Review closed.")).toBeVisible();
+  await page.getByRole("button", { name: "Reopen review" }).click();
+  await expect(page.getByText("Review reopened.")).toBeVisible();
   const statusPayloads = await page.evaluate(() =>
     window.__BUZZ_E2E_COMMAND_PAYLOADS__?.filter(
       (entry) => entry.command === "sign_project_pull_request_status",
@@ -726,7 +731,7 @@ test("viewer without repository ownership cannot merge", async ({ page }) => {
   });
   await openBuzzProject(page);
 
-  await page.getByRole("tab", { name: "Pull Request" }).click();
+  await page.getByRole("tab", { name: "Review" }).click();
   const prRow = page.getByTestId("project-pull-request-row").first();
   await expect(prRow).toBeVisible({ timeout: 10_000 });
   await prRow.getByRole("button", { name: /^#/ }).click();
@@ -779,15 +784,13 @@ test("project pull requests preserve partial results from batched queries", asyn
   await installMockBridge(page);
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
-  await page
-    .getByRole("button", { name: "Pull Requests", exact: true })
-    .click();
+  await page.getByRole("button", { name: "Reviews", exact: true }).click();
 
   await expect(
     page.getByRole("button", { name: /^View / }).first(),
   ).toBeVisible();
   await expect(
-    page.getByText(/Some pull request details could not be loaded/),
+    page.getByText(/Some review details could not be loaded/),
   ).toBeVisible();
   await expect(page.getByRole("button", { name: "Retry" })).toBeVisible();
 
@@ -823,7 +826,7 @@ test("project pull requests preserve partial results from batched queries", asyn
   });
   await page.getByRole("button", { name: "Retry" }).click();
   await expect(
-    page.getByText(/Some pull request details could not be loaded/),
+    page.getByText(/Some review details could not be loaded/),
   ).toHaveCount(0);
 });
 
@@ -834,9 +837,7 @@ test("project pull request author rollover stays identity-only", async ({
   await installMockBridge(page);
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
-  await page
-    .getByRole("button", { name: "Pull Requests", exact: true })
-    .click();
+  await page.getByRole("button", { name: "Reviews", exact: true }).click();
   await page.getByRole("button", { name: "List layout" }).click();
 
   const row = page.locator('[data-testid^="projects-pr-row-"]').first();
@@ -867,7 +868,7 @@ test("project issue author rollover matches pull requests", async ({
   await installMockBridge(page);
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
-  await page.getByRole("button", { name: "Issues", exact: true }).click();
+  await page.getByRole("button", { name: "Tasks", exact: true }).click();
   await page.getByRole("button", { name: "List layout" }).click();
 
   const row = page.locator('[data-testid^="projects-issue-row-"]').first();
@@ -901,19 +902,17 @@ test("project pull requests report aggregate root query failures", async ({
   await installMockBridge(page);
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
-  await page
-    .getByRole("button", { name: "Pull Requests", exact: true })
-    .click();
+  await page.getByRole("button", { name: "Reviews", exact: true }).click();
 
-  await expect(page.getByText("Could not load pull requests.")).toBeVisible();
+  await expect(page.getByText("Could not load reviews.")).toBeVisible();
   await expect(page.getByRole("button", { name: "Retry" })).toBeVisible();
-  await expect(page.getByText("No pull requests yet.")).toHaveCount(0);
+  await expect(page.getByText("No reviews yet.")).toHaveCount(0);
 
   await page.evaluate(() => {
     window.__BUZZ_E2E_REJECT_PROJECT_QUERY_KINDS__ = [];
   });
   await page.getByRole("button", { name: "Retry" }).click();
-  await expect(page.getByText("Could not load pull requests.")).toHaveCount(0);
+  await expect(page.getByText("Could not load reviews.")).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: /^View / }).first(),
   ).toBeVisible();
@@ -929,13 +928,13 @@ test("project issues preserve partial results from aggregate queries", async ({
   await installMockBridge(page);
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
-  await page.getByRole("button", { name: "Issues", exact: true }).click();
+  await page.getByRole("button", { name: "Tasks", exact: true }).click();
 
   await expect(
     page.getByRole("button", { name: /^View / }).first(),
   ).toBeVisible();
   await expect(
-    page.getByText("Some issue details could not be loaded."),
+    page.getByText("Some task details could not be loaded."),
   ).toBeVisible();
   await expect(page.getByText(/Missing comments\./)).toBeVisible();
   await expect(page.getByRole("button", { name: "Retry" })).toBeVisible();
@@ -945,7 +944,7 @@ test("project issues preserve partial results from aggregate queries", async ({
   });
   await page.getByRole("button", { name: "Retry" }).click();
   await expect(
-    page.getByText("Some issue details could not be loaded."),
+    page.getByText("Some task details could not be loaded."),
   ).toHaveCount(0);
 });
 
@@ -1044,14 +1043,14 @@ test("project subsections do not paint backgrounds behind list or grid items", a
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
 
-  for (const section of ["Repositories", "Pull Requests", "Issues"] as const) {
+  for (const section of ["Repositories", "Reviews", "Tasks"] as const) {
     await page.getByRole("button", { name: section, exact: true }).click();
     await page.getByRole("button", { name: "List layout" }).click();
 
     const listItems = page.locator(
       section === "Repositories"
         ? '[data-testid^="repository-row-"]'
-        : section === "Pull Requests"
+        : section === "Reviews"
           ? '[data-testid^="projects-pr-row-"]'
           : '[data-testid^="projects-issue-row-"]',
     );
@@ -1107,15 +1106,15 @@ test("project detail content areas do not paint background fills", async ({
     "Overview",
     "Files",
     "Commits",
-    "Issues",
-    "Pull Request",
+    "Tasks",
+    "Review",
     "Contributors",
   ]) {
     await page.getByRole("tab", { name: tab, exact: true }).click();
     await expectVisiblePanelsToBeTransparent();
   }
 
-  await page.getByRole("tab", { name: "Pull Request", exact: true }).click();
+  await page.getByRole("tab", { name: "Review", exact: true }).click();
   const pullRequest = page.getByTestId("project-pull-request-row").first();
   await expect(pullRequest).toBeVisible();
   await pullRequest.getByRole("button", { name: /^#/ }).click();
@@ -1313,8 +1312,8 @@ test("pushed local branch can open a pull request", async ({ page }) => {
   await page
     .getByRole("menuitemradio", { name: "feature/projects-workflow" })
     .click();
-  await page.getByRole("tab", { name: "Pull Request", exact: true }).click();
-  await page.getByRole("button", { name: "New pull request" }).click();
+  await page.getByRole("tab", { name: "Review", exact: true }).click();
+  await page.getByRole("button", { name: "Create review" }).click();
   await expect(page.getByTestId("create-pull-request-repository")).toHaveValue(
     /:buzz$/,
   );
@@ -1334,7 +1333,7 @@ test("pushed local branch can open a pull request", async ({ page }) => {
     button.click();
     button.click();
   });
-  await expect(page.getByText("Pull request created.")).toBeVisible();
+  await expect(page.getByText("Review created.")).toBeVisible();
 
   const createdEvents = await page.evaluate(
     () =>
@@ -1355,15 +1354,18 @@ test("pushed local branch can open a pull request", async ({ page }) => {
   ]);
 });
 
-test("project issue can be created from the issues header", async ({
+test("project task can be created with a category from the tasks header", async ({
   page,
 }) => {
   await enableProjectsFeature(page);
   await installMockBridge(page);
   await openBuzzProject(page);
 
-  await page.getByRole("tab", { name: "Issues", exact: true }).click();
-  await page.getByRole("button", { name: "New issue" }).click();
+  await page.getByRole("tab", { name: "Tasks", exact: true }).click();
+  await page.getByRole("button", { name: "Create task" }).click();
+  await page
+    .getByTestId("create-issue-category")
+    .selectOption("change-request");
   await page
     .getByTestId("create-issue-title")
     .fill("Document the broken workflow");
@@ -1371,7 +1373,7 @@ test("project issue can be created from the issues header", async ({
     .getByTestId("create-issue-body")
     .fill("The project workflow needs a clear repair path.");
   await page.getByTestId("create-issue-submit").click();
-  await expect(page.getByText("Issue created.")).toBeVisible();
+  await expect(page.getByText("Task created.")).toBeVisible();
 
   const createdEvent = await page.evaluate(() =>
     window.__BUZZ_E2E_SIGNED_EVENTS__?.find((event) => event.kind === 1621),
@@ -1380,4 +1382,5 @@ test("project issue can be created from the issues header", async ({
     "subject",
     "Document the broken workflow",
   ]);
+  expect(createdEvent?.tags).toContainEqual(["t", "change-request"]);
 });

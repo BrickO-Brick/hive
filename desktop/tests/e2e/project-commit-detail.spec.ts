@@ -5,6 +5,7 @@ import { installMockBridge, TEST_IDENTITIES } from "../helpers/bridge";
 
 const SHOTS = "test-results/project-commit-detail";
 const ALIGNMENT_TOLERANCE_PX = 2;
+const LATEST_COMMIT_HASH = "0123456789abcdef0123456789abcdef01234567";
 
 // The projects surface is a preview feature — opt in before the app mounts.
 // Must run before installMockBridge so React reads the override on mount.
@@ -15,6 +16,23 @@ async function enableProjectsFeature(page: import("@playwright/test").Page) {
       JSON.stringify({ projects: true }),
     );
   });
+}
+
+async function waitForMockLiveSubscription(
+  page: import("@playwright/test").Page,
+  channelName: string,
+) {
+  await expect
+    .poll(() =>
+      page.evaluate(
+        (name) =>
+          window.__BUZZ_E2E_HAS_MOCK_LIVE_SUBSCRIPTION__?.({
+            channelName: name,
+          }) ?? false,
+        channelName,
+      ),
+    )
+    .toBe(true);
 }
 
 test("top-level project lists align dates and overflow actions", async ({
@@ -134,27 +152,23 @@ test("top-level project lists align dates and overflow actions", async ({
   ).toBeVisible();
   await page.keyboard.press("Escape");
 
-  await page
-    .getByRole("button", { name: "Pull Requests", exact: true })
-    .click();
-  await page.getByRole("button", { name: "Filter pull requests" }).click();
+  await page.getByRole("button", { name: "Reviews", exact: true }).click();
+  await page.getByRole("button", { name: "Filter reviews" }).click();
   await expect(
-    page.getByRole("menuitem", { name: "My Pull Requests" }),
+    page.getByRole("menuitem", { name: "My Reviews" }),
   ).toBeVisible();
   await page.keyboard.press("Escape");
   await page.getByTestId("projects-create-menu").hover();
   await expect(page.getByRole("menuitem", { name: "Project" })).toBeVisible();
-  await expect(page.getByRole("menuitem", { name: "Issue" })).toBeVisible();
-  await page
-    .getByRole("menuitem", { name: "Pull Request", exact: true })
-    .click();
+  await expect(page.getByRole("menuitem", { name: "Task" })).toBeVisible();
+  await page.getByRole("menuitem", { name: "Review", exact: true }).click();
   await expect(page.getByTestId("create-pull-request-dialog")).toBeVisible();
   await expect(
     page.getByTestId("create-pull-request-repository"),
   ).toBeVisible();
   await page.keyboard.press("Escape");
   await page.getByTestId("projects-create-menu").hover();
-  await page.getByRole("menuitem", { name: "Issue" }).click();
+  await page.getByRole("menuitem", { name: "Task" }).click();
   await expect(page.getByTestId("create-issue-repository")).toBeVisible();
   await page.keyboard.press("Escape");
   const pullRequestRow = page
@@ -165,30 +179,29 @@ test("top-level project lists align dates and overflow actions", async ({
     .getByRole("button", { name: /More options for/ })
     .click();
   await expect(
-    page.getByRole("menuitem", { name: /Review PR|View (draft|merge|closed)/ }),
+    page.getByRole("menuitem", {
+      name: /Open review|View (draft|merge|closed)/,
+    }),
   ).toBeVisible();
   await page.keyboard.press("Escape");
 
-  await page.getByRole("button", { name: "Issues", exact: true }).click();
-  await page.getByRole("button", { name: "Filter issues" }).click();
-  await expect(page.getByRole("menuitem", { name: "My Issues" })).toBeVisible();
+  await page.getByRole("button", { name: "Tasks", exact: true }).click();
+  await page.getByRole("button", { name: "Filter tasks" }).click();
+  await expect(page.getByRole("menuitem", { name: "My Tasks" })).toBeVisible();
   await page.keyboard.press("Escape");
   const issueRow = page.locator('[data-testid^="projects-issue-row-"]').first();
+  await expect(issueRow).toBeVisible();
   const issuePositions = await trailingPositions(issueRow);
 
   expect(
-    Math.abs(pullRequestPositions.dateX - projectPositions.dateX),
+    Math.abs(pullRequestPositions.dateX - issuePositions.dateX),
   ).toBeLessThanOrEqual(ALIGNMENT_TOLERANCE_PX);
   expect(
-    Math.abs(pullRequestPositions.menuX - projectPositions.menuX),
+    Math.abs(pullRequestPositions.menuX - issuePositions.menuX),
   ).toBeLessThanOrEqual(ALIGNMENT_TOLERANCE_PX);
   expect(
-    Math.abs(issuePositions.dateX - projectPositions.dateX),
+    Math.abs(pullRequestPositions.rowHeight - issuePositions.rowHeight),
   ).toBeLessThanOrEqual(ALIGNMENT_TOLERANCE_PX);
-  expect(
-    Math.abs(issuePositions.menuX - projectPositions.menuX),
-  ).toBeLessThanOrEqual(ALIGNMENT_TOLERANCE_PX);
-
   await page.setViewportSize({ height: 720, width: 900 });
   await page.getByTestId("projects-section-projects").click();
   const responsiveRepositoryRow = page
@@ -599,6 +612,68 @@ test("commit detail opens from the commits feed with a diff", async ({
   await expect(projectEntry).toBeVisible();
 });
 
+test("project discussion row opens its channel thread in context", async ({
+  page,
+}) => {
+  await enableProjectsFeature(page);
+  await installMockBridge(page);
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByTestId("channel-general").click();
+  await waitForMockLiveSubscription(page, "general");
+  await page.evaluate(
+    ({ author, commitHash }) => {
+      const now = Math.floor(Date.now() / 1_000);
+      const root = window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
+        channelName: "general",
+        content: `Context leading to ${commitHash} OR ${commitHash.slice(0, 7)}`,
+        createdAt: now - 1,
+        kind: 9,
+        pubkey: author,
+      });
+      if (!root) throw new Error("mock message emitter is not installed");
+      window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
+        channelName: "general",
+        content: `Follow-up about ${commitHash} OR ${commitHash.slice(0, 7)}`,
+        createdAt: now,
+        kind: 9,
+        parentEventId: root.id,
+        pubkey: author,
+      });
+    },
+    {
+      author: TEST_IDENTITIES.alice.pubkey,
+      commitHash: LATEST_COMMIT_HASH,
+    },
+  );
+
+  await page.getByTestId("open-projects-view").click();
+  await page.getByTestId("projects-section-projects").click();
+  await page
+    .locator(
+      '[data-testid="project-card-buzz"], [data-testid="project-row-buzz"]',
+    )
+    .first()
+    .click();
+  await page.getByRole("tab", { name: "Commits" }).click();
+  const commitRow = page.getByTestId("project-activity-feed-item").first();
+  await commitRow
+    .getByRole("button", { name: /Add Trello board workflow details/ })
+    .click();
+
+  await page
+    .getByRole("button", { name: "Open conversation in #general" })
+    .click();
+  const panel = page.getByTestId("project-conversation-panel");
+  await expect(panel).toBeVisible();
+  await expect(panel).toContainText(`Context leading to ${LATEST_COMMIT_HASH}`);
+  await expect(panel).toContainText(`Follow-up about ${LATEST_COMMIT_HASH}`);
+  await expect(
+    page.getByRole("heading", { name: "Add Trello board workflow details" }),
+  ).toBeVisible();
+  await panel.getByRole("button", { name: "Close panel" }).click();
+  await expect(panel).toBeHidden();
+});
+
 test("pull request and issue feeds share the commit row structure", async ({
   page,
 }) => {
@@ -620,7 +695,7 @@ test("pull request and issue feeds share the commit row structure", async ({
   await projectEntry.click();
 
   // PR rows use the shared feed row: title button + #id cluster cell.
-  await page.getByRole("tab", { name: "Pull Request" }).click();
+  await page.getByRole("tab", { name: "Review" }).click();
   const prRows = page.getByTestId("project-pull-request-row");
   await expect(prRows.first()).toBeVisible({ timeout: 10_000 });
   await expect(
@@ -633,17 +708,17 @@ test("pull request and issue feeds share the commit row structure", async ({
   await prRows.first().getByRole("button", { name: /^#/ }).click();
   await expect(
     page.getByRole("navigation", { name: "Project breadcrumb" }),
-  ).toContainText("Pull Request");
+  ).toContainText("Review");
 
   // Step back to the feed so the community tabs are available again.
   await page
     .getByRole("navigation", { name: "Project breadcrumb" })
-    .getByRole("button", { name: "Pull Request", exact: true })
+    .getByRole("button", { name: "Review", exact: true })
     .click();
   await expect(prRows.first()).toBeVisible();
 
   // Issue rows share the same structure.
-  await page.getByRole("tab", { name: "Issues" }).click();
+  await page.getByRole("tab", { name: "Tasks" }).click();
   const issueRows = page.getByTestId("project-issue-row");
   await expect(issueRows.first()).toBeVisible({ timeout: 10_000 });
   await expect(

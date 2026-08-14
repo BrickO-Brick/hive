@@ -111,8 +111,8 @@ function buildSuggestions(projects: readonly Project[]) {
   const firstRepo = projects[0]?.name;
   return [
     {
-      label: "PR review",
-      prompt: "Which pull requests need attention today?",
+      label: "Reviews",
+      prompt: "Which reviews need attention today?",
     },
     {
       label: "Release check",
@@ -121,8 +121,8 @@ function buildSuggestions(projects: readonly Project[]) {
         : "Are we safe to cut a release this week?",
     },
     {
-      label: "Issues",
-      prompt: "Summarize the open issues and flag anything urgent.",
+      label: "Tasks",
+      prompt: "Summarize the open tasks and flag anything urgent.",
     },
     {
       label: "Activity",

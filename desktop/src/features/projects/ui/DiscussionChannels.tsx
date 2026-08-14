@@ -17,8 +17,10 @@ import {
 import { relativeTime } from "@/features/projects/lib/projectsViewHelpers";
 import { useSearchMessagesQuery } from "@/features/search/hooks";
 import type { SearchHit } from "@/shared/api/searchTypes";
+import { KIND_FORUM_COMMENT, KIND_FORUM_POST } from "@/shared/constants/kinds";
 import { cn } from "@/shared/lib/cn";
 import { UserAvatar } from "@/shared/ui/UserAvatar";
+import { useProjectConversationPanel } from "./ProjectConversationPanelContext";
 
 // Relay search caps a page at 500. Use the full page and surface a lower-bound
 // marker when it fills rather than silently presenting partial totals as exact.
@@ -93,6 +95,7 @@ export function DiscussedInChannels({
 }) {
   const { channels, hits, isTruncated } = useDiscussionChannels(query);
   const { goChannel, openSearchHit } = useAppNavigation();
+  const projectConversationPanel = useProjectConversationPanel();
   const [expanded, setExpanded] = React.useState(false);
   const channelName = useChannelNameLookup(channels.length > 0);
   const visible = expanded
@@ -134,18 +137,37 @@ export function DiscussedInChannels({
           const latestHit = latestHitByChannel.get(channel.id);
           if (!latestHit) return null;
           const name = channelName(channel.id, channel.name);
+          const opensForum =
+            latestHit.kind === KIND_FORUM_POST ||
+            latestHit.kind === KIND_FORUM_COMMENT;
+          const openConversation = () => {
+            if (!projectConversationPanel || opensForum) {
+              void openSearchHit(latestHit);
+              return;
+            }
+            projectConversationPanel.openConversation(latestHit);
+          };
           return (
             <div
-              className="flex w-full min-w-0 items-center gap-2.5 px-3 py-2"
+              className="group relative flex w-full min-w-0 items-center gap-2.5 px-3 py-2 transition-colors hover:bg-muted/30"
               data-testid="discussion-mention-row"
               key={channel.id}
             >
-              <ParticipantFacepile
-                interactive
-                participants={channel.participants}
-                profiles={profiles}
+              <button
+                aria-label={`Open conversation in #${name}`}
+                className="absolute inset-0"
+                onClick={openConversation}
+                title={`Open the latest conversation in #${name}`}
+                type="button"
               />
-              <span className="min-w-0 flex-1 truncate text-sm">
+              <span className="relative z-10">
+                <ParticipantFacepile
+                  interactive
+                  participants={channel.participants}
+                  profiles={profiles}
+                />
+              </span>
+              <span className="pointer-events-none relative z-10 min-w-0 flex-1 truncate text-sm">
                 <DiscussionNameList
                   participants={channel.participants}
                   profiles={profiles}
@@ -155,25 +177,20 @@ export function DiscussedInChannels({
                   discussed {entityLabel} in{" "}
                 </span>
                 <button
-                  className="font-medium text-foreground hover:underline"
+                  className="pointer-events-auto font-medium text-foreground hover:underline"
                   onClick={() => void goChannel(channel.id)}
                   title={`Open #${name}`}
                   type="button"
                 >
                   #{name}
                 </button>
-                <button
-                  className="text-muted-foreground hover:underline"
-                  onClick={() => void openSearchHit(latestHit)}
-                  title={`Open the latest mention in #${name}`}
-                  type="button"
-                >
+                <span className="text-muted-foreground group-hover:underline">
                   <span className="text-xs">
                     {" "}
                     · {relativeTime(channel.lastActivityAt)}
                   </span>
                   <span> — {discussionSnippet(latestHit.content)}</span>
-                </button>
+                </span>
               </span>
             </div>
           );
@@ -229,7 +246,7 @@ function DiscussionNameList({
             ) : null}
             <UserProfilePopover pubkey={pubkey} triggerElement="span">
               <button
-                className="font-medium text-foreground hover:underline"
+                className="pointer-events-auto font-medium text-foreground hover:underline"
                 type="button"
               >
                 {resolveUserLabel({ profiles, pubkey })}
@@ -334,8 +351,8 @@ export function DiscussionChannelsPanel({ query }: { query: string }) {
   if (channels.length === 0) {
     return (
       <p className="px-4 py-6 text-sm text-muted-foreground">
-        No channels reference this repository yet. Paste its link (or a PR or
-        issue link) in a channel and it will show up here.
+        No channels reference this repository yet. Paste its link (or a review
+        or task link) in a channel and it will show up here.
       </p>
     );
   }

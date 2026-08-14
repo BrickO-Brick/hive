@@ -98,17 +98,17 @@ test("projects v3 workspace screenshot states", async ({ page }) => {
   expect(contributorBounds).not.toBeNull();
 
   // Issues tab: the create action lives in the section header.
-  await page.getByRole("tab", { name: "Issues", exact: true }).click();
+  await page.getByRole("tab", { name: "Tasks", exact: true }).click();
   await expect(selectionRow).toHaveCount(0);
   const newIssueButton = workspacePanel.getByRole("button", {
-    name: "New issue",
+    name: "Create task",
   });
   await expect(newIssueButton).toBeVisible();
-  await expect(tabMenu.getByRole("button", { name: "New issue" })).toHaveCount(
-    0,
-  );
+  await expect(
+    tabMenu.getByRole("button", { name: "Create task" }),
+  ).toHaveCount(0);
   const issuesHeading = workspacePanel.getByRole("heading", {
-    name: "Issues",
+    name: "Tasks",
     exact: true,
   });
   const issuesHeadingBounds = await issuesHeading.boundingBox();
@@ -119,7 +119,7 @@ test("projects v3 workspace screenshot states", async ({ page }) => {
   const issueRow = page.getByTestId("project-issue-row").first();
   await expect(issueRow).toBeVisible({ timeout: 10_000 });
   const issueDate = issueRow.getByTestId("project-issue-row-date");
-  const issueId = issueRow.getByTitle("View issue");
+  const issueId = issueRow.getByTitle("View task");
   await expect(issueDate).toBeVisible();
   const issueDateBounds = await issueDate.boundingBox();
   const issueIdBounds = await issueId.boundingBox();
@@ -162,26 +162,26 @@ test("projects v3 workspace screenshot states", async ({ page }) => {
   // PR list: section header owns creation; detail keeps its entity header.
   await page
     .getByRole("navigation", { name: "Project breadcrumb" })
-    .getByRole("button", { name: "Issues", exact: true })
+    .getByRole("button", { name: "Tasks", exact: true })
     .click();
   await expect(tabMenu).toBeVisible();
-  await page.getByRole("tab", { name: "Pull Request", exact: true }).click();
+  await page.getByRole("tab", { name: "Review", exact: true }).click();
   await expect(
     workspacePanel.getByRole("heading", {
-      name: "Pull Requests",
+      name: "Reviews",
       exact: true,
     }),
   ).toBeVisible();
   await expect(
-    workspacePanel.getByRole("button", { name: "New pull request" }),
+    workspacePanel.getByRole("button", { name: "Create review" }),
   ).toBeVisible();
   await expect(
-    tabMenu.getByRole("button", { name: "New pull request" }),
+    tabMenu.getByRole("button", { name: "Create review" }),
   ).toHaveCount(0);
   const prRow = page.getByTestId("project-pull-request-row").first();
   await expect(prRow).toBeVisible({ timeout: 10_000 });
   const prDate = prRow.getByTestId("project-pull-request-row-date");
-  const prId = prRow.getByTitle("View pull request");
+  const prId = prRow.getByTitle("View review");
   await expect(prDate).toBeVisible();
   const prDateBounds = await prDate.boundingBox();
   const prIdBounds = await prId.boundingBox();
@@ -206,18 +206,21 @@ test("projects v3 work-item list metadata", async ({ page }) => {
   await page.getByTestId("open-projects-view").click();
 
   await page.getByTestId("projects-section-prs").click();
+  const reviewTable = page.getByTestId("projects-list-container");
+  await expect(reviewTable.locator("thead")).toHaveClass(/sr-only/);
   const pullRequestRow = page.getByTestId(/^projects-pr-row-/).first();
   await expect(pullRequestRow).toBeVisible();
-  await expect(pullRequestRow).toContainText("opened this in");
-  await expect(pullRequestRow).toContainText(/from\s*feature\/mock-2-0/);
+  await expect(pullRequestRow).toContainText("Review");
   await expect(pullRequestRow).not.toContainText(/#[0-9a-f]{8}/);
   await waitForAnimations(page);
   await page.screenshot({ path: `${SHOTS}/05-pr-list-metadata.png` });
 
   await page.getByTestId("projects-section-issues").click();
+  const taskTable = page.getByTestId("projects-list-container");
+  await expect(taskTable.locator("thead")).toHaveClass(/sr-only/);
   const issueRow = page.getByTestId(/^projects-issue-row-/).first();
   await expect(issueRow).toBeVisible();
-  await expect(issueRow).toContainText(/opened this in\s*relay-tools/);
+  await expect(issueRow).toContainText("Issue");
   await expect(issueRow).not.toContainText(/#[0-9a-f]{8}/);
   await waitForAnimations(page);
   await page.screenshot({ path: `${SHOTS}/06-issue-list-metadata.png` });

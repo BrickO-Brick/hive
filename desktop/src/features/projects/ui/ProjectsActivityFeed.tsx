@@ -154,7 +154,7 @@ function buildActivityItems({
       createdAt: pullRequest.createdAt,
       actorPubkey: pullRequest.author,
       actorName: null,
-      action: "opened a pull request in",
+      action: "opened a review in",
       title: pullRequest.title,
       body: contentPreview(pullRequest.content),
       detail: pullRequest.status,
@@ -167,7 +167,7 @@ function buildActivityItems({
         createdAt: update.createdAt,
         actorPubkey: update.author,
         actorName: null,
-        action: "updated a pull request in",
+        action: "updated a review in",
         title: pullRequest.title,
         body: contentPreview(update.content),
         detail: update.commit?.slice(0, 7) ?? null,
@@ -196,12 +196,12 @@ function buildActivityItems({
         actorName: null,
         action:
           kind === "approval"
-            ? "approved a pull request in"
+            ? "approved a review in"
             : kind === "changes-requested"
-              ? "requested changes to a pull request in"
+              ? "requested changes to a review in"
               : kind === "review-request"
                 ? "requested review in"
-                : "commented on a pull request in",
+                : "commented on a review in",
         title: pullRequest.title,
         body: contentPreview(comment.content),
         detail:
@@ -223,7 +223,7 @@ function buildActivityItems({
       createdAt: issue.createdAt,
       actorPubkey: issue.author,
       actorName: null,
-      action: "created an issue in",
+      action: "created a task in",
       title: issue.title,
       body: contentPreview(issue.content),
       detail: issue.status,
@@ -236,7 +236,7 @@ function buildActivityItems({
         createdAt: comment.createdAt,
         actorPubkey: comment.author,
         actorName: null,
-        action: "commented on an issue in",
+        action: "commented on a task in",
         title: issue.title,
         body: contentPreview(comment.content),
         detail: null,
@@ -453,7 +453,7 @@ export function ProjectsActivityFeed(props: ProjectsActivityFeedProps) {
           No project activity yet
         </p>
         <p className="mt-1 text-sm text-muted-foreground">
-          Commits, pull requests, reviews, and issues will appear here.
+          Commits, reviews, review decisions, and tasks will appear here.
         </p>
       </div>
     );

@@ -13,6 +13,18 @@ export const PROJECT_PICKER_TRIGGER_CLASS =
 export const PROJECT_DETAIL_PANEL_CLASS =
   "overflow-hidden rounded-xl border border-border/60 bg-transparent";
 
+/**
+ * Detail + meta rail: two columns when the project pane itself is wide enough.
+ * Uses a container query so opening the conversation panel reflows the rail
+ * instead of clipping it against a viewport `xl` breakpoint.
+ */
+export const PROJECT_DETAIL_META_GRID_WIDE_CLASS =
+  "[@container(min-width:48rem)]:grid-cols-[minmax(0,1fr)_18rem]";
+
+/** Left border for the meta rail when it sits beside the detail column. */
+export const PROJECT_DETAIL_META_RAIL_WIDE_BORDER_CLASS =
+  "[@container(min-width:48rem)]:border-l [@container(min-width:48rem)]:border-t-0";
+
 /** Empty or loading state using the same transparent project panel shell. */
 export const PROJECT_DETAIL_PANEL_MESSAGE_CLASS =
   "rounded-xl border border-border/60 bg-transparent p-4 text-sm text-muted-foreground";

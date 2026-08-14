@@ -690,7 +690,7 @@ export function ProjectPullRequestFilesChangedPanel({
       mediaTags?: string[][],
       decision?: "request-changes",
     ) => {
-      if (!pullRequest) throw new Error("No pull request selected.");
+      if (!pullRequest) throw new Error("No review selected.");
       try {
         await postComment({
           anchor,
@@ -726,7 +726,7 @@ export function ProjectPullRequestFilesChangedPanel({
       focusedAnchor={focusedAnchor}
       headerLabel={
         pullRequest
-          ? `${pullRequest.title} · ${pullRequest.commit?.slice(0, 7) ?? "PR"}`
+          ? `${pullRequest.title} · ${pullRequest.commit?.slice(0, 7) ?? "Review"}`
           : ""
       }
       inlineComments={
@@ -748,7 +748,7 @@ export function ProjectPullRequestFilesChangedPanel({
           : undefined
       }
       isLoading={isLoading}
-      subjectLabel="pull request"
+      subjectLabel="review"
     />
   );
 }

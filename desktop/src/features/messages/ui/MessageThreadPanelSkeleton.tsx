@@ -1,3 +1,4 @@
+import type * as React from "react";
 import type { ThreadPanelLayoutProps } from "@/features/channels/lib/threadPanelLayout";
 import {
   THREAD_PANEL_COLUMN_CLASS,
@@ -15,6 +16,40 @@ import {
   AuxiliaryPanelTitle,
 } from "@/shared/layout/AuxiliaryPanel";
 import { Skeleton } from "@/shared/ui/skeleton";
+
+/** Shared title row so the skeleton and loaded panel keep the same chrome. */
+export function MessageThreadPanelHeader({
+  headerLeading,
+  isFocusMode,
+  isSinglePanelView,
+  onClose,
+  showBackButton,
+}: {
+  headerLeading?: React.ReactNode;
+  isFocusMode: boolean;
+  isSinglePanelView: boolean;
+  onClose: () => void;
+  showBackButton?: boolean;
+}) {
+  return (
+    <AuxiliaryPanelHeader backdrop>
+      <AuxiliaryPanelHeaderGroup
+        backButtonAriaLabel="Back to conversation"
+        backButtonTestId="message-thread-back"
+        leading={headerLeading}
+        // Focus drawers fill width via isSinglePanelView but use the scrim to go
+        // back, so they omit this control. The narrow single-column view keeps it.
+        onBack={
+          (showBackButton ?? (isSinglePanelView && !isFocusMode))
+            ? onClose
+            : undefined
+        }
+      >
+        <AuxiliaryPanelTitle>Thread</AuxiliaryPanelTitle>
+      </AuxiliaryPanelHeaderGroup>
+    </AuxiliaryPanelHeader>
+  );
+}
 
 type MessageThreadPanelSkeletonProps = ThreadPanelLayoutProps & {
   onClose: () => void;
@@ -95,29 +130,25 @@ function ThreadComposerSkeleton({
 
 /** Loading state for the thread panel, in every layout the real panel supports. */
 export function MessageThreadPanelSkeleton({
+  canResetWidth,
   columnMaxWidthPx,
+  enterMotion,
   headerLeading,
   isFocusMode,
   isSinglePanelView = false,
   layout = "standalone",
   onClose,
+  onResetWidth,
+  onResizeStart,
+  showBackButton,
+  splitPaneClamp,
+  testId = "message-thread-panel",
   widthPx,
   transparentChrome = false,
 }: MessageThreadPanelSkeletonProps) {
   const isOverlay = useIsThreadPanelOverlay();
   const hasConstrainedColumn = columnMaxWidthPx != null;
   useEscapeKey(onClose, isOverlay || isSinglePanelView || isFocusMode);
-
-  const threadHeaderContent = (
-    <AuxiliaryPanelHeaderGroup
-      backButtonAriaLabel="Back to conversation"
-      // Matches the loaded panel's header so it doesn't shift on resolve.
-      leading={headerLeading}
-      onBack={isSinglePanelView && !isFocusMode ? onClose : undefined}
-    >
-      <AuxiliaryPanelTitle>Thread</AuxiliaryPanelTitle>
-    </AuxiliaryPanelHeaderGroup>
-  );
 
   const threadBody = (
     <AuxiliaryPanelBody
@@ -156,17 +187,26 @@ export function MessageThreadPanelSkeleton({
 
   return (
     <AuxiliaryPanel
+      canResetWidth={canResetWidth}
       className="relative"
-      // See `MessageThreadPanel`: the focus drawer owns the slide.
-      enterMotion={!isFocusMode}
+      enterMotion={enterMotion ?? !isFocusMode}
       footer={<ThreadComposerSkeleton columnMaxWidthPx={columnMaxWidthPx} />}
       header={
-        <AuxiliaryPanelHeader>{threadHeaderContent}</AuxiliaryPanelHeader>
+        <MessageThreadPanelHeader
+          headerLeading={headerLeading}
+          isFocusMode={isFocusMode}
+          isSinglePanelView={isSinglePanelView}
+          onClose={onClose}
+          showBackButton={showBackButton}
+        />
       }
       isSinglePanelView={isSinglePanelView}
       layout={layout}
       onClose={onClose}
-      testId="message-thread-panel"
+      onResetWidth={onResetWidth}
+      onResizeStart={onResizeStart}
+      splitPaneClamp={splitPaneClamp}
+      testId={testId}
       transparentChrome={transparentChrome}
       widthPx={widthPx}
     >

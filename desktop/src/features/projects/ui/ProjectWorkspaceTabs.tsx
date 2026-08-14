@@ -64,6 +64,7 @@ import {
 } from "./ProjectWorkspaceTabList";
 import { ProjectPullRequestFilesChangedPanel } from "./ProjectPullRequestFilesChangedPanel";
 import {
+  PROJECT_DETAIL_META_GRID_WIDE_CLASS,
   PROJECT_DETAIL_PANEL_CLASS,
   PROJECT_DETAIL_PANEL_MESSAGE_CLASS,
 } from "./projectPanelStyles";
@@ -331,11 +332,11 @@ export function WorkspaceTabs({
       <ProjectSectionHeader
         action={{
           disabled: createIssueAction.pending,
-          label: "New issue",
+          label: "Create task",
           onClick: () => setCreateIssueOpen(true),
         }}
         icon={CircleDot}
-        title="Issues"
+        title="Tasks"
       />
     ) : selectedTab === "prs" ? (
       <ProjectSectionHeader
@@ -343,13 +344,12 @@ export function WorkspaceTabs({
           disabled:
             !createPullRequestAction ||
             createPullRequestAction.projects.length === 0,
-          label: "New pull request",
+          label: "Create review",
           onClick: () => setCreatePullRequestOpen(true),
-          title:
-            "New pull request — choose a repository and branches to compare",
+          title: "Create review — choose a repository and branches to compare",
         }}
         icon={GitPullRequest}
-        title="Pull Requests"
+        title="Reviews"
       />
     ) : selectedTab === "channels" ? (
       <ProjectSectionHeader icon={Hash} title="Channels" />
@@ -387,11 +387,11 @@ export function WorkspaceTabs({
               disabled={updatePullRequestAction.pending}
               onClick={updatePullRequestAction.onUpdate}
               size="sm"
-              title="Publish the pushed commit to this pull request"
+              title="Publish the pushed commit to this review"
               variant="outline"
             >
               <RefreshCw className="h-4 w-4" />
-              {updatePullRequestAction.pending ? "Updating…" : "Update PR"}
+              {updatePullRequestAction.pending ? "Updating…" : "Update review"}
             </Button>
           ) : null}
         </div>
@@ -442,7 +442,7 @@ export function WorkspaceTabs({
           <div className={PROJECT_DETAIL_PANEL_CLASS} data-project-detail-panel>
             {/* Two full-height columns: the meta rail runs all the way to the
               top of the card, alongside the header and tabs. */}
-            <div className="grid xl:grid-cols-[minmax(0,1fr)_18rem]">
+            <div className={cn("grid", PROJECT_DETAIL_META_GRID_WIDE_CLASS)}>
               <div className="min-w-0">
                 <PullRequestDetailHeader
                   profiles={profiles}

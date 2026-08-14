@@ -49,12 +49,12 @@ export function ProjectInboxDetailPane({
   const authorAvatarUrl =
     profiles?.[normalizePubkey(authorPubkey)]?.avatarUrl ?? null;
   const inboxTitle = `${authorLabel} sent you ${
-    workItem.type === "pull-request" ? "a pull request" : "an issue"
+    workItem.type === "pull-request" ? "a review" : "a task"
   }`;
   // The action deep-links to this specific work item in the project view,
   // so the label names the entity, not the project.
   const openLabel =
-    workItem.type === "pull-request" ? "Open pull request" : "Open issue";
+    workItem.type === "pull-request" ? "Open review" : "Open task";
   const handleOpenMergeRecoveryTerminal = React.useCallback(
     async (input: {
       expectedCommit: string;
@@ -63,7 +63,7 @@ export function ProjectInboxDetailPane({
       targetBranch: string;
     }) => {
       if (workItem.type !== "pull-request") {
-        throw new Error("Merge recovery is only available for pull requests.");
+        throw new Error("Merge recovery is only available for reviews.");
       }
       const targetCloneUrl = workItem.repository.cloneUrls[0];
       if (!targetCloneUrl) {
@@ -135,7 +135,7 @@ export function ProjectInboxDetailPane({
       >
         <div className="p-3">
           <div
-            className="overflow-hidden rounded-xl border border-border/60 bg-card"
+            className="overflow-hidden rounded-xl border border-border/60 bg-card [container-type:inline-size]"
             data-testid="project-inbox-work-item-card"
           >
             {workItem.type === "pull-request" ? (

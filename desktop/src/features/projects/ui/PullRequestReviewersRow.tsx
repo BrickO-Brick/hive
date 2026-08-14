@@ -1,4 +1,4 @@
-import { Check, Search, TriangleAlert } from "lucide-react";
+import { Check, Clock3, History, Search, TriangleAlert } from "lucide-react";
 import * as React from "react";
 import { toast } from "sonner";
 
@@ -11,6 +11,7 @@ import { useRequestProjectPullRequestReviewMutation } from "@/features/projects/
 import { useUserSearchQuery } from "@/features/profile/hooks";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import type { UserSearchResult } from "@/shared/api/types";
+import { cn } from "@/shared/lib/cn";
 import { normalizePubkey, truncatePubkey } from "@/shared/lib/pubkey";
 import { Button } from "@/shared/ui/button";
 import {
@@ -22,7 +23,6 @@ import {
   DialogTrigger,
 } from "@/shared/ui/dialog";
 import { Input } from "@/shared/ui/input";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 import { UserAvatar } from "@/shared/ui/UserAvatar";
 
 function profileForPubkey(pubkey: string, profiles?: UserProfileLookup) {
@@ -102,6 +102,57 @@ export function PullRequestReviewersRow({
       normalizePubkey(request.author),
     ),
   );
+  const historicalBy = new Set(
+    pullRequest.comments
+      .filter(
+        (comment) =>
+          comment.isTrustedReviewDecision &&
+          comment.reviewDecisionStatus === "historical",
+      )
+      .map((comment) => normalizePubkey(comment.author)),
+  );
+  const decisionActors = [
+    ...new Set([
+      ...pullRequest.reviewers.map(normalizePubkey),
+      ...pullRequest.approvals.map((approval) =>
+        normalizePubkey(approval.author),
+      ),
+      ...pullRequest.changeRequests.map((request) =>
+        normalizePubkey(request.author),
+      ),
+      ...historicalBy,
+    ]),
+  ];
+  const requestedApprovalCount = pullRequest.reviewers.filter((pubkey) =>
+    approvedBy.has(normalizePubkey(pubkey)),
+  ).length;
+  const staleDecisionActors = new Set(
+    pullRequest.commit
+      ? [...historicalBy].filter(
+          (pubkey) =>
+            !approvedBy.has(pubkey) && !changesRequestedBy.has(pubkey),
+        )
+      : [],
+  );
+  const hasHistoricalDecision = staleDecisionActors.size > 0;
+  const reviewSummary = !pullRequest.commit
+    ? "No commit reported"
+    : changesRequestedBy.size > 0
+      ? "Changes requested"
+      : pullRequest.reviewers.length > 0 &&
+          requestedApprovalCount === pullRequest.reviewers.length
+        ? "Approved"
+        : pullRequest.reviewers.length === 0 && approvedBy.size > 0
+          ? "Approved"
+          : hasHistoricalDecision &&
+              approvedBy.size === 0 &&
+              changesRequestedBy.size === 0
+            ? "Re-review needed"
+            : requestedApprovalCount > 0
+              ? `${requestedApprovalCount} of ${pullRequest.reviewers.length} approved`
+              : pullRequest.reviewers.length > 0
+                ? "Awaiting review"
+                : "No reviewers";
 
   const handleRequest = React.useCallback(
     async (pubkey: string, reviewerLabel: string) => {
@@ -132,56 +183,73 @@ export function PullRequestReviewersRow({
     if (!pickerOpen) setReviewerQuery("");
   }, [pickerOpen]);
 
-  if (pullRequest.reviewers.length === 0 && !canRequest) {
-    return null;
-  }
-
   return (
-    <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-      {pullRequest.reviewers.map((pubkey) => {
-        const profile = profileForPubkey(pubkey, profiles);
-        const label = labelForPubkey(pubkey, profiles);
-        const hasApproved = approvedBy.has(normalizePubkey(pubkey));
-        const hasRequestedChanges = changesRequestedBy.has(
-          normalizePubkey(pubkey),
-        );
-        return (
-          <Tooltip key={pubkey}>
-            <TooltipTrigger asChild>
-              <span className="relative inline-flex">
+    <div className="min-w-0 space-y-2.5 text-xs text-muted-foreground">
+      <p
+        className="font-medium text-foreground"
+        data-testid="project-review-summary"
+      >
+        {reviewSummary}
+      </p>
+      {hasHistoricalDecision ? (
+        <p className="flex items-center gap-1.5 text-amber-600 dark:text-amber-400">
+          <History className="h-3.5 w-3.5 shrink-0" />
+          Earlier decision applies to another commit
+        </p>
+      ) : null}
+      {decisionActors.length > 0 ? (
+        <div className="space-y-1.5">
+          {decisionActors.map((pubkey) => {
+            const profile = profileForPubkey(pubkey, profiles);
+            const label = labelForPubkey(pubkey, profiles);
+            const hasApproved = approvedBy.has(pubkey);
+            const hasRequestedChanges = changesRequestedBy.has(pubkey);
+            const needsRereview = staleDecisionActors.has(pubkey);
+            const DecisionIcon = hasApproved
+              ? Check
+              : hasRequestedChanges
+                ? TriangleAlert
+                : needsRereview
+                  ? History
+                  : Clock3;
+            const decisionLabel = hasApproved
+              ? "Approved"
+              : hasRequestedChanges
+                ? "Changes requested"
+                : needsRereview
+                  ? "Re-review needed"
+                  : "Pending";
+            return (
+              <div className="flex min-w-0 items-center gap-2" key={pubkey}>
                 <UserAvatar
                   accent={profile?.isAgent === true}
                   avatarUrl={profile?.avatarUrl ?? null}
                   displayName={label}
                   size="xs"
                 />
-                {hasApproved ? (
-                  <span className="-right-0.5 -bottom-0.5 absolute flex h-2.5 w-2.5 items-center justify-center rounded-full bg-green-600 text-white ring-1 ring-background">
-                    <Check className="h-1.5 w-1.5" />
-                  </span>
-                ) : hasRequestedChanges ? (
-                  <span className="-right-0.5 -bottom-0.5 absolute flex h-2.5 w-2.5 items-center justify-center rounded-full bg-amber-500 text-amber-950 ring-1 ring-background">
-                    <TriangleAlert className="h-1.5 w-1.5" />
-                  </span>
-                ) : null}
-              </span>
-            </TooltipTrigger>
-            <TooltipContent>
-              {label}
-              {hasApproved
-                ? " — approved"
-                : hasRequestedChanges
-                  ? " — requested changes"
-                  : " — review requested"}
-            </TooltipContent>
-          </Tooltip>
-        );
-      })}
+                <span className="min-w-0 flex-1 truncate text-foreground">
+                  {label}
+                </span>
+                <span
+                  className={cn(
+                    "flex shrink-0 items-center gap-1",
+                    hasApproved && "text-green-600 dark:text-green-400",
+                    hasRequestedChanges && "text-amber-600 dark:text-amber-400",
+                  )}
+                >
+                  <DecisionIcon className="h-3.5 w-3.5" />
+                  {decisionLabel}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
       {canRequest ? (
         <Dialog onOpenChange={setPickerOpen} open={pickerOpen}>
           <DialogTrigger asChild>
             <Button
-              className="h-6 px-1 text-xs text-muted-foreground hover:text-foreground"
+              className="h-6 px-0 text-xs text-muted-foreground hover:bg-transparent hover:text-foreground"
               disabled={requestReviewMutation.isPending}
               size="xs"
               type="button"
@@ -194,7 +262,7 @@ export function PullRequestReviewersRow({
             <DialogHeader className="border-b border-border/60 px-6 py-5 pr-14">
               <DialogTitle>Add reviewer</DialogTitle>
               <DialogDescription>
-                Choose a person or agent to review this pull request.
+                Choose a person or agent to review these changes.
               </DialogDescription>
             </DialogHeader>
             <div className="flex items-center gap-2 border-b border-border/60 px-6 py-3">

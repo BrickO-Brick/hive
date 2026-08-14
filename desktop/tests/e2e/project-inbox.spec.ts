@@ -27,7 +27,7 @@ test("Buzz Git pull request renders and stays actionable in Inbox", async ({
     )
     .first()
     .click();
-  await page.getByRole("tab", { name: "Pull Request" }).click();
+  await page.getByRole("tab", { name: "Review" }).click();
 
   const alicePullRequest = page
     .getByTestId("project-pull-request-row")
@@ -110,7 +110,7 @@ test("Buzz Git pull request renders and stays actionable in Inbox", async ({
   ).toBeVisible();
   await expect(
     detail.getByRole("heading", {
-      name: "alice sent you a pull request",
+      name: "alice sent you a review",
       exact: true,
     }),
   ).toBeVisible();
