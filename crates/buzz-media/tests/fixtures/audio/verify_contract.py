@@ -13,10 +13,22 @@ def check(path):
         page=d[off:off+body];pay=d[off+hdr:off+body]
         seq=struct.unpack('<I',page[18:22])[0]
         stored=struct.unpack('<I',page[22:26])[0]
+        granule=struct.unpack('<Q',page[6:14])[0]
         calc=crc32_ogg(page[:22]+b'\x00'*4+page[26:])
         serials.add(page[14:18])
         if stored!=calc: errs.append(f"page{i}: CRC mismatch")
         if seq!=i: errs.append(f"page{i}: seq={seq} not contiguous")
+        # RFC 3533 6.2: granule -1 (0xFF..FF) means "no packet completes on this
+        # page". The three Vorbis header packets carry no sample position, so a
+        # header page that DOES complete a packet has granule 0 — never the -1
+        # sentinel. (A header page that completes nothing, i.e. a spanning setup
+        # continuation, legitimately carries -1.) Leaking -1 onto a completing
+        # header page decodes fine everywhere, so only a structural check sees
+        # it; the relay validator rejects it.
+        completes = len(seg)>0 and seg[-1]!=255
+        if i<3 and completes and granule!=0:
+            shown="-1 (0xFF..FF sentinel)" if granule==0xFFFFFFFFFFFFFFFF else granule
+            errs.append(f"page{i}: header-page granule={shown}, want 0")
         if i==0:
             if not (page[5]&0x02): errs.append("page0: BOS flag not set")
             if pay[:7]!=b'\x01vorbis': errs.append("page0: not identification")

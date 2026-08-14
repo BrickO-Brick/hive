@@ -72,6 +72,15 @@ python3 verify_contract.py <file.ogg>...
 Asserts the canonical layout the client emits: one logical stream, page
 sequence contiguous from 0, every page CRC recomputed and re-verified, the
 identification packet alone on the BOS page, the canonical empty comment
-packet alone on page 1 with a single lacing value, and the setup packet
-isolated on its own page(s). Written from RFC 3533 rather than from any
-particular stripper implementation, so it is an independent oracle.
+packet alone on page 1 with a single lacing value, the setup packet
+isolated on its own page(s), and granule 0 (never the `-1` sentinel) on
+every header page that completes a packet. Written from RFC 3533 rather than
+from any particular stripper implementation, so it is an independent oracle.
+
+The granule assertion was added after all four instruments above — plus this
+oracle's earlier revision — passed an implementation that leaked the RFC 3533
+§6.2 "no packet completes here" sentinel (`0xFF..FF`) onto the comment page.
+Every decoder ignores that field on header pages, so the file decoded, timed,
+and PCM-compared perfectly while being wire-invalid. An oracle is only as
+strong as its strictest clause; when the relay validator rejects something
+this script blesses, the script is what's wrong.
