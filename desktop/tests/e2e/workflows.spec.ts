@@ -57,19 +57,19 @@ async function expectUnsupportedActionWarnings(
 ) {
   await expect(menu.getByRole("menuitem")).toHaveText([
     "Delay",
-    "Send Message",
-    "Call Webhook",
+    "Send message",
+    "Call webhook",
     "Send DM",
-    "Request Approval",
-    "Add Reaction",
-    "Set Channel Topic",
+    "Request approval",
+    "Add reaction",
+    "Set channel topic",
   ]);
 
   for (const label of [
     "Send DM",
-    "Request Approval",
-    "Add Reaction",
-    "Set Channel Topic",
+    "Request approval",
+    "Add reaction",
+    "Set channel topic",
   ]) {
     await expect(
       menu
@@ -78,7 +78,7 @@ async function expectUnsupportedActionWarnings(
     ).toBeVisible();
   }
 
-  for (const label of ["Delay", "Send Message", "Call Webhook"]) {
+  for (const label of ["Delay", "Send message", "Call webhook"]) {
     await expect(
       menu
         .getByRole("menuitem", { name: label, exact: true })
@@ -344,7 +344,7 @@ test("keeps a step condition separate from its action configuration", async ({
   await page.getByRole("button", { name: "Create Workflow" }).click();
   const dialog = page.getByRole("dialog");
   await dialog.getByRole("button", { name: "Add step" }).click();
-  await page.getByRole("menuitem", { name: "Send Message" }).click();
+  await page.getByRole("menuitem", { name: "Send message" }).click();
 
   const inspector = dialog.getByTestId("workflow-node-inspector");
   await expect(inspector.getByLabel("Message text")).toBeVisible();
@@ -518,7 +518,7 @@ test("chooses an add-reaction step emoji with the app emoji picker", async ({
   const dialog = page.getByRole("dialog");
   await dialog.getByRole("button", { name: "Add step" }).click();
   await expectUnsupportedActionWarnings(page.getByRole("menu"));
-  await page.getByRole("menuitem", { name: "Add Reaction" }).click();
+  await page.getByRole("menuitem", { name: "Add reaction" }).click();
 
   const inspector = dialog.getByTestId("workflow-node-inspector");
   await expect(inspector).toContainText(
@@ -538,6 +538,13 @@ test("chooses an add-reaction step emoji with the app emoji picker", async ({
   await picker.getByRole("button", { name: ":buzz:" }).first().click();
 
   await expect(stepEmoji).toContainText(":buzz:");
+  const reactionStepNode = dialog.getByRole("button", {
+    name: "Step 1: :buzz:",
+  });
+  await expect(reactionStepNode).toContainText("Add reaction");
+  await expect(
+    reactionStepNode.getByTestId("workflow-step-reaction-emoji"),
+  ).toHaveAttribute("alt", ":buzz:");
   await dialog.getByRole("tab", { name: "YAML" }).click();
   await expect(dialog.getByLabel("Workflow YAML")).toHaveValue(
     /action: add_reaction[\s\S]*emoji: ":buzz:"/,
@@ -713,7 +720,7 @@ test("omits destination controls for a channel workflow", async ({ page }) => {
   await dialog.getByLabel("Trigger event").click();
   await page.getByRole("menuitem", { name: "Webhook" }).click();
   await dialog.getByRole("button", { name: "Add step" }).click();
-  await page.getByRole("menuitem", { name: "Send Message" }).click();
+  await page.getByRole("menuitem", { name: "Send message" }).click();
 
   await expect(
     dialog.getByRole("combobox", { name: "Channel override (optional)" }),
@@ -747,7 +754,7 @@ test("opens node configuration in a contextual inspector", async ({ page }) => {
   await expect(initialIngress.getByLabel("Add step")).toBeVisible();
 
   await dialog.getByRole("button", { name: "Add step" }).click();
-  await page.getByRole("menuitem", { name: "Send Message" }).click();
+  await page.getByRole("menuitem", { name: "Send message" }).click();
   const triggerNode = dialog.getByRole("button", { name: /^Trigger:/ });
   const stepNode = dialog.getByRole("button", { name: /^Step 1:/ });
   await expect(inspector.getByLabel("Step ID")).toHaveValue("step_1");
@@ -756,6 +763,18 @@ test("opens node configuration in a contextual inspector", async ({ page }) => {
     "send_message",
   );
   await expect(inspector.getByLabel("Message text")).toBeVisible();
+  await inspector.getByLabel("Message text").fill("hey yourself");
+  await expect(stepNode).toHaveAttribute(
+    "aria-label",
+    "Step 1: “hey yourself”",
+  );
+  await expect(stepNode).toContainText("Send message");
+  await expect(stepNode).toContainText("“hey yourself”");
+  await inspector.getByLabel("Name (optional)").fill("say hello");
+  await expect(stepNode).toHaveAttribute(
+    "aria-label",
+    "Step 1: say hello · “hey yourself”",
+  );
   await expect(
     inspector.getByRole("heading", { name: "Step condition" }),
   ).toBeVisible();

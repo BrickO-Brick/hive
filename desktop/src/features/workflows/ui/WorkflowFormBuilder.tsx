@@ -5,7 +5,6 @@ import {
   Check,
   ChevronDown,
   GitPullRequest,
-  LoaderCircle,
   MessageSquare,
   Plus,
   SmilePlus,
@@ -38,8 +37,11 @@ import {
 import { Input } from "@/shared/ui/input";
 import { Switch } from "@/shared/ui/switch";
 import { Textarea } from "@/shared/ui/textarea";
-import { UserAvatar } from "@/shared/ui/UserAvatar";
 import { WorkflowConditionBuilder } from "./WorkflowConditionBuilder";
+import {
+  StepReactionDescription,
+  TriggerNodeDescription,
+} from "./WorkflowNodeDescriptions";
 import { WorkflowScheduleFields } from "./WorkflowScheduleFields";
 import { WorkflowStepCard } from "./WorkflowStepCard";
 import {
@@ -66,10 +68,8 @@ import type {
   WorkflowFormState,
 } from "./workflowFormTypes";
 import { defaultScheduleTrigger } from "./workflowSchedule";
-import {
-  TRIGGER_MESSAGE_LOADING_LABEL,
-  workflowTriggerDescription,
-} from "./workflowTriggerDescription";
+import { workflowTriggerDescription } from "./workflowTriggerDescription";
+import { workflowStepDescription } from "./workflowStepDescription";
 
 const TRIGGER_ICONS: Record<TriggerType, LucideIcon> = {
   diff_posted: GitPullRequest,
@@ -390,90 +390,6 @@ function WorkflowNode({
   );
 }
 
-function TriggerNodeDescription({
-  authorAvatarUrl,
-  authorLabel,
-  description,
-  messageLoading,
-}: {
-  authorAvatarUrl?: string | null;
-  authorLabel?: string | null;
-  description: string;
-  messageLoading?: boolean;
-}) {
-  const authorIndex = authorLabel ? description.lastIndexOf(authorLabel) : -1;
-  if (!authorLabel || authorIndex < 0) {
-    return (
-      <TriggerDescriptionText
-        messageLoading={messageLoading}
-        text={description}
-      />
-    );
-  }
-  const prefix = description.slice(0, authorIndex).trimEnd();
-  const suffix = description
-    .slice(authorIndex + authorLabel.length)
-    .trimStart();
-
-  return (
-    <span className="flex min-w-0 items-center gap-1.5">
-      <span className="shrink-0">{prefix}</span>
-      <UserAvatar
-        avatarUrl={authorAvatarUrl ?? null}
-        className="h-4 w-4"
-        displayName={authorLabel}
-        fallbackDelayMs={0}
-        size="xs"
-        testId="workflow-trigger-author-avatar"
-      />
-      <span className="min-w-0 truncate">
-        {authorLabel}{" "}
-        {suffix ? (
-          <TriggerDescriptionText
-            messageLoading={messageLoading}
-            text={suffix}
-          />
-        ) : null}
-      </span>
-    </span>
-  );
-}
-
-function TriggerDescriptionText({
-  messageLoading,
-  text,
-}: {
-  messageLoading?: boolean;
-  text: string;
-}) {
-  const loadingIndex = messageLoading
-    ? text.indexOf(TRIGGER_MESSAGE_LOADING_LABEL)
-    : -1;
-  if (loadingIndex < 0) return text;
-
-  const prefix = text.slice(0, loadingIndex);
-  const suffix = text.slice(
-    loadingIndex + TRIGGER_MESSAGE_LOADING_LABEL.length,
-  );
-  return (
-    <>
-      {prefix}
-      <motion.span
-        animate={{ opacity: 1 }}
-        aria-label="Loading message"
-        className="inline-flex align-text-bottom"
-        data-testid="workflow-trigger-message-loading"
-        initial={{ opacity: 0 }}
-        role="status"
-        transition={{ delay: 0.5, duration: 0.15 }}
-      >
-        <LoaderCircle aria-hidden="true" className="h-3.5 w-3.5 animate-spin" />
-      </motion.span>
-      {suffix}
-    </>
-  );
-}
-
 export function WorkflowFormBuilder({
   channels,
   disabled,
@@ -789,15 +705,36 @@ export function WorkflowFormBuilder({
                     />
 
                     {formState.steps.map((step, index) => {
-                      const stepName = step.name?.trim();
                       const actionLabel = ACTION_LABELS[step.action];
-                      const nodeTitle = stepName || actionLabel;
+                      const channelLabel = step.channel
+                        ? channels.find(
+                            (channel) => channel.id === step.channel,
+                          )?.name
+                        : undefined;
+                      const nodeDescription = workflowStepDescription(step, {
+                        channelLabel,
+                      });
+                      const showActionSubtitle =
+                        nodeDescription !== actionLabel;
                       return (
                         <WorkflowNode
-                          description={nodeTitle}
+                          description={
+                            step.action === "add_reaction" && step.emoji ? (
+                              <StepReactionDescription
+                                description={nodeDescription}
+                                emoji={step.emoji}
+                                emojiUrl={reactionEmojiUrl(
+                                  step.emoji,
+                                  customEmoji,
+                                )}
+                              />
+                            ) : (
+                              nodeDescription
+                            )
+                          }
                           disabled={disabled}
                           key={step.id}
-                          label={`Step ${index + 1}: ${nodeTitle}`}
+                          label={`Step ${index + 1}: ${nodeDescription}`}
                           number={index + 1}
                           onAddAfter={(action) => insertStep(index + 1, action)}
                           onClick={() => selectNode({ type: "step", index })}
@@ -807,7 +744,9 @@ export function WorkflowFormBuilder({
                             selectedNode.index === index
                           }
                           showTitle={false}
-                          subtitle={stepName ? actionLabel : undefined}
+                          subtitle={
+                            showActionSubtitle ? actionLabel : undefined
+                          }
                           terminal={index === formState.steps.length - 1}
                           title={`Step ${index + 1}`}
                         />

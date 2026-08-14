@@ -88,12 +88,12 @@ export const TRIGGER_LABELS: Record<TriggerType, string> = {
 
 export const ACTION_LABELS: Record<ActionType, string> = {
   delay: "Delay",
-  send_message: "Send Message",
+  send_message: "Send message",
   send_dm: "Send DM",
-  call_webhook: "Call Webhook",
-  request_approval: "Request Approval",
-  add_reaction: "Add Reaction",
-  set_channel_topic: "Set Channel Topic",
+  call_webhook: "Call webhook",
+  request_approval: "Request approval",
+  add_reaction: "Add reaction",
+  set_channel_topic: "Set channel topic",
 };
 
 function toHeaderRows(
