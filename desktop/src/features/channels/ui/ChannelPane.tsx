@@ -782,6 +782,20 @@ export const ChannelPane = React.memo(function ChannelPane({
             useSplitAuxiliaryPane={useSplitAuxiliaryPane}
             transparentChrome={hasSplitAuxiliaryPane}
           />
+        ) : shouldShowThreadSkeleton ? (
+          (() => {
+            if (isHuddleTranscript) {
+              return wrapThreadPanel(<HuddleStartingView />);
+            }
+            const panel = (
+              <MessageThreadPanelSkeleton
+                {...threadLayoutProps}
+                onClose={onCloseThread}
+                widthPx={threadPanelWidthPx}
+              />
+            );
+            return wrapThreadPanel(panel);
+          })()
         ) : threadHeadMessage ? (
           (() => {
             const panel = (
@@ -850,20 +864,6 @@ export const ChannelPane = React.memo(function ChannelPane({
                     />
                   ) : null
                 }
-              />
-            );
-            return wrapThreadPanel(panel);
-          })()
-        ) : shouldShowThreadSkeleton ? (
-          (() => {
-            if (isHuddleTranscript) {
-              return wrapThreadPanel(<HuddleStartingView />);
-            }
-            const panel = (
-              <MessageThreadPanelSkeleton
-                {...threadLayoutProps}
-                onClose={onCloseThread}
-                widthPx={threadPanelWidthPx}
               />
             );
             return wrapThreadPanel(panel);

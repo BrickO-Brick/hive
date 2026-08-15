@@ -2781,6 +2781,47 @@ test("composer is focused after switching to a different channel", async ({
   await expect(input).toBeFocused();
 });
 
+test("thread open paints immediate feedback before deferred panel work", async ({
+  page,
+}) => {
+  await installMockBridge(page, { threadRepliesDelayMs: 800 });
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+  await expect(page.getByTestId("chat-title")).toHaveText("general");
+
+  const rootMessage = page
+    .getByTestId("message-timeline")
+    .getByTestId("message-row")
+    .first();
+  await rootMessage.hover();
+  await page.evaluate(() => {
+    const observed = { loading: false };
+    Object.assign(window, { __BUZZ_THREAD_OPEN_OBSERVED__: observed });
+    const observer = new MutationObserver(() => {
+      if (document.querySelector('[data-testid="message-thread-loading"]')) {
+        observed.loading = true;
+        observer.disconnect();
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+  });
+
+  await rootMessage.getByRole("button", { name: "Reply" }).click();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (
+            window as Window & {
+              __BUZZ_THREAD_OPEN_OBSERVED__?: { loading: boolean };
+            }
+          ).__BUZZ_THREAD_OPEN_OBSERVED__?.loading ?? false,
+      ),
+    )
+    .toBe(true);
+  await expect(page.getByTestId("message-thread-panel")).toBeVisible();
+});
+
 test("thread composer is focused after clicking the reply icon", async ({
   page,
 }) => {

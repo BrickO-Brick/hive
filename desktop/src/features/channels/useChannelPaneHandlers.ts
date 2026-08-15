@@ -31,6 +31,7 @@ export function useChannelPaneHandlers({
   profiles,
   recordThreadInteraction,
   onOptimisticOpenThreadHeadIdChange,
+  onPendingOpenThreadHeadIdChange,
   onRequestEmptyEditDelete,
   openThreadHeadId,
   sendMessageMutation,
@@ -54,6 +55,7 @@ export function useChannelPaneHandlers({
   onOptimisticOpenThreadHeadIdChange: React.Dispatch<
     React.SetStateAction<string | null | undefined>
   >;
+  onPendingOpenThreadHeadIdChange: (value: string | null) => void;
   onRequestEmptyEditDelete: (eventId: string) => void;
   openThreadHeadId: string | null;
   sendMessageMutation: ReturnType<typeof useSendMessageMutation>;
@@ -199,6 +201,7 @@ export function useChannelPaneHandlers({
   const handleOpenThread = React.useCallback(
     (message: { id: string }) => {
       if (openThreadHeadIdRef.current === message.id) {
+        onPendingOpenThreadHeadIdChange(null);
         deferPanelState(() => {
           onOptimisticOpenThreadHeadIdChange(null);
           setOpenThreadHeadId(null);
@@ -210,6 +213,7 @@ export function useChannelPaneHandlers({
         return;
       }
 
+      onPendingOpenThreadHeadIdChange(message.id);
       deferPanelState(() => {
         onOptimisticOpenThreadHeadIdChange(message.id);
         setOpenThreadHeadId(message.id);
@@ -222,6 +226,7 @@ export function useChannelPaneHandlers({
     [
       deferPanelState,
       onOptimisticOpenThreadHeadIdChange,
+      onPendingOpenThreadHeadIdChange,
       setEditTargetId,
       setExpandedThreadReplyIds,
       setOpenThreadHeadId,

@@ -157,6 +157,9 @@ export function ChannelScreen({
   const [editTargetId, setEditTargetId] = React.useState<string | null>(null);
   const [optimisticOpenThreadHeadId, setOptimisticOpenThreadHeadId] =
     React.useState<string | null | undefined>(undefined);
+  const [pendingOpenThreadHeadId, setPendingOpenThreadHeadId] = React.useState<
+    string | null
+  >(null);
   const clearOptimisticThreadOverride = React.useCallback(() => {
     setOptimisticOpenThreadHeadId(undefined);
   }, []);
@@ -171,6 +174,11 @@ export function ChannelScreen({
     openThreadHeadId,
     optimisticOpenThreadHeadId,
   });
+  React.useEffect(() => {
+    if (pendingOpenThreadHeadId === effectiveOpenThreadHeadId) {
+      setPendingOpenThreadHeadId(null);
+    }
+  }, [effectiveOpenThreadHeadId, pendingOpenThreadHeadId]);
   const isNotifiedForEffectiveThread =
     effectiveOpenThreadHeadId != null
       ? isNotifiedForThread(effectiveOpenThreadHeadId)
@@ -489,6 +497,7 @@ export function ChannelScreen({
     recordThreadInteraction,
     openThreadHeadId: effectiveOpenThreadHeadId,
     onOptimisticOpenThreadHeadIdChange: setOptimisticOpenThreadHeadId,
+    onPendingOpenThreadHeadIdChange: setPendingOpenThreadHeadId,
     onRequestEmptyEditDelete: setEmptyDeleteId,
     sendMessageMutation,
     setExpandedThreadReplyIds,
@@ -683,7 +692,10 @@ export function ChannelScreen({
     ? threadFirstUnreadReplyId
     : null;
   const shouldShowThreadSkeleton = Boolean(
-    effectiveOpenThreadHeadId && activeChannel && !displayedThreadHeadMessage,
+    pendingOpenThreadHeadId ||
+      (effectiveOpenThreadHeadId &&
+        activeChannel &&
+        !displayedThreadHeadMessage),
   );
   const isNarrowPanelViewport =
     channelContentWidthPx > 0 &&
