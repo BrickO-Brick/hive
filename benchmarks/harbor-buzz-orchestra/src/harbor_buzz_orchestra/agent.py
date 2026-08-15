@@ -36,6 +36,11 @@ class BuzzOrchestraAgent(BaseAgent):
         buzz_acp_binary: str = "buzz-acp",
         buzz_agent_binary: str = "buzz-agent",
         buzz_dev_mcp_binary: str = "buzz-dev-mcp",
+        goose_binary: str = "",
+        codex_acp_binary: str = "",
+        codex_binary: str = "",
+        codex_code_mode_host_binary: str = "",
+        codex_runtime_lib_dir: str = "",
         buzz_cli_binary: str = "buzz",
         relay_gateway: str = "",
         forwarder_binary: str = "relay-forwarder",
@@ -54,6 +59,11 @@ class BuzzOrchestraAgent(BaseAgent):
             buzz_acp_binary,
             buzz_agent_binary,
             buzz_dev_mcp_binary,
+            goose_binary,
+            codex_acp_binary,
+            codex_binary,
+            codex_code_mode_host_binary,
+            codex_runtime_lib_dir,
             buzz_cli_binary,
             relay_gateway,
             forwarder_binary,
@@ -113,6 +123,11 @@ class BuzzOrchestraAgent(BaseAgent):
         buzz_acp_binary: str,
         buzz_agent_binary: str,
         buzz_dev_mcp_binary: str,
+        goose_binary: str,
+        codex_acp_binary: str,
+        codex_binary: str,
+        codex_code_mode_host_binary: str,
+        codex_runtime_lib_dir: str,
         buzz_cli_binary: str,
         relay_gateway: str,
         forwarder_binary: str,
@@ -139,6 +154,11 @@ class BuzzOrchestraAgent(BaseAgent):
             buzz_acp_binary=buzz_acp_binary,
             buzz_agent_binary=buzz_agent_binary,
             buzz_dev_mcp_binary=buzz_dev_mcp_binary,
+            goose_binary=goose_binary,
+            codex_acp_binary=codex_acp_binary,
+            codex_binary=codex_binary,
+            codex_code_mode_host_binary=codex_code_mode_host_binary,
+            codex_runtime_lib_dir=codex_runtime_lib_dir,
             buzz_cli_binary=buzz_cli_binary,
             relay_gateway=relay_gateway,
             forwarder_binary=forwarder_binary,
@@ -148,6 +168,11 @@ class BuzzOrchestraAgent(BaseAgent):
         """Fail fast when the provisioner is configured but its stack is unhealthy."""
         if self.provisioner is not None:
             self.provisioner.healthcheck()
+        # Harbor excludes setup from agent_execution timing. Stage the large
+        # third-party runtimes here so the experiment measures their work, not
+        # a 100-300 MB upload. run() checks again for callers that skip setup.
+        if isinstance(self.runtime, BuzzContainerRuntime):
+            await self.runtime.prepare_external_harnesses(environment, self.manifest)
 
     async def run(
         self,

@@ -39,7 +39,7 @@
 # genuine finding about hierarchy, not a failed rewrite.
 #
 # Endpoint names are exact Databricks serving-endpoint names and resolve via
-# testbed/endpoints/databricks-live.json. buzz-agent's `databricks_v2` provider
+# testbed/endpoints/databricks-example.json. buzz-agent's `databricks_v2` provider
 # picks the route per model from the endpoint name; see tb-solo-opus.yaml for the
 # detail.
 schema_version: "1"

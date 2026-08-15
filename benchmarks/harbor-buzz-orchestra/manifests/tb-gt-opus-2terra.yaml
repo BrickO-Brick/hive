@@ -7,11 +7,10 @@
 # to us through Databricks (`databricks-claude-opus-5`); it is absent from
 # openai-live.json, and anthropic-live.json carries only Sonnet 4.6 and Haiku
 # 4.5. Terra is only served direct from OpenAI (`gpt-5.6-terra`); it is absent
-# from databricks-live.json. So there is no single endpoint config that can serve
-# both seats, and this manifest resolves against a MERGED config --
-# testbed/endpoints/mixed-opus-terra.json -- which needs BOTH DATABRICKS_TOKEN
-# and OPENAI_API_KEY exported. Neither sweep.sh nor sweep-openai.sh does that;
-# use sweep-mixed.sh.
+# from the Databricks catalog. So there is no single-provider endpoint config
+# that can serve both seats, and this manifest resolves against a MERGED config
+# naming Databricks and OpenAI endpoints in one file -- which needs BOTH
+# DATABRICKS_TOKEN and OPENAI_API_KEY exported. Pass it with --endpoint-config.
 #
 # What that costs interpretively:
 #
@@ -36,7 +35,7 @@
 # solo opus (0.851), that is worth knowing whatever the routes were, and it is
 # the last untested corner of the delegation hypothesis.
 #
-# Endpoint names resolve via testbed/endpoints/mixed-opus-terra.json.
+# Endpoint names resolve via the merged endpoint config described above.
 schema_version: "1"
 condition: tb-gt-opus-2terra
 roster:

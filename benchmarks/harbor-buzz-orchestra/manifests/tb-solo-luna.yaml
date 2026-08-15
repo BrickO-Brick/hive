@@ -7,7 +7,7 @@
 #
 # Endpoint names are exact Databricks serving-endpoint names: the runtime
 # passes the manifest endpoint name to the gateway as the model. They resolve
-# to provider/host/key via testbed/endpoints/databricks-live.json, which is
+# to provider/host/key via testbed/endpoints/databricks-example.json, which is
 # deployment config and deliberately outside this manifest.
 #
 # context_window_tokens is 272000, not the model's full window, on purpose.

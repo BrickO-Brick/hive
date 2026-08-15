@@ -49,6 +49,24 @@ def test_pinned_effort_is_part_of_the_condition_hash(manifest_data):
     assert pinned_manifest.sha256 != baseline.sha256
 
 
+def test_default_harness_preserves_historical_hash(manifest_data):
+    baseline = ExperimentManifest.load(manifest_data)
+    explicit = copy.deepcopy(manifest_data)
+    explicit["roster"][0]["harness"] = "buzz-agent"
+    assert b'"harness"' not in baseline.canonical_bytes()
+    assert explicit["roster"][0]["harness"] == "buzz-agent"
+    assert ExperimentManifest.load(explicit).sha256 == baseline.sha256
+
+
+def test_external_harness_is_part_of_the_condition_hash(manifest_data):
+    baseline = ExperimentManifest.load(manifest_data)
+    goose = copy.deepcopy(manifest_data)
+    goose["roster"][0]["harness"] = "goose"
+    goose_manifest = ExperimentManifest.load(goose)
+    assert b'"harness":"goose"' in goose_manifest.canonical_bytes()
+    assert goose_manifest.sha256 != baseline.sha256
+
+
 MANIFEST_DIR = pathlib.Path(__file__).resolve().parents[1] / "manifests"
 SHIPPED = sorted(MANIFEST_DIR.glob("*.yaml"))
 

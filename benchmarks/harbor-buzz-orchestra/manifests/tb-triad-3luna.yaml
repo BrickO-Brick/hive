@@ -30,7 +30,7 @@
 # this roster may burn up to 5x the tokens of tb-solo-sol and still win on cost.
 #
 # Endpoint names are exact Databricks serving-endpoint names; provider/host/key
-# resolve via testbed/endpoints/databricks-live.json.
+# resolve via testbed/endpoints/databricks-example.json.
 schema_version: "1"
 condition: tb-triad-3luna
 roster:

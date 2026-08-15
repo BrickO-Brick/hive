@@ -32,8 +32,9 @@
 #
 # THIS RUNS UNDER THE PATCHED HARBOR. LHTB needs continue_until_timeout honored
 # (patches/apply_continue_until_timeout.py); stock harbor ignores the flag and
-# agents self-report DONE minutes into hour-long budgets. lhtb46.sh refuses to
-# start on an unpatched harbor -- do not bypass that check.
+# agents self-report DONE minutes into hour-long budgets. Gate the run on
+# patches/gatecheck.py -- an unpatched harbor scores this cell far below the
+# leaderboard and the run looks merely bad rather than misconfigured.
 schema_version: "1"
 condition: lhtb-or-kimi-lead-2deepseek-high
 roster:

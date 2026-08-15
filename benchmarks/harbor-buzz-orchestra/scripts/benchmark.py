@@ -97,7 +97,13 @@ MAX_TASK_TIMEOUT_SECONDS = 12000
 # study actually runs on (doc 04 §6); the Anthropic manifests predate it and
 # need a key this project does not provision.
 DEFAULT_MANIFEST = PACKAGE_ROOT / "manifests" / "tb-solo-luna.yaml"
-DEFAULT_ENDPOINTS = PACKAGE_ROOT / "testbed" / "endpoints" / "databricks-live.json"
+# An EXAMPLE, not a working config: the workspace host is a placeholder, so a
+# run that falls through to this default is told to pass --endpoint-config
+# rather than being allowed to fail later against a host that does not exist.
+# The endpoint configs a deployment actually runs are operator-specific (host,
+# credential plumbing, model slate) and live outside this repo.
+DEFAULT_ENDPOINTS = PACKAGE_ROOT / "testbed" / "endpoints" / "databricks-example.json"
+PLACEHOLDER_HOSTS = ("example-workspace.cloud.databricks.com",)
 SCHEMA_SQL = PACKAGE_ROOT / "testbed" / "sql" / "benchmark_schema.sql"
 
 # Linux builds of the production agent stack, uploaded into each task
@@ -414,6 +420,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--endpoint-config", type=Path, default=DEFAULT_ENDPOINTS,
         help=f"Endpoint provider/API-key mapping (default: {DEFAULT_ENDPOINTS.name})",
     )
+    parser.add_argument("--goose-binary", type=Path, default=None)
+    parser.add_argument("--codex-acp-binary", type=Path, default=None)
+    parser.add_argument("--codex-binary", type=Path, default=None)
+    parser.add_argument("--codex-code-mode-host-binary", type=Path, default=None)
+    parser.add_argument("--codex-runtime-lib-dir", type=Path, default=None)
     parser.add_argument("--n-concurrent", "-n", type=int, default=4, help="Concurrent trials")
     parser.add_argument(
         "--timeout-multiplier", type=float, default=DEFAULT_TIMEOUT_MULTIPLIER,
@@ -674,6 +685,26 @@ def resolve_databricks_token(needed_seconds: int) -> None:
             "timeout. Export a long-lived DATABRICKS_TOKEN for real sweeps.",
             file=sys.stderr,
         )
+
+
+def reject_placeholder_endpoints(endpoint_config: Path) -> None:
+    """Refuse to launch against an example config's placeholder host.
+
+    The checked-in Databricks config exists to document the file shape, not to
+    be run. Without this the failure surfaces hours later as a DNS error inside
+    a task container, on a run that has already provisioned everything.
+    """
+    try:
+        raw = endpoint_config.read_text()
+    except OSError:
+        return  # write_provisioner_config raises the actionable error.
+    for host in PLACEHOLDER_HOSTS:
+        if host in raw:
+            raise SystemExit(
+                f"{endpoint_config.name} is an example: {host} is a placeholder.\n"
+                f"  Copy it, set DATABRICKS_HOST to your own workspace, and pass\n"
+                f"  --endpoint-config <path>."
+            )
 
 
 def required_key_envs(endpoint_config: Path) -> set[str]:
@@ -1117,6 +1148,15 @@ def leaderboard_argv(
         "--n-concurrent", str(args.n_concurrent),
         "--jobs-dir", str(args.jobs_dir),
     ]
+    for flag, value in (
+        ("--goose-binary", args.goose_binary),
+        ("--codex-acp-binary", args.codex_acp_binary),
+        ("--codex-binary", args.codex_binary),
+        ("--codex-code-mode-host-binary", args.codex_code_mode_host_binary),
+        ("--codex-runtime-lib-dir", args.codex_runtime_lib_dir),
+    ):
+        if value is not None:
+            argv += [flag, str(value)]
     argv += environment_override_argv(args.manifest)
     if args.timeout_multiplier != 1.0:
         # Forwarded only when it changes something: Harbor's validator rejects
@@ -1192,6 +1232,7 @@ def main(argv: list[str] | None = None) -> int:
     # Resolve only the credentials this endpoint config actually asks for. A
     # run on OpenAI must not die because a Databricks OAuth token it will never
     # send happens to have expired.
+    reject_placeholder_endpoints(args.endpoint_config)
     needed = required_key_envs(args.endpoint_config)
     if "DATABRICKS_TOKEN" in needed:
         resolve_databricks_token(trial_timeout_seconds(args.manifest) * args.attempts)

@@ -29,7 +29,7 @@
 # and the cell would report a null that was really a mislabelled `high` run.
 #
 # Endpoint names are exact Databricks serving-endpoint names; they resolve to
-# provider/host/key via testbed/endpoints/databricks-live.json.
+# provider/host/key via testbed/endpoints/databricks-example.json.
 schema_version: "1"
 condition: tb-solo-opus-xhigh
 roster:

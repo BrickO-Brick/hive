@@ -26,7 +26,7 @@
 # mixed setting, keeping Sol only as a solo baseline (tb-solo-sol).
 #
 # Endpoint names are exact Databricks serving-endpoint names; provider/host/key
-# resolve via testbed/endpoints/databricks-live.json.
+# resolve via testbed/endpoints/databricks-example.json.
 schema_version: "1"
 condition: tb-team-opus-2luna
 roster:

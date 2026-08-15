@@ -10,7 +10,7 @@
 #
 # Endpoint names are exact Databricks serving-endpoint names: the runtime passes
 # the manifest endpoint name to the gateway as the model. They resolve to
-# provider/host/key via testbed/endpoints/databricks-live.json, which is
+# provider/host/key via testbed/endpoints/databricks-example.json, which is
 # deployment config and deliberately outside this manifest.
 schema_version: "1"
 condition: tb-solo-sol

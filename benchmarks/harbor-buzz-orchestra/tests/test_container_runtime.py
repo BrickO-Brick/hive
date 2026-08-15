@@ -627,6 +627,12 @@ async def test_solo_roster_runs_and_is_priced(tmp_path, monkeypatch):
     assert result.cost_usd == pytest.approx(20.0 + 30.0)
     assert result.metadata["solo_roster"] is True
     assert result.metadata["accounting_reconciled"] is True
+    assert result.metadata["agent_active_seconds"] >= 0
+    timing = json.loads((tmp_path / "logs" / "buzz" / "timing.json").read_text())
+    assert timing["agent_active_seconds"] == pytest.approx(
+        result.metadata["agent_active_seconds"]
+    )
+    assert timing["usage_settle_seconds"] >= 0
     # The bundle landed next to the logs.
     summary = json.loads((tmp_path / "logs" / "buzz" / "summary.json").read_text())
     assert summary["solo_roster"] is True
@@ -1330,6 +1336,44 @@ async def test_thinking_effort_can_be_raised_per_condition(tmp_path):
     )
     _, env = environment.commands[-1]
     assert env["BUZZ_AGENT_THINKING_EFFORT"] == "xhigh"
+
+
+@pytest.mark.parametrize(
+    ("harness", "command"),
+    [("goose", "goose"), ("codex", "codex-acp")],
+)
+async def test_external_harness_gets_same_model_and_effort(
+    tmp_path, harness, command
+):
+    manifest = write_manifest(tmp_path)
+    entry = manifest.roster[0].model_copy(
+        update={
+            "harness": harness,
+            "generation": manifest.roster[0].generation.model_copy(
+                update={"thinking_effort": "high"}
+            ),
+        }
+    )
+    orch = credential("orch-1", "orchestrator", "gpt-5.6-luna")
+    env = runtime(tmp_path)._agent_env(
+        trial=trial_handle((orch,)),
+        credential=orch,
+        agent_class=entry,
+        endpoint=EndpointLaunchConfig("openai", "OPENAI_COMPAT_API_KEY"),
+        remote_prompt="/opt/buzz/prompts/orch-1.system-prompt.md",
+    )
+    assert env["BUZZ_ACP_AGENT_COMMAND"] == f"{REMOTE_BIN}/{command}"
+    assert env["OPENAI_API_KEY"] == orch.llm_api_key
+    assert "BUZZ_AGENT_MODEL" not in env
+    if harness == "goose":
+        assert env["GOOSE_MODEL"] == "gpt-5.6-luna"
+        assert env["GOOSE_THINKING_EFFORT"] == "high"
+    else:
+        assert env["CODEX_PATH"] == f"{REMOTE_BIN}/codex"
+        assert json.loads(env["DEFAULT_AUTH_REQUEST"])["methodId"] == "api-key"
+        assert env["INITIAL_AGENT_MODE"] == "agent-full-access"
+        assert json.loads(env["CODEX_CONFIG"])["model"] == "gpt-5.6-luna"
+        assert json.loads(env["CODEX_CONFIG"])["model_reasoning_effort"] == "high"
 
 
 @pytest.mark.parametrize(

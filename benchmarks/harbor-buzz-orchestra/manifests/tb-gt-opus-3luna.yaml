@@ -30,7 +30,7 @@
 # from its 3-agent sibling in a way the score cannot explain, check `free -m`
 # and container exit-137 before believing the coordination story.
 #
-# Endpoint names resolve via testbed/endpoints/databricks-live.json.
+# Endpoint names resolve via testbed/endpoints/databricks-example.json.
 schema_version: "1"
 condition: tb-gt-opus-3luna
 roster:

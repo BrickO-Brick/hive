@@ -180,6 +180,10 @@ class AgentClass(StrictModel):
     count: int = Field(gt=0)
     endpoint: str = Field(min_length=1)
     model_revision: str = Field(min_length=1)
+    # ACP process hosted behind buzz-acp. The default preserves every existing
+    # manifest's behaviour; benchmark-only cells can select Goose or Codex
+    # without smuggling process wiring through an endpoint's environment.
+    harness: Literal["buzz-agent", "goose", "codex"] = "buzz-agent"
     prompt: ArtifactRef
     persona: ArtifactRef | None = None
     skills: tuple[ArtifactRef, ...] = ()
@@ -301,6 +305,10 @@ class ExperimentManifest(StrictModel):
         # also drop the other optional fields that currently serialise as null
         # and would shift far more hashes than it preserved.
         for entry in data.get("roster", []):
+            # Adding a selector whose default describes the historical runtime
+            # must not re-identify all historical conditions.
+            if entry.get("harness") == "buzz-agent":
+                entry.pop("harness", None)
             generation = entry.get("generation")
             if not isinstance(generation, dict):
                 continue

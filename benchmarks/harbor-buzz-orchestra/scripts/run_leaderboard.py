@@ -106,6 +106,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Directory with Linux builds of buzz-acp/buzz-agent/buzz-dev-mcp "
         "to upload into each task container",
     )
+    parser.add_argument("--goose-binary", type=Path, default=None)
+    parser.add_argument("--codex-acp-binary", type=Path, default=None)
+    parser.add_argument("--codex-binary", type=Path, default=None)
+    parser.add_argument("--codex-code-mode-host-binary", type=Path, default=None)
+    parser.add_argument("--codex-runtime-lib-dir", type=Path, default=None)
     parser.add_argument(
         "--relay-gateway", default="",
         help="host:port of the benchmark relay as reachable from inside the "
@@ -235,6 +240,19 @@ def build_command(
         "buzz_cli_binary": binaries["buzz"],
         "run_id": args.job_name,
     }
+    for name in (
+        "goose_binary",
+        "codex_acp_binary",
+        "codex_binary",
+        "codex_code_mode_host_binary",
+        "codex_runtime_lib_dir",
+    ):
+        value = getattr(args, name)
+        if value is not None:
+            exists = value.is_dir() if name == "codex_runtime_lib_dir" else value.is_file()
+            if not exists and not args.dry_run:
+                raise SystemExit(f"{name.replace('_', ' ')} not found: {value}")
+            kwargs[name] = value
     if args.relay_gateway:
         kwargs["relay_gateway"] = args.relay_gateway
         kwargs["forwarder_binary"] = agent_binaries[FORWARDER_BINARY]

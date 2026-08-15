@@ -14,6 +14,7 @@ import asyncio
 import json
 import os
 import shlex
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -270,6 +271,11 @@ class BuzzContainerRuntime:
         buzz_acp_binary: str = "buzz-acp",
         buzz_agent_binary: str = "buzz-agent",
         buzz_dev_mcp_binary: str = "buzz-dev-mcp",
+        goose_binary: str = "",
+        codex_acp_binary: str = "",
+        codex_binary: str = "",
+        codex_code_mode_host_binary: str = "",
+        codex_runtime_lib_dir: str = "",
         buzz_cli_binary: str = "buzz",
         relay_gateway: str = "",
         forwarder_binary: str = "relay-forwarder",
@@ -297,6 +303,11 @@ class BuzzContainerRuntime:
         self.buzz_acp_binary = buzz_acp_binary
         self.buzz_agent_binary = buzz_agent_binary
         self.buzz_dev_mcp_binary = buzz_dev_mcp_binary
+        self.goose_binary = goose_binary
+        self.codex_acp_binary = codex_acp_binary
+        self.codex_binary = codex_binary
+        self.codex_code_mode_host_binary = codex_code_mode_host_binary
+        self.codex_runtime_lib_dir = codex_runtime_lib_dir
         # Host build used for user/provisioning operations only:
         self.buzz_cli_binary = buzz_cli_binary
         # Where the relay actually lives, as seen from inside the task
@@ -323,6 +334,10 @@ class BuzzContainerRuntime:
         manifest: ExperimentManifest,
         trial: TrialHandle,
     ) -> RuntimeResult:
+        runtime_started = time.monotonic()
+        active_started: float | None = None
+        active_finished: float | None = None
+        usage_settle_seconds_observed = 0.0
         classes = self._classes_by_agent_id(manifest, trial.credentials)
         orchestrator = next(c for c in trial.credentials if c.role == "orchestrator")
         # A zero-worker roster is the single-agent baseline, not an error. The
@@ -338,6 +353,7 @@ class BuzzContainerRuntime:
         verifier_deps = "unknown"
         try:
             trust_store = await self._install_stack(environment)
+            await self.prepare_external_harnesses(environment, manifest)
             forwarder = await self._start_forwarder(environment, trial)
             if forwarder is not None:
                 infra.append(forwarder)
@@ -366,6 +382,7 @@ class BuzzContainerRuntime:
             # The task arrives exactly as it would in production Buzz: a
             # user prompt @mentioning the orchestrator. The harness never
             # speaks as any agent.
+            active_started = time.monotonic()
             await self._send(
                 trial.user, trial, f"@{orchestrator.agent_id} {instruction}"
             )
@@ -381,8 +398,11 @@ class BuzzContainerRuntime:
                 ),
                 timeout=manifest.trial_budget.timeout_seconds,
             )
+            active_finished = time.monotonic()
             await self._verify_m1_output(environment, manifest)
         finally:
+            if active_started is not None and active_finished is None:
+                active_finished = time.monotonic()
             # `DONE:` is published before the turn's usage notification is, so
             # teardown has to wait or the trial's tokens are lost.
             #
@@ -400,7 +420,9 @@ class BuzzContainerRuntime:
             # usage line exists, which after the first round it does. Only a
             # phase that never completed a single round can spend the full
             # budget, and that phase has nothing to report anyway.
+            usage_settle_started = time.monotonic()
             await self._settle_usage(environment, agents)
+            usage_settle_seconds_observed = time.monotonic() - usage_settle_started
             await self._stop_agents(environment, agents + infra)
             # Logs first, and ahead of anything that touches the network. The
             # verifier pre-install below used to run first and, when the proxy
@@ -421,6 +443,29 @@ class BuzzContainerRuntime:
             # excluding it would bias the sweep's cost figures toward successes.
             trial_accounting = self._collect_accounting(
                 trial_dir, manifest, trial, classes
+            )
+            timing = {
+                "schema_version": 1,
+                "definition": (
+                    "agent_active_seconds spans task prompt dispatch through "
+                    "observed turn completion or timeout; it excludes runtime "
+                    "preparation and post-turn settlement/collection"
+                ),
+                "runtime_until_bundle_seconds": time.monotonic() - runtime_started,
+                "pre_prompt_seconds": (
+                    active_started - runtime_started
+                    if active_started is not None
+                    else None
+                ),
+                "agent_active_seconds": (
+                    active_finished - active_started
+                    if active_started is not None and active_finished is not None
+                    else None
+                ),
+                "usage_settle_seconds": usage_settle_seconds_observed,
+            }
+            (trial_dir / "timing.json").write_text(
+                json.dumps(timing, indent=2) + "\n", encoding="utf-8"
             )
             bundle.write(
                 trial_dir=trial_dir,
@@ -448,6 +493,8 @@ class BuzzContainerRuntime:
                 # inferred later from an empty message id.
                 "stopped_without_done": final_message is None,
                 "agent_runtime": "in-container",
+                "agent_active_seconds": timing["agent_active_seconds"],
+                "usage_settle_seconds": timing["usage_settle_seconds"],
                 # present | seeded | failed. `failed` means the container had
                 # no usable trust store and could not be given one, so any
                 # https the agent or the verifier attempted was doomed -- read
@@ -548,6 +595,44 @@ class BuzzContainerRuntime:
             raise RuntimeLaunchError(f"CA bundle not found: {self.ca_bundle}")
         await environment.upload_file(self.ca_bundle, REMOTE_CA_BUNDLE)
         return await self._seed_system_trust_store(environment)
+
+    async def prepare_external_harnesses(
+        self, environment: BaseEnvironment, manifest: ExperimentManifest
+    ) -> None:
+        """Stage only the non-default ACP runtimes selected by the manifest."""
+        harnesses = {entry.harness for entry in manifest.roster}
+        uploads: dict[str, str] = {}
+        if "goose" in harnesses:
+            uploads[f"{REMOTE_BIN}/goose"] = self.goose_binary
+        if "codex" in harnesses:
+            uploads[f"{REMOTE_BIN}/codex-acp"] = self.codex_acp_binary
+            uploads[f"{REMOTE_BIN}/codex"] = self.codex_binary
+            uploads[f"{REMOTE_BIN}/codex-code-mode-host"] = (
+                self.codex_code_mode_host_binary
+            )
+            runtime_libs = Path(self.codex_runtime_lib_dir)
+            for name in (
+                "ld-musl-x86_64.so.1",
+                "libgcc_s.so.1",
+                "libstdc++.so.6",
+            ):
+                uploads[f"{REMOTE_ROOT}/lib/x86_64/{name}"] = str(
+                    runtime_libs / name
+                )
+        if not uploads:
+            return
+        missing = [target for target, source in uploads.items() if not Path(source).is_file()]
+        if missing:
+            raise RuntimeLaunchError(
+                "external harness binary not found for: " + ", ".join(missing)
+            )
+        await environment.exec(f"mkdir -p {REMOTE_BIN}")
+        await environment.exec(f"mkdir -p {REMOTE_ROOT}/lib/x86_64")
+        for target, source in uploads.items():
+            present = await environment.exec(f"test -x {shlex.quote(target)}")
+            if present.return_code != 0:
+                await environment.upload_file(source, target)
+                await environment.exec(f"chmod 0755 {shlex.quote(target)}")
 
     @staticmethod
     async def _seed_system_trust_store(environment: BaseEnvironment) -> str:
@@ -775,6 +860,54 @@ class BuzzContainerRuntime:
         turn_timeout_seconds: int = 0,
     ) -> dict[str, str]:
         """The desktop-launch environment: real acp/agent/dev-mcp wiring."""
+        effort = agent_class.generation.thinking_effort or THINKING_EFFORT
+        commands = {
+            "buzz-agent": f"{REMOTE_BIN}/buzz-agent",
+            "goose": f"{REMOTE_BIN}/goose",
+            "codex": f"{REMOTE_BIN}/codex-acp",
+        }
+        harness_env: dict[str, str]
+        if agent_class.harness == "goose":
+            harness_env = {
+                "GOOSE_PROVIDER": endpoint.provider,
+                "GOOSE_MODEL": credential.llm_endpoint,
+                "GOOSE_THINKING_EFFORT": effort,
+                "OPENAI_API_KEY": credential.llm_api_key,
+            }
+        elif agent_class.harness == "codex":
+            harness_env = {
+                "CODEX_PATH": f"{REMOTE_BIN}/codex",
+                "CODEX_API_KEY": credential.llm_api_key,
+                "OPENAI_API_KEY": credential.llm_api_key,
+                # Supplying a key only advertises the method; the ACP client
+                # still has to select it. Headless benchmark runs have no UI in
+                # which to answer that auth request.
+                "DEFAULT_AUTH_REQUEST": '{"methodId":"api-key"}',
+                "NO_BROWSER": "1",
+                "INITIAL_AGENT_MODE": "agent-full-access",
+                "LD_LIBRARY_PATH": f"{REMOTE_ROOT}/lib/x86_64",
+                "CODEX_CONFIG": json.dumps(
+                    {
+                        "model": credential.llm_endpoint,
+                        "model_reasoning_effort": effort,
+                        "approval_policy": "never",
+                        "sandbox_mode": "danger-full-access",
+                    },
+                    separators=(",", ":"),
+                ),
+            }
+        else:
+            harness_env = {
+                "BUZZ_AGENT_PROVIDER": endpoint.provider,
+                "BUZZ_AGENT_MODEL": credential.llm_endpoint,
+                "BUZZ_AGENT_THINKING_EFFORT": effort,
+                **self._window_env(agent_class.generation),
+                **self._compaction_env(agent_class.generation),
+                "BUZZ_AGENT_MAX_ROUNDS": str(
+                    agent_class.budget.max_calls or self.max_agent_rounds
+                ),
+                "BUZZ_AGENT_NO_HINTS": "1",
+            }
         return {
             **self._turn_duration_env(turn_timeout_seconds),
             **endpoint.env,
@@ -792,7 +925,7 @@ class BuzzContainerRuntime:
             # so buzz-dev-mcp's shim can wire git auth/signing for the agent.
             "NOSTR_PRIVATE_KEY": credential.nostr_secret_key,
             "BUZZ_AUTH_TAG": credential.nostr_auth_tag,
-            "BUZZ_ACP_AGENT_COMMAND": f"{REMOTE_BIN}/buzz-agent",
+            "BUZZ_ACP_AGENT_COMMAND": commands[agent_class.harness],
             "BUZZ_ACP_AGENT_ARGS": "",
             "BUZZ_ACP_MCP_COMMAND": f"{REMOTE_BIN}/buzz-dev-mcp",
             "BUZZ_ACP_CHANNELS": trial.channel_id,
@@ -801,19 +934,7 @@ class BuzzContainerRuntime:
             "BUZZ_ACP_NO_MEMORY": "true",
             "BUZZ_ACP_SYSTEM_PROMPT_FILE": remote_prompt,
             **self._platform_prompt_env(agent_class),
-            "BUZZ_AGENT_PROVIDER": endpoint.provider,
-            "BUZZ_AGENT_MODEL": credential.llm_endpoint,
-            "BUZZ_AGENT_THINKING_EFFORT": (
-                agent_class.generation.thinking_effort or THINKING_EFFORT
-            ),
-            **self._window_env(agent_class.generation),
-            **self._compaction_env(agent_class.generation),
-            "BUZZ_AGENT_MAX_ROUNDS": str(
-                agent_class.budget.max_calls or self.max_agent_rounds
-            ),
-            # The pinned persona is the whole prompt: no hint-file or skill
-            # discovery from the task filesystem (metadata reports this).
-            "BUZZ_AGENT_NO_HINTS": "1",
+            **harness_env,
             endpoint.api_key_env: credential.llm_api_key,
         }
 

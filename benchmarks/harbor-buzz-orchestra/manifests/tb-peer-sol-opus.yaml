@@ -28,7 +28,7 @@
 # config may name entries from different providers, because benchmark.py's
 # `write_provisioner_config` resolves each entry's own `api_key_env` and each
 # entry carries its own `provider` and `env`. It is not needed here -- both
-# seats are Databricks, so `testbed/endpoints/databricks-live.json` covers them
+# seats are Databricks, so `testbed/endpoints/databricks-example.json` covers them
 # -- but it means the OpenAI-routed variant is possible without a harness change.
 #
 # WHICH MODEL DRIVES, AND WHY IT IS NOT ARBITRARY. Sol drives, Opus navigates.
@@ -51,7 +51,7 @@
 # untouched. That is bias pointing the wrong way. Do not start this cell while
 # G1 (`tb-gt-opus-2luna`) is running on another box.
 #
-# Endpoint names resolve via testbed/endpoints/databricks-live.json.
+# Endpoint names resolve via testbed/endpoints/databricks-example.json.
 schema_version: "1"
 condition: tb-peer-sol-opus
 roster:

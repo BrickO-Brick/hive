@@ -407,7 +407,7 @@ of every turn and delete most of what the personas currently spend ~600 tokens
 each rebutting. Worth revisiting if A1n shows `[Base]` is materially hurting,
 since at that point "production parity" is preserving a known handicap.
 
-**Endpoint names for Opus 5 are not established.** `databricks-live.json`
+**Endpoint names for Opus 5 are not established.** `databricks-example.json`
 currently maps only `databricks-gpt-5-6-sol` and `databricks-gpt-5-6-luna`.
 Every Tier-2 and Tier-3 condition above assumes an Opus 5 endpoint on the same
 gateway; A3, B1–B5 and C1–C5 are blocked until it exists and its list prices
