@@ -178,8 +178,11 @@ bounded string. `exp` and `iat` are finite NumericDate values satisfying
 Optional `nbf` satisfies `nbf <= now + skew`. Arithmetic is overflow-safe and
 equality at an expiry is expired. [FI-TRACE-ASSERTION-VALIDATION]
 
-If configured, a Nostr-key claim resolves without ambiguity to one 32-byte key.
-Lowercase hexadecimal is canonical. Authorization claims or capabilities use a
+The Nostr-key claim is named `nostr_pubkey`. When present it MUST be a
+lowercase hexadecimal encoding of exactly one 32-byte Nostr public key; other
+encodings and aliases deny. In `attested-key` enrollment policy and wherever
+current matching issuer attestation is required, this exact claim MUST be
+present and equal the proven actor. Authorization claims or capabilities use a
 closed bounded input set and deterministic canonical encoding. Unchecked claims
 never enter the result. [FI-TRACE-VERIFIER-PARITY]
 
@@ -199,8 +202,15 @@ Policy selects exactly one token class before parsing claims:
 
 OIDC ID Tokens always deny, even when `iss`, `aud`, and `sub` match. A generic
 or absent type has no stock fallback. Failure under one class never triggers
-validation under another. Token class and every class-specific validation rule
-are inputs to `assertion_policy_id`. [FI-TRACE-TOKEN-CLASS]
+validation under another. An RFC 9068 token MUST contain one non-empty bounded
+`client_id`. Issuer policy MUST distinguish a resource-owner token from a token
+whose subject represents the OAuth client, including a client-credentials token,
+using authenticated claim semantics and mutually exclusive validation rules. A
+token that admits both interpretations denies. If client-subject tokens are
+accepted, the issuer MUST guarantee that their `(iss, sub)` coordinates cannot
+collide with resource-owner coordinates; otherwise that token class is
+ineligible. Token class and every class-specific validation rule are inputs to
+`assertion_policy_id`. [FI-TRACE-TOKEN-CLASS]
 
 ### Policy identity and snapshots
 
@@ -274,6 +284,13 @@ final admission. Poll/cache age, event-delivery and processing delay, and
 enforcement delay all fit within the advertised value. A push implementation
 may close authority sooner but cannot claim a value below its tested worst case.
 [FI-TRACE-CURRENT-STATUS-REVOKED]
+
+An external capability projection whose removal is required to close authority
+within a declared revocation bound MUST enter authoritative local-policy state,
+not `claims_or_capabilities` from the assertion. That state is reread during
+preparation, final admission, and protected lease use. A deployment that carries
+such a projection only in assertions cannot claim a revocation bound for its
+changes. [FI-TRACE-CAPABILITY-REVOCATION]
 
 Before enabling an issuer, the operator records authoritative evidence that
 `sub` is stable for the account lifetime, never reassigned, and not intentionally
@@ -402,8 +419,8 @@ any policy-required current matching issuer attestation. [FI-TRACE-LIFECYCLE-AUT
   not globally revoke the old key.
 
 Failure or stale state causes no partial mutation. Ordinary authorization cannot
-perform or undo these transitions. Extended recovery, disablement, provisioning,
-and administrative expiry are defined only by NIP-FI-LIFECYCLE.
+perform or undo these transitions. Extended disablement, re-enablement,
+provisioning, and administrative expiry are defined only by NIP-FI-LIFECYCLE.
 
 ## Request and session bounds
 
@@ -494,11 +511,12 @@ policy revision. NIP-FI-CONF defines evidence and mutation-adequacy rules.
 |---|---|
 | `FI-TRACE-TRANSPORT-CLOSED` | Exact one-header input succeeds; missing, repeated, combined, malformed, mixed, URL, and fallback variants deny. |
 | `FI-TRACE-ASSERTION-VALIDATION` | Valid boundary input passes; each signature, key-selection, issuer, audience, time, size, and ambiguity negative denies. |
-| `FI-TRACE-TOKEN-CLASS` | An RFC 9068 `at+jwt` access token and a dedicated `nip-fi+jwt` assertion pass only their selected class. ID tokens, wrong/generic types outside a named compatibility policy, client-only audiences, and every attempted cross-class fallback deny. |
+| `FI-TRACE-TOKEN-CLASS` | An RFC 9068 `at+jwt` access token and a dedicated `nip-fi+jwt` assertion pass only their selected class. ID tokens, wrong/generic types outside a named compatibility policy, client-only audiences, absent or ambiguous `client_id`, resource-owner/client-subject ambiguity, and every attempted cross-class fallback deny. |
 | `FI-TRACE-CONTRACT-IDENTITIES` | Mutate each assertion semantic, transport semantic, and mutable dependency independently: semantic mutations change only their owning contract ID; snapshot/binding/lifecycle/policy/resource/status mutations change neither ID but force current revalidation. |
 | `FI-TRACE-VERIFIER-PARITY` | Equal authoritative input and policy produce the same canonical normalized result. |
 | `FI-TRACE-JWKS-ADD` / `REMOVE` | Retained-key rotation can revalidate; removed-key evidence and leases deny. |
 | `FI-TRACE-CURRENT-STATUS-REVOKED` / `STALE` | Revocation, including one racing final admission, closes authority within the advertised tested bound. Inactive/ambiguous status denies; expiry equality, outage, delayed events, and changed status versions cannot mint or extend a witness. |
+| `FI-TRACE-CAPABILITY-REVOCATION` | Removal of a revocation-bounded external capability projection from authoritative local policy closes prepared evidence and lease use within the declared bound; assertion-only projection cannot satisfy this oracle. |
 | `FI-TRACE-BODY-BINDING` / `BOUNDS` | Exact complete relevant body passes; absent/duplicate/mutated/partial/transformed/oversized/quota variants deny without effects. |
 | `FI-TRACE-DOMAIN-SPOOF` | Client routing and forwarded authority cannot replace server-owned context. |
 | `FI-TRACE-ASSERTION-KEY-MISMATCH` | Mismatch denies with no mutation and the private-state response. |

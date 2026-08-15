@@ -5,10 +5,10 @@
 ## Abstract
 
 This profile extends NIP-FI with provisioned enrollment, identity disablement,
-recovery, re-enablement, and an administrative binding-expiry gate. It is for
-deployments whose binding changes require separately authorized operator or
-enterprise workflows. It does not change NIP-FI assertion validation, Nostr
-proof, final admission, or public denial semantics.
+re-enablement, and an administrative binding-expiry gate. It is for deployments
+whose binding changes require separately authorized operator or enterprise
+workflows. It does not change NIP-FI assertion validation, Nostr proof, final
+admission, or public denial semantics.
 
 The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHALL**, **SHALL NOT**,
 **SHOULD**, **SHOULD NOT**, **RECOMMENDED**, **MAY**, and **OPTIONAL** in this
@@ -135,22 +135,6 @@ Applying an authorized disablement repeatedly is idempotent. It MUST NOT erase
 or replace existing lineage. If `i` has no active binding, disablement creates
 no lineage (`FI-LC-DISABLE`).
 
-### Recover
-
-```text
-Recover(i, old_binding_version, k_new):
-  require i is not in X_D
-  require Q_D(i) = (i, k_old, old_binding_version)
-  require TargetEligible(i, k_new, false)
-  require fresh target-key evidence
-  consume that exact Q_D(i)
-  create Binding(i, k_new, new_version, ReplacementProvenance(evidence))
-```
-
-Recovery preserves the old retired pair. It cannot consume absent, stale, or
-different lineage and cannot recover a disabled identity
-(`FI-LC-RECOVER`).
-
 ### Re-enable identity
 
 ```text
@@ -192,9 +176,9 @@ restore access; ordinary authorization cannot renew the bound
 
 Consumption of `Q_D` and creation of its replacement binding MUST be one
 compare-and-commit operation over the exact pending lineage. Of two concurrent
-recoveries or re-enablings presenting the same lineage, at most one can commit.
-The loser observes changed state and denies without creating a binding,
-consuming another lineage, or changing history (`FI-LC-QD-ONCE`).
+re-enablings presenting the same lineage, at most one can commit. The loser
+observes changed state and denies without creating a binding, consuming another
+lineage, or changing history (`FI-LC-QD-ONCE`).
 
 A lifecycle transition racing ordinary final admission is ordered by the same
 authoritative state transaction or dependency check. If the lifecycle commit
@@ -218,10 +202,9 @@ denied case.
 | `FI-LC-TARGET-PROOF` | Missing, stale, wrong-key, wrong-request, or mismatched required attestation for a new target denies without mutation. |
 | `FI-LC-PROVISION` | Ordinary first use in provisioned mode denies; authorized provisioning creates one binding and no lease; later current ordinary admission may use it. |
 | `FI-LC-DISABLE` | Disabling an active identity atomically disables it, retires its exact pair, records exact lineage, and closes subsequent lease use; replay is idempotent and preserves lineage. |
-| `FI-LC-RECOVER` | Exact pending lineage plus an eligible proven target creates one replacement and consumes that lineage; disabled, absent, stale, or mismatched lineage denies. |
-| `FI-LC-REENABLE` | Re-enablement creates an eligible proven binding in the same commit that clears disabled state; a clear-only attempt and wrong lineage deny. |
+| `FI-LC-REENABLE` | Re-enablement creates an eligible proven binding in the same commit that clears disabled state; absent or wrong expected lineage and a clear-only attempt deny. |
 | `FI-LC-ADMIN-EXPIRY` | Before the bound the binding may authorize; at equality it denies while still occupying the relation; only an authorized version-checked update changes the bound. |
-| `FI-LC-QD-ONCE` | Two concurrent transitions consume the same `Q_D` lineage; exactly one commits and the loser leaves every authoritative store unchanged. |
+| `FI-LC-QD-ONCE` | Two concurrent re-enablings consume the same `Q_D` lineage; exactly one commits and the loser leaves every authoritative store unchanged. |
 | `FI-LC-RACE` | Race each transition against prepared ordinary admission and lease use; no operation authorizes after observing the advanced lifecycle or binding dependency. |
 
 ## Security considerations
@@ -233,9 +216,8 @@ approval UX or key custody.
 
 Disabled identities, retired pairs, revoked keys, and pending lineage serve
 different purposes. Re-enablement removes only the exact disabled fact and
-optional exact lineage named by its transition. Recovery consumes lineage but
-never removes a retired pair. No transition in this profile removes a core
-revoked-key or retired-pair fact.
+optional exact lineage named by its transition. No transition in this profile
+removes a core revoked-key or retired-pair fact.
 
 Administrative expiry is local policy, not upstream revocation freshness. It
 cannot extend an assertion, status witness, Nostr proof, or lease deadline.

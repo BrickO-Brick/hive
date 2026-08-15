@@ -91,6 +91,6 @@ and never become authorization witnesses.
 
 1. NIP-FI for core state, wire behavior, invariants, and direct admission.
 2. NIP-FI-EDGE for a trusted-enterprise edge.
-3. NIP-FI-LIFECYCLE for provisioning, disablement, recovery, and re-enablement.
+3. NIP-FI-LIFECYCLE for provisioning, disablement, and re-enablement.
 4. NIP-FI-DELEG for delegated agents.
 5. NIP-FI-CONF for claim and evidence rules.
