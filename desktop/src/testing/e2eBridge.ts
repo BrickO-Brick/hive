@@ -3840,6 +3840,14 @@ function setMockPresenceStatus(pubkey: string, status: PresenceStatus) {
 }
 
 function resolveHandler(handler: unknown): WsHandler {
+  const deliver = resolveRawHandler(handler);
+  // The native plugin coalesces inbound frames and always delivers an array
+  // (native_websocket.rs `FrameBatch::flush`). Emitting bare frames here would
+  // green the e2e suites against a transport shape production no longer sends.
+  return (message) => deliver([message]);
+}
+
+function resolveRawHandler(handler: unknown): WsHandler {
   if (typeof handler === "function") {
     return handler as WsHandler;
   }
