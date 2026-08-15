@@ -1,0 +1,51 @@
+# GEPA lineage v4 = v3 base + TWO generic paragraphs, each promoted through the
+# no-bench-maxxing gate (Tyler directive msg c65caed4: zero task-specific facts;
+# must not regress full-89 — this manifest IS that cross-task gate vs v2 59/89).
+# 1) Reference-artifact alignment + identity/correspondence lock (Wren's exact
+#    promoted wording, evt a0e979f0): sam-cell-seg lineage 0 -> r1 3/6 -> r2 4/6,
+#    the first bar-clearing arm of the lap. Overlap behavior unchanged across
+#    rounds = fixed the chosen failure class, not geometry-cleanup score-buying.
+# 2) Numeric-deliverable validation (raman ladder distillate, parked at best 2/6
+#    after 6 rounds): raw-input print, absolute-over-relative reference
+#    agreement, unit-conversions-first + whole-range transform sanity +
+#    re-identify from transformed positions, fit raw with free offset,
+#    baseline-anchored windows (widen never tighten), first-half-of-budget clamp.
+#    Ladder receipts: r1 ratio-validated wrong axis, r3 Changeling identity
+#    swap, r5 inverted window advice, r6 2/6 with G passing 5/5 scored trials.
+# NOT promoted (weaker/parked evidence): corpus-gate + hermetic (filter-js
+# 0/23 lifetime), edgebias/lastcontact/minimaledit/redteam, F-1 convention.
+schema_version: "1"
+condition: tb-gepa-twins-v4
+timing_signal: true
+roster:
+  - id: mia
+    kind: orchestrator
+    role: conn
+    require_reply: true
+    count: 1
+    endpoint: deepseek-ai/Deepseek-V4-Flash
+    model_revision: deepseek/deepseek-v4-flash-20260731
+    prompt:
+      path: personas/bench/gepa/mia-v4-base.md
+      sha256: 81e6eb42495860d30279f7a14e92f071e5c8c7971388f7f1adf5e64701263f34
+    generation:
+      thinking_effort: high
+  - id: mie
+    kind: worker
+    role: twin
+    count: 1
+    endpoint: deepseek-ai/Deepseek-V4-Flash
+    model_revision: deepseek/deepseek-v4-flash-20260731
+    prompt:
+      path: personas/bench/gepa/mie-v0.md
+      sha256: a4924e4c4507ac466a7500bb34a04a782618df41dba850b6f0f729787c48439b
+    generation:
+      thinking_effort: high
+prices:
+  deepseek-ai/Deepseek-V4-Flash:
+    input_per_million_usd: 0.14
+    cached_input_per_million_usd: 0.14
+    output_per_million_usd: 0.28
+    cache_read_rate: 0.0
+trial_budget:
+  timeout_seconds: 36000
