@@ -729,6 +729,7 @@ export function WorkflowConditionBuilder({
                 return (
                   <div
                     className={cn(
+                      isExpanded && "pb-4 last:pb-0",
                       isExpanded &&
                         conditionFieldUsesFullHeightPicker(field.value) &&
                         "flex min-h-0 flex-1 flex-col",
@@ -760,11 +761,7 @@ export function WorkflowConditionBuilder({
                         <EmojiConditionSummary editor={editor} />
                       ) : (
                         <span className="max-w-40 truncate text-sm text-muted-foreground">
-                          {editor
-                            ? editorSummary(editor)
-                            : field.value === "trigger_text"
-                              ? "Any"
-                              : "Off"}
+                          {editor ? editorSummary(editor) : "Any"}
                         </span>
                       )}
                       <ChevronRight
