@@ -121,47 +121,59 @@ The names in the private-condition column are fixture identifiers for this
 enumeration. Six of them — `key_mismatch`, `attestation_required`,
 `binding_conflict`, `pair_retired`, `key_revoked`, and `binding_required` — are
 the symbols core's preparation pseudocode denies by name, and that list MUST
-equal core's set exactly. Rows 8 and 14, `policy_denied` and
-`dependency_unreadable`, are core's conditions expressed only in prose — a bare
-policy denial and `FI-INV-14` fail-closed — and core is not required to name
+equal core's set exactly. `policy_denied` and `dependency_unreadable` are core's
+conditions expressed only in prose — a bare policy denial and `FI-INV-14`
+fail-closed — and core is not required to name
 them symbolically; they are the only two core rows so exempted. The remaining
 rows name conditions the profiles define in prose. None is a wire value, and a
 deployment MAY use different private reason codes internally as long as every
 enumerated condition has a fixture.
 
-Rows 3–13 are the private-state anonymity set. Their public responses MUST
-compare byte-identical to each other, not merely equal in prefix or status.
+Every row whose public class is `authorization_denied` is in the private-state
+anonymity set. Their public responses MUST compare byte-identical to each other,
+not merely equal in prefix or status.
 Rows for an unclaimed profile are `not-applicable` with absence evidence. A
 profile that introduces a new private condition MUST add its row; an
 unenumerated condition escapes this oracle entirely.
 
 The anonymity comparison is **wider than the interoperability compared object
 defined below, and deliberately so**. Between two private conditions on the same
-implementation, every response byte MUST agree except values a server cannot
+implementation, every response byte as transmitted MUST agree — including
+transfer framing, and not only the content — except values a server cannot
 hold constant across two instants, such as `Date`. It is not limited to the
 header fields core names. The narrower object below exists because two
 *different* implementations cannot be required to agree on fields core does not
 pin; that reasoning does not apply within one implementation, where any field
 varying by private condition is a disclosure whatever its name. A suite that
 reuses the interoperability object here would pass an implementation that
-returns its private reason code in an unnamed header.
+returns its private reason code in an unnamed header, or one that varies its
+chunk boundaries by private condition.
 
 **Enumeration agreement.** The preceding paragraph makes a quantified claim
 about this table, and a fix verified against the one row it changes can still
-falsify it. Rows 8 and 14 are the **prose-only allowlist**: core's conditions
-that core is not required to name symbolically. The suite MUST check,
-mechanically at the claimed head (`FI-CONF-DENIAL-FIXTURES`):
+falsify it. `policy_denied` and `dependency_unreadable` are the **prose-only
+allowlist**: core's conditions that core is not required to name symbolically.
+Both sets here are named by symbol, never by row number, because this table is
+required to grow and every positional reference silently retargets when it does.
+The suite MUST check, mechanically at the claimed head
+(`FI-CONF-DENIAL-FIXTURES`):
 
 1. every symbol core denies by name has a row here;
 2. every symbol core denies by name is attributed to core;
 3. the naming paragraph above lists exactly the symbols core denies by name;
 4. the count word in that paragraph equals the number of symbols it lists;
-5. every core-attributed row that is a named symbol carries the same public
-   class — quantified over core's symbolic set, not over all core-attributed
-   rows, since `dependency_unreadable` is correctly `authorization_unavailable`;
+5. every symbol core denies by name carries the same public class — quantified
+   over core's symbolic set, not over all core-attributed rows, since
+   `dependency_unreadable` is core-attributed and correctly
+   `authorization_unavailable`;
 6. no allowlist entry appears in core's symbolic denial set; and
-7. the set of core-attributed rows equals core's symbolic denial set together
-   with the allowlist, exactly.
+7. the set of symbols named by core-attributed rows equals core's symbolic
+   denial set together with the allowlist, exactly.
+
+Every check above MUST be run against the unmutated document and be green before
+any mutant is scored. A check that is red on a conforming document detects
+nothing: it cannot be observed to flip, so every mutant reads as caught. Two of
+these checks shipped red for exactly that reason.
 
 Checks 3 and 4 are independent and neither implies the other: an editor who
 corrects the count without the names is caught by 3, and one who corrects the
@@ -183,11 +195,28 @@ two implementations. The anonymity comparison above is wider. Byte-identity is
 asserted over the response bytes an implementation chooses, which excludes bytes
 a conforming HTTP server cannot hold constant. Over Nostr the compared object is
 the complete relay message excluding only the event or subscription identifier
-echoed from the request. Over HTTP the compared object is exactly what NIP-FI
-core pins: the status code, the complete body, and the exact values of only the
-header fields core's denial table names. Header order and unnamed header fields
-are outside it, and their values MUST NOT depend on the private condition —
-which the anonymity requirement above already demands and tests directly.
+echoed from the request, encoded as compact JSON with no insignificant
+whitespace, per NIP-01's serialization rules. Over HTTP the compared object is
+exactly what NIP-FI core pins: the status code, the complete body, and the exact
+values of only the header fields core's denial table names. Header field *names*
+are matched case-insensitively per RFC 9110 Section 5.1; their values are
+compared exactly. The compared body is the *content* per RFC 9110 Section 6.4 —
+after transfer-decoding, chunk framing and trailer fields excluded — not the
+message body on the wire. That reading is scoped to this interoperability object
+and does not reach the anonymity comparison above, which stays over transmitted
+octets. `Content-Length` is deliberately not pinned: framing is the sender's
+choice and pinning it would widen the object for no privacy gain.
+Header order and unnamed header fields are outside it, and their values MUST NOT
+depend on the private condition — which the anonymity requirement above already
+demands and tests directly.
+
+Each of these three readings is stated because an independently written
+conforming implementation diverges on it by language default, not by error: a
+canonicalizing HTTP library emits `Www-Authenticate`, a server that sets no
+`Content-Length` frames the body as chunked, and a JSON encoder inserts spaces
+after `,` and `:`. An exit test whose result depends on a convention this
+document does not state is the same defect as an oracle no pair can satisfy,
+one layer down.
 
 Comparing the ordered sequence of header field names, or every header value
 except `Date`, would fail every conforming pair. Two independent servers emit
