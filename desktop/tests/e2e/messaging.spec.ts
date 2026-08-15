@@ -2835,8 +2835,16 @@ test("superseded sidebar feedback cannot override newer navigation", async ({
   await page.getByTestId("channel-general").click();
   await expect(page.getByTestId("chat-title")).toHaveText("general");
 
-  await page.getByTestId("channel-random").click();
-  await page.getByRole("button", { name: "Inbox" }).click();
+  await page.evaluate(() => {
+    document
+      .querySelector<HTMLElement>('[data-testid="channel-random"]')
+      ?.click();
+    const inboxButton = document.querySelector<HTMLButtonElement>(
+      '[data-testid="open-home-view"]',
+    );
+    if (!inboxButton) throw new Error("Expected Inbox button");
+    inboxButton.click();
+  });
 
   await expect(page.getByTestId("home-inbox")).toBeVisible();
   await page.waitForTimeout(100);
@@ -2845,6 +2853,58 @@ test("superseded sidebar feedback cannot override newer navigation", async ({
     "data-active",
     "false",
   );
+});
+
+test("back navigation supersedes pending sidebar navigation", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+  await expect(page.getByTestId("chat-title")).toHaveText("general");
+
+  const historyLength = await page.evaluate(() => window.history.length);
+  await page.evaluate(() => {
+    document
+      .querySelector<HTMLElement>('[data-testid="channel-random"]')
+      ?.click();
+    document
+      .querySelector<HTMLButtonElement>('[data-testid="global-back"]')
+      ?.click();
+  });
+
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.getByTestId("home-inbox")).toBeVisible();
+  await page.waitForTimeout(100);
+  await expect(page.getByTestId("home-inbox")).toBeVisible();
+  expect(await page.evaluate(() => window.history.length)).toBe(historyLength);
+});
+
+test("forward navigation supersedes pending sidebar navigation", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+  await expect(page.getByTestId("chat-title")).toHaveText("general");
+  await page.getByTestId("channel-random").click();
+  await expect(page.getByTestId("chat-title")).toHaveText("random");
+  await page.getByTestId("global-back").click();
+  await expect(page.getByTestId("chat-title")).toHaveText("general");
+
+  const historyLength = await page.evaluate(() => window.history.length);
+  await page.evaluate(() => {
+    document
+      .querySelector<HTMLElement>('[data-testid="channel-watercooler"]')
+      ?.click();
+    document
+      .querySelector<HTMLButtonElement>('[data-testid="global-forward"]')
+      ?.click();
+  });
+
+  await expect(page.getByTestId("chat-title")).toHaveText("random");
+  await expect(page).toHaveURL(/#\/channels\/[^?]+$/);
+  await page.waitForTimeout(100);
+  await expect(page.getByTestId("chat-title")).toHaveText("random");
+  expect(await page.evaluate(() => window.history.length)).toBe(historyLength);
 });
 
 test("thread open paints immediate feedback before deferred panel work", async ({

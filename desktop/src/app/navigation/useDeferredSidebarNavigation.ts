@@ -22,7 +22,7 @@ export function useDeferredSidebarNavigation({
   const pathnameRef = React.useRef(pathname);
   pathnameRef.current = pathname;
 
-  const cancel = React.useCallback(() => {
+  const cancelDeferred = React.useCallback(() => {
     generationRef.current += 1;
     if (frameRef.current !== null) {
       window.cancelAnimationFrame(frameRef.current);
@@ -32,10 +32,23 @@ export function useDeferredSidebarNavigation({
       window.clearTimeout(timerRef.current);
       timerRef.current = null;
     }
-    setPendingChannelId(null);
   }, []);
 
+  const cancel = React.useCallback(() => {
+    cancelDeferred();
+    setPendingChannelId(null);
+  }, [cancelDeferred]);
+
   React.useEffect(() => cancel, [cancel]);
+  React.useEffect(() => {
+    const handleNavigationIntent = () => cancelDeferred();
+    window.addEventListener("buzz:navigation-intent", handleNavigationIntent);
+    return () =>
+      window.removeEventListener(
+        "buzz:navigation-intent",
+        handleNavigationIntent,
+      );
+  }, [cancelDeferred]);
   React.useEffect(() => {
     // A committed route change supersedes any deferred sidebar intent.
     void pathname;
@@ -84,5 +97,5 @@ export function useDeferredSidebarNavigation({
     [cancel, selectChannel],
   );
 
-  return { cancel, pendingChannelId, selectDeferred };
+  return { pendingChannelId, selectDeferred };
 }

@@ -155,7 +155,6 @@ export function AppShell() {
     [location.pathname],
   );
   const {
-    cancel: cancelPendingSidebarNavigation,
     pendingChannelId: pendingSidebarChannelId,
     selectDeferred: handleSidebarChannelSelect,
   } = useDeferredSidebarNavigation({
@@ -858,10 +857,7 @@ export function AppShell() {
                             });
                           await goChannel(directMessage.id);
                         }}
-                        onSelectAgents={() => {
-                          cancelPendingSidebarNavigation();
-                          void goAgents();
-                        }}
+                        onSelectAgents={() => void goAgents()}
                         onSelectChannel={handleSidebarChannelSelect}
                         onOpenSearchResult={handleOpenSearchResult}
                         searchChannels={channels}
@@ -869,18 +865,9 @@ export function AppShell() {
                           searchFocusRequest,
                           scopeSearchFocusRequest,
                         ]}
-                        onSelectHome={() => {
-                          cancelPendingSidebarNavigation();
-                          void goHome();
-                        }}
-                        onSelectProjects={() => {
-                          cancelPendingSidebarNavigation();
-                          void goProjects();
-                        }}
-                        onSelectPulse={() => {
-                          cancelPendingSidebarNavigation();
-                          void goPulse();
-                        }}
+                        onSelectHome={() => void goHome()}
+                        onSelectProjects={() => void goProjects()}
+                        onSelectPulse={() => void goPulse()}
                         onSelectSettings={handleOpenSettings}
                         onSelectWorkflows={() => void goWorkflows()}
                         onSetPresenceStatus={(status) =>
@@ -904,7 +891,9 @@ export function AppShell() {
                             : undefined
                         }
                         selectedChannelId={sidebarSelectedChannelId}
-                        selectedView={selectedView}
+                        selectedView={
+                          pendingSidebarChannelId ? "channel" : selectedView
+                        }
                         unreadChannelIds={unreadChannelIds}
                         previewActivityChannelIds={unreadThreadChannelIds}
                         unreadChannelCounts={unreadChannelCounts}

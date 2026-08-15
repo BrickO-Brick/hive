@@ -105,6 +105,7 @@ export function AppSidebarPrimaryMenu({
         <SidebarMenuItem>
           <SidebarMenuButton
             className="data-[active=true]:font-normal"
+            data-testid="open-home-view"
             isActive={selectedView === "home"}
             onClick={onSelectHome}
             tooltip="Inbox"
