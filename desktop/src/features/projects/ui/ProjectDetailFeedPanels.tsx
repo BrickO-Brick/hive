@@ -13,6 +13,7 @@ import type {
 } from "@/features/projects/hooks";
 import { relativeTime } from "@/features/projects/lib/projectsViewHelpers";
 import type { ProjectRepoCommit } from "@/shared/api/types";
+import { truncatePubkey } from "@/shared/lib/pubkey";
 import {
   resolveUserLabel,
   type UserProfileLookup,
@@ -109,7 +110,7 @@ export function ContributorsPanel({
         isAgent,
         label: profile
           ? resolveUserLabel({ profiles, pubkey })
-          : `${pubkey.slice(0, 8)}…`,
+          : truncatePubkey(pubkey),
         profileLinked: true,
         pubkey,
         reviewCount: signedCounts.reviews,
