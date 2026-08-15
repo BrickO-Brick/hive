@@ -288,11 +288,15 @@ export function WorkflowsView({
               : `${editor.mode}:${editor.workflowId}`
           }
           mode={editor.mode}
+          onDeleteWorkflow={handleDelete}
+          onDuplicateWorkflow={onDuplicateWorkflow}
+          onEditWorkflow={onEditWorkflow}
           onEditorPaneChange={onEditorPaneChange}
           onOpenChange={(open) => {
             if (!open) onCloseEditor();
           }}
           open
+          onTriggerWorkflow={handleTrigger}
           pane={editor.pane}
           workflow={editorWorkflow}
         />

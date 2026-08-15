@@ -32,12 +32,14 @@ import {
 } from "@/shared/ui/dialog";
 import { Input } from "@/shared/ui/input";
 import { ChannelCombobox } from "./ChannelCombobox";
+import { WorkflowActionsMenu } from "./WorkflowActionsMenu";
 import {
   WorkflowFormBuilder,
   type WorkflowEditorMode,
   type WorkflowFormBuilderHandle,
 } from "./WorkflowFormBuilder";
 import { WorkflowWebhookSecretDialog } from "./WorkflowWebhookSecretDialog";
+import { getWorkflowEnabled } from "./workflowDefinition";
 import type { WorkflowEditorPane } from "./workflowEditorPane";
 import {
   DEFAULT_FORM_STATE,
@@ -50,8 +52,12 @@ type DialogMode = "create" | "edit" | "duplicate";
 type WorkflowDialogProps = {
   channels: Channel[];
   mode: DialogMode;
+  onDeleteWorkflow: (workflow: Workflow) => void;
+  onDuplicateWorkflow: (workflowId: string) => void;
+  onEditWorkflow: (workflowId: string) => void;
   onEditorPaneChange: (pane: WorkflowEditorPane) => void;
   onOpenChange: (open: boolean) => void;
+  onTriggerWorkflow: (workflowId: string) => void;
   open: boolean;
   pane: WorkflowEditorPane;
   workflow?: Workflow | null;
@@ -109,6 +115,24 @@ function yamlWithWorkflowName(yaml: string, name: string): string | null {
   const document = parseDocument(yaml);
   if (document.errors.length > 0 || !isMap(document.contents)) return null;
   document.set("name", name);
+  return document.toString();
+}
+
+function yamlWithWorkflowEnabled(
+  yaml: string,
+  enabled: boolean,
+): string | null {
+  if (!yaml.trim()) {
+    return formStateToYaml({ ...DEFAULT_FORM_STATE, enabled });
+  }
+
+  const document = parseDocument(yaml);
+  if (document.errors.length > 0 || !isMap(document.contents)) return null;
+  if (enabled) {
+    document.delete("enabled");
+  } else {
+    document.set("enabled", false);
+  }
   return document.toString();
 }
 
@@ -214,8 +238,12 @@ function WorkflowNameEditor({
 export function WorkflowDialog({
   channels,
   mode,
+  onDeleteWorkflow,
+  onDuplicateWorkflow,
+  onEditWorkflow,
   onEditorPaneChange,
   onOpenChange,
+  onTriggerWorkflow,
   open,
   pane,
   workflow,
@@ -419,6 +447,11 @@ export function WorkflowDialog({
   const workflowName = visibleWorkflowName(yamlDefinition, workflow?.name);
   const canEditWorkflowName =
     !yamlDefinition.trim() || yamlToFormState(yamlDefinition).ok;
+  const workflowEnabled = parsedDefinition?.ok
+    ? parsedDefinition.state.enabled
+    : workflow
+      ? getWorkflowEnabled(workflow.definition)
+      : true;
   const handleWorkflowNameCommit = React.useCallback(
     (name: string) => {
       const nextYaml = yamlWithWorkflowName(yamlDefinitionRef.current, name);
@@ -430,6 +463,16 @@ export function WorkflowDialog({
     },
     [mutation.reset],
   );
+  const handleToggleWorkflowEnabled = React.useCallback(() => {
+    const nextYaml = yamlWithWorkflowEnabled(
+      yamlDefinitionRef.current,
+      !workflowEnabled,
+    );
+    if (nextYaml === null) return;
+    mutation.reset();
+    yamlDefinitionRef.current = nextYaml;
+    setYamlDefinition(nextYaml);
+  }, [mutation.reset, workflowEnabled]);
 
   const showChannelSelector = mode !== "edit";
 
@@ -465,7 +508,9 @@ export function WorkflowDialog({
                 />
                 <div
                   className={
-                    editorMode === "form" && !workflowNameEditing
+                    mode !== "edit" &&
+                    editorMode === "form" &&
+                    !workflowNameEditing
                       ? "flex items-center"
                       : "hidden"
                   }
@@ -474,6 +519,17 @@ export function WorkflowDialog({
               </div>
             </div>
             <div className="flex items-center gap-2">
+              {mode === "edit" && workflow ? (
+                <WorkflowActionsMenu
+                  isEnabled={workflowEnabled}
+                  isTogglingEnabled={mutation.isPending || !canEditWorkflowName}
+                  onDelete={() => onDeleteWorkflow(workflow)}
+                  onDuplicate={() => onDuplicateWorkflow(workflow.id)}
+                  onEdit={() => onEditWorkflow(workflow.id)}
+                  onToggleEnabled={handleToggleWorkflowEnabled}
+                  onTrigger={() => onTriggerWorkflow(workflow.id)}
+                />
+              ) : null}
               <DialogClose asChild>
                 <Button
                   aria-label="Close"
@@ -493,7 +549,7 @@ export function WorkflowDialog({
               channels={channels}
               disabled={mutation.isPending}
               mode={editorMode}
-              nameLeadingContainer={nameLeadingElement}
+              nameLeadingContainer={mode === "edit" ? null : nameLeadingElement}
               onChange={(yaml) => {
                 mutation.reset();
                 yamlDefinitionRef.current = yaml;

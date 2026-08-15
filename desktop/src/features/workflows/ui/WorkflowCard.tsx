@@ -2,20 +2,13 @@ import {
   ArrowRight,
   CalendarClock,
   CircleCheckBig,
-  Copy,
   GitPullRequest,
   Hash,
   MessageCircle,
   MessageSquare,
-  MoreHorizontal,
-  Pencil,
-  Play,
-  Power,
-  PowerOff,
   Send,
   SmilePlus,
   Timer,
-  Trash2,
   Webhook,
   Zap,
 } from "lucide-react";
@@ -27,16 +20,7 @@ import type { Workflow } from "@/shared/api/types";
 import { cn } from "@/shared/lib/cn";
 import { emojiDisplayName } from "@/shared/lib/emojiName";
 import { rewriteRelayUrl } from "@/shared/lib/mediaUrl";
-import { Button } from "@/shared/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuCheckboxItem,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/shared/ui/dropdown-menu";
-import { Switch } from "@/shared/ui/switch";
+import { WorkflowActionsMenu } from "./WorkflowActionsMenu";
 import {
   getWorkflowCardLabel,
   getWorkflowDisplayStatus,
@@ -355,62 +339,15 @@ export function WorkflowCard({
 
           <div className="pointer-events-auto flex items-center gap-1.5">
             <StatusBadge status={displayStatus} />
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  aria-label="Workflow actions"
-                  className="h-8 w-8 text-muted-foreground hover:bg-background/80 hover:text-foreground data-[state=open]:bg-background/80 data-[state=open]:text-foreground"
-                  size="icon"
-                  variant="ghost"
-                >
-                  <MoreHorizontal className="h-4 w-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={() => onTrigger(workflow.id)}>
-                  <Play className="mr-2 h-4 w-4" />
-                  Trigger
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => onEdit(workflow)}>
-                  <Pencil className="mr-2 h-4 w-4" />
-                  Edit
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => onDuplicate(workflow)}>
-                  <Copy className="mr-2 h-4 w-4" />
-                  Duplicate
-                </DropdownMenuItem>
-                <DropdownMenuCheckboxItem
-                  checked={isEnabled}
-                  className="gap-2 pl-2 [&>span:first-child]:hidden"
-                  disabled={isTogglingEnabled}
-                  onCheckedChange={(checked) => {
-                    if (checked !== isEnabled) onToggleEnabled(workflow);
-                  }}
-                  onSelect={(event) => event.preventDefault()}
-                >
-                  {isEnabled ? (
-                    <Power className="mr-2 h-4 w-4 shrink-0" />
-                  ) : (
-                    <PowerOff className="mr-2 h-4 w-4 shrink-0" />
-                  )}
-                  <span>Enable</span>
-                  <Switch
-                    aria-hidden="true"
-                    checked={isEnabled}
-                    className="pointer-events-none ml-auto"
-                    tabIndex={-1}
-                  />
-                </DropdownMenuCheckboxItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  className="text-destructive"
-                  onClick={() => onDelete(workflow)}
-                >
-                  <Trash2 className="mr-2 h-4 w-4" />
-                  Delete
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+            <WorkflowActionsMenu
+              isEnabled={isEnabled}
+              isTogglingEnabled={isTogglingEnabled}
+              onDelete={() => onDelete(workflow)}
+              onDuplicate={() => onDuplicate(workflow)}
+              onEdit={() => onEdit(workflow)}
+              onToggleEnabled={() => onToggleEnabled(workflow)}
+              onTrigger={() => onTrigger(workflow.id)}
+            />
           </div>
         </div>
 

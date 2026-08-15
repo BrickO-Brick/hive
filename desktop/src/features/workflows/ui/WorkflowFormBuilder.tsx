@@ -436,11 +436,19 @@ export const WorkflowFormBuilder = React.forwardRef<
     if (!yaml.trim()) return;
     const result = yamlToFormState(yaml);
     if (!result.ok) return;
-    setFormState((current) =>
-      current.name === result.state.name
-        ? current
-        : { ...current, name: result.state.name },
-    );
+    setFormState((current) => {
+      if (
+        current.name === result.state.name &&
+        current.enabled === result.state.enabled
+      ) {
+        return current;
+      }
+      return {
+        ...current,
+        enabled: result.state.enabled,
+        name: result.state.name,
+      };
+    });
   }, [yaml]);
 
   const selectNode = React.useCallback(
