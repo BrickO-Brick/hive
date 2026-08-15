@@ -236,6 +236,19 @@ test.describe("list virtualization", () => {
         );
       }, expectedId);
 
+    // Transfer scroll ownership away from initial bottom settling with the same
+    // native input path a reader uses. The deterministic scrollTop assignments
+    // below position each boundary crossing; by themselves they do not emit
+    // wheel/pointer/touch intent and therefore cannot retire bottom settling.
+    const initialBox = await timeline.boundingBox();
+    if (!initialBox) throw new Error("timeline has no bounding box");
+    await page.mouse.move(
+      initialBox.x + initialBox.width / 2,
+      initialBox.y + initialBox.height / 2,
+    );
+    await page.mouse.wheel(0, -1);
+    await page.waitForTimeout(50);
+
     // Load fifteen consecutive server pages in one mounted virtualizer. This
     // is the production shape that exposed the intermittent end-cache snap:
     // variable-height rows and repeated front insertions exercise the full
@@ -563,16 +576,18 @@ test.describe("list virtualization", () => {
   });
 });
 
-test("thread-heavy history mounts every loaded row", async ({ page }) => {
+test("thread-heavy history keeps a bounded painted viewport", async ({
+  page,
+}) => {
   await installMockBridge(page);
   await page.goto("/");
   await page.waitForFunction(
     () => typeof window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__ === "function",
   );
 
-  // Seed summaries on 120 loaded roots. Every loaded row should be realized
-  // immediately so first-pass scrolling never encounters Virtua's hidden
-  // pre-measurement state.
+  // Seed summaries on 120 loaded roots. The bounded retention window should
+  // still paint every mounted row, without realizing the complete 50-root
+  // relay page before the reader moves through it.
   await page.evaluate(() => {
     for (let index = 480; index < 600; index += 1) {
       window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
@@ -603,9 +618,15 @@ test("thread-heavy history mounts every loaded row", async ({ page }) => {
   await page.waitForTimeout(300);
 
   const loadedRows = timeline.locator("[data-message-id]");
-  // The mock channel's current loaded window contains 50 roots; all of them
-  // must already exist and be painted before the first scroll gesture.
-  await expect(loadedRows).toHaveCount(50);
+  const loadedRowCount = await loadedRows.count();
+  // The current relay window still carries 50 roots, while only the viewport
+  // plus the narrow keep-mounted bands should exist as live row DOM.
+  expect(loadedRowCount).toBeGreaterThan(6);
+  expect(loadedRowCount).toBeLessThan(50);
+  const completeSnapshotCount = await page
+    .locator("[data-live-message-count]")
+    .evaluate((element) => Number(element.dataset.liveMessageCount ?? "0"));
+  expect(completeSnapshotCount).toBeGreaterThan(loadedRowCount);
   expect(
     await loadedRows.evaluateAll((rows) =>
       rows.every((row) => getComputedStyle(row).visibility === "visible"),
@@ -810,10 +831,8 @@ test("live tail arrivals stay buffered while reading and release on jump", async
 
   const timeline = page.getByTestId("message-timeline");
   await expect(timeline.locator("[data-message-id]").first()).toBeVisible();
-  await timeline.evaluate((element) => {
-    element.scrollTop = Math.max(500, element.scrollHeight / 2);
-    element.dispatchEvent(new Event("scroll", { bubbles: true }));
-  });
+  await timeline.hover();
+  await page.mouse.wheel(0, -800);
   await expect(page.getByTestId("message-scroll-to-latest")).toBeVisible();
   const frozenHeight = await timeline.evaluate(
     (element) => element.scrollHeight,

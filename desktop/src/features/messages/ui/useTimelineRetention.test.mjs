@@ -67,20 +67,26 @@ it("does not keep the full timeline mounted before the viewport is measured", as
   const root = createRoot(document.getElementById("root"));
   await act(async () => root.render(React.createElement(Harness)));
 
-  assert.equal(retention.retainedIndices.length, 100);
-  assert.equal(retention.retainedIndices[0], 9_900);
+  assert.equal(retention.retainedIndices.length, 8);
+  assert.equal(retention.retainedIndices[0], 9_992);
   assert.equal(retention.retainedIndices.at(-1), 9_999);
 
   await act(async () => initialRefresh());
-  assert.ok(retention.retainedIndices.length > 0);
-  assert.ok(retention.retainedIndices.length < 500);
+  assert.equal(retention.retainedIndices.length, 51);
+  assert.ok(retention.retainedIndices.includes(4_980));
   assert.ok(retention.retainedIndices.includes(5_000));
+  assert.ok(retention.retainedIndices.includes(5_020));
+  assert.ok(!retention.retainedIndices.includes(4_979));
+  assert.ok(!retention.retainedIndices.includes(5_021));
+  assert.ok(retention.retainedIndices.includes(9_990));
   assert.ok(retention.retainedIndices.includes(9_999));
 
   await act(async () => retention.onScrollEnd());
-  assert.ok(retention.retainedIndices.length > 0);
-  assert.ok(retention.retainedIndices.length < 500);
+  assert.equal(retention.retainedIndices.length, 51);
+  assert.ok(retention.retainedIndices.includes(4_980));
   assert.ok(retention.retainedIndices.includes(5_000));
+  assert.ok(retention.retainedIndices.includes(5_020));
+  assert.ok(retention.retainedIndices.includes(9_990));
   assert.ok(retention.retainedIndices.includes(9_999));
 
   await act(async () => root.unmount());

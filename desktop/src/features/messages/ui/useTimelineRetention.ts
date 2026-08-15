@@ -2,7 +2,7 @@ import * as React from "react";
 import type { VListHandle } from "virtua";
 import { nextRetainedTimelineKeys } from "./timelineRetention";
 
-const INITIAL_RETAINED_TAIL_SIZE = 100;
+const INITIAL_RETAINED_TAIL_SIZE = 8;
 
 export function useTimelineRetention(
   keys: readonly string[],

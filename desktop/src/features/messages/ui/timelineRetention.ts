@@ -14,11 +14,11 @@ export function nextRetainedTimelineKeys(
   const offset = list.scrollOffset;
   const indexAt = (target: number) =>
     list.findItemIndex(Math.min(list.scrollSize, Math.max(0, target)));
-  const admissionStart = indexAt(offset - viewportSize * 8);
-  const admissionEnd = indexAt(offset + viewportSize * 9);
-  const evictionStart = indexAt(offset - viewportSize * 12);
-  const evictionEnd = indexAt(offset + viewportSize * 13);
-  const tailStart = indexAt(list.scrollSize - viewportSize * 3);
+  const admissionStart = indexAt(offset - viewportSize * 2);
+  const admissionEnd = indexAt(offset + viewportSize * 2);
+  const evictionStart = indexAt(offset - viewportSize * 3);
+  const evictionEnd = indexAt(offset + viewportSize * 3);
+  const tailStart = indexAt(list.scrollSize - viewportSize);
   const next = new Set<string>();
 
   for (let index = evictionStart; index <= evictionEnd; index += 1) {

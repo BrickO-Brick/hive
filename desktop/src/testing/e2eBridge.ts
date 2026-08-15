@@ -5139,10 +5139,6 @@ async function handleGetChannelWindow(
     return relayQuery(config, [filter]);
   };
 
-  if (!args.cursor) {
-    return execute();
-  }
-
   const probe = window as unknown as {
     __CHANNEL_WINDOW_FETCH_COUNT__?: number;
     __CHANNEL_WINDOW_INFLIGHT__?: number;
@@ -5150,6 +5146,10 @@ async function handleGetChannelWindow(
   };
   probe.__CHANNEL_WINDOW_FETCH_COUNT__ =
     (probe.__CHANNEL_WINDOW_FETCH_COUNT__ ?? 0) + 1;
+
+  if (!args.cursor) {
+    return execute();
+  }
 
   const delayMs = getConfig()?.mock?.channelWindowDelayMs ?? 0;
   if (delayMs <= 0) {

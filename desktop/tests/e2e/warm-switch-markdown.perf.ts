@@ -9,23 +9,21 @@ import { installMockBridge } from "../helpers/bridge";
  * already in the React Query cache (the everyday alt-tab-between-channels
  * motion). The timeline subtree is keyed by channel id — required so TanStack
  * Router's scroll restoration never writes a stale scrollTop into a reused
- * scroll node — so every switch unmounts and remounts all rows, and each
- * `MessageRow` re-runs the synchronous react-markdown parse pipeline from
- * scratch. This spec is the instrument for that cost.
+ * scroll node. Warm entry therefore mounts a bounded route-correct slice first,
+ * then releases the complete cached snapshot in one transition. This spec gates
+ * that cost and proves the release cannot strand a partial timeline.
  *
  * TWO SCENARIOS, one per axis of the cost:
- *   plain-text  — `deep-history` (600 seeded one-line rows; the initial
- *                 channel window mounts ~50 of them, verified by parse
- *                 count): isolates the per-row remount floor.
+ *   plain-text  — `deep-history` (600 seeded one-line rows; the cached
+ *                 channel window retains 50): isolates the remount floor.
  *   markdown    — `random` + 60 injected markdown-heavy rows (code fences,
- *                 tables, lists, mentions, links): isolates the parse cost the
- *                 markdown cache is meant to remove.
+ *                 tables, lists, mentions, links): exercises expensive visible
+ *                 DOM creation and style recalculation.
  *
  * WHAT A "SWITCH" MEASURES: performance.now() immediately before an in-page
- * .click() on the sidebar link, until (chat title flipped) AND (>= 1 message
- * row committed) AND (no [data-render-pending="true"], i.e. the deferred
- * timeline snapshot caught up to the live one) AND a double-rAF so a frame
- * actually painted. The click and the polling both run in-page so CDP
+ * .click() on the sidebar link, until (chat title flipped) AND the target
+ * channel's expected visible viewport row is painted at the restored bottom
+ * offset with the complete cached snapshot admitted. The click and the
  * round-trip latency never pollutes the numbers. Longtask totals are captured
  * per switch as the "UI froze" axis (see cold-switch-longtask.perf.ts for the
  * rationale).
@@ -37,8 +35,8 @@ import { installMockBridge } from "../helpers/bridge";
  * the same machine are.
  *
  * Run it (from desktop/):
- *   pnpm build
- *   npx playwright test --config=playwright.perf.config.ts warm-switch-markdown.perf.ts
+ *   pnpm build:e2e
+ *   pnpm exec playwright test --config=playwright.perf.config.ts warm-switch-markdown.perf.ts
  *
  * NOTE: the perf web server reuses an existing server on :4173 — if one is
  * already running, kill it or make sure `dist/` is freshly built, otherwise
@@ -48,6 +46,10 @@ import { installMockBridge } from "../helpers/bridge";
 const MEASURED_SWITCHES = 8;
 const THROTTLE_RATE = 4;
 const MARKDOWN_MESSAGE_COUNT = 60;
+const PLAIN_MAX_LONGTASK_MS = 300;
+const MARKDOWN_MAX_LONGTASK_MS = 300;
+const PLAIN_MAX_CORRECT_PAINT_MS = 550;
+const MARKDOWN_MAX_CORRECT_PAINT_MS = 325;
 
 /** One representative agent-style message: fence, table, list, mention,
  * emphasis, inline code, and a link — the mix real Buzz channels carry. */
@@ -80,6 +82,19 @@ type SwitchSample = {
   longtaskTotal: number;
   longtaskMax: number;
   longtaskCount: number;
+  liveMessageCount: number;
+  renderedMessageCount: number;
+  visibleMessageIds: string[];
+  distanceFromBottom: number;
+  rowRenderCount: number;
+  mountedRowCount: number;
+};
+
+type ScenarioResult = {
+  samples: SwitchSample[];
+  cachedMessageCount: number;
+  expectedVisibleMessageIds: string[];
+  windowFetches: number;
 };
 
 function median(values: number[]): number {
@@ -108,15 +123,19 @@ async function waitForMockLiveSubscription(
 }
 
 /** Click the sidebar link and poll — all in-page — until the target channel's
- * rows are committed, the deferred snapshot has caught up, and a frame
- * painted. Returns wall-clock ms plus the longtasks observed in the window. */
+ * correct visible viewport is committed and a frame paints. Returns wall-clock
+ * ms plus the longtasks observed in the window. */
 async function measureSwitch(
   page: import("@playwright/test").Page,
   input: { targetTestId: string; targetTitle: string; rowSelector: string },
 ): Promise<SwitchSample> {
   return page.evaluate(async (args) => {
-    const store = window as unknown as { __LONGTASKS__: number[] };
+    const store = window as unknown as {
+      __LONGTASKS__: number[];
+      __TIMELINE_ROW_RENDER_COUNT__?: number;
+    };
     store.__LONGTASKS__ = [];
+    store.__TIMELINE_ROW_RENDER_COUNT__ = 0;
     const link = document.querySelector<HTMLElement>(
       `[data-testid="${args.targetTestId}"]`,
     );
@@ -131,10 +150,27 @@ async function measureSwitch(
         const title = document.querySelector(
           '[data-testid="chat-title"]',
         )?.textContent;
+        const timeline = document.querySelector<HTMLDivElement>(
+          '[data-testid="message-timeline"]',
+        );
+        const counts = document.querySelector<HTMLElement>(
+          "[data-rendered-message-count]",
+        );
+        const snapshotsMatch =
+          Number(counts?.dataset.liveMessageCount ?? "0") > 0 &&
+          counts?.dataset.renderedMessageCount ===
+            counts?.dataset.liveMessageCount;
+        const atBottom = timeline
+          ? timeline.scrollHeight -
+              timeline.clientHeight -
+              timeline.scrollTop <=
+            2
+          : false;
         const ready =
           title === args.targetTitle &&
           document.querySelector(args.rowSelector) !== null &&
-          document.querySelector('[data-render-pending="true"]') === null;
+          snapshotsMatch &&
+          atBottom;
         if (ready) {
           requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
           return;
@@ -150,11 +186,46 @@ async function measureSwitch(
 
     const elapsed = performance.now() - start;
     const tasks = store.__LONGTASKS__ ?? [];
+    const snapshot = document.querySelector<HTMLElement>(
+      "[data-rendered-message-count]",
+    );
+    const timeline = document.querySelector<HTMLDivElement>(
+      '[data-testid="message-timeline"]',
+    );
+    const timelineRect = timeline?.getBoundingClientRect();
+    const visibleMessageIds =
+      timeline && timelineRect
+        ? Array.from(
+            timeline.querySelectorAll<HTMLElement>("[data-message-id]"),
+          )
+            .filter((row) => {
+              const rect = row.getBoundingClientRect();
+              return (
+                rect.bottom > timelineRect.top && rect.top < timelineRect.bottom
+              );
+            })
+            .map((row) => row.dataset.messageId ?? "")
+            .filter(Boolean)
+        : [];
+    const distanceFromBottom = timeline
+      ? timeline.scrollHeight - timeline.clientHeight - timeline.scrollTop
+      : Number.POSITIVE_INFINITY;
+    const liveMessageCount = Number(snapshot?.dataset.liveMessageCount ?? "0");
+    const renderedMessageCount = Number(
+      snapshot?.dataset.renderedMessageCount ?? "0",
+    );
     return {
       ms: elapsed,
       longtaskTotal: tasks.reduce((sum, duration) => sum + duration, 0),
       longtaskMax: tasks.length ? Math.max(...tasks) : 0,
       longtaskCount: tasks.length,
+      liveMessageCount,
+      renderedMessageCount,
+      visibleMessageIds,
+      distanceFromBottom,
+      rowRenderCount: store.__TIMELINE_ROW_RENDER_COUNT__ ?? 0,
+      mountedRowCount:
+        timeline?.querySelectorAll("[data-message-id]").length ?? 0,
     };
   }, input);
 }
@@ -167,16 +238,26 @@ async function runScenario(
     targetTitle: string;
     rowSelector: string;
   },
-): Promise<SwitchSample[]> {
+): Promise<ScenarioResult> {
   const back = {
     targetTestId: "channel-general",
     targetTitle: "general",
     rowSelector: "[data-message-id]",
   };
 
-  // Untimed warmup round-trip: caches both channels' queries.
-  await measureSwitch(page, input);
+  // Untimed warmup round-trip: caches both channels' queries. Its settled
+  // message count is the complete cached window every measured re-entry must
+  // release after the bounded first paint.
+  const warmup = await measureSwitch(page, input);
+  const cachedMessageCount = warmup.liveMessageCount;
+  const expectedVisibleMessageIds = warmup.visibleMessageIds;
   await measureSwitch(page, back);
+
+  await page.evaluate(() => {
+    (
+      window as unknown as { __CHANNEL_WINDOW_FETCH_COUNT__?: number }
+    ).__CHANNEL_WINDOW_FETCH_COUNT__ = 0;
+  });
 
   const samples: SwitchSample[] = [];
   for (let run = 0; run < MEASURED_SWITCHES; run += 1) {
@@ -195,6 +276,11 @@ async function runScenario(
   console.log(
     `per-switch longtask ms:  [${longtaskTotals.map((v) => v.toFixed(1)).join(", ")}]`,
   );
+  console.log(
+    `row renders / mounted:    [${samples
+      .map((sample) => `${sample.rowRenderCount}/${sample.mountedRowCount}`)
+      .join(", ")}]`,
+  );
   console.log(`MEDIAN wall ms:          ${median(times).toFixed(1)}`);
   console.log(
     `MEDIAN longtask total:   ${median(longtaskTotals).toFixed(1)}ms`,
@@ -203,7 +289,53 @@ async function runScenario(
     `worst single longtask:   ${Math.max(...samples.map((sample) => sample.longtaskMax)).toFixed(1)}ms`,
   );
   /* eslint-enable no-console */
-  return samples;
+  const windowFetches = await page.evaluate(
+    () =>
+      (window as unknown as { __CHANNEL_WINDOW_FETCH_COUNT__?: number })
+        .__CHANNEL_WINDOW_FETCH_COUNT__ ?? 0,
+  );
+  return {
+    samples,
+    cachedMessageCount,
+    expectedVisibleMessageIds,
+    windowFetches,
+  };
+}
+
+async function fetchOneOlderWindow(
+  page: import("@playwright/test").Page,
+): Promise<number> {
+  return page.evaluate(async () => {
+    const timeline = document.querySelector<HTMLDivElement>(
+      '[data-testid="message-timeline"]',
+    );
+    if (!timeline) throw new Error("missing message timeline");
+    const probe = window as unknown as {
+      __CHANNEL_WINDOW_FETCH_COUNT__?: number;
+    };
+    probe.__CHANNEL_WINDOW_FETCH_COUNT__ = 0;
+
+    for (let step = 0; step < 400; step += 1) {
+      timeline.scrollBy(0, -300);
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => window.setTimeout(resolve, 25)),
+      );
+      if ((probe.__CHANNEL_WINDOW_FETCH_COUNT__ ?? 0) > 0) break;
+    }
+
+    const deadline = performance.now() + 5_000;
+    while (document.querySelector('[data-render-pending="true"]') !== null) {
+      if (performance.now() > deadline) {
+        throw new Error("older window did not finish rendering");
+      }
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => resolve()),
+      );
+    }
+    // Give a faulty re-armed observer time to issue a duplicate request.
+    await new Promise((resolve) => window.setTimeout(resolve, 250));
+    return probe.__CHANNEL_WINDOW_FETCH_COUNT__ ?? 0;
+  });
 }
 
 test("MEASURE: warm channel-switch cost (plain 300-row + markdown-heavy)", async ({
@@ -285,9 +417,55 @@ test("MEASURE: warm channel-switch cost (plain 300-row + markdown-heavy)", async
 
   await client.send("Emulation.setCPUThrottlingRate", { rate: 1 });
 
-  // Instrument, not a gate: assert the harness measured real work.
-  expect(plain.length).toBe(MEASURED_SWITCHES);
-  expect(markdown.length).toBe(MEASURED_SWITCHES);
-  expect(plain.every((sample) => sample.ms > 0)).toBe(true);
-  expect(markdown.every((sample) => sample.ms > 0)).toBe(true);
+  expect(plain.samples).toHaveLength(MEASURED_SWITCHES);
+  expect(markdown.samples).toHaveLength(MEASURED_SWITCHES);
+  expect(plain.cachedMessageCount).toBeGreaterThan(6);
+  expect(markdown.cachedMessageCount).toBeGreaterThan(6);
+  expect(plain.expectedVisibleMessageIds.length).toBeGreaterThan(0);
+  expect(markdown.expectedVisibleMessageIds.length).toBeGreaterThan(0);
+  expect(
+    plain.samples.every(
+      (sample) =>
+        sample.liveMessageCount === plain.cachedMessageCount &&
+        sample.visibleMessageIds.some((id) =>
+          plain.expectedVisibleMessageIds.includes(id),
+        ) &&
+        sample.distanceFromBottom <= 2,
+    ),
+  ).toBe(true);
+  expect(
+    markdown.samples.every(
+      (sample) =>
+        sample.liveMessageCount === markdown.cachedMessageCount &&
+        sample.visibleMessageIds.some((id) =>
+          markdown.expectedVisibleMessageIds.includes(id),
+        ) &&
+        sample.distanceFromBottom <= 2,
+    ),
+  ).toBe(true);
+
+  expect(plain.windowFetches).toBe(0);
+  expect(markdown.windowFetches).toBe(0);
+  expect(
+    Math.max(...plain.samples.map((sample) => sample.longtaskMax)),
+  ).toBeLessThanOrEqual(PLAIN_MAX_LONGTASK_MS);
+  expect(
+    Math.max(...markdown.samples.map((sample) => sample.longtaskMax)),
+  ).toBeLessThanOrEqual(MARKDOWN_MAX_LONGTASK_MS);
+  expect(
+    Math.max(...plain.samples.map((sample) => sample.ms)),
+  ).toBeLessThanOrEqual(PLAIN_MAX_CORRECT_PAINT_MS);
+  expect(
+    Math.max(...markdown.samples.map((sample) => sample.ms)),
+  ).toBeLessThanOrEqual(MARKDOWN_MAX_CORRECT_PAINT_MS);
+
+  // A genuine older-history reach remains network-backed and bounded to one
+  // channel-window request. The warm-navigation assertions above prove the
+  // same counter stays at zero when no continuation is needed.
+  await measureSwitch(page, {
+    targetTestId: "channel-deep-history",
+    targetTitle: "deep-history",
+    rowSelector: '[data-message-id^="mock-deep-history-"]',
+  });
+  expect(await fetchOneOlderWindow(page)).toBe(1);
 });

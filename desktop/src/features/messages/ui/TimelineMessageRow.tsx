@@ -91,7 +91,7 @@ type MessageRowItemProps = {
   videoReviewContext: ReturnType<typeof buildVideoReviewContextForMessage>;
 };
 
-export function MessageRowItem({
+export const MessageRowItem = React.memo(function MessageRowItem({
   channelId,
   currentPubkey,
   entry,
@@ -122,6 +122,13 @@ export function MessageRowItem({
   unfollowThreadById,
   videoReviewContext,
 }: MessageRowItemProps) {
+  if (import.meta.env.MODE === "e2e" && typeof window !== "undefined") {
+    const probe = window as unknown as {
+      __TIMELINE_ROW_RENDER_COUNT__?: number;
+    };
+    probe.__TIMELINE_ROW_RENDER_COUNT__ =
+      (probe.__TIMELINE_ROW_RENDER_COUNT__ ?? 0) + 1;
+  }
   const { message, summary } = entry;
   const canManage = canManageMessageForCurrentUser(
     message,
@@ -225,4 +232,4 @@ export function MessageRowItem({
       {footer}
     </div>
   );
-}
+});

@@ -229,6 +229,7 @@ export function resolveThreadReplyTarget(
 }
 
 export const CHANNEL_TIMELINE_GC_TIME_MS = 60 * 60 * 1_000;
+export const CHANNEL_TIMELINE_STALE_TIME_MS = 5 * 60 * 1_000;
 
 export function useChannelWindowQuery(channel: Channel | null) {
   const queryClient = useQueryClient();
@@ -372,7 +373,7 @@ export function useChannelMessagesQuery(channel: Channel | null) {
         signal,
       );
     },
-    staleTime: 5 * 60 * 1_000,
+    staleTime: CHANNEL_TIMELINE_STALE_TIME_MS,
     gcTime: CHANNEL_TIMELINE_GC_TIME_MS,
   });
 }
@@ -498,19 +499,27 @@ export function useChannelSubscription(channel: Channel | null) {
         }
 
         cleanup = dispose;
-        // The live subscription starts at "now", so it cannot close the gap
-        // between the last page snapshot and subscription establishment. Always
-        // refresh after the subscription is active; freshness alone is not a
-        // proof that no relay events landed in that interval.
-        void refreshNewestWindow().catch((error) => {
-          if (!isDisposed) {
-            console.error(
-              "Failed to refresh channel window after subscribing",
-              channelId,
-              error,
-            );
-          }
-        });
+        // A fresh cached window already covers ordinary warm navigation. Only
+        // close the page-to-live gap when the snapshot is absent or old;
+        // reconnects remain an explicit unconditional catch-up above.
+        const queryState = queryClient.getQueryState<RelayEvent[]>(
+          channelMessagesKey(channelId),
+        );
+        const snapshotIsFresh =
+          queryState?.data !== undefined &&
+          Date.now() - queryState.dataUpdatedAt <
+            CHANNEL_TIMELINE_STALE_TIME_MS;
+        if (!snapshotIsFresh) {
+          void refreshNewestWindow().catch((error) => {
+            if (!isDisposed) {
+              console.error(
+                "Failed to refresh channel window after subscribing",
+                channelId,
+                error,
+              );
+            }
+          });
+        }
       })
       .catch((error) => {
         console.error("Failed to subscribe to channel", channelId, error);
@@ -523,7 +532,7 @@ export function useChannelSubscription(channel: Channel | null) {
         void cleanup();
       }
     };
-  }, [channelId, channelType]);
+  }, [channelId, channelType, queryClient]);
 }
 
 export function useSendMessageMutation(
