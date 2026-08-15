@@ -1,0 +1,88 @@
+import * as React from "react";
+
+import { dispatchNavigationIntent } from "@/app/navigation/navigationIntent";
+
+type DeferredSidebarNavigationOptions = {
+  pathname: string;
+  selectedChannelId: string | null;
+  selectChannel: (channelId: string) => void;
+};
+
+export function useDeferredSidebarNavigation({
+  pathname,
+  selectedChannelId,
+  selectChannel,
+}: DeferredSidebarNavigationOptions) {
+  const [pendingChannelId, setPendingChannelId] = React.useState<string | null>(
+    null,
+  );
+  const frameRef = React.useRef<number | null>(null);
+  const timerRef = React.useRef<number | null>(null);
+  const generationRef = React.useRef(0);
+  const pathnameRef = React.useRef(pathname);
+  pathnameRef.current = pathname;
+
+  const cancel = React.useCallback(() => {
+    generationRef.current += 1;
+    if (frameRef.current !== null) {
+      window.cancelAnimationFrame(frameRef.current);
+      frameRef.current = null;
+    }
+    if (timerRef.current !== null) {
+      window.clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    setPendingChannelId(null);
+  }, []);
+
+  React.useEffect(() => cancel, [cancel]);
+  React.useEffect(() => {
+    // A committed route change supersedes any deferred sidebar intent.
+    void pathname;
+    cancel();
+  }, [cancel, pathname]);
+  React.useEffect(() => {
+    if (pendingChannelId === selectedChannelId) setPendingChannelId(null);
+  }, [pendingChannelId, selectedChannelId]);
+
+  const selectDeferred = React.useCallback(
+    (channelId: string) => {
+      dispatchNavigationIntent();
+      cancel();
+      const generation = generationRef.current;
+      const sourcePathname = pathnameRef.current;
+      setPendingChannelId(channelId);
+      frameRef.current = window.requestAnimationFrame(() => {
+        frameRef.current = null;
+        if (
+          generationRef.current !== generation ||
+          pathnameRef.current !== sourcePathname
+        ) {
+          return;
+        }
+        frameRef.current = window.requestAnimationFrame(() => {
+          frameRef.current = null;
+          if (
+            generationRef.current !== generation ||
+            pathnameRef.current !== sourcePathname
+          ) {
+            return;
+          }
+          timerRef.current = window.setTimeout(() => {
+            timerRef.current = null;
+            if (
+              generationRef.current !== generation ||
+              pathnameRef.current !== sourcePathname
+            ) {
+              return;
+            }
+            selectChannel(channelId);
+          }, 0);
+        });
+      });
+    },
+    [cancel, selectChannel],
+  );
+
+  return { cancel, pendingChannelId, selectDeferred };
+}

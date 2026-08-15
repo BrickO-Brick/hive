@@ -109,17 +109,70 @@ export function useChannelPaneHandlers({
   const markRevealedRepliesReadRef = React.useRef(markRevealedRepliesRead);
   markRevealedRepliesReadRef.current = markRevealedRepliesRead;
 
+  const deferredPanelFrameRef = React.useRef<number | null>(null);
+  const deferredPanelTimerRef = React.useRef<number | null>(null);
+  const deferredPanelGenerationRef = React.useRef(0);
+  const intendedOpenThreadHeadIdRef = React.useRef(openThreadHeadId);
+  if (
+    deferredPanelFrameRef.current === null &&
+    deferredPanelTimerRef.current === null
+  ) {
+    intendedOpenThreadHeadIdRef.current = openThreadHeadId;
+  }
   const deferPanelState = React.useCallback((update: () => void) => {
-    window.setTimeout(() => {
-      React.startTransition(update);
-    }, 0);
+    deferredPanelGenerationRef.current += 1;
+    const generation = deferredPanelGenerationRef.current;
+    if (deferredPanelFrameRef.current !== null) {
+      window.cancelAnimationFrame(deferredPanelFrameRef.current);
+    }
+    if (deferredPanelTimerRef.current !== null) {
+      window.clearTimeout(deferredPanelTimerRef.current);
+    }
+    deferredPanelFrameRef.current = window.requestAnimationFrame(() => {
+      if (deferredPanelGenerationRef.current !== generation) return;
+      deferredPanelFrameRef.current = window.requestAnimationFrame(() => {
+        if (deferredPanelGenerationRef.current !== generation) return;
+        deferredPanelFrameRef.current = null;
+        deferredPanelTimerRef.current = window.setTimeout(() => {
+          if (deferredPanelGenerationRef.current !== generation) return;
+          deferredPanelTimerRef.current = null;
+          React.startTransition(update);
+        }, 0);
+      });
+    });
   }, []);
+  React.useEffect(() => {
+    const cancelDeferredPanelState = () => {
+      deferredPanelGenerationRef.current += 1;
+      intendedOpenThreadHeadIdRef.current = openThreadHeadIdRef.current;
+      onPendingOpenThreadHeadIdChange(null);
+      onOptimisticOpenThreadHeadIdChange(undefined);
+      if (deferredPanelFrameRef.current !== null) {
+        window.cancelAnimationFrame(deferredPanelFrameRef.current);
+        deferredPanelFrameRef.current = null;
+      }
+      if (deferredPanelTimerRef.current !== null) {
+        window.clearTimeout(deferredPanelTimerRef.current);
+        deferredPanelTimerRef.current = null;
+      }
+    };
+    window.addEventListener("buzz:navigation-intent", cancelDeferredPanelState);
+    return () => {
+      window.removeEventListener(
+        "buzz:navigation-intent",
+        cancelDeferredPanelState,
+      );
+      cancelDeferredPanelState();
+    };
+  }, [onOptimisticOpenThreadHeadIdChange, onPendingOpenThreadHeadIdChange]);
 
   const handleCancelThreadReply = React.useCallback(() => {
     setThreadReplyTargetId(openThreadHeadIdRef.current);
   }, [setThreadReplyTargetId]);
 
   const handleCloseThread = React.useCallback(() => {
+    intendedOpenThreadHeadIdRef.current = null;
+    onPendingOpenThreadHeadIdChange(null);
     deferPanelState(() => {
       onOptimisticOpenThreadHeadIdChange(null);
       setOpenThreadHeadId(null);
@@ -130,6 +183,7 @@ export function useChannelPaneHandlers({
   }, [
     deferPanelState,
     onOptimisticOpenThreadHeadIdChange,
+    onPendingOpenThreadHeadIdChange,
     setExpandedThreadReplyIds,
     setOpenThreadHeadId,
     setThreadReplyTargetId,
@@ -200,7 +254,8 @@ export function useChannelPaneHandlers({
 
   const handleOpenThread = React.useCallback(
     (message: { id: string }) => {
-      if (openThreadHeadIdRef.current === message.id) {
+      if (intendedOpenThreadHeadIdRef.current === message.id) {
+        intendedOpenThreadHeadIdRef.current = null;
         onPendingOpenThreadHeadIdChange(null);
         deferPanelState(() => {
           onOptimisticOpenThreadHeadIdChange(null);
@@ -213,6 +268,7 @@ export function useChannelPaneHandlers({
         return;
       }
 
+      intendedOpenThreadHeadIdRef.current = message.id;
       onPendingOpenThreadHeadIdChange(message.id);
       deferPanelState(() => {
         onOptimisticOpenThreadHeadIdChange(message.id);

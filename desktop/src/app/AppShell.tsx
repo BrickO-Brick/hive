@@ -9,6 +9,7 @@ import { AppShellChannelSurface } from "@/app/AppShellChannelSurface";
 import { AppHuddleShell } from "@/app/AppHuddleShell";
 import { AppTopChrome } from "@/app/AppTopChrome";
 import { useAppNavigation } from "@/app/navigation/useAppNavigation";
+import { useDeferredSidebarNavigation } from "@/app/navigation/useDeferredSidebarNavigation";
 import { useBackForwardControls } from "@/app/navigation/useBackForwardControls";
 import { useCommunityNavigationTransitions } from "@/app/useCommunityNavigationTransitions";
 import { useLiveHomeFeedActions } from "@/app/useLiveHomeFeedActions";
@@ -153,47 +154,15 @@ export function AppShell() {
     () => deriveShellRoute(location.pathname),
     [location.pathname],
   );
-  const [pendingSidebarChannelId, setPendingSidebarChannelId] = React.useState<
-    string | null
-  >(null);
-  const pendingSidebarNavigationFrameRef = React.useRef<number | null>(null);
-  const pendingSidebarNavigationTimerRef = React.useRef<number | null>(null);
-  React.useEffect(() => {
-    return () => {
-      if (pendingSidebarNavigationFrameRef.current !== null) {
-        window.cancelAnimationFrame(pendingSidebarNavigationFrameRef.current);
-      }
-      if (pendingSidebarNavigationTimerRef.current !== null) {
-        window.clearTimeout(pendingSidebarNavigationTimerRef.current);
-      }
-    };
-  }, []);
-  React.useEffect(() => {
-    if (pendingSidebarChannelId === selectedChannelId) {
-      setPendingSidebarChannelId(null);
-    }
-  }, [pendingSidebarChannelId, selectedChannelId]);
-  const handleSidebarChannelSelect = React.useCallback(
-    (channelId: string) => {
-      setPendingSidebarChannelId(channelId);
-      if (pendingSidebarNavigationFrameRef.current !== null) {
-        window.cancelAnimationFrame(pendingSidebarNavigationFrameRef.current);
-      }
-      if (pendingSidebarNavigationTimerRef.current !== null) {
-        window.clearTimeout(pendingSidebarNavigationTimerRef.current);
-      }
-      pendingSidebarNavigationFrameRef.current = window.requestAnimationFrame(
-        () => {
-          pendingSidebarNavigationFrameRef.current = null;
-          pendingSidebarNavigationTimerRef.current = window.setTimeout(() => {
-            pendingSidebarNavigationTimerRef.current = null;
-            selectSidebarChannel(channelId);
-          }, 0);
-        },
-      );
-    },
-    [selectSidebarChannel],
-  );
+  const {
+    cancel: cancelPendingSidebarNavigation,
+    pendingChannelId: pendingSidebarChannelId,
+    selectDeferred: handleSidebarChannelSelect,
+  } = useDeferredSidebarNavigation({
+    pathname: location.pathname,
+    selectedChannelId,
+    selectChannel: selectSidebarChannel,
+  });
   const sidebarSelectedChannelId = pendingSidebarChannelId ?? selectedChannelId;
   const {
     removeCommunity: handleRemoveCommunity,
@@ -889,7 +858,10 @@ export function AppShell() {
                             });
                           await goChannel(directMessage.id);
                         }}
-                        onSelectAgents={() => void goAgents()}
+                        onSelectAgents={() => {
+                          cancelPendingSidebarNavigation();
+                          void goAgents();
+                        }}
                         onSelectChannel={handleSidebarChannelSelect}
                         onOpenSearchResult={handleOpenSearchResult}
                         searchChannels={channels}
@@ -897,9 +869,18 @@ export function AppShell() {
                           searchFocusRequest,
                           scopeSearchFocusRequest,
                         ]}
-                        onSelectHome={() => void goHome()}
-                        onSelectProjects={() => void goProjects()}
-                        onSelectPulse={() => void goPulse()}
+                        onSelectHome={() => {
+                          cancelPendingSidebarNavigation();
+                          void goHome();
+                        }}
+                        onSelectProjects={() => {
+                          cancelPendingSidebarNavigation();
+                          void goProjects();
+                        }}
+                        onSelectPulse={() => {
+                          cancelPendingSidebarNavigation();
+                          void goPulse();
+                        }}
                         onSelectSettings={handleOpenSettings}
                         onSelectWorkflows={() => void goWorkflows()}
                         onSetPresenceStatus={(status) =>

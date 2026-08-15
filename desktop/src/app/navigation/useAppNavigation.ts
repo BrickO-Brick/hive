@@ -6,6 +6,7 @@ import {
   useRouter,
 } from "@tanstack/react-router";
 
+import { dispatchNavigationIntent } from "@/app/navigation/navigationIntent";
 import { cacheSearchHitEvent } from "@/app/navigation/searchHitEventCache";
 import { resolveSearchHitDestination } from "@/app/navigation/resolveSearchHitDestination";
 import type { SearchHit } from "@/shared/api/types";
@@ -38,6 +39,7 @@ export function useAppNavigation() {
         return false;
       }
 
+      dispatchNavigationIntent();
       await navigate({
         ...next,
         replace: behavior.replace,
@@ -273,6 +275,7 @@ export function useAppNavigation() {
 
   const closeSettings = React.useCallback(() => {
     if (canGoBack) {
+      dispatchNavigationIntent();
       router.history.back();
       return;
     }
@@ -282,6 +285,7 @@ export function useAppNavigation() {
 
   const closeWorkflowDetail = React.useCallback(() => {
     if (canGoBack) {
+      dispatchNavigationIntent();
       router.history.back();
       return;
     }
@@ -292,6 +296,7 @@ export function useAppNavigation() {
   const closeForumPost = React.useCallback(
     (channelId: string) => {
       if (canGoBack) {
+        dispatchNavigationIntent();
         router.history.back();
         return;
       }

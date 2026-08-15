@@ -2793,14 +2793,14 @@ test("sidebar selection paints before cached channel work starts", async ({
     Object.assign(window, { __BUZZ_SIDEBAR_SELECTION_OBSERVED__: observed });
     const observer = new MutationObserver(() => {
       const random = document.querySelector('[data-testid="channel-random"]');
-      const title = document.querySelector('[data-testid="chat-title"]');
-      if (
-        random?.getAttribute("data-active") === "true" &&
-        title?.textContent === "general"
-      ) {
-        observed.selectedBeforeRoute = true;
-        observer.disconnect();
-      }
+      if (random?.getAttribute("data-active") !== "true") return;
+      observer.disconnect();
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          const title = document.querySelector('[data-testid="chat-title"]');
+          observed.selectedBeforeRoute = title?.textContent === "general";
+        });
+      });
     });
     observer.observe(document.body, {
       attributes: true,
@@ -2828,6 +2828,25 @@ test("sidebar selection paints before cached channel work starts", async ({
   await expect(page.getByTestId("chat-title")).toHaveText("random");
 });
 
+test("superseded sidebar feedback cannot override newer navigation", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+  await expect(page.getByTestId("chat-title")).toHaveText("general");
+
+  await page.getByTestId("channel-random").click();
+  await page.getByRole("button", { name: "Inbox" }).click();
+
+  await expect(page.getByTestId("home-inbox")).toBeVisible();
+  await page.waitForTimeout(100);
+  await expect(page.getByTestId("home-inbox")).toBeVisible();
+  await expect(page.getByTestId("channel-random")).toHaveAttribute(
+    "data-active",
+    "false",
+  );
+});
+
 test("thread open paints immediate feedback before deferred panel work", async ({
   page,
 }) => {
@@ -2845,10 +2864,17 @@ test("thread open paints immediate feedback before deferred panel work", async (
     const observed = { loading: false };
     Object.assign(window, { __BUZZ_THREAD_OPEN_OBSERVED__: observed });
     const observer = new MutationObserver(() => {
-      if (document.querySelector('[data-testid="message-thread-loading"]')) {
-        observed.loading = true;
-        observer.disconnect();
+      if (!document.querySelector('[data-testid="message-thread-loading"]')) {
+        return;
       }
+      observer.disconnect();
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          observed.loading =
+            document.querySelector('[data-testid="message-thread-loading"]') !==
+            null;
+        });
+      });
     });
     observer.observe(document.body, { childList: true, subtree: true });
   });
@@ -2867,6 +2893,166 @@ test("thread open paints immediate feedback before deferred panel work", async (
     )
     .toBe(true);
   await expect(page.getByTestId("message-thread-panel")).toBeVisible();
+});
+
+test("rapid thread intents commit only the latest history entry", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+  await expect(page.getByTestId("chat-title")).toHaveText("general");
+
+  const timeline = page.getByTestId("message-timeline");
+  const firstRoot = timeline.locator(
+    '[data-message-id="mock-general-welcome"]',
+  );
+  const secondRoot = timeline.locator('[data-message-id="mock-general-alice"]');
+  const historyLength = await page.evaluate(() => window.history.length);
+
+  await firstRoot.hover();
+  await secondRoot.hover();
+  await page.evaluate(() => {
+    const replyButtons = Array.from(
+      document.querySelectorAll<HTMLButtonElement>(
+        '[data-message-id="mock-general-welcome"] [aria-label="Reply"], [data-message-id="mock-general-alice"] [aria-label="Reply"]',
+      ),
+    );
+    if (replyButtons.length !== 2) {
+      throw new Error("Expected both thread reply buttons");
+    }
+    replyButtons[0].click();
+    replyButtons[1].click();
+  });
+
+  const threadPanel = page.getByTestId("message-thread-panel");
+  await expect(threadPanel).toBeVisible();
+  await expect(threadPanel.getByTestId("message-thread-head")).toContainText(
+    "Hey team",
+  );
+  await expect(page).toHaveURL(/thread=mock-general-alice/);
+  await expect
+    .poll(() => page.evaluate(() => window.history.length))
+    .toBe(historyLength + 1);
+});
+
+test("rapid same-thread toggle leaves no panel or stale history entry", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+  await expect(page.getByTestId("chat-title")).toHaveText("general");
+
+  const root = page
+    .getByTestId("message-timeline")
+    .locator('[data-message-id="mock-general-alice"]');
+  const historyLength = await page.evaluate(() => window.history.length);
+  await root.hover();
+  const reply = root.getByRole("button", { name: "Reply" });
+  await reply.dispatchEvent("click");
+  await reply.dispatchEvent("click");
+
+  await page.waitForTimeout(100);
+  await expect(page.getByTestId("message-thread-panel")).toHaveCount(0);
+  await expect(page).not.toHaveURL(/thread=/);
+  expect(await page.evaluate(() => window.history.length)).toBe(historyLength);
+});
+
+test("channel navigation supersedes a pending thread without stale history", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+  await expect(page.getByTestId("chat-title")).toHaveText("general");
+
+  const root = page
+    .getByTestId("message-timeline")
+    .locator('[data-message-id="mock-general-alice"]');
+  const historyLength = await page.evaluate(() => window.history.length);
+  await root.hover();
+  await page.evaluate(() => {
+    document
+      .querySelector<HTMLButtonElement>(
+        '[data-message-id="mock-general-alice"] [aria-label="Reply"]',
+      )
+      ?.click();
+    document
+      .querySelector<HTMLElement>('[data-testid="channel-random"]')
+      ?.click();
+  });
+
+  await expect(page.getByTestId("chat-title")).toHaveText("random");
+  await page.waitForTimeout(100);
+  await expect(page.getByTestId("message-thread-panel")).toHaveCount(0);
+  await expect(page).not.toHaveURL(/thread=/);
+  expect(await page.evaluate(() => window.history.length)).toBe(
+    historyLength + 1,
+  );
+});
+
+test("back navigation supersedes a pending thread without stale history", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+  await expect(page.getByTestId("chat-title")).toHaveText("general");
+
+  const root = page
+    .getByTestId("message-timeline")
+    .locator('[data-message-id="mock-general-alice"]');
+  const historyLength = await page.evaluate(() => window.history.length);
+  await root.hover();
+  await page.evaluate(() => {
+    document
+      .querySelector<HTMLButtonElement>(
+        '[data-message-id="mock-general-alice"] [aria-label="Reply"]',
+      )
+      ?.click();
+    document
+      .querySelector<HTMLButtonElement>('[data-testid="global-back"]')
+      ?.click();
+  });
+
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.getByTestId("home-inbox")).toBeVisible();
+  await page.waitForTimeout(100);
+  await expect(page.getByTestId("message-thread-panel")).toHaveCount(0);
+  await expect(page).not.toHaveURL(/thread=/);
+  expect(await page.evaluate(() => window.history.length)).toBe(historyLength);
+});
+
+test("forward navigation supersedes a pending thread without stale history", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+  await expect(page.getByTestId("chat-title")).toHaveText("general");
+  await page.getByTestId("channel-random").click();
+  await expect(page.getByTestId("chat-title")).toHaveText("random");
+  await page.getByTestId("global-back").click();
+  await expect(page.getByTestId("chat-title")).toHaveText("general");
+
+  const root = page
+    .getByTestId("message-timeline")
+    .locator('[data-message-id="mock-general-alice"]');
+  const historyLength = await page.evaluate(() => window.history.length);
+  await root.hover();
+  await page.evaluate(() => {
+    document
+      .querySelector<HTMLButtonElement>(
+        '[data-message-id="mock-general-alice"] [aria-label="Reply"]',
+      )
+      ?.click();
+    document
+      .querySelector<HTMLButtonElement>('[data-testid="global-forward"]')
+      ?.click();
+  });
+
+  await expect(page.getByTestId("chat-title")).toHaveText("random");
+  await expect(page).toHaveURL(/#\/channels\/[^?]+$/);
+  await page.waitForTimeout(100);
+  await expect(page.getByTestId("message-thread-panel")).toHaveCount(0);
+  await expect(page).not.toHaveURL(/thread=/);
+  expect(await page.evaluate(() => window.history.length)).toBe(historyLength);
 });
 
 test("thread composer is focused after clicking the reply icon", async ({

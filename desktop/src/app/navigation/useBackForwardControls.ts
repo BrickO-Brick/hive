@@ -7,6 +7,7 @@ import {
 import { isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
+import { dispatchNavigationIntent } from "@/app/navigation/navigationIntent";
 import { matchBackForwardChord } from "@/app/navigation/backForwardChords";
 import { isMacPlatform } from "@/shared/lib/platform";
 import { trimMapToSize } from "@/shared/lib/trimMapToSize";
@@ -59,6 +60,7 @@ export function useBackForwardControls() {
       return;
     }
 
+    dispatchNavigationIntent();
     router.history.back();
   }, [canGoBack, router.history]);
 
@@ -67,6 +69,7 @@ export function useBackForwardControls() {
       return;
     }
 
+    dispatchNavigationIntent();
     router.history.forward();
   }, [canGoForward, router.history]);
 
