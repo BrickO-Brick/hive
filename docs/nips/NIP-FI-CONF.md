@@ -110,7 +110,7 @@ which owns that mapping and the exact response bytes.
 | 6 | `pair_retired` | `authorization_denied` | core |
 | 7 | `key_revoked` | `authorization_denied` | core |
 | 8 | `policy_denied` — local operation policy | `authorization_denied` | core |
-| 9 | `binding_required` — provisioned mode, no binding | `authorization_denied` | NIP-FI-LIFECYCLE |
+| 9 | `binding_required` — enrollment policy creates no binding at this request: provisioned mode with no binding, or any unrecognized policy value | `authorization_denied` | core |
 | 10 | `identity_disabled` | `authorization_denied` | NIP-FI-LIFECYCLE |
 | 11 | `explicit_replacement_required` — pending lineage | `authorization_denied` | NIP-FI-LIFECYCLE |
 | 12 | `binding_expired` — administrative expiry | `authorization_denied` | NIP-FI-LIFECYCLE |
@@ -118,11 +118,16 @@ which owns that mapping and the exact response bytes.
 | 14 | `dependency_unreadable` | `authorization_unavailable` | core |
 
 The names in the private-condition column are fixture identifiers for this
-enumeration. Four of them — `key_mismatch`, `binding_conflict`, `pair_retired`,
-and `key_revoked` — are core's own denial symbols; the rest name conditions that
-core and the profiles define in prose. None is a wire value, and a deployment
-MAY use different private reason codes internally as long as every enumerated
-condition has a fixture.
+enumeration. Six of them — `key_mismatch`, `attestation_required`,
+`binding_conflict`, `pair_retired`, `key_revoked`, and `binding_required` — are
+the symbols core's preparation pseudocode denies by name, and that list MUST
+equal core's set exactly. Rows 8 and 14, `policy_denied` and
+`dependency_unreadable`, are core's conditions expressed only in prose — a bare
+policy denial and `FI-INV-14` fail-closed — and core is not required to name
+them symbolically; they are the only two core rows so exempted. The remaining
+rows name conditions the profiles define in prose. None is a wire value, and a
+deployment MAY use different private reason codes internally as long as every
+enumerated condition has a fixture.
 
 Rows 3–13 are the private-state anonymity set. Their public responses MUST
 compare byte-identical to each other, not merely equal in prefix or status.
@@ -130,18 +135,74 @@ Rows for an unclaimed profile are `not-applicable` with absence evidence. A
 profile that introduces a new private condition MUST add its row; an
 unenumerated condition escapes this oracle entirely.
 
-**Compared object.** Byte-identity is asserted over the response bytes an
-implementation chooses, which excludes bytes a conforming HTTP server cannot
-hold constant. Over Nostr the compared object is the complete relay message
-excluding only the event or subscription identifier echoed from the request.
-Over HTTP it is the status code, the ordered sequence of header field names,
-every header field value except `Date`, and the complete body. `Date` is
-excluded because RFC 9110 Section 6.6.1 requires an origin server with a clock
-to generate it on every 4xx response, so two denials at different instants can
-never be identical over the literal wire bytes; a suite comparing those would
-fail every conforming implementation. Any other excluded field MUST be named in
-the report with the reason it cannot be held constant, and its value MUST be
-independent of the private condition.
+The anonymity comparison is **wider than the interoperability compared object
+defined below, and deliberately so**. Between two private conditions on the same
+implementation, every response byte MUST agree except values a server cannot
+hold constant across two instants, such as `Date`. It is not limited to the
+header fields core names. The narrower object below exists because two
+*different* implementations cannot be required to agree on fields core does not
+pin; that reasoning does not apply within one implementation, where any field
+varying by private condition is a disclosure whatever its name. A suite that
+reuses the interoperability object here would pass an implementation that
+returns its private reason code in an unnamed header.
+
+**Enumeration agreement.** The preceding paragraph makes a quantified claim
+about this table, and a fix verified against the one row it changes can still
+falsify it. Rows 8 and 14 are the **prose-only allowlist**: core's conditions
+that core is not required to name symbolically. The suite MUST check,
+mechanically at the claimed head (`FI-CONF-DENIAL-FIXTURES`):
+
+1. every symbol core denies by name has a row here;
+2. every symbol core denies by name is attributed to core;
+3. the naming paragraph above lists exactly the symbols core denies by name;
+4. the count word in that paragraph equals the number of symbols it lists;
+5. every core-attributed row that is a named symbol carries the same public
+   class — quantified over core's symbolic set, not over all core-attributed
+   rows, since `dependency_unreadable` is correctly `authorization_unavailable`;
+6. no allowlist entry appears in core's symbolic denial set; and
+7. the set of core-attributed rows equals core's symbolic denial set together
+   with the allowlist, exactly.
+
+Checks 3 and 4 are independent and neither implies the other: an editor who
+corrects the count without the names is caught by 3, and one who corrects the
+names without the count is caught by 4.
+
+Checks 6 and 7 guard the allowlist itself, which is otherwise unguarded state
+in a document whose subject is that unguarded claims rot. Check 6 is what makes
+promotion visible: if a later core turns `policy_denied` or
+`dependency_unreadable` into a named symbol, check 2 does **not** fail — that
+row is already attributed to core, so promotion satisfies check 2 more, not
+less — and an editor who updates this paragraph honestly at the same time
+satisfies 3 and 4 as well. Only check 6 fails, and the stale entry is then the
+thing to delete. Check 7 restores equality in both directions, weakened by
+exactly the allowlist and nothing more, so a core-attributed row that core
+never emits is caught without failing a conforming document.
+
+**Compared object.** This object governs the interoperability comparison between
+two implementations. The anonymity comparison above is wider. Byte-identity is
+asserted over the response bytes an implementation chooses, which excludes bytes
+a conforming HTTP server cannot hold constant. Over Nostr the compared object is
+the complete relay message excluding only the event or subscription identifier
+echoed from the request. Over HTTP the compared object is exactly what NIP-FI
+core pins: the status code, the complete body, and the exact values of only the
+header fields core's denial table names. Header order and unnamed header fields
+are outside it, and their values MUST NOT depend on the private condition —
+which the anonymity requirement above already demands and tests directly.
+
+Comparing the ordered sequence of header field names, or every header value
+except `Date`, would fail every conforming pair. Two independent servers emit
+different automatic fields in different orders — `Server` and `Connection` are
+the common divergences — so an exit test comparing them can never be passed by
+anyone, and an oracle that no conforming implementation can satisfy is a defect
+in this document rather than evidence about either implementation. The compared
+object is therefore closed over what core names and nothing more; if core later
+pins an additional field, it joins the compared object with no edit here.
+
+`Date` needs no special exclusion under this rule, since core does not name it;
+RFC 9110 Section 6.6.1 requires an origin server with a clock to generate it on
+every response, so it could never be held constant. Any field an implementation
+must exclude despite core naming it MUST be reported with the reason it cannot
+be held constant, and its value MUST be independent of the private condition.
 
 The oracle runs a fixed positive iteration count on a pinned isolated runner at
 the exact claimed head. Before the run the operator records the environment,
@@ -205,11 +266,49 @@ each produce, from NIP-FI core and any claimed profile documents alone:
 - one byte-exact public denial response for each of the four public classes, on
   both transports, compared over the object defined under **Denial fixtures**.
 
-The evidence is the produced bytes, the document revision used, and a statement
-of independence. The test passes when the outputs compare equal byte for byte
-and each implementation accepts the other's valid request and reproduces the
-other's denials. Any divergence traced to an underspecified value is a defect
-in the specification, not in either implementation, and is fixed there.
+Independence is a claim about code and reference implementations, not about
+inputs. Two implementations given different issuers, keys, or clocks cannot
+produce equal bytes however correct both are, so the run is parameterized by a
+**shared exit fixture** that both sides load and neither side authors:
+
+- one issuer identity and one JWK set, including the private key needed to mint
+  assertions and the `kid` selecting it;
+- one assertion per denial class and one for the valid request, each with fixed
+  `iss`, `sub`, `aud`, `nostr_pubkey`, `client_id`, `iat`, `exp`, and token
+  class, expressed as complete pre-signature JWT claim sets;
+- one Nostr secret key for the proof, with the exact event fields including
+  `created_at`, so both sides derive the same actor;
+- one frozen evaluation instant, and the skew and lifetime bounds in force; and
+- the domain, target resource, operation, and enrollment policy for each case.
+
+Every value the compared object depends on MUST be pinned here. A value left to
+the implementation is a divergence the test will attribute to a defect in this
+document, which is the correct disposition but a slow way to discover a missing
+fixture field. The fixture records the document revision it was authored
+against.
+
+The exchanged artifact per case is the complete request frame and the complete
+response frame on each transport: for HTTP the request line, headers and body,
+and the response status, headers and body; for Nostr the complete client
+message and the complete relay message. Both sides emit whole frames even
+though the compared object is narrower, because the request side and the
+unnamed response fields are what the reader needs in order to explain a
+mismatch.
+
+The evidence is the produced bytes, the fixture identity, the document revision
+used, and a statement of independence. The test passes when the outputs compare
+equal over the compared object and each implementation accepts the other's
+valid request and reproduces the other's denials. Any divergence traced to an
+underspecified value is a defect in the specification, not in either
+implementation, and is fixed there.
+
+This test has a mandatory negative control. One implementation is patched to
+emit a denial that differs from the other only outside the compared object —
+adding a header core does not name, or reordering fields — and the run MUST
+still pass. A run that fails this control is comparing more than core pins and
+would reject conforming pairs; the exit test itself is then the defect. The
+control is retained with the evidence, because a comparison that only ever
+reports equality proves nothing about what it would have caught.
 
 ## Applicability
 
