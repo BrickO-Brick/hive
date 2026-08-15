@@ -465,7 +465,6 @@ test("multi-repository projects switch the active repository", async ({
       return {
         clientWidth: element.clientWidth,
         left: bounds.left,
-        top: bounds.top,
         width: bounds.width,
       };
     },
@@ -479,7 +478,6 @@ test("multi-repository projects switch the active repository", async ({
       return {
         clientWidth: element.clientWidth,
         left: bounds.left,
-        top: bounds.top,
         width: bounds.width,
       };
     },
