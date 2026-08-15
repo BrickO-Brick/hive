@@ -43,9 +43,12 @@ type WorkflowWithChannel = {
   channelName: string;
 };
 
+const WORKFLOW_CARD_GRID_CLASS =
+  "grid grid-cols-1 gap-3 [@container(min-width:42rem)]:grid-cols-2 [@container(min-width:63rem)]:grid-cols-3";
+
 function WorkflowsListSkeleton() {
   return (
-    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+    <div className={WORKFLOW_CARD_GRID_CLASS}>
       {["first", "second", "third", "fourth"].map((card) => (
         <div
           className="flex min-h-60 flex-col rounded-2xl border bg-card p-5"
@@ -253,7 +256,7 @@ export function WorkflowsView({
               </Button>
             </div>
           ) : (
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            <div className={WORKFLOW_CARD_GRID_CLASS}>
               <CreateWorkflowCard onClick={onCreateWorkflow} />
               {allWorkflows.map(({ workflow, channelName }) => (
                 <WorkflowCard
