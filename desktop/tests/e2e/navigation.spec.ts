@@ -24,7 +24,7 @@ async function createWorkflow(
   name: string,
 ) {
   await page.getByRole("button", { name: "Create Workflow" }).click();
-  const dialog = page.getByRole("dialog");
+  const dialog = page.getByRole("dialog", { name: "Create workflow" });
   await expect(dialog).toBeVisible();
   await dialog.getByRole("combobox", { name: "Channel" }).click();
   await dialog
@@ -32,10 +32,15 @@ async function createWorkflow(
     .getByRole("button")
     .first()
     .click();
-  await dialog.getByLabel("Workflow name").fill(name);
-  await dialog.getByRole("button", { name: "Add step" }).click();
-  await page.getByRole("menuitem", { name: "Delay" }).click();
-  await dialog.getByRole("button", { name: "Create workflow" }).click();
+  await dialog.getByRole("button", { name: "Edit workflow name" }).click();
+  await dialog.getByRole("textbox", { name: "Workflow name" }).fill(name);
+  await dialog.getByRole("button", { name: "Save workflow name" }).click();
+  const primaryAction = dialog.getByTestId("workflow-dialog-primary-action");
+  await expect(primaryAction).toHaveText("Add step");
+  await primaryAction.click();
+  await expect(primaryAction).toHaveText("Create workflow");
+  await dialog.getByLabel("Message text").fill("Test workflow message");
+  await primaryAction.click();
   await expect(dialog).not.toBeVisible();
 }
 

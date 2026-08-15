@@ -35,6 +35,7 @@ import { ChannelCombobox } from "./ChannelCombobox";
 import {
   WorkflowFormBuilder,
   type WorkflowEditorMode,
+  type WorkflowFormBuilderHandle,
 } from "./WorkflowFormBuilder";
 import { WorkflowWebhookSecretDialog } from "./WorkflowWebhookSecretDialog";
 import type { WorkflowEditorPane } from "./workflowEditorPane";
@@ -155,6 +156,8 @@ function WorkflowNameEditor({
       <div className="flex h-6 items-center gap-1.5">
         <Input
           aria-label="Workflow name"
+          autoCapitalize="off"
+          autoCorrect="off"
           className="h-6 w-72 px-2 font-mono text-sm"
           disabled={disabled}
           onChange={(event) => setDraft(event.target.value)}
@@ -217,6 +220,7 @@ export function WorkflowDialog({
   pane,
   workflow,
 }: WorkflowDialogProps) {
+  const formBuilderRef = React.useRef<WorkflowFormBuilderHandle>(null);
   const channelId =
     mode === "edit" && workflow?.channelId ? workflow.channelId : "";
 
@@ -255,6 +259,14 @@ export function WorkflowDialog({
 
   const selectedChannel =
     channels.find((c) => c.id === selectedChannelId) ?? null;
+  const parsedDefinition = yamlDefinition.trim()
+    ? yamlToFormState(yamlDefinition)
+    : null;
+  const isAddingFirstStep =
+    mode === "create" &&
+    editorMode === "form" &&
+    (parsedDefinition === null ||
+      (parsedDefinition.ok && parsedDefinition.state.steps.length === 0));
 
   const workflowChannelId = workflow?.channelId ?? null;
   const resetCreate = createMutation.reset;
@@ -489,6 +501,7 @@ export function WorkflowDialog({
               }}
               onSelectedNodeChange={onEditorPaneChange}
               parseError={editorParseError}
+              ref={formBuilderRef}
               scopeField={
                 showChannelSelector ? (
                   <div className="space-y-1">
@@ -563,19 +576,32 @@ export function WorkflowDialog({
               >
                 Cancel
               </Button>
-              <Button
-                disabled={
-                  !selectedChannelId ||
-                  !yamlDefinition.trim() ||
-                  mutation.isPending
-                }
-                onClick={handleSubmit}
-                type="button"
-              >
-                {mutation.isPending
-                  ? PENDING_LABELS[mode]
-                  : SUBMIT_LABELS[mode]}
-              </Button>
+              {isAddingFirstStep ? (
+                <Button
+                  aria-label="Add first step"
+                  data-testid="workflow-dialog-primary-action"
+                  disabled={!selectedChannelId || mutation.isPending}
+                  onClick={() => formBuilderRef.current?.addFirstStep()}
+                  type="button"
+                >
+                  Add step
+                </Button>
+              ) : (
+                <Button
+                  data-testid="workflow-dialog-primary-action"
+                  disabled={
+                    !selectedChannelId ||
+                    !yamlDefinition.trim() ||
+                    mutation.isPending
+                  }
+                  onClick={handleSubmit}
+                  type="button"
+                >
+                  {mutation.isPending
+                    ? PENDING_LABELS[mode]
+                    : SUBMIT_LABELS[mode]}
+                </Button>
+              )}
             </div>
           </div>
         </DialogContent>

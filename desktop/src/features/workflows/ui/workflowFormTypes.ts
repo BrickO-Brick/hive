@@ -28,8 +28,8 @@ export type ActionType = (typeof ACTION_TYPES)[number];
 // Keep every recognized schema action above so existing YAML remains editable,
 // but only offer actions that can complete successfully in form selectors.
 export const SELECTABLE_ACTION_TYPES = [
-  "delay",
   "send_message",
+  "delay",
   "call_webhook",
 ] as const satisfies readonly ActionType[];
 

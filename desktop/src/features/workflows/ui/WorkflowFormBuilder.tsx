@@ -158,6 +158,10 @@ type WorkflowFormBuilderProps = {
   workflowChannelId?: string | null;
 };
 
+export type WorkflowFormBuilderHandle = {
+  addFirstStep: () => void;
+};
+
 export type WorkflowEditorMode = "form" | "yaml";
 
 function nodePosition(node: Exclude<WorkflowEditorPane, null>): number {
@@ -362,19 +366,25 @@ function WorkflowNode({
   );
 }
 
-export function WorkflowFormBuilder({
-  channels,
-  disabled,
-  mode,
-  nameLeadingContainer,
-  onChange,
-  onSelectedNodeChange,
-  parseError,
-  scopeField,
-  selectedNode: selectedRouteNode,
-  yaml,
-  workflowChannelId,
-}: WorkflowFormBuilderProps) {
+export const WorkflowFormBuilder = React.forwardRef<
+  WorkflowFormBuilderHandle,
+  WorkflowFormBuilderProps
+>(function WorkflowFormBuilder(
+  {
+    channels,
+    disabled,
+    mode,
+    nameLeadingContainer,
+    onChange,
+    onSelectedNodeChange,
+    parseError,
+    scopeField,
+    selectedNode: selectedRouteNode,
+    yaml,
+    workflowChannelId,
+  },
+  ref,
+) {
   // Parse once on mount instead of calling yamlToFormState three times
   const initialParseRef = React.useRef(yaml ? yamlToFormState(yaml) : null);
   const [formState, setFormState] = React.useState<WorkflowFormState>(
@@ -468,6 +478,14 @@ export function WorkflowFormBuilder({
       selectNode({ type: "step", index });
     },
     [formState, selectNode, updateFormState],
+  );
+
+  React.useImperativeHandle(
+    ref,
+    () => ({
+      addFirstStep: () => insertStep(0, "send_message"),
+    }),
+    [insertStep],
   );
 
   const removeStep = React.useCallback(
@@ -838,4 +856,4 @@ export function WorkflowFormBuilder({
         : null}
     </>
   );
-}
+});

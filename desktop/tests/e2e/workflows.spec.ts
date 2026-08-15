@@ -56,8 +56,8 @@ async function expectUnsupportedActionWarnings(
   menu: import("@playwright/test").Locator,
 ) {
   await expect(menu.getByRole("menuitem")).toHaveText([
-    "Delay",
     "Send message",
+    "Delay",
     "Call webhook",
     "Send DM",
     "Request approval",
@@ -100,15 +100,19 @@ async function createWorkflow(
   },
 ) {
   await page.getByRole("button", { name: "Create Workflow" }).click();
-  const dialog = page.getByRole("dialog");
+  const dialog = page.getByRole("dialog", { name: "Create workflow" });
   await expect(dialog).toBeVisible();
   await expect(dialog.getByText("Choose a channel")).toBeVisible();
-  await expect(
-    dialog.getByRole("button", { name: "Create workflow" }),
-  ).toBeDisabled();
+  const primaryAction = dialog.getByTestId("workflow-dialog-primary-action");
+  await expect(primaryAction).toHaveText("Add step");
+  await expect(primaryAction).toBeDisabled();
   await selectFirstChannel(dialog);
+  await expect(primaryAction).toHaveText("Add step");
+  await expect(primaryAction).toBeEnabled();
 
-  await dialog.getByLabel("Workflow name").fill(name);
+  await dialog.getByRole("button", { name: "Edit workflow name" }).click();
+  await dialog.getByRole("textbox", { name: "Workflow name" }).fill(name);
+  await dialog.getByRole("button", { name: "Save workflow name" }).click();
   if (options?.description) {
     await dialog.getByLabel("Description (optional)").fill(options.description);
   }
@@ -131,8 +135,13 @@ async function createWorkflow(
     await dialog.getByLabel("Custom expression").fill(options.triggerCondition);
   }
 
-  await dialog.getByRole("button", { name: "Add step" }).click();
-  await page.getByRole("menuitem", { name: "Delay" }).click();
+  await primaryAction.click();
+  await expect(primaryAction).toHaveText("Create workflow");
+  await expect(dialog.getByLabel("Action")).toHaveAttribute(
+    "data-value",
+    "send_message",
+  );
+  await dialog.getByLabel("Message text").fill("Test workflow message");
   if (options?.stepName) {
     await dialog.getByLabel("Name (optional)").fill(options.stepName);
   }
@@ -140,7 +149,7 @@ async function createWorkflow(
     await dialog.getByLabel("Timeout (seconds)").fill(options.stepTimeoutSecs);
   }
 
-  await dialog.getByRole("button", { name: "Create workflow" }).click();
+  await primaryAction.click();
 
   await expect(
     page.getByRole("heading", { name: "Create workflow" }),
@@ -172,10 +181,10 @@ test("disables autocapitalization in the workflow form", async ({ page }) => {
   await page.getByRole("button", { name: "Create Workflow" }).click();
   const dialog = page.getByRole("dialog");
 
-  await expect(dialog.getByLabel("Workflow name")).toHaveAttribute(
-    "autocapitalize",
-    "off",
-  );
+  await dialog.getByRole("button", { name: "Edit workflow name" }).click();
+  await expect(
+    dialog.getByRole("textbox", { name: "Workflow name" }),
+  ).toHaveAttribute("autocapitalize", "off");
 
   await dialog.getByRole("button", { name: "Add step" }).click();
   await page.getByRole("menuitem", { name: "Delay" }).click();
