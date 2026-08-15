@@ -54,6 +54,11 @@ public identity projection, application membership policy, or user interface.
 - **lease**: a cached committed decision for one actor and bounded operation
   set. A lease is not a binding.
 
+Identity and authorization-state comparisons preserve every tuple component.
+Equal `sub` values under different `iss` values are distinct identities; equal
+`(i, k)` pairs under different domains are distinct bindings, retired pairs,
+and authorization state. [FI-TRACE-CROSS-DOMAIN-COLLISION]
+
 Every identifier is either **interoperability-critical** or
 **deployment-local**. Header names, public response bytes, token type values,
 and trace identifiers are interoperability-critical and fixed here.
