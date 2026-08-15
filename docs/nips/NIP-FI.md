@@ -179,37 +179,58 @@ never enter the result. [FI-TRACE-VERIFIER-PARITY]
 
 ### Token class
 
-Policy selects exactly one token class before validation:
+Policy selects exactly one token class before parsing claims:
 
-- **portable access token**: an `aud=buzz` access token; when the issuer supports
-  RFC 9068, the protected `typ` is exactly `at+jwt`;
+- **RFC 9068 access token**: a Buzz-resource access token whose protected
+  `typ` is exactly `at+jwt` and whose `aud` contains the configured Buzz
+  resource audience;
 - **dedicated Buzz assertion**: a separately minted assertion whose protected
   `typ` is exactly `nip-fi+jwt`;
-- **named compatibility access token**: absent or generic `typ=JWT` only under
-  an explicit issuer policy with required and forbidden claims that are
-  mutually exclusive with every accepted ID-token or other JWT class.
+- **named compatibility access token**: absent or generic protected `typ=JWT`
+  only under an explicit issuer policy whose required and forbidden claims,
+  audience, issuer, key source, and validation rules are mutually exclusive
+  with every accepted ID-token and other JWT class.
 
-OIDC ID Tokens always deny, even when `iss`, `aud`, and `sub` match. A failed
-class never falls back to another class. Token class and all class-specific
-rules are inputs to `assertion_policy_id`. [FI-TRACE-TOKEN-CLASS]
+OIDC ID Tokens always deny, even when `iss`, `aud`, and `sub` match. A generic
+or absent type has no stock fallback. Failure under one class never triggers
+validation under another. Token class and every class-specific validation rule
+are inputs to `assertion_policy_id`. [FI-TRACE-TOKEN-CLASS]
 
 ### Policy identity and snapshots
 
-`assertion_policy_id` is a deployment-local deterministic digest of the
-canonical assertion-policy contract: issuer, audience, token class, allowed
-algorithms, authenticated key/status sources, identity/key/claim mapping, time
-and size rules, normalization, freshness class, and compiled verifier behavior.
-A semantic change changes the ID; authenticated snapshot contents, key order,
-cache timestamps, and retrieval time do not. [FI-TRACE-CONTRACT-IDENTITIES]
+Core has exactly two semantic contract identities:
 
-Mutable state remains in `revalidation_dependencies`, including the assertion
-snapshot version, verification-key identity, snapshot hard deadline, optional
-status source/version/deadline, and a confidential handle to the exact compact
-JWS. Adding, removing, or replacing an accepted key changes the snapshot
-version. Changed dependencies require revalidation under the current snapshot;
-a retained key may continue, while an absent key denies. Unknown-key refresh is
-bounded and coalesced and has no attacker-triggered stale-key fallback.
-[FI-TRACE-JWKS-ADD] [FI-TRACE-JWKS-REMOVE]
+```text
+assertion_policy_id  = H(canonical assertion-policy contract)
+transport_contract_id = H(canonical transport contract)
+```
+
+Each uses one implementation-defined but deterministic, versioned encoding and
+collision-resistant hash within a deployment. `assertion_policy_id` covers the
+canonical issuer, audience, token class, allowed algorithms, authenticated
+key/status-source contracts, identity/key/claim mapping, time and size rules,
+normalization, freshness class, and compiled verifier behavior. The verifier
+fingerprint is an input, not a third identity. `transport_contract_id` covers
+the client-attached field, parsing, attachment, context preservation, and
+no-fallback semantics; a companion transport may define its own canonical
+contract under that same identity slot. A semantic change changes exactly its
+owning ID. [FI-TRACE-CONTRACT-IDENTITIES]
+
+Mutable contents and deployment state are not contract identities. They remain
+in `revalidation_dependencies`: authenticated assertion-snapshot version,
+verification-key identity, key-snapshot hard deadline, optional status
+source/version/deadline, binding/lifecycle/local-policy/resource versions,
+proof and replay witnesses, and a confidential handle to the exact compact JWS.
+Adding, removing, or replacing an accepted key changes the snapshot version,
+not `assertion_policy_id`. Changed dependencies require revalidation under
+current state; a retained key may continue, while an absent key denies.
+Unknown-key refresh is bounded and coalesced and has no attacker-triggered
+stale-key fallback. [FI-TRACE-JWKS-ADD] [FI-TRACE-JWKS-REMOVE]
+
+Thus two contract identities do not mean two total version values. Folding a
+mutable snapshot into policy identity would make benign rotation change policy
+lineage; omitting it would let evidence under a removed key survive. Stable
+semantic IDs plus explicit mutable dependency versions preserve both outcomes.
 
 The base contract compares the current authenticated snapshot and makes no
 anti-rollback promise. A deployment claiming rollback prevention records a
@@ -223,24 +244,30 @@ Each policy declares exactly one server-owned freshness class, included in
 
 - **`offline-jwt`** validates the JWT and authenticated key snapshot only.
   `upstream_authority_deadline` is the minimum of `exp`,
-  `iat + maximum_assertion_age`, and the key-snapshot hard deadline. It cannot
-  truthfully advertise an unconditional upstream-revocation bound. Enabling it
-  requires deployment evidence that revocation stops new accepted issuance;
-  discovery reports the residual bound as unknown. [deployment artifact:
-  issuer revocation review]
+  `iat + maximum_assertion_age`, and the key-snapshot hard deadline. Token age
+  bounds assertions minted before revocation; it cannot bound an issuer that
+  continues minting accepted assertions afterward. Enabling this class therefore
+  requires deployment evidence that revocation stops new accepted issuance, and
+  discovery reports the unconditional residual bound as unknown (`null`). It
+  MUST NOT advertise a finite unconditional residual bound. [deployment
+  artifact: issuer revocation review]
 - **`current-status`** additionally requires an authenticated witness
   `(iss, sub, token_or_session_id?, active=true, observed_at, valid_until,
   status_version, authenticated_source_id)`. Subject and optional session
-  identifier exactly match the assertion. `valid_until` is finite and no later
-  than `observed_at + maximum_status_age`. The upstream deadline also includes
-  `valid_until`. Outage cannot mint or extend a witness, though an already
-  verified witness remains usable until its existing deadline.
-  [FI-TRACE-CURRENT-STATUS-STALE]
+  identifier exactly match the assertion. Ambiguous, unauthenticated, inactive,
+  or expired status denies. `valid_until` is finite and no later than
+  `observed_at + maximum_status_age`. The upstream deadline is the minimum of
+  the offline assertion deadlines and `valid_until`. Source outage cannot mint
+  or extend a witness; an already verified witness remains usable only until
+  its existing `valid_until`. [FI-TRACE-CURRENT-STATUS-STALE]
 
-A current-status deployment advertises a tested
-`maximum_residual_upstream_revocation_seconds`; prepared evidence and leases
-close within that value after upstream revocation. Poll/cache age and event
-processing delay are included. [FI-TRACE-CURRENT-STATUS-REVOKED]
+A current-status deployment advertises a tested positive
+`maximum_residual_upstream_revocation_seconds`. Prepared evidence and leases
+close within that value after upstream revocation, including a revocation racing
+final admission. Poll/cache age, event-delivery and processing delay, and
+enforcement delay all fit within the advertised value. A push implementation
+may close authority sooner but cannot claim a value below its tested worst case.
+[FI-TRACE-CURRENT-STATUS-REVOKED]
 
 Before enabling an issuer, the operator records authoritative evidence that
 `sub` is stable for the account lifetime, never reassigned, and not intentionally
@@ -451,11 +478,11 @@ policy revision. NIP-FI-CONF defines evidence and mutation-adequacy rules.
 |---|---|
 | `FI-TRACE-TRANSPORT-CLOSED` | Exact one-header input succeeds; missing, repeated, combined, malformed, mixed, URL, and fallback variants deny. |
 | `FI-TRACE-ASSERTION-VALIDATION` | Valid boundary input passes; each signature, key-selection, issuer, audience, time, size, and ambiguity negative denies. |
-| `FI-TRACE-TOKEN-CLASS` | ID tokens, wrong/generic types outside a named policy, client-only audiences, and cross-class fallback deny. |
-| `FI-TRACE-CONTRACT-IDENTITIES` | Each semantic mutation changes only its owning contract ID; snapshot-only mutations change neither. |
+| `FI-TRACE-TOKEN-CLASS` | An RFC 9068 `at+jwt` access token and a dedicated `nip-fi+jwt` assertion pass only their selected class. ID tokens, wrong/generic types outside a named compatibility policy, client-only audiences, and every attempted cross-class fallback deny. |
+| `FI-TRACE-CONTRACT-IDENTITIES` | Mutate each assertion semantic, transport semantic, and mutable dependency independently: semantic mutations change only their owning contract ID; snapshot/binding/lifecycle/policy/resource/status mutations change neither ID but force current revalidation. |
 | `FI-TRACE-VERIFIER-PARITY` | Equal authoritative input and policy produce the same canonical normalized result. |
 | `FI-TRACE-JWKS-ADD` / `REMOVE` | Retained-key rotation can revalidate; removed-key evidence and leases deny. |
-| `FI-TRACE-CURRENT-STATUS-REVOKED` / `STALE` | Revocation closes authority within the advertised bound; expiry equality/outage cannot extend a witness. |
+| `FI-TRACE-CURRENT-STATUS-REVOKED` / `STALE` | Revocation, including one racing final admission, closes authority within the advertised tested bound. Inactive/ambiguous status denies; expiry equality, outage, delayed events, and changed status versions cannot mint or extend a witness. |
 | `FI-TRACE-BODY-BINDING` / `BOUNDS` | Exact complete relevant body passes; absent/duplicate/mutated/partial/transformed/oversized/quota variants deny without effects. |
 | `FI-TRACE-DOMAIN-SPOOF` | Client routing and forwarded authority cannot replace server-owned context. |
 | `FI-TRACE-ASSERTION-KEY-MISMATCH` | Mismatch denies with no mutation and the private-state response. |
