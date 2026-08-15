@@ -1,4 +1,5 @@
-import { Trash2 } from "lucide-react";
+import { ChevronRight, Trash2 } from "lucide-react";
+import { type ReactNode, useState } from "react";
 
 import type { Channel } from "@/shared/api/types";
 import { cn } from "@/shared/lib/cn";
@@ -15,6 +16,55 @@ import type { StepFormState, TriggerType } from "./workflowFormTypes";
 
 const DEFAULT_STEP_TIMEOUT_SECONDS = 5 * 60;
 const DEFAULT_APPROVAL_TIMEOUT_SECONDS = 24 * 60 * 60;
+
+type StepSetting = "timeout" | "details";
+
+function StepSettingAccordion({
+  children,
+  disabled,
+  expanded,
+  label,
+  onToggle,
+  summary,
+}: {
+  children: ReactNode;
+  disabled?: boolean;
+  expanded: boolean;
+  label: string;
+  onToggle: () => void;
+  summary: string;
+}) {
+  return (
+    <div>
+      <button
+        aria-expanded={expanded}
+        className="flex min-h-12 w-full items-center gap-3 py-3 text-left transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+        disabled={disabled}
+        onClick={onToggle}
+        type="button"
+      >
+        <span className="min-w-0 flex-1 truncate text-base font-medium">
+          {label}
+        </span>
+        <span className="max-w-40 truncate text-sm text-muted-foreground">
+          {summary}
+        </span>
+        <ChevronRight
+          className={cn(
+            "h-4 w-4 shrink-0 text-muted-foreground/70 transition-transform duration-150 motion-reduce:transition-none",
+            expanded && "rotate-90",
+          )}
+        />
+      </button>
+
+      {expanded ? (
+        <div className="animate-in pb-4 pt-1 fade-in slide-in-from-top-1 duration-150 motion-reduce:animate-none">
+          {children}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 function BackendSupportHint({ action }: { action: StepFormState["action"] }) {
   switch (action) {
@@ -325,6 +375,13 @@ export function WorkflowStepCard({
   workflowChannelId?: string | null;
 }) {
   const prefix = `wf-step-${index}`;
+  const [expandedSetting, setExpandedSetting] = useState<StepSetting | null>(
+    null,
+  );
+
+  const toggleSetting = (setting: StepSetting) => {
+    setExpandedSetting((current) => (current === setting ? null : setting));
+  };
 
   return (
     <div
@@ -352,7 +409,7 @@ export function WorkflowStepCard({
         </div>
       ) : null}
 
-      <section className="space-y-5 pb-5">
+      <section className="pb-5">
         <StepConfigFields
           channels={channels}
           disabled={disabled}
@@ -363,45 +420,69 @@ export function WorkflowStepCard({
           triggerType={triggerType}
           workflowChannelId={workflowChannelId}
         />
-        <WorkflowDurationField
-          disabled={disabled}
-          fallbackSeconds={DEFAULT_STEP_TIMEOUT_SECONDS}
-          id={`${prefix}-timeout-secs`}
-          label="Timeout"
-          onChange={(timeoutSecs) => onUpdate({ ...step, timeoutSecs })}
-          placeholder="5m"
-          value={step.timeoutSecs ?? ""}
-        />
       </section>
 
-      <section className="space-y-4 border-t border-border/50 pt-5">
-        <div className="space-y-1.5">
-          <FieldLabel htmlFor={`${prefix}-name`}>Name (optional)</FieldLabel>
-          <Input
-            autoCapitalize="off"
+      <section className="divide-y divide-border/50 border-t border-border/50">
+        <StepSettingAccordion
+          disabled={disabled}
+          expanded={expandedSetting === "timeout"}
+          label="Timeout"
+          onToggle={() => toggleSetting("timeout")}
+          summary={step.timeoutSecs?.trim() || "5m"}
+        >
+          <WorkflowDurationField
             disabled={disabled}
-            id={`${prefix}-name`}
-            onChange={(event) =>
-              onUpdate({ ...step, name: event.target.value })
-            }
-            placeholder="e.g. Notify deployment channel"
-            value={step.name ?? ""}
+            fallbackSeconds={DEFAULT_STEP_TIMEOUT_SECONDS}
+            hideLabel
+            id={`${prefix}-timeout-secs`}
+            label="Timeout"
+            onChange={(timeoutSecs) => onUpdate({ ...step, timeoutSecs })}
+            placeholder="5m"
+            value={step.timeoutSecs ?? ""}
           />
-        </div>
-        <div className="space-y-1.5">
-          <FieldLabel htmlFor={`${prefix}-id`}>Step ID</FieldLabel>
-          <Input
-            autoCapitalize="off"
-            disabled={disabled}
-            id={`${prefix}-id`}
-            onChange={(event) => onUpdate({ ...step, id: event.target.value })}
-            placeholder="unique_step_id"
-            value={step.id}
-          />
-          <p className="text-xs text-muted-foreground">
-            Used in configuration and run history.
-          </p>
-        </div>
+        </StepSettingAccordion>
+
+        <StepSettingAccordion
+          disabled={disabled}
+          expanded={expandedSetting === "details"}
+          label="Name"
+          onToggle={() => toggleSetting("details")}
+          summary={step.name?.trim() || step.id}
+        >
+          <div className="space-y-4">
+            <div className="space-y-1.5">
+              <FieldLabel htmlFor={`${prefix}-name`}>
+                Name (optional)
+              </FieldLabel>
+              <Input
+                autoCapitalize="off"
+                disabled={disabled}
+                id={`${prefix}-name`}
+                onChange={(event) =>
+                  onUpdate({ ...step, name: event.target.value })
+                }
+                placeholder="e.g. Notify deployment channel"
+                value={step.name ?? ""}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <FieldLabel htmlFor={`${prefix}-id`}>ID</FieldLabel>
+              <Input
+                autoCapitalize="off"
+                disabled={disabled}
+                id={`${prefix}-id`}
+                onChange={(event) =>
+                  onUpdate({ ...step, id: event.target.value })
+                }
+                placeholder="unique_step_id"
+                value={step.id}
+              />
+              <p className="text-xs text-muted-foreground">
+                Used in configuration and run history.
+              </p>
+            </div>
+          </div>
+        </StepSettingAccordion>
       </section>
     </div>
   );

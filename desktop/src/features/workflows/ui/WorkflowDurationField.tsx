@@ -11,6 +11,7 @@ import {
 export function WorkflowDurationField({
   disabled,
   fallbackSeconds = DEFAULT_DURATION_SECONDS,
+  hideLabel = false,
   id,
   label = "Duration",
   onChange,
@@ -19,6 +20,7 @@ export function WorkflowDurationField({
 }: {
   disabled?: boolean;
   fallbackSeconds?: number;
+  hideLabel?: boolean;
   id: string;
   label?: string;
   onChange: (value: string) => void;
@@ -34,7 +36,13 @@ export function WorkflowDurationField({
 
   return (
     <div className="space-y-1.5">
-      <FieldLabel htmlFor={id}>{label}</FieldLabel>
+      {hideLabel ? (
+        <label className="sr-only" htmlFor={id}>
+          {label}
+        </label>
+      ) : (
+        <FieldLabel htmlFor={id}>{label}</FieldLabel>
+      )}
       <div className="flex items-center gap-4">
         <div className="relative flex h-9 min-w-0 flex-1 items-center">
           <div
