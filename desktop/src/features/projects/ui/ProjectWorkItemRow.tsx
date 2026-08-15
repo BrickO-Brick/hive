@@ -27,7 +27,7 @@ export function ProjectWorkItemRow({
 }) {
   return (
     <article
-      className="group/work-item flex min-h-10 min-w-0 items-center gap-2 px-4 py-2 transition-colors hover:bg-muted/30"
+      className="group/work-item flex min-h-10 min-w-0 items-center gap-2 rounded-md px-2 py-2 transition-colors hover:bg-muted/30"
       data-project-event-id={eventId}
       data-testid={testId}
     >

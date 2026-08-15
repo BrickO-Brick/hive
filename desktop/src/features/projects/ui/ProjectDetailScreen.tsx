@@ -29,10 +29,8 @@ import { useProjectRepositoryRefSelection } from "@/features/projects/useProject
 import { useUpdateProjectPullRequestMutation } from "@/features/projects/pullRequestMutations";
 import { useCreateProjectIssueMutation } from "@/features/projects/issueMutations";
 import { UserProfilePanel } from "@/features/profile/ui/UserProfilePanel";
-import { openProjectMergeRecoveryTerminal } from "@/shared/api/projectGit";
 import { ProfilePanelProvider } from "@/shared/context/ProfilePanelContext";
 import { useHistorySearchState } from "@/shared/hooks/useHistorySearchState";
-import { useThreadPanelWidth } from "@/shared/hooks/useThreadPanelWidth";
 import { Button } from "@/shared/ui/button";
 import { ViewLoadingFallback } from "@/shared/ui/ViewLoadingFallback";
 import { useCommunities } from "@/features/communities/useCommunities";
@@ -65,10 +63,7 @@ import { useProjectRepoPresentation } from "@/features/projects/useProjectRepoHo
 import { WorkspaceTabs } from "./ProjectWorkspaceTabs";
 import type { RepoSourceHeaderControls } from "./ProjectRepositorySource";
 import { showProjectCloneErrorToast } from "./projectGitErrorToast";
-import {
-  projectTerminalLabel,
-  useOpenProjectTerminal,
-} from "./useOpenProjectTerminal";
+import { projectTerminalLabel } from "./useOpenProjectTerminal";
 import type { CreateIssueDialogInput } from "./CreateIssueDialog";
 import { ProjectBranchActionDialogs } from "./ProjectBranchActionDialogs";
 import { ProjectDetailChrome } from "./ProjectDetailChrome";
@@ -80,6 +75,8 @@ import { buildProjectDetailCrumbs } from "./useProjectDetailCrumbs";
 import { useProjectDetailPeople } from "./useProjectDetailPeople";
 import { useProjectProfilePanel } from "./useProjectProfilePanel";
 import { useProjectRepositoryPanel } from "./useProjectRepositoryPanel";
+import { useProjectPanelWidths } from "./useProjectPanelWidths";
+import { useProjectRepositoryOpenActions } from "./useProjectRepositoryOpenActions";
 import { pushPullTitle, snapshotHasContent } from "./projectDetailHelpers";
 
 type ProjectDetailScreenProps = {
@@ -157,6 +154,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
   const [selectedIssueId, setSelectedIssueId] = React.useState<string | null>(
     issueId ?? null,
   );
+  const [createIssueRequestKey, setCreateIssueRequestKey] = React.useState(0);
   // biome-ignore lint/correctness/useExhaustiveDependencies: the transient request ID deliberately reapplies an unchanged entity selection.
   React.useEffect(() => {
     setSelectedPullRequestId(pullRequestId ?? null);
@@ -512,7 +510,9 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
     profilePanelTab,
     profilePanelView,
   } = useProjectProfilePanel();
-  const threadPanelWidth = useThreadPanelWidth();
+  const { activeRightPanelWidth, threadPanelWidth } = useProjectPanelWidths(
+    repositoryPanel.mode,
+  );
   const handlePushLocalRepo = React.useCallback(async () => {
     try {
       const result = await pushLocalRepoMutation.mutateAsync();
@@ -648,34 +648,21 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
     repoStateQuery,
     repoSyncStatusQuery,
   ]);
-  const openTerminal = useOpenProjectTerminal(activeCommunity?.reposDir);
-  const handleOpenTerminal = React.useCallback(() => {
-    if (!repository) return Promise.resolve();
-    return openTerminal(repository, {
-      branch: activeBranch,
-      hasLocalCheckout,
-    });
-  }, [activeBranch, hasLocalCheckout, openTerminal, repository]);
-  const handleOpenMergeRecoveryTerminal = React.useCallback(
-    async (input: {
-      expectedCommit: string;
-      sourceBranch: string;
-      sourceCloneUrl: string;
-      targetBranch: string;
-    }) => {
-      const targetCloneUrl = repository?.cloneUrls[0];
-      if (!repository || !targetCloneUrl) {
-        throw new Error("No project selected.");
-      }
-      return openProjectMergeRecoveryTerminal({
-        ...input,
-        projectDtag: repository.dtag,
-        reposDir: activeCommunity?.reposDir,
-        targetCloneUrl,
-      });
-    },
-    [activeCommunity?.reposDir, repository],
-  );
+  const localRepositoryPath =
+    repoSyncStatusQuery.data?.localPath ??
+    localRepoSnapshotQuery.data?.path ??
+    null;
+  const {
+    handleOpenLocalRepository,
+    handleOpenMergeRecoveryTerminal,
+    handleOpenTerminal,
+  } = useProjectRepositoryOpenActions({
+    activeBranch,
+    hasLocalCheckout,
+    localRepositoryPath,
+    repository,
+    reposDir: activeCommunity?.reposDir,
+  });
   const projectTerminalContext = React.useMemo(() => {
     const channelId = repository?.channelId ?? project?.projectChannelId;
     if (!channelId) return null;
@@ -807,6 +794,10 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
       terminalAvailable={projectTerminalContext !== null}
     />
   );
+  const detachedRepositoryPanel =
+    !profilePanelPubkey &&
+    !repositoryPanel.collapsed &&
+    repositoryPanel.mode === "repository";
   const sharedHeaderBackdrop =
     !selectedPullRequestId && !selectedIssueId && !selectedCommitHash;
   const handleRepositoryChange = (nextRepositoryId: string) => {
@@ -836,21 +827,32 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
         <ProjectConversationPanelController
           canResetWidth={threadPanelWidth.canReset}
           closeWhen={Boolean(profilePanelPubkey)}
+          detachFallbackPanel={detachedRepositoryPanel}
           fallbackPanel={
             profilePanelPubkey || repositoryPanel.collapsed ? null : (
               <ProjectDetailRightPanel
-                canResetWidth={threadPanelWidth.canReset}
+                activeTab={activeTab}
+                canResetWidth={activeRightPanelWidth.canReset}
                 contributors={displayedRepositoryContributors}
                 context={agentPageContext}
+                createIssuePending={createIssueMutation.isPending}
+                detachedRepository={detachedRepositoryPanel}
                 files={displayedRepositoryFiles}
                 identityPubkey={identityPubkey}
+                issues={issuesQuery.data ?? []}
                 mode={repositoryPanel.mode}
+                onCreateTask={() => {
+                  setCreateIssueRequestKey((key) => key + 1);
+                }}
                 onOpenTerminal={() => {
                   void handleOpenTerminal();
                 }}
+                onOpenLocalRepository={() => {
+                  void handleOpenLocalRepository();
+                }}
                 onRepositoryChange={handleRepositoryChange}
-                onResetWidth={threadPanelWidth.onResetWidth}
-                onResizeStart={threadPanelWidth.onResizeStart}
+                onResetWidth={activeRightPanelWidth.onResetWidth}
+                onResizeStart={activeRightPanelWidth.onResizeStart}
                 profiles={profiles}
                 pullRequests={pullRequestsQuery.data ?? []}
                 project={project}
@@ -860,7 +862,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
                 snapshot={displayedRepositorySnapshot}
                 sourceControls={filesSourceControls}
                 terminalTitle={projectTerminalLabel(hasLocalCheckout)}
-                widthPx={threadPanelWidth.widthPx}
+                widthPx={activeRightPanelWidth.widthPx}
               />
             )
           }
@@ -911,6 +913,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
                     onCreate: handleCreateIssue,
                     pending: createIssueMutation.isPending,
                   }}
+                  createIssueRequestKey={createIssueRequestKey}
                   createPullRequestAction={{
                     onCreated: handlePullRequestCreated,
                     projects: projectsQuery.data ?? [project],

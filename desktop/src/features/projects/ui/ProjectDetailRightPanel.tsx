@@ -11,11 +11,13 @@ type RepositoryPanelProps = React.ComponentProps<
 
 export function ProjectDetailRightPanel({
   context,
+  detachedRepository = false,
   mode,
   sharedHeaderBackdrop,
   ...repositoryProps
 }: RepositoryPanelProps & {
   context: ProjectDetailAgentContext;
+  detachedRepository?: boolean;
   mode: ProjectRightPanelMode;
   sharedHeaderBackdrop?: boolean;
 }) {
@@ -32,5 +34,10 @@ export function ProjectDetailRightPanel({
       />
     );
   }
-  return <ProjectRepositoryActionsPanel {...repositoryProps} />;
+  return (
+    <ProjectRepositoryActionsPanel
+      detached={detachedRepository}
+      {...repositoryProps}
+    />
+  );
 }

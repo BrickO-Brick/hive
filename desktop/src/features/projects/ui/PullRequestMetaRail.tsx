@@ -70,7 +70,7 @@ export function PullRequestMetaHeader({
           {pullRequest.commit ? (
             <span className="inline-flex min-w-0 items-center gap-0.5 text-muted-foreground">
               <code
-                className="truncate font-mono text-sm"
+                className="truncate font-mono text-xs"
                 title={pullRequest.commit}
               >
                 {pullRequest.commit.slice(0, 7)}

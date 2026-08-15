@@ -89,6 +89,7 @@ export function WorkspaceTabs({
   contributorActivityCounts,
   contributorPubkeys,
   createIssueAction,
+  createIssueRequestKey,
   createPullRequestAction,
   updatePullRequestAction,
   initialTab,
@@ -131,6 +132,7 @@ export function WorkspaceTabs({
   contributorActivityCounts: Record<string, ProjectContributorActivityCounts>;
   contributorPubkeys: string[];
   createIssueAction: CreateIssueAction;
+  createIssueRequestKey?: number;
   createPullRequestAction?: CreatePullRequestAction;
   updatePullRequestAction?: UpdatePullRequestAction;
   /** Tab to open on mount (workspace vocabulary), e.g. from a share link. */
@@ -267,8 +269,15 @@ export function WorkspaceTabs({
       pullRequestId: string;
     } | null>(null);
   const [createIssueOpen, setCreateIssueOpen] = React.useState(false);
+  const previousCreateIssueRequestKey = React.useRef(createIssueRequestKey);
   const [createPullRequestOpen, setCreatePullRequestOpen] =
     React.useState(false);
+
+  React.useEffect(() => {
+    if (previousCreateIssueRequestKey.current === createIssueRequestKey) return;
+    previousCreateIssueRequestKey.current = createIssueRequestKey;
+    setCreateIssueOpen(true);
+  }, [createIssueRequestKey]);
 
   React.useEffect(() => {
     onSelectedTabChange?.(selectedTab);
@@ -451,7 +460,9 @@ export function WorkspaceTabs({
         </TabsContent>
 
         <TabsContent
-          className={`m-0 ${PROJECT_DETAIL_PANEL_CLASS}`}
+          className={`m-0 ${
+            selectedPullRequestId ? "" : PROJECT_DETAIL_PANEL_CLASS
+          }`}
           data-project-detail-panel
           value="prs"
         >
@@ -501,7 +512,7 @@ export function WorkspaceTabs({
         </TabsContent>
 
         <TabsContent
-          className={`m-0 ${PROJECT_DETAIL_PANEL_CLASS}`}
+          className={`m-0 ${selectedIssueId ? "" : PROJECT_DETAIL_PANEL_CLASS}`}
           data-project-detail-panel
           value="issues"
         >

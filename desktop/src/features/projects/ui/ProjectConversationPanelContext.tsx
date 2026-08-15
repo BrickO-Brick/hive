@@ -1,6 +1,7 @@
 import * as React from "react";
 
 import type { SearchHit } from "@/shared/api/searchTypes";
+import { cn } from "@/shared/lib/cn";
 import { ProjectConversationPanel } from "./ProjectConversationPanel";
 import { PROJECT_COLUMN_HEADER_BACKDROP_CLASS } from "./projectPanelStyles";
 
@@ -35,6 +36,7 @@ export function ProjectConversationPanelController({
   canResetWidth,
   children,
   closeWhen,
+  detachFallbackPanel = false,
   fallbackPanel,
   onOpenConversation,
   onResetWidth,
@@ -46,6 +48,7 @@ export function ProjectConversationPanelController({
   canResetWidth: boolean;
   children: React.ReactNode;
   closeWhen: boolean;
+  detachFallbackPanel?: boolean;
   fallbackPanel?: React.ReactNode;
   onOpenConversation: () => void;
   onResetWidth: () => void;
@@ -68,17 +71,44 @@ export function ProjectConversationPanelController({
     },
     [onOpenConversation],
   );
+  const detached =
+    detachFallbackPanel && hit === null && fallbackPanel !== undefined;
   return (
     <ProjectConversationPanelProvider onOpenConversation={openConversation}>
-      <div className="relative flex min-h-0 min-w-0 flex-1 flex-row overflow-hidden">
-        {sharedHeaderBackdrop ? (
+      <div
+        className={cn(
+          "relative flex min-h-0 min-w-0 flex-1 flex-row overflow-hidden",
+          detached && "gap-2 bg-sidebar pb-2 pr-2 pt-px",
+        )}
+        data-detached={detached ? "true" : "false"}
+        data-project-context-detached={detached ? "true" : undefined}
+        data-project-detail-screen
+        data-testid="project-panel-layout"
+      >
+        {sharedHeaderBackdrop && !detached ? (
           <div
             aria-hidden="true"
             className={`pointer-events-none absolute inset-x-0 top-0 z-20 h-13 ${PROJECT_COLUMN_HEADER_BACKDROP_CLASS}`}
             data-testid="project-shared-header-backdrop"
           />
         ) : null}
-        {children}
+        <div
+          className={cn(
+            detached
+              ? "relative ml-px flex min-h-0 min-w-0 flex-1 overflow-hidden rounded-2xl bg-background"
+              : "contents",
+          )}
+          data-testid={detached ? "project-content-pod" : undefined}
+        >
+          {sharedHeaderBackdrop && detached ? (
+            <div
+              aria-hidden="true"
+              className={`pointer-events-none absolute inset-x-0 top-0 z-20 h-13 ${PROJECT_COLUMN_HEADER_BACKDROP_CLASS}`}
+              data-testid="project-shared-header-backdrop"
+            />
+          ) : null}
+          {children}
+        </div>
         {hit ? (
           <ProjectConversationPanel
             canResetWidth={canResetWidth}

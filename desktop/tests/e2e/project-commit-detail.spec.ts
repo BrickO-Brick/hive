@@ -631,6 +631,13 @@ test("commit detail opens from the commits feed with a diff", async ({
   await expect(
     page.getByRole("heading", { name: "Add Trello board workflow details" }),
   ).toBeVisible();
+  const commitDetail = page.getByTestId("project-commit-detail");
+  await expect(commitDetail).toHaveCSS("max-width", "768px");
+  await expect(
+    commitDetail.getByRole("heading", {
+      name: "Add Trello board workflow details",
+    }),
+  ).toHaveCSS("font-size", "18px");
   await expect(
     page.getByRole("button", { name: "Copy commit hash" }),
   ).toBeVisible();

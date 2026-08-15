@@ -48,6 +48,7 @@ import { ProjectDetailSection } from "./ProjectDetailSection";
 import { ProfileIdentityButton } from "./ProjectProfileIdentity";
 import { ProjectRichContent } from "./ProjectRichContent";
 import { ShareLinkButton } from "./ShareLinkButton";
+import { PROJECT_DETAIL_READING_COLUMN_CLASS } from "./projectPanelStyles";
 import {
   ProjectStatusProgressIcon,
   type ProjectStatusProgressState,
@@ -296,9 +297,13 @@ export function ProjectIssueDetail({
     Boolean(viewer) && (isAuthor || isOwner || isManagedAgentOwner);
 
   return (
-    <div>
-      <header className="space-y-1 px-4 pb-1 pt-3">
-        <h3 className="line-clamp-2 text-xl font-semibold text-foreground">
+    <div
+      className={PROJECT_DETAIL_READING_COLUMN_CLASS}
+      data-project-detail-panel
+      data-testid="project-issue-detail"
+    >
+      <header className="space-y-2 px-6 pb-3 pt-5">
+        <h3 className="line-clamp-2 text-lg font-semibold leading-6 text-foreground">
           {issue.title}{" "}
           <span className="font-normal text-muted-foreground">
             #{issue.id.slice(0, 8)}
@@ -310,7 +315,7 @@ export function ProjectIssueDetail({
             testId="project-issue-copy-link"
           />
         </h3>
-        <p className="flex flex-wrap items-center gap-x-1 gap-y-1 text-xs font-medium text-muted-foreground">
+        <p className="flex flex-wrap items-center gap-x-1 gap-y-1 text-xs text-muted-foreground">
           <ProfileIdentityButton
             avatarClassName="shrink-0"
             avatarSize="xs"
@@ -383,7 +388,7 @@ export function ProjectIssueDetail({
         </div>
       </ProjectDetailSection>
       <div
-        className="px-4 pb-4 pt-2"
+        className="border-border/50 border-t px-6 pb-6 pt-4"
         data-testid="project-issue-comment-composer"
       >
         <ForumComposer

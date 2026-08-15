@@ -1,11 +1,16 @@
 import {
+  CheckCircle2,
+  CircleDot,
   DownloadCloud,
   ExternalLink,
   FileCode2,
+  FolderOpen,
   GitCommitHorizontal,
+  GitMerge,
   GitPullRequest,
   Loader2,
   MessageCircle,
+  Plus,
   RefreshCw,
   SquareTerminal,
   UploadCloud,
@@ -15,22 +20,19 @@ import type * as React from "react";
 
 import type {
   Project,
+  ProjectIssue,
   ProjectPullRequest,
   ProjectRepoContributor,
   ProjectRepoFile,
   ProjectRepoSnapshot,
   Repository,
 } from "@/features/projects/hooks";
-import {
-  LANGUAGE_DOT_CLASSES,
-  languageForPath,
-  topLanguagesFromCounts,
-} from "@/features/projects/lib/projectLanguages";
 import { projectExternalRefUrl } from "@/features/projects/lib/projectExternalUrl";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import { RightAuxiliaryPane } from "@/features/channels/ui/RightAuxiliaryPane";
 import { normalizePubkey } from "@/shared/lib/pubkey";
 import { Button } from "@/shared/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 import { UserAvatar } from "@/shared/ui/UserAvatar";
 import {
   RepoSourceDropdown,
@@ -38,12 +40,23 @@ import {
   RepositoryBranchDropdown,
 } from "./ProjectRepositorySource";
 import { ProjectRepositoryManagement } from "./ProjectRepositoryManagement";
+import {
+  projectReviewActivity,
+  projectRightPanelScope,
+  projectTaskActivity,
+} from "./projectRightPanelContext";
 
 type ProjectRepositoryActionsPanelProps = {
+  activeTab: string;
   canResetWidth: boolean;
   contributors: ProjectRepoContributor[];
+  createIssuePending: boolean;
+  detached?: boolean;
   files: ProjectRepoFile[];
   identityPubkey?: string;
+  issues: ProjectIssue[];
+  onCreateTask: () => void;
+  onOpenLocalRepository: () => void;
   onOpenTerminal: () => void;
   onRepositoryChange: (repositoryId: string) => void;
   onResetWidth: () => void;
@@ -59,29 +72,73 @@ type ProjectRepositoryActionsPanelProps = {
   widthPx: number;
 };
 
-function topLanguages(files: ProjectRepoFile[]) {
-  const counts: Record<string, number> = {};
-  for (const file of files) {
-    const language = languageForPath(file.path);
-    if (language) counts[language] = (counts[language] ?? 0) + 1;
-  }
-  return topLanguagesFromCounts(counts);
-}
-
 function RepositoryPanelSection({
   children,
+  divided = false,
   title,
 }: {
   children: React.ReactNode;
-  title: string;
+  divided?: boolean;
+  title?: string;
 }) {
   return (
-    <section className="space-y-2.5">
-      <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-        {title}
-      </h3>
+    <section
+      className={
+        divided
+          ? "!mt-2 space-y-0.5 border-border/50 border-t pt-2"
+          : "space-y-0.5"
+      }
+    >
+      {title ? (
+        <h3 className="flex h-7 min-w-0 items-center truncate text-sm font-normal text-muted-foreground/70">
+          {title}
+        </h3>
+      ) : null}
       {children}
     </section>
+  );
+}
+
+function RepositoryPeople({
+  people,
+  profiles,
+}: {
+  people: string[];
+  profiles?: UserProfileLookup;
+}) {
+  return (
+    <div
+      className="flex -space-x-1.5 pb-1 pt-0"
+      data-testid="project-repository-people"
+    >
+      {people.slice(0, 18).map((person) => {
+        const profile = profiles?.[person];
+        const label =
+          profile?.displayName?.trim() ||
+          profile?.nip05Handle?.trim() ||
+          person;
+        return (
+          <Tooltip key={person}>
+            <TooltipTrigger asChild>
+              <span
+                className="relative inline-flex rounded-full ring-2 ring-background"
+                data-testid="project-repository-person"
+              >
+                <UserAvatar
+                  accent={profile?.isAgent === true}
+                  avatarUrl={profile?.avatarUrl ?? null}
+                  displayName={label}
+                  size="sm"
+                />
+              </span>
+            </TooltipTrigger>
+            <TooltipContent data-testid="project-repository-person-tooltip">
+              {label}
+            </TooltipContent>
+          </Tooltip>
+        );
+      })}
+    </div>
   );
 }
 
@@ -98,13 +155,13 @@ function RepositoryActionButton({
 }) {
   return (
     <Button
-      className="h-8 justify-start gap-2 text-sm"
+      className="-mx-2 h-7 w-[calc(100%+1rem)] justify-start gap-3 rounded-md px-2 text-left text-sm font-normal hover:bg-muted/70 disabled:text-muted-foreground [&_svg]:h-4 [&_svg]:w-4 [&_svg]:shrink-0 [&_svg]:text-muted-foreground"
       disabled={disabled}
       onClick={onClick}
       size="sm"
       title={title}
       type="button"
-      variant="outline"
+      variant="ghost"
     >
       {children}
     </Button>
@@ -112,10 +169,16 @@ function RepositoryActionButton({
 }
 
 export function ProjectRepositoryActionsPanel({
+  activeTab,
   canResetWidth,
   contributors,
+  createIssuePending,
+  detached = false,
   files,
   identityPubkey,
+  issues,
+  onCreateTask,
+  onOpenLocalRepository,
   onOpenTerminal,
   onRepositoryChange,
   onResetWidth,
@@ -137,245 +200,346 @@ export function ProjectRepositoryActionsPanel({
         .map(normalizePubkey),
     ),
   ];
-  const languages = topLanguages(files);
   const latestCommit = snapshot?.latestCommit ?? null;
+  const scope = projectRightPanelScope(activeTab);
+  const branchScoped = scope === "branch";
+  const taskActivity = projectTaskActivity(issues);
+  const reviewActivity = projectReviewActivity(pullRequests);
   const cloneAction = sourceControls.localDisabled
     ? sourceControls.onCloneLocal
     : undefined;
   const fetchAction =
-    sourceControls.source === "local" ||
-    sourceControls.remoteKind !== "external"
+    branchScoped &&
+    (sourceControls.source === "local" ||
+      sourceControls.remoteKind !== "external")
       ? sourceControls.onFetch
       : undefined;
-  const pullAction = sourceControls.canPull ? sourceControls.onPull : undefined;
-  const pushAction = sourceControls.canPush ? sourceControls.onPush : undefined;
+  const pullAction =
+    branchScoped && sourceControls.canPull ? sourceControls.onPull : undefined;
+  const pushAction =
+    branchScoped && sourceControls.canPush ? sourceControls.onPush : undefined;
   const externalOpenUrl = projectExternalRefUrl(
     sourceControls.externalUrl,
-    sourceControls.selectedTag ?? sourceControls.branch,
+    branchScoped ? (sourceControls.selectedTag ?? sourceControls.branch) : null,
   );
 
   return (
     <RightAuxiliaryPane
       canResetWidth={canResetWidth}
+      detached={detached}
       onResetWidth={onResetWidth}
       onResizeStart={onResizeStart}
       testId="project-repository-actions-panel"
       widthPx={widthPx}
     >
-      <div className="relative z-30 min-h-0 flex-1 space-y-6 overflow-y-auto p-5">
-        <RepositoryPanelSection title="Working copy">
-          <div className="grid gap-2 [&_button]:w-full [&_button]:justify-between [&_button]:text-sm">
-            <RepoSourceDropdown controls={sourceControls} />
-            <RepositoryBranchDropdown
-              branch={sourceControls.branch}
-              branchOptions={sourceControls.branchOptions}
-              createBranchDisabled={sourceControls.createBranchDisabled}
-              createBranchTitle={sourceControls.createBranchTitle}
-              deleteBranchDisabled={sourceControls.deleteBranchDisabled}
-              deleteBranchTitle={sourceControls.deleteBranchTitle}
-              onBranchChange={sourceControls.onBranchChange}
-              onCreateBranch={sourceControls.onCreateBranch}
-              onDeleteBranch={sourceControls.onDeleteBranch}
-              onTagChange={sourceControls.onTagChange}
-              selectedTag={sourceControls.selectedTag}
-              tagOptions={sourceControls.tagOptions}
-            />
-          </div>
-        </RepositoryPanelSection>
-
-        <RepositoryPanelSection title="Actions">
-          <div className="grid gap-2">
-            {cloneAction ? (
-              <RepositoryActionButton
-                disabled={sourceControls.clonePending}
-                onClick={cloneAction}
+      <div
+        className={
+          detached
+            ? "relative z-30 min-h-0 flex-1 overflow-y-auto"
+            : "relative z-30 min-h-0 flex-1 overflow-y-auto p-3"
+        }
+      >
+        <div
+          className={`rounded-2xl ${detached ? "bg-background" : "border border-border/60 bg-muted/30"}`}
+          data-testid="project-context-card"
+        >
+          <div className="flex min-w-0 items-center justify-between gap-2 px-4 pt-3">
+            <h2 className="min-w-0 truncate text-sm font-normal text-muted-foreground/70">
+              {repository.name}
+            </h2>
+            {branchScoped ? (
+              <div
+                className="flex shrink-0 items-center"
+                data-testid="project-repository-management-actions"
               >
-                {sourceControls.clonePending ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <DownloadCloud className="h-3.5 w-3.5" />
-                )}
-                {sourceControls.clonePending ? "Cloning…" : "Clone"}
-              </RepositoryActionButton>
-            ) : null}
-            {sourceControls.remoteUnavailableReason === "access" &&
-            sourceControls.onAskForAccess ? (
-              <RepositoryActionButton
-                onClick={sourceControls.onAskForAccess}
-                title="Open project chat to ask for repository access"
-              >
-                <MessageCircle className="h-3.5 w-3.5" />
-                Ask for access
-              </RepositoryActionButton>
-            ) : null}
-            {fetchAction ? (
-              <RepositoryActionButton
-                disabled={sourceControls.fetchPending}
-                onClick={fetchAction}
-                title={sourceControls.fetchTitle}
-              >
-                {sourceControls.fetchPending ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <RefreshCw className="h-3.5 w-3.5" />
-                )}
-                Fetch
-              </RepositoryActionButton>
-            ) : null}
-            {pullAction ? (
-              <RepositoryActionButton
-                disabled={sourceControls.pullDisabled}
-                onClick={pullAction}
-                title={sourceControls.pullTitle}
-              >
-                {sourceControls.pullPending ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <DownloadCloud className="h-3.5 w-3.5" />
-                )}
-                Pull
-                {sourceControls.behindCount
-                  ? ` ${sourceControls.behindCount}`
-                  : ""}
-              </RepositoryActionButton>
-            ) : null}
-            {pushAction ? (
-              <RepositoryActionButton
-                disabled={sourceControls.pushDisabled}
-                onClick={pushAction}
-                title={sourceControls.pushTitle}
-              >
-                {sourceControls.pushPending ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <UploadCloud className="h-3.5 w-3.5" />
-                )}
-                Push
-                {sourceControls.aheadCount
-                  ? ` ${sourceControls.aheadCount}`
-                  : ""}
-              </RepositoryActionButton>
-            ) : null}
-            <RepositoryActionButton
-              onClick={onOpenTerminal}
-              title={terminalTitle ?? "Open terminal"}
-            >
-              <SquareTerminal className="h-3.5 w-3.5" />
-              Terminal
-            </RepositoryActionButton>
-            {externalOpenUrl ? (
-              <Button
-                asChild
-                className="h-8 justify-start gap-2 text-sm"
-                size="sm"
-                variant="outline"
-              >
-                <a href={externalOpenUrl} rel="noreferrer" target="_blank">
-                  <ExternalLink className="h-3.5 w-3.5" />
-                  Open
-                </a>
-              </Button>
-            ) : null}
-          </div>
-          <div className="grid gap-2 [&_button]:h-8 [&_button]:w-full [&_button]:justify-start [&_button]:text-sm">
-            <ProjectRepositoryManagement
-              identityPubkey={identityPubkey}
-              onChange={onRepositoryChange}
-              project={project}
-              projects={projects}
-              repository={repository}
-            />
-          </div>
-        </RepositoryPanelSection>
-
-        <RepositoryPanelSection title="People">
-          <div className="flex flex-wrap gap-1.5">
-            {people.slice(0, 18).map((person) => {
-              const profile = profiles?.[person];
-              const label =
-                profile?.displayName?.trim() ||
-                profile?.nip05Handle?.trim() ||
-                person;
-              return (
-                <UserAvatar
-                  accent={profile?.isAgent === true}
-                  avatarUrl={profile?.avatarUrl ?? null}
-                  displayName={label}
-                  key={person}
-                  size="sm"
+                <ProjectRepositoryManagement
+                  compact
+                  identityPubkey={identityPubkey}
+                  onChange={onRepositoryChange}
+                  project={project}
+                  projects={projects}
+                  repository={repository}
                 />
-              );
-            })}
+              </div>
+            ) : null}
           </div>
-        </RepositoryPanelSection>
-
-        <RepositoryPanelSection title="Top languages">
-          {languages.length > 0 ? (
-            <div className="flex flex-wrap gap-1.5">
-              {languages.map(([language], index) => (
-                <span
-                  className="inline-flex h-5 items-center gap-1.5 rounded-full border border-border/60 bg-muted/40 px-2 text-xs text-muted-foreground"
-                  key={language}
-                >
-                  <span
-                    className={`h-2 w-2 rounded-full ${
-                      LANGUAGE_DOT_CLASSES[index % LANGUAGE_DOT_CLASSES.length]
-                    }`}
+          <div className="space-y-0.5 px-4 pb-3 pt-2">
+            {branchScoped ? (
+              <RepositoryPanelSection>
+                <div className="grid gap-0.5 [&_button]:-mx-2 [&_button]:h-7 [&_button]:w-[calc(100%+1rem)] [&_button]:max-w-none [&_button]:justify-start [&_button]:gap-3 [&_button]:rounded-md [&_button]:border-0 [&_button]:bg-transparent [&_button]:px-2 [&_button]:text-left [&_button]:text-sm [&_button]:font-normal [&_button]:shadow-none [&_button]:hover:bg-muted/70 [&_button>svg:last-child]:ml-auto">
+                  <RepoSourceDropdown controls={sourceControls} />
+                  <RepositoryBranchDropdown
+                    branch={sourceControls.branch}
+                    branchOptions={sourceControls.branchOptions}
+                    createBranchDisabled={sourceControls.createBranchDisabled}
+                    createBranchTitle={sourceControls.createBranchTitle}
+                    deleteBranchDisabled={sourceControls.deleteBranchDisabled}
+                    deleteBranchTitle={sourceControls.deleteBranchTitle}
+                    onBranchChange={sourceControls.onBranchChange}
+                    onCreateBranch={sourceControls.onCreateBranch}
+                    onDeleteBranch={sourceControls.onDeleteBranch}
+                    onTagChange={sourceControls.onTagChange}
+                    selectedTag={sourceControls.selectedTag}
+                    tagOptions={sourceControls.tagOptions}
                   />
-                  {language}
-                </span>
-              ))}
-            </div>
-          ) : (
-            <p className="text-xs text-muted-foreground">
-              No language data available.
-            </p>
-          )}
-        </RepositoryPanelSection>
+                </div>
+              </RepositoryPanelSection>
+            ) : activeTab === "issues" ? (
+              <RepositoryPanelSection>
+                <RepositoryActionButton
+                  disabled={createIssuePending}
+                  onClick={onCreateTask}
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  Create task
+                </RepositoryActionButton>
+              </RepositoryPanelSection>
+            ) : null}
 
-        <RepositoryPanelSection title="Repository details">
-          <dl className="space-y-2 text-sm">
-            <div className="flex items-center justify-between gap-3">
-              <dt className="flex items-center gap-1.5 text-muted-foreground">
-                <GitPullRequest className="h-3.5 w-3.5" />
-                Reviews
-              </dt>
-              <dd className="font-medium text-foreground">
-                {pullRequests.length}
-              </dd>
-            </div>
-            <div className="flex items-center justify-between gap-3">
-              <dt className="flex items-center gap-1.5 text-muted-foreground">
-                <GitCommitHorizontal className="h-3.5 w-3.5" />
-                Latest
-              </dt>
-              <dd className="font-mono text-xs text-foreground">
-                {latestCommit ? latestCommit.hash.slice(0, 7) : "—"}
-              </dd>
-            </div>
-            <div className="flex items-center justify-between gap-3">
-              <dt className="flex items-center gap-1.5 text-muted-foreground">
-                <FileCode2 className="h-3.5 w-3.5" />
-                Files
-              </dt>
-              <dd
-                className="font-medium text-foreground"
-                data-testid="project-repository-file-count"
-              >
-                {snapshot ? files.length : "—"}
-              </dd>
-            </div>
-            <div className="flex items-center justify-between gap-3">
-              <dt className="flex items-center gap-1.5 text-muted-foreground">
-                <Users className="h-3.5 w-3.5" />
-                Contributors
-              </dt>
-              <dd className="font-medium text-foreground">
-                {snapshot ? contributors.length : "—"}
-              </dd>
-            </div>
-          </dl>
-        </RepositoryPanelSection>
+            {branchScoped ? (
+              <RepositoryPanelSection>
+                <div className="grid gap-0.5">
+                  {cloneAction ? (
+                    <RepositoryActionButton
+                      disabled={sourceControls.clonePending}
+                      onClick={cloneAction}
+                    >
+                      {sourceControls.clonePending ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <DownloadCloud className="h-3.5 w-3.5" />
+                      )}
+                      {sourceControls.clonePending ? "Cloning…" : "Clone"}
+                    </RepositoryActionButton>
+                  ) : null}
+                  {sourceControls.remoteUnavailableReason === "access" &&
+                  sourceControls.onAskForAccess ? (
+                    <RepositoryActionButton
+                      onClick={sourceControls.onAskForAccess}
+                      title="Open project chat to ask for repository access"
+                    >
+                      <MessageCircle className="h-3.5 w-3.5" />
+                      Ask for access
+                    </RepositoryActionButton>
+                  ) : null}
+                  {fetchAction ? (
+                    <RepositoryActionButton
+                      disabled={sourceControls.fetchPending}
+                      onClick={fetchAction}
+                      title={sourceControls.fetchTitle}
+                    >
+                      {sourceControls.fetchPending ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <RefreshCw className="h-3.5 w-3.5" />
+                      )}
+                      Fetch
+                    </RepositoryActionButton>
+                  ) : null}
+                  {pullAction ? (
+                    <RepositoryActionButton
+                      disabled={sourceControls.pullDisabled}
+                      onClick={pullAction}
+                      title={sourceControls.pullTitle}
+                    >
+                      {sourceControls.pullPending ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <DownloadCloud className="h-3.5 w-3.5" />
+                      )}
+                      Pull
+                      {sourceControls.behindCount
+                        ? ` ${sourceControls.behindCount}`
+                        : ""}
+                    </RepositoryActionButton>
+                  ) : null}
+                  {pushAction ? (
+                    <RepositoryActionButton
+                      disabled={sourceControls.pushDisabled}
+                      onClick={pushAction}
+                      title={sourceControls.pushTitle}
+                    >
+                      {sourceControls.pushPending ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <UploadCloud className="h-3.5 w-3.5" />
+                      )}
+                      Push
+                      {sourceControls.aheadCount
+                        ? ` ${sourceControls.aheadCount}`
+                        : ""}
+                    </RepositoryActionButton>
+                  ) : null}
+                  <RepositoryActionButton
+                    onClick={onOpenTerminal}
+                    title={terminalTitle ?? "Open terminal"}
+                  >
+                    <SquareTerminal className="h-3.5 w-3.5" />
+                    Terminal
+                  </RepositoryActionButton>
+                  {sourceControls.source === "local" ? (
+                    <RepositoryActionButton
+                      onClick={onOpenLocalRepository}
+                      title="Open local repository folder"
+                    >
+                      <FolderOpen className="h-3.5 w-3.5" />
+                      Open
+                    </RepositoryActionButton>
+                  ) : externalOpenUrl ? (
+                    <Button
+                      asChild
+                      className="-mx-2 h-7 w-[calc(100%+1rem)] justify-start gap-3 rounded-md px-2 text-left text-sm font-normal hover:bg-muted/70 [&_svg]:h-4 [&_svg]:w-4 [&_svg]:shrink-0 [&_svg]:text-muted-foreground"
+                      size="sm"
+                      variant="ghost"
+                    >
+                      <a
+                        href={externalOpenUrl}
+                        rel="noreferrer"
+                        target="_blank"
+                      >
+                        <ExternalLink className="h-3.5 w-3.5" />
+                        Open
+                      </a>
+                    </Button>
+                  ) : null}
+                </div>
+              </RepositoryPanelSection>
+            ) : null}
+
+            {branchScoped ? (
+              <RepositoryPanelSection divided title="Details">
+                <RepositoryPeople people={people} profiles={profiles} />
+                <dl className="text-sm [&>div]:h-7 [&_dd]:ml-auto [&_dd]:tabular-nums [&_dt]:gap-3 [&_dt]:text-foreground [&_dt_svg]:h-4 [&_dt_svg]:w-4 [&_dt_svg]:shrink-0 [&_dt_svg]:text-muted-foreground">
+                  <div className="flex items-center justify-between gap-3">
+                    <dt className="flex items-center gap-1.5 text-muted-foreground">
+                      <GitCommitHorizontal className="h-3.5 w-3.5" />
+                      Latest
+                    </dt>
+                    <dd className="font-mono text-xs text-foreground">
+                      {latestCommit ? latestCommit.hash.slice(0, 7) : "—"}
+                    </dd>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <dt className="flex items-center gap-1.5 text-muted-foreground">
+                      <FileCode2 className="h-3.5 w-3.5" />
+                      Files
+                    </dt>
+                    <dd
+                      className="font-medium text-foreground"
+                      data-testid="project-repository-file-count"
+                    >
+                      {snapshot ? files.length : "—"}
+                    </dd>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <dt className="flex items-center gap-1.5 text-muted-foreground">
+                      <Users className="h-3.5 w-3.5" />
+                      Contributors
+                    </dt>
+                    <dd className="font-medium text-foreground">
+                      {snapshot ? contributors.length : "—"}
+                    </dd>
+                  </div>
+                </dl>
+              </RepositoryPanelSection>
+            ) : (
+              <>
+                <RepositoryPanelSection
+                  divided={activeTab === "issues"}
+                  title={activeTab === "issues" ? "Details" : undefined}
+                >
+                  <RepositoryPeople people={people} profiles={profiles} />
+                </RepositoryPanelSection>
+                <RepositoryPanelSection
+                  title={
+                    activeTab === "issues"
+                      ? undefined
+                      : activeTab === "prs"
+                        ? "Review activity"
+                        : "Repository activity"
+                  }
+                >
+                  <dl className="text-sm [&>div]:h-7 [&_dd]:ml-auto [&_dd]:tabular-nums [&_dt]:gap-3 [&_dt]:text-foreground [&_dt_svg]:h-4 [&_dt_svg]:w-4 [&_dt_svg]:shrink-0 [&_dt_svg]:text-muted-foreground">
+                    {activeTab !== "prs" ? (
+                      <>
+                        <div className="flex items-center justify-between gap-3">
+                          <dt className="flex items-center gap-1.5 text-muted-foreground">
+                            <CircleDot className="h-3.5 w-3.5" />
+                            {activeTab === "issues" ? "Tasks" : "Active tasks"}
+                          </dt>
+                          <dd className="font-medium text-foreground">
+                            {activeTab === "issues"
+                              ? taskActivity.total
+                              : taskActivity.active}
+                          </dd>
+                        </div>
+                        {activeTab === "issues" ? (
+                          <>
+                            <div className="flex items-center justify-between gap-3">
+                              <dt className="flex items-center gap-1.5 text-muted-foreground">
+                                <CircleDot className="h-3.5 w-3.5" />
+                                Active
+                              </dt>
+                              <dd className="font-medium text-foreground">
+                                {taskActivity.active}
+                              </dd>
+                            </div>
+                            <div className="flex items-center justify-between gap-3">
+                              <dt className="flex items-center gap-1.5 text-muted-foreground">
+                                <CheckCircle2 className="h-3.5 w-3.5" />
+                                Completed
+                              </dt>
+                              <dd className="font-medium text-foreground">
+                                {taskActivity.completed}
+                              </dd>
+                            </div>
+                          </>
+                        ) : null}
+                      </>
+                    ) : null}
+                    {activeTab !== "issues" ? (
+                      <>
+                        <div className="flex items-center justify-between gap-3">
+                          <dt className="flex items-center gap-1.5 text-muted-foreground">
+                            <GitPullRequest className="h-3.5 w-3.5" />
+                            {activeTab === "prs" ? "Reviews" : "Open reviews"}
+                          </dt>
+                          <dd className="font-medium text-foreground">
+                            {activeTab === "prs"
+                              ? reviewActivity.total
+                              : reviewActivity.open}
+                          </dd>
+                        </div>
+                        {activeTab === "prs" ? (
+                          <>
+                            <div className="flex items-center justify-between gap-3">
+                              <dt className="flex items-center gap-1.5 text-muted-foreground">
+                                <GitPullRequest className="h-3.5 w-3.5" />
+                                Open
+                              </dt>
+                              <dd className="font-medium text-foreground">
+                                {reviewActivity.open}
+                              </dd>
+                            </div>
+                            <div className="flex items-center justify-between gap-3">
+                              <dt className="flex items-center gap-1.5 text-muted-foreground">
+                                <GitMerge className="h-3.5 w-3.5" />
+                                Merged
+                              </dt>
+                              <dd className="font-medium text-foreground">
+                                {reviewActivity.merged}
+                              </dd>
+                            </div>
+                          </>
+                        ) : null}
+                      </>
+                    ) : null}
+                  </dl>
+                </RepositoryPanelSection>
+              </>
+            )}
+          </div>
+        </div>
       </div>
     </RightAuxiliaryPane>
   );

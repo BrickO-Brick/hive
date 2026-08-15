@@ -4,7 +4,7 @@ import type * as React from "react";
 import { cn } from "@/shared/lib/cn";
 
 const META_ROW_CLASS =
-  "flex min-h-8 min-w-0 items-center gap-2 py-1.5 text-sm leading-5";
+  "flex min-h-7 min-w-0 items-center gap-2 py-1 text-xs leading-4";
 
 /** Chip height matches the meta row's text/avatar line so Labels isn't taller. */
 export const PROJECT_DETAIL_META_PILL_CLASS =
@@ -21,7 +21,7 @@ export function ProjectDetailMetaList({
   return (
     <div
       className={cn(
-        "mx-4 mb-3 mt-3 rounded-xl bg-muted/50 px-3 py-1.5",
+        "mx-6 mb-4 mt-2 rounded-lg bg-muted/35 px-3 py-1.5",
         className,
       )}
       data-testid="project-detail-meta"

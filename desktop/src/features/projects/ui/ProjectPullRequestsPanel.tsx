@@ -50,6 +50,7 @@ import { ProjectRichContent } from "./ProjectRichContent";
 import { PullRequestMetaHeader } from "./PullRequestMetaRail";
 import { PullRequestReviewCard } from "./PullRequestReviewCard";
 import { ShareLinkButton } from "./ShareLinkButton";
+import { PROJECT_DETAIL_READING_COLUMN_CLASS } from "./projectPanelStyles";
 import {
   ProjectStatusProgressIcon,
   type ProjectStatusProgressState,
@@ -343,8 +344,8 @@ export function PullRequestDetailHeader({
   const authorLabel = labelForPubkey(pullRequest.author, profiles);
 
   return (
-    <header className="min-w-0 space-y-1 px-4 pb-1 pt-3">
-      <h3 className="line-clamp-2 min-w-0 text-xl font-semibold text-foreground">
+    <header className="min-w-0 space-y-2 px-6 pb-3 pt-5">
+      <h3 className="line-clamp-2 min-w-0 text-lg font-semibold leading-6 text-foreground">
         {pullRequest.title}{" "}
         <span className="font-normal text-muted-foreground">
           #{pullRequest.id.slice(0, 8)}
@@ -357,7 +358,7 @@ export function PullRequestDetailHeader({
         />
       </h3>
       <p
-        className="flex flex-wrap items-center gap-x-1 gap-y-1 text-xs font-medium text-muted-foreground"
+        className="flex flex-wrap items-center gap-x-1 gap-y-1 text-xs text-muted-foreground"
         data-testid="project-pull-request-detail-metadata"
       >
         <span
@@ -509,7 +510,11 @@ export function ProjectPullRequestDetail({
   );
 
   return (
-    <div>
+    <div
+      className={PROJECT_DETAIL_READING_COLUMN_CLASS}
+      data-project-detail-panel
+      data-testid="project-pull-request-detail"
+    >
       <PullRequestDetailHeader profiles={profiles} pullRequest={pullRequest} />
       <PullRequestMetaHeader
         diffStats={diffStats}
@@ -571,7 +576,7 @@ export function ProjectPullRequestDetail({
           testId="project-detail-section-files"
           title="Files changed"
         >
-          <div className="-mx-4">{filesChanged}</div>
+          <div className="-mx-6">{filesChanged}</div>
         </ProjectDetailSection>
       ) : null}
       <ProjectDetailSection
@@ -579,7 +584,7 @@ export function ProjectPullRequestDetail({
         defaultOpen={false}
         title="Commits"
       >
-        <div className="-mx-4 divide-y divide-border/50">
+        <div className="-mx-6 divide-y divide-border/50">
           <PullRequestCommitRow
             author={pullRequest.author}
             branch={pullRequest.branchName}
@@ -618,7 +623,7 @@ export function ProjectPullRequestDetail({
             query={entityDiscussionQuery(pullRequest.id)}
             testId="pull-request-discussed-in"
           />
-          <div className="group/timeline -mx-4 overflow-hidden">
+          <div className="group/timeline -mx-6 overflow-hidden">
             {reviewHistory.length > 0 ? (
               <button
                 aria-expanded={!reviewHistoryCollapsed}
@@ -810,7 +815,7 @@ export function ProjectPullRequestDetail({
         </div>
       </ProjectDetailSection>
       <div
-        className="px-4 pb-4 pt-2"
+        className="border-border/50 border-t px-6 pb-6 pt-4"
         data-testid="project-pull-request-comment-composer"
       >
         <ForumComposer

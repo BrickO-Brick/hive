@@ -35,12 +35,13 @@ export function ProjectDetailSection({
 
   return (
     <section
+      className="border-border/50 border-t"
       data-open={open ? "true" : "false"}
       data-testid={testId ?? "project-detail-section"}
     >
       <button
         aria-expanded={open}
-        className="flex min-h-9 w-full min-w-0 items-center gap-2 px-4 py-1.5 text-left text-base font-normal leading-5 text-foreground transition-colors hover:bg-muted/20"
+        className="flex min-h-10 w-full min-w-0 items-center gap-2 px-6 py-2 text-left text-sm font-medium leading-5 text-foreground transition-colors hover:bg-muted/20"
         onClick={() => setOpen(!open)}
         type="button"
       >
@@ -59,7 +60,7 @@ export function ProjectDetailSection({
           ) : null}
         </span>
       </button>
-      {open ? <div className="px-4 pb-4">{children}</div> : null}
+      {open ? <div className="px-6 pb-6 pt-1">{children}</div> : null}
     </section>
   );
 }

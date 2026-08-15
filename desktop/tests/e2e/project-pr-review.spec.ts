@@ -1098,16 +1098,26 @@ test("project detail content areas do not paint background fills", async ({
   await installMockBridge(page);
   await openBuzzProject(page);
 
-  const expectVisiblePanelsToBeTransparent = async () => {
+  const expectVisiblePanelsToBeTransparent = async ({
+    bordered = true,
+    required = false,
+  }: {
+    bordered?: boolean;
+    required?: boolean;
+  } = {}) => {
     const panels = page.locator("[data-project-detail-panel]:visible");
-    await expect(panels.first()).toBeVisible();
     const panelCount = await panels.count();
+    if (required) await expect(panels.first()).toBeVisible();
     for (let index = 0; index < panelCount; index += 1) {
       await expect(panels.nth(index)).toHaveCSS(
         "background-color",
         "rgba(0, 0, 0, 0)",
       );
-      await expect(panels.nth(index)).toHaveCSS("border-style", "solid");
+      if (bordered) {
+        await expect(panels.nth(index)).toHaveCSS("border-style", "solid");
+      } else {
+        await expect(panels.nth(index)).toHaveCSS("border-width", "0px");
+      }
     }
   };
 
@@ -1127,7 +1137,10 @@ test("project detail content areas do not paint background fills", async ({
   const pullRequest = page.getByTestId("project-pull-request-row").first();
   await expect(pullRequest).toBeVisible();
   await pullRequest.getByRole("button", { name: /^#/ }).click();
-  await expectVisiblePanelsToBeTransparent();
+  await expectVisiblePanelsToBeTransparent({
+    bordered: false,
+    required: true,
+  });
 });
 
 test("project without a checkout offers fetch feedback and cloning", async ({

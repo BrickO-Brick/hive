@@ -22,12 +22,14 @@ import { AddProjectRepositoryDialog } from "./AddProjectRepositoryDialog";
 import { AttachProjectRepositoryDialog } from "./AttachProjectRepositoryDialog";
 
 export function ProjectRepositoryManagement({
+  compact = false,
   identityPubkey,
   onChange,
   project,
   projects,
   repository,
 }: {
+  compact?: boolean;
   identityPubkey?: string;
   onChange: (repositoryId: string) => void;
   project: Project;
@@ -135,14 +137,18 @@ export function ProjectRepositoryManagement({
           <DropdownMenuTrigger asChild>
             <Button
               aria-label="Add repository"
-              className="h-7 shrink-0 gap-1.5 rounded-md"
+              className={
+                compact
+                  ? "h-6 w-6 shrink-0 rounded-md text-muted-foreground hover:bg-muted/70 hover:text-foreground"
+                  : "h-7 shrink-0 gap-1.5 rounded-md"
+              }
               data-testid="add-project-repository"
-              size="sm"
+              size={compact ? "icon" : "sm"}
               type="button"
-              variant="outline"
+              variant={compact ? "ghost" : "outline"}
             >
-              <Plus className="h-3.5 w-3.5" />
-              Add
+              <Plus className={compact ? "h-4 w-4" : "h-3.5 w-3.5"} />
+              {compact ? null : "Add"}
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start">
@@ -167,14 +173,23 @@ export function ProjectRepositoryManagement({
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button
-              className="h-7 shrink-0 gap-1.5 rounded-md"
+              aria-label="Manage repository access"
+              className={
+                compact
+                  ? "h-6 w-6 shrink-0 rounded-md text-muted-foreground hover:bg-muted/70 hover:text-foreground"
+                  : "h-7 shrink-0 gap-1.5 rounded-md"
+              }
               disabled={repairMutation.isPending}
-              size="sm"
+              size={compact ? "icon" : "sm"}
               type="button"
-              variant="outline"
+              variant={compact ? "ghost" : "outline"}
             >
-              <ShieldCheck className="h-3.5 w-3.5" />
-              {repairMutation.isPending ? "Updating…" : "Access"}
+              <ShieldCheck className={compact ? "h-4 w-4" : "h-3.5 w-3.5"} />
+              {compact
+                ? null
+                : repairMutation.isPending
+                  ? "Updating…"
+                  : "Access"}
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="min-w-56">

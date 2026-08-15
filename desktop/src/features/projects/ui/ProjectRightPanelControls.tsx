@@ -7,7 +7,6 @@ import {
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
 import terminalIcon from "@/shared/ui/assets/terminal.svg";
-import { ProjectRepositoryPanelToggle } from "./ProjectRepositoryPanelToggle";
 
 export type ProjectRightPanelMode = "chat" | "repository";
 
@@ -28,41 +27,49 @@ export function ProjectRightPanelControls({
 }) {
   const terminalPanel = useTerminalPanel();
   const terminalOpen = terminalPanel.mode !== "closed";
+  const repositoryOpen = !collapsed && mode === "repository";
+  const chatOpen = !collapsed && mode === "chat";
 
   return (
     <div className="flex items-center gap-0.5">
       <Button
-        aria-label="Show repository information"
-        aria-pressed={!collapsed && mode === "repository"}
+        aria-label={
+          repositoryOpen ? "Hide project context" : "Show project context"
+        }
+        aria-pressed={repositoryOpen}
         className={cn(
           "h-7 w-7 text-sidebar-foreground/65 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-          !collapsed &&
-            mode === "repository" &&
-            "bg-sidebar-accent text-sidebar-accent-foreground",
+          repositoryOpen && "bg-sidebar-accent text-sidebar-accent-foreground",
         )}
         data-testid="project-right-panel-repository-tab"
         onClick={() => {
+          if (repositoryOpen) {
+            onCollapse();
+            return;
+          }
           onModeChange("repository");
           onExpand();
         }}
         size="icon"
-        title="Repository information"
+        title="Project context"
         type="button"
         variant="ghost"
       >
         <Info className="h-4 w-4" />
       </Button>
       <Button
-        aria-label="Show project chat"
-        aria-pressed={!collapsed && mode === "chat"}
+        aria-label={chatOpen ? "Hide project chat" : "Show project chat"}
+        aria-pressed={chatOpen}
         className={cn(
           "h-7 w-7 text-sidebar-foreground/65 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-          !collapsed &&
-            mode === "chat" &&
-            "bg-sidebar-accent text-sidebar-accent-foreground",
+          chatOpen && "bg-sidebar-accent text-sidebar-accent-foreground",
         )}
         data-testid="project-right-panel-chat-tab"
         onClick={() => {
+          if (chatOpen) {
+            onCollapse();
+            return;
+          }
           onModeChange("chat");
           onExpand();
         }}
@@ -100,11 +107,6 @@ export function ProjectRightPanelControls({
           }}
         />
       </Button>
-      <ProjectRepositoryPanelToggle
-        className="text-sidebar-foreground/65 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-        expanded={!collapsed}
-        onClick={collapsed ? onExpand : onCollapse}
-      />
     </div>
   );
 }

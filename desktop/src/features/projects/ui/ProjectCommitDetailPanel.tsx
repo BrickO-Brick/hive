@@ -19,7 +19,7 @@ import {
   ProjectDetailMetaRow,
 } from "./ProjectDetailMeta";
 import { ProjectDetailSection } from "./ProjectDetailSection";
-import { PROJECT_DETAIL_PANEL_CLASS } from "./projectPanelStyles";
+import { PROJECT_DETAIL_READING_COLUMN_CLASS } from "./projectPanelStyles";
 import { ProfileIdentityButton } from "./ProjectProfileIdentity";
 import { ProjectDiffFilesPanel } from "./ProjectPullRequestFilesChangedPanel";
 import { ProjectOriginReference } from "./ProjectOriginReference";
@@ -73,9 +73,13 @@ export function ProjectCommitDetailPanel({
   const fileCount = diff?.files.length;
 
   return (
-    <div className={PROJECT_DETAIL_PANEL_CLASS} data-project-detail-panel>
-      <header className="space-y-1 px-4 pb-1 pt-3">
-        <h3 className="line-clamp-2 text-xl font-semibold text-foreground">
+    <div
+      className={PROJECT_DETAIL_READING_COLUMN_CLASS}
+      data-project-detail-panel
+      data-testid="project-commit-detail"
+    >
+      <header className="space-y-2 px-6 pb-3 pt-5">
+        <h3 className="line-clamp-2 text-lg font-semibold leading-6 text-foreground">
           {commit?.subject ?? shortHash}{" "}
           <ShareLinkButton
             className="ml-1 inline-flex h-7 w-7 align-text-bottom"
@@ -84,7 +88,7 @@ export function ProjectCommitDetailPanel({
             testId="project-commit-copy-link"
           />
         </h3>
-        <p className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs font-medium text-muted-foreground">
+        <p className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-muted-foreground">
           <ProfileIdentityButton
             avatarClassName="shrink-0"
             avatarSize="xs"
@@ -144,7 +148,7 @@ export function ProjectCommitDetailPanel({
         </ProjectDetailSection>
       ) : null}
       <DiscussedInChannels
-        className="mx-4 mb-4"
+        className="mx-6 mb-4"
         entityLabel="this commit"
         query={commitDiscussionQuery({
           hash: commit?.hash ?? commitHash,
@@ -153,7 +157,7 @@ export function ProjectCommitDetailPanel({
         testId="commit-discussed-in"
       />
       <ProjectDetailSection count={fileCount} defaultOpen title="Files changed">
-        <div className="-mx-4">
+        <div className="-mx-6">
           <ProjectDiffFilesPanel
             diff={diff}
             embedded

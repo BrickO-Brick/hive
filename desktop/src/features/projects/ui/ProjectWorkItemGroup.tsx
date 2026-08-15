@@ -28,7 +28,7 @@ export function ProjectWorkItemGroup({
         <span className="font-medium text-foreground/80">{label}</span>
         <span className="tabular-nums text-muted-foreground/65">{count}</span>
       </div>
-      <div>{children}</div>
+      <div className="mt-1 space-y-0.5 px-2">{children}</div>
     </section>
   );
 }

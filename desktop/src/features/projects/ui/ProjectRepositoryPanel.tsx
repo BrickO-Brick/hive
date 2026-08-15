@@ -151,7 +151,7 @@ function RepositoryCommitCell({
   if (!commit) return <span className="text-muted-foreground">—</span>;
 
   return (
-    <p className="truncate text-sm text-foreground">
+    <p className="truncate text-xs text-foreground">
       {commit.subject}
       <span className="text-muted-foreground">
         {" "}
@@ -424,9 +424,10 @@ function RepositoryEntryIcon({ entry }: { entry: RepositoryFileEntry }) {
   return (
     <span
       className={cn(
-        "flex h-6 w-6 shrink-0 items-center justify-center",
+        "flex h-6 w-6 shrink-0 items-center justify-center rounded-md",
         visual.containerClassName,
       )}
+      data-testid="project-repository-entry-icon"
     >
       <Icon className={cn("h-4 w-4", visual.className)} />
     </span>
@@ -836,8 +837,8 @@ export function RepositoryFilesPanel({
         </div>
       ) : null}
 
-      <div className="overflow-x-auto">
-        <table className="w-full caption-bottom text-sm">
+      <div className="overflow-x-auto px-2 pb-2">
+        <table className="w-full border-separate border-spacing-y-0.5 caption-bottom text-sm">
           <thead>
             <tr className="border-border/50 border-b bg-muted/20">
               <th className="px-4 py-3 text-left font-normal" colSpan={3}>
@@ -900,10 +901,7 @@ export function RepositoryFilesPanel({
               return (
                 <tr
                   aria-label={`Open ${entry.type} ${entry.name}`}
-                  className={cn(
-                    "cursor-pointer transition-colors hover:bg-muted/35 focus-visible:bg-muted/35 focus-visible:outline-hidden",
-                    !rowIsLast && "border-border/50 border-b",
-                  )}
+                  className="group/repository-entry cursor-pointer text-xs focus-visible:outline-hidden"
                   key={`${entry.type}:${entry.path}`}
                   onClick={openEntry}
                   onKeyDown={(event) =>
@@ -911,7 +909,12 @@ export function RepositoryFilesPanel({
                   }
                   tabIndex={0}
                 >
-                  <td className="min-w-52 px-4 py-3 align-middle">
+                  <td
+                    className={cn(
+                      "min-w-52 rounded-l-md px-3 py-2 align-middle transition-colors group-hover/repository-entry:bg-muted/35 group-focus-visible/repository-entry:bg-muted/35",
+                      !rowIsLast && "border-border/50 border-b",
+                    )}
+                  >
                     <div className="flex min-w-0 items-center gap-2">
                       <RepositoryEntryIcon entry={entry} />
                       <span className="truncate font-medium text-foreground">
@@ -919,13 +922,23 @@ export function RepositoryFilesPanel({
                       </span>
                     </div>
                   </td>
-                  <td className="max-w-96 p-3 align-middle">
+                  <td
+                    className={cn(
+                      "max-w-96 p-2 align-middle transition-colors group-hover/repository-entry:bg-muted/35 group-focus-visible/repository-entry:bg-muted/35",
+                      !rowIsLast && "border-border/50 border-b",
+                    )}
+                  >
                     <RepositoryCommitCell
                       commit={latestCommit}
                       profiles={profiles}
                     />
                   </td>
-                  <td className="w-36 whitespace-nowrap p-3 text-right align-middle text-muted-foreground">
+                  <td
+                    className={cn(
+                      "w-36 whitespace-nowrap rounded-r-md p-2 text-right align-middle text-muted-foreground transition-colors group-hover/repository-entry:bg-muted/35 group-focus-visible/repository-entry:bg-muted/35",
+                      !rowIsLast && "border-border/50 border-b",
+                    )}
+                  >
                     {latestCommit ? (
                       <time
                         dateTime={new Date(

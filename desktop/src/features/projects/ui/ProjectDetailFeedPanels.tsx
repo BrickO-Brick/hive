@@ -260,7 +260,7 @@ export function ActivityPanel({
 
   return (
     <section className={PROJECT_DETAIL_PANEL_CLASS} data-project-detail-panel>
-      <div>
+      <div className="space-y-0.5 px-2">
         {commits.map((commit) => {
           const matchedProfile = profileForCommit(
             commit,
