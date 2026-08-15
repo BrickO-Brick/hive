@@ -3,6 +3,7 @@ import test from "node:test";
 import { QueryClient, QueryObserver } from "@tanstack/react-query";
 
 import {
+  CHANNEL_TIMELINE_GC_TIME_MS,
   reconcileFetchedChannelWindow,
   reconcileFetchedChannelWindowPages,
 } from "../hooks.ts";
@@ -53,6 +54,10 @@ function newestPage(rows) {
     hasMore: false,
   };
 }
+
+test("channel page provenance is retained for the full warm-row lifetime", () => {
+  assert.equal(CHANNEL_TIMELINE_GC_TIME_MS, 60 * 60 * 1_000);
+});
 
 function createHarness() {
   const client = new QueryClient({

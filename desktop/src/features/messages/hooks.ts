@@ -228,6 +228,8 @@ export function resolveThreadReplyTarget(
   };
 }
 
+export const CHANNEL_TIMELINE_GC_TIME_MS = 60 * 60 * 1_000;
+
 export function useChannelWindowQuery(channel: Channel | null) {
   const queryClient = useQueryClient();
   const queryKey = channelWindowKey(channel?.id ?? "none");
@@ -238,6 +240,9 @@ export function useChannelWindowQuery(channel: Channel | null) {
       queryClient.getQueryData<ChannelWindowStore>(queryKey) ??
       emptyChannelWindowStore(),
     staleTime: Number.POSITIVE_INFINITY,
+    // Page provenance determines whether cached rows (including known-empty)
+    // are warm enough to paint. Retain it for exactly as long as those rows.
+    gcTime: CHANNEL_TIMELINE_GC_TIME_MS,
   });
 }
 
@@ -368,7 +373,7 @@ export function useChannelMessagesQuery(channel: Channel | null) {
       );
     },
     staleTime: 5 * 60 * 1_000,
-    gcTime: 60 * 60 * 1_000,
+    gcTime: CHANNEL_TIMELINE_GC_TIME_MS,
   });
 }
 
