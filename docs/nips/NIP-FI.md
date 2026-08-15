@@ -44,7 +44,8 @@ public identity projection, application membership policy, or user interface.
 - **actor** (`k`): the 32-byte public key returned by Nostr-proof validation.
 - **request context** (`R`): `R_t` sealed with `k`.
 - **binding**: a durable, versioned association `(D, i, k)` with immutable
-  provenance `attested-key` or `tofu`.
+  provenance `attested-key`, `tofu`, or a companion-profile value such as
+  `provisioned`.
 - **retired pair**: a durable denial fact for an exact `(D, i, k)`.
 - **revoked key**: a durable denial fact for `(D, k)`.
 - **prepared authorization**: immutable, read-only evidence and witnesses for a
@@ -396,7 +397,9 @@ any policy-required current matching issuer attestation. [FI-TRACE-LIFECYCLE-AUT
   revocation is idempotent.
 - **Rotate** replaces one exact active binding with one unused, unrevoked,
   non-retired target key, retires the old pair, and creates a fresh binding
-  version. Rotation does not globally revoke the old key.
+  version. The replacement provenance is `attested-key` when current matching
+  issuer attestation was validated and `provisioned` otherwise. Rotation does
+  not globally revoke the old key.
 
 Failure or stale state causes no partial mutation. Ordinary authorization cannot
 perform or undo these transitions. Extended recovery, disablement, provisioning,
@@ -419,8 +422,9 @@ revalidation to an equivalent result; unreadable or ineligible state denies.
 A lease for one key never authorizes another key on the same connection.
 [FI-TRACE-MULTI-KEY-SESSION]
 
-Expiry ends the lease, not the binding. Renewal requires fresh attached
-assertion, fresh Nostr proof, preparation, and final admission. Confidential
+Expiry ends the lease, not the binding. Renewal requires a new connection with
+a fresh assertion attached to its WebSocket upgrade, fresh Nostr proof,
+preparation, and final admission; there is no in-band renewal path. Confidential
 assertion revalidation material is destroyed on expiry, close, or invalidation.
 
 ## Rejection and privacy
@@ -431,13 +435,17 @@ the private-state anonymity set.
 
 | Private condition | Public class | Nostr prefix and exact text | HTTP response |
 |---|---|---|---|
-| assertion/proof absent | `missing_evidence` | `auth-required: authentication required` | `401` + `authentication required\n` |
-| malformed, invalid, expired, or replayed evidence | `evidence_rejected` | `restricted: evidence rejected` | `403` + `evidence rejected\n` |
-| key mismatch; attestation required; binding conflict; retired pair; revoked key; lifecycle gate; binding required/expired; local policy denial | `authorization_denied` | `restricted: authorization denied` | `403` + `authorization denied\n` |
-| required current dependency unreadable | `authorization_unavailable` | `restricted: authorization unavailable` | `503` + `authorization unavailable\n` |
+| assertion/proof absent | `missing_evidence` | `auth-required: authentication required` | `401`; `WWW-Authenticate: Nostr`; `Content-Type: text/plain; charset=utf-8`; `authentication required\n` |
+| malformed, invalid, expired, or replayed evidence | `evidence_rejected` | `restricted: evidence rejected` | `403`; `Content-Type: text/plain; charset=utf-8`; `evidence rejected\n` |
+| key mismatch; attestation required; binding conflict; retired pair; revoked key; lifecycle gate; binding required/expired; local policy denial | `authorization_denied` | `restricted: authorization denied` | `403`; `Content-Type: text/plain; charset=utf-8`; `authorization denied\n` |
+| required current dependency unreadable | `authorization_unavailable` | `restricted: authorization unavailable` | `503`; `Content-Type: text/plain; charset=utf-8`; `authorization unavailable\n` |
 
-Nostr text is the exact UTF-8 text after an applicable NIP-42/NIP-01 prefix;
-HTTP body is exact UTF-8 `text/plain` with the shown LF and no other bytes.
+Nostr text is the exact UTF-8 text after an applicable NIP-42/NIP-01 prefix.
+For HTTP, the compared denial contract is closed over the status, complete body,
+and exact values of only the header fields named in the table; header order and
+other fields are outside that contract and their values cannot depend on the
+private condition. The body is the shown UTF-8 bytes with one LF and no other
+bytes. The `Nostr` challenge satisfies RFC 9110 Section 15.5.2.
 Responses contain no free text, reason code, request ID, issuer, subject, key,
 claim, binding state, enrollment posture, token material, or timing hint. All
 private conditions in `authorization_denied` produce byte-identical responses.
@@ -469,11 +477,12 @@ A relay SHOULD advertise core support in NIP-11 as:
 
 For `current-status`, the final value is a tested positive integer. Discovery
 never states enrollment mode or TOFU posture and never exposes issuer URLs,
-audiences, claim names, tenant IDs, or deployment-local identifiers. For every
-enrollment policy, including `attested-key`, private `tofu`, and any companion
-profile mode, the complete public discovery output is byte-identical: no field,
-flag, value, omission, ordering, or object shape may distinguish the configured
-mode. Profile documents own only non-enrollment public claims.
+audiences, claim names, tenant IDs, or deployment-local identifiers. For a fixed
+set of claimed profiles, the complete public discovery output is byte-identical
+for every enrollment policy, including `attested-key`, private `tofu`, and any
+companion profile mode: no field, flag, value, omission, ordering, or object shape
+may distinguish the configured mode. Profile documents own only non-enrollment
+public claims.
 [FI-TRACE-DISCOVERY-PRIVATE]
 
 ## Core behavioral oracles

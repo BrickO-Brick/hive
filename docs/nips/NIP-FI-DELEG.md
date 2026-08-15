@@ -37,6 +37,7 @@ DelegationEvidence = (
   relationship_revision,
   audience,
   operations,
+  conditions,
   resource_or_target,
   not_before?,
   mandatory_expiry
