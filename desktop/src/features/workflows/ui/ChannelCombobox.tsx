@@ -177,7 +177,12 @@ export function ChannelCombobox({
           <button
             aria-disabled="true"
             aria-label={`${ariaLabel}: ${selectedLabel}. Read only.`}
-            className="flex w-full cursor-default items-center justify-center rounded-lg px-3 py-2 text-lg font-semibold text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+            className={cn(
+              "flex w-full cursor-default items-center rounded-lg px-3 py-2 text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring",
+              variant === "header" &&
+                "justify-center border-0 bg-transparent text-lg font-semibold",
+              variant === "field" && "text-sm font-normal",
+            )}
             id={id}
             type="button"
           >

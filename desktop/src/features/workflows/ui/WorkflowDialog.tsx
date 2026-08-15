@@ -453,7 +453,7 @@ export function WorkflowDialog({
                   <div className="space-y-1">
                     <ChannelCombobox
                       channels={channels}
-                      defaultOpen={mode === "create"}
+                      defaultOpen={mode === "create" && editorMode === "form"}
                       disabled={mutation.isPending}
                       id="wf-channel-select"
                       onChange={(value) => {
@@ -462,6 +462,7 @@ export function WorkflowDialog({
                         if (value) onEditorPaneChange({ type: "trigger" });
                       }}
                       required
+                      variant={editorMode === "yaml" ? "field" : "header"}
                       value={selectedChannelId}
                     />
                     {channels.length === 0 ? (
@@ -476,6 +477,7 @@ export function WorkflowDialog({
                     id="wf-channel-select"
                     onChange={setSelectedChannelId}
                     readOnly
+                    variant={editorMode === "yaml" ? "field" : "header"}
                     value={selectedChannel.id}
                   />
                 ) : null
