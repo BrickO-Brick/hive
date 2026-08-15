@@ -8,18 +8,26 @@ import {
 
 export const OPENAI_COMPAT_BASE_URL = "OPENAI_COMPAT_BASE_URL";
 
+function isSafeHttpBaseUrl(url: URL): boolean {
+  return (
+    (url.protocol === "http:" || url.protocol === "https:") &&
+    url.host.length > 0 &&
+    url.username.length === 0 &&
+    url.password.length === 0 &&
+    url.search.length === 0 &&
+    url.hash.length === 0
+  );
+}
+
 export function openAiCompatibleBaseUrlError(value: string): string | null {
   const trimmed = value.trim();
   if (trimmed.length === 0) return "Base URL is required.";
   try {
-    const url = new URL(trimmed);
-    if ((url.protocol === "http:" || url.protocol === "https:") && url.host) {
-      return null;
-    }
+    if (isSafeHttpBaseUrl(new URL(trimmed))) return null;
   } catch {
     // Fall through to the actionable validation message.
   }
-  return "Enter a valid HTTP or HTTPS URL.";
+  return "Enter an HTTP or HTTPS URL without credentials, query, or fragment.";
 }
 
 export function OpenAiCompatibleBaseUrlField({

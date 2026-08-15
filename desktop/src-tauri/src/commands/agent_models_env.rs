@@ -39,6 +39,22 @@ pub(super) fn env_or_process_override(env: &BTreeMap<String, String>, key: &str)
         })
 }
 
+pub(super) fn validate_openai_compat_base_url(value: &str) -> Result<(), String> {
+    const INVALID_URL: &str =
+        "OPENAI_COMPAT_BASE_URL must be an HTTP(S) URL without credentials, query, or fragment";
+    let parsed = url::Url::parse(value.trim()).map_err(|_| INVALID_URL.to_string())?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err(INVALID_URL.to_string());
+    }
+    Ok(())
+}
+
 /// Clone `env` with `key` set to the value a request actually used, so error
 /// redaction masks the inherited process value and not just the mapped one.
 pub(super) fn redaction_env_with_value(
@@ -124,5 +140,25 @@ pub(super) fn effective_discovery_provider(
     DiscoveryProvider {
         value: provider_env_var.and_then(|key| env_or_process_value(env, key)),
         inferred: true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_openai_compat_base_url;
+
+    #[test]
+    fn rejects_ambiguous_openai_compat_url_components() {
+        for value in [
+            "http://user:secret@localhost/v1",
+            "http://localhost/v1?tenant=x",
+            "http://localhost/v1#fragment",
+        ] {
+            let error = validate_openai_compat_base_url(value).unwrap_err();
+            assert!(
+                error.contains("without credentials, query, or fragment"),
+                "value={value} error={error}"
+            );
+        }
     }
 }

@@ -571,7 +571,9 @@ impl Config {
                 parse_openai_api(env("OPENAI_COMPAT_API").as_deref())?,
             ),
             Provider::OpenAiCompat => (
-                env("OPENAI_COMPAT_API_KEY").unwrap_or_default(),
+                env("OPENAI_COMPAT_API_KEY")
+                    .map(|value| value.trim().to_string())
+                    .unwrap_or_default(),
                 resolve_model(
                     buzz_agent_model.as_deref(),
                     env("OPENAI_COMPAT_MODEL").as_deref(),
@@ -838,14 +840,22 @@ fn resolve_provider(
 }
 
 fn parse_openai_compat_base_url(raw: Option<&str>) -> Result<String, String> {
+    const INVALID_URL: &str =
+        "config: OPENAI_COMPAT_BASE_URL must be an HTTP(S) URL without credentials, query, or fragment";
+
     let value = raw
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "config: OPENAI_COMPAT_BASE_URL required for openai-compat".to_string())?;
-    let parsed = url::Url::parse(value)
-        .map_err(|_| "config: OPENAI_COMPAT_BASE_URL must be a valid HTTP(S) URL".to_string())?;
-    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
-        return Err("config: OPENAI_COMPAT_BASE_URL must be a valid HTTP(S) URL".to_string());
+    let parsed = url::Url::parse(value).map_err(|_| INVALID_URL.to_string())?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err(INVALID_URL.to_string());
     }
     Ok(value.trim_end_matches('/').to_string())
 }
@@ -1160,9 +1170,19 @@ mod tests {
         assert!(parse_openai_compat_base_url(None)
             .unwrap_err()
             .contains("required for openai-compat"));
-        assert!(parse_openai_compat_base_url(Some("ftp://localhost/v1"))
-            .unwrap_err()
-            .contains("valid HTTP(S) URL"));
+        for invalid in [
+            "ftp://localhost/v1",
+            "http://user:secret@localhost/v1",
+            "http://localhost/v1?tenant=x",
+            "http://localhost/v1#fragment",
+        ] {
+            assert!(
+                parse_openai_compat_base_url(Some(invalid))
+                    .unwrap_err()
+                    .contains("without credentials, query, or fragment"),
+                "invalid={invalid}"
+            );
+        }
         assert_eq!(
             parse_openai_compat_base_url(Some("  http://localhost:11434/v1///  ")).unwrap(),
             "http://localhost:11434/v1"

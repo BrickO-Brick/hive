@@ -37,7 +37,6 @@ import {
   CARD_MINT_KEY_ANNOTATIONS,
   CUSTOM_PROVIDER_DROPDOWN_VALUE,
   getPersonaProviderOptions,
-  getProviderApiKeyEnvVar,
   getProviderApiKeyLabel,
   runtimeSupportsLlmProviderSelection,
 } from "@/features/agents/ui/agentConfigOptions";
@@ -68,6 +67,7 @@ import { SettingsOptionGroup } from "@/features/settings/ui/SettingsOptionGroup"
 import { AdvancedRequiredBadge } from "./AdvancedRequiredBadge";
 import { CardMintKeyCue } from "./CardMintKeyCue";
 import { getGlobalAgentCredentialState } from "./globalAgentCredentialState";
+import { envVarsClearingOpenAiCompatBaseUrl } from "./providerEnvVarUpdates";
 
 export const EMPTY_GLOBAL_CONFIG: GlobalAgentConfig = {
   env_vars: {},
@@ -96,7 +96,9 @@ type AgentConfigDisclosure =
 // - auto-select a valid model when the provider changes
 // - keep the model select usable during discovery
 // - preserve credential env vars across provider switches (the abandoned
-//   provider's key stays in env_vars — visible/deletable under Advanced)
+//   provider's key stays in env_vars — visible/deletable under Advanced), except
+//   provider-owned endpoint metadata is cleared when it would affect the next
+//   provider.
 // - require a provider before model/effort are editable (no saveable
 //   invalid state — design principle #4)
 const autoSelectModelOnProviderChange = true;
@@ -521,29 +523,23 @@ export function AgentConfigFields({
   });
   function handleProviderChange(value: string) {
     userEditedProviderRef.current = true;
-    const previousApiKey = getProviderApiKeyEnvVar(effectiveProvider);
     if (value === CUSTOM_PROVIDER_DROPDOWN_VALUE) {
-      const nextEnvVars = { ...config.env_vars };
-      if (!preserveCredentialEnvVarsOnProviderChange && previousApiKey) {
-        delete nextEnvVars[previousApiKey];
-      }
+      const nextEnvVars = envVarsClearingOpenAiCompatBaseUrl(
+        config.env_vars,
+        effectiveProvider,
+        "",
+      );
       onIsCustomProviderChange(true);
       onConfigChange({ ...config, env_vars: nextEnvVars, provider: null });
       return;
     }
     const nextProvider =
       value === AUTO_PROVIDER_DROPDOWN_VALUE || value === "" ? null : value;
-    const nextApiKey = getProviderApiKeyEnvVar(
+    const nextEnvVars = envVarsClearingOpenAiCompatBaseUrl(
+      config.env_vars,
+      effectiveProvider,
       nextProvider ?? bakedProvider ?? "",
     );
-    const nextEnvVars = { ...config.env_vars };
-    if (
-      !preserveCredentialEnvVarsOnProviderChange &&
-      previousApiKey &&
-      previousApiKey !== nextApiKey
-    ) {
-      delete nextEnvVars[previousApiKey];
-    }
     const providerChanged = nextProvider !== (config.provider ?? null);
     onIsCustomProviderChange(false);
     onConfigChange({

@@ -105,7 +105,11 @@ with a TypeScript lookup table or an id comparison in a component.
    `onboarding-agent-defaults.spec.ts`.
 9. **The defaults modal is progressively disclosed.** An unset global config
    starts on the Buzz Agent-first deployment fallback and carries that visible
-   harness into the next saved edit. The `progressive-defaults` disclosure
+   harness into the next saved edit. Provider changes preserve typed API keys
+   in Advanced, but `OPENAI_COMPAT_BASE_URL` is provider-owned routing state and
+   must be cleared whenever a defaults/onboarding transition leaves
+   `openai-compat`; otherwise official OpenAI discovery inherits the stale
+   custom endpoint. The `progressive-defaults` disclosure
    preset therefore begins at Provider for Buzz Agent, then reveals Model,
    Effort, and Advanced only after a provider is configured. Harnesses whose
    runtime metadata has no provider field skip that gate. Reveals animate their

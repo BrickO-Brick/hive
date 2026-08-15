@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   envVarsClearingManagedApiKey,
+  envVarsClearingOpenAiCompatBaseUrl,
   envVarsWithoutKey,
 } from "./providerEnvVarUpdates.ts";
 
@@ -33,6 +34,45 @@ test("envVarsClearingManagedApiKey clears when leaving to a custom/empty provide
     "",
   );
   assert.deepEqual(next, {});
+});
+
+test("envVarsClearingOpenAiCompatBaseUrl clears only the compatible URL", () => {
+  const current = {
+    OPENAI_COMPAT_API_KEY: "sk-1",
+    OPENAI_COMPAT_BASE_URL: "http://localhost:11434/v1",
+    KEEP: "x",
+  };
+  assert.deepEqual(
+    envVarsClearingOpenAiCompatBaseUrl(current, " OpenAI-Compat ", "openai"),
+    {
+      OPENAI_COMPAT_API_KEY: "sk-1",
+      KEEP: "x",
+    },
+  );
+  assert.equal(
+    envVarsClearingOpenAiCompatBaseUrl(
+      current,
+      "openai-compat",
+      "OPENAI-COMPAT",
+    ),
+    current,
+  );
+});
+
+test("envVarsClearingManagedApiKey clears the compatible URL when leaving compat", () => {
+  const next = envVarsClearingManagedApiKey(
+    {
+      OPENAI_COMPAT_API_KEY: "sk-1",
+      OPENAI_COMPAT_BASE_URL: "http://localhost:11434/v1",
+      KEEP: "x",
+    },
+    "openai-compat",
+    "openai",
+  );
+  assert.deepEqual(next, {
+    OPENAI_COMPAT_API_KEY: "sk-1",
+    KEEP: "x",
+  });
 });
 
 test("envVarsClearingManagedApiKey is a no-op when the managed key is shared or absent", () => {

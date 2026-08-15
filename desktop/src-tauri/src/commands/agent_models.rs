@@ -12,7 +12,7 @@ use super::managed_agent_definition::apply_model_provider_prompt_update;
 use super::agent_models_env::env_value;
 use super::agent_models_env::{
     effective_discovery_provider, env_or_process_override, env_or_process_value,
-    redaction_env_with_value, DiscoveryProvider,
+    redaction_env_with_value, validate_openai_compat_base_url, DiscoveryProvider,
 };
 use super::agent_update_rollback::{rollback_failed_agent_update, AgentUpdateRollback};
 
@@ -367,19 +367,17 @@ fn openai_compatible_models_url_for_discovery(
     provider: Option<&str>,
     env: &BTreeMap<String, String>,
 ) -> Result<String, String> {
+    let is_compat =
+        provider.is_some_and(|value| value.trim().eq_ignore_ascii_case("openai-compat"));
     let base_url = env_or_process_value(env, "OPENAI_COMPAT_BASE_URL");
-    let base_url = if provider.map(str::trim) == Some("openai-compat") {
+    let base_url = if is_compat {
         base_url.ok_or_else(|| {
             "OPENAI_COMPAT_BASE_URL required for OpenAI-compatible model discovery".to_string()
         })?
     } else {
         base_url.unwrap_or_else(|| "https://api.openai.com/v1".to_string())
     };
-    let parsed = url::Url::parse(base_url.trim())
-        .map_err(|_| "OPENAI_COMPAT_BASE_URL must be a valid HTTP(S) URL".to_string())?;
-    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
-        return Err("OPENAI_COMPAT_BASE_URL must be a valid HTTP(S) URL".to_string());
-    }
+    validate_openai_compat_base_url(&base_url)?;
     Ok(format!("{}/models", base_url.trim().trim_end_matches('/')))
 }
 
@@ -511,7 +509,9 @@ async fn discover_openai_compatible_models(
         return Ok(None);
     }
 
-    let is_compat = provider.as_deref().map(str::trim) == Some("openai-compat");
+    let is_compat = provider
+        .as_deref()
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("openai-compat"));
     let api_key = if relay_mesh {
         crate::managed_agents::RELAY_MESH_API_KEY_PLACEHOLDER.to_string()
     } else if is_compat {

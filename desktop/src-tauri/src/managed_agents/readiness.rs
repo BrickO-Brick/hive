@@ -460,8 +460,8 @@ fn buzz_agent_requirements(effective: &EffectiveAgentEnv) -> Vec<Requirement> {
     let provider = effective
         .env
         .get("BUZZ_AGENT_PROVIDER")
-        .filter(|v| !v.is_empty())
-        .map(String::as_str);
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty());
     if provider.is_none() {
         missing.push(Requirement::NormalizedField {
             field: "provider".to_string(),
@@ -475,7 +475,7 @@ fn buzz_agent_requirements(effective: &EffectiveAgentEnv) -> Vec<Requirement> {
     // databricks/databricks_v2, ANTHROPIC_MODEL for anthropic, etc.). The
     // baked buzz-releases env sets DATABRICKS_MODEL but not BUZZ_AGENT_MODEL,
     // so without this fallback agents baked from releases appear "not ready".
-    let provider_model_key = match provider {
+    let provider_model_key = match provider.as_deref() {
         Some("databricks") | Some("databricks_v2") | Some("databricks-v2") => {
             Some("DATABRICKS_MODEL")
         }
@@ -503,7 +503,7 @@ fn buzz_agent_requirements(effective: &EffectiveAgentEnv) -> Vec<Requirement> {
     // A key present with an empty value is treated as absent — matching the
     // dialog's (envVars[key] ?? "").length === 0 emptiness check.
     let env_key_missing = |key: &str| effective.env.get(key).is_none_or(|v| v.is_empty());
-    match provider {
+    match provider.as_deref() {
         Some("anthropic")
             if env_key_missing("ANTHROPIC_API_KEY") => {
                 missing.push(Requirement::EnvKey {
@@ -566,16 +566,17 @@ fn goose_requirements(
     let provider = effective
         .env
         .get("GOOSE_PROVIDER")
-        .filter(|v| !v.is_empty())
-        .map(String::as_str);
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty());
 
     // Effective provider for credential checking: prefer env layer, then file.
-    let effective_provider = provider.or_else(|| {
-        file_cfg
-            .as_ref()
-            .and_then(|c| c.provider.as_deref())
-            .filter(|v| !v.is_empty())
-    });
+    let file_provider = file_cfg
+        .as_ref()
+        .and_then(|config| config.provider.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase);
+    let effective_provider = provider.as_deref().or(file_provider.as_deref());
 
     if provider.is_none() {
         // Silenced if the file config provides a provider.
@@ -783,7 +784,7 @@ mod tests {
         let with_url = make_env(
             "buzz-agent",
             env_with(&[
-                ("BUZZ_AGENT_PROVIDER", "openai-compat"),
+                ("BUZZ_AGENT_PROVIDER", " OpenAI-Compat "),
                 ("BUZZ_AGENT_MODEL", "llama3"),
                 ("OPENAI_COMPAT_BASE_URL", "http://localhost:11434/v1"),
             ]),

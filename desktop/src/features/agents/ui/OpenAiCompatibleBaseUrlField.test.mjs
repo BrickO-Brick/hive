@@ -3,19 +3,23 @@ import test from "node:test";
 
 import { openAiCompatibleBaseUrlError } from "./OpenAiCompatibleBaseUrlField.tsx";
 
-test("OpenAI-compatible base URL accepts only absolute HTTP(S) URLs", () => {
+test("OpenAI-compatible base URL accepts only safe absolute HTTP(S) URLs", () => {
+  const invalidMessage =
+    "Enter an HTTP or HTTPS URL without credentials, query, or fragment.";
+
   assert.equal(openAiCompatibleBaseUrlError("http://localhost:11434/v1"), null);
   assert.equal(
     openAiCompatibleBaseUrlError(" https://models.example/v1/ "),
     null,
   );
   assert.equal(openAiCompatibleBaseUrlError(""), "Base URL is required.");
-  assert.equal(
-    openAiCompatibleBaseUrlError("ftp://models.example/v1"),
-    "Enter a valid HTTP or HTTPS URL.",
-  );
-  assert.equal(
-    openAiCompatibleBaseUrlError("localhost:11434/v1"),
-    "Enter a valid HTTP or HTTPS URL.",
-  );
+  for (const value of [
+    "ftp://models.example/v1",
+    "localhost:11434/v1",
+    "https://user:secret@models.example/v1",
+    "https://models.example/v1?tenant=x",
+    "https://models.example/v1#fragment",
+  ]) {
+    assert.equal(openAiCompatibleBaseUrlError(value), invalidMessage, value);
+  }
 });
