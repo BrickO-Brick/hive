@@ -141,10 +141,10 @@ function WorkflowNameEditor({
 
   if (editing) {
     return (
-      <div className="flex h-7 items-center gap-1.5">
+      <div className="flex h-6 items-center gap-1.5">
         <Input
           aria-label="Workflow name"
-          className="h-7 w-72 px-2 font-mono text-sm"
+          className="h-6 w-72 px-2 font-mono text-sm"
           disabled={disabled}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {
@@ -177,7 +177,7 @@ function WorkflowNameEditor({
   }
 
   return (
-    <div className="inline-flex h-7 max-w-full min-w-0 items-center gap-1.5 font-mono text-sm text-muted-foreground">
+    <div className="inline-flex h-6 max-w-full min-w-0 items-center gap-1.5 font-mono text-sm text-muted-foreground">
       <span className="min-w-0 truncate">
         {generating ? "Generating name…" : name || "Untitled workflow"}
       </span>
@@ -415,9 +415,11 @@ export function WorkflowDialog({
         open={open && savedWebhookInfo === null}
       >
         <DialogContent className="flex h-[88vh] max-h-[88vh] w-[calc(100vw-2rem)] max-w-6xl flex-col gap-0 overflow-hidden p-0">
-          <DialogHeader className="flex flex-shrink-0 flex-row items-center justify-between gap-6 border-b border-border px-6 py-5 pr-14 text-left">
-            <div className="space-y-0.5">
-              <DialogTitle>{TITLES[mode]}</DialogTitle>
+          <DialogHeader className="flex flex-shrink-0 flex-row items-center justify-between gap-6 space-y-0 px-6 pt-3 pr-14 pb-2 text-left">
+            <div className="space-y-0">
+              <DialogTitle className="text-lg leading-tight">
+                {TITLES[mode]}
+              </DialogTitle>
               <DialogDescription className="sr-only">
                 {mode === "edit"
                   ? "Update when this workflow runs and what it does."
@@ -494,7 +496,7 @@ export function WorkflowDialog({
             </p>
           ) : null}
 
-          <div className="flex flex-shrink-0 items-center justify-between gap-4 border-t border-border px-6 py-4">
+          <div className="flex flex-shrink-0 items-center justify-between gap-4 px-6 pt-2 pb-4">
             <Tabs onValueChange={handleEditorModeChange} value={editorMode}>
               <TabsList aria-label="Workflow editor mode" className="h-8 p-0.5">
                 <TabsTrigger

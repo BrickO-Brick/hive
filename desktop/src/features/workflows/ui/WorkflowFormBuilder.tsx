@@ -521,18 +521,18 @@ export function WorkflowFormBuilder({
         ) : null}
 
         {mode === "yaml" ? (
-          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-6">
-            <div className="max-w-md">{scopeField}</div>
-            <div className="flex h-full min-h-[320px] flex-col space-y-1.5">
+          <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden px-6 pb-3 pt-3">
+            <div className="max-w-md flex-shrink-0">{scopeField}</div>
+            <div className="flex min-h-0 flex-1 flex-col gap-1.5">
               <Textarea
                 aria-label="Workflow YAML"
                 autoCapitalize="off"
-                className="min-h-[320px] flex-1 resize-none font-mono text-xs"
+                className="min-h-0 flex-1 resize-none font-mono text-xs"
                 disabled={disabled}
                 onChange={(event) => onChange(event.target.value)}
                 value={yaml}
               />
-              <p className="text-xs text-muted-foreground">
+              <p className="flex-shrink-0 text-xs text-muted-foreground">
                 Edit the raw YAML definition directly.
               </p>
             </div>
