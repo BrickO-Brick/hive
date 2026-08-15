@@ -202,7 +202,7 @@ export function PullRequestReviewersRow({
             <Dialog onOpenChange={setPickerOpen} open={pickerOpen}>
               <DialogTrigger asChild>
                 <Button
-                  className="h-5 px-0 text-xs text-muted-foreground hover:bg-transparent hover:text-foreground"
+                  className="h-5 px-0 text-sm text-muted-foreground hover:bg-transparent hover:text-foreground"
                   disabled={requestReviewMutation.isPending}
                   size="xs"
                   type="button"
@@ -301,7 +301,7 @@ export function PullRequestReviewersRow({
           <ProjectDetailMetaRow
             key={pubkey}
             label={label}
-            labelClassName="text-foreground"
+            labelClassName="font-medium text-foreground"
             leading={
               <UserAvatar
                 accent={profile?.isAgent === true}
@@ -313,7 +313,7 @@ export function PullRequestReviewersRow({
           >
             <span
               className={cn(
-                "inline-flex items-center gap-0.5 text-xs",
+                "inline-flex items-center gap-0.5 text-sm",
                 hasApproved && "text-green-600 dark:text-green-400",
                 hasRequestedChanges && "text-amber-600 dark:text-amber-400",
                 !hasApproved && !hasRequestedChanges && "text-muted-foreground",

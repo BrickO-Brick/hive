@@ -18,6 +18,17 @@ async function enableProjectsFeature(page: import("@playwright/test").Page) {
   });
 }
 
+async function addProjectToSidebar(
+  page: import("@playwright/test").Page,
+  dtag: string,
+) {
+  await page.getByTestId("sidebar-projects-section-label").hover();
+  await page.getByTestId("sidebar-projects-create").click();
+  const browser = page.getByTestId("project-browser-dialog");
+  await browser.getByRole("searchbox", { name: "Search projects" }).fill(dtag);
+  await browser.getByTestId(`project-browser-result-${dtag}`).click();
+}
+
 async function waitForMockLiveSubscription(
   page: import("@playwright/test").Page,
   channelName: string,
@@ -320,9 +331,10 @@ test("unsupported relays keep the initial repository accessible", async ({
   await projectEntry
     .getByRole("button", { name: "View legacy-fallback" })
     .click();
-  const repositoryPicker = page.getByTestId("project-repository-picker");
-  await expect(repositoryPicker).toBeVisible();
-  await expect(repositoryPicker).toContainText("legacy-fallback");
+  const repositoryRow = page.getByTestId(
+    "sidebar-project-repository-legacy-fallback",
+  );
+  await expect(repositoryRow).toBeVisible();
   await waitForAnimations(page);
   await page.screenshot({
     path: `${SHOTS}/06-single-repository-add.png`,
@@ -419,41 +431,34 @@ test("multi-repository projects switch the active repository", async ({
   await enableProjectsFeature(page);
   await installMockBridge(page);
   await page.goto("/", { waitUntil: "domcontentloaded" });
-  await page.getByTestId("open-projects-view").click();
-  await page.getByTestId("projects-section-projects").click();
-  await page
-    .locator(
-      '[data-testid="project-card-buzz"], [data-testid="project-row-buzz"]',
-    )
-    .first()
-    .click();
+  await addProjectToSidebar(page, "buzz");
 
-  const picker = page.getByTestId("project-repository-picker");
-  await expect(picker).toContainText("buzz");
-  await picker.click();
-  await expect(
-    page.getByTestId("project-repository-relay-tools"),
-  ).toBeVisible();
+  const primaryRepository = page.getByTestId("sidebar-project-repository-buzz");
+  const relayToolsRepository = page.getByTestId(
+    "sidebar-project-repository-relay-tools",
+  );
+  await expect(primaryRepository).toHaveAttribute("data-active", "true");
+  await expect(relayToolsRepository).toBeVisible();
   await waitForAnimations(page);
   await page.screenshot({
     path: `${SHOTS}/04-multi-repository-picker.png`,
   });
 
-  await page.getByTestId("project-repository-relay-tools").click();
-  await expect(picker).toContainText("relay-tools");
+  await relayToolsRepository.click();
+  await expect(relayToolsRepository).toHaveAttribute("data-active", "true");
   await expect(page).toHaveURL(
     new RegExp(`repositoryId=${TEST_IDENTITIES.alice.pubkey}%3Arelay-tools`),
   );
 
-  await picker.click();
   await page.getByTestId("add-project-repository").click();
-  await expect(page.getByTestId("create-project-repository")).toBeVisible();
   await expect(page.getByTestId("attach-project-repository")).toBeVisible();
   await page.getByTestId("create-project-repository").click();
   await page.getByTestId("add-project-repository-name").fill("mobile-app");
   await page.getByTestId("add-project-repository-submit").click();
   await expect(page.getByTestId("add-project-repository-dialog")).toBeHidden();
-  await expect(picker).toContainText("mobile-app");
+  await expect(
+    page.getByTestId("sidebar-project-repository-mobile-app"),
+  ).toBeVisible();
   const addedEvents = await page.evaluate(
     () =>
       window.__BUZZ_E2E_ACCEPTED_PROJECT_EVENTS__?.filter(
@@ -472,7 +477,6 @@ test("multi-repository projects switch the active repository", async ({
     addedEvents.find((event) => event.kind === 30617)?.tags,
   ).toContainEqual(["buzz-channel", "9a1657ac-f7aa-5db0-b632-d8bbeb6dfb50"]);
 
-  await picker.click();
   await page.getByTestId("add-project-repository").click();
   await page.getByTestId("attach-project-repository").click();
   await expect(
@@ -482,7 +486,9 @@ test("multi-repository projects switch the active repository", async ({
   await expect(
     page.getByTestId("attach-project-repository-dialog"),
   ).toBeHidden();
-  await expect(picker).toContainText("design-system");
+  await expect(
+    page.getByTestId("sidebar-project-repository-design-system"),
+  ).toBeVisible();
   await expect
     .poll(() =>
       page.evaluate(
@@ -526,10 +532,22 @@ test("commit detail opens from the commits feed with a diff", async ({
   const commitRows = page.getByTestId("project-activity-feed-item");
   await expect(commitRows.first()).toBeVisible({ timeout: 10_000 });
 
-  // Commits share the rounded list structure used by issues and pull requests.
+  // Commits use the same compact, aligned row structure as work items.
   await expect(
     page.getByRole("heading", { name: "Commits", exact: true }),
   ).toBeVisible();
+  const firstCommitRow = commitRows.first();
+  expect((await firstCommitRow.boundingBox())?.height).toBeLessThanOrEqual(40);
+  await expect(firstCommitRow.getByTitle(/^View commit /)).toBeVisible();
+  await expect(
+    firstCommitRow.getByTestId("project-commit-author"),
+  ).toHaveAttribute("title", /^Committed by .+ · \d+ commits?$/);
+  await expect(
+    firstCommitRow.getByRole("button", { name: "Copy commit hash" }),
+  ).toBeVisible();
+  await expect(
+    firstCommitRow.getByTestId("project-commit-row-date"),
+  ).toHaveClass(/text-muted-foreground\/70/);
   await waitForAnimations(page);
   await page.screenshot({
     fullPage: false,
@@ -542,13 +560,16 @@ test("commit detail opens from the commits feed with a diff", async ({
     .getByRole("button", { name: /Add Trello board workflow details/ })
     .click();
 
-  // Detail header: author line, subject, and hash.
-  await expect(page.getByText("Commit from")).toBeVisible();
+  // Detail header: resolved author, subject, and hash.
+  await expect(page.getByText("Brain", { exact: true })).toBeVisible();
   await expect(
     page.getByRole("heading", { name: "Add Trello board workflow details" }),
   ).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Copy commit hash" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Copy commit link" }),
   ).toBeVisible();
   await expect(page.getByTestId("project-workspace-tab-menu")).toHaveCount(0);
   await expect(
@@ -594,10 +615,10 @@ test("commit detail opens from the commits feed with a diff", async ({
     .first()
     .getByRole("button", { name: /Add Trello board workflow details/ })
     .click();
-  await expect(page.getByText("Commit from")).toBeVisible();
+  await expect(page.getByText("Brain", { exact: true })).toBeVisible();
   await page
     .getByRole("navigation", { name: "Project breadcrumb" })
-    .getByRole("button", { name: "buzz", exact: true })
+    .getByTestId("project-breadcrumb-repository")
     .click();
   await expect(page.getByRole("tab", { name: "Overview" })).toHaveAttribute(
     "aria-selected",
@@ -674,7 +695,7 @@ test("project discussion row opens its channel thread in context", async ({
   await expect(panel).toBeHidden();
 });
 
-test("pull request and issue feeds share the commit row structure", async ({
+test("pull request and issue feeds use compact work item rows", async ({
   page,
 }) => {
   await enableProjectsFeature(page);
@@ -694,17 +715,30 @@ test("pull request and issue feeds share the commit row structure", async ({
   await expect(projectEntry).toBeVisible({ timeout: 10_000 });
   await projectEntry.click();
 
-  // PR rows use the shared feed row: title button + #id cluster cell.
+  // Reviews use the compact single-line work-item row.
   await page.getByRole("tab", { name: "Review" }).click();
   const prRows = page.getByTestId("project-pull-request-row");
   await expect(prRows.first()).toBeVisible({ timeout: 10_000 });
   await expect(
     prRows.first().getByRole("button", { name: /^#/ }),
   ).toBeVisible();
+  expect((await prRows.first().boundingBox())?.height).toBeLessThanOrEqual(40);
+  await expect(
+    prRows.first().getByTestId("project-pull-request-comments"),
+  ).toHaveText("0");
+  await expect(
+    prRows.first().getByTestId("project-pull-request-row-date"),
+  ).toHaveClass(/text-muted-foreground\/70/);
+  await expect(
+    page.getByTestId("project-work-item-group-header").first(),
+  ).toBeVisible();
+  await expect(
+    prRows.first().locator("button").filter({ hasText: /.+/ }).nth(1),
+  ).toHaveCSS("font-weight", "400");
   await waitForAnimations(page);
   await page.screenshot({ fullPage: false, path: `${SHOTS}/03-prs-feed.png` });
 
-  // The #id cell opens the PR detail, same as clicking the title.
+  // The inline #id opens the review detail, same as clicking the title.
   await prRows.first().getByRole("button", { name: /^#/ }).click();
   await expect(
     page.getByRole("navigation", { name: "Project breadcrumb" }),
@@ -717,13 +751,47 @@ test("pull request and issue feeds share the commit row structure", async ({
     .click();
   await expect(prRows.first()).toBeVisible();
 
-  // Issue rows share the same structure.
+  // Tasks share the same compact structure.
   await page.getByRole("tab", { name: "Tasks" }).click();
   const issueRows = page.getByTestId("project-issue-row");
   await expect(issueRows.first()).toBeVisible({ timeout: 10_000 });
   await expect(
     issueRows.first().getByRole("button", { name: /^#/ }),
   ).toBeVisible();
+  expect((await issueRows.first().boundingBox())?.height).toBeLessThanOrEqual(
+    40,
+  );
+  const taskCategoryCells = issueRows.getByTestId("project-issue-row-category");
+  await expect(taskCategoryCells.first()).toHaveText(
+    /^(Issue|Change request|Improvement)$/,
+  );
+  const taskCreator = issueRows.first().getByTestId("project-issue-creator");
+  const emptyAssignee = issueRows
+    .first()
+    .getByTestId("project-issue-assignee-placeholder");
+  await expect(taskCreator).toHaveAttribute("title", /^Created by /);
+  await expect(emptyAssignee).toHaveAttribute("title", "Unassigned");
+  const [taskCreatorBox, emptyAssigneeBox] = await Promise.all([
+    taskCreator.boundingBox(),
+    emptyAssignee.boundingBox(),
+  ]);
+  expect(
+    (emptyAssigneeBox?.x ?? 0) -
+      ((taskCreatorBox?.x ?? 0) + (taskCreatorBox?.width ?? 0)),
+  ).toBeLessThanOrEqual(4);
+  await expect(
+    issueRows.first().getByTestId("project-issue-comments"),
+  ).toHaveText("0");
+  await expect(
+    issueRows.first().getByTestId("project-issue-row-date"),
+  ).toHaveClass(/text-muted-foreground\/70/);
+  const taskCategoryBoxes = await taskCategoryCells.evaluateAll((cells) =>
+    cells.slice(0, 5).map((cell) => {
+      const box = cell.getBoundingClientRect();
+      return box.x + box.width;
+    }),
+  );
+  expect(new Set(taskCategoryBoxes).size).toBe(1);
   await waitForAnimations(page);
   await page.screenshot({
     fullPage: false,
@@ -743,17 +811,8 @@ test("adding a repository retries and reports an error when the 30617 publicatio
   });
   await installMockBridge(page);
   await page.goto("/", { waitUntil: "domcontentloaded" });
-  await page.getByTestId("open-projects-view").click();
-  await page.getByTestId("projects-section-projects").click();
-  await page
-    .locator(
-      '[data-testid="project-card-buzz"], [data-testid="project-row-buzz"]',
-    )
-    .first()
-    .click();
+  await addProjectToSidebar(page, "buzz");
 
-  const picker = page.getByTestId("project-repository-picker");
-  await picker.click();
   await page.getByTestId("add-project-repository").click();
   await page.getByTestId("create-project-repository").click();
   await page.getByTestId("add-project-repository-name").fill("rejected-repo");
@@ -810,18 +869,8 @@ test("adding a repository treats a lost 30617 acknowledgement as success", async
   });
   await installMockBridge(page);
   await page.goto("/", { waitUntil: "domcontentloaded" });
-  await page.getByTestId("open-projects-view").click();
-  await page.getByTestId("projects-section-projects").click();
-  await page
-    .locator(
-      '[data-testid="project-card-buzz"], [data-testid="project-row-buzz"]',
-    )
-    .first()
-    .click();
+  await addProjectToSidebar(page, "buzz");
 
-  const picker = page.getByTestId("project-repository-picker");
-
-  await picker.click();
   await page.getByTestId("add-project-repository").click();
   await page.getByTestId("create-project-repository").click();
   await page.getByTestId("add-project-repository-name").fill("lost-ack-repo");
@@ -829,8 +878,10 @@ test("adding a repository treats a lost 30617 acknowledgement as success", async
 
   // The dialog should close — the operation recovered from the lost ACK.
   await expect(page.getByTestId("add-project-repository-dialog")).toBeHidden();
-  // The repository picker must reflect the newly added repository.
-  await expect(picker).toContainText("lost-ack-repo");
+  // The sidebar must reflect the newly added repository.
+  await expect(
+    page.getByTestId("sidebar-project-repository-lost-ack-repo"),
+  ).toBeVisible();
 
   // Both events must have been accepted: the 30621 (project update) and the
   // 30617 (repository — accepted by relay even though ACK was lost).
@@ -887,8 +938,6 @@ test("adding a repository blocks when a standalone 30617 already exists at that 
     .first()
     .click();
 
-  const picker = page.getByTestId("project-repository-picker");
-  await picker.click();
   await page.getByTestId("add-project-repository").click();
   await page.getByTestId("create-project-repository").click();
   // Use the same name — the dtag will match the seeded standalone 30617.
@@ -975,10 +1024,10 @@ test("navigating via a 30617 entity-link route opens the correct non-primary rep
     { waitUntil: "domcontentloaded" },
   );
 
-  // Repository controls intentionally render only on README and Files. The
-  // seeded PR and branch prove that this detail route resolved relay-tools
-  // rather than falling back to the project's primary repository.
-  await expect(page.getByTestId("project-repository-picker")).toHaveCount(0);
+  // Direct navigation must not implicitly add the project to the sidebar.
+  await expect(page.getByTestId("sidebar-project-buzz")).toHaveCount(0);
+  // The seeded PR proves that this detail route resolved relay-tools rather
+  // than falling back to the project's primary repository.
   // Use `first()` to avoid Playwright strict-mode violations: the text appears
   // in both the breadcrumb and the PR title heading once the detail panel opens.
   await expect(

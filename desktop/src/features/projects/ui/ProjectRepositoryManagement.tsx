@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Check, ShieldCheck } from "lucide-react";
+import { Check, FolderPlus, Link, Plus, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
 
 import { useIsManagedAgent } from "@/features/agent-memory/hooks";
@@ -20,7 +20,6 @@ import {
 } from "@/shared/ui/dropdown-menu";
 import { AddProjectRepositoryDialog } from "./AddProjectRepositoryDialog";
 import { AttachProjectRepositoryDialog } from "./AttachProjectRepositoryDialog";
-import { ProjectRepositoryPicker } from "./ProjectRepositoryPicker";
 
 export function ProjectRepositoryManagement({
   identityPubkey,
@@ -131,13 +130,39 @@ export function ProjectRepositoryManagement({
         project={project}
         repositories={attachCandidates}
       />
-      <ProjectRepositoryPicker
-        onAttach={canEdit ? () => setAttachOpen(true) : undefined}
-        onChange={onChange}
-        onCreate={canEdit ? () => setCreateOpen(true) : undefined}
-        project={project}
-        repository={repository}
-      />
+      {canEdit ? (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              aria-label="Add repository"
+              className="h-7 shrink-0 gap-1.5 rounded-md"
+              data-testid="add-project-repository"
+              size="sm"
+              type="button"
+              variant="outline"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              Add
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start">
+            <DropdownMenuItem
+              data-testid="create-project-repository"
+              onSelect={() => setCreateOpen(true)}
+            >
+              <FolderPlus className="h-4 w-4" />
+              Create new repository
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              data-testid="attach-project-repository"
+              onSelect={() => setAttachOpen(true)}
+            >
+              <Link className="h-4 w-4" />
+              Select existing repository
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      ) : null}
       {canManageAccess ? (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>

@@ -8,7 +8,9 @@ import {
   resolveUserLabel,
   type UserProfileLookup,
 } from "@/features/profile/lib/identity";
+import type { Repository } from "@/features/projects/hooks";
 import { commitDiscussionQuery } from "@/features/projects/lib/discussionChannels";
+import { commitShareLink } from "@/features/projects/lib/projectShareLinks";
 import type { ProjectRepoCommit, ProjectRepoDiff } from "@/shared/api/types";
 import { DiscussedInChannels } from "./DiscussionChannels";
 import { CopyCommitHashButton } from "./ProjectCommitCopyButton";
@@ -22,6 +24,7 @@ import { ProfileIdentityButton } from "./ProjectProfileIdentity";
 import { ProjectDiffFilesPanel } from "./ProjectPullRequestFilesChangedPanel";
 import { ProjectOriginReference } from "./ProjectOriginReference";
 import { ProjectRichContent } from "./ProjectRichContent";
+import { ShareLinkButton } from "./ShareLinkButton";
 
 function commitDateLabel(timestamp: number) {
   return new Date(timestamp * 1_000).toLocaleString(undefined, {
@@ -44,6 +47,7 @@ export function ProjectCommitDetailPanel({
   originAgentName,
   originChannelId,
   profiles,
+  project,
   viewerGitIdentity,
 }: {
   commit: ProjectRepoCommit | null;
@@ -56,6 +60,7 @@ export function ProjectCommitDetailPanel({
   originAgentName?: string | null;
   originChannelId?: string | null;
   profiles?: UserProfileLookup;
+  project: Repository;
   viewerGitIdentity?: ViewerGitIdentity | null;
 }) {
   const matchedProfile = commit
@@ -71,7 +76,13 @@ export function ProjectCommitDetailPanel({
     <div className={PROJECT_DETAIL_PANEL_CLASS} data-project-detail-panel>
       <header className="space-y-1 px-4 pb-1 pt-3">
         <h3 className="line-clamp-2 text-xl font-semibold text-foreground">
-          {commit?.subject ?? shortHash}
+          {commit?.subject ?? shortHash}{" "}
+          <ShareLinkButton
+            className="ml-1 inline-flex h-7 w-7 align-text-bottom"
+            label="Copy commit link"
+            link={commitShareLink(project, commit?.hash ?? commitHash)}
+            testId="project-commit-copy-link"
+          />
         </h3>
         <p className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs font-medium text-muted-foreground">
           <ProfileIdentityButton

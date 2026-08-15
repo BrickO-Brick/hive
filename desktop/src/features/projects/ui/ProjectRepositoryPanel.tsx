@@ -555,7 +555,7 @@ function FileContentPanel({
 
   return (
     <div className={PROJECT_DETAIL_PANEL_CLASS} data-project-detail-panel>
-      <div className="flex min-h-14 items-center gap-1 border-border/50 border-b bg-muted/20 px-3 py-3">
+      <div className="flex min-h-14 items-center gap-1 border-border/50 border-b bg-muted/20 px-4 py-3">
         <BreadcrumbButton onClick={() => onOpenPath("")}>
           Files
         </BreadcrumbButton>
@@ -587,15 +587,15 @@ function FileContentPanel({
         Last changed {formatLastChangedAt(file.lastChangedAt)}
       </div>
       {file.previewContent ? (
-        <pre className="max-h-[36rem] overflow-auto bg-background/60 p-4">
+        <pre className="overflow-x-auto bg-background/60 p-4">
           {language ? (
             <SyntaxHighlightedCode
-              className="text-xs leading-relaxed"
+              className="whitespace-pre-wrap break-words text-xs leading-relaxed"
               code={file.previewContent}
               language={language}
             />
           ) : (
-            <code className="block min-w-full whitespace-pre font-mono text-xs leading-relaxed text-foreground">
+            <code className="block min-w-full whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-foreground">
               {file.previewContent}
             </code>
           )}
@@ -617,6 +617,7 @@ export function RepositoryFilesPanel({
   error,
   profiles,
   fallbackAuthorPubkey,
+  onContextChange,
   sourceControls,
   unavailableMessage,
 }: {
@@ -626,6 +627,10 @@ export function RepositoryFilesPanel({
   error: unknown;
   profiles?: UserProfileLookup;
   fallbackAuthorPubkey?: string;
+  onContextChange?: (context: {
+    kind: "file" | "folder";
+    path: string;
+  }) => void;
   /** Branch picker + remote/local toggle rendered in the panel header. */
   sourceControls?: RepoSourceHeaderControls;
   unavailableMessage?: string;
@@ -633,6 +638,12 @@ export function RepositoryFilesPanel({
   const [currentPath, setCurrentPath] = React.useState("");
   const [selectedFile, setSelectedFile] =
     React.useState<ProjectRepoFile | null>(null);
+  React.useEffect(() => {
+    onContextChange?.({
+      kind: selectedFile ? "file" : "folder",
+      path: selectedFile?.path ?? currentPath,
+    });
+  }, [currentPath, onContextChange, selectedFile]);
   const entries = React.useMemo(
     () => repositoryEntries(files, currentPath),
     [currentPath, files],
@@ -705,7 +716,7 @@ export function RepositoryFilesPanel({
     }
     return (
       <div className={PROJECT_DETAIL_PANEL_CLASS} data-project-detail-panel>
-        <div className="flex min-h-14 min-w-0 items-center gap-1 border-border/50 border-b px-3 py-3">
+        <div className="flex min-h-14 min-w-0 items-center gap-1 border-border/50 border-b px-4 py-3">
           <RepoSourceDropdown controls={sourceControls} />
           <RepositoryBranchDropdown
             branch={sourceControls.branch}
@@ -745,7 +756,7 @@ export function RepositoryFilesPanel({
   return (
     <div className={PROJECT_DETAIL_PANEL_CLASS} data-project-detail-panel>
       {sourceControls || pathSegments.length > 0 ? (
-        <div className="flex min-h-14 min-w-0 items-center gap-1 border-border/50 border-b px-3 py-3">
+        <div className="flex min-h-14 min-w-0 items-center gap-1 border-border/50 border-b px-4 py-3">
           {sourceControls ? (
             <>
               <RepoSourceDropdown controls={sourceControls} />
@@ -871,7 +882,7 @@ export function RepositoryFilesPanel({
                   }
                   tabIndex={0}
                 >
-                  <td className="min-w-52 p-3 align-middle">
+                  <td className="min-w-52 px-4 py-3 align-middle">
                     <div className="flex min-w-0 items-center gap-2">
                       <RepositoryEntryIcon entry={entry} />
                       <span className="truncate font-medium text-foreground">

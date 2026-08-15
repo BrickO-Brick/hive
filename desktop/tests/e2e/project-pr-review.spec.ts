@@ -1119,7 +1119,7 @@ test("project detail content areas do not paint background fills", async ({
   await expectVisiblePanelsToBeTransparent();
 });
 
-test("project without a checkout offers fetch feedback and dropdown cloning", async ({
+test("project without a checkout offers fetch feedback and cloning", async ({
   page,
 }) => {
   await enableProjectsFeature(page);
@@ -1127,21 +1127,21 @@ test("project without a checkout offers fetch feedback and dropdown cloning", as
   await openBuzzProject(page);
 
   await expect(
-    page.getByRole("button", { name: "Buzz", exact: true }),
+    page.getByRole("button", { name: "Remote", exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "Buzz", exact: true }),
+    page.getByRole("button", { name: "Remote", exact: true }),
   ).toHaveClass(/\bborder-input\/40\b/);
   await expect(page.getByRole("button", { name: /main/ })).toHaveClass(
     /\bborder-input\/40\b/,
   );
   await expect(
     page.getByRole("button", { name: "Clone", exact: true }),
-  ).toHaveCount(0);
+  ).toBeVisible();
   await page.getByRole("button", { name: "Fetch", exact: true }).click();
   await expect(page.getByText("Remote state refreshed.")).toBeVisible();
 
-  await page.getByRole("button", { name: "Buzz", exact: true }).click();
+  await page.getByRole("button", { name: "Remote", exact: true }).click();
   const cloneItem = page.getByRole("menuitem", {
     name: "Local missing Clone",
   });
@@ -1223,7 +1223,7 @@ test("repository tags can be browsed as immutable remote snapshots", async ({
 
   await expect(page.getByRole("button", { name: /v1\.0\.0/ })).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "Buzz", exact: true }),
+    page.getByRole("button", { name: "Remote", exact: true }),
   ).toBeVisible();
   await expect
     .poll(() =>

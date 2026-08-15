@@ -2,6 +2,7 @@ import * as React from "react";
 
 import type { SearchHit } from "@/shared/api/searchTypes";
 import { ProjectConversationPanel } from "./ProjectConversationPanel";
+import { PROJECT_COLUMN_HEADER_BACKDROP_CLASS } from "./projectPanelStyles";
 
 type ProjectConversationPanelContextValue = {
   openConversation: (hit: SearchHit) => void;
@@ -34,19 +35,23 @@ export function ProjectConversationPanelController({
   canResetWidth,
   children,
   closeWhen,
+  fallbackPanel,
   onOpenConversation,
   onResetWidth,
   onResizeStart,
   resetKey,
+  sharedHeaderBackdrop,
   widthPx,
 }: {
   canResetWidth: boolean;
   children: React.ReactNode;
   closeWhen: boolean;
+  fallbackPanel?: React.ReactNode;
   onOpenConversation: () => void;
   onResetWidth: () => void;
   onResizeStart: (event: React.PointerEvent<HTMLButtonElement>) => void;
   resetKey: string;
+  sharedHeaderBackdrop?: boolean;
   widthPx: number;
 }) {
   const [hit, setHit] = React.useState<SearchHit | null>(null);
@@ -65,7 +70,14 @@ export function ProjectConversationPanelController({
   );
   return (
     <ProjectConversationPanelProvider onOpenConversation={openConversation}>
-      <div className="flex min-h-0 min-w-0 flex-1 flex-row overflow-hidden">
+      <div className="relative flex min-h-0 min-w-0 flex-1 flex-row overflow-hidden">
+        {sharedHeaderBackdrop ? (
+          <div
+            aria-hidden="true"
+            className={`pointer-events-none absolute inset-x-0 top-0 z-20 h-13 ${PROJECT_COLUMN_HEADER_BACKDROP_CLASS}`}
+            data-testid="project-shared-header-backdrop"
+          />
+        ) : null}
         {children}
         {hit ? (
           <ProjectConversationPanel
@@ -76,7 +88,9 @@ export function ProjectConversationPanelController({
             onResizeStart={onResizeStart}
             widthPx={widthPx}
           />
-        ) : null}
+        ) : (
+          fallbackPanel
+        )}
       </div>
     </ProjectConversationPanelProvider>
   );

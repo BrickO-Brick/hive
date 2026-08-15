@@ -41,7 +41,7 @@ test("selectedProjectRouteId reads the project id from the detail route", () => 
   );
 });
 
-test("listSidebarProjects keeps owned and contributed projects for Mine", () => {
+test("listSidebarProjects only includes explicitly added projects", () => {
   const owned = makeProject({
     dtag: "owned",
     id: `30621:${VIEWER}:owned`,
@@ -72,14 +72,18 @@ test("listSidebarProjects keeps owned and contributed projects for Mine", () => 
   const other = makeProject({ name: "Other" });
 
   const listed = listSidebarProjects({
+    addedProjectAddresses: new Set([
+      contributed.projectAddress,
+      other.projectAddress,
+    ]),
     currentPubkey: VIEWER,
-    filter: "mine",
+    filter: "added",
     projects: [other, contributed, owned],
     sort: "name",
   });
   assert.deepEqual(
     listed.map((project) => project.name),
-    ["Contrib", "Owned"],
+    ["Contrib", "Other"],
   );
 });
 
@@ -113,6 +117,10 @@ test("listSidebarProjects owned filter hides contributed projects", () => {
   });
 
   const listed = listSidebarProjects({
+    addedProjectAddresses: new Set([
+      contributed.projectAddress,
+      owned.projectAddress,
+    ]),
     currentPubkey: VIEWER,
     filter: "owned",
     projects: [contributed, owned],
@@ -143,8 +151,12 @@ test("listSidebarProjects newest sort orders by createdAt then name", () => {
   });
 
   const listed = listSidebarProjects({
+    addedProjectAddresses: new Set([
+      older.projectAddress,
+      newer.projectAddress,
+    ]),
     currentPubkey: VIEWER,
-    filter: "mine",
+    filter: "added",
     projects: [older, newer],
     sort: "created",
   });

@@ -40,7 +40,7 @@ export function ProjectDetailSection({
     >
       <button
         aria-expanded={open}
-        className="flex min-h-8 w-full min-w-0 items-center gap-2 px-4 py-1.5 text-left text-sm font-semibold leading-5 text-foreground transition-colors hover:bg-muted/20"
+        className="flex min-h-9 w-full min-w-0 items-center gap-2 px-4 py-1.5 text-left text-base font-normal leading-5 text-foreground transition-colors hover:bg-muted/20"
         onClick={() => setOpen(!open)}
         type="button"
       >
@@ -52,7 +52,7 @@ export function ProjectDetailSection({
               !open && "-rotate-90",
             )}
           />
-          {count != null ? (
+          {open && count != null ? (
             <span className="shrink-0 font-medium text-muted-foreground">
               {count}
             </span>

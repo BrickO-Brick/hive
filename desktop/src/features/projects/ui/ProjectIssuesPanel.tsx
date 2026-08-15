@@ -1,9 +1,12 @@
 import {
+  Circle,
   CircleCheck,
+  CircleDashed,
   CircleDot,
   CircleX,
   MessageSquare,
   Tag,
+  type LucideIcon,
   User,
 } from "lucide-react";
 import * as React from "react";
@@ -32,11 +35,6 @@ import { useIdentityQuery } from "@/shared/api/hooks";
 import type { ChannelMember } from "@/shared/api/types";
 import { normalizePubkey } from "@/shared/lib/pubkey";
 import { IssueAssigneeFacepile, IssueAssigneesRow } from "./IssueAssigneesRow";
-import {
-  ProjectFeedRow,
-  ProjectFeedRowCluster,
-  ProjectFeedRowMonoCell,
-} from "./ProjectFeedRow";
 import { DiscussedInChannels } from "./DiscussionChannels";
 import { ProjectIssueCommentTimeline } from "./ProjectIssueCommentTimeline";
 import { ProjectOriginReference } from "./ProjectOriginReference";
@@ -49,22 +47,70 @@ import { ProjectDetailSection } from "./ProjectDetailSection";
 import { ProfileIdentityButton } from "./ProjectProfileIdentity";
 import { ProjectRichContent } from "./ProjectRichContent";
 import { ShareLinkButton } from "./ShareLinkButton";
+import {
+  ProjectStatusProgressIcon,
+  type ProjectStatusProgressState,
+} from "./ProjectStatusProgressIcon";
+import { ProjectWorkItemGroup } from "./ProjectWorkItemGroup";
+import { ProjectWorkItemRow } from "./ProjectWorkItemRow";
 
 export function issueStatusClassName(status: ProjectIssue["status"]) {
+  if (status === "Triage" || status === "In Progress") return "text-amber-500";
+  if (status === "Backlog") return "text-muted-foreground";
+  if (status === "In Review") return "text-green-500";
   if (status === "Done") return "text-purple-400";
   if (status === "Closed") return "text-destructive";
-  return "text-green-500";
+  return "text-muted-foreground";
 }
 
-function issueStatusVisual(status: ProjectIssue["status"]) {
+function issueStatusVisual(status: ProjectIssue["status"]): {
+  className: string;
+  icon: LucideIcon;
+  progress: ProjectStatusProgressState;
+} {
   if (status === "Done") {
-    return { className: "text-purple-400", icon: CircleCheck };
+    return {
+      className: "text-purple-400",
+      icon: CircleCheck,
+      progress: "completed",
+    };
   }
   if (status === "Closed") {
-    return { className: "text-destructive", icon: CircleX };
+    return {
+      className: "text-destructive",
+      icon: CircleX,
+      progress: "canceled",
+    };
   }
-  return { className: "text-green-500", icon: CircleDot };
+  if (status === "Backlog") {
+    return {
+      className: issueStatusClassName(status),
+      icon: Circle,
+      progress: "queued",
+    };
+  }
+  if (status === "Triage") {
+    return {
+      className: issueStatusClassName(status),
+      icon: CircleDashed,
+      progress: "queued",
+    };
+  }
+  return {
+    className: issueStatusClassName(status),
+    icon: CircleDot,
+    progress: status === "In Review" ? "review" : "started",
+  };
 }
+
+const ISSUE_STATUS_ORDER: readonly ProjectIssue["status"][] = [
+  "In Review",
+  "In Progress",
+  "Triage",
+  "Backlog",
+  "Done",
+  "Closed",
+];
 
 function issueMembers(
   project: Project,
@@ -103,71 +149,89 @@ function IssueRow({
   const authorProfile = profiles?.[normalizePubkey(issue.author)];
   const authorLabel = resolveUserLabel({ profiles, pubkey: issue.author });
   const status = issueStatusVisual(issue.status);
-  const labels = projectTaskUserLabels(issue.labels);
 
   return (
-    <ProjectFeedRow
-      meta={
-        <>
-          <ProfileIdentityButton
-            avatarClassName="shrink-0"
-            avatarSize="xs"
-            avatarUrl={authorProfile?.avatarUrl ?? null}
-            isAgent={authorProfile?.isAgent === true}
-            label={authorLabel}
-            pubkey={issue.author}
-            showLabel={false}
-          />
-          <span className="truncate text-foreground/80">
-            <span className="font-medium">{authorLabel}</span> created this task
-          </span>
-          <span>·</span>
-          <span>{projectTaskCategoryLabel(issue.category)}</span>
-          <span>·</span>
-          <span>{issue.status}</span>
-          {labels.map((label) => (
-            <span
-              className="rounded-full border border-border/60 px-1.5 py-0.5 text-2xs"
-              key={label}
-            >
-              {label}
-            </span>
-          ))}
-        </>
-      }
+    <ProjectWorkItemRow
       eventId={issue.id}
+      identifier={`#${issue.id.slice(0, 8)}`}
+      identifierTitle="View task"
       onOpen={onOpen}
       statusIcon={
-        <status.icon className={`h-3.5 w-3.5 shrink-0 ${status.className}`} />
+        <ProjectStatusProgressIcon
+          aria-label={issue.status}
+          className={`h-3.5 w-3.5 shrink-0 ${status.className}`}
+          state={status.progress}
+        />
       }
       testId="project-issue-row"
       title={issue.title}
       trailing={
         <>
-          <IssueAssigneeFacepile
-            assignees={issue.assignees}
-            profiles={profiles}
-          />
-          {issue.comments.length > 0 ? (
+          <span
+            className="hidden w-24 shrink-0 truncate text-right text-xs text-muted-foreground md:block"
+            data-testid="project-issue-row-category"
+          >
+            {projectTaskCategoryLabel(issue.category)}
+          </span>
+          <span className="flex w-20 shrink-0 items-center justify-end gap-1">
+            <span
+              className="flex h-5 w-5 shrink-0 items-center justify-center"
+              data-testid="project-issue-creator"
+              title={`Created by ${authorLabel}`}
+            >
+              <ProfileIdentityButton
+                avatarClassName="shrink-0"
+                avatarSize="xs"
+                avatarUrl={authorProfile?.avatarUrl ?? null}
+                isAgent={authorProfile?.isAgent === true}
+                label={authorLabel}
+                pubkey={issue.author}
+                showLabel={false}
+              />
+            </span>
+            <span
+              className="flex min-w-5 shrink-0 justify-end text-muted-foreground/45"
+              data-testid="project-issue-assignee-cell"
+            >
+              {issue.assignees.length > 0 ? (
+                <IssueAssigneeFacepile
+                  assignees={issue.assignees}
+                  profiles={profiles}
+                />
+              ) : (
+                <span
+                  className="flex h-5 w-5 items-center justify-center rounded-full border border-border/70 bg-muted/35"
+                  data-testid="project-issue-assignee-placeholder"
+                  title="Unassigned"
+                >
+                  <User aria-hidden="true" className="h-3 w-3" />
+                  <span className="sr-only">Unassigned</span>
+                </span>
+              )}
+            </span>
+          </span>
+          <span className="flex w-8 shrink-0 justify-end">
             <button
-              aria-label={`View ${issue.comments.length} comments`}
-              className="flex items-center gap-1 rounded-md text-xs text-muted-foreground hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+              aria-label={
+                issue.comments.length > 0
+                  ? `View ${issue.comments.length} comments`
+                  : "View comments"
+              }
+              className={`flex items-center gap-1 rounded-md text-xs hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring ${
+                issue.comments.length > 0
+                  ? "text-muted-foreground"
+                  : "text-muted-foreground/45"
+              }`}
+              data-testid="project-issue-comments"
               onClick={onOpen}
               type="button"
             >
               <MessageSquare className="h-3.5 w-3.5" />
               {issue.comments.length}
             </button>
-          ) : null}
-          <ProjectFeedRowCluster>
-            <ProjectFeedRowMonoCell
-              label={`#${issue.id.slice(0, 8)}`}
-              onClick={onOpen}
-              title="View task"
-            />
-          </ProjectFeedRowCluster>
+          </span>
           <span
-            className="hidden w-20 shrink-0 text-right text-xs text-muted-foreground sm:block"
+            className="hidden w-20 shrink-0 text-right text-xs text-muted-foreground/70 sm:block"
             data-testid="project-issue-row-date"
             title={new Date(issue.createdAt * 1_000).toLocaleString()}
           >
@@ -315,19 +379,22 @@ export function ProjectIssueDetail({
             key={issue.id}
             profiles={profiles}
           />
-          <div data-testid="project-issue-comment-composer">
-            <ForumComposer
-              className="border border-border/60 bg-background/45"
-              disabled={commentMutation.isPending}
-              isSending={commentMutation.isPending}
-              members={members}
-              onSubmit={handleCommentSubmit}
-              placeholder="Add a comment…"
-              profiles={profiles}
-            />
-          </div>
         </div>
       </ProjectDetailSection>
+      <div
+        className="px-4 pb-4 pt-2"
+        data-testid="project-issue-comment-composer"
+      >
+        <ForumComposer
+          className="border border-border/60 bg-background/45"
+          disabled={commentMutation.isPending}
+          isSending={commentMutation.isPending}
+          members={members}
+          onSubmit={handleCommentSubmit}
+          placeholder="Add a comment…"
+          profiles={profiles}
+        />
+      </div>
     </div>
   );
 }
@@ -372,16 +439,38 @@ export function ProjectIssuesPanel({
     );
   }
 
+  const groups = ISSUE_STATUS_ORDER.map((status) => ({
+    items: issues.filter((issue) => issue.status === status),
+    status,
+  })).filter((group) => group.items.length > 0);
+
   return (
-    <div className="divide-y divide-border/50">
-      {issues.map((issue) => (
-        <IssueRow
-          issue={issue}
-          key={issue.id}
-          onOpen={() => onSelectedIssueIdChange(issue.id)}
-          profiles={profiles}
-        />
-      ))}
+    <div>
+      {groups.map(({ items, status }) => {
+        const visual = issueStatusVisual(status);
+        return (
+          <ProjectWorkItemGroup
+            count={items.length}
+            icon={
+              <ProjectStatusProgressIcon
+                className={`h-4 w-4 ${visual.className}`}
+                state={visual.progress}
+              />
+            }
+            key={status}
+            label={status}
+          >
+            {items.map((issue) => (
+              <IssueRow
+                issue={issue}
+                key={issue.id}
+                onOpen={() => onSelectedIssueIdChange(issue.id)}
+                profiles={profiles}
+              />
+            ))}
+          </ProjectWorkItemGroup>
+        );
+      })}
     </div>
   );
 }

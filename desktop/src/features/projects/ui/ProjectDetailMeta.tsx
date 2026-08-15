@@ -54,14 +54,14 @@ export function ProjectDetailMetaRow({
         ))}
       <span
         className={cn(
-          "w-20 shrink-0 truncate whitespace-nowrap text-muted-foreground",
+          "w-20 shrink-0 truncate whitespace-nowrap font-normal text-muted-foreground/75",
           labelClassName,
         )}
         title={label}
       >
         {label}
       </span>
-      <div className="flex min-h-5 min-w-0 flex-1 items-center text-foreground">
+      <div className="flex min-h-5 min-w-0 flex-1 items-center font-medium text-foreground">
         {children}
       </div>
     </div>

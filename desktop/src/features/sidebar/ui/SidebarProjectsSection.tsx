@@ -2,11 +2,14 @@ import { useLocation } from "@tanstack/react-router";
 import {
   ArrowUpDown,
   ChevronDown,
+  EllipsisVertical,
+  Folder,
   FolderGit2,
+  FolderOpen,
   Folders,
   Link2,
+  ListMinus,
   Plus,
-  Settings2,
   Trash2,
 } from "lucide-react";
 import * as React from "react";
@@ -20,13 +23,21 @@ import {
 } from "@/features/projects/hooks";
 import { isProjectOwnedByCurrentUser } from "@/features/projects/lib/projectsViewHelpers";
 import { projectShareLink } from "@/features/projects/lib/projectShareLinks";
+import {
+  addProjectToSidebar,
+  PROJECT_SIDEBAR_MEMBERSHIP_EVENT,
+  readProjectSidebarMembership,
+  removeProjectFromSidebar,
+} from "@/features/projects/lib/projectSidebarMembership";
+import { selectProjectRepository } from "@/features/projects/projectModels";
 import { projectMatchesRouteId } from "@/features/projects/projectRoutes";
-import { CreateProjectDialog } from "@/features/projects/ui/CreateProjectDialog";
+import { ProjectBrowserDialog } from "@/features/projects/ui/ProjectBrowserDialog";
 import { useCreateProjectMutation } from "@/features/projects/useCreateProject";
 import { useIdentityQuery } from "@/shared/api/hooks";
 import { FeatureGate } from "@/shared/features";
 import { copyTextToClipboard } from "@/shared/lib/clipboard";
 import { cn } from "@/shared/lib/cn";
+import { getCachedRelayOrigin } from "@/shared/lib/mediaUrl";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -113,10 +124,17 @@ function SidebarProjectsSectionContent() {
   const currentPubkey = identityQuery.data?.pubkey;
   const { goProject, goProjects } = useAppNavigation();
   const pathname = useLocation({ select: (location) => location.pathname });
+  const routeRepositoryId = useLocation({
+    select: (location) => {
+      const value = (location.search as Record<string, unknown>).repositoryId;
+      return typeof value === "string" ? value : undefined;
+    },
+  });
   const routeProjectId = selectedProjectRouteId(pathname);
+  const relayOrigin = getCachedRelayOrigin();
   const [collapsed, setCollapsed] = React.useState(false);
   const [actionsOpen, setActionsOpen] = React.useState(false);
-  const [createOpen, setCreateOpen] = React.useState(false);
+  const [browserOpen, setBrowserOpen] = React.useState(false);
   const [projectToDelete, setProjectToDelete] = React.useState<Project | null>(
     null,
   );
@@ -126,18 +144,36 @@ function SidebarProjectsSectionContent() {
   const [sort, setSort] = React.useState<SidebarProjectsSort>(
     readSidebarProjectsSort,
   );
+  const [addedProjectAddresses, setAddedProjectAddresses] = React.useState<
+    string[]
+  >(() => readProjectSidebarMembership(relayOrigin, currentPubkey));
   const createProjectMutation = useCreateProjectMutation();
   const deleteProjectMutation = useDeleteProjectMutation();
   const isPending = projectsQuery.isPending || identityQuery.isPending;
+  React.useEffect(() => {
+    const refresh = () =>
+      setAddedProjectAddresses(
+        readProjectSidebarMembership(relayOrigin, currentPubkey),
+      );
+    refresh();
+    globalThis.addEventListener(PROJECT_SIDEBAR_MEMBERSHIP_EVENT, refresh);
+    return () =>
+      globalThis.removeEventListener(PROJECT_SIDEBAR_MEMBERSHIP_EVENT, refresh);
+  }, [currentPubkey, relayOrigin]);
+  const addedProjectAddressSet = React.useMemo(
+    () => new Set(addedProjectAddresses),
+    [addedProjectAddresses],
+  );
   const projects = React.useMemo(
     () =>
       listSidebarProjects({
+        addedProjectAddresses: addedProjectAddressSet,
         currentPubkey,
         filter,
         projects: projectsQuery.data ?? [],
         sort,
       }),
-    [currentPubkey, filter, projectsQuery.data, sort],
+    [addedProjectAddressSet, currentPubkey, filter, projectsQuery.data, sort],
   );
 
   const handleFilterChange = (next: SidebarProjectsFilter) => {
@@ -148,11 +184,32 @@ function SidebarProjectsSectionContent() {
     setSort(next);
     writeSidebarProjectsSort(next);
   };
+  const handleAdd = (project: Project) => {
+    addProjectToSidebar(project.projectAddress, relayOrigin, currentPubkey);
+  };
+  const handleRemove = (project: Project) => {
+    removeProjectFromSidebar(
+      project.projectAddress,
+      relayOrigin,
+      currentPubkey,
+    );
+    if (
+      routeProjectId != null &&
+      projectMatchesRouteId(project, routeProjectId)
+    ) {
+      void goProjects();
+    }
+  };
 
   const handleDelete = React.useCallback(
     async (project: Project) => {
       try {
         await deleteProjectMutation.mutateAsync(project);
+        removeProjectFromSidebar(
+          project.projectAddress,
+          relayOrigin,
+          currentPubkey,
+        );
         toast.success("Project deleted");
         if (
           routeProjectId != null &&
@@ -168,7 +225,13 @@ function SidebarProjectsSectionContent() {
         setProjectToDelete(null);
       }
     },
-    [deleteProjectMutation, goProjects, routeProjectId],
+    [
+      currentPubkey,
+      deleteProjectMutation,
+      goProjects,
+      relayOrigin,
+      routeProjectId,
+    ],
   );
 
   return (
@@ -201,7 +264,7 @@ function SidebarProjectsSectionContent() {
         <SidebarProjectsHeaderActions
           filter={filter}
           onBrowseAll={() => void goProjects()}
-          onCreate={() => setCreateOpen(true)}
+          onCreate={() => setBrowserOpen(true)}
           onFilterChange={handleFilterChange}
           onOpenChange={setActionsOpen}
           onSortChange={handleSortChange}
@@ -212,23 +275,56 @@ function SidebarProjectsSectionContent() {
         <SidebarGroupContent id="sidebar-projects">
           {projects.length > 0 ? (
             <SidebarMenu data-testid="sidebar-projects">
-              {projects.map((project) => (
-                <SidebarProjectRow
-                  canDelete={isProjectOwnedByCurrentUser(
-                    project,
-                    currentPubkey,
-                  )}
-                  deleteDisabled={deleteProjectMutation.isPending}
-                  isActive={
-                    routeProjectId != null &&
-                    projectMatchesRouteId(project, routeProjectId)
-                  }
-                  key={project.id}
-                  onDelete={() => setProjectToDelete(project)}
-                  onOpen={() => goProject(project.id)}
-                  project={project}
-                />
-              ))}
+              {projects.map((project) => {
+                const isActive =
+                  routeProjectId != null &&
+                  projectMatchesRouteId(project, routeProjectId);
+                const selectedRepository = isActive
+                  ? selectProjectRepository(project, routeRepositoryId)
+                  : null;
+
+                return (
+                  <React.Fragment key={project.id}>
+                    <SidebarProjectRow
+                      canDelete={isProjectOwnedByCurrentUser(
+                        project,
+                        currentPubkey,
+                      )}
+                      deleteDisabled={deleteProjectMutation.isPending}
+                      isActive={isActive}
+                      onDelete={() => setProjectToDelete(project)}
+                      onOpen={() => goProject(project.id)}
+                      onRemove={() => handleRemove(project)}
+                      project={project}
+                    />
+                    {isActive
+                      ? project.repositories.map((repository) => (
+                          <SidebarMenuItem key={repository.id}>
+                            <SidebarMenuButton
+                              className="h-7 pl-7 text-sidebar-foreground/70 data-[active=true]:!bg-transparent data-[active=true]:font-semibold data-[active=true]:text-sidebar-foreground data-[active=true]:shadow-none data-[active=true]:hover:!bg-transparent data-[active=true]:hover:text-sidebar-foreground data-[active=true]:active:!bg-transparent"
+                              data-testid={`sidebar-project-repository-${repository.dtag}`}
+                              isActive={
+                                repository.id === selectedRepository?.id
+                              }
+                              onClick={() =>
+                                goProject(project.id, {
+                                  repositoryId: repository.id,
+                                })
+                              }
+                              tooltip={repository.name}
+                              type="button"
+                            >
+                              <FolderGit2 className="h-3.5 w-3.5" />
+                              <SidebarMenuLabel>
+                                {repository.name}
+                              </SidebarMenuLabel>
+                            </SidebarMenuButton>
+                          </SidebarMenuItem>
+                        ))
+                      : null}
+                  </React.Fragment>
+                );
+              })}
             </SidebarMenu>
           ) : isPending ? null : (
             <p className="px-2 py-1 text-xs text-sidebar-foreground/50">
@@ -237,7 +333,7 @@ function SidebarProjectsSectionContent() {
           )}
         </SidebarGroupContent>
       ) : null}
-      <CreateProjectDialog
+      <ProjectBrowserDialog
         isCreating={createProjectMutation.isPending}
         onCreate={async (input) => {
           const result = await createProjectMutation.mutateAsync(input);
@@ -250,8 +346,14 @@ function SidebarProjectsSectionContent() {
           }
           await goProject(result.project.id);
         }}
-        onOpenChange={setCreateOpen}
-        open={createOpen}
+        onOpenChange={setBrowserOpen}
+        onSelectProject={(project) => {
+          handleAdd(project);
+          void goProject(project.id);
+        }}
+        open={browserOpen}
+        projects={projectsQuery.data ?? []}
+        selectedProjectAddresses={addedProjectAddressSet}
       />
       <AlertDialog
         onOpenChange={(open) => {
@@ -327,12 +429,12 @@ function SidebarProjectsHeaderActions({
   onSortChange: (sort: SidebarProjectsSort) => void;
   sort: SidebarProjectsSort;
 }) {
-  const settingsTriggerRef = React.useRef<HTMLButtonElement>(null);
+  const actionsTriggerRef = React.useRef<HTMLButtonElement>(null);
 
   return (
     <div className="absolute right-1 top-1/2 z-10 flex -translate-y-1/2 items-center gap-0.5">
       <button
-        aria-label="Create project"
+        aria-label="Add project"
         className={cn(
           SECTION_ICON_BUTTON_CLASS,
           SECTION_ACTION_VISIBILITY_CLASS,
@@ -343,7 +445,7 @@ function SidebarProjectsHeaderActions({
           onCreate();
         }}
         onPointerDown={(event) => event.stopPropagation()}
-        title="Create project"
+        title="Add project"
         type="button"
       >
         <Plus className="h-4 w-4" />
@@ -351,7 +453,7 @@ function SidebarProjectsHeaderActions({
       <DropdownMenu onOpenChange={onOpenChange}>
         <DropdownMenuTrigger asChild>
           <button
-            aria-label="Project section settings"
+            aria-label="More actions for Projects"
             className={cn(
               SECTION_ICON_BUTTON_CLASS,
               SECTION_ACTION_VISIBILITY_CLASS,
@@ -359,17 +461,17 @@ function SidebarProjectsHeaderActions({
             data-testid="sidebar-projects-settings"
             onClick={(event) => event.stopPropagation()}
             onPointerDown={(event) => event.stopPropagation()}
-            ref={settingsTriggerRef}
+            ref={actionsTriggerRef}
             type="button"
           >
-            <Settings2 className="h-4 w-4" />
+            <EllipsisVertical className="h-4 w-4" />
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent
           align="end"
           onCloseAutoFocus={(event) => {
             event.preventDefault();
-            settingsTriggerRef.current?.blur();
+            actionsTriggerRef.current?.blur();
           }}
         >
           <DropdownMenuSub>
@@ -384,7 +486,9 @@ function SidebarProjectsHeaderActions({
                 }
                 value={filter}
               >
-                <DropdownMenuRadioItem value="mine">Mine</DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="added">
+                  Added
+                </DropdownMenuRadioItem>
                 <DropdownMenuRadioItem value="owned">
                   Owned by me
                 </DropdownMenuRadioItem>
@@ -412,7 +516,7 @@ function SidebarProjectsHeaderActions({
           </DropdownMenuSub>
           <DropdownMenuSeparator />
           <DropdownMenuItem onSelect={() => deferMenuAction(onBrowseAll)}>
-            <FolderGit2 className="h-4 w-4" />
+            <Folder className="h-4 w-4" />
             <span>Browse all projects</span>
           </DropdownMenuItem>
         </DropdownMenuContent>
@@ -427,6 +531,7 @@ function SidebarProjectRow({
   isActive,
   onDelete,
   onOpen,
+  onRemove,
   project,
 }: {
   canDelete: boolean;
@@ -434,22 +539,25 @@ function SidebarProjectRow({
   isActive: boolean;
   onDelete: () => void;
   onOpen: () => void;
+  onRemove: () => void;
   project: Project;
 }) {
   const shareLink = projectShareLink(project);
+  const ProjectIcon = isActive ? FolderOpen : Folders;
 
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
         <SidebarMenuItem>
           <SidebarMenuButton
+            className="data-[active=true]:!bg-transparent data-[active=true]:font-normal data-[active=true]:text-sidebar-foreground data-[active=true]:shadow-none data-[active=true]:hover:!bg-transparent data-[active=true]:hover:text-sidebar-foreground data-[active=true]:active:!bg-transparent"
             data-testid={`sidebar-project-${project.dtag}`}
             isActive={isActive}
             onClick={onOpen}
             tooltip={project.name}
             type="button"
           >
-            <FolderGit2 className="h-4 w-4" />
+            <ProjectIcon className="h-4 w-4" />
             <SidebarMenuLabel>{project.name}</SidebarMenuLabel>
           </SidebarMenuButton>
           {canDelete ? (
@@ -470,23 +578,32 @@ function SidebarProjectRow({
         </SidebarMenuItem>
       </ContextMenuTrigger>
       <ContextMenuContent>
+        <ContextMenuItem onSelect={() => deferMenuAction(onRemove)}>
+          <ContextMenuIconSlot>
+            <ListMinus className="h-4 w-4" />
+          </ContextMenuIconSlot>
+          <span>Remove from sidebar</span>
+        </ContextMenuItem>
         {shareLink ? (
-          <ContextMenuItem
-            onSelect={() =>
-              deferMenuAction(() =>
-                copyTextToClipboard(shareLink, "Link copied to clipboard"),
-              )
-            }
-          >
-            <ContextMenuIconSlot>
-              <Link2 className="h-4 w-4" />
-            </ContextMenuIconSlot>
-            <span>Copy link</span>
-          </ContextMenuItem>
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuItem
+              onSelect={() =>
+                deferMenuAction(() =>
+                  copyTextToClipboard(shareLink, "Link copied to clipboard"),
+                )
+              }
+            >
+              <ContextMenuIconSlot>
+                <Link2 className="h-4 w-4" />
+              </ContextMenuIconSlot>
+              <span>Copy link</span>
+            </ContextMenuItem>
+          </>
         ) : null}
         {canDelete ? (
           <>
-            {shareLink ? <ContextMenuSeparator /> : null}
+            <ContextMenuSeparator />
             <ContextMenuItem
               className="text-destructive focus:text-destructive"
               data-testid={`sidebar-project-delete-menu-${project.dtag}`}

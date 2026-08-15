@@ -55,16 +55,12 @@ export function PullRequestMetaHeader({
   return (
     <ProjectDetailMetaList>
       <ProjectDetailMetaRow icon={GitBranch} label="Branch">
-        <p className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs">
-          <code className="truncate font-mono text-foreground">
-            {sourceBranch}
-          </code>
+        <p className="flex min-w-0 flex-wrap items-center gap-1.5">
+          <span className="truncate text-foreground">{sourceBranch}</span>
           <span aria-hidden className="text-muted-foreground">
             →
           </span>
-          <code className="truncate font-mono text-foreground">
-            {targetBranch}
-          </code>
+          <span className="truncate text-foreground">{targetBranch}</span>
           {diffStats ? (
             <>
               <span className="text-green-500">+{diffStats.additions}</span>
@@ -73,7 +69,10 @@ export function PullRequestMetaHeader({
           ) : null}
           {pullRequest.commit ? (
             <span className="inline-flex min-w-0 items-center gap-0.5 text-muted-foreground">
-              <code className="truncate font-mono" title={pullRequest.commit}>
+              <code
+                className="truncate font-mono text-sm"
+                title={pullRequest.commit}
+              >
                 {pullRequest.commit.slice(0, 7)}
               </code>
               <CopyCommitHashButton

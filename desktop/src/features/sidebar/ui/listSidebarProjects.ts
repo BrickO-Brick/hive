@@ -1,13 +1,10 @@
 import type { Project } from "@/features/projects/projectModels";
-import {
-  isProjectMine,
-  isProjectOwnedByCurrentUser,
-} from "@/features/projects/lib/projectsViewHelpers";
+import { isProjectOwnedByCurrentUser } from "@/features/projects/lib/projectsViewHelpers";
 
 const SIDEBAR_PROJECTS_FILTER_KEY = "buzz.sidebar.projects.filter";
 const SIDEBAR_PROJECTS_SORT_KEY = "buzz.sidebar.projects.sort";
 
-export type SidebarProjectsFilter = "mine" | "owned";
+export type SidebarProjectsFilter = "added" | "owned";
 export type SidebarProjectsSort = "name" | "created";
 
 export function selectedProjectRouteId(pathname: string): string | undefined {
@@ -24,9 +21,9 @@ export function selectedProjectRouteId(pathname: string): string | undefined {
 export function readSidebarProjectsFilter(): SidebarProjectsFilter {
   try {
     const value = globalThis.localStorage?.getItem(SIDEBAR_PROJECTS_FILTER_KEY);
-    return value === "owned" ? "owned" : "mine";
+    return value === "owned" ? "owned" : "added";
   } catch {
-    return "mine";
+    return "added";
   }
 }
 
@@ -56,21 +53,24 @@ export function writeSidebarProjectsSort(sort: SidebarProjectsSort) {
 }
 
 export function listSidebarProjects({
+  addedProjectAddresses,
   currentPubkey,
   filter,
   projects,
   sort,
 }: {
+  addedProjectAddresses: ReadonlySet<string>;
   currentPubkey: string | undefined;
   filter: SidebarProjectsFilter;
   projects: readonly Project[];
   sort: SidebarProjectsSort;
 }): Project[] {
   return [...projects]
-    .filter((project) =>
-      filter === "owned"
-        ? isProjectOwnedByCurrentUser(project, currentPubkey)
-        : isProjectMine(project, currentPubkey),
+    .filter(
+      (project) =>
+        addedProjectAddresses.has(project.projectAddress) &&
+        (filter !== "owned" ||
+          isProjectOwnedByCurrentUser(project, currentPubkey)),
     )
     .sort((left, right) => {
       if (sort === "created") {

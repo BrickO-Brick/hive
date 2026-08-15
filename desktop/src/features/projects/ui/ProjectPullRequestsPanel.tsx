@@ -8,7 +8,6 @@ import {
   MessageSquare,
   TriangleAlert,
   UserPlus,
-  X,
 } from "lucide-react";
 import * as React from "react";
 import { toast } from "sonner";
@@ -50,6 +49,12 @@ import { ProjectRichContent } from "./ProjectRichContent";
 import { PullRequestMetaHeader } from "./PullRequestMetaRail";
 import { PullRequestReviewCard } from "./PullRequestReviewCard";
 import { ShareLinkButton } from "./ShareLinkButton";
+import {
+  ProjectStatusProgressIcon,
+  type ProjectStatusProgressState,
+} from "./ProjectStatusProgressIcon";
+import { ProjectWorkItemGroup } from "./ProjectWorkItemGroup";
+import { ProjectWorkItemRow } from "./ProjectWorkItemRow";
 
 export { PullRequestMetaHeader } from "./PullRequestMetaRail";
 
@@ -71,6 +76,22 @@ function pullRequestStatusClassName(status: ProjectPullRequest["status"]) {
   if (status === "Draft") return "text-muted-foreground";
   if (status === "Merged") return "text-purple-400";
   return "text-green-500";
+}
+
+const PULL_REQUEST_STATUS_ORDER: readonly ProjectPullRequest["status"][] = [
+  "Open",
+  "Draft",
+  "Merged",
+  "Closed",
+];
+
+function pullRequestProgressState(
+  status: ProjectPullRequest["status"],
+): ProjectStatusProgressState {
+  if (status === "Draft") return "queued";
+  if (status === "Merged") return "completed";
+  if (status === "Closed") return "canceled";
+  return "review";
 }
 
 function pullRequestMembers(
@@ -240,17 +261,53 @@ function PullRequestRow({
 }) {
   const authorProfile = profileForPubkey(pullRequest.author, profiles);
   const authorLabel = labelForPubkey(pullRequest.author, profiles);
-  const StatusIcon =
-    pullRequest.status === "Closed" || pullRequest.status === "Draft"
-      ? X
-      : Check;
   const statusClassName = pullRequestStatusClassName(pullRequest.status);
 
   return (
-    <ProjectFeedRow
+    <ProjectWorkItemRow
       eventId={pullRequest.id}
-      meta={
+      identifier={`#${pullRequest.id.slice(0, 8)}`}
+      identifierTitle="View review"
+      metadata={
+        pullRequest.branchName ? (
+          <span className="inline-flex min-w-0 items-center gap-1">
+            <GitBranch className="h-3 w-3 shrink-0" />
+            <span className="truncate">{pullRequest.branchName}</span>
+          </span>
+        ) : undefined
+      }
+      onOpen={onOpen}
+      statusIcon={
+        <ProjectStatusProgressIcon
+          aria-label={pullRequest.status}
+          className={`h-3.5 w-3.5 shrink-0 ${statusClassName}`}
+          state={pullRequestProgressState(pullRequest.status)}
+        />
+      }
+      testId="project-pull-request-row"
+      title={pullRequest.title}
+      trailing={
         <>
+          <span className="flex w-8 shrink-0 justify-end">
+            <button
+              aria-label={
+                pullRequest.comments.length > 0
+                  ? `View ${pullRequest.comments.length} comments`
+                  : "View comments"
+              }
+              className={`flex items-center gap-1 rounded-md text-xs hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring ${
+                pullRequest.comments.length > 0
+                  ? "text-muted-foreground"
+                  : "text-muted-foreground/45"
+              }`}
+              data-testid="project-pull-request-comments"
+              onClick={onOpen}
+              type="button"
+            >
+              <MessageSquare className="h-3.5 w-3.5" />
+              {pullRequest.comments.length}
+            </button>
+          </span>
           <ProfileIdentityButton
             avatarClassName="shrink-0"
             avatarSize="xs"
@@ -260,53 +317,8 @@ function PullRequestRow({
             pubkey={pullRequest.author}
             showLabel={false}
           />
-          <span className="truncate">
-            <ProfileAuthorName pubkey={pullRequest.author}>
-              {authorLabel}
-            </ProfileAuthorName>{" "}
-            created this review
-          </span>
-          {pullRequest.branchName ? (
-            <span className="inline-flex min-w-0 items-center gap-1 rounded-full border border-border/60 px-1.5 py-0.5 font-mono text-2xs">
-              <GitBranch className="h-3 w-3 shrink-0" />
-              <span className="truncate">{pullRequest.branchName}</span>
-            </span>
-          ) : null}
           <span
-            className={`rounded-full border border-border/60 px-1.5 py-0.5 text-2xs font-medium ${statusClassName}`}
-          >
-            {pullRequest.status}
-          </span>
-        </>
-      }
-      onOpen={onOpen}
-      statusIcon={
-        <StatusIcon className={`h-3.5 w-3.5 shrink-0 ${statusClassName}`} />
-      }
-      testId="project-pull-request-row"
-      title={pullRequest.title}
-      trailing={
-        <>
-          {pullRequest.comments.length > 0 ? (
-            <button
-              aria-label={`View ${pullRequest.comments.length} comments`}
-              className="flex items-center gap-1 rounded-md text-xs text-muted-foreground hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
-              onClick={onOpen}
-              type="button"
-            >
-              <MessageSquare className="h-3.5 w-3.5" />
-              {pullRequest.comments.length}
-            </button>
-          ) : null}
-          <ProjectFeedRowCluster>
-            <ProjectFeedRowMonoCell
-              label={`#${pullRequest.id.slice(0, 8)}`}
-              onClick={onOpen}
-              title="View review"
-            />
-          </ProjectFeedRowCluster>
-          <span
-            className="hidden w-20 shrink-0 text-right text-xs text-muted-foreground sm:block"
+            className="hidden w-20 shrink-0 text-right text-xs text-muted-foreground/70 sm:block"
             data-testid="project-pull-request-row-date"
             title={formatExactTimestamp(pullRequest.createdAt)}
           >
@@ -794,23 +806,26 @@ export function ProjectPullRequestDetail({
               />
             </div>
           </div>
-          <div data-testid="project-pull-request-comment-composer">
-            <ForumComposer
-              className="border border-border/60 bg-background/45"
-              disabled={commentMutation.isPending}
-              isSending={commentMutation.isPending}
-              members={members}
-              onSecondarySubmit={
-                canRequestChanges ? handleChangeRequestSubmit : undefined
-              }
-              onSubmit={handleCommentSubmit}
-              placeholder="Add a comment…"
-              profiles={profiles}
-              secondarySubmitLabel="Request changes"
-            />
-          </div>
         </div>
       </ProjectDetailSection>
+      <div
+        className="px-4 pb-4 pt-2"
+        data-testid="project-pull-request-comment-composer"
+      >
+        <ForumComposer
+          className="border border-border/60 bg-background/45"
+          disabled={commentMutation.isPending}
+          isSending={commentMutation.isPending}
+          members={members}
+          onSecondarySubmit={
+            canRequestChanges ? handleChangeRequestSubmit : undefined
+          }
+          onSubmit={handleCommentSubmit}
+          placeholder="Add a comment…"
+          profiles={profiles}
+          secondarySubmitLabel="Request changes"
+        />
+      </div>
     </div>
   );
 }
@@ -891,16 +906,37 @@ export function PullRequestsPanel({
     );
   }
 
+  const groups = PULL_REQUEST_STATUS_ORDER.map((status) => ({
+    items: pullRequests.filter((pullRequest) => pullRequest.status === status),
+    status,
+  })).filter((group) => group.items.length > 0);
+
   return (
-    <div className="divide-y divide-border/50">
-      {pullRequests.map((pullRequest) => (
-        <PullRequestRow
-          key={pullRequest.id}
-          onOpen={() => onSelectedPullRequestIdChange(pullRequest.id)}
-          profiles={profiles}
-          pullRequest={pullRequest}
-        />
-      ))}
+    <div>
+      {groups.map(({ items, status }) => {
+        return (
+          <ProjectWorkItemGroup
+            count={items.length}
+            icon={
+              <ProjectStatusProgressIcon
+                className={`h-4 w-4 ${pullRequestStatusClassName(status)}`}
+                state={pullRequestProgressState(status)}
+              />
+            }
+            key={status}
+            label={status}
+          >
+            {items.map((pullRequest) => (
+              <PullRequestRow
+                key={pullRequest.id}
+                onOpen={() => onSelectedPullRequestIdChange(pullRequest.id)}
+                profiles={profiles}
+                pullRequest={pullRequest}
+              />
+            ))}
+          </ProjectWorkItemGroup>
+        );
+      })}
     </div>
   );
 }

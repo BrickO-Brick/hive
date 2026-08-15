@@ -1,4 +1,4 @@
-import { Activity, Bot, FolderGit2, Inbox, Zap } from "lucide-react";
+import { Activity, Bot, Folders, Inbox, Zap } from "lucide-react";
 
 import { TopbarSearch } from "@/features/search/ui/TopbarSearch";
 import { SidebarProjectsSection } from "@/features/sidebar/ui/SidebarProjectsSection";
@@ -155,7 +155,7 @@ export function AppSidebarPrimaryMenu({
                 tooltip="Projects"
                 type="button"
               >
-                <FolderGit2 className="h-4 w-4" />
+                <Folders className="h-4 w-4" />
                 <SidebarMenuLabel>Projects</SidebarMenuLabel>
               </SidebarMenuButton>
             </SidebarMenuItem>

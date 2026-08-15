@@ -188,6 +188,10 @@ type E2eConfig = {
     pocketVoiceImportResult?: "success" | "cancel" | "invalid";
     /** Advertised HEAD for the first mock project without adding that branch. */
     projectHeadBranch?: string;
+    /** Override the repository access channel for project authorization states. */
+    projectAccessChannelId?: string;
+    /** Make remote project snapshots fail with this git-facing message. */
+    projectRepoSnapshotError?: string;
     /** Builderlab account returned by hosted-community onboarding. Null/omitted = signed out. */
     builderlabAuth?: {
       email?: string;
@@ -5475,7 +5479,11 @@ function buildMockProjectEvents(): RelayEvent[] {
           ["d", seed.dtag],
           ["name", seed.name],
           ["description", seed.description],
-          ["buzz-channel", "9a1657ac-f7aa-5db0-b632-d8bbeb6dfb50"],
+          [
+            "buzz-channel",
+            getConfig()?.mock?.projectAccessChannelId ??
+              "9a1657ac-f7aa-5db0-b632-d8bbeb6dfb50",
+          ],
           ["clone", seed.cloneUrl],
           ...seed.contributors.map((pubkey) => ["p", pubkey]),
         ],
@@ -11535,6 +11543,9 @@ export function maybeInstallE2eTauriMocks() {
         // viewer-identity avatar attribution is exercised in e2e.
         return { name: "Thomas P", email: "thomasp@example.com" };
       case "get_project_repo_snapshot":
+        if (activeConfig?.mock?.projectRepoSnapshotError) {
+          throw new Error(activeConfig.mock.projectRepoSnapshotError);
+        }
         return {
           latest_commit: {
             hash: "0123456789abcdef0123456789abcdef01234567",
