@@ -33,6 +33,7 @@ import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import { useIdentityQuery } from "@/shared/api/hooks";
 import type { ChannelMember } from "@/shared/api/types";
 import { normalizePubkey, truncatePubkey } from "@/shared/lib/pubkey";
+import { BuzzLoadingState } from "@/shared/ui/BuzzLoadingState";
 import {
   ProjectFeedRow,
   ProjectFeedRowCluster,
@@ -874,9 +875,7 @@ export function PullRequestsPanel({
   }, [onSelectedPullRequestIdChange, pullRequests, selectedPullRequestId]);
 
   if (isLoading) {
-    return (
-      <p className="p-4 text-sm text-muted-foreground">Loading reviews…</p>
-    );
+    return <BuzzLoadingState label="Loading reviews" />;
   }
 
   if (pullRequests.length === 0) {

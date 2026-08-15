@@ -89,11 +89,14 @@ import {
 } from "@/features/sidebar/ui/sidebarSectionStyles";
 import {
   listSidebarProjects,
+  readSidebarProjectExpansion,
   readSidebarProjectsFilter,
   readSidebarProjectsSort,
   selectedProjectRouteId,
+  type SidebarProjectExpansionState,
   type SidebarProjectsFilter,
   type SidebarProjectsSort,
+  writeSidebarProjectExpansion,
   writeSidebarProjectsFilter,
   writeSidebarProjectsSort,
 } from "@/features/sidebar/ui/listSidebarProjects";
@@ -144,6 +147,10 @@ function SidebarProjectsSectionContent() {
   const [sort, setSort] = React.useState<SidebarProjectsSort>(
     readSidebarProjectsSort,
   );
+  const [projectExpansion, setProjectExpansion] =
+    React.useState<SidebarProjectExpansionState>(() =>
+      readSidebarProjectExpansion(relayOrigin, currentPubkey),
+    );
   const [addedProjectAddresses, setAddedProjectAddresses] = React.useState<
     string[]
   >(() => readProjectSidebarMembership(relayOrigin, currentPubkey));
@@ -160,6 +167,11 @@ function SidebarProjectsSectionContent() {
     return () =>
       globalThis.removeEventListener(PROJECT_SIDEBAR_MEMBERSHIP_EVENT, refresh);
   }, [currentPubkey, relayOrigin]);
+  React.useEffect(() => {
+    setProjectExpansion(
+      readSidebarProjectExpansion(relayOrigin, currentPubkey),
+    );
+  }, [currentPubkey, relayOrigin]);
   const addedProjectAddressSet = React.useMemo(
     () => new Set(addedProjectAddresses),
     [addedProjectAddresses],
@@ -175,6 +187,23 @@ function SidebarProjectsSectionContent() {
       }),
     [addedProjectAddressSet, currentPubkey, filter, projectsQuery.data, sort],
   );
+  React.useEffect(() => {
+    if (!routeProjectId) return;
+    const selectedProject = projects.find((project) =>
+      projectMatchesRouteId(project, routeProjectId),
+    );
+    if (
+      !selectedProject ||
+      projectExpansion[selectedProject.projectAddress] !== undefined
+    ) {
+      return;
+    }
+    setProjectExpansion((current) => {
+      const next = { ...current, [selectedProject.projectAddress]: true };
+      writeSidebarProjectExpansion(next, relayOrigin, currentPubkey);
+      return next;
+    });
+  }, [currentPubkey, projectExpansion, projects, relayOrigin, routeProjectId]);
 
   const handleFilterChange = (next: SidebarProjectsFilter) => {
     setFilter(next);
@@ -183,6 +212,13 @@ function SidebarProjectsSectionContent() {
   const handleSortChange = (next: SidebarProjectsSort) => {
     setSort(next);
     writeSidebarProjectsSort(next);
+  };
+  const setProjectExpanded = (project: Project, expanded: boolean) => {
+    setProjectExpansion((current) => {
+      const next = { ...current, [project.projectAddress]: expanded };
+      writeSidebarProjectExpansion(next, relayOrigin, currentPubkey);
+      return next;
+    });
   };
   const handleAdd = (project: Project) => {
     addProjectToSidebar(project.projectAddress, relayOrigin, currentPubkey);
@@ -282,6 +318,8 @@ function SidebarProjectsSectionContent() {
                 const selectedRepository = isActive
                   ? selectProjectRepository(project, routeRepositoryId)
                   : null;
+                const isExpanded =
+                  projectExpansion[project.projectAddress] ?? isActive;
 
                 return (
                   <React.Fragment key={project.id}>
@@ -292,12 +330,20 @@ function SidebarProjectsSectionContent() {
                       )}
                       deleteDisabled={deleteProjectMutation.isPending}
                       isActive={isActive}
+                      isExpanded={isExpanded}
                       onDelete={() => setProjectToDelete(project)}
-                      onOpen={() => goProject(project.id)}
+                      onOpen={() => {
+                        if (isActive) {
+                          setProjectExpanded(project, !isExpanded);
+                          return;
+                        }
+                        setProjectExpanded(project, true);
+                        void goProject(project.id);
+                      }}
                       onRemove={() => handleRemove(project)}
                       project={project}
                     />
-                    {isActive
+                    {isExpanded
                       ? project.repositories.map((repository) => (
                           <SidebarMenuItem key={repository.id}>
                             <SidebarMenuButton
@@ -529,6 +575,7 @@ function SidebarProjectRow({
   canDelete,
   deleteDisabled,
   isActive,
+  isExpanded,
   onDelete,
   onOpen,
   onRemove,
@@ -537,19 +584,21 @@ function SidebarProjectRow({
   canDelete: boolean;
   deleteDisabled: boolean;
   isActive: boolean;
+  isExpanded: boolean;
   onDelete: () => void;
   onOpen: () => void;
   onRemove: () => void;
   project: Project;
 }) {
   const shareLink = projectShareLink(project);
-  const ProjectIcon = isActive ? FolderOpen : Folders;
+  const ProjectIcon = isExpanded ? FolderOpen : Folders;
 
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
         <SidebarMenuItem>
           <SidebarMenuButton
+            aria-expanded={isExpanded}
             className="data-[active=true]:!bg-transparent data-[active=true]:font-normal data-[active=true]:text-sidebar-foreground data-[active=true]:shadow-none data-[active=true]:hover:!bg-transparent data-[active=true]:hover:text-sidebar-foreground data-[active=true]:active:!bg-transparent"
             data-testid={`sidebar-project-${project.dtag}`}
             isActive={isActive}

@@ -86,6 +86,7 @@ export function ProjectConversationPanelController({
             onClose={() => setHit(null)}
             onResetWidth={onResetWidth}
             onResizeStart={onResizeStart}
+            sharedHeaderBackdrop={sharedHeaderBackdrop}
             widthPx={widthPx}
           />
         ) : (

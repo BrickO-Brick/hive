@@ -32,6 +32,17 @@ async function openBuzzProject(page: import("@playwright/test").Page) {
   await projectEntry.click();
 }
 
+async function addProjectToSidebar(
+  page: import("@playwright/test").Page,
+  dtag: string,
+) {
+  await page.getByTestId("sidebar-projects-section-label").hover();
+  await page.getByTestId("sidebar-projects-create").click();
+  const browser = page.getByTestId("project-browser-dialog");
+  await browser.getByRole("searchbox", { name: "Search projects" }).fill(dtag);
+  await browser.getByTestId(`project-browser-result-${dtag}`).click();
+}
+
 test("same-second request changes supersedes approval", async ({ page }) => {
   await enableProjectsFeature(page);
   await page.addInitScript(() => {
@@ -1274,6 +1285,123 @@ test("project branches can be deleted but the default branch cannot", async ({
     () => window.__BUZZ_E2E_COMMANDS__ ?? [],
   );
   expect(commands).toContain("delete_project_remote_branch");
+});
+
+test("external repositories stay on local source after a branch round trip", async ({
+  page,
+}) => {
+  await enableProjectsFeature(page);
+  await page.addInitScript(() => {
+    const commit = "0123456789abcdef0123456789abcdef01234567";
+    const localBranch =
+      "wintermute/entity-link-recipient-cards-with-a-long-branch-name";
+    window.sessionStorage.setItem(
+      "buzz-e2e-project-branches",
+      JSON.stringify({ "relay-tools": { [localBranch]: commit } }),
+    );
+    window.__BUZZ_E2E_PROJECT_REPO_SYNC_STATUS__ = {
+      local_path: "/tmp/buzz/REPOS/relay-tools",
+      local_branch: localBranch,
+      local_branches: ["main", localBranch],
+      local_head: commit,
+      local_short_head: commit.slice(0, 7),
+      remote_branch: localBranch,
+      remote_head: commit,
+      remote_short_head: commit.slice(0, 7),
+      merge_base: commit,
+      ahead_count: 0,
+      behind_count: 0,
+      has_uncommitted_changes: false,
+      has_untracked_files: false,
+      can_push: false,
+      push_block_reason: "Local branch is already pushed.",
+      can_pull: false,
+      pull_block_reason: "Local branch is up to date.",
+    };
+    window.__BUZZ_E2E_PROJECT_LOCAL_REPO_SNAPSHOT__ = {
+      path: "/tmp/buzz/REPOS/relay-tools",
+      snapshot: {
+        latest_commit: null,
+        commits: [],
+        contributors: [],
+        files: [
+          {
+            path: "README.md",
+            kind: "text",
+            size: 21,
+            preview_content: "# Local branch README",
+            last_changed_at: null,
+            latest_commit: null,
+          },
+        ],
+      },
+    };
+  });
+  await installMockBridge(page);
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await addProjectToSidebar(page, "buzz");
+  await page.getByTestId("sidebar-project-repository-relay-tools").click();
+
+  await expect(
+    page.getByRole("heading", { name: "Local branch README" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Local", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "Open", exact: true }),
+  ).toHaveAttribute("href", "https://github.com/block/relay-tools/tree/main");
+
+  await page.getByRole("button", { name: /main/ }).click();
+  await page
+    .getByRole("menuitemradio", {
+      name: "wintermute/entity-link-recipient-cards-with-a-long-branch-name",
+    })
+    .click();
+  const branchTrigger = page.getByTestId("project-repository-branch-trigger");
+  await expect(
+    page.getByRole("button", {
+      name: /wintermute\/entity-link-recipient-cards-with-a-long-branch-name/,
+    }),
+  ).toBeVisible();
+  await expect
+    .poll(() =>
+      branchTrigger.evaluate(
+        (element) => element.scrollWidth <= element.clientWidth,
+      ),
+    )
+    .toBe(true);
+  await expect
+    .poll(() =>
+      branchTrigger
+        .locator("span")
+        .evaluate((element) => element.scrollWidth > element.clientWidth),
+    )
+    .toBe(true);
+  await expect(
+    page.getByRole("button", { name: "Local", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "Open", exact: true }),
+  ).toHaveAttribute(
+    "href",
+    "https://github.com/block/relay-tools/tree/wintermute%2Fentity-link-recipient-cards-with-a-long-branch-name",
+  );
+
+  await branchTrigger.click();
+  await page.getByRole("menuitemradio", { name: "main" }).click();
+
+  await expect(page.getByRole("button", { name: /main/ })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Local", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Local branch README" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "Open", exact: true }),
+  ).toHaveAttribute("href", "https://github.com/block/relay-tools/tree/main");
+  await expect(page.getByText("Code hosted on github.com")).toHaveCount(0);
 });
 
 test("pushed local branch can open a pull request", async ({ page }) => {

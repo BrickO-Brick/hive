@@ -34,6 +34,7 @@ import {
   getMentionTagPubkey,
   resolveMentionProps,
 } from "@/shared/lib/resolveMentionNames";
+import { BuzzLoadingState } from "@/shared/ui/BuzzLoadingState";
 import { Markdown } from "@/shared/ui/markdown";
 import { UserAvatar } from "@/shared/ui/UserAvatar";
 import { useProjectConversationPanel } from "./ProjectConversationPanelContext";
@@ -491,11 +492,7 @@ export function DiscussionChannelsPanel({
   const profiles = profilesQuery.data?.profiles;
 
   if (isLoading) {
-    return (
-      <p className="px-4 py-6 text-sm text-muted-foreground">
-        Searching channel discussions…
-      </p>
-    );
+    return <BuzzLoadingState label="Loading channel discussions" />;
   }
   if (channels.length === 0) {
     return (

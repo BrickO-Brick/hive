@@ -7,8 +7,10 @@ import {
 } from "lucide-react";
 
 import type { ProjectRepoFile } from "@/features/projects/hooks";
+import { projectExternalRefUrl } from "@/features/projects/lib/projectExternalUrl";
 import type { ProjectRepoUnavailableReason } from "@/features/projects/lib/projectRepoAvailability";
 import { Button } from "@/shared/ui/button";
+import { BuzzLoadingState } from "@/shared/ui/BuzzLoadingState";
 import { Markdown, SyntaxHighlightedCode } from "@/shared/ui/markdown";
 import {
   baseName,
@@ -117,6 +119,10 @@ export function ReadmePanel({
   /** Branch picker + remote/local toggle rendered in the panel header. */
   sourceControls?: RepoSourceHeaderControls;
 }) {
+  const externalOpenUrl = projectExternalRefUrl(
+    externalUrl,
+    sourceControls?.selectedTag ?? sourceControls?.branch,
+  );
   // Two header rows, mirroring the files panel: controls on top, then the
   // file identity row.
   const header = hideHeader ? null : (
@@ -161,10 +167,7 @@ export function ReadmePanel({
     return (
       <section className="overflow-hidden">
         {header}
-        <div className="flex items-center gap-2 p-6 text-sm text-muted-foreground">
-          <Loader2 className="h-4 w-4 animate-spin" />
-          Loading repository…
-        </div>
+        <BuzzLoadingState label="Loading repository" />
       </section>
     );
   }
@@ -204,14 +207,14 @@ export function ReadmePanel({
             Clone this repository locally to explore its files, commits, and
             contributors in Buzz.
           </p>
-          {externalUrl ? (
+          {externalOpenUrl ? (
             <a
               className="mt-2 max-w-lg truncate font-mono text-xs text-primary hover:underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
-              href={externalUrl}
+              href={externalOpenUrl}
               rel="noreferrer"
               target="_blank"
             >
-              {externalUrl}
+              {externalOpenUrl}
             </a>
           ) : null}
           <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
@@ -229,9 +232,9 @@ export function ReadmePanel({
                 {sourceControls.clonePending ? "Cloning…" : "Clone locally"}
               </Button>
             ) : null}
-            {externalUrl ? (
+            {externalOpenUrl ? (
               <Button asChild size="sm" variant="outline">
-                <a href={externalUrl} rel="noreferrer" target="_blank">
+                <a href={externalOpenUrl} rel="noreferrer" target="_blank">
                   <ExternalLink className="h-4 w-4" />
                   Open on {externalHost}
                 </a>

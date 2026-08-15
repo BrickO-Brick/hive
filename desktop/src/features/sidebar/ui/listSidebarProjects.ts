@@ -3,9 +3,55 @@ import { isProjectOwnedByCurrentUser } from "@/features/projects/lib/projectsVie
 
 const SIDEBAR_PROJECTS_FILTER_KEY = "buzz.sidebar.projects.filter";
 const SIDEBAR_PROJECTS_SORT_KEY = "buzz.sidebar.projects.sort";
+const SIDEBAR_PROJECTS_EXPANDED_KEY = "buzz.sidebar.projects.expanded";
 
 export type SidebarProjectsFilter = "added" | "owned";
 export type SidebarProjectsSort = "name" | "created";
+export type SidebarProjectExpansionState = Record<string, boolean>;
+
+function expandedProjectsStorageKey(
+  relayOrigin: string | null,
+  currentPubkey?: string,
+) {
+  return `${SIDEBAR_PROJECTS_EXPANDED_KEY}:${encodeURIComponent(relayOrigin ?? "unknown")}:${currentPubkey ?? "anonymous"}`;
+}
+
+export function readSidebarProjectExpansion(
+  relayOrigin: string | null,
+  currentPubkey?: string,
+): SidebarProjectExpansionState {
+  try {
+    const value = globalThis.localStorage?.getItem(
+      expandedProjectsStorageKey(relayOrigin, currentPubkey),
+    );
+    if (!value) return {};
+    const parsed: unknown = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      return {};
+    return Object.fromEntries(
+      Object.entries(parsed).filter((entry): entry is [string, boolean] => {
+        return typeof entry[1] === "boolean";
+      }),
+    );
+  } catch {
+    return {};
+  }
+}
+
+export function writeSidebarProjectExpansion(
+  expansion: SidebarProjectExpansionState,
+  relayOrigin: string | null,
+  currentPubkey?: string,
+) {
+  try {
+    globalThis.localStorage?.setItem(
+      expandedProjectsStorageKey(relayOrigin, currentPubkey),
+      JSON.stringify(expansion),
+    );
+  } catch {
+    // Persistence is best-effort; the in-memory toggle still works.
+  }
+}
 
 export function selectedProjectRouteId(pathname: string): string | undefined {
   if (!pathname.startsWith("/projects/")) return undefined;

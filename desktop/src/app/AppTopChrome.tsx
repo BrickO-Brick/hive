@@ -101,6 +101,13 @@ export function AppTopChrome({
       )}
       data-tauri-drag-region
       data-testid="app-top-chrome"
+      style={
+        {
+          "--app-top-chrome-center-offset": hasCommunityRail
+            ? "-1.75rem"
+            : "0rem",
+        } as React.CSSProperties
+      }
     >
       <div className={cn("flex items-center gap-0.5", navRowAlignmentClass)}>
         <TopChromeSidebarTrigger />

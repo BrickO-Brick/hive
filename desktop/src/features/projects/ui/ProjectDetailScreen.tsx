@@ -479,19 +479,18 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
     }
   }, [projectPending, repository]);
   React.useEffect(() => {
-    setRepoSource((currentSource) => {
-      if (selectedTag) return "remote";
-      if (currentSource === "local" && !hasLocalCheckout) return "remote";
-      if (
-        currentSource === "remote" &&
-        !hasRemoteSnapshot &&
-        hasLocalCheckout
-      ) {
-        return "local";
-      }
-      return currentSource;
-    });
-  }, [hasLocalCheckout, hasRemoteSnapshot, selectedTag]);
+    if (selectedTag) {
+      if (repoSource !== "remote") setRepoSource("remote");
+      return;
+    }
+    if (repoSource === "local" && !hasLocalCheckout) {
+      setRepoSource("remote");
+      return;
+    }
+    if (repoSource === "remote" && !hasRemoteSnapshot && hasLocalCheckout) {
+      setRepoSource("local");
+    }
+  }, [hasLocalCheckout, hasRemoteSnapshot, repoSource, selectedTag]);
   const {
     contributorActivityCounts,
     contributorPubkeys,
@@ -809,12 +808,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
     />
   );
   const sharedHeaderBackdrop =
-    repositoryPanel.mode === "chat" &&
-    !repositoryPanel.collapsed &&
-    !profilePanelPubkey &&
-    !selectedPullRequestId &&
-    !selectedIssueId &&
-    !selectedCommitHash;
+    !selectedPullRequestId && !selectedIssueId && !selectedCommitHash;
   const handleRepositoryChange = (nextRepositoryId: string) => {
     applyRepositorySearch({
       repositoryId: nextRepositoryId,
@@ -985,6 +979,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
               onViewChange={handleProfilePanelViewChange}
               pubkey={profilePanelPubkey}
               tab={profilePanelTab}
+              transparentChrome={sharedHeaderBackdrop}
               view={profilePanelView}
               widthPx={threadPanelWidth.widthPx}
             />

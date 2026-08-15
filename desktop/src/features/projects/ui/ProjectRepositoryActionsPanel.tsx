@@ -26,6 +26,7 @@ import {
   languageForPath,
   topLanguagesFromCounts,
 } from "@/features/projects/lib/projectLanguages";
+import { projectExternalRefUrl } from "@/features/projects/lib/projectExternalUrl";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import { RightAuxiliaryPane } from "@/features/channels/ui/RightAuxiliaryPane";
 import { normalizePubkey } from "@/shared/lib/pubkey";
@@ -148,6 +149,10 @@ export function ProjectRepositoryActionsPanel({
       : undefined;
   const pullAction = sourceControls.canPull ? sourceControls.onPull : undefined;
   const pushAction = sourceControls.canPush ? sourceControls.onPush : undefined;
+  const externalOpenUrl = projectExternalRefUrl(
+    sourceControls.externalUrl,
+    sourceControls.selectedTag ?? sourceControls.branch,
+  );
 
   return (
     <RightAuxiliaryPane
@@ -157,7 +162,7 @@ export function ProjectRepositoryActionsPanel({
       testId="project-repository-actions-panel"
       widthPx={widthPx}
     >
-      <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-5">
+      <div className="relative z-30 min-h-0 flex-1 space-y-6 overflow-y-auto p-5">
         <RepositoryPanelSection title="Working copy">
           <div className="grid gap-2 [&_button]:w-full [&_button]:justify-between [&_button]:text-sm">
             <RepoSourceDropdown controls={sourceControls} />
@@ -258,18 +263,14 @@ export function ProjectRepositoryActionsPanel({
               <SquareTerminal className="h-3.5 w-3.5" />
               Terminal
             </RepositoryActionButton>
-            {sourceControls.externalUrl ? (
+            {externalOpenUrl ? (
               <Button
                 asChild
                 className="h-8 justify-start gap-2 text-sm"
                 size="sm"
                 variant="outline"
               >
-                <a
-                  href={sourceControls.externalUrl}
-                  rel="noreferrer"
-                  target="_blank"
-                >
+                <a href={externalOpenUrl} rel="noreferrer" target="_blank">
                   <ExternalLink className="h-3.5 w-3.5" />
                   Open
                 </a>

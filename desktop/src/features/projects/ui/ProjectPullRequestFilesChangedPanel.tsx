@@ -39,6 +39,7 @@ import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import { useIdentityQuery } from "@/shared/api/hooks";
 import { cn } from "@/shared/lib/cn";
 import type { ProjectRepoDiff, ProjectRepoDiffFile } from "@/shared/api/types";
+import { BuzzLoadingState } from "@/shared/ui/BuzzLoadingState";
 import { PROJECT_DETAIL_PANEL_CLASS } from "./projectPanelStyles";
 import { ProjectPullRequestInlineCommentThread } from "./ProjectPullRequestInlineComments";
 
@@ -814,14 +815,7 @@ export function ProjectDiffFilesPanel({
   }, [filteredFiles, selectedPath]);
 
   if (isLoading) {
-    return (
-      <div
-        className={cn("p-4 text-sm text-muted-foreground", outerBorderClass)}
-        data-project-detail-panel={embedded ? undefined : true}
-      >
-        Loading changed files…
-      </div>
-    );
+    return <BuzzLoadingState label="Loading changed files" />;
   }
 
   if (error) {

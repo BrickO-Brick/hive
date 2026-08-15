@@ -14,6 +14,7 @@ import type {
 import { relativeTime } from "@/features/projects/lib/projectsViewHelpers";
 import type { ProjectRepoCommit } from "@/shared/api/types";
 import { truncatePubkey } from "@/shared/lib/pubkey";
+import { BuzzLoadingState } from "@/shared/ui/BuzzLoadingState";
 import {
   resolveUserLabel,
   type UserProfileLookup,
@@ -241,14 +242,7 @@ export function ActivityPanel({
   );
 
   if (isLoading) {
-    return (
-      <p
-        className={PROJECT_DETAIL_PANEL_MESSAGE_CLASS}
-        data-project-detail-panel
-      >
-        Loading activity…
-      </p>
-    );
+    return <BuzzLoadingState label="Loading activity" />;
   }
 
   if (commits.length === 0) {

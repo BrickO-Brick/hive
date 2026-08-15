@@ -19,6 +19,7 @@ import {
 } from "@/features/profile/lib/identity";
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
+import { BuzzLoadingState } from "@/shared/ui/BuzzLoadingState";
 import { Card } from "@/shared/ui/card";
 import { DropdownMenuItem } from "@/shared/ui/dropdown-menu";
 import { CopyShareLinkMenuItem } from "./CopyShareLinkMenuItem";
@@ -318,16 +319,7 @@ export function ProjectsIssuesList({
   viewMode,
 }: ProjectsIssuesListProps) {
   if (isLoading) {
-    return (
-      <div
-        className={cn(
-          "px-4 py-12 text-center text-sm text-muted-foreground",
-          !embedded && "border border-border/60",
-        )}
-      >
-        Loading tasks...
-      </div>
-    );
+    return <BuzzLoadingState label="Loading tasks" />;
   }
 
   const loadNotice = (

@@ -42,7 +42,10 @@ export function ProjectDetailChrome({
       >
         <nav
           aria-label="Project breadcrumb"
-          className="absolute left-1/2 flex max-w-[50%] min-w-0 -translate-x-1/2 -translate-y-px items-center gap-0.5 text-xs text-sidebar-foreground/65"
+          className="absolute flex max-w-[50%] min-w-0 -translate-x-1/2 -translate-y-px items-center gap-0.5 text-xs text-sidebar-foreground/65"
+          style={{
+            left: "calc(50% + var(--app-top-chrome-center-offset, 0rem))",
+          }}
         >
           <button
             className="flex shrink-0 items-center gap-1.5 rounded-md px-1 py-1 font-medium transition-colors hover:text-sidebar-accent-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"

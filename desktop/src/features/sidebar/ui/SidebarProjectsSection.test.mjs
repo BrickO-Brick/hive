@@ -3,11 +3,53 @@ import { test } from "node:test";
 
 import {
   listSidebarProjects,
+  readSidebarProjectExpansion,
   selectedProjectRouteId,
+  writeSidebarProjectExpansion,
 } from "./listSidebarProjects.ts";
 
 const OWNER = "a".repeat(64);
 const VIEWER = "b".repeat(64);
+
+test("project expansion persists independently per relay and viewer", () => {
+  const values = new Map();
+  const previousLocalStorage = globalThis.localStorage;
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: {
+      getItem: (key) => values.get(key) ?? null,
+      setItem: (key, value) => values.set(key, value),
+    },
+  });
+  try {
+    writeSidebarProjectExpansion(
+      { "project:one": true, "project:two": false },
+      "https://relay.example",
+      VIEWER,
+    );
+    assert.deepEqual(
+      readSidebarProjectExpansion("https://relay.example", VIEWER),
+      { "project:one": true, "project:two": false },
+    );
+    assert.deepEqual(
+      readSidebarProjectExpansion("https://other.example", VIEWER),
+      {},
+    );
+    assert.deepEqual(
+      readSidebarProjectExpansion("https://relay.example", OWNER),
+      {},
+    );
+  } finally {
+    if (previousLocalStorage === undefined) {
+      delete globalThis.localStorage;
+    } else {
+      Object.defineProperty(globalThis, "localStorage", {
+        configurable: true,
+        value: previousLocalStorage,
+      });
+    }
+  }
+});
 
 function makeProject(overrides = {}) {
   return {

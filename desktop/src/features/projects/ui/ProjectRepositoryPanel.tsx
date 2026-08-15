@@ -32,6 +32,7 @@ import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import type { UserSearchResult } from "@/shared/api/types";
 import { cn } from "@/shared/lib/cn";
 import { normalizePubkey } from "@/shared/lib/pubkey";
+import { BuzzLoadingState } from "@/shared/ui/BuzzLoadingState";
 import { SyntaxHighlightedCode } from "@/shared/ui/markdown";
 import { UserAvatar } from "@/shared/ui/UserAvatar";
 import {
@@ -694,15 +695,43 @@ export function RepositoryFilesPanel({
 
   // Loading/error/empty states keep the header controls visible — the
   // remote/local toggle must stay reachable when one source fails to load.
-  const stateMessage = isLoading
-    ? "Loading repository files…"
-    : unavailableMessage
-      ? unavailableMessage
-      : error
-        ? "Could not load the repository file tree."
-        : files.length === 0
-          ? "No files have been pushed yet."
-          : null;
+  if (isLoading) {
+    if (!sourceControls) {
+      return <BuzzLoadingState label="Loading repository files" />;
+    }
+    return (
+      <div className={PROJECT_DETAIL_PANEL_CLASS} data-project-detail-panel>
+        <div className="flex min-h-14 min-w-0 items-center gap-1 border-border/50 border-b px-4 py-3">
+          <RepoSourceDropdown controls={sourceControls} />
+          <RepositoryBranchDropdown
+            branch={sourceControls.branch}
+            branchOptions={sourceControls.branchOptions}
+            createBranchDisabled={sourceControls.createBranchDisabled}
+            createBranchTitle={sourceControls.createBranchTitle}
+            deleteBranchDisabled={sourceControls.deleteBranchDisabled}
+            deleteBranchTitle={sourceControls.deleteBranchTitle}
+            onBranchChange={sourceControls.onBranchChange}
+            onCreateBranch={sourceControls.onCreateBranch}
+            onDeleteBranch={sourceControls.onDeleteBranch}
+            onTagChange={sourceControls.onTagChange}
+            selectedTag={sourceControls.selectedTag}
+            tagOptions={sourceControls.tagOptions}
+          />
+          <div className="ml-auto flex shrink-0 items-center">
+            <RepoSyncActionButton controls={sourceControls} />
+          </div>
+        </div>
+        <BuzzLoadingState label="Loading repository files" />
+      </div>
+    );
+  }
+  const stateMessage = unavailableMessage
+    ? unavailableMessage
+    : error
+      ? "Could not load the repository file tree."
+      : files.length === 0
+        ? "No files have been pushed yet."
+        : null;
   if (stateMessage) {
     if (!sourceControls) {
       return (

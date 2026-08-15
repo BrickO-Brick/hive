@@ -23,6 +23,7 @@ import {
 } from "@/features/projects/projectPullRequests.mjs";
 import { cn } from "@/shared/lib/cn";
 import { normalizePubkey } from "@/shared/lib/pubkey";
+import { BuzzLoadingState } from "@/shared/ui/BuzzLoadingState";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 import { UserAvatar } from "@/shared/ui/UserAvatar";
 import {
@@ -431,19 +432,7 @@ export function ProjectsActivityFeed(props: ProjectsActivityFeedProps) {
   const items = buildActivityItems(props);
 
   if (props.isLoading && items.length === 0) {
-    return (
-      <div className={cn(props.compact ? "space-y-2.5" : "space-y-3")}>
-        {["first", "second", "third"].map((key) => (
-          <div
-            className={cn(
-              "animate-pulse rounded-xl border border-border/60 bg-muted/20",
-              props.compact ? "h-24" : "h-28",
-            )}
-            key={key}
-          />
-        ))}
-      </div>
-    );
+    return <BuzzLoadingState label="Loading project activity" />;
   }
 
   if (items.length === 0) {

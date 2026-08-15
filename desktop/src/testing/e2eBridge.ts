@@ -192,6 +192,8 @@ type E2eConfig = {
     projectAccessChannelId?: string;
     /** Make remote project snapshots fail with this git-facing message. */
     projectRepoSnapshotError?: string;
+    /** Delay remote repository snapshots so project loading UI is observable. */
+    projectRepoSnapshotDelayMs?: number;
     /** Builderlab account returned by hosted-community onboarding. Null/omitted = signed out. */
     builderlabAuth?: {
       email?: string;
@@ -1260,6 +1262,8 @@ declare global {
     __BUZZ_E2E_REJECT_PROJECT_QUERY_KINDS__?: number[];
     /** Captured aggregate project-history filters for request-count assertions. */
     __BUZZ_E2E_PROJECT_QUERY_FILTERS__?: MockFilter[];
+    /** Optional local repository snapshot returned for project branch tests. */
+    __BUZZ_E2E_PROJECT_LOCAL_REPO_SNAPSHOT__?: unknown;
     __BUZZ_E2E_PROJECT_REPO_SYNC_STATUS__?: {
       local_path: string | null;
       local_branch: string | null;
@@ -5364,6 +5368,7 @@ const MOCK_PROJECT_SEEDS = [
     description:
       "Relay, desktop, and mobile clients for the Buzz community platform.",
     cloneUrl: `${DEFAULT_RELAY_HTTP_URL}/git/${MOCK_IDENTITY_PUBKEY}/buzz`,
+    webUrl: null,
     owner: MOCK_IDENTITY_PUBKEY,
     contributors: [ALICE_PUBKEY, BOB_PUBKEY, CHARLIE_PUBKEY],
     activityLevel: 4,
@@ -5373,6 +5378,7 @@ const MOCK_PROJECT_SEEDS = [
     name: "relay-tools",
     description: "Operator tooling and admin CLI for relay deployments.",
     cloneUrl: "https://github.com/block/relay-tools.git",
+    webUrl: "https://github.com/block/relay-tools",
     owner: ALICE_PUBKEY,
     contributors: [MOCK_IDENTITY_PUBKEY, BOB_PUBKEY],
     activityLevel: 2,
@@ -5382,6 +5388,7 @@ const MOCK_PROJECT_SEEDS = [
     name: "design-system",
     description: "Shared UI tokens, typography ramps, and component library.",
     cloneUrl: `${DEFAULT_RELAY_HTTP_URL}/git/${BOB_PUBKEY}/design-system`,
+    webUrl: null,
     owner: BOB_PUBKEY,
     contributors: [ALICE_PUBKEY],
     activityLevel: 1,
@@ -5485,6 +5492,7 @@ function buildMockProjectEvents(): RelayEvent[] {
               "9a1657ac-f7aa-5db0-b632-d8bbeb6dfb50",
           ],
           ["clone", seed.cloneUrl],
+          ...(seed.webUrl ? [["web", seed.webUrl]] : []),
           ...seed.contributors.map((pubkey) => ["p", pubkey]),
         ],
         owner,
@@ -11543,6 +11551,14 @@ export function maybeInstallE2eTauriMocks() {
         // viewer-identity avatar attribution is exercised in e2e.
         return { name: "Thomas P", email: "thomasp@example.com" };
       case "get_project_repo_snapshot":
+        if (activeConfig?.mock?.projectRepoSnapshotDelayMs) {
+          await new Promise((resolve) =>
+            window.setTimeout(
+              resolve,
+              activeConfig.mock?.projectRepoSnapshotDelayMs,
+            ),
+          );
+        }
         if (activeConfig?.mock?.projectRepoSnapshotError) {
           throw new Error(activeConfig.mock.projectRepoSnapshotError);
         }
@@ -11641,7 +11657,7 @@ export function maybeInstallE2eTauriMocks() {
           ],
         };
       case "get_project_local_repo_snapshot":
-        return null;
+        return window.__BUZZ_E2E_PROJECT_LOCAL_REPO_SNAPSHOT__ ?? null;
       case "get_project_repo_diff":
         return {
           additions: 27,

@@ -437,8 +437,74 @@ test("multi-repository projects switch the active repository", async ({
   const relayToolsRepository = page.getByTestId(
     "sidebar-project-repository-relay-tools",
   );
+  const projectRow = page.getByTestId("sidebar-project-buzz");
+  await expect(projectRow).toHaveAttribute("aria-expanded", "true");
   await expect(primaryRepository).toHaveAttribute("data-active", "true");
   await expect(relayToolsRepository).toBeVisible();
+
+  await projectRow.click();
+  await expect(projectRow).toHaveAttribute("aria-expanded", "false");
+  await expect(relayToolsRepository).toBeHidden();
+
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await addProjectToSidebar(page, "buzz");
+  await expect(projectRow).toHaveAttribute("aria-expanded", "false");
+  await expect(relayToolsRepository).toBeHidden();
+
+  await projectRow.click();
+  await expect(projectRow).toHaveAttribute("aria-expanded", "true");
+  await expect(relayToolsRepository).toBeVisible();
+
+  await page.getByTestId("channel-general").click();
+  await expect(projectRow).toHaveAttribute("aria-expanded", "true");
+  await expect(relayToolsRepository).toBeVisible();
+  const sidebarScrollContent = page.getByTestId("sidebar-scroll-content");
+  const channelSidebarMetrics = await sidebarScrollContent.evaluate(
+    (element) => {
+      const bounds = element.getBoundingClientRect();
+      return {
+        clientWidth: element.clientWidth,
+        left: bounds.left,
+        top: bounds.top,
+        width: bounds.width,
+      };
+    },
+  );
+  await projectRow.click();
+  await expect(page).toHaveURL(/\/projects\//);
+  await expect(relayToolsRepository).toBeVisible();
+  const projectSidebarMetrics = await sidebarScrollContent.evaluate(
+    (element) => {
+      const bounds = element.getBoundingClientRect();
+      return {
+        clientWidth: element.clientWidth,
+        left: bounds.left,
+        top: bounds.top,
+        width: bounds.width,
+      };
+    },
+  );
+  expect(projectSidebarMetrics).toEqual(channelSidebarMetrics);
+
+  await projectRow.click();
+  await expect(projectRow).toHaveAttribute("aria-expanded", "false");
+  await page.getByTestId("channel-general").click();
+  const sidebarScroller = page.locator('[data-sidebar="content"]');
+  const anchoredScrollTop = await sidebarScroller.evaluate((element) => {
+    element.scrollTop = Math.min(
+      20,
+      Math.max(0, element.scrollHeight - element.clientHeight),
+    );
+    return element.scrollTop;
+  });
+  await projectRow.click();
+  await expect(page).toHaveURL(/\/projects\//);
+  await expect(projectRow).toHaveAttribute("aria-expanded", "true");
+  await expect
+    .poll(() =>
+      sidebarScroller.evaluate((element) => Math.round(element.scrollTop)),
+    )
+    .toBe(Math.round(anchoredScrollTop));
   await waitForAnimations(page);
   await page.screenshot({
     path: `${SHOTS}/04-multi-repository-picker.png`,

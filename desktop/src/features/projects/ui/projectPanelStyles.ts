@@ -7,7 +7,7 @@ export const PROJECT_PANEL_ACTION_BUTTON_CLASS =
  * they read as one consistent control family in the workspace header.
  */
 export const PROJECT_PICKER_TRIGGER_CLASS =
-  "h-7 max-w-full shrink-0 gap-1.5 rounded-md px-3 text-sm font-medium hover:border-input";
+  "h-7 min-w-0 max-w-full gap-1.5 rounded-md px-3 text-sm font-medium hover:border-input";
 
 /** Bordered shell that lets the project page surface show through. */
 export const PROJECT_DETAIL_PANEL_CLASS =

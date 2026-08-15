@@ -113,6 +113,27 @@ test("restricted repositories keep event work visible and offer access help", as
   await expect(chatPanel.getByTestId("message-composer")).toBeVisible();
 });
 
+test("repository pages show a centered Buzz loader while fetching", async ({
+  page,
+}) => {
+  await installMockBridge(page, { projectRepoSnapshotDelayMs: 750 });
+  await openBuzzProject(page);
+
+  const loader = page.getByTestId("buzz-loading-state");
+  await expect(loader).toBeVisible();
+  await expect(
+    loader.getByRole("img", { name: "Loading repository" }),
+  ).toBeVisible();
+  const animatedMark = loader.locator(".buzz-logo__mark");
+  await expect(animatedMark).toHaveCSS(
+    "animation-name",
+    "buzz-logo-scale-pulse",
+  );
+  await expect(animatedMark).toHaveCSS("opacity", "1");
+  await expect(loader).toHaveCSS("justify-content", "center");
+  await expect(loader).toBeHidden({ timeout: 5_000 });
+});
+
 // Walks the Projects v3 workspace through its headline states so PR
 // screenshots capture distinct pixels per feature (overview box, tab-strip
 // plus, issue detail with inline copy link + avatar timeline, PR detail).
@@ -177,6 +198,31 @@ test("projects v3 workspace screenshot states", async ({ page }) => {
   ).toBeGreaterThan(13);
   expect((await filesTab.boundingBox())?.height).toBe(28);
   await expect(repositoryActionsPanel).toBeVisible();
+  const sharedHeaderBackdrop = page.getByTestId(
+    "project-shared-header-backdrop",
+  );
+  await expect(sharedHeaderBackdrop).toBeVisible();
+  await expect
+    .poll(() =>
+      sharedHeaderBackdrop.evaluate(
+        (element) => getComputedStyle(element).backdropFilter,
+      ),
+    )
+    .not.toBe("none");
+  const [sharedHeaderBackdropBounds, repositoryActionsPanelBounds] =
+    await Promise.all([
+      sharedHeaderBackdrop.boundingBox(),
+      repositoryActionsPanel.boundingBox(),
+    ]);
+  expect(sharedHeaderBackdropBounds).not.toBeNull();
+  expect(repositoryActionsPanelBounds).not.toBeNull();
+  expect(
+    (sharedHeaderBackdropBounds?.x ?? 0) +
+      (sharedHeaderBackdropBounds?.width ?? 0),
+  ).toBeGreaterThanOrEqual(
+    (repositoryActionsPanelBounds?.x ?? 0) +
+      (repositoryActionsPanelBounds?.width ?? 0),
+  );
   const repositoryPanelTab = page.getByTestId(
     "project-right-panel-repository-tab",
   );
@@ -228,19 +274,6 @@ test("projects v3 workspace screenshot states", async ({ page }) => {
       (tabMenuHeaderBounds?.height ?? 0) - (agentContextBounds?.height ?? 0),
     ),
   ).toBeLessThanOrEqual(1);
-  const sharedHeaderBackdrop = page.getByTestId(
-    "project-shared-header-backdrop",
-  );
-  await expect(sharedHeaderBackdrop).toBeVisible();
-  await expect
-    .poll(() =>
-      sharedHeaderBackdrop.evaluate(
-        (element) => getComputedStyle(element).backdropFilter,
-      ),
-    )
-    .not.toBe("none");
-  const sharedHeaderBackdropBounds = await sharedHeaderBackdrop.boundingBox();
-  expect(sharedHeaderBackdropBounds).not.toBeNull();
   expect(sharedHeaderBackdropBounds?.x).toBeLessThanOrEqual(
     tabMenuHeaderBounds?.x ?? 0,
   );

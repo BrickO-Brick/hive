@@ -33,6 +33,7 @@ import {
 } from "@/features/projects/projectTaskCategories";
 import { useIdentityQuery } from "@/shared/api/hooks";
 import type { ChannelMember } from "@/shared/api/types";
+import { BuzzLoadingState } from "@/shared/ui/BuzzLoadingState";
 import { normalizePubkey } from "@/shared/lib/pubkey";
 import { IssueAssigneeFacepile, IssueAssigneesRow } from "./IssueAssigneesRow";
 import { DiscussedInChannels } from "./DiscussionChannels";
@@ -416,7 +417,7 @@ export function ProjectIssuesPanel({
     issues.find((issue) => issue.id === selectedIssueId) ?? null;
 
   if (issuesQuery.isLoading) {
-    return <p className="p-4 text-sm text-muted-foreground">Loading tasks…</p>;
+    return <BuzzLoadingState label="Loading tasks" />;
   }
 
   if (issues.length === 0) {

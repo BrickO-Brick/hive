@@ -40,6 +40,7 @@ export function ProjectConversationPanel({
   onClose,
   onResetWidth,
   onResizeStart,
+  sharedHeaderBackdrop,
   widthPx,
 }: {
   canResetWidth: boolean;
@@ -47,6 +48,7 @@ export function ProjectConversationPanel({
   onClose: () => void;
   onResetWidth: () => void;
   onResizeStart: (event: React.PointerEvent<HTMLButtonElement>) => void;
+  sharedHeaderBackdrop?: boolean;
   widthPx: number;
 }) {
   const { goChannel } = useAppNavigation();
@@ -204,7 +206,7 @@ export function ProjectConversationPanel({
     showBackButton: false,
     splitPaneClamp: false,
     testId: isOverlay ? "project-conversation-panel" : "message-thread-panel",
-    transparentChrome: false,
+    transparentChrome: sharedHeaderBackdrop,
   };
 
   const handleSend = React.useCallback(
