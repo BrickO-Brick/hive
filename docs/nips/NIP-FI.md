@@ -1,19 +1,492 @@
-# NIP-FI: Federated Identity Authorization (Core)
+NIP-FI
+======
 
-`draft` `optional`
+Federated identity authorization — core
+----------------------------------------
 
-> SKELETON — text owner: Wren (core boundary + NIP idiom), integrating Max's
-> cross-cutting sections (freshness classes, token typ rules, two contract
-> identities). Source designs: RESEARCH/NIP_FI_9999_CORE_BOUNDARY_DESIGN.md,
-> RESEARCH/NIP_FI_9999_SECURITY_SEMANTICS_DESIGN.md, PLANS/NIP_FI_9999_DESIGN.md.
-> Target: ~350 normative lines. One normative source: FI-INV-01..16 live HERE.
+`draft` `optional` `relay`
 
-## Scope
+**Protocol dependencies**: NIP-01 and either NIP-42 or NIP-98. Optional
+profiles are defined by NIP-FI-EDGE, NIP-FI-LIFECYCLE, NIP-FI-DELEG, and
+NIP-FI-CONF.
 
-Issuer-qualified identity (iss, sub); independent Nostr proof; client-attached
-assertion transport; partial bijection with durable tombstones; atomic final
-admission; bounded leases; private denials with closed response vocabulary;
-retire/revoke/rotate transitions; two contract identities
-(assertion_policy_id, transport_contract_id); declared freshness class
-(offline-jwt | current-status); server-declared body authorization relevance
-(NIP-98 payload binding fix); BCP 14; "equivalent" defined; worked wire example.
+The key words "MUST", "MUST NOT", "REQUIRED", "SHOULD", "SHOULD NOT", and
+"MAY" in this document are to be interpreted as described in BCP 14 (RFC 2119
+and RFC 8174) when, and only when, they appear in all capitals.
+
+## Abstract
+
+NIP-FI authorizes a Nostr key only when four independent facts agree: a valid
+issuer-qualified identity assertion, fresh proof of that Nostr key, current
+identity-to-key binding state, and current local policy for the exact operation.
+The identity provider never signs Nostr events, and an assertion never replaces
+Nostr proof.
+
+Bindings outlive individual assertions. Assertions and authorization leases do
+not outlive their evidence. This core defines the portable client-attached
+assertion transport, direct enrollment, atomic final admission, bounded
+sessions, privacy-preserving denial responses, and the smallest useful binding
+lifecycle. Companion profiles add trusted edges, extended lifecycle operations,
+and delegation without changing the core admission rule.
+
+This NIP does not define an identity provider, database schema, operator API,
+public identity projection, application membership policy, or user interface.
+
+## Terms and identifier classes
+
+- **domain** (`D`): an authorization boundary selected only by authenticated
+  server routing and configuration.
+- **identity** (`i`): the exact tuple `(iss, sub)` returned by assertion
+  validation. Email, display name, employee number, and a bare `sub` are not
+  identities.
+- **target context** (`R_t`): the server-resolved method, authority, path and
+  query, body semantics, transport, operation, and resource.
+- **actor** (`k`): the 32-byte public key returned by Nostr-proof validation.
+- **request context** (`R`): `R_t` sealed with `k`.
+- **binding**: a durable, versioned association `(D, i, k)` with immutable
+  provenance `attested-key` or `tofu`.
+- **retired pair**: a durable denial fact for an exact `(D, i, k)`.
+- **revoked key**: a durable denial fact for `(D, k)`.
+- **prepared authorization**: immutable, read-only evidence and witnesses for a
+  possible admission.
+- **committed authorization**: authority returned only after final revalidation
+  and atomic commit.
+- **lease**: a cached committed decision for one actor and bounded operation
+  set. A lease is not a binding.
+
+Every identifier is either **interoperability-critical** or
+**deployment-local**. Header names, public response bytes, token type values,
+and trace identifiers are interoperability-critical and fixed here.
+`assertion_policy_id`, `transport_contract_id`, domain IDs, snapshot versions,
+binding versions, policy versions, and correlation IDs are deployment-local;
+their values are opaque outside a deployment, while their stability and
+invalidation behavior are normative.
+
+## Core security invariants
+
+These labels are the normative home of the NIP-FI invariants. Companion
+profiles may add witnesses and bounds but cannot weaken them.
+
+1. **`FI-INV-01 — partial bijection.`** Active bindings are one-to-one within a
+   domain: one identity has at most one active key and one key has at most one
+   active identity. [FI-TRACE-BINDING-CONFLICT]
+2. **`FI-INV-02 — durable binding.`** Assertion expiry removes neither a
+   binding nor its provenance. Fresh eligible evidence may authorize the same
+   binding later. [FI-TRACE-ASSERTION-REFRESH]
+3. **`FI-INV-03 — tombstone monotonicity.`** Ordinary authorization never
+   removes a retired-pair or revoked-key fact and never recreates a retired
+   pair. [FI-TRACE-TOMBSTONE-REPLAY]
+4. **`FI-INV-04 — server-owned context.`** Every admitted operation uses one
+   server-resolved domain, target, resource, operation, and proven actor.
+   Unauthenticated input cannot replace them. [FI-TRACE-DOMAIN-SPOOF]
+5. **`FI-INV-05 — independent evidence.`** Direct authorization requires a
+   current assertion and fresh Nostr proof. If the assertion names a key, it
+   equals the proven actor. [FI-TRACE-ASSERTION-KEY-MISMATCH]
+6. **`FI-INV-06 — stable assertion policy.`** Assertion-policy identity changes
+   when accepted assertion semantics change, but not when only authenticated
+   key or status snapshot contents rotate. [FI-TRACE-VERIFIER-PARITY]
+7. **`FI-INV-07 — current-snapshot verification.`** Evidence cannot survive
+   removal of the key or policy snapshot that authenticated it; a changed
+   snapshot requires revalidation. [FI-TRACE-JWKS-REMOVE]
+8. **`FI-INV-08 — read-only preparation.`** Preparation creates no binding,
+   tombstone, replay claim, receipt, lease, publication, last-seen value, audit
+   authority, or application mutation. [FI-TRACE-FINAL-DENIAL-NO-MUTATION]
+9. **`FI-INV-09 — atomic final admission.`** Enrollment, replay claims,
+   receipts, and required authorization evidence commit only after complete
+   final revalidation, all or none. [FI-TRACE-PREPARED-STALE]
+10. **`FI-INV-10 — explicit lifecycle authority.`** Retirement, revocation,
+    rotation, and profile-defined lifecycle changes occur only through their
+    separately authorized transition. [FI-TRACE-LIFECYCLE-AUTHORITY]
+11. **`FI-INV-11 — evidence-bounded leases.`** A lease ends no later than every
+    evidence, snapshot, proof, binding, local-policy, and implementation bound
+    on which it depends. [FI-TRACE-LEASE-BOUND]
+12. **`FI-INV-12 — current-owner delegation.`** When NIP-FI-DELEG is claimed,
+    delegation requires the exact current eligible owner binding, fresh
+    delegate proof, capability intersection, and a positive finite deadline.
+    [FI-DELEG-OWNER-CURRENT]
+13. **`FI-INV-13 — privacy-safe denial.`** Public rejection is many-to-one and
+    reveals no identity, key, claim, binding, tombstone, enrollment mode, key
+    identifier, or private policy fact. [FI-TRACE-DENIAL-ORACLE]
+14. **`FI-INV-14 — fail closed.`** Unreadable, ambiguous, stale beyond policy,
+    or inconsistent evidence or authoritative state cannot produce authority.
+    [FI-TRACE-DEPENDENCY-FAIL-CLOSED]
+15. **`FI-INV-15 — uniform authority.`** Every protected ingress in a domain
+    uses the same current domain policy and final-admission authority. An
+    uncovered or competing path is unavailable. [FI-TRACE-AUTHORITY-UNIFORM]
+16. **`FI-INV-16 — canonical verifier.`** Assertion transports feed one closed,
+    provider-neutral normalized-result contract and cannot fork final
+    admission. [FI-TRACE-VERIFIER-PARITY]
+
+## Client-attached transport
+
+Server configuration selects `client-attached` before protected traffic is
+accepted. Request fields cannot select, negotiate, or downgrade transport.
+Failure never falls back to another transport. [FI-TRACE-TRANSPORT-CLOSED]
+
+The client sends exactly one field on the request or WebSocket upgrade:
+
+```text
+Nostr-Federated-Identity: Bearer <compact-JWS>
+```
+
+`Authorization` remains reserved for NIP-98. Assertion and provenance fields
+from any other profile are absent. Missing, repeated, comma-combined, empty,
+malformed, non-Bearer, or mixed-profile fields deny. Assertions never appear in
+URLs, query parameters, Nostr events, tags, filters, application history, or
+public identity projections. [FI-TRACE-TRANSPORT-CLOSED]
+
+The core transport contract has deployment-local identity
+`transport_contract_id`. It deterministically identifies the exact field,
+parsing, request-attachment, no-fallback, and context-preservation semantics.
+Changing any of those semantics changes the ID; changing request data does not.
+[FI-TRACE-CONTRACT-IDENTITIES]
+
+## Assertion validation
+
+A configured assertion policy accepts exactly one bounded compact JWS and
+returns this closed result:
+
+```text
+VerifiedAssertion = (
+  identity = (iss, sub),
+  asserted_key?,
+  claims_or_capabilities,
+  authority_deadlines,          // non-empty
+  assertion_policy_id,
+  transport_contract_id,
+  revalidation_dependencies
+)
+```
+
+The verifier rejects ambiguous protected-header or claim members, unknown
+critical headers, `alg=none`, symmetric algorithms, algorithm/key mismatch,
+incompatible JWK usage, ambiguous key selection, and signatures not valid
+under exactly one accepted asymmetric key. It bounds the assertion, headers,
+claims, subject, key identifiers, and authenticated key set before lookup or
+logging. [FI-TRACE-ASSERTION-VALIDATION]
+
+The exact `iss` selects an authenticated policy and key source; `iss` and at
+least one `aud` value exactly match configured values. `sub` is a non-empty
+bounded string. `exp` and `iat` are finite NumericDate values satisfying
+`now < exp`, `iat <= now + skew`, and `now < iat + maximum_assertion_age`.
+Optional `nbf` satisfies `nbf <= now + skew`. Arithmetic is overflow-safe and
+equality at an expiry is expired. [FI-TRACE-ASSERTION-VALIDATION]
+
+If configured, a Nostr-key claim resolves without ambiguity to one 32-byte key.
+Lowercase hexadecimal is canonical. Authorization claims or capabilities use a
+closed bounded input set and deterministic canonical encoding. Unchecked claims
+never enter the result. [FI-TRACE-VERIFIER-PARITY]
+
+### Token class
+
+Policy selects exactly one token class before validation:
+
+- **portable access token**: an `aud=buzz` access token; when the issuer supports
+  RFC 9068, the protected `typ` is exactly `at+jwt`;
+- **dedicated Buzz assertion**: a separately minted assertion whose protected
+  `typ` is exactly `nip-fi+jwt`;
+- **named compatibility access token**: absent or generic `typ=JWT` only under
+  an explicit issuer policy with required and forbidden claims that are
+  mutually exclusive with every accepted ID-token or other JWT class.
+
+OIDC ID Tokens always deny, even when `iss`, `aud`, and `sub` match. A failed
+class never falls back to another class. Token class and all class-specific
+rules are inputs to `assertion_policy_id`. [FI-TRACE-TOKEN-CLASS]
+
+### Policy identity and snapshots
+
+`assertion_policy_id` is a deployment-local deterministic digest of the
+canonical assertion-policy contract: issuer, audience, token class, allowed
+algorithms, authenticated key/status sources, identity/key/claim mapping, time
+and size rules, normalization, freshness class, and compiled verifier behavior.
+A semantic change changes the ID; authenticated snapshot contents, key order,
+cache timestamps, and retrieval time do not. [FI-TRACE-CONTRACT-IDENTITIES]
+
+Mutable state remains in `revalidation_dependencies`, including the assertion
+snapshot version, verification-key identity, snapshot hard deadline, optional
+status source/version/deadline, and a confidential handle to the exact compact
+JWS. Adding, removing, or replacing an accepted key changes the snapshot
+version. Changed dependencies require revalidation under the current snapshot;
+a retained key may continue, while an absent key denies. Unknown-key refresh is
+bounded and coalesced and has no attacker-triggered stale-key fallback.
+[FI-TRACE-JWKS-ADD] [FI-TRACE-JWKS-REMOVE]
+
+The base contract compares the current authenticated snapshot and makes no
+anti-rollback promise. A deployment claiming rollback prevention records a
+separately authenticated monotonic floor and tests it. [deployment artifact:
+assertion-policy review]
+
+### Freshness class
+
+Each policy declares exactly one server-owned freshness class, included in
+`assertion_policy_id`:
+
+- **`offline-jwt`** validates the JWT and authenticated key snapshot only.
+  `upstream_authority_deadline` is the minimum of `exp`,
+  `iat + maximum_assertion_age`, and the key-snapshot hard deadline. It cannot
+  truthfully advertise an unconditional upstream-revocation bound. Enabling it
+  requires deployment evidence that revocation stops new accepted issuance;
+  discovery reports the residual bound as unknown. [deployment artifact:
+  issuer revocation review]
+- **`current-status`** additionally requires an authenticated witness
+  `(iss, sub, token_or_session_id?, active=true, observed_at, valid_until,
+  status_version, authenticated_source_id)`. Subject and optional session
+  identifier exactly match the assertion. `valid_until` is finite and no later
+  than `observed_at + maximum_status_age`. The upstream deadline also includes
+  `valid_until`. Outage cannot mint or extend a witness, though an already
+  verified witness remains usable until its existing deadline.
+  [FI-TRACE-CURRENT-STATUS-STALE]
+
+A current-status deployment advertises a tested
+`maximum_residual_upstream_revocation_seconds`; prepared evidence and leases
+close within that value after upstream revocation. Poll/cache age and event
+processing delay are included. [FI-TRACE-CURRENT-STATUS-REVOKED]
+
+Before enabling an issuer, the operator records authoritative evidence that
+`sub` is stable for the account lifetime, never reassigned, and not intentionally
+derived from mutable profile data. An issuer that cannot provide this property
+is ineligible. [deployment artifact: issuer subject-stability review]
+
+## Nostr proof and body semantics
+
+The actor is always returned by fresh Nostr-proof validation, never by an
+assertion or unsigned field. NIP-42 binds its AUTH event to the current
+challenge, relay URL, connection, and freshness window. NIP-98 binds its event
+to the exact server-resolved URL, method, and freshness window. All evidence
+agrees with the same `D` and `R_t`. [FI-TRACE-DOMAIN-SPOOF]
+
+Each protected HTTP operation declares in server policy whether its body is
+authorization-relevant; clients cannot select the declaration.
+
+For a relevant body, the NIP-98 event contains exactly one `payload` tag equal
+to lowercase hexadecimal SHA-256 of the exact bytes consumed by the
+application. Absence, duplication, mismatch, validation of only a prefix, or
+post-validation transformation denies. For an irrelevant body, no
+Authorization decision, target, capability, or effect selector derives from a
+body field not bound by NIP-98. [FI-TRACE-BODY-BINDING]
+
+Every operation has finite body and spool bounds. A known oversized body is
+rejected before hashing; a stream is rejected at octet `limit + 1`; admission
+waits for EOF. Before EOF there is no application effect, replay mutation,
+receipt, or partial digest authority. Quota failure cleans up staged bytes and
+denies. [FI-TRACE-BODY-BOUNDS]
+
+## Direct preparation
+
+The following is normative pseudocode; every read is from authoritative state.
+
+```text
+PrepareDirect(request, assertion, proof):
+  (D, R_t, operation, resource) := ResolveTargetContext(request) or DENY
+  e := ValidateClientAttached(assertion, D, R_t) or DENY
+  k := ValidateNostrProof(proof, D, R_t) or DENY
+  R := SealActor(R_t, k)
+  i := e.identity
+
+  if e.asserted_key exists and e.asserted_key != k: DENY(key_mismatch)
+  atomically read B_D(i), B_D(k), T_D(i,k), Y_D(k), enrollment policy,
+                      local policy, resource, and all dependency versions
+  if k in Y_D: DENY(key_revoked)
+  if (i,k) in T_D: DENY(pair_retired)
+
+  if B_D(i) = B_D(k) = binding(i,k):
+      proposal := existing(binding.version, binding.provenance)
+  else if B_D(i) exists or B_D(k) exists:
+      DENY(binding_conflict)
+  else if enrollment policy = attested-key:
+      require e.asserted_key = k
+      proposal := enroll(i, k, attested-key)
+  else if enrollment policy = tofu:
+      proposal := enroll(i, k, e.asserted_key = k ? attested-key : tofu)
+
+  EvaluateLocalPolicy(D, R, operation, resource, k,
+                      e.claims_or_capabilities) or DENY
+  return PreparedAuthorization(evidence, proposal, witnesses, deadlines)
+```
+
+TOFU is optional private deployment posture and is not self-advertised. It
+accepts that a stolen assertion for a never-enrolled identity can bind an
+attacker's proven key; deployments enabling it retain a passing
+FI-TRACE-TOFU-THEFT artifact. Binding provenance is immutable. A policy change
+affects only future creation. [deployment artifact: TOFU risk review]
+
+Preparation, including first-use enrollment, is read-only and produces no
+authoritative mutation. [FI-TRACE-FINAL-DENIAL-NO-MUTATION]
+
+## Final admission
+
+A prepared value is consumed at most once. Final admission first requires an
+exact domain, context, operation, resource, actor, and transport match; both
+contract IDs unchanged; and every bound live. A changed dependency is reread
+and re-evaluated from authoritative evidence. [FI-TRACE-PREPARED-STALE]
+
+Two verified assertion results are **equivalent** when:
+
+1. identity-class fields are byte-equal: `iss`, `sub`, asserted-key presence and
+   value, canonical claims/capabilities, `assertion_policy_id`, and
+   `transport_contract_id`;
+2. each bounds-class deadline is live now and is no later than its prepared
+   value; and
+3. provenance-class fields — snapshot version, verification-key identity,
+   cache metadata, ordering, and retrieval time — are ignored after successful
+   current revalidation.
+
+Any new or unclassified field belongs to the identity class. A fresher assertion
+cannot silently extend a prepared decision. [FI-TRACE-PREPARED-STALE]
+
+Final admission atomically rereads binding, tombstone, revocation, enrollment,
+policy, resource, replay, receipt, and invalidation witnesses; recomputes the
+complete decision; claims applicable proof replay identities; creates an
+eligible proposed binding; and appends its request-bound receipt and required
+authorization evidence. All commit or none. A concurrent identical enrollment
+may recompute as the same `existing` binding; conflicting enrollment commits at
+most one winner. [FI-TRACE-CONCURRENT-ENROLLMENT]
+
+A failed admission rolls back all authority mutation. The application operation
+runs only after committed authorization. If it cannot share the transaction, a
+request-bound idempotent receipt prevents the same proof from creating a second
+effect. [FI-TRACE-FINAL-DENIAL-NO-MUTATION]
+
+## Base lifecycle
+
+Retirement, revocation, and rotation require separate privileged authority
+bound to the exact domain, transition, identity, old binding version when
+present, target key when present, and request. Each atomically rechecks current
+state, appends immutable lifecycle history, and invalidates dependent leases
+after commit. Every new target key supplies fresh target-bound Nostr proof and
+any policy-required current matching issuer attestation. [FI-TRACE-LIFECYCLE-AUTHORITY]
+
+- **RetirePair** removes one exact active binding and durably retires its pair.
+- **RevokeKey** records the key as revoked even if inactive; if active, it also
+  removes the binding and retires that pair. Repeating the same authorized
+  revocation is idempotent.
+- **Rotate** replaces one exact active binding with one unused, unrevoked,
+  non-retired target key, retires the old pair, and creates a fresh binding
+  version. Rotation does not globally revoke the old key.
+
+Failure or stale state causes no partial mutation. Ordinary authorization cannot
+perform or undo these transitions. Extended recovery, disablement, provisioning,
+and administrative expiry are defined only by NIP-FI-LIFECYCLE.
+
+## Request and session bounds
+
+HTTP authority covers one exact request and is never reusable.
+
+A WebSocket lease is scoped to one actor, domain, operation set, binding
+version, normalized result, policy/resource versions, and invalidation
+witnesses. Its deadline is the earliest assertion, upstream-authority,
+key-snapshot, proof/connection, local-policy, and implementation deadline.
+Arithmetic is overflow-safe and equality is expired. [FI-TRACE-LEASE-BOUND]
+
+Before each protected use, the service checks actor, domain, operation,
+resource, deadline, binding version, contract IDs, snapshot/status versions,
+policy versions, and invalidation state. Changed dependencies require current
+revalidation to an equivalent result; unreadable or ineligible state denies.
+A lease for one key never authorizes another key on the same connection.
+[FI-TRACE-MULTI-KEY-SESSION]
+
+Expiry ends the lease, not the binding. Renewal requires fresh attached
+assertion, fresh Nostr proof, preparation, and final admission. Confidential
+assertion revalidation material is destroyed on expiry, close, or invalidation.
+
+## Rejection and privacy
+
+Public class is a function only of evidence the requester supplied, never of
+private server state. Under the private-posture rule, even `key_mismatch` joins
+the private-state anonymity set.
+
+| Private condition | Public class | Nostr prefix and exact text | HTTP response |
+|---|---|---|---|
+| assertion/proof absent | `missing_evidence` | `auth-required: authentication required` | `401` + `authentication required\n` |
+| malformed, invalid, expired, or replayed evidence | `evidence_rejected` | `restricted: evidence rejected` | `403` + `evidence rejected\n` |
+| key mismatch; binding conflict; retired pair; revoked key; lifecycle gate; binding required/expired; local policy denial | `authorization_denied` | `restricted: authorization denied` | `403` + `authorization denied\n` |
+| required current dependency unreadable | `authorization_unavailable` | `restricted: authorization unavailable` | `503` + `authorization unavailable\n` |
+
+Nostr text is the exact UTF-8 text after an applicable NIP-42/NIP-01 prefix;
+HTTP body is exact UTF-8 `text/plain` with the shown LF and no other bytes.
+Responses contain no free text, reason code, request ID, issuer, subject, key,
+claim, binding state, enrollment posture, token material, or timing hint. All
+private conditions in `authorization_denied` produce byte-identical responses.
+[FI-TRACE-DENIAL-ORACLE]
+
+NIP-FI defines no public identity projection. Public events, tags, filters,
+discovery, responses, logs, metrics, and traces contain no raw assertions or
+unredacted `iss`, `sub`, email, display name, or private claim. Access-controlled
+authoritative stores retain only what enforcement and investigation require.
+A separate presentation protocol cannot confer NIP-FI authority.
+[FI-TRACE-PRIVACY-NONPUBLIC]
+
+## Discovery
+
+A relay SHOULD advertise core support in NIP-11 as:
+
+```json
+{
+  "limitation": { "federated_identity": true },
+  "federated_identity": {
+    "core": "client-attached",
+    "assertion_freshness": {
+      "class": "offline-jwt",
+      "maximum_residual_upstream_revocation_seconds": null
+    }
+  }
+}
+```
+
+For `current-status`, the final value is a tested positive integer. Discovery
+never states enrollment mode or TOFU posture and never exposes issuer URLs,
+audiences, claim names, tenant IDs, or deployment-local identifiers. For every
+enrollment policy, including `attested-key`, private `tofu`, and any companion
+profile mode, the complete public discovery output is byte-identical: no field,
+flag, value, omission, ordering, or object shape may distinguish the configured
+mode. Profile documents own only non-enrollment public claims.
+[FI-TRACE-DISCOVERY-PRIVATE]
+
+## Core behavioral oracles
+
+A core claim covers every applicable oracle below at one implementation and
+policy revision. NIP-FI-CONF defines evidence and mutation-adequacy rules.
+
+| ID | Required outcome |
+|---|---|
+| `FI-TRACE-TRANSPORT-CLOSED` | Exact one-header input succeeds; missing, repeated, combined, malformed, mixed, URL, and fallback variants deny. |
+| `FI-TRACE-ASSERTION-VALIDATION` | Valid boundary input passes; each signature, key-selection, issuer, audience, time, size, and ambiguity negative denies. |
+| `FI-TRACE-TOKEN-CLASS` | ID tokens, wrong/generic types outside a named policy, client-only audiences, and cross-class fallback deny. |
+| `FI-TRACE-CONTRACT-IDENTITIES` | Each semantic mutation changes only its owning contract ID; snapshot-only mutations change neither. |
+| `FI-TRACE-VERIFIER-PARITY` | Equal authoritative input and policy produce the same canonical normalized result. |
+| `FI-TRACE-JWKS-ADD` / `REMOVE` | Retained-key rotation can revalidate; removed-key evidence and leases deny. |
+| `FI-TRACE-CURRENT-STATUS-REVOKED` / `STALE` | Revocation closes authority within the advertised bound; expiry equality/outage cannot extend a witness. |
+| `FI-TRACE-BODY-BINDING` / `BOUNDS` | Exact complete relevant body passes; absent/duplicate/mutated/partial/transformed/oversized/quota variants deny without effects. |
+| `FI-TRACE-DOMAIN-SPOOF` | Client routing and forwarded authority cannot replace server-owned context. |
+| `FI-TRACE-ASSERTION-KEY-MISMATCH` | Mismatch denies with no mutation and the private-state response. |
+| `FI-TRACE-BINDING-CONFLICT` / `TOMBSTONE-REPLAY` | Conflicts and fresh evidence for retired/revoked state deny without replacement. |
+| `FI-TRACE-ASSERTION-REFRESH` | Fresh evidence reuses the same eligible durable binding after prior assertion expiry. |
+| `FI-TRACE-PREPARED-STALE` | Changed identity-class witnesses or extended bounds deny; provenance-only rotation revalidates. |
+| `FI-TRACE-CONCURRENT-ENROLLMENT` | Identical first use converges; conflicting first use commits at most one winner. |
+| `FI-TRACE-FINAL-DENIAL-NO-MUTATION` | Every failed phase leaves all authoritative stores and effects unchanged. |
+| `FI-TRACE-LIFECYCLE-AUTHORITY` | Unprivileged/stale transitions deny; authorized retirement/revocation/rotation is atomic. |
+| `FI-TRACE-LEASE-BOUND` / `MULTI-KEY-SESSION` | Equality expires and one actor's lease never authorizes another. |
+| `FI-TRACE-DENIAL-ORACLE` | Each private row produces its exact fixed bytes; all private-state rows compare byte-identical. |
+| `FI-TRACE-DEPENDENCY-FAIL-CLOSED` | Each unreadable authoritative dependency denies. |
+| `FI-TRACE-AUTHORITY-UNIFORM` | Every protected ingress reaches one current final-admission authority. |
+| `FI-TRACE-CROSS-DOMAIN-COLLISION` | Equal subjects across issuers and equal pairs across domains remain distinct. |
+| `FI-TRACE-PRIVACY-NONPUBLIC` / `DISCOVERY-PRIVATE` | Private identity does not enter public surfaces; complete discovery bytes remain identical across attested-key, TOFU, and companion enrollment modes. |
+| `FI-TRACE-TOFU-THEFT` | Stolen-assertion first use denies unless private TOFU is enabled and the attacker also proves its chosen key. |
+
+## Security considerations
+
+Issuer compromise can impersonate a principal but cannot prove an uncompromised
+bound Nostr key. Assertion theft cannot use an existing binding without that
+key; private TOFU intentionally retains first-use theft risk. Snapshot
+revalidation limits removed-key reuse but the base policy accepts authenticated
+key-source rollback as residual issuer risk. Two-phase admission closes the
+binding and policy TOCTOU window only when every authoritative witness is reread
+atomically. Availability failures deny rather than degrade to Nostr-only access.
+
+## Sources
+
+- NIP-42 authentication: <https://github.com/nostr-protocol/nips/blob/6d2979b369329748734c66846989e453270ced03/42.md>
+- NIP-98 HTTP authentication: <https://github.com/nostr-protocol/nips/blob/6d2979b369329748734c66846989e453270ced03/98.md>
+- JWT BCP: <https://www.rfc-editor.org/rfc/rfc8725>
+- JWT access-token profile: <https://www.rfc-editor.org/rfc/rfc9068>
+- Non-normative composed model: [NIP-FI-MODEL.md](NIP-FI-MODEL.md)
