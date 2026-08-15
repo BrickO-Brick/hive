@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Check, Code, Pencil } from "lucide-react";
+import { Check, Code, Pencil, X } from "lucide-react";
 import { useBlocker } from "@tanstack/react-router";
 import { isMap, parseDocument, stringify as yamlStringify } from "yaml";
 
@@ -24,6 +24,7 @@ import { Button } from "@/shared/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/shared/ui/tabs";
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogDescription,
   DialogHeader,
@@ -414,8 +415,11 @@ export function WorkflowDialog({
         onOpenChange={handleOpenChange}
         open={open && savedWebhookInfo === null}
       >
-        <DialogContent className="flex h-[88vh] max-h-[88vh] w-[calc(100vw-2rem)] max-w-6xl flex-col gap-0 overflow-hidden p-0">
-          <DialogHeader className="flex flex-shrink-0 flex-row items-center justify-between gap-6 space-y-0 px-6 pt-3 pr-14 pb-2 text-left">
+        <DialogContent
+          className="flex h-[88vh] max-h-[88vh] w-[calc(100vw-2rem)] max-w-6xl flex-col gap-0 overflow-hidden p-0"
+          showCloseButton={false}
+        >
+          <DialogHeader className="flex flex-shrink-0 flex-row items-center justify-between gap-6 space-y-0 px-6 pt-3 pb-2 text-left">
             <div className="space-y-0">
               <DialogTitle className="text-lg leading-tight">
                 {TITLES[mode]}
@@ -434,7 +438,20 @@ export function WorkflowDialog({
                 onCommit={handleWorkflowNameCommit}
               />
             </div>
-            <div ref={setHeaderTrailingElement} />
+            <div className="flex items-center gap-2">
+              <div ref={setHeaderTrailingElement} />
+              <DialogClose asChild>
+                <Button
+                  aria-label="Close"
+                  className="h-8 w-8 text-muted-foreground"
+                  size="icon"
+                  type="button"
+                  variant="ghost"
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </DialogClose>
+            </div>
           </DialogHeader>
 
           <div className="min-h-0 flex-1">
