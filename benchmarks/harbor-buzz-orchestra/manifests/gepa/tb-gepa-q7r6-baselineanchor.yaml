@@ -1,0 +1,48 @@
+# GEPA Q7 ROUND 6 (raman-fitting). r5 (windowstable) 0/6 — REJECT, but the
+# residue narrowed to ONE parameter: 4/6 passed test_G_Peak, 5/6 found the
+# reciprocal transform, every genuine fail was 2D-only (gamma 18.3-35.7 vs
+# 17.52 abs<1; offset 499-1128 vs 1239 rel<10%; one trial failed on offset
+# ALONE). ROOT CAUSE WAS MY PROSE: r5 said "swollen width + starved offset
+# = contamination, TIGHTEN the window" — backwards. A narrow window has no
+# baseline-dominated points, so the free offset starves and its power leaks
+# into gamma; tightening worsens the exact signature. The r4 winner's real
+# move was a window WIDE enough to include flat baseline on both flanks
+# while excluding neighbors. Single variable vs r5: the Window rule is
+# REWRITTEN (baseline-anchor form, fully generic — offset terms need
+# baseline-dominated data; widen into flat baseline on the swollen-width/
+# starved-offset signature, never tighten onto the feature).
+schema_version: "1"
+condition: tb-gepa-q7r6-baselineanchor
+timing_signal: true
+roster:
+  - id: mia
+    kind: orchestrator
+    role: conn
+    require_reply: true
+    count: 1
+    endpoint: deepseek-ai/Deepseek-V4-Flash
+    model_revision: deepseek/deepseek-v4-flash-20260731
+    prompt:
+      path: personas/bench/gepa/mia-v16-baselineanchor.md
+      sha256: 1a95d6ecebbc549f3d64fb61b61feb4dfe45be9b7b93bd75116abaa5c395fcca
+    generation:
+      thinking_effort: high
+  - id: mie
+    kind: worker
+    role: twin
+    count: 1
+    endpoint: deepseek-ai/Deepseek-V4-Flash
+    model_revision: deepseek/deepseek-v4-flash-20260731
+    prompt:
+      path: personas/bench/gepa/mie-v0.md
+      sha256: a4924e4c4507ac466a7500bb34a04a782618df41dba850b6f0f729787c48439b
+    generation:
+      thinking_effort: high
+prices:
+  deepseek-ai/Deepseek-V4-Flash:
+    input_per_million_usd: 0.14
+    cached_input_per_million_usd: 0.14
+    output_per_million_usd: 0.28
+    cache_read_rate: 0.0
+trial_budget:
+  timeout_seconds: 36000
