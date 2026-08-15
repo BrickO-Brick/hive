@@ -188,7 +188,11 @@ export function CommunityThemeController() {
         );
         clearCommunityThemeMigrationOutbox(pubkey, relayUrl);
       },
-      legacyFallback,
+      () =>
+        scopedPreferenceRef.current ??
+        readCommunityThemeOutbox(pubkey, relayUrl, legacyFallback) ??
+        readCommunityThemePreference(pubkey, relayUrl, legacyFallback) ??
+        legacyFallback,
     );
     managerRef.current = manager;
     if (durablePending) {
@@ -222,14 +226,22 @@ export function CommunityThemeController() {
       // coordinate cancels the pending upgrade rather than being overwritten by
       // a legacy-derived republish two seconds later.
       clearCommunityThemeMigrationOutbox(pubkey, relayUrl);
-      scopedPreferenceRef.current = remote.preference;
-      manager.cancelPendingPublish();
+      const migrationWasSubmitted = manager.cancelPendingPublish(
+        remote.preference,
+      );
       cacheAndApplyCommunityTheme(
         pubkey,
         relayUrl,
         remote.preference,
         applyPreference,
       );
+      scopedPreferenceRef.current = remote.preference;
+      if (migrationWasSubmitted) {
+        // Submission cannot be withdrawn. Reassert the accepted remote after
+        // the stale migration settles so it remains the winning coordinate.
+        writeCommunityThemeOutbox(pubkey, relayUrl, remote.preference);
+        return;
+      }
       if (
         remote.needsUpgrade &&
         writeCommunityThemeMigrationOutbox(pubkey, relayUrl, remote.preference)
