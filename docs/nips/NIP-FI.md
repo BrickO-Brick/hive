@@ -321,10 +321,12 @@ PrepareDirect(request, assertion, proof):
   else if B_D(i) exists or B_D(k) exists:
       DENY(binding_conflict)
   else if enrollment policy = attested-key:
-      require e.asserted_key = k
+      if e.asserted_key != k: DENY(attestation_required)
       proposal := enroll(i, k, attested-key)
   else if enrollment policy = tofu:
       proposal := enroll(i, k, e.asserted_key = k ? attested-key : tofu)
+  else:
+      DENY(binding_required)
 
   EvaluateLocalPolicy(D, R, operation, resource, k,
                       e.claims_or_capabilities) or DENY
@@ -426,7 +428,7 @@ the private-state anonymity set.
 |---|---|---|---|
 | assertion/proof absent | `missing_evidence` | `auth-required: authentication required` | `401` + `authentication required\n` |
 | malformed, invalid, expired, or replayed evidence | `evidence_rejected` | `restricted: evidence rejected` | `403` + `evidence rejected\n` |
-| key mismatch; binding conflict; retired pair; revoked key; lifecycle gate; binding required/expired; local policy denial | `authorization_denied` | `restricted: authorization denied` | `403` + `authorization denied\n` |
+| key mismatch; attestation required; binding conflict; retired pair; revoked key; lifecycle gate; binding required/expired; local policy denial | `authorization_denied` | `restricted: authorization denied` | `403` + `authorization denied\n` |
 | required current dependency unreadable | `authorization_unavailable` | `restricted: authorization unavailable` | `503` + `authorization unavailable\n` |
 
 Nostr text is the exact UTF-8 text after an applicable NIP-42/NIP-01 prefix;
