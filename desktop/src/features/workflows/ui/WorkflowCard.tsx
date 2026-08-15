@@ -30,11 +30,13 @@ import { rewriteRelayUrl } from "@/shared/lib/mediaUrl";
 import { Button } from "@/shared/ui/button";
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/shared/ui/dropdown-menu";
+import { Switch } from "@/shared/ui/switch";
 import {
   getWorkflowCardLabel,
   getWorkflowDisplayStatus,
@@ -377,17 +379,28 @@ export function WorkflowCard({
                   <Copy className="mr-2 h-4 w-4" />
                   Duplicate
                 </DropdownMenuItem>
-                <DropdownMenuItem
+                <DropdownMenuCheckboxItem
+                  checked={isEnabled}
+                  className="gap-2 pl-2 [&>span:first-child]:hidden"
                   disabled={isTogglingEnabled}
-                  onClick={() => onToggleEnabled(workflow)}
+                  onCheckedChange={(checked) => {
+                    if (checked !== isEnabled) onToggleEnabled(workflow);
+                  }}
+                  onSelect={(event) => event.preventDefault()}
                 >
                   {isEnabled ? (
-                    <PowerOff className="mr-2 h-4 w-4" />
+                    <Power className="mr-2 h-4 w-4 shrink-0" />
                   ) : (
-                    <Power className="mr-2 h-4 w-4" />
+                    <PowerOff className="mr-2 h-4 w-4 shrink-0" />
                   )}
-                  {isEnabled ? "Disable" : "Enable"}
-                </DropdownMenuItem>
+                  <span>Enable</span>
+                  <Switch
+                    aria-hidden="true"
+                    checked={isEnabled}
+                    className="pointer-events-none ml-auto"
+                    tabIndex={-1}
+                  />
+                </DropdownMenuCheckboxItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
                   className="text-destructive"

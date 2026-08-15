@@ -147,8 +147,8 @@ function TriggerConfigFields({
 type WorkflowFormBuilderProps = {
   channels: Channel[];
   disabled?: boolean;
-  headerTrailingContainer?: HTMLElement | null;
   mode: WorkflowEditorMode;
+  nameLeadingContainer?: HTMLElement | null;
   onChange: (yaml: string) => void;
   onSelectedNodeChange: (node: WorkflowEditorPane) => void;
   parseError: string | null;
@@ -365,8 +365,8 @@ function WorkflowNode({
 export function WorkflowFormBuilder({
   channels,
   disabled,
-  headerTrailingContainer,
   mode,
+  nameLeadingContainer,
   onChange,
   onSelectedNodeChange,
   parseError,
@@ -822,22 +822,18 @@ export function WorkflowFormBuilder({
           </div>
         )}
       </div>
-      {mode === "form" && headerTrailingContainer
+      {mode === "form" && nameLeadingContainer
         ? createPortal(
-            <div className="flex items-center gap-3">
-              <label className="text-sm text-foreground" htmlFor="wf-enabled">
-                Enable
-              </label>
-              <Switch
-                checked={formState.enabled}
-                disabled={disabled}
-                id="wf-enabled"
-                onCheckedChange={(checked) =>
-                  updateFormState({ ...formState, enabled: checked })
-                }
-              />
-            </div>,
-            headerTrailingContainer,
+            <Switch
+              aria-label="Enable workflow"
+              checked={formState.enabled}
+              disabled={disabled}
+              id="wf-enabled"
+              onCheckedChange={(checked) =>
+                updateFormState({ ...formState, enabled: checked })
+              }
+            />,
+            nameLeadingContainer,
           )
         : null}
     </>

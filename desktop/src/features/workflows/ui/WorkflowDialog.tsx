@@ -116,11 +116,13 @@ function WorkflowNameEditor({
   generating,
   name,
   onCommit,
+  onEditingChange,
 }: {
   disabled: boolean;
   generating: boolean;
   name: string;
   onCommit: (name: string) => boolean;
+  onEditingChange: (editing: boolean) => void;
 }) {
   const [editing, setEditing] = React.useState(false);
   const [draft, setDraft] = React.useState(name);
@@ -134,11 +136,19 @@ function WorkflowNameEditor({
     if (editing) inputRef.current?.select();
   }, [editing]);
 
+  const changeEditing = React.useCallback(
+    (nextEditing: boolean) => {
+      setEditing(nextEditing);
+      onEditingChange(nextEditing);
+    },
+    [onEditingChange],
+  );
+
   const commit = React.useCallback(() => {
     const nextName = draft.trim();
     if (!nextName || !onCommit(nextName)) return;
-    setEditing(false);
-  }, [draft, onCommit]);
+    changeEditing(false);
+  }, [changeEditing, draft, onCommit]);
 
   if (editing) {
     return (
@@ -155,7 +165,7 @@ function WorkflowNameEditor({
             } else if (event.key === "Escape") {
               event.preventDefault();
               setDraft(name);
-              setEditing(false);
+              changeEditing(false);
             }
           }}
           ref={inputRef}
@@ -186,7 +196,7 @@ function WorkflowNameEditor({
         aria-label="Edit workflow name"
         className="text-muted-foreground [&_svg]:size-3"
         disabled={disabled || generating}
-        onClick={() => setEditing(true)}
+        onClick={() => changeEditing(true)}
         size="icon-xs"
         title="Edit workflow name"
         type="button"
@@ -220,7 +230,8 @@ export function WorkflowDialog({
   const [editorParseError, setEditorParseError] = React.useState<string | null>(
     null,
   );
-  const [headerTrailingElement, setHeaderTrailingElement] =
+  const [workflowNameEditing, setWorkflowNameEditing] = React.useState(false);
+  const [nameLeadingElement, setNameLeadingElement] =
     React.useState<HTMLDivElement | null>(null);
   const [savedWebhookInfo, setSavedWebhookInfo] = React.useState<{
     relayHttpUrl: string;
@@ -265,6 +276,7 @@ export function WorkflowDialog({
       setYamlDefinition(initialYaml);
       setEditorMode(getInitialEditorMode(initialYaml));
       setEditorParseError(null);
+      setWorkflowNameEditing(false);
       setSavedWebhookInfo(null);
       setDiscardConfirmationOpen(false);
       resetCreate();
@@ -431,15 +443,25 @@ export function WorkflowDialog({
                     ? "Copy this workflow and adjust its details."
                     : "Automate actions when something happens in a channel."}
               </DialogDescription>
-              <WorkflowNameEditor
-                disabled={mutation.isPending || !canEditWorkflowName}
-                generating={generatingName}
-                name={workflowName}
-                onCommit={handleWorkflowNameCommit}
-              />
+              <div className="flex items-center gap-2">
+                <WorkflowNameEditor
+                  disabled={mutation.isPending || !canEditWorkflowName}
+                  generating={generatingName}
+                  name={workflowName}
+                  onCommit={handleWorkflowNameCommit}
+                  onEditingChange={setWorkflowNameEditing}
+                />
+                <div
+                  className={
+                    editorMode === "form" && !workflowNameEditing
+                      ? "flex items-center"
+                      : "hidden"
+                  }
+                  ref={setNameLeadingElement}
+                />
+              </div>
             </div>
             <div className="flex items-center gap-2">
-              <div ref={setHeaderTrailingElement} />
               <DialogClose asChild>
                 <Button
                   aria-label="Close"
@@ -458,8 +480,8 @@ export function WorkflowDialog({
             <WorkflowFormBuilder
               channels={channels}
               disabled={mutation.isPending}
-              headerTrailingContainer={headerTrailingElement}
               mode={editorMode}
+              nameLeadingContainer={nameLeadingElement}
               onChange={(yaml) => {
                 mutation.reset();
                 yamlDefinitionRef.current = yaml;
