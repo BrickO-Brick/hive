@@ -54,6 +54,7 @@ type StartBackgroundUploadOptions = Omit<
 
 export type PreparedBackgroundMediaUpload = {
   cancel: () => void;
+  isCanceled: () => boolean;
   start: (options: StartBackgroundUploadOptions) => boolean;
 };
 
@@ -243,6 +244,7 @@ export function prepareBackgroundMediaUpload(
     let started = false;
     return {
       cancel: () => undefined,
+      isCanceled: () => false,
       start: ({ onComplete, onError }) => {
         if (started) return false;
         started = true;
@@ -274,6 +276,7 @@ export function prepareBackgroundMediaUpload(
     cancel: () => {
       cancelTask(task);
     },
+    isCanceled: () => task.canceled,
     start: ({ onCancel, onComplete, onError }) => {
       if (started || task.canceled) return false;
       started = true;

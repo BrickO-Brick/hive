@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   cancelStartedMediaUploads,
   dispatchTrackedMediaUpload,
+  prepareBackgroundMediaUpload,
 } from "./backgroundMediaUploadStore.ts";
 
 const descriptor = {
@@ -21,6 +22,27 @@ function deferred() {
   });
   return { promise, resolve };
 }
+
+test("reports cancellation before a prepared upload starts", () => {
+  const prepared = prepareBackgroundMediaUpload([
+    {
+      file: new File(["video"], "large-video.mp4", { type: "video/mp4" }),
+      id: 1,
+      spoilered: false,
+    },
+  ]);
+
+  assert.equal(prepared.isCanceled(), false);
+  prepared.cancel();
+  assert.equal(prepared.isCanceled(), true);
+  assert.equal(
+    prepared.start({
+      onComplete: async () => {},
+      onError: () => {},
+    }),
+    false,
+  );
+});
 
 test("cancels only uploads whose native commands were dispatched", async () => {
   const releaseUpload = deferred();

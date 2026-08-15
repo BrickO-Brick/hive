@@ -572,7 +572,7 @@ export function useMentionSendFlow({
             );
           }
         };
-        if (!optimisticId && sendChannelId) {
+        if (!optimisticId && sendChannelId && !preparedUpload?.isCanceled()) {
           const initialMessage = buildOutgoingMessage(
             draft.trimmed,
             draft.savedImeta,
@@ -621,9 +621,7 @@ export function useMentionSendFlow({
               restoreComposerAfterFailure();
             },
           });
-          if (!uploadStarted) {
-            return;
-          }
+          if (!uploadStarted) return removePendingSend();
         }
         if (
           draft.capturedChannelId === channelIdRef.current ||

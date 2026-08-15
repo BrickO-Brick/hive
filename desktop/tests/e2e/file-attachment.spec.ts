@@ -265,6 +265,12 @@ test("sends immediately and keeps upload progress across channels", async ({
   await expect(queuedSpoiler).toHaveCSS("opacity", "1");
   await page.getByTestId("send-message").click();
 
+  const pendingRow = page.getByTestId("message-row").last();
+  await expect(
+    pendingRow.getByTestId("message-preparation-status"),
+  ).toContainText("Preparing large-video.mp4…");
+  const pendingMessageId = await pendingRow.getAttribute("data-message-id");
+  expect(pendingMessageId).not.toBeNull();
   await expect(page.getByTestId("message-composer")).not.toContainText(
     "large-video.mp4",
   );
@@ -278,6 +284,9 @@ test("sends immediately and keeps upload progress across channels", async ({
   });
 
   await page.getByTestId("channel-general").click();
+  await expect(
+    page.locator(`[data-message-id="${pendingMessageId}"]`),
+  ).toHaveCount(1);
   await expect(page.getByTestId("file-card").last()).toContainText(
     "quarterly-report.pdf",
   );
