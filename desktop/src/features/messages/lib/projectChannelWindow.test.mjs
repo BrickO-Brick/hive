@@ -213,6 +213,31 @@ test("test_reconciliation_preserves_dense_second_window_order", () => {
   );
 });
 
+test("test_live_echo_replaces_matching_staged_send", () => {
+  const harness = createHarness();
+  const pending = {
+    ...event("pending", 110),
+    content: "hello",
+    pending: true,
+  };
+  const accepted = {
+    ...event("accepted", 110),
+    content: "hello",
+    id: "c".repeat(64),
+  };
+  appendLiveEvent(harness, pending);
+  appendLiveEvent(harness, accepted);
+
+  assert.deepEqual(
+    harness.client.getQueryData(harness.messagesKey).map((item) => item.id),
+    [event("initial", 100).id, accepted.id],
+  );
+  assert.equal(
+    harness.client.getQueryData(harness.messagesKey)[1]?.localKey,
+    pending.id,
+  );
+});
+
 test("test_reconciliation_retains_identical_pending_sends", () => {
   const harness = createHarness();
   const first = {

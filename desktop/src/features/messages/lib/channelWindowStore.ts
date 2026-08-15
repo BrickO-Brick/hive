@@ -1,4 +1,5 @@
 import type { RelayEvent } from "@/shared/api/types";
+import { reconcileIncomingMessage } from "./messageMerge";
 
 export type ChannelWindowCursor = { createdAt: number; eventId: string };
 export type ChannelWindowThreadSummary = {
@@ -214,10 +215,9 @@ export function mergeLiveChannelWindowEvent(
   }
   return {
     ...current,
-    liveOverlay: current.liveOverlay
-      .filter((candidate) => candidate.id !== event.id)
-      .concat(event)
-      .sort(compareRelayOrder),
+    liveOverlay: reconcileIncomingMessage(current.liveOverlay, event).sort(
+      compareRelayOrder,
+    ),
   };
 }
 
