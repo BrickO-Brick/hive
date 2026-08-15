@@ -28,8 +28,10 @@ import { useEscapeKey } from "@/shared/hooks/useEscapeKey";
 import { useIsThreadPanelOverlay } from "@/shared/hooks/use-mobile";
 import { VideoReviewNavigationProvider } from "@/shared/ui/VideoReviewNavigation";
 import { cn } from "@/shared/lib/cn";
-import { AuxiliaryPanel } from "@/shared/layout/AuxiliaryPanel";
-import { AuxiliaryPanelBody } from "@/shared/layout/AuxiliaryPanel";
+import {
+  AuxiliaryPanel,
+  AuxiliaryPanelBody,
+} from "@/shared/layout/AuxiliaryPanel";
 import {
   AuxiliaryPanelHeader,
   AuxiliaryPanelHeaderGroup,
@@ -910,7 +912,8 @@ export function MessageThreadPanel({
               onEditLastOwnMessage={onEditLastOwnMessage}
               onEditSave={onEditSave}
               onSend={onSend}
-              {...{ onStagePendingSend, onRemovePendingSend }}
+              onStagePendingSend={onStagePendingSend}
+              onRemovePendingSend={onRemovePendingSend}
               placeholder={
                 isHuddleTranscript
                   ? "Message the huddle"
