@@ -41,6 +41,7 @@ import {
   getWorkflowEnabled,
   getWorkflowPrimaryAction,
   getWorkflowPrimaryActionEmoji,
+  getWorkflowStepCount,
   getWorkflowTriggerConfig,
   getWorkflowTriggerSummary,
   getWorkflowTriggerType,
@@ -77,7 +78,7 @@ const ACTION_ICONS: Record<string, LucideIcon> = {
   set_channel_topic: Hash,
 };
 
-const TRIGGER_THEMES: Record<string, string> = {
+const TRIGGER_ACCENTS: Record<string, string> = {
   diff_posted: "border-violet-400/30 bg-violet-600 text-white",
   message_posted: "border-blue-400/30 bg-blue-600 text-white",
   reaction_added: "border-pink-400/30 bg-pink-600 text-white",
@@ -89,13 +90,46 @@ function StatusBadge({ status }: { status: Workflow["status"] }) {
   return (
     <span
       className={cn(
-        "rounded-full px-2 py-1 text-2xs font-semibold uppercase tracking-wider",
-        status === "active"
-          ? "bg-white/20 text-white"
-          : "bg-black/20 text-white/80",
+        "rounded-full border border-border/65 bg-background/80 px-2 py-1 text-2xs font-semibold uppercase tracking-wider shadow-xs",
+        status === "active" ? "text-foreground" : "text-muted-foreground",
       )}
     >
       {status}
+    </span>
+  );
+}
+
+function ActionTileStack({
+  children,
+  stackDepth,
+}: {
+  children: React.ReactNode;
+  stackDepth: number;
+}) {
+  return (
+    <span
+      className={cn(
+        "relative h-9",
+        stackDepth === 0 && "w-9",
+        stackDepth === 1 && "w-[2.625rem]",
+        stackDepth > 1 && "w-12",
+      )}
+    >
+      {stackDepth > 1 ? (
+        <span
+          aria-hidden="true"
+          className="absolute top-1/2 left-3 h-9 w-9 -translate-y-1/2 scale-75 rounded-xl border border-border/60 bg-background/80 opacity-35"
+        />
+      ) : null}
+      {stackDepth > 0 ? (
+        <span
+          aria-hidden="true"
+          className="absolute top-1/2 left-1.5 h-9 w-9 -translate-y-1/2 scale-90 rounded-xl border border-border/65 bg-background/80 opacity-60"
+        />
+      ) : null}
+      <span className="absolute inset-y-0 left-0 z-10 flex w-9 items-center justify-center rounded-xl border border-border/65 bg-background/80 text-muted-foreground shadow-xs">
+        {children}
+      </span>
     </span>
   );
 }
@@ -255,22 +289,21 @@ export function WorkflowCard({
   const actionReactionPresentation = cardReactions.find(
     ({ emoji }) => emoji === actionReaction,
   );
-  const theme = triggerType ? TRIGGER_THEMES[triggerType] : undefined;
+  const stackDepth = Math.min(
+    Math.max(getWorkflowStepCount(workflow.definition) - 1, 0),
+    2,
+  );
+  const triggerAccent = triggerType ? TRIGGER_ACCENTS[triggerType] : undefined;
 
   return (
     <div
       className={cn(
-        "group relative min-h-60 w-full overflow-hidden rounded-2xl border p-5 text-left shadow-sm transition-shadow duration-200 hover:shadow-lg",
-        theme ?? "border-slate-500/30 bg-slate-700 text-white",
+        "group relative min-h-60 w-full overflow-hidden rounded-2xl border border-border/70 bg-muted/50 p-5 text-left text-foreground shadow-xs transition-colors hover:border-border hover:bg-muted/65",
       )}
       data-testid={`workflow-card-${workflow.id}`}
     >
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute inset-0 bg-gradient-to-br from-white/10 via-transparent to-black/15 transition-colors duration-200 group-hover:bg-white/5"
-      />
       <button
-        className="absolute inset-0 z-0 rounded-2xl focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white"
+        className="absolute inset-0 z-0 rounded-2xl focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
         onClick={() => onEdit(workflow)}
         type="button"
       >
@@ -280,7 +313,12 @@ export function WorkflowCard({
       <div className="pointer-events-none relative z-10 flex h-full min-h-48 flex-col">
         <div className="flex items-start justify-between gap-3">
           <div className="flex items-center gap-2" aria-hidden="true">
-            <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-white/15 shadow-xs ring-1 ring-white/15">
+            <span
+              className={cn(
+                "flex h-9 w-9 items-center justify-center rounded-xl border shadow-xs",
+                triggerAccent ?? "border-slate-400/30 bg-slate-600 text-white",
+              )}
+            >
               {triggerReaction ? (
                 <ReactionGlyph
                   className="h-6 w-6 text-2xl"
@@ -296,8 +334,8 @@ export function WorkflowCard({
             </span>
             {ActionIcon ? (
               <>
-                <ArrowRight className="h-4 w-4 text-white/60" />
-                <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-white/15 shadow-xs ring-1 ring-white/15">
+                <ArrowRight className="h-4 w-4 text-muted-foreground/60" />
+                <ActionTileStack stackDepth={stackDepth}>
                   {actionReactionPresentation ? (
                     <ReactionGlyph
                       className="h-6 w-6 text-2xl"
@@ -308,7 +346,7 @@ export function WorkflowCard({
                   ) : (
                     <ActionIcon className="h-5 w-5" />
                   )}
-                </span>
+                </ActionTileStack>
               </>
             ) : null}
           </div>
@@ -319,7 +357,7 @@ export function WorkflowCard({
               <DropdownMenuTrigger asChild>
                 <Button
                   aria-label="Workflow actions"
-                  className="h-8 w-8 text-white hover:bg-white/15 hover:text-white data-[state=open]:bg-white/15"
+                  className="h-8 w-8 text-muted-foreground hover:bg-background/80 hover:text-foreground data-[state=open]:bg-background/80 data-[state=open]:text-foreground"
                   size="icon"
                   variant="ghost"
                 >
@@ -364,7 +402,7 @@ export function WorkflowCard({
         </div>
 
         {triggerSummary ? (
-          <p className="mt-4 line-clamp-1 text-xs font-semibold text-white/70">
+          <p className="mt-4 line-clamp-1 text-xs font-semibold text-muted-foreground">
             <TriggerCardText
               authorLoading={triggerPresentation.authorLoading}
               messageLoading={triggerPresentation.messageLoading}
@@ -381,9 +419,9 @@ export function WorkflowCard({
             text={cardLabel}
           />
         </h3>
-        <div className="mt-auto flex min-w-0 items-end justify-between gap-3 pt-5 text-white/75">
+        <div className="mt-auto flex min-w-0 items-end justify-between gap-3 pt-5 text-secondary-foreground/75">
           <div className="min-w-0">
-            <p className="truncate text-xs font-semibold text-white">
+            <p className="truncate text-xs font-semibold text-foreground">
               {workflow.name}
             </p>
             {channelName ? (

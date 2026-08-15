@@ -41,6 +41,13 @@ function getWorkflowSteps(
     : [];
 }
 
+/** Return the number of configured steps in a workflow definition. */
+export function getWorkflowStepCount(
+  definition: Record<string, unknown>,
+): number {
+  return getWorkflowSteps(definition).length;
+}
+
 export function getWorkflowTriggerType(
   definition: Record<string, unknown>,
 ): string | null {
