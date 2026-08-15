@@ -38,11 +38,6 @@ pub fn repo_link(owner: &str, repo_id: &str) -> String {
     format!("buzz://repo?owner={owner}&d={repo_id}")
 }
 
-/// Build a link to a specific git commit in a repository.
-pub fn commit_link(commit_hash: &str, owner: &str, repo_id: &str) -> String {
-    format!("buzz://repo?owner={owner}&d={repo_id}&tab=commits&commit={commit_hash}")
-}
-
 /// Build a `buzz://project` link for a project announcement (kind 30621).
 pub fn project_link(owner: &str, project_id: &str) -> String {
     format!("buzz://project?owner={owner}&d={project_id}")
@@ -89,10 +84,6 @@ mod tests {
         assert_eq!(
             project_link(owner, dtag),
             golden["links"]["project"].as_str().unwrap()
-        );
-        assert_eq!(
-            commit_link(event_id, owner, dtag),
-            golden["links"]["commit"].as_str().unwrap()
         );
     }
 

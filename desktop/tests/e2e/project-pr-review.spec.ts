@@ -43,6 +43,28 @@ async function addProjectToSidebar(
   await browser.getByTestId(`project-browser-result-${dtag}`).click();
 }
 
+function pullRequestRowByAuthor(
+  page: import("@playwright/test").Page,
+  author: string,
+) {
+  return page.getByTestId("project-pull-request-row").filter({
+    has: page.getByRole("button", { name: author, exact: true }),
+  });
+}
+
+async function expectLocalRepositoryOpenAction(
+  page: import("@playwright/test").Page,
+) {
+  const openButton = page.getByRole("button", { name: "Open", exact: true });
+  await expect(openButton).toHaveAttribute(
+    "title",
+    "Open local repository folder",
+  );
+  await expect(
+    page.getByRole("link", { name: "Open", exact: true }),
+  ).toHaveCount(0);
+}
+
 test("same-second request changes supersedes approval", async ({ page }) => {
   await enableProjectsFeature(page);
   await page.addInitScript(() => {
@@ -52,10 +74,7 @@ test("same-second request changes supersedes approval", async ({ page }) => {
   await openBuzzProject(page);
 
   await page.getByRole("tab", { name: "Review" }).click();
-  const aliceRow = page
-    .getByTestId("project-pull-request-row")
-    .filter({ hasText: "alice" })
-    .first();
+  const aliceRow = pullRequestRowByAuthor(page, "alice").first();
   await expect(aliceRow).toBeVisible({ timeout: 10_000 });
   await aliceRow.getByRole("button", { name: /^#/ }).click();
 
@@ -123,15 +142,16 @@ test("PR creator/owner can toggle draft, request reviews, and approve", async ({
 
   // Pick a PR authored by alice: the viewer is not the author, so the
   // Approve button must be available alongside the owner status controls.
-  const aliceRow = prRows.filter({ hasText: "alice" }).first();
+  const aliceRow = prRows
+    .filter({
+      has: page.getByRole("button", { name: "alice", exact: true }),
+    })
+    .first();
   await expect(aliceRow).toBeVisible();
   await aliceRow.getByRole("button", { name: /^#/ }).click();
 
   const header = page.getByRole("heading", { level: 3 });
   await expect(header.first()).toBeVisible();
-  await expect(
-    page.getByRole("heading", { name: "Review", exact: true }),
-  ).toBeVisible();
   await expect(page.getByTestId("project-review-summary")).toBeVisible();
   const sourceChannelLink = page.getByRole("button", {
     name: "Open author-claimed origin channel #general",
@@ -487,10 +507,7 @@ test("merge conflicts offer persistent terminal recovery", async ({ page }) => {
   });
 
   await page.getByRole("tab", { name: "Review" }).click();
-  const aliceRow = page
-    .getByTestId("project-pull-request-row")
-    .filter({ hasText: "alice" })
-    .first();
+  const aliceRow = pullRequestRowByAuthor(page, "alice").first();
   await aliceRow.getByRole("button", { name: /^#/ }).click();
   await page.getByRole("button", { name: "Merge", exact: true }).click();
   await page.getByTestId("merge-pull-request-confirm-button").click();
@@ -550,10 +567,7 @@ test("reviewer can leave a commit-scoped inline diff comment", async ({
   await openBuzzProject(page);
 
   await page.getByRole("tab", { name: "Review" }).click();
-  const aliceRow = page
-    .getByTestId("project-pull-request-row")
-    .filter({ hasText: "alice" })
-    .first();
+  const aliceRow = pullRequestRowByAuthor(page, "alice").first();
   await aliceRow.getByRole("button", { name: /^#/ }).click();
   await page.getByRole("button", { name: /^Files changed/ }).click();
 
@@ -600,12 +614,12 @@ test("reviewer can leave a commit-scoped inline diff comment", async ({
     "Please add a type for this parameter.",
   );
 
-  await expect(
-    page.getByText("Please add a type for this parameter."),
-  ).toBeVisible();
-  await expect(
-    page.getByText("desktop/src/features/projects/ui/ProjectDetailScreen.tsx"),
-  ).toBeVisible();
+  const timelineComment = page
+    .getByTestId("project-pull-request-timeline-row")
+    .filter({ hasText: "Please add a type for this parameter." });
+  await expect(timelineComment).toContainText(
+    "desktop/src/features/projects/ui/ProjectDetailScreen.tsx",
+  );
   await waitForAnimations(page);
   await page.screenshot({
     fullPage: false,
@@ -652,10 +666,7 @@ test("managed agent repository owner can merge", async ({ page }) => {
   await openBuzzProject(page);
 
   await page.getByRole("tab", { name: "Review" }).click();
-  const agentRow = page
-    .getByTestId("project-pull-request-row")
-    .filter({ hasText: "Brain" })
-    .first();
+  const agentRow = pullRequestRowByAuthor(page, "Brain").first();
   await expect(agentRow).toBeVisible({ timeout: 10_000 });
   await agentRow.getByRole("button", { name: /^#/ }).click();
   await page.getByRole("button", { name: "Add Reviewer", exact: true }).click();
@@ -1361,9 +1372,7 @@ test("external repositories stay on local source after a branch round trip", asy
   await expect(
     page.getByRole("button", { name: "Local", exact: true }),
   ).toBeVisible();
-  await expect(
-    page.getByRole("link", { name: "Open", exact: true }),
-  ).toHaveAttribute("href", "https://github.com/block/relay-tools/tree/main");
+  await expectLocalRepositoryOpenAction(page);
 
   await page.getByRole("button", { name: /main/ }).click();
   await page
@@ -1394,12 +1403,7 @@ test("external repositories stay on local source after a branch round trip", asy
   await expect(
     page.getByRole("button", { name: "Local", exact: true }),
   ).toBeVisible();
-  await expect(
-    page.getByRole("link", { name: "Open", exact: true }),
-  ).toHaveAttribute(
-    "href",
-    "https://github.com/block/relay-tools/tree/wintermute%2Fentity-link-recipient-cards-with-a-long-branch-name",
-  );
+  await expectLocalRepositoryOpenAction(page);
 
   await branchTrigger.click();
   await page.getByRole("menuitemradio", { name: "main" }).click();
@@ -1411,9 +1415,7 @@ test("external repositories stay on local source after a branch round trip", asy
   await expect(
     page.getByRole("heading", { name: "Local branch README" }),
   ).toBeVisible();
-  await expect(
-    page.getByRole("link", { name: "Open", exact: true }),
-  ).toHaveAttribute("href", "https://github.com/block/relay-tools/tree/main");
+  await expectLocalRepositoryOpenAction(page);
   await expect(page.getByText("Code hosted on github.com")).toHaveCount(0);
 });
 
@@ -1501,7 +1503,10 @@ test("project task can be created with a category from the tasks header", async 
   await openBuzzProject(page);
 
   await page.getByRole("tab", { name: "Tasks", exact: true }).click();
-  await page.getByRole("button", { name: "Create task" }).click();
+  await page
+    .getByTestId("project-section-header")
+    .getByRole("button", { name: "Create task" })
+    .click();
   await page
     .getByTestId("create-issue-category")
     .selectOption("change-request");

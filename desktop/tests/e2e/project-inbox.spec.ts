@@ -31,7 +31,9 @@ test("Buzz Git pull request renders and stays actionable in Inbox", async ({
 
   const alicePullRequest = page
     .getByTestId("project-pull-request-row")
-    .filter({ hasText: "alice" })
+    .filter({
+      has: page.getByRole("button", { name: "alice", exact: true }),
+    })
     .first();
   await expect(alicePullRequest).toBeVisible({ timeout: 10_000 });
   const pullRequestId = await alicePullRequest.getAttribute(
