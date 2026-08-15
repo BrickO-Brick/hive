@@ -1,0 +1,48 @@
+# GEPA Q7 ROUND 4 (raman-fitting). r3 (rawfit) 0/6: ALL AgentTimeoutError,
+# but 3 shipped artifacts pre-wall. Forensics: bG6EP3P obeyed every r3 rule
+# and STILL failed — it used the linear 1/2.3703 scale, which lands both
+# candidate peaks at textbook x0 with their IDENTITIES SWAPPED. True axis is
+# reciprocal (raw x = wavelength nm; 1e7/x -> 212..6068 cm^-1 sane window),
+# which REVERSES order: raw 6328 -> 1580 (G), raw 3745 -> 2670 (2D). Proof:
+# trial's "G" A=12249 matches verifier 2D A=12314; its "2D" A=8377 matches
+# verifier G A=8383. Two peaks with textbook spacing land "correctly" under
+# multiple transforms — degenerate. Single variable vs mia-v3 (r3 paragraph
+# REPLACED): wholeaxis — try standard physical unit conversions first,
+# reciprocal reverses order so re-identify peaks from transformed positions,
+# accept a transform only if the WHOLE axis range maps into the physically
+# sensible window; baseline + budget rules retained verbatim.
+schema_version: "1"
+condition: tb-gepa-q7r4-wholeaxis
+timing_signal: true
+roster:
+  - id: mia
+    kind: orchestrator
+    role: conn
+    require_reply: true
+    count: 1
+    endpoint: deepseek-ai/Deepseek-V4-Flash
+    model_revision: deepseek/deepseek-v4-flash-20260731
+    prompt:
+      path: personas/bench/gepa/mia-v14-wholeaxis.md
+      sha256: 5741271d7e24096666577e08d5a0930bca3d9111f32d620e15410a97d5714989
+    generation:
+      thinking_effort: high
+  - id: mie
+    kind: worker
+    role: twin
+    count: 1
+    endpoint: deepseek-ai/Deepseek-V4-Flash
+    model_revision: deepseek/deepseek-v4-flash-20260731
+    prompt:
+      path: personas/bench/gepa/mie-v0.md
+      sha256: a4924e4c4507ac466a7500bb34a04a782618df41dba850b6f0f729787c48439b
+    generation:
+      thinking_effort: high
+prices:
+  deepseek-ai/Deepseek-V4-Flash:
+    input_per_million_usd: 0.14
+    cached_input_per_million_usd: 0.14
+    output_per_million_usd: 0.28
+    cache_read_rate: 0.0
+trial_budget:
+  timeout_seconds: 36000
