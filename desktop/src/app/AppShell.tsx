@@ -109,7 +109,7 @@ export function AppShell() {
     handleHuddleStartPendingChange,
     handleHuddleStarted,
     handleHuddleVisibilityChange,
-    handleSidebarChannelSelect,
+    handleSidebarChannelSelect: selectSidebarChannel,
     huddleBackingChannelIds,
     revealedHuddleChannelIds,
     isHuddleCompanionOpen,
@@ -153,6 +153,48 @@ export function AppShell() {
     () => deriveShellRoute(location.pathname),
     [location.pathname],
   );
+  const [pendingSidebarChannelId, setPendingSidebarChannelId] = React.useState<
+    string | null
+  >(null);
+  const pendingSidebarNavigationFrameRef = React.useRef<number | null>(null);
+  const pendingSidebarNavigationTimerRef = React.useRef<number | null>(null);
+  React.useEffect(() => {
+    return () => {
+      if (pendingSidebarNavigationFrameRef.current !== null) {
+        window.cancelAnimationFrame(pendingSidebarNavigationFrameRef.current);
+      }
+      if (pendingSidebarNavigationTimerRef.current !== null) {
+        window.clearTimeout(pendingSidebarNavigationTimerRef.current);
+      }
+    };
+  }, []);
+  React.useEffect(() => {
+    if (pendingSidebarChannelId === selectedChannelId) {
+      setPendingSidebarChannelId(null);
+    }
+  }, [pendingSidebarChannelId, selectedChannelId]);
+  const handleSidebarChannelSelect = React.useCallback(
+    (channelId: string) => {
+      setPendingSidebarChannelId(channelId);
+      if (pendingSidebarNavigationFrameRef.current !== null) {
+        window.cancelAnimationFrame(pendingSidebarNavigationFrameRef.current);
+      }
+      if (pendingSidebarNavigationTimerRef.current !== null) {
+        window.clearTimeout(pendingSidebarNavigationTimerRef.current);
+      }
+      pendingSidebarNavigationFrameRef.current = window.requestAnimationFrame(
+        () => {
+          pendingSidebarNavigationFrameRef.current = null;
+          pendingSidebarNavigationTimerRef.current = window.setTimeout(() => {
+            pendingSidebarNavigationTimerRef.current = null;
+            selectSidebarChannel(channelId);
+          }, 0);
+        },
+      );
+    },
+    [selectSidebarChannel],
+  );
+  const sidebarSelectedChannelId = pendingSidebarChannelId ?? selectedChannelId;
   const {
     removeCommunity: handleRemoveCommunity,
     switchCommunity: handleSwitchCommunity,
@@ -880,7 +922,7 @@ export function AppShell() {
                               ] ?? undefined)
                             : undefined
                         }
-                        selectedChannelId={selectedChannelId}
+                        selectedChannelId={sidebarSelectedChannelId}
                         selectedView={selectedView}
                         unreadChannelIds={unreadChannelIds}
                         previewActivityChannelIds={unreadThreadChannelIds}

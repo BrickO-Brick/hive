@@ -2781,6 +2781,53 @@ test("composer is focused after switching to a different channel", async ({
   await expect(input).toBeFocused();
 });
 
+test("sidebar selection paints before cached channel work starts", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+  await expect(page.getByTestId("chat-title")).toHaveText("general");
+
+  await page.evaluate(() => {
+    const observed = { selectedBeforeRoute: false };
+    Object.assign(window, { __BUZZ_SIDEBAR_SELECTION_OBSERVED__: observed });
+    const observer = new MutationObserver(() => {
+      const random = document.querySelector('[data-testid="channel-random"]');
+      const title = document.querySelector('[data-testid="chat-title"]');
+      if (
+        random?.getAttribute("data-active") === "true" &&
+        title?.textContent === "general"
+      ) {
+        observed.selectedBeforeRoute = true;
+        observer.disconnect();
+      }
+    });
+    observer.observe(document.body, {
+      attributes: true,
+      attributeFilter: ["data-active"],
+      childList: true,
+      subtree: true,
+    });
+  });
+
+  await page.getByTestId("channel-random").click();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (
+            window as Window & {
+              __BUZZ_SIDEBAR_SELECTION_OBSERVED__?: {
+                selectedBeforeRoute: boolean;
+              };
+            }
+          ).__BUZZ_SIDEBAR_SELECTION_OBSERVED__?.selectedBeforeRoute ?? false,
+      ),
+    )
+    .toBe(true);
+  await expect(page.getByTestId("chat-title")).toHaveText("random");
+});
+
 test("thread open paints immediate feedback before deferred panel work", async ({
   page,
 }) => {
