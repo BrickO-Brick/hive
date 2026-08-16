@@ -316,8 +316,7 @@ export function useHuddlePresentation() {
         isHuddleDrawerOpen &&
         channelId === activeHuddleChannelIdRef.current
       ) {
-        showHuddleInMainApp(channelId);
-        return;
+        return showHuddleInMainApp(channelId);
       }
       return goChannel(channelId);
     },
