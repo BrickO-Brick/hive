@@ -111,20 +111,20 @@ export function listSidebarProjects({
   projects: readonly Project[];
   sort: SidebarProjectsSort;
 }): Project[] {
-  return [...projects]
-    .filter(
-      (project) =>
-        addedProjectAddresses.has(project.projectAddress) &&
-        (filter !== "owned" ||
-          isProjectOwnedByCurrentUser(project, currentPubkey)),
-    )
-    .sort((left, right) => {
-      if (sort === "created") {
-        return (
-          right.createdAt - left.createdAt ||
-          left.name.localeCompare(right.name)
-        );
-      }
-      return left.name.localeCompare(right.name);
-    });
+  // The two modes are independent views: "added" lists explicit sidebar
+  // membership, while "owned" must surface every project the viewer owns —
+  // including ones never added to the sidebar.
+  const matchesFilter =
+    filter === "owned"
+      ? (project: Project) =>
+          isProjectOwnedByCurrentUser(project, currentPubkey)
+      : (project: Project) => addedProjectAddresses.has(project.projectAddress);
+  return projects.filter(matchesFilter).sort((left, right) => {
+    if (sort === "created") {
+      return (
+        right.createdAt - left.createdAt || left.name.localeCompare(right.name)
+      );
+    }
+    return left.name.localeCompare(right.name);
+  });
 }

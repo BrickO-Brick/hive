@@ -1,6 +1,5 @@
 import { Hash, MessageSquare } from "lucide-react";
 import * as React from "react";
-import { useQuery } from "@tanstack/react-query";
 
 import { useAppNavigation } from "@/app/navigation/useAppNavigation";
 import { useChannelsQuery } from "@/features/channels/hooks";
@@ -12,28 +11,15 @@ import {
 import { UserProfilePopover } from "@/features/profile/ui/UserProfilePopover";
 import {
   type DiscussionChannel,
-  type DiscussionOrigin,
   discussionSnippet,
   groupDiscussionChannels,
   mergeOriginDiscussionChannel,
-  pickOriginConversationEvent,
-  relayEventToSearchHit,
 } from "@/features/projects/lib/discussionChannels";
 import { relativeTime } from "@/features/projects/lib/projectsViewHelpers";
 import { useSearchMessagesQuery } from "@/features/search/hooks";
-import { relayClient } from "@/shared/api/relayClient";
 import type { SearchHit } from "@/shared/api/searchTypes";
-import {
-  KIND_FORUM_COMMENT,
-  KIND_FORUM_POST,
-  KIND_STREAM_MESSAGE,
-  KIND_STREAM_MESSAGE_V2,
-} from "@/shared/constants/kinds";
+import { KIND_FORUM_COMMENT, KIND_FORUM_POST } from "@/shared/constants/kinds";
 import { cn } from "@/shared/lib/cn";
-import {
-  getMentionTagPubkey,
-  resolveMentionProps,
-} from "@/shared/lib/resolveMentionNames";
 import { BuzzLoadingState } from "@/shared/ui/BuzzLoadingState";
 import { Markdown } from "@/shared/ui/markdown";
 import { UserAvatar } from "@/shared/ui/UserAvatar";
@@ -43,45 +29,6 @@ import { useProjectConversationPanel } from "./ProjectConversationPanelContext";
 // marker when it fills rather than silently presenting partial totals as exact.
 const DISCUSSION_SEARCH_LIMIT = 500;
 const COLLAPSED_MENTION_ROWS = 3;
-const ORIGIN_CONVERSATION_KINDS = [
-  KIND_STREAM_MESSAGE,
-  KIND_STREAM_MESSAGE_V2,
-  KIND_FORUM_POST,
-  KIND_FORUM_COMMENT,
-];
-
-function useOriginConversationHit(
-  origin: DiscussionOrigin | null,
-  hasSearchHit: boolean,
-): { hit: SearchHit | null; tags: string[][] | null } {
-  const query = useQuery({
-    queryKey: [
-      "project-origin-conversation",
-      origin?.channelId ?? null,
-      origin?.pubkey ?? null,
-      origin?.createdAt ?? null,
-    ],
-    enabled: Boolean(origin) && !hasSearchHit,
-    queryFn: async () => {
-      if (!origin) return { hit: null, tags: null };
-      const events = await relayClient.fetchEvents({
-        kinds: ORIGIN_CONVERSATION_KINDS,
-        "#h": [origin.channelId],
-        until: origin.createdAt,
-        limit: 20,
-      });
-      const event = pickOriginConversationEvent(events, origin);
-      return event
-        ? {
-            hit: relayEventToSearchHit(event, origin.channelId),
-            tags: event.tags,
-          }
-        : { hit: null, tags: null };
-    },
-    staleTime: 30_000,
-  });
-  return query.data ?? { hit: null, tags: null };
-}
 
 /**
  * Messages (and the channels containing them) that link the entity matched
@@ -131,9 +78,9 @@ function useChannelNameLookup(enabled: boolean) {
  * bordered block under the body. Each channel gets a name line plus a
  * compact markdown preview of the latest message (same `inbox-preview-markdown`
  * treatment as inbox rows). Tasks and reviews also include the origin
- * channel (`h` tag), because that thread created the entity and will not
- * contain a share link yet. Renders nothing when search and origin are both
- * empty.
+ * channel (`h` tag) as a channel-only row — the tag proves only which
+ * channel the entity came from, so no message is quoted or attributed for
+ * it. Renders nothing when search and origin are both empty.
  */
 export function DiscussedInChannels({
   className,
@@ -174,19 +121,6 @@ export function DiscussedInChannels({
     () => mergeOriginDiscussionChannel(discussed, origin),
     [discussed, origin],
   );
-  const originConversation = useOriginConversationHit(
-    origin,
-    hits.some((hit) => hit.channelId === origin?.channelId),
-  );
-  const originSearchHit = originConversation.hit;
-  const originTags = originConversation.tags;
-  const originMentionPubkeys = React.useMemo(() => {
-    if (!originTags) return [];
-    return originTags.flatMap((tag) => {
-      const pubkey = getMentionTagPubkey(tag);
-      return pubkey ? [pubkey] : [];
-    });
-  }, [originTags]);
   const { goChannel, openSearchHit } = useAppNavigation();
   const projectConversationPanel = useProjectConversationPanel();
   const [expanded, setExpanded] = React.useState(false);
@@ -195,16 +129,14 @@ export function DiscussedInChannels({
     ? channels
     : channels.slice(0, COLLAPSED_MENTION_ROWS);
   const profilesQuery = useUsersBatchQuery(
-    [
-      ...visible.flatMap((channel) => channel.participants),
-      ...originMentionPubkeys,
-    ],
+    visible.flatMap((channel) => channel.participants),
     { enabled: visible.length > 0 },
   );
   const profiles = profilesQuery.data?.profiles;
   // Hits are sorted newest first, so the first hit per channel is the one a
-  // click should land on (and the one worth quoting). Origin-channel events
-  // fill in the spawning thread when nobody has pasted a share link yet.
+  // click should land on (and the one worth quoting). The origin channel has
+  // no such hit: the `h` tag proves only the channel, so its row navigates
+  // to the channel without claiming any particular message.
   const latestHitByChannel = React.useMemo(() => {
     const byChannel = new Map<string, SearchHit>();
     for (const hit of hits) {
@@ -212,14 +144,8 @@ export function DiscussedInChannels({
         byChannel.set(hit.channelId, hit);
       }
     }
-    if (
-      originSearchHit?.channelId &&
-      !byChannel.has(originSearchHit.channelId)
-    ) {
-      byChannel.set(originSearchHit.channelId, originSearchHit);
-    }
     return byChannel;
-  }, [hits, originSearchHit]);
+  }, [hits]);
   if (channels.length === 0) return null;
 
   const hiddenCount = channels.length - visible.length;
@@ -239,9 +165,6 @@ export function DiscussedInChannels({
         {visible.map((channel) => {
           const latestHit = latestHitByChannel.get(channel.id);
           const name = channelName(channel.id, channel.name);
-          const isOriginFallback =
-            Boolean(originSearchHit) &&
-            latestHit?.eventId === originSearchHit?.eventId;
           const opensForum =
             latestHit != null &&
             (latestHit.kind === KIND_FORUM_POST ||
@@ -257,10 +180,6 @@ export function DiscussedInChannels({
             }
             projectConversationPanel.openConversation(latestHit);
           };
-          const previewMentionNames =
-            isOriginFallback && originTags
-              ? resolveMentionProps(originTags, profiles).mentionNames
-              : undefined;
           return (
             <div
               className="group relative flex w-full min-w-0 items-start gap-2.5 px-3 py-2 transition-colors hover:bg-muted/30"
@@ -268,10 +187,18 @@ export function DiscussedInChannels({
               key={channel.id}
             >
               <button
-                aria-label={`Open conversation in #${name}`}
+                aria-label={
+                  latestHit
+                    ? `Open conversation in #${name}`
+                    : `Open channel #${name}`
+                }
                 className="absolute inset-0"
                 onClick={openConversation}
-                title={`Open the latest conversation in #${name}`}
+                title={
+                  latestHit
+                    ? `Open the latest conversation in #${name}`
+                    : `Open #${name}`
+                }
                 type="button"
               />
               <span className="relative z-10 pt-0.5">
@@ -289,8 +216,9 @@ export function DiscussedInChannels({
                   />
                   <span className="text-muted-foreground">
                     {" "}
-                    {latestHit && !isOriginFallback ? "discussed" : "started"}{" "}
-                    {entityLabel} in{" "}
+                    {latestHit
+                      ? `discussed ${entityLabel} in`
+                      : `created ${entityLabel} from`}{" "}
                   </span>
                   <button
                     className="pointer-events-auto font-medium text-foreground hover:underline"
@@ -307,10 +235,7 @@ export function DiscussedInChannels({
                 </span>
                 {latestHit ? (
                   <span className="block text-xs text-muted-foreground">
-                    <DiscussionMessagePreview
-                      content={latestHit.content}
-                      mentionNames={previewMentionNames}
-                    />
+                    <DiscussionMessagePreview content={latestHit.content} />
                   </span>
                 ) : null}
               </span>
@@ -341,19 +266,12 @@ const NAME_LIST_MAX = 3;
 
 /** Compact markdown preview matching inbox list rows: first block only,
  * clamped, non-interactive so the overlay click still opens the thread. */
-function DiscussionMessagePreview({
-  content,
-  mentionNames,
-}: {
-  content: string;
-  mentionNames?: string[];
-}) {
+function DiscussionMessagePreview({ content }: { content: string }) {
   return (
     <Markdown
       className="inbox-preview-markdown mt-0.5 text-inherit leading-4"
       content={discussionSnippet(content)}
       interactive={false}
-      mentionNames={mentionNames}
     />
   );
 }

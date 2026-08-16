@@ -8,8 +8,6 @@ import {
   formatNameList,
   groupDiscussionChannels,
   mergeOriginDiscussionChannel,
-  pickOriginConversationEvent,
-  relayEventToSearchHit,
   repositoryDiscussionQuery,
 } from "./discussionChannels.ts";
 
@@ -56,50 +54,6 @@ test("mergeOriginDiscussionChannel prepends the origin when search missed it", (
     discussed,
   );
   assert.equal(mergeOriginDiscussionChannel(discussed, null), discussed);
-});
-
-test("relayEventToSearchHit uses the thread root when present", () => {
-  const hit = relayEventToSearchHit(
-    {
-      id: EVENT_ID,
-      content: "filed it",
-      kind: 9,
-      pubkey: ALICE,
-      created_at: 50,
-      tags: [
-        ["h", "origin"],
-        ["e", "root-id", "", "root"],
-        ["e", "parent-id", "", "reply"],
-      ],
-    },
-    "origin",
-    "agents",
-  );
-  assert.equal(hit.eventId, EVENT_ID);
-  assert.equal(hit.channelId, "origin");
-  assert.equal(hit.channelName, "agents");
-  assert.equal(hit.threadRootId, "root-id");
-});
-
-test("pickOriginConversationEvent prefers the author's newest message", () => {
-  const origin = { channelId: "c1", createdAt: 100, pubkey: ALICE };
-  const picked = pickOriginConversationEvent(
-    [
-      { pubkey: BOB, created_at: 90, id: "bob" },
-      { pubkey: ALICE, created_at: 40, id: "old" },
-      { pubkey: ALICE, created_at: 80, id: "alice" },
-    ],
-    origin,
-  );
-  assert.equal(picked?.id, "alice");
-  assert.equal(
-    pickOriginConversationEvent(
-      [{ pubkey: BOB, created_at: 90, id: "bob" }],
-      origin,
-    )?.id,
-    "bob",
-  );
-  assert.equal(pickOriginConversationEvent([], origin), null);
 });
 
 test("commit queries match full or short hash citations", () => {

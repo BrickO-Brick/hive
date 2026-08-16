@@ -26,6 +26,7 @@ import { projectShareLink } from "@/features/projects/lib/projectShareLinks";
 import {
   addProjectToSidebar,
   PROJECT_SIDEBAR_MEMBERSHIP_EVENT,
+  type ProjectSidebarMembershipChange,
   readProjectSidebarMembership,
   removeProjectFromSidebar,
 } from "@/features/projects/lib/projectSidebarMembership";
@@ -158,14 +159,34 @@ function SidebarProjectsSectionContent() {
   const deleteProjectMutation = useDeleteProjectMutation();
   const isPending = projectsQuery.isPending || identityQuery.isPending;
   React.useEffect(() => {
-    const refresh = () =>
+    setAddedProjectAddresses(
+      readProjectSidebarMembership(relayOrigin, currentPubkey),
+    );
+    // Consume the membership carried on the event: when persistence is
+    // unavailable the change lives only in the event detail, and re-reading
+    // localStorage would silently revert the user's add/remove.
+    const onChange = (event: Event) => {
+      const detail = (event as CustomEvent<ProjectSidebarMembershipChange>)
+        .detail;
+      if (
+        detail &&
+        detail.relayOrigin === relayOrigin &&
+        currentPubkey &&
+        detail.pubkey.toLowerCase() === currentPubkey.toLowerCase()
+      ) {
+        setAddedProjectAddresses(detail.addresses);
+        return;
+      }
       setAddedProjectAddresses(
         readProjectSidebarMembership(relayOrigin, currentPubkey),
       );
-    refresh();
-    globalThis.addEventListener(PROJECT_SIDEBAR_MEMBERSHIP_EVENT, refresh);
+    };
+    globalThis.addEventListener(PROJECT_SIDEBAR_MEMBERSHIP_EVENT, onChange);
     return () =>
-      globalThis.removeEventListener(PROJECT_SIDEBAR_MEMBERSHIP_EVENT, refresh);
+      globalThis.removeEventListener(
+        PROJECT_SIDEBAR_MEMBERSHIP_EVENT,
+        onChange,
+      );
   }, [currentPubkey, relayOrigin]);
   React.useEffect(() => {
     setProjectExpansion(

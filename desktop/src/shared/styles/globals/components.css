@@ -782,19 +782,19 @@
  * so it can unframe the utility-styled content surface. Chat removes the
  * marker and restores the normal framed surface.
  */
+[data-buzz-content-surface]:has([data-project-detail-screen]),
 :root[data-buzz-sidebar]:not(.dark)
   [data-buzz-content-surface]:has([data-project-detail-screen]),
 :root[data-buzz-sidebar].dark
-  [data-buzz-content-surface]:has([data-project-detail-screen]),
-[data-buzz-content-surface]:has([data-project-detail-screen]) {
+  [data-buzz-content-surface]:has([data-project-detail-screen]) {
   box-shadow: none;
 }
 
+[data-buzz-content-surface]:has([data-project-context-detached="true"]),
 :root[data-buzz-sidebar]:not(.dark)
   [data-buzz-content-surface]:has([data-project-context-detached="true"]),
 :root[data-buzz-sidebar].dark
-  [data-buzz-content-surface]:has([data-project-context-detached="true"]),
-[data-buzz-content-surface]:has([data-project-context-detached="true"]) {
+  [data-buzz-content-surface]:has([data-project-context-detached="true"]) {
   background: transparent;
   border-radius: 0;
   box-shadow: none;

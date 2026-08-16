@@ -13,6 +13,7 @@ import {
 import { restoreProjectsAgentConversation } from "@/features/projects/lib/projectAgentConversation";
 import {
   clearStoredProjectsAgentConversation,
+  type ProjectsConversationOpener,
   readStoredProjectsAgentConversation,
   type StoredProjectsAgentConversation,
   writeStoredProjectsAgentConversation,
@@ -34,7 +35,7 @@ import { ProjectAgentContextStrip } from "./ProjectAgentContextStrip";
 type ProjectAgentConversation = {
   agent: AgentCandidate;
   channel: Channel;
-  visibleAfter: number;
+  opener: ProjectsConversationOpener;
 };
 
 export function ProjectAgentChatPanel({
@@ -99,8 +100,6 @@ export function ProjectAgentChatPanel({
       const trimmed = content.trim();
       if (!trimmed || !selectedAgent || isSending) return;
       setIsSending(true);
-      const visibleAfter =
-        conversation?.visibleAfter ?? Math.floor(Date.now() / 1_000);
       try {
         if (selectedAgent.isManaged && !selectedAgent.isActive) {
           await startAgentMutation.mutateAsync(selectedAgent.pubkey);
@@ -110,7 +109,7 @@ export function ProjectAgentChatPanel({
           (await openDmMutation.mutateAsync({
             pubkeys: [selectedAgent.pubkey],
           }));
-        await sendChannelMessage(
+        const sent = await sendChannelMessage(
           channel.id,
           `${trimmed}${projectDetailAgentContextBlock(context)}`,
           undefined,
@@ -118,15 +117,22 @@ export function ProjectAgentChatPanel({
           [...new Set([...mentionPubkeys, selectedAgent.pubkey])],
         );
         if (!conversation) {
+          // Anchor the conversation to the exact accepted opener event: a
+          // bare timestamp cannot isolate it from unrelated same-second DM
+          // history.
+          const opener = {
+            createdAt: sent.createdAt,
+            eventId: sent.eventId,
+          };
           const nextConversation = {
             agent: selectedAgent,
             channel,
-            visibleAfter,
+            opener,
           };
           const stored = {
             agentPubkey: selectedAgent.pubkey,
             channelId: channel.id,
-            visibleAfter,
+            opener,
           };
           setConversation(nextConversation);
           setStoredConversation(stored);
@@ -182,7 +188,7 @@ export function ProjectAgentChatPanel({
               currentPubkey={identityQuery.data?.pubkey ?? null}
               selfAvatarUrl={profileQuery.data?.avatarUrl ?? null}
               stripSelfContent={stripProjectDetailAgentContext}
-              visibleAfter={conversation.visibleAfter}
+              opener={conversation.opener}
             />
           ) : (
             <div className="flex h-full min-h-40 flex-col items-center justify-center gap-2 text-center">

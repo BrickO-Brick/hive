@@ -40,11 +40,17 @@ import { useThreadRepliesForRoots } from "@/features/messages/useThreadReplies";
 import { useProfileQuery, useUsersBatchQuery } from "@/features/profile/hooks";
 import type { Project } from "@/features/projects/hooks";
 import {
+  UNTRUSTED_CONTEXT_NOTICE,
+  untrustedPromptValue,
+} from "@/features/projects/lib/projectDetailAgentContext";
+import {
+  isAtOrAfterConversationOpener,
   mergeProjectAgentConversationEvents,
   restoreProjectsAgentConversation,
 } from "@/features/projects/lib/projectAgentConversation";
 import {
   clearStoredProjectsAgentConversation,
+  type ProjectsConversationOpener,
   readStoredProjectsAgentConversation,
   type StoredProjectsAgentConversation,
   writeStoredProjectsAgentConversation,
@@ -79,7 +85,7 @@ export type AgentCandidate = {
 type ProjectAgentConversation = {
   channel: Channel;
   agent: AgentCandidate;
-  visibleAfter: number;
+  opener: ProjectsConversationOpener;
 };
 
 const MAX_CONTEXT_REPOS = 8;
@@ -87,7 +93,9 @@ const REPO_CONTEXT_MARKER = "Workspace repositories:";
 
 /** Compact machine-readable footer so the agent can scope git queries
  * (repo announcements are addressable by these coordinates). Only sent
- * with the first message of a conversation. */
+ * with the first message of a conversation. Project and repository names
+ * are relay-controlled — each value is neutralized and quoted, and the
+ * block carries the shared untrusted-data framing. */
 function repoContextBlock(projects: readonly Project[]) {
   if (projects.length === 0) return "";
   const repositories = projects.flatMap((project) =>
@@ -101,17 +109,23 @@ function repoContextBlock(projects: readonly Project[]) {
   );
   const listed = repositories
     .slice(0, MAX_CONTEXT_REPOS)
-    .map((repository) => `- ${repository.label} (${repository.repoAddress})`);
+    .map(
+      (repository) =>
+        `- ${untrustedPromptValue(repository.label)} (address: ${untrustedPromptValue(repository.repoAddress, 400)})`,
+    );
   const remaining = repositories.length - listed.length;
   return ["", "---", REPO_CONTEXT_MARKER, ...listed]
     .concat(remaining > 0 ? [`…and ${remaining} more`] : [])
+    .concat([UNTRUSTED_CONTEXT_NOTICE])
     .join("\n");
 }
 
 /** Hides the machine-readable repo footer when rendering the user's own
  * prompt back in the inline conversation. */
 export function stripRepoContext(content: string) {
-  const markerIndex = content.indexOf(`---\n${REPO_CONTEXT_MARKER}`);
+  // The generated footer is appended at the end, so search from the end:
+  // user-authored text may legitimately contain an earlier marker.
+  const markerIndex = content.lastIndexOf(`---\n${REPO_CONTEXT_MARKER}`);
   if (markerIndex === -1) return content;
   return content.slice(0, markerIndex).replace(/\n+$/, "");
 }
@@ -202,7 +216,7 @@ export function ConversationThread({
   currentPubkey,
   selfAvatarUrl,
   stripSelfContent = stripRepoContext,
-  visibleAfter,
+  opener,
 }: {
   channel: Channel;
   agent: AgentCandidate;
@@ -210,7 +224,7 @@ export function ConversationThread({
   currentPubkey: string | null;
   selfAvatarUrl: string | null;
   stripSelfContent?: (content: string) => string;
-  visibleAfter: number;
+  opener: ProjectsConversationOpener;
 }) {
   useChannelSubscription(channel);
   const messagesQuery = useChannelMessagesQuery(channel);
@@ -221,11 +235,11 @@ export function ConversationThread({
           (event) =>
             (event.kind === KIND_STREAM_MESSAGE ||
               event.kind === KIND_STREAM_MESSAGE_V2) &&
-            event.created_at >= visibleAfter &&
+            isAtOrAfterConversationOpener(event, opener) &&
             getThreadReference(event.tags).parentId === null,
         )
         .map((event) => event.id),
-    [messagesQuery.data, visibleAfter],
+    [messagesQuery.data, opener],
   );
   const threadReplies = useThreadRepliesForRoots(channel, threadRootIds);
   const toggleReactionMutation = useToggleReactionMutation();
@@ -281,7 +295,10 @@ export function ConversationThread({
         (message) =>
           (message.kind === KIND_STREAM_MESSAGE ||
             message.kind === KIND_STREAM_MESSAGE_V2) &&
-          message.createdAt >= visibleAfter,
+          isAtOrAfterConversationOpener(
+            { created_at: message.createdAt, id: message.id },
+            opener,
+          ),
       )
       .map((message) =>
         normalizedCurrent &&
@@ -299,7 +316,7 @@ export function ConversationThread({
     selfAvatarUrl,
     stripSelfContent,
     threadReplies.events,
-    visibleAfter,
+    opener,
   ]);
   const conversationEntries = React.useMemo(
     () => messages.map((message) => ({ message, summary: null })),
@@ -454,11 +471,6 @@ export function ProjectsAgentPromptPage({
     if (!trimmed || !selectedAgent || isSending) return;
 
     setIsSending(true);
-    // Cutoff captured before sending: the opening prompt lands at or after
-    // this instant, while everything a reused DM channel already held stays
-    // hidden from the Projects page.
-    const visibleAfter =
-      conversation?.visibleAfter ?? Math.floor(Date.now() / 1_000);
     try {
       if (selectedAgent.isManaged && !selectedAgent.isActive) {
         await startAgentMutation.mutateAsync(selectedAgent.pubkey);
@@ -472,19 +484,29 @@ export function ProjectsAgentPromptPage({
       const content = conversation
         ? trimmed
         : `${trimmed}${repoContextBlock(projects)}`;
-      await sendChannelMessage(channel.id, content, undefined, undefined, [
-        selectedAgent.pubkey,
-      ]);
+      const sent = await sendChannelMessage(
+        channel.id,
+        content,
+        undefined,
+        undefined,
+        [selectedAgent.pubkey],
+      );
       if (!conversation) {
+        // Anchor the conversation to the exact accepted opener event: a bare
+        // timestamp cannot isolate it from unrelated same-second DM history.
+        const opener = {
+          createdAt: sent.createdAt,
+          eventId: sent.eventId,
+        };
         const nextConversation = {
           channel,
           agent: selectedAgent,
-          visibleAfter,
+          opener,
         };
         const stored = {
           agentPubkey: selectedAgent.pubkey,
           channelId: channel.id,
-          visibleAfter,
+          opener,
         };
         setConversation(nextConversation);
         setStoredConversation(stored);
@@ -669,7 +691,7 @@ export function ProjectsAgentPromptPage({
               channel={conversation.channel}
               currentPubkey={identityQuery.data?.pubkey ?? null}
               selfAvatarUrl={profileQuery.data?.avatarUrl ?? null}
-              visibleAfter={conversation.visibleAfter}
+              opener={conversation.opener}
             />
           </div>
         </div>
