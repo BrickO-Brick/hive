@@ -428,3 +428,74 @@ test("matrix: a rebuilt store generation is reopened instead of wedging on the o
     rig.restore();
   }
 });
+
+// ── The badge lane below the projection ──────────────────────────────────────
+//
+// `matrix: an ingested event reaches the projection the badge reads` asserts
+// projectionsRef — the map. It never reads the `rawUnread` memo that turns a
+// projection into unreadChannelIds / unreadChannelCounts, so the whole native
+// badge lane had no witness: forcing `nativeProjection?.count ?? 0` to a
+// constant 0 left the full 4,919-test suite green. This closes that.
+
+test("native: an ingested event reaches the hook's unread counts, not just the projection", async () => {
+  installFreshStorage();
+  const CHANNEL = "channel-badge";
+  const scope = { pubkey: "pk-badge", relayUrl: RELAY };
+  let first;
+  let second;
+  const rig = installNativeRig();
+  try {
+    // First mount creates the native scope.
+    first = await mountUnreadChannels({
+      pubkey: scope.pubkey,
+      relay: RELAY,
+      channels: [{ id: CHANNEL, channelType: "channel" }],
+      relayClient: makeStubRelayClient(),
+    });
+    await settle();
+    const store = rig.scope(scope);
+    assert.ok(store, "precondition: native mode must be entered");
+    await first.unmount();
+    first = null;
+
+    // A notifying event exists natively when the renderer reopens.
+    store.events.set("evt-badge", {
+      id: "evt-badge",
+      channelId: CHANNEL,
+      createdAt: NOW_S,
+      rootId: null,
+      highPriority: false,
+      countsTowardBadge: true,
+      countsTowardAppBadge: true,
+    });
+    assert.equal(
+      store.projections().find((p) => p.channelId === CHANNEL)?.count,
+      1,
+      "precondition: the native projection itself must count the event",
+    );
+
+    // Reopen: the open snapshot carries the projection into the renderer.
+    second = await mountUnreadChannels({
+      pubkey: scope.pubkey,
+      relay: RELAY,
+      channels: [{ id: CHANNEL, channelType: "channel" }],
+      relayClient: makeStubRelayClient(),
+    });
+    await settle();
+    await settle();
+
+    assert.equal(
+      second.result.unreadChannelCounts.get(CHANNEL),
+      1,
+      "the native badgeCount must reach unreadChannelCounts; asserting projectionsRef alone leaves this lane untested",
+    );
+    assert.ok(
+      second.result.unreadChannelIds.has(CHANNEL),
+      "the channel must appear in unreadChannelIds",
+    );
+  } finally {
+    await first?.unmount();
+    await second?.unmount();
+    rig.restore();
+  }
+});
