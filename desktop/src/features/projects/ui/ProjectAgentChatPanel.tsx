@@ -30,6 +30,7 @@ import {
   useAgentCandidates,
 } from "./ProjectsAgentPromptPage";
 import { ProjectAgentContextStrip } from "./ProjectAgentContextStrip";
+import { AgentContextPayloadPreview } from "./AgentContextPayloadPreview";
 
 type ProjectAgentConversation = {
   agent: AgentCandidate;
@@ -87,6 +88,13 @@ export function ProjectAgentChatPanel({
         normalizePubkey(selectedAgent.pubkey)
       ]?.avatarUrl ?? null)
     : null;
+  // Computed once per context so the pre-send preview and the appended
+  // payload are byte-identical: the user must be able to inspect exactly
+  // what will be signed under their key, not a paraphrase of it.
+  const contextPayload = React.useMemo(
+    () => projectDetailAgentContextBlock(context),
+    [context],
+  );
   const restorableConversation = React.useMemo(
     () =>
       restoreProjectsAgentConversation({
@@ -128,7 +136,7 @@ export function ProjectAgentChatPanel({
           }));
         const sent = await sendChannelMessage(
           channel.id,
-          `${trimmed}${projectDetailAgentContextBlock(context)}`,
+          `${trimmed}${contextPayload}`,
           undefined,
           mediaTags,
           [...new Set([...mentionPubkeys, selectedAgent.pubkey])],
@@ -164,7 +172,7 @@ export function ProjectAgentChatPanel({
       }
     },
     [
-      context,
+      contextPayload,
       conversation,
       isSending,
       openDmMutation,
@@ -236,19 +244,25 @@ export function ProjectAgentChatPanel({
           showBackgroundUploadProgress={false}
           showTopBorder={false}
           toolbarExtraActions={
-            conversation ? (
-              <Button
-                aria-label="Clear project agent chat"
-                className="h-7 w-7"
-                onClick={handleClear}
-                size="icon"
-                title="Clear conversation"
-                type="button"
-                variant="ghost"
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </Button>
-            ) : null
+            <>
+              <AgentContextPayloadPreview
+                payload={contextPayload}
+                triggerLabel="Context"
+              />
+              {conversation ? (
+                <Button
+                  aria-label="Clear project agent chat"
+                  className="h-7 w-7"
+                  onClick={handleClear}
+                  size="icon"
+                  title="Clear conversation"
+                  type="button"
+                  variant="ghost"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              ) : null}
+            </>
           }
         />
       </div>

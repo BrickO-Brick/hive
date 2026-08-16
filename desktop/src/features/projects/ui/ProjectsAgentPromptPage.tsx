@@ -39,6 +39,7 @@ import type { TimelineMessage } from "@/features/messages/types";
 import { useThreadRepliesForRoots } from "@/features/messages/useThreadReplies";
 import { useProfileQuery, useUsersBatchQuery } from "@/features/profile/hooks";
 import type { Project } from "@/features/projects/hooks";
+import { AgentContextPayloadPreview } from "./AgentContextPayloadPreview";
 import {
   UNTRUSTED_CONTEXT_NOTICE,
   untrustedPromptValue,
@@ -452,6 +453,13 @@ export function ProjectsAgentPromptPage({
     () => buildSuggestions(projects),
     [projects],
   );
+  // Computed once so the pre-send preview and the appended opener payload
+  // are byte-identical: the user inspects exactly what will be signed under
+  // their key. Repo context rides only on the conversation opener.
+  const repoContextPayload = React.useMemo(
+    () => repoContextBlock(projects),
+    [projects],
+  );
   const canSubmit = Boolean(prompt.trim() && selectedAgent && !isSending);
 
   const handleSubmit = React.useCallback(async () => {
@@ -471,7 +479,7 @@ export function ProjectsAgentPromptPage({
       // Repo context rides only on the conversation opener.
       const content = conversation
         ? trimmed
-        : `${trimmed}${repoContextBlock(projects)}`;
+        : `${trimmed}${repoContextPayload}`;
       const sent = await sendChannelMessage(
         channel.id,
         content,
@@ -513,7 +521,7 @@ export function ProjectsAgentPromptPage({
     conversation,
     isSending,
     openDmMutation,
-    projects,
+    repoContextPayload,
     richText.clearContent,
     richText.getMarkdown,
     selectedAgent,
@@ -650,6 +658,14 @@ export function ProjectsAgentPromptPage({
             Ask
           </Button>
         </div>
+        {conversation ? null : (
+          <div className="flex justify-end pt-1">
+            <AgentContextPayloadPreview
+              payload={repoContextPayload}
+              triggerLabel="Context appended to your first message"
+            />
+          </div>
+        )}
       </div>
       {linkEditor.card}
       {linkEditor.dialog}
