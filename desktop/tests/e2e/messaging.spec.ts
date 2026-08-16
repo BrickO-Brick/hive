@@ -2887,6 +2887,32 @@ test("sidebar selection paints before cached channel work starts", async ({
   await expect(page.getByTestId("chat-title")).toHaveText("random");
 });
 
+test("reselecting the current channel cancels pending sidebar navigation", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+  await expect(page.getByTestId("chat-title")).toHaveText("general");
+
+  const generalUrl = page.url();
+  const historyLength = await page.evaluate(() => window.history.length);
+  await page.evaluate(() => {
+    document
+      .querySelector<HTMLElement>('[data-testid="channel-random"]')
+      ?.click();
+    document
+      .querySelector<HTMLElement>('[data-testid="channel-general"]')
+      ?.click();
+  });
+
+  await expect(page.getByTestId("pending-channel-skeleton")).toHaveCount(0);
+  await expect(page.getByTestId("chat-title")).toHaveText("general");
+  await page.waitForTimeout(100);
+  await expect(page).toHaveURL(generalUrl);
+  await expect(page.getByTestId("chat-title")).toHaveText("general");
+  expect(await page.evaluate(() => window.history.length)).toBe(historyLength);
+});
+
 test("superseded sidebar feedback cannot override newer navigation", async ({
   page,
 }) => {

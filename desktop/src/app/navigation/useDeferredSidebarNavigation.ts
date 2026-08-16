@@ -78,7 +78,12 @@ export function useDeferredSidebarNavigation({
   const selectDeferred = React.useCallback(
     (channelId: string) => {
       if (channelId === selectedChannelId) {
-        selectChannel(channelId);
+        if (pendingChannelId !== null) {
+          dispatchNavigationIntent();
+          cancel();
+        }
+        const navigationResult = selectChannel(channelId);
+        if (navigationResult) void navigationResult.catch(() => undefined);
         return;
       }
       dispatchNavigationIntent();
@@ -122,7 +127,7 @@ export function useDeferredSidebarNavigation({
         });
       });
     },
-    [cancel, selectChannel, selectedChannelId],
+    [cancel, pendingChannelId, selectChannel, selectedChannelId],
   );
 
   return { pendingChannelId, selectDeferred };

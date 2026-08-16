@@ -298,7 +298,7 @@ export function useHuddlePresentation() {
       void queryClient.invalidateQueries({
         queryKey: channelWindowKey(ephemeralChannelId),
       });
-      void goChannel(ephemeralChannelId);
+      return goChannel(ephemeralChannelId);
     },
     [goChannel, queryClient, revealHuddleChannel],
   );
@@ -306,7 +306,7 @@ export function useHuddlePresentation() {
     (ephemeralChannelId: string) => {
       activeHuddleChannelIdRef.current = ephemeralChannelId;
       trackHuddleBackingChannel(ephemeralChannelId);
-      viewHuddleChannel(ephemeralChannelId);
+      return viewHuddleChannel(ephemeralChannelId);
     },
     [trackHuddleBackingChannel, viewHuddleChannel],
   );
