@@ -1,59 +1,64 @@
 import * as React from "react";
 import {
-  flushObservedUnreadWrite,
+  clearObservedUnreadStorage,
+  deriveLatestByChannel,
+  observedUnreadStorageKey,
   pruneObservedUnreadByMarkers,
   readObservedUnreadFromStorage,
   scheduleObservedUnreadWrite,
-  deriveLatestByChannel,
-  clearObservedUnreadStorage,
+  flushObservedUnreadWrite,
   type ObservedUnreadRefs,
 } from "@/features/channels/observedUnreadStorage";
 import { activityScopeKey } from "@/features/channels/threadActivityStorage";
 import type { ObservedUnreadEvent } from "@/features/channels/unreadChannelCounts";
+import {
+  ingestObservedUnread,
+  openObservedUnreadScope,
+  type ObservedUnreadProjection,
+  type ObservedUnreadResponse,
+  type ObservedUnreadWireEvent,
+} from "@/shared/api/tauriObservedUnread";
 
 export type ObservedUnreadPersistence = {
-  /** Scope key loaded into the refs ("" until identity is known). */
   scopeLoadedRef: React.MutableRefObject<string>;
-  /** Current scope derived from normalized pubkey + relay. */
   currentScope: string;
-  /**
-   * Returns true when the identity-reset effect has committed and the observed
-   * refs hold data for the current scope. Always reads the ref at call time.
-   * Use as a scope guard before projecting or mutating the observed refs.
-   */
+  projectionsRef: React.MutableRefObject<Map<string, ObservedUnreadProjection>>;
+  isNative: () => boolean;
   isScopeLoaded: () => boolean;
-  /**
-   * Call after recording a new observed event to schedule a debounced write.
-   * @param scope - the currentScope value captured this render
-   */
-  schedule: (scope: string) => void;
-  /** Remove a single channel from the persisted cache (clearObserved path). */
+  schedule: (
+    scope: string,
+    channelId?: string,
+    event?: ObservedUnreadEvent,
+  ) => void;
   removeChannel: (channelId: string) => void;
-  /** Clear the entire persisted cache (mark-all-read path). */
+  updateMembership: (kind: string, value: string, present: boolean) => void;
   clearAll: () => void;
 };
 
-/**
- * Additional options for useObservedUnreadPersistence.
- */
-export type UseObservedUnreadPersistenceOptions = {
-  /**
-   * Called when a marker-prune pass removes at least one event from the
-   * in-memory refs. The hook itself cannot bump the parent's version counter;
-   * pass a stable callback (e.g. useEvent-wrapped bumpLatestVersion) here so
-   * the UI re-renders when stale observed events are swept out.
-   */
+type Options = {
   onPruned?: () => void;
+  membershipSeed?: {
+    participatedRootIds: string[];
+    authoredRootIds: string[];
+    mentionedRootIds: string[];
+    followedRootIds: string[];
+    mutedRootIds: string[];
+    mutedChannelIds: string[];
+  };
 };
 
-/**
- * Hook that manages the observed-unread localStorage persistence layer for
- * useUnreadChannels. Owns the scope ref, debounce timer, pagehide flush, and
- * marker-prune effect.
- *
- * Returns a stable API object; callers read `scopeLoadedRef` and `currentScope`
- * to guard writes, and call `schedule`/`removeChannel`/`clearAll` on mutations.
- */
+type QueuedObservedUnreadEvent = {
+  scope: string;
+  event: ObservedUnreadWireEvent;
+};
+
+type NativeState = {
+  scope: { pubkey: string; relayUrl: string };
+  generation: string;
+  revision: number;
+  sequence: number;
+};
+
 export function useObservedUnreadPersistence(
   normalizedPubkey: string | null,
   normalizedRelayUrl: string,
@@ -65,15 +70,20 @@ export function useObservedUnreadPersistence(
     Map<string, Map<string, ObservedUnreadEvent>>
   >,
   latestByChannelRef: React.MutableRefObject<Map<string, number>>,
-  options: UseObservedUnreadPersistenceOptions = {},
+  options: Options = {},
 ): ObservedUnreadPersistence {
+  const optionsRef = React.useRef(options);
+  optionsRef.current = options;
   const currentScope = activityScopeKey(normalizedPubkey, normalizedRelayUrl);
-
-  const { onPruned } = options;
-
-  const scopeLoadedRef = React.useRef<string>("");
+  const scopeLoadedRef = React.useRef("");
+  const projectionsRef = React.useRef(
+    new Map<string, ObservedUnreadProjection>(),
+  );
+  const nativeRef = React.useRef<NativeState | null>(null);
+  const nativeFailedRef = React.useRef(false);
   const timerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-
+  const queueRef = React.useRef<QueuedObservedUnreadEvent[]>([]);
+  const chainRef = React.useRef(Promise.resolve());
   const persistRefs = React.useRef<ObservedUnreadRefs>({
     eventsRef: observedUnreadEventsByChannelRef,
     scopeLoadedRef,
@@ -81,129 +91,382 @@ export function useObservedUnreadPersistence(
   });
   persistRefs.current.eventsRef = observedUnreadEventsByChannelRef;
 
-  // pagehide: synchronously flush any pending debounce before the webview
-  // unloads. Cmd+R reloads within 500ms of teardown; without this flush the
-  // last observed event would be lost within the debounce window.
+  const reopen = React.useCallback(
+    async (scope: { pubkey: string; relayUrl: string }) => {
+      const response = await openObservedUnreadScope({
+        scope,
+        legacyPayload: null,
+        membershipSeed: null,
+      });
+      if (response.kind !== "snapshot") return;
+      nativeRef.current = {
+        scope,
+        generation: response.generation,
+        revision: response.revision,
+        sequence: response.lastAckedSequence,
+      };
+      projectionsRef.current = new Map(
+        response.channels.map((item) => [item.channelId, item]),
+      );
+      optionsRef.current.onPruned?.();
+    },
+    [],
+  );
+
+  const apply = React.useCallback(
+    (response: ObservedUnreadResponse) => {
+      const state = nativeRef.current;
+      if (
+        !state ||
+        activityScopeKey(response.scope.pubkey, response.scope.relayUrl) !==
+          scopeLoadedRef.current
+      )
+        return;
+      if (response.kind === "snapshotRequired") {
+        void reopen(state.scope);
+        return;
+      }
+      if (response.kind === "snapshot") {
+        if (
+          response.generation !== state.generation ||
+          response.revision >= state.revision
+        ) {
+          projectionsRef.current = new Map(
+            response.channels.map((item) => [item.channelId, item]),
+          );
+          nativeRef.current = {
+            ...state,
+            generation: response.generation,
+            revision: response.revision,
+            sequence: response.lastAckedSequence,
+          };
+          optionsRef.current.onPruned?.();
+        }
+        return;
+      }
+      if (
+        response.generation !== state.generation ||
+        response.baseRevision !== state.revision
+      ) {
+        void reopen(state.scope);
+        return;
+      }
+      const next = new Map(projectionsRef.current);
+      for (const id of response.removed) next.delete(id);
+      for (const item of response.upserts) next.set(item.channelId, item);
+      projectionsRef.current = next;
+      nativeRef.current = {
+        ...state,
+        revision: response.revision,
+        sequence: response.ackedSequence,
+      };
+      optionsRef.current.onPruned?.();
+    },
+    [reopen],
+  );
+
+  const flushNative = React.useCallback(() => {
+    const state = nativeRef.current;
+    if (!state || queueRef.current.length === 0) return;
+    const stateScope = activityScopeKey(
+      state.scope.pubkey,
+      state.scope.relayUrl,
+    );
+    const queued = queueRef.current.filter(({ scope }) => scope === stateScope);
+    queueRef.current = queueRef.current.filter(
+      ({ scope }) => scope !== stateScope,
+    );
+    if (queued.length === 0) return;
+    const events = queued.map(({ event }) => event);
+    chainRef.current = chainRef.current
+      .then(() => {
+        const current = nativeRef.current;
+        if (
+          !current ||
+          current.scope.pubkey !== state.scope.pubkey ||
+          current.scope.relayUrl !== state.scope.relayUrl
+        ) {
+          queueRef.current = [...queued, ...queueRef.current];
+          return;
+        }
+        return ingestObservedUnread({
+          scope: current.scope,
+          sequence: current.sequence + 1,
+          baseRevision: current.revision,
+          events,
+          markers: [],
+          membership: [],
+          clearChannels: [],
+          clearAll: false,
+        }).then(apply);
+      })
+      .catch(() => {
+        queueRef.current = [...queued, ...queueRef.current];
+        nativeFailedRef.current = true;
+        nativeRef.current = null;
+        scheduleObservedUnreadWrite(
+          scopeLoadedRef.current,
+          persistRefs.current,
+        );
+      });
+  }, [apply]);
+
   React.useEffect(() => {
-    const refs = persistRefs.current;
-    const onPageHide = () => flushObservedUnreadWrite(refs);
+    const onPageHide = () => {
+      flushNative();
+      flushObservedUnreadWrite(persistRefs.current);
+    };
     window.addEventListener("pagehide", onPageHide);
     return () => window.removeEventListener("pagehide", onPageHide);
-  }, []);
+  }, [flushNative]);
 
-  // Hydrate refs from storage whenever identity/relay changes. Flush the OLD
-  // scope first so no event is lost before we clobber the refs.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: normalizedRelayUrl is intentional reset signal alongside normalizedPubkey
+  // Identity and relay are the intentional reset signals; refs and stable callbacks
+  // are mutable containers/transport helpers rather than reset triggers.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: scope reset is keyed only by normalized identity and relay
   React.useEffect(() => {
+    flushNative();
     flushObservedUnreadWrite(persistRefs.current);
-
+    nativeRef.current = null;
+    nativeFailedRef.current = false;
+    projectionsRef.current = new Map();
     observedUnreadEventsByChannelRef.current = new Map();
     latestByChannelRef.current = new Map();
-
-    if (normalizedPubkey && normalizedRelayUrl) {
-      const stored = readObservedUnreadFromStorage(
-        normalizedPubkey,
-        normalizedRelayUrl,
-      );
-      if (stored && stored.size > 0) {
-        observedUnreadEventsByChannelRef.current = stored;
-        latestByChannelRef.current = deriveLatestByChannel(stored);
-      }
-    }
-    scopeLoadedRef.current = activityScopeKey(
-      normalizedPubkey,
-      normalizedRelayUrl,
-    );
-
-    // On unmount (or before next effect run), flush the current scope so any
-    // in-flight debounce is persisted before refs are clobbered.
+    scopeLoadedRef.current = "";
+    if (!normalizedPubkey || !normalizedRelayUrl) return;
+    let active = true;
+    const scope = { pubkey: normalizedPubkey, relayUrl: normalizedRelayUrl };
+    const key = observedUnreadStorageKey(normalizedPubkey, normalizedRelayUrl);
+    let legacyPayload: unknown = null;
+    try {
+      const raw = window.localStorage.getItem(key);
+      legacyPayload = raw ? JSON.parse(raw) : null;
+    } catch {}
+    void openObservedUnreadScope({
+      scope,
+      legacyPayload,
+      membershipSeed: optionsRef.current.membershipSeed ?? null,
+    })
+      .then((response) => {
+        if (!active) return;
+        if (response.kind !== "snapshot")
+          throw new Error(
+            "native observed-unread open did not return snapshot",
+          );
+        nativeRef.current = {
+          scope,
+          generation: response.generation,
+          revision: response.revision,
+          sequence: response.lastAckedSequence,
+        };
+        scopeLoadedRef.current = currentScope;
+        apply(response);
+        if (response.migrationComplete) {
+          try {
+            window.localStorage.removeItem(key);
+          } catch {}
+        }
+      })
+      .catch(() => {
+        if (!active) return;
+        nativeFailedRef.current = true;
+        const stored = readObservedUnreadFromStorage(
+          normalizedPubkey,
+          normalizedRelayUrl,
+        );
+        if (stored) {
+          observedUnreadEventsByChannelRef.current = stored;
+          latestByChannelRef.current = deriveLatestByChannel(stored);
+        }
+        scopeLoadedRef.current = currentScope;
+        optionsRef.current.onPruned?.();
+      });
     return () => {
+      active = false;
+      flushNative();
       flushObservedUnreadWrite(persistRefs.current);
     };
   }, [normalizedPubkey, normalizedRelayUrl]);
 
-  // Marker prune: whenever read state advances, drop events now covered by
-  // their channel/thread/msg marker, persist if anything changed.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: readStateVersion + isReadStateReady are intentional prune triggers
+  // readStateVersion is the intentional invalidation signal; marker readers and
+  // mutable refs are sampled when that signal advances.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: readStateVersion and readiness intentionally drive marker synchronization
   React.useEffect(() => {
-    if (!isReadStateReady) return;
-    const scope = scopeLoadedRef.current;
-    if (!scope || scope !== currentScope) return;
-
-    const changed = pruneObservedUnreadByMarkers(
-      observedUnreadEventsByChannelRef.current,
-      latestByChannelRef.current,
-      getEffectiveTimestamp,
-      getOwnTimestamp,
-    );
-    if (changed) {
-      scheduleObservedUnreadWrite(scope, persistRefs.current);
-      onPruned?.();
+    if (!isReadStateReady || scopeLoadedRef.current !== currentScope) return;
+    const state = nativeRef.current;
+    if (state) {
+      const contexts = new Set<string>();
+      for (const [
+        channelId,
+        events,
+      ] of observedUnreadEventsByChannelRef.current) {
+        contexts.add(channelId);
+        for (const event of events.values()) {
+          contexts.add(`msg:${event.id}`);
+          if (event.rootId) contexts.add(`thread:${event.rootId}`);
+        }
+      }
+      const markers = [...contexts].map((contextId) => ({
+        contextId,
+        readAt:
+          contextId.startsWith("thread:") || contextId.startsWith("msg:")
+            ? getOwnTimestamp(contextId)
+            : getEffectiveTimestamp(contextId),
+      }));
+      chainRef.current = chainRef.current.then(() => {
+        const current = nativeRef.current;
+        if (
+          !current ||
+          current.scope.pubkey !== state.scope.pubkey ||
+          current.scope.relayUrl !== state.scope.relayUrl
+        )
+          return;
+        return ingestObservedUnread({
+          scope: current.scope,
+          sequence: current.sequence + 1,
+          baseRevision: current.revision,
+          events: [],
+          markers,
+          membership: [],
+          clearChannels: [],
+          clearAll: false,
+        }).then(apply);
+      });
+    } else if (
+      pruneObservedUnreadByMarkers(
+        observedUnreadEventsByChannelRef.current,
+        latestByChannelRef.current,
+        getEffectiveTimestamp,
+        getOwnTimestamp,
+      )
+    ) {
+      scheduleObservedUnreadWrite(currentScope, persistRefs.current);
+      optionsRef.current.onPruned?.();
     }
   }, [readStateVersion, isReadStateReady]);
 
   const schedule = React.useCallback(
-    (scope: string) => scheduleObservedUnreadWrite(scope, persistRefs.current),
-    [],
+    (scope: string, channelId?: string, event?: ObservedUnreadEvent) => {
+      if (scopeLoadedRef.current !== scope) return;
+      if (nativeRef.current && channelId && event) {
+        queueRef.current.push({ scope, event: { channelId, ...event } });
+        if (timerRef.current !== null) clearTimeout(timerRef.current);
+        timerRef.current = setTimeout(() => {
+          timerRef.current = null;
+          flushNative();
+        }, 1_000);
+      } else scheduleObservedUnreadWrite(scope, persistRefs.current);
+    },
+    [flushNative],
   );
 
+  const mutateClear = React.useCallback(
+    (clearChannels: string[], clearAll: boolean) => {
+      const state = nativeRef.current;
+      if (!state) return false;
+      flushNative();
+      chainRef.current = chainRef.current.then(() => {
+        const current = nativeRef.current;
+        if (
+          !current ||
+          current.scope.pubkey !== state.scope.pubkey ||
+          current.scope.relayUrl !== state.scope.relayUrl
+        )
+          return;
+        return ingestObservedUnread({
+          scope: current.scope,
+          sequence: current.sequence + 1,
+          baseRevision: current.revision,
+          events: [],
+          markers: [],
+          membership: [],
+          clearChannels,
+          clearAll,
+        }).then(apply);
+      });
+      return true;
+    },
+    [apply, flushNative],
+  );
+
+  const updateMembership = React.useCallback(
+    (kind: string, value: string, present: boolean) => {
+      const state = nativeRef.current;
+      if (!state) return;
+      flushNative();
+      chainRef.current = chainRef.current.then(() => {
+        const current = nativeRef.current;
+        if (
+          !current ||
+          current.scope.pubkey !== state.scope.pubkey ||
+          current.scope.relayUrl !== state.scope.relayUrl
+        )
+          return;
+        return ingestObservedUnread({
+          scope: current.scope,
+          sequence: current.sequence + 1,
+          baseRevision: current.revision,
+          events: [],
+          markers: [],
+          membership: [{ kind, value, present }],
+          clearChannels: [],
+          clearAll: false,
+        }).then(apply);
+      });
+    },
+    [apply, flushNative],
+  );
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: mutable storage refs are stable containers
   const removeChannel = React.useCallback(
     (channelId: string) => {
-      // Reject if the loaded scope has drifted — a stale callback during A→B
-      // transitions must not cancel B's pending snapshot or corrupt B's refs.
       if (scopeLoadedRef.current !== currentScope) return;
-      // Delete from both in-memory refs so the projection no longer sees this
-      // channel. Then replace any pending snapshot with a new snapshot of the
-      // current full map — never cancel-without-replacement, which would lose
-      // unsaved sibling-channel events on the next reload.
-      observedUnreadEventsByChannelRef.current.delete(channelId);
-      latestByChannelRef.current.delete(channelId);
-      scheduleObservedUnreadWrite(currentScope, persistRefs.current);
+      projectionsRef.current.delete(channelId);
+      if (!mutateClear([channelId], false)) {
+        observedUnreadEventsByChannelRef.current.delete(channelId);
+        latestByChannelRef.current.delete(channelId);
+        scheduleObservedUnreadWrite(currentScope, persistRefs.current);
+      }
     },
-    [currentScope, observedUnreadEventsByChannelRef, latestByChannelRef],
+    [currentScope, mutateClear],
   );
-
+  // biome-ignore lint/correctness/useExhaustiveDependencies: mutable storage refs are stable containers
   const clearAll = React.useCallback(() => {
-    // Reject if the loaded scope has drifted — a stale callback must not
-    // cancel the new scope's pending snapshot or clear the wrong bucket.
     if (scopeLoadedRef.current !== currentScope) return;
-    // Cancel any pending snapshot and clear both in-memory refs before touching
-    // storage — the parent no longer resets the refs directly, so this is the
-    // single transactional clear path for mark-all-read.
-    if (timerRef.current !== null) {
-      clearTimeout(timerRef.current);
-      timerRef.current = null;
+    projectionsRef.current = new Map();
+    if (!mutateClear([], true)) {
+      observedUnreadEventsByChannelRef.current = new Map();
+      latestByChannelRef.current = new Map();
+      clearObservedUnreadStorage(normalizedPubkey ?? "", normalizedRelayUrl);
     }
-    observedUnreadEventsByChannelRef.current = new Map();
-    latestByChannelRef.current = new Map();
-    clearObservedUnreadStorage(normalizedPubkey ?? "", normalizedRelayUrl);
-  }, [
-    currentScope,
-    normalizedPubkey,
-    normalizedRelayUrl,
-    observedUnreadEventsByChannelRef,
-    latestByChannelRef,
-  ]);
-
-  // isScopeLoaded reads the ref at call time — always fresh, never a stale
-  // snapshot from a closed-over useMemo value.
+  }, [currentScope, mutateClear, normalizedPubkey, normalizedRelayUrl]);
   const isScopeLoaded = React.useCallback(
     () => scopeLoadedRef.current === currentScope,
     [currentScope],
   );
-
-  // Stable API object: only reconstructed when scope or stable callbacks change.
-  // This prevents useCallback deps in the parent from seeing a new object each
-  // render, which would restart catch-up REQs on every unrelated re-render.
+  const isNative = React.useCallback(
+    () => nativeRef.current !== null && !nativeFailedRef.current,
+    [],
+  );
   return React.useMemo(
     () => ({
       scopeLoadedRef,
       currentScope,
+      projectionsRef,
+      isNative,
       isScopeLoaded,
       schedule,
       removeChannel,
+      updateMembership,
       clearAll,
     }),
-    [currentScope, isScopeLoaded, schedule, removeChannel, clearAll],
+    [
+      currentScope,
+      isNative,
+      isScopeLoaded,
+      schedule,
+      removeChannel,
+      updateMembership,
+      clearAll,
+    ],
   );
 }

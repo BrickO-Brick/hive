@@ -31,6 +31,7 @@ mod native_websocket;
 mod native_websocket_batch;
 mod nostr_bind;
 pub mod nostr_convert;
+mod observed_unread;
 mod persona_catalog;
 mod prevent_sleep;
 mod ptt_shortcut;
@@ -232,6 +233,7 @@ pub fn run() {
         .manage(terminal_runtime::TerminalSessions::default())
         .manage(archive::sync::ArchiveSyncState::default())
         .manage(native_relay_client::NativeRelayClient::default())
+        .manage(observed_unread::ObservedUnreadStore::default())
         .setup(move |app| {
             let app_handle = app.handle().clone();
             #[cfg(target_os = "macos")]
@@ -718,6 +720,8 @@ pub fn run() {
             probe_backend_provider,
             persona_catalog::fetch_persona_catalog,
             unread_catch_up::unread_catch_up,
+            observed_unread::observed_unread_open_scope,
+            observed_unread::observed_unread_ingest,
             list_personas,
             create_persona,
             update_persona,

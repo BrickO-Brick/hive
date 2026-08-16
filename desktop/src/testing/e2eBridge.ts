@@ -13377,6 +13377,40 @@ export function maybeInstallE2eTauriMocks() {
       case "start_archive_sync":
       case "stop_archive_sync":
         return null;
+      case "observed_unread_open_scope": {
+        const request = payload as {
+          request: { scope: { pubkey: string; relayUrl: string } };
+        };
+        return {
+          kind: "snapshot",
+          scope: request.request.scope,
+          generation: "e2e",
+          revision: 0,
+          lastAckedSequence: 0,
+          migrationComplete: true,
+          membershipSeeded: true,
+          channels: [],
+        };
+      }
+      case "observed_unread_ingest": {
+        const request = payload as {
+          request: {
+            scope: { pubkey: string; relayUrl: string };
+            sequence: number;
+            baseRevision: number;
+          };
+        };
+        return {
+          kind: "delta",
+          scope: request.request.scope,
+          generation: "e2e",
+          baseRevision: request.request.baseRevision,
+          revision: request.request.baseRevision + 1,
+          ackedSequence: request.request.sequence,
+          upserts: [],
+          removed: [],
+        };
+      }
       case "unread_catch_up": {
         const request = payload as {
           request: { channels: Array<{ id: string }> };

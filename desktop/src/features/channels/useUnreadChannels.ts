@@ -1,6 +1,5 @@
 import * as React from "react";
 import {
-  EMPTY_SET,
   useLiveChannelUpdates,
   type UseLiveChannelUpdatesOptions,
 } from "@/features/channels/useLiveChannelUpdates";
@@ -67,6 +66,7 @@ type UseUnreadChannelsOptions = UseLiveChannelUpdatesOptions & {
 // filter to find one external trigger message. 1000 matches the live sub's
 // per-channel limit elsewhere in the app.
 const CATCH_UP_LIMIT = 1000;
+const EMPTY_ROOT_IDS: ReadonlySet<string> = new Set();
 
 export function channelCatchUpEventKinds(
   channelType: Channel["channelType"] | undefined,
@@ -213,8 +213,8 @@ export function useUnreadChannels(
 
   // Stable ref for the caller-supplied muted channel IDs. Updated every render
   // so the catch-up loop always reads the latest set without being a dep.
-  const mutedChannelIdsRef = React.useRef<ReadonlySet<string>>(new Set());
-  mutedChannelIdsRef.current = mutedChannelIdsOption ?? new Set();
+  const mutedChannelIdsRef = React.useRef<ReadonlySet<string>>(EMPTY_ROOT_IDS);
+  mutedChannelIdsRef.current = mutedChannelIdsOption ?? EMPTY_ROOT_IDS;
 
   // Thread reply events that triggered notifications — surfaced in the Home
   // activity feed as synthetic FeedItems. The buffer is the source of truth
@@ -241,28 +241,6 @@ export function useUnreadChannels(
     0,
   );
 
-  // Persistence layer: hydration, pagehide flush, scope fence, write-through, marker-prune.
-  const observedPersistence = useObservedUnreadPersistence(
-    normalizedPubkey,
-    normalizedRelayUrl,
-    isReadStateReady,
-    readStateVersion,
-    getEffectiveTimestamp,
-    getOwnTimestamp,
-    observedUnreadEventsByChannelRef,
-    latestByChannelRef,
-    { onPruned: bumpLatestVersion },
-  );
-
-  // Thread-activity persistence: coalesced writes, pagehide/visibility flush,
-  // hydration + legacy-key cleanup. Owns the loaded scope for the buffer above.
-  const activityPersistence = useThreadActivityPersistence(
-    normalizedPubkey,
-    normalizedRelayUrl,
-    threadActivityRef,
-  );
-  const currentActivityScope = activityPersistence.currentScope;
-
   // Reset all in-session state when the identity or relay changes. In-memory
   // caches are cleared; persisted stores are loaded for the new pubkey (so
   // forced-unread, participation, etc. are correct for the new identity).
@@ -285,6 +263,57 @@ export function useUnreadChannels(
     bumpLatestVersion();
     bumpMembershipVersion();
   }, [pubkey, relayClient, normalizedRelayUrl]);
+
+  // Persistence layer: hydration, pagehide flush, scope fence, write-through, marker-prune.
+  const observedPersistence = useObservedUnreadPersistence(
+    normalizedPubkey,
+    normalizedRelayUrl,
+    isReadStateReady,
+    readStateVersion,
+    getEffectiveTimestamp,
+    getOwnTimestamp,
+    observedUnreadEventsByChannelRef,
+    latestByChannelRef,
+    {
+      onPruned: bumpLatestVersion,
+      membershipSeed: {
+        participatedRootIds: [...participatedRootIdsRef.current],
+        authoredRootIds: [...authoredRootIdsRef.current],
+        mentionedRootIds: [...mentionedRootIdsRef.current],
+        followedRootIds: [...(options.followedRootIds ?? EMPTY_ROOT_IDS)],
+        mutedRootIds: [...mutedRootIdsRef.current],
+        mutedChannelIds: [...mutedChannelIdsRef.current],
+      },
+    },
+  );
+  const followedMembershipRef = React.useRef(new Set<string>());
+  React.useEffect(() => {
+    const desired = options.followedRootIds ?? EMPTY_ROOT_IDS;
+    if (!observedPersistence.isScopeLoaded()) {
+      followedMembershipRef.current = new Set(desired);
+      return;
+    }
+    for (const rootId of desired) {
+      if (!followedMembershipRef.current.has(rootId)) {
+        observedPersistence.updateMembership("followed", rootId, true);
+      }
+    }
+    for (const rootId of followedMembershipRef.current) {
+      if (!desired.has(rootId)) {
+        observedPersistence.updateMembership("followed", rootId, false);
+      }
+    }
+    followedMembershipRef.current = new Set(desired);
+  }, [observedPersistence, options.followedRootIds]);
+
+  // Thread-activity persistence: coalesced writes, pagehide/visibility flush,
+  // hydration + legacy-key cleanup. Owns the loaded scope for the buffer above.
+  const activityPersistence = useThreadActivityPersistence(
+    normalizedPubkey,
+    normalizedRelayUrl,
+    threadActivityRef,
+  );
+  const currentActivityScope = activityPersistence.currentScope;
 
   // `topLevelOnly`: passive channel-open path (NIP-RS Option 1) — marker lands at newest
   // top-level msg without folding observed replies; leaves refs intact so the dot persists
@@ -357,10 +386,11 @@ export function useUnreadChannels(
       const sizeBefore = target.size;
       target.add(rootId);
       if (target.size === sizeBefore) return false;
+      observedPersistence.updateMembership("mentioned", rootId, true);
       mentionedStore.write(normalizedPubkey, target);
       return true;
     },
-    [normalizedPubkey],
+    [normalizedPubkey, observedPersistence],
   );
 
   // Records an external trigger event and schedules persistence.
@@ -375,7 +405,11 @@ export function useUnreadChannels(
         CATCH_UP_LIMIT,
       );
       if (didRecord)
-        observedPersistence.schedule(observedPersistence.currentScope);
+        observedPersistence.schedule(
+          observedPersistence.currentScope,
+          channelId,
+          event,
+        );
       return didRecord;
     },
     [observedPersistence],
@@ -457,11 +491,16 @@ export function useUnreadChannels(
       // to an already-tracked root is a no-op for the notify gate, so skipping
       // the bump avoids a wasted snapshot re-allocation + gate recompute.
       if (targetSet.size !== sizeBefore) {
+        observedPersistence.updateMembership(
+          isParticipation ? "participated" : "authored",
+          ref.rootId ?? event.id,
+          true,
+        );
         bumpMembershipVersion();
       }
       bumpLatestVersion();
     },
-    [normalizedPubkey],
+    [normalizedPubkey, observedPersistence],
   );
 
   const recordThreadInteraction = React.useCallback(
@@ -472,12 +511,17 @@ export function useUnreadChannels(
       const sizeBefore = target.size;
       target.add(normalizedRootId);
       if (target.size === sizeBefore) return;
+      observedPersistence.updateMembership(
+        "participated",
+        normalizedRootId,
+        true,
+      );
       if (normalizedPubkey !== null) {
         participationStore.write(normalizedPubkey, target);
       }
       bumpMembershipVersion();
     },
-    [normalizedPubkey],
+    [normalizedPubkey, observedPersistence],
   );
 
   const handleThreadReplyNotification = React.useCallback(
@@ -515,23 +559,25 @@ export function useUnreadChannels(
   const muteThread = React.useCallback(
     (rootId: string) => {
       mutedRootIdsRef.current.add(rootId);
+      observedPersistence.updateMembership("muted_root", rootId, true);
       if (normalizedPubkey !== null) {
         mutedStore.write(normalizedPubkey, mutedRootIdsRef.current);
       }
       bumpLatestVersion();
     },
-    [normalizedPubkey],
+    [normalizedPubkey, observedPersistence],
   );
 
   const unmuteThread = React.useCallback(
     (rootId: string) => {
       mutedRootIdsRef.current.delete(rootId);
+      observedPersistence.updateMembership("muted_root", rootId, false);
       if (normalizedPubkey !== null) {
         mutedStore.write(normalizedPubkey, mutedRootIdsRef.current);
       }
       bumpLatestVersion();
     },
-    [normalizedPubkey],
+    [normalizedPubkey, observedPersistence],
   );
 
   useLiveChannelUpdates(channels, activeChannelId, {
@@ -590,10 +636,9 @@ export function useUnreadChannels(
     const authoredSizeBefore = authoredRootIdsRef.current.size;
     const mentionedSizeBefore = mentionedRootIdsRef.current.size;
 
-    // Membership remains renderer-owned until E's native observed-unread store,
-    // so unchanged sets cross IPC on every catch-up. The five 1,000-entry
-    // stores bound that interim cost at roughly 332 KiB per request. Command
-    // arguments use a fetch body, so this cost is linear with no size cliff.
+    // E's native observed-unread store owns notification membership, so this
+    // request scales with channels being caught up rather than five 1,000-id
+    // sets. The prior 332 KiB-at-cap payload is retired at this boundary.
     void unreadCatchUp({
       channels: toFetch.map((channelId) => {
         const channel = channels.find(
@@ -607,11 +652,6 @@ export function useUnreadChannels(
         };
       }),
       selfPubkey: normalizedPubkey ?? "",
-      participatedRootIds: [...participatedRootIdsRef.current],
-      authoredRootIds: [...authoredRootIdsRef.current],
-      mentionedRootIds: [...mentionedRootIdsRef.current],
-      followedRootIds: [...(options.followedRootIds ?? EMPTY_SET)],
-      mutedRootIds: [...mutedRootIdsRef.current],
       mutedChannelIds: [...mutedChannelIdsRef.current],
     })
       .then(({ channels: results }) => {
@@ -633,17 +673,30 @@ export function useUnreadChannels(
           for (const rootId of result.discovered.participated) {
             const before = participatedRootIdsRef.current.size;
             participatedRootIdsRef.current.add(rootId);
-            didDiscover ||= participatedRootIdsRef.current.size !== before;
+            if (participatedRootIdsRef.current.size !== before) {
+              observedPersistence.updateMembership(
+                "participated",
+                rootId,
+                true,
+              );
+              didDiscover = true;
+            }
           }
           for (const rootId of result.discovered.authored) {
             const before = authoredRootIdsRef.current.size;
             authoredRootIdsRef.current.add(rootId);
-            didDiscover ||= authoredRootIdsRef.current.size !== before;
+            if (authoredRootIdsRef.current.size !== before) {
+              observedPersistence.updateMembership("authored", rootId, true);
+              didDiscover = true;
+            }
           }
           for (const rootId of result.discovered.mentioned) {
             const before = mentionedRootIdsRef.current.size;
             mentionedRootIdsRef.current.add(rootId);
-            didDiscover ||= mentionedRootIdsRef.current.size !== before;
+            if (mentionedRootIdsRef.current.size !== before) {
+              observedPersistence.updateMembership("mentioned", rootId, true);
+              didDiscover = true;
+            }
           }
           allThreadReplies.push(...result.activityRows);
           for (const event of result.observedEvents) {
@@ -763,8 +816,12 @@ export function useUnreadChannels(
             (messageId) => getOwnTimestamp(`msg:${messageId}`),
           );
 
-        const unreadCount =
-          latestByChannelRef.current.get(channel.id) === undefined
+        const nativeProjection = observedPersistence.isNative()
+          ? observedPersistence.projectionsRef.current.get(channel.id)
+          : undefined;
+        const unreadCount = nativeProjection
+          ? nativeProjection.count
+          : latestByChannelRef.current.get(channel.id) === undefined
             ? 0
             : countUnreadObservedEvents(observedEvents, readAtForObservedEvent);
         if (unreadCount === 0) {
@@ -778,28 +835,39 @@ export function useUnreadChannels(
 
         unread.add(channel.id);
         if (
-          hasUnreadTopLevelObservedEvent(observedEvents, readAtForObservedEvent)
+          nativeProjection?.topLevelUnread ||
+          (!nativeProjection &&
+            hasUnreadTopLevelObservedEvent(
+              observedEvents,
+              readAtForObservedEvent,
+            ))
         ) {
           topLevelUnread.add(channel.id);
         }
-        const badgeCount = countUnreadBadgeObservedEvents(
-          observedEvents,
-          readAtForObservedEvent,
-        );
+        const badgeCount =
+          nativeProjection?.badgeCount ??
+          countUnreadBadgeObservedEvents(
+            observedEvents,
+            readAtForObservedEvent,
+          );
         counts.set(channel.id, badgeCount);
-        unreadChannelNotificationCount += countUnreadAppBadgeObservedEvents(
-          observedEvents,
-          readAtForObservedEvent,
-        );
+        unreadChannelNotificationCount +=
+          nativeProjection?.appBadgeCount ??
+          countUnreadAppBadgeObservedEvents(
+            observedEvents,
+            readAtForObservedEvent,
+          );
 
         // DM channels: any unread DM is high-priority.
         if (channel.channelType === "dm") {
           highPriority.add(channel.id);
         } else if (
-          countUnreadHighPriorityObservedEvents(
-            observedEvents,
-            readAtForObservedEvent,
-          ) > 0
+          nativeProjection?.highPriorityUnread ||
+          (!nativeProjection &&
+            countUnreadHighPriorityObservedEvents(
+              observedEvents,
+              readAtForObservedEvent,
+            ) > 0)
         ) {
           // Non-DM: high-priority only if at least one mention/broadcast
           // remains unread in its own channel/thread context.

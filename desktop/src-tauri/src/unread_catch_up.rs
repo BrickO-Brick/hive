@@ -1,10 +1,10 @@
 //! Batched native unread catch-up.
 //!
-//! The renderer supplies its history-derived notification membership because
-//! those sets are still renderer-owned until the native observed-unread store
-//! lands. Rust performs every channel REQ over the shared authenticated session,
-//! then classifies the complete successful batch in two passes so a root learned
-//! anywhere in pass one is visible everywhere in pass two.
+//! Native unread catch-up consumes notification membership from the observed-
+//! unread SQLite store rather than serializing renderer-owned sets on every
+//! request. Rust performs every channel REQ over the shared authenticated
+//! session, then classifies the complete successful batch in two passes so a
+//! root learned anywhere in pass one is visible everywhere in pass two.
 
 use std::{collections::HashSet, time::Duration};
 
@@ -14,7 +14,7 @@ use buzz_core_pkg::kind::{
 };
 use nostr::Event;
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, State};
 use tokio::{sync::Semaphore, task::JoinSet};
 
 use crate::{app_state::AppState, native_relay_client::NativeRelayClient};
@@ -28,11 +28,6 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 pub(crate) struct UnreadCatchUpRequest {
     channels: Vec<CatchUpChannel>,
     self_pubkey: String,
-    participated_root_ids: HashSet<String>,
-    authored_root_ids: HashSet<String>,
-    mentioned_root_ids: HashSet<String>,
-    followed_root_ids: HashSet<String>,
-    muted_root_ids: HashSet<String>,
     muted_channel_ids: HashSet<String>,
 }
 
@@ -142,6 +137,7 @@ pub(crate) async fn unread_catch_up(
     request: UnreadCatchUpRequest,
     state: State<'_, AppState>,
     relay_client: State<'_, NativeRelayClient>,
+    app: AppHandle,
 ) -> Result<UnreadCatchUpResponse, String> {
     let keys = state.signing_keys()?;
     let owner = keys.public_key().to_hex();
@@ -222,7 +218,14 @@ pub(crate) async fn unread_catch_up(
         return Err("unread catch-up scope changed while fetching".to_string());
     }
 
-    let mut channels = classify_batch(&request, fetched);
+    let membership = crate::observed_unread::load_membership(
+        &app,
+        &crate::observed_unread::ObservedUnreadScope {
+            pubkey: owner,
+            relay_url,
+        },
+    )?;
+    let mut channels = classify_batch(&request, fetched, &membership);
     channels.extend(failures);
     Ok(UnreadCatchUpResponse { channels })
 }
@@ -230,11 +233,12 @@ pub(crate) async fn unread_catch_up(
 fn classify_batch(
     request: &UnreadCatchUpRequest,
     fetched: Vec<FetchedChannel>,
+    membership: &std::collections::HashMap<String, HashSet<String>>,
 ) -> Vec<ChannelResult> {
     let self_pubkey = request.self_pubkey.to_lowercase();
-    let mut participated = request.participated_root_ids.clone();
-    let mut authored = request.authored_root_ids.clone();
-    let mut mentioned = request.mentioned_root_ids.clone();
+    let mut participated = membership.get("participated").cloned().unwrap_or_default();
+    let mut authored = membership.get("authored").cloned().unwrap_or_default();
+    let mut mentioned = membership.get("mentioned").cloned().unwrap_or_default();
 
     // Pass one is deliberately global, not per-channel: notification validity
     // depends on roots learned from history, while the command observes a batch.
@@ -275,7 +279,14 @@ fn classify_batch(
                     .channel
                     .read_at
                     .is_some_and(|read_at| event.created_at <= read_at)
-                || !should_notify(&event, &self_pubkey, request, &participated, &authored)
+                || !should_notify(
+                    &event,
+                    &self_pubkey,
+                    request,
+                    membership,
+                    &participated,
+                    &authored,
+                )
             {
                 continue;
             }
@@ -383,6 +394,7 @@ fn should_notify(
     event: &EventView,
     self_pubkey: &str,
     request: &UnreadCatchUpRequest,
+    membership: &std::collections::HashMap<String, HashSet<String>>,
     participated: &HashSet<String>,
     authored: &HashSet<String>,
 ) -> bool {
@@ -405,11 +417,16 @@ fn should_notify(
     let Some(root_id) = reference.root_id else {
         return false;
     };
-    if request.muted_root_ids.contains(&root_id) {
+    if membership
+        .get("muted_root")
+        .is_some_and(|set| set.contains(&root_id))
+    {
         return false;
     }
     participated.contains(&root_id)
-        || request.followed_root_ids.contains(&root_id)
+        || membership
+            .get("followed")
+            .is_some_and(|set| set.contains(&root_id))
         || authored.contains(&root_id)
 }
 
@@ -430,6 +447,8 @@ fn has_tag_value(tags: &[Vec<String>], name: &str, value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
 
     fn event(id: &str, pubkey: &str, created_at: u64, tags: &[&[&str]]) -> EventView {
@@ -450,11 +469,6 @@ mod tests {
         UnreadCatchUpRequest {
             channels: vec![],
             self_pubkey: "self".into(),
-            participated_root_ids: HashSet::new(),
-            authored_root_ids: HashSet::new(),
-            mentioned_root_ids: HashSet::new(),
-            followed_root_ids: HashSet::new(),
-            muted_root_ids: HashSet::new(),
             muted_channel_ids: HashSet::new(),
         }
     }
@@ -486,7 +500,7 @@ mod tests {
                 ),
             ],
         }];
-        let result = classify_batch(&req, fetched);
+        let result = classify_batch(&req, fetched, &HashMap::new());
         let ChannelResult::Success {
             observed_events,
             discovered,
@@ -507,8 +521,9 @@ mod tests {
 
     #[test]
     fn same_second_marker_and_mutes_match_renderer_rules() {
-        let mut req = request();
-        req.muted_root_ids.insert("muted".into());
+        let req = request();
+        let mut membership = HashMap::new();
+        membership.insert("muted_root".into(), HashSet::from(["muted".into()]));
         let channel = CatchUpChannel {
             id: "ch".into(),
             channel_type: "stream".into(),
@@ -534,7 +549,7 @@ mod tests {
                 ),
             ],
         }];
-        let result = classify_batch(&req, fetched);
+        let result = classify_batch(&req, fetched, &membership);
         let ChannelResult::Success {
             observed_events,
             max_trigger,

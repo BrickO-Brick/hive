@@ -12,11 +12,6 @@ export type UnreadCatchUpChannel = {
 export type UnreadCatchUpRequest = {
   channels: UnreadCatchUpChannel[];
   selfPubkey: string;
-  participatedRootIds: string[];
-  authoredRootIds: string[];
-  mentionedRootIds: string[];
-  followedRootIds: string[];
-  mutedRootIds: string[];
   mutedChannelIds: string[];
 };
 
