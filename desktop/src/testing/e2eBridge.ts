@@ -13358,6 +13358,24 @@ export function maybeInstallE2eTauriMocks() {
       case "archive_events":
         // Returns the ArchiveBatchResult shape the UI expects.
         return { persisted: 0, dropped: 0 };
+      // Archive sync runs natively; the bridge has no relay-backed backend to
+      // drive, so these are accepted no-ops. Without them every AppShell mount
+      // logs an unknown-command warning once the gate opens.
+      //
+      // The epoch must return a number rather than null, because it stands in
+      // for a value production guarantees is numeric. Nothing here validates
+      // it at runtime — the typed wrapper is erased — so a null would not
+      // fail loudly; it would flow into `start_archive_sync` as
+      // `{ epoch: null }` and this no-op would accept it, leaving the suite
+      // exercising a wire shape the real backend never sends. Returning a
+      // number keeps the production contract, and the reconciliation-gate
+      // spec asserts it: announce precedes start, and start carries a numeric
+      // epoch. Mutating this to null fails that spec.
+      case "announce_archive_sync_epoch":
+        return 1;
+      case "start_archive_sync":
+      case "stop_archive_sync":
+        return null;
       case "agent_metric_archive_default_enabled":
         return activeConfig?.mock?.agentMetricArchiveDefaultEnabled ?? true;
       case "set_prevent_sleep_active":
