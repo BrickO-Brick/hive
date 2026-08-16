@@ -278,6 +278,35 @@ fn seed_membership(tx: &Transaction<'_>, scope: &str, seed: &MembershipSeed) -> 
     Ok(())
 }
 
+fn advance_channel_latest(
+    tx: &Transaction<'_>,
+    scope: &str,
+    channel_id: &str,
+    created_at: u64,
+) -> Result<(), String> {
+    tx.execute(
+        "INSERT INTO channel_latest(scope,channel_id,created_at) VALUES(?1,?2,?3) ON CONFLICT(scope,channel_id) DO UPDATE SET created_at=MAX(created_at,excluded.created_at)",
+        params![scope, channel_id, created_at],
+    )
+    .map_err(|e| format!("advance channel latest: {e}"))?;
+    Ok(())
+}
+
+fn seed_membership_once(
+    tx: &Transaction<'_>,
+    scope: &str,
+    membership_seeded: bool,
+    seed: Option<&MembershipSeed>,
+) -> Result<(), String> {
+    if membership_seeded {
+        return Ok(());
+    }
+    if let Some(seed) = seed {
+        seed_membership(tx, scope, seed)?;
+    }
+    Ok(())
+}
+
 fn prune(tx: &Transaction<'_>, scope: &str) -> Result<(), String> {
     let cutoff = chrono::Utc::now().timestamp() - HORIZON_SECONDS;
     tx.execute(
@@ -411,11 +440,12 @@ pub(crate) fn observed_unread_open_scope(
         )
         .map_err(|e| format!("mark observed migration: {e}"))?;
     }
-    if !membership_seeded {
-        if let Some(seed) = &request.membership_seed {
-            seed_membership(&tx, &scope, seed)?;
-        }
-    }
+    seed_membership_once(
+        &tx,
+        &scope,
+        membership_seeded,
+        request.membership_seed.as_ref(),
+    )?;
     prune(&tx, &scope)?;
     let channels = projections(&tx, &scope)?;
     let (generation, revision, last, migrated, seeded) = state(&tx, &scope)?;
@@ -495,11 +525,7 @@ pub(crate) fn observed_unread_ingest(
         upsert_event(&tx, &scope, event)?;
     }
     for update in &request.channel_latest {
-        tx.execute(
-            "INSERT INTO channel_latest(scope,channel_id,created_at) VALUES(?1,?2,?3) ON CONFLICT(scope,channel_id) DO UPDATE SET created_at=MAX(created_at,excluded.created_at)",
-            params![scope, update.channel_id, update.created_at],
-        )
-        .map_err(|e| format!("advance channel latest: {e}"))?;
+        advance_channel_latest(&tx, &scope, &update.channel_id, update.created_at)?;
     }
     for update in &request.membership {
         if update.present {
@@ -671,6 +697,67 @@ mod tests {
         assert_eq!(request.channel_latest[0].channel_id, "ch");
         assert_eq!(request.channel_latest[0].created_at, 42);
     }
+    #[test]
+    fn second_seed_cannot_erase_discovered_membership() {
+        let (_d, mut conn) = db();
+        let tx = conn.transaction().unwrap();
+        let key = scope().key();
+        ensure_scope(&tx, &key).unwrap();
+        // First open seeds from the renderer.
+        let (_, _, _, _, seeded) = state(&tx, &key).unwrap();
+        seed_membership_once(
+            &tx,
+            &key,
+            seeded,
+            Some(&MembershipSeed {
+                participated_root_ids: vec!["from-seed".into()],
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        // Native discovers a root incrementally (the ingest path).
+        tx.execute(
+            "INSERT INTO unread_membership(scope,kind,value) VALUES(?1,'participated','discovered')",
+            [&key],
+        )
+        .unwrap();
+        // Second open with an EMPTY seed must not erase it.
+        let (_, _, _, _, seeded) = state(&tx, &key).unwrap();
+        seed_membership_once(&tx, &key, seeded, Some(&MembershipSeed::default())).unwrap();
+        let kept: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM unread_membership WHERE scope=?1 AND value='discovered'",
+                [&key],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(kept, 1, "an empty second seed erased discovered membership");
+    }
+
+    #[test]
+    fn channel_latest_anchor_never_moves_backward() {
+        let (_d, mut conn) = db();
+        let tx = conn.transaction().unwrap();
+        let key = scope().key();
+        ensure_scope(&tx, &key).unwrap();
+        let advance = |created_at: u64| {
+            advance_channel_latest(&tx, &key, "ch", created_at).unwrap();
+        };
+        advance(500);
+        advance(100); // an older catch-up trigger arriving late
+        let anchor: u64 = tx
+            .query_row(
+                "SELECT created_at FROM channel_latest WHERE scope=?1 AND channel_id='ch'",
+                [&key],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            anchor, 500,
+            "a late older trigger rewound the latest anchor"
+        );
+    }
+
     #[test]
     fn serialized_response_matches_typescript_contract() {
         let actual = serde_json::to_value(ObservedUnreadResponse::Delta {
