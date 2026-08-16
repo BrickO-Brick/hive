@@ -461,18 +461,23 @@ pub enum MessagesCmd {
     },
     /// Retrieve messages from a channel
     #[command(
-        after_help = "Examples:\n  buzz messages get --channel <UUID>\n  buzz messages get --channel <UUID> --limit 50 --kinds 1,1984"
+        after_help = "Pagination:\n  Returns up to --limit messages (default 50, max 200), NEWEST-first.\n  For channels larger than the cap, page backwards with --before:\n\n  buzz messages get --channel <UUID> --limit 200\n  buzz messages get --channel <UUID> --limit 200 \\\n      --before <created_at of oldest message seen> --before-id <its event id>\n\n  --before alone is INCLUSIVE (<=), so a timestamp-only cursor re-returns\n  every message sharing that second; if one second holds more messages than\n  --limit, paging stalls. Pass --before-id to make the cursor exclusive.\n\nExamples:\n  buzz messages get --channel <UUID>\n  buzz messages get --channel <UUID> --limit 50 --kinds 1,1984"
     )]
     Get {
         /// Channel UUID
         #[arg(long)]
         channel: String,
-        /// Maximum number of results to return
+        /// Maximum number of results to return (default 50, max 200)
         #[arg(long)]
         limit: Option<u32>,
-        /// Unix timestamp — return messages before this time
+        /// Unix timestamp — return messages before this time (inclusive
+        /// unless paired with --before-id)
         #[arg(long)]
         before: Option<i64>,
+        /// Event ID cursor — tiebreak for messages sharing the cursor second
+        /// (composite pagination with --before)
+        #[arg(long)]
+        before_id: Option<String>,
         /// Unix timestamp — return messages after this time
         #[arg(long)]
         since: Option<i64>,
@@ -481,6 +486,9 @@ pub enum MessagesCmd {
         kinds: Option<String>,
     },
     /// Get a message thread (replies to a root message)
+    #[command(
+        after_help = "Pagination:\n  Returns up to --limit replies (default 100, max 500) plus the root event.\n  Replies without a cursor and without --depth-limit are NEWEST-first; either\n  one selects the OLDEST-first walk, so the cursor picks which end you see.\n\n  To page a thread larger than the cap, walk FORWARD from the oldest reply.\n  Seed with --after 0, then pass the newest reply of each page back in:\n\n  buzz messages thread --channel <UUID> --event <ID> --limit 500 --after 0\n  buzz messages thread --channel <UUID> --event <ID> --limit 500 \\\n      --after <created_at of newest reply seen> --after-id <its event id>\n\n  Always pass --after-id. The timestamp-only cursor is STRICTLY greater-than,\n  so a page boundary landing inside a second shared by several replies skips\n  the rest of that second silently (rc=0). --after-id carries the tiebreak, so\n  no reply is skipped regardless of where the boundary lands."
+    )]
     Thread {
         /// Channel UUID
         #[arg(long)]
@@ -488,12 +496,22 @@ pub enum MessagesCmd {
         /// Root message event ID (64-char hex)
         #[arg(long)]
         event: String,
-        /// Maximum number of results to return
+        /// Maximum number of replies to return (default 100, max 500)
         #[arg(long)]
         limit: Option<u32>,
-        /// Maximum reply nesting depth to include
+        /// Maximum reply nesting depth to include. Also selects the
+        /// oldest-first reply ordering (see Pagination below)
         #[arg(long)]
         depth_limit: Option<u32>,
+        /// Unix timestamp cursor — return replies created after this time
+        /// (STRICTLY after; pass --after 0 to seed a forward walk)
+        #[arg(long)]
+        after: Option<i64>,
+        /// Event ID cursor — tiebreak for replies sharing the cursor second
+        /// (composite pagination with --after). Always pass this when paging:
+        /// without it a page boundary inside a shared second skips replies
+        #[arg(long)]
+        after_id: Option<String>,
     },
     /// Full-text search across messages
     #[command(
