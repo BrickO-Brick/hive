@@ -11,8 +11,18 @@
 //! off a buffer); the session lifecycle lives here instead of being pushed down
 //! into it, because `buzz-cli` and `buzz-test-client` consume that crate and do
 //! not want subscription bookkeeping.
+//!
+//! # Caller contract
+//!
+//! A subscription id's filter is immutable for the life of a session: to change
+//! a filter, use a new id. See [`Subscription::id`] for why this cannot be
+//! relaxed from inside this module.
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+    time::Duration,
+};
 
 use buzz_ws_client_pkg::{NostrWsConnection, RelayMessage};
 use nostr::{Event, Keys};
@@ -45,6 +55,14 @@ const CLOSED_RATE_LIMIT_DEFAULT: Duration = Duration::from_secs(10);
 pub(crate) struct Subscription {
     /// Caller-stable key. Reused verbatim as the relay subscription id so a
     /// resubscribe after reconnect replaces rather than duplicates.
+    ///
+    /// **An id's filter is immutable for the life of a session.** To change a
+    /// filter, use a new id — as `archive::sync` does by hashing scope and
+    /// kinds into the id. Reusing an id for a different filter is unsound and
+    /// cannot be made sound here: a CLOSED frame carries only the id, so a
+    /// rejection caused by the old filter is indistinguishable from one caused
+    /// by the new one, and would latch backoff (or a terminal stop) onto a
+    /// subscription that never failed.
     pub(crate) id: String,
     pub(crate) filter: serde_json::Value,
 }
@@ -59,9 +77,54 @@ pub(crate) struct MatchedEvent {
 /// Handle to a running session. Dropping it does not stop the session; call
 /// [`RelaySession::shutdown`] so the socket closes deterministically.
 pub(crate) struct RelaySession {
-    desired: Arc<Mutex<Vec<Subscription>>>,
+    state: Arc<Mutex<SessionState>>,
     wake: mpsc::Sender<()>,
     cancel: CancellationToken,
+}
+
+/// Desired set plus the write-time record of what has left it.
+///
+/// One lock covers both because reconcile must read them together: snapshotting
+/// the desired set and draining `removed` in separate acquisitions lets a
+/// `set_subscriptions` land in the gap, so the drain would be consumed against
+/// a stale snapshot and could reopen a subscription the caller just dropped.
+#[derive(Default)]
+struct SessionState {
+    desired: Vec<Subscription>,
+    /// Ids whose exact subscription has left `desired` since the last
+    /// reconcile drained this. Written here rather than derived at reconcile
+    /// time because reconcile cannot derive it: wakes coalesce, so a remove
+    /// followed by a re-add is observed as a single pass whose desired set
+    /// never lost the id. See the eviction table on `retries`.
+    removed: HashSet<String>,
+}
+
+impl SessionState {
+    /// Installs a new desired set, recording every departure.
+    ///
+    /// Returns the ids whose filter changed under a reused id — a violation of
+    /// the immutable-filter-per-id contract on [`Subscription::id`]. This is
+    /// the only place that can detect one: the write side alone holds the old
+    /// and new filter for an id. Behavior after a violation is deliberately
+    /// unspecified; detection is all this offers.
+    fn replace_desired(&mut self, subscriptions: Vec<Subscription>) -> Vec<String> {
+        let mut violations = Vec::new();
+        for previous in std::mem::replace(&mut self.desired, subscriptions) {
+            // Departure is keyed on the exact subscription, not the id alone:
+            // the relay replaces by id, so a changed filter retires the old
+            // subscription just as surely as dropping the id would, and its
+            // backoff must not be inherited.
+            let survivor = self.desired.iter().find(|next| next.id == previous.id);
+            if survivor.is_some_and(|next| next.filter == previous.filter) {
+                continue;
+            }
+            if survivor.is_some() {
+                violations.push(previous.id.clone());
+            }
+            self.removed.insert(previous.id);
+        }
+        violations
+    }
 }
 
 impl RelaySession {
@@ -72,12 +135,24 @@ impl RelaySession {
     /// have to be replayed in order across a reconnect, which is exactly the
     /// bug class this avoids.
     ///
-    /// It is also why no revision/generation guard is needed. Every reconcile
-    /// re-reads the current desired set, so a change that lands mid-pass is
-    /// picked up by the wake it queued rather than having to invalidate work
-    /// already in flight.
+    /// It is also why `open` needs no revision/generation guard. Every
+    /// reconcile re-reads the current desired set, so a change that lands
+    /// mid-pass is picked up by the wake it queued rather than having to
+    /// invalidate work already in flight.
+    ///
+    /// That argument holds only for state that is a function of the final
+    /// desired set. It does not hold for `retries`, whose validity depends on
+    /// the id having been *continuously* desired — history that coalescing
+    /// erases. So departures are recorded here, at the only point that can see
+    /// them.
     pub(crate) async fn set_subscriptions(&self, subscriptions: Vec<Subscription>) {
-        *self.desired.lock().await = subscriptions;
+        let violations = self.state.lock().await.replace_desired(subscriptions);
+        for id in violations {
+            eprintln!(
+                "buzz-desktop: native_relay_client: subscription {id} changed filter under a \
+                 reused id; ids must be derived from their filter"
+            );
+        }
         // A full channel already means "reconcile pending", so a failed send
         // is success: the loop has not yet consumed the previous wake.
         let _ = self.wake.try_send(());
@@ -102,7 +177,7 @@ pub(crate) fn start(
     let (event_tx, event_rx) = mpsc::channel(256);
     let (wake, wake_rx) = mpsc::channel(1);
     let session = Arc::new(RelaySession {
-        desired: Arc::new(Mutex::new(Vec::new())),
+        state: Arc::new(Mutex::new(SessionState::default())),
         wake,
         cancel: CancellationToken::new(),
     });
@@ -175,9 +250,26 @@ async fn run_connection(
     // subscription deleted there is re-added by the next reload. The JS port
     // could delete from its subscription map because that map WAS the desired
     // set; here the two are separate, and only this one is per-socket.
+    //
+    // An entry is valid only while its id has been continuously desired since
+    // the CLOSED that created it, which makes eviction the whole design:
+    //
+    // | Eviction trigger | Where | Why it is the right edge |
+    // |---|---|---|
+    // | event delivered | the EVENT arm below | the subscription is demonstrably healthy |
+    // | EOSE | the EOSE arm below | the relay served it, so the cause has cleared |
+    // | id leaves the desired set, including intermediate states the loop never observes | `SessionState::removed`, drained at the top of `reconcile` | validity depends on history, and coalesced wakes erase it — see `set_subscriptions` |
+    // | socket drops | this map is per-connection | relay policy and our own auth can change across a reconnect |
+    //
+    // Reconcile deliberately does NOT also prune ids merely absent from the
+    // desired snapshot. That clause is unreachable: entries are minted only for
+    // ids present in `open` (the CLOSED arm's guard below), ids enter `open`
+    // only from a desired snapshot, and every departure from desired is
+    // recorded at write time. It would kill no mutant these tests do not
+    // already kill, while masking the drain that does the work.
     let mut retries: HashMap<String, ClosedRetry> = HashMap::new();
 
-    if !reconcile(&mut conn, session, &mut open, &retries).await {
+    if !reconcile(&mut conn, session, &mut open, &mut retries).await {
         return;
     }
 
@@ -193,7 +285,7 @@ async fn run_connection(
                 return;
             }
             Some(()) = wake_rx.recv() => {
-                if !reconcile(&mut conn, session, &mut open, &retries).await {
+                if !reconcile(&mut conn, session, &mut open, &mut retries).await {
                     return;
                 }
             }
@@ -209,7 +301,7 @@ async fn run_connection(
                         retry.due_at = None;
                     }
                 }
-                if !reconcile(&mut conn, session, &mut open, &retries).await {
+                if !reconcile(&mut conn, session, &mut open, &mut retries).await {
                     return;
                 }
             }
@@ -220,6 +312,12 @@ async fn run_connection(
                         // A CLOSE races in flight with events already queued at
                         // the relay, so this is the last line of defense
                         // against delivering out-of-scope events after a change.
+                        //
+                        // This arm drops rather than heals: an event for an id
+                        // we do not have open is generation-ambiguous — it may
+                        // predate a deletion — so it cannot serve as the fence
+                        // an EOSE does. The EOSE arm below is where an
+                        // open-map mismatch is repaired.
                         if !open.contains_key(&subscription_id) {
                             continue;
                         }
@@ -240,7 +338,16 @@ async fn run_connection(
                     Ok(RelayMessage::Closed { subscription_id, message }) => {
                         // The relay dropped it; forget it so a reopen re-sends
                         // REQ rather than assuming it is still live.
-                        open.remove(&subscription_id);
+                        //
+                        // A CLOSED for a subscription this socket is not
+                        // running is stale — our own CLOSE raced it, exactly as
+                        // the EVENT arm above guards. Minting retry state from
+                        // it would resurrect the entry the drain just pruned,
+                        // and nothing would evict it: the id is gone from
+                        // `desired`, so no future removal can record it again.
+                        if open.remove(&subscription_id).is_none() {
+                            continue;
+                        }
                         let retry = retries.entry(subscription_id.clone()).or_default();
                         retry.schedule(&message);
                         eprintln!(
@@ -253,7 +360,27 @@ async fn run_connection(
                         // JS port performs in `handleSubscriptionEose`, and it
                         // is what keeps an intermittent relay from ratcheting
                         // its way to the 30s ceiling and staying there.
+                        let was_open = open.contains_key(&subscription_id);
                         retries.remove(&subscription_id);
+                        // The relay is running a subscription this socket does
+                        // not think is open, so the two disagree. EOSE is the
+                        // fence that makes this recoverable: frames on one
+                        // socket are ordered, so a stale CLOSED from a previous
+                        // generation of this id necessarily precedes the
+                        // recreated generation's EOSE. Without this wake a
+                        // terminal stale CLOSED is a blackhole — it clears
+                        // `open`, sets no `due_at`, and so leaves no edge back
+                        // into reconcile while the relay delivers events the
+                        // EVENT arm silently drops.
+                        //
+                        // Deliberately not on the EVENT arm: an event for an
+                        // absent id may belong to the old generation, so it is
+                        // not a fence. Converges rather than storms — the
+                        // reconcile this triggers reopens the id, and the
+                        // replacement EOSE then finds it open.
+                        if !was_open {
+                            let _ = session.wake.try_send(());
+                        }
                     }
                     Ok(_) => {}
                     Err(error) => {
@@ -275,9 +402,25 @@ async fn reconcile(
     conn: &mut NostrWsConnection,
     session: &RelaySession,
     open: &mut HashMap<String, serde_json::Value>,
-    retries: &HashMap<String, ClosedRetry>,
+    retries: &mut HashMap<String, ClosedRetry>,
 ) -> bool {
-    let desired = session.desired.lock().await.clone();
+    // Snapshot and drain in ONE acquisition. Taking them separately would let a
+    // `set_subscriptions` land in the gap, spending its removal against a
+    // desired set captured before it — reopening a subscription the caller had
+    // just dropped, with no record left to catch it on the next pass.
+    let (desired, removed) = {
+        let mut state = session.state.lock().await;
+        let removed = std::mem::take(&mut state.removed);
+        (state.desired.clone(), removed)
+    };
+
+    // Retry state is only valid while its id has been continuously desired
+    // since the CLOSED that created it. Every departure is here even when the
+    // id is desired again now, because the loop cannot see the gap: coalesced
+    // wakes make remove-then-re-add one pass whose desired set never lost it.
+    for id in removed {
+        retries.remove(&id);
+    }
 
     for id in open.keys().cloned().collect::<Vec<_>>() {
         if desired.iter().any(|s| s.id == id) {
@@ -445,7 +588,11 @@ fn is_read_timeout(error: &buzz_ws_client_pkg::WsClientError) -> bool {
 mod closed_recovery_tests {
     use super::*;
     use futures_util::{SinkExt, StreamExt};
+    use nostr::EventBuilder;
     use tokio_tungstenite::tungstenite::protocol::Message;
+
+    /// The subscription id every test below drives.
+    const PROBE_ID: &str = "archive:probe";
 
     /// Minimal relay that completes the NIP-42 handshake, records every REQ,
     /// and sends a CLOSED only when the test asks it to.
@@ -461,17 +608,17 @@ mod closed_recovery_tests {
     /// queues a wake that may still be pending when an immediate CLOSED lands,
     /// and that wake reopens the subscription on its own — which made the first
     /// version of this test pass against the unfixed code.
-    async fn stub_relay() -> (
-        String,
-        mpsc::Receiver<String>,
-        mpsc::Sender<(String, String)>,
-    ) {
+    ///
+    /// `frames` reports REQ and CLOSE in wire order, not REQ alone: the
+    /// lifecycle tests below assert that a CLOSE was sent before the REQ that
+    /// follows it, which a REQ-only channel cannot express.
+    async fn stub_relay() -> (String, mpsc::Receiver<Frame>, mpsc::Sender<StubCommand>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind stub relay");
         let address = listener.local_addr().expect("stub relay address");
         let (req_tx, req_rx) = mpsc::channel(16);
-        let (closed_tx, mut closed_rx) = mpsc::channel::<(String, String)>(4);
+        let (closed_tx, mut closed_rx) = mpsc::channel::<StubCommand>(4);
 
         tokio::spawn(async move {
             let (stream, _) = listener.accept().await.expect("accept");
@@ -503,20 +650,33 @@ mod closed_recovery_tests {
                             }
                             Some("REQ") => {
                                 let id = frame[1].as_str().unwrap_or_default().to_string();
-                                if req_tx.send(id).await.is_err() {
+                                if req_tx.send(Frame::Req(id)).await.is_err() {
+                                    return;
+                                }
+                            }
+                            Some("CLOSE") => {
+                                let id = frame[1].as_str().unwrap_or_default().to_string();
+                                if req_tx.send(Frame::Close(id)).await.is_err() {
                                     return;
                                 }
                             }
                             _ => {}
                         }
                     }
-                    Some((id, message)) = closed_rx.recv() => {
+                    Some(command) = closed_rx.recv() => {
+                        let frame = match command {
+                            StubCommand::Closed(id, message) => {
+                                serde_json::json!(["CLOSED", id, message])
+                            }
+                            StubCommand::Eose(id) => serde_json::json!(["EOSE", id]),
+                            StubCommand::Event(id, event) => {
+                                serde_json::json!(["EVENT", id, event])
+                            }
+                        };
                         socket
-                            .send(Message::Text(
-                                serde_json::json!(["CLOSED", id, message]).to_string().into(),
-                            ))
+                            .send(Message::Text(frame.to_string().into()))
                             .await
-                            .expect("send closed");
+                            .expect("send stub frame");
                     }
                 }
             }
@@ -525,18 +685,43 @@ mod closed_recovery_tests {
         (format!("ws://{address}"), req_rx, closed_tx)
     }
 
+    /// A client→relay frame the stub observed, in wire order.
+    #[derive(Debug, PartialEq, Eq)]
+    enum Frame {
+        Req(String),
+        Close(String),
+    }
+
+    /// A relay→client frame the test asks the stub to emit.
+    enum StubCommand {
+        Closed(String, String),
+        Eose(String),
+        Event(String, serde_json::Value),
+    }
+
     fn probe_subscription() -> Subscription {
         Subscription {
-            id: "archive:probe".to_string(),
+            id: PROBE_ID.to_string(),
             filter: serde_json::json!({ "kinds": [1], "limit": 0 }),
         }
     }
 
-    async fn next_req(reqs: &mut mpsc::Receiver<String>, label: &str) -> String {
-        tokio::time::timeout(Duration::from_secs(10), reqs.recv())
+    async fn next_frame(frames: &mut mpsc::Receiver<Frame>, label: &str) -> Frame {
+        tokio::time::timeout(Duration::from_secs(10), frames.recv())
             .await
             .unwrap_or_else(|_| panic!("timed out waiting for {label}"))
             .unwrap_or_else(|| panic!("stub relay closed before {label}"))
+    }
+
+    /// Waits for the next REQ, tolerating the CLOSE frames a reconcile sends
+    /// first. Asserting on `Frame::Req` directly would couple every test to
+    /// whether a particular reconcile also had cleanup to do.
+    async fn next_req(frames: &mut mpsc::Receiver<Frame>, label: &str) -> String {
+        loop {
+            if let Frame::Req(id) = next_frame(frames, label).await {
+                return id;
+            }
+        }
     }
 
     /// Waits out the wake `set_subscriptions` queued, so a CLOSED sent after
@@ -558,30 +743,27 @@ mod closed_recovery_tests {
     /// loss for ephemeral kind 24200.
     #[tokio::test]
     async fn a_closed_subscription_reopens_without_a_desired_set_change() {
-        let (relay_url, mut reqs, closed) = stub_relay().await;
+        let (relay_url, mut frames, closed) = stub_relay().await;
         let (session, _events) = start(relay_url, Keys::generate(), None);
 
         session.set_subscriptions(vec![probe_subscription()]).await;
-        assert_eq!(
-            next_req(&mut reqs, "the initial REQ").await,
-            "archive:probe"
-        );
+        assert_eq!(next_req(&mut frames, "the initial REQ").await, PROBE_ID);
         settle().await;
 
         // Retryable class, sent once: the reopen is answered normally, so a
         // failure here means "never retried" rather than "retried into another
         // rejection".
         closed
-            .send(("archive:probe".into(), "error: temporary".into()))
+            .send(StubCommand::Closed(
+                PROBE_ID.into(),
+                "error: temporary".into(),
+            ))
             .await
             .expect("stub relay accepts the closed command");
 
         // No `set_subscriptions` between the two REQs: the reopen must come
         // from the CLOSED itself, which is exactly the edge that was missing.
-        assert_eq!(
-            next_req(&mut reqs, "the reopened REQ").await,
-            "archive:probe"
-        );
+        assert_eq!(next_req(&mut frames, "the reopened REQ").await, PROBE_ID);
 
         session.shutdown();
     }
@@ -589,30 +771,341 @@ mod closed_recovery_tests {
     /// A relay that rejects on policy must not be re-asked in a tight loop.
     #[tokio::test]
     async fn a_terminal_closed_is_not_retried_on_the_same_socket() {
-        let (relay_url, mut reqs, closed) = stub_relay().await;
+        let (relay_url, mut frames, closed) = stub_relay().await;
         let (session, _events) = start(relay_url, Keys::generate(), None);
 
         session.set_subscriptions(vec![probe_subscription()]).await;
-        assert_eq!(
-            next_req(&mut reqs, "the initial REQ").await,
-            "archive:probe"
-        );
+        assert_eq!(next_req(&mut frames, "the initial REQ").await, PROBE_ID);
         settle().await;
 
         closed
-            .send(("archive:probe".into(), "restricted: not authorized".into()))
+            .send(StubCommand::Closed(
+                PROBE_ID.into(),
+                "restricted: not authorized".into(),
+            ))
             .await
             .expect("stub relay accepts the closed command");
 
         // Long enough that a retryable class (1s base) would have reopened
         // several times, so this asserts suppression rather than just slowness.
-        let retried = tokio::time::timeout(Duration::from_secs(5), reqs.recv()).await;
+        let retried = tokio::time::timeout(Duration::from_secs(5), frames.recv()).await;
         assert!(
             retried.is_err(),
             "a terminal CLOSED must not be retried on this socket, got {retried:?}"
         );
 
         session.shutdown();
+    }
+
+    /// M18: a subscription deleted and recreated must get a fresh REQ, even
+    /// though its terminal latch says never to retry.
+    ///
+    /// The latch is scoped to the subscription that earned it. Recreating the
+    /// id is a new subscription that happens to share a name — `archive::sync`
+    /// derives the id from scope and kinds, so a delete/recreate of the same
+    /// saved subscription produces a byte-identical id and would otherwise
+    /// inherit a permanent suppression for the life of the socket.
+    #[tokio::test]
+    async fn a_recreated_subscription_does_not_inherit_a_terminal_latch() {
+        let (relay_url, mut frames, closed) = stub_relay().await;
+        let (session, _events) = start(relay_url, Keys::generate(), None);
+
+        session.set_subscriptions(vec![probe_subscription()]).await;
+        assert_eq!(next_req(&mut frames, "the initial REQ").await, PROBE_ID);
+        settle().await;
+
+        closed
+            .send(StubCommand::Closed(
+                PROBE_ID.into(),
+                "restricted: not authorized".into(),
+            ))
+            .await
+            .expect("stub relay accepts the closed command");
+        settle().await;
+
+        // Delete, then recreate — each observed as its own reconcile.
+        session.set_subscriptions(vec![]).await;
+        settle().await;
+        session.set_subscriptions(vec![probe_subscription()]).await;
+
+        assert_eq!(
+            next_req(&mut frames, "the REQ for the recreated subscription").await,
+            PROBE_ID,
+        );
+
+        session.shutdown();
+    }
+
+    /// M19: the same schedule, with both writes landing before the loop
+    /// consumes its single wake.
+    ///
+    /// This is the mutant that discriminates the mechanism. The wake channel
+    /// has capacity 1 and `set_subscriptions` only ever queues "reconcile
+    /// pending", so the delete and the recreate collapse into ONE observed
+    /// reconcile whose desired set already contains the id again. A prune that
+    /// reads only the current desired set never sees the id absent and leaves
+    /// the latch in place — passing the test above while failing this one.
+    /// The departure is therefore recorded at write time, where it is visible.
+    ///
+    /// No `settle()` between the two writes: that gap is the whole point, and
+    /// adding one would silently convert this into a duplicate of M18.
+    #[tokio::test]
+    async fn a_recreated_subscription_is_not_suppressed_when_the_writes_coalesce() {
+        let (relay_url, mut frames, closed) = stub_relay().await;
+        let (session, _events) = start(relay_url, Keys::generate(), None);
+
+        session.set_subscriptions(vec![probe_subscription()]).await;
+        assert_eq!(next_req(&mut frames, "the initial REQ").await, PROBE_ID);
+        settle().await;
+
+        closed
+            .send(StubCommand::Closed(
+                PROBE_ID.into(),
+                "restricted: not authorized".into(),
+            ))
+            .await
+            .expect("stub relay accepts the closed command");
+        settle().await;
+
+        session.set_subscriptions(vec![]).await;
+        session.set_subscriptions(vec![probe_subscription()]).await;
+
+        assert_eq!(
+            next_req(&mut frames, "the REQ for the recreated subscription").await,
+            PROBE_ID,
+        );
+
+        session.shutdown();
+    }
+
+    /// M20: pruning must be scoped to departures, not run every pass.
+    ///
+    /// A reconcile triggered while the id is still desired must leave its
+    /// pending backoff alone. Clearing wholesale would collapse the CLOSED
+    /// backoff — every unrelated subscription change would re-ask a relay that
+    /// just rejected us, at the speed of the event loop.
+    #[tokio::test]
+    async fn a_reconcile_preserves_the_backoff_of_a_still_desired_subscription() {
+        let (relay_url, mut frames, closed) = stub_relay().await;
+        let (session, _events) = start(relay_url, Keys::generate(), None);
+
+        session.set_subscriptions(vec![probe_subscription()]).await;
+        assert_eq!(next_req(&mut frames, "the initial REQ").await, PROBE_ID);
+        settle().await;
+
+        // Rate-limited: a long, unambiguously pending backoff, so a reopen
+        // inside the window is the prune and not the timer.
+        closed
+            .send(StubCommand::Closed(
+                PROBE_ID.into(),
+                "rate-limited: slow down; retry in 30s".into(),
+            ))
+            .await
+            .expect("stub relay accepts the closed command");
+        settle().await;
+
+        // A change that adds an unrelated subscription. The probe never leaves
+        // the desired set, so its backoff must survive this reconcile.
+        session
+            .set_subscriptions(vec![
+                probe_subscription(),
+                Subscription {
+                    id: "archive:other".to_string(),
+                    filter: serde_json::json!({ "kinds": [7], "limit": 0 }),
+                },
+            ])
+            .await;
+
+        assert_eq!(
+            next_req(&mut frames, "the REQ for the newly added subscription").await,
+            "archive:other",
+        );
+        let reopened = tokio::time::timeout(Duration::from_secs(3), frames.recv()).await;
+        assert!(
+            reopened.is_err(),
+            "a still-desired subscription must keep its pending backoff across a \
+             reconcile, got {reopened:?}"
+        );
+
+        crate::relay_admission::reset_rate_limit_gate();
+        session.shutdown();
+    }
+
+    /// M21: a CLOSED that arrives after we stopped running the subscription is
+    /// stale and must mint nothing.
+    ///
+    /// Our CLOSE races the relay's in-flight frames — the EVENT arm already
+    /// guards this. Without the same guard on CLOSED, the frame recreates the
+    /// retry entry the drain just removed, and nothing can evict it: the id is
+    /// gone from the desired set, so no future departure records it again.
+    #[tokio::test]
+    async fn a_closed_arriving_after_removal_does_not_mint_retry_state() {
+        let (relay_url, mut frames, closed) = stub_relay().await;
+        let (session, _events) = start(relay_url, Keys::generate(), None);
+
+        session.set_subscriptions(vec![probe_subscription()]).await;
+        assert_eq!(next_req(&mut frames, "the initial REQ").await, PROBE_ID);
+        settle().await;
+
+        // Delete first, and wait for our CLOSE to reach the wire: that ordering
+        // is what makes the CLOSED below arrive after the drain rather than
+        // before it, which is the schedule M18 and M19 do not cover.
+        session.set_subscriptions(vec![]).await;
+        assert_eq!(
+            next_frame(&mut frames, "the CLOSE for the deleted subscription").await,
+            Frame::Close(PROBE_ID.to_string()),
+        );
+
+        closed
+            .send(StubCommand::Closed(
+                PROBE_ID.into(),
+                "restricted: not authorized".into(),
+            ))
+            .await
+            .expect("stub relay accepts the closed command");
+        settle().await;
+
+        session.set_subscriptions(vec![probe_subscription()]).await;
+
+        assert_eq!(
+            next_req(&mut frames, "the REQ for the recreated subscription").await,
+            PROBE_ID,
+        );
+
+        session.shutdown();
+    }
+
+    /// M22: a stale *terminal* CLOSED landing after the id was recreated must
+    /// not blackhole the live subscription.
+    ///
+    /// This one survives every defense above. The CLOSED is legitimately
+    /// attributed — the id is open again, so the M21 guard passes it — and
+    /// terminal means no `due_at`, so the timer arm is disabled and no wake is
+    /// pending. `open` loses the id while the relay keeps delivering, and the
+    /// EVENT arm drops every frame in silence.
+    ///
+    /// EOSE is the recovery edge because it is the only ordered fence
+    /// available: frames on one socket are totally ordered, so the previous
+    /// generation's CLOSED necessarily precedes the new generation's EOSE.
+    #[tokio::test]
+    async fn a_stale_terminal_closed_does_not_blackhole_a_recreated_subscription() {
+        let (relay_url, mut frames, closed) = stub_relay().await;
+        let (session, mut events) = start(relay_url, Keys::generate(), None);
+
+        session.set_subscriptions(vec![probe_subscription()]).await;
+        assert_eq!(next_req(&mut frames, "the initial REQ").await, PROBE_ID);
+        settle().await;
+
+        // Delete and recreate, so the id is open again under a new generation.
+        session.set_subscriptions(vec![]).await;
+        assert_eq!(
+            next_frame(&mut frames, "the CLOSE for the deleted subscription").await,
+            Frame::Close(PROBE_ID.to_string()),
+        );
+        session.set_subscriptions(vec![probe_subscription()]).await;
+        assert_eq!(
+            next_req(&mut frames, "the REQ for the recreated subscription").await,
+            PROBE_ID,
+        );
+        settle().await;
+
+        // The old generation's terminal CLOSED, delayed past the new REQ.
+        closed
+            .send(StubCommand::Closed(
+                PROBE_ID.into(),
+                "restricted: not authorized".into(),
+            ))
+            .await
+            .expect("stub relay accepts the closed command");
+        // The new generation's EOSE, which the wire orders after it.
+        closed
+            .send(StubCommand::Eose(PROBE_ID.into()))
+            .await
+            .expect("stub relay accepts the eose command");
+
+        // The EOSE found the id closed, so it must drive a reconcile that
+        // reopens it. Nothing else can: terminal schedules no timer, and the
+        // desired set is stable.
+        assert_eq!(
+            next_req(&mut frames, "the REQ healing the open-map mismatch").await,
+            PROBE_ID,
+        );
+
+        // And the heal converges rather than storming: the replacement EOSE
+        // finds the id open, so it wakes nothing.
+        closed
+            .send(StubCommand::Eose(PROBE_ID.into()))
+            .await
+            .expect("stub relay accepts the second eose command");
+        let extra = tokio::time::timeout(Duration::from_secs(3), frames.recv()).await;
+        assert!(
+            extra.is_err(),
+            "an EOSE for an already-open subscription must not re-reconcile, got {extra:?}"
+        );
+
+        // The point of the heal: events flow again.
+        let event = EventBuilder::text_note("post-heal")
+            .sign_with_keys(&Keys::generate())
+            .expect("sign event");
+        let event_id = event.id.to_hex();
+        closed
+            .send(StubCommand::Event(
+                PROBE_ID.into(),
+                serde_json::to_value(&event).expect("serialize event"),
+            ))
+            .await
+            .expect("stub relay accepts the event command");
+
+        let delivered = tokio::time::timeout(Duration::from_secs(10), events.recv())
+            .await
+            .expect("timed out waiting for an event after the heal")
+            .expect("session channel closed");
+        assert_eq!(
+            delivered.event.id.to_hex(),
+            event_id,
+            "events must flow again once the open map is healed"
+        );
+
+        session.shutdown();
+    }
+
+    /// M23: reusing an id for a changed filter must be *detected*.
+    ///
+    /// This test pins detection and nothing else. Post-violation behavior —
+    /// whether the subscription reopens, what happens to its retry state, what
+    /// the relay is sent — is unspecified by design, because the wire carries
+    /// only the id and an in-flight CLOSED from the old filter is
+    /// indistinguishable from one caused by the new one. Asserting any of that
+    /// would turn an unsupported input into a supported one.
+    ///
+    /// It exists because the `(id, filter)` departure diff is otherwise
+    /// unpinned: on every supported path it is byte-equivalent to an id-only
+    /// diff, so a refactor could revert it, pass every other test here, and
+    /// silently remove the one signal that tells C and D they broke the
+    /// contract.
+    #[test]
+    fn a_filter_change_under_a_reused_id_is_reported_as_a_contract_violation() {
+        let mut state = SessionState::default();
+
+        assert!(
+            state.replace_desired(vec![probe_subscription()]).is_empty(),
+            "a first desired set violates nothing"
+        );
+        assert!(
+            state.replace_desired(vec![probe_subscription()]).is_empty(),
+            "an unchanged subscription is not a filter change"
+        );
+
+        let violations = state.replace_desired(vec![Subscription {
+            id: PROBE_ID.to_string(),
+            filter: serde_json::json!({ "kinds": [7], "limit": 0 }),
+        }]);
+
+        assert_eq!(
+            violations,
+            vec![PROBE_ID.to_string()],
+            "a filter changed under a reused id must be reported"
+        );
     }
 
     #[test]
