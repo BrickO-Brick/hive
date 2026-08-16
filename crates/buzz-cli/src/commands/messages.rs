@@ -370,6 +370,34 @@ fn validate_cursor_pair(
     Ok(())
 }
 
+/// Kinds returned by `messages get` when `--kinds` is omitted.
+///
+/// Quoted by file:line in field notes, because the CLI has no way to report
+/// the kind universe of a channel — a pull can only ever state which kinds it
+/// asked for.
+const DEFAULT_MESSAGE_KINDS: [u64; 5] = [9, 40002, 40008, 45001, 45003];
+
+/// Parse a `--kinds` list, refusing anything that is not an event kind.
+///
+/// The previous form was `filter_map(|s| s.trim().parse().ok())`, which
+/// discarded unparseable tokens silently: `--kinds '*'` and `--kinds all`
+/// produced an empty list, left the default kinds in place, and exited 0 — so
+/// a caller measuring a widened pull was handed the narrow default while being
+/// told it succeeded. A typo is now a usage error naming the token.
+fn parse_kinds(kinds: &str) -> Result<Vec<u64>, CliError> {
+    kinds
+        .split(',')
+        .map(|token| {
+            let token = token.trim();
+            token.parse::<u64>().map_err(|_| {
+                CliError::Usage(format!(
+                    "--kinds: `{token}` is not an event kind (expected comma-separated integers, e.g. 9,1984)"
+                ))
+            })
+        })
+        .collect()
+}
+
 /// Build the filter for a channel message query.
 ///
 /// Split out from [`cmd_get_messages`] so the cursor grammar is testable
@@ -381,19 +409,18 @@ fn build_messages_filter(
     before_id: Option<&str>,
     since: Option<i64>,
     kinds: Option<&str>,
-) -> serde_json::Value {
+) -> Result<serde_json::Value, CliError> {
     let mut filter = serde_json::json!({
-        "kinds": [9, 40002, 40008, 45001, 45003],
+        "kinds": DEFAULT_MESSAGE_KINDS,
         "#h": [channel_id],
         "limit": limit
     });
 
-    // If specific kinds requested, override
+    // If specific kinds requested, override. Parsing happens here rather than
+    // at the caller so no code path can reach the wire with a partially
+    // discarded kind list.
     if let Some(k) = kinds {
-        let kind_list: Vec<u64> = k.split(',').filter_map(|s| s.trim().parse().ok()).collect();
-        if !kind_list.is_empty() {
-            filter["kinds"] = serde_json::json!(kind_list);
-        }
+        filter["kinds"] = serde_json::json!(parse_kinds(k)?);
     }
 
     if let Some(b) = before {
@@ -407,7 +434,7 @@ fn build_messages_filter(
         filter["since"] = serde_json::json!(s);
     }
 
-    filter
+    Ok(filter)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -425,7 +452,7 @@ pub async fn cmd_get_messages(
     validate_cursor_pair(before, before_id, "--before-id", "--before")?;
     let limit = limit.unwrap_or(50).min(200);
 
-    let filter = build_messages_filter(channel_id, limit, before, before_id, since, kinds);
+    let filter = build_messages_filter(channel_id, limit, before, before_id, since, kinds)?;
 
     let resp = client.query(&filter).await?;
     let mut events: Vec<serde_json::Value> = serde_json::from_str(&resp).unwrap_or_default();
@@ -1606,7 +1633,7 @@ mod messages_cursor_tests {
     #[test]
     fn head_request_sends_no_cursor_fields() {
         // The default pull must keep its existing wire shape.
-        let f = build_messages_filter(CH, 50, None, None, None, None);
+        let f = build_messages_filter(CH, 50, None, None, None, None).expect("no kinds to parse");
         assert!(f.get("until").is_none());
         assert!(f.get("before_id").is_none());
         assert_eq!(f["limit"], serde_json::json!(50));
@@ -1617,14 +1644,22 @@ mod messages_cursor_tests {
     fn timestamp_only_cursor_still_works() {
         // Back-compat: `--before` alone is the existing (inclusive) cursor and
         // must keep sending a bare `until`, never a half composite.
-        let f = build_messages_filter(CH, 200, Some(1_786_800_000), None, None, None);
+        let f = build_messages_filter(CH, 200, Some(1_786_800_000), None, None, None)
+            .expect("no kinds to parse");
         assert_eq!(f["until"], serde_json::json!(1_786_800_000_i64));
         assert!(f.get("before_id").is_none());
     }
 
     #[test]
     fn composite_cursor_sends_both_halves() {
-        let f = build_messages_filter(CH, 200, Some(1_786_800_000), Some(BEFORE_ID), None, None);
+        // Wire-verified discriminator (buzz-security corpus, `bff3110a0`):
+        // window B=1785282528, cap=7, tie second T=1785163671 with
+        // multiplicity 2. A decrement-always backward walk recovers 1/2 there
+        // (drops `fa81da0b`); the same walk with `--before-id` recovers 2/2.
+        // So the composite cursor removes a correctness dependency on the
+        // caller's loop shape, not merely a truncation at a large tie.
+        let f = build_messages_filter(CH, 200, Some(1_786_800_000), Some(BEFORE_ID), None, None)
+            .expect("no kinds to parse");
         assert_eq!(f["until"], serde_json::json!(1_786_800_000_i64));
         assert_eq!(f["before_id"], serde_json::json!(BEFORE_ID));
     }
@@ -1633,7 +1668,8 @@ mod messages_cursor_tests {
     fn cursor_id_is_dropped_without_a_timestamp() {
         // The relay 400s on `before_id` without `until`; the builder must not
         // emit a half cursor even if the caller-level guard is bypassed.
-        let f = build_messages_filter(CH, 200, None, Some(BEFORE_ID), None, None);
+        let f = build_messages_filter(CH, 200, None, Some(BEFORE_ID), None, None)
+            .expect("no kinds to parse");
         assert!(f.get("before_id").is_none());
         assert!(f.get("until").is_none());
     }
@@ -1647,7 +1683,8 @@ mod messages_cursor_tests {
             Some(BEFORE_ID),
             Some(1_786_000_000),
             Some("9,1984"),
-        );
+        )
+        .expect("a well-formed kind list parses");
         assert_eq!(f["since"], serde_json::json!(1_786_000_000_i64));
         assert_eq!(f["kinds"], serde_json::json!([9, 1984]));
         assert_eq!(f["before_id"], serde_json::json!(BEFORE_ID));
@@ -1687,5 +1724,54 @@ mod messages_cursor_tests {
         .is_ok());
         // And a bare timestamp cursor is legal on both surfaces.
         assert!(validate_cursor_pair(Some(1_786_800_000), None, "--before-id", "--before").is_ok());
+    }
+
+    // ── `--kinds` must not substitute the default for what you asked for ──
+    //
+    // Measured at bff3110a0, before this change: `--kinds ''`, `--kinds '*'`
+    // and `--kinds all` all exited 0 having sent the DEFAULT kind list, so a
+    // caller trying to widen a pull was handed the narrow default and told it
+    // worked. Each shape below is one of those commands.
+
+    #[test]
+    fn a_wildcard_kind_list_is_refused_instead_of_silently_defaulting() {
+        for garbage in ["*", "all", "", "9,*", "9, ,1984", "-1", "1984abc"] {
+            let err = build_messages_filter(CH, 50, None, None, None, Some(garbage))
+                .expect_err("unparseable --kinds must be a usage error");
+            assert!(
+                err.to_string().contains("is not an event kind"),
+                "unexpected error for {garbage:?}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_refused_kind_list_never_reaches_the_wire_as_the_default() {
+        // The specific failure this closes: the error must not be recoverable
+        // into a filter at all, so there is no shape where `*` measures [9].
+        assert!(build_messages_filter(CH, 50, None, None, None, Some("*")).is_err());
+        let ok = build_messages_filter(CH, 50, None, None, None, Some("7"))
+            .expect("a real token still works");
+        assert_eq!(ok["kinds"], serde_json::json!([7]));
+    }
+
+    #[test]
+    fn whitespace_around_real_tokens_is_still_tolerated() {
+        // Positive control for the stricter parser: it must reject typos
+        // without also rejecting the documented ` 9, 1984 ` spelling.
+        let f = build_messages_filter(CH, 50, None, None, None, Some(" 9 , 1984 "))
+            .expect("padded integers parse");
+        assert_eq!(f["kinds"], serde_json::json!([9, 1984]));
+    }
+
+    #[test]
+    fn omitting_kinds_sends_the_documented_default_list() {
+        // The default is what `--help` and any field note must quote; pin it so
+        // a change to the list is a deliberate edit here.
+        let f = build_messages_filter(CH, 50, None, None, None, None).expect("no kinds to parse");
+        assert_eq!(
+            f["kinds"],
+            serde_json::json!([9, 40002, 40008, 45001, 45003])
+        );
     }
 }

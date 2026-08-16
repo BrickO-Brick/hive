@@ -461,7 +461,7 @@ pub enum MessagesCmd {
     },
     /// Retrieve messages from a channel
     #[command(
-        after_help = "Pagination:\n  Returns up to --limit messages (default 50, max 200), NEWEST-first.\n  For channels larger than the cap, page backwards with --before:\n\n  buzz messages get --channel <UUID> --limit 200\n  buzz messages get --channel <UUID> --limit 200 \\\n      --before <created_at of oldest message seen> --before-id <its event id>\n\n  --before alone is INCLUSIVE (<=), so a timestamp-only cursor re-returns\n  every message sharing that second; if one second holds more messages than\n  --limit, paging stalls. Pass --before-id to make the cursor exclusive.\n\nExamples:\n  buzz messages get --channel <UUID>\n  buzz messages get --channel <UUID> --limit 50 --kinds 1,1984"
+        after_help = "Pagination:\n  Returns up to --limit messages (default 50, max 200), NEWEST-first.\n  For channels larger than the cap, page backwards with --before:\n\n  buzz messages get --channel <UUID> --limit 200\n  buzz messages get --channel <UUID> --limit 200 \\\n      --before <created_at of oldest message seen> --before-id <its event id>\n\n  --before alone is INCLUSIVE (<=), so a timestamp-only cursor re-returns\n  every message sharing that second; if one second holds more messages than\n  --limit, paging stalls. Pass --before-id to make the cursor exclusive.\n\nKind scope:\n  Without --kinds this returns kinds 9,40002,40008,45001,45003 (message,\n  message v2, diff, forum post, forum comment) and NOTHING ELSE. Notably\n  EXCLUDED: reactions (7), deletions (5), and message edits (40003) — a\n  channel can hold many events this command never shows, and it cannot\n  report a channel total. --kinds REPLACES that list; it does not add to\n  it, and an unparseable token is an error rather than a silent default.\n  `messages thread` uses a DIFFERENT default list (it includes edits 40003\n  and omits forum posts 45001), so counts from the two commands are not\n  comparable.\n\nExamples:\n  buzz messages get --channel <UUID>\n  buzz messages get --channel <UUID> --limit 50 --kinds 1,1984"
     )]
     Get {
         /// Channel UUID
@@ -481,13 +481,14 @@ pub enum MessagesCmd {
         /// Unix timestamp — return messages after this time
         #[arg(long)]
         since: Option<i64>,
-        /// Comma-separated event kinds to filter (e.g. 1,1984)
+        /// Comma-separated event kinds, REPLACING the default list (e.g.
+        /// 1,1984). Unparseable tokens are rejected, not ignored
         #[arg(long)]
         kinds: Option<String>,
     },
     /// Get a message thread (replies to a root message)
     #[command(
-        after_help = "Pagination:\n  Returns up to --limit replies (default 100, max 500) plus the root event.\n  Replies without a cursor and without --depth-limit are NEWEST-first; either\n  one selects the OLDEST-first walk, so the cursor picks which end you see.\n\n  To page a thread larger than the cap, walk FORWARD from the oldest reply.\n  Seed with --after 0, then pass the newest reply of each page back in:\n\n  buzz messages thread --channel <UUID> --event <ID> --limit 500 --after 0\n  buzz messages thread --channel <UUID> --event <ID> --limit 500 \\\n      --after <created_at of newest reply seen> --after-id <its event id>\n\n  Always pass --after-id. The timestamp-only cursor is STRICTLY greater-than,\n  so a page boundary landing inside a second shared by several replies skips\n  the rest of that second silently (rc=0). --after-id carries the tiebreak, so\n  no reply is skipped regardless of where the boundary lands."
+        after_help = "Pagination:\n  Returns up to --limit replies (default 100, max 500) plus the root event.\n  Replies without a cursor and without --depth-limit are NEWEST-first; either\n  one selects the OLDEST-first walk, so the cursor picks which end you see.\n\n  To page a thread larger than the cap, walk FORWARD from the oldest reply.\n  Seed with --after 0, then pass the newest reply of each page back in:\n\n  buzz messages thread --channel <UUID> --event <ID> --limit 500 --after 0\n  buzz messages thread --channel <UUID> --event <ID> --limit 500 \\\n      --after <created_at of newest reply seen> --after-id <its event id>\n\n  Always pass --after-id. The timestamp-only cursor is STRICTLY greater-than,\n  so a page boundary landing inside a second shared by several replies skips\n  the rest of that second silently (rc=0). --after-id carries the tiebreak, so\n  no reply is skipped regardless of where the boundary lands.\n\nKind scope:\n  Replies are limited to kinds 9,40002,40003,40008,45003 (message, message\n  v2, edit, diff, forum comment) and NOTHING ELSE. Notably EXCLUDED:\n  reactions (7) and deletions (5) — on a busy thread these outnumber the\n  replies, and no flag here surfaces them, so a reply count is not a thread\n  event count. This list intentionally differs from `messages get`, which\n  omits edits (40003) and includes forum posts (45001)."
     )]
     Thread {
         /// Channel UUID
