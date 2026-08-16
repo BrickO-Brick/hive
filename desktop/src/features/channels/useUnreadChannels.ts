@@ -15,7 +15,6 @@ import {
   type ObservedUnreadEvent,
 } from "@/features/channels/unreadChannelCounts";
 import { useReadState } from "@/features/channels/readState/useReadState";
-import { makeRootIdStore } from "@/features/channels/unreadRootIdStore";
 import {
   forcedUnreadStore,
   type ForcedUnreadMap,
@@ -50,6 +49,13 @@ export {
   writeActivityToStorage,
 } from "@/features/channels/threadActivityStorage";
 import { useObservedUnreadPersistence } from "@/features/channels/useObservedUnreadPersistence";
+import {
+  authoredStore,
+  mentionedStore,
+  mutedStore,
+  participationStore,
+  useObservedUnreadMembershipSeed,
+} from "@/features/channels/unreadMembership";
 import { useThreadActivityPersistence } from "@/features/channels/useThreadActivityPersistence";
 import { unreadCatchUp } from "@/shared/api/tauriUnreadCatchUp";
 
@@ -75,14 +81,6 @@ export function channelCatchUpEventKinds(
     ? DM_NOTIFIABLE_EVENT_KINDS
     : CHANNEL_MESSAGE_EVENT_KINDS;
 }
-
-const participationStore = makeRootIdStore("buzz-thread-participation.v1");
-const authoredStore = makeRootIdStore("buzz-thread-authored.v1");
-// Thread roots where an external message @-mentioned the current user. The
-// badge gate ORs this in so a mention recipient who never participated,
-// authored, or followed still gets the thread-unread badge.
-const mentionedStore = makeRootIdStore("buzz-thread-mentioned.v1");
-const mutedStore = makeRootIdStore("buzz-thread-muted.v1");
 
 function parseTimestamp(value: string | null | undefined) {
   if (!value) {
@@ -174,26 +172,6 @@ export function useUnreadChannels(
     pubkey ? forcedUnreadStore.read(pubkey) : {},
   );
 
-  // When a synced event advances a read marker (cross-device mark-as-read),
-  // remove from forcedUnreadRef so the dot clears immediately.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: readStateVersion is the intentional drain trigger
-  React.useEffect(() => {
-    const advanced = drainSyncedAdvances();
-    let anyNew = false;
-    for (const channelId of advanced) {
-      if (Object.hasOwn(forcedUnreadRef.current, channelId)) {
-        delete forcedUnreadRef.current[channelId];
-        anyNew = true;
-      }
-    }
-    if (anyNew) {
-      if (pubkey) {
-        forcedUnreadStore.write(pubkey, forcedUnreadRef.current);
-      }
-      bumpLatestVersion();
-    }
-  }, [readStateVersion, drainSyncedAdvances]);
-
   // Root event IDs of threads where the current user has replied at least once.
   // Used to determine if thread replies should trigger unread notifications.
   const participatedRootIdsRef = React.useRef(new Set<string>());
@@ -264,6 +242,13 @@ export function useUnreadChannels(
     bumpMembershipVersion();
   }, [pubkey, relayClient, normalizedRelayUrl]);
 
+  const membershipSeed = useObservedUnreadMembershipSeed(
+    `${normalizedPubkey ?? ""}\u0000${normalizedRelayUrl}`,
+    pubkey,
+    options.followedRootIds,
+    mutedChannelIdsRef.current,
+  );
+
   // Persistence layer: hydration, pagehide flush, scope fence, write-through, marker-prune.
   const observedPersistence = useObservedUnreadPersistence(
     normalizedPubkey,
@@ -276,16 +261,32 @@ export function useUnreadChannels(
     latestByChannelRef,
     {
       onPruned: bumpLatestVersion,
-      membershipSeed: {
-        participatedRootIds: [...participatedRootIdsRef.current],
-        authoredRootIds: [...authoredRootIdsRef.current],
-        mentionedRootIds: [...mentionedRootIdsRef.current],
-        followedRootIds: [...(options.followedRootIds ?? EMPTY_ROOT_IDS)],
-        mutedRootIds: [...mutedRootIdsRef.current],
-        mutedChannelIds: [...mutedChannelIdsRef.current],
-      },
+      membershipSeed,
     },
   );
+
+  // Forward only changed NIP-RS contexts; native owns the event read model.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: readStateVersion is the intentional drain trigger
+  React.useEffect(() => {
+    const advanced = drainSyncedAdvances();
+    observedPersistence.syncMarkers(advanced);
+    let anyNew = false;
+    for (const channelId of advanced) {
+      if (
+        !channelId.startsWith("thread:") &&
+        !channelId.startsWith("msg:") &&
+        Object.hasOwn(forcedUnreadRef.current, channelId)
+      ) {
+        delete forcedUnreadRef.current[channelId];
+        anyNew = true;
+      }
+    }
+    if (anyNew) {
+      if (pubkey) forcedUnreadStore.write(pubkey, forcedUnreadRef.current);
+      bumpLatestVersion();
+    }
+  }, [readStateVersion, drainSyncedAdvances, observedPersistence, pubkey]);
+
   const followedMembershipRef = React.useRef(new Set<string>());
   React.useEffect(() => {
     const desired = options.followedRootIds ?? EMPTY_ROOT_IDS;
@@ -342,7 +343,7 @@ export function useUnreadChannels(
       }
       const observedLatest = topLevelOnly
         ? undefined
-        : latestByChannelRef.current.get(channelId);
+        : observedPersistence.latestForChannel(channelId);
       const { markAt, clearObserved } = resolveChannelReadMarker(
         readAt,
         observedLatest,
@@ -398,6 +399,14 @@ export function useUnreadChannels(
   const recordUnreadEvent = React.useCallback(
     (channelId: string, event: ObservedUnreadEvent): boolean => {
       if (!observedPersistence.isScopeLoaded()) return false;
+      if (observedPersistence.isNative()) {
+        observedPersistence.schedule(
+          observedPersistence.currentScope,
+          channelId,
+          event,
+        );
+        return true;
+      }
       const didRecord = recordObservedUnreadEvent(
         observedUnreadEventsByChannelRef.current,
         channelId,
@@ -438,8 +447,12 @@ export function useUnreadChannels(
       // Fence latestByChannelRef on the scope guard — a stale live callback
       // during A→B drift must not write A's timestamp into B's hydrated ref.
       const scopeOk = observedPersistence.isScopeLoaded();
-      const current = latestByChannelRef.current.get(channelId) ?? 0;
-      if (scopeOk && event.created_at > current) {
+      const current = observedPersistence.latestForChannel(channelId) ?? 0;
+      if (
+        scopeOk &&
+        !observedPersistence.isNative() &&
+        event.created_at > current
+      ) {
         latestByChannelRef.current.set(channelId, event.created_at);
       }
       if (didRecordUnreadEvent || (scopeOk && event.created_at > current)) {
@@ -707,8 +720,11 @@ export function useUnreadChannels(
             result.maxTrigger > (getEffectiveTimestamp(result.channelId) ?? 0)
           ) {
             const current =
-              latestByChannelRef.current.get(result.channelId) ?? 0;
-            if (result.maxTrigger > current) {
+              observedPersistence.latestForChannel(result.channelId) ?? 0;
+            if (
+              !observedPersistence.isNative() &&
+              result.maxTrigger > current
+            ) {
               latestByChannelRef.current.set(
                 result.channelId,
                 result.maxTrigger,
@@ -819,8 +835,8 @@ export function useUnreadChannels(
         const nativeProjection = observedPersistence.isNative()
           ? observedPersistence.projectionsRef.current.get(channel.id)
           : undefined;
-        const unreadCount = nativeProjection
-          ? nativeProjection.count
+        const unreadCount = observedPersistence.isNative()
+          ? (nativeProjection?.count ?? 0)
           : latestByChannelRef.current.get(channel.id) === undefined
             ? 0
             : countUnreadObservedEvents(observedEvents, readAtForObservedEvent);
@@ -910,7 +926,7 @@ export function useUnreadChannels(
     for (const channelId of unreadChannelIdsRef.current) {
       delete forcedUnreadRef.current[channelId];
       const unixSeconds =
-        latestByChannelRef.current.get(channelId) ??
+        observedPersistence.latestForChannel(channelId) ??
         getEffectiveTimestamp(channelId) ??
         null;
       if (unixSeconds !== null) {
