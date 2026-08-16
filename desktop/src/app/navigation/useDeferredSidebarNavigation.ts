@@ -5,7 +5,7 @@ import { dispatchNavigationIntent } from "@/app/navigation/navigationIntent";
 type DeferredSidebarNavigationOptions = {
   pathname: string;
   selectedChannelId: string | null;
-  selectChannel: (channelId: string) => void;
+  selectChannel: (channelId: string) => Promise<unknown> | undefined;
 };
 
 export function useDeferredSidebarNavigation({
@@ -19,6 +19,8 @@ export function useDeferredSidebarNavigation({
   const frameRef = React.useRef<number | null>(null);
   const timerRef = React.useRef<number | null>(null);
   const generationRef = React.useRef(0);
+  const isCommittingRef = React.useRef(false);
+  const ignoreNextNavigationIntentRef = React.useRef(false);
   const pathnameRef = React.useRef(pathname);
   pathnameRef.current = pathname;
 
@@ -35,27 +37,42 @@ export function useDeferredSidebarNavigation({
   }, []);
 
   const cancel = React.useCallback(() => {
+    isCommittingRef.current = false;
+    ignoreNextNavigationIntentRef.current = false;
     cancelDeferred();
     setPendingChannelId(null);
   }, [cancelDeferred]);
 
   React.useEffect(() => cancel, [cancel]);
   React.useEffect(() => {
-    const handleNavigationIntent = () => cancelDeferred();
+    const handleNavigationIntent = () => {
+      if (ignoreNextNavigationIntentRef.current) {
+        ignoreNextNavigationIntentRef.current = false;
+        return;
+      }
+      cancel();
+    };
     window.addEventListener("buzz:navigation-intent", handleNavigationIntent);
     return () =>
       window.removeEventListener(
         "buzz:navigation-intent",
         handleNavigationIntent,
       );
-  }, [cancelDeferred]);
+  }, [cancel]);
   React.useEffect(() => {
-    // A committed route change supersedes any deferred sidebar intent.
+    // Keep the destination skeleton mounted through the route commit and one
+    // paint. Clearing state directly in this effect can be batched before the
+    // browser paints, exposing either the old outlet or expensive new outlet.
     void pathname;
-    cancel();
+    frameRef.current = window.requestAnimationFrame(() => {
+      frameRef.current = null;
+      cancel();
+    });
   }, [cancel, pathname]);
   React.useEffect(() => {
-    if (pendingChannelId === selectedChannelId) setPendingChannelId(null);
+    if (!isCommittingRef.current && pendingChannelId === selectedChannelId) {
+      setPendingChannelId(null);
+    }
   }, [pendingChannelId, selectedChannelId]);
 
   const selectDeferred = React.useCallback(
@@ -89,7 +106,14 @@ export function useDeferredSidebarNavigation({
             ) {
               return;
             }
-            selectChannel(channelId);
+            isCommittingRef.current = true;
+            ignoreNextNavigationIntentRef.current = true;
+            const navigationResult = selectChannel(channelId);
+            if (navigationResult) {
+              void navigationResult.catch(() => {
+                if (generationRef.current === generation) cancel();
+              });
+            }
           }, 0);
         });
       });

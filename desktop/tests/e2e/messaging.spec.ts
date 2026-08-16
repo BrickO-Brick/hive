@@ -2789,12 +2789,38 @@ test("sidebar selection paints before cached channel work starts", async ({
   await expect(page.getByTestId("chat-title")).toHaveText("general");
 
   await page.evaluate(() => {
+    const sourceHref = window.location.href;
     const observed = {
       selectedBeforeRoute: false,
       singularSelection: false,
       activeBackgroundTransitions: true,
+      destinationSkeletonBeforeRoute: false,
+      destinationSkeletonAfterRoute: false,
+      destinationContentAfterSkeleton: false,
     };
     Object.assign(window, { __BUZZ_SIDEBAR_SELECTION_OBSERVED__: observed });
+    const originalPushState = window.history.pushState.bind(window.history);
+    window.history.pushState = (...args) => {
+      observed.destinationSkeletonAfterRoute = Boolean(
+        document.querySelector('[data-testid="pending-channel-skeleton"]'),
+      );
+      return originalPushState(...args);
+    };
+    const routeObserver = new MutationObserver(() => {
+      const skeleton = document.querySelector(
+        '[data-testid="pending-channel-skeleton"]',
+      );
+      const title = document.querySelector('[data-testid="chat-title"]');
+      if (
+        observed.destinationSkeletonAfterRoute &&
+        !skeleton &&
+        title?.textContent === "random"
+      ) {
+        observed.destinationContentAfterSkeleton = true;
+        routeObserver.disconnect();
+      }
+    });
+    routeObserver.observe(document.body, { childList: true, subtree: true });
     const observer = new MutationObserver(() => {
       const general = document.querySelector('[data-testid="channel-general"]');
       const random = document.querySelector('[data-testid="channel-random"]');
@@ -2802,8 +2828,10 @@ test("sidebar selection paints before cached channel work starts", async ({
       observer.disconnect();
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
-          const title = document.querySelector('[data-testid="chat-title"]');
-          observed.selectedBeforeRoute = title?.textContent === "general";
+          observed.selectedBeforeRoute = window.location.href === sourceHref;
+          observed.destinationSkeletonBeforeRoute = Boolean(
+            document.querySelector('[data-testid="pending-channel-skeleton"]'),
+          );
           observed.singularSelection =
             general?.getAttribute("data-active") === "false" &&
             document.querySelectorAll(
@@ -2839,6 +2867,9 @@ test("sidebar selection paints before cached channel work starts", async ({
                 selectedBeforeRoute: boolean;
                 singularSelection: boolean;
                 activeBackgroundTransitions: boolean;
+                destinationSkeletonBeforeRoute: boolean;
+                destinationSkeletonAfterRoute: boolean;
+                destinationContentAfterSkeleton: boolean;
               };
             }
           ).__BUZZ_SIDEBAR_SELECTION_OBSERVED__ ?? null,
@@ -2848,7 +2879,11 @@ test("sidebar selection paints before cached channel work starts", async ({
       selectedBeforeRoute: true,
       singularSelection: true,
       activeBackgroundTransitions: false,
+      destinationSkeletonBeforeRoute: true,
+      destinationSkeletonAfterRoute: true,
+      destinationContentAfterSkeleton: true,
     });
+  await expect(page.getByTestId("pending-channel-skeleton")).toHaveCount(0);
   await expect(page.getByTestId("chat-title")).toHaveText("random");
 });
 

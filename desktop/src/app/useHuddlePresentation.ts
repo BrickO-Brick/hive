@@ -319,7 +319,7 @@ export function useHuddlePresentation() {
         showHuddleInMainApp(channelId);
         return;
       }
-      void goChannel(channelId);
+      return goChannel(channelId);
     },
     [goChannel, isHuddleDrawerOpen, showHuddleInMainApp],
   );

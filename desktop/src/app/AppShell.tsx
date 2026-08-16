@@ -87,6 +87,7 @@ import { relayClient } from "@/shared/api/relayClient";
 import { useIdentityQuery } from "@/shared/api/hooks";
 import { useRelayAutoHeal } from "@/shared/api/useRelayAutoHeal";
 import { useDeferredStartup } from "@/shared/hooks/useDeferredStartup";
+import { ViewLoadingFallback } from "@/shared/ui/ViewLoadingFallback";
 import { useWebviewScrollBoundaryLock } from "@/shared/hooks/useWebviewScrollBoundaryLock";
 import { joinChannel } from "@/shared/api/tauri";
 import type { Channel, ChannelVisibility, SearchHit } from "@/shared/api/types";
@@ -911,7 +912,16 @@ export function AppShell() {
                       mainInsetRef={mainInsetRef}
                       terminal={<TerminalBootstrap {...terminalContext} />}
                     >
-                      <Outlet />
+                      {pendingSidebarChannelId ? (
+                        <div
+                          className="flex min-h-0 min-w-0 flex-1"
+                          data-testid="pending-channel-skeleton"
+                        >
+                          <ViewLoadingFallback includeHeader kind="channel" />
+                        </div>
+                      ) : (
+                        <Outlet />
+                      )}
                     </AppShellChannelSurface>
                     {!isHuddleRoom ? (
                       <RelayConnectionOverlay
