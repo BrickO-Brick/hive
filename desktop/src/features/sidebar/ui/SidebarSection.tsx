@@ -302,7 +302,10 @@ export function ChannelMenuButton({
   const button = (
     <SidebarMenuButton
       className={cn(
-        "data-[active=true]:font-normal",
+        // Selection ownership changes immediately during deferred navigation.
+        // Do not cross-fade the old and new active backgrounds: that makes two
+        // channels appear selected even though data-active is already singular.
+        "data-[active=true]:font-normal transition-[width,height,padding,box-shadow]",
         isActive
           ? "group-hover/menu-item:bg-sidebar-active group-hover/menu-item:text-sidebar-active-foreground"
           : "group-hover/menu-item:bg-sidebar-accent group-hover/menu-item:text-sidebar-foreground",

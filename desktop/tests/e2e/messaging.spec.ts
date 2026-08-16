@@ -2789,9 +2789,14 @@ test("sidebar selection paints before cached channel work starts", async ({
   await expect(page.getByTestId("chat-title")).toHaveText("general");
 
   await page.evaluate(() => {
-    const observed = { selectedBeforeRoute: false };
+    const observed = {
+      selectedBeforeRoute: false,
+      singularSelection: false,
+      activeBackgroundTransitions: true,
+    };
     Object.assign(window, { __BUZZ_SIDEBAR_SELECTION_OBSERVED__: observed });
     const observer = new MutationObserver(() => {
+      const general = document.querySelector('[data-testid="channel-general"]');
       const random = document.querySelector('[data-testid="channel-random"]');
       if (random?.getAttribute("data-active") !== "true") return;
       observer.disconnect();
@@ -2799,6 +2804,19 @@ test("sidebar selection paints before cached channel work starts", async ({
         requestAnimationFrame(() => {
           const title = document.querySelector('[data-testid="chat-title"]');
           observed.selectedBeforeRoute = title?.textContent === "general";
+          observed.singularSelection =
+            general?.getAttribute("data-active") === "false" &&
+            document.querySelectorAll(
+              '[data-testid^="channel-"][data-active="true"]',
+            ).length === 1;
+          observed.activeBackgroundTransitions = [general, random].some(
+            (element) =>
+              element instanceof HTMLElement &&
+              getComputedStyle(element)
+                .transitionProperty.split(",")
+                .map((property) => property.trim())
+                .includes("background-color"),
+          );
         });
       });
     });
@@ -2819,12 +2837,18 @@ test("sidebar selection paints before cached channel work starts", async ({
             window as Window & {
               __BUZZ_SIDEBAR_SELECTION_OBSERVED__?: {
                 selectedBeforeRoute: boolean;
+                singularSelection: boolean;
+                activeBackgroundTransitions: boolean;
               };
             }
-          ).__BUZZ_SIDEBAR_SELECTION_OBSERVED__?.selectedBeforeRoute ?? false,
+          ).__BUZZ_SIDEBAR_SELECTION_OBSERVED__ ?? null,
       ),
     )
-    .toBe(true);
+    .toEqual({
+      selectedBeforeRoute: true,
+      singularSelection: true,
+      activeBackgroundTransitions: false,
+    });
   await expect(page.getByTestId("chat-title")).toHaveText("random");
 });
 
