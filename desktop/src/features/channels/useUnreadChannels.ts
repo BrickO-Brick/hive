@@ -249,7 +249,6 @@ export function useUnreadChannels(
     mutedChannelIdsRef.current,
   );
 
-  // Persistence layer: hydration, pagehide flush, scope fence, write-through, marker-prune.
   const observedPersistence = useObservedUnreadPersistence(
     normalizedPubkey,
     normalizedRelayUrl,
@@ -265,7 +264,6 @@ export function useUnreadChannels(
     },
   );
 
-  // Forward only changed NIP-RS contexts; native owns the event read model.
   // biome-ignore lint/correctness/useExhaustiveDependencies: readStateVersion is the intentional drain trigger
   React.useEffect(() => {
     const advanced = drainSyncedAdvances();
@@ -350,11 +348,13 @@ export function useUnreadChannels(
       );
       if (markAt === null) return;
       markContextRead(channelId, markAt);
-      // Delegate destructive observed-ref removal to the fenced owner operation —
+      observedPersistence.syncMarkers(
+        [channelId],
+        new Map([[channelId, markAt]]),
+      );
       // the parent must not delete from latestByChannelRef or
       // observedUnreadEventsByChannelRef directly on the clear-observed path,
       // or a stale scope-A callback could corrupt scope B before the fence rejects.
-      // (Fenced record writes in handleChannelMessage and catch-up remain in the parent.)
       if (clearObserved) {
         observedPersistence.removeChannel(channelId);
         bumpLatestVersion();
@@ -721,11 +721,8 @@ export function useUnreadChannels(
           ) {
             const current =
               observedPersistence.latestForChannel(result.channelId) ?? 0;
-            if (
-              !observedPersistence.isNative() &&
-              result.maxTrigger > current
-            ) {
-              latestByChannelRef.current.set(
+            if (result.maxTrigger > current) {
+              observedPersistence.advanceLatest(
                 result.channelId,
                 result.maxTrigger,
               );
@@ -923,6 +920,7 @@ export function useUnreadChannels(
   unreadChannelIdsRef.current = unreadChannelIds;
 
   const markAllChannelsRead = React.useCallback(() => {
+    const marked = new Map<string, number>();
     for (const channelId of unreadChannelIdsRef.current) {
       delete forcedUnreadRef.current[channelId];
       const unixSeconds =
@@ -931,12 +929,13 @@ export function useUnreadChannels(
         null;
       if (unixSeconds !== null) {
         markContextRead(channelId, unixSeconds);
+        marked.set(channelId, unixSeconds);
       }
     }
+    observedPersistence.syncMarkers(marked.keys(), marked);
     if (pubkey) {
       forcedUnreadStore.write(pubkey, forcedUnreadRef.current);
     }
-    // Delegate destructive observed-ref clearing to the fenced owner operation —
     // the parent must not reset the observed Maps directly on this path, or a
     // stale scope-A callback could corrupt scope B before the fence rejects.
     // (Fenced record writes in handleChannelMessage and catch-up remain in the parent.)

@@ -36,7 +36,11 @@ export type ObservedUnreadPersistence = {
   ) => void;
   removeChannel: (channelId: string) => void;
   updateMembership: (kind: string, value: string, present: boolean) => void;
-  syncMarkers: (contextIds: Iterable<string>) => void;
+  syncMarkers: (
+    contextIds: Iterable<string>,
+    explicitReadAt?: ReadonlyMap<string, number>,
+  ) => void;
+  advanceLatest: (channelId: string, createdAt: number) => void;
   latestForChannel: (channelId: string) => number | undefined;
   clearAll: () => void;
 };
@@ -201,6 +205,7 @@ export function useObservedUnreadPersistence(
           sequence: current.sequence + 1,
           baseRevision: current.revision,
           events,
+          channelLatest: [],
           markers: [],
           membership: [],
           clearChannels: [],
@@ -310,15 +315,19 @@ export function useObservedUnreadPersistence(
   }, [normalizedPubkey, normalizedRelayUrl]);
 
   const syncMarkers = React.useCallback(
-    (contextIds: Iterable<string>) => {
+    (
+      contextIds: Iterable<string>,
+      explicitReadAt?: ReadonlyMap<string, number>,
+    ) => {
       const state = nativeRef.current;
       if (!state) return;
       const markers = [...new Set(contextIds)].map((contextId) => ({
         contextId,
         readAt:
-          contextId.startsWith("thread:") || contextId.startsWith("msg:")
+          explicitReadAt?.get(contextId) ??
+          (contextId.startsWith("thread:") || contextId.startsWith("msg:")
             ? getOwnTimestamp(contextId)
-            : getEffectiveTimestamp(contextId),
+            : getEffectiveTimestamp(contextId)),
       }));
       if (markers.length === 0) return;
       flushNative();
@@ -335,6 +344,7 @@ export function useObservedUnreadPersistence(
           sequence: current.sequence + 1,
           baseRevision: current.revision,
           events: [],
+          channelLatest: [],
           markers,
           membership: [],
           clearChannels: [],
@@ -399,6 +409,7 @@ export function useObservedUnreadPersistence(
           sequence: current.sequence + 1,
           baseRevision: current.revision,
           events: [],
+          channelLatest: [],
           markers: [],
           membership: [],
           clearChannels,
@@ -406,6 +417,41 @@ export function useObservedUnreadPersistence(
         }).then(apply);
       });
       return true;
+    },
+    [apply, flushNative],
+  );
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: mutable storage refs are stable containers
+  const advanceLatest = React.useCallback(
+    (channelId: string, createdAt: number) => {
+      const state = nativeRef.current;
+      if (!state) {
+        const current = latestByChannelRef.current.get(channelId) ?? 0;
+        if (createdAt > current)
+          latestByChannelRef.current.set(channelId, createdAt);
+        return;
+      }
+      flushNative();
+      chainRef.current = chainRef.current.then(() => {
+        const current = nativeRef.current;
+        if (
+          !current ||
+          current.scope.pubkey !== state.scope.pubkey ||
+          current.scope.relayUrl !== state.scope.relayUrl
+        )
+          return;
+        return ingestObservedUnread({
+          scope: current.scope,
+          sequence: current.sequence + 1,
+          baseRevision: current.revision,
+          events: [],
+          channelLatest: [{ channelId, createdAt }],
+          markers: [],
+          membership: [],
+          clearChannels: [],
+          clearAll: false,
+        }).then(apply);
+      });
     },
     [apply, flushNative],
   );
@@ -428,6 +474,7 @@ export function useObservedUnreadPersistence(
           sequence: current.sequence + 1,
           baseRevision: current.revision,
           events: [],
+          channelLatest: [],
           markers: [],
           membership: [{ kind, value, present }],
           clearChannels: [],
@@ -488,6 +535,7 @@ export function useObservedUnreadPersistence(
       removeChannel,
       updateMembership,
       syncMarkers,
+      advanceLatest,
       latestForChannel,
       clearAll,
     }),
@@ -499,6 +547,7 @@ export function useObservedUnreadPersistence(
       removeChannel,
       updateMembership,
       syncMarkers,
+      advanceLatest,
       latestForChannel,
       clearAll,
     ],

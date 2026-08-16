@@ -64,6 +64,7 @@ export function ingestObservedUnread(request: {
   sequence: number;
   baseRevision: number;
   events: ObservedUnreadWireEvent[];
+  channelLatest: Array<{ channelId: string; createdAt: number }>;
   markers: Array<{ contextId: string; readAt: number | null }>;
   membership: Array<{ kind: string; value: string; present: boolean }>;
   clearChannels: string[];

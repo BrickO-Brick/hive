@@ -62,6 +62,13 @@ struct IngestEvent {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct ChannelLatestUpdate {
+    channel_id: String,
+    created_at: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct MarkerUpdate {
     context_id: String,
     read_at: Option<u64>,
@@ -101,6 +108,7 @@ pub(crate) struct IngestRequest {
     sequence: u64,
     base_revision: u64,
     events: Vec<IngestEvent>,
+    channel_latest: Vec<ChannelLatestUpdate>,
     markers: Vec<MarkerUpdate>,
     membership: Vec<MembershipUpdate>,
     clear_channels: Vec<String>,
@@ -179,6 +187,9 @@ fn open_db(path: &Path) -> Result<Connection, String> {
           counts_badge INTEGER NOT NULL, counts_app_badge INTEGER NOT NULL,
           PRIMARY KEY(scope,event_id));
         CREATE INDEX IF NOT EXISTS observed_events_channel ON observed_events(scope,channel_id,created_at,event_id);
+        CREATE TABLE IF NOT EXISTS channel_latest(
+          scope TEXT NOT NULL, channel_id TEXT NOT NULL, created_at INTEGER NOT NULL,
+          PRIMARY KEY(scope,channel_id));
         CREATE TABLE IF NOT EXISTS read_markers(
           scope TEXT NOT NULL, context_id TEXT NOT NULL, read_at INTEGER NOT NULL,
           PRIMARY KEY(scope,context_id));
@@ -292,6 +303,30 @@ fn projections(tx: &Transaction<'_>, scope: &str) -> Result<Vec<ChannelProjectio
         .map_err(|e| format!("query unread markers: {e}"))?
         .collect::<Result<_, _>>()
         .map_err(|e| format!("read unread markers: {e}"))?;
+    let mut by_channel: HashMap<String, ChannelProjection> = HashMap::new();
+    let mut latest_stmt = tx
+        .prepare("SELECT channel_id,created_at FROM channel_latest WHERE scope=?1")
+        .map_err(|e| format!("prepare channel latest: {e}"))?;
+    for row in latest_stmt
+        .query_map([scope], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, u64>(1)?))
+        })
+        .map_err(|e| format!("query channel latest: {e}"))?
+    {
+        let (channel_id, latest) = row.map_err(|e| format!("read channel latest: {e}"))?;
+        by_channel.insert(
+            channel_id.clone(),
+            ChannelProjection {
+                channel_id,
+                latest,
+                count: 0,
+                badge_count: 0,
+                app_badge_count: 0,
+                top_level_unread: false,
+                high_priority_unread: false,
+            },
+        );
+    }
     let mut stmt = tx.prepare("SELECT event_id,channel_id,created_at,root_id,high_priority,counts_badge,counts_app_badge FROM observed_events WHERE scope=?1 ORDER BY channel_id,created_at,event_id").map_err(|e| format!("prepare observed projection: {e}"))?;
     let rows = stmt
         .query_map([scope], |r| {
@@ -306,7 +341,6 @@ fn projections(tx: &Transaction<'_>, scope: &str) -> Result<Vec<ChannelProjectio
             ))
         })
         .map_err(|e| format!("query observed projection: {e}"))?;
-    let mut by_channel: HashMap<String, ChannelProjection> = HashMap::new();
     for row in rows {
         let (id, channel, created, root, high, badge, app) =
             row.map_err(|e| format!("read observed projection: {e}"))?;
@@ -353,7 +387,7 @@ pub(crate) fn observed_unread_open_scope(
         .map_err(|e| format!("begin observed-unread open: {e}"))?;
     let scope = request.scope.key();
     ensure_scope(&tx, &scope)?;
-    let (_, _, _, migration_complete, _) = state(&tx, &scope)?;
+    let (_, _, _, migration_complete, membership_seeded) = state(&tx, &scope)?;
     if !migration_complete {
         if let Some(payload) = &request.legacy_payload {
             if let Some(channels) = payload
@@ -377,8 +411,10 @@ pub(crate) fn observed_unread_open_scope(
         )
         .map_err(|e| format!("mark observed migration: {e}"))?;
     }
-    if let Some(seed) = &request.membership_seed {
-        seed_membership(&tx, &scope, seed)?;
+    if !membership_seeded {
+        if let Some(seed) = &request.membership_seed {
+            seed_membership(&tx, &scope, seed)?;
+        }
     }
     prune(&tx, &scope)?;
     let channels = projections(&tx, &scope)?;
@@ -440,6 +476,8 @@ pub(crate) fn observed_unread_ingest(
     if request.clear_all {
         tx.execute("DELETE FROM observed_events WHERE scope=?1", [&scope])
             .map_err(|e| format!("clear observed scope: {e}"))?;
+        tx.execute("DELETE FROM channel_latest WHERE scope=?1", [&scope])
+            .map_err(|e| format!("clear channel latest scope: {e}"))?;
     }
     for channel in &request.clear_channels {
         tx.execute(
@@ -447,9 +485,21 @@ pub(crate) fn observed_unread_ingest(
             params![scope, channel],
         )
         .map_err(|e| format!("clear observed channel: {e}"))?;
+        tx.execute(
+            "DELETE FROM channel_latest WHERE scope=?1 AND channel_id=?2",
+            params![scope, channel],
+        )
+        .map_err(|e| format!("clear channel latest: {e}"))?;
     }
     for event in &request.events {
         upsert_event(&tx, &scope, event)?;
+    }
+    for update in &request.channel_latest {
+        tx.execute(
+            "INSERT INTO channel_latest(scope,channel_id,created_at) VALUES(?1,?2,?3) ON CONFLICT(scope,channel_id) DO UPDATE SET created_at=MAX(created_at,excluded.created_at)",
+            params![scope, update.channel_id, update.created_at],
+        )
+        .map_err(|e| format!("advance channel latest: {e}"))?;
     }
     for update in &request.membership {
         if update.present {
@@ -575,6 +625,51 @@ mod tests {
         assert_eq!(p[0].count, 1);
         assert_eq!(p[0].badge_count, 1);
         tx.commit().unwrap();
+    }
+    #[test]
+    fn latest_anchor_survives_without_a_notify_event_and_seed_is_one_shot() {
+        let (_d, mut conn) = db();
+        let tx = conn.transaction().unwrap();
+        let key = scope().key();
+        ensure_scope(&tx, &key).unwrap();
+        let first = MembershipSeed {
+            participated_root_ids: vec!["kept".into()],
+            ..Default::default()
+        };
+        seed_membership(&tx, &key, &first).unwrap();
+        let empty = MembershipSeed::default();
+        let (_, _, _, _, seeded) = state(&tx, &key).unwrap();
+        if !seeded {
+            seed_membership(&tx, &key, &empty).unwrap();
+        }
+        tx.execute(
+            "INSERT INTO channel_latest(scope,channel_id,created_at) VALUES(?1,'ch',42)",
+            [&key],
+        )
+        .unwrap();
+        let membership: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM unread_membership WHERE scope=?1 AND value='kept'",
+                [&key],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(membership, 1);
+        let projected = projections(&tx, &key).unwrap();
+        assert_eq!(projected[0].latest, 42);
+        assert_eq!(projected[0].count, 0);
+    }
+    #[test]
+    fn ingest_request_wire_accepts_channel_latest() {
+        let request: IngestRequest = serde_json::from_value(serde_json::json!({
+            "scope":{"pubkey":"PK","relayUrl":"wss://relay/"},
+            "sequence":1,"baseRevision":0,"events":[],
+            "channelLatest":[{"channelId":"ch","createdAt":42}],
+            "markers":[],"membership":[],"clearChannels":[],"clearAll":false
+        }))
+        .unwrap();
+        assert_eq!(request.channel_latest[0].channel_id, "ch");
+        assert_eq!(request.channel_latest[0].created_at, 42);
     }
     #[test]
     fn serialized_response_matches_typescript_contract() {
