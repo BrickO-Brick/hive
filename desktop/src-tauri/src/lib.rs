@@ -31,6 +31,7 @@ mod native_websocket;
 mod native_websocket_batch;
 mod nostr_bind;
 pub mod nostr_convert;
+mod persona_catalog;
 mod prevent_sleep;
 mod ptt_shortcut;
 mod relay;
@@ -229,6 +230,7 @@ pub fn run() {
         .manage(commands::pairing::PairingHandle::new())
         .manage(terminal_runtime::TerminalSessions::default())
         .manage(archive::sync::ArchiveSyncState::default())
+        .manage(native_relay_client::NativeRelayClient::default())
         .setup(move |app| {
             let app_handle = app.handle().clone();
             #[cfg(target_os = "macos")]
@@ -713,6 +715,7 @@ pub fn run() {
             update_managed_agent,
             discover_backend_providers,
             probe_backend_provider,
+            persona_catalog::fetch_persona_catalog,
             list_personas,
             create_persona,
             update_persona,
