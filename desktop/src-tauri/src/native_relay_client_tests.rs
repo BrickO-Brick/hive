@@ -152,6 +152,83 @@ async fn settle() {
     tokio::time::sleep(Duration::from_millis(500)).await;
 }
 
+/// C's acceptance edge: a finite request shares the authenticated real socket
+/// with a persistent subscription, completes on wire EOSE, and does not steal
+/// later persistent delivery. A fake connection cannot establish any of those
+/// transport/lifetime properties.
+#[tokio::test]
+async fn finite_fetch_multiplexes_with_persistent_delivery_on_a_real_websocket() {
+    let (relay_url, mut frames, commands) = stub_relay().await;
+    let (session, mut events) = start(relay_url, Keys::generate(), None);
+    session.set_subscriptions(vec![probe_subscription()]).await;
+    assert_eq!(next_req(&mut frames, "the persistent REQ").await, PROBE_ID);
+
+    let fetch = {
+        let session = Arc::clone(&session);
+        tokio::spawn(async move {
+            session
+                .fetch_events(
+                    serde_json::json!({ "kinds": [buzz_core_pkg::kind::KIND_PERSONA], "limit": 500 }),
+                    Duration::from_secs(10),
+                )
+                .await
+        })
+    };
+    let request_id = next_req(&mut frames, "the finite fetch REQ").await;
+    assert_ne!(request_id, PROBE_ID);
+
+    let relay_keys = Keys::generate();
+    let mut forged = EventBuilder::text_note("forged catalog page event")
+        .sign_with_keys(&relay_keys)
+        .unwrap();
+    forged.content = "tampered after signing".into();
+    commands
+        .send(StubCommand::Event(
+            request_id.clone(),
+            serde_json::to_value(forged).unwrap(),
+        ))
+        .await
+        .unwrap();
+    let fetched = EventBuilder::text_note("catalog page event")
+        .sign_with_keys(&relay_keys)
+        .unwrap();
+    commands
+        .send(StubCommand::Event(
+            request_id.clone(),
+            serde_json::to_value(&fetched).unwrap(),
+        ))
+        .await
+        .unwrap();
+    commands
+        .send(StubCommand::Eose(request_id.clone()))
+        .await
+        .unwrap();
+
+    assert_eq!(fetch.await.unwrap().unwrap(), vec![fetched]);
+    assert_eq!(
+        next_frame(&mut frames, "finite fetch CLOSE").await,
+        Frame::Close(request_id)
+    );
+
+    let persistent = EventBuilder::text_note("persistent event after fetch")
+        .sign_with_keys(&relay_keys)
+        .unwrap();
+    commands
+        .send(StubCommand::Event(
+            PROBE_ID.into(),
+            serde_json::to_value(&persistent).unwrap(),
+        ))
+        .await
+        .unwrap();
+    let delivered = tokio::time::timeout(Duration::from_secs(10), events.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(delivered.subscription_id, PROBE_ID);
+    assert_eq!(*delivered.event, persistent);
+    session.shutdown();
+}
+
 /// The blocker: a CLOSED with the desired set never changing again must
 /// still reopen the subscription.
 ///

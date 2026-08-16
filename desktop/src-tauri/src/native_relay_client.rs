@@ -27,7 +27,7 @@ use std::{
 use buzz_ws_client_pkg::{NostrWsConnection, RelayMessage};
 use nostr::{Event, Keys};
 use tokio::{
-    sync::{mpsc, Mutex},
+    sync::{broadcast, mpsc, oneshot, Mutex},
     time::Instant,
 };
 use tokio_util::sync::CancellationToken;
@@ -69,6 +69,7 @@ pub(crate) struct Subscription {
 
 /// An event delivered to the session owner, tagged with the subscription that
 /// matched it. Callers demultiplex on `subscription_id`.
+#[derive(Clone)]
 pub(crate) struct MatchedEvent {
     pub(crate) subscription_id: String,
     pub(crate) event: Box<Event>,
@@ -76,10 +77,82 @@ pub(crate) struct MatchedEvent {
 
 /// Handle to a running session. Dropping it does not stop the session; call
 /// [`RelaySession::shutdown`] so the socket closes deterministically.
+/// App-wide owner of the one native socket for the active `(relay, pubkey)`
+/// scope. Features subscribe independently, while scope replacement cancels
+/// the old socket before exposing the new one.
+#[derive(Default)]
+pub(crate) struct NativeRelayClient {
+    current: Mutex<Option<ManagedSession>>,
+}
+
+struct ManagedSession {
+    scope: (String, String),
+    session: Arc<RelaySession>,
+}
+
+impl NativeRelayClient {
+    async fn ensure_session(&self, relay_url: String, keys: Keys) -> Arc<RelaySession> {
+        let scope = (relay_url.clone(), keys.public_key().to_hex());
+        let mut current = self.current.lock().await;
+        if let Some(managed) = current.as_ref().filter(|managed| managed.scope == scope) {
+            return Arc::clone(&managed.session);
+        }
+        if let Some(previous) = current.take() {
+            previous.session.shutdown();
+        }
+        let session = start_managed(relay_url, keys, None);
+        *current = Some(ManagedSession {
+            scope,
+            session: Arc::clone(&session),
+        });
+        session
+    }
+
+    pub(crate) async fn session(&self, relay_url: String, keys: Keys) -> Arc<RelaySession> {
+        self.ensure_session(relay_url, keys).await
+    }
+
+    pub(crate) async fn archive_session(
+        &self,
+        relay_url: String,
+        keys: Keys,
+    ) -> (Arc<RelaySession>, mpsc::Receiver<MatchedEvent>) {
+        let session = self.ensure_session(relay_url, keys).await;
+        let mut events = session.subscribe();
+        let (event_tx, event_rx) = mpsc::channel(256);
+        tauri::async_runtime::spawn(async move {
+            loop {
+                match events.recv().await {
+                    Ok(event) => {
+                        if event_tx.send(event).await.is_err() {
+                            return;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        eprintln!(
+                            "buzz-desktop: archive relay receiver lagged by {skipped} events; stopping sync rather than silently losing archive data"
+                        );
+                        return;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => return,
+                }
+            }
+        });
+        (session, event_rx)
+    }
+}
+
 pub(crate) struct RelaySession {
     state: Arc<Mutex<SessionState>>,
+    requests: Arc<Mutex<HashMap<String, PendingRequest>>>,
+    events: broadcast::Sender<MatchedEvent>,
     wake: mpsc::Sender<()>,
     cancel: CancellationToken,
+}
+
+struct PendingRequest {
+    events: Vec<Event>,
+    complete: oneshot::Sender<Result<Vec<Event>, String>>,
 }
 
 /// Desired set plus the write-time record of what has left it.
@@ -91,6 +164,7 @@ pub(crate) struct RelaySession {
 #[derive(Default)]
 struct SessionState {
     desired: Vec<Subscription>,
+    transient: Vec<Subscription>,
     /// Ids whose exact subscription has left `desired` since the last
     /// reconcile drained this. Written here rather than derived at reconcile
     /// time because reconcile cannot derive it: wakes coalesce, so a remove
@@ -128,6 +202,57 @@ impl SessionState {
 }
 
 impl RelaySession {
+    pub(crate) fn subscribe(&self) -> broadcast::Receiver<MatchedEvent> {
+        self.events.subscribe()
+    }
+
+    /// Fetches one finite page over this session without disturbing persistent
+    /// feature subscriptions. Request ids are fresh, so CLOSED/backoff history
+    /// can never leak between pages or into a long-lived subscription.
+    pub(crate) async fn fetch_events(
+        &self,
+        filter: serde_json::Value,
+        timeout: Duration,
+    ) -> Result<Vec<Event>, String> {
+        let id = format!("native-fetch-{}", uuid::Uuid::new_v4());
+        let (complete, result) = oneshot::channel();
+        self.requests.lock().await.insert(
+            id.clone(),
+            PendingRequest {
+                events: Vec::new(),
+                complete,
+            },
+        );
+        {
+            let mut state = self.state.lock().await;
+            state.transient.push(Subscription {
+                id: id.clone(),
+                filter,
+            });
+        }
+        let _ = self.wake.try_send(());
+
+        let outcome = tokio::select! {
+            _ = self.cancel.cancelled() => Err("relay session cancelled".to_string()),
+            value = tokio::time::timeout(timeout, result) => match value {
+                Ok(Ok(value)) => value,
+                Ok(Err(_)) => Err("relay request ended before EOSE".to_string()),
+                Err(_) => Err("relay request timed out".to_string()),
+            }
+        };
+        self.finish_request(&id).await;
+        outcome
+    }
+
+    async fn finish_request(&self, id: &str) {
+        self.requests.lock().await.remove(id);
+        let mut state = self.state.lock().await;
+        state.transient.retain(|subscription| subscription.id != id);
+        state.removed.insert(id.to_string());
+        drop(state);
+        let _ = self.wake.try_send(());
+    }
+
     /// Replaces the desired subscription set and wakes the loop to reconcile.
     ///
     /// Reconciliation is declarative rather than incremental: callers state
@@ -169,15 +294,42 @@ impl RelaySession {
 /// reconnects on drop with exponential backoff and resubscribes the current
 /// desired set — never a snapshot captured at connect time, so a subscription
 /// change during an outage is honored by the reconnect that follows.
+#[cfg(test)]
 pub(crate) fn start(
     relay_url: String,
     keys: Keys,
     auth_tag: Option<nostr::Tag>,
 ) -> (Arc<RelaySession>, mpsc::Receiver<MatchedEvent>) {
+    let session = start_managed(relay_url, keys, auth_tag);
+    let mut events = session.subscribe();
     let (event_tx, event_rx) = mpsc::channel(256);
+    tauri::async_runtime::spawn(async move {
+        loop {
+            match events.recv().await {
+                Ok(event) => {
+                    if event_tx.send(event).await.is_err() {
+                        return;
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    eprintln!(
+                        "buzz-desktop: native_relay_client: legacy receiver lagged by {skipped} events"
+                    );
+                }
+                Err(broadcast::error::RecvError::Closed) => return,
+            }
+        }
+    });
+    (session, event_rx)
+}
+
+fn start_managed(relay_url: String, keys: Keys, auth_tag: Option<nostr::Tag>) -> Arc<RelaySession> {
+    let (events, _) = broadcast::channel(256);
     let (wake, wake_rx) = mpsc::channel(1);
     let session = Arc::new(RelaySession {
         state: Arc::new(Mutex::new(SessionState::default())),
+        requests: Arc::new(Mutex::new(HashMap::new())),
+        events,
         wake,
         cancel: CancellationToken::new(),
     });
@@ -188,10 +340,9 @@ pub(crate) fn start(
         auth_tag,
         Arc::clone(&session),
         wake_rx,
-        event_tx,
     ));
 
-    (session, event_rx)
+    session
 }
 
 async fn run_session(
@@ -200,7 +351,6 @@ async fn run_session(
     auth_tag: Option<nostr::Tag>,
     session: Arc<RelaySession>,
     mut wake_rx: mpsc::Receiver<()>,
-    event_tx: mpsc::Sender<MatchedEvent>,
 ) {
     let mut delay = RECONNECT_BASE_DELAY;
     loop {
@@ -215,7 +365,7 @@ async fn run_session(
                 // clean exit — a socket that drops after one event must not
                 // inherit the previous failure's delay.
                 delay = RECONNECT_BASE_DELAY;
-                run_connection(conn, &session, &mut wake_rx, &event_tx).await;
+                run_connection(conn, &session, &mut wake_rx).await;
             }
             Err(error) => {
                 eprintln!("buzz-desktop: native_relay_client: connect failed: {error}");
@@ -238,7 +388,6 @@ async fn run_connection(
     mut conn: NostrWsConnection,
     session: &RelaySession,
     wake_rx: &mut mpsc::Receiver<()>,
-    event_tx: &mpsc::Sender<MatchedEvent>,
 ) {
     // Subscription ids currently open ON THIS SOCKET. Deliberately local: a new
     // socket has none, so reconnect resubscribes the full desired set without
@@ -321,19 +470,40 @@ async fn run_connection(
                         if !open.contains_key(&subscription_id) {
                             continue;
                         }
+                        let pending = session
+                            .requests
+                            .lock()
+                            .await
+                            .contains_key(&subscription_id);
+                        if pending {
+                            // Reject forged finite-request events before
+                            // retaining them, bounding memory at the transport
+                            // seam. The catalog re-verifies defensively before
+                            // head selection.
+                            if event.verify().is_err() {
+                                continue;
+                            }
+                            if let Some(request) = session
+                                .requests
+                                .lock()
+                                .await
+                                .get_mut(&subscription_id)
+                            {
+                                request.events.push(*event);
+                            }
+                            continue;
+                        }
                         // Delivery proves the subscription is healthy, so any
                         // accumulated backoff for it is stale. Mirrors the JS
                         // port's per-event `closedRetryAttempt = 0`.
                         retries.remove(&subscription_id);
-                        if event_tx
-                            .send(MatchedEvent { subscription_id, event })
-                            .await
-                            .is_err()
-                        {
-                            // Receiver gone: nobody is consuming this session.
-                            let _ = conn.disconnect().await;
-                            return;
-                        }
+                        // A broadcast session remains healthy when no feature
+                        // currently observes persistent events (catalog fetches
+                        // are fulfilled above through `requests`).
+                        let _ = session.events.send(MatchedEvent {
+                            subscription_id,
+                            event,
+                        });
                     }
                     Ok(RelayMessage::Closed { subscription_id, message }) => {
                         // The relay dropped it; forget it so a reopen re-sends
@@ -346,6 +516,15 @@ async fn run_connection(
                         // and nothing would evict it: the id is gone from
                         // `desired`, so no future removal can record it again.
                         if open.remove(&subscription_id).is_none() {
+                            continue;
+                        }
+                        if let Some(request) = session.requests.lock().await.remove(&subscription_id) {
+                            let _ = request.complete.send(Err(format!("relay closed request: {message}")));
+                            let mut state = session.state.lock().await;
+                            state.transient.retain(|subscription| subscription.id != subscription_id);
+                            state.removed.insert(subscription_id.clone());
+                            drop(state);
+                            let _ = session.wake.try_send(());
                             continue;
                         }
                         let retry = retries.entry(subscription_id.clone()).or_default();
@@ -361,6 +540,15 @@ async fn run_connection(
                         // is what keeps an intermittent relay from ratcheting
                         // its way to the 30s ceiling and staying there.
                         let was_open = open.contains_key(&subscription_id);
+                        if let Some(request) = session.requests.lock().await.remove(&subscription_id) {
+                            let _ = request.complete.send(Ok(request.events));
+                            let mut state = session.state.lock().await;
+                            state.transient.retain(|subscription| subscription.id != subscription_id);
+                            state.removed.insert(subscription_id.clone());
+                            drop(state);
+                            let _ = session.wake.try_send(());
+                            continue;
+                        }
                         retries.remove(&subscription_id);
                         // The relay is running a subscription this socket does
                         // not think is open, so the two disagree. EOSE is the
@@ -411,7 +599,15 @@ async fn reconcile(
     let (desired, removed) = {
         let mut state = session.state.lock().await;
         let removed = std::mem::take(&mut state.removed);
-        (state.desired.clone(), removed)
+        (
+            state
+                .desired
+                .iter()
+                .chain(&state.transient)
+                .cloned()
+                .collect::<Vec<_>>(),
+            removed,
+        )
     };
 
     // Retry state is only valid while its id has been continuously desired

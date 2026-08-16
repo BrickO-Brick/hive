@@ -31,7 +31,7 @@ use super::{
     store::SaveSubscription, ArchiveBatchResult, ArchiveCandidate, MatchedScope, ScopeType,
 };
 use crate::app_state::AppState;
-use crate::native_relay_client::{self, MatchedEvent, RelaySession, Subscription};
+use crate::native_relay_client::{MatchedEvent, NativeRelayClient, RelaySession, Subscription};
 
 /// Flush once this many events are buffered. Parity with the renderer manager.
 const FLUSH_BATCH_SIZE: usize = 25;
@@ -496,6 +496,7 @@ pub async fn start_archive_sync(
     app: AppHandle,
     state: State<'_, AppState>,
     sync_state: State<'_, ArchiveSyncState>,
+    relay_client: State<'_, NativeRelayClient>,
     epoch: u64,
     lease: u64,
 ) -> Result<(), String> {
@@ -516,7 +517,7 @@ pub async fn start_archive_sync(
 
     // No NIP-OA auth tag: this is the owner's own session, authenticated as
     // the identity itself, exactly like the renderer's relay client.
-    let (session, events) = native_relay_client::start(relay_url, keys, None);
+    let (session, events) = relay_client.archive_session(relay_url, keys).await;
 
     let io = AppIo {
         app: app.clone(),
@@ -524,7 +525,7 @@ pub async fn start_archive_sync(
     };
     tauri::async_runtime::spawn(async move {
         run_sync(&io, reload, events, cancel).await;
-        session.shutdown();
+        session.set_subscriptions(Vec::new()).await;
     });
     Ok(())
 }
