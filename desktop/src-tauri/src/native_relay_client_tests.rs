@@ -159,7 +159,7 @@ async fn settle() {
 #[tokio::test]
 async fn finite_fetch_multiplexes_with_persistent_delivery_on_a_real_websocket() {
     let (relay_url, mut frames, commands) = stub_relay().await;
-    let (session, mut events) = start(relay_url, Keys::generate(), None);
+    let (session, mut events) = start(relay_url, Keys::generate(), None).await;
     session.set_subscriptions(vec![probe_subscription()]).await;
     assert_eq!(next_req(&mut frames, "the persistent REQ").await, PROBE_ID);
 
@@ -229,6 +229,71 @@ async fn finite_fetch_multiplexes_with_persistent_delivery_on_a_real_websocket()
     session.shutdown();
 }
 
+async fn run_persistent_burst(drain_concurrently: bool) {
+    const BURST: usize = 1_200;
+
+    let (relay_url, mut frames, commands) = stub_relay().await;
+    let (session, mut events) = start(relay_url, Keys::generate(), None).await;
+    session.set_subscriptions(vec![probe_subscription()]).await;
+    assert_eq!(next_req(&mut frames, "the burst REQ").await, PROBE_ID);
+
+    let relay_keys = Keys::generate();
+    let event = EventBuilder::text_note("persistent burst event")
+        .sign_with_keys(&relay_keys)
+        .unwrap();
+    let send_burst = tokio::spawn({
+        let commands = commands.clone();
+        let event = serde_json::to_value(&event).unwrap();
+        async move {
+            for _ in 0..BURST {
+                commands
+                    .send(StubCommand::Event(PROBE_ID.into(), event.clone()))
+                    .await
+                    .unwrap();
+            }
+        }
+    });
+
+    if !drain_concurrently {
+        // Let the bounded archive channel fill before draining. The socket loop
+        // must wait here rather than evicting live-only events.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    for _ in 0..BURST {
+        tokio::time::timeout(Duration::from_secs(60), events.recv())
+            .await
+            .expect("timed out draining persistent burst")
+            .expect("archive receiver closed during persistent burst");
+    }
+    send_burst.await.unwrap();
+
+    let after = EventBuilder::text_note("persistent event after burst")
+        .sign_with_keys(&relay_keys)
+        .unwrap();
+    commands
+        .send(StubCommand::Event(
+            PROBE_ID.into(),
+            serde_json::to_value(&after).unwrap(),
+        ))
+        .await
+        .unwrap();
+    let delivered = tokio::time::timeout(Duration::from_secs(60), events.recv())
+        .await
+        .expect("timed out after persistent burst")
+        .expect("archive receiver closed after persistent burst");
+    assert_eq!(*delivered.event, after);
+    session.shutdown();
+}
+
+/// Persistent archive subscriptions use `limit: 0`, so an event lost during a
+/// slow-consumer burst cannot be replayed. Both a fast control and a receiver
+/// that starts late must therefore get the whole burst and remain live after it.
+#[tokio::test]
+async fn persistent_delivery_applies_backpressure_without_losing_a_burst() {
+    run_persistent_burst(true).await;
+    run_persistent_burst(false).await;
+}
+
 /// The blocker: a CLOSED with the desired set never changing again must
 /// still reopen the subscription.
 ///
@@ -239,7 +304,7 @@ async fn finite_fetch_multiplexes_with_persistent_delivery_on_a_real_websocket()
 #[tokio::test]
 async fn a_closed_subscription_reopens_without_a_desired_set_change() {
     let (relay_url, mut frames, closed) = stub_relay().await;
-    let (session, _events) = start(relay_url, Keys::generate(), None);
+    let (session, _events) = start(relay_url, Keys::generate(), None).await;
 
     session.set_subscriptions(vec![probe_subscription()]).await;
     assert_eq!(next_req(&mut frames, "the initial REQ").await, PROBE_ID);
@@ -267,7 +332,7 @@ async fn a_closed_subscription_reopens_without_a_desired_set_change() {
 #[tokio::test]
 async fn a_terminal_closed_is_not_retried_on_the_same_socket() {
     let (relay_url, mut frames, closed) = stub_relay().await;
-    let (session, _events) = start(relay_url, Keys::generate(), None);
+    let (session, _events) = start(relay_url, Keys::generate(), None).await;
 
     session.set_subscriptions(vec![probe_subscription()]).await;
     assert_eq!(next_req(&mut frames, "the initial REQ").await, PROBE_ID);
@@ -303,7 +368,7 @@ async fn a_terminal_closed_is_not_retried_on_the_same_socket() {
 #[tokio::test]
 async fn a_recreated_subscription_does_not_inherit_a_terminal_latch() {
     let (relay_url, mut frames, closed) = stub_relay().await;
-    let (session, _events) = start(relay_url, Keys::generate(), None);
+    let (session, _events) = start(relay_url, Keys::generate(), None).await;
 
     session.set_subscriptions(vec![probe_subscription()]).await;
     assert_eq!(next_req(&mut frames, "the initial REQ").await, PROBE_ID);
@@ -347,7 +412,7 @@ async fn a_recreated_subscription_does_not_inherit_a_terminal_latch() {
 #[tokio::test]
 async fn a_recreated_subscription_is_not_suppressed_when_the_writes_coalesce() {
     let (relay_url, mut frames, closed) = stub_relay().await;
-    let (session, _events) = start(relay_url, Keys::generate(), None);
+    let (session, _events) = start(relay_url, Keys::generate(), None).await;
 
     session.set_subscriptions(vec![probe_subscription()]).await;
     assert_eq!(next_req(&mut frames, "the initial REQ").await, PROBE_ID);
@@ -382,7 +447,7 @@ async fn a_recreated_subscription_is_not_suppressed_when_the_writes_coalesce() {
 #[tokio::test]
 async fn a_reconcile_preserves_the_backoff_of_a_still_desired_subscription() {
     let (relay_url, mut frames, closed) = stub_relay().await;
-    let (session, _events) = start(relay_url, Keys::generate(), None);
+    let (session, _events) = start(relay_url, Keys::generate(), None).await;
 
     session.set_subscriptions(vec![probe_subscription()]).await;
     assert_eq!(next_req(&mut frames, "the initial REQ").await, PROBE_ID);
@@ -436,7 +501,7 @@ async fn a_reconcile_preserves_the_backoff_of_a_still_desired_subscription() {
 #[tokio::test]
 async fn a_closed_arriving_after_removal_does_not_mint_retry_state() {
     let (relay_url, mut frames, closed) = stub_relay().await;
-    let (session, _events) = start(relay_url, Keys::generate(), None);
+    let (session, _events) = start(relay_url, Keys::generate(), None).await;
 
     session.set_subscriptions(vec![probe_subscription()]).await;
     assert_eq!(next_req(&mut frames, "the initial REQ").await, PROBE_ID);
@@ -485,7 +550,7 @@ async fn a_closed_arriving_after_removal_does_not_mint_retry_state() {
 #[tokio::test]
 async fn a_stale_terminal_closed_does_not_blackhole_a_recreated_subscription() {
     let (relay_url, mut frames, closed) = stub_relay().await;
-    let (session, mut events) = start(relay_url, Keys::generate(), None);
+    let (session, mut events) = start(relay_url, Keys::generate(), None).await;
 
     session.set_subscriptions(vec![probe_subscription()]).await;
     assert_eq!(next_req(&mut frames, "the initial REQ").await, PROBE_ID);

@@ -27,7 +27,7 @@ use std::{
 use buzz_ws_client_pkg::{NostrWsConnection, RelayMessage};
 use nostr::{Event, Keys};
 use tokio::{
-    sync::{broadcast, mpsc, oneshot, Mutex},
+    sync::{mpsc, oneshot, Mutex},
     time::Instant,
 };
 use tokio_util::sync::CancellationToken;
@@ -118,26 +118,7 @@ impl NativeRelayClient {
         keys: Keys,
     ) -> (Arc<RelaySession>, mpsc::Receiver<MatchedEvent>) {
         let session = self.ensure_session(relay_url, keys).await;
-        let mut events = session.subscribe();
-        let (event_tx, event_rx) = mpsc::channel(256);
-        tauri::async_runtime::spawn(async move {
-            loop {
-                match events.recv().await {
-                    Ok(event) => {
-                        if event_tx.send(event).await.is_err() {
-                            return;
-                        }
-                    }
-                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                        eprintln!(
-                            "buzz-desktop: archive relay receiver lagged by {skipped} events; stopping sync rather than silently losing archive data"
-                        );
-                        return;
-                    }
-                    Err(broadcast::error::RecvError::Closed) => return,
-                }
-            }
-        });
+        let event_rx = session.attach_archive().await;
         (session, event_rx)
     }
 }
@@ -145,7 +126,11 @@ impl NativeRelayClient {
 pub(crate) struct RelaySession {
     state: Arc<Mutex<SessionState>>,
     requests: Arc<Mutex<HashMap<String, PendingRequest>>>,
-    events: broadcast::Sender<MatchedEvent>,
+    /// The archive is the sole persistent-event consumer. Sending through its
+    /// bounded channel is awaited by the socket loop, preserving the
+    /// backpressure required by live-only (`limit: 0`) subscriptions: dropping
+    /// an event here cannot be repaired by replaying it later.
+    archive_events: Arc<Mutex<Option<mpsc::Sender<MatchedEvent>>>>,
     wake: mpsc::Sender<()>,
     cancel: CancellationToken,
 }
@@ -202,8 +187,10 @@ impl SessionState {
 }
 
 impl RelaySession {
-    pub(crate) fn subscribe(&self) -> broadcast::Receiver<MatchedEvent> {
-        self.events.subscribe()
+    async fn attach_archive(&self) -> mpsc::Receiver<MatchedEvent> {
+        let (events, receiver) = mpsc::channel(256);
+        *self.archive_events.lock().await = Some(events);
+        receiver
     }
 
     /// Fetches one finite page over this session without disturbing persistent
@@ -295,41 +282,22 @@ impl RelaySession {
 /// desired set — never a snapshot captured at connect time, so a subscription
 /// change during an outage is honored by the reconnect that follows.
 #[cfg(test)]
-pub(crate) fn start(
+pub(crate) async fn start(
     relay_url: String,
     keys: Keys,
     auth_tag: Option<nostr::Tag>,
 ) -> (Arc<RelaySession>, mpsc::Receiver<MatchedEvent>) {
     let session = start_managed(relay_url, keys, auth_tag);
-    let mut events = session.subscribe();
-    let (event_tx, event_rx) = mpsc::channel(256);
-    tauri::async_runtime::spawn(async move {
-        loop {
-            match events.recv().await {
-                Ok(event) => {
-                    if event_tx.send(event).await.is_err() {
-                        return;
-                    }
-                }
-                Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                    eprintln!(
-                        "buzz-desktop: native_relay_client: legacy receiver lagged by {skipped} events"
-                    );
-                }
-                Err(broadcast::error::RecvError::Closed) => return,
-            }
-        }
-    });
-    (session, event_rx)
+    let events = session.attach_archive().await;
+    (session, events)
 }
 
 fn start_managed(relay_url: String, keys: Keys, auth_tag: Option<nostr::Tag>) -> Arc<RelaySession> {
-    let (events, _) = broadcast::channel(256);
     let (wake, wake_rx) = mpsc::channel(1);
     let session = Arc::new(RelaySession {
         state: Arc::new(Mutex::new(SessionState::default())),
         requests: Arc::new(Mutex::new(HashMap::new())),
-        events,
+        archive_events: Arc::new(Mutex::new(None)),
         wake,
         cancel: CancellationToken::new(),
     });
@@ -497,13 +465,20 @@ async fn run_connection(
                         // accumulated backoff for it is stale. Mirrors the JS
                         // port's per-event `closedRetryAttempt = 0`.
                         retries.remove(&subscription_id);
-                        // A broadcast session remains healthy when no feature
-                        // currently observes persistent events (catalog fetches
-                        // are fulfilled above through `requests`).
-                        let _ = session.events.send(MatchedEvent {
-                            subscription_id,
-                            event,
-                        });
+                        // Persistent archive subscriptions are live-only, so
+                        // losing an event cannot be repaired with a later REQ.
+                        // Await the bounded archive channel to push back on the
+                        // socket read loop instead. Finite catalog requests are
+                        // fulfilled above and never enter this channel.
+                        let sender = session.archive_events.lock().await.clone();
+                        if let Some(sender) = sender {
+                            let _ = sender
+                                .send(MatchedEvent {
+                                    subscription_id,
+                                    event,
+                                })
+                                .await;
+                        }
                     }
                     Ok(RelayMessage::Closed { subscription_id, message }) => {
                         // The relay dropped it; forget it so a reopen re-sends
@@ -827,7 +802,7 @@ mod relay_backed_tests {
         // shape: that the `#p` tag key and the `limit: 0` live tail produce a
         // REQ a real relay accepts and answers. Scope demultiplexing on the
         // archive side is covered in `archive/sync_tests.rs`.
-        let (session, mut events) = start(relay_url.clone(), owner.clone(), None);
+        let (session, mut events) = start(relay_url.clone(), owner.clone(), None).await;
         session
             .set_subscriptions(vec![Subscription {
                 id: "archive:owner_p:test".to_string(),
