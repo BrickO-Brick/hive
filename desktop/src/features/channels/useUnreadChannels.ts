@@ -29,7 +29,6 @@ import {
 import {
   hasMentionForEvent,
   isHighPriorityEventForUser,
-  shouldNotifyForEvent,
 } from "@/features/notifications/lib/shouldNotify";
 import type { RelayClient } from "@/shared/api/relayClientSession";
 import type { Channel, RelayEvent } from "@/shared/api/types";
@@ -53,6 +52,7 @@ export {
 } from "@/features/channels/threadActivityStorage";
 import { useObservedUnreadPersistence } from "@/features/channels/useObservedUnreadPersistence";
 import { useThreadActivityPersistence } from "@/features/channels/useThreadActivityPersistence";
+import { unreadCatchUp } from "@/shared/api/tauriUnreadCatchUp";
 
 type UseUnreadChannelsOptions = UseLiveChannelUpdatesOptions & {
   pubkey?: string;
@@ -590,189 +590,108 @@ export function useUnreadChannels(
     const authoredSizeBefore = authoredRootIdsRef.current.size;
     const mentionedSizeBefore = mentionedRootIdsRef.current.size;
 
-    type CatchUpResult =
-      | {
-          channelId: string;
-          ok: true;
-          maxExternal: number;
-          unreadEvents: ObservedUnreadEvent[];
-          threadReplies: ThreadActivityItem[];
-        }
-      | { channelId: string; ok: false };
-
-    void Promise.all(
-      toFetch.map(async (channelId): Promise<CatchUpResult> => {
-        try {
-          const readAt = getEffectiveTimestamp(channelId);
-          const channel = channels.find((c) => c.id === channelId);
-          // NIP-01 `since` is inclusive of `created_at >= since`. The +1
-          // makes the relay-side filter strict-newer; the client-side
-          // `> readAt` check below is the belt to the suspenders.
-          const sinceParam = readAt === null ? 0 : readAt + 1;
-
-          const events = await relayClient.fetchEvents({
-            kinds: [...channelCatchUpEventKinds(channel?.channelType)],
-            "#h": [channelId],
-            since: sinceParam,
-            limit: CATCH_UP_LIMIT,
-          });
-
-          // Pass 1: build participation from self-authored thread replies,
-          // track self-authored top-level messages for author notifications,
-          // and capture external mentions so their threads gate a badge.
-          for (const event of events) {
-            const isSelf =
-              normalizedPubkey !== null &&
-              event.pubkey.toLowerCase() === normalizedPubkey;
-            if (isSelf) {
-              const ref = getThreadReference(event.tags);
-              if (ref.rootId !== null) {
-                participatedRootIdsRef.current.add(ref.rootId);
-              } else {
-                authoredRootIdsRef.current.add(event.id);
-              }
-            } else {
-              recordMentionedRoot(event);
-            }
-          }
-
-          if (normalizedPubkey !== null) {
-            participationStore.write(
-              normalizedPubkey,
-              participatedRootIdsRef.current,
-            );
-            authoredStore.write(normalizedPubkey, authoredRootIdsRef.current);
-          }
-
-          // Pass 2: compute maxExternal and collect thread reply activity,
-          // applying the notification filter to both.
-          let maxExternal = 0;
-          const unreadEvents: ObservedUnreadEvent[] = [];
-          const threadReplies: ThreadActivityItem[] = [];
-          const chType = channel?.channelType;
-          const chName = channel?.name ?? "";
-          for (const event of events) {
-            if (
-              normalizedPubkey !== null &&
-              event.pubkey.toLowerCase() === normalizedPubkey
-            ) {
-              continue;
-            }
-            if (readAt !== null && event.created_at <= readAt) continue;
-            const eventChannelId =
-              event.tags.find((t) => t[0] === "h")?.[1] ?? null;
-            if (
-              !shouldNotifyForEvent(event, normalizedPubkey ?? "", {
-                participatedRootIds: participatedRootIdsRef.current,
-                followedRootIds: options.followedRootIds ?? EMPTY_SET,
-                authoredRootIds: authoredRootIdsRef.current,
-                mutedRootIds: mutedRootIdsRef.current,
-                mutedChannelIds: mutedChannelIdsRef.current,
-                channelId: eventChannelId,
-              })
-            ) {
-              continue;
-            }
-            const evtRef = getThreadReference(event.tags);
-            const isThreadedReply =
-              evtRef.parentId !== null && !isBroadcastReply(event.tags);
-            if (event.created_at > maxExternal) {
-              maxExternal = event.created_at;
-            }
-            const isHighPriority =
-              chType === "dm" ||
-              (normalizedPubkey !== null &&
-                isHighPriorityEventForUser(event, normalizedPubkey));
-            unreadEvents.push(
-              makeObservedUnreadEvent({
-                id: event.id,
-                createdAt: event.created_at,
-                rootId: resolveObservedUnreadRootId(event.tags),
-                highPriority: isHighPriority,
-                channelType: chType,
-                isThreadedReply,
-              }),
-            );
-            if (isThreadedReply) {
-              threadReplies.push({
-                id: event.id,
-                kind: event.kind,
-                pubkey: event.pubkey,
-                content: event.content,
-                createdAt: event.created_at,
-                channelId,
-                channelName: chName,
-                tags: [...event.tags],
-              });
-            }
-          }
-
-          return {
-            channelId,
-            ok: true,
-            maxExternal,
-            unreadEvents,
-            threadReplies,
-          };
-        } catch {
-          // Transient relay failure for this channel — release the claim
-          // so we retry on the next effect run instead of staying stuck
-          // until identity reset.
-          return { channelId, ok: false };
-        }
+    void unreadCatchUp({
+      channels: toFetch.map((channelId) => {
+        const channel = channels.find(
+          (candidate) => candidate.id === channelId,
+        );
+        return {
+          id: channelId,
+          type: channel?.channelType ?? "stream",
+          name: channel?.name ?? "",
+          readAt: getEffectiveTimestamp(channelId),
+        };
       }),
-    ).then((results) => {
-      if (isCancelled) return;
-      // Guard: don't merge catch-up results into a ref whose scope has drifted
-      // (relay/pubkey changed while this async fetch was in flight). Use the
-      // observed owner's loaded-scope predicate — one scope authority, not two.
-      if (!observedPersistence.isScopeLoaded()) return;
-      let didAdvance = false;
-      const allThreadReplies: ThreadActivityItem[] = [];
-      for (const result of results) {
-        if (!result.ok) {
-          caughtUpChannelsRef.current.delete(result.channelId);
-          continue;
-        }
-        const { channelId, maxExternal, unreadEvents, threadReplies } = result;
-        allThreadReplies.push(...threadReplies);
-        if (unreadEvents.length > 0) {
-          for (const event of unreadEvents) {
-            recordUnreadEvent(channelId, event);
+      selfPubkey: normalizedPubkey ?? "",
+      participatedRootIds: [...participatedRootIdsRef.current],
+      authoredRootIds: [...authoredRootIdsRef.current],
+      mentionedRootIds: [...mentionedRootIdsRef.current],
+      followedRootIds: [...(options.followedRootIds ?? EMPTY_SET)],
+      mutedRootIds: [...mutedRootIdsRef.current],
+      mutedChannelIds: [...mutedChannelIdsRef.current],
+    })
+      .then(({ channels: results }) => {
+        if (isCancelled) return;
+        // The command rejects if relay/pubkey scope changes in flight. Keep the
+        // renderer fence too: it also covers effect cleanup before merge.
+        if (!observedPersistence.isScopeLoaded()) return;
+
+        let didAdvance = false;
+        let didDiscover = false;
+        const allThreadReplies: ThreadActivityItem[] = [];
+        for (const result of results) {
+          if (result.status === "error") {
+            caughtUpChannelsRef.current.delete(result.channelId);
+            continue;
           }
-          didAdvance = true;
-        }
-        if (maxExternal > 0) {
-          const readAtNow = getEffectiveTimestamp(channelId) ?? 0;
-          if (maxExternal > readAtNow) {
-            const current = latestByChannelRef.current.get(channelId) ?? 0;
-            if (maxExternal > current) {
-              latestByChannelRef.current.set(channelId, maxExternal);
+          for (const rootId of result.discovered.participated) {
+            const before = participatedRootIdsRef.current.size;
+            participatedRootIdsRef.current.add(rootId);
+            didDiscover ||= participatedRootIdsRef.current.size !== before;
+          }
+          for (const rootId of result.discovered.authored) {
+            const before = authoredRootIdsRef.current.size;
+            authoredRootIdsRef.current.add(rootId);
+            didDiscover ||= authoredRootIdsRef.current.size !== before;
+          }
+          for (const rootId of result.discovered.mentioned) {
+            const before = mentionedRootIdsRef.current.size;
+            mentionedRootIdsRef.current.add(rootId);
+            didDiscover ||= mentionedRootIdsRef.current.size !== before;
+          }
+          allThreadReplies.push(...result.activityRows);
+          for (const event of result.observedEvents) {
+            recordUnreadEvent(result.channelId, event);
+            didAdvance = true;
+          }
+          if (
+            result.maxTrigger > (getEffectiveTimestamp(result.channelId) ?? 0)
+          ) {
+            const current =
+              latestByChannelRef.current.get(result.channelId) ?? 0;
+            if (result.maxTrigger > current) {
+              latestByChannelRef.current.set(
+                result.channelId,
+                result.maxTrigger,
+              );
               didAdvance = true;
             }
           }
         }
-      }
-      if (allThreadReplies.length > 0) {
-        const added = addThreadActivityItems(
-          threadActivityRef.current,
-          allThreadReplies,
-        );
-        if (added.didAdd) {
-          threadActivityRef.current = added.items;
-          activityPersistence.schedule(currentActivityScope);
-          didAdvance = true;
+
+        if (normalizedPubkey !== null && didDiscover) {
+          participationStore.write(
+            normalizedPubkey,
+            participatedRootIdsRef.current,
+          );
+          authoredStore.write(normalizedPubkey, authoredRootIdsRef.current);
+          mentionedStore.write(normalizedPubkey, mentionedRootIdsRef.current);
         }
-      }
-      if (didAdvance) bumpLatestVersion();
-      if (
-        participatedRootIdsRef.current.size !== participatedSizeBefore ||
-        authoredRootIdsRef.current.size !== authoredSizeBefore ||
-        mentionedRootIdsRef.current.size !== mentionedSizeBefore
-      ) {
-        bumpMembershipVersion();
-      }
-    });
+        if (allThreadReplies.length > 0) {
+          const added = addThreadActivityItems(
+            threadActivityRef.current,
+            allThreadReplies,
+          );
+          if (added.didAdd) {
+            threadActivityRef.current = added.items;
+            activityPersistence.schedule(currentActivityScope);
+            didAdvance = true;
+          }
+        }
+        if (didAdvance) bumpLatestVersion();
+        if (
+          didDiscover ||
+          participatedRootIdsRef.current.size !== participatedSizeBefore ||
+          authoredRootIdsRef.current.size !== authoredSizeBefore ||
+          mentionedRootIdsRef.current.size !== mentionedSizeBefore
+        ) {
+          bumpMembershipVersion();
+        }
+      })
+      .catch(() => {
+        if (isCancelled) return;
+        for (const id of toFetch) caughtUpChannelsRef.current.delete(id);
+      });
 
     return () => {
       isCancelled = true;

@@ -13376,6 +13376,21 @@ export function maybeInstallE2eTauriMocks() {
       case "start_archive_sync":
       case "stop_archive_sync":
         return null;
+      case "unread_catch_up": {
+        const request = payload as {
+          request: { channels: Array<{ id: string }> };
+        };
+        return {
+          channels: request.request.channels.map((channel) => ({
+            status: "success",
+            channelId: channel.id,
+            observedEvents: [],
+            maxTrigger: 0,
+            activityRows: [],
+            discovered: { participated: [], authored: [], mentioned: [] },
+          })),
+        };
+      }
       case "agent_metric_archive_default_enabled":
         return activeConfig?.mock?.agentMetricArchiveDefaultEnabled ?? true;
       case "set_prevent_sleep_active":
