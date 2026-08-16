@@ -16,6 +16,13 @@ const _observerBatchKind = 'batch';
 /// Key for channel-scoped transcript reads.
 typedef ObserverKey = ({String channelId, String agentPubkey});
 
+/// Key for a transcript constrained to one agent turn.
+typedef ObserverTurnKey = ({
+  String channelId,
+  String agentPubkey,
+  String turnId,
+});
+
 /// State emitted by the channel-scoped observer transcript provider.
 @immutable
 class ObserverState {
@@ -246,7 +253,8 @@ class ObserverRelayNotifier extends Notifier<ObserverRelayState> {
       );
       final plaintext = nip44Decrypt(conversationKey, event.content);
       final json = jsonDecode(plaintext) as Map<String, dynamic>;
-      final frame = ObserverFrame.fromJson(json);
+      final receivedAt = DateTime.now().toUtc();
+      final frame = ObserverFrame.fromJson(json, receivedAt: receivedAt);
       if (frame.kind != _observerBatchKind) {
         return [frame];
       }
@@ -261,7 +269,10 @@ class ObserverRelayNotifier extends Notifier<ObserverRelayState> {
 
       return [
         for (final inner in events)
-          ObserverFrame.fromJson(inner as Map<String, dynamic>),
+          ObserverFrame.fromJson(
+            inner as Map<String, dynamic>,
+            receivedAt: receivedAt,
+          ),
       ];
     } catch (error) {
       _errorMessage = 'Observer event decrypt failed: $error';
@@ -368,6 +379,29 @@ final observerSubscriptionProvider =
       return ObserverState(
         connection: relayState.connection,
         transcript: buildTranscript(channelFrames),
+        errorMessage: relayState.errorMessage,
+      );
+    });
+
+/// Live transcript for one exact turn.
+///
+/// The narrower key keeps compact composer activity from merging concurrent or
+/// unrelated turns that happen to share an agent and channel.
+final observerTurnSubscriptionProvider =
+    Provider.family<ObserverState, ObserverTurnKey>((ref, key) {
+      final relayState = ref.watch(observerRelayProvider);
+      final normalizedAgent = key.agentPubkey.toLowerCase();
+      final frames = relayState.framesByAgent[normalizedAgent] ?? const [];
+      final turnFrames = [
+        for (final frame in frames)
+          if ((frame.channelId == key.channelId || frame.channelId == null) &&
+              frame.turnId == key.turnId)
+            frame,
+      ];
+
+      return ObserverState(
+        connection: relayState.connection,
+        transcript: buildTranscript(turnFrames),
         errorMessage: relayState.errorMessage,
       );
     });
