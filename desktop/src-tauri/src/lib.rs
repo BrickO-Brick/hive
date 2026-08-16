@@ -45,6 +45,7 @@ mod terminal_runtime;
 mod terminal_transport;
 #[cfg(target_os = "macos")]
 mod tray_menu;
+mod unread_catch_up;
 mod util;
 #[cfg(target_os = "linux")]
 pub mod webkit_rendering;
@@ -716,6 +717,7 @@ pub fn run() {
             discover_backend_providers,
             probe_backend_provider,
             persona_catalog::fetch_persona_catalog,
+            unread_catch_up::unread_catch_up,
             list_personas,
             create_persona,
             update_persona,

@@ -190,3 +190,46 @@ fn exact_tags_reject_duplicates_and_extra_fields() {
     assert_eq!(coordinate_tag(&extended, "d").as_deref(), Some("reviewer"));
     assert_eq!(exact_tag(&extended, "shared"), None);
 }
+
+/// Pins the serialized DTO output against the renderer's catalog contract.
+/// The Tauri generic is only a TypeScript assertion; serde's bytes are the
+/// actual boundary, so populate every optional field and compare the value.
+#[test]
+fn serialized_catalog_matches_the_typescript_contract() {
+    let publication = PersonaCatalogPublication {
+        event_id: "ev1".into(),
+        owner_pubkey: "owner".into(),
+        source_persona_id: "persona-1".into(),
+        created_at: 42,
+        agent: CatalogAgentProjection {
+            display_name: "Ada".into(),
+            avatar_url: Some("https://example.com/a.png".into()),
+            system_prompt: "be kind".into(),
+            runtime: Some("acp".into()),
+            model: Some("m1".into()),
+            provider: Some("p1".into()),
+            name_pool: vec!["Ada".into(), "Lin".into()],
+            respond_to: Some("mentions".into()),
+            parallelism: Some(2),
+        },
+    };
+    let actual = serde_json::to_value(vec![publication]).unwrap();
+    let expected = serde_json::json!([{
+        "eventId": "ev1",
+        "ownerPubkey": "owner",
+        "sourcePersonaId": "persona-1",
+        "createdAt": 42,
+        "agent": {
+            "displayName": "Ada",
+            "avatarUrl": "https://example.com/a.png",
+            "systemPrompt": "be kind",
+            "runtime": "acp",
+            "model": "m1",
+            "provider": "p1",
+            "namePool": ["Ada", "Lin"],
+            "respondTo": "mentions",
+            "parallelism": 2,
+        },
+    }]);
+    assert_eq!(actual, expected);
+}
