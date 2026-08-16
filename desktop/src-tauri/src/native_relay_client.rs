@@ -470,6 +470,9 @@ async fn run_connection(
                         // Await the bounded archive channel to push back on the
                         // socket read loop instead. Finite catalog requests are
                         // fulfilled above and never enter this channel.
+                        // Because this await is outside the session-cancel select,
+                        // teardown depends on `run_sync` dropping its receiver; moving
+                        // ownership or spawning that teardown can strand the socket loop.
                         let sender = session.archive_events.lock().await.clone();
                         if let Some(sender) = sender {
                             let _ = sender
