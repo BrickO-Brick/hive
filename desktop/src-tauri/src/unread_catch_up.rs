@@ -53,7 +53,11 @@ pub(crate) struct UnreadCatchUpResponse {
 }
 
 #[derive(Serialize)]
-#[serde(tag = "status", rename_all = "camelCase")]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 enum ChannelResult {
     Success {
         channel_id: String,
@@ -271,14 +275,7 @@ fn classify_batch(
                     .channel
                     .read_at
                     .is_some_and(|read_at| event.created_at <= read_at)
-                || !should_notify(
-                    &event,
-                    &item.channel.id,
-                    &self_pubkey,
-                    request,
-                    &participated,
-                    &authored,
-                )
+                || !should_notify(&event, &self_pubkey, request, &participated, &authored)
             {
                 continue;
             }
@@ -384,7 +381,6 @@ fn thread_reference(tags: &[Vec<String>]) -> ThreadReference {
 
 fn should_notify(
     event: &EventView,
-    _channel_id: &str,
     self_pubkey: &str,
     request: &UnreadCatchUpRequest,
     participated: &HashSet<String>,
@@ -555,5 +551,97 @@ mod tests {
             ["broadcast"]
         );
         assert_eq!(*max_trigger, 12);
+    }
+
+    /// Pins the SERIALIZED wire contract against `tauriUnreadCatchUp.ts`.
+    ///
+    /// Asserts on serde's OUTPUT, not on `ChannelResult`: the renderer never
+    /// sees the Rust type, it sees bytes, through an `invokeTauri<T>` cast
+    /// that validates nothing. Every other test here inspects the enum before
+    /// serialization and the e2e bridge hand-writes the intended shape, so
+    /// without this nothing compares what Rust emits to what TypeScript
+    /// declares.
+    ///
+    /// Whole-value rather than a key list, deliberately: a key-set assertion
+    /// passes a mutant that drops the variant rename and emits `"Success"`,
+    /// which the renderer's `status === "error"` branch silently misreads.
+    /// Failure here means the merge loop throws on the first success row and
+    /// catch-up yields nothing, silently.
+    #[test]
+    fn serialized_response_matches_the_typescript_contract() {
+        let channels = vec![
+            ChannelResult::Success {
+                channel_id: "ch".into(),
+                observed_events: vec![ObservedUnreadEvent {
+                    id: "evt".into(),
+                    created_at: 11,
+                    root_id: Some("root".into()),
+                    high_priority: true,
+                    counts_toward_badge: true,
+                    counts_toward_app_badge: false,
+                }],
+                max_trigger: 11,
+                activity_rows: vec![ActivityRow {
+                    id: "evt".into(),
+                    kind: 9,
+                    pubkey: "other".into(),
+                    content: "hi".into(),
+                    created_at: 11,
+                    channel_id: "ch".into(),
+                    channel_name: "Ch".into(),
+                    tags: vec![vec!["h".into(), "ch".into()]],
+                }],
+                discovered: DiscoveredRoots {
+                    participated: vec!["root".into()],
+                    authored: Vec::new(),
+                    mentioned: Vec::new(),
+                },
+            },
+            ChannelResult::Error {
+                channel_id: "ch-2".into(),
+                error: "relay request timed out".into(),
+            },
+        ];
+
+        let actual = serde_json::to_value(UnreadCatchUpResponse { channels }).unwrap();
+        let expected = serde_json::json!({
+            "channels": [
+                {
+                    "status": "success",
+                    "channelId": "ch",
+                    "observedEvents": [{
+                        "id": "evt",
+                        "createdAt": 11,
+                        "rootId": "root",
+                        "highPriority": true,
+                        "countsTowardBadge": true,
+                        "countsTowardAppBadge": false,
+                    }],
+                    "maxTrigger": 11,
+                    "activityRows": [{
+                        "id": "evt",
+                        "kind": 9,
+                        "pubkey": "other",
+                        "content": "hi",
+                        "createdAt": 11,
+                        "channelId": "ch",
+                        "channelName": "Ch",
+                        "tags": [["h", "ch"]],
+                    }],
+                    "discovered": {
+                        "participated": ["root"],
+                        "authored": [],
+                        "mentioned": [],
+                    },
+                },
+                {
+                    "status": "error",
+                    "channelId": "ch-2",
+                    "error": "relay request timed out",
+                },
+            ]
+        });
+
+        assert_eq!(actual, expected);
     }
 }

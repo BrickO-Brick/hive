@@ -590,6 +590,10 @@ export function useUnreadChannels(
     const authoredSizeBefore = authoredRootIdsRef.current.size;
     const mentionedSizeBefore = mentionedRootIdsRef.current.size;
 
+    // Membership remains renderer-owned until E's native observed-unread store,
+    // so unchanged sets cross IPC on every catch-up. The five 1,000-entry
+    // stores bound that interim cost at roughly 332 KiB per request. Command
+    // arguments use a fetch body, so this cost is linear with no size cliff.
     void unreadCatchUp({
       channels: toFetch.map((channelId) => {
         const channel = channels.find(
@@ -621,6 +625,8 @@ export function useUnreadChannels(
         const allThreadReplies: ThreadActivityItem[] = [];
         for (const result of results) {
           if (result.status === "error") {
+            // The error arm carries only this identity; releasing its claim is
+            // what lets a failed channel retry on the next effect run.
             caughtUpChannelsRef.current.delete(result.channelId);
             continue;
           }

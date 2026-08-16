@@ -10,6 +10,7 @@ import {
   handleDeleteCustomHarness,
 } from "./e2eBridgeCustomHarnesses.ts";
 
+import type { UnreadCatchUpChannelResult } from "@/shared/api/tauriUnreadCatchUp";
 import { relayClient } from "@/shared/api/relayClient";
 import { activateRateLimit } from "@/shared/api/relayRateLimitGate";
 import { resolveAgentParallelism } from "@/features/agents/lib/agentParallelism";
@@ -13380,16 +13381,18 @@ export function maybeInstallE2eTauriMocks() {
         const request = payload as {
           request: { channels: Array<{ id: string }> };
         };
-        return {
-          channels: request.request.channels.map((channel) => ({
+        const results: UnreadCatchUpChannelResult[] =
+          request.request.channels.map((channel) => ({
             status: "success",
             channelId: channel.id,
             observedEvents: [],
             maxTrigger: 0,
             activityRows: [],
             discovered: { participated: [], authored: [], mentioned: [] },
-          })),
-        };
+          }));
+        // Keep this mock aligned with the complete Rust serde shape pinned by
+        // `serialized_response_matches_the_typescript_contract`.
+        return { channels: results };
       }
       case "agent_metric_archive_default_enabled":
         return activeConfig?.mock?.agentMetricArchiveDefaultEnabled ?? true;
