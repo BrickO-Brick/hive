@@ -1,16 +1,16 @@
 import { motion, useReducedMotion } from "motion/react";
+import type { ComponentProps } from "react";
 
 import { cn } from "@/shared/lib/cn";
 
-export function DrawerPanelIcon({
+export function TerminalPanelIcon({
   className,
-  side,
-}: {
-  className?: string;
-  side: "left" | "right";
+  open,
+  ...props
+}: ComponentProps<"svg"> & {
+  open: boolean;
 }) {
   const prefersReducedMotion = useReducedMotion();
-  const isOpen = side === "left";
 
   return (
     <svg
@@ -21,6 +21,7 @@ export function DrawerPanelIcon({
       viewBox="0 0 24 22"
       width="24"
       xmlns="http://www.w3.org/2000/svg"
+      {...props}
     >
       <rect
         height="20"
@@ -33,18 +34,18 @@ export function DrawerPanelIcon({
       />
       <motion.rect
         animate={{
-          rx: isOpen ? 2.5 : 1,
-          width: isOpen ? 5 : 2,
+          height: open ? 5 : 2,
+          rx: open ? 2.5 : 1,
+          y: open ? 13 : 16,
         }}
         fill="currentColor"
-        height="14"
         initial={false}
         transition={{
           duration: prefersReducedMotion ? 0 : 0.2,
           ease: "easeOut",
         }}
+        width="16"
         x="4"
-        y="4"
       />
     </svg>
   );

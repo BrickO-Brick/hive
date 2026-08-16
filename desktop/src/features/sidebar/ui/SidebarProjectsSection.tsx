@@ -25,10 +25,9 @@ import { isProjectOwnedByCurrentUser } from "@/features/projects/lib/projectsVie
 import { projectShareLink } from "@/features/projects/lib/projectShareLinks";
 import {
   addProjectToSidebar,
-  PROJECT_SIDEBAR_MEMBERSHIP_EVENT,
-  readProjectSidebarMembership,
   removeProjectFromSidebar,
 } from "@/features/projects/lib/projectSidebarMembership";
+import { useProjectSidebarMembership } from "@/features/projects/lib/useProjectSidebarMembership";
 import { selectProjectRepository } from "@/features/projects/projectModels";
 import { projectMatchesRouteId } from "@/features/projects/projectRoutes";
 import { ProjectBrowserDialog } from "@/features/projects/ui/ProjectBrowserDialog";
@@ -151,22 +150,13 @@ function SidebarProjectsSectionContent() {
     React.useState<SidebarProjectExpansionState>(() =>
       readSidebarProjectExpansion(relayOrigin, currentPubkey),
     );
-  const [addedProjectAddresses, setAddedProjectAddresses] = React.useState<
-    string[]
-  >(() => readProjectSidebarMembership(relayOrigin, currentPubkey));
+  const addedProjectAddresses = useProjectSidebarMembership(
+    relayOrigin,
+    currentPubkey,
+  );
   const createProjectMutation = useCreateProjectMutation();
   const deleteProjectMutation = useDeleteProjectMutation();
   const isPending = projectsQuery.isPending || identityQuery.isPending;
-  React.useEffect(() => {
-    const refresh = () =>
-      setAddedProjectAddresses(
-        readProjectSidebarMembership(relayOrigin, currentPubkey),
-      );
-    refresh();
-    globalThis.addEventListener(PROJECT_SIDEBAR_MEMBERSHIP_EVENT, refresh);
-    return () =>
-      globalThis.removeEventListener(PROJECT_SIDEBAR_MEMBERSHIP_EVENT, refresh);
-  }, [currentPubkey, relayOrigin]);
   React.useEffect(() => {
     setProjectExpansion(
       readSidebarProjectExpansion(relayOrigin, currentPubkey),
