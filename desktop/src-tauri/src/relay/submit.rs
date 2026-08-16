@@ -76,3 +76,39 @@ pub async fn submit_event(
     let keys = state.signing_keys()?;
     submit_event_at_with_keys(builder, state, &api_base_url, &keys).await
 }
+
+/// Like [`submit_event`], but also returns the signed event's `created_at`.
+///
+/// Callers that persist a timestamp as an event cursor (e.g. the Projects
+/// conversation opener) need the signed event's own second — a
+/// post-publication clock read can land a second later and permanently
+/// exclude other events stamped in the event's real second.
+pub async fn submit_event_with_created_at(
+    builder: nostr::EventBuilder,
+    state: &AppState,
+) -> Result<(SubmitEventResponse, i64), String> {
+    let api_base_url = relay_api_base_url_with_override(state);
+    let keys = state.signing_keys()?;
+    let event = builder
+        .sign_with_keys(&keys)
+        .map_err(|e| format!("failed to sign event: {e}"))?;
+    let created_at = event.created_at.as_secs() as i64;
+    let result = submit_signed_event_at_with_keys(&event, state, &api_base_url, &keys).await?;
+    Ok((result, created_at))
+}
+
+/// Like `submit_event_with_keys`, but also returns the signed event's
+/// `created_at` — same cursor rationale as [`submit_event_with_created_at`].
+pub async fn submit_event_with_keys_created_at(
+    builder: nostr::EventBuilder,
+    state: &AppState,
+    keys: &nostr::Keys,
+    auth_tag: Option<&str>,
+) -> Result<(SubmitEventResponse, i64), String> {
+    let event = builder
+        .sign_with_keys(keys)
+        .map_err(|e| format!("failed to sign event: {e}"))?;
+    let created_at = event.created_at.as_secs() as i64;
+    let result = super::submit_signed_event_with_keys(&event, state, keys, auth_tag).await?;
+    Ok((result, created_at))
+}

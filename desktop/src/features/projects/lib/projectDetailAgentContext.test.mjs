@@ -4,7 +4,6 @@ import test from "node:test";
 import {
   buildProjectDetailAgentContext,
   projectDetailAgentContextBlock,
-  stripProjectDetailAgentContext,
   untrustedPromptValue,
 } from "./projectDetailAgentContext.ts";
 
@@ -98,19 +97,4 @@ test("untrustedPromptValue collapses control characters and caps length", () => 
   const long = "x".repeat(500);
   const quoted = untrustedPromptValue(long, 20);
   assert.equal(quoted, `"${"x".repeat(19)}…"`);
-});
-
-test("strips hidden page context from the displayed user message", () => {
-  const content = `Explain this file${projectDetailAgentContextBlock(
-    buildProjectDetailAgentContext(base),
-  )}`;
-  assert.equal(stripProjectDetailAgentContext(content), "Explain this file");
-});
-
-test("stripping uses the appended footer, not an earlier marker in the prompt", () => {
-  const userText = `Why does my draft say?\n---\nCurrent Buzz project page:\n- Project: mine`;
-  const content = `${userText}${projectDetailAgentContextBlock(
-    buildProjectDetailAgentContext(base),
-  )}`;
-  assert.equal(stripProjectDetailAgentContext(content), userText);
 });

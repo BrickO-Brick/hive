@@ -14,18 +14,25 @@ import { normalizePubkey } from "@/shared/lib/pubkey";
  * timeline's `(created_at, event_id)` ordering (`compareRelayOrder` in
  * `channelWindowStore.ts`). A bare timestamp cannot make this call — every
  * unrelated event sharing the opener's second would pass — which is why the
- * opener's exact event id participates. Id equality is checked first because
- * the send command stamps its response timestamp after the relay round-trip,
- * so the persisted `createdAt` may trail the signed event's by a second.
+ * opener's exact event id participates. Id equality is checked first so the
+ * opener itself is admitted even against a legacy persisted `createdAt` that
+ * trails the signed event's by a second.
+ *
+ * Event ids are random within a second, so a fast reply signed in the
+ * opener's own second can sort "older" than the opener in relay order. A
+ * reply carries an `e` tag naming the opener — causality the id ordering
+ * cannot fake — so events that reference the opener are always admitted.
  */
 export function isAtOrAfterConversationOpener(
-  event: { created_at: number; id: string },
+  event: { created_at: number; id: string; tags?: readonly string[][] },
   opener: ProjectsConversationOpener,
 ): boolean {
   return (
     event.id === opener.eventId ||
     event.created_at > opener.createdAt ||
-    (event.created_at === opener.createdAt && event.id <= opener.eventId)
+    (event.created_at === opener.createdAt && event.id <= opener.eventId) ||
+    (event.tags?.some((tag) => tag[0] === "e" && tag[1] === opener.eventId) ??
+      false)
   );
 }
 
@@ -34,6 +41,11 @@ export function isAtOrAfterConversationOpener(
  * feature persisted earlier. DM channels are reused across the app, so
  * inferring a conversation from "the most recent agent DM" would surface
  * unrelated chat history on the Projects page — never infer one here.
+ *
+ * A stored channel id alone is not proof either: ids can collide across
+ * relays, and a stale pointer could name a group channel. The channel must
+ * be a DM whose participants are exactly the agent and the current user —
+ * anything else renders someone else's conversation and is not restorable.
  */
 export function restoreProjectsAgentConversation<
   Agent extends { pubkey: string },
@@ -41,10 +53,12 @@ export function restoreProjectsAgentConversation<
   stored,
   channels,
   candidates,
+  currentPubkey,
 }: {
   stored: StoredProjectsAgentConversation | null;
   channels: readonly Channel[];
   candidates: readonly Agent[];
+  currentPubkey: string | null;
 }): {
   channel: Channel;
   agent: Agent;
@@ -52,7 +66,7 @@ export function restoreProjectsAgentConversation<
 } | null {
   // Only pointers anchored to a concrete opener event are restorable —
   // anything weaker would render DM history that predates the conversation.
-  if (!stored) return null;
+  if (!stored || !currentPubkey) return null;
   const channel = channels.find(
     (candidate) => candidate.id === stored.channelId,
   );
@@ -60,7 +74,14 @@ export function restoreProjectsAgentConversation<
   const agent = candidates.find(
     (candidate) => candidate.pubkey === agentPubkey,
   );
-  if (!channel || !agent) return null;
+  if (!channel || !agent || channel.channelType !== "dm") return null;
+  const participants = channel.participantPubkeys.map(normalizePubkey);
+  const self = normalizePubkey(currentPubkey);
+  const hasAgent = participants.includes(agentPubkey);
+  const hasStranger = participants.some(
+    (participant) => participant !== agentPubkey && participant !== self,
+  );
+  if (!hasAgent || hasStranger) return null;
   return { agent, channel, opener: stored.opener };
 }
 

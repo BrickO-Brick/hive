@@ -120,16 +120,6 @@ function repoContextBlock(projects: readonly Project[]) {
     .join("\n");
 }
 
-/** Hides the machine-readable repo footer when rendering the user's own
- * prompt back in the inline conversation. */
-export function stripRepoContext(content: string) {
-  // The generated footer is appended at the end, so search from the end:
-  // user-authored text may legitimately contain an earlier marker.
-  const markerIndex = content.lastIndexOf(`---\n${REPO_CONTEXT_MARKER}`);
-  if (markerIndex === -1) return content;
-  return content.slice(0, markerIndex).replace(/\n+$/, "");
-}
-
 function buildSuggestions(projects: readonly Project[]) {
   const firstRepo = projects[0]?.name;
   return [
@@ -208,14 +198,17 @@ export function useAgentCandidates() {
 }
 
 /** Live message feed for the conversation's backing DM channel, reduced to
- * plain chat rows (kind 9 / 40002 only). */
+ * plain chat rows (kind 9 / 40002 only). The user's own messages render
+ * verbatim — including any machine-appended context footer — so the exact
+ * payload signed under the user's identity is always visible. Hiding it
+ * while sending it would let relay-controlled metadata ride invisibly on
+ * the user's signature. */
 export function ConversationThread({
   channel,
   agent,
   agentAvatarUrl,
   currentPubkey,
   selfAvatarUrl,
-  stripSelfContent = stripRepoContext,
   opener,
 }: {
   channel: Channel;
@@ -223,7 +216,6 @@ export function ConversationThread({
   agentAvatarUrl: string | null;
   currentPubkey: string | null;
   selfAvatarUrl: string | null;
-  stripSelfContent?: (content: string) => string;
   opener: ProjectsConversationOpener;
 }) {
   useChannelSubscription(channel);
@@ -290,31 +282,21 @@ export function ConversationThread({
       currentPubkey ?? undefined,
       selfAvatarUrl,
       profiles,
-    )
-      .filter(
-        (message) =>
-          (message.kind === KIND_STREAM_MESSAGE ||
-            message.kind === KIND_STREAM_MESSAGE_V2) &&
-          isAtOrAfterConversationOpener(
-            { created_at: message.createdAt, id: message.id },
-            opener,
-          ),
-      )
-      .map((message) =>
-        normalizedCurrent &&
-        message.pubkey &&
-        normalizePubkey(message.pubkey) === normalizedCurrent
-          ? { ...message, body: stripSelfContent(message.body) }
-          : message,
-      );
+    ).filter(
+      (message) =>
+        (message.kind === KIND_STREAM_MESSAGE ||
+          message.kind === KIND_STREAM_MESSAGE_V2) &&
+        isAtOrAfterConversationOpener(
+          { created_at: message.createdAt, id: message.id, tags: message.tags },
+          opener,
+        ),
+    );
   }, [
     channel,
     currentPubkey,
     messagesQuery.data,
-    normalizedCurrent,
     profiles,
     selfAvatarUrl,
-    stripSelfContent,
     threadReplies.events,
     opener,
   ]);
@@ -422,9 +404,15 @@ export function ProjectsAgentPromptPage({
       restoreProjectsAgentConversation({
         candidates,
         channels: channelsQuery.data ?? [],
+        currentPubkey: identityQuery.data?.pubkey ?? null,
         stored: storedConversation,
       }),
-    [candidates, channelsQuery.data, storedConversation],
+    [
+      candidates,
+      channelsQuery.data,
+      identityQuery.data?.pubkey,
+      storedConversation,
+    ],
   );
 
   React.useEffect(() => {

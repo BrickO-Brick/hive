@@ -149,13 +149,3 @@ export function projectDetailAgentContextBlock(
   );
   return lines.join("\n");
 }
-
-export function stripProjectDetailAgentContext(content: string) {
-  // The generated footer is appended at the end, so search from the end:
-  // user-authored text may legitimately contain an earlier marker.
-  const markerIndex = content.lastIndexOf(
-    `---\n${PROJECT_PAGE_CONTEXT_MARKER}`,
-  );
-  if (markerIndex === -1) return content;
-  return content.slice(0, markerIndex).replace(/\n+$/, "");
-}

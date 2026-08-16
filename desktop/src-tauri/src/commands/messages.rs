@@ -17,7 +17,9 @@ use crate::{
         SendChannelMessageResponse, ThreadRepliesResponse,
     },
     nostr_convert,
-    relay::{query_relay, submit_event, submit_event_with_keys},
+    relay::{
+        query_relay, submit_event, submit_event_with_created_at, submit_event_with_keys_created_at,
+    },
 };
 
 // ── Reads (pure-nostr) ──────────────────────────────────────────────────────
@@ -558,7 +560,9 @@ pub async fn send_channel_message(
         }
     };
 
-    let result = submit_event(builder, &state).await?;
+    // `created_at` is the signed event's own second, not a post-publication
+    // clock read — persisted as an event cursor by the Projects opener.
+    let (result, created_at) = submit_event_with_created_at(builder, &state).await?;
 
     let depth = match (&parent_event_id, &resolved_root) {
         (None, _) => 0,
@@ -572,7 +576,7 @@ pub async fn send_channel_message(
         root_event_id: resolved_root,
         parent_event_id,
         depth,
-        created_at: chrono::Utc::now().timestamp(),
+        created_at,
     })
 }
 
@@ -820,15 +824,18 @@ pub async fn send_managed_agent_channel_message(
         &mentions,
         &client_tags,
     )?;
-    let result =
-        submit_event_with_keys(builder, &state, &keys, submission_auth_tag.as_deref()).await?;
+    // Same contract as `send_channel_message`: `created_at` is the signed
+    // event's, not a post-publication clock read.
+    let (result, created_at) =
+        submit_event_with_keys_created_at(builder, &state, &keys, submission_auth_tag.as_deref())
+            .await?;
 
     Ok(SendChannelMessageResponse {
         event_id: result.event_id,
         parent_event_id: parent_event_id.clone(),
         root_event_id: thread_ref.map(|reference| reference.root_event_id.to_hex()),
         depth: if parent_event_id.is_some() { 1 } else { 0 },
-        created_at: chrono::Utc::now().timestamp(),
+        created_at,
     })
 }
 

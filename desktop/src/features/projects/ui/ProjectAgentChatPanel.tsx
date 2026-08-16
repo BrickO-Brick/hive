@@ -5,11 +5,10 @@ import { toast } from "sonner";
 import { useStartManagedAgentMutation } from "@/features/agents/hooks";
 import { RightAuxiliaryPane } from "@/features/channels/ui/RightAuxiliaryPane";
 import { useChannelsQuery, useOpenDmMutation } from "@/features/channels/hooks";
+import { normalizeRelayUrl } from "@/features/communities/communityStorage";
+import { useCommunities } from "@/features/communities/useCommunities";
 import type { ProjectDetailAgentContext } from "@/features/projects/lib/projectDetailAgentContext";
-import {
-  projectDetailAgentContextBlock,
-  stripProjectDetailAgentContext,
-} from "@/features/projects/lib/projectDetailAgentContext";
+import { projectDetailAgentContextBlock } from "@/features/projects/lib/projectDetailAgentContext";
 import { restoreProjectsAgentConversation } from "@/features/projects/lib/projectAgentConversation";
 import {
   clearStoredProjectsAgentConversation,
@@ -53,7 +52,19 @@ export function ProjectAgentChatPanel({
   sharedHeaderBackdrop?: boolean;
   widthPx: number;
 }) {
-  const storageScope = `detail:${context.repoAddress}`;
+  const { activeCommunity } = useCommunities();
+  // Repository coordinates (`kind:owner:dtag`) are not globally unique — the
+  // same address can exist on two relays. Scope persistence, drafts, and
+  // restore to the community's relay identity so a community switch can
+  // never surface the other tenant's conversation. No relay identity means
+  // nothing to safely restore against, so the scope stays null (no-op reads
+  // and writes).
+  const relayScope = activeCommunity?.relayUrl
+    ? normalizeRelayUrl(activeCommunity.relayUrl)
+    : null;
+  const storageScope = relayScope
+    ? `detail:${relayScope}:${context.repoAddress}`
+    : null;
   const [isSending, setIsSending] = React.useState(false);
   const [storedConversation, setStoredConversation] =
     React.useState<StoredProjectsAgentConversation | null>(() =>
@@ -81,9 +92,15 @@ export function ProjectAgentChatPanel({
       restoreProjectsAgentConversation({
         candidates,
         channels: channelsQuery.data ?? [],
+        currentPubkey: identityQuery.data?.pubkey ?? null,
         stored: storedConversation,
       }),
-    [candidates, channelsQuery.data, storedConversation],
+    [
+      candidates,
+      channelsQuery.data,
+      identityQuery.data?.pubkey,
+      storedConversation,
+    ],
   );
 
   React.useEffect(() => {
@@ -187,7 +204,6 @@ export function ProjectAgentChatPanel({
               channel={conversation.channel}
               currentPubkey={identityQuery.data?.pubkey ?? null}
               selfAvatarUrl={profileQuery.data?.avatarUrl ?? null}
-              stripSelfContent={stripProjectDetailAgentContext}
               opener={conversation.opener}
             />
           ) : (
@@ -207,7 +223,7 @@ export function ProjectAgentChatPanel({
           channelType="dm"
           containerClassName="px-3 pb-3"
           disabled={!selectedAgent || isSending}
-          draftKey={`project-agent:${storageScope}`}
+          draftKey={`project-agent:${storageScope ?? "unscoped"}`}
           isSending={isSending}
           layoutMode="standalone"
           onSend={handleSubmit}

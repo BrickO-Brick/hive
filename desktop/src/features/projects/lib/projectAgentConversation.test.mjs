@@ -18,6 +18,7 @@ import {
 } from "@/shared/constants/kinds";
 
 const AGENT_PUBKEY = "a".repeat(64);
+const SELF_PUBKEY = "b".repeat(64);
 const WORKSPACE_ID = "wss://relay.example.com";
 // The user opened the Projects prompt at this instant (epoch seconds).
 const PROMPT_AT = 1_752_570_000;
@@ -32,7 +33,7 @@ const AGENT = { pubkey: AGENT_PUBKEY, name: "Brain" };
 const EXISTING_DM = {
   id: "dm-channel-1",
   channelType: "dm",
-  participantPubkeys: [AGENT_PUBKEY, "b".repeat(64)],
+  participantPubkeys: [AGENT_PUBKEY, SELF_PUBKEY],
   lastMessageAt: new Date((PROMPT_AT - 60) * 1_000).toISOString(),
 };
 
@@ -54,6 +55,7 @@ test("an existing agent DM is never auto-restored without a stored pointer", () 
     stored: null,
     channels: [EXISTING_DM],
     candidates: [AGENT],
+    currentPubkey: SELF_PUBKEY,
   });
   assert.equal(restored, null);
 });
@@ -67,6 +69,7 @@ test("restores exactly the conversation this feature persisted", () => {
     },
     channels: [EXISTING_DM],
     candidates: [AGENT],
+    currentPubkey: SELF_PUBKEY,
   });
   assert.equal(restored?.channel, EXISTING_DM);
   assert.equal(restored?.agent, AGENT);
@@ -84,6 +87,7 @@ test("pointers to unknown channels or agents are not restorable", () => {
       stored,
       channels: [],
       candidates: [AGENT],
+      currentPubkey: SELF_PUBKEY,
     }),
     null,
   );
@@ -92,6 +96,60 @@ test("pointers to unknown channels or agents are not restorable", () => {
       stored,
       channels: [EXISTING_DM],
       candidates: [],
+      currentPubkey: SELF_PUBKEY,
+    }),
+    null,
+  );
+});
+
+test("a pointer naming a non-DM or foreign-participant channel is not restorable", () => {
+  const stored = {
+    agentPubkey: AGENT_PUBKEY,
+    channelId: EXISTING_DM.id,
+    opener: OPENER,
+  };
+  // Same id, but not a DM — a stale/colliding pointer must not render it.
+  assert.equal(
+    restoreProjectsAgentConversation({
+      stored,
+      channels: [{ ...EXISTING_DM, channelType: "stream" }],
+      candidates: [AGENT],
+      currentPubkey: SELF_PUBKEY,
+    }),
+    null,
+  );
+  // A DM with a third participant is someone else's conversation.
+  assert.equal(
+    restoreProjectsAgentConversation({
+      stored,
+      channels: [
+        {
+          ...EXISTING_DM,
+          participantPubkeys: [AGENT_PUBKEY, SELF_PUBKEY, "c".repeat(64)],
+        },
+      ],
+      candidates: [AGENT],
+      currentPubkey: SELF_PUBKEY,
+    }),
+    null,
+  );
+  // A DM that does not include the agent proves nothing about the pointer.
+  assert.equal(
+    restoreProjectsAgentConversation({
+      stored,
+      channels: [{ ...EXISTING_DM, participantPubkeys: [SELF_PUBKEY] }],
+      candidates: [AGENT],
+      currentPubkey: SELF_PUBKEY,
+    }),
+    null,
+  );
+  // Without a current identity there is nothing to validate against.
+  assert.equal(
+    restoreProjectsAgentConversation({
+      stored,
+      channels: [EXISTING_DM],
+      candidates: [AGENT],
+      currentPubkey: null,
     }),
     null,
   );
@@ -136,6 +194,31 @@ test("unrelated DM history sharing the opener's second is excluded", () => {
   assert.deepEqual(visible, [opener, sameSecondNewer]);
   assert.equal(isAtOrAfterConversationOpener(sameSecondOlder, OPENER), false);
   assert.equal(isAtOrAfterConversationOpener(opener, OPENER), true);
+});
+
+test("a fast reply in the opener's second is admitted via its reply reference", () => {
+  // An agent reply signed within the opener's second can carry an id greater
+  // than the opener's, which sorts "older" in relay order. Its `e` tag names
+  // the opener — causality that must win over the id tiebreak.
+  const fastReply = {
+    ...message(PROMPT_AT, KIND_STREAM_MESSAGE_V2, `f${"a".repeat(63)}`),
+    tags: [["e", OPENER.eventId, "", "reply"]],
+  };
+  // An unrelated same-second event with the same unlucky id ordering and no
+  // reference to the opener stays excluded.
+  const unrelated = {
+    ...message(PROMPT_AT, KIND_STREAM_MESSAGE, `f${"b".repeat(63)}`),
+    tags: [["e", `9${"9".repeat(63)}`, "", "reply"]],
+  };
+
+  assert.equal(isAtOrAfterConversationOpener(fastReply, OPENER), true);
+  assert.equal(isAtOrAfterConversationOpener(unrelated, OPENER), false);
+  const opener = message(PROMPT_AT, KIND_STREAM_MESSAGE, OPENER.eventId);
+  // Same-second sort is stable, so relay arrival order (opener first) holds.
+  assert.deepEqual(
+    visibleConversationMessages([unrelated, opener, fastReply], OPENER),
+    [opener, fastReply],
+  );
 });
 
 test("root questions and separately queried replies stay in conversation order", () => {
