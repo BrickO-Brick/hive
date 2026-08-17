@@ -118,3 +118,75 @@ export function mergeProjectAgentConversationEvents<
     ).values(),
   ].sort((left, right) => left.created_at - right.created_at);
 }
+
+/**
+ * Runs the Projects agent submit sequence with every relay side effect bound
+ * to the tenant scope the caller captured before the first await.
+ *
+ * The sequence suspends twice (managed-agent startup, DM open) and a
+ * community switch during either suspension does not cancel this callback —
+ * remounting only removes the UI. Binding is therefore delegated to the
+ * scoped APIs themselves: `openDm` and `send` receive `expectedRelayUrl`
+ * and the backing commands fail closed when the active community no longer
+ * matches, so a stale callback can neither open a DM in the new tenant nor
+ * publish the captured tenant's context to it. This function never re-reads
+ * the active scope after capture — doing so would race the very switch it
+ * guards against.
+ *
+ * Follow-up sends carry `parentEventId = opener.eventId`: a follow-up signed
+ * in the opener's own second gets a random event id, and roughly half of
+ * those sort on the rejected side of the same-second id tiebreak in
+ * `isAtOrAfterConversationOpener`. The causal reply reference — which the
+ * comparator always admits — is what keeps an immediate follow-up visible;
+ * id luck cannot.
+ */
+export async function submitProjectAgentMessage<Ch extends { id: string }>({
+  agent,
+  conversation,
+  content,
+  mentionPubkeys,
+  mediaTags,
+  relayScope,
+  startAgent,
+  openDm,
+  send,
+}: {
+  agent: { pubkey: string; isManaged: boolean; isActive: boolean };
+  conversation: { channel: Ch; opener: ProjectsConversationOpener } | null;
+  content: string;
+  mentionPubkeys: string[];
+  mediaTags?: string[][];
+  /** Community relay captured before the first await; null when the
+   * community has no relay identity (no tenant boundary to protect). */
+  relayScope: string | null;
+  startAgent: (agentPubkey: string) => Promise<unknown>;
+  openDm: (input: {
+    pubkeys: string[];
+    expectedRelayUrl?: string;
+  }) => Promise<Ch>;
+  send: (request: {
+    channelId: string;
+    content: string;
+    mentionPubkeys: string[];
+    mediaTags?: string[][];
+    parentEventId?: string;
+    expectedRelayUrl?: string;
+  }) => Promise<{ eventId: string; createdAt: number }>;
+}): Promise<{ channel: Ch; sent: { eventId: string; createdAt: number } }> {
+  const expectedRelayUrl = relayScope ?? undefined;
+  if (agent.isManaged && !agent.isActive) {
+    await startAgent(agent.pubkey);
+  }
+  const channel =
+    conversation?.channel ??
+    (await openDm({ pubkeys: [agent.pubkey], expectedRelayUrl }));
+  const sent = await send({
+    channelId: channel.id,
+    content,
+    mentionPubkeys,
+    mediaTags,
+    parentEventId: conversation?.opener.eventId,
+    expectedRelayUrl,
+  });
+  return { channel, sent };
+}

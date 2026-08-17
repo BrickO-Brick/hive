@@ -9,7 +9,10 @@ import { normalizeRelayUrl } from "@/features/communities/communityStorage";
 import { useCommunities } from "@/features/communities/useCommunities";
 import type { ProjectDetailAgentContext } from "@/features/projects/lib/projectDetailAgentContext";
 import { projectDetailAgentContextBlock } from "@/features/projects/lib/projectDetailAgentContext";
-import { restoreProjectsAgentConversation } from "@/features/projects/lib/projectAgentConversation";
+import {
+  restoreProjectsAgentConversation,
+  submitProjectAgentMessage,
+} from "@/features/projects/lib/projectAgentConversation";
 import {
   clearStoredProjectsAgentConversation,
   type ProjectsConversationOpener,
@@ -20,7 +23,7 @@ import {
 import { MessageComposer } from "@/features/messages/ui/MessageComposer";
 import { useProfileQuery, useUsersBatchQuery } from "@/features/profile/hooks";
 import { useIdentityQuery } from "@/shared/api/hooks";
-import { sendChannelMessage } from "@/shared/api/tauri";
+import { sendChannelMessage } from "@/shared/api/tauriMessages";
 import type { Channel } from "@/shared/api/types";
 import { normalizePubkey } from "@/shared/lib/pubkey";
 import { Button } from "@/shared/ui/button";
@@ -126,21 +129,37 @@ export function ProjectAgentChatPanel({
       if (!trimmed || !selectedAgent || isSending) return;
       setIsSending(true);
       try {
-        if (selectedAgent.isManaged && !selectedAgent.isActive) {
-          await startAgentMutation.mutateAsync(selectedAgent.pubkey);
-        }
-        const channel =
-          conversation?.channel ??
-          (await openDmMutation.mutateAsync({
-            pubkeys: [selectedAgent.pubkey],
-          }));
-        const sent = await sendChannelMessage(
-          channel.id,
-          `${trimmed}${contextPayload}`,
-          undefined,
+        // The awaits below suspend across a possible community switch;
+        // `submitProjectAgentMessage` binds every relay side effect to the
+        // scope captured here (fail closed), and threads follow-ups onto the
+        // opener so a same-second follow-up cannot be hidden by id ordering.
+        const { channel, sent } = await submitProjectAgentMessage({
+          agent: selectedAgent,
+          conversation,
+          content: `${trimmed}${contextPayload}`,
+          mentionPubkeys: [
+            ...new Set([...mentionPubkeys, selectedAgent.pubkey]),
+          ],
           mediaTags,
-          [...new Set([...mentionPubkeys, selectedAgent.pubkey])],
-        );
+          relayScope,
+          startAgent: (agentPubkey) =>
+            startAgentMutation.mutateAsync(agentPubkey),
+          openDm: (input) => openDmMutation.mutateAsync(input),
+          send: (request) =>
+            sendChannelMessage(
+              request.channelId,
+              request.content,
+              request.parentEventId,
+              request.mediaTags,
+              request.mentionPubkeys,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              request.expectedRelayUrl,
+            ),
+        });
         if (!conversation) {
           // Anchor the conversation to the exact accepted opener event: a
           // bare timestamp cannot isolate it from unrelated same-second DM
@@ -176,6 +195,7 @@ export function ProjectAgentChatPanel({
       conversation,
       isSending,
       openDmMutation,
+      relayScope,
       selectedAgent,
       startAgentMutation,
       storageScope,

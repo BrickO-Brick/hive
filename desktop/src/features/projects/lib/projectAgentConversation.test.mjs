@@ -5,6 +5,7 @@ import {
   isAtOrAfterConversationOpener,
   mergeProjectAgentConversationEvents,
   restoreProjectsAgentConversation,
+  submitProjectAgentMessage,
   visibleConversationMessages,
 } from "./projectAgentConversation.ts";
 import {
@@ -286,4 +287,158 @@ test("storage round-trips opener-anchored pointers and clears them", () => {
 
   clearStoredProjectsAgentConversation(WORKSPACE_ID);
   assert.equal(readStoredProjectsAgentConversation(WORKSPACE_ID), null);
+});
+
+// ── submitProjectAgentMessage ───────────────────────────────────────────────
+
+/** Models the backend's fail-closed scope check: commands resolve the active
+ * relay when they run and reject when a caller-captured scope no longer
+ * matches. `active` is mutable so tests can switch communities mid-flight. */
+function makeScopedBackend(active) {
+  const state = { active, dmOpens: [], sends: [] };
+  const assertScope = (expectedRelayUrl) => {
+    if (expectedRelayUrl !== undefined && expectedRelayUrl !== state.active) {
+      throw new Error(
+        "active community changed before the message was submitted; not sent",
+      );
+    }
+  };
+  return {
+    state,
+    openDm: async (input) => {
+      assertScope(input.expectedRelayUrl);
+      state.dmOpens.push({ relay: state.active, input });
+      return { id: `dm-on-${state.active}` };
+    },
+    send: async (request) => {
+      assertScope(request.expectedRelayUrl);
+      state.sends.push({ relay: state.active, request });
+      return { eventId: `f${"0".repeat(63)}`, createdAt: PROMPT_AT };
+    },
+  };
+}
+
+test("a community switch during agent startup publishes nothing to either tenant", async () => {
+  const backend = makeScopedBackend("wss://tenant-a.example");
+  let releaseStart;
+  const startGate = new Promise((resolve) => {
+    releaseStart = resolve;
+  });
+
+  const pending = submitProjectAgentMessage({
+    agent: { pubkey: AGENT_PUBKEY, isManaged: true, isActive: false },
+    conversation: null,
+    content: "tenant A repo context",
+    mentionPubkeys: [AGENT_PUBKEY],
+    relayScope: "wss://tenant-a.example",
+    startAgent: () => startGate,
+    openDm: backend.openDm,
+    send: backend.send,
+  });
+
+  // The user switches communities while the callback is suspended on the
+  // managed-agent startup await. Remounting removed the panel, but this
+  // callback keeps running.
+  backend.state.active = "wss://tenant-b.example";
+  releaseStart();
+
+  await assert.rejects(pending, /active community changed/);
+  assert.deepEqual(backend.state.dmOpens, []);
+  assert.deepEqual(backend.state.sends, []);
+});
+
+test("a community switch during the DM open fails the send closed", async () => {
+  const backend = makeScopedBackend("wss://tenant-a.example");
+  const scopedOpenDm = backend.openDm;
+  const pending = submitProjectAgentMessage({
+    agent: { pubkey: AGENT_PUBKEY, isManaged: false, isActive: true },
+    conversation: null,
+    content: "tenant A repo context",
+    mentionPubkeys: [AGENT_PUBKEY],
+    relayScope: "wss://tenant-a.example",
+    startAgent: () => {
+      throw new Error("inactive relay agents are not startable");
+    },
+    openDm: async (input) => {
+      const channel = await scopedOpenDm(input);
+      // The switch lands after the DM was opened on tenant A but before the
+      // message submit — the narrowest window Carl's finding names.
+      backend.state.active = "wss://tenant-b.example";
+      return channel;
+    },
+    send: backend.send,
+  });
+
+  await assert.rejects(pending, /active community changed/);
+  // The DM was legitimately opened while tenant A was still active…
+  assert.equal(backend.state.dmOpens.length, 1);
+  assert.equal(backend.state.dmOpens[0].relay, "wss://tenant-a.example");
+  // …but nothing was ever published anywhere.
+  assert.deepEqual(backend.state.sends, []);
+});
+
+test("the captured scope rides every relay side effect of a first send", async () => {
+  const backend = makeScopedBackend("wss://tenant-a.example");
+  const result = await submitProjectAgentMessage({
+    agent: { pubkey: AGENT_PUBKEY, isManaged: false, isActive: true },
+    conversation: null,
+    content: "opener",
+    mentionPubkeys: [AGENT_PUBKEY],
+    relayScope: "wss://tenant-a.example",
+    startAgent: async () => {},
+    openDm: backend.openDm,
+    send: backend.send,
+  });
+
+  assert.equal(
+    backend.state.dmOpens[0].input.expectedRelayUrl,
+    "wss://tenant-a.example",
+  );
+  assert.equal(
+    backend.state.sends[0].request.expectedRelayUrl,
+    "wss://tenant-a.example",
+  );
+  // The opener is a thread root: no parent reference.
+  assert.equal(backend.state.sends[0].request.parentEventId, undefined);
+  assert.equal(result.channel.id, "dm-on-wss://tenant-a.example");
+});
+
+test("follow-ups reply to the opener so same-second id ordering cannot hide them", async () => {
+  const backend = makeScopedBackend("wss://tenant-a.example");
+  await submitProjectAgentMessage({
+    agent: { pubkey: AGENT_PUBKEY, isManaged: false, isActive: true },
+    conversation: { channel: EXISTING_DM, opener: OPENER },
+    content: "follow-up in the opener's second",
+    mentionPubkeys: [AGENT_PUBKEY],
+    relayScope: "wss://tenant-a.example",
+    startAgent: async () => {},
+    openDm: () => {
+      throw new Error("an existing conversation must reuse its channel");
+    },
+    send: backend.send,
+  });
+
+  const request = backend.state.sends[0].request;
+  assert.equal(request.channelId, EXISTING_DM.id);
+  assert.equal(request.parentEventId, OPENER.eventId);
+
+  // Carl's exact-head probe: a same-second follow-up whose random id lands on
+  // the rejected side of the id tiebreak (`e… > d…`). As an unreferenced root
+  // it would vanish; as the reply the submit path now sends, it is admitted.
+  const rejectedSideId = `e${"0".repeat(63)}`;
+  const asUnreferencedRoot = {
+    created_at: OPENER.createdAt,
+    id: rejectedSideId,
+    tags: [],
+  };
+  assert.equal(
+    isAtOrAfterConversationOpener(asUnreferencedRoot, OPENER),
+    false,
+  );
+  const asSentReply = {
+    created_at: OPENER.createdAt,
+    id: rejectedSideId,
+    tags: [["e", OPENER.eventId, "", "reply"]],
+  };
+  assert.equal(isAtOrAfterConversationOpener(asSentReply, OPENER), true);
 });

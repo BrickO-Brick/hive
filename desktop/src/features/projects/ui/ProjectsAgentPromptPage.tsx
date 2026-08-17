@@ -21,6 +21,8 @@ import {
 } from "@/features/agents/lib/agentAutocompleteEligibility";
 import { isManagedAgentActive } from "@/features/agents/lib/managedAgentControlActions";
 import { useChannelsQuery, useOpenDmMutation } from "@/features/channels/hooks";
+import { normalizeRelayUrl } from "@/features/communities/communityStorage";
+import { useCommunities } from "@/features/communities/useCommunities";
 import {
   useChannelMessagesQuery,
   useChannelSubscription,
@@ -48,6 +50,7 @@ import {
   isAtOrAfterConversationOpener,
   mergeProjectAgentConversationEvents,
   restoreProjectsAgentConversation,
+  submitProjectAgentMessage,
 } from "@/features/projects/lib/projectAgentConversation";
 import {
   clearStoredProjectsAgentConversation,
@@ -57,7 +60,7 @@ import {
   writeStoredProjectsAgentConversation,
 } from "@/features/projects/lib/projectAgentConversationStorage";
 import { useIdentityQuery } from "@/shared/api/hooks";
-import { sendChannelMessage } from "@/shared/api/tauri";
+import { sendChannelMessage } from "@/shared/api/tauriMessages";
 import type { Channel } from "@/shared/api/types";
 import {
   KIND_STREAM_MESSAGE,
@@ -385,6 +388,14 @@ export function ProjectsAgentPromptPage({
   const channelsQuery = useChannelsQuery();
   const openDmMutation = useOpenDmMutation();
   const startAgentMutation = useStartManagedAgentMutation();
+  const { activeCommunity } = useCommunities();
+  // Tenant scope for the submit sequence below: captured per render, so the
+  // value the callback closes over is the community that was active when the
+  // user pressed Ask — the backing commands fail closed if it changes while
+  // the callback is suspended.
+  const relayScope = activeCommunity?.relayUrl
+    ? normalizeRelayUrl(activeCommunity.relayUrl)
+    : null;
 
   const candidatePubkeys = React.useMemo(
     () => candidates.map((candidate) => candidate.pubkey),
@@ -468,25 +479,39 @@ export function ProjectsAgentPromptPage({
 
     setIsSending(true);
     try {
-      if (selectedAgent.isManaged && !selectedAgent.isActive) {
-        await startAgentMutation.mutateAsync(selectedAgent.pubkey);
-      }
-      const channel =
-        conversation?.channel ??
-        (await openDmMutation.mutateAsync({
-          pubkeys: [selectedAgent.pubkey],
-        }));
       // Repo context rides only on the conversation opener.
       const content = conversation
         ? trimmed
         : `${trimmed}${repoContextPayload}`;
-      const sent = await sendChannelMessage(
-        channel.id,
+      // The awaits inside suspend across a possible community switch;
+      // `submitProjectAgentMessage` binds every relay side effect to the
+      // scope captured at render (fail closed) and threads follow-ups onto
+      // the opener so a same-second follow-up cannot be hidden by id
+      // ordering.
+      const { channel, sent } = await submitProjectAgentMessage({
+        agent: selectedAgent,
+        conversation,
         content,
-        undefined,
-        undefined,
-        [selectedAgent.pubkey],
-      );
+        mentionPubkeys: [selectedAgent.pubkey],
+        relayScope,
+        startAgent: (agentPubkey) =>
+          startAgentMutation.mutateAsync(agentPubkey),
+        openDm: (input) => openDmMutation.mutateAsync(input),
+        send: (request) =>
+          sendChannelMessage(
+            request.channelId,
+            request.content,
+            request.parentEventId,
+            undefined,
+            request.mentionPubkeys,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            request.expectedRelayUrl,
+          ),
+      });
       if (!conversation) {
         // Anchor the conversation to the exact accepted opener event: a bare
         // timestamp cannot isolate it from unrelated same-second DM history.
@@ -521,6 +546,7 @@ export function ProjectsAgentPromptPage({
     conversation,
     isSending,
     openDmMutation,
+    relayScope,
     repoContextPayload,
     richText.clearContent,
     richText.getMarkdown,

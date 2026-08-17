@@ -6,7 +6,6 @@ import type {
   ChannelPageCursor,
   ChannelType,
   CreateChannelInput,
-  OpenDmInput,
   SetChannelPurposeInput,
   SetChannelTopicInput,
   UpdateChannelInput,
@@ -155,6 +154,17 @@ export async function ensureStarterChannels(): Promise<Channel[]> {
     fromRawChannel,
   );
 }
+
+export type OpenDmInput = {
+  pubkeys: string[];
+  /**
+   * Tenant scope captured by the caller before its first await (community
+   * relay URL). The backend fails closed when the active community no longer
+   * matches, so a suspended callback can never open a DM in the wrong
+   * community. Omit for callers without a tenant boundary.
+   */
+  expectedRelayUrl?: string;
+};
 
 export async function openDm(input: OpenDmInput): Promise<Channel> {
   return fromRawChannel(await invokeTauri<RawChannel>("open_dm", input));
