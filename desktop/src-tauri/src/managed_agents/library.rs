@@ -588,5 +588,91 @@ fn identity_collisions<'a>(
     colliders
 }
 
+// ── §2.5 pure identity-binding helpers ────────────────────────────────────────
+
+impl LibraryDocument {
+    /// The §2.5 deletion-protection predicate (P13-C1, widened by P17-C1):
+    /// answers, purely from `library.json`, whether the key for `agent_pubkey`
+    /// must NEVER be deleted or its identity archived in v1. `true` iff ANY
+    /// entry — live or tombstoned, any `deleted` value, any projection state —
+    /// has EVER bound this pubkey, OR any outstanding `deferred_archives` row
+    /// names it. Every removal path (direct delete, persona cascade, inbound
+    /// kind:5, forced delete, §3.4/§3.5 cascades, the finalizer, every recovery
+    /// point) MUST consult this for the record's pubkey before `delete_agent_key`
+    /// or NIP-IA archival, regardless of the record's own linkage — the keyring
+    /// is process-global by pubkey, so an unrelated plain carrier of a bound
+    /// pubkey would otherwise destroy the binding's one global identity.
+    ///
+    /// Scans the RAW entries (not the decoded healthy set) so a QUARANTINED
+    /// entry that names the pubkey still protects it: mis-deleting a live key is
+    /// catastrophic and irreversible, while over-protecting only leaves a secret
+    /// resident — the v1 posture is conservative by design. Ever-bound is
+    /// observable forever because tombstoned entries and their binding records
+    /// are kept forever (P1-OQ2).
+    pub fn key_archive_protected(&self, agent_pubkey: &str) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| entry_names_agent(entry, agent_pubkey))
+    }
+}
+
+/// Whether one raw entry `Value` binds `agent_pubkey` in `identity_bindings` or
+/// carries an outstanding `deferred_archives` row for it (§2.5). Field-name
+/// exact matches on the raw JSON so a quarantined entry still counts.
+fn entry_names_agent(entry: &Value, agent_pubkey: &str) -> bool {
+    let bound = entry
+        .get("identity_bindings")
+        .and_then(Value::as_object)
+        .is_some_and(|bindings| {
+            bindings
+                .values()
+                .any(|b| b.get("agent_pubkey").and_then(Value::as_str) == Some(agent_pubkey))
+        });
+    if bound {
+        return true;
+    }
+    entry
+        .get("deferred_archives")
+        .and_then(Value::as_array)
+        .is_some_and(|rows| {
+            rows.iter()
+                .any(|r| r.get("agent_pubkey").and_then(Value::as_str) == Some(agent_pubkey))
+        })
+}
+
+/// One linked instance's identity coordinates for §2.5 seed selection.
+pub(crate) struct SeedCandidate<'a> {
+    /// ISO-8601 UTC creation timestamp — same format for every record, so
+    /// lexical order equals chronological order.
+    pub created_at: &'a str,
+    pub pubkey: &'a str,
+}
+
+/// Deterministic binding-seed selection (§2.5, P3-I2): among the linked
+/// instances that exist at share/first-deploy time, the seed is the instance
+/// with the earliest `created_at`, ties broken by the lowest pubkey — the
+/// longest-lived identity collaborators are most likely to know. `None` is
+/// legal ONLY when zero instances exist (no identity to carry yet; the first
+/// deploy anywhere seeds the binding). The chosen pubkey is what carries across
+/// the owner's scopes; the others keep their identities locally, unchanged.
+///
+/// Pure selection only; the caller performs the §2.5 mint/verify protocol on
+/// the result inside the insertion transaction (P8-C2, Phase 4b).
+pub(crate) fn select_binding_seed<'a>(
+    instances: impl IntoIterator<Item = SeedCandidate<'a>>,
+) -> Option<&'a str> {
+    instances
+        .into_iter()
+        .min_by(|a, b| {
+            a.created_at
+                .cmp(b.created_at)
+                .then_with(|| a.pubkey.cmp(b.pubkey))
+        })
+        .map(|winner| winner.pubkey)
+}
+
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod binding_tests;
