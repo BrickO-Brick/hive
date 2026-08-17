@@ -123,7 +123,7 @@ final composerActivityStateProvider = Provider.autoDispose
           humans.add(entry);
           continue;
         }
-        if (signals.containsKey(pubkey)) continue;
+        if (signals[pubkey]?.isWorking == true) continue;
         final turn = activeByAgent[pubkey];
         final liveTurn = turn?.isWorking == true ? turn : null;
         signals[pubkey] = WorkingAgentSignal(
