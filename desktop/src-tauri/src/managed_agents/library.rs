@@ -208,6 +208,28 @@ impl LibraryEntry {
             .filter(|d| seen.insert((d.scope_id.as_str(), d.agent_pubkey.as_str())))
             .collect()
     }
+
+    /// The §3.5 retirement-due derived condition (P6-I2; permanently
+    /// conservative per P15-I2/P16-I1/P17-C1). Retirement is a DERIVED condition,
+    /// never a stored state: an entry is retirement-due when it has at least one
+    /// projection, EVERY projection is terminal (`Excluded`/`Deleted`), and a
+    /// binding key or a `deferred_archives` marker still names it. The empty-
+    /// projection guard keeps a never-deployed entry (vacuously "all terminal")
+    /// from being flagged — retirement means it WAS live and now every
+    /// projection is terminal.
+    ///
+    /// Whatever write produces this condition (a cascade confirming, another
+    /// scope's activation reconcile confirming, a §3.6 direct deletion completing
+    /// a pending removal), the finalizer OBSERVES it at recovery points and
+    /// discharges NOTHING — see [`retirement_due_entries`].
+    ///
+    /// [`retirement_due_entries`]: LoadedLibrary::retirement_due_entries
+    pub fn is_retirement_due(&self) -> bool {
+        !self.projections.is_empty()
+            && self.projections.values().all(|p| p.state.is_terminal())
+            && (!self.identity_bindings.is_empty()
+                || !self.deferred_archive_obligations().is_empty())
+    }
 }
 
 /// `(origin scope_id, origin slug)` — the share idempotency key (§2.3).
@@ -351,6 +373,31 @@ impl LoadedLibrary {
             entries,
             orphan_keys: self.orphan_keys.clone(),
         })
+    }
+
+    /// The §3.5 binding-retirement finalizer — MARKER MAINTENANCE ONLY, the sole
+    /// v1 behavior (P6-I2, permanently conservative per P15-I2/P16-I1/P17-C1).
+    /// Returns the healthy entries that are retirement-due (every projection
+    /// terminal while a binding key or `deferred_archives` marker still names the
+    /// pubkey — [`LibraryEntry::is_retirement_due`]).
+    ///
+    /// It is a pure OBSERVER: it discharges nothing. No v1 path deletes an
+    /// ever-bound key or archives an ever-bound identity, because library
+    /// metadata alone cannot prove a process-global secret or a community-visible
+    /// identity is unused — an unrelated plain carrier of the bound pubkey may
+    /// live in an inactive scope no deleting authority may read (P17-C1). The
+    /// keyring entry, the deferred rows, and the tombstoned entry's binding
+    /// record therefore persist as PERMANENT journaled markers a future indexed
+    /// version may safely consume. The recovery-point that calls this (§4)
+    /// records the observation and leaves every marker in place; wiring it into
+    /// the recovery sweep is Phase 4b. Quarantined entries are excluded — their
+    /// markers already protect the key via [`LibraryDocument::key_archive_protected`],
+    /// and a malformed entry's projection set cannot be trusted for terminality.
+    pub fn retirement_due_entries(&self) -> Vec<&LibraryEntry> {
+        self.healthy
+            .iter()
+            .filter(|entry| entry.is_retirement_due())
+            .collect()
     }
 }
 

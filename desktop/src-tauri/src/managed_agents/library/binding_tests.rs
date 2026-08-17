@@ -640,3 +640,173 @@ fn test_reap_persist_failure_propagates() {
         "delete ran before the failed persist"
     );
 }
+
+// ── retirement finalizer: §3.5 marker maintenance (P6-I2/P15-I2/P16-I1/P17-C1) ───
+
+/// A projection in the given state (only `state` matters to the finalizer; the
+/// other fields are fixed placeholders).
+fn projection(state: ProjectionState) -> ProjectionEntry {
+    ProjectionEntry {
+        state,
+        local_slug: "lib-x".into(),
+        relay_url: "wss://r".into(),
+        workspace_label: None,
+    }
+}
+
+/// A healthy entry with the given projections, bindings, and deferred rows.
+fn entry(
+    library_id: &str,
+    projections: Vec<(&str, ProjectionState)>,
+    bindings: Vec<&str>,
+    deferred: Vec<&str>,
+) -> LibraryEntry {
+    let mut identity_bindings = std::collections::BTreeMap::new();
+    for (i, agent_pubkey) in bindings.into_iter().enumerate() {
+        identity_bindings.insert(
+            format!("owner-{i}"),
+            IdentityBinding {
+                agent_pubkey: agent_pubkey.into(),
+                auth_tag: "{}".into(),
+            },
+        );
+    }
+    let mut e = LibraryEntry {
+        library_id: library_id.into(),
+        origin: OriginKey {
+            scope_id: "s".into(),
+            slug: library_id.into(),
+        },
+        revision: 1,
+        deleted: false,
+        owner_pubkey_at_share: "owner".into(),
+        shared: SharedDefinition {
+            display_name: "A".into(),
+            avatar_url: None,
+            system_prompt: "p".into(),
+            runtime: None,
+            model: None,
+            provider: None,
+            name_pool: vec![],
+            respond_to: None,
+            respond_to_allowlist: vec![],
+            parallelism: None,
+        },
+        deferred_archives: vec![],
+        identity_bindings,
+        projections: projections
+            .into_iter()
+            .map(|(scope, state)| (scope.to_string(), projection(state)))
+            .collect(),
+    };
+    for agent_pubkey in deferred {
+        e.upsert_deferred_archive("s".into(), agent_pubkey.into());
+    }
+    e
+}
+
+fn loaded(healthy: Vec<LibraryEntry>) -> LoadedLibrary {
+    LoadedLibrary {
+        healthy,
+        quarantined: vec![],
+        orphan_keys: vec![],
+        degradations: vec![],
+    }
+}
+
+#[test]
+fn test_retirement_due_when_all_terminal_and_key_or_row_survives() {
+    // Every projection terminal (mixed Excluded + Deleted) while a binding key
+    // still exists ⇒ retirement-due. A second entry with a deferred row and no
+    // binding is equally due — the marker alone qualifies.
+    let bound = entry(
+        "lib-bound",
+        vec![
+            ("a", ProjectionState::Excluded),
+            ("b", ProjectionState::Deleted),
+        ],
+        vec![&"aa".repeat(32)],
+        vec![],
+    );
+    let deferred_only = entry(
+        "lib-deferred",
+        vec![("a", ProjectionState::Deleted)],
+        vec![],
+        vec![&"bb".repeat(32)],
+    );
+    let lib = loaded(vec![bound, deferred_only]);
+
+    let due: Vec<&str> = lib
+        .retirement_due_entries()
+        .iter()
+        .map(|e| e.library_id.as_str())
+        .collect();
+    assert_eq!(due, vec!["lib-bound", "lib-deferred"]);
+}
+
+#[test]
+fn test_not_retirement_due_while_any_projection_live() {
+    // One non-terminal projection keeps the entry off the list — the binding
+    // still backs a live projection, so its key is not even a retirement marker.
+    let lib = loaded(vec![entry(
+        "lib-live",
+        vec![
+            ("a", ProjectionState::Excluded),
+            ("b", ProjectionState::Materialized { revision: 1 }),
+        ],
+        vec![&"cc".repeat(32)],
+        vec![],
+    )]);
+    assert!(lib.retirement_due_entries().is_empty());
+}
+
+#[test]
+fn test_not_retirement_due_without_key_or_deferred_row() {
+    // All terminal but neither a binding nor a deferred row survives — there is
+    // no marker to maintain, so the entry is not retirement-due.
+    let lib = loaded(vec![entry(
+        "lib-clean",
+        vec![("a", ProjectionState::Deleted)],
+        vec![],
+        vec![],
+    )]);
+    assert!(lib.retirement_due_entries().is_empty());
+}
+
+#[test]
+fn test_never_projected_entry_is_not_retirement_due() {
+    // Zero projections is not "vacuously all terminal": retirement means the
+    // entry WAS live and is now fully terminal. A bound entry that never
+    // projected anywhere must not be flagged.
+    let lib = loaded(vec![entry(
+        "lib-fresh",
+        vec![],
+        vec![&"dd".repeat(32)],
+        vec![],
+    )]);
+    assert!(lib.retirement_due_entries().is_empty());
+}
+
+#[test]
+fn test_finalizer_discharges_nothing_markers_persist() {
+    // The finalizer is a pure observer: reading it does not touch the entry's
+    // markers. The keyring is untouched by construction (no KeyStore parameter);
+    // here we assert the binding + deferred rows survive the observation, the v1
+    // permanent-marker contract (P17-C1).
+    let lib = loaded(vec![entry(
+        "lib-due",
+        vec![("a", ProjectionState::Deleted)],
+        vec![&"ee".repeat(32)],
+        vec![&"ee".repeat(32)],
+    )]);
+
+    assert_eq!(lib.retirement_due_entries().len(), 1);
+
+    // Markers untouched: the binding and the deferred row are exactly as journaled.
+    let e = &lib.healthy[0];
+    assert_eq!(e.identity_bindings.len(), 1);
+    assert_eq!(e.deferred_archive_obligations().len(), 1);
+    // And the pubkey stays protected — no discharge weakened the predicate.
+    let doc = lib.rebuild_document().expect("rebuild");
+    assert!(doc.key_archive_protected(&"ee".repeat(32)));
+}
