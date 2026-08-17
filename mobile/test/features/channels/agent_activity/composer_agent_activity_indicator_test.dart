@@ -9,8 +9,8 @@ import 'package:buzz/features/channels/agent_activity/observer_models.dart';
 import 'package:buzz/features/channels/agent_activity/observer_subscription.dart';
 import 'package:buzz/features/channels/agent_activity/working_bots_provider.dart';
 import 'package:buzz/features/channels/channel_typing_provider.dart';
-import 'package:buzz/features/profile/user_cache_provider.dart';
-import 'package:buzz/features/profile/user_profile.dart';
+import 'package:buzz/shared/profile/user_cache_provider.dart';
+import 'package:buzz/shared/profile/user_profile.dart';
 import 'package:buzz/shared/theme/theme.dart';
 
 const _channelId = 'channel-1';
@@ -157,6 +157,54 @@ void main() {
       expect(control, findsNothing);
     },
   );
+
+  testWidgets('keeps a collapsed terminal error openable', (tester) async {
+    final container = ProviderContainer(
+      overrides: [
+        composerActivityStateProvider(_scope).overrideWithValue(
+          const ComposerActivityState(
+            agents: [
+              WorkingAgentSignal(
+                pubkey: _agentPubkey,
+                source: AgentWorkingSource.observer,
+                canViewActivity: true,
+                turnId: _turnId,
+              ),
+            ],
+            humanTyping: [],
+          ),
+        ),
+        agentTurnStatesProvider.overrideWithValue([
+          _turn(AgentTurnPhase.error),
+        ]),
+        observerTurnSubscriptionProvider(
+          _turnKey,
+        ).overrideWithValue(_observerState),
+        userCacheProvider.overrideWith(_FakeUserCacheNotifier.new),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    await tester.pumpWidget(_app(container));
+    await tester.pump();
+
+    final control = find.byKey(
+      const ValueKey('composer-agent-activity-control'),
+    );
+    expect(control, findsOneWidget);
+    expect(find.text('Pollen stopped with an error'), findsOneWidget);
+
+    await tester.tap(control);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 240));
+
+    expect(
+      find.byKey(const ValueKey('composer-agent-activity-panel')),
+      findsOneWidget,
+    );
+    expect(find.text('Error'), findsOneWidget);
+    expect(find.text('Thinking'), findsOneWidget);
+  });
 
   testWidgets('reduced motion makes inline size changes immediate', (
     tester,

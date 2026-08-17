@@ -7,6 +7,7 @@ import 'observer_subscription.dart';
 
 const _defaultLivenessTimeout = Duration(seconds: 30);
 const _activeTurnClockInterval = Duration(seconds: 5);
+const _terminalComposerRetention = Duration(seconds: 30);
 // Matches buzz-acp's MAX_TURN_DURATION_CEILING_SECS. A disabled or unusually
 // sparse liveness cadence must not expire before any legal turn can finish.
 const _maximumTurnDuration = Duration(days: 7);
@@ -263,6 +264,30 @@ final activeAgentTurnsProvider = Provider<List<AgentTurnState>>((ref) {
       if (turn.isWorking) turn,
   ];
 });
+
+/// Working turns plus recent explicit outcomes that remain actionable beside
+/// the composer for a short, bounded window.
+final composerAgentTurnStatesProvider = Provider<List<AgentTurnState>>((ref) {
+  final now =
+      ref.watch(_activeAgentTurnClockProvider).value ?? DateTime.now().toUtc();
+  return composerAgentTurnStates(ref.watch(agentTurnStatesProvider), now: now);
+});
+
+/// Filters turn states to those that should remain visible by the composer.
+@visibleForTesting
+List<AgentTurnState> composerAgentTurnStates(
+  Iterable<AgentTurnState> states, {
+  required DateTime now,
+}) => List.unmodifiable([
+  for (final state in states)
+    if (state.isWorking ||
+        !now.isAfter(
+          (state.terminalAt ?? state.lastActivityAt).add(
+            _terminalComposerRetention,
+          ),
+        ))
+      state,
+]);
 
 DateTime _frameTimestamp(ObserverFrame frame) =>
     DateTime.tryParse(frame.timestamp)?.toUtc() ??

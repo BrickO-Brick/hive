@@ -2,7 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 
 import '../../../shared/mentions/agent_identity_provider.dart';
-import '../../profile/user_cache_provider.dart';
+import '../../../shared/profile/user_cache_provider.dart';
 import '../channel_management_provider.dart';
 import '../channel_typing_provider.dart';
 import 'active_agent_turns.dart';
@@ -70,9 +70,9 @@ final composerActivityStateProvider = Provider.autoDispose
       final ownerByAgent =
           ref.watch(agentOwnersProvider).asData?.value ??
           const <String, String>{};
-      final activeTurns = ref.watch(activeAgentTurnsProvider);
+      final composerTurns = ref.watch(composerAgentTurnStatesProvider);
       final activeByAgent = <String, AgentTurnState>{};
-      for (final turn in activeTurns) {
+      for (final turn in composerTurns) {
         if (turn.channelId != key.channelId) continue;
         final existing = activeByAgent[turn.agentPubkey];
         if (existing == null ||
@@ -95,6 +95,7 @@ final composerActivityStateProvider = Provider.autoDispose
         for (final entry in activeByAgent.entries) {
           if (!channelAgents.contains(entry.key)) continue;
           final turn = entry.value;
+          if (!turn.isWorking && !canView(entry.key)) continue;
           signals[entry.key] = WorkingAgentSignal(
             pubkey: entry.key,
             source: AgentWorkingSource.observer,

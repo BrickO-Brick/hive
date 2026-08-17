@@ -203,6 +203,41 @@ void main() {
     expect(turns.single.phase, AgentTurnPhase.error);
     expect(turns.single.errorMessage, 'Process exited');
   });
+
+  test(
+    'retains terminal outcomes beside the composer for a bounded window',
+    () {
+      final terminalAt = DateTime.utc(2026, 8, 16, 12, 0, 2);
+      final states = [
+        AgentTurnState(
+          agentPubkey: 'agent-a',
+          channelId: 'channel-1',
+          turnId: 'turn-a',
+          startedAt: DateTime.utc(2026, 8, 16, 12),
+          lastActivityAt: terminalAt,
+          livenessTimeout: const Duration(seconds: 30),
+          phase: AgentTurnPhase.error,
+          terminalAt: terminalAt,
+          errorMessage: 'Agent timed out',
+        ),
+      ];
+
+      expect(
+        composerAgentTurnStates(
+          states,
+          now: terminalAt.add(const Duration(seconds: 30)),
+        ),
+        hasLength(1),
+      );
+      expect(
+        composerAgentTurnStates(
+          states,
+          now: terminalAt.add(const Duration(seconds: 31)),
+        ),
+        isEmpty,
+      );
+    },
+  );
 }
 
 ObserverFrame _frame({

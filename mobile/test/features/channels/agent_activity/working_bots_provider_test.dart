@@ -6,9 +6,9 @@ import 'package:buzz/features/channels/agent_activity/observer_subscription.dart
 import 'package:buzz/features/channels/agent_activity/working_bots_provider.dart';
 import 'package:buzz/features/channels/channel_management_provider.dart';
 import 'package:buzz/features/channels/channel_typing_provider.dart';
-import 'package:buzz/features/profile/user_cache_provider.dart';
-import 'package:buzz/features/profile/user_profile.dart';
 import 'package:buzz/shared/mentions/agent_identity_provider.dart';
+import 'package:buzz/shared/profile/user_cache_provider.dart';
+import 'package:buzz/shared/profile/user_profile.dart';
 
 const _channelId = 'channel-1';
 
@@ -40,7 +40,7 @@ void main() {
             'agent-a': [_observerFrame('agent-a')],
           }),
         ),
-        activeAgentTurnsProvider.overrideWithValue([observerTurn]),
+        composerAgentTurnStatesProvider.overrideWithValue([observerTurn]),
       ],
     );
     addTearDown(container.dispose);
@@ -96,7 +96,7 @@ void main() {
               'agent-a': [_observerFrame('agent-a')],
             }),
           ),
-          activeAgentTurnsProvider.overrideWithValue([_turn('agent-a')]),
+          composerAgentTurnStatesProvider.overrideWithValue([_turn('agent-a')]),
         ],
       );
       addTearDown(container.dispose);
@@ -113,16 +113,64 @@ void main() {
       expect(state.humanTyping.single.pubkey, 'human');
     },
   );
+
+  test('keeps a recent owned error reachable after typing stops', () {
+    final failedTurn = _turn('agent-a', phase: AgentTurnPhase.error);
+    final container = ProviderContainer(
+      overrides: [
+        currentPubkeyProvider.overrideWith((ref) => 'owner'),
+        channelMembersProvider(
+          _channelId,
+        ).overrideWith((ref) async => const <ChannelMember>[]),
+        channelTypingProvider(
+          _channelId,
+        ).overrideWith(() => _FakeTypingNotifier(const [])),
+        agentMentionPubkeysProvider(
+          _channelId,
+        ).overrideWith((ref) => const {'agent-a'}),
+        agentOwnersProvider.overrideWithValue(
+          const AsyncData({'agent-a': 'owner'}),
+        ),
+        userCacheProvider.overrideWith(_FakeUserCacheNotifier.new),
+        observerRelayProvider.overrideWith(
+          () => _FakeObserverRelayNotifier({
+            'agent-a': [_observerFrame('agent-a')],
+          }),
+        ),
+        composerAgentTurnStatesProvider.overrideWithValue([failedTurn]),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    final state = container.read(
+      composerActivityStateProvider((
+        channelId: _channelId,
+        threadHeadId: null,
+      )),
+    );
+
+    expect(state.agents, hasLength(1));
+    expect(state.agents.single.pubkey, 'agent-a');
+    expect(state.agents.single.turnId, failedTurn.turnId);
+    expect(state.agents.single.canViewActivity, isTrue);
+    expect(state.humanTyping, isEmpty);
+  });
 }
 
-AgentTurnState _turn(String pubkey) => AgentTurnState(
+AgentTurnState _turn(
+  String pubkey, {
+  AgentTurnPhase phase = AgentTurnPhase.working,
+}) => AgentTurnState(
   agentPubkey: pubkey,
   channelId: _channelId,
   turnId: 'turn-$pubkey',
   startedAt: DateTime.utc(2026, 8, 16, 12),
   lastActivityAt: DateTime.utc(2026, 8, 16, 12),
   livenessTimeout: const Duration(seconds: 30),
-  phase: AgentTurnPhase.working,
+  phase: phase,
+  terminalAt: phase == AgentTurnPhase.working
+      ? null
+      : DateTime.utc(2026, 8, 16, 12, 0, 5),
 );
 
 ObserverFrame _observerFrame(String pubkey) => ObserverFrame(
