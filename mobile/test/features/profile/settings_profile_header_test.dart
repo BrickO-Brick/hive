@@ -20,6 +20,26 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 import '../../helpers/widget_helpers.dart';
 
 void main() {
+  testWidgets('reserves half of the 24dp settings section gap', (tester) async {
+    await tester.pumpWidget(
+      WidgetHelpers.testable(
+        overrides: [
+          profileProvider.overrideWith(_FakeProfileNotifier.new),
+          presenceProvider.overrideWith(() => _FakePresenceNotifier('online')),
+          userStatusProvider.overrideWith(() => _FakeUserStatusNotifier(null)),
+          customEmojiListProvider.overrideWithValue(const []),
+        ],
+        child: const SettingsProfileHeader(),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final header = tester.widget<Padding>(
+      find.byKey(const ValueKey('settings-profile-header')),
+    );
+    expect((header.padding as EdgeInsets).bottom, Grid.twelve);
+  });
+
   testWidgets('shows the poster until the animated avatar is ready', (
     tester,
   ) async {

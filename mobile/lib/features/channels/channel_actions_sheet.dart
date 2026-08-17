@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:flutter/services.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
@@ -8,18 +9,30 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 import '../../shared/clipboard_utils.dart';
 import '../../shared/mentions/agent_identity_provider.dart';
 import '../../shared/theme/theme.dart';
+import '../../shared/widgets/app_list.dart';
+import '../../shared/widgets/app_list_card.dart';
+import '../../shared/widgets/avatar_image.dart';
+import '../../shared/widgets/buzz_action_tile.dart';
 import '../../shared/widgets/buzz_loading_indicator.dart';
+import '../../shared/widgets/frosted_app_bar.dart';
+import '../../shared/widgets/frosted_scaffold.dart';
 import '../../shared/widgets/modal_presentation.dart';
 import '../../shared/widgets/sheet_divider.dart';
 import 'channel.dart';
+import 'add_members_sheet.dart';
 import 'channel_management_provider.dart';
 import 'channel_mutes/channel_mutes_provider.dart';
 import 'channel_sections/channel_sections_provider.dart';
 import 'channel_stars/channel_stars_provider.dart';
 import 'channels_provider.dart';
 import 'manage_channel_sheet.dart';
+import 'members_sheet.dart';
+import '../profile/user_cache_provider.dart';
+import '../profile/user_profile_sheet.dart';
 import '../../shared/read_state/read_state_provider.dart';
 import '../../shared/read_state/read_state_time.dart';
+
+part 'channel_details_page.dart';
 
 /// Opens the mobile channel actions sheet and returns whether its parent page
 /// should close after a successful lifecycle action.
@@ -161,7 +174,7 @@ class ChannelActionsSheet extends ConsumerWidget {
                 ),
                 const SizedBox(height: Grid.xs),
               ],
-              if (!channel.isDm)
+              if (!channel.isDm && canManageLifecycle)
                 ListTile(
                   contentPadding: EdgeInsets.zero,
                   leading: const Icon(LucideIcons.folderInput),

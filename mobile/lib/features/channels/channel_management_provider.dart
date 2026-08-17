@@ -11,7 +11,10 @@ import '../../shared/mentions/agent_identity_provider.dart';
 import '../../shared/relay/relay.dart';
 import '../profile/profile_provider.dart';
 import 'channel.dart';
+import 'channel_metadata_updates.dart';
 import 'channels_provider.dart';
+
+export 'channel_metadata_updates.dart';
 
 String _relayErrorMessage(Object error) =>
     error.toString().replaceFirst('Exception: ', '');
@@ -757,6 +760,24 @@ class ChannelActions {
       tags: [
         ['h', channelId],
       ],
+    );
+    await _refreshChannelState(channelId);
+  }
+
+  /// Updates the user-editable channel metadata and refreshes cached details.
+  Future<void> updateChannel({
+    required String channelId,
+    String? name,
+    String? description,
+  }) async {
+    await _signedEventRelay.submit(
+      kind: 9002,
+      content: '',
+      tags: buildUpdateChannelTags(
+        channelId: channelId,
+        name: name,
+        description: description,
+      ),
     );
     await _refreshChannelState(channelId);
   }

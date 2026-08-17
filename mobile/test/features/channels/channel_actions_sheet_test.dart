@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:buzz/features/channels/channel.dart';
 import 'package:buzz/features/channels/channel_actions_sheet.dart';
 import 'package:buzz/features/channels/channel_management_provider.dart';
+import 'package:buzz/features/channels/manage_channel_sheet.dart';
 import 'package:buzz/shared/mentions/agent_identity_provider.dart';
 import 'package:buzz/shared/relay/relay.dart';
 import 'package:buzz/shared/theme/theme.dart';
@@ -302,29 +303,53 @@ void main() {
     expect(find.text('Channel actions unavailable'), findsOneWidget);
   });
 
-  testWidgets(
-    'manage leave closes both nested sheets without popping the page',
-    (tester) async {
-      await tester.pumpWidget(
-        _modalApp(
-          channel: _channel(),
-          loadMembers: () async => const [],
-          createChannelActions: (ref) => _FakeChannelActions(ref),
-        ),
-      );
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Open actions'));
-      await tester.pumpAndSettle();
+  testWidgets('Manage contains editing and canvas, not mute or leave', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _modalApp(
+        channel: _channel(),
+        loadMembers: () async => const [],
+        createChannelActions: (ref) => _FakeChannelActions(ref),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Open actions'));
+    await tester.pumpAndSettle();
 
-      await tester.tap(find.text('Manage channel'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Leave channel').last);
-      await tester.pumpAndSettle();
+    await tester.tap(find.text('Manage channel'));
+    await tester.pumpAndSettle();
 
-      expect(find.byType(ChannelActionsSheet), findsNothing);
-      expect(find.byType(Scaffold), findsOneWidget);
-    },
-  );
+    final manageSheet = find.byType(ManageChannelSheet);
+    expect(manageSheet, findsOneWidget);
+    expect(
+      find.descendant(
+        of: manageSheet,
+        matching: find.byKey(const ValueKey('manage-channel-name')),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: manageSheet, matching: find.text('Canvas')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: manageSheet, matching: find.text('Mute channel')),
+      findsNothing,
+    );
+    expect(
+      find.descendant(of: manageSheet, matching: find.text('Leave channel')),
+      findsNothing,
+    );
+    expect(
+      find.descendant(of: manageSheet, matching: find.text('Topic')),
+      findsNothing,
+    );
+    expect(
+      find.descendant(of: manageSheet, matching: find.text('Purpose')),
+      findsNothing,
+    );
+  });
 
   testWidgets('DM omits quick actions, then shows mute and copy rows', (
     tester,
