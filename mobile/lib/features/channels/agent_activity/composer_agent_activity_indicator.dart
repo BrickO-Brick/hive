@@ -495,6 +495,7 @@ class ComposerAgentActivityIndicator extends HookConsumerWidget {
                                         observerState: observerState,
                                         transcript: transcript,
                                         profiles: profiles,
+                                        signals: viewableWorking,
                                         selectorAgents: selectorAgents,
                                         selectedAgent: effectiveSelectedAgent,
                                         nameFor: nameFor,
@@ -619,6 +620,7 @@ class _InlineActivityPanel extends StatelessWidget {
   final ObserverState? observerState;
   final List<TranscriptItem> transcript;
   final Map<String, UserProfile> profiles;
+  final List<WorkingAgentSignal> signals;
   final List<String> selectorAgents;
   final String selectedAgent;
   final String Function(String) nameFor;
@@ -639,6 +641,7 @@ class _InlineActivityPanel extends StatelessWidget {
     required this.observerState,
     required this.transcript,
     required this.profiles,
+    required this.signals,
     required this.selectorAgents,
     required this.selectedAgent,
     required this.nameFor,
@@ -655,6 +658,7 @@ class _InlineActivityPanel extends StatelessWidget {
     final headline = _selectedActivityHeadline(selectedTurn, transcript);
     final compactLabel = _agentActivityLabel(
       pubkeys: selectorAgents,
+      signals: signals,
       selectedTurn: selectedTurn,
       transcript: transcript,
       nameFor: nameFor,

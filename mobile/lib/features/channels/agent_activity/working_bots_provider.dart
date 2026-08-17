@@ -22,6 +22,9 @@ class WorkingAgentSignal {
 
   /// Whether this signal represents live work rather than a retained outcome.
   final bool isWorking;
+
+  /// Known observer phase; typing-only signals have no lifecycle phase yet.
+  final AgentTurnPhase? phase;
   final String? turnId;
   final DateTime? startedAt;
 
@@ -30,6 +33,7 @@ class WorkingAgentSignal {
     required this.source,
     required this.canViewActivity,
     this.isWorking = true,
+    this.phase,
     this.turnId,
     this.startedAt,
   });
@@ -105,6 +109,7 @@ final composerActivityStateProvider = Provider.autoDispose
             source: AgentWorkingSource.observer,
             canViewActivity: canView(entry.key),
             isWorking: turn.isWorking,
+            phase: turn.phase,
             turnId: turn.turnId,
             startedAt: turn.startedAt,
           );
@@ -121,13 +126,15 @@ final composerActivityStateProvider = Provider.autoDispose
         }
         if (signals.containsKey(pubkey)) continue;
         final turn = activeByAgent[pubkey];
+        final liveTurn = turn?.isWorking == true ? turn : null;
         signals[pubkey] = WorkingAgentSignal(
           pubkey: pubkey,
           source: AgentWorkingSource.typing,
           canViewActivity: canView(pubkey),
           isWorking: true,
-          turnId: turn?.turnId,
-          startedAt: turn?.startedAt,
+          phase: liveTurn?.phase,
+          turnId: liveTurn?.turnId,
+          startedAt: liveTurn?.startedAt,
         );
       }
 

@@ -114,6 +114,56 @@ void main() {
     },
   );
 
+  test('thread typing does not inherit a retained terminal turn', () {
+    final failedTurn = _turn('agent-a', phase: AgentTurnPhase.error);
+    final container = ProviderContainer(
+      overrides: [
+        currentPubkeyProvider.overrideWith((ref) => 'owner'),
+        channelMembersProvider(
+          _channelId,
+        ).overrideWith((ref) async => const <ChannelMember>[]),
+        channelTypingProvider(_channelId).overrideWith(
+          () => _FakeTypingNotifier(const [
+            TypingEntry(
+              pubkey: 'agent-a',
+              threadHeadId: 'thread-1',
+              expiresAtMs: 9999999999999,
+            ),
+          ]),
+        ),
+        agentMentionPubkeysProvider(
+          _channelId,
+        ).overrideWith((ref) => const {'agent-a'}),
+        agentOwnersProvider.overrideWithValue(
+          const AsyncData({'agent-a': 'owner'}),
+        ),
+        userCacheProvider.overrideWith(_FakeUserCacheNotifier.new),
+        observerRelayProvider.overrideWith(
+          () => _FakeObserverRelayNotifier({
+            'agent-a': [_observerFrame('agent-a')],
+          }),
+        ),
+        composerAgentTurnStatesProvider.overrideWithValue([failedTurn]),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    final signal = container
+        .read(
+          composerActivityStateProvider((
+            channelId: _channelId,
+            threadHeadId: 'thread-1',
+          )),
+        )
+        .agents
+        .single;
+
+    expect(signal.source, AgentWorkingSource.typing);
+    expect(signal.isWorking, isTrue);
+    expect(signal.turnId, isNull);
+    expect(signal.startedAt, isNull);
+  });
+
   test('keeps a recent owned error reachable after typing stops', () {
     final failedTurn = _turn('agent-a', phase: AgentTurnPhase.error);
     final container = ProviderContainer(

@@ -229,6 +229,7 @@ class _AgentActivityControl extends StatelessWidget {
         : [?selectedAgent];
     final label = _agentActivityLabel(
       pubkeys: pubkeys,
+      signals: signals,
       selectedTurn: selectedTurn,
       transcript: transcript,
       nameFor: nameFor,
@@ -393,16 +394,47 @@ _ActivityStatus _activityStatus(AgentTurnState? turn, bool isFallbackWorking) {
 
 ({String visibleLabel, String semanticLabel}) _agentActivityLabel({
   required List<String> pubkeys,
+  required List<WorkingAgentSignal> signals,
   required AgentTurnState? selectedTurn,
   required List<TranscriptItem> transcript,
   required String Function(String) nameFor,
   required bool expanded,
 }) {
   final action = expanded ? 'Collapse live activity.' : 'Show live activity.';
+  if (pubkeys.length > 1 && signals.length == pubkeys.length) {
+    final working = signals.where((signal) => signal.isWorking).length;
+    final errors = signals
+        .where((signal) => signal.phase == AgentTurnPhase.error)
+        .length;
+    final finished = signals.length - working - errors;
+    if (working == signals.length) {
+      return (
+        visibleLabel: '${signals.length} agents are working…',
+        semanticLabel: '${signals.length} agents are working. $action',
+      );
+    }
+    final visibleParts = [
+      if (working > 0) '$working working',
+      if (finished > 0) '$finished finished',
+      if (errors > 0) '$errors ${errors == 1 ? 'error' : 'errors'}',
+    ];
+    final semanticParts = [
+      if (working > 0)
+        '$working ${working == 1 ? 'agent is' : 'agents are'} working',
+      if (finished > 0)
+        '$finished ${finished == 1 ? 'agent has' : 'agents have'} finished',
+      if (errors > 0)
+        '$errors ${errors == 1 ? 'agent stopped' : 'agents stopped'} with ${errors == 1 ? 'an error' : 'errors'}',
+    ];
+    return (
+      visibleLabel: visibleParts.join(' · '),
+      semanticLabel: '${semanticParts.join(', ')}. $action',
+    );
+  }
   if (pubkeys.length > 1) {
     return (
-      visibleLabel: '${pubkeys.length} agents are working…',
-      semanticLabel: '${pubkeys.length} agents are working. $action',
+      visibleLabel: '${pubkeys.length} agents have activity',
+      semanticLabel: '${pubkeys.length} agents have activity. $action',
     );
   }
   final name = pubkeys.isEmpty ? 'Agent' : nameFor(pubkeys.single);

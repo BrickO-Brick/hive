@@ -206,6 +206,105 @@ void main() {
     expect(find.text('Thinking'), findsOneWidget);
   });
 
+  testWidgets('summarizes mixed working and terminal agent states', (
+    tester,
+  ) async {
+    final container = ProviderContainer(
+      overrides: [
+        composerActivityStateProvider(_scope).overrideWithValue(
+          const ComposerActivityState(
+            agents: [
+              WorkingAgentSignal(
+                pubkey: _agentPubkey,
+                source: AgentWorkingSource.observer,
+                canViewActivity: true,
+                phase: AgentTurnPhase.working,
+                turnId: _turnId,
+              ),
+              WorkingAgentSignal(
+                pubkey: _secondAgentPubkey,
+                source: AgentWorkingSource.observer,
+                canViewActivity: true,
+                isWorking: false,
+                phase: AgentTurnPhase.error,
+                turnId: _secondTurnId,
+              ),
+            ],
+            humanTyping: [],
+          ),
+        ),
+        agentTurnStatesProvider.overrideWithValue([
+          _turn(AgentTurnPhase.working),
+          _turnFor(
+            pubkey: _secondAgentPubkey,
+            turnId: _secondTurnId,
+            phase: AgentTurnPhase.error,
+          ),
+        ]),
+        observerTurnSubscriptionProvider(
+          _turnKey,
+        ).overrideWithValue(_observerState),
+        userCacheProvider.overrideWith(_FakeUserCacheNotifier.new),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    await tester.pumpWidget(_app(container));
+    await tester.pump();
+
+    expect(find.text('1 working · 1 error'), findsOneWidget);
+    expect(find.text('2 agents are working…'), findsNothing);
+  });
+
+  testWidgets('summarizes multiple retained terminal outcomes', (tester) async {
+    final container = ProviderContainer(
+      overrides: [
+        composerActivityStateProvider(_scope).overrideWithValue(
+          const ComposerActivityState(
+            agents: [
+              WorkingAgentSignal(
+                pubkey: _agentPubkey,
+                source: AgentWorkingSource.observer,
+                canViewActivity: true,
+                isWorking: false,
+                phase: AgentTurnPhase.finished,
+                turnId: _turnId,
+              ),
+              WorkingAgentSignal(
+                pubkey: _secondAgentPubkey,
+                source: AgentWorkingSource.observer,
+                canViewActivity: true,
+                isWorking: false,
+                phase: AgentTurnPhase.error,
+                turnId: _secondTurnId,
+              ),
+            ],
+            humanTyping: [],
+          ),
+        ),
+        agentTurnStatesProvider.overrideWithValue([
+          _turn(AgentTurnPhase.finished),
+          _turnFor(
+            pubkey: _secondAgentPubkey,
+            turnId: _secondTurnId,
+            phase: AgentTurnPhase.error,
+          ),
+        ]),
+        observerTurnSubscriptionProvider(
+          _turnKey,
+        ).overrideWithValue(_observerState),
+        userCacheProvider.overrideWith(_FakeUserCacheNotifier.new),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    await tester.pumpWidget(_app(container));
+    await tester.pump();
+
+    expect(find.text('1 finished · 1 error'), findsOneWidget);
+    expect(find.text('2 agents are working…'), findsNothing);
+  });
+
   testWidgets('reduced motion makes inline size changes immediate', (
     tester,
   ) async {
