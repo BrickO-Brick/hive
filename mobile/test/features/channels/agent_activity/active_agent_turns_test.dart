@@ -58,6 +58,61 @@ void main() {
     expect(turns, isEmpty);
   });
 
+  test('uses the advertised liveness interval to expire quiet turns', () {
+    final frames = {
+      'agent-a': [
+        _frame(
+          seq: 1,
+          second: 1,
+          kind: 'turn_started',
+          payload: {'livenessIntervalSecs': 120},
+        ),
+      ],
+    };
+
+    final beforeTimeout = reduceAgentTurnStates(
+      frames,
+      now: DateTime.utc(2026, 8, 16, 12, 2, 30),
+    );
+    final afterTimeout = reduceAgentTurnStates(
+      frames,
+      now: DateTime.utc(2026, 8, 16, 12, 2, 32),
+    );
+
+    expect(beforeTimeout, hasLength(1));
+    expect(beforeTimeout.single.livenessTimeout, const Duration(seconds: 150));
+    expect(afterTimeout, isEmpty);
+  });
+
+  test('keeps liveness-disabled turns until the bounded crash backstop', () {
+    final frames = {
+      'agent-a': [
+        _frame(
+          seq: 1,
+          second: 1,
+          kind: 'turn_started',
+          payload: {'livenessIntervalSecs': 0},
+        ),
+      ],
+    };
+
+    final longRunning = reduceAgentTurnStates(
+      frames,
+      now: DateTime.utc(2026, 8, 17, 12),
+    );
+    final pastBackstop = reduceAgentTurnStates(
+      frames,
+      now: DateTime.utc(2026, 8, 17, 12, 0, 32),
+    );
+
+    expect(longRunning, hasLength(1));
+    expect(
+      longRunning.single.livenessTimeout,
+      const Duration(hours: 24, seconds: 30),
+    );
+    expect(pastBackstop, isEmpty);
+  });
+
   test('recovers a missed start and rejects stale post-terminal liveness', () {
     final turns = reduceAgentTurnStates({
       'agent-a': [
