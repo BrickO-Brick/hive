@@ -461,7 +461,8 @@ pub(crate) async fn run_setup_listener(config: Config, payload: SetupPayload) ->
             continue;
         }
 
-        // Build and publish the setup nudge.
+        // Build and publish the setup nudge. Dedup records successful delivery,
+        // not an attempt: a transient lookup or relay failure must remain retryable.
         if let Err(e) = publish_setup_nudge(
             &publisher,
             &rest_client,
@@ -472,6 +473,7 @@ pub(crate) async fn run_setup_listener(config: Config, payload: SetupPayload) ->
         )
         .await
         {
+            record_nudge_failure(&mut nudged_event_ids, buzz_event.event.id);
             tracing::warn!("setup-mode: failed to publish nudge: {e}");
         } else {
             tracing::info!(
@@ -512,6 +514,10 @@ pub(crate) fn should_nudge_for_event(
         return false;
     }
     true
+}
+
+fn record_nudge_failure(nudged_event_ids: &mut HashSet<EventId>, event_id: EventId) {
+    nudged_event_ids.remove(&event_id);
 }
 
 fn is_setup_message_kind(kind: u32) -> bool {
@@ -1195,6 +1201,17 @@ mod tests {
             !second,
             "replay of the same event-id must be rejected (dedup)"
         );
+    }
+
+    #[test]
+    fn failed_nudge_attempt_remains_retryable() {
+        let mut dedup = HashSet::new();
+        let event_id = fake_event_id(0xCC);
+        assert!(should_nudge_for_event(event_id, true, true, &mut dedup));
+
+        record_nudge_failure(&mut dedup, event_id);
+
+        assert!(should_nudge_for_event(event_id, true, true, &mut dedup));
     }
 
     // ── availability round-trip tests ─────────────────────────────────────────
