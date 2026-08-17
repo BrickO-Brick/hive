@@ -784,9 +784,11 @@ pub(crate) struct MintedIdentity {
 /// 1. generate the keypair in memory (nothing persisted anywhere);
 /// 2. journal its derived pubkey to `orphan_keys` and DURABLY persist the
 ///    document via `persist` — the coordinate outlives a crash;
-/// 3. write the nsec to the keyring and read it back to verify;
-/// 4. build the verified binding from the READ-BACK nsec (never the in-memory
-///    copy) — proof the keyring entry backs exactly this pubkey.
+/// 3. write the nsec to the keyring and confirm it is DURABLY retrievable
+///    (raw OS read-back via [`KeyStore::write_and_verify`], not a cache read);
+/// 4. build the verified binding from the keyring's own read-back of the nsec
+///    (never the in-memory copy) — proof the keyring entry backs exactly this
+///    pubkey.
 ///
 /// On `Ok`, the orphan row is left IN `document`; the caller commits `binding`
 /// and drops the row in ONE atomic write (Phase 4b), so a crash before that
@@ -815,8 +817,10 @@ pub(crate) fn mint_bound_identity(
     document.journal_orphan_pubkey(&agent_pubkey);
     persist(document)?;
 
-    // (3) keyring write + read-back verify. A crash at or after this leaves the
-    // durable orphan row (step 2) whose keyring entry the recovery sweep reaps.
+    // (3) keyring write + DURABLE read-back verify (raw OS round-trip, not a
+    // cache read — see KeyStore::write_and_verify). A crash at or after this
+    // leaves the durable orphan row (step 2) whose keyring entry the recovery
+    // sweep reaps.
     let name = agent_keyring_name(&agent_pubkey);
     let nsec = agent_keys
         .secret_key()
@@ -824,9 +828,11 @@ pub(crate) fn mint_bound_identity(
         .map_err(|e| format!("encode minted nsec: {e}"))?;
     store.write_and_verify(&name, &nsec)?;
 
-    // (4) build the binding from the READ-BACK nsec — proves the keyring entry
-    // backs exactly this pubkey. The caller commits it and removes the orphan
-    // row in one atomic write (Phase 4b).
+    // (4) build the binding from the keyring's read-back — proves the entry
+    // backs exactly this pubkey. Sound because step 3 already confirmed the
+    // value is durably retrievable, so this load reflects the verified backend
+    // state; an absent value here is still fail-closed. The caller commits the
+    // binding and removes the orphan row in one atomic write (Phase 4b).
     let read_back = store.load(&name)?.ok_or_else(|| {
         "minted key absent from keyring immediately after verified write".to_string()
     })?;

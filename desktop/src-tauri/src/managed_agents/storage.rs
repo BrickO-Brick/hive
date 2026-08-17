@@ -159,8 +159,13 @@ pub(crate) trait KeyStore {
     /// `Ok(None)` when no blob exists yet; `Err` only on backend failure.
     /// Callers must not call `migrate_legacy_key` — this is a read-only view.
     fn load_all_readonly(&self) -> Result<Option<HashMap<String, String>>, String>;
-    /// Write `value` and read it back to confirm before the caller strips the
-    /// inline copy.
+    /// Write `value` and confirm it is durably retrievable from the OS keyring
+    /// before the caller strips the inline copy or commits a binding. The
+    /// confirmation MUST read through the backend, NOT merely the in-process
+    /// cache the write itself just advanced — it proves the OS keyring
+    /// round-trip, so a backend that acknowledges a write without durably
+    /// persisting the value fails here rather than reporting a false success
+    /// (see [`SecretStore::verify_stored_raw`]).
     fn write_and_verify(&self, name: &str, value: &str) -> Result<(), String>;
     /// Insert all entries from `entries` in a single blob mutation.
     fn store_all(&self, entries: &HashMap<String, String>) -> Result<(), String>;
@@ -183,9 +188,12 @@ impl KeyStore for SecretStore {
     }
     fn write_and_verify(&self, name: &str, value: &str) -> Result<(), String> {
         self.store(name, value)?;
-        match self.load(name)? {
-            Some(stored) if stored == value => Ok(()),
-            _ => Err("keyring read-back verify failed".to_string()),
+        // Confirm through the OS backend, bypassing the cache the `store` above
+        // just advanced — proving durable retrievability, not merely that the
+        // cache was updated (see `SecretStore::verify_stored_raw`).
+        match self.verify_stored_raw(name, value)? {
+            true => Ok(()),
+            false => Err("keyring read-back verify failed".to_string()),
         }
     }
     fn store_all(&self, entries: &HashMap<String, String>) -> Result<(), String> {

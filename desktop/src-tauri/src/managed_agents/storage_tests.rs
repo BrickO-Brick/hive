@@ -840,3 +840,62 @@ fn install_log_filename_accepts_ordinary_runtime_ids() {
         );
     }
 }
+
+// ── write_and_verify: durable OS read-back, not a cache read (P3A-I1) ─────────
+
+/// The library mint (`mint_bound_identity`) commits an identity binding only
+/// after `KeyStore::write_and_verify` confirms the nsec. That confirmation must
+/// prove DURABLE retrievability from the OS keyring, not merely that the write
+/// advanced the in-process cache — otherwise a backend that acknowledges a write
+/// without persisting it could let a binding commit against a secret that dies
+/// with the process, violating §2.5 ("no state in which a binding exists but its
+/// key is unverified").
+///
+/// `write_and_verify` calls `store` first, and `store` durably persists before
+/// returning, so on an honest backend cache and durable always agree the instant
+/// it verifies — the cache-vs-durable divergence that the defect would expose is
+/// only observable against an adverse backend (covered by the live keyring
+/// probe). What this test guards deterministically is the delegated primitive
+/// the fix now depends on: `verify_stored_raw` reads the OS backend and ignores a
+/// stale in-process cache. Reverting it to a cache read (the original `load`
+/// path) flips these assertions RED. Requires a real OS keychain.
+#[ignore = "requires real OS keychain (run locally)"]
+#[test]
+fn write_and_verify_confirms_durable_state_and_verify_raw_ignores_stale_cache() {
+    use crate::secret_store::SecretStore;
+
+    let svc = "buzz-test-write-verify-durable";
+    let name = agent_keyring_name("wv-agent");
+
+    // Clean slate, then exercise the fixed production seam positively: the write
+    // is confirmed durably retrievable, so it returns Ok.
+    let writer = SecretStore::keyring(svc);
+    let _ = KeyStore::delete(&writer, &name);
+    KeyStore::write_and_verify(&writer, &name, "nsec1durable").expect("durable write verifies");
+
+    // A second "process": its own cache, warmed to a value the backend no longer
+    // holds. `stale` stores v_old (warming its cache to v_old), then `writer`
+    // overwrites the durable blob with v_new — `stale`'s cache is now behind.
+    let stale = SecretStore::keyring(svc);
+    KeyStore::write_and_verify(&stale, &name, "nsec1old").expect("stale warms its cache to old");
+    KeyStore::write_and_verify(&writer, &name, "nsec1new").expect("durable advances to new");
+
+    // A cache read from `stale` returns the stale value it last wrote…
+    assert_eq!(
+        KeyStore::load(&stale, &name).unwrap(),
+        Some("nsec1old".to_string()),
+        "stale instance's cache still holds the old value"
+    );
+    // …but raw verification reflects DURABLE storage, bypassing that cache:
+    assert!(
+        stale.verify_stored_raw(&name, "nsec1new").unwrap(),
+        "verify_stored_raw must see the durable value, not the stale cache"
+    );
+    assert!(
+        !stale.verify_stored_raw(&name, "nsec1old").unwrap(),
+        "verify_stored_raw must reject a stale-cache value absent from the backend"
+    );
+
+    // Cleanup.
+    let _ = KeyStore::delete(&writer, &name);
+}
