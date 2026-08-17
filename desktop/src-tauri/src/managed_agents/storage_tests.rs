@@ -118,6 +118,14 @@ impl KeyStore for FakeKeyStore {
         }
         Ok(())
     }
+    fn delete(&self, name: &str) -> Result<(), String> {
+        if !self.reachable {
+            return Err("keyring backend unreachable".to_string());
+        }
+        // Deleting an absent entry is a no-op success, matching SecretStore.
+        self.stored.borrow_mut().remove(name);
+        Ok(())
+    }
 }
 
 fn record_with_key(nsec: &str) -> ManagedAgentRecord {

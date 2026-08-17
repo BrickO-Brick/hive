@@ -277,7 +277,13 @@ fn test_unreferenced_orphans_ignores_deferred_only_reference() {
 struct FakeKeyStore {
     stored: RefCell<HashMap<String, String>>,
     fail_write: bool,
+    fail_delete: bool,
+    /// `load` returns `Ok(None)` even after a verified write — models a keyring
+    /// where the minted key vanishes between write-back and read-back (§2.5
+    /// step 4's "minted key absent immediately after verified write" arm).
+    load_misses: bool,
     writes: RefCell<usize>,
+    deletes: RefCell<usize>,
 }
 
 impl FakeKeyStore {
@@ -285,15 +291,35 @@ impl FakeKeyStore {
         Self {
             stored: RefCell::new(HashMap::new()),
             fail_write: false,
+            fail_delete: false,
+            load_misses: false,
             writes: RefCell::new(0),
+            deletes: RefCell::new(0),
         }
     }
     fn write_fails() -> Self {
         Self {
-            stored: RefCell::new(HashMap::new()),
             fail_write: true,
-            writes: RefCell::new(0),
+            ..Self::ok()
         }
+    }
+    fn delete_fails() -> Self {
+        Self {
+            fail_delete: true,
+            ..Self::ok()
+        }
+    }
+    fn load_misses() -> Self {
+        Self {
+            load_misses: true,
+            ..Self::ok()
+        }
+    }
+    fn with_key(self, name: &str, value: &str) -> Self {
+        self.stored
+            .borrow_mut()
+            .insert(name.to_string(), value.to_string());
+        self
     }
 }
 
@@ -302,6 +328,9 @@ impl crate::managed_agents::storage::KeyStore for FakeKeyStore {
         KeyringProbe::ReachableButEmpty
     }
     fn load(&self, name: &str) -> Result<Option<String>, String> {
+        if self.load_misses {
+            return Ok(None);
+        }
         Ok(self.stored.borrow().get(name).cloned())
     }
     fn load_all_readonly(&self) -> Result<Option<HashMap<String, String>>, String> {
@@ -322,6 +351,14 @@ impl crate::managed_agents::storage::KeyStore for FakeKeyStore {
         self.stored
             .borrow_mut()
             .extend(entries.iter().map(|(k, v)| (k.clone(), v.clone())));
+        Ok(())
+    }
+    fn delete(&self, name: &str) -> Result<(), String> {
+        *self.deletes.borrow_mut() += 1;
+        if self.fail_delete {
+            return Err("keyring backend unreachable".to_string());
+        }
+        self.stored.borrow_mut().remove(name);
         Ok(())
     }
 }
@@ -451,5 +488,155 @@ fn test_mint_crash_at_keyring_write_leaves_durable_orphan_for_reap() {
             .iter()
             .map(String::as_str)
             .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_mint_crash_at_read_back_leaves_durable_orphan_no_binding() {
+    // Crash point in step 4: the keyring write verified, but the immediate
+    // read-back misses (key vanished between write and load). No binding is
+    // produced, the error surfaces, and the durable orphan row (step 2) survives
+    // so the dangling key is reaped at the next recovery point.
+    let owner = Keys::generate();
+    let store = FakeKeyStore::load_misses();
+    let mut doc = library(vec![]);
+    let mut persisted: Option<LibraryDocument> = None;
+
+    let err = mint_bound_identity(&mut doc, &owner, &store, |d| {
+        persisted = Some(d.clone());
+        Ok(())
+    })
+    .expect_err("read-back miss propagates");
+
+    assert!(err.contains("absent from keyring"));
+    assert_eq!(
+        *store.writes.borrow(),
+        1,
+        "keyring write verified before load"
+    );
+    // The durable snapshot carries the orphan coordinate, unreferenced — the reap
+    // selects it exactly as at the keyring-write crash point.
+    let durable = persisted.expect("journal was persisted before the keyring write");
+    assert_eq!(durable.orphan_keys.len(), 1);
+    assert_eq!(
+        durable.unreferenced_orphans(),
+        durable
+            .orphan_keys
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+    );
+}
+
+// ── reap_unreferenced_orphans: §4 recovery sweep (§2.5 step 3) ───────────────────
+
+#[test]
+fn test_reap_deletes_uncommitted_keys_and_drops_rows_leaving_committed() {
+    // Two orphans journaled: one committed (a live binding references it), one
+    // dangling. The sweep deletes only the dangling key and drops only its row;
+    // the committed key and row survive untouched.
+    let committed = "aa".repeat(32);
+    let dangling = "bb".repeat(32);
+    let store = FakeKeyStore::ok()
+        .with_key(&format!("agent:{committed}"), "nsec-committed")
+        .with_key(&format!("agent:{dangling}"), "nsec-dangling");
+    let mut doc = library(vec![bound_entry(&committed, false)]);
+    doc.journal_orphan_pubkey(&committed);
+    doc.journal_orphan_pubkey(&dangling);
+    let saves: RefCell<usize> = RefCell::new(0);
+
+    reap_unreferenced_orphans(&mut doc, &store, |_| {
+        *saves.borrow_mut() += 1;
+        Ok(())
+    })
+    .expect("reap");
+
+    assert_eq!(
+        *saves.borrow(),
+        1,
+        "one durable write for the trimmed journal"
+    );
+    assert_eq!(*store.deletes.borrow(), 1, "only the dangling key deleted");
+    // Committed row + key survive; dangling row + key gone.
+    assert_eq!(doc.orphan_keys, vec![committed.clone()]);
+    assert!(store
+        .stored
+        .borrow()
+        .contains_key(&format!("agent:{committed}")));
+    assert!(!store
+        .stored
+        .borrow()
+        .contains_key(&format!("agent:{dangling}")));
+}
+
+#[test]
+fn test_reap_is_idempotent_across_recovery_points() {
+    // A second sweep after the first has nothing to reap: no deletes, the
+    // journal is already clean. Proves re-running a recovery point is safe.
+    let dangling = "cc".repeat(32);
+    let store = FakeKeyStore::ok().with_key(&format!("agent:{dangling}"), "nsec");
+    let mut doc = library(vec![]);
+    doc.journal_orphan_pubkey(&dangling);
+
+    reap_unreferenced_orphans(&mut doc, &store, |_| Ok(())).expect("first reap");
+    assert!(doc.orphan_keys.is_empty());
+    assert_eq!(*store.deletes.borrow(), 1);
+
+    reap_unreferenced_orphans(&mut doc, &store, |_| Ok(())).expect("second reap");
+    assert_eq!(
+        *store.deletes.borrow(),
+        1,
+        "nothing left to delete on re-sweep"
+    );
+}
+
+#[test]
+fn test_reap_delete_failure_keeps_rows_persists_and_errors() {
+    // Every keyring delete backend-fails: no row is dropped, yet persist still
+    // runs once (recording zero progress durably), and the sweep returns Err
+    // naming the retained orphans so a later recovery point retries them.
+    let ok_pubkey = "dd".repeat(32);
+    let fail_pubkey = "ee".repeat(32);
+    let store = FakeKeyStore::delete_fails();
+    let mut doc = library(vec![]);
+    doc.journal_orphan_pubkey(&ok_pubkey);
+    doc.journal_orphan_pubkey(&fail_pubkey);
+    let mut persisted: Option<LibraryDocument> = None;
+
+    let err = reap_unreferenced_orphans(&mut doc, &store, |d| {
+        persisted = Some(d.clone());
+        Ok(())
+    })
+    .expect_err("backend delete failure surfaces");
+
+    assert!(err.contains("retry"));
+    assert_eq!(*store.deletes.borrow(), 2, "both deletes attempted");
+    // Persist ran once even though every delete failed — no row was dropped.
+    let durable = persisted.expect("persist ran");
+    assert_eq!(
+        durable.orphan_keys.len(),
+        2,
+        "failed deletes keep their rows"
+    );
+}
+
+#[test]
+fn test_reap_persist_failure_propagates() {
+    // A durable-write failure after the keyring deletes propagates — the caller
+    // must know the trimmed journal did not reach disk (the next recovery point
+    // re-deletes harmlessly and retries the drop).
+    let dangling = "ff".repeat(32);
+    let store = FakeKeyStore::ok().with_key(&format!("agent:{dangling}"), "nsec");
+    let mut doc = library(vec![]);
+    doc.journal_orphan_pubkey(&dangling);
+
+    let err = reap_unreferenced_orphans(&mut doc, &store, |_| Err("disk full".to_string()))
+        .expect_err("persist failure propagates");
+
+    assert!(err.contains("disk full"));
+    assert_eq!(
+        *store.deletes.borrow(),
+        1,
+        "delete ran before the failed persist"
     );
 }

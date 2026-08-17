@@ -164,6 +164,11 @@ pub(crate) trait KeyStore {
     fn write_and_verify(&self, name: &str, value: &str) -> Result<(), String>;
     /// Insert all entries from `entries` in a single blob mutation.
     fn store_all(&self, entries: &HashMap<String, String>) -> Result<(), String>;
+    /// Delete the entry for `name`. Deleting an absent entry is `Ok(())` (not a
+    /// backend failure) — so the §2.5 recovery reap is idempotent across repeated
+    /// recovery points until the journal row is also dropped. `Err` only on a
+    /// backend failure that leaves the entry possibly still present.
+    fn delete(&self, name: &str) -> Result<(), String>;
 }
 
 impl KeyStore for SecretStore {
@@ -185,6 +190,9 @@ impl KeyStore for SecretStore {
     }
     fn store_all(&self, entries: &HashMap<String, String>) -> Result<(), String> {
         SecretStore::store_all(self, entries)
+    }
+    fn delete(&self, name: &str) -> Result<(), String> {
+        SecretStore::delete(self, name)
     }
 }
 

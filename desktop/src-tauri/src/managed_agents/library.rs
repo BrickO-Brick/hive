@@ -818,14 +818,67 @@ impl LibraryDocument {
     /// once reaped, the caller drops the row via [`remove_orphan_pubkey`]. Scans
     /// RAW entries for a live binding to the pubkey (binding only — a
     /// `deferred_archives` marker is not a live binding and must not keep an
-    /// uncommitted orphan alive). Pure selection; the keyring delete is the IO
-    /// half performed by the recovery point (Phase 4b).
+    /// uncommitted orphan alive). Pure selection; [`reap_unreferenced_orphans`]
+    /// performs the keyring delete + journal drop at the recovery point.
     pub fn unreferenced_orphans(&self) -> Vec<&str> {
         self.orphan_keys
             .iter()
             .filter(|orphan| !self.entries.iter().any(|e| entry_binds_agent(e, orphan)))
             .map(String::as_str)
             .collect()
+    }
+}
+
+/// Reap every unreferenced orphan at a §4 recovery point (§2.5 step 3): for each
+/// [`LibraryDocument::unreferenced_orphans`] pubkey, delete its keyring entry
+/// THEN drop its journal row, and durably `persist` the trimmed document once.
+///
+/// Ordering is the crash-safety guarantee: the keyring `delete` precedes the
+/// journal-row drop, and the row is only dropped for a pubkey whose delete
+/// SUCCEEDED. A crash after a delete but before `persist` leaves the row intact,
+/// so the next recovery point re-deletes (a no-op on the already-absent entry —
+/// [`KeyStore::delete`] treats absent as success) and drops the row then; the
+/// reap is idempotent. A backend `delete` failure keeps that pubkey's row for a
+/// later retry and surfaces as `Err` AFTER the successful drops are persisted,
+/// so partial progress is never lost. Referenced (committed) orphans are never
+/// touched — their key backs a live binding.
+///
+/// `persist` and [`KeyStore`] are injected so the ordering is unit-testable at
+/// each crash point without real IO; production passes the live secret store and
+/// `|doc| save_library_document(base_dir, doc)`.
+pub(crate) fn reap_unreferenced_orphans(
+    document: &mut LibraryDocument,
+    store: &impl KeyStore,
+    persist: impl FnOnce(&LibraryDocument) -> Result<(), String>,
+) -> Result<(), String> {
+    let targets: Vec<String> = document
+        .unreferenced_orphans()
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+
+    let mut failures = Vec::new();
+    for pubkey in &targets {
+        match store.delete(&agent_keyring_name(pubkey)) {
+            // Key gone (or already absent) — safe to drop the coordinate.
+            Ok(()) => document.remove_orphan_pubkey(pubkey),
+            // Backend failure: keep the row so a later recovery point retries.
+            Err(e) => failures.push(format!("{pubkey}: {e}")),
+        }
+    }
+
+    // Durably record the successful drops before reporting any failure, so a
+    // partial reap never repeats work it already completed.
+    persist(document)?;
+
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "reap left {} orphan(s) for retry: {}",
+            failures.len(),
+            failures.join("; ")
+        ))
     }
 }
 
