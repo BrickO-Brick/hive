@@ -50,6 +50,26 @@ void main() {
     expect(turns[1].errorMessage, 'Tool permission denied');
   });
 
+  test('keeps an error terminal when generic completion arrives later', () {
+    final turns = reduceAgentTurnStates({
+      'agent-a': [
+        _frame(seq: 1, second: 1, kind: 'turn_started'),
+        _frame(
+          seq: 2,
+          second: 2,
+          kind: 'turn_error',
+          payload: {'error': 'Agent timed out'},
+        ),
+        _frame(seq: 3, second: 3, kind: 'turn_completed'),
+      ],
+    }, now: DateTime.utc(2026, 8, 16, 12, 1));
+
+    expect(turns, hasLength(1));
+    expect(turns.single.phase, AgentTurnPhase.error);
+    expect(turns.single.errorMessage, 'Agent timed out');
+    expect(turns.single.terminalAt, DateTime.utc(2026, 8, 16, 12, 0, 2));
+  });
+
   test('expires silence without claiming the turn finished', () {
     final turns = reduceAgentTurnStates({
       'agent-a': [_frame(seq: 1, second: 1, kind: 'turn_started')],
@@ -84,6 +104,35 @@ void main() {
     expect(afterTimeout, isEmpty);
   });
 
+  test('honors advertised liveness intervals longer than one day', () {
+    final frames = {
+      'agent-a': [
+        _frame(
+          seq: 1,
+          second: 1,
+          kind: 'turn_started',
+          payload: {'livenessIntervalSecs': 48 * 60 * 60},
+        ),
+      ],
+    };
+
+    final beforeTimeout = reduceAgentTurnStates(
+      frames,
+      now: DateTime.utc(2026, 8, 18, 12, 0, 30),
+    );
+    final afterTimeout = reduceAgentTurnStates(
+      frames,
+      now: DateTime.utc(2026, 8, 18, 12, 0, 32),
+    );
+
+    expect(beforeTimeout, hasLength(1));
+    expect(
+      beforeTimeout.single.livenessTimeout,
+      const Duration(hours: 48, seconds: 30),
+    );
+    expect(afterTimeout, isEmpty);
+  });
+
   test('keeps liveness-disabled turns until the bounded crash backstop', () {
     final frames = {
       'agent-a': [
@@ -98,17 +147,17 @@ void main() {
 
     final longRunning = reduceAgentTurnStates(
       frames,
-      now: DateTime.utc(2026, 8, 17, 12),
+      now: DateTime.utc(2026, 8, 23, 12),
     );
     final pastBackstop = reduceAgentTurnStates(
       frames,
-      now: DateTime.utc(2026, 8, 17, 12, 0, 32),
+      now: DateTime.utc(2026, 8, 23, 12, 0, 32),
     );
 
     expect(longRunning, hasLength(1));
     expect(
       longRunning.single.livenessTimeout,
-      const Duration(hours: 24, seconds: 30),
+      const Duration(days: 7, seconds: 30),
     );
     expect(pastBackstop, isEmpty);
   });

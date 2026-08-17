@@ -7,7 +7,9 @@ import 'observer_subscription.dart';
 
 const _defaultLivenessTimeout = Duration(seconds: 30);
 const _activeTurnClockInterval = Duration(seconds: 5);
-const _maximumLivenessInterval = Duration(hours: 24);
+// Matches buzz-acp's MAX_TURN_DURATION_CEILING_SECS. A disabled or unusually
+// sparse liveness cadence must not expire before any legal turn can finish.
+const _maximumTurnDuration = Duration(days: 7);
 const _livenessTimeoutSlack = Duration(seconds: 30);
 
 /// Lifecycle state reconstructed from owner-scoped observer frames.
@@ -114,6 +116,12 @@ List<AgentTurnState> reduceAgentTurnStates(
           if (turnId != null) {
             terminalOrderById[turnId] = frameOrderAt;
             final existing = turnsById[turnId];
+            // The harness's generic completion guard can run after its result
+            // handler emits the specific failure outcome.
+            if (frame.kind == 'turn_completed' &&
+                existing?.phase == AgentTurnPhase.error) {
+              continue;
+            }
             final channelId = existing?.channelId ?? frame.channelId;
             if (channelId == null) continue;
             turnsById[turnId] =
@@ -293,11 +301,11 @@ Duration _livenessTimeout(dynamic payload) {
 
   final intervalSeconds = rawInterval.toInt();
   if (intervalSeconds <= 0) {
-    return _maximumLivenessInterval + _livenessTimeoutSlack;
+    return _maximumTurnDuration + _livenessTimeoutSlack;
   }
   final boundedInterval = intervalSeconds.clamp(
     5,
-    _maximumLivenessInterval.inSeconds,
+    _maximumTurnDuration.inSeconds,
   );
   final timeoutSeconds = boundedInterval + _livenessTimeoutSlack.inSeconds;
   return Duration(
