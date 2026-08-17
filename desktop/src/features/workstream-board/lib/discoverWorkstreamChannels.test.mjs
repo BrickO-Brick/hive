@@ -18,7 +18,7 @@ function buildChannel(overrides) {
     memberCount: overrides.memberPubkeys?.length ?? 0,
     memberPubkeys: overrides.memberPubkeys ?? [],
     lastMessageAt: null,
-    archivedAt: null,
+    archivedAt: overrides.archivedAt ?? null,
     participants: [],
     participantPubkeys: [],
     isMember: overrides.isMember ?? false,
@@ -101,6 +101,23 @@ test("applies no creator/membership filter — every matching name is included r
     "no-members",
     "someone-elses",
   ]);
+});
+
+test("excludes an archived channel even when its name matches the prefix", () => {
+  const channels = [
+    buildChannel({
+      id: "1",
+      name: "loganj-ws-done",
+      archivedAt: "2026-01-01T00:00:00Z",
+    }),
+    buildChannel({ id: "2", name: "loganj-ws-active" }),
+  ];
+
+  const result = filterWorkstreamChannels(channels);
+  assert.deepEqual(
+    result.map((c) => c.id),
+    ["2"],
+  );
 });
 
 test("returns an empty array when nothing matches", () => {
