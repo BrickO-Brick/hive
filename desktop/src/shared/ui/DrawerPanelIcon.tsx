@@ -41,7 +41,7 @@ export function DrawerPanelIcon({
         initial={false}
         transition={{
           duration: prefersReducedMotion ? 0 : 0.2,
-          ease: "easeOut",
+          ease: "linear",
         }}
         x="4"
         y="4"

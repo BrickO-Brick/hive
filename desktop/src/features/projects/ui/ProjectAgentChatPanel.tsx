@@ -30,6 +30,7 @@ import {
   useAgentCandidates,
 } from "./ProjectsAgentPromptPage";
 import { ProjectAgentContextStrip } from "./ProjectAgentContextStrip";
+import { ProjectAgentSelectionComposerBanner } from "./ProjectAgentSelectionComposerBanner";
 
 type ProjectAgentConversation = {
   agent: AgentCandidate;
@@ -39,14 +40,18 @@ type ProjectAgentConversation = {
 
 export function ProjectAgentChatPanel({
   canResetWidth,
+  constrainToAvailableSpace = true,
   context,
+  onClose,
   onResetWidth,
   onResizeStart,
   sharedHeaderBackdrop,
   widthPx,
 }: {
   canResetWidth: boolean;
+  constrainToAvailableSpace?: boolean;
   context: ProjectDetailAgentContext;
+  onClose?: () => void;
   onResetWidth: () => void;
   onResizeStart: (event: React.PointerEvent<HTMLButtonElement>) => void;
   sharedHeaderBackdrop?: boolean;
@@ -160,6 +165,7 @@ export function ProjectAgentChatPanel({
   return (
     <RightAuxiliaryPane
       canResetWidth={canResetWidth}
+      constrainToAvailableSpace={constrainToAvailableSpace}
       onResetWidth={onResetWidth}
       onResizeStart={onResizeStart}
       testId="project-agent-chat-panel"
@@ -167,11 +173,12 @@ export function ProjectAgentChatPanel({
     >
       <ProjectAgentContextStrip
         context={context}
+        onClose={onClose}
         sharedBackdrop={sharedHeaderBackdrop}
       />
       <div className="flex min-h-0 flex-1 flex-col">
         <div
-          className="min-h-0 flex-1 overflow-y-auto px-4 pb-4 pt-[4.25rem]"
+          className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pb-4 pt-[4.25rem]"
           data-testid="project-agent-conversation-scroll"
         >
           {conversation ? (
@@ -185,7 +192,7 @@ export function ProjectAgentChatPanel({
               visibleAfter={conversation.visibleAfter}
             />
           ) : (
-            <div className="flex h-full min-h-40 flex-col items-center justify-center gap-2 text-center">
+            <div className="flex min-h-40 flex-1 flex-col items-center justify-center gap-2 text-center">
               <p className="text-sm font-medium text-foreground">
                 Ask about this page
               </p>
@@ -195,6 +202,9 @@ export function ProjectAgentChatPanel({
             </div>
           )}
         </div>
+        {context.selection?.length ? (
+          <ProjectAgentSelectionComposerBanner items={context.selection} />
+        ) : null}
         <MessageComposer
           channelId={conversation?.channel.id ?? null}
           channelName={selectedAgent?.name ?? "project agent"}

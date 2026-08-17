@@ -3,6 +3,8 @@ import test from "node:test";
 
 import {
   buildProjectDetailAgentContext,
+  buildProjectSelectionAgentContext,
+  buildProjectsOverviewAgentContext,
   projectDetailAgentContextBlock,
   stripProjectDetailAgentContext,
 } from "./projectDetailAgentContext.ts";
@@ -16,6 +18,16 @@ const base = {
   source: "local",
   workItems: [null, null, null],
 };
+
+test("builds projects overview context", () => {
+  assert.deepEqual(buildProjectsOverviewAgentContext("Reviews"), {
+    projectName: "Projects",
+    repoAddress: "projects:overview",
+    repositoryName: "All projects",
+    source: "remote",
+    view: "Reviews",
+  });
+});
 
 test("builds selected file context", () => {
   const context = buildProjectDetailAgentContext(base);
@@ -53,6 +65,21 @@ test("prompt footer contains current page details", () => {
   assert.match(footer, /View: Files/);
   assert.match(footer, /File: src\/app\.tsx/);
   assert.match(footer, /Branch: main/);
+});
+
+test("prompt footer includes the selected project entities", () => {
+  const footer = projectDetailAgentContextBlock(
+    buildProjectSelectionAgentContext([
+      {
+        id: "task:42",
+        kind: "task",
+        shareLink: "buzz://issue?id=42",
+        title: "Ship the fix",
+      },
+    ]),
+  );
+  assert.match(footer, /Selection: 1 task/);
+  assert.match(footer, /task: Ship the fix \(buzz:\/\/issue\?id=42\)/);
 });
 
 test("strips hidden page context from the displayed user message", () => {

@@ -90,6 +90,7 @@ type AppSidebarProps = {
   isCreatingChannel: boolean;
   isCreatingForum: boolean;
   profile?: Profile;
+  projectsOverviewActive: boolean;
   relayConnectionCard: ReturnType<typeof useSidebarRelayConnectionCard>;
   selfPresenceStatus: PresenceStatus;
   errorMessage?: string;
@@ -183,6 +184,7 @@ export function AppSidebar({
   isCreatingChannel,
   isCreatingForum,
   profile,
+  projectsOverviewActive,
   relayConnectionCard,
   selfPresenceStatus,
   errorMessage,
@@ -579,6 +581,7 @@ export function AppSidebar({
           onSelectProjects={onSelectProjects}
           onSelectPulse={onSelectPulse}
           onSelectWorkflows={onSelectWorkflows}
+          projectsOverviewActive={projectsOverviewActive}
           searchChannels={searchChannels}
           searchFocusRequest={searchFocusRequests[0]}
           scopeSearchFocusRequest={searchFocusRequests[1]}

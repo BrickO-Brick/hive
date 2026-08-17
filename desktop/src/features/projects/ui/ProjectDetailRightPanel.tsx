@@ -25,6 +25,7 @@ export function ProjectDetailRightPanel({
     return (
       <ProjectAgentChatPanel
         canResetWidth={repositoryProps.canResetWidth}
+        constrainToAvailableSpace={false}
         context={context}
         key={context.repoAddress}
         onResetWidth={repositoryProps.onResetWidth}
