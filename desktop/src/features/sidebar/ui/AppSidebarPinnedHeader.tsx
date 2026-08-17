@@ -45,6 +45,7 @@ type AppSidebarPrimaryMenuProps = {
   onSelectProjects: () => void;
   onSelectPulse: () => void;
   onSelectWorkflows: () => void;
+  onSelectWorkstreamBoard: () => void;
   projectsOverviewActive: boolean;
   selectedView: SidebarSelectedView;
 };
@@ -95,6 +96,7 @@ export function AppSidebarPrimaryMenu({
   onSelectProjects,
   onSelectPulse,
   onSelectWorkflows,
+  onSelectWorkstreamBoard,
   projectsOverviewActive,
   selectedView,
 }: AppSidebarPrimaryMenuProps) {

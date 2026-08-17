@@ -511,6 +511,7 @@ export function AppSidebar({
                 onSelectProjects={onSelectProjects}
                 onSelectPulse={onSelectPulse}
                 onSelectWorkflows={onSelectWorkflows}
+                onSelectWorkstreamBoard={onSelectWorkstreamBoard}
                 projectsOverviewActive={projectsOverviewActive}
                 selectedView={selectedView}
               />
