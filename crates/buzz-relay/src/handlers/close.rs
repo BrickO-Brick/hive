@@ -36,7 +36,9 @@ pub(crate) async fn remove_subscription(
 
     if let Some(removed) = registry.remove_subscription(conn.conn_id, sub_id) {
         if removed.scope.is_global() {
-            pubsub.release_topic(&conn.tenant, buzz_pubsub::EventTopic::Global).await;
+            pubsub
+                .release_topic(&conn.tenant, buzz_pubsub::EventTopic::Global)
+                .await;
         }
         for &channel_id in removed.scope.channel_ids() {
             pubsub
@@ -47,4 +49,3 @@ pub(crate) async fn remove_subscription(
 
     drop(pending_subscriptions);
 }
-

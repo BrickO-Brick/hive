@@ -292,10 +292,14 @@ pub(crate) async fn handle_req(
         return;
     }
 
+    let subscription_scope = authorized_requested_channels
+        .clone()
+        .map(crate::subscription::SubscriptionScope::Channels)
+        .unwrap_or(crate::subscription::SubscriptionScope::Global);
     if !register_subscription_if_current(
         &sub_id,
         &filters,
-        authorized_requested_channels.as_deref(),
+        &subscription_scope,
         &conn,
         &state.sub_registry,
         state.pubsub.as_ref(),
@@ -304,7 +308,6 @@ pub(crate) async fn handle_req(
     .await
     {
         return;
-    }
     }
 
     debug!(conn_id = %conn_id, sub_id = %sub_id, "Subscription registered");
@@ -498,7 +501,7 @@ const SEARCH_PAGE_SIZE: u32 = 100;
 async fn register_subscription_if_current(
     sub_id: &str,
     filters: &[Filter],
-    channel_id: Option<uuid::Uuid>,
+    scope: &crate::subscription::SubscriptionScope,
     conn: &ConnectionState,
     registry: &crate::subscription::SubscriptionRegistry,
     pubsub: &dyn SubscriptionTopics,
@@ -517,21 +520,38 @@ async fn register_subscription_if_current(
         .await
         .insert(sub_id.to_owned(), filters.to_vec());
 
-    let replaced = registry.register_scoped(
-        conn.tenant.community(),
-        conn.conn_id,
-        sub_id.to_owned(),
-        filters.to_vec(),
-        channel_id,
-    );
+    let replaced = match scope {
+        crate::subscription::SubscriptionScope::Channels(channel_ids) => registry
+            .register_channels_scoped(
+                conn.tenant.community(),
+                conn.conn_id,
+                sub_id.to_owned(),
+                filters.to_vec(),
+                channel_ids.clone(),
+            ),
+        crate::subscription::SubscriptionScope::Global => registry.register_scoped(
+            conn.tenant.community(),
+            conn.conn_id,
+            sub_id.to_owned(),
+            filters.to_vec(),
+            None,
+        ),
+    };
     if let Some(replaced) = replaced {
-        pubsub
-            .release_topic(&conn.tenant, topic_for_subscription(replaced.channel_id))
-            .await;
+        release_subscription_topics(pubsub, &conn.tenant, &replaced.scope).await;
     }
-    pubsub
-        .retain_topic(&conn.tenant, topic_for_subscription(channel_id))
-        .await;
+    match scope {
+        crate::subscription::SubscriptionScope::Channels(channel_ids) => {
+            for &channel_id in channel_ids {
+                pubsub
+                    .retain_topic(&conn.tenant, EventTopic::Channel(channel_id))
+                    .await;
+            }
+        }
+        crate::subscription::SubscriptionScope::Global => {
+            pubsub.retain_topic(&conn.tenant, EventTopic::Global).await;
+        }
+    }
 
     // Only a successful replacement commit supersedes historical delivery from
     // the previous same-ID REQ. Validation/search failures leave it untouched.
@@ -1204,16 +1224,15 @@ pub(crate) fn extract_channel_ids_from_filters(filters: &[Filter]) -> Option<Vec
 }
 
 async fn release_subscription_topics(
-    state: &AppState,
+    pubsub: &dyn SubscriptionTopics,
     tenant: &TenantContext,
     scope: &crate::subscription::SubscriptionScope,
 ) {
     if scope.is_global() {
-        state.pubsub.release_topic(tenant, EventTopic::Global).await;
+        pubsub.release_topic(tenant, EventTopic::Global).await;
     } else {
         for &channel_id in scope.channel_ids() {
-            state
-                .pubsub
+            pubsub
                 .release_topic(tenant, EventTopic::Channel(channel_id))
                 .await;
         }
@@ -1618,7 +1637,7 @@ mod tests {
                         register_subscription_if_current(
                             &sub_id,
                             &filters,
-                            Some(channel_id),
+                            &crate::subscription::SubscriptionScope::Channels(vec![channel_id]),
                             &conn,
                             &registry,
                             pubsub.as_ref(),
@@ -1696,7 +1715,7 @@ mod tests {
             register_subscription_if_current(
                 sub_id,
                 &filters,
-                Some(channel_id),
+                &crate::subscription::SubscriptionScope::Channels(vec![channel_id]),
                 &conn,
                 &registry,
                 pubsub.as_ref(),
@@ -1775,7 +1794,7 @@ mod tests {
                         let _ = register_subscription_if_current(
                             &sub_id,
                             &filters,
-                            Some(channel_id),
+                            &crate::subscription::SubscriptionScope::Channels(vec![channel_id]),
                             &conn,
                             &registry,
                             pubsub.as_ref(),
@@ -1790,8 +1809,7 @@ mod tests {
                     .expect("REQ reached pre-registration await");
                 crate::connection::shutdown_pending_requests(&conn, &mut req_tasks).await;
                 for removed in registry.remove_connection(conn.conn_id) {
-                    pubsub
-                        .release_topic(&conn.tenant, topic_for_subscription(removed.channel_id))
+                    release_subscription_topics(pubsub.as_ref(), &conn.tenant, &removed.scope)
                         .await;
                 }
                 gate.notify_one();
