@@ -52,6 +52,23 @@ void main() {
     expect(turns[1].errorMessage, 'Tool permission denied');
   });
 
+  test('reports cancelled completion separately from a finished turn', () {
+    final turns = reduceAgentTurnStates({
+      'agent-a': [
+        _frame(seq: 1, second: 1, kind: 'turn_started'),
+        _frame(
+          seq: 2,
+          second: 2,
+          kind: 'turn_completed',
+          payload: {'outcome': 'cancelled'},
+        ),
+      ],
+    }, now: DateTime.utc(2026, 8, 16, 12, 1));
+
+    expect(turns, hasLength(1));
+    expect(turns.single.phase, AgentTurnPhase.cancelled);
+  });
+
   test('keeps an error terminal when generic completion arrives later', () {
     final turns = reduceAgentTurnStates({
       'agent-a': [
@@ -162,6 +179,51 @@ void main() {
       const Duration(days: 7, seconds: 30),
     );
     expect(pastBackstop, isEmpty);
+  });
+
+  test('does not assume a 30-second cadence when joining mid-turn', () {
+    final frames = {
+      'agent-a': [
+        _frame(
+          seq: 1,
+          second: const Duration(days: 6).inSeconds + 1,
+          kind: 'acp_read',
+          startedAt: DateTime.utc(2026, 8, 16, 12).toIso8601String(),
+        ),
+      ],
+    };
+
+    final afterLegacyTimeout = reduceAgentTurnStates(
+      frames,
+      now: DateTime.utc(2026, 8, 22, 12, 0, 32),
+    );
+    final pastBackstop = reduceAgentTurnStates(
+      frames,
+      now: DateTime.utc(2026, 8, 23, 12, 0, 32),
+    );
+
+    expect(afterLegacyTimeout, hasLength(1));
+    expect(
+      afterLegacyTimeout.single.livenessTimeout,
+      const Duration(days: 7, seconds: 30),
+    );
+    expect(pastBackstop, isEmpty);
+  });
+
+  test('uses a liveness frame cadence when joining mid-turn', () {
+    final turns = reduceAgentTurnStates({
+      'agent-a': [
+        _frame(
+          seq: 1,
+          second: 1,
+          kind: 'turn_liveness',
+          payload: {'livenessIntervalSecs': 120},
+        ),
+      ],
+    }, now: DateTime.utc(2026, 8, 16, 12, 2, 30));
+
+    expect(turns, hasLength(1));
+    expect(turns.single.livenessTimeout, const Duration(seconds: 150));
   });
 
   test('recovers a missed start and rejects stale post-terminal liveness', () {

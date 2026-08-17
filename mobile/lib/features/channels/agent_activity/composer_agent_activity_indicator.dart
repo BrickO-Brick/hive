@@ -875,12 +875,14 @@ class _ActivityStatusBadge extends StatelessWidget {
     final color = switch (status) {
       _ActivityStatus.working => context.appColors.success,
       _ActivityStatus.finished => context.colors.onSurfaceVariant,
+      _ActivityStatus.cancelled => context.colors.onSurfaceVariant,
       _ActivityStatus.error => context.colors.error,
       _ActivityStatus.waiting => context.appColors.warning,
     };
     final label = switch (status) {
       _ActivityStatus.working => 'Working',
       _ActivityStatus.finished => 'Finished',
+      _ActivityStatus.cancelled => 'Cancelled',
       _ActivityStatus.error => 'Error',
       _ActivityStatus.waiting => 'Waiting',
     };
@@ -949,9 +951,12 @@ class _ActivityEmptyState extends StatelessWidget {
             ),
           const SizedBox(height: Grid.half),
           Text(
-            status == _ActivityStatus.finished
-                ? 'No activity rows were captured for this turn.'
-                : 'Waiting for live activity…',
+            switch (status) {
+              _ActivityStatus.finished =>
+                'No activity rows were captured for this turn.',
+              _ActivityStatus.cancelled => 'This turn was cancelled.',
+              _ => 'Waiting for live activity…',
+            },
             style: context.textTheme.bodySmall?.copyWith(
               color: context.colors.onSurfaceVariant,
             ),

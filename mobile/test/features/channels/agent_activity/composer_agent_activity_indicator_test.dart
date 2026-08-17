@@ -206,6 +206,53 @@ void main() {
     expect(find.text('Thinking'), findsOneWidget);
   });
 
+  testWidgets('labels a cancelled turn separately from a finished turn', (
+    tester,
+  ) async {
+    final container = ProviderContainer(
+      overrides: [
+        composerActivityStateProvider(_scope).overrideWithValue(
+          const ComposerActivityState(
+            agents: [
+              WorkingAgentSignal(
+                pubkey: _agentPubkey,
+                source: AgentWorkingSource.observer,
+                canViewActivity: true,
+                isWorking: false,
+                phase: AgentTurnPhase.cancelled,
+                turnId: _turnId,
+              ),
+            ],
+            humanTyping: [],
+          ),
+        ),
+        agentTurnStatesProvider.overrideWithValue([
+          _turn(AgentTurnPhase.cancelled),
+        ]),
+        observerTurnSubscriptionProvider(
+          _turnKey,
+        ).overrideWithValue(_observerState),
+        userCacheProvider.overrideWith(_FakeUserCacheNotifier.new),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    await tester.pumpWidget(_app(container));
+    await tester.pump();
+
+    final control = find.byKey(
+      const ValueKey('composer-agent-activity-control'),
+    );
+    expect(control, findsOneWidget);
+    expect(find.text('Pollen was cancelled'), findsOneWidget);
+
+    await tester.tap(control);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 240));
+
+    expect(find.text('Cancelled'), findsOneWidget);
+  });
+
   testWidgets('summarizes mixed working and terminal agent states', (
     tester,
   ) async {

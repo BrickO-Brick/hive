@@ -111,7 +111,17 @@ Unknown `kind` values MUST be ignored.
 | `acp_read`         | Inbound ACP protocol frame (model → harness)             |
 | `acp_write`        | Outbound ACP protocol frame (harness → model)            |
 | `turn_started`     | A new agent turn has begun                               |
+| `turn_liveness`    | The current turn is still active                          |
+| `turn_completed`   | The current turn ended, optionally with an outcome        |
+| `turn_error`       | The current turn stopped with an error                    |
+| `agent_panic`      | The agent task terminated unexpectedly                    |
 | `session_resolved` | Session completed or terminated                          |
+
+`turn_completed.payload.outcome` MAY be `"cancelled"` when the turn was
+explicitly cancelled. A missing outcome retains the legacy completion semantics
+and SHOULD be treated as finished unless a more specific terminal frame exists.
+`turn_started` and `turn_liveness` carry `livenessIntervalSecs`; other mid-turn
+frames are not required to repeat it.
 
 ### Control (`frame=control`)
 

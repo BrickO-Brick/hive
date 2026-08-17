@@ -1529,7 +1529,7 @@ pub async fn run_prompt_task(
     // metadata now, before the agent is moved into PromptResult. It must be
     // declared before `liveness_guard`: Rust drops locals in reverse order, so
     // liveness is aborted before completion makes the turn terminal.
-    let _turn_guard = TurnCompletionGuard::new(
+    let mut turn_guard = TurnCompletionGuard::new(
         agent.acp.observer_handle(),
         agent.acp.observer_agent_index(),
         observer_channel_id,
@@ -2245,6 +2245,7 @@ pub async fn run_prompt_task(
                         {
                             Ok(stop_reason) => {
                                 log_stop_reason(&source, &stop_reason);
+                                turn_guard.mark_cancelled();
                                 agent.state.invalidate(&source);
                                 let retry_batch =
                                     requeue_cancelled_batch(&ctx, control_signal, batch);
@@ -2376,6 +2377,9 @@ pub async fn run_prompt_task(
     match prompt_result {
         Ok(stop_reason) => {
             log_stop_reason(&source, &stop_reason);
+            if matches!(&stop_reason, StopReason::Cancelled) {
+                turn_guard.mark_cancelled();
+            }
 
             if let PromptSource::Channel(cid) = &source {
                 let standing_sent = !agent.has_system_prompt_support();
@@ -3994,6 +3998,7 @@ struct TurnCompletionGuard {
     channel_id: Option<uuid::Uuid>,
     thread_head_id: Option<String>,
     turn_id: String,
+    cancelled: bool,
 }
 
 impl TurnCompletionGuard {
@@ -4010,7 +4015,12 @@ impl TurnCompletionGuard {
             channel_id,
             thread_head_id,
             turn_id,
+            cancelled: false,
         }
+    }
+
+    fn mark_cancelled(&mut self) {
+        self.cancelled = true;
     }
 }
 
@@ -4020,12 +4030,12 @@ impl Drop for TurnCompletionGuard {
             let mut context =
                 observer::context_for(self.channel_id, None, Some(self.turn_id.clone()));
             context.thread_head_id = self.thread_head_id.clone();
-            observer.emit(
-                "turn_completed",
-                self.agent_index,
-                &context,
-                serde_json::json!({}),
-            );
+            let payload = if self.cancelled {
+                serde_json::json!({ "outcome": "cancelled" })
+            } else {
+                serde_json::json!({})
+            };
+            observer.emit("turn_completed", self.agent_index, &context, payload);
         }
     }
 }
@@ -6815,6 +6825,29 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             .find(|event| event.kind == "turn_completed")
             .expect("completion frame");
         assert_eq!(event.thread_head_id.as_deref(), Some("thread-1"));
+        assert_eq!(event.payload, serde_json::json!({}));
+    }
+
+    #[test]
+    fn test_completion_guard_reports_cancelled_outcome() {
+        let observer = observer::ObserverHandle::in_process();
+        {
+            let mut guard = TurnCompletionGuard::new(
+                Some(observer.clone()),
+                Some(0),
+                Some(Uuid::new_v4()),
+                Some("thread-1".into()),
+                "turn-1".into(),
+            );
+            guard.mark_cancelled();
+        }
+
+        let event = observer
+            .snapshot()
+            .into_iter()
+            .find(|event| event.kind == "turn_completed")
+            .expect("completion frame");
+        assert_eq!(event.payload, serde_json::json!({ "outcome": "cancelled" }));
     }
 
     #[tokio::test(start_paused = true)]

@@ -14,7 +14,7 @@ const _maximumTurnDuration = Duration(days: 7);
 const _livenessTimeoutSlack = Duration(seconds: 30);
 
 /// Lifecycle state reconstructed from owner-scoped observer frames.
-enum AgentTurnPhase { working, finished, error }
+enum AgentTurnPhase { working, finished, cancelled, error }
 
 /// One observed agent turn, including its explicit terminal outcome when known.
 @immutable
@@ -116,7 +116,7 @@ List<AgentTurnState> reduceAgentTurnStates(
         case 'turn_error':
         case 'agent_panic':
           final terminalPhase = frame.kind == 'turn_completed'
-              ? AgentTurnPhase.finished
+              ? _completionPhase(frame.payload)
               : AgentTurnPhase.error;
           final turnId = frame.turnId;
           if (turnId != null) {
@@ -204,7 +204,13 @@ List<AgentTurnState> reduceAgentTurnStates(
             turnId: turnId,
             startedAt: _safeStartedAt(frame, frameAt),
             lastActivityAt: frameAt,
-            livenessTimeout: _livenessTimeout(frame.payload),
+            // A live-only subscription can join after turn_started. Ordinary
+            // ACP frames do not repeat the configured cadence, so absence here
+            // means unknown rather than the legacy 30-second default.
+            livenessTimeout: _livenessTimeout(
+              frame.payload,
+              missingFallback: _maximumTurnDuration + _livenessTimeoutSlack,
+            ),
             phase: AgentTurnPhase.working,
           );
       }
@@ -214,7 +220,12 @@ List<AgentTurnState> reduceAgentTurnStates(
       turnsById.values.where(
         (turn) =>
             !turn.isWorking ||
-            now.difference(turn.lastActivityAt) <= turn.livenessTimeout,
+            (now.difference(turn.lastActivityAt) <= turn.livenessTimeout &&
+                !now.isAfter(
+                  turn.startedAt.add(
+                    _maximumTurnDuration + _livenessTimeoutSlack,
+                  ),
+                )),
       ),
     );
   }
@@ -334,9 +345,19 @@ String? _turnError(dynamic payload) {
   return error is String && error.trim().isNotEmpty ? error.trim() : null;
 }
 
-Duration _livenessTimeout(dynamic payload) {
+AgentTurnPhase _completionPhase(dynamic payload) {
+  if (payload is Map && payload['outcome'] == 'cancelled') {
+    return AgentTurnPhase.cancelled;
+  }
+  return AgentTurnPhase.finished;
+}
+
+Duration _livenessTimeout(
+  dynamic payload, {
+  Duration missingFallback = _defaultLivenessTimeout,
+}) {
   final rawInterval = payload is Map ? payload['livenessIntervalSecs'] : null;
-  if (rawInterval is! num) return _defaultLivenessTimeout;
+  if (rawInterval is! num) return missingFallback;
 
   final intervalSeconds = rawInterval.toInt();
   if (intervalSeconds <= 0) {

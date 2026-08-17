@@ -380,12 +380,13 @@ class _AgentAvatarStack extends StatelessWidget {
   }
 }
 
-enum _ActivityStatus { working, finished, error, waiting }
+enum _ActivityStatus { working, finished, cancelled, error, waiting }
 
 _ActivityStatus _activityStatus(AgentTurnState? turn, bool isFallbackWorking) {
   return switch (turn?.phase) {
     AgentTurnPhase.working => _ActivityStatus.working,
     AgentTurnPhase.finished => _ActivityStatus.finished,
+    AgentTurnPhase.cancelled => _ActivityStatus.cancelled,
     AgentTurnPhase.error => _ActivityStatus.error,
     null =>
       isFallbackWorking ? _ActivityStatus.working : _ActivityStatus.waiting,
@@ -406,7 +407,10 @@ _ActivityStatus _activityStatus(AgentTurnState? turn, bool isFallbackWorking) {
     final errors = signals
         .where((signal) => signal.phase == AgentTurnPhase.error)
         .length;
-    final finished = signals.length - working - errors;
+    final cancelled = signals
+        .where((signal) => signal.phase == AgentTurnPhase.cancelled)
+        .length;
+    final finished = signals.length - working - cancelled - errors;
     if (working == signals.length) {
       return (
         visibleLabel: '${signals.length} agents are working…',
@@ -416,6 +420,7 @@ _ActivityStatus _activityStatus(AgentTurnState? turn, bool isFallbackWorking) {
     final visibleParts = [
       if (working > 0) '$working working',
       if (finished > 0) '$finished finished',
+      if (cancelled > 0) '$cancelled cancelled',
       if (errors > 0) '$errors ${errors == 1 ? 'error' : 'errors'}',
     ];
     final semanticParts = [
@@ -423,6 +428,8 @@ _ActivityStatus _activityStatus(AgentTurnState? turn, bool isFallbackWorking) {
         '$working ${working == 1 ? 'agent is' : 'agents are'} working',
       if (finished > 0)
         '$finished ${finished == 1 ? 'agent has' : 'agents have'} finished',
+      if (cancelled > 0)
+        '$cancelled ${cancelled == 1 ? 'agent was' : 'agents were'} cancelled',
       if (errors > 0)
         '$errors ${errors == 1 ? 'agent stopped' : 'agents stopped'} with ${errors == 1 ? 'an error' : 'errors'}',
     ];
@@ -450,6 +457,7 @@ String _selectedActivityHeadline(
   List<TranscriptItem> transcript,
 ) => switch (selectedTurn?.phase) {
   AgentTurnPhase.finished => 'finished',
+  AgentTurnPhase.cancelled => 'was cancelled',
   AgentTurnPhase.error => 'stopped with an error',
   _ =>
     transcript.isNotEmpty ? _compactHeadline(transcript.last) : 'is working…',
