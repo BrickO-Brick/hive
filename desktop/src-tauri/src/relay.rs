@@ -85,7 +85,10 @@ pub fn relay_http_base_url(relay_url: &str) -> String {
 }
 
 mod scope;
-pub use scope::{assert_expected_relay_scope, assert_expected_signer};
+pub use scope::{
+    assert_expected_relay_scope, assert_expected_signer, bind_expected_relay_scope,
+    ScopedWorkspaceRelay,
+};
 
 pub fn relay_api_base_url() -> String {
     if let Some(base) = configured_env_var("BUZZ_RELAY_HTTP") {

@@ -26,6 +26,39 @@ pub fn assert_expected_relay_scope(
     Ok(())
 }
 
+/// A workspace-relay read that has passed the caller-captured scope check.
+///
+/// The only constructor is [`bind_expected_relay_scope`], so any side effect
+/// that takes this type is proven — by construction — to consume the exact
+/// value the check passed on, never a re-read of the mutable override. This
+/// closes the check/use gap where a workspace switch landing between a scope
+/// assertion and the side effect retargets it to a tenant the caller never
+/// validated.
+#[derive(Debug)]
+pub struct ScopedWorkspaceRelay(String);
+
+impl ScopedWorkspaceRelay {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Validate a caller-captured relay scope against one workspace-relay read
+/// and bind that exact read for the side effect to consume.
+///
+/// `None` preserves the unscoped behavior for callers without a tenant
+/// boundary — the read is still bound so the side effect stays single-read.
+pub fn bind_expected_relay_scope(
+    expected_relay_url: Option<&str>,
+    workspace_relay_url: String,
+) -> Result<ScopedWorkspaceRelay, String> {
+    assert_expected_relay_scope(
+        expected_relay_url,
+        &relay_http_base_url(&workspace_relay_url),
+    )?;
+    Ok(ScopedWorkspaceRelay(workspace_relay_url))
+}
+
 /// Fail closed when a caller-captured signer identity no longer matches the
 /// identity a command actually read.
 ///
@@ -57,7 +90,7 @@ pub fn assert_expected_signer(
 
 #[cfg(test)]
 mod tests {
-    use super::{assert_expected_relay_scope, assert_expected_signer};
+    use super::{assert_expected_relay_scope, assert_expected_signer, bind_expected_relay_scope};
 
     #[test]
     fn matching_scope_passes_across_ws_http_normalization() {
@@ -85,6 +118,72 @@ mod tests {
         assert_expected_relay_scope(None, "https://anything.example").unwrap();
         assert_expected_relay_scope(Some(""), "https://anything.example").unwrap();
         assert_expected_relay_scope(Some("   "), "https://anything.example").unwrap();
+    }
+
+    #[test]
+    fn bound_scope_is_immune_to_a_switch_landing_after_the_bind() {
+        // Models the round-7 startup race: the caller captured tenant A, the
+        // post-preflight bind reads the workspace relay while it is still A,
+        // and THEN the switch to B lands — after the check, before the spawn.
+        // The spawn consumes the BOUND value, not a re-read, so the pair can
+        // only ever be keyed to the tenant the caller validated; the switch
+        // mutates state the spawn no longer consults.
+        let mut workspace = "wss://tenant-a.example".to_string();
+        let bound =
+            bind_expected_relay_scope(Some("wss://tenant-a.example"), workspace.clone()).unwrap();
+        workspace = "wss://tenant-b.example".to_string(); // the switch lands post-check
+        assert_eq!(bound.as_str(), "wss://tenant-a.example");
+        assert_ne!(
+            bound.as_str(),
+            workspace,
+            "spawn input must be the checked value"
+        );
+    }
+
+    #[test]
+    fn bind_fails_closed_when_the_switch_lands_before_the_read() {
+        // The switch landed during the preflight await, so the one workspace
+        // read already sees tenant B: no relay may be released to the spawn.
+        let error = bind_expected_relay_scope(
+            Some("wss://tenant-a.example"),
+            "wss://tenant-b.example".to_string(),
+        )
+        .unwrap_err();
+        assert!(error.contains("active community changed"), "{error}");
+    }
+
+    #[test]
+    fn bind_returns_the_exact_read_for_unscoped_callers() {
+        let bound = bind_expected_relay_scope(None, "wss://anything.example".to_string()).unwrap();
+        assert_eq!(bound.as_str(), "wss://anything.example");
+    }
+
+    #[test]
+    fn pair_key_derives_from_the_bound_relay_not_the_post_switch_workspace() {
+        // Round-7 regression (check/use gap): the caller captured tenant A,
+        // the post-preflight bind passed while the workspace still read A,
+        // and the A→B switch lands AFTER the check but BEFORE the spawn.
+        // This mirrors the exact key derivation `start_managed_agent_process`
+        // performs — `effective_agent_relay_url(record, bound.as_str())` into
+        // `ManagedAgentRuntimeKey::new` — and proves the pair (and the
+        // receipt, keyed by the same value) can only ever be keyed to the
+        // tenant the caller validated: the switch mutates state the spawn no
+        // longer consults, so no runtime pair can exist in B.
+        let mut workspace = "wss://tenant-a.example".to_string();
+        let bound = bind_expected_relay_scope(Some("wss://tenant-a.example"), workspace.clone())
+            .expect("scope matches at bind time");
+        workspace = "wss://tenant-b.example".to_string(); // the switch lands post-check
+
+        let record_relay = "ws://localhost:3000"; // ignored by design (agents-everywhere)
+        let relay_url = crate::relay::effective_agent_relay_url(record_relay, bound.as_str());
+        let key = crate::managed_agents::ManagedAgentRuntimeKey::new("a".repeat(64), &relay_url)
+            .expect("keyable relay");
+        assert_eq!(key.relay_url, "wss://tenant-a.example");
+        assert_ne!(
+            key.relay_url,
+            crate::relay::effective_agent_relay_url(record_relay, &workspace),
+            "a pair keyed to the post-switch tenant must be unrepresentable"
+        );
     }
 
     #[test]

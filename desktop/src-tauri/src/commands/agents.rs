@@ -232,14 +232,15 @@ pub(super) async fn start_local_agent_with_preflight(
 
     // The mesh preflight above is the suspension window Projects callbacks
     // capture their scope against: a community switch during that await
-    // would otherwise spawn this pair keyed to the *new* workspace relay
-    // (`start_managed_agent_process` re-reads the active override at spawn
-    // time). Re-assert the caller's captured scope after the await, before
-    // the spawn side effect — fail closed instead of activating the agent
-    // in the wrong tenant.
-    crate::relay::assert_expected_relay_scope(
+    // would otherwise spawn this pair keyed to the *new* workspace relay.
+    // Read the workspace relay ONCE, assert the caller's captured scope
+    // against that exact read, and hand the same bound value to the spawn
+    // below — the check is tied to its use, so a switch landing after this
+    // point can no longer retarget the spawn (it only changes state this
+    // call no longer consults).
+    let workspace_relay_url = crate::relay::bind_expected_relay_scope(
         expected_relay_url,
-        &crate::relay::relay_api_base_url_with_override(state),
+        crate::relay::relay_ws_url_with_override(state),
     )?;
 
     let _store_guard = state
@@ -276,7 +277,13 @@ pub(super) async fn start_local_agent_with_preflight(
             }
         }
     }
-    start_managed_agent_process(app, record, &mut runtimes, Some(owner_hex))?;
+    start_managed_agent_process(
+        app,
+        record,
+        &mut runtimes,
+        Some(owner_hex),
+        &workspace_relay_url,
+    )?;
     save_managed_agents(app, &records)?;
     if let Some(saved_record) = records.iter().find(|r| r.pubkey == pubkey) {
         retain_managed_agent_pending(app, state, saved_record);
@@ -924,10 +931,11 @@ pub async fn start_managed_agent(
     // activates the (agent, relay) pair — a channel/tool-capable side effect
     // — so a stale callback must fail closed here before any spawn or deploy
     // when the active community or identity changed while it was suspended.
-    // The local path re-asserts the relay scope again at spawn time
-    // (`start_managed_agent_process`), after the mesh preflight awaits; the
-    // provider path re-asserts against the relay embedded in the deploy
-    // payload before deploying.
+    // After the mesh-preflight awaits, the local path re-checks and BINDS
+    // the workspace relay (`bind_expected_relay_scope`) so the spawn consumes
+    // the checked value rather than re-reading mutable state; the provider
+    // path asserts against the relay embedded in the deploy payload before
+    // deploying.
     crate::relay::assert_expected_relay_scope(
         expected_relay_url.as_deref(),
         &crate::relay::relay_api_base_url_with_override(&state),

@@ -932,20 +932,20 @@ fn child_rust_log_filter() -> String {
     }
 }
 
+/// Spawn (or adopt) the runtime pair for `record` on the caller's bound
+/// workspace relay. `workspace_relay` can only be produced by
+/// `bind_expected_relay_scope`, so this spawn consumes — by construction —
+/// the exact workspace-relay read the caller's scope assertion passed on; it
+/// never re-reads the mutable override (see `relay::scope`).
 pub fn start_managed_agent_process(
     app: &AppHandle,
     record: &mut ManagedAgentRecord,
     runtimes: &mut HashMap<ManagedAgentRuntimeKey, ManagedAgentPairRuntime>,
     owner_hex: Option<&str>,
+    workspace_relay: &crate::relay::ScopedWorkspaceRelay,
 ) -> Result<(), String> {
-    let relay_url = {
-        use tauri::Manager;
-        let state = app.state::<crate::app_state::AppState>();
-        crate::relay::effective_agent_relay_url(
-            &record.relay_url,
-            &crate::relay::relay_ws_url_with_override(&state),
-        )
-    };
+    let relay_url =
+        crate::relay::effective_agent_relay_url(&record.relay_url, workspace_relay.as_str());
     let key = ManagedAgentRuntimeKey::new(record.pubkey.clone(), &relay_url)?;
     if let Some(runtime) = runtimes.get_mut(&key) {
         if runtime

@@ -249,6 +249,22 @@ test("viewer git identity does not claim other authors' commits", () => {
   assert.equal(matched, null);
 });
 
+test("a shared display name alone never borrows the viewer's identity", () => {
+  // Two contributors can share a display name; only the git email — which
+  // the viewer's own commits actually carry — may attribute a commit to the
+  // viewer's pubkey.
+  const commit = makeCommit({
+    authorName: "Thomas Petersen",
+    authorEmail: "impostor@example.org",
+  });
+  const matched = profileForCommit(commit, PROFILES, new Map(), {
+    pubkey: USER_PUBKEY,
+    name: "Thomas Petersen",
+    email: "thomasp@squareup.com",
+  });
+  assert.equal(matched, null);
+});
+
 test("signed PR mapping wins over the viewer git identity", () => {
   const commit = makeCommit();
   const map = new Map([[commit.hash, AGENT_PUBKEY]]);

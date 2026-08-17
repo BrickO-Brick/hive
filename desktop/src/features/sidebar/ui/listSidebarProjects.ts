@@ -9,11 +9,26 @@ export type SidebarProjectsFilter = "added" | "owned";
 export type SidebarProjectsSort = "name" | "created";
 export type SidebarProjectExpansionState = Record<string, boolean>;
 
+// Every persisted sidebar preference — filter, sort, expansion, membership —
+// is scoped to the relay+pubkey identity: a community or identity switch must
+// not leak one tenant's view of the sidebar into another.
+function scopedPreferenceKey(
+  baseKey: string,
+  relayOrigin: string | null,
+  currentPubkey?: string,
+) {
+  return `${baseKey}:${encodeURIComponent(relayOrigin ?? "unknown")}:${currentPubkey ?? "anonymous"}`;
+}
+
 function expandedProjectsStorageKey(
   relayOrigin: string | null,
   currentPubkey?: string,
 ) {
-  return `${SIDEBAR_PROJECTS_EXPANDED_KEY}:${encodeURIComponent(relayOrigin ?? "unknown")}:${currentPubkey ?? "anonymous"}`;
+  return scopedPreferenceKey(
+    SIDEBAR_PROJECTS_EXPANDED_KEY,
+    relayOrigin,
+    currentPubkey,
+  );
 }
 
 export function readSidebarProjectExpansion(
@@ -64,35 +79,75 @@ export function selectedProjectRouteId(pathname: string): string | undefined {
   }
 }
 
-export function readSidebarProjectsFilter(): SidebarProjectsFilter {
+export function readSidebarProjectsFilter(
+  relayOrigin: string | null,
+  currentPubkey?: string,
+): SidebarProjectsFilter {
   try {
-    const value = globalThis.localStorage?.getItem(SIDEBAR_PROJECTS_FILTER_KEY);
+    const value = globalThis.localStorage?.getItem(
+      scopedPreferenceKey(
+        SIDEBAR_PROJECTS_FILTER_KEY,
+        relayOrigin,
+        currentPubkey,
+      ),
+    );
     return value === "owned" ? "owned" : "added";
   } catch {
     return "added";
   }
 }
 
-export function writeSidebarProjectsFilter(filter: SidebarProjectsFilter) {
+export function writeSidebarProjectsFilter(
+  filter: SidebarProjectsFilter,
+  relayOrigin: string | null,
+  currentPubkey?: string,
+) {
   try {
-    globalThis.localStorage?.setItem(SIDEBAR_PROJECTS_FILTER_KEY, filter);
+    globalThis.localStorage?.setItem(
+      scopedPreferenceKey(
+        SIDEBAR_PROJECTS_FILTER_KEY,
+        relayOrigin,
+        currentPubkey,
+      ),
+      filter,
+    );
   } catch {
     // Persistence is best-effort; the in-memory toggle still works.
   }
 }
 
-export function readSidebarProjectsSort(): SidebarProjectsSort {
+export function readSidebarProjectsSort(
+  relayOrigin: string | null,
+  currentPubkey?: string,
+): SidebarProjectsSort {
   try {
-    const value = globalThis.localStorage?.getItem(SIDEBAR_PROJECTS_SORT_KEY);
+    const value = globalThis.localStorage?.getItem(
+      scopedPreferenceKey(
+        SIDEBAR_PROJECTS_SORT_KEY,
+        relayOrigin,
+        currentPubkey,
+      ),
+    );
     return value === "created" ? "created" : "name";
   } catch {
     return "name";
   }
 }
 
-export function writeSidebarProjectsSort(sort: SidebarProjectsSort) {
+export function writeSidebarProjectsSort(
+  sort: SidebarProjectsSort,
+  relayOrigin: string | null,
+  currentPubkey?: string,
+) {
   try {
-    globalThis.localStorage?.setItem(SIDEBAR_PROJECTS_SORT_KEY, sort);
+    globalThis.localStorage?.setItem(
+      scopedPreferenceKey(
+        SIDEBAR_PROJECTS_SORT_KEY,
+        relayOrigin,
+        currentPubkey,
+      ),
+      sort,
+    );
   } catch {
     // Persistence is best-effort; the in-memory toggle still works.
   }
