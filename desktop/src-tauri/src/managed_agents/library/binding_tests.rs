@@ -1,13 +1,17 @@
 //! Phase-3 §2.5 pure identity-binding helper tests: the `key_archive_protected`
-//! deletion-safety predicate (P13-C1/P17-C1) and deterministic `select_binding_seed`
-//! (P3-I2). Both are keyring-free pure functions; the crash-safe mint protocol and
-//! their transaction wiring land later (Phase 4b). Kept in their own module so the
-//! Phase-1 `tests.rs` suite stays clear of the 1000-line file ratchet.
+//! deletion-safety predicate (P13-C1/P17-C1), deterministic `select_binding_seed`
+//! (P3-I2), and the crash-safe `mint_bound_identity` order (P5-I1). The mint
+//! transaction WIRING (the atomic step-4 commit into `insert_linked_instance`)
+//! lands later (Phase 4b). Kept in their own module so the Phase-1 `tests.rs`
+//! suite stays clear of the 1000-line file ratchet.
 
 use serde_json::json;
 
 use super::*;
+use crate::secret_store::KeyringProbe;
 use nostr::{Keys, ToBech32};
+use std::cell::RefCell;
+use std::collections::HashMap;
 
 // ── key_archive_protected ──────────────────────────────────────────────────────
 
@@ -262,4 +266,190 @@ fn test_unreferenced_orphans_ignores_deferred_only_reference() {
     let mut doc = library(vec![deferred_entry(&target)]);
     doc.journal_orphan_pubkey(&target);
     assert_eq!(doc.unreferenced_orphans(), vec![target.as_str()]);
+}
+
+// ── mint_bound_identity: crash-safe order (§2.5, P5-I1) ─────────────────────────
+
+/// In-memory [`KeyStore`] recording writes/reads so a test can assert the
+/// keyring was (or was not) touched. `fail_write` fails `write_and_verify`
+/// after recording the attempt; the map is only populated on success, matching
+/// the real read-back-verified contract.
+struct FakeKeyStore {
+    stored: RefCell<HashMap<String, String>>,
+    fail_write: bool,
+    writes: RefCell<usize>,
+}
+
+impl FakeKeyStore {
+    fn ok() -> Self {
+        Self {
+            stored: RefCell::new(HashMap::new()),
+            fail_write: false,
+            writes: RefCell::new(0),
+        }
+    }
+    fn write_fails() -> Self {
+        Self {
+            stored: RefCell::new(HashMap::new()),
+            fail_write: true,
+            writes: RefCell::new(0),
+        }
+    }
+}
+
+impl crate::managed_agents::storage::KeyStore for FakeKeyStore {
+    fn probe(&self, _name: &str) -> KeyringProbe {
+        KeyringProbe::ReachableButEmpty
+    }
+    fn load(&self, name: &str) -> Result<Option<String>, String> {
+        Ok(self.stored.borrow().get(name).cloned())
+    }
+    fn load_all_readonly(&self) -> Result<Option<HashMap<String, String>>, String> {
+        let map = self.stored.borrow().clone();
+        Ok((!map.is_empty()).then_some(map))
+    }
+    fn write_and_verify(&self, name: &str, value: &str) -> Result<(), String> {
+        *self.writes.borrow_mut() += 1;
+        if self.fail_write {
+            return Err("read-back verify failed".to_string());
+        }
+        self.stored
+            .borrow_mut()
+            .insert(name.to_string(), value.to_string());
+        Ok(())
+    }
+    fn store_all(&self, entries: &HashMap<String, String>) -> Result<(), String> {
+        self.stored
+            .borrow_mut()
+            .extend(entries.iter().map(|(k, v)| (k.clone(), v.clone())));
+        Ok(())
+    }
+}
+
+#[test]
+fn test_mint_journals_before_keyring_and_binding_validates_on_read() {
+    // Happy path: keypair minted, orphan journaled + persisted BEFORE the
+    // keyring write, binding built from the read-back nsec passes the read-side
+    // validator. The orphan row is left for the caller's atomic step-4 commit.
+    let owner = Keys::generate();
+    let store = FakeKeyStore::ok();
+    let mut doc = library(vec![]);
+    let saves: RefCell<usize> = RefCell::new(0);
+
+    let minted = mint_bound_identity(&mut doc, &owner, &store, |d| {
+        *saves.borrow_mut() += 1;
+        // The pubkey is durably journaled at persist time, before any secret.
+        assert_eq!(d.orphan_keys.len(), 1);
+        assert_eq!(
+            *store.writes.borrow(),
+            0,
+            "keyring untouched at journal persist"
+        );
+        Ok(())
+    })
+    .expect("mint");
+
+    assert_eq!(
+        *saves.borrow(),
+        1,
+        "exactly one durable checkpoint (step 2)"
+    );
+    assert_eq!(minted.owner_hex, owner.public_key().to_hex());
+    assert_eq!(
+        minted.binding.agent_pubkey,
+        minted.keys.public_key().to_hex()
+    );
+    // Orphan row still present — the caller drops it in the atomic step-4 commit.
+    assert_eq!(doc.orphan_keys, vec![minted.keys.public_key().to_hex()]);
+    // The keyring holds exactly the minted nsec under agent:{pubkey}.
+    let name = format!("agent:{}", minted.keys.public_key().to_hex());
+    assert_eq!(
+        store.stored.borrow().get(&name).map(String::as_str),
+        Some(minted.keys.secret_key().to_bech32().expect("nsec").as_str())
+    );
+    // The binding validates on the very next read with no special case.
+    let mut bindings = std::collections::BTreeMap::new();
+    bindings.insert(minted.owner_hex.clone(), minted.binding.clone());
+    let entry = LibraryEntry {
+        library_id: "lib-1".into(),
+        origin: OriginKey {
+            scope_id: "s".into(),
+            slug: "a".into(),
+        },
+        revision: 1,
+        deleted: false,
+        owner_pubkey_at_share: minted.owner_hex.clone(),
+        shared: SharedDefinition {
+            display_name: "A".into(),
+            avatar_url: None,
+            system_prompt: "p".into(),
+            runtime: None,
+            model: None,
+            provider: None,
+            name_pool: vec![],
+            respond_to: None,
+            respond_to_allowlist: vec![],
+            parallelism: None,
+        },
+        deferred_archives: vec![],
+        identity_bindings: bindings,
+        projections: std::collections::BTreeMap::new(),
+    };
+    validate_entry_bindings(&entry).expect("minted binding validates on read");
+}
+
+#[test]
+fn test_mint_crash_at_journal_persist_writes_no_secret() {
+    // Crash point after step 1, at the durable journal write (step 2): the
+    // keyring is never touched, so no un-journaled secret can exist. The
+    // in-memory document holds the pubkey, but nothing was persisted or stored.
+    let owner = Keys::generate();
+    let store = FakeKeyStore::ok();
+    let mut doc = library(vec![]);
+
+    let err = mint_bound_identity(&mut doc, &owner, &store, |_| {
+        Err("disk full at journal persist".to_string())
+    })
+    .expect_err("persist failure propagates");
+
+    assert!(err.contains("disk full"));
+    assert_eq!(
+        *store.writes.borrow(),
+        0,
+        "no keyring write before durable journal"
+    );
+    assert!(store.stored.borrow().is_empty(), "no secret persisted");
+}
+
+#[test]
+fn test_mint_crash_at_keyring_write_leaves_durable_orphan_for_reap() {
+    // Crash point after step 2, at the keyring write (step 3): the durable
+    // orphan row already exists (persist ran), so the dangling key — whether or
+    // not the backend stored it — is reaped at the next recovery point. No
+    // binding is produced.
+    let owner = Keys::generate();
+    let store = FakeKeyStore::write_fails();
+    let mut doc = library(vec![]);
+    let mut persisted: Option<LibraryDocument> = None;
+
+    let err = mint_bound_identity(&mut doc, &owner, &store, |d| {
+        persisted = Some(d.clone());
+        Ok(())
+    })
+    .expect_err("keyring write failure propagates");
+
+    assert!(err.contains("verify"));
+    assert_eq!(*store.writes.borrow(), 1, "keyring write was attempted");
+    // The durable snapshot carries the orphan coordinate…
+    let durable = persisted.expect("journal was persisted before the keyring write");
+    assert_eq!(durable.orphan_keys.len(), 1);
+    // …and it is unreferenced (no binding committed), so the reap selects it.
+    assert_eq!(
+        durable.unreferenced_orphans(),
+        durable
+            .orphan_keys
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+    );
 }

@@ -15,7 +15,7 @@ use crate::secret_store::{KeyringProbe, SecretStore};
 
 /// Keyring key name for an agent's nsec, namespaced from the human identity
 /// key (`"identity"`) which shares the service.
-fn agent_keyring_name(pubkey: &str) -> String {
+pub(crate) fn agent_keyring_name(pubkey: &str) -> String {
     format!("agent:{pubkey}")
 }
 
@@ -146,10 +146,11 @@ fn newest_agent_log_in_dir(dir: &Path, pubkey: &str) -> Option<PathBuf> {
         .map(|(_, _, path)| path)
 }
 
-/// The keyring operations the migration chokepoint needs. Abstracted so the
-/// migrate-and-strip decision logic ([`migrate_inline_key`]) can be unit-tested
-/// against a fake without touching the live OS keyring.
-trait KeyStore {
+/// The keyring operations the library key protocols need. Abstracted so the
+/// migrate-and-strip decision ([`migrate_inline_key`]) and the §2.5 mint/reap
+/// orchestration can be unit-tested against a fake without touching the live OS
+/// keyring.
+pub(crate) trait KeyStore {
     fn probe(&self, name: &str) -> KeyringProbe;
     /// Read a key. `Ok(None)` is "no such entry" (absent); `Err` is a backend
     /// failure (keyring unreachable) — the caller MUST NOT collapse the two.

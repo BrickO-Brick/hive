@@ -28,11 +28,13 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
-use nostr::{Keys, PublicKey};
+use nostr::{Keys, PublicKey, ToBech32};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::storage::{atomic_write_json_restricted, backup_invalid_store};
+use super::storage::{
+    agent_keyring_name, atomic_write_json_restricted, backup_invalid_store, KeyStore,
+};
 use super::types::ManagedAgentRecord;
 
 pub(crate) mod journals;
@@ -712,6 +714,82 @@ pub(crate) fn build_identity_binding(
             auth_tag,
         },
     ))
+}
+
+/// A freshly minted identity, its keyring secret written and read-back
+/// verified, ready for the atomic binding commit (§2.5 step 4, Phase 4b).
+#[derive(Debug)]
+pub(crate) struct MintedIdentity {
+    /// The generated keypair — the caller deploys the instance under it.
+    pub keys: Keys,
+    /// Owner pubkey hex; the `identity_bindings` map key for `binding`.
+    pub owner_hex: String,
+    /// The verified binding to insert as `identity_bindings[owner_hex]`.
+    pub binding: IdentityBinding,
+}
+
+/// Crash-safe fresh-identity mint order (§2.5 "deploy minting a fresh key",
+/// P5-I1). Runs the only physically coherent ordering — a pubkey exists only
+/// after its keypair — with a DURABLE orphan-journal checkpoint before the
+/// secret touches the keyring, so every persisted secret has a prior durable
+/// coordinate and no crash can strand an un-journaled key:
+///
+/// 1. generate the keypair in memory (nothing persisted anywhere);
+/// 2. journal its derived pubkey to `orphan_keys` and DURABLY persist the
+///    document via `persist` — the coordinate outlives a crash;
+/// 3. write the nsec to the keyring and read it back to verify;
+/// 4. build the verified binding from the READ-BACK nsec (never the in-memory
+///    copy) — proof the keyring entry backs exactly this pubkey.
+///
+/// On `Ok`, the orphan row is left IN `document`; the caller commits `binding`
+/// and drops the row in ONE atomic write (Phase 4b), so a crash before that
+/// commit leaves the orphan unreferenced and its key is reaped at the next
+/// recovery point (§4, [`unreferenced_orphans`]). On any `Err`, no keyring
+/// secret exists without its durable orphan row already journaled: a failure at
+/// step 2's `persist` wrote nothing to the keyring; a failure at step 3 leaves
+/// the durable row for the reap.
+///
+/// `persist` is the durable step-2 write, injected so the ordering is
+/// unit-testable at every crash point without real disk IO; production passes
+/// `|doc| save_library_document(base_dir, doc)`. Keyring IO goes through
+/// [`KeyStore`] for the same reason. Pure of any other side effect.
+pub(crate) fn mint_bound_identity(
+    document: &mut LibraryDocument,
+    owner_keys: &Keys,
+    store: &impl KeyStore,
+    persist: impl FnOnce(&LibraryDocument) -> Result<(), String>,
+) -> Result<MintedIdentity, String> {
+    // (1) keypair in memory — no persistence anywhere yet.
+    let agent_keys = Keys::generate();
+    let agent_pubkey = agent_keys.public_key().to_hex();
+
+    // (2) durable orphan journal BEFORE any secret is written. A failed persist
+    // means nothing reached the keyring, so there is no un-journaled secret.
+    document.journal_orphan_pubkey(&agent_pubkey);
+    persist(document)?;
+
+    // (3) keyring write + read-back verify. A crash at or after this leaves the
+    // durable orphan row (step 2) whose keyring entry the recovery sweep reaps.
+    let name = agent_keyring_name(&agent_pubkey);
+    let nsec = agent_keys
+        .secret_key()
+        .to_bech32()
+        .map_err(|e| format!("encode minted nsec: {e}"))?;
+    store.write_and_verify(&name, &nsec)?;
+
+    // (4) build the binding from the READ-BACK nsec — proves the keyring entry
+    // backs exactly this pubkey. The caller commits it and removes the orphan
+    // row in one atomic write (Phase 4b).
+    let read_back = store.load(&name)?.ok_or_else(|| {
+        "minted key absent from keyring immediately after verified write".to_string()
+    })?;
+    let (owner_hex, binding) = build_identity_binding(owner_keys, &read_back)?;
+
+    Ok(MintedIdentity {
+        keys: agent_keys,
+        owner_hex,
+        binding,
+    })
 }
 
 impl LibraryDocument {
