@@ -19,6 +19,9 @@ class WorkingAgentSignal {
   final String pubkey;
   final AgentWorkingSource source;
   final bool canViewActivity;
+
+  /// Whether this signal represents live work rather than a retained outcome.
+  final bool isWorking;
   final String? turnId;
   final DateTime? startedAt;
 
@@ -26,6 +29,7 @@ class WorkingAgentSignal {
     required this.pubkey,
     required this.source,
     required this.canViewActivity,
+    this.isWorking = true,
     this.turnId,
     this.startedAt,
   });
@@ -76,7 +80,7 @@ final composerActivityStateProvider = Provider.autoDispose
         if (turn.channelId != key.channelId) continue;
         final existing = activeByAgent[turn.agentPubkey];
         if (existing == null ||
-            turn.lastActivityAt.isAfter(existing.lastActivityAt)) {
+            _compareComposerTurnRecency(turn, existing) > 0) {
           activeByAgent[turn.agentPubkey] = turn;
         }
       }
@@ -100,6 +104,7 @@ final composerActivityStateProvider = Provider.autoDispose
             pubkey: entry.key,
             source: AgentWorkingSource.observer,
             canViewActivity: canView(entry.key),
+            isWorking: turn.isWorking,
             turnId: turn.turnId,
             startedAt: turn.startedAt,
           );
@@ -120,6 +125,7 @@ final composerActivityStateProvider = Provider.autoDispose
           pubkey: pubkey,
           source: AgentWorkingSource.typing,
           canViewActivity: canView(pubkey),
+          isWorking: true,
           turnId: turn?.turnId,
           startedAt: turn?.startedAt,
         );
@@ -149,5 +155,18 @@ final workingBotPubkeysProvider = Provider.autoDispose
           threadHeadId: null,
         )),
       );
-      return Set.unmodifiable(activity.agents.map((agent) => agent.pubkey));
+      return Set.unmodifiable(
+        activity.agents
+            .where((agent) => agent.isWorking)
+            .map((agent) => agent.pubkey),
+      );
     });
+
+int _compareComposerTurnRecency(AgentTurnState a, AgentTurnState b) {
+  if (a.isWorking != b.isWorking) return a.isWorking ? 1 : -1;
+  final activity = a.lastActivityAt.compareTo(b.lastActivityAt);
+  if (activity != 0) return activity;
+  final started = a.startedAt.compareTo(b.startedAt);
+  if (started != 0) return started;
+  return a.turnId.compareTo(b.turnId);
+}

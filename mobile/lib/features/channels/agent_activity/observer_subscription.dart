@@ -267,11 +267,15 @@ class ObserverRelayNotifier extends Notifier<ObserverRelayState> {
         return [frame];
       }
 
-      return [
+      final innerFrames = [
         for (final inner in events)
-          ObserverFrame.fromJson(
-            inner as Map<String, dynamic>,
-            receivedAt: receivedAt,
+          ObserverFrame.fromJson(inner as Map<String, dynamic>),
+      ]..sort(_compareObserverFrames);
+      return [
+        for (var index = 0; index < innerFrames.length; index++)
+          _withReceivedAt(
+            innerFrames[index],
+            receivedAt.add(Duration(microseconds: index)),
           ),
       ];
     } catch (error) {
@@ -358,6 +362,22 @@ class ObserverRelayNotifier extends Notifier<ObserverRelayState> {
     if (tsA != tsB) return tsA.compareTo(tsB);
     return a.seq.compareTo(b.seq);
   }
+
+  static ObserverFrame _withReceivedAt(
+    ObserverFrame frame,
+    DateTime receivedAt,
+  ) => ObserverFrame(
+    seq: frame.seq,
+    timestamp: frame.timestamp,
+    kind: frame.kind,
+    agentIndex: frame.agentIndex,
+    channelId: frame.channelId,
+    sessionId: frame.sessionId,
+    turnId: frame.turnId,
+    startedAt: frame.startedAt,
+    receivedAt: receivedAt,
+    payload: frame.payload,
+  );
 }
 
 final observerRelayProvider =

@@ -383,6 +383,11 @@ void main() {
     final relayState = container.read(observerRelayProvider);
     final frames = relayState.framesByAgent[agentKeychain.public];
     expect(frames?.map((frame) => frame.seq), [1, 2]);
+    expect(
+      frames![0].receivedAt!.isBefore(frames[1].receivedAt!),
+      isTrue,
+      reason: 'batch receipt order must follow timestamp and sequence',
+    );
 
     final state = container.read(observerSubscriptionProvider(key));
     expect(state.connection, ObserverConnectionState.open);

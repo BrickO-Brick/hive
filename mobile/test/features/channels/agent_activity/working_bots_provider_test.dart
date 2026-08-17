@@ -153,19 +153,78 @@ void main() {
     expect(state.agents.single.pubkey, 'agent-a');
     expect(state.agents.single.turnId, failedTurn.turnId);
     expect(state.agents.single.canViewActivity, isTrue);
+    expect(state.agents.single.isWorking, isFalse);
     expect(state.humanTyping, isEmpty);
+    expect(container.read(workingBotPubkeysProvider(_channelId)), isEmpty);
+  });
+
+  test('prefers live work over retained terminal history', () {
+    final receiptAt = DateTime.utc(2026, 8, 16, 12, 0, 5);
+    final container = ProviderContainer(
+      overrides: [
+        currentPubkeyProvider.overrideWith((ref) => 'owner'),
+        channelMembersProvider(
+          _channelId,
+        ).overrideWith((ref) async => const <ChannelMember>[]),
+        channelTypingProvider(
+          _channelId,
+        ).overrideWith(() => _FakeTypingNotifier(const [])),
+        agentMentionPubkeysProvider(
+          _channelId,
+        ).overrideWith((ref) => const {'agent-a'}),
+        agentOwnersProvider.overrideWithValue(
+          const AsyncData({'agent-a': 'owner'}),
+        ),
+        userCacheProvider.overrideWith(_FakeUserCacheNotifier.new),
+        observerRelayProvider.overrideWith(
+          () => _FakeObserverRelayNotifier({
+            'agent-a': [_observerFrame('agent-a')],
+          }),
+        ),
+        composerAgentTurnStatesProvider.overrideWithValue([
+          _turn(
+            'agent-a',
+            phase: AgentTurnPhase.error,
+            turnId: 'turn-old',
+            startedAt: DateTime.utc(2026, 8, 16, 11, 59),
+            lastActivityAt: receiptAt,
+          ),
+          _turn(
+            'agent-a',
+            turnId: 'turn-new',
+            startedAt: DateTime.utc(2026, 8, 16, 12, 0, 4),
+            lastActivityAt: receiptAt,
+          ),
+        ]),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    final state = container.read(
+      composerActivityStateProvider((
+        channelId: _channelId,
+        threadHeadId: null,
+      )),
+    );
+
+    expect(state.agents.single.turnId, 'turn-new');
+    expect(state.agents.single.isWorking, isTrue);
+    expect(container.read(workingBotPubkeysProvider(_channelId)), {'agent-a'});
   });
 }
 
 AgentTurnState _turn(
   String pubkey, {
   AgentTurnPhase phase = AgentTurnPhase.working,
+  String? turnId,
+  DateTime? startedAt,
+  DateTime? lastActivityAt,
 }) => AgentTurnState(
   agentPubkey: pubkey,
   channelId: _channelId,
-  turnId: 'turn-$pubkey',
-  startedAt: DateTime.utc(2026, 8, 16, 12),
-  lastActivityAt: DateTime.utc(2026, 8, 16, 12),
+  turnId: turnId ?? 'turn-$pubkey',
+  startedAt: startedAt ?? DateTime.utc(2026, 8, 16, 12),
+  lastActivityAt: lastActivityAt ?? DateTime.utc(2026, 8, 16, 12),
   livenessTimeout: const Duration(seconds: 30),
   phase: phase,
   terminalAt: phase == AgentTurnPhase.working
