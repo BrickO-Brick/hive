@@ -8,8 +8,8 @@ const VALID_CARD_CONTENT = [
   JSON.stringify({
     version: 1,
     synopsis: "Shipping the canvas card slice.",
-    orchestrator: "loganj",
-    assignees: ["alice"],
+    orchestrator: { pubkey: "loganj-pubkey", name: "Logan" },
+    assignees: [{ pubkey: "alice-pubkey", name: "Alice" }],
   }),
   "```",
 ].join("\n");
@@ -72,8 +72,13 @@ test("returns a ready card when the canvas parses successfully", () => {
 
   assert.equal(viewModel.status, "ready");
   assert.equal(viewModel.card.synopsis, "Shipping the canvas card slice.");
-  assert.equal(viewModel.card.orchestrator, "loganj");
-  assert.deepEqual(viewModel.card.assignees, ["alice"]);
+  assert.deepEqual(viewModel.card.orchestrator, {
+    pubkey: "loganj-pubkey",
+    name: "Logan",
+  });
+  assert.deepEqual(viewModel.card.assignees, [
+    { pubkey: "alice-pubkey", name: "Alice" },
+  ]);
 });
 
 test("loading takes priority over content even if content happens to be malformed", () => {

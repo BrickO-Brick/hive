@@ -6,7 +6,7 @@
  *
  * ```
  * ```buzz-workstream-card
- * {"version":1,"synopsis":"…","orchestrator":"…","assignees":[…]}
+ * {"version":1,"synopsis":"…","orchestrator":{"pubkey":"…","name":"…"},"assignees":[{"pubkey":"…","name":"…"}]}
  * ```
  * ```
  *
@@ -19,11 +19,16 @@
 const FENCE_OPEN = "```buzz-workstream-card";
 const FENCE_CLOSE = "```";
 
+export type WorkstreamIdentity = {
+  pubkey: string;
+  name: string;
+};
+
 export type WorkstreamCardV1 = {
   version: 1;
   synopsis: string;
-  orchestrator: string;
-  assignees: string[];
+  orchestrator: WorkstreamIdentity;
+  assignees: WorkstreamIdentity[];
   pullRequests: unknown[];
   waitingOn: unknown[];
 };
@@ -40,30 +45,51 @@ export type WorkstreamCardParseResult =
   | { ok: false; reason: WorkstreamCardParseFailureReason };
 
 function findFencedBlocks(content: string): string[] {
+  const lines = content.split(/\r?\n/);
   const blocks: string[] = [];
-  let cursor = 0;
 
-  while (true) {
-    const openIdx = content.indexOf(FENCE_OPEN, cursor);
-    if (openIdx === -1) break;
+  for (let index = 0; index < lines.length; index += 1) {
+    if (lines[index].trimEnd() !== FENCE_OPEN) continue;
 
-    const jsonStart = content.indexOf("\n", openIdx);
-    if (jsonStart === -1) break;
+    const body: string[] = [];
+    let closeIndex = index + 1;
+    while (
+      closeIndex < lines.length &&
+      lines[closeIndex].trim() !== FENCE_CLOSE
+    ) {
+      body.push(lines[closeIndex]);
+      closeIndex += 1;
+    }
+    if (closeIndex === lines.length) break;
 
-    const closeIdx = content.indexOf(`\n${FENCE_CLOSE}`, jsonStart);
-    if (closeIdx === -1) break;
-
-    blocks.push(content.slice(jsonStart + 1, closeIdx).trim());
-    cursor = closeIdx + `\n${FENCE_CLOSE}`.length;
+    blocks.push(body.join("\n").trim());
+    index = closeIndex;
   }
 
   return blocks;
 }
 
-function isStringArray(value: unknown): value is string[] {
-  return (
-    Array.isArray(value) && value.every((item) => typeof item === "string")
-  );
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim() !== "";
+}
+
+function isOneLineString(value: unknown): value is string {
+  return isNonEmptyString(value) && !/[\r\n]/.test(value);
+}
+
+function isWorkstreamIdentity(value: unknown): value is WorkstreamIdentity {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+
+  const raw = value as Record<string, unknown>;
+  return isNonEmptyString(raw.pubkey) && isNonEmptyString(raw.name);
+}
+
+function isWorkstreamIdentityArray(
+  value: unknown,
+): value is WorkstreamIdentity[] {
+  return Array.isArray(value) && value.every(isWorkstreamIdentity);
 }
 
 /**
@@ -102,24 +128,27 @@ export function parseWorkstreamCard(
     return { ok: false, reason: "unknown-version" };
   }
 
-  if (typeof raw.synopsis !== "string" || raw.synopsis.trim() === "") {
-    return { ok: false, reason: "invalid-fields" };
-  }
-  if (typeof raw.orchestrator !== "string" || raw.orchestrator.trim() === "") {
-    return { ok: false, reason: "invalid-fields" };
-  }
-
-  const assignees = raw.assignees ?? [];
-  if (!isStringArray(assignees)) {
+  const synopsis = raw.synopsis;
+  if (!isOneLineString(synopsis)) {
     return { ok: false, reason: "invalid-fields" };
   }
 
-  const pullRequests = raw.pullRequests ?? [];
+  const orchestrator = raw.orchestrator;
+  if (!isWorkstreamIdentity(orchestrator)) {
+    return { ok: false, reason: "invalid-fields" };
+  }
+
+  const assignees = raw.assignees === undefined ? [] : raw.assignees;
+  if (!isWorkstreamIdentityArray(assignees)) {
+    return { ok: false, reason: "invalid-fields" };
+  }
+
+  const pullRequests = raw.pullRequests === undefined ? [] : raw.pullRequests;
   if (!Array.isArray(pullRequests)) {
     return { ok: false, reason: "invalid-fields" };
   }
 
-  const waitingOn = raw.waitingOn ?? [];
+  const waitingOn = raw.waitingOn === undefined ? [] : raw.waitingOn;
   if (!Array.isArray(waitingOn)) {
     return { ok: false, reason: "invalid-fields" };
   }
@@ -128,8 +157,8 @@ export function parseWorkstreamCard(
     ok: true,
     card: {
       version: 1,
-      synopsis: raw.synopsis,
-      orchestrator: raw.orchestrator,
+      synopsis,
+      orchestrator,
       assignees,
       pullRequests,
       waitingOn,

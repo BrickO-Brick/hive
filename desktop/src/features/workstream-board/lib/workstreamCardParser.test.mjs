@@ -14,8 +14,11 @@ function withCardFence(prose, rawPayload) {
 const VALID_PAYLOAD = {
   version: 1,
   synopsis: "Implementing the canvas card slice.",
-  orchestrator: "loganj",
-  assignees: ["alice", "bob"],
+  orchestrator: { pubkey: "loganj-pubkey", name: "Logan" },
+  assignees: [
+    { pubkey: "alice-pubkey", name: "Alice" },
+    { pubkey: "bob-pubkey", name: "Bob" },
+  ],
 };
 
 // ── Happy path ────────────────────────────────────────────────────────────────
@@ -34,7 +37,7 @@ test("parses a valid v1 card with explicit optional arrays", () => {
     version: 1,
     synopsis: VALID_PAYLOAD.synopsis,
     orchestrator: VALID_PAYLOAD.orchestrator,
-    assignees: ["alice", "bob"],
+    assignees: VALID_PAYLOAD.assignees,
     pullRequests: ["https://github.com/block/buzz/pull/1"],
     waitingOn: ["review"],
   });
@@ -46,7 +49,7 @@ test("defaults assignees/pullRequests/waitingOn to empty arrays when omitted", (
   );
 
   assert.equal(result.ok, true);
-  assert.deepEqual(result.card.assignees, ["alice", "bob"]);
+  assert.deepEqual(result.card.assignees, VALID_PAYLOAD.assignees);
   assert.deepEqual(result.card.pullRequests, []);
   assert.deepEqual(result.card.waitingOn, []);
 });
@@ -144,10 +147,10 @@ test("returns invalid-fields when synopsis is missing", () => {
   });
 });
 
-test("returns invalid-fields when orchestrator is an empty string", () => {
+test("returns invalid-fields when orchestrator is missing its identity fields", () => {
   const content = withCardFence("Status:", {
     ...VALID_PAYLOAD,
-    orchestrator: "",
+    orchestrator: { name: "Logan" },
   });
   assert.deepEqual(parseWorkstreamCard(content), {
     ok: false,
@@ -166,10 +169,10 @@ test("returns invalid-fields when assignees is not an array", () => {
   });
 });
 
-test("returns invalid-fields when assignees contains a non-string", () => {
+test("returns invalid-fields when assignees contains an invalid identity", () => {
   const content = withCardFence("Status:", {
     ...VALID_PAYLOAD,
-    assignees: ["alice", 2],
+    assignees: [{ pubkey: "alice-pubkey", name: "Alice" }, "bob"],
   });
   assert.deepEqual(parseWorkstreamCard(content), {
     ok: false,
@@ -199,8 +202,52 @@ test("returns invalid-fields when waitingOn is not an array", () => {
   });
 });
 
+test("rejects the former string identity schema for orchestrator", () => {
+  const content = withCardFence("Status:", {
+    ...VALID_PAYLOAD,
+    orchestrator: "loganj",
+  });
+  assert.deepEqual(parseWorkstreamCard(content), {
+    ok: false,
+    reason: "invalid-fields",
+  });
+});
+
+test("rejects the former string identity schema for assignees", () => {
+  const content = withCardFence("Status:", {
+    ...VALID_PAYLOAD,
+    assignees: ["alice"],
+  });
+  assert.deepEqual(parseWorkstreamCard(content), {
+    ok: false,
+    reason: "invalid-fields",
+  });
+});
+
 test("returns invalid-fields when the payload is a JSON array, not an object", () => {
   const content = withCardFence("Status:", [VALID_PAYLOAD]);
+  assert.deepEqual(parseWorkstreamCard(content), {
+    ok: false,
+    reason: "invalid-fields",
+  });
+});
+
+test("returns invalid-fields when synopsis spans multiple lines", () => {
+  const content = withCardFence("Status:", {
+    ...VALID_PAYLOAD,
+    synopsis: "line one\nline two",
+  });
+  assert.deepEqual(parseWorkstreamCard(content), {
+    ok: false,
+    reason: "invalid-fields",
+  });
+});
+
+test("returns invalid-fields when optional arrays are explicitly null", () => {
+  const content = withCardFence("Status:", {
+    ...VALID_PAYLOAD,
+    pullRequests: null,
+  });
   assert.deepEqual(parseWorkstreamCard(content), {
     ok: false,
     reason: "invalid-fields",

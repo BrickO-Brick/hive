@@ -48,7 +48,7 @@ export function WorkstreamCard({ channel, onSelect }: WorkstreamCardProps) {
               <p className="truncate text-2xs text-muted-foreground">
                 Orchestrator:{" "}
                 <span className="text-foreground">
-                  {viewModel.card.orchestrator}
+                  {viewModel.card.orchestrator.name}
                 </span>
               </p>
               {viewModel.card.assignees.length > 0 ? (
@@ -56,9 +56,9 @@ export function WorkstreamCard({ channel, onSelect }: WorkstreamCardProps) {
                   {viewModel.card.assignees.map((assignee) => (
                     <span
                       className="rounded-full border border-border/65 bg-background/80 px-2 py-0.5 text-2xs text-muted-foreground"
-                      key={assignee}
+                      key={assignee.pubkey}
                     >
-                      {assignee}
+                      {assignee.name}
                     </span>
                   ))}
                 </div>
