@@ -54,8 +54,9 @@ pub struct ManagedAgentPairRuntime {
     /// Scope ID of the workspace this runtime was spawned into. Used by drain
     /// filtering and `list_managed_agent_runtimes` to detect cross-scope
     /// entries, and by the runtime-capability commands (`put_agent_session_config`
-    /// / `get_agent_config_surface`) to require that a session-config frame or
-    /// read matches the CURRENT active scope — the seam that keeps a delayed
+    /// / `get_agent_config_surface` / `put_managed_agent_runtime_lifecycle`) to
+    /// require that a session-config frame, config read, or lifecycle frame
+    /// matches the CURRENT active scope — the seam that keeps a delayed
     /// frame from a drained workspace from surfacing under a rotated identity.
     pub scope_id: Option<String>,
     /// ACP session config captured from this exact harness generation. Set by

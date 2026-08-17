@@ -506,3 +506,57 @@ fn lifecycle_sibling_rejects_stale_nonce() {
     );
     h.reap();
 }
+
+/// §3.3a sibling scope binding (P3B-I1): a same-pair/same-nonce frame on a
+/// still-live runtime whose `scope_id` no longer matches the active scope — the
+/// runtime survived but the workspace rotated — is rejected with zero mutation
+/// and no status emit. This is the lifecycle-command analogue of
+/// `frame_with_stale_scope_is_rejected`; the base checks (pair/nonce/liveness)
+/// all pass, so only the scope check can reject it.
+#[test]
+fn lifecycle_sibling_rejects_stale_scope() {
+    let _guard = gen_guard();
+    let pubkey = "aa".repeat(32);
+    let record = test_record(&pubkey);
+    let h = Harness::new(&record);
+    // Runtime stamped scope-a and live under the current nonce; the active
+    // scope then rotates to scope-b.
+    h.seed_runtime(&record, "scope-a", "nonce-1");
+    h.switch_scope_to("scope-b");
+
+    let payload = crate::managed_agents::ManagedAgentRuntimeLifecycleObserverPayload {
+        pubkey: pubkey.clone(),
+        relay_url: TEST_RELAY.to_string(),
+        start_nonce: "nonce-1".to_string(),
+        lifecycle: crate::managed_agents::ManagedAgentRuntimeLifecycle::Ready,
+        error: None,
+    };
+    let result = crate::managed_agents::put_managed_agent_runtime_lifecycle_for(
+        pubkey.clone(),
+        payload,
+        h.app.handle(),
+    );
+    assert!(
+        result.is_err(),
+        "stale-scope lifecycle frame must be rejected even with matching pair/nonce/liveness"
+    );
+    // Runtime unmutated: still Starting (seed), never advanced to the frame's
+    // Ready. An unchanged lifecycle also proves no status was emitted — the
+    // emit only runs on the Ok path after the mutation.
+    {
+        let key = ManagedAgentRuntimeKey::new(&pubkey, TEST_RELAY).unwrap();
+        let state = h.state();
+        let runtimes = state.managed_agent_processes.lock().unwrap();
+        let rt = runtimes.get(&key).expect("runtime still tracked");
+        assert_eq!(
+            rt.lifecycle,
+            crate::managed_agents::ManagedAgentRuntimeLifecycle::Starting,
+            "rejected frame must not mutate the runtime lifecycle"
+        );
+        assert!(
+            rt.error.is_none(),
+            "rejected frame must not write an error onto the runtime"
+        );
+    }
+    h.reap();
+}

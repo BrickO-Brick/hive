@@ -123,6 +123,9 @@ pub(crate) fn put_managed_agent_runtime_lifecycle_for<R: tauri::Runtime>(
         .iter()
         .find(|record| record.pubkey.eq_ignore_ascii_case(&key.pubkey))
         .ok_or_else(|| format!("agent {} not found", key.pubkey))?;
+    // Capture the active scope BEFORE taking the runtime lock so a concurrent
+    // workspace switch cannot slip a stale-scope frame past the check.
+    let current_scope_id = state.capture_active_scope().map(|scope| scope.scope_id);
     let mut runtimes = state
         .managed_agent_processes
         .lock()
@@ -132,6 +135,9 @@ pub(crate) fn put_managed_agent_runtime_lifecycle_for<R: tauri::Runtime>(
         .ok_or_else(|| "lifecycle frame does not match a tracked runtime pair".to_string())?;
     if runtime.start_nonce != payload.start_nonce {
         return Err("lifecycle frame does not match the current harness generation".into());
+    }
+    if runtime.scope_id != current_scope_id {
+        return Err("lifecycle frame does not match the current workspace scope".into());
     }
     let exited = runtime
         .child
