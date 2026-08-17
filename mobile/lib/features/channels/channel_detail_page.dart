@@ -23,8 +23,8 @@ import '../../shared/widgets/modal_presentation.dart';
 import '../../shared/widgets/skeleton.dart';
 import '../profile/presence_cache_provider.dart';
 import '../profile/profile_provider.dart';
-import '../profile/user_cache_provider.dart';
-import '../profile/user_profile.dart';
+import '../../shared/profile/user_cache_provider.dart';
+import '../../shared/profile/user_profile.dart';
 import '../forum/forum_posts_view.dart';
 import 'android_ime_lift.dart';
 import 'channel.dart';
@@ -319,6 +319,7 @@ class ChannelDetailPage extends HookConsumerWidget {
                     context: context,
                     channel: resolvedChannel,
                     currentPubkey: currentPubkey,
+                    onMemberTap: showUserProfileSheet,
                     sectionId: ref
                         .read(channelSectionsProvider)
                         .store

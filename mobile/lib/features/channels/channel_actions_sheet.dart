@@ -27,8 +27,7 @@ import 'channel_stars/channel_stars_provider.dart';
 import 'channels_provider.dart';
 import 'manage_channel_sheet.dart';
 import 'members_sheet.dart';
-import '../profile/user_cache_provider.dart';
-import '../profile/user_profile_sheet.dart';
+import '../../shared/profile/user_cache_provider.dart';
 import '../../shared/read_state/read_state_provider.dart';
 import '../../shared/read_state/read_state_time.dart';
 
@@ -174,7 +173,7 @@ class ChannelActionsSheet extends ConsumerWidget {
                 ),
                 const SizedBox(height: Grid.xs),
               ],
-              if (!channel.isDm && canManageLifecycle)
+              if (!channel.isDm)
                 ListTile(
                   contentPadding: EdgeInsets.zero,
                   leading: const Icon(LucideIcons.folderInput),

@@ -10,12 +10,14 @@ Future<bool?> showChannelDetailsPage({
   required BuildContext context,
   required Channel channel,
   required String? currentPubkey,
+  required void Function(BuildContext context, String pubkey) onMemberTap,
   String? sectionId,
 }) => Navigator.of(context).push<bool>(
   MaterialPageRoute<bool>(
     builder: (_) => ChannelDetailsPage(
       channel: channel,
       currentPubkey: currentPubkey,
+      onMemberTap: onMemberTap,
       sectionId: sectionId,
     ),
   ),
@@ -27,11 +29,13 @@ class ChannelDetailsPage extends HookConsumerWidget {
     super.key,
     required this.channel,
     required this.currentPubkey,
+    required this.onMemberTap,
     this.sectionId,
   });
 
   final Channel channel;
   final String? currentPubkey;
+  final void Function(BuildContext context, String pubkey) onMemberTap;
   final String? sectionId;
 
   @override
@@ -61,6 +65,7 @@ class ChannelDetailsPage extends HookConsumerWidget {
     final membersAsync = ref.watch(channelMembersProvider(resolvedChannel.id));
     final members = membersAsync.asData?.value ?? const <ChannelMember>[];
     final agentOwnersAsync = ref.watch(agentOwnersProvider);
+    final sectionState = ref.watch(channelSectionsProvider);
     final resolvedCurrentPubkey =
         currentPubkey?.toLowerCase() ??
         ref.watch(currentPubkeyProvider)?.toLowerCase();
@@ -102,6 +107,9 @@ class ChannelDetailsPage extends HookConsumerWidget {
         '$memberCount ${memberCount == 1 ? 'member' : 'members'}';
     final previewMembers = members.take(_channelMemberPreviewLimit).toList();
     final userCache = ref.watch(userCacheProvider);
+    final currentSectionId = sectionState.isReady
+        ? sectionState.store.assignments[resolvedChannel.id]
+        : sectionId;
     final previewPubkeyKey = previewMembers
         .map((member) => member.pubkey.toLowerCase())
         .join('|');
@@ -365,6 +373,7 @@ class ChannelDetailsPage extends HookConsumerWidget {
                     key: ValueKey('channel-details-member-${member.pubkey}'),
                     member: member,
                     currentPubkey: resolvedCurrentPubkey,
+                    onMemberTap: onMemberTap,
                     displayName:
                         userCache[member.pubkey.toLowerCase()]?.displayName,
                     avatarUrl:
@@ -395,7 +404,7 @@ class ChannelDetailsPage extends HookConsumerWidget {
                     context,
                     ref,
                     channel: resolvedChannel,
-                    sectionId: sectionId,
+                    sectionId: currentSectionId,
                   );
                 },
               ),
@@ -599,12 +608,14 @@ class _ChannelMemberPreviewRow extends StatelessWidget {
     super.key,
     required this.member,
     required this.currentPubkey,
+    required this.onMemberTap,
     required this.displayName,
     required this.avatarUrl,
   });
 
   final ChannelMember member;
   final String? currentPubkey;
+  final void Function(BuildContext context, String pubkey) onMemberTap;
   final String? displayName;
   final String? avatarUrl;
 
@@ -641,7 +652,7 @@ class _ChannelMemberPreviewRow extends StatelessWidget {
         overflow: TextOverflow.ellipsis,
       ),
       trailing: const _ChannelDetailsChevron(),
-      onTap: () => showUserProfileSheet(context, member.pubkey),
+      onTap: () => onMemberTap(context, member.pubkey),
       verticalPadding: Grid.xxs,
     );
   }

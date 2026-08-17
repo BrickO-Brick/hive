@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:buzz/features/channels/channel.dart';
 import 'package:buzz/features/channels/channel_actions_sheet.dart';
 import 'package:buzz/features/channels/channel_management_provider.dart';
+import 'package:buzz/features/channels/channel_sections/channel_sections_provider.dart';
+import 'package:buzz/features/channels/channel_sections/channel_sections_storage.dart';
 import 'package:buzz/features/channels/manage_channel_sheet.dart';
 import 'package:buzz/shared/mentions/agent_identity_provider.dart';
 import 'package:buzz/shared/relay/relay.dart';
@@ -63,6 +65,12 @@ Widget _modalApp({
   overrides: [
     currentPubkeyProvider.overrideWith((ref) => _currentPubkey),
     channelMembersProvider(channel.id).overrideWith((ref) => loadMembers()),
+    channelSectionsProvider.overrideWith(
+      () => _FakeChannelSectionsNotifier(const ChannelSectionStore()),
+    ),
+    agentOwnersProvider.overrideWithValue(
+      const AsyncValue.data(<String, String>{}),
+    ),
     channelCanvasProvider(channel.id).overrideWith(
       (ref) async => const ChannelCanvas(
         content: null,
@@ -296,6 +304,7 @@ void main() {
 
     expect(find.text('Archive channel'), findsNothing);
     expect(find.text('Delete channel'), findsNothing);
+    expect(find.text('Move to section…'), findsOneWidget);
     expect(find.text('Leave channel'), findsOneWidget);
   });
 
@@ -383,6 +392,54 @@ void main() {
     expect(tester.widget<FilledButton>(editCanvas).onPressed, isNull);
   });
 
+  testWidgets('regular members can move channels but cannot edit metadata', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _modalApp(
+        channel: _channel(),
+        loadMembers: () async => [
+          ChannelMember(
+            pubkey: _currentPubkey,
+            role: 'member',
+            joinedAt: DateTime(2025),
+          ),
+        ],
+        createChannelActions: (ref) => _FakeChannelActions(ref),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Open actions'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Move to section…'), findsOneWidget);
+    await tester.tap(find.text('Manage channel'));
+    await tester.pumpAndSettle();
+
+    final nameField = find.byKey(const ValueKey('manage-channel-name'));
+    final descriptionField = find.byKey(
+      const ValueKey('manage-channel-description'),
+    );
+    expect(tester.widget<TextField>(nameField).enabled, isFalse);
+    expect(tester.widget<TextField>(descriptionField).enabled, isFalse);
+    expect(
+      tester
+          .widget<FilledButton>(
+            find.byKey(const ValueKey('manage-channel-save-details')),
+          )
+          .onPressed,
+      isNull,
+    );
+    expect(
+      tester
+          .widget<FilledButton>(
+            find.widgetWithText(FilledButton, 'Create canvas'),
+          )
+          .onPressed,
+      isNotNull,
+    );
+  });
+
   testWidgets('DM omits quick actions, then shows mute and copy rows', (
     tester,
   ) async {
@@ -421,6 +478,16 @@ void main() {
     expect(muteTop, lessThan(copyNameTop));
     expect(copyNameTop, lessThan(copyIdTop));
   });
+}
+
+class _FakeChannelSectionsNotifier extends ChannelSectionsNotifier {
+  _FakeChannelSectionsNotifier(this._store);
+
+  final ChannelSectionStore _store;
+
+  @override
+  ChannelSectionsState build() =>
+      ChannelSectionsState(isReady: true, store: _store, version: 1);
 }
 
 class _FakeChannelActions extends ChannelActions {
