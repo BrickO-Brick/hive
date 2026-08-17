@@ -286,6 +286,7 @@ pub(crate) async fn handle_req(
             &conn,
             &state,
             trace_state.as_ref(),
+            &pending,
         )
         .await;
         return;
@@ -380,7 +381,9 @@ pub(crate) async fn handle_req(
             Ok(evs) => evs,
             Err(e) => {
                 warn!(conn_id = %conn_id, sub_id = %sub_id, "Historical query failed: {e}");
-                conn.send(RelayMessage::eose(&sub_id));
+                let _ = conn
+                    .send_historical_if_permitted(&sub_id, &pending, RelayMessage::eose(&sub_id))
+                    .await;
                 return;
             }
         };
@@ -457,7 +460,10 @@ pub(crate) async fn handle_req(
             }
 
             let msg = RelayMessage::event(&sub_id, &stored.event);
-            if !conn.send(msg) {
+            if !conn
+                .send_historical_if_permitted(&sub_id, &pending, msg)
+                .await
+            {
                 return;
             }
             total_sent += 1;
@@ -467,7 +473,9 @@ pub(crate) async fn handle_req(
         }
     }
 
-    conn.send(RelayMessage::eose(&sub_id));
+    let _ = conn
+        .send_historical_if_permitted(&sub_id, &pending, RelayMessage::eose(&sub_id))
+        .await;
 
     debug!(
         conn_id = %conn_id,
@@ -641,6 +649,7 @@ async fn handle_search_req(
     conn: &ConnectionState,
     state: &AppState,
     trace_state: Option<&crate::conformance::AbstractState>,
+    pending: &Arc<PendingSubscription>,
 ) {
     // The community-wide channel scope (no #h tag on the filter). `None` means
     // "no accessible channels and no global access" → EOSE, exactly as the
@@ -649,7 +658,9 @@ async fn handle_search_req(
         match build_search_channel_scope_filter(accessible_channels, include_global) {
             Some(scope) => scope,
             None => {
-                conn.send(RelayMessage::eose(sub_id));
+                let _ = conn
+                    .send_historical_if_permitted(sub_id, pending, RelayMessage::eose(sub_id))
+                    .await;
                 return;
             }
         };
@@ -839,7 +850,14 @@ async fn handle_search_req(
                     if !seen_ids.insert(stored.event.id) {
                         continue;
                     }
-                    if !conn.send(RelayMessage::event(sub_id, &stored.event)) {
+                    if !conn
+                        .send_historical_if_permitted(
+                            sub_id,
+                            pending,
+                            RelayMessage::event(sub_id, &stored.event),
+                        )
+                        .await
+                    {
                         return;
                     }
                     emitted += 1;
@@ -852,7 +870,9 @@ async fn handle_search_req(
         }
     }
 
-    conn.send(RelayMessage::eose(sub_id));
+    let _ = conn
+        .send_historical_if_permitted(sub_id, pending, RelayMessage::eose(sub_id))
+        .await;
 }
 
 /// Convert a single NIP-01 filter into an [`EventQuery`] for the database.
