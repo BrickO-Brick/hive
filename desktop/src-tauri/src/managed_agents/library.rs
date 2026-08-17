@@ -28,7 +28,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
-use nostr::PublicKey;
+use nostr::{Keys, PublicKey};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -620,23 +620,29 @@ impl LibraryDocument {
 /// carries an outstanding `deferred_archives` row for it (§2.5). Field-name
 /// exact matches on the raw JSON so a quarantined entry still counts.
 fn entry_names_agent(entry: &Value, agent_pubkey: &str) -> bool {
-    let bound = entry
+    entry_binds_agent(entry, agent_pubkey)
+        || entry
+            .get("deferred_archives")
+            .and_then(Value::as_array)
+            .is_some_and(|rows| {
+                rows.iter()
+                    .any(|r| r.get("agent_pubkey").and_then(Value::as_str) == Some(agent_pubkey))
+            })
+}
+
+/// Whether one raw entry `Value` holds a live `identity_bindings` binding to
+/// `agent_pubkey` (§2.5) — a deferred-archive marker does NOT count. This is the
+/// "referenced by a live binding" test that keeps a committed key out of the
+/// recovery reap; [`entry_names_agent`] widens it with deferred rows for the
+/// deletion-protection predicate.
+fn entry_binds_agent(entry: &Value, agent_pubkey: &str) -> bool {
+    entry
         .get("identity_bindings")
         .and_then(Value::as_object)
         .is_some_and(|bindings| {
             bindings
                 .values()
                 .any(|b| b.get("agent_pubkey").and_then(Value::as_str) == Some(agent_pubkey))
-        });
-    if bound {
-        return true;
-    }
-    entry
-        .get("deferred_archives")
-        .and_then(Value::as_array)
-        .is_some_and(|rows| {
-            rows.iter()
-                .any(|r| r.get("agent_pubkey").and_then(Value::as_str) == Some(agent_pubkey))
         })
 }
 
@@ -669,6 +675,80 @@ pub(crate) fn select_binding_seed<'a>(
                 .then_with(|| a.pubkey.cmp(b.pubkey))
         })
         .map(|winner| winner.pubkey)
+}
+
+/// Construct a verified [`IdentityBinding`] at commit time (§2.5 step 2, P4-I3).
+/// The inverse of [`validate_entry_bindings`]: derive `agent_pubkey` from the
+/// READ-BACK nsec (never the stored record — a stored `auth_tag` proves nothing
+/// about this binding, and a pre-NIP-OA seed legitimately has none), then
+/// compute a FRESH auth tag with the current owner keys. Deriving the pubkey
+/// from the same secret that was keyring-verified guarantees the binding's
+/// keyring entry backs exactly this pubkey, and computing the tag here
+/// guarantees the embedded owner equals the map key (`owner_keys.public_key()`)
+/// by construction — so the entry passes [`validate_entry_bindings`] on the
+/// very next read with no special case for the legacy-`None` seed.
+///
+/// Returns `(owner_hex, binding)` — the caller inserts it as
+/// `identity_bindings[owner_hex]` inside the insertion transaction (P8-C2,
+/// Phase 4b). Pure: no keyring, no library IO. The nsec parse and the NIP-OA
+/// self-attestation guard (owner == agent) are the only failure modes; both are
+/// fail-closed `Err`. Passes `nostr` types straight into `buzz-sdk` exactly as
+/// [`validate_entry_bindings`] does on the read side, so the constructed tag
+/// verifies under the same code path.
+pub(crate) fn build_identity_binding(
+    owner_keys: &Keys,
+    read_back_nsec: &str,
+) -> Result<(String, IdentityBinding), String> {
+    let agent_keys = Keys::parse(read_back_nsec.trim())
+        .map_err(|e| format!("read-back nsec did not parse as a keypair: {e}"))?;
+    let agent_pubkey = agent_keys.public_key();
+    let auth_tag = buzz_sdk_pkg::nip_oa::compute_auth_tag(owner_keys, &agent_pubkey, "")
+        .map_err(|e| format!("failed to compute NIP-OA auth tag: {e}"))?;
+
+    Ok((
+        owner_keys.public_key().to_hex(),
+        IdentityBinding {
+            agent_pubkey: agent_pubkey.to_hex(),
+            auth_tag,
+        },
+    ))
+}
+
+impl LibraryDocument {
+    /// Journal a freshly minted pubkey to `orphan_keys` (§2.5 step 2) before its
+    /// secret is written anywhere. Idempotent — a re-journal after a crashed
+    /// retry is a no-op, never a duplicate row. Every persisted secret therefore
+    /// has a prior durable orphan coordinate. Pure document mutation; the caller
+    /// performs the atomic `save_library_document` (Phase 4b).
+    pub fn journal_orphan_pubkey(&mut self, agent_pubkey: &str) {
+        if !self.orphan_keys.iter().any(|k| k == agent_pubkey) {
+            self.orphan_keys.push(agent_pubkey.to_string());
+        }
+    }
+
+    /// Drop a pubkey's `orphan_keys` row (§2.5 step 4 / recovery). Called in the
+    /// SAME atomic library write that commits the binding (the pubkey is now
+    /// referenced by a live binding) or by the recovery sweep after its keyring
+    /// entry is reaped. Pure; no-op when absent.
+    pub fn remove_orphan_pubkey(&mut self, agent_pubkey: &str) {
+        self.orphan_keys.retain(|k| k != agent_pubkey);
+    }
+
+    /// The `orphan_keys` rows that no binding references (§2.5 step 3 recovery).
+    /// A crash between the orphan journal (step 2) and the binding commit (step
+    /// 4) leaves a journaled pubkey whose keyring entry, if any, must be reaped;
+    /// once reaped, the caller drops the row via [`remove_orphan_pubkey`]. Scans
+    /// RAW entries for a live binding to the pubkey (binding only — a
+    /// `deferred_archives` marker is not a live binding and must not keep an
+    /// uncommitted orphan alive). Pure selection; the keyring delete is the IO
+    /// half performed by the recovery point (Phase 4b).
+    pub fn unreferenced_orphans(&self) -> Vec<&str> {
+        self.orphan_keys
+            .iter()
+            .filter(|orphan| !self.entries.iter().any(|e| entry_binds_agent(e, orphan)))
+            .map(String::as_str)
+            .collect()
+    }
 }
 
 #[cfg(test)]

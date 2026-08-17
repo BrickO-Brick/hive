@@ -7,6 +7,7 @@
 use serde_json::json;
 
 use super::*;
+use nostr::{Keys, ToBech32};
 
 // ── key_archive_protected ──────────────────────────────────────────────────────
 
@@ -146,4 +147,119 @@ fn test_seed_single_instance() {
 #[test]
 fn test_seed_empty_is_none() {
     assert_eq!(select_binding_seed(Vec::new()), None);
+}
+
+// ── build_identity_binding ──────────────────────────────────────────────────────
+
+#[test]
+fn test_build_binding_derives_pubkey_from_nsec_and_verifies_on_read() {
+    // The binding a fresh mint produces must pass validate_entry_bindings on the
+    // next read with no special case: agent_pubkey derived from the read-back
+    // nsec, a fresh tag embedding exactly the owner it is keyed under.
+    let owner = Keys::generate();
+    let agent = Keys::generate();
+    let nsec = agent.secret_key().to_bech32().expect("encode nsec");
+
+    let (owner_hex, binding) = build_identity_binding(&owner, &nsec).expect("build binding");
+
+    assert_eq!(owner_hex, owner.public_key().to_hex());
+    assert_eq!(binding.agent_pubkey, agent.public_key().to_hex());
+    // Feed it straight into the read-side validator via a full entry.
+    let mut bindings = std::collections::BTreeMap::new();
+    bindings.insert(owner_hex.clone(), binding.clone());
+    let entry = LibraryEntry {
+        library_id: "lib-1".into(),
+        origin: OriginKey {
+            scope_id: "s".into(),
+            slug: "a".into(),
+        },
+        revision: 1,
+        deleted: false,
+        owner_pubkey_at_share: owner_hex,
+        shared: SharedDefinition {
+            display_name: "A".into(),
+            avatar_url: None,
+            system_prompt: "p".into(),
+            runtime: None,
+            model: None,
+            provider: None,
+            name_pool: vec![],
+            respond_to: None,
+            respond_to_allowlist: vec![],
+            parallelism: None,
+        },
+        deferred_archives: vec![],
+        identity_bindings: bindings,
+        projections: std::collections::BTreeMap::new(),
+    };
+    validate_entry_bindings(&entry).expect("freshly built binding validates on read");
+}
+
+#[test]
+fn test_build_binding_ignores_stored_tag_uses_read_back_nsec() {
+    // agent_pubkey comes from the nsec, never a caller-supplied record: two
+    // different owners over the same agent nsec yield the same agent_pubkey with
+    // different, each-valid tags.
+    let owner_a = Keys::generate();
+    let owner_b = Keys::generate();
+    let agent = Keys::generate();
+    let nsec = agent.secret_key().to_bech32().expect("encode nsec");
+
+    let (_, ba) = build_identity_binding(&owner_a, &nsec).expect("a");
+    let (_, bb) = build_identity_binding(&owner_b, &nsec).expect("b");
+
+    assert_eq!(ba.agent_pubkey, agent.public_key().to_hex());
+    assert_eq!(bb.agent_pubkey, agent.public_key().to_hex());
+    assert_ne!(ba.auth_tag, bb.auth_tag);
+}
+
+#[test]
+fn test_build_binding_rejects_garbage_nsec() {
+    let owner = Keys::generate();
+    assert!(build_identity_binding(&owner, "not-a-real-nsec").is_err());
+}
+
+// ── orphan-key journal + recovery selection ─────────────────────────────────────
+
+#[test]
+fn test_journal_orphan_is_idempotent() {
+    let mut doc = library(vec![]);
+    doc.journal_orphan_pubkey("aa");
+    doc.journal_orphan_pubkey("aa");
+    assert_eq!(doc.orphan_keys, vec!["aa".to_string()]);
+}
+
+#[test]
+fn test_remove_orphan_drops_row_and_is_noop_when_absent() {
+    let mut doc = library(vec![]);
+    doc.journal_orphan_pubkey("aa");
+    doc.journal_orphan_pubkey("bb");
+    doc.remove_orphan_pubkey("aa");
+    assert_eq!(doc.orphan_keys, vec!["bb".to_string()]);
+    doc.remove_orphan_pubkey("missing");
+    assert_eq!(doc.orphan_keys, vec!["bb".to_string()]);
+}
+
+#[test]
+fn test_unreferenced_orphans_reaps_only_uncommitted() {
+    // committed: a live binding references it → NOT reaped.
+    // dangling: journaled but no binding → reaped (crash between step 2 and 4).
+    let committed = "aa".repeat(32);
+    let dangling = "bb".repeat(32);
+    let mut doc = library(vec![bound_entry(&committed, false)]);
+    doc.journal_orphan_pubkey(&committed);
+    doc.journal_orphan_pubkey(&dangling);
+
+    let reap = doc.unreferenced_orphans();
+    assert_eq!(reap, vec![dangling.as_str()]);
+}
+
+#[test]
+fn test_unreferenced_orphans_ignores_deferred_only_reference() {
+    // A deferred-archive marker is NOT a live binding: a journaled orphan whose
+    // only mention is a deferred row is still uncommitted and must be reaped.
+    let target = "cc".repeat(32);
+    let mut doc = library(vec![deferred_entry(&target)]);
+    doc.journal_orphan_pubkey(&target);
+    assert_eq!(doc.unreferenced_orphans(), vec![target.as_str()]);
 }
