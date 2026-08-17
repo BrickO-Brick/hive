@@ -22,6 +22,8 @@ const OBSERVER_BUFFER_CAP: usize = 1_000;
 pub struct ObserverContext {
     /// Buzz channel UUID for the current turn, when channel-scoped.
     pub channel_id: Option<String>,
+    /// NIP-10 thread root for the current turn, when thread-scoped.
+    pub thread_head_id: Option<String>,
     /// ACP session ID associated with the current turn, once known.
     pub session_id: Option<String>,
     /// Local UUID for one prompt turn.
@@ -67,6 +69,9 @@ pub struct ObserverEvent {
     pub agent_index: Option<usize>,
     /// Buzz channel UUID for channel-scoped events.
     pub channel_id: Option<String>,
+    /// NIP-10 thread root for thread-scoped events.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread_head_id: Option<String>,
     /// ACP session ID when known.
     pub session_id: Option<String>,
     /// Local UUID for one prompt turn.
@@ -114,6 +119,7 @@ impl ObserverHandle {
             kind: kind.into(),
             agent_index,
             channel_id: context.channel_id.clone(),
+            thread_head_id: context.thread_head_id.clone(),
             session_id: context.session_id.clone(),
             turn_id: context.turn_id.clone(),
             started_at: context.started_at.clone(),
@@ -144,6 +150,7 @@ pub fn context_for(
 ) -> ObserverContext {
     ObserverContext {
         channel_id: channel_id.map(|id| id.to_string()),
+        thread_head_id: None,
         session_id,
         turn_id,
         started_at: None,
@@ -153,12 +160,14 @@ pub fn context_for(
 /// Attach the authoritative start timestamp to every observer frame for a turn.
 pub fn context_for_turn(
     channel_id: Option<uuid::Uuid>,
+    thread_head_id: Option<String>,
     session_id: Option<String>,
     turn_id: String,
     started_at: String,
 ) -> ObserverContext {
     ObserverContext {
         channel_id: channel_id.map(|id| id.to_string()),
+        thread_head_id,
         session_id,
         turn_id: Some(turn_id),
         started_at: Some(started_at),

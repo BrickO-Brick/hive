@@ -51,9 +51,9 @@ class ComposerActivityState {
   });
 }
 
-/// Unified composer state. Observer activity is authoritative in channels;
-/// kind:20002 typing fills gaps and is the only thread-scoped signal because
-/// observer frames do not carry a thread id.
+/// Unified composer state. Scoped observer activity is authoritative;
+/// kind:20002 typing fills gaps, including for legacy observer frames that do
+/// not carry a thread id.
 final composerActivityStateProvider = Provider.autoDispose
     .family<ComposerActivityState, ComposerActivityKey>((ref, key) {
       final currentPubkey = ref.watch(currentPubkeyProvider)?.toLowerCase();
@@ -81,7 +81,10 @@ final composerActivityStateProvider = Provider.autoDispose
       final composerTurns = ref.watch(composerAgentTurnStatesProvider);
       final activeByAgent = <String, AgentTurnState>{};
       for (final turn in composerTurns) {
-        if (turn.channelId != key.channelId) continue;
+        if (turn.channelId != key.channelId ||
+            turn.threadHeadId != key.threadHeadId) {
+          continue;
+        }
         final existing = activeByAgent[turn.agentPubkey];
         if (existing == null ||
             _compareComposerTurnRecency(turn, existing) > 0) {
@@ -97,23 +100,19 @@ final composerActivityStateProvider = Provider.autoDispose
       }
 
       final signals = <String, WorkingAgentSignal>{};
-      // A channel can trust observer activity directly. A thread cannot: the
-      // observer protocol has no thread id, so a thread requires typing first.
-      if (key.threadHeadId == null) {
-        for (final entry in activeByAgent.entries) {
-          if (!channelAgents.contains(entry.key)) continue;
-          final turn = entry.value;
-          if (!turn.isWorking && !canView(entry.key)) continue;
-          signals[entry.key] = WorkingAgentSignal(
-            pubkey: entry.key,
-            source: AgentWorkingSource.observer,
-            canViewActivity: canView(entry.key),
-            isWorking: turn.isWorking,
-            phase: turn.phase,
-            turnId: turn.turnId,
-            startedAt: turn.startedAt,
-          );
-        }
+      for (final entry in activeByAgent.entries) {
+        if (!channelAgents.contains(entry.key)) continue;
+        final turn = entry.value;
+        if (!turn.isWorking && !canView(entry.key)) continue;
+        signals[entry.key] = WorkingAgentSignal(
+          pubkey: entry.key,
+          source: AgentWorkingSource.observer,
+          canViewActivity: canView(entry.key),
+          isWorking: turn.isWorking,
+          phase: turn.phase,
+          turnId: turn.turnId,
+          startedAt: turn.startedAt,
+        );
       }
 
       final humans = <TypingEntry>[];

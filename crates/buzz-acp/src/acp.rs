@@ -577,6 +577,11 @@ impl AcpClient {
         self.observer_context = context;
     }
 
+    /// Return the observer metadata for the current turn.
+    pub(crate) fn observer_context(&self) -> ObserverContext {
+        self.observer_context.clone()
+    }
+
     /// Return a clone of the observer handle, if attached.
     pub(crate) fn observer_handle(&self) -> Option<ObserverHandle> {
         self.observer.clone()

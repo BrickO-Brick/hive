@@ -21,6 +21,7 @@ enum AgentTurnPhase { working, finished, error }
 class AgentTurnState {
   final String agentPubkey;
   final String channelId;
+  final String? threadHeadId;
   final String turnId;
   final DateTime startedAt;
   final DateTime lastActivityAt;
@@ -33,6 +34,7 @@ class AgentTurnState {
   const AgentTurnState({
     required this.agentPubkey,
     required this.channelId,
+    this.threadHeadId,
     required this.turnId,
     required this.startedAt,
     required this.lastActivityAt,
@@ -49,6 +51,7 @@ class AgentTurnState {
       AgentTurnState(
         agentPubkey: agentPubkey,
         channelId: channelId,
+        threadHeadId: threadHeadId,
         turnId: turnId,
         startedAt: startedAt,
         lastActivityAt: at,
@@ -64,6 +67,7 @@ class AgentTurnState {
   }) => AgentTurnState(
     agentPubkey: agentPubkey,
     channelId: channelId,
+    threadHeadId: threadHeadId,
     turnId: turnId,
     startedAt: startedAt,
     lastActivityAt: at,
@@ -100,6 +104,7 @@ List<AgentTurnState> reduceAgentTurnStates(
           turnsById[turnId] = AgentTurnState(
             agentPubkey: agentPubkey,
             channelId: channelId,
+            threadHeadId: frame.threadHeadId,
             turnId: turnId,
             startedAt: _safeStartedAt(frame, frameAt),
             lastActivityAt: frameAt,
@@ -134,6 +139,7 @@ List<AgentTurnState> reduceAgentTurnStates(
                 AgentTurnState(
                   agentPubkey: agentPubkey,
                   channelId: channelId,
+                  threadHeadId: frame.threadHeadId,
                   turnId: turnId,
                   startedAt: _safeStartedAt(frame, frameAt),
                   lastActivityAt: frameAt,
@@ -148,7 +154,12 @@ List<AgentTurnState> reduceAgentTurnStates(
           final channelId = frame.channelId;
           if (channelId == null) continue;
           final matching = turnsById.values
-              .where((turn) => turn.channelId == channelId && turn.isWorking)
+              .where(
+                (turn) =>
+                    turn.channelId == channelId &&
+                    turn.threadHeadId == frame.threadHeadId &&
+                    turn.isWorking,
+              )
               .fold<AgentTurnState?>(
                 null,
                 (latest, turn) =>
@@ -189,6 +200,7 @@ List<AgentTurnState> reduceAgentTurnStates(
           turnsById[turnId] = AgentTurnState(
             agentPubkey: agentPubkey,
             channelId: channelId,
+            threadHeadId: frame.threadHeadId,
             turnId: turnId,
             startedAt: _safeStartedAt(frame, frameAt),
             lastActivityAt: frameAt,
@@ -222,6 +234,7 @@ AgentTurnState? latestAgentTurnState(
   Iterable<AgentTurnState> states, {
   required String agentPubkey,
   required String channelId,
+  required String? threadHeadId,
   String? turnId,
 }) {
   final normalizedAgent = agentPubkey.toLowerCase();
@@ -229,6 +242,7 @@ AgentTurnState? latestAgentTurnState(
   for (final state in states) {
     if (state.agentPubkey != normalizedAgent ||
         state.channelId != channelId ||
+        state.threadHeadId != threadHeadId ||
         (turnId != null && state.turnId != turnId)) {
       continue;
     }

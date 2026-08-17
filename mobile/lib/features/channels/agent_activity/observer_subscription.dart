@@ -372,6 +372,7 @@ class ObserverRelayNotifier extends Notifier<ObserverRelayState> {
     kind: frame.kind,
     agentIndex: frame.agentIndex,
     channelId: frame.channelId,
+    threadHeadId: frame.threadHeadId,
     sessionId: frame.sessionId,
     turnId: frame.turnId,
     startedAt: frame.startedAt,

@@ -361,6 +361,7 @@ void main() {
     final earlierFrame = _observerFrameJson(
       seq: 1,
       channelId: channelId,
+      threadHeadId: 'thread-1',
       turnId: 'turn-1',
     );
     relaySession.emit(
@@ -388,6 +389,7 @@ void main() {
       isTrue,
       reason: 'batch receipt order must follow timestamp and sequence',
     );
+    expect(frames[0].threadHeadId, 'thread-1');
 
     final state = container.read(observerSubscriptionProvider(key));
     expect(state.connection, ObserverConnectionState.open);
@@ -594,12 +596,14 @@ ObserverFrame _turnMessageFrame({
 Map<String, dynamic> _observerFrameJson({
   required int seq,
   required String channelId,
+  String? threadHeadId,
   required String turnId,
 }) => {
   'seq': seq,
   'timestamp': '2026-04-30T12:00:0$seq.000Z',
   'kind': 'turn_started',
   'channelId': channelId,
+  'threadHeadId': ?threadHeadId,
   'turnId': turnId,
   'payload': {
     'triggeringEventIds': ['$seq'],

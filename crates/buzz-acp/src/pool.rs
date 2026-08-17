@@ -59,6 +59,8 @@ pub struct SuccessfulSteerDelivery {
 pub struct TaskMeta {
     pub agent_index: usize,
     pub channel_id: Option<Uuid>,
+    /// NIP-10 thread root for panic recovery telemetry.
+    pub thread_head_id: Option<String>,
     /// Identifies terminal events when the task panics before returning a result.
     pub turn_id: String,
     /// Clone of batch for Queue mode panic recovery.
@@ -1462,6 +1464,12 @@ fn send_prompt_result(
     });
 }
 
+fn observer_thread_head_id(batch: Option<&FlushBatch>) -> Option<String> {
+    batch
+        .and_then(|batch| batch.events.last())
+        .and_then(|event| crate::queue::parse_thread_tags(&event.event).root_event_id)
+}
+
 /// Core async function spawned for each prompt.
 ///
 /// Lifecycle:
@@ -1492,9 +1500,11 @@ pub async fn run_prompt_task(
         PromptSource::Channel(channel_id) => Some(*channel_id),
         PromptSource::Heartbeat => None,
     };
+    let observer_thread_head_id = observer_thread_head_id(batch.as_ref());
     let turn_started_at = chrono::Utc::now().to_rfc3339();
     agent.acp.set_observer_context(observer::context_for_turn(
         observer_channel_id,
+        observer_thread_head_id.clone(),
         None,
         turn_id.clone(),
         turn_started_at.clone(),
@@ -1523,6 +1533,7 @@ pub async fn run_prompt_task(
         agent.acp.observer_handle(),
         agent.acp.observer_agent_index(),
         observer_channel_id,
+        observer_thread_head_id.clone(),
         turn_id.clone(),
     );
 
@@ -1544,6 +1555,7 @@ pub async fn run_prompt_task(
         agent.acp.observer_agent_index(),
         observer::context_for_turn(
             observer_channel_id,
+            observer_thread_head_id.clone(),
             None,
             turn_id.clone(),
             turn_started_at.clone(),
@@ -1814,6 +1826,7 @@ pub async fn run_prompt_task(
     };
     agent.acp.set_observer_context(observer::context_for_turn(
         observer_channel_id,
+        observer_thread_head_id,
         Some(session_id.clone()),
         turn_id.clone(),
         turn_started_at,
@@ -3979,6 +3992,7 @@ struct TurnCompletionGuard {
     observer: Option<observer::ObserverHandle>,
     agent_index: Option<usize>,
     channel_id: Option<uuid::Uuid>,
+    thread_head_id: Option<String>,
     turn_id: String,
 }
 
@@ -3987,12 +4001,14 @@ impl TurnCompletionGuard {
         observer: Option<observer::ObserverHandle>,
         agent_index: Option<usize>,
         channel_id: Option<uuid::Uuid>,
+        thread_head_id: Option<String>,
         turn_id: String,
     ) -> Self {
         Self {
             observer,
             agent_index,
             channel_id,
+            thread_head_id,
             turn_id,
         }
     }
@@ -4001,7 +4017,9 @@ impl TurnCompletionGuard {
 impl Drop for TurnCompletionGuard {
     fn drop(&mut self) {
         if let Some(observer) = self.observer.take() {
-            let context = observer::context_for(self.channel_id, None, Some(self.turn_id.clone()));
+            let mut context =
+                observer::context_for(self.channel_id, None, Some(self.turn_id.clone()));
+            context.thread_head_id = self.thread_head_id.clone();
             observer.emit(
                 "turn_completed",
                 self.agent_index,
@@ -6518,6 +6536,39 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
     }
 
     #[test]
+    fn test_observer_thread_scope_uses_triggering_thread_root() {
+        let channel_id = Uuid::new_v4();
+        let root = "a".repeat(64);
+        let root_tag = Tag::parse(vec![
+            "e".to_string(),
+            root.clone(),
+            String::new(),
+            "root".to_string(),
+        ])
+        .unwrap();
+        let event = EventBuilder::new(Kind::Custom(9), "thread reply")
+            .tags([root_tag])
+            .sign_with_keys(&Keys::generate())
+            .unwrap();
+        let batch = FlushBatch {
+            channel_id,
+            events: vec![crate::queue::BatchEvent {
+                event,
+                prompt_tag: "test".into(),
+                received_at: std::time::Instant::now(),
+            }],
+            cancelled_events: vec![],
+            cancel_reason: None,
+        };
+
+        assert_eq!(
+            observer_thread_head_id(Some(&batch)).as_deref(),
+            Some(root.as_str())
+        );
+        assert_eq!(observer_thread_head_id(None), None);
+    }
+
+    #[test]
     fn test_requeue_cancelled_batch_maps_control_signal_to_cancel_reason() {
         let cases = [
             (ControlSignal::Steer, Some(CancelReason::Steer)),
@@ -6745,11 +6796,37 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
         }))
     }
 
+    #[test]
+    fn test_completion_guard_preserves_thread_scope() {
+        let observer = observer::ObserverHandle::in_process();
+        {
+            let _guard = TurnCompletionGuard::new(
+                Some(observer.clone()),
+                Some(0),
+                Some(Uuid::new_v4()),
+                Some("thread-1".into()),
+                "turn-1".into(),
+            );
+        }
+
+        let event = observer
+            .snapshot()
+            .into_iter()
+            .find(|event| event.kind == "turn_completed")
+            .expect("completion frame");
+        assert_eq!(event.thread_head_id.as_deref(), Some("thread-1"));
+    }
+
     #[tokio::test(start_paused = true)]
     async fn test_liveness_stops_before_completion_frame() {
         let observer = observer::ObserverHandle::in_process();
-        let context =
-            observer::context_for_turn(None, None, "t-1".into(), "2026-07-14T21:00:00Z".into());
+        let context = observer::context_for_turn(
+            None,
+            None,
+            None,
+            "t-1".into(),
+            "2026-07-14T21:00:00Z".into(),
+        );
         let completion_context = observer::context_for(None, None, Some("t-1".into()));
         let completion_observer = observer.clone();
         let completion_handle = tokio::spawn(async move {
@@ -6802,7 +6879,13 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
     async fn test_liveness_fires_until_guard_drops() {
         let observer = observer::ObserverHandle::in_process();
         let started_at = "2026-07-14T21:00:00Z".to_string();
-        let context = observer::context_for_turn(None, None, "t-1".into(), started_at.clone());
+        let context = observer::context_for_turn(
+            None,
+            Some("thread-1".into()),
+            None,
+            "t-1".into(),
+            started_at.clone(),
+        );
         let state = open_liveness_state();
         let guard = LivenessGuard::new(
             tokio::spawn(run_turn_liveness(
@@ -6834,6 +6917,9 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             .all(|event| event.started_at.as_deref() == Some(&started_at)));
         assert!(pings
             .iter()
+            .all(|event| event.thread_head_id.as_deref() == Some("thread-1")));
+        assert!(pings
+            .iter()
             .all(|event| { event.payload == serde_json::json!({ "livenessIntervalSecs": 10 }) }));
         assert_eq!(
             serde_json::to_value(&pings[0]).unwrap()["startedAt"],
@@ -6853,8 +6939,13 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
     #[tokio::test(start_paused = true)]
     async fn test_liveness_backfills_session_id_after_resolution() {
         let observer = observer::ObserverHandle::in_process();
-        let context =
-            observer::context_for_turn(None, None, "t-1".into(), "2026-07-14T21:00:00Z".into());
+        let context = observer::context_for_turn(
+            None,
+            None,
+            None,
+            "t-1".into(),
+            "2026-07-14T21:00:00Z".into(),
+        );
         let state = open_liveness_state();
         let guard = LivenessGuard::new(
             tokio::spawn(run_turn_liveness(
@@ -6953,8 +7044,13 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
     #[tokio::test(start_paused = true)]
     async fn test_liveness_emits_nothing_once_closed_flag_is_set() {
         let observer = observer::ObserverHandle::in_process();
-        let context =
-            observer::context_for_turn(None, None, "t-1".into(), "2026-07-14T21:00:00Z".into());
+        let context = observer::context_for_turn(
+            None,
+            None,
+            None,
+            "t-1".into(),
+            "2026-07-14T21:00:00Z".into(),
+        );
         // Set directly, bypassing `LivenessGuard` — isolates the read side of
         // the contract: the check under the lock must gate the emit on its own.
         let state = Arc::new(Mutex::new(LivenessState {

@@ -591,6 +591,7 @@ fn batch_envelope(events: &[observer::ObserverEvent]) -> observer::ObserverEvent
         kind: OBSERVER_BATCH_KIND.to_string(),
         agent_index: last.agent_index,
         channel_id: last.channel_id.clone(),
+        thread_head_id: last.thread_head_id.clone(),
         session_id: last.session_id.clone(),
         turn_id: last.turn_id.clone(),
         started_at: last.started_at.clone(),
@@ -1259,6 +1260,7 @@ fn emit_project_owner_control_result(
         None,
         &observer::ObserverContext {
             channel_id: None,
+            thread_head_id: None,
             session_id: None,
             turn_id: None,
             started_at: None,
@@ -1296,6 +1298,7 @@ fn handle_cancel_turn_control(
             None,
             &observer::ObserverContext {
                 channel_id: Some(channel_id.to_string()),
+                thread_head_id: None,
                 session_id: None,
                 turn_id: None,
                 started_at: None,
@@ -1373,6 +1376,7 @@ fn handle_switch_model_control(
             None,
             &observer::ObserverContext {
                 channel_id: Some(channel_id.to_string()),
+                thread_head_id: None,
                 session_id: None,
                 turn_id: None,
                 started_at: None,
@@ -3765,6 +3769,7 @@ fn dispatch_pending(
             pool::TaskMeta {
                 agent_index,
                 channel_id: Some(channel_id),
+                thread_head_id: typing_scope.root_event_id.clone(),
                 turn_id,
                 recoverable_batch,
                 control_tx: Some(control_tx),
@@ -4029,11 +4034,16 @@ fn handle_prompt_result(
         .to_string();
     let harness_pid = std::process::id();
 
-    let channel_id = match &result.source {
-        PromptSource::Channel(ch) => Some(*ch),
-        PromptSource::Heartbeat => None,
-    };
-    let turn_id = result.turn_id.clone();
+    let mut observer_context = result.agent.acp.observer_context();
+    if observer_context.channel_id.is_none() {
+        observer_context.channel_id = match &result.source {
+            PromptSource::Channel(channel_id) => Some(channel_id.to_string()),
+            PromptSource::Heartbeat => None,
+        };
+    }
+    if observer_context.turn_id.is_none() {
+        observer_context.turn_id = Some(result.turn_id.clone());
+    }
     let emit_turn_error = |error_msg: &str, error_code: Option<i64>| {
         if let Some(ref observer) = observer {
             let mut payload = serde_json::json!({
@@ -4043,12 +4053,7 @@ fn handle_prompt_result(
             if let Some(code) = error_code {
                 payload["code"] = serde_json::json!(code);
             }
-            observer.emit(
-                "turn_error",
-                Some(agent_index),
-                &observer::context_for(channel_id, None, Some(turn_id.clone())),
-                payload,
-            );
+            observer.emit("turn_error", Some(agent_index), &observer_context, payload);
         }
     };
 
@@ -4275,7 +4280,13 @@ fn recover_panicked_agent(
         observer.emit(
             "agent_panic",
             Some(i),
-            &observer::context_for(meta.channel_id, None, Some(meta.turn_id)),
+            &observer::ObserverContext {
+                channel_id: meta.channel_id.map(|channel_id| channel_id.to_string()),
+                thread_head_id: meta.thread_head_id,
+                session_id: None,
+                turn_id: Some(meta.turn_id),
+                started_at: None,
+            },
             serde_json::json!({
                 "outcome": "panic",
                 "error": format!("Agent task panicked: {join_error}"),
@@ -4401,6 +4412,7 @@ fn dispatch_heartbeat(
         pool::TaskMeta {
             agent_index,
             channel_id: None,
+            thread_head_id: None,
             turn_id,
             recoverable_batch: None,
             control_tx: None,
@@ -5195,6 +5207,7 @@ mod owner_control_command_tests {
             pool::TaskMeta {
                 agent_index: 0,
                 channel_id: Some(channel_id),
+                thread_head_id: None,
                 turn_id: "test-turn-id".to_string(),
                 recoverable_batch: None,
                 control_tx: Some(control_tx),
@@ -5758,6 +5771,7 @@ mod observer_publish_queue_tests {
             kind: kind.to_string(),
             agent_index: Some(0),
             channel_id: channel.map(ToOwned::to_owned),
+            thread_head_id: None,
             session_id: Some("session-1".to_string()),
             turn_id: Some("turn-1".to_string()),
             started_at: None,
@@ -6626,6 +6640,7 @@ mod observer_chunk_coalescer_tests {
             kind: "acp_read".to_string(),
             agent_index: Some(0),
             channel_id: Some("channel-1".to_string()),
+            thread_head_id: None,
             session_id: Some("session-1".to_string()),
             turn_id: Some("turn-1".to_string()),
             started_at: None,
@@ -6654,6 +6669,7 @@ mod observer_chunk_coalescer_tests {
             kind: "turn_started".to_string(),
             agent_index: Some(0),
             channel_id: Some("channel-1".to_string()),
+            thread_head_id: None,
             session_id: Some("session-1".to_string()),
             turn_id: Some("turn-1".to_string()),
             started_at: None,
@@ -7049,6 +7065,7 @@ mod error_outcome_emission_tests {
             crate::pool::TaskMeta {
                 agent_index: 0,
                 channel_id: Some(channel_id),
+                thread_head_id: None,
                 turn_id: "test-turn-id".into(),
                 recoverable_batch: None,
                 control_tx: None,
@@ -7121,6 +7138,7 @@ mod error_outcome_emission_tests {
             crate::pool::TaskMeta {
                 agent_index: 0,
                 channel_id: Some(channel_id),
+                thread_head_id: None,
                 turn_id: "test-turn-id".into(),
                 recoverable_batch: None,
                 control_tx: None,
@@ -7236,6 +7254,7 @@ mod error_outcome_emission_tests {
             crate::pool::TaskMeta {
                 agent_index: 0,
                 channel_id: Some(channel_id),
+                thread_head_id: None,
                 turn_id: "test-turn-id".into(),
                 recoverable_batch: None,
                 control_tx: None,
@@ -7288,7 +7307,11 @@ mod error_outcome_emission_tests {
     /// Drive one error outcome through `handle_prompt_result` and return how
     /// many `turn_error` events it emitted to the observer feed.
     async fn turn_errors_emitted_for(outcome: PromptOutcome) -> usize {
-        let agent = dummy_agent(0).await;
+        let mut agent = dummy_agent(0).await;
+        let mut observer_context =
+            crate::observer::context_for(None, None, Some("test-turn-id".to_string()));
+        observer_context.thread_head_id = Some("thread-1".to_string());
+        agent.acp.set_observer_context(observer_context);
         let mut pool = AgentPool::from_slots(vec![None]);
 
         // `handle_prompt_result` asserts it removes exactly one in-flight task
@@ -7301,6 +7324,7 @@ mod error_outcome_emission_tests {
             crate::pool::TaskMeta {
                 agent_index: 0,
                 channel_id: None,
+                thread_head_id: None,
                 turn_id: "test-turn-id".to_string(),
                 recoverable_batch: None,
                 control_tx: None,
@@ -7355,6 +7379,12 @@ mod error_outcome_emission_tests {
                 .all(|event| event.turn_id.as_deref() == Some("test-turn-id")),
             "turn_error must retain the completed turn id"
         );
+        assert!(
+            turn_errors
+                .iter()
+                .all(|event| event.thread_head_id.as_deref() == Some("thread-1")),
+            "turn_error must retain the completed turn thread"
+        );
         turn_errors.len()
     }
 
@@ -7378,6 +7408,7 @@ mod error_outcome_emission_tests {
             crate::pool::TaskMeta {
                 agent_index: 0,
                 channel_id: Some(channel_id),
+                thread_head_id: Some("thread-1".into()),
                 turn_id: "panic-turn-id".to_string(),
                 recoverable_batch: None,
                 control_tx: None,
@@ -7427,6 +7458,7 @@ mod error_outcome_emission_tests {
             Some(channel_id.to_string().as_str())
         );
         assert_eq!(panic.turn_id.as_deref(), Some("panic-turn-id"));
+        assert_eq!(panic.thread_head_id.as_deref(), Some("thread-1"));
     }
 
     #[tokio::test]
@@ -7471,6 +7503,7 @@ mod error_outcome_emission_tests {
                 crate::pool::TaskMeta {
                     agent_index: 0,
                     channel_id: None,
+                    thread_head_id: None,
                     turn_id: "test-turn-id".to_string(),
                     recoverable_batch: None,
                     control_tx: None,
@@ -7563,6 +7596,7 @@ mod error_outcome_emission_tests {
                 crate::pool::TaskMeta {
                     agent_index: 0,
                     channel_id: None,
+                    thread_head_id: None,
                     turn_id: "test-turn-id".to_string(),
                     recoverable_batch: None,
                     control_tx: None,
@@ -7669,6 +7703,7 @@ mod error_outcome_emission_tests {
                 crate::pool::TaskMeta {
                     agent_index: 0,
                     channel_id: None,
+                    thread_head_id: None,
                     turn_id: "test-turn-id".to_string(),
                     recoverable_batch: None,
                     control_tx: None,
@@ -7746,6 +7781,7 @@ mod error_outcome_emission_tests {
             crate::pool::TaskMeta {
                 agent_index: 0,
                 channel_id: None,
+                thread_head_id: None,
                 turn_id: "test-turn-id".to_string(),
                 recoverable_batch: None,
                 control_tx: None,
@@ -7841,6 +7877,7 @@ mod error_outcome_emission_tests {
             crate::pool::TaskMeta {
                 agent_index: 0,
                 channel_id: None,
+                thread_head_id: None,
                 turn_id: "test-turn-id".to_string(),
                 recoverable_batch: None,
                 control_tx: None,
@@ -7958,6 +7995,7 @@ mod error_outcome_emission_tests {
             crate::pool::TaskMeta {
                 agent_index: 0,
                 channel_id: None,
+                thread_head_id: None,
                 turn_id: "test-turn-id".to_string(),
                 recoverable_batch: None,
                 control_tx: None,
@@ -8098,6 +8136,7 @@ mod error_outcome_emission_tests {
             crate::pool::TaskMeta {
                 agent_index: 0,
                 channel_id: None,
+                thread_head_id: None,
                 turn_id: "test-turn-id".to_string(),
                 recoverable_batch: None,
                 control_tx: None,
@@ -8287,6 +8326,7 @@ mod error_outcome_emission_tests {
             crate::pool::TaskMeta {
                 agent_index: 0,
                 channel_id: None,
+                thread_head_id: None,
                 turn_id: "test-turn-id".to_string(),
                 recoverable_batch: None,
                 control_tx: None,
@@ -8373,6 +8413,7 @@ mod error_outcome_emission_tests {
             crate::pool::TaskMeta {
                 agent_index: 0,
                 channel_id: None,
+                thread_head_id: None,
                 turn_id: "test-turn-id".to_string(),
                 recoverable_batch: None,
                 control_tx: None,
@@ -8437,6 +8478,7 @@ mod observer_payload_trim_tests {
             kind: kind.to_string(),
             agent_index: Some(0),
             channel_id: Some("11111111-1111-1111-1111-111111111111".to_string()),
+            thread_head_id: None,
             session_id: Some("sess-1".to_string()),
             turn_id: Some("turn-1".to_string()),
             started_at: None,

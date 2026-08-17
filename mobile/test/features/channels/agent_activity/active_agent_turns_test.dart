@@ -10,6 +10,7 @@ void main() {
           seq: 1,
           second: 1,
           kind: 'turn_started',
+          threadHeadId: 'thread-1',
           receivedSecond: 10,
           payload: {
             'triggeringEventIds': ['message-1'],
@@ -22,6 +23,7 @@ void main() {
     expect(turns, hasLength(1));
     expect(turns.single.agentPubkey, 'agent-a');
     expect(turns.single.phase, AgentTurnPhase.working);
+    expect(turns.single.threadHeadId, 'thread-1');
     expect(turns.single.triggeringEventId, 'message-1');
     expect(turns.single.lastActivityAt, DateTime.utc(2026, 8, 16, 12, 0, 20));
   });
@@ -204,6 +206,44 @@ void main() {
     expect(turns.single.errorMessage, 'Process exited');
   });
 
+  test('terminal without a turn id stays within its observer thread scope', () {
+    final turns = reduceAgentTurnStates({
+      'agent-a': [
+        _frame(
+          seq: 1,
+          second: 1,
+          kind: 'turn_started',
+          turnId: 'turn-a',
+          threadHeadId: 'thread-a',
+        ),
+        _frame(
+          seq: 2,
+          second: 2,
+          kind: 'turn_started',
+          turnId: 'turn-b',
+          threadHeadId: 'thread-b',
+        ),
+        _frame(
+          seq: 3,
+          second: 3,
+          kind: 'agent_panic',
+          turnId: null,
+          threadHeadId: 'thread-b',
+          payload: {'error': 'Process exited'},
+        ),
+      ],
+    }, now: DateTime.utc(2026, 8, 16, 12, 0, 20));
+
+    expect(
+      turns.singleWhere((turn) => turn.turnId == 'turn-a').phase,
+      AgentTurnPhase.working,
+    );
+    expect(
+      turns.singleWhere((turn) => turn.turnId == 'turn-b').phase,
+      AgentTurnPhase.error,
+    );
+  });
+
   test(
     'retains terminal outcomes beside the composer for a bounded window',
     () {
@@ -246,6 +286,7 @@ ObserverFrame _frame({
   required String kind,
   String? turnId = 'turn-1',
   String channelId = 'channel-1',
+  String? threadHeadId,
   int? receivedSecond,
   String? startedAt,
   dynamic payload = const <String, dynamic>{},
@@ -255,6 +296,7 @@ ObserverFrame _frame({
     timestamp: DateTime.utc(2026, 8, 16, 12, 0, second).toIso8601String(),
     kind: kind,
     channelId: channelId,
+    threadHeadId: threadHeadId,
     turnId: turnId,
     startedAt: startedAt,
     receivedAt: receivedSecond == null

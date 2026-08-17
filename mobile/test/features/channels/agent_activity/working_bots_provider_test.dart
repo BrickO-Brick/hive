@@ -164,6 +164,57 @@ void main() {
     expect(signal.startedAt, isNull);
   });
 
+  test(
+    'keeps a scoped terminal outcome reachable after thread typing stops',
+    () {
+      final failedTurn = _turn(
+        'agent-a',
+        phase: AgentTurnPhase.error,
+        threadHeadId: 'thread-1',
+      );
+      final container = ProviderContainer(
+        overrides: [
+          currentPubkeyProvider.overrideWith((ref) => 'owner'),
+          channelMembersProvider(
+            _channelId,
+          ).overrideWith((ref) async => const <ChannelMember>[]),
+          channelTypingProvider(
+            _channelId,
+          ).overrideWith(() => _FakeTypingNotifier(const [])),
+          agentMentionPubkeysProvider(
+            _channelId,
+          ).overrideWith((ref) => const {'agent-a'}),
+          agentOwnersProvider.overrideWithValue(
+            const AsyncData({'agent-a': 'owner'}),
+          ),
+          userCacheProvider.overrideWith(_FakeUserCacheNotifier.new),
+          observerRelayProvider.overrideWith(
+            () => _FakeObserverRelayNotifier({
+              'agent-a': [_observerFrame('agent-a')],
+            }),
+          ),
+          composerAgentTurnStatesProvider.overrideWithValue([failedTurn]),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      final signal = container
+          .read(
+            composerActivityStateProvider((
+              channelId: _channelId,
+              threadHeadId: 'thread-1',
+            )),
+          )
+          .agents
+          .single;
+
+      expect(signal.source, AgentWorkingSource.observer);
+      expect(signal.isWorking, isFalse);
+      expect(signal.phase, AgentTurnPhase.error);
+      expect(signal.turnId, failedTurn.turnId);
+    },
+  );
+
   test('keeps a recent owned error reachable after typing stops', () {
     final failedTurn = _turn('agent-a', phase: AgentTurnPhase.error);
     final container = ProviderContainer(
@@ -267,11 +318,13 @@ AgentTurnState _turn(
   String pubkey, {
   AgentTurnPhase phase = AgentTurnPhase.working,
   String? turnId,
+  String? threadHeadId,
   DateTime? startedAt,
   DateTime? lastActivityAt,
 }) => AgentTurnState(
   agentPubkey: pubkey,
   channelId: _channelId,
+  threadHeadId: threadHeadId,
   turnId: turnId ?? 'turn-$pubkey',
   startedAt: startedAt ?? DateTime.utc(2026, 8, 16, 12),
   lastActivityAt: lastActivityAt ?? DateTime.utc(2026, 8, 16, 12),

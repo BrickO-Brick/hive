@@ -252,6 +252,7 @@ class ComposerAgentActivityIndicator extends HookConsumerWidget {
             turnStates,
             agentPubkey: effectiveSelectedAgent,
             channelId: channelId,
+            threadHeadId: threadHeadId,
             turnId: effectiveTurnId,
           );
     final ObserverState? observerState;
@@ -358,6 +359,7 @@ class ComposerAgentActivityIndicator extends HookConsumerWidget {
         turnStates,
         agentPubkey: pubkey,
         channelId: channelId,
+        threadHeadId: threadHeadId,
       );
       selectedAgent.value = pubkey;
       pinnedTurnId.value = signal?.turnId ?? latestTurn?.turnId;

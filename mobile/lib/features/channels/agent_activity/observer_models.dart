@@ -14,6 +14,7 @@ class ObserverFrame {
   final String kind;
   final int? agentIndex;
   final String? channelId;
+  final String? threadHeadId;
   final String? sessionId;
   final String? turnId;
   final String? startedAt;
@@ -26,6 +27,7 @@ class ObserverFrame {
     required this.kind,
     this.agentIndex,
     this.channelId,
+    this.threadHeadId,
     this.sessionId,
     this.turnId,
     this.startedAt,
@@ -42,6 +44,7 @@ class ObserverFrame {
     kind: json['kind'] as String? ?? '',
     agentIndex: json['agentIndex'] as int?,
     channelId: json['channelId'] as String?,
+    threadHeadId: json['threadHeadId'] as String?,
     sessionId: json['sessionId'] as String?,
     turnId: json['turnId'] as String?,
     startedAt: json['startedAt'] as String?,
