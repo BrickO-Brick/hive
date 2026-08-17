@@ -107,9 +107,18 @@ pub fn put_managed_agent_runtime_lifecycle(
     payload: super::ManagedAgentRuntimeLifecycleObserverPayload,
     app: AppHandle,
 ) -> Result<ManagedAgentRuntimeStatus, String> {
+    put_managed_agent_runtime_lifecycle_for(outer_pubkey, payload, &app)
+}
+
+/// Runtime-generic core so the sibling capability check is testable under `MockRuntime` (§3.3a / §7).
+pub(crate) fn put_managed_agent_runtime_lifecycle_for<R: tauri::Runtime>(
+    outer_pubkey: String,
+    payload: super::ManagedAgentRuntimeLifecycleObserverPayload,
+    app: &tauri::AppHandle<R>,
+) -> Result<ManagedAgentRuntimeStatus, String> {
     let key = observer_lifecycle_key(&outer_pubkey, &payload)?;
     let state = app.state::<AppState>();
-    let records = load_managed_agents(&app)?;
+    let records = load_managed_agents(app)?;
     let record = records
         .iter()
         .find(|record| record.pubkey.eq_ignore_ascii_case(&key.pubkey))
@@ -124,18 +133,18 @@ pub fn put_managed_agent_runtime_lifecycle(
     if runtime.start_nonce != payload.start_nonce {
         return Err("lifecycle frame does not match the current harness generation".into());
     }
-    if runtime
+    let exited = runtime
         .child
         .try_wait()
         .map_err(|e| e.to_string())?
-        .is_some()
-    {
+        .is_some();
+    if exited {
         return Err("lifecycle frame arrived after process exit".into());
     }
     runtime.lifecycle = payload.lifecycle;
     runtime.error = payload.error;
-    let status = status_for(&app, record, &key, Some(runtime), None);
-    emit_status(&app, &status);
+    let status = status_for(app, record, &key, Some(runtime), None);
+    emit_status(app, &status);
     Ok(status)
 }
 
@@ -184,7 +193,6 @@ pub fn list_managed_agent_runtimes(
     for key in exited_keys {
         runtimes.remove(&key);
         super::remove_agent_runtime_receipt(&app, &key);
-        state.clear_agent_session_cache(&key);
         if let Some(record) = records
             .iter_mut()
             .find(|record| record.pubkey.eq_ignore_ascii_case(&key.pubkey))
@@ -432,7 +440,6 @@ pub fn stop_managed_agent_runtime(
         terminate_untracked_pair_runtime(&app, &key)?;
     }
     super::remove_agent_runtime_receipt(&app, &key);
-    state.clear_agent_session_cache(&key);
     record.runtime_pid = None;
     record.updated_at = crate::util::now_iso();
     record.last_stopped_at = Some(record.updated_at.clone());
@@ -821,7 +828,6 @@ pub(crate) fn drain_scope_runtimes(
 
     execute_drain_journal(&journal, &mut runtimes, |key| {
         super::remove_agent_runtime_receipt(app, key);
-        state.clear_agent_session_cache(key);
     })
 }
 

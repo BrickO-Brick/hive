@@ -564,6 +564,13 @@ pub struct PromptContext {
     /// the desktop keys per (agent, relay) pair, e.g. `session_config_captured`,
     /// mirroring the `managed_agent_runtime_lifecycle` frames.
     pub relay_url: String,
+    /// Unpredictable identity for this exact harness generation
+    /// (`BUZZ_MANAGED_AGENT_START_NONCE`). Rides in `session_config_captured`
+    /// alongside `relay_url` so the desktop can bind the frame to the exact
+    /// tracked runtime that emitted it, the same generation check the lifecycle
+    /// frames already carry. Empty when the harness was launched outside a
+    /// managed-agent runtime (no nonce in env) — such frames the desktop drops.
+    pub start_nonce: String,
 }
 
 impl AgentPool {
@@ -1008,9 +1015,11 @@ async fn create_session_and_apply_model(
             "modes": resp.raw.get("modes").cloned().unwrap_or(serde_json::Value::Null),
             "models": resp.raw.get("models").cloned().unwrap_or(serde_json::Value::Null),
             "modelOverridden": agent.model_overridden && switch_succeeded,
-            // Pair identity for the desktop session-config cache, which is
-            // keyed by (agent, relay) like the lifecycle frames.
+            // Pair identity for the desktop session-config cache, which binds
+            // the frame to the exact tracked runtime by (agent, relay, nonce)
+            // like the lifecycle frames. A frame with no nonce is dropped.
             "relayUrl": ctx.relay_url,
+            "startNonce": ctx.start_nonce,
         }),
     );
 
@@ -6542,6 +6551,7 @@ mod tests {
             memory_enabled: false,
             harness_name: "goose".to_string(),
             relay_url: "ws://127.0.0.1:3000".to_string(),
+            start_nonce: "test-nonce".to_string(),
         }
     }
 
