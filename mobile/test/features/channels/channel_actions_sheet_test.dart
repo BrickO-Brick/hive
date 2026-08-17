@@ -371,6 +371,47 @@ void main() {
     );
   });
 
+  testWidgets('Manage refreshes metadata after saving from actions', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _modalApp(
+        channel: _channel(),
+        loadMembers: () async => [
+          ChannelMember(
+            pubkey: _currentPubkey,
+            role: 'owner',
+            joinedAt: DateTime(2025),
+          ),
+        ],
+        createChannelActions: (ref) => _FakeChannelActions(
+          ref,
+          onUpdateChannel: (channelId, name, description) async {},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Open actions'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Manage channel'));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(
+      find.byKey(const ValueKey('manage-channel-name')),
+      'renamed',
+    );
+    await tester.tap(find.byKey(const ValueKey('manage-channel-save-details')));
+    await tester.pumpAndSettle();
+
+    expect(find.widgetWithText(ListTile, 'Manage channel'), findsOneWidget);
+    await tester.tap(find.widgetWithText(ListTile, 'Manage channel'));
+    await tester.pumpAndSettle();
+    final nameField = tester.widget<TextField>(
+      find.byKey(const ValueKey('manage-channel-name')),
+    );
+    expect(nameField.controller?.text, 'renamed');
+  });
+
   testWidgets('non-member cannot edit canvas from Manage channel', (
     tester,
   ) async {
@@ -491,7 +532,14 @@ class _FakeChannelSectionsNotifier extends ChannelSectionsNotifier {
 }
 
 class _FakeChannelActions extends ChannelActions {
-  _FakeChannelActions(Ref ref)
+  final Future<void> Function(
+    String channelId,
+    String? name,
+    String? description,
+  )?
+  onUpdateChannel;
+
+  _FakeChannelActions(Ref ref, {this.onUpdateChannel})
     : super(
         ref: ref,
         session: ref.read(relaySessionProvider.notifier),
@@ -501,6 +549,15 @@ class _FakeChannelActions extends ChannelActions {
         ),
         currentPubkey: _currentPubkey,
       );
+
+  @override
+  Future<void> updateChannel({
+    required String channelId,
+    String? name,
+    String? description,
+  }) async {
+    await onUpdateChannel?.call(channelId, name, description);
+  }
 
   String? unarchivedChannelId;
 

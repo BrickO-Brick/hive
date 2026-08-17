@@ -47,10 +47,12 @@ class AddChannelMembersSheet extends HookConsumerWidget {
     final selectedPubkeys = selectedUsers.value
         .map((user) => user.pubkey.toLowerCase())
         .toSet();
+    final successfulPubkeys = useState<Set<String>>(<String>{});
+    final excludedPubkeys = {...normalizedExisting, ...successfulPubkeys.value};
     final availableUsers =
         directoryAsync.asData?.value
             .where(
-              (user) => !normalizedExisting.contains(user.pubkey.toLowerCase()),
+              (user) => !excludedPubkeys.contains(user.pubkey.toLowerCase()),
             )
             .toList() ??
         const <DirectoryUser>[];
@@ -84,6 +86,12 @@ class AddChannelMembersSheet extends HookConsumerWidget {
         final failedPubkeys = error.failures.keys
             .map((pubkey) => pubkey.toLowerCase())
             .toSet();
+        successfulPubkeys.value = {
+          ...successfulPubkeys.value,
+          for (final user in submittedUsers)
+            if (!failedPubkeys.contains(user.pubkey.toLowerCase()))
+              user.pubkey.toLowerCase(),
+        };
         selectedUsers.value = [
           for (final user in submittedUsers)
             if (failedPubkeys.contains(user.pubkey.toLowerCase())) user,

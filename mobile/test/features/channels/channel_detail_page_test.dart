@@ -1210,6 +1210,10 @@ void main() {
           find.byKey(const ValueKey('add-channel-member-selected-bob')),
           findsOneWidget,
         );
+        expect(
+          find.byKey(const ValueKey('add-channel-member-alice')),
+          findsNothing,
+        );
         // The successful add must not remain selected for a retry.
         expect(
           tester
