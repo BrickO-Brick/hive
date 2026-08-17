@@ -40,7 +40,19 @@ test("projects activity overview screenshot", async ({ page }) => {
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
   await expect(page.getByTestId("projects-page-tabs")).toBeVisible();
-  await expect(page.getByTestId("projects-page-header")).toBeVisible();
+  const activityHeader = page.getByTestId("projects-page-header");
+  const relayIcon = page.getByTestId("projects-activity-relay-icon");
+  await expect(activityHeader).toBeVisible();
+  await expect(relayIcon).toBeVisible();
+  const [activityHeaderBox, relayIconBox] = await Promise.all([
+    activityHeader.boundingBox(),
+    relayIcon.boundingBox(),
+  ]);
+  expect(activityHeaderBox).not.toBeNull();
+  expect(relayIconBox).not.toBeNull();
+  expect((relayIconBox?.y ?? 0) + (relayIconBox?.height ?? 0)).toBeLessThan(
+    activityHeaderBox?.y ?? 0,
+  );
   await expect(page.getByTestId("projects-activity-search")).toBeVisible();
   await expect(page.getByTestId("projects-activity-intro")).toContainText(
     "Projects Activity",
@@ -279,10 +291,10 @@ test("projects v3 workspace screenshot states", async ({ page }) => {
     name: "Fetch",
     exact: true,
   });
-  await expect(peopleSection).toHaveCSS("border-top-width", "1px");
+  await expect(peopleSection).toHaveCSS("border-top-width", "0px");
   await expect(detailsHeading.locator("..")).toHaveCSS(
     "border-top-width",
-    "1px",
+    "0px",
   );
   expect(
     await repositoryHeading.evaluate(
@@ -305,9 +317,9 @@ test("projects v3 workspace screenshot states", async ({ page }) => {
     (peopleSectionBounds?.y ?? 0) -
       ((actionsSectionBounds?.y ?? 0) + (actionsSectionBounds?.height ?? 0)),
   ).toBe(8);
-  expect(
-    (detailsHeadingBounds?.y ?? 0) - (peopleSectionBounds?.y ?? 0) - 1,
-  ).toBe(8);
+  expect((detailsHeadingBounds?.y ?? 0) - (peopleSectionBounds?.y ?? 0)).toBe(
+    8,
+  );
   const people = repositoryActionsPanel.getByTestId(
     "project-repository-person",
   );
@@ -768,6 +780,13 @@ test("projects v3 workspace screenshot states", async ({ page }) => {
   await expect(
     workspacePanel.getByTestId("project-repository-entry-icon").first(),
   ).toHaveCSS("border-radius", "8px");
+  const repositoryEntryCell = workspacePanel
+    .getByTestId("project-repository-entry-row")
+    .first()
+    .locator("td")
+    .first();
+  await expect(repositoryEntryCell).toHaveCSS("border-radius", "0px");
+  await expect(repositoryEntryCell).toHaveCSS("border-bottom-width", "0px");
   await chatPanelTab.click();
   await expect(agentContext).toContainText("Files");
   await expect(
@@ -861,7 +880,7 @@ test("projects v3 workspace screenshot states", async ({ page }) => {
     repositoryActionsPanel
       .getByTestId("project-repository-people")
       .locator(".."),
-  ).toHaveCSS("border-top-width", "1px");
+  ).toHaveCSS("border-top-width", "0px");
   await expect(
     repositoryActionsPanel.getByRole("heading", {
       name: "Task activity",

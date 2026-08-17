@@ -93,7 +93,7 @@ async function expectBuzzSidebarPalette(page: Page, mode: "light" | "dark") {
     (element) => getComputedStyle(element, "::before").backgroundColor,
   );
   expect(pinnedSpacerColor).toBe("rgba(0, 0, 0, 0)");
-  await expect(pinnedHeader.getByTestId("open-agents-view")).toBeVisible();
+  await expect(scrollContent.getByTestId("open-agents-view")).toBeVisible();
   const searchBox = await search.boundingBox();
   const pinnedHeaderBox = await pinnedHeader.boundingBox();
   const primaryMenuBox = await primaryMenu.boundingBox();
@@ -129,7 +129,7 @@ async function expectBuzzSidebarPalette(page: Page, mode: "light" | "dark") {
   expect(searchBox.y + searchBox.height).toBeLessThanOrEqual(
     pinnedHeaderBox.y + pinnedHeaderBox.height,
   );
-  expect(primaryMenuBox.y).toBeLessThan(
+  expect(primaryMenuBox.y).toBeGreaterThanOrEqual(
     pinnedHeaderBox.y + pinnedHeaderBox.height,
   );
   for (const rowBox of [primaryRowBox, activeRowBox, hoverRowBox]) {

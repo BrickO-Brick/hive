@@ -32,7 +32,7 @@ type AppSidebarPrimaryMenuProps = {
   selectedView: SidebarSelectedView;
 };
 
-type AppSidebarPinnedHeaderProps = AppSidebarPrimaryMenuProps & {
+type AppSidebarPinnedHeaderProps = {
   channelLabels: Record<string, string>;
   currentChannelId?: string | null;
   currentPubkey?: string;
@@ -52,23 +52,15 @@ export function AppSidebarPinnedHeader({
   channelLabels,
   currentChannelId,
   currentPubkey,
-  homeBadgeCount,
   onBrowseChannels,
   onCreateAgent,
   onCreateChannel,
   onOpenDm,
   onOpenSearchResult,
-  onSelectAgents,
   onSelectChannel,
-  onSelectHome,
-  onSelectProjects,
-  onSelectPulse,
-  onSelectWorkflows,
-  projectsOverviewActive,
   searchChannels,
   searchFocusRequest,
   scopeSearchFocusRequest,
-  selectedView,
   suggestionChannels,
 }: AppSidebarPinnedHeaderProps) {
   return (
@@ -79,7 +71,6 @@ export function AppSidebarPinnedHeader({
       <TopbarSearch
         channelLabels={channelLabels}
         channels={searchChannels}
-        className="mb-2"
         currentChannelId={currentChannelId}
         currentPubkey={currentPubkey}
         focusRequest={searchFocusRequest}
@@ -91,16 +82,6 @@ export function AppSidebarPinnedHeader({
         onCreateChannel={onCreateChannel}
         scopeFocusRequest={scopeSearchFocusRequest}
         suggestionChannels={suggestionChannels}
-      />
-      <AppSidebarPrimaryMenu
-        homeBadgeCount={homeBadgeCount}
-        onSelectAgents={onSelectAgents}
-        onSelectHome={onSelectHome}
-        onSelectProjects={onSelectProjects}
-        onSelectPulse={onSelectPulse}
-        onSelectWorkflows={onSelectWorkflows}
-        projectsOverviewActive={projectsOverviewActive}
-        selectedView={selectedView}
       />
     </div>
   );
@@ -118,7 +99,7 @@ export function AppSidebarPrimaryMenu({
 }: AppSidebarPrimaryMenuProps) {
   return (
     <SidebarHeader
-      className="relative z-40 cursor-default select-none px-0 pb-2 pt-0"
+      className="relative z-40 cursor-default select-none px-2 pb-2 pt-0"
       data-tauri-drag-region
       data-testid="sidebar-primary-menu"
     >

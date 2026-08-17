@@ -528,6 +528,47 @@ test("places sidebar search above the primary navigation", async ({ page }) => {
   expect(searchBox.y + searchBox.height).toBeLessThanOrEqual(menuBox.y);
 });
 
+test("keeps only search pinned while primary navigation scrolls", async ({
+  page,
+}) => {
+  await loadTheme(page, "github-light");
+
+  const search = page.getByTestId("open-search");
+  const primaryMenu = page.getByTestId("sidebar-primary-menu");
+  const sidebarScroller = page.locator(".buzz-sidebar-scrollbar");
+  const [initialSearchBox, initialMenuBox] = await Promise.all([
+    search.boundingBox(),
+    primaryMenu.boundingBox(),
+  ]);
+  expect(initialSearchBox).not.toBeNull();
+  expect(initialMenuBox).not.toBeNull();
+
+  const scrollTop = await sidebarScroller.evaluate((element) => {
+    element.scrollTop = Math.min(
+      120,
+      Math.max(0, element.scrollHeight - element.clientHeight),
+    );
+    return element.scrollTop;
+  });
+  expect(scrollTop).toBeGreaterThan(0);
+  await expect
+    .poll(() =>
+      sidebarScroller.evaluate((element) => Math.round(element.scrollTop)),
+    )
+    .toBe(Math.round(scrollTop));
+
+  const [scrolledSearchBox, scrolledMenuBox] = await Promise.all([
+    search.boundingBox(),
+    primaryMenu.boundingBox(),
+  ]);
+  expect(scrolledSearchBox).not.toBeNull();
+  expect(scrolledMenuBox).not.toBeNull();
+  expect(
+    Math.abs((scrolledSearchBox?.y ?? 0) - (initialSearchBox?.y ?? 0)),
+  ).toBeLessThanOrEqual(1);
+  expect(scrolledMenuBox?.y ?? 0).toBeLessThan(initialMenuBox?.y ?? 0);
+});
+
 test("sidebar rail resizes without toggling the sidebar", async ({ page }) => {
   await page.goto("/");
   const rail = page.getByRole("button", { name: "Resize sidebar" });

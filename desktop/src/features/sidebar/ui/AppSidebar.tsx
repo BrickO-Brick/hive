@@ -32,7 +32,10 @@ import {
   useLeaveChannelDialog,
   type SectionDialogValue,
 } from "@/features/sidebar/ui/ChannelSectionDialogs";
-import { AppSidebarPinnedHeader } from "@/features/sidebar/ui/AppSidebarPinnedHeader";
+import {
+  AppSidebarPinnedHeader,
+  AppSidebarPrimaryMenu,
+} from "@/features/sidebar/ui/AppSidebarPinnedHeader";
 import { SidebarProjectsSection } from "@/features/sidebar/ui/SidebarProjectsSection";
 import { MoreUnreadButton } from "@/features/sidebar/ui/MoreUnreadButton";
 import { SidebarSection } from "@/features/sidebar/ui/SidebarSection";
@@ -569,23 +572,15 @@ export function AppSidebar({
           currentChannelId={
             selectedView === "channel" ? selectedChannelId : null
           }
-          homeBadgeCount={homeBadgeCount}
           onBrowseChannels={onBrowseChannels}
           onCreateAgent={onCreateAgent}
           onCreateChannel={handleOpenCreateChannel}
           onOpenDm={onOpenDm}
           onOpenSearchResult={onOpenSearchResult}
-          onSelectAgents={onSelectAgents}
           onSelectChannel={onSelectChannel}
-          onSelectHome={onSelectHome}
-          onSelectProjects={onSelectProjects}
-          onSelectPulse={onSelectPulse}
-          onSelectWorkflows={onSelectWorkflows}
-          projectsOverviewActive={projectsOverviewActive}
           searchChannels={searchChannels}
           searchFocusRequest={searchFocusRequests[0]}
           scopeSearchFocusRequest={searchFocusRequests[1]}
-          selectedView={selectedView}
           suggestionChannels={channels}
         />
 
@@ -614,6 +609,9 @@ export function AppSidebar({
               data-sidebar-background
               data-testid="sidebar-scroll-content"
             >
+              {/* biome-ignore format: keep compact to stay within file size limit */}
+              <AppSidebarPrimaryMenu homeBadgeCount={homeBadgeCount} onSelectAgents={onSelectAgents} onSelectHome={onSelectHome} onSelectProjects={onSelectProjects} onSelectPulse={onSelectPulse} onSelectWorkflows={onSelectWorkflows} projectsOverviewActive={projectsOverviewActive} selectedView={selectedView} />
+
               <SidebarProjectsSection />
 
               {isLoading ? (

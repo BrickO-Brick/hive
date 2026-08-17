@@ -322,14 +322,7 @@ function SidebarProjectsSectionContent() {
                       isActive={isActive}
                       isExpanded={isExpanded}
                       onDelete={() => setProjectToDelete(project)}
-                      onOpen={() => {
-                        if (isActive) {
-                          setProjectExpanded(project, !isExpanded);
-                          return;
-                        }
-                        setProjectExpanded(project, true);
-                        void goProject(project.id);
-                      }}
+                      onOpen={() => setProjectExpanded(project, !isExpanded)}
                       onRemove={() => handleRemove(project)}
                       project={project}
                     />

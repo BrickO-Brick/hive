@@ -471,7 +471,13 @@ test("multi-repository projects switch the active repository", async ({
     },
   );
   await projectRow.click();
-  await expect(page).toHaveURL(/\/projects\//);
+  await expect(page).not.toHaveURL(/\/projects\//);
+  await expect(projectRow).toHaveAttribute("aria-expanded", "false");
+  await expect(relayToolsRepository).toBeHidden();
+
+  await projectRow.click();
+  await expect(page).not.toHaveURL(/\/projects\//);
+  await expect(projectRow).toHaveAttribute("aria-expanded", "true");
   await expect(relayToolsRepository).toBeVisible();
   const projectSidebarMetrics = await sidebarScrollContent.evaluate(
     (element) => {
@@ -497,7 +503,7 @@ test("multi-repository projects switch the active repository", async ({
     return element.scrollTop;
   });
   await projectRow.click();
-  await expect(page).toHaveURL(/\/projects\//);
+  await expect(page).not.toHaveURL(/\/projects\//);
   await expect(projectRow).toHaveAttribute("aria-expanded", "true");
   await expect
     .poll(() =>
@@ -568,6 +574,30 @@ test("multi-repository projects switch the active repository", async ({
       ),
     )
     .toBe(true);
+});
+
+test("latest files commit opens its detail without a divider", async ({
+  page,
+}) => {
+  await enableProjectsFeature(page);
+  await installMockBridge(page);
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByTestId("open-projects-view").click();
+  await page.getByTestId("projects-section-projects").click();
+  const projectEntry = page
+    .locator(
+      '[data-testid="project-card-buzz"], [data-testid="project-row-buzz"]',
+    )
+    .first();
+  await expect(projectEntry).toBeVisible({ timeout: 10_000 });
+  await projectEntry.click();
+  await page.getByRole("tab", { name: "Files" }).click();
+
+  const latestCommit = page.getByTestId("project-repository-latest-commit");
+  await expect(latestCommit).toBeVisible();
+  await expect(latestCommit).toHaveCSS("border-bottom-width", "0px");
+  await latestCommit.click();
+  await expect(page.getByTestId("project-commit-detail")).toBeVisible();
 });
 
 test("commit detail opens from the commits feed with a diff", async ({

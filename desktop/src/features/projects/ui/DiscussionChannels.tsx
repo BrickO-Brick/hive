@@ -354,7 +354,7 @@ function DiscussionMessagePreview({
 }) {
   return (
     <Markdown
-      className="inbox-preview-markdown mt-0.5 text-inherit leading-4"
+      className="inbox-preview-markdown mt-0.5 text-inherit leading-6"
       content={discussionSnippet(content)}
       interactive={false}
       mentionNames={mentionNames}
