@@ -675,6 +675,9 @@ export function AgentEditMergedDialog({
         data-testid="edit-agent-dialog"
         footerClassName="border-t-0 pt-0"
         headerClassName="pb-2"
+        // Deep-link focus targets are owned by the rAF effects above; suppress
+        // Radix's name-input open-autofocus so it can't steal the requested field.
+        onOpenAutoFocus={initialFocus ? (e) => e.preventDefault() : undefined}
         title={dialogTitle}
         footer={
           <div className="flex w-full flex-wrap items-center justify-between gap-3">
