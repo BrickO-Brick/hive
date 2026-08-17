@@ -30,7 +30,12 @@ import {
   AttachmentMedia,
   AttachmentTitle,
 } from "@/shared/ui/attachment";
-import { useReleasingVideoRef } from "@/shared/ui/mediaSession";
+import {
+  claimMediaSession,
+  markMediaSessionPaused,
+  type NowPlayingMetadata,
+  useReleasingVideoRef,
+} from "@/shared/ui/mediaSession";
 import { MODAL_BACKDROP_BLUR_CLASS } from "@/shared/ui/modalBackdrop";
 import { Progress } from "@/shared/ui/progress";
 import { Toggle } from "@/shared/ui/toggle";
@@ -291,6 +296,16 @@ const MediaAttachmentItem = React.forwardRef<
       ? rewriteRelayUrl(attachment.thumb)
       : undefined;
 
+  // `navigator.mediaSession.metadata` is page-global, so a preview that played
+  // without claiming would leave Control Center showing whatever timeline video
+  // published last. No channel subtitle here — the attachment isn't posted yet.
+  const mediaSessionMetadata = React.useMemo<NowPlayingMetadata>(
+    () => ({
+      title: attachment.filename?.trim() || mediaLabel,
+    }),
+    [attachment.filename, mediaLabel],
+  );
+
   // Only Buzz-hosted uploads have a content hash. URL-only provider media
   // must remain externally hosted instead of being copied into storage by the
   // image editor's save path.
@@ -440,6 +455,15 @@ const MediaAttachmentItem = React.forwardRef<
                     "relative max-h-[90vh] max-w-[90vw] rounded-lg",
                     isSpoilered && "blur-2xl brightness-75",
                   )}
+                  onEnded={(event) =>
+                    markMediaSessionPaused(event.currentTarget)
+                  }
+                  onPause={(event) =>
+                    markMediaSessionPaused(event.currentTarget)
+                  }
+                  onPlay={(event) =>
+                    claimMediaSession(event.currentTarget, mediaSessionMetadata)
+                  }
                 />
               ) : (
                 <img
