@@ -2,9 +2,8 @@ import type { Channel } from "@/shared/api/types";
 
 /**
  * Channels whose name starts with this prefix are discovered as workstream
- * board entries. There is no creator/ownership filter — any visible,
- * non-archived channel matching the prefix is included, regardless of who
- * created or joined it.
+ * board entries. Discovery is limited to visible channels the current user
+ * has joined; there is no creator/ownership filter.
  */
 export const WORKSTREAM_CHANNEL_PREFIX = "loganj-ws-";
 
@@ -13,7 +12,8 @@ export function filterWorkstreamChannels(
 ): Channel[] {
   return channels.filter(
     (channel) =>
-      channel.name.startsWith(WORKSTREAM_CHANNEL_PREFIX) &&
-      channel.archivedAt === null,
+      channel.isMember &&
+      channel.archivedAt === null &&
+      channel.name.startsWith(WORKSTREAM_CHANNEL_PREFIX),
   );
 }

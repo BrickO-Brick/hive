@@ -21,7 +21,7 @@ function buildChannel(overrides) {
     archivedAt: overrides.archivedAt ?? null,
     participants: [],
     participantPubkeys: [],
-    isMember: overrides.isMember ?? false,
+    isMember: overrides.isMember ?? true,
     ttlSeconds: null,
     ttlDeadline: null,
   };
@@ -31,16 +31,33 @@ test("prefix constant matches the contract-specified prefix", () => {
   assert.equal(WORKSTREAM_CHANNEL_PREFIX, "loganj-ws-");
 });
 
-test("includes channels whose name starts exactly with the prefix", () => {
+test("includes joined channels whose name starts exactly with the prefix", () => {
   const channels = [
-    buildChannel({ id: "1", name: "loganj-ws-canvas-cards" }),
-    buildChannel({ id: "2", name: "general" }),
+    buildChannel({ id: "1", name: "loganj-ws-canvas-cards", isMember: true }),
+    buildChannel({ id: "2", name: "general", isMember: true }),
   ];
 
   const result = filterWorkstreamChannels(channels);
   assert.deepEqual(
     result.map((c) => c.id),
     ["1"],
+  );
+});
+
+test("excludes prefixed channels the current user has not joined", () => {
+  const channels = [
+    buildChannel({ id: "joined", name: "loganj-ws-joined", isMember: true }),
+    buildChannel({
+      id: "unjoined",
+      name: "loganj-ws-unjoined",
+      isMember: false,
+    }),
+  ];
+
+  const result = filterWorkstreamChannels(channels);
+  assert.deepEqual(
+    result.map((c) => c.id),
+    ["joined"],
   );
 });
 
@@ -70,11 +87,11 @@ test("excludes a near-miss name missing the trailing hyphen", () => {
   );
 });
 
-test("applies no creator/membership filter — every matching name is included regardless of who created or joined it", () => {
+test("includes every joined matching channel without a creator filter", () => {
   const channels = [
-    // Different member sets stand in for "different creators" — the Channel
-    // type carries no creator field on the list endpoint, so membership
-    // overlap is the only axis available to prove no ownership filtering.
+    // The list response has no creator field. Distinct membership sets prove
+    // that matching joined channels are included without creator/ownership
+    // filtering, while the unjoined control remains excluded.
     buildChannel({
       id: "mine",
       name: "loganj-ws-mine",
@@ -82,25 +99,21 @@ test("applies no creator/membership filter — every matching name is included r
       memberPubkeys: ["aa"],
     }),
     buildChannel({
-      id: "someone-elses",
-      name: "loganj-ws-someone-elses",
-      isMember: false,
+      id: "delegated",
+      name: "loganj-ws-delegated",
+      isMember: true,
       memberPubkeys: ["bb", "cc"],
     }),
     buildChannel({
-      id: "no-members",
-      name: "loganj-ws-empty",
+      id: "unjoined",
+      name: "loganj-ws-unjoined",
       isMember: false,
-      memberPubkeys: [],
+      memberPubkeys: ["dd"],
     }),
   ];
 
   const result = filterWorkstreamChannels(channels);
-  assert.deepEqual(result.map((c) => c.id).sort(), [
-    "mine",
-    "no-members",
-    "someone-elses",
-  ]);
+  assert.deepEqual(result.map((c) => c.id).sort(), ["delegated", "mine"]);
 });
 
 test("excludes an archived channel even when its name matches the prefix", () => {
