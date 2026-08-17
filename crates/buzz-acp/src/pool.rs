@@ -1575,11 +1575,10 @@ pub async fn run_prompt_task(
     //
     // Failure modes (all fail open — no crash, no block):
     //   * no owner configured → skip (no NIP-AE namespace exists)
-    //   * confirmed absence → cache the onboarding nudge so the agent
-    //     learns how to bootstrap itself.
+    //   * confirmed absence → cache no section; memory onboarding is loaded
+    //     only for memory-related tasks through the buzz-cli skill.
     //   * transport / decrypt / parse error → inject nothing. We never
-    //     mistake "relay slow or broken" for "no core" — that would invite
-    //     the agent to overwrite real, just-unreachable memory.
+    //     mistake "relay slow or broken" for "no core".
     //   * fetch exceeds CORE_FETCH_TIMEOUT → inject nothing, same reason.
     //
     // Per Tyler's locked spec: NO mid-session refreshes. Re-fetch only
@@ -1593,7 +1592,7 @@ pub async fn run_prompt_task(
         {
             let is_new_channel_session = !agent.state.sessions.contains_key(cid);
             if is_new_channel_session && !agent.state.core_sections.contains_key(cid) {
-                // Bounded — we'd rather start the session with no core hint
+                // Bounded — we'd rather start the session with no core context
                 // than block session creation on a stalled relay.
                 const CORE_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
                 let fetch = crate::engram_fetch::build_core_section(

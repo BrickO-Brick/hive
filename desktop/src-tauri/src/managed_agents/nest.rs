@@ -43,14 +43,28 @@ pub(crate) const AGENTS_MD: &str = include_str!("nest_agents.md");
 /// Written to ~/.buzz/.agents/skills/buzz-cli/SKILL.md on first init.
 const BUZZ_CLI_SKILL_MD: &str = include_str!("nest_skill.md");
 
+/// Progressive-disclosure references installed beside the buzz-cli skill.
+const BUZZ_CLI_REFERENCES: &[(&str, &str)] = &[
+    ("messaging.md", include_str!("nest_skill_messaging.md")),
+    ("agents.md", include_str!("nest_skill_agents.md")),
+    (
+        "repositories.md",
+        include_str!("nest_skill_repositories.md"),
+    ),
+    ("memory.md", include_str!("nest_skill_memory.md")),
+    ("recovery.md", include_str!("nest_skill_recovery.md")),
+    ("contracts.md", include_str!("nest_skill_contracts.md")),
+    ("workspace.md", include_str!("nest_skill_workspace.md")),
+];
+
 /// Template content version for AGENTS.md static content (above managed markers).
 /// Bump this when changing `nest_agents.md` to trigger refresh on existing installs.
 /// Version 1 is implicitly "before this mechanism existed" (no version file).
-const NEST_AGENTS_VERSION: u32 = 4;
+const NEST_AGENTS_VERSION: u32 = 6;
 
 /// Template content version for SKILL.md.
 /// Bump this when changing `nest_skill.md` to trigger refresh on existing installs.
-const NEST_SKILL_VERSION: u32 = 5;
+const NEST_SKILL_VERSION: u32 = 7;
 
 const BEGIN_MARKER: &str = "<!-- BEGIN BUZZ MANAGED";
 const END_MARKER: &str = "<!-- END BUZZ MANAGED -->";
@@ -119,7 +133,7 @@ pub fn ensure_nest() -> Result<(), String> {
 ///
 /// - Creates the root directory and all subdirectories.
 /// - Writes `AGENTS.md` only if it doesn't already exist.
-/// - Writes `.agents/skills/buzz-cli/SKILL.md` only if it doesn't already exist.
+/// - Writes `.agents/skills/buzz-cli/SKILL.md` and its reference tree.
 /// - Creates harness-specific symlinks pointing to the canonical
 ///   `.agents/skills/buzz-cli` directory for each known provider.
 /// - Sets 700 permissions on the root, all subdirectories, and the skill
@@ -258,6 +272,7 @@ pub fn ensure_nest_at(root: &Path) -> Result<(), String> {
                 accumulated.push(component);
                 skill_perm_dirs.push(root.join(&accumulated));
             }
+            skill_perm_dirs.push(root.join(CANONICAL_SKILL_DIR).join("references"));
         }
         for skill_dir in known_skill_dirs() {
             // Ensure every ancestor dir gets 700, not just the leaf.
@@ -441,7 +456,7 @@ fn refresh_agents_md_if_stale(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Refresh SKILL.md if the template version has changed.
+/// Refresh SKILL.md and its reference tree if the template version has changed.
 ///
 /// SKILL.md has no user-editable sections — it is fully overwritten on version bump.
 fn refresh_skill_md_if_stale(root: &Path) -> Result<(), String> {
@@ -483,6 +498,22 @@ fn refresh_skill_md_if_stale(root: &Path) -> Result<(), String> {
     }
     tmp.persist(&skill_md)
         .map_err(|e| format!("persist {}: {e}", skill_md.display()))?;
+
+    let references_dir = agents_skill_dir.join("references");
+    fs::create_dir_all(&references_dir)
+        .map_err(|e| format!("create {}: {e}", references_dir.display()))?;
+    for (name, content) in BUZZ_CLI_REFERENCES {
+        let path = references_dir.join(name);
+        let mut tmp = tempfile::NamedTempFile::new_in(&references_dir)
+            .map_err(|e| format!("tempfile in {}: {e}", references_dir.display()))?;
+        {
+            use std::io::Write;
+            tmp.write_all(content.as_bytes())
+                .map_err(|e| format!("write tempfile: {e}"))?;
+        }
+        tmp.persist(&path)
+            .map_err(|e| format!("persist {}: {e}", path.display()))?;
+    }
 
     // Replace old real directory with a symlink.
     if old_is_real_dir {

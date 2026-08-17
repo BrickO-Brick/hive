@@ -13,7 +13,7 @@
 //!   still queue normally.
 //! - **Queue** — all events accumulate; batched on the next flush cycle.
 
-use nostr::{Event, ToBech32};
+use nostr::Event;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -1109,21 +1109,21 @@ fn format_prompt_actor(pubkey: &str, profile_lookup: Option<&PromptProfileLookup
 
 /// Format the per-event `[Event]` block for a single [`BatchEvent`].
 ///
-/// Includes: event_id, channel (name + UUID), kind, sender (hex + npub),
-/// time, content, all tags (never stripped), and parsed structural fields.
+/// Includes the event identity, kind, sender, time, content, parsed thread and
+/// mention fields, plus only non-structural metadata tags. Channel identity and
+/// reply routing live once in the preceding `[Context]` section.
 ///
 /// Reused by the goose-native steer path (lib.rs mode-gate) to render the
 /// single withheld event for delivery via `_goose/unstable/session/steer`,
 /// without paying for the batch-level context blocks the in-flight turn
 /// already has.
 pub(crate) fn format_event_block(
-    channel_id: Uuid,
-    channel_info: Option<&PromptChannelInfo>,
+    _channel_id: Uuid,
+    _channel_info: Option<&PromptChannelInfo>,
     be: &BatchEvent,
     profile_lookup: Option<&PromptProfileLookup>,
 ) -> String {
     let hex = be.event.pubkey.to_hex();
-    let npub = be.event.pubkey.to_bech32().unwrap_or_else(|_| hex.clone());
 
     let time = chrono::DateTime::from_timestamp(be.event.created_at.as_secs() as i64, 0)
         .map(|dt| dt.to_rfc3339())
@@ -1132,43 +1132,34 @@ pub(crate) fn format_event_block(
     let kind = be.event.kind.as_u16() as u32;
     let event_id = be.event.id.to_hex();
 
-    let channel_display = match channel_info {
-        Some(ci) => format!("{} (#{channel_id})", ci.name),
-        None => channel_id.to_string(),
-    };
+    let thread = parse_thread_tags(&be.event);
 
     let mut block = format!(
         "Event ID: {event_id}\n\
-         Channel: {channel_display}\n\
          Kind: {kind}\n\
          From: {}\n\
          Time: {time}\n\
          Content: {}",
         match resolve_prompt_label(&hex, profile_lookup) {
-            Some(label) => format!("{label} (npub: {npub}, hex: {hex})"),
-            None => format!("{npub} (hex: {hex})"),
+            Some(label) => format!("{label} ({hex})"),
+            None => hex.clone(),
         },
         be.event.content,
     );
 
-    // Always include tags — they carry structural information.
-    let tags_json: Vec<&[String]> = be.event.tags.iter().map(|t| t.as_slice()).collect();
-    if let Ok(tags_str) = serde_json::to_string(&tags_json) {
-        block.push_str(&format!("\nTags: {tags_str}"));
-    }
-
-    // Parsed structural fields.
-    let thread = parse_thread_tags(&be.event);
-    let mut parsed_parts = Vec::new();
+    let mut thread_parts = Vec::new();
     if let Some(ref p) = thread.parent_event_id {
-        parsed_parts.push(format!("parent={p}"));
+        thread_parts.push(format!("parent={p}"));
     }
     if let Some(ref r) = thread.root_event_id {
-        parsed_parts.push(format!("root={r}"));
+        thread_parts.push(format!("root={r}"));
+    }
+    if !thread_parts.is_empty() {
+        block.push_str(&format!("\nThread: {}", thread_parts.join(", ")));
     }
     if !thread.mentioned_pubkeys.is_empty() {
-        parsed_parts.push(format!(
-            "mentions=[{}]",
+        block.push_str(&format!(
+            "\nMentions: {}",
             thread
                 .mentioned_pubkeys
                 .iter()
@@ -1177,40 +1168,40 @@ pub(crate) fn format_event_block(
                 .join(", ")
         ));
     }
-    if !parsed_parts.is_empty() {
-        block.push_str(&format!("\nParsed: {}", parsed_parts.join(", ")));
+
+    // Channel, participant, client, and parsed thread tags are already represented
+    // above or in `[Context]`. Preserve unknown/custom tags because they can carry
+    // task-specific semantics such as broadcasts or workflow metadata.
+    let metadata_tags: Vec<&[String]> = be
+        .event
+        .tags
+        .iter()
+        .map(|tag| tag.as_slice())
+        .filter(|tag| match tag.first().map(String::as_str) {
+            Some("h" | "p" | "client") => false,
+            Some("e") => tag.get(1).is_none_or(|id| {
+                thread.root_event_id.as_deref() != Some(id.as_str())
+                    && thread.parent_event_id.as_deref() != Some(id.as_str())
+            }),
+            _ => true,
+        })
+        .collect();
+    if !metadata_tags.is_empty() {
+        if let Ok(tags) = serde_json::to_string(&metadata_tags) {
+            block.push_str(&format!("\nMetadata: {tags}"));
+        }
     }
 
     block
 }
 
-/// Append a reply instruction when the agent is responding to a thread event.
-///
-/// Tells the agent to default to `--reply-to <event_id>` for ordinary replies
-/// while still allowing an explicit human request to post at the channel root or
-/// top level.
-fn append_reply_instruction(s: &mut String, event_id: &str) {
+/// Append the exact default command for an ordinary human-visible reply.
+fn append_reply_command(s: &mut String, channel_id: Uuid, reply_anchor: Option<&str>) {
     s.push_str(&format!(
-        "\nIMPORTANT: For ordinary replies in this turn, use `--reply-to {event_id}` \
-         on `buzz messages send` so the conversation stays threaded. \
-         If the human explicitly asks for a channel-root, top-level, \
-         or broadcast post, send that message without `--reply-to`. \
-         If the requested destination is ambiguous, ask before sending."
-    ));
-}
-
-/// Append a new-thread reply instruction for a human-facing top-level mention.
-///
-/// The triggering mention has no thread tags, so the agent's reply becomes the
-/// thread root. Anchoring to the triggering event (rather than leaving the
-/// choice open) prevents replying into a stale/unrelated prior thread.
-fn append_new_thread_reply_instruction(s: &mut String, event_id: &str) {
-    s.push_str(&format!(
-        "\nIMPORTANT: This is a new top-level message. For ordinary replies in \
-         this turn, use `--reply-to {event_id}` on `buzz messages send` — the \
-         triggering message is the thread root. Do NOT reply into any other \
-         (older) thread. If the human explicitly asks for a channel-root, \
-         top-level, or broadcast post, send that message without `--reply-to`."
+        "\nReply: buzz messages send --channel {channel_id}{} --content <message>",
+        reply_anchor
+            .map(|event_id| format!(" --reply-to {event_id}"))
+            .unwrap_or_default()
     ));
 }
 
@@ -1271,7 +1262,7 @@ fn resolve_reply_anchor(
 /// Limits prompt bloat from unusually long descriptions; a raw embedded newline
 /// in a description must not be able to spoof another `[Context]` field, so
 /// multiline text is collapsed to single-space-joined lines before truncation.
-const MAX_DESCRIPTION_LEN: usize = 500;
+const MAX_DESCRIPTION_LEN: usize = 200;
 
 /// Append a `Description: …` line to a `[Context]` block when non-empty.
 ///
@@ -1324,9 +1315,11 @@ fn format_context_hints(
     conversation_context_had_delivered_events: bool,
     reply_anchor: Option<&str>,
 ) -> String {
-    let channel_display = match channel_info {
-        Some(ci) => format!("{} (#{channel_id})", ci.name),
-        None => channel_id.to_string(),
+    let append_channel = |s: &mut String| {
+        if let Some(info) = channel_info {
+            s.push_str(&format!("\nChannel: {}", info.name));
+        }
+        s.push_str(&format!("\nChannel ID: {channel_id}"));
     };
 
     // DM check comes first — a DM reply has both thread tags AND is_dm=true,
@@ -1335,25 +1328,25 @@ fn format_context_hints(
         let is_reply = thread_tags.root_event_id.is_some();
         // DM replies use thread command because /messages excludes thread replies.
         // DM non-replies use get for recent conversation.
-        let ctx_hint = if has_conversation_context && is_reply {
-            "Thread context included below. Use `buzz messages thread --channel <UUID> --event <ID>` for full history if truncated."
+        let history = if has_conversation_context && is_reply {
+            "included below; fetch full thread if marked truncated".to_string()
         } else if has_conversation_context {
-            "Conversation context included below. Use `buzz messages get --channel <UUID>` for full history if truncated."
+            "included below; fetch full conversation if marked truncated".to_string()
         } else if conversation_context_had_delivered_events && is_reply {
-            "Earlier thread context was already delivered in this session. Use `buzz messages thread --channel <UUID> --event <ID>` to re-read the reply chain."
+            format!("already delivered; reread with `buzz messages thread --channel {channel_id} --event {}`", thread_tags.root_event_id.as_deref().unwrap_or_default())
         } else if conversation_context_had_delivered_events {
-            "Earlier conversation context was already delivered in this session. Use `buzz messages get --channel <UUID>` to re-read it."
+            format!("already delivered; reread with `buzz messages get --channel {channel_id}`")
         } else if is_reply {
-            "Use `buzz messages thread --channel <UUID> --event <ID>` to fetch the reply chain."
+            format!(
+                "fetch with `buzz messages thread --channel {channel_id} --event {}`",
+                thread_tags.root_event_id.as_deref().unwrap_or_default()
+            )
         } else {
-            "Use `buzz messages get --channel <UUID>` for conversation context."
+            format!("fetch with `buzz messages get --channel {channel_id}`")
         };
-        let mut s = format!(
-            "[Context]\n\
-             Scope: dm\n\
-             Channel: {channel_display}\n\
-             {ctx_hint}"
-        );
+        let mut s = "[Context]\nScope: dm".to_string();
+        append_channel(&mut s);
+        s.push_str(&format!("\nHistory: {history}"));
         // If this is a DM reply, include thread structural info as supplementary.
         if let Some(ref root) = thread_tags.root_event_id {
             s.push_str(&format!("\nThread root: {root}"));
@@ -1362,24 +1355,19 @@ fn format_context_hints(
                     s.push_str(&format!("\nParent: {parent}"));
                 }
             }
-            if let Some(event_id) = reply_anchor {
-                append_reply_instruction(&mut s, event_id);
-            }
         }
+        append_reply_command(&mut s, channel_id, reply_anchor);
         s
     } else if let Some(ref root) = thread_tags.root_event_id {
-        let ctx_hint = if has_conversation_context {
-            "Thread context included below. Use `buzz messages thread --channel <UUID> --event <ID>` for full history if truncated."
+        let history = if has_conversation_context {
+            "included below; fetch full thread if marked truncated".to_string()
         } else if conversation_context_had_delivered_events {
-            "Earlier thread context was already delivered in this session. Use `buzz messages thread --channel <UUID> --event <ID>` to re-read it."
+            format!("already delivered; reread with `buzz messages thread --channel {channel_id} --event {root}`")
         } else {
-            "Use `buzz messages thread --channel <UUID> --event <ID>` to fetch thread context."
+            format!("fetch with `buzz messages thread --channel {channel_id} --event {root}`")
         };
-        let mut s = format!(
-            "[Context]\n\
-             Scope: thread\n\
-             Channel: {channel_display}"
-        );
+        let mut s = "[Context]\nScope: thread".to_string();
+        append_channel(&mut s);
         append_channel_description(&mut s, channel_info);
         s.push_str(&format!("\nThread root: {root}"));
         if let Some(ref parent) = thread_tags.parent_event_id {
@@ -1387,24 +1375,17 @@ fn format_context_hints(
                 s.push_str(&format!("\nParent: {parent}"));
             }
         }
-        s.push_str(&format!("\n{ctx_hint}"));
-        if let Some(event_id) = reply_anchor {
-            append_reply_instruction(&mut s, event_id);
-        }
+        s.push_str(&format!("\nHistory: {history}"));
+        append_reply_command(&mut s, channel_id, reply_anchor);
         s
     } else {
-        let mut s = format!(
-            "[Context]\n\
-             Scope: channel\n\
-             Channel: {channel_display}"
-        );
+        let mut s = "[Context]\nScope: channel".to_string();
+        append_channel(&mut s);
         append_channel_description(&mut s, channel_info);
-        s.push_str(
-            "\nHint: Use `buzz messages get --channel <UUID>` for recent messages if needed.",
-        );
-        if let Some(event_id) = reply_anchor {
-            append_new_thread_reply_instruction(&mut s, event_id);
-        }
+        s.push_str(&format!(
+            "\nHistory: fetch with `buzz messages get --channel {channel_id}` if needed"
+        ));
+        append_reply_command(&mut s, channel_id, reply_anchor);
         s
     }
 }
@@ -2009,10 +1990,7 @@ mod tests {
     fn test_format_prompt_single() {
         let ch = Uuid::new_v4();
         let event = make_event("Hello @agent");
-        let npub = event
-            .pubkey
-            .to_bech32()
-            .unwrap_or_else(|_| event.pubkey.to_hex());
+        let author_hex = event.pubkey.to_hex();
 
         let batch = FlushBatch {
             channel_id: ch,
@@ -2031,8 +2009,8 @@ mod tests {
         assert!(prompt.contains("[Context]"));
         assert!(prompt.contains("Scope: channel"));
         assert!(prompt.contains("[Buzz event: @mention]\n"));
-        assert!(prompt.contains(&format!("Channel: {}", ch)));
-        assert!(prompt.contains(&format!("From: {}", npub)));
+        assert!(prompt.contains(&format!("Channel ID: {ch}")));
+        assert!(prompt.contains(&format!("From: {author_hex}")));
         assert!(prompt.contains("Content: Hello @agent"));
         // Event ID should be present.
         assert!(prompt.contains("Event ID:"));
@@ -3270,7 +3248,8 @@ mod tests {
             },
         )
         .join("\n\n");
-        assert!(prompt.contains("engineering (#"));
+        assert!(prompt.contains("Channel: engineering"));
+        assert!(prompt.contains(&format!("Channel ID: {ch}")));
         assert!(prompt.contains("Scope: channel"));
     }
 
@@ -3384,7 +3363,7 @@ mod tests {
         .join("\n\n");
         assert!(prompt.contains("[Thread Context (2 of 5 messages, truncated)]"));
         assert!(prompt.contains("Let's refactor auth"));
-        assert!(prompt.contains("Thread context included below"));
+        assert!(prompt.contains("History: included below; fetch full thread if marked truncated"));
     }
 
     #[test]
@@ -3491,9 +3470,9 @@ mod tests {
         )
         .join("\n\n");
 
-        assert!(prompt.contains("From: Wes (npub:"));
+        assert!(prompt.contains(&format!("From: Wes ({author_hex})")));
         assert!(prompt.contains(
-            "mentions=[Rick (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)]"
+            "Mentions: Rick (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)"
         ));
         assert!(prompt.contains("[1] Wes ("));
     }
@@ -3638,7 +3617,7 @@ mod tests {
     }
 
     #[test]
-    fn test_format_prompt_dm_reply_hints_get_thread() {
+    fn test_format_prompt_dm_reply_with_context_defers_fetch_until_truncated() {
         let ch = Uuid::new_v4();
         // DM reply event — has thread e-tags.
         let event = make_event_with_tags(
@@ -3691,10 +3670,10 @@ mod tests {
             prompt.contains("Scope: dm"),
             "DM reply should have Scope: dm, got:\n{prompt}"
         );
-        // Hint should point to the thread command, not get.
+        // Complete context is already present, so no redundant fetch command is needed.
         assert!(
-            prompt.contains("buzz messages thread"),
-            "DM reply hint should mention `buzz messages thread`, got:\n{prompt}"
+            prompt.contains("History: included below; fetch full thread if marked truncated"),
+            "DM reply should describe the supplied history, got:\n{prompt}"
         );
         // Thread structural info should be present.
         assert!(
@@ -3729,8 +3708,10 @@ mod tests {
         };
 
         let trigger_only_prompt = format_prompt(&batch, &FormatPromptArgs::default()).join("\n\n");
-        assert!(trigger_only_prompt.contains("fetch thread context"));
-        assert!(!trigger_only_prompt.contains("already delivered in this session"));
+        assert!(trigger_only_prompt.contains(&format!(
+            "History: fetch with `buzz messages thread --channel {ch} --event root123`"
+        )));
+        assert!(!trigger_only_prompt.contains("History: already delivered"));
 
         let prompt = format_prompt(
             &batch,
@@ -3741,9 +3722,9 @@ mod tests {
         )
         .join("\n\n");
 
-        assert!(prompt.contains("Earlier thread context was already delivered in this session"));
-        assert!(prompt.contains("buzz messages thread"));
-        assert!(!prompt.contains("Thread context included below"));
+        assert!(prompt.contains(&format!(
+            "History: already delivered; reread with `buzz messages thread --channel {ch} --event root123`"
+        )));
         assert!(!prompt.contains("[Thread Context"));
     }
 
@@ -3774,8 +3755,10 @@ mod tests {
             },
         )
         .join("\n\n");
-        assert!(trigger_only_prompt.contains("for conversation context"));
-        assert!(!trigger_only_prompt.contains("already delivered in this session"));
+        assert!(trigger_only_prompt.contains(&format!(
+            "History: fetch with `buzz messages get --channel {ch}`"
+        )));
+        assert!(!trigger_only_prompt.contains("History: already delivered"));
 
         let prompt = format_prompt(
             &batch,
@@ -3787,11 +3770,9 @@ mod tests {
         )
         .join("\n\n");
 
-        assert!(
-            prompt.contains("Earlier conversation context was already delivered in this session")
-        );
-        assert!(prompt.contains("buzz messages get"));
-        assert!(!prompt.contains("Conversation context included below"));
+        assert!(prompt.contains(&format!(
+            "History: already delivered; reread with `buzz messages get --channel {ch}`"
+        )));
         assert!(!prompt.contains("[Conversation Context"));
     }
 
@@ -3859,11 +3840,10 @@ mod tests {
     }
 
     #[test]
-    fn test_format_event_block_includes_hex_and_npub() {
+    fn test_format_event_block_uses_compact_hex_identity() {
         let ch = Uuid::new_v4();
         let event = make_event("test");
         let hex = event.pubkey.to_hex();
-        let npub = event.pubkey.to_bech32().unwrap();
         let batch = FlushBatch {
             channel_id: ch,
             events: vec![BatchEvent {
@@ -3877,16 +3857,25 @@ mod tests {
 
         let prompt = format_prompt(&batch, &FormatPromptArgs::default()).join("\n\n");
         assert!(
-            prompt.contains(&format!("From: {npub} (hex: {hex})")),
-            "prompt should contain both npub and hex"
+            prompt.contains(&format!("From: {hex}")),
+            "prompt should contain the canonical hex identity"
+        );
+        assert!(
+            !prompt.contains("npub:"),
+            "prompt should not duplicate identity formats"
         );
     }
 
     #[test]
-    fn test_format_event_block_always_includes_tags() {
+    fn test_format_event_block_omits_structural_tags_but_keeps_custom_metadata() {
         let ch = Uuid::new_v4();
-        // Kind 9 (stream message) — tags were previously stripped.
-        let event = make_event_with_tags("hello", vec![vec!["h".into(), ch.to_string()]]);
+        let event = make_event_with_tags(
+            "hello",
+            vec![
+                vec!["h".into(), ch.to_string()],
+                vec!["broadcast".into(), "1".into()],
+            ],
+        );
         let batch = FlushBatch {
             channel_id: ch,
             events: vec![BatchEvent {
@@ -3899,10 +3888,8 @@ mod tests {
         };
 
         let prompt = format_prompt(&batch, &FormatPromptArgs::default()).join("\n\n");
-        assert!(
-            prompt.contains("Tags:"),
-            "tags should always be included, even for stream messages"
-        );
+        assert!(prompt.contains("Metadata: [[\"broadcast\",\"1\"]]"));
+        assert!(!prompt.contains("Metadata: [[\"h\""));
     }
 
     #[test]
@@ -4273,17 +4260,12 @@ mod tests {
             "human-facing thread reply should anchor to the thread root"
         );
         assert!(
-            prompt.contains("For ordinary replies in this turn"),
-            "channel thread reply should describe reply-to as the default"
+            prompt.contains(&format!(
+                "Reply: buzz messages send --channel {ch} --reply-to {root_id} --content <message>"
+            )),
+            "channel thread reply should expose one exact default command"
         );
-        assert!(
-            prompt.contains("send that message without `--reply-to`"),
-            "channel thread reply should allow explicit channel-root/top-level requests"
-        );
-        assert!(
-            !prompt.contains("Do not broadcast to the channel"),
-            "reply instruction should not forbid explicit human-requested root posts"
-        );
+        assert!(!prompt.contains("IMPORTANT:"));
     }
 
     #[test]
@@ -4349,10 +4331,9 @@ mod tests {
             prompt.contains(&format!("--reply-to {event_id}")),
             "top-level human message should anchor a new thread at the triggering event"
         );
-        assert!(
-            prompt.contains("new top-level message"),
-            "top-level human message should use the new-thread instruction"
-        );
+        assert!(prompt.contains(&format!(
+            "Reply: buzz messages send --channel {ch} --reply-to {event_id} --content <message>"
+        )));
     }
 
     #[test]
@@ -4455,13 +4436,10 @@ mod tests {
             "human-facing thread reply should anchor to the thread root"
         );
         assert!(
-            prompt.contains("channel-root, top-level"),
-            "instruction should tell agents to honor explicit root/top-level requests"
-        );
-        assert!(
             !prompt.contains("on EVERY `buzz messages send` call"),
             "instruction should not make reply-to absolute for every send"
         );
+        assert!(!prompt.contains("IMPORTANT:"));
     }
 
     #[test]
@@ -4535,10 +4513,9 @@ mod tests {
             prompt.contains(&format!("--reply-to {plain_id}")),
             "batched top-level-last prompt should anchor to the last (top-level) event"
         );
-        assert!(
-            prompt.contains("new top-level message"),
-            "batched top-level-last prompt should use the new-thread instruction"
-        );
+        assert!(prompt.contains(&format!(
+            "Reply: buzz messages send --channel {ch} --reply-to {plain_id} --content <message>"
+        )));
     }
 
     /// Build a single-event FlushBatch with the given content.

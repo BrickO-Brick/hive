@@ -31,14 +31,31 @@ fn init_nest_dir_prod_sets_buzz() {
 
 #[test]
 fn nest_skill_contains_safe_mention_workflow() {
-    assert!(BUZZ_CLI_SKILL_MD.contains("--mention <hex-or-npub>"));
-    assert!(BUZZ_CLI_SKILL_MD.contains("every presentation-only name that should notify"));
-    assert!(BUZZ_CLI_SKILL_MD
-        .contains("permits unresolved or ambiguous `@Name` text as presentation-only"));
-    assert!(BUZZ_CLI_SKILL_MD.contains("signed event's `mention_pubkeys`"));
-    assert!(BUZZ_CLI_SKILL_MD.contains("no follow-up verification command is needed"));
-    assert!(BUZZ_CLI_SKILL_MD.contains("Add membership separately only when authorized"));
-    assert!(BUZZ_CLI_SKILL_MD.contains("never changes membership automatically"));
+    let messaging = BUZZ_CLI_REFERENCES
+        .iter()
+        .find_map(|(name, content)| (*name == "messaging.md").then_some(*content))
+        .expect("messaging reference must exist");
+    assert!(messaging.contains("--mention <hex-or-npub>"));
+    assert!(messaging.contains("every presentation-only name that should notify"));
+    assert!(messaging.contains("unresolved, ambiguous, or non-member targets"));
+    assert!(messaging.contains("write response's `mention_pubkeys`"));
+    assert!(messaging.contains("no verification read is needed"));
+    assert!(messaging.contains("Add membership separately only when authorized"));
+    assert!(messaging.contains("sending never changes membership"));
+    assert!(BUZZ_CLI_SKILL_MD.contains("Do not load when normal use of the"));
+    assert!(BUZZ_CLI_SKILL_MD.contains("buzz messages command group is sufficient"));
+}
+
+#[test]
+fn nest_entrypoints_stay_compact() {
+    assert!(
+        AGENTS_MD.len() < 1_500,
+        "Nest AGENTS.md should remain an orientation layer, not a manual"
+    );
+    assert!(
+        BUZZ_CLI_SKILL_MD.len() < 2_000,
+        "buzz-cli SKILL.md should remain a router to task-specific references"
+    );
 }
 
 #[test]
@@ -130,6 +147,11 @@ fn ensure_nest_creates_skill_file() {
     assert!(skill.exists(), "SKILL.md should exist at .agents path");
     let content = fs::read_to_string(&skill).unwrap();
     assert_eq!(content, BUZZ_CLI_SKILL_MD);
+    for (name, expected) in BUZZ_CLI_REFERENCES {
+        let reference = root.join(".agents/skills/buzz-cli/references").join(name);
+        assert!(reference.exists(), "{name} reference should exist");
+        assert_eq!(fs::read_to_string(reference).unwrap(), *expected);
+    }
 
     // On unix, harness-specific symlinks should resolve to the canonical dir.
     #[cfg(unix)]
@@ -174,6 +196,7 @@ fn ensure_nest_skill_dir_has_700_permissions() {
         ".agents",
         ".agents/skills",
         ".agents/skills/buzz-cli",
+        ".agents/skills/buzz-cli/references",
         ".goose",
         ".goose/skills",
         ".claude",
@@ -910,7 +933,9 @@ fn refresh_skill_overwrites_on_version_bump() {
     ensure_nest_at(&root).unwrap();
 
     let skill_md = root.join(".agents/skills/buzz-cli/SKILL.md");
+    let messaging = root.join(".agents/skills/buzz-cli/references/messaging.md");
     fs::write(&skill_md, "stale skill content").unwrap();
+    fs::write(&messaging, "stale messaging reference").unwrap();
 
     // Remove version file to simulate upgrade.
     let _ = fs::remove_file(root.join(".agents/skills/buzz-cli/.skill-version"));
@@ -921,5 +946,14 @@ fn refresh_skill_overwrites_on_version_bump() {
     assert_eq!(
         content, BUZZ_CLI_SKILL_MD,
         "SKILL.md must be refreshed on version bump"
+    );
+    let expected_messaging = BUZZ_CLI_REFERENCES
+        .iter()
+        .find_map(|(name, content)| (*name == "messaging.md").then_some(*content))
+        .unwrap();
+    assert_eq!(
+        fs::read_to_string(messaging).unwrap(),
+        expected_messaging,
+        "reference tree must be refreshed with SKILL.md"
     );
 }

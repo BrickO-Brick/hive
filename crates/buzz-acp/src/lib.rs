@@ -4413,55 +4413,46 @@ fn dispatch_heartbeat(
 }
 
 #[cfg(test)]
-mod agent_draft_prompt_tests {
+mod base_prompt_contract_tests {
     #[test]
-    fn shared_base_prompt_teaches_portable_agent_drafts() {
+    fn shared_base_prompt_stays_small_and_product_specific() {
         let prompt = include_str!("base_prompt.md");
-        assert!(prompt.contains("buzz agents draft-create"));
-        assert!(prompt.contains("ask for at most two things"));
-        assert!(prompt.contains("what it should do day-to-day"));
-        assert!(prompt.contains("owner saves it"));
-        assert!(prompt.contains("Do not ask about runtime, provider, model, credentials"));
-    }
-
-    #[test]
-    fn shared_base_prompt_teaches_real_newlines_for_multiline_messages() {
-        let prompt = include_str!("base_prompt.md");
-        assert!(prompt.contains("pass real newline bytes through stdin"));
-        assert!(prompt.contains("single-quoted shell strings preserve `\\n` literally"));
-        assert!(prompt.contains("buzz messages send ... --content -"));
-    }
-
-    #[test]
-    fn shared_base_prompt_teaches_repo_context_and_learning_loop() {
-        let prompt = include_str!("base_prompt.md");
-        assert!(prompt.contains("read its root `AGENTS.md`"));
-        assert!(prompt.contains("path-local `AGENTS.md`"));
         assert!(
-            prompt.contains("product, architecture, and vision documents as design constraints")
+            prompt.len() < 2_500,
+            "base prompt grew to {} bytes",
+            prompt.len()
         );
-        assert!(prompt.contains("CI and live workflow evidence answer different questions"));
-        assert!(prompt.contains("record the invariant in the same session"));
-        assert!(prompt.contains("update the team's shared guidance"));
+        assert!(prompt.contains("humans and agents collaborate as colleagues"));
+        assert!(prompt.contains("desktop and mobile collaboration app"));
+        assert!(prompt.contains("Treat the current `[Context]` block as authoritative"));
+        assert!(prompt.contains("The `buzz` CLI is your interface to Buzz."));
+        assert!(prompt.contains("## Messaging"));
+        assert!(prompt.contains("`buzz messages` command group is the normal interface"));
+        assert!(prompt.contains("Execute the exact `Reply:` command"));
+        assert!(prompt.contains("Do not load the `buzz-cli` skill when normal `buzz messages`"));
+        assert!(prompt.contains("ambiguous or non-member mentions"));
+        assert!(prompt.contains("its router points to the messaging reference"));
+        assert!(prompt.contains("reasoning, ACP output, and tool calls are not visible"));
+        assert!(prompt.contains("preserve the exact display name shown in Buzz"));
+        assert!(prompt.contains("keep `@Name` plain"));
+        assert!(prompt.contains("pass `--mention <hex-or-npub>`"));
     }
 
     #[test]
-    fn shared_base_prompt_teaches_single_command_mentions_and_preflight() {
+    fn shared_base_prompt_defers_task_specific_procedures() {
         let prompt = include_str!("base_prompt.md");
-        assert!(prompt.contains("use the person's **exact display name as shown in Buzz**"));
-        assert!(prompt.contains("Do not expand a short display name, infer a surname"));
-        assert!(prompt.contains("Preserve it exactly; do not infer, expand, or look up a surname"));
-        assert!(prompt.contains("--mention <hex-or-npub>"));
-        assert!(prompt.contains("every presentation-only name that should notify"));
-        assert!(
-            prompt.contains("permits unresolved or ambiguous `@Name` text as presentation-only")
-        );
-        assert!(prompt.contains("success JSON's `mention_pubkeys`"));
-        assert!(prompt.contains("no follow-up verification command is needed"));
-        assert!(prompt.contains("stops before sending"));
-        assert!(prompt
-            .contains("add them explicitly with `buzz channels add-member` only when authorized"));
-        assert!(prompt.contains("never changes membership automatically"));
+        for deferred in [
+            "buzz agents draft-create",
+            "git config user.email",
+            "sandbox_workspace_write",
+            "pass real newline bytes through stdin",
+            "workflow runs",
+        ] {
+            assert!(
+                !prompt.contains(deferred),
+                "task-specific guidance leaked into base prompt: {deferred}"
+            );
+        }
     }
 }
 

@@ -4,11 +4,10 @@
 //! Scope per Tyler's spec:
 //! - Fire one synchronous query for the core head when a *new* session is born.
 //! - If a body is found, emit `[Agent Memory — core]\n<profile>`.
-//! - If no body is found, emit an onboarding nudge so the agent learns how
-//!   to set its own core.
+//! - If no body is found, emit nothing. Memory onboarding is task-specific
+//!   guidance in the buzz-cli skill, not standing context for every session.
 //! - On any *error* (transport, parse), log and emit nothing. We must not
-//!   mistake a relay outage for "no core" — that would invite the agent to
-//!   overwrite real, just-unreachable memory with a fresh profile.
+//!   mistake a relay outage for "no core".
 //! - Either way, session creation is never blocked.
 
 use buzz_core::engram::{conversation_key, d_tag, select_head, validate_and_decrypt, Body};
@@ -20,19 +19,11 @@ use crate::relay::RestClient;
 /// Section header rendered into the prompt.
 const SECTION_LABEL: &str = "Agent Memory — core";
 
-/// Onboarding nudge for new agents with no core yet.
-///
-/// Wording is from Tyler's brief: "No core memory found. Use `buzz mem`
-/// to create a core memory. Ask your user about yourself."
-pub const ONBOARDING_NUDGE: &str = "No core memory found. \
-Use `buzz mem set core \"…\"` to create one (it will hold your identity, \
-rules, and goals across sessions). Ask your user about yourself.";
-
 /// Build the rendered prompt section for the agent's core.
 ///
 /// Returns:
 /// - `Some(profile_section)` when a valid core exists,
-/// - `Some(nudge_section)` when the relay confirmed absence,
+/// - `None` when the relay confirmed absence,
 /// - `None` when the fetch failed (transport, parse, decrypt) — the caller
 ///   should inject no section in that case so the agent doesn't conclude
 ///   memory is empty.
@@ -43,7 +34,7 @@ pub async fn build_core_section(
 ) -> Option<String> {
     match fetch_core_body(rest, agent_keys, owner).await {
         Ok(Some(profile)) => Some(format!("[{SECTION_LABEL}]\n{profile}")),
-        Ok(None) => Some(format!("[{SECTION_LABEL}]\n{ONBOARDING_NUDGE}")),
+        Ok(None) => None,
         Err(reason) => {
             tracing::warn!(
                 target: "engram::core",
@@ -60,7 +51,7 @@ pub async fn build_core_section(
 /// - `Ok(None)` only if the relay confirmed absence (empty result set),
 /// - `Err(reason)` if the relay returned candidates we could not parse,
 ///   verify, or decrypt — those are NOT treated as absence (would let an
-///   unreadable but real core be silently overwritten by the onboarding nudge),
+///   unreadable but real core be silently treated as absent),
 /// - `Err` for transport / parse errors.
 async fn fetch_core_body(
     rest: &RestClient,
@@ -93,7 +84,7 @@ async fn fetch_core_body(
 /// Pure decoder: given the relay's JSON array, decide whether we have a
 /// readable core, confirmed absence, or an ambiguous unreadable-state.
 ///
-/// - Empty array → `Ok(None)` (confirmed absence; caller renders the nudge).
+/// - Empty array → `Ok(None)` (confirmed absence; caller emits no section).
 /// - At least one event decrypts → use the winning head's body.
 ///   * Body::Core → `Ok(Some(profile))`
 ///   * Body::Tombstone or unexpected shape → `Ok(None)` (treat as absent).
@@ -169,8 +160,8 @@ mod tests {
     use buzz_core::engram::{build_event, Body};
     use serde_json::json;
 
-    /// Empty array → confirmed absence → Ok(None), so the caller emits the
-    /// onboarding nudge. This is the only path that maps to "no core."
+    /// Empty array → confirmed absence → Ok(None), so the caller emits no
+    /// standing memory section. This is the only path that maps to "no core."
     #[test]
     fn decode_empty_array_is_confirmed_absence() {
         let agent = Keys::generate();
@@ -196,9 +187,8 @@ mod tests {
     /// Regression: when the relay returns a kind:30174 event addressed to
     /// this agent that we cannot decrypt (here: encrypted to a *different*
     /// owner's key, so the MAC fails for this agent↔owner pair), we MUST
-    /// return Err and NOT Ok(None). Returning Ok(None) would cause the
-    /// harness to emit the onboarding nudge, inviting the agent to overwrite
-    /// a real-but-unreadable core.
+    /// return Err and NOT Ok(None). Returning Ok(None) would incorrectly
+    /// collapse a real-but-unreadable core into confirmed absence.
     #[test]
     fn decode_undecryptable_candidate_is_err_not_absent() {
         let agent = Keys::generate();
