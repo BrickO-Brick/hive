@@ -1864,8 +1864,45 @@ mod idle_pool_sleep_tests {
 }
 
 pub fn run() -> Result<()> {
+    // Multicall git-helper personalities — when the harness binary is invoked
+    // under one of these names (via the symlinks it installs on the
+    // agent-runtime child's PATH; see `AcpClient::install_git_identity`), it
+    // dispatches to that personality and exits before any harness setup. This
+    // makes buzz-acp self-contained for deterministic agent git identity: the
+    // enforcement wrapper AND the nostr signer/credential helper it configures
+    // are all reachable from a single binary, with no dependency on a separately
+    // resolvable buzz-dev-mcp. Mirrors buzz-dev-mcp's own shim dispatch so the
+    // native shells of every runtime hit the same identity-enforcing git.
+    match git_multicall_personality() {
+        Some(GitPersonality::Git) => std::process::exit(buzz_git_identity::git_wrapper::run()),
+        Some(GitPersonality::SignNostr) => std::process::exit(git_sign_nostr::run()),
+        Some(GitPersonality::CredentialNostr) => std::process::exit(git_credential_nostr::run()),
+        None => {}
+    }
     config::propagate_legacy_env_vars();
     tokio_main()
+}
+
+/// A git-helper multicall personality this binary can assume based on argv[0].
+enum GitPersonality {
+    Git,
+    SignNostr,
+    CredentialNostr,
+}
+
+/// The multicall personality implied by argv[0]'s file stem, or `None` when the
+/// binary was launched normally as `buzz-acp`.
+fn git_multicall_personality() -> Option<GitPersonality> {
+    let stem = std::env::args_os()
+        .next()
+        .map(std::path::PathBuf::from)
+        .and_then(|p| p.file_stem().map(|s| s.to_ascii_lowercase()))?;
+    match stem.to_str()? {
+        "git" => Some(GitPersonality::Git),
+        "git-sign-nostr" => Some(GitPersonality::SignNostr),
+        "git-credential-nostr" => Some(GitPersonality::CredentialNostr),
+        _ => None,
+    }
 }
 
 #[tokio::main]

@@ -214,6 +214,11 @@ pub struct AcpClient {
     standard_usage: StandardUsageTracker,
     /// Known adapter identity for prompt-response usage mapping.
     standard_adapter: Option<StandardAdapterKind>,
+    /// Session-scoped tempdir holding the agent's git identity keyfile and the
+    /// `git` enforcement-wrapper symlink prepended to the child's PATH. Present
+    /// only when `NOSTR_PRIVATE_KEY` was set at spawn. Dropped with the client,
+    /// which deletes the keyfile — its sole lifecycle owner.
+    _git_identity_dir: Option<tempfile::TempDir>,
 }
 
 /// Recursively merge `overlay` into `base`, with `overlay` winning on scalar/shape
@@ -413,6 +418,120 @@ fn build_client_capabilities() -> serde_json::Value {
     })
 }
 
+/// Install deterministic agent git identity onto the about-to-be-spawned agent
+/// runtime child (L1b + the L2/L3 wrapper's PATH placement).
+///
+/// Builds a session-scoped 0700 tempdir that holds:
+/// - the agent's 0600 nostr keyfile (the signer/credential helper read it), and
+/// - `git`, `git-sign-nostr`, `git-credential-nostr` symlinks back to this
+///   binary's own exe, whose multicall dispatch (see [`crate::run`]) makes each
+///   name resolve to the matching personality.
+///
+/// It then prepends that dir to the child's `PATH` (so the wrapper `git` shadows
+/// the real one and the nostr helpers are reachable) and applies the identity +
+/// signing `GIT_CONFIG_*` env, composed over any config the caller already set
+/// (the desktop's per-URL credential helper). The returned [`TempDir`] owns the
+/// keyfile's lifetime and must be held for the life of the child.
+///
+/// Returns `None` — leaving the child's git identity untouched — when there is
+/// no `NOSTR_PRIVATE_KEY` (test spawns, unconfigured sessions), or when the
+/// tempdir or any of the three symlinks cannot be created. Gating the whole
+/// operation on all three symlinks is deliberate: [`signing_entries`] makes git
+/// invoke `git-sign-nostr` for every commit, so applying the config without a
+/// reachable signer would fail *every* commit. Either the full identity is
+/// installed and signing works, or nothing is applied and the child commits
+/// under whatever ambient identity it had before (unattributed, but able to
+/// commit).
+///
+/// `NOSTR_PRIVATE_KEY` is intentionally left in the child env: the child
+/// forwards it to buzz-dev-mcp, whose shim performs the remove-from-env dance
+/// for its own subtree. Duplicate-but-identical config when the shim also
+/// applies is last-wins and benign.
+///
+/// Only wired on Unix. Windows agent hosting is not a supported surface for the
+/// harness, and the symlink/exec model the wrapper relies on does not exist
+/// there; on Windows this is a no-op so the child spawns with ambient identity.
+#[cfg(unix)]
+fn install_git_identity(cmd: &mut tokio::process::Command) -> Option<tempfile::TempDir> {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    std::env::var_os("NOSTR_PRIVATE_KEY")?;
+
+    let self_exe = std::env::current_exe()
+        .inspect_err(|e| tracing::warn!("git identity: cannot resolve own exe ({e}); skipping"))
+        .ok()?;
+
+    let dir = tempfile::Builder::new()
+        .prefix("buzz-acp-git-")
+        .tempdir()
+        .inspect_err(|e| tracing::warn!("git identity: tempdir failed ({e}); skipping"))
+        .ok()?;
+    if let Err(e) = std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)) {
+        tracing::warn!("git identity: chmod 0700 failed ({e}); skipping");
+        return None;
+    }
+
+    // The wrapper `git` shadows the real one; the two nostr helpers back the
+    // signing + credential config. All resolve to this binary's multicall.
+    for name in ["git", "git-sign-nostr", "git-credential-nostr"] {
+        if let Err(e) = symlink(&self_exe, dir.path().join(name)) {
+            tracing::warn!("git identity: symlink {name} failed ({e}); skipping");
+            return None;
+        }
+    }
+
+    // Read (do NOT remove) NOSTR_PRIVATE_KEY and persist the keyfile; derive the
+    // identity. `None` on an unset/invalid key or a keyfile-write failure — a
+    // mis-provisioned session then commits unattributed rather than not at all.
+    let id = buzz_git_identity::read_key_and_write(dir.path())?;
+
+    // Prepend the wrapper dir to the child's PATH. The desktop stages the
+    // augmented PATH on this process's env (inherited by the child); a persona
+    // could instead stage it on `cmd`. Prefer the cmd-staged value, fall back to
+    // the process env, so we compose rather than clobber in both cases.
+    let base_path = child_env(cmd, "PATH")
+        .or_else(|| std::env::var_os("PATH"))
+        .unwrap_or_default();
+    let mut entries = vec![dir.path().to_path_buf()];
+    entries.extend(std::env::split_paths(&base_path));
+    match std::env::join_paths(entries) {
+        Ok(joined) => cmd.env("PATH", joined),
+        Err(e) => {
+            tracing::warn!("git identity: PATH join failed ({e}); skipping");
+            return None;
+        }
+    };
+
+    // Identity + signing GIT_CONFIG_*, composed over any config already present.
+    // `to_git_config_env` reads the base `GIT_CONFIG_COUNT` from this process's
+    // env — which is where the desktop stages its per-URL credential helper
+    // (KEY_0/KEY_1, inherited by the child) — so our entries land at the next
+    // free indices and the credential helper is preserved. We set only the new
+    // COUNT and KEY_n/VALUE_n; the inherited lower indices are untouched.
+    let entries = buzz_git_identity::identity_signing_entries(&id);
+    for (key, value) in buzz_git_identity::to_git_config_env(&entries) {
+        cmd.env(key, value);
+    }
+
+    Some(dir)
+}
+
+#[cfg(not(unix))]
+fn install_git_identity(_cmd: &mut tokio::process::Command) -> Option<tempfile::TempDir> {
+    None
+}
+
+/// Read a value previously staged on `cmd` via [`Command::env`], if any. Lets
+/// the git-identity installer compose over a `PATH` the spawn path already put
+/// on the child rather than clobbering it.
+#[cfg(unix)]
+fn child_env(cmd: &tokio::process::Command, key: &str) -> Option<std::ffi::OsString> {
+    cmd.as_std()
+        .get_envs()
+        .find(|(k, _)| *k == std::ffi::OsStr::new(key))
+        .and_then(|(_, v)| v.map(|v| v.to_owned()))
+}
+
 impl AcpClient {
     /// Kill the agent subprocess and wait for it to exit (no zombies).
     ///
@@ -516,6 +635,23 @@ impl AcpClient {
             cmd.env("CODEX_CONFIG", merged);
         }
 
+        // ── L1b: deterministic agent git identity for the whole runtime subtree ──
+        //
+        // buzz-dev-mcp's shim applies the identity+signing GIT_CONFIG_* only to
+        // its own shell-tool children. The native shells of claude-code / codex /
+        // goose never see it, so a bare `git commit` there resolves to whatever
+        // ambient identity the repo/global config carries (the leak that
+        // produced attribution gaps). Lift the same identity onto the agent
+        // runtime child so every native shell inherits it.
+        //
+        // Composed over the desktop's per-URL credential-helper GIT_CONFIG_*
+        // (base-offset preserved). NOSTR_PRIVATE_KEY is intentionally NOT removed
+        // — the child forwards it to dev-mcp, whose shim owns the remove-from-env
+        // dance for its subtree. Duplicate-but-identical config when the shim
+        // also applies is last-wins and benign. Skipped entirely when no key is
+        // present (test spawns, unconfigured sessions) so those are unchanged.
+        let git_identity_dir = install_git_identity(&mut cmd);
+
         // Spawn the agent in its own process group so SIGKILL doesn't propagate
         // to the harness's own process group on Unix.
         // tokio::process::Command::process_group is a stable tokio API (no extra imports needed).
@@ -563,6 +699,7 @@ impl AcpClient {
             goose_usage: UsageTracker::default(),
             standard_usage: StandardUsageTracker::default(),
             standard_adapter,
+            _git_identity_dir: git_identity_dir,
         })
     }
 
