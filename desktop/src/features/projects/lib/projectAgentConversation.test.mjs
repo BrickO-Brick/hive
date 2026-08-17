@@ -144,6 +144,17 @@ test("a pointer naming a non-DM or foreign-participant channel is not restorable
     }),
     null,
   );
+  // An agent-only channel has no stranger to reject — the signed-in user's
+  // own membership must be required, not merely the absence of strangers.
+  assert.equal(
+    restoreProjectsAgentConversation({
+      stored,
+      channels: [{ ...EXISTING_DM, participantPubkeys: [AGENT_PUBKEY] }],
+      candidates: [AGENT],
+      currentPubkey: SELF_PUBKEY,
+    }),
+    null,
+  );
   // Without a current identity there is nothing to validate against.
   assert.equal(
     restoreProjectsAgentConversation({
@@ -291,27 +302,44 @@ test("storage round-trips opener-anchored pointers and clears them", () => {
 
 // ── submitProjectAgentMessage ───────────────────────────────────────────────
 
-/** Models the backend's fail-closed scope check: commands resolve the active
- * relay when they run and reject when a caller-captured scope no longer
- * matches. `active` is mutable so tests can switch communities mid-flight. */
-function makeScopedBackend(active) {
-  const state = { active, dmOpens: [], sends: [] };
-  const assertScope = (expectedRelayUrl) => {
+/** Models the backend's fail-closed scope checks: commands resolve the active
+ * relay AND the active signing identity when they run and reject when a
+ * caller-captured scope no longer matches either. `active`/`activeSigner`
+ * are mutable so tests can switch communities (or race the identity swap)
+ * mid-flight. Startup is a recorded side effect too: activating the (agent,
+ * relay) pair grants channel/tool access, so the cross-tenant start must be
+ * observable, not merely survivable. */
+function makeScopedBackend(active, activeSigner = SELF_PUBKEY) {
+  const state = { active, activeSigner, starts: [], dmOpens: [], sends: [] };
+  const assertScope = ({ expectedRelayUrl, expectedSignerPubkey }) => {
     if (expectedRelayUrl !== undefined && expectedRelayUrl !== state.active) {
       throw new Error(
         "active community changed before the message was submitted; not sent",
       );
     }
+    if (
+      expectedSignerPubkey !== undefined &&
+      expectedSignerPubkey !== state.activeSigner
+    ) {
+      throw new Error(
+        "active identity changed before the message was submitted; not sent",
+      );
+    }
   };
   return {
     state,
+    startAgent: async (input) => {
+      assertScope(input);
+      state.starts.push({ relay: state.active, input });
+      return {};
+    },
     openDm: async (input) => {
-      assertScope(input.expectedRelayUrl);
+      assertScope(input);
       state.dmOpens.push({ relay: state.active, input });
       return { id: `dm-on-${state.active}` };
     },
     send: async (request) => {
-      assertScope(request.expectedRelayUrl);
+      assertScope(request);
       state.sends.push({ relay: state.active, request });
       return { eventId: `f${"0".repeat(63)}`, createdAt: PROMPT_AT };
     },
@@ -320,9 +348,10 @@ function makeScopedBackend(active) {
 
 test("a community switch during agent startup publishes nothing to either tenant", async () => {
   const backend = makeScopedBackend("wss://tenant-a.example");
-  let releaseStart;
-  const startGate = new Promise((resolve) => {
-    releaseStart = resolve;
+  const scopedStartAgent = backend.startAgent;
+  let releaseSwitch;
+  const switchGate = new Promise((resolve) => {
+    releaseSwitch = resolve;
   });
 
   const pending = submitProjectAgentMessage({
@@ -331,19 +360,55 @@ test("a community switch during agent startup publishes nothing to either tenant
     content: "tenant A repo context",
     mentionPubkeys: [AGENT_PUBKEY],
     relayScope: "wss://tenant-a.example",
-    startAgent: () => startGate,
+    signerScope: SELF_PUBKEY,
+    startAgent: async (input) => {
+      // The user switches communities while the callback is suspended on
+      // the managed-agent startup await (the backend's mesh preflight).
+      // Remounting removed the panel, but this callback keeps running —
+      // the backend's post-await check must reject before the spawn.
+      await switchGate;
+      return scopedStartAgent(input);
+    },
     openDm: backend.openDm,
     send: backend.send,
   });
 
-  // The user switches communities while the callback is suspended on the
-  // managed-agent startup await. Remounting removed the panel, but this
-  // callback keeps running.
   backend.state.active = "wss://tenant-b.example";
-  releaseStart();
+  releaseSwitch();
 
   await assert.rejects(pending, /active community changed/);
+  // The start side effect itself was blocked — the agent pair was never
+  // activated in tenant B — and nothing downstream ran either.
+  assert.deepEqual(backend.state.starts, []);
   assert.deepEqual(backend.state.dmOpens, []);
+  assert.deepEqual(backend.state.sends, []);
+});
+
+test("an identity swap racing the send fails closed at the signer check", async () => {
+  const backend = makeScopedBackend("wss://tenant-a.example");
+  const scopedSend = backend.send;
+  const pending = submitProjectAgentMessage({
+    agent: { pubkey: AGENT_PUBKEY, isManaged: false, isActive: true },
+    conversation: { channel: EXISTING_DM, opener: OPENER },
+    content: "tenant A repo context",
+    mentionPubkeys: [AGENT_PUBKEY],
+    relayScope: "wss://tenant-a.example",
+    signerScope: SELF_PUBKEY,
+    startAgent: backend.startAgent,
+    openDm: () => {
+      throw new Error("an existing conversation must reuse its channel");
+    },
+    send: async (request) => {
+      // A workspace switch mutates relay and keys under separate locks; the
+      // narrowest race leaves the relay matching while the identity has
+      // already swapped. The signer scope must catch what the relay scope
+      // cannot.
+      backend.state.activeSigner = "e".repeat(64);
+      return scopedSend(request);
+    },
+  });
+
+  await assert.rejects(pending, /active identity changed/);
   assert.deepEqual(backend.state.sends, []);
 });
 
@@ -356,6 +421,7 @@ test("a community switch during the DM open fails the send closed", async () => 
     content: "tenant A repo context",
     mentionPubkeys: [AGENT_PUBKEY],
     relayScope: "wss://tenant-a.example",
+    signerScope: SELF_PUBKEY,
     startAgent: () => {
       throw new Error("inactive relay agents are not startable");
     },
@@ -380,23 +446,41 @@ test("a community switch during the DM open fails the send closed", async () => 
 test("the captured scope rides every relay side effect of a first send", async () => {
   const backend = makeScopedBackend("wss://tenant-a.example");
   const result = await submitProjectAgentMessage({
-    agent: { pubkey: AGENT_PUBKEY, isManaged: false, isActive: true },
+    agent: { pubkey: AGENT_PUBKEY, isManaged: true, isActive: false },
     conversation: null,
     content: "opener",
     mentionPubkeys: [AGENT_PUBKEY],
     relayScope: "wss://tenant-a.example",
-    startAgent: async () => {},
+    signerScope: SELF_PUBKEY,
+    startAgent: backend.startAgent,
     openDm: backend.openDm,
     send: backend.send,
   });
 
+  // Startup, DM open, and send all carry the same captured scope pair —
+  // including the startup call, whose spawn/deploy side effect the backend
+  // gates on exactly these values.
+  assert.equal(backend.state.starts.length, 1);
+  assert.equal(
+    backend.state.starts[0].input.expectedRelayUrl,
+    "wss://tenant-a.example",
+  );
+  assert.equal(backend.state.starts[0].input.expectedSignerPubkey, SELF_PUBKEY);
   assert.equal(
     backend.state.dmOpens[0].input.expectedRelayUrl,
     "wss://tenant-a.example",
   );
   assert.equal(
+    backend.state.dmOpens[0].input.expectedSignerPubkey,
+    SELF_PUBKEY,
+  );
+  assert.equal(
     backend.state.sends[0].request.expectedRelayUrl,
     "wss://tenant-a.example",
+  );
+  assert.equal(
+    backend.state.sends[0].request.expectedSignerPubkey,
+    SELF_PUBKEY,
   );
   // The opener is a thread root: no parent reference.
   assert.equal(backend.state.sends[0].request.parentEventId, undefined);
@@ -411,6 +495,7 @@ test("follow-ups reply to the opener so same-second id ordering cannot hide them
     content: "follow-up in the opener's second",
     mentionPubkeys: [AGENT_PUBKEY],
     relayScope: "wss://tenant-a.example",
+    signerScope: SELF_PUBKEY,
     startAgent: async () => {},
     openDm: () => {
       throw new Error("an existing conversation must reuse its channel");

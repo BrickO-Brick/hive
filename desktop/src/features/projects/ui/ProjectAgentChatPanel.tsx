@@ -142,8 +142,8 @@ export function ProjectAgentChatPanel({
           ],
           mediaTags,
           relayScope,
-          startAgent: (agentPubkey) =>
-            startAgentMutation.mutateAsync(agentPubkey),
+          signerScope: identityQuery.data?.pubkey ?? null,
+          startAgent: (input) => startAgentMutation.mutateAsync(input),
           openDm: (input) => openDmMutation.mutateAsync(input),
           send: (request) =>
             sendChannelMessage(
@@ -158,6 +158,7 @@ export function ProjectAgentChatPanel({
               undefined,
               undefined,
               request.expectedRelayUrl,
+              request.expectedSignerPubkey,
             ),
         });
         if (!conversation) {
@@ -193,6 +194,7 @@ export function ProjectAgentChatPanel({
     [
       contextPayload,
       conversation,
+      identityQuery.data?.pubkey,
       isSending,
       openDmMutation,
       relayScope,

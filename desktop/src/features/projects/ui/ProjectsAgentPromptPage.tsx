@@ -494,8 +494,8 @@ export function ProjectsAgentPromptPage({
         content,
         mentionPubkeys: [selectedAgent.pubkey],
         relayScope,
-        startAgent: (agentPubkey) =>
-          startAgentMutation.mutateAsync(agentPubkey),
+        signerScope: identityQuery.data?.pubkey ?? null,
+        startAgent: (input) => startAgentMutation.mutateAsync(input),
         openDm: (input) => openDmMutation.mutateAsync(input),
         send: (request) =>
           sendChannelMessage(
@@ -510,6 +510,7 @@ export function ProjectsAgentPromptPage({
             undefined,
             undefined,
             request.expectedRelayUrl,
+            request.expectedSignerPubkey,
           ),
       });
       if (!conversation) {
@@ -544,6 +545,7 @@ export function ProjectsAgentPromptPage({
     }
   }, [
     conversation,
+    identityQuery.data?.pubkey,
     isSending,
     openDmMutation,
     relayScope,

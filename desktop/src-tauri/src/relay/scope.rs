@@ -26,9 +26,38 @@ pub fn assert_expected_relay_scope(
     Ok(())
 }
 
+/// Fail closed when a caller-captured signer identity no longer matches the
+/// identity a command actually read.
+///
+/// The relay URL and the signing keys live under separate locks and a
+/// workspace switch mutates them in sequence, so a caller that only pins the
+/// relay can still have its event signed — and its NIP-98 auth minted — by
+/// the *new* tenant's identity if the switch lands between the URL check and
+/// the key read. Callers capture the expected owner pubkey together with the
+/// relay scope; commands read one identity snapshot, assert it here, and use
+/// that exact snapshot for every signature. `None` preserves the unscoped
+/// behavior for callers without a tenant boundary.
+pub fn assert_expected_signer(
+    expected_signer_pubkey: Option<&str>,
+    actual_signer_hex: &str,
+) -> Result<(), String> {
+    let Some(expected) = expected_signer_pubkey
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        return Ok(());
+    };
+    if !expected.eq_ignore_ascii_case(actual_signer_hex) {
+        return Err(
+            "active identity changed before the message was submitted; not sent".to_string(),
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::assert_expected_relay_scope;
+    use super::{assert_expected_relay_scope, assert_expected_signer};
 
     #[test]
     fn matching_scope_passes_across_ws_http_normalization() {
@@ -56,5 +85,33 @@ mod tests {
         assert_expected_relay_scope(None, "https://anything.example").unwrap();
         assert_expected_relay_scope(Some(""), "https://anything.example").unwrap();
         assert_expected_relay_scope(Some("   "), "https://anything.example").unwrap();
+    }
+
+    #[test]
+    fn matching_signer_passes_case_insensitively() {
+        let keys = nostr::Keys::generate();
+        let hex = keys.public_key().to_hex();
+        assert_expected_signer(Some(&hex), &hex).unwrap();
+        assert_expected_signer(Some(&hex.to_ascii_uppercase()), &hex).unwrap();
+        assert_expected_signer(Some(&format!("  {hex} ")), &hex).unwrap();
+    }
+
+    #[test]
+    fn changed_signer_fails_closed() {
+        // Models the workspace-switch race: the caller captured tenant A's
+        // owner identity, but the switch landed before the command read the
+        // keys, so the snapshot now holds tenant B's identity.
+        let captured = nostr::Keys::generate().public_key().to_hex();
+        let switched = nostr::Keys::generate().public_key().to_hex();
+        let error = assert_expected_signer(Some(&captured), &switched).unwrap_err();
+        assert!(error.contains("active identity changed"), "{error}");
+    }
+
+    #[test]
+    fn absent_signer_preserves_unscoped_sends() {
+        let hex = nostr::Keys::generate().public_key().to_hex();
+        assert_expected_signer(None, &hex).unwrap();
+        assert_expected_signer(Some(""), &hex).unwrap();
+        assert_expected_signer(Some("   "), &hex).unwrap();
     }
 }

@@ -77,8 +77,8 @@ pub async fn submit_event(
     submit_event_at_with_keys(builder, state, &api_base_url, &keys).await
 }
 
-/// Sign, submit to an explicit HTTP API base URL, and also return the signed
-/// event's `created_at`.
+/// Sign with an explicit identity, submit to an explicit HTTP API base URL,
+/// and also return the signed event's `created_at`.
 ///
 /// Callers that persist a timestamp as an event cursor (e.g. the Projects
 /// conversation opener) need the signed event's own second — a
@@ -89,18 +89,22 @@ pub async fn submit_event(
 /// submit time) matters for the same callers: they validated a tenant scope
 /// against the resolved base earlier in the same command, and re-resolving
 /// here would reopen the window where a workspace switch retargets the event
-/// after the check passed.
+/// after the check passed. The explicit `keys` close the sibling window: the
+/// relay URL and the signing keys mutate under separate locks during a
+/// workspace switch, so re-reading the keys here could sign — and NIP-98
+/// authenticate — the event as the *new* tenant's identity after the caller
+/// validated the old one. The caller passes the exact snapshot it asserted.
 pub async fn submit_event_at_created_at(
     builder: nostr::EventBuilder,
     state: &AppState,
     api_base_url: &str,
+    keys: &nostr::Keys,
 ) -> Result<(SubmitEventResponse, i64), String> {
-    let keys = state.signing_keys()?;
     let event = builder
-        .sign_with_keys(&keys)
+        .sign_with_keys(keys)
         .map_err(|e| format!("failed to sign event: {e}"))?;
     let created_at = event.created_at.as_secs() as i64;
-    let result = submit_signed_event_at_with_keys(&event, state, api_base_url, &keys).await?;
+    let result = submit_signed_event_at_with_keys(&event, state, api_base_url, keys).await?;
     Ok((result, created_at))
 }
 

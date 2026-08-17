@@ -18,8 +18,8 @@ use crate::{
     },
     nostr_convert,
     relay::{
-        assert_expected_relay_scope, query_relay, submit_event, submit_event_at_created_at,
-        submit_event_with_keys_created_at,
+        assert_expected_relay_scope, assert_expected_signer, query_relay, submit_event,
+        submit_event_at_created_at, submit_event_with_keys_created_at,
     },
 };
 
@@ -451,6 +451,7 @@ pub async fn send_channel_message(
     mention_pubkeys: Option<Vec<String>>,
     kind: Option<u32>,
     expected_relay_url: Option<String>,
+    expected_signer_pubkey: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<SendChannelMessageResponse, String> {
     let channel_uuid = uuid::Uuid::parse_str(&channel_id)
@@ -461,13 +462,23 @@ pub async fn send_channel_message(
     let emoji = emoji_tags.unwrap_or_default();
     let mention_refs_only = mention_tags.unwrap_or_default();
     let link_previews = link_preview_tags.unwrap_or_default();
-    // Resolve the relay once and use it for every read and the submission.
-    // Callers that captured a tenant scope before an await (Projects agent
-    // sends) pass `expected_relay_url`; a mismatch means the active community
-    // changed mid-flight and the send must fail closed rather than publish
-    // the captured tenant's content to the new tenant's relay.
+    // Resolve the relay AND the signing identity once and use them for every
+    // read and the submission. Callers that captured a tenant scope before an
+    // await (Projects agent sends) pass `expected_relay_url` and
+    // `expected_signer_pubkey`; a mismatch on either means the active
+    // community changed mid-flight and the send must fail closed rather than
+    // publish the captured tenant's content to the new tenant's relay — or
+    // sign it under the new tenant's identity. The relay check alone cannot
+    // catch the latter: relay and keys mutate under separate locks during a
+    // workspace switch, so the keys are snapshotted here, asserted, and that
+    // exact snapshot signs the event and its NIP-98 auth below.
     let relay_base = crate::relay::relay_api_base_url_with_override(&state);
     assert_expected_relay_scope(expected_relay_url.as_deref(), &relay_base)?;
+    let signing_keys = state.signing_keys()?;
+    assert_expected_signer(
+        expected_signer_pubkey.as_deref(),
+        &signing_keys.public_key().to_hex(),
+    )?;
     let kind_num = kind.unwrap_or(buzz_core_pkg::kind::KIND_STREAM_MESSAGE);
     if sent_from_thread_tag.is_some() && kind_num != buzz_core_pkg::kind::KIND_STREAM_MESSAGE {
         return Err("sent-from-thread provenance requires a stream message".into());
@@ -487,7 +498,8 @@ pub async fn send_channel_message(
             let parent_id = parent_event_id
                 .as_deref()
                 .ok_or("forum comment requires parent_event_id")?;
-            let thread_ref = resolve_thread_ref(parent_id, &state, &relay_base).await?;
+            let thread_ref =
+                resolve_thread_ref(parent_id, &state, &relay_base, Some(&signing_keys)).await?;
             resolved_root = Some(thread_ref.root_event_id.to_hex());
             events::build_forum_comment(
                 channel_uuid,
@@ -501,7 +513,8 @@ pub async fn send_channel_message(
         _ => {
             let thread_ref = match parent_event_id.as_deref() {
                 Some(pid) => {
-                    let tr = resolve_thread_ref(pid, &state, &relay_base).await?;
+                    let tr =
+                        resolve_thread_ref(pid, &state, &relay_base, Some(&signing_keys)).await?;
                     resolved_root = Some(tr.root_event_id.to_hex());
                     Some(tr)
                 }
@@ -524,9 +537,11 @@ pub async fn send_channel_message(
 
     // `created_at` is the signed event's own second, not a post-publication
     // clock read — persisted as an event cursor by the Projects opener.
-    // Submit through the base resolved (and scope-checked) above — a
-    // re-resolve here would reopen the mid-command switch window.
-    let (result, created_at) = submit_event_at_created_at(builder, &state, &relay_base).await?;
+    // Submit through the base resolved (and scope-checked) above and the
+    // identity snapshotted (and signer-checked) above — a re-resolve or key
+    // re-read here would reopen the mid-command switch window.
+    let (result, created_at) =
+        submit_event_at_created_at(builder, &state, &relay_base, &signing_keys).await?;
 
     let depth = match (&parent_event_id, &resolved_root) {
         (None, _) => 0,
@@ -746,11 +761,12 @@ pub async fn send_managed_agent_channel_message(
         Some(parent_id) => Some(
             // Same active-relay resolution as before — this path has no
             // caller-captured tenant scope (yet), so resolve the override
-            // here and read through it.
+            // here and read through it with the active identity.
             resolve_thread_ref(
                 parent_id,
                 &state,
                 &crate::relay::relay_api_base_url_with_override(&state),
+                None,
             )
             .await?,
         ),

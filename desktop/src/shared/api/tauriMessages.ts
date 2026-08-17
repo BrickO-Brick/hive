@@ -14,6 +14,7 @@ export async function sendChannelMessage(
   linkPreviewTags?: string[][],
   sentFromThreadTag?: string[],
   expectedRelayUrl?: string,
+  expectedSignerPubkey?: string,
 ): Promise<SendChannelMessageResult> {
   const response = await invokeTauri<RawSendChannelMessageResult>(
     "send_channel_message",
@@ -31,6 +32,10 @@ export async function sendChannelMessage(
       // Tenant scope captured by the caller before its first await; the
       // backend fails closed when the active community no longer matches.
       expectedRelayUrl: expectedRelayUrl ?? null,
+      // Signer identity captured with the relay scope; the backend fails
+      // closed when the active identity no longer matches, so a community
+      // switch cannot re-sign the captured tenant's content as the new one.
+      expectedSignerPubkey: expectedSignerPubkey ?? null,
     },
   );
   return {

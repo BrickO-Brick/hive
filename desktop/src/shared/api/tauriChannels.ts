@@ -164,6 +164,14 @@ export type OpenDmInput = {
    * community. Omit for callers without a tenant boundary.
    */
   expectedRelayUrl?: string;
+  /**
+   * Signer identity captured together with the relay scope (owner pubkey,
+   * hex). Relay and keys change under separate locks during a community
+   * switch, so the backend also fails closed when the active identity no
+   * longer matches — a stale callback can neither open the DM in the wrong
+   * community nor open it under the wrong identity.
+   */
+  expectedSignerPubkey?: string;
 };
 
 export async function openDm(input: OpenDmInput): Promise<Channel> {

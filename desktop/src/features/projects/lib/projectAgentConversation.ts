@@ -78,10 +78,15 @@ export function restoreProjectsAgentConversation<
   const participants = channel.participantPubkeys.map(normalizePubkey);
   const self = normalizePubkey(currentPubkey);
   const hasAgent = participants.includes(agentPubkey);
+  // The contract is participants === {agent, self}: requiring the current
+  // user's own membership matters as much as rejecting strangers — a stored
+  // pointer must never restore a channel not proven to include the
+  // signed-in user (e.g. a stale pointer naming an agent-only channel).
+  const hasSelf = participants.includes(self);
   const hasStranger = participants.some(
     (participant) => participant !== agentPubkey && participant !== self,
   );
-  if (!hasAgent || hasStranger) return null;
+  if (!hasAgent || !hasSelf || hasStranger) return null;
   return { agent, channel, opener: stored.opener };
 }
 
@@ -126,12 +131,18 @@ export function mergeProjectAgentConversationEvents<
  * The sequence suspends twice (managed-agent startup, DM open) and a
  * community switch during either suspension does not cancel this callback —
  * remounting only removes the UI. Binding is therefore delegated to the
- * scoped APIs themselves: `openDm` and `send` receive `expectedRelayUrl`
- * and the backing commands fail closed when the active community no longer
- * matches, so a stale callback can neither open a DM in the new tenant nor
- * publish the captured tenant's context to it. This function never re-reads
- * the active scope after capture — doing so would race the very switch it
- * guards against.
+ * scoped APIs themselves: `startAgent`, `openDm`, and `send` all receive
+ * the captured `expectedRelayUrl`/`expectedSignerPubkey`, and the backing
+ * commands fail closed when the active community or identity no longer
+ * matches — a stale callback can neither activate the agent pair in the new
+ * tenant, nor open a DM there, nor publish (or re-sign) the captured
+ * tenant's context. Startup is scoped too because starting a managed agent
+ * activates the (agent, relay) pair with channel/tool access — a side effect
+ * in its own right, not mere preflight. The signer scope exists because the
+ * relay URL and the signing keys change under separate locks during a
+ * switch: pinning only the relay would still let the new identity sign the
+ * old tenant's content. This function never re-reads the active scope after
+ * capture — doing so would race the very switch it guards against.
  *
  * Follow-up sends carry `parentEventId = opener.eventId`: a follow-up signed
  * in the opener's own second gets a random event id, and roughly half of
@@ -147,6 +158,7 @@ export async function submitProjectAgentMessage<Ch extends { id: string }>({
   mentionPubkeys,
   mediaTags,
   relayScope,
+  signerScope,
   startAgent,
   openDm,
   send,
@@ -159,10 +171,18 @@ export async function submitProjectAgentMessage<Ch extends { id: string }>({
   /** Community relay captured before the first await; null when the
    * community has no relay identity (no tenant boundary to protect). */
   relayScope: string | null;
-  startAgent: (agentPubkey: string) => Promise<unknown>;
+  /** Signing identity (owner pubkey, hex) captured together with
+   * `relayScope`; null when unknown. */
+  signerScope: string | null;
+  startAgent: (input: {
+    pubkey: string;
+    expectedRelayUrl?: string;
+    expectedSignerPubkey?: string;
+  }) => Promise<unknown>;
   openDm: (input: {
     pubkeys: string[];
     expectedRelayUrl?: string;
+    expectedSignerPubkey?: string;
   }) => Promise<Ch>;
   send: (request: {
     channelId: string;
@@ -171,15 +191,25 @@ export async function submitProjectAgentMessage<Ch extends { id: string }>({
     mediaTags?: string[][];
     parentEventId?: string;
     expectedRelayUrl?: string;
+    expectedSignerPubkey?: string;
   }) => Promise<{ eventId: string; createdAt: number }>;
 }): Promise<{ channel: Ch; sent: { eventId: string; createdAt: number } }> {
   const expectedRelayUrl = relayScope ?? undefined;
+  const expectedSignerPubkey = signerScope ?? undefined;
   if (agent.isManaged && !agent.isActive) {
-    await startAgent(agent.pubkey);
+    await startAgent({
+      pubkey: agent.pubkey,
+      expectedRelayUrl,
+      expectedSignerPubkey,
+    });
   }
   const channel =
     conversation?.channel ??
-    (await openDm({ pubkeys: [agent.pubkey], expectedRelayUrl }));
+    (await openDm({
+      pubkeys: [agent.pubkey],
+      expectedRelayUrl,
+      expectedSignerPubkey,
+    }));
   const sent = await send({
     channelId: channel.id,
     content,
@@ -187,6 +217,7 @@ export async function submitProjectAgentMessage<Ch extends { id: string }>({
     mediaTags,
     parentEventId: conversation?.opener.eventId,
     expectedRelayUrl,
+    expectedSignerPubkey,
   });
   return { channel, sent };
 }
