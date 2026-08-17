@@ -724,7 +724,7 @@ class ThreadDetailPage extends HookConsumerWidget {
               if (!isMember || isArchived)
                 _ThreadTypingIndicator(
                   channelId: channelId,
-                  threadHeadId: threadHead.id,
+                  threadHeadId: effectiveRootId,
                   animated: false,
                   overlayTopBoundary: frostedAppBarHeight(context),
                 ),
@@ -751,7 +751,7 @@ class ThreadDetailPage extends HookConsumerWidget {
                               restoreComposerFocus,
                             ) => _ThreadTypingIndicator(
                               channelId: channelId,
-                              threadHeadId: threadHead.id,
+                              threadHeadId: effectiveRootId,
                               horizontalInset: 0,
                               overlayTopBoundary: frostedAppBarHeight(context),
                               compactWidthFactor: 0.85,

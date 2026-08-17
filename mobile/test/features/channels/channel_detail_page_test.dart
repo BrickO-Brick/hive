@@ -14,6 +14,7 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 import 'package:buzz/features/channels/channel.dart';
 import 'package:buzz/features/channels/agent_activity/active_agent_turns.dart';
+import 'package:buzz/features/channels/agent_activity/composer_agent_activity_indicator.dart';
 import 'package:buzz/features/channels/agent_activity/observer_models.dart';
 import 'package:buzz/features/channels/agent_activity/observer_subscription.dart';
 import 'package:buzz/features/channels/agent_activity/working_bots_provider.dart';
@@ -4560,6 +4561,11 @@ void main() {
       );
       expect(threadPage.threadHead.id, 'parent');
       expect(threadPage.initialMessageId, 'target');
+
+      final activityIndicator = tester.widget<ComposerAgentActivityIndicator>(
+        find.byType(ComposerAgentActivityIndicator),
+      );
+      expect(activityIndicator.threadHeadId, 'root');
 
       final highlighted = tester.widget<DecoratedBox>(
         find.byKey(const ValueKey('thread-message-target')),

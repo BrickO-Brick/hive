@@ -155,17 +155,28 @@ final composerActivityStateProvider = Provider.autoDispose
 /// Agent pubkeys working in a channel, for the members badge and sheet.
 final workingBotPubkeysProvider = Provider.autoDispose
     .family<Set<String>, String>((ref, channelId) {
-      final activity = ref.watch(
-        composerActivityStateProvider((
-          channelId: channelId,
-          threadHeadId: null,
-        )),
-      );
-      return Set.unmodifiable(
-        activity.agents
-            .where((agent) => agent.isWorking)
-            .map((agent) => agent.pubkey),
-      );
+      final threadScopes = <String?>{
+        null,
+        for (final entry in ref.watch(channelTypingProvider(channelId)))
+          entry.threadHeadId,
+        for (final turn in ref.watch(composerAgentTurnStatesProvider))
+          if (turn.channelId == channelId) turn.threadHeadId,
+      };
+      final working = <String>{};
+      for (final threadHeadId in threadScopes) {
+        final activity = ref.watch(
+          composerActivityStateProvider((
+            channelId: channelId,
+            threadHeadId: threadHeadId,
+          )),
+        );
+        working.addAll(
+          activity.agents
+              .where((agent) => agent.isWorking)
+              .map((agent) => agent.pubkey),
+        );
+      }
+      return Set.unmodifiable(working);
     });
 
 int _compareComposerTurnRecency(AgentTurnState a, AgentTurnState b) {

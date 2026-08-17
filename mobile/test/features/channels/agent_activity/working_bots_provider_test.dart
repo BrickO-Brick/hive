@@ -259,6 +259,52 @@ void main() {
     expect(container.read(workingBotPubkeysProvider(_channelId)), isEmpty);
   });
 
+  test('channel working set includes agents from every thread scope', () {
+    final container = ProviderContainer(
+      overrides: [
+        currentPubkeyProvider.overrideWith((ref) => 'owner'),
+        channelMembersProvider(
+          _channelId,
+        ).overrideWith((ref) async => const <ChannelMember>[]),
+        channelTypingProvider(_channelId).overrideWith(
+          () => _FakeTypingNotifier(const [
+            TypingEntry(
+              pubkey: 'agent-a',
+              threadHeadId: 'thread-1',
+              expiresAtMs: 9999999999999,
+            ),
+            TypingEntry(
+              pubkey: 'human',
+              threadHeadId: 'thread-3',
+              expiresAtMs: 9999999999999,
+            ),
+          ]),
+        ),
+        agentMentionPubkeysProvider(
+          _channelId,
+        ).overrideWith((ref) => const {'agent-a', 'agent-b'}),
+        agentOwnersProvider.overrideWithValue(
+          const AsyncData({'agent-a': 'owner', 'agent-b': 'owner'}),
+        ),
+        userCacheProvider.overrideWith(_FakeUserCacheNotifier.new),
+        observerRelayProvider.overrideWith(
+          () => _FakeObserverRelayNotifier({
+            'agent-b': [_observerFrame('agent-b')],
+          }),
+        ),
+        composerAgentTurnStatesProvider.overrideWithValue([
+          _turn('agent-b', threadHeadId: 'thread-2'),
+        ]),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    expect(container.read(workingBotPubkeysProvider(_channelId)), {
+      'agent-a',
+      'agent-b',
+    });
+  });
+
   test('prefers live work over retained terminal history', () {
     final receiptAt = DateTime.utc(2026, 8, 16, 12, 0, 5);
     final container = ProviderContainer(
