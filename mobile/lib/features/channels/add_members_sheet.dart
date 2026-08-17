@@ -69,6 +69,7 @@ class AddChannelMembersSheet extends HookConsumerWidget {
 
     Future<void> addSelectedMembers() async {
       if (selectedUsers.value.isEmpty || isSubmitting.value) return;
+      final submittedUsers = List<DirectoryUser>.of(selectedUsers.value);
       isSubmitting.value = true;
       submitError.value = null;
       try {
@@ -76,10 +77,17 @@ class AddChannelMembersSheet extends HookConsumerWidget {
             .read(channelActionsProvider)
             .addMembers(
               channelId: channelId,
-              pubkeys: selectedUsers.value.map((user) => user.pubkey).toList(),
+              pubkeys: submittedUsers.map((user) => user.pubkey).toList(),
             );
         if (context.mounted) Navigator.of(context).pop(true);
       } on AddMembersException catch (error) {
+        final failedPubkeys = error.failures.keys
+            .map((pubkey) => pubkey.toLowerCase())
+            .toSet();
+        selectedUsers.value = [
+          for (final user in submittedUsers)
+            if (failedPubkeys.contains(user.pubkey.toLowerCase())) user,
+        ];
         submitError.value = error.message;
       } catch (error) {
         submitError.value = error.toString();

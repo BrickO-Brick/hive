@@ -1140,6 +1140,96 @@ void main() {
       );
     });
 
+    testWidgets(
+      'keeps only rejected members selected after a partial failure',
+      (tester) async {
+        var attempts = 0;
+        final submittedPubkeys = <List<String>>[];
+        await tester.pumpWidget(
+          _buildTestable(
+            messages: const [],
+            members: [
+              ChannelMember(
+                pubkey: 'self',
+                role: 'owner',
+                joinedAt: DateTime(2025),
+              ),
+            ],
+            directoryUsers: const [
+              DirectoryUser(pubkey: 'alice', displayName: 'Alice'),
+              DirectoryUser(pubkey: 'bob', displayName: 'Bob'),
+            ],
+            createChannelActions: (ref) => _FakeChannelActions(
+              ref,
+              onAddMembers: (_, pubkeys) async {
+                submittedPubkeys.add(pubkeys);
+                attempts += 1;
+                if (attempts == 1) {
+                  throw const AddMembersException({'bob': 'rejected'});
+                }
+              },
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        await tester.tap(
+          find.byKey(const ValueKey('channel-header-settings-trigger')),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.byKey(const ValueKey('channel-details-add-members-row')),
+        );
+        await tester.pumpAndSettle();
+
+        await tester.tap(
+          find.byKey(const ValueKey('add-channel-member-alice')),
+        );
+        await tester.pump();
+        await tester.tap(find.byKey(const ValueKey('add-channel-member-bob')));
+        await tester.pump();
+        expect(
+          find.byKey(const ValueKey('add-channel-member-selected-alice')),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(const ValueKey('add-channel-member-selected-bob')),
+          findsOneWidget,
+        );
+        await tester.tap(
+          find.byKey(const ValueKey('add-channel-members-submit')),
+        );
+        await tester.pumpAndSettle();
+
+        expect(attempts, 1);
+        expect(
+          find.byKey(const ValueKey('add-channel-member-selected-alice')),
+          findsNothing,
+        );
+        expect(
+          find.byKey(const ValueKey('add-channel-member-selected-bob')),
+          findsOneWidget,
+        );
+        // The successful add must not remain selected for a retry.
+        expect(
+          tester
+              .widgetList<InputChip>(find.byType(InputChip))
+              .map((chip) => chip.key)
+              .toList(),
+          [const ValueKey('add-channel-member-selected-bob')],
+        );
+        await tester.tap(
+          find.byKey(const ValueKey('add-channel-members-submit')),
+        );
+        await tester.pumpAndSettle();
+        expect(attempts, 2);
+        expect(submittedPubkeys, [
+          ['alice', 'bob'],
+          ['bob'],
+        ]);
+      },
+    );
+
     testWidgets('hides composer for archived channels', (tester) async {
       final archivedChannel = _testChannel.copyWith(
         archivedAt: DateTime.utc(2025, 1, 2),
