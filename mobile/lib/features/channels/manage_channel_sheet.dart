@@ -51,7 +51,7 @@ class ManageChannelSheet extends HookConsumerWidget {
         canonicalName.isNotEmpty &&
         (nameDirty || descriptionDirty) &&
         !isSavingDetails.value;
-    final canEditCanvas = !channel.isArchived;
+    final canEditCanvas = channel.isMember && !channel.isArchived;
 
     Future<void> saveDetails() async {
       if (!canSaveDetails) return;

@@ -13,7 +13,11 @@ import 'package:hooks_riverpod/hooks_riverpod.dart';
 
 const _currentPubkey = 'me';
 
-Channel _channel({String type = 'stream', bool isArchived = false}) => Channel(
+Channel _channel({
+  String type = 'stream',
+  bool isArchived = false,
+  bool isMember = true,
+}) => Channel(
   id: 'channel-id',
   name: type == 'dm' ? 'Alice' : 'general',
   channelType: type,
@@ -22,7 +26,7 @@ Channel _channel({String type = 'stream', bool isArchived = false}) => Channel(
   createdBy: 'owner',
   createdAt: DateTime(2025),
   memberCount: 2,
-  isMember: true,
+  isMember: isMember,
   archivedAt: isArchived ? DateTime(2025, 1, 2) : null,
 );
 
@@ -59,6 +63,13 @@ Widget _modalApp({
   overrides: [
     currentPubkeyProvider.overrideWith((ref) => _currentPubkey),
     channelMembersProvider(channel.id).overrideWith((ref) => loadMembers()),
+    channelCanvasProvider(channel.id).overrideWith(
+      (ref) async => const ChannelCanvas(
+        content: null,
+        updatedAt: null,
+        authorPubkey: null,
+      ),
+    ),
     channelActionsProvider.overrideWith(createChannelActions),
   ],
   child: MaterialApp(
@@ -349,6 +360,27 @@ void main() {
       find.descendant(of: manageSheet, matching: find.text('Purpose')),
       findsNothing,
     );
+  });
+
+  testWidgets('non-member cannot edit canvas from Manage channel', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _modalApp(
+        channel: _channel(isMember: false),
+        loadMembers: () async => const [],
+        createChannelActions: (ref) => _FakeChannelActions(ref),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Open actions'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Manage channel'));
+    await tester.pumpAndSettle();
+
+    final editCanvas = find.widgetWithText(FilledButton, 'Create canvas');
+    expect(editCanvas, findsOneWidget);
+    expect(tester.widget<FilledButton>(editCanvas).onPressed, isNull);
   });
 
   testWidgets('DM omits quick actions, then shows mute and copy rows', (
