@@ -158,37 +158,44 @@ class AddChannelMembersSheet extends HookConsumerWidget {
                             final selected = selectedPubkeys.contains(
                               user.pubkey.toLowerCase(),
                             );
-                            return ListTile(
+                            return Semantics(
                               key: ValueKey(
                                 'add-channel-member-${user.pubkey}',
                               ),
-                              contentPadding: EdgeInsets.zero,
-                              leading: AvatarImage(
-                                imageUrl: user.avatarUrl,
-                                radius: 20,
-                                backgroundColor:
-                                    context.colors.primaryContainer,
-                                fallback: Text(user.initial),
+                              button: true,
+                              selected: selected,
+                              label: selected
+                                  ? '${user.label}, selected'
+                                  : user.label,
+                              child: ListTile(
+                                contentPadding: EdgeInsets.zero,
+                                leading: AvatarImage(
+                                  imageUrl: user.avatarUrl,
+                                  radius: 20,
+                                  backgroundColor:
+                                      context.colors.primaryContainer,
+                                  fallback: Text(user.initial),
+                                ),
+                                title: Text(
+                                  user.label,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                subtitle: Text(
+                                  user.secondaryLabel,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                trailing: Icon(
+                                  selected
+                                      ? LucideIcons.circleCheck
+                                      : LucideIcons.plus,
+                                  color: selected
+                                      ? context.colors.primary
+                                      : context.colors.onSurfaceVariant,
+                                ),
+                                onTap: () => toggleUser(user),
                               ),
-                              title: Text(
-                                user.label,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                              subtitle: Text(
-                                user.secondaryLabel,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                              trailing: Icon(
-                                selected
-                                    ? LucideIcons.circleCheck
-                                    : LucideIcons.plus,
-                                color: selected
-                                    ? context.colors.primary
-                                    : context.colors.onSurfaceVariant,
-                              ),
-                              onTap: () => toggleUser(user),
                             );
                           },
                         ),

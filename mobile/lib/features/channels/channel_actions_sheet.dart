@@ -220,7 +220,11 @@ class ChannelActionsSheet extends ConsumerWidget {
                         maxWidth: 640,
                         maxHeight: MediaQuery.sizeOf(context).height * 0.9,
                       ),
-                      builder: (_) => ManageChannelSheet(channel: channel),
+                      builder: (_) => ManageChannelSheet(
+                        channel: channel,
+                        canEditDetails:
+                            canManageLifecycle && !channel.isArchived,
+                      ),
                     );
                     if (shouldClose == true && context.mounted) {
                       Navigator.of(context).pop(true);

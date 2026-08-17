@@ -197,6 +197,7 @@ class ChannelDetailsPage extends HookConsumerWidget {
         ),
         builder: (_) => ManageChannelSheet(
           channel: resolvedChannel,
+          canEditDetails: canEdit,
           onChannelUpdated: (updated) => displayedChannel.value = updated,
         ),
       );

@@ -11,10 +11,12 @@ class ManageChannelSheet extends HookConsumerWidget {
   const ManageChannelSheet({
     super.key,
     required this.channel,
+    this.canEditDetails = true,
     this.onChannelUpdated,
   });
 
   final Channel channel;
+  final bool canEditDetails;
   final ValueChanged<Channel>? onChannelUpdated;
 
   @override
@@ -48,6 +50,7 @@ class ManageChannelSheet extends HookConsumerWidget {
     final nameDirty = canonicalName != channel.name.trim();
     final descriptionDirty = description != channel.description.trim();
     final canSaveDetails =
+        canEditDetails &&
         canonicalName.isNotEmpty &&
         (nameDirty || descriptionDirty) &&
         !isSavingDetails.value;
@@ -113,7 +116,7 @@ class ManageChannelSheet extends HookConsumerWidget {
               fieldKey: const ValueKey('manage-channel-name'),
               outlineKey: const ValueKey('manage-channel-name-outline'),
               controller: nameController,
-              enabled: !isSavingDetails.value,
+              enabled: canEditDetails && !isSavingDetails.value,
               hintText: 'Channel name',
               textInputAction: TextInputAction.next,
             ),
@@ -122,7 +125,7 @@ class ManageChannelSheet extends HookConsumerWidget {
               fieldKey: const ValueKey('manage-channel-description'),
               outlineKey: const ValueKey('manage-channel-description-outline'),
               controller: descriptionController,
-              enabled: !isSavingDetails.value,
+              enabled: canEditDetails && !isSavingDetails.value,
               hintText: 'Description',
               minLines: 2,
               maxLines: 4,
@@ -284,28 +287,32 @@ class _ManageChannelTextField extends StatelessWidget {
         ),
         borderRadius: BorderRadius.circular(Radii.card),
       ),
-      child: TextField(
-        key: fieldKey,
-        controller: controller,
-        enabled: enabled,
-        minLines: minLines,
-        maxLines: maxLines,
-        style: context.textTheme.bodyLarge,
-        decoration: InputDecoration(
-          hintText: hintText,
-          hintStyle: context.textTheme.bodyLarge?.copyWith(
-            color: context.colors.onSurfaceVariant,
+      child: Semantics(
+        label: hintText,
+        textField: true,
+        child: TextField(
+          key: fieldKey,
+          controller: controller,
+          enabled: enabled,
+          minLines: minLines,
+          maxLines: maxLines,
+          style: context.textTheme.bodyLarge,
+          decoration: InputDecoration(
+            hintText: hintText,
+            hintStyle: context.textTheme.bodyLarge?.copyWith(
+              color: context.colors.onSurfaceVariant,
+            ),
+            border: InputBorder.none,
+            enabledBorder: InputBorder.none,
+            focusedBorder: InputBorder.none,
+            isDense: true,
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: Grid.xs,
+              vertical: Grid.twelve,
+            ),
           ),
-          border: InputBorder.none,
-          enabledBorder: InputBorder.none,
-          focusedBorder: InputBorder.none,
-          isDense: true,
-          contentPadding: const EdgeInsets.symmetric(
-            horizontal: Grid.xs,
-            vertical: Grid.twelve,
-          ),
+          textInputAction: textInputAction,
         ),
-        textInputAction: textInputAction,
       ),
     );
   }

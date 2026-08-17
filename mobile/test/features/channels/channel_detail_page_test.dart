@@ -1107,8 +1107,27 @@ void main() {
       );
       await tester.pumpAndSettle();
 
+      await tester.pump();
+      final unselectedSemantics = tester.getSemantics(
+        find.byKey(const ValueKey('add-channel-member-alice')),
+      );
+      expect(unselectedSemantics.flagsCollection.isButton, isTrue);
+      expect(
+        unselectedSemantics.flagsCollection.isSelected.toString(),
+        'Tristate.isFalse',
+      );
+
       await tester.tap(find.byKey(const ValueKey('add-channel-member-alice')));
       await tester.pump();
+      final selectedSemantics = tester.getSemantics(
+        find.byKey(const ValueKey('add-channel-member-alice')),
+      );
+      expect(selectedSemantics.flagsCollection.isButton, isTrue);
+      expect(
+        selectedSemantics.flagsCollection.isSelected.toString(),
+        'Tristate.isTrue',
+      );
+      expect(selectedSemantics.label, 'Alice, selected');
       await tester.tap(
         find.byKey(const ValueKey('add-channel-members-submit')),
       );
