@@ -178,7 +178,7 @@ export function ProjectAgentChatPanel({
       />
       <div className="flex min-h-0 flex-1 flex-col">
         <div
-          className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pb-4 pt-[4.25rem]"
+          className="flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-auto pb-4 pt-[4.25rem]"
           data-testid="project-agent-conversation-scroll"
         >
           {conversation ? (
