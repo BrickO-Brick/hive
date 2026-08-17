@@ -305,8 +305,63 @@ void main() {
     });
   });
 
-  test('prefers live work over retained terminal history', () {
+  test('prefers a newer terminal outcome over stale working history', () {
+    final container = ProviderContainer(
+      overrides: [
+        currentPubkeyProvider.overrideWith((ref) => 'owner'),
+        channelMembersProvider(
+          _channelId,
+        ).overrideWith((ref) async => const <ChannelMember>[]),
+        channelTypingProvider(
+          _channelId,
+        ).overrideWith(() => _FakeTypingNotifier(const [])),
+        agentMentionPubkeysProvider(
+          _channelId,
+        ).overrideWith((ref) => const {'agent-a'}),
+        agentOwnersProvider.overrideWithValue(
+          const AsyncData({'agent-a': 'owner'}),
+        ),
+        userCacheProvider.overrideWith(_FakeUserCacheNotifier.new),
+        observerRelayProvider.overrideWith(
+          () => _FakeObserverRelayNotifier({
+            'agent-a': [_observerFrame('agent-a')],
+          }),
+        ),
+        composerAgentTurnStatesProvider.overrideWithValue([
+          _turn(
+            'agent-a',
+            turnId: 'turn-old',
+            startedAt: DateTime.utc(2026, 8, 16, 11, 59),
+            lastActivityAt: DateTime.utc(2026, 8, 16, 12, 0, 1),
+          ),
+          _turn(
+            'agent-a',
+            phase: AgentTurnPhase.error,
+            turnId: 'turn-new',
+            startedAt: DateTime.utc(2026, 8, 16, 12),
+            lastActivityAt: DateTime.utc(2026, 8, 16, 12, 0, 5),
+          ),
+        ]),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    final state = container.read(
+      composerActivityStateProvider((
+        channelId: _channelId,
+        threadHeadId: null,
+      )),
+    );
+
+    expect(state.agents.single.turnId, 'turn-new');
+    expect(state.agents.single.phase, AgentTurnPhase.error);
+    expect(state.agents.single.isWorking, isFalse);
+    expect(container.read(workingBotPubkeysProvider(_channelId)), isEmpty);
+  });
+
+  test('prefers live work when turn chronology is tied', () {
     final receiptAt = DateTime.utc(2026, 8, 16, 12, 0, 5);
+    final startedAt = DateTime.utc(2026, 8, 16, 12, 0, 4);
     final container = ProviderContainer(
       overrides: [
         currentPubkeyProvider.overrideWith((ref) => 'owner'),
@@ -333,13 +388,13 @@ void main() {
             'agent-a',
             phase: AgentTurnPhase.error,
             turnId: 'turn-old',
-            startedAt: DateTime.utc(2026, 8, 16, 11, 59),
+            startedAt: startedAt,
             lastActivityAt: receiptAt,
           ),
           _turn(
             'agent-a',
             turnId: 'turn-new',
-            startedAt: DateTime.utc(2026, 8, 16, 12, 0, 4),
+            startedAt: startedAt,
             lastActivityAt: receiptAt,
           ),
         ]),

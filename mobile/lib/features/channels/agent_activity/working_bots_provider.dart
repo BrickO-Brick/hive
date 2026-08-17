@@ -180,10 +180,10 @@ final workingBotPubkeysProvider = Provider.autoDispose
     });
 
 int _compareComposerTurnRecency(AgentTurnState a, AgentTurnState b) {
-  if (a.isWorking != b.isWorking) return a.isWorking ? 1 : -1;
   final activity = a.lastActivityAt.compareTo(b.lastActivityAt);
   if (activity != 0) return activity;
   final started = a.startedAt.compareTo(b.startedAt);
   if (started != 0) return started;
+  if (a.isWorking != b.isWorking) return a.isWorking ? 1 : -1;
   return a.turnId.compareTo(b.turnId);
 }
