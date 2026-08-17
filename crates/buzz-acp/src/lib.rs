@@ -4417,8 +4417,9 @@ mod base_prompt_contract_tests {
     #[test]
     fn shared_base_prompt_stays_small_and_product_specific() {
         let prompt = include_str!("base_prompt.md");
+        // This is a tripwire against re-accreting a manual, not a token budget.
         assert!(
-            prompt.len() < 2_500,
+            prompt.len() < 5_000,
             "base prompt grew to {} bytes",
             prompt.len()
         );
@@ -4426,12 +4427,16 @@ mod base_prompt_contract_tests {
         assert!(prompt.contains("desktop and mobile collaboration app"));
         assert!(prompt.contains("Treat the current `[Context]` block as authoritative"));
         assert!(prompt.contains("The `buzz` CLI is your interface to Buzz."));
+        assert!(prompt.contains("`projects`, `patches`, `issues`, `pr`"));
         assert!(prompt.contains("## Messaging"));
         assert!(prompt.contains("`buzz messages` command group is the normal interface"));
         assert!(prompt.contains("Execute the exact `Reply:` command"));
-        assert!(prompt.contains("Do not load the `buzz-cli` skill when normal `buzz messages`"));
+        assert!(prompt.contains("pipe real newline bytes to `--content -`"));
+        assert!(prompt.contains("a quoted `\\n` sends literal backslashes"));
+        assert!(prompt.contains("Load the `buzz-cli` skill when a task uses another"));
+        assert!(prompt.contains("Do not load it when ordinary `buzz messages`"));
         assert!(prompt.contains("ambiguous or non-member mentions"));
-        assert!(prompt.contains("its router points to the messaging reference"));
+        assert!(prompt.contains("skill is a router; once loaded"));
         assert!(prompt.contains("reasoning, ACP output, and tool calls are not visible"));
         assert!(prompt.contains("preserve the exact display name shown in Buzz"));
         assert!(prompt.contains("keep `@Name` plain"));
@@ -4445,7 +4450,6 @@ mod base_prompt_contract_tests {
             "buzz agents draft-create",
             "git config user.email",
             "sandbox_workspace_write",
-            "pass real newline bytes through stdin",
             "workflow runs",
         ] {
             assert!(

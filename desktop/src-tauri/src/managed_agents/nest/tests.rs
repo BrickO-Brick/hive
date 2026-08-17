@@ -42,8 +42,8 @@ fn nest_skill_contains_safe_mention_workflow() {
     assert!(messaging.contains("no verification read is needed"));
     assert!(messaging.contains("Add membership separately only when authorized"));
     assert!(messaging.contains("sending never changes membership"));
-    assert!(BUZZ_CLI_SKILL_MD.contains("Do not load when normal use of the"));
-    assert!(BUZZ_CLI_SKILL_MD.contains("buzz messages command group is sufficient"));
+    assert!(BUZZ_CLI_SKILL_MD.contains("Buzz relay operations and specialized messaging policy"));
+    assert!(!BUZZ_CLI_SKILL_MD.contains("Do not load"));
 }
 
 #[test]

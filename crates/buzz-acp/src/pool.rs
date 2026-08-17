@@ -35,6 +35,7 @@ use crate::acp::{
     StopReason, SystemPromptTransport,
 };
 use crate::config::{compose_session_title, DedupMode, PermissionMode};
+use crate::engram_fetch::CoreSection;
 use crate::observer;
 use crate::queue::{
     CancelReason, ContextMessage, ConversationContext, FlushBatch, PromptChannelInfo,
@@ -119,6 +120,10 @@ pub struct SessionState {
     /// channel_id → rendered NIP-AE core prompt section, populated once at
     /// session creation per Tyler's spec (no mid-session refresh).
     pub core_sections: HashMap<Uuid, String>,
+    /// Agent-process-wide latch for the no-core onboarding nudge. It survives
+    /// channel and session invalidation so the same agent is not reminded in
+    /// every channel; a newly spawned agent process starts with `false`.
+    pub core_onboarding_emitted: bool,
     /// channel_id → rendered `[Channel Canvas]` metadata section.
     ///
     /// Populated once before session creation (same lifecycle as `core_sections`).
@@ -1402,6 +1407,30 @@ fn with_core(framed: Option<String>, core: Option<&str>) -> Option<String> {
     }
 }
 
+/// Cache a fetched core section for one channel, suppressing repeat onboarding.
+///
+/// Profiles are always cached because a core may be created after the one-time
+/// onboarding nudge. The onboarding latch is agent-wide and intentionally is
+/// not part of channel invalidation.
+fn cache_core_section(
+    state: &mut SessionState,
+    channel_id: Uuid,
+    section: CoreSection,
+) -> Option<(usize, bool)> {
+    let is_onboarding = section.is_onboarding();
+    if is_onboarding && state.core_onboarding_emitted {
+        return None;
+    }
+
+    let rendered = section.into_rendered();
+    let section_len = rendered.len();
+    state.core_sections.insert(channel_id, rendered);
+    if is_onboarding {
+        state.core_onboarding_emitted = true;
+    }
+    Some((section_len, is_onboarding))
+}
+
 /// Append owner-signed huddle instructions to this channel session's system prompt.
 fn with_huddle_instructions(prompt: Option<String>, instructions: Option<&str>) -> Option<String> {
     let instructions = instructions
@@ -1575,8 +1604,8 @@ pub async fn run_prompt_task(
     //
     // Failure modes (all fail open — no crash, no block):
     //   * no owner configured → skip (no NIP-AE namespace exists)
-    //   * confirmed absence → cache no section; memory onboarding is loaded
-    //     only for memory-related tasks through the buzz-cli skill.
+    //   * confirmed absence → inject onboarding once per agent process, not
+    //     once per channel session.
     //   * transport / decrypt / parse error → inject nothing. We never
     //     mistake "relay slow or broken" for "no core".
     //   * fetch exceeds CORE_FETCH_TIMEOUT → inject nothing, same reason.
@@ -1612,14 +1641,17 @@ pub async fn run_prompt_task(
                         None
                     }
                 };
-                if let Some(rendered) = section {
-                    tracing::info!(
-                        target: "engram::core",
-                        channel = %cid,
-                        section_len = rendered.len(),
-                        "injected NIP-AE core section into system prompt"
-                    );
-                    agent.state.core_sections.insert(*cid, rendered);
+                if let Some(section) = section {
+                    let cached = cache_core_section(&mut agent.state, *cid, section);
+                    if let Some((section_len, is_onboarding)) = cached {
+                        tracing::info!(
+                            target: "engram::core",
+                            channel = %cid,
+                            section_len,
+                            is_onboarding,
+                            "injected NIP-AE core section into system prompt"
+                        );
+                    }
                 }
             }
         }
@@ -4714,6 +4746,44 @@ mod tests {
     }
 
     #[test]
+    fn test_cache_core_onboarding_only_once_per_agent() {
+        let mut state = SessionState::default();
+        let first_channel = Uuid::new_v4();
+        let second_channel = Uuid::new_v4();
+
+        assert!(
+            cache_core_section(&mut state, first_channel, CoreSection::onboarding(),).is_some()
+        );
+        assert!(state.core_onboarding_emitted);
+        assert!(state.core_sections.contains_key(&first_channel));
+
+        assert!(
+            cache_core_section(&mut state, second_channel, CoreSection::onboarding(),).is_none()
+        );
+        assert!(!state.core_sections.contains_key(&second_channel));
+    }
+
+    #[test]
+    fn test_cache_core_profile_after_onboarding_is_not_suppressed() {
+        let mut state = SessionState {
+            core_onboarding_emitted: true,
+            ..SessionState::default()
+        };
+        let channel = Uuid::new_v4();
+
+        assert!(cache_core_section(
+            &mut state,
+            channel,
+            CoreSection::profile("durable profile".to_string()),
+        )
+        .is_some());
+        assert_eq!(
+            state.core_sections.get(&channel).map(String::as_str),
+            Some("[Agent Memory — core]\ndurable profile")
+        );
+    }
+
+    #[test]
     fn test_with_core_neither_is_none() {
         assert!(with_core(None, None).is_none());
     }
@@ -6295,6 +6365,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
         s.turn_counts.insert(ch_b, 3);
         s.core_sections.insert(ch_a, "core-a".into());
         s.core_sections.insert(ch_b, "core-b".into());
+        s.core_onboarding_emitted = true;
         s.deliveries.insert(
             ch_a,
             ChannelDeliveryState {
@@ -6334,6 +6405,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
         assert_eq!(s.core_sections.get(&ch_b).unwrap(), "core-b");
         assert_eq!(s.heartbeat_session.as_deref(), Some("sess-hb"));
         assert_eq!(s.heartbeat_turn_count, 7);
+        assert!(s.core_onboarding_emitted);
     }
 
     #[test]
@@ -6387,7 +6459,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
     }
 
     #[test]
-    fn test_invalidate_all_clears_everything() {
+    fn test_invalidate_all_clears_session_state_but_preserves_onboarding_latch() {
         let (mut s, _ch_a, _ch_b) = make_state();
         s.invalidate_all();
 
@@ -6397,6 +6469,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
         assert!(s.heartbeat_session.is_none());
         assert_eq!(s.heartbeat_turn_count, 0);
         assert!(!s.heartbeat_standing_context_sent);
+        assert!(s.core_onboarding_emitted);
     }
 
     #[test]

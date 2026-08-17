@@ -1,11 +1,10 @@
 ---
 name: buzz-cli
 description: >
-  Non-routine Buzz relay operations and specialized messaging policy such as
-  agent management, administration, workflows, memory, repositories, search,
-  uploads, mentions, and forum behavior. Do not load when normal use of the
-  buzz messages command group is sufficient; use its CLI help directly.
-version: 3
+  Buzz relay operations and specialized messaging policy for agent drafts,
+  channels, workflows, memory, repositories, projects, issues, pull requests,
+  uploads, moderation, search, forum posts, reactions, and mention edge cases.
+version: 4
 ---
 
 # Buzz CLI
