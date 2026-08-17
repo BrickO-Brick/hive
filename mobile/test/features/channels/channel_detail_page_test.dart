@@ -3472,6 +3472,77 @@ void main() {
       );
     });
 
+    for (final huddleEvent in [
+      (kind: EventKind.huddleStarted, action: 'started a huddle'),
+      (kind: EventKind.huddleEnded, action: 'ended the huddle'),
+    ]) {
+      testWidgets(
+        '${huddleEvent.action} aligns its author and body with a regular message',
+        (tester) async {
+          await tester.pumpWidget(
+            _buildTestable(
+              messages: [
+                _textMsg(
+                  id: 'regular-message',
+                  pubkey: 'alice',
+                  content: 'Regular message',
+                  createdAt: 1000,
+                ),
+                _huddleMsg(
+                  id: 'huddle-message',
+                  kind: huddleEvent.kind,
+                  pubkey: 'bob',
+                  createdAt: 1010,
+                ),
+              ],
+              users: {
+                'alice': const UserProfile(
+                  pubkey: 'alice',
+                  displayName: 'Alice',
+                ),
+                'bob': const UserProfile(pubkey: 'bob', displayName: 'Bob'),
+              },
+            ),
+          );
+          await tester.pumpAndSettle();
+
+          final regularRow = find.byKey(
+            const ValueKey('message-row-regular-message'),
+          );
+          final huddleRow = find.byKey(
+            const ValueKey('system-message-row-huddle-message'),
+          );
+          final regularAvatar = tester.getRect(
+            find
+                .descendant(of: regularRow, matching: find.byType(CircleAvatar))
+                .first,
+          );
+          final huddleAvatar = tester.getRect(
+            find
+                .descendant(of: huddleRow, matching: find.byType(CircleAvatar))
+                .first,
+          );
+          final regularAuthor = tester.getRect(
+            find.byKey(const ValueKey('message-author-regular-message')),
+          );
+          final huddleAuthor = tester.getRect(
+            find.byKey(const ValueKey('system-message-author-bob')),
+          );
+          final regularBody = tester.getRect(findRichText('Regular message'));
+          final huddleBody = tester.getRect(findRichText(huddleEvent.action));
+
+          expect(
+            huddleAuthor.top - huddleAvatar.top,
+            closeTo(regularAuthor.top - regularAvatar.top, 0.01),
+          );
+          expect(
+            huddleBody.top - huddleAuthor.bottom,
+            closeTo(regularBody.top - regularAuthor.bottom, 0.01),
+          );
+        },
+      );
+    }
+
     testWidgets(
       'keeps membership and huddle rows evenly spaced with authored messages',
       (tester) async {
