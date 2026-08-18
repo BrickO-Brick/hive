@@ -67,8 +67,7 @@ mod lifecycle;
 #[cfg(test)]
 use lifecycle::kill_stale_tracked_processes_with;
 pub use lifecycle::{kill_stale_tracked_processes, sync_managed_agent_processes};
-
-mod spawn_key;
+mod spawn_key; // production spawn-key derivation + its regressions
 pub(crate) use spawn_key::bound_runtime_key;
 
 /// Classify an agent's persona against the live catalog for the Agents-menu
@@ -255,6 +254,7 @@ pub fn build_managed_agent_summary(
             &teams,
             &key.relay_url,
             global_config,
+            super::owner_only_access_build(),
         );
         (runtime, current)
     });
@@ -860,6 +860,7 @@ pub fn spawn_agent_child(
             system_prompt: effective_prompt.as_deref(),
             model: effective_model.as_deref(),
             provider: effective_provider.as_deref(),
+            enforced_owner_only: super::owner_only_access_build(),
         },
     );
 
@@ -937,11 +938,10 @@ fn child_rust_log_filter() -> String {
 
 /// Spawn (or adopt) the runtime pair for `record` on the caller's bound
 /// workspace relay. `workspace_relay` can only be produced by
-/// `bind_expected_relay_scope`, so this spawn consumes — by construction —
-/// the exact workspace-relay read the caller's scope assertion passed on; it
-/// never re-reads the mutable override (see `relay::scope`). The key is
-/// derived by [`bound_runtime_key`] — the seam the spawn-key regressions
-/// exercise.
+/// `bind_expected_relay_scope`, so this spawn consumes — by construction — the
+/// exact workspace-relay read the caller's scope assertion passed on; it never
+/// re-reads the mutable override (see `relay::scope`). The key comes from
+/// [`bound_runtime_key`] — the seam the spawn-key regressions exercise.
 pub fn start_managed_agent_process(
     app: &AppHandle,
     record: &mut ManagedAgentRecord,
