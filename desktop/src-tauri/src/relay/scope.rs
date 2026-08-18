@@ -158,33 +158,10 @@ mod tests {
         assert_eq!(bound.as_str(), "wss://anything.example");
     }
 
-    #[test]
-    fn pair_key_derives_from_the_bound_relay_not_the_post_switch_workspace() {
-        // Round-7 regression (check/use gap): the caller captured tenant A,
-        // the post-preflight bind passed while the workspace still read A,
-        // and the A→B switch lands AFTER the check but BEFORE the spawn.
-        // This mirrors the exact key derivation `start_managed_agent_process`
-        // performs — `effective_agent_relay_url(record, bound.as_str())` into
-        // `ManagedAgentRuntimeKey::new` — and proves the pair (and the
-        // receipt, keyed by the same value) can only ever be keyed to the
-        // tenant the caller validated: the switch mutates state the spawn no
-        // longer consults, so no runtime pair can exist in B.
-        let mut workspace = "wss://tenant-a.example".to_string();
-        let bound = bind_expected_relay_scope(Some("wss://tenant-a.example"), workspace.clone())
-            .expect("scope matches at bind time");
-        workspace = "wss://tenant-b.example".to_string(); // the switch lands post-check
-
-        let record_relay = "ws://localhost:3000"; // ignored by design (agents-everywhere)
-        let relay_url = crate::relay::effective_agent_relay_url(record_relay, bound.as_str());
-        let key = crate::managed_agents::ManagedAgentRuntimeKey::new("a".repeat(64), &relay_url)
-            .expect("keyable relay");
-        assert_eq!(key.relay_url, "wss://tenant-a.example");
-        assert_ne!(
-            key.relay_url,
-            crate::relay::effective_agent_relay_url(record_relay, &workspace),
-            "a pair keyed to the post-switch tenant must be unrepresentable"
-        );
-    }
+    // The round-7 pair-key regression moved to
+    // `managed_agents::runtime::tests::production_spawn_key_derives_from_the_bound_relay_not_the_post_switch_workspace`,
+    // which exercises `bound_runtime_key` — the seam production spawn keys on —
+    // instead of reconstructing the derivation by hand here.
 
     #[test]
     fn matching_signer_passes_case_insensitively() {

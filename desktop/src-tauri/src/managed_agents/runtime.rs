@@ -68,6 +68,9 @@ mod lifecycle;
 use lifecycle::kill_stale_tracked_processes_with;
 pub use lifecycle::{kill_stale_tracked_processes, sync_managed_agent_processes};
 
+mod spawn_key;
+pub(crate) use spawn_key::bound_runtime_key;
+
 /// Classify an agent's persona against the live catalog for the Agents-menu
 /// drift indicator. Returns `(out_of_date, orphaned)`.
 ///
@@ -936,7 +939,9 @@ fn child_rust_log_filter() -> String {
 /// workspace relay. `workspace_relay` can only be produced by
 /// `bind_expected_relay_scope`, so this spawn consumes — by construction —
 /// the exact workspace-relay read the caller's scope assertion passed on; it
-/// never re-reads the mutable override (see `relay::scope`).
+/// never re-reads the mutable override (see `relay::scope`). The key is
+/// derived by [`bound_runtime_key`] — the seam the spawn-key regressions
+/// exercise.
 pub fn start_managed_agent_process(
     app: &AppHandle,
     record: &mut ManagedAgentRecord,
@@ -944,9 +949,7 @@ pub fn start_managed_agent_process(
     owner_hex: Option<&str>,
     workspace_relay: &crate::relay::ScopedWorkspaceRelay,
 ) -> Result<(), String> {
-    let relay_url =
-        crate::relay::effective_agent_relay_url(&record.relay_url, workspace_relay.as_str());
-    let key = ManagedAgentRuntimeKey::new(record.pubkey.clone(), &relay_url)?;
+    let key = bound_runtime_key(record, workspace_relay)?;
     if let Some(runtime) = runtimes.get_mut(&key) {
         if runtime
             .child

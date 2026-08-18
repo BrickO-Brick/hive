@@ -802,7 +802,11 @@ pub async fn create_managed_agent(
                     .ok_or_else(|| "agent disappeared".to_string())?;
                 build_deploy_payload(&app, &state, rec)?
             };
-            match deploy_to_provider(&app, &state, &pubkey, id, config, agent_json, None).await {
+            match deploy_to_provider(
+                &app, &state, &pubkey, id, config, agent_json, None, None, None,
+            )
+            .await
+            {
                 Ok(()) => spawn_error,
                 Err(e) => Some(e),
             }
@@ -875,6 +879,16 @@ pub async fn start_managed_agent(
         &crate::relay::relay_api_base_url_with_override(&state),
     )?;
     crate::relay::assert_expected_signer(expected_signer_pubkey.as_deref(), &owner_hex)?;
+    // Pin the relay for the fire-and-forget profile reconciliation spawned
+    // after a successful start: one validated workspace-relay read, captured
+    // NOW. The background task may execute long after this command returns —
+    // resolving the relay at execution time would let a community switch
+    // landing in between retarget the kind:0 query/publish to the new
+    // tenant's relay under authorization the caller only gave for this one.
+    let reconcile_relay = crate::relay::bind_expected_relay_scope(
+        expected_relay_url.as_deref(),
+        relay_ws_url_with_override(&state),
+    )?;
     enum StartTarget {
         Local,
         Provider {
@@ -912,7 +926,14 @@ pub async fn start_managed_agent(
         // profile reconcile (the create-time snapshot may be empty or stale for
         // a persona-inherited harness).
         let reconcile_personas = load_personas(&app).unwrap_or_default();
-        let reconcile = profile_reconcile_data(record, &reconcile_personas);
+        let mut reconcile = profile_reconcile_data(record, &reconcile_personas);
+        // Pin the startup relay (the bound, caller-validated read) so the
+        // fire-and-forget task can never resolve a post-switch workspace.
+        // Mirrors `load_pending_profile_reconciliations`.
+        reconcile.target_relay_url = Some(crate::relay::effective_agent_relay_url(
+            &record.relay_url,
+            reconcile_relay.as_str(),
+        ));
 
         let target = if record.backend == BackendKind::Local {
             StartTarget::Local
@@ -944,18 +965,10 @@ pub async fn start_managed_agent(
             cached_binary_path,
             agent_json,
         } => {
-            // The deploy payload embeds the relay the agent will connect to
-            // (resolved from the active workspace while the payload was
-            // built). Assert the caller's captured scope against that exact
-            // embedded value — not a re-read of the active override — so a
-            // switch racing the payload build cannot deploy the agent into
-            // the new tenant on behalf of a stale callback.
-            if let Some(embedded_relay) = agent_json.get("relay_url").and_then(|v| v.as_str()) {
-                crate::relay::assert_expected_relay_scope(
-                    expected_relay_url.as_deref(),
-                    &crate::relay::relay_http_base_url(embedded_relay),
-                )?;
-            }
+            // The caller's captured scope is asserted INSIDE deploy_to_provider
+            // against the payload rebuilt after the deploy lock — the exact
+            // payload invoked — so a switch racing the lock wait cannot deploy
+            // the agent into the new tenant on behalf of a stale callback.
             deploy_to_provider(
                 &app,
                 &state,
@@ -964,6 +977,8 @@ pub async fn start_managed_agent(
                 &config,
                 agent_json,
                 cached_binary_path.as_deref(),
+                expected_relay_url.as_deref(),
+                expected_signer_pubkey.as_deref(),
             )
             .await?;
 
