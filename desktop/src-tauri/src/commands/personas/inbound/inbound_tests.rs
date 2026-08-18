@@ -4,7 +4,7 @@
 use super::*;
 use std::collections::BTreeMap;
 
-const UUID: &str = "11111111-2222-3333-4444-555555555555";
+const UUID: &str = "11111111-2222-3333-4444-555555555555"; // sadscan:disable sq.pii.cc.visa -- fixed test UUID
 
 /// A local in-app persona: `source_team_persona_slug` is None, so its d-tag
 /// IS its UUID id. Carries env_vars + source_team that must survive a patch.
@@ -188,6 +188,7 @@ fn local_agent() -> ManagedAgentRecord {
             config: serde_json::json!({ "api_key": "localproviderkey" }),
         },
         backend_agent_id: Some("local-remote-id".to_string()),
+        provider_policy_pending: false,
         provider_binary_path: Some("/local/bin".to_string()),
         team_id: None,
         persona_team_dir: None,
@@ -265,8 +266,14 @@ fn inbound_managed_agent_drops_injected_secrets_and_harness() {
     let content =
         crate::managed_agents::agent_events::managed_agent_content_from_event(&event).unwrap();
     let mut agents = vec![local_agent()];
-    apply_inbound_managed_agent(&mut agents, &[], AGENT_PUBKEY, content);
+    let InboundAgentApply { access_changed, .. } =
+        apply_inbound_managed_agent(&mut agents, &[], AGENT_PUBKEY, content);
 
+    assert_eq!(
+        access_changed,
+        !crate::managed_agents::owner_only_access_build(),
+        "only an effective access change may trigger a runtime refresh"
+    );
     let a = &agents[0];
     // Secrets / harness / runtime — every one preserved from the local record.
     assert_eq!(
@@ -439,7 +446,7 @@ fn inbound_30177_freezes_repoint_of_library_owned_linkage() {
     );
 
     assert_eq!(
-        outcome,
+        outcome.linkage,
         InboundAgentLinkage::Frozen(LinkageFreezeReason::OwnedByLibrary),
         "re-pointing a library-owned linkage must freeze",
     );
@@ -468,7 +475,7 @@ fn inbound_30177_freezes_clear_of_library_owned_linkage() {
     );
 
     assert_eq!(
-        outcome,
+        outcome.linkage,
         InboundAgentLinkage::Frozen(LinkageFreezeReason::OwnedByLibrary),
     );
     assert_eq!(
@@ -496,7 +503,7 @@ fn inbound_30177_freezes_inadmissible_new_link_to_projected_definition() {
     );
 
     assert_eq!(
-        outcome,
+        outcome.linkage,
         InboundAgentLinkage::Frozen(LinkageFreezeReason::InadmissibleNewLink),
         "a new link to a projected definition must fail closed",
     );
@@ -521,7 +528,7 @@ fn inbound_30177_applies_plain_relink_unchanged() {
         agent_content("Renamed", Some("plain-b")),
     );
 
-    assert_eq!(outcome, InboundAgentLinkage::Applied);
+    assert_eq!(outcome.linkage, InboundAgentLinkage::Applied);
     assert_eq!(
         agents[0].persona_id,
         Some("plain-b".to_string()),
@@ -546,7 +553,7 @@ fn inbound_30177_no_linkage_change_applies_even_when_projected() {
         agent_content("Renamed", Some("shared-def")),
     );
 
-    assert_eq!(outcome, InboundAgentLinkage::Applied);
+    assert_eq!(outcome.linkage, InboundAgentLinkage::Applied);
     let a = &agents[0];
     assert_eq!(a.persona_id, Some("shared-def".to_string()));
     assert_eq!(a.name, "Renamed");
@@ -625,166 +632,10 @@ fn converge_frozen_linkage_errs_when_record_missing() {
     );
 }
 
-// ── Team (30176) inbound ─────────────────────────────────────────────────
-
-const TEAM_ID: &str = "team-local-id";
-
-fn local_team() -> TeamRecord {
-    TeamRecord {
-        id: TEAM_ID.to_string(),
-        name: "Local Team".to_string(),
-        description: Some("local desc".to_string()),
-        instructions: None,
-        persona_ids: vec!["p-local".to_string()],
-        is_builtin: false,
-        source_dir: Some(std::path::PathBuf::from("/local/team/dir")),
-        is_symlink: true,
-        symlink_target: Some("/external".to_string()),
-        version: Some("1.0".to_string()),
-        created_at: "2025-01-01T00:00:00Z".to_string(),
-        updated_at: "2025-01-01T00:00:00Z".to_string(),
-    }
-}
-
-fn team_content(name: &str) -> TeamEventContent {
-    TeamEventContent {
-        name: name.to_string(),
-        description: Some("remote desc".to_string()),
-        instructions: Some(Some("remote instructions".to_string())),
-        persona_ids: Some(vec!["p-remote-1".to_string(), "p-remote-2".to_string()]),
-    }
-}
-
-/// An inbound event shaped like one from a client that predates
-/// always-publish: `instructions`/`persona_ids` both omitted (`None`).
-fn team_content_omitting_optional_fields(name: &str) -> TeamEventContent {
-    TeamEventContent {
-        name: name.to_string(),
-        description: Some("remote desc".to_string()),
-        instructions: None,
-        persona_ids: None,
-    }
-}
-
-/// An inbound event that explicitly clears both fields: `instructions` is
-/// `Some(None)` (JSON `null`), `persona_ids` is `Some(vec![])`.
-fn team_content_clearing_optional_fields(name: &str) -> TeamEventContent {
-    TeamEventContent {
-        name: name.to_string(),
-        description: Some("remote desc".to_string()),
-        instructions: Some(None),
-        persona_ids: Some(vec![]),
-    }
-}
-
-#[test]
-fn inbound_team_match_patches_shared_preserves_local() {
-    let mut teams = vec![local_team()];
-    apply_inbound_team(
-        &mut teams,
-        TEAM_ID.to_string(),
-        team_content("Renamed Team"),
-    );
-
-    assert_eq!(teams.len(), 1, "no duplicate row");
-    let t = &teams[0];
-    // Shared fields overwritten.
-    assert_eq!(t.name, "Renamed Team");
-    assert_eq!(t.description, Some("remote desc".to_string()));
-    assert_eq!(t.instructions, Some("remote instructions".to_string()));
-    assert_eq!(
-        t.persona_ids,
-        vec!["p-remote-1".to_string(), "p-remote-2".to_string()]
-    );
-    // Install-local fields preserved.
-    assert_eq!(t.id, TEAM_ID);
-    assert_eq!(
-        t.source_dir,
-        Some(std::path::PathBuf::from("/local/team/dir"))
-    );
-    assert!(t.is_symlink);
-    assert_eq!(t.symlink_target, Some("/external".to_string()));
-    assert_eq!(t.version, Some("1.0".to_string()));
-    assert_eq!(t.created_at, "2025-01-01T00:00:00Z");
-}
-
-#[test]
-fn inbound_team_omitted_fields_preserve_local() {
-    // A `None` for instructions/persona_ids means the publisher predates
-    // always-publish — its true value is unknown, so reconcile must
-    // preserve whatever this device already has. This is the fix for the
-    // Sietch Tabr wipe: an old-shaped (or genuinely field-omitting) event
-    // must not blank out a team that has real membership/instructions.
-    let mut teams = vec![local_team()];
-    // Give local_team real instructions so preservation is discriminating:
-    // the pre-fix blind-overwrite bug would collapse this to `None`, while
-    // the fix must leave it untouched on an omitted field.
-    teams[0].instructions = Some("local instructions".to_string());
-    apply_inbound_team(
-        &mut teams,
-        TEAM_ID.to_string(),
-        team_content_omitting_optional_fields("Renamed Team"),
-    );
-
-    assert_eq!(teams.len(), 1);
-    let t = &teams[0];
-    assert_eq!(
-        t.name, "Renamed Team",
-        "shared non-optional field still overwrites"
-    );
-    assert_eq!(
-        t.instructions,
-        Some("local instructions".to_string()),
-        "omitted instructions preserves local value rather than wiping it"
-    );
-    assert_eq!(
-        t.persona_ids,
-        vec!["p-local".to_string()],
-        "omitted persona_ids preserves local membership rather than wiping it"
-    );
-}
-
-#[test]
-fn inbound_team_explicit_clear_overwrites_local() {
-    // `Some(None)` / `Some(vec![])` are the explicit-clear signals a
-    // pre-fix client can never produce — these must still overwrite local.
-    let mut teams = vec![local_team()];
-    // Give local_team real instructions so the clear has something to erase.
-    teams[0].instructions = Some("local instructions".to_string());
-
-    apply_inbound_team(
-        &mut teams,
-        TEAM_ID.to_string(),
-        team_content_clearing_optional_fields("Cleared Team"),
-    );
-
-    assert_eq!(teams.len(), 1);
-    let t = &teams[0];
-    assert_eq!(t.instructions, None, "explicit null clears instructions");
-    assert_eq!(
-        t.persona_ids,
-        Vec::<String>::new(),
-        "explicit empty array clears membership"
-    );
-}
-
-#[test]
-fn inbound_team_no_match_inserts_idempotently() {
-    let mut teams = vec![local_team()];
-    let other = "team-remote-id";
-    apply_inbound_team(&mut teams, other.to_string(), team_content("New Team"));
-
-    assert_eq!(teams.len(), 2, "unmatched inbound is inserted");
-    let inserted = teams.iter().find(|t| t.id == other).unwrap();
-    assert_eq!(inserted.name, "New Team");
-    assert!(
-        inserted.source_dir.is_none(),
-        "inserted team has no local install dir"
-    );
-    // Re-receive stays idempotent.
-    apply_inbound_team(&mut teams, other.to_string(), team_content("New Team"));
-    assert_eq!(teams.len(), 2, "re-receive of inserted team no-ops");
-}
+// Team (kind:30176) inbound tests — split to keep this file under the cap.
+#[path = "team_tests.rs"]
+mod team_tests;
+use team_tests::{local_team, TEAM_ID};
 
 // ── Tombstone (kind:5) consume ────────────────────────────────────────────
 
@@ -921,3 +772,63 @@ fn inbound_gate_accepts_validly_signed_event() {
 // fixtures above via `use super::*`.
 #[path = "seam_tests.rs"]
 mod seam_tests;
+
+#[test]
+fn inbound_persona_rejects_invisible_definition_text() {
+    let mut inbound = inbound_for("unsafe", "Remote");
+    inbound.system_prompt = "Review\u{200B} code.".to_string();
+
+    let error = validate_inbound_persona_definition(&inbound)
+        .expect_err("relay sync must reject invisible instructions");
+
+    assert!(error.contains("U+200B"));
+}
+
+fn inbound_managed_agent_content(
+    name: &str,
+    persona_id: Option<&str>,
+    system_prompt: Option<&str>,
+) -> crate::managed_agents::agent_events::ManagedAgentEventContent {
+    crate::managed_agents::agent_events::ManagedAgentEventContent {
+        name: name.to_string(),
+        persona_id: persona_id.map(str::to_string),
+        system_prompt: system_prompt.map(str::to_string),
+        model: None,
+        provider: None,
+        persona_source_version: None,
+        parallelism: 1,
+        respond_to: crate::managed_agents::RespondTo::OwnerOnly,
+        respond_to_allowlist: vec![],
+    }
+}
+
+#[test]
+fn inbound_definition_less_agent_rejects_invisible_prompt() {
+    let inbound = inbound_managed_agent_content("Remote Agent", None, Some("Review\u{200B} code."));
+
+    let error = validate_inbound_managed_agent_definition(&inbound)
+        .expect_err("definition-less sync must reject invisible instructions");
+
+    assert!(error.contains("U+200B"));
+}
+
+#[test]
+fn inbound_managed_agent_rejects_bidirectional_name() {
+    let inbound = inbound_managed_agent_content("Remote\u{202E} Agent", None, None);
+
+    let error = validate_inbound_managed_agent_definition(&inbound)
+        .expect_err("managed-agent sync must reject bidirectional names");
+
+    assert!(error.contains("U+202E"));
+}
+
+#[test]
+fn inbound_definition_less_agent_accepts_visible_multiline_prompt() {
+    let inbound = inbound_managed_agent_content(
+        "Remote Agent",
+        None,
+        Some("Review code.\n\tCall out security risks."),
+    );
+
+    assert!(validate_inbound_managed_agent_definition(&inbound).is_ok());
+}

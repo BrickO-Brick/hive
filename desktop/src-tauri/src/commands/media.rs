@@ -116,11 +116,10 @@ fn fd_real_path(_file: &std::fs::File) -> Result<std::path::PathBuf, String> {
 
 /// MIME types blocked from upload — mirrors the server's generic-file deny-list.
 ///
-/// Active-content XSS carriers and native executables. Everything else (images,
-/// video, documents, archives, audio, text, data) is accepted; un-sniffable
-/// files fall back to `application/octet-stream` and are served as downloads.
+/// Active-content XSS carriers (JS, SVG) and native executables. Other types,
+/// including HTML, are accepted as downloads; un-sniffable files fall back to
+/// `application/octet-stream`. XHTML remains blocked in lockstep with the relay.
 const BLOCKED_MIME: &[&str] = &[
-    "text/html",
     "application/xhtml+xml",
     "image/svg+xml",
     "application/javascript",
@@ -358,11 +357,9 @@ pub(crate) fn sign_blossom_get_auth_header(
 /// the header — a stale capability (its issuing identity superseded by a
 /// transition) attaches nothing.
 ///
-/// Fail-open by design: while the relay's `BUZZ_REQUIRE_MEDIA_GET_AUTH` flag
-/// is off, an unauthenticated request still succeeds, so degrading to no
-/// header (instead of erroring) keeps media rendering during key recovery.
-/// Once the flag is on, these requests will 403 — the correct outcome for an
-/// identity that can't prove membership.
+/// When signing is unavailable, callers send no header and the relay rejects
+/// the read. This keeps recovery mode from accidentally treating a media URL
+/// as a bearer capability.
 ///
 /// Safety contract: callers must only attach the returned header to URLs
 /// constructed from (or validated against) the app's own relay base URL —

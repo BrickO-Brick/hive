@@ -2,6 +2,7 @@ pub(crate) use backfill::backfill_standalone_agents_in_dir;
 pub(crate) use detach::detach_directory_backed_teams_in_dir;
 pub(crate) use fold::fold_personas_in_dir;
 pub(crate) use materialize::materialize_runtimes_in_file;
+pub(crate) use team_membership::repair_team_membership_in_dir;
 pub(crate) use team_suffix::strip_baked_team_instructions_in_dir;
 
 /// Rename `provider` → `runtime` in a scoped `definitions_dir/personas.json`.

@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager, State};
 
+use super::mesh_readiness::wait_for_mesh_inference;
 use crate::{app_state::AppState, mesh_llm, relay};
 
 #[cfg(feature = "mesh-llm")]
@@ -532,10 +533,6 @@ pub async fn mesh_start_node(
     mesh_llm::publish_current_status_once(&app, "start").await;
     Ok(status)
 }
-
-#[path = "mesh_llm_readiness.rs"]
-mod readiness;
-use readiness::wait_for_mesh_inference;
 
 pub(crate) async fn ensure_client_node_for_model(
     state: &AppState,

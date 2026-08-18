@@ -69,7 +69,11 @@ const READY_MARKER: &str = "_ready";
 ///   version may have incomplete retention or missing persona snapshots.
 /// - v1: `run_pre_ready_family` (retention + backfill) runs before `_ready`;
 ///   Option-A Mesh preflight; marker contains this version string.
-const READY_MARKER_VERSION: &str = "v1";
+/// - v2: `run_scoped_migrations` gained the Bumble→Pollen rename (step 1.5) and
+///   the team-membership repair (step 4.5). Both are documented idempotent, so
+///   re-running a v1 scope through the whole pipeline is safe; bumping forces
+///   scopes already marked ready at v1 to re-run so they pick up both steps.
+const READY_MARKER_VERSION: &str = "v2";
 
 /// File written inside the scope directory (or staging) as the initialization manifest.
 const MANIFEST_FILE: &str = "_manifest.json";
@@ -395,12 +399,17 @@ fn install_staged(
 /// # Order (must be preserved)
 /// 1. `fold_personas_in_dir` — fold personas.json into managed-agents.json.
 ///    BEFORE all readers of the unified store (strip, backfill, materialize).
+///    - 1.5. `migrate_pollen_agent_name_at` — Bumble→Pollen builtin rename AFTER
+///      fold (sees lifted definitions) and BEFORE strip.
 /// 2. `strip_baked_team_instructions_in_dir` — clean legacy baked team-instructions
 ///    suffix AFTER fold (so lifted definitions are also cleaned) and BEFORE
 ///    backfill (so manufactured definitions never snapshot the suffix).
 /// 3. `refresh_builtin_agent_avatars_at` — refresh legacy builtin avatars.
 /// 4. `backfill_standalone_agents_in_dir` — manufacture definitions for standalone
 ///    agents AFTER fold (slug collision checks see pre-existing definitions).
+///    - 4.5. `repair_team_membership_in_dir` — repair dropped team↔member links
+///      BEFORE detach; fatal-on-Err preserves the clean-repair gate (detach
+///      skipped, so source_dir survives) by construction.
 /// 5. `detach_directory_backed_teams_in_dir` — lift pack instructions, clear
 ///    source_dir on teams.
 /// 6. `reconcile_legacy_command_names_at` — fix stale command names.
@@ -425,6 +434,14 @@ fn run_scoped_migrations(scope_dir: &Path) -> Result<(), String> {
         Err(e) => return Err(format!("scope-init-fold: {e}")),
     }
 
+    // Step 1.5: Bumble→Pollen built-in agent rename. Runs AFTER fold (so the
+    // rename sees definitions lifted into the scoped store) and BEFORE strip —
+    // main's exact relative position. Operates on the scoped `managed-agents.json`
+    // so an already-adopted scope's store is renamed and the profile-reconcile
+    // queue lands next to the scoped store where its loaders look.
+    crate::migration::migrate_pollen_agent_name_at(scope_dir)
+        .map_err(|e| format!("scope-init-pollen: {e}"))?;
+
     // Step 2: strip baked team-instructions suffix.
     match crate::migration::strip_baked_team_instructions_in_dir(scope_dir) {
         Ok(0) => {}
@@ -441,6 +458,19 @@ fn run_scoped_migrations(scope_dir: &Path) -> Result<(), String> {
         Ok(0) => {}
         Ok(n) => eprintln!("buzz-desktop: scope-init-backfill: {n} agents backfilled"),
         Err(e) => return Err(format!("scope-init-backfill: {e}")),
+    }
+
+    // Step 4.5: repair dropped team↔member links BEFORE the step-5 detach. The
+    // clean-repair gate (main's `orchestrate_repair_then_detach`) is preserved
+    // by construction here and more strongly: this step is fatal-on-`Err`, so a
+    // failed repair withholds the `_ready` marker and step 5 detach never runs,
+    // leaving `source_dir` intact as retry evidence for the next boot. A stale
+    // bare slug shared across source teams is disambiguated by `source_dir`,
+    // which detach clears — so repair must precede detach.
+    match crate::migration::repair_team_membership_in_dir(scope_dir) {
+        Ok(0) => {}
+        Ok(n) => eprintln!("buzz-desktop: scope-init-team-repair: {n} record(s) repaired"),
+        Err(e) => return Err(format!("scope-init-team-repair: {e}")),
     }
 
     // Step 5: detach directory-backed teams.

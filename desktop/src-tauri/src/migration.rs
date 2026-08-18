@@ -147,8 +147,7 @@ fn run_boot_migrations_inner(app: &tauri::AppHandle, reset_completed: bool) {
     // ensures the dev nest boots with the correct workspace on its first launch,
     // matching what the prod nest had configured. Skip-if-dest-exists so it is
     // idempotent and never clobbers a value the dev nest already set explicitly.
-    // Uses the composed helper so the gate + migration run through the same
-    // code path that the behavioral test exercises.
+    // Uses the composed helper so gate + migration share the tested code path.
     if let (Some(home), Some(dev_nest)) = (dirs::home_dir(), crate::managed_agents::nest_dir()) {
         maybe_migrate_dev_repos_dir(is_dev, reset_completed, &home, &dev_nest);
     }
@@ -167,6 +166,19 @@ fn run_boot_migrations_inner(app: &tauri::AppHandle, reset_completed: bool) {
     //
     // `migrate_agent_keys_to_dev_service` moved to `run_pre_ready_family` as
     // step C (debug builds); runs after the scoped store is populated.
+    //
+    // `migrate_pollen_agent_name` (Bumble→Pollen rename) moved to
+    // `run_scoped_migrations` as step 1.5 (after fold, before strip — main's
+    // relative position); runs on the scoped `managed-agents.json` so an
+    // already-adopted scope's store is renamed and its profile-reconcile queue
+    // lands next to the scoped store where the loaders look.
+    //
+    // `repair_then_detach_teams` split: the repair leg moved to
+    // `run_scoped_migrations` as step 4.5 (before the step-5 detach), and the
+    // recurring per-apply repair runs in `apply_workspace` before the blocking
+    // event-sync. The detach stays step 5. The clean-repair gate is preserved
+    // by construction — scoped steps are fatal-on-Err, so a failed repair
+    // withholds `_ready` and detach never runs.
 }
 
 /// Copy one-time app state from the legacy app identifier directory to
@@ -1178,6 +1190,9 @@ mod materialize;
 use fold::load_persona_runtimes;
 mod backfill;
 mod detach;
+mod pollen;
+mod team_membership;
+pub(crate) use pollen::*;
 mod team_suffix;
 
 include!("migration_scope.rs");

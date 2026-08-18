@@ -160,6 +160,9 @@ async fn apply_workspace_body(
     use crate::managed_agents::scope::WorkspaceApplyResult;
 
     let restore_app = app.clone();
+    // Capture the caller's relay before the blocking apply. Reading shared
+    // state afterward could pick up a newer concurrent community switch.
+    let profile_reconcile_relay = relay_url.clone();
     let blocking_result: Result<WorkspaceApplyResult, String> =
         tokio::task::spawn_blocking(move || {
             let state = app.state::<AppState>();
@@ -403,32 +406,82 @@ async fn apply_workspace_body(
     }
 
     let state = restore_app.state::<AppState>();
-    match super::agents::provider_access::reconcile_on_workspace_apply(&restore_app, &state).await {
-        Ok(()) => {}
-        Err(reason) => {
-            // Provider-access reconciliation failed after the scope committed.
-            // Preserves #4053's fail-closed intent: no agents spawn against a
-            // workspace whose provider deployment may not have accepted
-            // owner-only access. Return applied-but-blocked so the frontend
-            // can park on the loading gate with a truthful error rather than
-            // falsely treating the workspace as unapplied.
-            return Ok(
-                crate::managed_agents::scope::WorkspaceApplyResult::applied_but_blocked(
-                    reason, degraded,
-                ),
-            );
-        }
+    if let Err(reason) =
+        super::agents::provider_access::reconcile_on_workspace_apply(&restore_app, &state).await
+    {
+        // Provider-access reconciliation failed after the scope committed.
+        // Preserves #4053's fail-closed intent: no agents spawn against a
+        // workspace whose provider deployment may not have accepted
+        // owner-only access. Return applied-but-blocked so the frontend
+        // can park on the loading gate with a truthful error rather than
+        // falsely treating the workspace as unapplied.
+        return Ok(
+            crate::managed_agents::scope::WorkspaceApplyResult::applied_but_blocked(
+                reason, degraded,
+            ),
+        );
     }
 
+    // The Bumble→Pollen migration may have renamed stopped agents. Reconcile
+    // their relay profiles independently of runtime restore; successful writes
+    // record this relay while retaining the agent for other communities, and
+    // failures retry on the next workspace apply. The loader is scope-resolved
+    // (scoped-store queue path), so this runs after the scope has committed.
+    crate::managed_agents::spawn_pending_profile_reconciliations(
+        &restore_app,
+        &profile_reconcile_relay,
+    );
+
+    // Backfill this exact relay+owner scope only after the workspace has been
+    // applied. Running at process boot would target the fallback relay and
+    // collapse every community into one pending-event store.
     match crate::managed_agents::retention::active_retention_scope(&restore_app, &state) {
         Ok(scope) => {
             if let Some(agent_scope) = state.capture_active_scope() {
-                crate::event_sync::spawn_event_sync(
+                // Per-apply team-membership repair. Main runs the repair on
+                // every boot (`repair_then_detach_teams`); its drift source #2
+                // — adding a persona to a team not backfilling running
+                // instances' `team_id` — is ongoing, not one-shot, so a
+                // once-per-scope-lifetime repair in scope-init would be a silent
+                // downgrade. Repair-only (no detach; detach stays one-shot in
+                // scope-init) and upstream of the superseding-head write below
+                // so the fatal team leg retains the corrected roster.
+                // Best-effort: a failure is logged and does not block the apply;
+                // the corrected roster is re-derived on the next apply.
+                if let Err(error) =
+                    crate::migration::repair_team_membership_in_dir(&agent_scope.definitions_dir)
+                {
+                    eprintln!("buzz-desktop: per-apply team-membership repair failed: {error}");
+                }
+                // Legacy global-retention adoption (main's per-apply
+                // `migrate_legacy_retention_into`) is dropped as subsumed:
+                // scope-init's pre-Ready family already runs
+                // `migrate_legacy_retention_db` (Step A) into the identical
+                // scoped `db_path` this scope resolves, and the READY_MARKER v2
+                // bump re-runs that step for scopes marked Ready by the v1
+                // pipeline. The adoption is one-shot per scope by design, so the
+                // scope-init call fully covers it.
+                //
+                // Await the reconcile to completion — do NOT spawn it — and
+                // propagate its failure. The boot migration may have repaired
+                // team membership on disk; the frontend starts inbound history
+                // replay the moment `useCommunityInit` observes the applied
+                // workspace, and an old relay team head could otherwise win that
+                // race and overwrite the repaired `persona_ids`. The team leg is
+                // fatal (see `run_event_sync`): only its success durably retains
+                // the corrected head with a superseding `monotonic_created_at`,
+                // so `retain_inbound_event`'s equal/older guard rejects the
+                // stale head. On failure we return `Err` — the command reports
+                // failure, `useCommunityInit` never exposes the community, and
+                // inbound replay never starts against an un-superseded disk
+                // state.
+                crate::event_sync::run_event_sync_blocking(
                     restore_app.clone(),
                     scope.owner_keys,
                     scope.db_path,
                     agent_scope.definitions_dir,
-                );
+                )
+                .await?;
             } else {
                 degraded.push(
                     "active agent scope unavailable after workspace apply — event sync skipped"
@@ -437,7 +490,12 @@ async fn apply_workspace_body(
             }
         }
         Err(error) => {
-            degraded.push(format!(
+            // Scope resolution is a prerequisite for establishing the
+            // superseding head, so its failure is fatal for the same reason:
+            // without a scope we cannot retain the repaired roster ahead of an
+            // inbound replay. Fail the command rather than silently opening the
+            // inbound lane.
+            return Err(format!(
                 "scoped event-sync unavailable after workspace apply: {error}"
             ));
         }

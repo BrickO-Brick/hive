@@ -17,48 +17,53 @@ use std::path::Path;
 /// `definitions_dir` is the scoped definitions directory for this workspace
 /// (`WorkspaceAgentScope::definitions_dir`). Reads personas/teams/agents from
 /// that directory rather than the legacy unscoped `agents/` root.
+///
+/// Persona and agent legs stay best-effort: they log and swallow, and their
+/// failure does not undo the boot team-membership repair. The team leg is
+/// fatal — it establishes the superseding local head (a monotonic
+/// `created_at`) that lets `retain_inbound_event`'s equal/older guard reject a
+/// stale relay roster. If it fails, the caller must not let the frontend expose
+/// the community and start inbound replay against an un-superseded disk state.
 pub fn run_event_sync(
     _app: &tauri::AppHandle,
     owner_keys: &nostr::Keys,
     db_path: &Path,
     definitions_dir: &Path,
-) {
+) -> Result<(), String> {
     migrate_personas_to_events(definitions_dir, owner_keys, db_path);
-    migrate_teams_to_events(definitions_dir, owner_keys, db_path);
+    migrate_teams_to_events(definitions_dir, owner_keys, db_path)?;
     crate::managed_agents::reconcile::reconcile_agents_to_events(
         definitions_dir,
         owner_keys,
         db_path,
     );
+    Ok(())
 }
 
-/// Spawn the best-effort event reconcile off the synchronous Tauri setup path.
+/// Run the scoped event reconcile to completion on the blocking pool, awaiting
+/// it and propagating failure.
 ///
-/// The owner keys are cloned before spawning so the task never touches the
-/// `AppState::keys` mutex. The reconcile itself is still synchronous JSON,
-/// SQLite, and signing work, so it runs on the blocking pool rather than an
-/// async worker.
+/// Callers that must not let downstream work observe a not-yet-retained disk
+/// state (e.g. `apply_workspace` before the frontend can start inbound history
+/// replay) await this so the repaired local heads are durably retained — with a
+/// superseding `monotonic_created_at` — before an old relay head can race in.
+/// The owner keys are moved in so the task never touches the `AppState::keys`
+/// mutex; the reconcile itself is synchronous JSON/SQLite/signing work, so it
+/// runs on the blocking pool rather than an async worker.
 ///
-/// The dispatch always succeeds (fire-and-forget); completion failures are
-/// logged internally via `eprintln!`. Event-sync does not emit a structured
-/// degradation event because `spawn_blocking` failure means the Tauri runtime
-/// is shutting down — there is no user-visible surface to deliver a toast to
-/// at that point.
-pub fn spawn_event_sync(
+/// Returns `Err` if the task fails to join or the fatal team leg errors, so the
+/// caller can withhold community exposure until the superseding head is durable.
+pub async fn run_event_sync_blocking(
     app: tauri::AppHandle,
     owner_keys: nostr::Keys,
     db_path: std::path::PathBuf,
     definitions_dir: std::path::PathBuf,
-) {
-    tauri::async_runtime::spawn(async move {
-        if let Err(e) = tauri::async_runtime::spawn_blocking(move || {
-            run_event_sync(&app, &owner_keys, &db_path, &definitions_dir);
-        })
-        .await
-        {
-            eprintln!("buzz-desktop: event-sync: spawn_blocking failed: {e}");
-        }
-    });
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        run_event_sync(&app, &owner_keys, &db_path, &definitions_dir)
+    })
+    .await
+    .map_err(|e| format!("event-sync: spawn_blocking failed: {e}"))?
 }
 
 /// Reconcile `personas.json` into the persona-event retention store.
@@ -237,15 +242,22 @@ fn migrate_personas_in_dir_at(
 /// the owner's keys).
 ///
 /// `definitions_dir` is the scoped definitions directory (`WorkspaceAgentScope::definitions_dir`).
-pub fn migrate_teams_to_events(definitions_dir: &Path, keys: &nostr::Keys, db_path: &Path) {
+///
+/// The team leg is fatal (returns `Result`): a repaired local team head must be
+/// durably retained with a superseding `monotonic_created_at` before inbound
+/// replay can race a stale relay head in.
+pub fn migrate_teams_to_events(
+    definitions_dir: &Path,
+    keys: &nostr::Keys,
+    db_path: &Path,
+) -> Result<(), String> {
     match migrate_teams_in_dir_at(definitions_dir, keys, db_path) {
-        Ok(0) => {}
+        Ok(0) => Ok(()),
         Ok(migrated) => {
             eprintln!("buzz-desktop: team-event-migration: {migrated} teams migrated to retention");
+            Ok(())
         }
-        Err(e) => {
-            eprintln!("buzz-desktop: team-event-migration: {e}");
-        }
+        Err(e) => Err(format!("team-event-migration: {e}")),
     }
 }
 

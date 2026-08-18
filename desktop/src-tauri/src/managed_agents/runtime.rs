@@ -252,6 +252,7 @@ pub fn build_managed_agent_summary(
             &teams,
             &key.relay_url,
             global_config,
+            super::owner_only_access_build(),
         );
         (runtime, current)
     });
@@ -681,7 +682,19 @@ pub(crate) fn spawn_agent_child_at<R: tauri::Runtime>(
     } else {
         command.env_remove("BUZZ_ACP_SYSTEM_PROMPT");
     }
-    if let Some(model) = effective_model.as_deref() {
+    // Shared compute stores `auto`, but the wire name is MeshLLM's virtual
+    // `mesh` model. Translate here too, so the harness and the LLM client are
+    // told the same thing: `BUZZ_ACP_MODEL=auto` would name a model the mesh
+    // never advertises, leaving buzz-acp to warn and fall back on every new
+    // session while `BUZZ_AGENT_MODEL` said `mesh`.
+    #[cfg(feature = "mesh-llm")]
+    let acp_model = match (&mesh_model_id, effective_model.as_deref()) {
+        (Some(mesh_model_id), _) => Some(super::relay_mesh_wire_model(mesh_model_id).to_string()),
+        (None, model) => model.map(str::to_owned),
+    };
+    #[cfg(not(feature = "mesh-llm"))]
+    let acp_model = effective_model.as_deref().map(str::to_owned);
+    if let Some(model) = acp_model.as_deref() {
         command.env("BUZZ_ACP_MODEL", model);
     } else {
         command.env_remove("BUZZ_ACP_MODEL");
@@ -782,6 +795,7 @@ pub(crate) fn spawn_agent_child_at<R: tauri::Runtime>(
             system_prompt: effective_prompt.as_deref(),
             model: effective_model.as_deref(),
             provider: effective_provider.as_deref(),
+            enforced_owner_only: super::owner_only_access_build(),
         },
     );
 

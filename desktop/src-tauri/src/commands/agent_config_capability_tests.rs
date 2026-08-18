@@ -96,6 +96,7 @@ fn make_process(record: &ManagedAgentRecord, start_nonce: &str) -> ManagedAgentP
             &[],
             TEST_RELAY,
             &Default::default(),
+            false,
         ),
         setup_mode: false,
         adapter_availability: None,
