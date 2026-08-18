@@ -498,9 +498,11 @@ A relay SHOULD advertise core support in NIP-11 as:
 }
 ```
 
-For `current-status`, the final value is a tested positive integer. Discovery
-never states enrollment mode or TOFU posture and never exposes issuer URLs,
-audiences, claim names, tenant IDs, or deployment-local identifiers. For a fixed
+NIP-FI-EDGE owns the optional `edge_transports` member and its exact type,
+placement, and value semantics. For `current-status`, the final value is a tested
+positive integer. Discovery never states enrollment mode or TOFU posture and
+never exposes issuer URLs, audiences, claim names, tenant IDs, or
+deployment-local identifiers. For a fixed
 set of claimed profiles, the complete public discovery output is byte-identical
 for every enrollment policy, including `attested-key`, private `tofu`, and any
 companion profile mode: no field, flag, value, omission, ordering, or object shape

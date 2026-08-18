@@ -132,8 +132,9 @@ that drifts and the whole subject of this section is that unguarded restatements
 rot. `policy_denied` and `dependency_unreadable` are core's conditions expressed
 only in prose — a bare policy denial and `FI-INV-14` fail-closed — and core is
 not required to name them symbolically; they are the only two core rows so
-exempted. The remaining rows name conditions the profiles define in prose. None
-is a wire value, and a deployment MAY use different private reason codes
+exempted. The remaining rows name conditions in the owning profiles' literal
+private-denial-condition tables. None is a wire value, and a deployment MAY use
+different private reason codes
 internally as long as every enumerated condition has a fixture.
 
 Every row whose public class is `authorization_denied` is in the private-state
@@ -172,14 +173,24 @@ The suite MUST check, mechanically at the claimed head
    `authorization_unavailable`; and
 3. the set of symbols named by core-attributed rows equals core's symbolic
    denial set together with the allowlist, exactly, and the allowlist is
-   disjoint from core's symbolic denial set.
+   disjoint from core's symbolic denial set; and
+4. for each claimed profile that owns a literal private-denial-condition table,
+   the set of `(identifier, public class)` pairs in that table equals the set of
+   pairs in rows attributed to that profile here, exactly. A row with multiple
+   profile owners contributes its pair to each owner named in that cell.
 
 Every check above MUST be run against the unmutated document and be green before
 any mutant is scored. A check that is red on a conforming document detects
 nothing: it cannot be observed to flip, so every mutant reads as caught. Two of
 these checks shipped red for exactly that reason.
 
-Check 3 keeps the allowlist honest in both directions. Its equality half catches
+Checks 3 and 4 keep copied enumerations honest in both directions. Check 4
+catches a profile condition renamed, added, removed, reclassified, or attributed
+to the wrong owner without the matching fixture-table change. It is run for each
+claimed owning profile. Rows for an unclaimed profile remain `not-applicable`.
+
+Check 3 keeps the core allowlist honest in both directions. Its equality half
+catches
 a core-attributed row core never emits. Its disjointness half is what makes
 promotion visible: if a later core turns `policy_denied` or
 `dependency_unreadable` into a named symbol, every other check still passes —
@@ -415,7 +426,7 @@ They close no item in this gate.
 | ID | Required outcome |
 |---|---|
 | `FI-CONF-CLAIM-COMPLETE` | A report missing an applicable oracle, duplicating one, carrying a result from another claim tuple, or claiming a status other than `pass`/`not-applicable` is rejected. |
-| `FI-CONF-DENIAL-FIXTURES` | Every enumerated private condition has a fixture; anonymity-set responses compare byte-identical; the distinguishing negative control fails. |
+| `FI-CONF-DENIAL-FIXTURES` | Every enumerated private condition has a fixture; core and each claimed profile pass exact identifier/class/owner enumeration agreement; anonymity-set responses compare byte-identical; the distinguishing negative control fails. |
 | `FI-CONF-MUTATION` | Every listed oracle has a singly-applied, attributed, reachability-witnessed mutant killed by that entry's own oracle; survivors are recorded, not waived. |
 | `FI-CONF-INTEROP-EXIT` | Two independent implementations produce, from the documents alone, valid requests equal over the request compared object and per-class denials equal over the denial compared object, and accept each other's output. |
 

@@ -54,10 +54,10 @@ binding version. There is at most one pending lineage per identity.
 `binding_not_after` bounds the grant represented by **one binding**; it is not a
 bound on the identity. Rotation continues the same grant: the replacement binding
 preserves the carried bound, and only expiry authority changes it. Retirement,
-revocation, disablement, re-enablement, provisioning, and ordinary enrollment
-establish a *new* grant that carries no prior bound — so retirement of a bound
-pair followed by ordinary enrollment under `attested-key` or `tofu` policy yields
-an unbounded binding, and that is conformant. A deadline that must survive the end
+revocation, and disablement end the existing grant. Re-enablement, provisioning,
+and ordinary enrollment establish a *new* grant that carries no prior bound — so
+retirement of a bound pair followed by ordinary enrollment under `attested-key`
+or `tofu` policy yields an unbounded binding, and that is conformant. A deadline that must survive the end
 of a grant — an identity-scoped access bound — belongs in the capability
 projection of authoritative local-policy state, which core already requires for
 any projection whose removal must close authority within a declared bound and
@@ -83,6 +83,21 @@ NOT clear, consume, or alter any of those facts (`FI-LC-ORDINARY-GATES`). An
 absent `binding_not_after` has no administrative expiry. Assertion `exp`,
 `iat`, refresh, or maximum age never creates, renews, extends, or clears it.
 Time passage alone creates no tombstone, lineage, or history.
+
+## Private denial conditions
+
+This profile defines exactly these private condition identifiers and owning
+public classes for NIP-FI-CONF enumeration agreement:
+
+| Private condition identifier | Public class |
+|---|---|
+| `identity_disabled` | `authorization_denied` |
+| `explicit_replacement_required` | `authorization_denied` |
+| `binding_expired` | `authorization_denied` |
+
+The identifiers are fixture names, not wire values. Adding, removing, renaming,
+or reclassifying one requires the same change in NIP-FI-CONF's denial-fixture
+table.
 
 ## Common transition contract
 

@@ -251,7 +251,8 @@ assertion_digest_hex = 6103b52a52730bc065d65673247603a63c9810488c90d0ada3d8d227e
 The fixture JWT represents a separately minted `nip-fi+jwt` assertion and is opaque
 test input; its deliberately synthetic signature is not an assertion-validation
 vector. Implementations MUST reproduce each field, complete pre-MAC input,
-diagnostic input digest, raw MAC, and wire MAC exactly.
+diagnostic input digest, raw MAC, and wire MAC exactly
+(`FI-TRACE-EDGE-VECTORS`).
 
 ### Vector 1: HTTP / NIP-98 / non-empty payload
 
@@ -343,14 +344,20 @@ Every implementation MUST run these normative negative cases:
 
 ## Discovery and conformance
 
-A relay that completely implements the stock profile MAY list
-`trusted-proxy-hmac-v2` in NIP-11's NIP-FI transport discovery. It MUST NOT advertise
-private adapters, keys, domains, field names, or code contracts. Claiming FI-EDGE
+A relay that completely implements the stock profile MAY add exactly
+`"edge_transports": ["trusted-proxy-hmac-v2"]` inside the top-level NIP-11
+`federated_identity` object. `edge_transports` is an array of unique ASCII string
+profile identifiers in ascending bytewise order; this document assigns only the
+single value shown. A relay that does not completely implement the stock profile
+MUST omit the member. It MUST NOT advertise private adapters, keys, domains, field
+names, or code contracts. No request may select behavior from this discovery
+member; server-owned configuration selects the edge profile. Claiming FI-EDGE
 requires every configured edge profile to pass the applicable core conformance suite
 and these profile traces:
 
 | Trace | Required oracle |
 |---|---|
+| `FI-TRACE-EDGE-VECTORS` | Reproduce all three normative vectors field-for-field, including each complete pre-MAC input, diagnostic input digest, raw MAC, and wire MAC; reproduce all five timestamp serialization rows; every listed serialization and negative-matrix case produces its required denial or configuration failure. |
 | `FI-TRACE-PROXY-SPOOF` | Direct ingress, unsigned/header-only identity, unauthenticated caller, or invalid provenance denies without fallback. |
 | `FI-TRACE-PROXY-REPLAY` | Two HMAC-v2 final admissions using one nonce commit at most one; preparation consumes neither. A private adapter proves its declared replay semantics. |
 | `FI-TRACE-PROXY-CROSS-REQUEST` | Each protected component mutation denies. HMAC-v2 covers assertion, domain, method, authority, path/query, complete body, proof transport, and peer. |

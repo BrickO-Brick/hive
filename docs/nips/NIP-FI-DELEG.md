@@ -58,6 +58,19 @@ A delegated request carries fresh request-appropriate Nostr proof and no
 `Nostr-Federated-Identity` or profile provenance field. Mixed direct and
 delegated evidence denies rather than selecting a path. [FI-DELEG-PATH-SEPARATION]
 
+## Private denial conditions
+
+This profile defines exactly this private condition identifier and owning public
+class for NIP-FI-CONF enumeration agreement:
+
+| Private condition identifier | Public class |
+|---|---|
+| `delegation_not_current` | `authorization_denied` |
+
+The identifier is a fixture name, not a wire value. Adding, removing, renaming,
+or reclassifying it requires the same change in NIP-FI-CONF's denial-fixture
+table.
+
 ## Preparation
 
 Preparation resolves the exact server-owned domain, target context, operation,
