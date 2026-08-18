@@ -95,6 +95,22 @@ struct DefinitionContext {
     env: Map<String, Value>,
 }
 
+fn harness_env_for_runtime(
+    runtime: Option<&str>,
+    harness_env_by_runtime: &std::collections::HashMap<String, Map<String, Value>>,
+) -> Result<Map<String, Value>, String> {
+    let Some(runtime) = runtime.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(Map::new());
+    };
+    if let Some(env) = harness_env_by_runtime.get(runtime) {
+        return Ok(env.clone());
+    }
+    if crate::managed_agents::custom_harnesses::check_id_collision(runtime).is_ok() {
+        return Err(format!("unresolved custom harness {runtime:?}"));
+    }
+    Ok(Map::new())
+}
+
 fn sibling_path(path: &Path, suffix: &str) -> PathBuf {
     let file_name = path
         .file_name()
@@ -201,10 +217,8 @@ fn migrate_openai_credentials_in_file(
                     .filter(|runtime| !runtime.is_empty())
                     .or(effective_runtime);
                 let merged_inherited_env = {
-                    let mut merged = selected_runtime
-                        .and_then(|runtime| harness_env_by_runtime.get(runtime))
-                        .cloned()
-                        .unwrap_or_default();
+                    let mut merged =
+                        harness_env_for_runtime(selected_runtime, harness_env_by_runtime)?;
                     if let Some(inherited) = inherited_env_vars {
                         merged.extend(inherited.clone());
                     }
@@ -222,20 +236,7 @@ fn migrate_openai_credentials_in_file(
             changed
         }
         Value::Object(record) => {
-            let selected_runtime = record
-                .get("preferred_runtime")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|runtime| !runtime.is_empty())
-                .or(effective_runtime);
-            let merged_inherited_env = selected_runtime
-                .and_then(|runtime| harness_env_by_runtime.get(runtime))
-                .cloned();
-            migrate_openai_credential_record(
-                record,
-                effective_provider,
-                merged_inherited_env.as_ref().or(inherited_env_vars),
-            )
+            migrate_openai_credential_record(record, effective_provider, inherited_env_vars)
         }
         _ => {
             return Err(format!(
@@ -560,6 +561,66 @@ mod tests {
             "compat-secret"
         );
         assert!(records[0]["env_vars"].get(OPENAI_API_KEY).is_none());
+    }
+
+    #[test]
+    fn unresolved_custom_harness_leaves_file_unmarked() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("managed-agents.json");
+        let original = serde_json::to_vec(&serde_json::json!([{
+            "pubkey": "",
+            "slug": "custom-definition",
+            "runtime": "missing-custom-harness",
+            "provider": "openai",
+            "env_vars": { "OPENAI_COMPAT_API_KEY": "compat-secret" }
+        }]))
+        .unwrap();
+        std::fs::write(&path, &original).unwrap();
+
+        let error = migrate_openai_credentials_in_file(
+            &path,
+            None,
+            None,
+            None,
+            &std::collections::HashMap::new(),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("unresolved custom harness"), "{error}");
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert!(!sibling_path(&path, MIGRATION_SUFFIX).exists());
+    }
+
+    #[test]
+    fn global_credentials_ignore_preferred_runtime_harness_env() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("global-agent-config.json");
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "preferred_runtime": "custom-gateway",
+                "provider": "openai",
+                "env_vars": { "OPENAI_COMPAT_API_KEY": "official-secret" }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let harness_env = std::collections::HashMap::from([(
+            "custom-gateway".to_string(),
+            serde_json::json!({
+                "OPENAI_COMPAT_BASE_URL": "https://gateway.example/v1"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        )]);
+
+        migrate_openai_credentials_in_file(&path, None, None, None, &harness_env).unwrap();
+        let global: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+
+        assert_eq!(global["provider"], "openai");
+        assert_eq!(global["env_vars"][OPENAI_API_KEY], "official-secret");
+        assert!(global["env_vars"].get(OPENAI_COMPAT_API_KEY).is_none());
     }
 
     #[test]

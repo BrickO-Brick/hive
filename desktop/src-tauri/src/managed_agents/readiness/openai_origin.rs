@@ -11,8 +11,9 @@ pub(super) fn require_safe_official_origin(
         .filter(|value| !value.is_empty())
         .is_none_or(|value| value.trim_end_matches('/') == "https://api.openai.com/v1");
     if !safe {
-        missing.push(Requirement::EnvKey {
-            key: "OPENAI_COMPAT_BASE_URL".to_string(),
+        missing.push(Requirement::ConfigInvalid {
+            message: "remove `OPENAI_COMPAT_BASE_URL` or switch the provider to `openai-compat`"
+                .to_string(),
         });
     }
 }
@@ -39,8 +40,10 @@ mod tests {
 
         assert_eq!(
             missing,
-            vec![Requirement::EnvKey {
-                key: "OPENAI_COMPAT_BASE_URL".to_string()
+            vec![Requirement::ConfigInvalid {
+                message:
+                    "remove `OPENAI_COMPAT_BASE_URL` or switch the provider to `openai-compat`"
+                        .to_string()
             }]
         );
     }

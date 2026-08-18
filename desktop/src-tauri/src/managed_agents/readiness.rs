@@ -286,7 +286,6 @@ fn resolve_effective_agent_env_with_def(
 }
 
 // ── Requirement types ─────────────────────────────────────────────────────────
-
 /// A single missing piece of configuration, tagged with the UI surface that
 /// owns it so the UI can route each gap to the right affordance.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -299,11 +298,12 @@ pub enum Requirement {
         field: String,
     },
     /// An env-backed credential that is absent from the effective env.
-    /// Routes to the env-var row editor in the Edit Agent dialog.
     EnvKey {
         /// The env var key name (e.g. `"ANTHROPIC_API_KEY"`).
         key: String,
     },
+    /// Invalid configuration with actionable remediation copy.
+    ConfigInvalid { message: String },
     /// A CLI authentication step that must be completed interactively.
     /// Routes to a setup instruction panel in the Edit Agent dialog.
     CliLogin {

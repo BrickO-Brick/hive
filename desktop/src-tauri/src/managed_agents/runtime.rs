@@ -596,6 +596,9 @@ pub fn spawn_agent_child(
                             "surface": "env_key",
                             "key": key,
                         }),
+                        Requirement::ConfigInvalid { message } => serde_json::json!({
+                            "surface": "config_invalid", "message": message,
+                        }),
                         Requirement::CliLogin {
                             probe_args,
                             setup_copy,
