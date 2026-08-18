@@ -72,17 +72,43 @@ fn compensate_import_drain(
 /// `workspace_transition` (never `identity_mutation`), so the global order
 /// `identity_mutation` → `workspace_transition` has no cycle.
 ///
-/// `commit_fence` + `validity_check` are threaded to the pre-commit boundary:
-/// normal import supplies `None` + always-`Ok`; the phone-recovery continuation
-/// supplies the pairing `generation_fence` + its generation-current check, so a
-/// superseded recovery compensates the drain and commits NO identity while a
-/// recovery that wins the fence commits durably (P26-C1).
+/// `commit_fence` + `late_validity_check` are threaded to the pre-commit
+/// boundary: normal import supplies `None` + always-`Ok`; the phone-recovery
+/// continuation supplies the pairing `generation_fence` + its generation-current
+/// check, so a superseded recovery compensates the drain and commits NO identity
+/// while a recovery that wins the fence commits durably (P26-C1).
+///
+/// # Two validity boundaries (P26-C1)
+///
+/// The transition is gated at TWO points, each closing a distinct supersession
+/// window; a single check cannot cover both because they straddle the drain:
+///
+/// - **`early_validity_check`** runs under the held `workspace_transition`
+///   guard, immediately after the locks are acquired and BEFORE the Mesh
+///   preflight and drain. Its job is to reject a task that was already
+///   superseded/cancelled while it queued on the locks, doing ZERO disruptive
+///   work — no drain, no Mesh state change, no egress-barrier bump, nothing to
+///   compensate. Normal import supplies always-`Ok`; pairing supplies the
+///   task-currency check.
+/// - **`late_validity_check`** runs inside [`import_identity_blocking`] at the
+///   fence-held pre-commit boundary — after a successful drain, immediately
+///   before the durable dispatch — so a supersession that lands during the
+///   drain window is caught before any identity is committed (the drained
+///   runtimes are then compensated). This is the boundary the `commit_fence`
+///   makes indivisible against a racing invalidation.
+///
+/// A cancellation that lands AFTER the early gate but DURING the drain reaches
+/// the runtime revoke before `late_validity_check` rejects it; the drained
+/// runtimes compensate, but revoked owner-identity durable capabilities stay
+/// revoked. This is design-conformant fail-closed churn, not a split state —
+/// see `CROSS_WORKSPACE_AGENT_LIBRARY.md` §3.3a (barrier sequence is fixed).
 pub(crate) async fn run_identity_transition(
     app_handle: tauri::AppHandle,
     nsec: String,
     password: Option<String>,
     commit_fence: Option<std::sync::Arc<std::sync::Mutex<()>>>,
-    validity_check: impl FnOnce() -> Result<(), String> + Send + 'static,
+    early_validity_check: impl FnOnce() -> Result<(), String>,
+    late_validity_check: impl FnOnce() -> Result<(), String> + Send + 'static,
 ) -> Result<IdentityInfo, String> {
     // ── Layer 1: identity_mutation (async serialization lock) ────────────────
     // Held for the full import to prevent a concurrent stale persist from
@@ -95,52 +121,43 @@ pub(crate) async fn run_identity_transition(
     let lock_state = lock_handle.state::<AppState>();
     let _mutation_guard = lock_state.identity_mutation.lock().await;
 
-    // ── Layer 1b: workspace_transition + Mesh preflight (UNCONDITIONAL) ──────
+    // ── Layer 1b: workspace_transition (UNCONDITIONAL) ───────────────────────
     // Always route through the transition lock, whether or not a scope appears
     // active — the active/no-scope decision is made INSIDE the blocking body
     // from a snapshot taken under this guard, so a concurrent apply_workspace
     // can neither slip a `None → Some` activation past the scope sample nor
-    // race the durable commit (P26-C1). When the `mesh-llm` feature is enabled,
-    // `with_workspace_transition_preflight` acquires `workspace_transition`,
-    // runs `fail_if_client_mesh_active`, then invokes the body while the lock
-    // remains held — the same orchestration path `apply_workspace` uses.
-    // Without `mesh-llm`, acquire `workspace_transition` manually (no mesh
-    // check needed) and invoke the blocking body under it.
-    let app_for_body = app_handle.clone();
+    // race the durable commit (P26-C1).
+    let _transition_guard = lock_state.workspace_transition.lock().await;
 
+    // ── Early validity gate (P26-C1) ─────────────────────────────────────────
+    // Under the held transition guard, BEFORE the Mesh preflight and drain: a
+    // task superseded while queued on the locks is rejected here having done
+    // ZERO disruptive work (no drain, no Mesh, no egress-barrier change).
+    early_validity_check()?;
+
+    // ── Mesh preflight (UNCONDITIONAL, no-op without `mesh-llm`) ──────────────
+    // Fail closed if a client-mode Mesh runtime is active. Runs under the held
+    // `workspace_transition` guard — the same orchestration invariant
+    // `apply_workspace` relies on.
     #[cfg(feature = "mesh-llm")]
-    let result = crate::commands::mesh_llm::scope_impl::with_workspace_transition_preflight(
-        &app_handle,
-        move || {
-            Box::pin(async move {
-                tokio::task::spawn_blocking(move || {
-                    import_identity_blocking(
-                        app_for_body,
-                        nsec,
-                        password,
-                        commit_fence,
-                        validity_check,
-                    )
-                })
-                .await
-                .map_err(|e| format!("spawn_blocking failed: {e}"))?
-            })
-        },
-    )
-    .await;
+    crate::commands::mesh_llm::scope_impl::run_mesh_transition_preflight(&app_handle).await?;
 
-    #[cfg(not(feature = "mesh-llm"))]
-    let result = {
-        let _transition_guard = lock_state.workspace_transition.lock().await;
-        tokio::task::spawn_blocking(move || {
-            import_identity_blocking(app_for_body, nsec, password, commit_fence, validity_check)
-        })
-        .await
-        .map_err(|e| format!("spawn_blocking failed: {e}"))?
-    };
+    let app_for_body = app_handle.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        import_identity_blocking(
+            app_for_body,
+            nsec,
+            password,
+            commit_fence,
+            late_validity_check,
+        )
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking failed: {e}"))?;
 
-    // identity_mutation must outlive spawn_blocking — drop explicitly here so
-    // the compiler can see the guard's lifetime covers both branches.
+    // Both transition guards must outlive spawn_blocking — drop explicitly here
+    // so the compiler can see their lifetimes cover the blocking body.
+    drop(_transition_guard);
     drop(_mutation_guard);
 
     result

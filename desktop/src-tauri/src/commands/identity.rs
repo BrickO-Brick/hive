@@ -383,8 +383,9 @@ pub async fn import_identity(
     password: Option<String>,
     app_handle: tauri::AppHandle,
 ) -> Result<IdentityInfo, String> {
-    // Normal import: no supersession fence, always-valid pre-commit check.
-    run_identity_transition(app_handle, nsec, password, None, || Ok(())).await
+    // Normal import: no supersession fence, both validity gates always pass —
+    // there is no queued-task currency to check.
+    run_identity_transition(app_handle, nsec, password, None, || Ok(()), || Ok(())).await
 }
 
 /// Finish an imported identity commit whose durable persist already succeeded

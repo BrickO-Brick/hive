@@ -472,14 +472,19 @@ async fn import_recovered_identity(
     // runtimes, clears the active scope, and bumps the scope generation — none
     // of which the old direct `commit_imported_identity` path performed. The
     // pairing `generation_fence` is the coordinator's commit fence and the
-    // task-currency check is its pre-commit validity check, held across the
-    // durable commit (P26-C1): a superseded recovery compensates the drain and
-    // commits NO identity; a recovery that wins the fence commits durably.
+    // task-currency check gates BOTH validity boundaries (P26-C1): the early
+    // gate rejects a recovery already superseded while it queued on the locks
+    // (zero disruptive work); the late gate, held across the durable commit,
+    // rejects one superseded during the drain (compensates, commits NO
+    // identity). `ensure_pairing_task_is_current` is an idempotent currency
+    // read, so both gates get an independent clone of the same check.
+    let early_generation = Arc::clone(&generation);
     crate::commands::identity::run_identity_transition(
         app.clone(),
         nsec.trim().to_string(),
         None,
         Some(Arc::clone(generation_fence)),
+        move || ensure_pairing_task_is_current(&early_generation, task_generation),
         move || ensure_pairing_task_is_current(&generation, task_generation),
     )
     .await
