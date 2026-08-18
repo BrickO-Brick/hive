@@ -51,11 +51,13 @@
 //!
 //! # Closed-world egress construction sites (C1c condition 3)
 //!
-//! The `EgressLease` witness is only ever minted at these eight sites — the
-//! complete owner/managed-agent egress sink set. The `relay_admission`
-//! module doc and the C8 closed-world sink test enumerate exactly this set; a
+//! The `EgressLease` witness is minted only at the enumerated sites below. A
 //! new send that skips admission fails to compile (no witness) and fails the
-//! sink-test enumeration.
+//! C8 closed-world sink-test enumeration. The `relay_admission` module doc and
+//! that sink test enumerate exactly this set. Two disjoint construction sets
+//! exist: the owner-identity sites (`try_admit_owner_identity_egress`) and the
+//! **eight** managed-agent keyed sites (`admit_managed_agent_egress`) — the
+//! ruled `ManagedAgentKeyed` construction set.
 //!
 //! Owner-identity (`try_admit_owner_identity_egress`):
 //! - `submit_event` / `query_relay_at` / `build_nip98_auth_header` — the
@@ -74,7 +76,10 @@
 //! 1. `submit_engram_event` (snapshot import).
 //! 2. `sync_managed_agent_profile`.
 //! 3. the agent query probe (`runtime_commands`).
-//! 4. `commands::messages` reaction publish.
+//! 4. `commands::messages::send_managed_agent_channel_message` — the
+//!    managed-agent channel message send (`add_reaction`/`remove_reaction`
+//!    publish through the self-admitting owner wrappers and are NOT
+//!    `ManagedAgentKeyed` sites).
 //! 5. the four `project_git_workflow` PR-status/merge sends (items 5–8).
 
 use std::sync::atomic::{AtomicU64, Ordering};
