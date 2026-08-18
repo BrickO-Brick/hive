@@ -130,6 +130,15 @@ class GenerationConfig(StrictModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def validate_harness_extras(self) -> Self:
+        goose_mode = self.extra.get("goose_system_prompt_mode")
+        if goose_mode is not None and goose_mode not in {"append", "set"}:
+            raise ValueError(
+                "generation.extra.goose_system_prompt_mode must be append or set"
+            )
+        return self
+
 
 class AgentBudget(StrictModel):
     """Optional per-agent live safety limits."""
@@ -192,8 +201,8 @@ class AgentClass(StrictModel):
     #
     # A manifest field rather than deployment config because it changes the
     # effective system prompt, which is what a condition *is*. The base section
-    # is ~12KB of production-workspace guidance — startup recovery sweeps,
-    # RESEARCH/PLANS conventions, git worktrees, "silence is usually correct" —
+    # is production-workspace guidance — RESEARCH/PLANS conventions, git
+    # worktrees, "silence is usually correct" —
     # written for a long-lived Buzz workspace rather than a graded container.
     # Every persona overrides it in prose, but prose is not proof, so the
     # ability to turn it off is what makes that override falsifiable.

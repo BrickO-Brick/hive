@@ -299,7 +299,9 @@ async def test_system_trust_store_is_seeded_for_apt_curl_and_pip(tmp_path):
     installs pytest, and the task scores 0.0 as if the model were wrong.
     """
     rt = _stack_runtime(tmp_path)
-    environment = Environment({SYSTEM_CA_BUNDLE: ExecResult(stdout="seeded", stderr="", return_code=0)})
+    environment = Environment(
+        {SYSTEM_CA_BUNDLE: ExecResult(stdout="seeded", stderr="", return_code=0)}
+    )
     assert await rt._install_stack(environment) == "seeded"
     seed = [cmd for cmd, _ in environment.commands if SYSTEM_CA_BUNDLE in cmd]
     assert len(seed) == 1
@@ -314,7 +316,9 @@ async def test_system_trust_store_is_seeded_for_apt_curl_and_pip(tmp_path):
 async def test_an_images_own_trust_store_is_never_overwritten(tmp_path):
     """A task about certificate handling must keep the store its image shipped."""
     rt = _stack_runtime(tmp_path)
-    environment = Environment({SYSTEM_CA_BUNDLE: ExecResult(stdout="present", stderr="", return_code=0)})
+    environment = Environment(
+        {SYSTEM_CA_BUNDLE: ExecResult(stdout="present", stderr="", return_code=0)}
+    )
     assert await rt._install_stack(environment) == "present"
 
 
@@ -327,10 +331,14 @@ async def test_an_unseedable_trust_store_is_recorded_not_fatal(tmp_path):
     answer -- exactly the distinction the A1 sweep could not make.
     """
     rt = _stack_runtime(tmp_path)
-    environment = Environment({SYSTEM_CA_BUNDLE: ExecResult(stdout="failed", stderr="", return_code=1)})
+    environment = Environment(
+        {SYSTEM_CA_BUNDLE: ExecResult(stdout="failed", stderr="", return_code=1)}
+    )
     assert await rt._install_stack(environment) == "failed"
     # An exec that returns nothing at all is a failure too, not a pass.
-    blank = Environment({SYSTEM_CA_BUNDLE: ExecResult(stdout="", stderr="", return_code=0)})
+    blank = Environment(
+        {SYSTEM_CA_BUNDLE: ExecResult(stdout="", stderr="", return_code=0)}
+    )
     assert await rt._install_stack(blank) == "failed"
 
 
@@ -350,8 +358,6 @@ async def test_install_stack_requires_the_ca_bundle_on_disk(tmp_path):
 
 
 async def test_forwarder_bridges_the_canonical_relay_address(tmp_path):
-    from harbor_buzz_orchestra.container_runtime import FORWARDER
-
     forwarder = tmp_path / "relay-forwarder"
     forwarder.write_text("ELF")
     rt = runtime(
@@ -550,14 +556,19 @@ async def test_solo_roster_runs_and_is_priced(tmp_path, monkeypatch):
             "condition": "solo",
             "roster": [
                 {
-                    "id": "solo", "kind": "orchestrator", "role": "lead", "count": 1,
-                    "endpoint": "orch-model", "model_revision": "r1",
+                    "id": "solo",
+                    "kind": "orchestrator",
+                    "role": "lead",
+                    "count": 1,
+                    "endpoint": "orch-model",
+                    "model_revision": "r1",
                     "prompt": {
                         "path": "prompt.md",
                         "sha256": hashlib.sha256(b"prompt").hexdigest(),
                     },
                     "generation": {
-                        "max_output_tokens": 100, "context_window_tokens": 1000
+                        "max_output_tokens": 100,
+                        "context_window_tokens": 1000,
                     },
                 }
             ],
@@ -605,7 +616,8 @@ async def test_solo_roster_runs_and_is_priced(tmp_path, monkeypatch):
 
     monkeypatch.setattr(rt, "_install_stack", lambda environment: _noop())
     monkeypatch.setattr(
-        rt, "_wait_for_done",
+        rt,
+        "_wait_for_done",
         lambda *a, **k: _value({"id": "m1", "content": "DONE: done"}),
     )
 
@@ -968,9 +980,10 @@ async def test_a_lone_agent_that_ends_its_turn_ends_the_trial(tmp_path, monkeypa
             )
         }
     )
-    assert await rt._wait_for_done(
-        ended, orch, trial, [], solo=settle_agent("orch-1")
-    ) is None
+    assert (
+        await rt._wait_for_done(ended, orch, trial, [], solo=settle_agent("orch-1"))
+        is None
+    )
 
 
 @pytest.mark.parametrize(
@@ -990,9 +1003,12 @@ async def test_a_turn_that_ended_badly_still_ended(tmp_path, monkeypatch, line):
     environment = Environment(
         responses={"cat ": ExecResult(stdout=line, stderr="", return_code=0)}
     )
-    assert await rt._wait_for_done(
-        environment, orch, trial_handle((orch,)), [], solo=settle_agent("orch-1")
-    ) is None
+    assert (
+        await rt._wait_for_done(
+            environment, orch, trial_handle((orch,)), [], solo=settle_agent("orch-1")
+        )
+        is None
+    )
 
 
 async def test_a_working_agent_is_never_mistaken_for_a_finished_one(
@@ -1005,7 +1021,9 @@ async def test_a_working_agent_is_never_mistaken_for_a_finished_one(
     """
     rt = runtime(tmp_path, poll_seconds=0)
     orch = credential("orch-1", "orchestrator", "orch-model")
-    rounds = iter([[], [], [{"id": "9", "pubkey": orch.nostr_pubkey, "content": "DONE: ok"}]])
+    rounds = iter(
+        [[], [], [{"id": "9", "pubkey": orch.nostr_pubkey, "content": "DONE: ok"}]]
+    )
     monkeypatch.setattr(rt, "_buzz_json", lambda *a, **k: _value(next(rounds)))
     working = Environment(
         responses={
@@ -1030,7 +1048,9 @@ async def test_a_team_keeps_waiting_because_a_worker_can_still_wake_the_lead(
     """
     rt = runtime(tmp_path, poll_seconds=0)
     orch = credential("orch-1", "orchestrator", "orch-model")
-    rounds = iter([[], [{"id": "9", "pubkey": orch.nostr_pubkey, "content": "DONE: ok"}]])
+    rounds = iter(
+        [[], [{"id": "9", "pubkey": orch.nostr_pubkey, "content": "DONE: ok"}]]
+    )
     monkeypatch.setattr(rt, "_buzz_json", lambda *a, **k: _value(next(rounds)))
     ended = Environment(
         responses={
@@ -1053,14 +1073,19 @@ async def test_a_quiet_stop_is_recorded_rather_than_inferred(tmp_path, monkeypat
             "condition": "solo",
             "roster": [
                 {
-                    "id": "solo", "kind": "orchestrator", "role": "lead", "count": 1,
-                    "endpoint": "orch-model", "model_revision": "r1",
+                    "id": "solo",
+                    "kind": "orchestrator",
+                    "role": "lead",
+                    "count": 1,
+                    "endpoint": "orch-model",
+                    "model_revision": "r1",
                     "prompt": {
                         "path": "prompt.md",
                         "sha256": hashlib.sha256(b"prompt").hexdigest(),
                     },
                     "generation": {
-                        "max_output_tokens": 100, "context_window_tokens": 1000
+                        "max_output_tokens": 100,
+                        "context_window_tokens": 1000,
                     },
                 }
             ],
@@ -1132,9 +1157,24 @@ async def test_transcript_is_saved_in_author_order_with_names(tmp_path, monkeypa
 
     async def buzz_json(credential, *args, **kwargs):
         return [
-            {"id": "3", "pubkey": orch.nostr_pubkey, "content": "DONE: x", "created_at": 3},
-            {"id": "1", "pubkey": trial.user.nostr_pubkey, "content": "@orch-1 go", "created_at": 1},
-            {"id": "2", "pubkey": worker.nostr_pubkey, "content": "@orch-1 done", "created_at": 2},
+            {
+                "id": "3",
+                "pubkey": orch.nostr_pubkey,
+                "content": "DONE: x",
+                "created_at": 3,
+            },
+            {
+                "id": "1",
+                "pubkey": trial.user.nostr_pubkey,
+                "content": "@orch-1 go",
+                "created_at": 1,
+            },
+            {
+                "id": "2",
+                "pubkey": worker.nostr_pubkey,
+                "content": "@orch-1 done",
+                "created_at": 2,
+            },
         ]
 
     monkeypatch.setattr(rt, "_buzz_json", buzz_json)
@@ -1342,9 +1382,7 @@ async def test_thinking_effort_can_be_raised_per_condition(tmp_path):
     ("harness", "command"),
     [("goose", "goose"), ("codex", "codex-acp")],
 )
-async def test_external_harness_gets_same_model_and_effort(
-    tmp_path, harness, command
-):
+async def test_external_harness_gets_same_model_and_effort(tmp_path, harness, command):
     manifest = write_manifest(tmp_path)
     entry = manifest.roster[0].model_copy(
         update={
@@ -1376,9 +1414,30 @@ async def test_external_harness_gets_same_model_and_effort(
         assert json.loads(env["CODEX_CONFIG"])["model_reasoning_effort"] == "high"
 
 
+async def test_goose_prompt_replacement_mode_reaches_buzz_acp(tmp_path):
+    manifest = write_manifest(tmp_path)
+    entry = manifest.roster[0].model_copy(
+        update={
+            "harness": "goose",
+            "generation": manifest.roster[0].generation.model_copy(
+                update={"extra": {"goose_system_prompt_mode": "set"}}
+            ),
+        }
+    )
+    orch = credential("orch-1", "orchestrator", "gpt-5.6-terra")
+    env = runtime(tmp_path)._agent_env(
+        trial=trial_handle((orch,)),
+        credential=orch,
+        agent_class=entry,
+        endpoint=EndpointLaunchConfig("openai", "OPENAI_COMPAT_API_KEY"),
+        remote_prompt="/opt/buzz/prompts/orch-1.system-prompt.md",
+    )
+    assert env["BUZZ_ACP_GOOSE_SYSTEM_PROMPT_MODE"] == "set"
+
+
 @pytest.mark.parametrize(
     ("include", "expected"),
-    [(True, None), (False, "1")],
+    [(True, None), (False, "true")],
 )
 async def test_platform_prompt_can_be_switched_off_per_condition(
     tmp_path, include, expected
@@ -1474,8 +1533,6 @@ class _BindsAfter(Environment):
         self._log = ""
 
     async def exec(self, command, env=None, **kwargs):
-        from harbor_buzz_orchestra.container_runtime import FORWARDER
-
         self.commands.append((command, env))
         if command.startswith(": >"):
             self._log = ""
@@ -1484,7 +1541,7 @@ class _BindsAfter(Environment):
             self.launches += 1
             if self.remaining > 0:
                 self.remaining -= 1
-                self._log = 'Error: Os { code: 98, kind: AddrInUse }'
+                self._log = "Error: Os { code: 98, kind: AddrInUse }"
             else:
                 self._log = "forwarding 127.0.0.1:3600 -> host.docker.internal:3600"
             return ExecResult(stdout="99\n", stderr="", return_code=0)
@@ -1517,8 +1574,6 @@ async def test_forwarder_gives_up_after_the_attempt_budget(tmp_path, monkeypatch
 
 async def test_forwarder_does_not_retry_other_failures(tmp_path, monkeypatch):
     """Only EADDRINUSE is transient; a silent forwarder is a real fault."""
-    from harbor_buzz_orchestra.container_runtime import FORWARDER
-
     rt = _forwarder_runtime(tmp_path)
     monkeypatch.setattr(type(rt), "readiness_timeout_seconds", 0.0, raising=False)
     rt.readiness_timeout_seconds = 0.0
@@ -1558,8 +1613,6 @@ async def test_forwarder_from_an_earlier_phase_is_adopted(tmp_path):
     without SO_REUSEADDR, so its accepted sockets hold the port in TIME_WAIT
     for 60s after it exits.
     """
-    from harbor_buzz_orchestra.container_runtime import FORWARDER
-
     rt = _forwarder_runtime(tmp_path)
     environment = _HasLiveForwarder(pid=4242)
 

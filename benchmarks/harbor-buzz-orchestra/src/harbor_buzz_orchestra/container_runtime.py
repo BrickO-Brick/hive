@@ -117,9 +117,11 @@ def _forwarder_probe(proc: str = "/proc") -> str:
     return (
         f"for d in {proc}/[0-9]*; do "
         "a=$(tr '\\0' '\\n' < \"$d/cmdline\" 2>/dev/null | head -1); "
-        f"[ \"$a\" = {shlex.quote(FORWARDER)} ] "
-        f"&& echo \"${{d#{proc}/}}\"; done; true"
+        f'[ "$a" = {shlex.quote(FORWARDER)} ] '
+        f'&& echo "${{d#{proc}/}}"; done; true'
     )
+
+
 # Trust anchors the agent uses to reach its model provider over TLS.
 #
 # buzz-agent links reqwest's `rustls` feature, which loads roots via
@@ -358,12 +360,20 @@ class BuzzContainerRuntime:
             if forwarder is not None:
                 infra.append(forwarder)
             await self._buzz_json(
-                trial.user, trial, "users", "set-profile", "--name",
+                trial.user,
+                trial,
+                "users",
+                "set-profile",
+                "--name",
                 trial.user.agent_id,
             )
             for credential in trial.credentials:
                 await self._buzz_json(
-                    credential, trial, "users", "set-profile", "--name",
+                    credential,
+                    trial,
+                    "users",
+                    "set-profile",
+                    "--name",
                     credential.agent_id,
                 )
                 agents.append(
@@ -480,9 +490,7 @@ class BuzzContainerRuntime:
             output_tokens=trial_accounting.output_tokens,
             cost_usd=trial_accounting.cost_usd,
             metadata={
-                "completion_message_id": (
-                    final_message["id"] if final_message else ""
-                ),
+                "completion_message_id": (final_message["id"] if final_message else ""),
                 "completion_message": (
                     final_message["content"] if final_message else ""
                 ),
@@ -616,12 +624,12 @@ class BuzzContainerRuntime:
                 "libgcc_s.so.1",
                 "libstdc++.so.6",
             ):
-                uploads[f"{REMOTE_ROOT}/lib/x86_64/{name}"] = str(
-                    runtime_libs / name
-                )
+                uploads[f"{REMOTE_ROOT}/lib/x86_64/{name}"] = str(runtime_libs / name)
         if not uploads:
             return
-        missing = [target for target, source in uploads.items() if not Path(source).is_file()]
+        missing = [
+            target for target, source in uploads.items() if not Path(source).is_file()
+        ]
         if missing:
             raise RuntimeLaunchError(
                 "external harness binary not found for: " + ", ".join(missing)
@@ -728,11 +736,17 @@ class BuzzContainerRuntime:
         if existing is not None:
             return _Agent(
                 AgentCredential(
-                    agent_id="relay-forwarder", role="infra",
-                    nostr_secret_key="", nostr_pubkey="", nostr_auth_tag="",
-                    llm_endpoint="", llm_api_key="",
+                    agent_id="relay-forwarder",
+                    role="infra",
+                    nostr_secret_key="",
+                    nostr_pubkey="",
+                    nostr_auth_tag="",
+                    llm_endpoint="",
+                    llm_api_key="",
                 ),
-                existing, log, log,
+                existing,
+                log,
+                log,
             )
 
         # Retry on EADDRINUSE anyway, as a guard for the cases adoption cannot
@@ -753,11 +767,17 @@ class BuzzContainerRuntime:
                 ) from error
             forwarder = _Agent(
                 AgentCredential(
-                    agent_id="relay-forwarder", role="infra",
-                    nostr_secret_key="", nostr_pubkey="", nostr_auth_tag="",
-                    llm_endpoint="", llm_api_key="",
+                    agent_id="relay-forwarder",
+                    role="infra",
+                    nostr_secret_key="",
+                    nostr_pubkey="",
+                    nostr_auth_tag="",
+                    llm_endpoint="",
+                    llm_api_key="",
                 ),
-                pid, log, log,
+                pid,
+                log,
+                log,
             )
             deadline = (
                 asyncio.get_running_loop().time() + self.readiness_timeout_seconds
@@ -874,6 +894,13 @@ class BuzzContainerRuntime:
                 "GOOSE_THINKING_EFFORT": effort,
                 "OPENAI_API_KEY": credential.llm_api_key,
             }
+            goose_prompt_mode = agent_class.generation.extra.get(
+                "goose_system_prompt_mode"
+            )
+            if goose_prompt_mode is not None:
+                harness_env["BUZZ_ACP_GOOSE_SYSTEM_PROMPT_MODE"] = str(
+                    goose_prompt_mode
+                )
         elif agent_class.harness == "codex":
             harness_env = {
                 "CODEX_PATH": f"{REMOTE_BIN}/codex",
@@ -984,7 +1011,9 @@ class BuzzContainerRuntime:
         """
         if agent_class.include_platform_prompt:
             return {}
-        return {"BUZZ_ACP_NO_BASE_PROMPT": "1"}
+        # clap's bool parser accepts explicit true/false values, not shell-style
+        # 1/0. This environment variable is passed as a value-bearing option.
+        return {"BUZZ_ACP_NO_BASE_PROMPT": "true"}
 
     @staticmethod
     def _window_env(generation: GenerationConfig) -> dict[str, str]:
@@ -1000,9 +1029,7 @@ class BuzzContainerRuntime:
         if generation.max_output_tokens is not None:
             env["BUZZ_AGENT_MAX_OUTPUT_TOKENS"] = str(generation.max_output_tokens)
         if generation.context_window_tokens is not None:
-            env["BUZZ_AGENT_MAX_CONTEXT_TOKENS"] = str(
-                generation.context_window_tokens
-            )
+            env["BUZZ_AGENT_MAX_CONTEXT_TOKENS"] = str(generation.context_window_tokens)
         return env
 
     @staticmethod
@@ -1119,9 +1146,14 @@ class BuzzContainerRuntime:
                 await self._raise_for_dead_agents(environment, agents)
             polls += 1
             messages = await self._buzz_json(
-                trial.user, trial,
-                "messages", "get", "--channel", trial.channel_id,
-                "--limit", "100",
+                trial.user,
+                trial,
+                "messages",
+                "get",
+                "--channel",
+                trial.channel_id,
+                "--limit",
+                "100",
             )
             for message in messages:
                 if message.get("pubkey") == orchestrator.nostr_pubkey and str(
@@ -1222,9 +1254,7 @@ class BuzzContainerRuntime:
             )
 
     @staticmethod
-    async def _stop_agents(
-        environment: BaseEnvironment, agents: list[_Agent]
-    ) -> None:
+    async def _stop_agents(environment: BaseEnvironment, agents: list[_Agent]) -> None:
         """Terminate every process of the uploaded stack (acp, agent, mcp)."""
         if not agents:
             return
@@ -1243,9 +1273,9 @@ class BuzzContainerRuntime:
         # nothing: the container is destroyed at the end of the trial.
         sweep = (
             "for d in /proc/[0-9]*; do "
-            f"grep -aq {REMOTE_BIN} \"$d/cmdline\" 2>/dev/null "
-            "&& ! grep -aq relay-forwarder \"$d/cmdline\" 2>/dev/null "
-            "&& kill -TERM \"${d#/proc/}\" 2>/dev/null; done; true"
+            f'grep -aq {REMOTE_BIN} "$d/cmdline" 2>/dev/null '
+            '&& ! grep -aq relay-forwarder "$d/cmdline" 2>/dev/null '
+            '&& kill -TERM "${d#/proc/}" 2>/dev/null; done; true'
         )
         try:
             await environment.exec(sweep)
@@ -1280,9 +1310,14 @@ class BuzzContainerRuntime:
         """
         try:
             messages = await self._buzz_json(
-                trial.user, trial,
-                "messages", "get", "--channel", trial.channel_id,
-                "--limit", str(TRANSCRIPT_LIMIT),
+                trial.user,
+                trial,
+                "messages",
+                "get",
+                "--channel",
+                trial.channel_id,
+                "--limit",
+                str(TRANSCRIPT_LIMIT),
             )
         except Exception:  # noqa: BLE001 — a lost transcript is not a failed trial
             return

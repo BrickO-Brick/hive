@@ -179,7 +179,9 @@ def test_an_empty_generation_block_hashes_as_an_absent_one(manifest_data):
         {**manifest_data["roster"][0], "generation": {}},
         manifest_data["roster"][1],
     ]
-    assert ExperimentManifest.load(absent).sha256 == ExperimentManifest.load(empty).sha256
+    assert (
+        ExperimentManifest.load(absent).sha256 == ExperimentManifest.load(empty).sha256
+    )
 
 
 def test_compaction_is_unset_by_default(manifest_data):
@@ -257,6 +259,21 @@ def test_compaction_target_is_part_of_the_condition_hash(manifest_data):
     baseline = ExperimentManifest.load(copy.deepcopy(manifest_data)).sha256
     manifest_data["roster"][0]["generation"]["compact_at_tokens"] = 100_000
     assert ExperimentManifest.load(manifest_data).sha256 != baseline
+
+
+def test_goose_prompt_mode_is_validated_and_hashed(manifest_data):
+    import copy
+
+    baseline = ExperimentManifest.load(copy.deepcopy(manifest_data)).sha256
+    manifest_data["roster"][0]["generation"]["extra"] = {
+        "goose_system_prompt_mode": "set"
+    }
+    assert ExperimentManifest.load(manifest_data).sha256 != baseline
+    manifest_data["roster"][0]["generation"]["extra"] = {
+        "goose_system_prompt_mode": "replace"
+    }
+    with pytest.raises(ManifestError, match="must be append or set"):
+        ExperimentManifest.load(manifest_data)
 
 
 def test_environment_overrides_default_to_leaving_the_task_alone(manifest_data):

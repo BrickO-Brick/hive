@@ -707,12 +707,18 @@ impl AcpClient {
         &mut self,
         session_id: &str,
         text: &str,
+        mode: &str,
     ) -> Result<serde_json::Value, AcpError> {
+        if !matches!(mode, "append" | "set") {
+            return Err(AcpError::Protocol(format!(
+                "invalid Goose system prompt mode {mode:?}; expected append or set"
+            )));
+        }
         self.send_request(
             "_goose/unstable/session/system-prompt/set",
             serde_json::json!({
                 "sessionId": session_id,
-                "mode": "set",
+                "mode": mode,
                 "key": "buzz",
                 "text": text,
             }),
@@ -3532,7 +3538,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn goose_system_prompt_request_uses_set_contract() {
+    async fn goose_system_prompt_request_uses_append_contract() {
         let script = r#"
             read -t 2 REQ
             echo '{"jsonrpc":"2.0","id":0,"result":{"_receivedRequest":'"$REQ"'}}'
@@ -3540,7 +3546,7 @@ mod tests {
         "#;
         let mut client = spawn_script(script).await;
         let result = client
-            .session_set_goose_system_prompt("ses_goose", "Be terse")
+            .session_set_goose_system_prompt("ses_goose", "Be terse", "append")
             .await
             .expect("custom request succeeds");
         let received = &result["_receivedRequest"];
@@ -3549,7 +3555,7 @@ mod tests {
             "_goose/unstable/session/system-prompt/set"
         );
         assert_eq!(received["params"]["sessionId"], "ses_goose");
-        assert_eq!(received["params"]["mode"], "set");
+        assert_eq!(received["params"]["mode"], "append");
         assert_eq!(received["params"]["key"], "buzz");
         assert_eq!(received["params"]["text"], "Be terse");
     }
@@ -3564,7 +3570,7 @@ mod tests {
         let mut client = spawn_script(script).await;
         assert!(matches!(
             client
-                .session_set_goose_system_prompt("ses_goose", "Be terse")
+                .session_set_goose_system_prompt("ses_goose", "Be terse", "append")
                 .await,
             Err(AcpError::AgentError { code: -32601, .. })
         ));
@@ -3580,9 +3586,35 @@ mod tests {
         let mut client = spawn_script(script).await;
         assert!(matches!(
             client
-                .session_set_goose_system_prompt("ses_goose", "Be terse")
+                .session_set_goose_system_prompt("ses_goose", "Be terse", "append")
                 .await,
             Err(AcpError::AgentError { code: -32602, .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn goose_system_prompt_request_supports_replacement_contract() {
+        let script = r#"
+            read -t 2 REQ
+            echo '{"jsonrpc":"2.0","id":0,"result":{"_receivedRequest":'"$REQ"'}}'
+            sleep 1
+        "#;
+        let mut client = spawn_script(script).await;
+        let result = client
+            .session_set_goose_system_prompt("ses_goose", "Be terse", "set")
+            .await
+            .expect("custom request succeeds");
+        assert_eq!(result["_receivedRequest"]["params"]["mode"], "set");
+    }
+
+    #[tokio::test]
+    async fn goose_system_prompt_rejects_unknown_mode_before_writing() {
+        let mut client = spawn_script("sleep 1").await;
+        assert!(matches!(
+            client
+                .session_set_goose_system_prompt("ses_goose", "Be terse", "replace")
+                .await,
+            Err(AcpError::Protocol(message)) if message.contains("expected append or set")
         ));
     }
 

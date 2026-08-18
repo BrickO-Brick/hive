@@ -3,17 +3,16 @@
 #
 # Byte-identical to tb-solo-luna.yaml except for include_platform_prompt. That
 # is the point — the pair isolates one variable, so any score, cost, or token
-# delta between them is attributable to the ~12KB of production-workspace
-# guidance buzz-acp prepends ahead of the pinned persona
+# delta between them is attributable to the production-workspace guidance
+# buzz-acp prepends ahead of the pinned persona
 # (crates/buzz-acp/src/base_prompt.md).
 #
-# Why it is worth a run: that section tells agents to sweep `buzz feed get` on
-# startup, look for RESEARCH/ and PLANS/ and AGENTS.md, edit inside a git
-# worktree, and that "publishing is optional and silence is usually correct".
-# In a graded container the first three waste tool rounds and can write files
-# the grader sees, and the fourth is how a multi-agent trial stalls. Every
-# persona in personas/bench/ overrides all of it in prose. This condition is
-# what turns that override from an assertion into a measurement.
+# Why it is worth a run: that section tells agents to look for workspace
+# guidance, edit inside a git worktree, and that "publishing is optional and
+# silence is usually correct". In a graded container those instructions can
+# waste tool rounds, write files the grader sees, or stall a multi-agent trial.
+# Every persona in personas/bench/ overrides all of it in prose. This condition
+# is what turns that override from an assertion into a measurement.
 #
 # Not a headline condition. tb-solo-luna.yaml stays the baseline, because
 # [Base] is what a real Buzz agent receives and the study is about Buzz. Run
