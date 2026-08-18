@@ -23,7 +23,8 @@
     "test:e2e:release-smoke": "pnpm build:e2e && playwright test --config=playwright.release-smoke.config.ts",
     "test:e2e:report": "playwright show-report",
     "tauri:build": "tauri build",
-    "check:e2e-bootstrap": "node ./scripts/check-e2e-bootstrap.mjs"
+    "check:e2e-bootstrap": "pnpm test:check-e2e-bootstrap && node ./scripts/check-e2e-bootstrap.mjs",
+    "test:check-e2e-bootstrap": "node --test ./scripts/check-e2e-bootstrap.test.mjs"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

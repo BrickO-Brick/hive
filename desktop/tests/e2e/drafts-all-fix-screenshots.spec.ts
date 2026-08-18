@@ -1,7 +1,7 @@
-import { expect, test } from "../helpers/test";
+import { expect, test, bootstrapE2ePage } from "../helpers/test";
 
 import { waitForAnimations } from "../helpers/animations";
-import { E2E_APP_ORIGIN, bootstrapE2ePage } from "../helpers/bootstrap";
+import { E2E_APP_ORIGIN } from "../helpers/bootstrap";
 import { TEST_IDENTITIES, installMockBridge } from "../helpers/bridge";
 
 const SHOTS = "test-results/drafts-all-fix";
