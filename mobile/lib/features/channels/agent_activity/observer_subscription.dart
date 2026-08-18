@@ -228,7 +228,10 @@ class ObserverRelayNotifier extends Notifier<ObserverRelayState> {
       () => <ObserverFrame>[],
     );
     frames.add(frame);
-    frames.sort(_compareObserverFrames);
+    final orderedFrames = orderObserverFrames(frames);
+    frames
+      ..clear()
+      ..addAll(orderedFrames);
 
     if (frames.length > _maxObserverEvents) {
       final removeCount = frames.length - _maxObserverEvents;
@@ -267,10 +270,10 @@ class ObserverRelayNotifier extends Notifier<ObserverRelayState> {
         return [frame];
       }
 
-      final innerFrames = [
+      final innerFrames = orderObserverFrames([
         for (final inner in events)
           ObserverFrame.fromJson(inner as Map<String, dynamic>),
-      ]..sort(_compareObserverFrames);
+      ]);
       return [
         for (var index = 0; index < innerFrames.length; index++)
           _withReceivedAt(
@@ -354,13 +357,6 @@ class ObserverRelayNotifier extends Notifier<ObserverRelayState> {
       return error.message;
     }
     return 'Observer subscription failed: $error';
-  }
-
-  static int _compareObserverFrames(ObserverFrame a, ObserverFrame b) {
-    final tsA = DateTime.tryParse(a.timestamp)?.millisecondsSinceEpoch ?? 0;
-    final tsB = DateTime.tryParse(b.timestamp)?.millisecondsSinceEpoch ?? 0;
-    if (tsA != tsB) return tsA.compareTo(tsB);
-    return a.seq.compareTo(b.seq);
   }
 
   static ObserverFrame _withReceivedAt(

@@ -89,13 +89,12 @@ List<AgentTurnState> reduceAgentTurnStates(
 
   for (final entry in framesByAgent.entries) {
     final agentPubkey = entry.key.toLowerCase();
-    final frames = [...entry.value]..sort(_compareFrames);
+    final frames = orderObserverFrames(entry.value);
     final turnsById = <String, AgentTurnState>{};
-    final terminalOrderById = <String, DateTime>{};
+    final terminalSequenceById = <String, int>{};
 
     for (final frame in frames) {
-      final frameOrderAt = _frameTimestamp(frame);
-      final frameAt = frame.receivedAt ?? frameOrderAt;
+      final frameAt = frame.receivedAt ?? _frameTimestamp(frame);
       switch (frame.kind) {
         case 'turn_started':
           final channelId = frame.channelId;
@@ -120,7 +119,7 @@ List<AgentTurnState> reduceAgentTurnStates(
               : AgentTurnPhase.error;
           final turnId = frame.turnId;
           if (turnId != null) {
-            terminalOrderById[turnId] = frameOrderAt;
+            terminalSequenceById[turnId] = frame.seq;
             final existing = turnsById[turnId];
             // The harness's generic completion guard can run after its result
             // handler emits the specific failure outcome.
@@ -169,7 +168,7 @@ List<AgentTurnState> reduceAgentTurnStates(
                     : latest,
               );
           if (matching == null) continue;
-          terminalOrderById[matching.turnId] = frameOrderAt;
+          terminalSequenceById[matching.turnId] = frame.seq;
           turnsById[matching.turnId] = matching.withTerminal(
             phase: terminalPhase,
             at: frameAt,
@@ -191,8 +190,8 @@ List<AgentTurnState> reduceAgentTurnStates(
             continue;
           }
 
-          final terminalOrder = terminalOrderById[turnId];
-          if (terminalOrder != null && !frameOrderAt.isAfter(terminalOrder)) {
+          final terminalSequence = terminalSequenceById[turnId];
+          if (terminalSequence != null && frame.seq <= terminalSequence) {
             continue;
           }
           final channelId = frame.channelId;
@@ -373,9 +372,4 @@ Duration _livenessTimeout(
         ? _defaultLivenessTimeout.inSeconds
         : timeoutSeconds,
   );
-}
-
-int _compareFrames(ObserverFrame a, ObserverFrame b) {
-  final timestamp = _frameTimestamp(a).compareTo(_frameTimestamp(b));
-  return timestamp != 0 ? timestamp : a.seq.compareTo(b.seq);
 }

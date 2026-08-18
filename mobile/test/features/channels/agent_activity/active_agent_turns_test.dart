@@ -52,6 +52,63 @@ void main() {
     expect(turns[1].errorMessage, 'Tool permission denied');
   });
 
+  test('orders a turn by sequence when the host clock moves backward', () {
+    final turns = reduceAgentTurnStates({
+      'agent-a': [
+        _frame(
+          seq: 1,
+          second: 10,
+          kind: 'turn_started',
+          sessionId: 'session-1',
+          receivedSecond: 1,
+        ),
+        _frame(
+          seq: 2,
+          second: 1,
+          kind: 'turn_completed',
+          sessionId: 'session-1',
+          receivedSecond: 2,
+        ),
+      ],
+    }, now: DateTime.utc(2026, 8, 16, 12, 0, 20));
+
+    expect(turns, hasLength(1));
+    expect(turns.single.phase, AgentTurnPhase.finished);
+    expect(turns.single.lastActivityAt, DateTime.utc(2026, 8, 16, 12, 0, 2));
+  });
+
+  test('orders a turn by sequence when the host clock jumps forward', () {
+    final turns = reduceAgentTurnStates({
+      'agent-a': [
+        _frame(
+          seq: 1,
+          second: 1,
+          kind: 'turn_started',
+          sessionId: 'session-1',
+          receivedSecond: 1,
+        ),
+        _frame(
+          seq: 2,
+          second: 50,
+          kind: 'acp_read',
+          sessionId: 'session-1',
+          receivedSecond: 2,
+        ),
+        _frame(
+          seq: 3,
+          second: 3,
+          kind: 'turn_completed',
+          sessionId: 'session-1',
+          receivedSecond: 3,
+        ),
+      ],
+    }, now: DateTime.utc(2026, 8, 16, 12, 0, 20));
+
+    expect(turns, hasLength(1));
+    expect(turns.single.phase, AgentTurnPhase.finished);
+    expect(turns.single.lastActivityAt, DateTime.utc(2026, 8, 16, 12, 0, 3));
+  });
+
   test('reports cancelled completion separately from a finished turn', () {
     final turns = reduceAgentTurnStates({
       'agent-a': [
@@ -349,6 +406,7 @@ ObserverFrame _frame({
   String? turnId = 'turn-1',
   String channelId = 'channel-1',
   String? threadHeadId,
+  String? sessionId,
   int? receivedSecond,
   String? startedAt,
   dynamic payload = const <String, dynamic>{},
@@ -359,6 +417,7 @@ ObserverFrame _frame({
     kind: kind,
     channelId: channelId,
     threadHeadId: threadHeadId,
+    sessionId: sessionId,
     turnId: turnId,
     startedAt: startedAt,
     receivedAt: receivedSecond == null

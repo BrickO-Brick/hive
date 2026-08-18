@@ -599,6 +599,70 @@ void main() {
     expect(find.text('Running Read file'), findsNothing);
   });
 
+  for (final platform in [TargetPlatform.android, TargetPlatform.iOS]) {
+    for (final textScale in [2.0, 3.0]) {
+      testWidgets(
+        'narrow $platform panel stays operable at ${textScale}x text',
+        (tester) async {
+          debugDefaultTargetPlatformOverride = platform;
+          addTearDown(() => debugDefaultTargetPlatformOverride = null);
+          tester.view.physicalSize = const Size(220, 600);
+          tester.view.devicePixelRatio = 1;
+          addTearDown(tester.view.reset);
+          final container = _multiAgentContainer();
+          addTearDown(container.dispose);
+
+          await tester.pumpWidget(
+            _app(
+              container,
+              disableAnimations: true,
+              textScaler: TextScaler.linear(textScale),
+            ),
+          );
+          await tester.pump();
+          expect(tester.takeException(), isNull);
+
+          await tester.tap(
+            find.byKey(const ValueKey('composer-agent-activity-control')),
+          );
+          await tester.pump();
+
+          expect(tester.takeException(), isNull);
+          expect(find.text('Live activity'), findsOneWidget);
+          expect(find.text('Working'), findsOneWidget);
+          expect(
+            find.byKey(const ValueKey('composer-agent-activity-collapse')),
+            findsOneWidget,
+          );
+
+          final sprigSegment = find.byKey(
+            const ValueKey('composer-agent-segment-agent-b'),
+          );
+          await tester.ensureVisible(sprigSegment);
+          await tester.tap(sprigSegment);
+          await tester.pump();
+
+          expect(tester.takeException(), isNull);
+          expect(find.text('Sprig'), findsOneWidget);
+          expect(find.text('Running Search messages'), findsOneWidget);
+
+          await tester.tap(
+            find.byKey(const ValueKey('composer-agent-activity-collapse')),
+          );
+          await tester.pump();
+          await tester.pump();
+
+          expect(tester.takeException(), isNull);
+          expect(
+            find.byKey(const ValueKey('composer-agent-activity-panel')),
+            findsNothing,
+          );
+          debugDefaultTargetPlatformOverride = null;
+        },
+      );
+    }
+  }
+
   testWidgets('iOS uses the native sliding segmented control', (tester) async {
     debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
     addTearDown(() => debugDefaultTargetPlatformOverride = null);
@@ -1087,6 +1151,7 @@ Widget _app(
   Animation<double>? composerWidthAnimation,
   ValueNotifier<bool>? composerInteractionLock,
   ValueNotifier<int>? composerActivationRequests,
+  TextScaler textScaler = TextScaler.noScaling,
 }) {
   Widget activityIndicator = ComposerAgentActivityIndicator(
     channelId: _channelId,
@@ -1130,6 +1195,7 @@ Widget _app(
           data: MediaQuery.of(context).copyWith(
             disableAnimations: disableAnimations,
             viewInsets: viewInsets,
+            textScaler: textScaler,
           ),
           child: Scaffold(
             resizeToAvoidBottomInset: false,

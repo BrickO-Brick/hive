@@ -27,7 +27,7 @@ part 'composer_agent_activity_indicator/compact_activity_item.dart';
 /// stream without moving or covering the composer itself.
 class ComposerAgentActivityIndicator extends HookConsumerWidget {
   static const _compactSurfaceHeight = 52.0;
-  static const _expandedTargetHeight = 328.0;
+  static const _baseExpandedTargetHeight = 328.0;
   static const _surfaceMorphDuration = Duration(milliseconds: 220);
   static const _surfaceMorphCurve = Cubic(0.77, 0, 0.175, 1);
 
@@ -76,7 +76,7 @@ class ComposerAgentActivityIndicator extends HookConsumerWidget {
     final activityAnchorKey = useMemoized(GlobalKey.new);
     final activityOverlayController = useMemoized(OverlayPortalController.new);
     final compactActivityWidth = useState(0.0);
-    final expandedHeight = useState(_expandedTargetHeight);
+    final expandedHeight = useState(_baseExpandedTargetHeight);
     final expansionController = useAnimationController(
       duration: _surfaceMorphDuration,
     );
@@ -88,6 +88,7 @@ class ComposerAgentActivityIndicator extends HookConsumerWidget {
     final reducedMotion = MediaQuery.disableAnimationsOf(context);
     final motionDisabled = !animated || reducedMotion;
     final mediaSize = MediaQuery.sizeOf(context);
+    final expandedTargetHeight = _expandedPanelTargetHeight(context);
     final viewInsets = MediaQuery.viewInsetsOf(context);
     final viewPadding = MediaQuery.viewPaddingOf(context);
     final platformView = View.of(context);
@@ -113,7 +114,7 @@ class ComposerAgentActivityIndicator extends HookConsumerWidget {
         anchorBottom - topBoundary - Grid.xxs,
       );
       final nextExpandedHeight = math.min(
-        _expandedTargetHeight,
+        expandedTargetHeight,
         availableHeight,
       );
       final nextCompactWidth = renderObject.size.width;
@@ -178,6 +179,7 @@ class ComposerAgentActivityIndicator extends HookConsumerWidget {
         keyboardInsetBottom,
         viewPadding.top,
         overlayTopBoundary,
+        expandedTargetHeight,
         expanded.value,
       ],
     );
@@ -485,6 +487,7 @@ class ComposerAgentActivityIndicator extends HookConsumerWidget {
                                     child: ClipRect(
                                       child: _InlineActivityPanel(
                                         height: panelViewportHeight,
+                                        panelWidth: panelWidth,
                                         expandedHeight: expandedHeight.value,
                                         morphProgress: progress,
                                         targetExpanded: expanded.value,
@@ -610,9 +613,8 @@ List<TranscriptItem> compactActivityItems(List<TranscriptItem> transcript) {
 }
 
 class _InlineActivityPanel extends StatelessWidget {
-  static const _footerHeight = 44.0;
-
   final double height;
+  final double panelWidth;
   final double expandedHeight;
   final double morphProgress;
   final bool targetExpanded;
@@ -634,6 +636,7 @@ class _InlineActivityPanel extends StatelessWidget {
 
   const _InlineActivityPanel({
     required this.height,
+    required this.panelWidth,
     required this.expandedHeight,
     required this.morphProgress,
     required this.targetExpanded,
@@ -667,10 +670,29 @@ class _InlineActivityPanel extends StatelessWidget {
       expanded: false,
     ).visibleLabel;
     final topInset = Grid.xxs * morphProgress;
-    final panelHeight = math.max(_footerHeight, height - Grid.xxs - topInset);
+    final labelStyle = context.textTheme.labelSmall?.copyWith(
+      fontWeight: FontWeight.w600,
+    );
+    final statusLabel = _activityStatusLabel(status);
+    final contentWidth = math.max(
+      0.0,
+      panelWidth - horizontalInset * 2 - Grid.xxs * 2,
+    );
+    final inlineFooterWidth =
+        _agentAvatarStackWidth(selectorAgents.length) +
+        Grid.xxs +
+        _singleLineTextWidth(context, 'Live activity', labelStyle) +
+        Grid.xxs +
+        _singleLineTextWidth(context, statusLabel, labelStyle) +
+        Grid.xxs * 2 +
+        Grid.half +
+        18;
+    final stacksFooter = inlineFooterWidth > contentWidth;
+    final footerHeight = _activityFooterHeight(context, stacked: stacksFooter);
+    final panelHeight = math.max(footerHeight, height - Grid.xxs - topInset);
     final expandedDetailHeight = math.max(
       0.0,
-      expandedHeight - Grid.xxs * 2 - _footerHeight,
+      expandedHeight - Grid.xxs * 2 - footerHeight,
     );
     final detailsOpacity = Curves.easeOut.transform(
       ((morphProgress - 0.16) / 0.84).clamp(0.0, 1.0),
@@ -700,7 +722,7 @@ class _InlineActivityPanel extends StatelessWidget {
             child: Stack(
               children: [
                 Positioned.fill(
-                  bottom: _footerHeight,
+                  bottom: footerHeight,
                   child: ClipRect(
                     child: IgnorePointer(
                       ignoring: morphProgress < 0.95,
@@ -730,6 +752,8 @@ class _InlineActivityPanel extends StatelessWidget {
                                   alignment: Alignment.centerLeft,
                                   child: Text(
                                     'Live activity may be partial.',
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
                                     style: context.textTheme.labelSmall
                                         ?.copyWith(
                                           color:
@@ -776,7 +800,7 @@ class _InlineActivityPanel extends StatelessWidget {
                   left: 0,
                   right: 0,
                   bottom: 0,
-                  height: _footerHeight,
+                  height: footerHeight,
                   child: Semantics(
                     button: true,
                     label:
@@ -788,69 +812,76 @@ class _InlineActivityPanel extends StatelessWidget {
                         child: Padding(
                           padding: const EdgeInsets.symmetric(
                             horizontal: Grid.xxs,
+                            vertical: Grid.half,
                           ),
-                          child: Row(
-                            children: [
-                              _AgentAvatarStack(
-                                pubkeys: selectorAgents,
-                                profiles: profiles,
-                              ),
-                              const SizedBox(width: Grid.xxs),
-                              Expanded(
-                                child: Stack(
-                                  alignment: Alignment.centerLeft,
+                          child: stacksFooter
+                              ? Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
                                   children: [
-                                    Opacity(
-                                      opacity: 1 - morphProgress,
-                                      child: Text(
-                                        compactLabel,
-                                        style: context.textTheme.labelSmall
-                                            ?.copyWith(
-                                              color: context
-                                                  .colors
-                                                  .onSurfaceVariant,
-                                              fontWeight: FontWeight.w600,
-                                            ),
-                                        overflow: TextOverflow.ellipsis,
+                                    Row(
+                                      children: [
+                                        _AgentAvatarStack(
+                                          pubkeys: selectorAgents,
+                                          profiles: profiles,
+                                        ),
+                                        const SizedBox(width: Grid.xxs),
+                                        _ActivityFooterLabel(
+                                          compactLabel: compactLabel,
+                                          morphProgress: morphProgress,
+                                        ),
+                                        Transform.rotate(
+                                          angle: math.pi * morphProgress,
+                                          child: Icon(
+                                            LucideIcons.chevronUp,
+                                            size: 18,
+                                            color:
+                                                context.colors.onSurfaceVariant,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: Grid.half),
+                                    Align(
+                                      alignment: Alignment.centerLeft,
+                                      child: _ActivityStatusBadge(
+                                        status: status,
                                       ),
                                     ),
-                                    Opacity(
-                                      opacity: morphProgress,
-                                      child: Text(
-                                        'Live activity',
-                                        style: context.textTheme.labelSmall
-                                            ?.copyWith(
-                                              color: context
-                                                  .colors
-                                                  .onSurfaceVariant,
-                                              fontWeight: FontWeight.w600,
-                                            ),
-                                        overflow: TextOverflow.ellipsis,
+                                  ],
+                                )
+                              : Row(
+                                  children: [
+                                    _AgentAvatarStack(
+                                      pubkeys: selectorAgents,
+                                      profiles: profiles,
+                                    ),
+                                    const SizedBox(width: Grid.xxs),
+                                    _ActivityFooterLabel(
+                                      compactLabel: compactLabel,
+                                      morphProgress: morphProgress,
+                                    ),
+                                    ClipRect(
+                                      child: Align(
+                                        widthFactor: morphProgress,
+                                        child: Opacity(
+                                          opacity: morphProgress,
+                                          child: _ActivityStatusBadge(
+                                            status: status,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                    SizedBox(width: Grid.half * morphProgress),
+                                    Transform.rotate(
+                                      angle: math.pi * morphProgress,
+                                      child: Icon(
+                                        LucideIcons.chevronUp,
+                                        size: 18,
+                                        color: context.colors.onSurfaceVariant,
                                       ),
                                     ),
                                   ],
                                 ),
-                              ),
-                              ClipRect(
-                                child: Align(
-                                  widthFactor: morphProgress,
-                                  child: Opacity(
-                                    opacity: morphProgress,
-                                    child: _ActivityStatusBadge(status: status),
-                                  ),
-                                ),
-                              ),
-                              SizedBox(width: Grid.half * morphProgress),
-                              Transform.rotate(
-                                angle: math.pi * morphProgress,
-                                child: Icon(
-                                  LucideIcons.chevronUp,
-                                  size: 18,
-                                  color: context.colors.onSurfaceVariant,
-                                ),
-                              ),
-                            ],
-                          ),
                         ),
                       ),
                     ),
@@ -859,48 +890,6 @@ class _InlineActivityPanel extends StatelessWidget {
               ],
             ),
           ),
-        ),
-      ),
-    );
-  }
-}
-
-class _ActivityStatusBadge extends StatelessWidget {
-  final _ActivityStatus status;
-
-  const _ActivityStatusBadge({required this.status});
-
-  @override
-  Widget build(BuildContext context) {
-    final color = switch (status) {
-      _ActivityStatus.working => context.appColors.success,
-      _ActivityStatus.finished => context.colors.onSurfaceVariant,
-      _ActivityStatus.cancelled => context.colors.onSurfaceVariant,
-      _ActivityStatus.error => context.colors.error,
-      _ActivityStatus.waiting => context.appColors.warning,
-    };
-    final label = switch (status) {
-      _ActivityStatus.working => 'Working',
-      _ActivityStatus.finished => 'Finished',
-      _ActivityStatus.cancelled => 'Cancelled',
-      _ActivityStatus.error => 'Error',
-      _ActivityStatus.waiting => 'Waiting',
-    };
-    return Container(
-      key: const ValueKey('composer-agent-activity-status'),
-      padding: const EdgeInsets.symmetric(
-        horizontal: Grid.xxs,
-        vertical: Grid.quarter,
-      ),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Text(
-        label,
-        style: context.textTheme.labelSmall?.copyWith(
-          color: color,
-          fontWeight: FontWeight.w600,
         ),
       ),
     );

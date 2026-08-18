@@ -21,7 +21,7 @@ class _AgentSegmentedControl extends StatelessWidget {
     final isIos = defaultTargetPlatform == TargetPlatform.iOS;
 
     return SizedBox(
-      height: Grid.xl,
+      height: _agentSelectorHeight(context),
       child: Padding(
         padding: const EdgeInsets.symmetric(
           horizontal: _inset,
@@ -361,7 +361,7 @@ class _AgentAvatarStack extends StatelessWidget {
   Widget build(BuildContext context) {
     final visible = pubkeys.take(3).toList();
     return SizedBox(
-      width: 24.0 + math.max(0, visible.length - 1) * 14.0,
+      width: _agentAvatarStackWidth(visible.length),
       height: 24,
       child: Stack(
         children: [
@@ -378,6 +378,178 @@ class _AgentAvatarStack extends StatelessWidget {
       ),
     );
   }
+}
+
+class _ActivityFooterLabel extends StatelessWidget {
+  final String compactLabel;
+  final double morphProgress;
+
+  const _ActivityFooterLabel({
+    required this.compactLabel,
+    required this.morphProgress,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final style = context.textTheme.labelSmall?.copyWith(
+      color: context.colors.onSurfaceVariant,
+      fontWeight: FontWeight.w600,
+    );
+    return Expanded(
+      child: Stack(
+        alignment: Alignment.centerLeft,
+        children: [
+          Opacity(
+            opacity: 1 - morphProgress,
+            child: Text(
+              compactLabel,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: style,
+            ),
+          ),
+          Opacity(
+            opacity: morphProgress,
+            child: Text(
+              'Live activity',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: style,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ActivityStatusBadge extends StatelessWidget {
+  final _ActivityStatus status;
+
+  const _ActivityStatusBadge({required this.status});
+
+  @override
+  Widget build(BuildContext context) {
+    final color = switch (status) {
+      _ActivityStatus.working => context.appColors.success,
+      _ActivityStatus.finished => context.colors.onSurfaceVariant,
+      _ActivityStatus.cancelled => context.colors.onSurfaceVariant,
+      _ActivityStatus.error => context.colors.error,
+      _ActivityStatus.waiting => context.appColors.warning,
+    };
+    return Container(
+      key: const ValueKey('composer-agent-activity-status'),
+      padding: const EdgeInsets.symmetric(
+        horizontal: Grid.xxs,
+        vertical: Grid.quarter,
+      ),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Text(
+        _activityStatusLabel(status),
+        maxLines: 1,
+        style: context.textTheme.labelSmall?.copyWith(
+          color: color,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
+  }
+}
+
+String _activityStatusLabel(_ActivityStatus status) => switch (status) {
+  _ActivityStatus.working => 'Working',
+  _ActivityStatus.finished => 'Finished',
+  _ActivityStatus.cancelled => 'Cancelled',
+  _ActivityStatus.error => 'Error',
+  _ActivityStatus.waiting => 'Waiting',
+};
+
+double _scaledTextHeight(
+  BuildContext context,
+  TextStyle? style, {
+  required double fallbackSize,
+  required double fallbackHeight,
+}) {
+  final fontSize = style?.fontSize ?? fallbackSize;
+  return MediaQuery.textScalerOf(context).scale(fontSize) *
+      (style?.height ?? fallbackHeight);
+}
+
+double _agentSelectorHeight(BuildContext context) {
+  final labelHeight = _scaledTextHeight(
+    context,
+    context.textTheme.labelMedium,
+    fallbackSize: 14,
+    fallbackHeight: 1.25,
+  );
+  return math.max(Grid.xl, labelHeight + Grid.xs + Grid.half);
+}
+
+double _activityFooterHeight(BuildContext context, {required bool stacked}) {
+  final labelHeight = _scaledTextHeight(
+    context,
+    context.textTheme.labelSmall,
+    fallbackSize: 11,
+    fallbackHeight: 1.2,
+  );
+  if (stacked) {
+    return _stackedActivityFooterHeight(labelHeight);
+  }
+  final firstRowHeight = math.max(24.0, labelHeight);
+  final badgeHeight = labelHeight + Grid.half;
+  return math.max(44.0, Grid.xxs + math.max(firstRowHeight, badgeHeight));
+}
+
+double _stackedActivityFooterHeight(double labelHeight) => math.max(
+  44.0,
+  Grid.xxs +
+      Grid.quarter +
+      math.max(24.0, labelHeight) +
+      Grid.half +
+      labelHeight +
+      Grid.half,
+);
+
+double _expandedPanelTargetHeight(BuildContext context) {
+  final labelHeight = _scaledTextHeight(
+    context,
+    context.textTheme.labelSmall,
+    fallbackSize: 11,
+    fallbackHeight: 1.2,
+  );
+  const baseLabelHeight = 11 * 1.2;
+  final extraDisclaimerHeight =
+      math.max(0.0, labelHeight - baseLabelHeight) * 2;
+  return ComposerAgentActivityIndicator._baseExpandedTargetHeight +
+      math.max(0.0, _agentSelectorHeight(context) - Grid.xl) +
+      math.max(
+        0.0,
+        _activityFooterHeight(context, stacked: true) -
+            _stackedActivityFooterHeight(baseLabelHeight),
+      ) +
+      extraDisclaimerHeight;
+}
+
+double _singleLineTextWidth(
+  BuildContext context,
+  String text,
+  TextStyle? style,
+) {
+  final painter = TextPainter(
+    text: TextSpan(text: text, style: style),
+    maxLines: 1,
+    textDirection: Directionality.of(context),
+    textScaler: MediaQuery.textScalerOf(context),
+  )..layout();
+  return painter.width;
+}
+
+double _agentAvatarStackWidth(int count) {
+  final visibleCount = math.min(3, count);
+  return visibleCount == 0 ? 0 : 24.0 + (visibleCount - 1) * 14.0;
 }
 
 enum _ActivityStatus { working, finished, cancelled, error, waiting }
