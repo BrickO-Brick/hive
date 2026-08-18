@@ -206,11 +206,22 @@ pub async fn build_observer_control_event(
 }
 
 #[tauri::command]
-pub fn get_nsec(state: State<'_, AppState>) -> Result<String, String> {
+pub async fn get_nsec(
+    state: State<'_, AppState>,
+) -> Result<crate::owner_identity_egress::StampedArtifact<String>, String> {
     let keys = state.signing_keys()?;
-    keys.secret_key()
+    // Admit BEFORE reading the secret key (the F1 lesson): the raw-identity
+    // export is a leased owner-identity operation and its value is a P33
+    // identity-export artifact stamped with the issuing lease's generation, so
+    // an nsec revealed across a transition fails closed at its frontend
+    // reveal/copy boundary (C6/C7).
+    let lease = crate::owner_identity_egress::try_admit_owner_identity_egress().await?;
+    let nsec = keys
+        .secret_key()
         .to_bech32()
-        .map_err(|error| format!("encode nsec: {error}"))
+        .map_err(|error| format!("encode nsec: {error}"))?;
+    let artifact = crate::owner_identity_egress::register_owner_artifact(&lease);
+    Ok(artifact.stamp_value(nsec))
 }
 
 /// Generate a passphrase for a new encrypted backup (EFF short wordlist, OS
@@ -261,11 +272,20 @@ pub(crate) fn create_backup_with_log_n(
 pub async fn create_ncryptsec_backup(
     password: String,
     app_handle: tauri::AppHandle,
-) -> Result<String, String> {
+) -> Result<crate::owner_identity_egress::StampedArtifact<String>, String> {
+    // Admit BEFORE deriving the backup: the NIP-49 blob recovers the owner
+    // identity itself (the strongest P33 identity-export artifact), so it is
+    // stamped with the issuing lease's generation. The witness survives
+    // reducer/provider retention (settings + onboarding); every save boundary
+    // validates current admission + generation in C6/C7, and a transition
+    // invalidates the retained backup with zero write.
+    let lease = crate::owner_identity_egress::try_admit_owner_identity_egress().await?;
     tokio::task::spawn_blocking(move || {
         let password = zeroize::Zeroizing::new(password);
         let state = app_handle.state::<AppState>();
-        create_backup_with_log_n(&state, &password, crate::key_backup::BACKUP_LOG_N)
+        let blob = create_backup_with_log_n(&state, &password, crate::key_backup::BACKUP_LOG_N)?;
+        let artifact = crate::owner_identity_egress::register_owner_artifact(&lease);
+        Ok(artifact.stamp_value(blob))
     })
     .await
     .map_err(|e| format!("spawn_blocking failed: {e}"))?

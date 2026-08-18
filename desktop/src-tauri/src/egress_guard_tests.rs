@@ -442,6 +442,7 @@ fn ncryptsec_handling_is_confined_to_allowlisted_files() {
         "src/commands/identity_key_backup_tests.rs",
         "src/lib.rs", // module registration + invoke handler
         // boundary wiring (guard call sites name the module, not the codec):
+        "src/owner_identity_egress/mod.rs", // artifact inventory names the export producers
         "src/relay.rs",
         "src/relay/submit.rs",
         "src/huddle/pipeline.rs",

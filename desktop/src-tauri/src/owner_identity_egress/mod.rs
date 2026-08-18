@@ -75,17 +75,27 @@
 //!   as `{value, artifact}`, validated in C6/C7. Frontend session REGISTRATION
 //!   (native-WS teardown handle) defers to C6/C7 with the frontend identity
 //!   store.
-//! - **Owner-identity artifacts** — the seven `commands::identity` producers
+//! - **Owner-identity artifacts** — the nine `commands::identity` producers
 //!   `sign_event`, `create_auth_event`, `build_observer_control_event`,
 //!   `sign_nostr_identity_binding`, `nip44_encrypt_to_self`,
-//!   `nip44_decrypt_from_self`, and `decrypt_observer_event` admit a bounded
-//!   lease BEFORE the owner-key sign/encrypt/decrypt, register an
-//!   [`OwnerIdentityCapability<ArtifactPolicy>`], and return the owner-key
-//!   value wrapped as [`StampedArtifact`] (`{value, artifact:{id,generation}}`).
+//!   `nip44_decrypt_from_self`, `decrypt_observer_event`, and the two P33
+//!   identity-export producers `get_nsec` (raw `nsec`) and
+//!   `create_ncryptsec_backup` (NIP-49 blob recovering the identity itself)
+//!   admit a bounded lease BEFORE the owner-key sign/encrypt/decrypt/export,
+//!   register an [`OwnerIdentityCapability<ArtifactPolicy>`], and return the
+//!   owner-key value wrapped as [`StampedArtifact`]
+//!   (`{value, artifact:{id,generation}}`). The identity-export class is
+//!   CONSTRUCTOR-AGNOSTIC (P33-C1): any value derived from, containing, or
+//!   recovering the owner secret is stamped regardless of the producing call
+//!   (NIP-49 `EncryptedSecretKey::new` is outside the sign/encrypt method
+//!   sweep, yet stronger than any of them).
 //!   Artifacts carry NO side-effecting teardown: their only revocation is the
 //!   application-site generation compare, triggered by the transition bump
 //!   (shape (ii)). The frontend threads the pair opaque; C6/C7 adds the
-//!   compare at each application boundary. Rust-consumed / collapsed-transaction
+//!   compare at each application boundary — for the export artifacts that is
+//!   the `save_ncryptsec_copy` write and the reveal/copy sites (first save AND
+//!   each repeat save), so a transition invalidates a retained backup with
+//!   zero write. Rust-consumed / collapsed-transaction
 //!   artifacts (`project_git_workflow` sign+submit, archive-ingest decrypts,
 //!   snapshot-import, engram-listing decrypt) exercise synchronously inside
 //!   their lease and keep the collapsed shape — inventoried for C5/C6.

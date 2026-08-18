@@ -11354,7 +11354,9 @@ export function maybeInstallE2eTauriMocks() {
         if (delayMs > 0) {
           await new Promise((resolve) => setTimeout(resolve, delayMs));
         }
-        return MOCK_NCRYPTSEC;
+        // P33 identity-export artifact: the adapter unwraps `.value` (C6/C7
+        // adds the generation-compare), so mirror the stamped wire shape.
+        return { value: MOCK_NCRYPTSEC, artifact: { id: 0, generation: 0 } };
       }
       case "save_ncryptsec_copy": {
         const paths = activeConfig?.mock?.backupSavePaths ?? [
@@ -11394,6 +11396,9 @@ export function maybeInstallE2eTauriMocks() {
         };
       }
       case "get_nsec": {
+        // P33 identity-export artifact: the adapter unwraps `.value` (C6/C7
+        // adds the generation-compare), so mirror the stamped wire shape on
+        // every success return.
         const nsecSequence = activeConfig?.mock?.nsecErrors;
         if (nsecSequence && nsecSequence.length > 0) {
           const idx = Math.min(nsecCallCount, nsecSequence.length - 1);
@@ -11402,13 +11407,21 @@ export function maybeInstallE2eTauriMocks() {
           if (entry !== null) {
             throw new Error(entry);
           }
-          return "nsec1mock000000000000000000000000000000000000000000000000000000";
+          return {
+            value:
+              "nsec1mock000000000000000000000000000000000000000000000000000000",
+            artifact: { id: 0, generation: 0 },
+          };
         }
         const nsecError = activeConfig?.mock?.nsecError;
         if (nsecError) {
           throw new Error(nsecError);
         }
-        return "nsec1mock000000000000000000000000000000000000000000000000000000";
+        return {
+          value:
+            "nsec1mock000000000000000000000000000000000000000000000000000000",
+          artifact: { id: 0, generation: 0 },
+        };
       }
       case "persist_current_identity": {
         // Persist the ephemeral key: clears only the lost flag. The locked flag
