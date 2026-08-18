@@ -14,6 +14,7 @@ import * as React from "react";
 
 import {
   useAcpRuntimesQuery,
+  useAgentConfigSurface,
   useBakedBuildEnvKeysQuery,
   usePersonasQuery,
   useStartManagedAgentMutation,
@@ -155,6 +156,12 @@ export function AgentEditMergedDialog({
   const startMutation = useStartManagedAgentMutation();
 
   const { data: bakedEnvKeys } = useBakedBuildEnvKeysQuery({ enabled: open });
+  // Effort write control (ported from #4557): the config surface supplies the
+  // discovered effort configId/options and current effort tier. Gated on an
+  // open dialog with a present instance — effort is a per-instance local write.
+  const configSurfaceQuery = useAgentConfigSurface(
+    open && inst ? inst.pubkey : null,
+  );
   const { data: agentAccessOwnerOnly } = useAgentAccessOwnerOnlyQuery({
     // Query in both instance and definition-only contexts: rows 9–10 say
     // access/parallelism are D-owned in definition-only (shown on the form).
@@ -918,6 +925,7 @@ export function AgentEditMergedDialog({
                 startOnAppLaunch={startOnAppLaunch}
                 systemPrompt={systemPrompt}
                 onSystemPromptChange={setSystemPrompt}
+                effortConfig={configSurfaceQuery.data}
               />
             ) : null}
 

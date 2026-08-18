@@ -14,6 +14,7 @@ import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 
 import type { ManagedAgent, RespondToMode } from "@/shared/api/types";
 import type { AgentPersona } from "@/shared/api/types";
+import type { RuntimeConfigSurface } from "@/shared/api/types";
 import type { EditAgentFocusTarget } from "@/features/agents/openEditAgentEvent";
 import { cn } from "@/shared/lib/cn";
 import { Input } from "@/shared/ui/input";
@@ -32,6 +33,7 @@ import { AgentAiDefaultsNotice } from "./AgentAiDefaults";
 import { AgentDefaultsDialog } from "./AgentDefaultsDialog";
 import { AdvancedRequiredBadge } from "./AdvancedRequiredBadge";
 import { EditAgentAdvancedFields } from "./EditAgentAdvancedFields";
+import { EffortPickerField } from "./EffortPickerField";
 import { OwnerOnlyAccessField } from "./OwnerOnlyAccessField";
 import { PersonaDropdownField } from "./PersonaDropdownField";
 import { PersonaModelCombobox } from "./PersonaModelCombobox";
@@ -126,6 +128,7 @@ export type AgentEditMergedISectionProps = {
   onParallelismChange: (value: string) => void;
   systemPrompt: string;
   onSystemPromptChange: (value: string) => void;
+  effortConfig: RuntimeConfigSurface | undefined;
 };
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -204,6 +207,7 @@ export function AgentEditMergedInstanceSection({
   onParallelismChange,
   systemPrompt,
   onSystemPromptChange,
+  effortConfig,
 }: AgentEditMergedISectionProps) {
   const shouldReduceMotion = useReducedMotion();
   const advancedFieldsTransition = shouldReduceMotion
@@ -431,6 +435,8 @@ export function AgentEditMergedInstanceSection({
           ) : null}
         </div>
       ) : null}
+
+      <EffortPickerField agent={inst} config={effortConfig} />
 
       <AgentAiDefaultsNotice
         onEditDefaults={() => onAiDefaultsOpenChange(true)}
