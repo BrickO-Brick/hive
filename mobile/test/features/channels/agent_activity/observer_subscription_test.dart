@@ -379,7 +379,7 @@ void main() {
       seq: 2,
       channelId: channelId,
       turnId: 'turn-2',
-    );
+    )..['threadHeadId'] = null;
     final earlierFrame = _observerFrameJson(
       seq: 1,
       channelId: channelId,
@@ -412,6 +412,9 @@ void main() {
       reason: 'batch receipt order must follow timestamp and sequence',
     );
     expect(frames[0].threadHeadId, 'thread-1');
+    expect(frames[0].hasThreadScope, isTrue);
+    expect(frames[1].threadHeadId, isNull);
+    expect(frames[1].hasThreadScope, isTrue);
 
     final state = container.read(observerSubscriptionProvider(key));
     expect(state.connection, ObserverConnectionState.open);
