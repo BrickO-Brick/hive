@@ -10681,6 +10681,15 @@ export function maybeInstallE2eTauriMocks() {
     });
     window.__BUZZ_E2E_COMMAND_LOG__?.push({ command, payload });
 
+    // Owner-identity artifact commands cross the Tauri boundary as the stamped
+    // `{value, artifact}` pair; the production adapters unwrap `.value` (C6/C7
+    // adds the generation-compare), so the bridge must mirror that shape or the
+    // app throws `JSON.parse(undefined)` at every sign/encrypt site.
+    const stamped = <T>(value: T) => ({
+      value,
+      artifact: { id: 0, generation: 0 },
+    });
+
     switch (command) {
       case "get_huddle_state": {
         const snapshot = mockHuddle ? structuredClone(mockHuddle.state) : null;
@@ -11318,21 +11327,23 @@ export function maybeInstallE2eTauriMocks() {
           await new Promise((resolve) => setTimeout(resolve, signDelayMs));
         }
         const activeIdentity = identity ?? DEFAULT_MOCK_IDENTITY;
-        return JSON.stringify({
-          id: "e2e-signed-nostr-binding",
-          pubkey: activeIdentity.pubkey,
-          created_at: 0,
-          kind: 24243,
-          tags: [
-            ["challenge_id", request.challengeId],
-            ["nonce", request.nonce],
-            ["verification_code", request.verificationCode],
-            ["origin", request.origin],
-            ["expires_at", request.expiresAt],
-          ],
-          content: "",
-          sig: "e2e-signed-nostr-binding",
-        });
+        return stamped(
+          JSON.stringify({
+            id: "e2e-signed-nostr-binding",
+            pubkey: activeIdentity.pubkey,
+            created_at: 0,
+            kind: 24243,
+            tags: [
+              ["challenge_id", request.challengeId],
+              ["nonce", request.nonce],
+              ["verification_code", request.verificationCode],
+              ["origin", request.origin],
+              ["expires_at", request.expiresAt],
+            ],
+            content: "",
+            sig: "e2e-signed-nostr-binding",
+          }),
+        );
       }
       case "sign_out":
         // Production wipes local state and restarts the app. In the browser
@@ -11356,7 +11367,7 @@ export function maybeInstallE2eTauriMocks() {
         }
         // P33 identity-export artifact: the adapter unwraps `.value` (C6/C7
         // adds the generation-compare), so mirror the stamped wire shape.
-        return { value: MOCK_NCRYPTSEC, artifact: { id: 0, generation: 0 } };
+        return stamped(MOCK_NCRYPTSEC);
       }
       case "save_ncryptsec_copy": {
         const paths = activeConfig?.mock?.backupSavePaths ?? [
@@ -11407,21 +11418,17 @@ export function maybeInstallE2eTauriMocks() {
           if (entry !== null) {
             throw new Error(entry);
           }
-          return {
-            value:
-              "nsec1mock000000000000000000000000000000000000000000000000000000",
-            artifact: { id: 0, generation: 0 },
-          };
+          return stamped(
+            "nsec1mock000000000000000000000000000000000000000000000000000000",
+          );
         }
         const nsecError = activeConfig?.mock?.nsecError;
         if (nsecError) {
           throw new Error(nsecError);
         }
-        return {
-          value:
-            "nsec1mock000000000000000000000000000000000000000000000000000000",
-          artifact: { id: 0, generation: 0 },
-        };
+        return stamped(
+          "nsec1mock000000000000000000000000000000000000000000000000000000",
+        );
       }
       case "persist_current_identity": {
         // Persist the ephemeral key: clears only the lost flag. The locked flag
@@ -13119,48 +13126,56 @@ export function maybeInstallE2eTauriMocks() {
           tags: (payload as { tags: string[][] }).tags,
         });
         if (identity) {
-          return JSON.stringify(
-            await signWithIdentity(identity, {
-              kind: (payload as { kind: number }).kind,
-              content: (payload as { content: string }).content,
-              createdAt: (payload as { createdAt?: number }).createdAt,
-              tags: (payload as { tags: string[][] }).tags,
-            }),
+          return stamped(
+            JSON.stringify(
+              await signWithIdentity(identity, {
+                kind: (payload as { kind: number }).kind,
+                content: (payload as { content: string }).content,
+                createdAt: (payload as { createdAt?: number }).createdAt,
+                tags: (payload as { tags: string[][] }).tags,
+              }),
+            ),
           );
         }
 
-        return JSON.stringify(
-          createMockEvent(
-            (payload as { kind: number }).kind,
-            (payload as { content: string }).content,
-            (payload as { tags: string[][] }).tags,
-            DEFAULT_MOCK_IDENTITY.pubkey,
-            (payload as { createdAt?: number }).createdAt,
+        return stamped(
+          JSON.stringify(
+            createMockEvent(
+              (payload as { kind: number }).kind,
+              (payload as { content: string }).content,
+              (payload as { tags: string[][] }).tags,
+              DEFAULT_MOCK_IDENTITY.pubkey,
+              (payload as { createdAt?: number }).createdAt,
+            ),
           ),
         );
       case "nip44_encrypt_to_self":
-        return (payload as { plaintext: string }).plaintext;
+        return stamped((payload as { plaintext: string }).plaintext);
       case "nip44_decrypt_from_self":
-        return (payload as { ciphertext: string }).ciphertext;
+        return stamped((payload as { ciphertext: string }).ciphertext);
       case "create_auth_event":
         if (identity) {
-          return JSON.stringify(
-            await signWithIdentity(identity, {
-              kind: 22242,
-              content: "",
-              tags: [
-                ["relay", (payload as { relayUrl: string }).relayUrl],
-                ["challenge", (payload as { challenge: string }).challenge],
-              ],
-            }),
+          return stamped(
+            JSON.stringify(
+              await signWithIdentity(identity, {
+                kind: 22242,
+                content: "",
+                tags: [
+                  ["relay", (payload as { relayUrl: string }).relayUrl],
+                  ["challenge", (payload as { challenge: string }).challenge],
+                ],
+              }),
+            ),
           );
         }
 
-        return JSON.stringify(
-          createMockEvent(22242, "", [
-            ["relay", (payload as { relayUrl: string }).relayUrl],
-            ["challenge", (payload as { challenge: string }).challenge],
-          ]),
+        return stamped(
+          JSON.stringify(
+            createMockEvent(22242, "", [
+              ["relay", (payload as { relayUrl: string }).relayUrl],
+              ["challenge", (payload as { challenge: string }).challenge],
+            ]),
+          ),
         );
       case "plugin:websocket|connect":
         if (isRelayMode(activeConfig)) {
