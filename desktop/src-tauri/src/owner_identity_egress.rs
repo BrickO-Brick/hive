@@ -69,6 +69,11 @@
 //! - `managed_agents::persona_events`, `commands::personas::sharing`,
 //!   `commands::channels` (×3), and the huddle STT task (per-send inline
 //!   owner lease).
+//! - **Durable bearers** — `commands::media::mint_media_get_auth` (Blossom
+//!   `t=get`) and the `do_upload` `t=upload` mint sign under a bounded lease
+//!   and register an [`OwnerIdentityCapability<BearerPolicy>`]; the four
+//!   get-auth attach sites (`media_download`, `personas::card`, `media_proxy`
+//!   ×2) and the upload dispatch validate it before the HTTP send.
 //!
 //! Managed-agent keyed (`admit_managed_agent_egress`) — the four sink sites
 //! plus the git-workflow branch, variant selected at runtime by
@@ -664,8 +669,6 @@ pub fn register_owner_session(cancel: CancellationToken) -> OwnerIdentityCapabil
 /// The returned capability stamps the current generation; every attach site
 /// validates it via [`OwnerIdentityCapability::admit_exercise`] before the HTTP
 /// dispatch.
-// Consumed by the Blossom attach sites in C2b; remove allow when they land.
-#[allow(dead_code)]
 pub fn register_owner_bearer() -> OwnerIdentityCapability<BearerPolicy> {
     let generation = REGISTRY.generation.load(Ordering::Acquire);
     let mut durable = lock_durable();

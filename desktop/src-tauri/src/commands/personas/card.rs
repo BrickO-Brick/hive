@@ -672,9 +672,17 @@ pub async fn mint_agent_card(
             // header ONLY for same-origin URLs so the token never leaves the
             // relay (same contract as `media_download.rs`).
             let relay_base = crate::relay::relay_api_base_url_with_override(&state);
-            let auth = is_same_origin(url, &relay_base)
-                .then(|| crate::commands::media::mint_media_get_auth(&state, &relay_base))
-                .flatten();
+            // Mint get-auth ONLY for same-origin URLs so the token never leaves
+            // the relay, then validate the durable bearer before attaching it —
+            // a superseded identity's header is dropped (fetch stays fail-open).
+            let auth = if is_same_origin(url, &relay_base) {
+                crate::commands::media::mint_media_get_auth(&state, &relay_base)
+                    .await
+                    .filter(|(_, bearer)| bearer.admit_exercise().is_ok())
+                    .map(|(header, _)| header)
+            } else {
+                None
+            };
             fetch_avatar(url, auth.as_deref()).await?
         }
         _ => {

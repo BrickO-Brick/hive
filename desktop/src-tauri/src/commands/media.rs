@@ -6,6 +6,7 @@ use tauri::State;
 use tokio_util::sync::CancellationToken;
 
 use crate::app_state::AppState;
+use crate::owner_identity_egress::{BearerPolicy, OwnerIdentityCapability};
 use crate::relay::{parse_json_response, relay_api_base_url_with_override, relay_error_message};
 
 use super::media_transcode::{
@@ -347,8 +348,15 @@ pub(crate) fn sign_blossom_get_auth_header(
     ))
 }
 
-/// Mint a `t=get` Authorization header value for a relay media fetch, or
-/// `None` when signing is unavailable (identity in recovery mode).
+/// Mint a `t=get` Authorization header value for a relay media fetch, paired
+/// with the durable [`OwnerIdentityCapability`] that governs it, or `None` when
+/// signing is unavailable (identity in recovery mode).
+///
+/// The header is owner-derived bearer authority that a LATER HTTP transmission
+/// attaches, so the caller must validate the returned capability
+/// ([`OwnerIdentityCapability::admit_exercise`]) immediately before attaching
+/// the header — a stale capability (its issuing identity superseded by a
+/// transition) attaches nothing.
 ///
 /// Fail-open by design: while the relay's `BUZZ_REQUIRE_MEDIA_GET_AUTH` flag
 /// is off, an unauthenticated request still succeeds, so degrading to no
@@ -359,7 +367,10 @@ pub(crate) fn sign_blossom_get_auth_header(
 /// Safety contract: callers must only attach the returned header to URLs
 /// constructed from (or validated against) the app's own relay base URL —
 /// never to third-party origins, where the bearer token would leak.
-pub(crate) fn mint_media_get_auth(state: &AppState, base_url: &str) -> Option<String> {
+pub(crate) async fn mint_media_get_auth(
+    state: &AppState,
+    base_url: &str,
+) -> Option<(String, OwnerIdentityCapability<BearerPolicy>)> {
     let keys = match state.signing_keys() {
         Ok(k) => k,
         Err(e) => {
@@ -367,13 +378,27 @@ pub(crate) fn mint_media_get_auth(state: &AppState, base_url: &str) -> Option<St
             return None;
         }
     };
-    match sign_blossom_get_auth_header(&keys, base_url, MEDIA_GET_AUTH_EXPIRY_SECS) {
-        Ok(header) => Some(header),
+    // Issuance runs under a bounded egress lease: signing the bearer is an
+    // ordinary leased operation (spec L4569-4570). Registering the durable
+    // capability while the lease is held keeps its generation stamp coherent
+    // with the state that admitted the sign — no bump can slip between.
+    let lease = match crate::owner_identity_egress::try_admit_owner_identity_egress().await {
+        Ok(lease) => lease,
+        Err(e) => {
+            eprintln!("buzz-desktop: media get auth egress refused (unsigned request): {e}");
+            return None;
+        }
+    };
+    let header = match sign_blossom_get_auth_header(&keys, base_url, MEDIA_GET_AUTH_EXPIRY_SECS) {
+        Ok(header) => header,
         Err(e) => {
             eprintln!("buzz-desktop: media get auth signing failed (unsigned request): {e}");
-            None
+            return None;
         }
-    }
+    };
+    let bearer = crate::owner_identity_egress::register_owner_bearer();
+    drop(lease);
+    Some((header, bearer))
 }
 
 fn sign_blossom_upload_auth(
@@ -440,9 +465,16 @@ async fn do_upload(
         300
     };
     let base_url = relay_api_base_url_with_override(state);
-    let auth_event = {
+    // Issuance runs under a bounded egress lease (spec L4569-4570); the durable
+    // bearer registered under it carries the upload authority forward to the
+    // HTTP dispatch below, which validates it before each attempt.
+    let (auth_event, bearer) = {
+        let lease = crate::owner_identity_egress::try_admit_owner_identity_egress().await?;
         let keys = state.signing_keys()?;
-        sign_blossom_upload_auth(&keys, &sha256, expiry_secs, &base_url)?
+        let event = sign_blossom_upload_auth(&keys, &sha256, expiry_secs, &base_url)?;
+        let bearer = crate::owner_identity_egress::register_owner_bearer();
+        drop(lease);
+        (event, bearer)
     };
 
     let auth_header = format!(
@@ -453,6 +485,10 @@ async fn do_upload(
     if let Some((app, progress_id)) = progress.as_ref() {
         emit_media_upload_phase(app, Some(progress_id.as_str()), "uploading");
     }
+    // Validate the bearer immediately before transmitting the signed upload
+    // header: an identity superseded between minting and send uploads zero
+    // bytes rather than writing to the relay under stale authority.
+    bearer.admit_exercise()?;
     let mut resp = send_upload_attempt(
         state,
         UploadAttempt {
