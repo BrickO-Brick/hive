@@ -3795,6 +3795,7 @@ fn try_native_steer(
     let (ack_tx, ack_rx) = tokio::sync::oneshot::channel::<pool::SteerAck>();
     let request = pool::SteerRequest {
         prompt_blocks: vec![body],
+        observer_thread_head_id: thread_tags.root_event_id.clone(),
         ack_tx,
     };
 
@@ -3922,6 +3923,9 @@ fn dispatch_pending(
         let (control_tx, control_rx) = tokio::sync::oneshot::channel::<ControlSignal>();
         let turn_id = Uuid::new_v4().to_string();
         let task_turn_id = turn_id.clone();
+        let observer_turn_scope =
+            observer::ObserverTurnScope::new(typing_scope.root_event_id.clone());
+        let task_observer_turn_scope = observer_turn_scope.clone();
 
         let abort_handle = pool.join_set.spawn(async move {
             pool::run_prompt_task(
@@ -3932,6 +3936,7 @@ fn dispatch_pending(
                 result_tx,
                 Some(control_rx),
                 task_turn_id,
+                task_observer_turn_scope,
             )
             .await;
         });
@@ -3942,6 +3947,7 @@ fn dispatch_pending(
                 agent_index,
                 channel_id: Some(channel_id),
                 thread_head_id: typing_scope.root_event_id.clone(),
+                observer_turn_scope: Some(observer_turn_scope),
                 turn_id,
                 recoverable_batch,
                 control_tx: Some(control_tx),
@@ -4565,6 +4571,8 @@ fn dispatch_heartbeat(
     let agent_index = agent.index;
     let turn_id = Uuid::new_v4().to_string();
     let task_turn_id = turn_id.clone();
+    let observer_turn_scope = observer::ObserverTurnScope::new(None);
+    let task_observer_turn_scope = observer_turn_scope.clone();
 
     let abort_handle = pool.join_set.spawn(async move {
         pool::run_prompt_task(
@@ -4575,6 +4583,7 @@ fn dispatch_heartbeat(
             result_tx,
             None,
             task_turn_id,
+            task_observer_turn_scope,
         )
         .await;
     });
@@ -4585,6 +4594,7 @@ fn dispatch_heartbeat(
             agent_index,
             channel_id: None,
             thread_head_id: None,
+            observer_turn_scope: Some(observer_turn_scope),
             turn_id,
             recoverable_batch: None,
             control_tx: None,
@@ -5380,6 +5390,7 @@ mod owner_control_command_tests {
                 agent_index: 0,
                 channel_id: Some(channel_id),
                 thread_head_id: None,
+                observer_turn_scope: None,
                 turn_id: "test-turn-id".to_string(),
                 recoverable_batch: None,
                 control_tx: Some(control_tx),
@@ -7506,12 +7517,22 @@ mod error_outcome_emission_tests {
         let channel_id = Uuid::new_v4();
         let mut pool = AgentPool::from_slots(vec![None]);
         let task_id = pool.join_set.spawn(async {}).id();
+        let observer_turn_scope = crate::observer::ObserverTurnScope::new(Some("thread-a".into()));
+        let mut live_agent = dummy_agent(0).await;
+        let mut observer_context =
+            crate::observer::context_for(Some(channel_id), None, Some("turn-1".into()));
+        observer_context.thread_head_id = Some("thread-a".into());
+        live_agent.acp.set_observer_context(observer_context);
+        live_agent
+            .acp
+            .set_observer_turn_scope(Some(observer_turn_scope.clone()));
         pool.task_map_mut().insert(
             task_id,
             crate::pool::TaskMeta {
                 agent_index: 0,
                 channel_id: Some(channel_id),
                 thread_head_id: Some("thread-a".into()),
+                observer_turn_scope: Some(observer_turn_scope.clone()),
                 turn_id: "turn-1".into(),
                 recoverable_batch: None,
                 control_tx: None,
@@ -7534,6 +7555,16 @@ mod error_outcome_emission_tests {
         let updated_typing = typing_channels.get(&channel_id).expect("typing scope");
         assert_eq!(updated_typing.root_event_id.as_deref(), Some("thread-b"));
         assert_eq!(updated_typing.parent_event_id.as_deref(), Some("message-b"));
+        assert_eq!(
+            observer_turn_scope.thread_head_id().as_deref(),
+            Some("thread-b"),
+            "subsequent live observer frames must use the steered thread",
+        );
+        assert_eq!(
+            live_agent.acp.observer_context().thread_head_id.as_deref(),
+            Some("thread-b"),
+            "raw ACP frames must read the shared steered scope",
+        );
         assert_eq!(
             pool.task_map()
                 .values()
@@ -7565,6 +7596,7 @@ mod error_outcome_emission_tests {
                 agent_index: 0,
                 channel_id: Some(channel_id),
                 thread_head_id: None,
+                observer_turn_scope: None,
                 turn_id: "test-turn-id".into(),
                 recoverable_batch: None,
                 control_tx: None,
@@ -7638,6 +7670,7 @@ mod error_outcome_emission_tests {
                 agent_index: 0,
                 channel_id: Some(channel_id),
                 thread_head_id: None,
+                observer_turn_scope: None,
                 turn_id: "test-turn-id".into(),
                 recoverable_batch: None,
                 control_tx: None,
@@ -7754,6 +7787,7 @@ mod error_outcome_emission_tests {
                 agent_index: 0,
                 channel_id: Some(channel_id),
                 thread_head_id: None,
+                observer_turn_scope: None,
                 turn_id: "test-turn-id".into(),
                 recoverable_batch: None,
                 control_tx: None,
@@ -7824,6 +7858,7 @@ mod error_outcome_emission_tests {
                 agent_index: 0,
                 channel_id: None,
                 thread_head_id: None,
+                observer_turn_scope: None,
                 turn_id: "test-turn-id".to_string(),
                 recoverable_batch: None,
                 control_tx: None,
@@ -7908,6 +7943,7 @@ mod error_outcome_emission_tests {
                 agent_index: 0,
                 channel_id: Some(channel_id),
                 thread_head_id: Some("thread-1".into()),
+                observer_turn_scope: None,
                 turn_id: "panic-turn-id".to_string(),
                 recoverable_batch: None,
                 control_tx: None,
@@ -8003,6 +8039,7 @@ mod error_outcome_emission_tests {
                     agent_index: 0,
                     channel_id: None,
                     thread_head_id: None,
+                    observer_turn_scope: None,
                     turn_id: "test-turn-id".to_string(),
                     recoverable_batch: None,
                     control_tx: None,
@@ -8096,6 +8133,7 @@ mod error_outcome_emission_tests {
                     agent_index: 0,
                     channel_id: None,
                     thread_head_id: None,
+                    observer_turn_scope: None,
                     turn_id: "test-turn-id".to_string(),
                     recoverable_batch: None,
                     control_tx: None,
@@ -8203,6 +8241,7 @@ mod error_outcome_emission_tests {
                     agent_index: 0,
                     channel_id: None,
                     thread_head_id: None,
+                    observer_turn_scope: None,
                     turn_id: "test-turn-id".to_string(),
                     recoverable_batch: None,
                     control_tx: None,
@@ -8281,6 +8320,7 @@ mod error_outcome_emission_tests {
                 agent_index: 0,
                 channel_id: None,
                 thread_head_id: None,
+                observer_turn_scope: None,
                 turn_id: "test-turn-id".to_string(),
                 recoverable_batch: None,
                 control_tx: None,
@@ -8377,6 +8417,7 @@ mod error_outcome_emission_tests {
                 agent_index: 0,
                 channel_id: None,
                 thread_head_id: None,
+                observer_turn_scope: None,
                 turn_id: "test-turn-id".to_string(),
                 recoverable_batch: None,
                 control_tx: None,
@@ -8495,6 +8536,7 @@ mod error_outcome_emission_tests {
                 agent_index: 0,
                 channel_id: None,
                 thread_head_id: None,
+                observer_turn_scope: None,
                 turn_id: "test-turn-id".to_string(),
                 recoverable_batch: None,
                 control_tx: None,
@@ -8636,6 +8678,7 @@ mod error_outcome_emission_tests {
                 agent_index: 0,
                 channel_id: None,
                 thread_head_id: None,
+                observer_turn_scope: None,
                 turn_id: "test-turn-id".to_string(),
                 recoverable_batch: None,
                 control_tx: None,
@@ -8826,6 +8869,7 @@ mod error_outcome_emission_tests {
                 agent_index: 0,
                 channel_id: None,
                 thread_head_id: None,
+                observer_turn_scope: None,
                 turn_id: "test-turn-id".to_string(),
                 recoverable_batch: None,
                 control_tx: None,
@@ -8913,6 +8957,7 @@ mod error_outcome_emission_tests {
                 agent_index: 0,
                 channel_id: None,
                 thread_head_id: None,
+                observer_turn_scope: None,
                 turn_id: "test-turn-id".to_string(),
                 recoverable_batch: None,
                 control_tx: None,

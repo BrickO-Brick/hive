@@ -61,6 +61,8 @@ pub struct TaskMeta {
     pub channel_id: Option<Uuid>,
     /// NIP-10 thread root for panic recovery telemetry.
     pub thread_head_id: Option<String>,
+    /// Shared presentation scope used by every live observer frame for this turn.
+    pub observer_turn_scope: Option<observer::ObserverTurnScope>,
     /// Identifies terminal events when the task panics before returning a result.
     pub turn_id: String,
     /// Clone of batch for Queue mode panic recovery.
@@ -382,6 +384,8 @@ pub struct SteerRequest {
     /// `queue::native_steer_framing()` + `queue::format_event_block` so
     /// the wording cannot drift from the cancel+merge fallback path.
     pub prompt_blocks: Vec<String>,
+    /// NIP-10 thread root that subsequent observer frames use after success.
+    pub observer_thread_head_id: Option<String>,
     /// Oneshot for the read loop to report the outcome.
     pub ack_tx: tokio::sync::oneshot::Sender<SteerAck>,
 }
@@ -754,7 +758,10 @@ impl AgentPool {
             .task_map
             .values_mut()
             .find(|meta| meta.channel_id == Some(channel_id))?;
-        meta.thread_head_id = thread_head_id;
+        meta.thread_head_id = thread_head_id.clone();
+        if let Some(scope) = &meta.observer_turn_scope {
+            scope.set_thread_head_id(thread_head_id);
+        }
         Some(meta.turn_id.clone())
     }
 
@@ -1482,6 +1489,7 @@ fn send_prompt_result(
     });
 }
 
+#[cfg(test)]
 fn observer_thread_head_id(batch: Option<&FlushBatch>) -> Option<String> {
     batch
         .and_then(|batch| batch.events.last())
@@ -1500,6 +1508,7 @@ fn observer_thread_head_id(batch: Option<&FlushBatch>) -> Option<String> {
 ///
 /// The agent is ALWAYS returned — even on panic the `JoinSet` detects the
 /// abort and the caller uses `task_map` to recover the agent index.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_prompt_task(
     mut agent: OwnedAgent,
     batch: Option<FlushBatch>,
@@ -1508,6 +1517,7 @@ pub async fn run_prompt_task(
     result_tx: mpsc::UnboundedSender<PromptResult>,
     control_rx: Option<tokio::sync::oneshot::Receiver<ControlSignal>>,
     turn_id: String,
+    observer_turn_scope: observer::ObserverTurnScope,
 ) {
     // Is this a channel prompt or a heartbeat?
     let source = match &batch {
@@ -1518,8 +1528,11 @@ pub async fn run_prompt_task(
         PromptSource::Channel(channel_id) => Some(*channel_id),
         PromptSource::Heartbeat => None,
     };
-    let observer_thread_head_id = observer_thread_head_id(batch.as_ref());
+    let observer_thread_head_id = observer_turn_scope.thread_head_id();
     let turn_started_at = chrono::Utc::now().to_rfc3339();
+    agent
+        .acp
+        .set_observer_turn_scope(Some(observer_turn_scope.clone()));
     agent.acp.set_observer_context(observer::context_for_turn(
         observer_channel_id,
         observer_thread_head_id.clone(),
@@ -1551,7 +1564,7 @@ pub async fn run_prompt_task(
         agent.acp.observer_handle(),
         agent.acp.observer_agent_index(),
         observer_channel_id,
-        observer_thread_head_id.clone(),
+        observer_turn_scope.clone(),
         turn_id.clone(),
     );
 
@@ -1578,6 +1591,7 @@ pub async fn run_prompt_task(
             turn_id.clone(),
             turn_started_at.clone(),
         ),
+        observer_turn_scope.clone(),
         ctx.turn_liveness_interval,
         Arc::clone(&liveness_state),
     );
@@ -3907,6 +3921,7 @@ async fn run_turn_liveness(
     observer: Option<observer::ObserverHandle>,
     agent_index: Option<usize>,
     mut context: observer::ObserverContext,
+    turn_scope: observer::ObserverTurnScope,
     interval: Duration,
     state: Arc<Mutex<LivenessState>>,
 ) {
@@ -3934,6 +3949,7 @@ async fn run_turn_liveness(
             return;
         }
         context.session_id = guard.session_id.clone();
+        context.thread_head_id = turn_scope.thread_head_id();
         observer.emit(
             "turn_liveness",
             agent_index,
@@ -4014,7 +4030,7 @@ struct TurnCompletionGuard {
     observer: Option<observer::ObserverHandle>,
     agent_index: Option<usize>,
     channel_id: Option<uuid::Uuid>,
-    thread_head_id: Option<String>,
+    turn_scope: observer::ObserverTurnScope,
     turn_id: String,
     cancelled: bool,
 }
@@ -4024,14 +4040,14 @@ impl TurnCompletionGuard {
         observer: Option<observer::ObserverHandle>,
         agent_index: Option<usize>,
         channel_id: Option<uuid::Uuid>,
-        thread_head_id: Option<String>,
+        turn_scope: observer::ObserverTurnScope,
         turn_id: String,
     ) -> Self {
         Self {
             observer,
             agent_index,
             channel_id,
-            thread_head_id,
+            turn_scope,
             turn_id,
             cancelled: false,
         }
@@ -4047,7 +4063,7 @@ impl Drop for TurnCompletionGuard {
         if let Some(observer) = self.observer.take() {
             let mut context =
                 observer::context_for(self.channel_id, None, Some(self.turn_id.clone()));
-            context.thread_head_id = self.thread_head_id.clone();
+            context.thread_head_id = self.turn_scope.thread_head_id();
             let payload = if self.cancelled {
                 serde_json::json!({ "outcome": "cancelled" })
             } else {
@@ -5720,6 +5736,7 @@ done"#
                 result_tx.clone(),
                 None,
                 format!("turn-{turn}"),
+                observer::ObserverTurnScope::new(None),
             )
             .await;
             let result = result_rx.recv().await.expect("prompt result");
@@ -5835,6 +5852,7 @@ done"#
                 result_tx.clone(),
                 None,
                 format!("turn-{turn}"),
+                observer::ObserverTurnScope::new(None),
             )
             .await;
             let result = result_rx.recv().await.expect("prompt result");
@@ -6010,6 +6028,7 @@ done"#
                 result_tx.clone(),
                 None,
                 turn_id.into(),
+                observer::ObserverTurnScope::new(None),
             )
             .await;
             let result = result_rx.recv().await.expect("prompt result");
@@ -6169,6 +6188,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             result_tx,
             None,
             "next-turn".into(),
+            observer::ObserverTurnScope::new(None),
         )
         .await;
         let mut result = result_rx.recv().await.expect("next prompt result");
@@ -6832,7 +6852,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
                 Some(observer.clone()),
                 Some(0),
                 Some(Uuid::new_v4()),
-                Some("thread-1".into()),
+                observer::ObserverTurnScope::new(Some("thread-1".into())),
                 "turn-1".into(),
             );
         }
@@ -6847,6 +6867,29 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
     }
 
     #[test]
+    fn test_completion_guard_uses_latest_turn_scope() {
+        let observer = observer::ObserverHandle::in_process();
+        let scope = observer::ObserverTurnScope::new(Some("thread-1".into()));
+        {
+            let _guard = TurnCompletionGuard::new(
+                Some(observer.clone()),
+                Some(0),
+                Some(Uuid::new_v4()),
+                scope.clone(),
+                "turn-1".into(),
+            );
+            scope.set_thread_head_id(Some("thread-2".into()));
+        }
+
+        let event = observer
+            .snapshot()
+            .into_iter()
+            .find(|event| event.kind == "turn_completed")
+            .expect("completion frame");
+        assert_eq!(event.thread_head_id.as_deref(), Some("thread-2"));
+    }
+
+    #[test]
     fn test_completion_guard_reports_cancelled_outcome() {
         let observer = observer::ObserverHandle::in_process();
         {
@@ -6854,7 +6897,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
                 Some(observer.clone()),
                 Some(0),
                 Some(Uuid::new_v4()),
-                Some("thread-1".into()),
+                observer::ObserverTurnScope::new(Some("thread-1".into())),
                 "turn-1".into(),
             );
             guard.mark_cancelled();
@@ -6887,6 +6930,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
                     Some(observer.clone()),
                     Some(0),
                     context,
+                    observer::ObserverTurnScope::new(None),
                     Duration::from_secs(10),
                     Arc::clone(&state),
                 )),
@@ -6938,11 +6982,13 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             started_at.clone(),
         );
         let state = open_liveness_state();
+        let turn_scope = observer::ObserverTurnScope::new(Some("thread-1".into()));
         let guard = LivenessGuard::new(
             tokio::spawn(run_turn_liveness(
                 Some(observer.clone()),
                 Some(0),
                 context,
+                turn_scope.clone(),
                 Duration::from_secs(10),
                 Arc::clone(&state),
             )),
@@ -6950,8 +6996,11 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
         );
         tokio::task::yield_now().await;
 
-        // First liveness tick at 10s and the second at 20s.
-        tokio::time::advance(Duration::from_secs(25)).await;
+        // First liveness tick at 10s, then rescope before the second at 20s.
+        tokio::time::advance(Duration::from_secs(10)).await;
+        tokio::task::yield_now().await;
+        turn_scope.set_thread_head_id(Some("thread-2".into()));
+        tokio::time::advance(Duration::from_secs(15)).await;
         tokio::task::yield_now().await;
         assert_eq!(liveness_count(&observer), 2);
 
@@ -6966,9 +7015,8 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
         assert!(pings
             .iter()
             .all(|event| event.started_at.as_deref() == Some(&started_at)));
-        assert!(pings
-            .iter()
-            .all(|event| event.thread_head_id.as_deref() == Some("thread-1")));
+        assert_eq!(pings[0].thread_head_id.as_deref(), Some("thread-1"));
+        assert_eq!(pings[1].thread_head_id.as_deref(), Some("thread-2"));
         assert!(pings
             .iter()
             .all(|event| { event.payload == serde_json::json!({ "livenessIntervalSecs": 10 }) }));
@@ -7003,6 +7051,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
                 Some(observer.clone()),
                 Some(0),
                 context,
+                observer::ObserverTurnScope::new(None),
                 Duration::from_secs(10),
                 Arc::clone(&state),
             )),
@@ -7045,6 +7094,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             Some(observer.clone()),
             Some(0),
             context,
+            observer::ObserverTurnScope::new(None),
             Duration::ZERO,
             open_liveness_state(),
         );
@@ -7068,6 +7118,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             None,
             None,
             context,
+            observer::ObserverTurnScope::new(None),
             Duration::from_secs(10),
             open_liveness_state(),
         );
@@ -7112,6 +7163,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             Some(observer.clone()),
             Some(0),
             context,
+            observer::ObserverTurnScope::new(None),
             Duration::from_secs(10),
             state,
         );
@@ -7234,6 +7286,10 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
         assert!(
             result.agent.acp.steer_rx_is_none(),
             "steer_rx must be None after send_prompt_result on error path"
+        );
+        assert!(
+            result.agent.acp.observer_turn_scope().is_none(),
+            "observer turn scope must remain unset when no turn installed one",
         );
 
         // The next dispatch can now install a fresh receiver without panicking.

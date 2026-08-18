@@ -32,6 +32,41 @@ pub struct ObserverContext {
     pub started_at: Option<String>,
 }
 
+/// Shared thread scope for a live observer turn.
+///
+/// Native steering can move one in-flight ACP turn between Buzz threads. Raw
+/// ACP frames, liveness pings, and the completion guard all hold clones of this
+/// handle so a successful steer updates every later frame atomically.
+#[derive(Clone, Debug)]
+pub struct ObserverTurnScope {
+    thread_head_id: Arc<Mutex<Option<String>>>,
+}
+
+impl ObserverTurnScope {
+    /// Create a turn scope with its initial NIP-10 thread root.
+    pub fn new(thread_head_id: Option<String>) -> Self {
+        Self {
+            thread_head_id: Arc::new(Mutex::new(thread_head_id)),
+        }
+    }
+
+    /// Return the turn's current NIP-10 thread root.
+    pub fn thread_head_id(&self) -> Option<String> {
+        match self.thread_head_id.lock() {
+            Ok(thread_head_id) => thread_head_id.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
+    /// Move the live turn to another NIP-10 thread root.
+    pub fn set_thread_head_id(&self, thread_head_id: Option<String>) {
+        match self.thread_head_id.lock() {
+            Ok(mut current) => *current = thread_head_id,
+            Err(poisoned) => *poisoned.into_inner() = thread_head_id,
+        }
+    }
+}
+
 /// Handle used by the harness to publish local observer events.
 #[derive(Clone)]
 pub struct ObserverHandle {
