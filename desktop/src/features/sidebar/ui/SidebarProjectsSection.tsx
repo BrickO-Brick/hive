@@ -589,8 +589,10 @@ function SidebarProjectRow({
             tooltip={project.name}
             type="button"
           >
-            <ProjectIcon className="h-4 w-4" />
-            <SidebarMenuLabel>{project.name}</SidebarMenuLabel>
+            <ProjectIcon className={cn("h-4 w-4", !isActive && "opacity-80")} />
+            <SidebarMenuLabel className={cn(!isActive && "opacity-80")}>
+              {project.name}
+            </SidebarMenuLabel>
           </SidebarMenuButton>
           {canDelete ? (
             <SidebarMenuAction
