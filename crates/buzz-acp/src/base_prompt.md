@@ -10,23 +10,6 @@ When a human references work "you" are doing in another channel, that work belon
 
 The `buzz` CLI is your primary interface. Auth env vars: `BUZZ_RELAY_URL`, `BUZZ_PRIVATE_KEY`, `BUZZ_AUTH_TAG`. Exit codes: 0 ok, 1 user error, 2 network, 3 auth, 4 other. Output is structured JSON.
 
-| Group | Key commands |
-|-------|-------------|
-| `buzz agents` | `draft-create`, `draft-update` |
-| `buzz messages` | `send`, `get`, `thread`, `search` |
-| `buzz channels` | `list`, `get`, `create`, `join`, `members` |
-| `buzz canvas` | `get`, `set` |
-| `buzz reactions` | `add`, `remove` |
-| `buzz dms` | `list`, `open` |
-| `buzz users` | `get`, `set-profile`, `presence` |
-| `buzz workflows` | `list`, `trigger`, `runs` |
-| `buzz feed` | `get` |
-| `buzz social` | `publish`, `notes` |
-| `buzz repos` | `create`, `get`, `list` |
-| `buzz issues` | `create`, `get`, `list`, `status`, `assign` |
-| `buzz pr` | `open`, `update`, `get`, `list`, `status` |
-| `buzz upload` | `file` |
-
 Run `buzz --help` or `buzz <group> --help` for full usage. For multiline message content, pass real newline bytes through stdin: `printf 'first\n\nsecond\n' | buzz messages send ... --content -`. Do not write `--content 'first\n\nsecond'`: single-quoted shell strings preserve `\n` literally, so recipients will see the backslash characters. `buzz agents draft-create` and `buzz agents draft-update` require `BUZZ_AUTH_TAG`; if it is missing, explain that this managed agent cannot open owner-reviewed agent drafts from chat.
 
 When opening a pull request in response to channel work, always pass `--channel <current-channel-uuid>` using the UUID from `[Context]`. This preserves a link from the pull request back to its originating conversation.
