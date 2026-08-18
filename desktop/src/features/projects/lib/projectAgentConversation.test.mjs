@@ -10,6 +10,7 @@ import {
 } from "./projectAgentConversation.ts";
 import {
   clearStoredProjectsAgentConversation,
+  projectsConversationScope,
   readStoredProjectsAgentConversation,
   writeStoredProjectsAgentConversation,
 } from "./projectAgentConversationStorage.ts";
@@ -50,6 +51,50 @@ globalThis.localStorage = {
 };
 
 beforeEach(() => store.clear());
+
+test("conversation scopes isolate same-relay identities and restore on return", () => {
+  const relay = "wss://relay.example.com";
+  const resource = "30617:owner:buzz";
+  const identityA = "a".repeat(64);
+  const identityB = "b".repeat(64);
+  const scopeA = projectsConversationScope(
+    "detail",
+    relay,
+    identityA,
+    resource,
+  );
+  const scopeB = projectsConversationScope(
+    "detail",
+    relay,
+    identityB,
+    resource,
+  );
+  assert.notEqual(scopeA, scopeB);
+
+  const pointer = {
+    agentPubkey: AGENT_PUBKEY,
+    channelId: EXISTING_DM.id,
+    opener: OPENER,
+  };
+  writeStoredProjectsAgentConversation(scopeA, pointer);
+  assert.equal(readStoredProjectsAgentConversation(scopeB), null);
+  assert.deepEqual(readStoredProjectsAgentConversation(scopeA), pointer);
+});
+
+test("conversation scopes fail closed without relay, signer, or resource", () => {
+  assert.equal(
+    projectsConversationScope("detail", null, SELF_PUBKEY, "repo"),
+    null,
+  );
+  assert.equal(
+    projectsConversationScope("detail", WORKSPACE_ID, null, "repo"),
+    null,
+  );
+  assert.equal(
+    projectsConversationScope("detail", WORKSPACE_ID, SELF_PUBKEY, ""),
+    null,
+  );
+});
 
 test("an existing agent DM is never auto-restored without a stored pointer", () => {
   const restored = restoreProjectsAgentConversation({

@@ -10,6 +10,23 @@ use crate::managed_agents::{
 };
 use crate::relay;
 
+const WORKSPACE_APPLY_SUPERSEDED: &str = "workspace apply superseded by a newer request";
+
+fn next_apply_generation(generation: &std::sync::atomic::AtomicU64) -> u64 {
+    generation.fetch_add(1, Ordering::AcqRel).wrapping_add(1)
+}
+
+fn assert_current_apply_generation(
+    generation: &std::sync::atomic::AtomicU64,
+    ticket: u64,
+) -> Result<(), String> {
+    if generation.load(Ordering::Acquire) == ticket {
+        Ok(())
+    } else {
+        Err(WORKSPACE_APPLY_SUPERSEDED.to_string())
+    }
+}
+
 /// Adopt the pre-scoping global retention database's pending rows into `scope`.
 ///
 /// Best-effort: a failure is logged and the boot proceeds. The migration's own
@@ -131,11 +148,18 @@ pub async fn apply_workspace(
     agent_managed_profiles: Option<bool>,
     app: AppHandle,
 ) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let apply_generation = next_apply_generation(&state.workspace_apply_generation);
+    let _apply_guard = state.workspace_apply_lock.lock().await;
+    assert_current_apply_generation(&state.workspace_apply_generation, apply_generation)?;
+
     let restore_app = app.clone();
+    let apply_app = app.clone();
     // Capture the caller's relay before the blocking apply. Reading shared
     // state afterward could pick up a newer concurrent community switch.
     let profile_reconcile_relay = relay_url.clone();
     tokio::task::spawn_blocking(move || {
+        let app = apply_app;
         let state = app.state::<AppState>();
 
         // ── Validate before mutating ──────────────────────────────────────────
@@ -165,6 +189,11 @@ pub async fn apply_workspace(
             },
             None => None,
         };
+
+        // A newer caller may have taken a generation ticket while this apply
+        // was validating paths off-thread. Fail before the first mutation so
+        // the stale apply cannot transiently overwrite the newer workspace.
+        assert_current_apply_generation(&state.workspace_apply_generation, apply_generation)?;
 
         // ── Apply all state changes (nothing below can fail) ──────────────────
         {
@@ -213,6 +242,8 @@ pub async fn apply_workspace(
     })
     .await
     .map_err(|e| format!("spawn_blocking failed: {e}"))??;
+
+    assert_current_apply_generation(&state.workspace_apply_generation, apply_generation)?;
 
     let state = restore_app.state::<AppState>();
     super::agents::provider_access::reconcile_on_workspace_apply(&restore_app, &state).await?;
@@ -316,5 +347,34 @@ pub async fn apply_workspace(
         });
     }
 
+    assert_current_apply_generation(&state.workspace_apply_generation, apply_generation)?;
+
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicU64;
+
+    use super::{assert_current_apply_generation, next_apply_generation};
+
+    #[test]
+    fn newer_workspace_apply_supersedes_older_ticket_before_mutation() {
+        let generation = AtomicU64::new(0);
+        let delayed_a = next_apply_generation(&generation);
+        let fast_b = next_apply_generation(&generation);
+
+        let error = assert_current_apply_generation(&generation, delayed_a).unwrap_err();
+        assert!(error.contains("superseded"), "{error}");
+        assert_current_apply_generation(&generation, fast_b).unwrap();
+    }
+
+    #[test]
+    fn sequential_workspace_applies_each_hold_current_ticket() {
+        let generation = AtomicU64::new(0);
+        let first = next_apply_generation(&generation);
+        assert_current_apply_generation(&generation, first).unwrap();
+        let second = next_apply_generation(&generation);
+        assert_current_apply_generation(&generation, second).unwrap();
+    }
 }

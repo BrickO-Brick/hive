@@ -55,6 +55,7 @@ import {
 import {
   clearStoredProjectsAgentConversation,
   type ProjectsConversationOpener,
+  projectsConversationScope,
   readStoredProjectsAgentConversation,
   type StoredProjectsAgentConversation,
   writeStoredProjectsAgentConversation,
@@ -363,9 +364,7 @@ export function ProjectsAgentPromptPage({
 }) {
   const [prompt, setPrompt] = React.useState("");
   const [storedConversation, setStoredConversation] =
-    React.useState<StoredProjectsAgentConversation | null>(() =>
-      readStoredProjectsAgentConversation(workspaceId),
-    );
+    React.useState<StoredProjectsAgentConversation | null>(null);
   const [selectedPubkey, setSelectedPubkey] = React.useState<string | null>(
     () => storedConversation?.agentPubkey ?? null,
   );
@@ -396,6 +395,15 @@ export function ProjectsAgentPromptPage({
   const relayScope = activeCommunity?.relayUrl
     ? normalizeRelayUrl(activeCommunity.relayUrl)
     : null;
+  const signerScope = identityQuery.data?.pubkey
+    ? normalizePubkey(identityQuery.data.pubkey)
+    : null;
+  const scopedWorkspaceId = projectsConversationScope(
+    "workspace",
+    relayScope,
+    signerScope,
+    workspaceId ?? "",
+  );
 
   const candidatePubkeys = React.useMemo(
     () => candidates.map((candidate) => candidate.pubkey),
@@ -453,6 +461,15 @@ export function ProjectsAgentPromptPage({
   onEditLinkRef.current = linkEditor.openFromClick;
   onLinkSelectionChangeRef.current = linkEditor.showFromCursor;
   onLinkShortcutRef.current = linkEditor.openFromShortcut;
+
+  React.useEffect(() => {
+    const stored = readStoredProjectsAgentConversation(scopedWorkspaceId);
+    setStoredConversation(stored);
+    setConversation(null);
+    setSelectedPubkey(stored?.agentPubkey ?? null);
+    setPrompt("");
+    richText.clearContent();
+  }, [richText.clearContent, scopedWorkspaceId]);
 
   React.useEffect(() => {
     if (!richText.editor) return;
@@ -532,7 +549,7 @@ export function ProjectsAgentPromptPage({
         };
         setConversation(nextConversation);
         setStoredConversation(stored);
-        writeStoredProjectsAgentConversation(workspaceId, stored);
+        writeStoredProjectsAgentConversation(scopedWorkspaceId, stored);
       }
       setPrompt("");
       richText.clearContent();
@@ -554,20 +571,20 @@ export function ProjectsAgentPromptPage({
     richText.getMarkdown,
     selectedAgent,
     startAgentMutation,
-    workspaceId,
+    scopedWorkspaceId,
   ]);
   submitPromptRef.current = () => {
     void handleSubmit();
   };
 
   const handleClearConversation = React.useCallback(() => {
-    clearStoredProjectsAgentConversation(workspaceId);
+    clearStoredProjectsAgentConversation(scopedWorkspaceId);
     setStoredConversation(null);
     setConversation(null);
     setSelectedPubkey(null);
     setPrompt("");
     richText.clearContent();
-  }, [richText.clearContent, workspaceId]);
+  }, [richText.clearContent, scopedWorkspaceId]);
 
   const promptBox = (
     <>

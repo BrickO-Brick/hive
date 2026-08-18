@@ -16,6 +16,7 @@ import {
 import {
   clearStoredProjectsAgentConversation,
   type ProjectsConversationOpener,
+  projectsConversationScope,
   readStoredProjectsAgentConversation,
   type StoredProjectsAgentConversation,
   writeStoredProjectsAgentConversation,
@@ -57,6 +58,7 @@ export function ProjectAgentChatPanel({
   widthPx: number;
 }) {
   const { activeCommunity } = useCommunities();
+  const identityQuery = useIdentityQuery();
   // Repository coordinates (`kind:owner:dtag`) are not globally unique — the
   // same address can exist on two relays. Scope persistence, drafts, and
   // restore to the community's relay identity so a community switch can
@@ -66,9 +68,15 @@ export function ProjectAgentChatPanel({
   const relayScope = activeCommunity?.relayUrl
     ? normalizeRelayUrl(activeCommunity.relayUrl)
     : null;
-  const storageScope = relayScope
-    ? `detail:${relayScope}:${context.repoAddress}`
+  const signerScope = identityQuery.data?.pubkey
+    ? normalizePubkey(identityQuery.data.pubkey)
     : null;
+  const storageScope = projectsConversationScope(
+    "detail",
+    relayScope,
+    signerScope,
+    context.repoAddress,
+  );
   const [isSending, setIsSending] = React.useState(false);
   const [storedConversation, setStoredConversation] =
     React.useState<StoredProjectsAgentConversation | null>(() =>
@@ -78,7 +86,6 @@ export function ProjectAgentChatPanel({
     React.useState<ProjectAgentConversation | null>(null);
   const candidates = useAgentCandidates();
   const channelsQuery = useChannelsQuery();
-  const identityQuery = useIdentityQuery();
   const profileQuery = useProfileQuery();
   const openDmMutation = useOpenDmMutation();
   const startAgentMutation = useStartManagedAgentMutation();

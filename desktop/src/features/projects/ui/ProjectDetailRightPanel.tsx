@@ -2,6 +2,8 @@ import type * as React from "react";
 
 import { normalizeRelayUrl } from "@/features/communities/communityStorage";
 import { useCommunities } from "@/features/communities/useCommunities";
+import { useIdentityQuery } from "@/shared/api/hooks";
+import { normalizePubkey } from "@/shared/lib/pubkey";
 import type { ProjectDetailAgentContext } from "@/features/projects/lib/projectDetailAgentContext";
 import { ProjectAgentChatPanel } from "./ProjectAgentChatPanel";
 import { ProjectRepositoryActionsPanel } from "./ProjectRepositoryActionsPanel";
@@ -24,6 +26,7 @@ export function ProjectDetailRightPanel({
   sharedHeaderBackdrop?: boolean;
 }) {
   const { activeCommunity } = useCommunities();
+  const identityQuery = useIdentityQuery();
   if (mode === "chat") {
     // Remount on community identity as well as repository address: the same
     // repo coordinate can exist in two communities, and retained panel state
@@ -31,11 +34,14 @@ export function ProjectDetailRightPanel({
     const relayScope = activeCommunity?.relayUrl
       ? normalizeRelayUrl(activeCommunity.relayUrl)
       : "";
+    const signerScope = identityQuery.data?.pubkey
+      ? normalizePubkey(identityQuery.data.pubkey)
+      : "";
     return (
       <ProjectAgentChatPanel
         canResetWidth={repositoryProps.canResetWidth}
         context={context}
-        key={`${relayScope}:${context.repoAddress}`}
+        key={`${relayScope}:${signerScope}:${context.repoAddress}`}
         onResetWidth={repositoryProps.onResetWidth}
         onResizeStart={repositoryProps.onResizeStart}
         sharedHeaderBackdrop={sharedHeaderBackdrop}

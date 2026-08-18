@@ -1,5 +1,16 @@
 const CONVERSATION_STORAGE_PREFIX = "buzz.projects.agentConversation";
 
+/** Builds the identity boundary for Projects conversation pointers and drafts. */
+export function projectsConversationScope(
+  surface: string,
+  relayUrl: string | null,
+  signerPubkey: string | null,
+  resource: string,
+): string | null {
+  if (!relayUrl || !signerPubkey || !resource) return null;
+  return `${surface}:${relayUrl}:${signerPubkey.toLowerCase()}:${resource}`;
+}
+
 /**
  * The exact opening prompt of an inline Projects conversation, identified by
  * the signed event the relay accepted. `createdAt` alone (epoch seconds)

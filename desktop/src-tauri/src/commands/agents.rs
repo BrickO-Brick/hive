@@ -206,9 +206,9 @@ pub(super) async fn start_local_agent_with_preflight(
     app: &AppHandle,
     state: &AppState,
     pubkey: &str,
-    owner_hex: &str,
     allow_fresh_create_start: bool,
     expected_relay_url: Option<&str>,
+    expected_signer_pubkey: Option<&str>,
 ) -> Result<ManagedAgentSummary, String> {
     let record_snapshot = {
         let _store_guard = state
@@ -256,6 +256,11 @@ pub(super) async fn start_local_agent_with_preflight(
         expected_relay_url,
         crate::relay::relay_ws_url_with_override(state),
     )?;
+    // Bind the active owner after the same final await as the relay. A
+    // same-relay identity replacement during mesh preflight must not release
+    // the stale preflight owner to spawn.
+    let workspace_owner =
+        crate::relay::bind_expected_signer(expected_signer_pubkey, workspace_owner_hex(state)?)?;
 
     let _store_guard = state
         .managed_agents_store_lock
@@ -295,7 +300,7 @@ pub(super) async fn start_local_agent_with_preflight(
         app,
         record,
         &mut runtimes,
-        Some(owner_hex),
+        Some(workspace_owner.as_str()),
         &workspace_relay_url,
     )?;
     save_managed_agents(app, &records)?;
@@ -410,10 +415,6 @@ pub async fn create_managed_agent(
             "respond-to mode 'allowlist' requires at least one pubkey in the allowlist".to_string(),
         );
     }
-
-    // Snapshot the workspace owner pubkey for the legacy-record auth_tag
-    // fallback. Computed outside the records lock to keep lock ordering simple.
-    let owner_hex = workspace_owner_hex(&state)?;
 
     // ── Phase 1: generate keys (sync lock) ────────────────────────────────────
     let (agent_keys, private_key_nsec, pubkey, resolved_relay_url, input) = {
@@ -747,8 +748,7 @@ pub async fn create_managed_agent(
     // ── Phase 3b: local spawn (async preflight outside store lock) ───────────
     let mut spawn_error = None;
     let agent = if input.spawn_after_create && input.backend == BackendKind::Local {
-        match start_local_agent_with_preflight(&app, &state, &pubkey, &owner_hex, true, None).await
-        {
+        match start_local_agent_with_preflight(&app, &state, &pubkey, true, None, None).await {
             Ok(agent) => agent,
             Err(error) => {
                 let _store_guard = state
@@ -957,9 +957,9 @@ pub async fn start_managed_agent(
                 &app,
                 &state,
                 &pubkey,
-                &owner_hex,
                 false,
                 expected_relay_url.as_deref(),
+                expected_signer_pubkey.as_deref(),
             )
             .await
         }
