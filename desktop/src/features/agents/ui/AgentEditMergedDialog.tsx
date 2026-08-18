@@ -63,6 +63,7 @@ import {
 import type { EnvVarsValue } from "./EnvVarsEditor";
 import { formatPersonaNamePoolText } from "./personaDialogState";
 import { useAgentEditRuntimeState } from "./useAgentEditRuntimeState";
+import { useAgentEditDeepLinkFocus } from "./useAgentEditDeepLinkFocus";
 
 // ── Types / Component ────────────────────────────────────────────────────────
 
@@ -608,30 +609,14 @@ export function AgentEditMergedDialog({
   });
 
   // ── Focus target (R2) ──────────────────────────────────────────────────────
-  const normalizedFieldFocusFiredRef = React.useRef(false);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: intentional — reset guard on open/context-switch; pure ref mutation is correct
-  React.useEffect(() => {
-    normalizedFieldFocusFiredRef.current = false;
-  }, [open, inst?.pubkey, def?.id]);
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: intentional — llmProviderFieldVisible is the availability signal; inst?.pubkey handles agent-switch
-  React.useEffect(() => {
-    if (!open || !initialFocus) return;
-    if (initialFocus.type !== "normalized_field") return;
-    if (normalizedFieldFocusFiredRef.current) return;
-    const targetId =
-      initialFocus.field === "provider"
-        ? "edit-agent-llm-provider"
-        : "edit-agent-model";
-    const el = document.getElementById(targetId);
-    if (!(el instanceof HTMLElement)) return;
-    normalizedFieldFocusFiredRef.current = true;
-    const id = requestAnimationFrame(() => {
-      el.scrollIntoView({ block: "nearest" });
-      el.focus();
-    });
-    return () => cancelAnimationFrame(id);
-  }, [open, initialFocus, inst?.pubkey, llmProviderFieldVisible]);
+  const { onOpenAutoFocus } = useAgentEditDeepLinkFocus({
+    open,
+    initialFocus,
+    contextKey: `${inst?.pubkey ?? ""}:${def?.id ?? ""}`,
+    llmProviderFieldVisible,
+    modelDiscoveryLoading,
+    setShowAdvancedFields,
+  });
 
   // ── Render ─────────────────────────────────────────────────────────────────
   function handleSubmit() {
@@ -682,9 +667,7 @@ export function AgentEditMergedDialog({
         data-testid="edit-agent-dialog"
         footerClassName="border-t-0 pt-0"
         headerClassName="pb-2"
-        // Deep-link focus targets are owned by the rAF effects above; suppress
-        // Radix's name-input open-autofocus so it can't steal the requested field.
-        onOpenAutoFocus={initialFocus ? (e) => e.preventDefault() : undefined}
+        onOpenAutoFocus={onOpenAutoFocus}
         title={dialogTitle}
         footer={
           <div className="flex w-full flex-wrap items-center justify-between gap-3">
