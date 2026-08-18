@@ -55,6 +55,33 @@ pub(super) fn validate_openai_compat_base_url(value: &str) -> Result<(), String>
     Ok(())
 }
 
+pub(super) fn openai_compatible_models_url_for_discovery(
+    provider: Option<&str>,
+    env: &BTreeMap<String, String>,
+) -> Result<String, String> {
+    let is_compat =
+        provider.is_some_and(|value| value.trim().eq_ignore_ascii_case("openai-compat"));
+    let configured_base_url =
+        env_or_process_override(env, "OPENAI_COMPAT_BASE_URL").filter(|value| !value.is_empty());
+    if !is_compat {
+        if configured_base_url
+            .as_deref()
+            .is_some_and(|value| value.trim_end_matches('/') != "https://api.openai.com/v1")
+        {
+            return Err(
+                "OPENAI_COMPAT_BASE_URL is only supported by provider=openai-compat".into(),
+            );
+        }
+        return Ok("https://api.openai.com/v1/models".to_string());
+    }
+
+    let base_url = configured_base_url.ok_or_else(|| {
+        "OPENAI_COMPAT_BASE_URL required for OpenAI-compatible model discovery".to_string()
+    })?;
+    validate_openai_compat_base_url(&base_url)?;
+    Ok(format!("{}/models", base_url.trim().trim_end_matches('/')))
+}
+
 /// Clone `env` with `key` set to the value a request actually used, so error
 /// redaction masks the inherited process value and not just the mapped one.
 pub(super) fn redaction_env_with_value(
@@ -98,7 +125,7 @@ impl DiscoveryProvider {
         env: &BTreeMap<String, String>,
         key: &str,
     ) -> Result<Option<String>, String> {
-        match env_or_process_value(env, key) {
+        match env_or_process_override(env, key).filter(|value| !value.is_empty()) {
             Some(value) => Ok(Some(value)),
             None if self.inferred => Ok(None),
             None => Err(format!("config: {key} required")),

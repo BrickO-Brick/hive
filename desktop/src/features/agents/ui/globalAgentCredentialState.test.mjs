@@ -49,7 +49,7 @@ test("global defaults accept a provider key set in runtime config", () => {
     runtimeFileConfig: {
       provider: "openai",
       model: "gpt-5.5",
-      satisfiedEnvKeys: ["OPENAI_COMPAT_API_KEY"],
+      satisfiedEnvKeys: ["OPENAI_API_KEY"],
     },
     runtimeId: "goose",
   });

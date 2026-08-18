@@ -59,23 +59,29 @@ test("envVarsClearingOpenAiCompatBaseUrl clears only the compatible URL", () => 
   );
 });
 
-test("envVarsClearingManagedApiKey clears the compatible URL when leaving compat", () => {
+test("envVarsClearingManagedApiKey clears the compat credential and URL when switching to OpenAI", () => {
   const next = envVarsClearingManagedApiKey(
     {
-      OPENAI_COMPAT_API_KEY: "sk-1",
+      OPENAI_COMPAT_API_KEY: "compat-key",
       OPENAI_COMPAT_BASE_URL: "http://localhost:11434/v1",
       KEEP: "x",
     },
     "openai-compat",
     "openai",
   );
-  assert.deepEqual(next, {
-    OPENAI_COMPAT_API_KEY: "sk-1",
-    KEEP: "x",
-  });
+  assert.deepEqual(next, { KEEP: "x" });
 });
 
-test("envVarsClearingManagedApiKey is a no-op when the managed key is shared or absent", () => {
+test("envVarsClearingManagedApiKey clears the OpenAI credential when switching to compat", () => {
+  const next = envVarsClearingManagedApiKey(
+    { OPENAI_API_KEY: "openai-key", KEEP: "x" },
+    "openai",
+    "openai-compat",
+  );
+  assert.deepEqual(next, { KEEP: "x" });
+});
+
+test("envVarsClearingManagedApiKey is a no-op when the provider is unchanged or unmanaged", () => {
   const current = { ANTHROPIC_API_KEY: "sk-1" };
   assert.equal(
     envVarsClearingManagedApiKey(current, "anthropic", "anthropic"),

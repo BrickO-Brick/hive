@@ -97,6 +97,40 @@ test("provider switch clears the previous managed API key and sets the provider"
   assert.deepEqual(next.envVars, { KEEP: "x" });
 });
 
+test("provider switch between OpenAI origins clears the previous credential identity", () => {
+  const official = selectionOnProviderDropdownChange(
+    {
+      ...base,
+      provider: "openai-compat",
+      envVars: {
+        OPENAI_COMPAT_API_KEY: "compat-key",
+        OPENAI_COMPAT_BASE_URL: "https://gateway.example/v1",
+        KEEP: "x",
+      },
+    },
+    {
+      runtime: "buzz-agent",
+      nextValue: "openai",
+      clearModelWhenApiKeyMissing: false,
+    },
+  );
+  assert.deepEqual(official.envVars, { KEEP: "x" });
+
+  const compatible = selectionOnProviderDropdownChange(
+    {
+      ...base,
+      provider: "openai",
+      envVars: { OPENAI_API_KEY: "official-key", KEEP: "x" },
+    },
+    {
+      runtime: "buzz-agent",
+      nextValue: "openai-compat",
+      clearModelWhenApiKeyMissing: false,
+    },
+  );
+  assert.deepEqual(compatible.envVars, { KEEP: "x" });
+});
+
 test("custom-provider entry clears the managed key and enters custom editing", () => {
   const next = selectionOnProviderDropdownChange(
     {

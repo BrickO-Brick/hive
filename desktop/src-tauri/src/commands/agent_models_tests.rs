@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "agent_models_tests/openai_credentials.rs"]
+mod openai_credentials;
+
 #[test]
 fn access_policy_change_requires_runtime_refresh_for_effective_gate_changes() {
     use crate::managed_agents::RespondTo;
@@ -138,14 +141,6 @@ fn openai_compat_model_normalization_preserves_provider_specific_ids() {
             "anthropic/claude-sonnet-4-6".to_string(),
             "text-embedding-compatible".to_string(),
         ]
-    );
-}
-
-#[test]
-fn openai_models_url_uses_openai_default_base_url() {
-    assert_eq!(
-        openai_compatible_models_url(&BTreeMap::new()),
-        "https://api.openai.com/v1/models"
     );
 }
 
@@ -326,7 +321,7 @@ fn effective_discovery_provider_recovers_baked_provider_when_record_has_none() {
 fn effective_discovery_provider_is_none_without_an_explicit_or_env_provider() {
     let env = BTreeMap::new();
     assert_eq!(
-        effective_discovery_provider(None, Some("BUZZ_AGENT_PROVIDER"), &env).as_deref(),
+        effective_discovery_provider(None, Some("BUZZ_TEST_UNSET_PROVIDER"), &env).as_deref(),
         None
     );
     // A runtime that takes no provider env var has nothing to recover from.
@@ -1012,7 +1007,13 @@ async fn openai_compat_discovery_omits_authorization_without_key() {
     });
 
     let provider = effective_discovery_provider(Some("openai-compat"), None, &BTreeMap::new());
-    let env = BTreeMap::from([("OPENAI_COMPAT_BASE_URL".to_string(), base_url)]);
+    let env = BTreeMap::from([
+        ("OPENAI_COMPAT_BASE_URL".to_string(), base_url),
+        (
+            "OPENAI_API_KEY".to_string(),
+            "must-not-cross-provider-boundary".to_string(),
+        ),
+    ]);
     let result = discover_openai_compatible_models(&reqwest::Client::new(), &provider, &env, None)
         .await
         .unwrap()

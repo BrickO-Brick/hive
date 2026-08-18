@@ -43,7 +43,7 @@ pub struct Llm {
     /// for the lifetime of the process.
     auto_upgraded: AtomicBool,
     /// Bearer-token source for OpenAI-family requests. Static for OpenAI
-    /// (the `OPENAI_COMPAT_API_KEY` env var) and Databricks-with-token
+    /// (the provider-specific OpenAI API key env var) and Databricks-with-token
     /// (the `DATABRICKS_TOKEN` env var); a refreshable PKCE engine for
     /// Databricks otherwise. Anthropic doesn't use this — it always
     /// reads `cfg.api_key` directly because the API expects `x-api-key`.
@@ -2074,7 +2074,8 @@ pub(crate) fn databricks_pkce_config(host: &str) -> PkceOAuthConfig {
 /// - `Provider::Anthropic`: a static source seeded from `cfg.api_key`. It's
 ///   never read for Anthropic requests (those go through `post_anthropic` with
 ///   `x-api-key`), but Llm holds one to keep the field non-`Option`.
-/// - `Provider::OpenAi`: a static source over `OPENAI_COMPAT_API_KEY`.
+/// - `Provider::OpenAi`: a static source over `OPENAI_API_KEY`.
+/// - `Provider::OpenAiCompat`: a static source over `OPENAI_COMPAT_API_KEY`.
 /// - `Provider::Databricks`: if `DATABRICKS_TOKEN` is set, a static source.
 ///   Otherwise a `PkceOAuthTokenSource` pointed at the workspace's OIDC
 ///   discovery URL. First request without a cached token triggers a browser

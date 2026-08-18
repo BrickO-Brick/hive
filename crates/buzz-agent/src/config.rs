@@ -533,7 +533,7 @@ impl Config {
         let provider = resolve_provider(
             env("BUZZ_AGENT_PROVIDER").as_deref(),
             env("ANTHROPIC_API_KEY").as_deref(),
-            env("OPENAI_COMPAT_API_KEY").as_deref(),
+            env("OPENAI_API_KEY").as_deref(),
             env("OPENROUTER_API_KEY").as_deref(),
         )?;
 
@@ -543,8 +543,8 @@ impl Config {
         // user intent; provider-specific vars serve as defaults for CLI/standalone use.
         let buzz_agent_model = env("BUZZ_AGENT_MODEL");
 
-        // OPENAI_COMPAT_API is only read when provider=openai, so a stray
-        // bad value can't break an Anthropic-only deployment.
+        // OPENAI_COMPAT_API is only read for OpenAI-family providers, so a
+        // stray bad value can't break an Anthropic-only deployment.
         //
         // Databricks borrows api_key as the *optional* `DATABRICKS_TOKEN` escape
         // hatch — empty means "use OAuth PKCE." Legacy Databricks encodes the
@@ -561,13 +561,13 @@ impl Config {
                 OpenAiApi::Auto, // unused for Anthropic
             ),
             Provider::OpenAi => (
-                req("OPENAI_COMPAT_API_KEY")?,
+                req("OPENAI_API_KEY")?,
                 resolve_model(
                     buzz_agent_model.as_deref(),
                     env("OPENAI_COMPAT_MODEL").as_deref(),
                 )
                 .ok_or_else(|| "config: OPENAI_COMPAT_MODEL required".to_string())?,
-                env_or("OPENAI_COMPAT_BASE_URL", "https://api.openai.com/v1"),
+                official_openai_base_url(env("OPENAI_COMPAT_BASE_URL").as_deref())?,
                 parse_openai_api(env("OPENAI_COMPAT_API").as_deref())?,
             ),
             Provider::OpenAiCompat => (
@@ -822,7 +822,7 @@ fn resolve_provider(
                     "config: ANTHROPIC_API_KEY required".into(),
                 ),
                 "openai" if present_nonempty(openai_key) => Ok(Provider::OpenAi),
-                "openai" => Err("config: OPENAI_COMPAT_API_KEY required".into()),
+                "openai" => Err("config: OPENAI_API_KEY required".into()),
                 "openai-compat" => Ok(Provider::OpenAiCompat),
                 "databricks" => Ok(Provider::Databricks),
                 "databricks_v2" | "databricks-v2" => Ok(Provider::DatabricksV2),
@@ -835,6 +835,18 @@ fn resolve_provider(
         }
         None => Err(
             "config: BUZZ_AGENT_PROVIDER is required — set it to your provider (e.g. anthropic, openai, databricks)".into(),
+        ),
+    }
+}
+
+fn official_openai_base_url(raw: Option<&str>) -> Result<String, String> {
+    const BASE_URL: &str = "https://api.openai.com/v1";
+    match raw.map(str::trim).filter(|value| !value.is_empty()) {
+        None => Ok(BASE_URL.to_string()),
+        Some(value) if value.trim_end_matches('/') == BASE_URL => Ok(BASE_URL.to_string()),
+        Some(_) => Err(
+            "config: OPENAI_COMPAT_BASE_URL is only supported by provider=openai-compat"
+                .to_string(),
         ),
     }
 }
@@ -1157,12 +1169,26 @@ mod tests {
         assert!(err.contains("ANTHROPIC_API_KEY required"), "{err}");
 
         let err = resolve_provider(Some("openai"), None, Some("   "), None).unwrap_err();
-        assert!(err.contains("OPENAI_COMPAT_API_KEY required"), "{err}");
+        assert!(err.contains("OPENAI_API_KEY required"), "{err}");
 
         assert_eq!(
             resolve_provider(Some("openai-compat"), None, None, None).unwrap(),
             Provider::OpenAiCompat
         );
+    }
+
+    #[test]
+    fn official_openai_rejects_compat_routing_state() {
+        assert_eq!(
+            official_openai_base_url(None).unwrap(),
+            "https://api.openai.com/v1"
+        );
+        assert_eq!(
+            official_openai_base_url(Some(" https://api.openai.com/v1/ ")).unwrap(),
+            "https://api.openai.com/v1"
+        );
+        let error = official_openai_base_url(Some("https://gateway.example/v1")).unwrap_err();
+        assert!(error.contains("provider=openai-compat"), "{error}");
     }
 
     #[test]
@@ -1207,7 +1233,7 @@ mod tests {
         );
         // Missing key for other providers still errors — no Databricks fallback.
         let err = resolve_provider(Some("openai"), None, None, None).unwrap_err();
-        assert!(err.contains("OPENAI_COMPAT_API_KEY required"), "{err}");
+        assert!(err.contains("OPENAI_API_KEY required"), "{err}");
         let err = resolve_provider(None, None, None, None).unwrap_err();
         assert!(err.contains("BUZZ_AGENT_PROVIDER is required"), "{err}");
     }

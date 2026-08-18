@@ -387,7 +387,7 @@ impl AgentReadiness {
 ///   present in the effective env or as structured fields). Additionally,
 ///   provider-specific credentials are required:
 ///   - `anthropic` → `ANTHROPIC_API_KEY`
-///   - `openai` → `OPENAI_COMPAT_API_KEY`
+///   - `openai` → `OPENAI_API_KEY`
 ///   - `databricks` / `databricks_v2` → `DATABRICKS_HOST` (token optional —
 ///     OAuth PKCE is the fallback)
 /// * **claude**: a successful `claude auth status` probe.
@@ -511,9 +511,9 @@ fn buzz_agent_requirements(effective: &EffectiveAgentEnv) -> Vec<Requirement> {
                 });
             }
         Some("openai")
-            if env_key_missing("OPENAI_COMPAT_API_KEY") => {
+            if env_key_missing("OPENAI_API_KEY") => {
                 missing.push(Requirement::EnvKey {
-                    key: "OPENAI_COMPAT_API_KEY".to_string(),
+                    key: "OPENAI_API_KEY".to_string(),
                 });
             }
         Some("openai-compat")
@@ -630,11 +630,10 @@ fn goose_requirements(
             });
         }
         Some("openai")
-            if env_key_missing("OPENAI_COMPAT_API_KEY")
-                && !file_key_present("OPENAI_COMPAT_API_KEY") =>
+            if env_key_missing("OPENAI_API_KEY") && !file_key_present("OPENAI_API_KEY") =>
         {
             missing.push(Requirement::EnvKey {
-                key: "OPENAI_COMPAT_API_KEY".to_string(),
+                key: "OPENAI_API_KEY".to_string(),
             });
         }
         Some("openai-compat")
@@ -754,12 +753,13 @@ mod tests {
             env_with(&[
                 ("BUZZ_AGENT_PROVIDER", "openai"),
                 ("BUZZ_AGENT_MODEL", "gpt-4o"),
+                ("OPENAI_COMPAT_API_KEY", "must-not-cross-provider-boundary"),
             ]),
         );
         let result = agent_readiness(&env);
         assert!(!result.is_ready());
         assert!(result.requirements().contains(&Requirement::EnvKey {
-            key: "OPENAI_COMPAT_API_KEY".to_string()
+            key: "OPENAI_API_KEY".to_string()
         }));
     }
 
@@ -1656,7 +1656,7 @@ mod tests {
             env_with(&[
                 ("BUZZ_AGENT_PROVIDER", "openai"),
                 ("OPENAI_COMPAT_MODEL", "gpt-4o"),
-                ("OPENAI_COMPAT_API_KEY", "sk-test"),
+                ("OPENAI_API_KEY", "sk-test"),
             ]),
         );
         assert!(
