@@ -393,7 +393,7 @@ mod keyring_config;
 pub(crate) use keyring_config::keyring_service;
 
 /// Keyring key name for the human identity nsec.
-const IDENTITY_KEY_NAME: &str = "identity";
+pub(crate) const IDENTITY_KEY_NAME: &str = "identity";
 
 /// Filename of the marker written once a successful keyring migration deletes
 /// the legacy `identity.key`. Its presence is the only durable signal that a
@@ -405,7 +405,7 @@ const MIGRATION_MARKER_NAME: &str = "identity.migrated";
 /// The keyring operations the identity resolution flow needs. Abstracted so the
 /// corrupt-keyring recovery decision ([`recover_from_keyring`]) can be
 /// unit-tested against a fake without touching the live OS keyring.
-trait IdentityKeyStore {
+pub(crate) trait IdentityKeyStore {
     fn probe(&self, name: &str) -> crate::secret_store::KeyringProbe;
     fn load(&self, name: &str) -> Result<Option<String>, String>;
     fn store(&self, name: &str, value: &str) -> Result<(), String>;
@@ -1031,7 +1031,7 @@ fn quarantine_corrupt_key(key_path: &std::path::Path, data_dir: &std::path::Path
     }
 }
 
-fn load_key_file(path: &std::path::Path) -> Result<Keys, String> {
+pub(crate) fn load_key_file(path: &std::path::Path) -> Result<Keys, String> {
     let content = std::fs::read_to_string(path).map_err(|e| format!("read identity.key: {e}"))?;
     let trimmed = content.trim();
     if trimmed.is_empty() {

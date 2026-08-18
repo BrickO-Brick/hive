@@ -9,6 +9,7 @@ mod egress_guard;
 mod event_sync;
 mod events;
 mod huddle;
+mod identity_persistence;
 mod identity_storage;
 mod initial_window;
 mod key_backup;
