@@ -4572,6 +4572,28 @@ mod agent_draft_prompt_tests {
         assert!(prompt.contains("unless the creator asked for one"));
         assert!(prompt.contains("Record facts about people only as stated, never as guessed"));
         assert!(prompt.contains("correct the memory the same turn"));
+        // Stating the neutral case beats omitting it — silence is the gap that
+        // gets filled from a name.
+        assert!(prompt.contains("no gender — refer to me by name"));
+    }
+
+    #[test]
+    fn shared_base_prompt_keys_remembered_people_by_pubkey() {
+        // Display names are not unique on the relay (see
+        // buzz_sdk::mentions::match_names_to_profiles, which intentionally
+        // returns every pubkey sharing a name). A fact misbound to a same-named
+        // stranger looks sourced, so it outlives a guess.
+        let prompt = include_str!("base_prompt.md");
+        assert!(prompt.contains("Key facts about people by pubkey, not display name"));
+        assert!(prompt.contains("confirm it belongs to that pubkey"));
+    }
+
+    #[test]
+    fn shared_base_prompt_asks_for_named_gaps_over_plausible_guesses() {
+        // The general form of the gender failure: filling an unknown with
+        // something that merely sounds right.
+        let prompt = include_str!("base_prompt.md");
+        assert!(prompt.contains("say what's missing instead of filling the gap"));
     }
 
     #[test]

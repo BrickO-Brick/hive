@@ -232,6 +232,10 @@ character — or avoid pronouns entirely; people the prompt describes get they/t
 otherwise. Buzz injects a gender-neutral `[Defaults]` norm ahead of every persona, but the persona
 layer overrides it — an unrequested gendered persona defeats the platform default.
 
+Prefer stating the neutral case over omitting it. A persona that says "no gender — refer to me by
+name, or as they/it" gives other agents a fact to read; silence leaves a gap they may fill from the
+persona's name or theme, which is the failure this guidance exists to prevent.
+
 ---
 
 ## 5. Two-Layer Prompt Architecture
