@@ -84,16 +84,9 @@ pub(crate) async fn start_local_agent_pairs_with_preflight(
         .managed_agent_processes
         .lock()
         .map_err(|e| e.to_string())?;
-    let personas = super::load_personas(app).unwrap_or_default();
     let record = records
         .iter()
         .find(|record| record.pubkey == pubkey)
         .ok_or_else(|| format!("agent {pubkey} not found"))?;
-    super::build_managed_agent_summary(
-        app,
-        record,
-        &runtimes,
-        &personas,
-        &crate::managed_agents::load_global_agent_config(app).unwrap_or_default(),
-    )
+    super::summarize_from_disk(app, record, &runtimes)
 }

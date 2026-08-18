@@ -25,6 +25,28 @@ pub(super) fn workspace_owner_hex(state: &AppState) -> Result<String, String> {
     Ok(state.current_pubkey()?.to_hex())
 }
 
+/// Build a summary from fresh disk state (personas, teams, global config).
+/// For one-shot command paths only — the 5s list poll calls
+/// `build_managed_agent_summary` directly with stores loaded once per call,
+/// not once per record.
+pub(super) fn summarize_from_disk(
+    app: &AppHandle,
+    record: &ManagedAgentRecord,
+    runtimes: &std::collections::HashMap<
+        crate::managed_agents::ManagedAgentRuntimeKey,
+        crate::managed_agents::ManagedAgentPairRuntime,
+    >,
+) -> Result<ManagedAgentSummary, String> {
+    build_managed_agent_summary(
+        app,
+        record,
+        runtimes,
+        &load_personas(app).unwrap_or_default(),
+        &load_teams(app).unwrap_or_default(),
+        &crate::managed_agents::load_global_agent_config(app).unwrap_or_default(),
+    )
+}
+
 /// Retain a freshly authored managed-agent event in the local store, flagged
 /// for relay sync. MUST be called inside the `managed_agents_store_lock`-held
 /// body after `save_managed_agents`, NEVER across an `.await`: it acquires
@@ -357,6 +379,7 @@ pub(super) async fn start_local_agent_with_preflight(
         record,
         &runtimes,
         &personas,
+        &load_teams(app).unwrap_or_default(),
         &crate::managed_agents::load_global_agent_config(app).unwrap_or_default(),
     )
 }
@@ -392,14 +415,22 @@ pub async fn list_managed_agents(app: AppHandle) -> Result<Vec<ManagedAgentSumma
 
         let personas = load_personas(&app).unwrap_or_default();
         // One disk read for the whole list — build_managed_agent_summary takes
-        // the config as a parameter precisely so this poll-every-5s call does
-        // not re-read it per record.
+        // teams and config as parameters precisely so this poll-every-5s call
+        // does not re-read them per record.
+        let teams = load_teams(&app).unwrap_or_default();
         let global_config =
             crate::managed_agents::load_global_agent_config(&app).unwrap_or_default();
         records
             .iter()
             .map(|record| {
-                build_managed_agent_summary(&app, record, &runtimes, &personas, &global_config)
+                build_managed_agent_summary(
+                    &app,
+                    record,
+                    &runtimes,
+                    &personas,
+                    &teams,
+                    &global_config,
+                )
             })
             .collect()
     })
@@ -768,15 +799,8 @@ pub async fn create_managed_agent(
         // before any .await — owner-authored, every agent (Will's ruling: no
         // is_builtin/persona-membership gate).
         retain_managed_agent_pending(&app, &state, record);
-        let personas = load_personas(&app).unwrap_or_default();
         (
-            build_managed_agent_summary(
-                &app,
-                record,
-                &runtimes,
-                &personas,
-                &crate::managed_agents::load_global_agent_config(&app).unwrap_or_default(),
-            )?,
+            summarize_from_disk(&app, record, &runtimes)?,
             resolved_avatar_url,
         )
     };
@@ -805,14 +829,7 @@ pub async fn create_managed_agent(
                     .iter()
                     .find(|record| record.pubkey == pubkey)
                     .ok_or_else(|| "created agent disappeared unexpectedly".to_string())?;
-                let personas = load_personas(&app).unwrap_or_default();
-                build_managed_agent_summary(
-                    &app,
-                    record,
-                    &runtimes,
-                    &personas,
-                    &crate::managed_agents::load_global_agent_config(&app).unwrap_or_default(),
-                )?
+                summarize_from_disk(&app, record, &runtimes)?
             }
         }
     } else {
@@ -881,14 +898,7 @@ pub async fn create_managed_agent(
             .iter()
             .find(|r| r.pubkey == pubkey)
             .ok_or_else(|| "agent disappeared".to_string())?;
-        let personas = load_personas(&app).unwrap_or_default();
-        build_managed_agent_summary(
-            &app,
-            record,
-            &runtimes,
-            &personas,
-            &crate::managed_agents::load_global_agent_config(&app).unwrap_or_default(),
-        )?
+        summarize_from_disk(&app, record, &runtimes)?
     } else {
         agent
     };
@@ -994,14 +1004,7 @@ pub async fn start_managed_agent(
                 .iter()
                 .find(|r| r.pubkey == pubkey)
                 .ok_or_else(|| format!("agent {pubkey} not found"))?;
-            let personas = load_personas(&app).unwrap_or_default();
-            build_managed_agent_summary(
-                &app,
-                record,
-                &runtimes,
-                &personas,
-                &crate::managed_agents::load_global_agent_config(&app).unwrap_or_default(),
-            )
+            summarize_from_disk(&app, record, &runtimes)
         }
         StartTarget::Provider { backend, .. } => Err(format!(
             "agent {pubkey} has unsupported backend kind: {backend:?}"
@@ -1079,14 +1082,7 @@ pub async fn stop_managed_agent(
             .iter()
             .find(|record| record.pubkey == pubkey)
             .ok_or_else(|| format!("agent {pubkey} not found"))?;
-        let personas = load_personas(&app).unwrap_or_default();
-        build_managed_agent_summary(
-            &app,
-            record,
-            &runtimes,
-            &personas,
-            &crate::managed_agents::load_global_agent_config(&app).unwrap_or_default(),
-        )
+        summarize_from_disk(&app, record, &runtimes)
     })
     .await
     .map_err(|e| format!("spawn_blocking failed: {e}"))?
