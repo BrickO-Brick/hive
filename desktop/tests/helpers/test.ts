@@ -5,7 +5,7 @@ import { E2E_APP_ORIGIN, bootstrapE2ePage } from "./bootstrap";
 export type * from "@playwright/test";
 
 type E2eFixtures = {
-  automaticE2eBootstrap: void;
+  automaticE2eBootstrap: undefined;
   /**
    * Set false only when a test must inspect or configure the page before its
    * first app navigation.
