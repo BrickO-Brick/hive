@@ -4913,6 +4913,18 @@ fn extract_auth_methods(init_result: &serde_json::Value) -> Vec<serde_json::Valu
         .unwrap_or_default()
 }
 
+/// Shut down the client and exit with `code` after printing `msg` to stderr.
+///
+/// `std::process::exit` runs no destructors, so error/timeout paths must call
+/// `shutdown().await` — which reaps the child AND deletes the git-identity
+/// keyfile tempdir — before exiting. Taking the client by value guarantees no
+/// caller can exit while still holding a live client (and thus a live keyfile).
+async fn shutdown_and_exit(mut client: AcpClient, msg: &str, code: i32) -> ! {
+    client.shutdown().await;
+    eprintln!("{msg}");
+    std::process::exit(code)
+}
+
 /// `buzz-acp auth-methods` — spawn an adapter, initialize it, print authMethods.
 async fn run_auth_methods(args: AuthMethodsArgs) -> Result<()> {
     let mut client = match spawn_auth_client(&args.agent).await {
@@ -4926,14 +4938,15 @@ async fn run_auth_methods(args: AuthMethodsArgs) -> Result<()> {
     let init_result = match tokio::time::timeout(MODELS_TIMEOUT, client.initialize()).await {
         Ok(Ok(result)) => result,
         Ok(Err(e)) => {
-            client.shutdown().await;
-            eprintln!("error: agent initialize failed: {e}");
-            std::process::exit(1);
+            shutdown_and_exit(client, &format!("error: agent initialize failed: {e}"), 1).await;
         }
         Err(_) => {
-            client.shutdown().await;
-            eprintln!("error: agent timed out ({MODELS_TIMEOUT:?})");
-            std::process::exit(1);
+            shutdown_and_exit(
+                client,
+                &format!("error: agent timed out ({MODELS_TIMEOUT:?})"),
+                1,
+            )
+            .await;
         }
     };
 
@@ -4974,14 +4987,15 @@ async fn run_authenticate(args: AuthenticateArgs) -> Result<()> {
     let init_result = match tokio::time::timeout(MODELS_TIMEOUT, client.initialize()).await {
         Ok(Ok(result)) => result,
         Ok(Err(e)) => {
-            client.shutdown().await;
-            eprintln!("error: agent initialize failed: {e}");
-            std::process::exit(1);
+            shutdown_and_exit(client, &format!("error: agent initialize failed: {e}"), 1).await;
         }
         Err(_) => {
-            client.shutdown().await;
-            eprintln!("error: agent initialize timed out ({MODELS_TIMEOUT:?})");
-            std::process::exit(1);
+            shutdown_and_exit(
+                client,
+                &format!("error: agent initialize timed out ({MODELS_TIMEOUT:?})"),
+                1,
+            )
+            .await;
         }
     };
 
@@ -4989,12 +5003,15 @@ async fn run_authenticate(args: AuthenticateArgs) -> Result<()> {
         .iter()
         .any(|method| method.get("id").and_then(|id| id.as_str()) == Some(args.method_id.as_str()));
     if !supports_method {
-        client.shutdown().await;
-        eprintln!(
-            "error: auth method '{}' is not advertised by this adapter",
-            args.method_id
-        );
-        std::process::exit(1);
+        shutdown_and_exit(
+            client,
+            &format!(
+                "error: auth method '{}' is not advertised by this adapter",
+                args.method_id
+            ),
+            1,
+        )
+        .await;
     }
 
     let result =
@@ -5006,14 +5023,15 @@ async fn run_authenticate(args: AuthenticateArgs) -> Result<()> {
             Ok(())
         }
         Ok(Err(e)) => {
-            client.shutdown().await;
-            eprintln!("error: authenticate failed: {e}");
-            std::process::exit(1);
+            shutdown_and_exit(client, &format!("error: authenticate failed: {e}"), 1).await;
         }
         Err(_) => {
-            client.shutdown().await;
-            eprintln!("error: authenticate timed out ({AUTHENTICATE_TIMEOUT:?})");
-            std::process::exit(1);
+            shutdown_and_exit(
+                client,
+                &format!("error: authenticate timed out ({AUTHENTICATE_TIMEOUT:?})"),
+                1,
+            )
+            .await;
         }
     }
 }
@@ -5052,14 +5070,20 @@ async fn run_models(args: ModelsArgs) -> Result<()> {
     let (init_result, session_resp) = match protocol_result {
         Ok(Ok(tuple)) => tuple,
         Ok(Err(e)) => {
-            client.shutdown().await;
-            eprintln!("error: agent communication failed: {e}");
-            std::process::exit(1);
+            shutdown_and_exit(
+                client,
+                &format!("error: agent communication failed: {e}"),
+                1,
+            )
+            .await;
         }
         Err(_) => {
-            client.shutdown().await;
-            eprintln!("error: agent timed out ({MODELS_TIMEOUT:?})");
-            std::process::exit(1);
+            shutdown_and_exit(
+                client,
+                &format!("error: agent timed out ({MODELS_TIMEOUT:?})"),
+                1,
+            )
+            .await;
         }
     };
 

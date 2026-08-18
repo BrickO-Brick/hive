@@ -216,8 +216,9 @@ pub struct AcpClient {
     standard_adapter: Option<StandardAdapterKind>,
     /// Session-scoped tempdir holding the agent's git identity keyfile and the
     /// `git` enforcement-wrapper symlink prepended to the child's PATH. Present
-    /// only when `NOSTR_PRIVATE_KEY` was set at spawn. Dropped with the client,
-    /// which deletes the keyfile — its sole lifecycle owner.
+    /// only when `NOSTR_PRIVATE_KEY` was set at spawn. Deleted explicitly by
+    /// [`AcpClient::shutdown`] (the guaranteed-cleanup path); `Drop` is the
+    /// best-effort fallback for callers that never call `shutdown`.
     _git_identity_dir: Option<tempfile::TempDir>,
 }
 
@@ -539,6 +540,19 @@ impl AcpClient {
     /// Call this when you need guaranteed cleanup — e.g., in `run_models`
     /// before process exit.
     pub async fn shutdown(&mut self) {
+        // Delete the git-identity tempdir (0600 nostr keyfile) explicitly and
+        // first. `TempDir`'s own `Drop` swallows its `remove_dir_all` error, and
+        // when the client is dropped right before `std::process::exit` on an
+        // error/timeout path that removal races the teardown and leaves the
+        // keyfile on disk ~80% of the time (the leak Gurney found). Closing it
+        // here — on the guaranteed-cleanup path, before the process-group kill —
+        // makes removal deterministic and surfaces any failure.
+        if let Some(dir) = self._git_identity_dir.take() {
+            let path = dir.path().to_path_buf();
+            if let Err(e) = dir.close() {
+                tracing::warn!("git identity: keyfile cleanup failed for {path:?}: {e}");
+            }
+        }
         // Kill the entire process group when possible. The child was spawned
         // with process_group(0), so its PID == its PGID. Killing the group
         // ensures subprocesses (MCP servers, tool processes) are cleaned up

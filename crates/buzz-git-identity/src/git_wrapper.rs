@@ -64,16 +64,108 @@ pub fn run() -> i32 {
     };
 
     // Push verification (L3) runs before exec so a wrongly-authored commit
-    // cannot leave the machine. A verification error blocks the push; an
-    // *inability to verify* (no agent identity configured) does not.
-    if subcommand(&argv).as_deref() == Some("push") {
-        if let Err(msg) = verify_push(&real_git, &argv) {
+    // cannot leave the machine. The effective command is resolved through git
+    // aliases (config-defined and inline `-c alias.*`), because `git pub` with
+    // `alias.pub = push` reaches the real push after we hand off — keying on the
+    // literal token alone would let an alias slip a wrong-authored commit past.
+    let ctx = repo_context_args(&argv);
+    if is_push_command(&real_git, &argv, &ctx) {
+        if let Err(msg) = verify_push(&real_git, &argv, &ctx) {
             eprintln!("{msg}");
             return 1;
         }
     }
 
     exec_real_git(&real_git, &argv)
+}
+
+/// Global options that carry the repository context real git would apply. The
+/// verifier's internal `config`/`rev-list`/`show` probes must run under the
+/// same context or they resolve against the wrapper's cwd instead — the
+/// `git -C <repo> push` bypass. `-C` and its value are already paired into the
+/// globals by [`split_globals`].
+fn repo_context_args(argv: &[String]) -> Vec<String> {
+    let (globals, _) = split_globals(argv);
+    let mut ctx = Vec::new();
+    let mut i = 0;
+    while i < globals.len() {
+        let g = globals[i].as_str();
+        if matches!(g, "-C" | "--git-dir" | "--work-tree" | "--namespace") {
+            ctx.push(globals[i].clone());
+            if i + 1 < globals.len() {
+                i += 1;
+                ctx.push(globals[i].clone());
+            }
+        } else if g.starts_with("--git-dir=")
+            || g.starts_with("--work-tree=")
+            || g.starts_with("--namespace=")
+        {
+            ctx.push(globals[i].clone());
+        }
+        i += 1;
+    }
+    ctx
+}
+
+/// Whether the invocation's *effective* command is `push`, resolving git
+/// aliases so `git pub` (with `alias.pub = push`) and `git -c alias.pub=push
+/// pub` are both recognized. Config aliases are read under `ctx` so a
+/// `-C <repo>` push consults the target repo's aliases. Shell aliases (`!…`)
+/// are opaque to arg parsing, so an alias body that invokes `push` is treated
+/// as a push (over-verification only ever rejects wrong-authored commits, never
+/// legitimate ones). Recursion is bounded to defeat cyclic alias definitions.
+fn is_push_command(real_git: &Path, argv: &[String], ctx: &[String]) -> bool {
+    let (globals, _) = split_globals(argv);
+    let inline = inline_aliases(&globals);
+    let mut name = match subcommand(argv) {
+        Some(s) => s,
+        None => return false,
+    };
+    for _ in 0..10 {
+        if name == "push" {
+            return true;
+        }
+        let def = inline.get(&name).cloned().or_else(|| {
+            capture(
+                real_git,
+                ctx,
+                &["config", "--get", &format!("alias.{name}")],
+            )
+        });
+        let def = match def {
+            Some(d) => d,
+            None => return false, // not an alias — this is the effective command
+        };
+        if let Some(body) = def.strip_prefix('!') {
+            // Shell alias: opaque; verify if its body invokes push anywhere.
+            return body
+                .split_whitespace()
+                .any(|t| t == "push" || t.ends_with("/git-push"));
+        }
+        match def.split_whitespace().next() {
+            Some(first) => name = first.to_string(),
+            None => return false,
+        }
+    }
+    false
+}
+
+/// Map of inline `-c alias.NAME=BODY` definitions passed on the command line.
+/// These win over config-file aliases, matching git's own precedence.
+fn inline_aliases(globals: &[String]) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    for token in globals {
+        let cfg = token
+            .strip_prefix("-c")
+            .filter(|s| !s.is_empty())
+            .unwrap_or(token);
+        if let Some(rest) = cfg.strip_prefix("alias.") {
+            if let Some((name, body)) = rest.split_once('=') {
+                map.insert(name.to_string(), body.to_string());
+            }
+        }
+    }
+    map
 }
 
 /// Reject the flag-based identity-override vectors. `Ok(())` means the argv is
@@ -194,12 +286,12 @@ fn subcommand(argv: &[String]) -> Option<String> {
 /// commits pulled in via a merge/rebase of `main` are excluded — they are
 /// reachable from `refs/remotes/*`. Only genuinely new local ("session")
 /// commits are checked, which is exactly the set that should be agent-authored.
-fn verify_push(real_git: &Path, argv: &[String]) -> Result<(), String> {
+fn verify_push(real_git: &Path, argv: &[String], ctx: &[String]) -> Result<(), String> {
     // The expected identity is whatever git config resolves `user.email` to —
     // i.e. the injected agent identity. If it does not look like an agent email
     // (`<64-hex>@host`), we cannot determine the agent identity and must not
     // block (avoids false rejects in unconfigured/local sessions).
-    let expected = git_config_email(real_git);
+    let expected = git_config_email(real_git, ctx);
     let expected = match expected {
         Some(e) if is_agent_email(&e) => e,
         _ => return Ok(()),
@@ -207,12 +299,25 @@ fn verify_push(real_git: &Path, argv: &[String]) -> Result<(), String> {
 
     let mut offenders = Vec::new();
     for tip in push_source_revs(argv) {
-        let shas = match rev_list_outgoing(real_git, &tip) {
+        let shas = match rev_list_outgoing(real_git, ctx, &tip) {
             Some(s) => s,
-            None => continue, // unresolvable ref (e.g. deletion) — nothing to check
+            // Fail closed: an outgoing tip that resolves to a real ref but whose
+            // range we cannot compute must not be treated as "nothing to check"
+            // — that was the `-C <repo>` bypass. Only genuinely unresolvable
+            // refs (deletions, tag-only pushes) skip, distinguished below.
+            None => {
+                if ref_exists(real_git, ctx, &tip) {
+                    return Err(format!(
+                        "buzz git wrapper: refusing to push — could not verify the authorship of \
+                         outgoing commits for `{tip}`. Enforcement fails closed rather than let \
+                         an unverified commit leave the machine."
+                    ));
+                }
+                continue;
+            }
         };
         for sha in shas {
-            if let Some(email) = commit_author_email(real_git, &sha) {
+            if let Some(email) = commit_author_email(real_git, ctx, &sha) {
                 if email != expected {
                     offenders.push((sha, email));
                 }
@@ -305,18 +410,41 @@ fn push_source_revs(argv: &[String]) -> Vec<String> {
         .collect()
 }
 
-fn git_config_email(real_git: &Path) -> Option<String> {
-    capture(real_git, &["config", "--get", "user.email"])
+fn git_config_email(real_git: &Path, ctx: &[String]) -> Option<String> {
+    capture(real_git, ctx, &["config", "--get", "user.email"])
 }
 
-fn commit_author_email(real_git: &Path, sha: &str) -> Option<String> {
-    capture(real_git, &["show", "-s", "--format=%ae", sha])
+fn commit_author_email(real_git: &Path, ctx: &[String], sha: &str) -> Option<String> {
+    capture(real_git, ctx, &["show", "-s", "--format=%ae", sha])
+}
+
+/// Whether `tip` resolves to a real object/ref under `ctx`. Distinguishes a
+/// genuinely-absent ref (deletion, nonexistent source — safe to skip) from a
+/// ref that exists but whose outgoing range could not be computed (fail closed).
+fn ref_exists(real_git: &Path, ctx: &[String], tip: &str) -> bool {
+    let mut args = ctx.to_vec();
+    args.extend(
+        [
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{tip}^{{commit}}"),
+        ]
+        .map(String::from),
+    );
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    capture_raw(real_git, &arg_refs)
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 /// Commits reachable from `tip` but not from any remote-tracking ref. `None`
 /// when `tip` does not resolve (rev-list exits non-zero).
-fn rev_list_outgoing(real_git: &Path, tip: &str) -> Option<Vec<String>> {
-    let out = capture_output(real_git, &["rev-list", tip, "--not", "--remotes"])?;
+fn rev_list_outgoing(real_git: &Path, ctx: &[String], tip: &str) -> Option<Vec<String>> {
+    let mut args = ctx.to_vec();
+    args.extend(["rev-list", tip, "--not", "--remotes"].map(String::from));
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let out = capture_raw(real_git, &arg_refs)?;
     if !out.status.success() {
         return None;
     }
@@ -328,8 +456,14 @@ fn rev_list_outgoing(real_git: &Path, tip: &str) -> Option<Vec<String>> {
     )
 }
 
-fn capture(real_git: &Path, args: &[&str]) -> Option<String> {
-    let out = capture_output(real_git, args)?;
+/// Run `git <ctx...> <args...>` and capture trimmed stdout when it succeeds.
+/// `ctx` carries repository-context globals (`-C`, `--git-dir`, …) so the probe
+/// resolves against the same repository the user's command targets.
+fn capture(real_git: &Path, ctx: &[String], args: &[&str]) -> Option<String> {
+    let mut full = ctx.to_vec();
+    full.extend(args.iter().map(|s| s.to_string()));
+    let arg_refs: Vec<&str> = full.iter().map(String::as_str).collect();
+    let out = capture_raw(real_git, &arg_refs)?;
     if !out.status.success() {
         return None;
     }
@@ -337,7 +471,7 @@ fn capture(real_git: &Path, args: &[&str]) -> Option<String> {
     (!s.is_empty()).then_some(s)
 }
 
-fn capture_output(real_git: &Path, args: &[&str]) -> Option<std::process::Output> {
+fn capture_raw(real_git: &Path, args: &[&str]) -> Option<std::process::Output> {
     let mut cmd = std::process::Command::new(real_git);
     cmd.args(args);
     scrub_env(&mut cmd);
@@ -575,5 +709,121 @@ mod tests {
             push_source_revs(&v(&["push", "--force", "origin", "b:main"])),
             vec!["b"]
         );
+    }
+
+    // ── inline_aliases / repo_context_args ────────────────────────────────────
+
+    #[test]
+    fn inline_aliases_parses_dash_c_alias_definitions() {
+        let (globals, _) = split_globals(&v(&["-c", "alias.pub=push", "-calias.p=push", "pub"]));
+        let map = inline_aliases(&globals);
+        assert_eq!(map.get("pub").map(String::as_str), Some("push"));
+        assert_eq!(map.get("p").map(String::as_str), Some("push"));
+    }
+
+    #[test]
+    fn repo_context_args_extracts_repository_context_globals() {
+        assert_eq!(
+            repo_context_args(&v(&["-C", "/repo", "-c", "core.x=y", "push"])),
+            v(&["-C", "/repo"])
+        );
+        assert_eq!(
+            repo_context_args(&v(&["--git-dir=/g", "status"])),
+            v(&["--git-dir=/g"])
+        );
+        assert!(repo_context_args(&v(&["push"])).is_empty());
+    }
+
+    // ── is_push_command / verify_push against a real git repo ─────────────────
+
+    /// Build a repo whose HEAD carries a deliberately human-authored commit and
+    /// return `(tempdir, repo_path)`. No remote, so `--not --remotes` yields the
+    /// full history — the commit shows as outgoing.
+    fn human_authored_repo() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().to_path_buf();
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_SYSTEM", "/dev/null")
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "git {args:?} failed");
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.name", "Human"]);
+        git(&["config", "user.email", "human@example.com"]);
+        git(&["config", "commit.gpgSign", "false"]);
+        git(&["config", "alias.pub", "push"]);
+        std::fs::write(repo.join("f"), "x").unwrap();
+        git(&["add", "f"]);
+        git(&["commit", "-qm", "human commit"]);
+        (dir, repo)
+    }
+
+    fn real_git() -> PathBuf {
+        PathBuf::from("git")
+    }
+
+    #[test]
+    fn config_alias_resolving_to_push_is_recognized() {
+        let (_d, repo) = human_authored_repo();
+        let ctx = vec!["-C".to_string(), repo.to_string_lossy().into_owned()];
+        // `git pub` → alias.pub = push.
+        assert!(is_push_command(
+            &real_git(),
+            &v(&["-C", repo.to_str().unwrap(), "pub"]),
+            &ctx
+        ));
+        // A non-push subcommand is not misclassified.
+        assert!(!is_push_command(
+            &real_git(),
+            &v(&["-C", repo.to_str().unwrap(), "status"]),
+            &ctx
+        ));
+    }
+
+    #[test]
+    fn inline_alias_resolving_to_push_is_recognized() {
+        let ctx: Vec<String> = vec![];
+        assert!(is_push_command(
+            &real_git(),
+            &v(&["-c", "alias.pub=push", "pub"]),
+            &ctx
+        ));
+    }
+
+    #[test]
+    fn verify_push_rejects_human_commit_through_dash_c_context() {
+        let (_d, repo) = human_authored_repo();
+        let agent = format!("{}@relay.test", "a".repeat(64));
+        // Point the agent identity at a different email so HEAD is an offender.
+        std::process::Command::new("git")
+            .args(["-C", repo.to_str().unwrap(), "config", "user.email", &agent])
+            .status()
+            .unwrap();
+        let ctx = vec!["-C".to_string(), repo.to_string_lossy().into_owned()];
+        let err = verify_push(
+            &real_git(),
+            &v(&["-C", repo.to_str().unwrap(), "push", "origin", "main"]),
+            &ctx,
+        )
+        .expect_err("human-authored HEAD must be refused");
+        assert!(err.contains("not authored by your agent identity"), "{err}");
+    }
+
+    #[test]
+    fn ref_exists_distinguishes_real_refs_from_absent_ones() {
+        // Fail-closed hinges on this: a tip that resolves to a real commit but
+        // whose outgoing range can't be computed is refused, while a genuinely
+        // absent ref (deletion) is safely skipped.
+        let (_d, repo) = human_authored_repo();
+        let ctx = vec!["-C".to_string(), repo.to_string_lossy().into_owned()];
+        assert!(ref_exists(&real_git(), &ctx, "main"));
+        assert!(ref_exists(&real_git(), &ctx, "HEAD"));
+        assert!(!ref_exists(&real_git(), &ctx, "no-such-ref"));
     }
 }
