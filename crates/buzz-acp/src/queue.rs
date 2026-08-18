@@ -2691,6 +2691,12 @@ mod tests {
             assert!(first.contains(section), "first message missing {section}");
             assert!(!later.contains(section), "turn 2 repeated {section}");
         }
+        // `[Defaults]` dropping out here is a known cost, not a goal: the
+        // interaction norms are only as durable as this gate on the legacy
+        // path, where modern agents keep them in the persistent system role.
+        // Re-sending them alone is not possible without also re-sending the
+        // rest of the block — `StandingContext::sections()` renders them
+        // together. See the durability note in `interaction_norms`.
         // What the turn is actually about survives, and now leads.
         assert!(later.starts_with("[Context]"), "got: {later}");
         assert!(later.contains("hello"));

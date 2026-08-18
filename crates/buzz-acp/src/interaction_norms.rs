@@ -15,6 +15,28 @@
 //! Kept tiny. Every norm added here taxes every session of every agent, so
 //! entries must be cross-cutting behavioral defaults that cannot live
 //! anywhere more targeted (the base prompt, a persona, a skill).
+//!
+//! # Durability differs by delivery path
+//!
+//! Enforcement is not equally strong on both paths, and the difference is
+//! structural rather than a bug to fix here:
+//!
+//! - **Protocol-v2 and Claude agents** receive this block in the `session/new`
+//!   system role, where it persists for the life of the session and is
+//!   re-established on every new session.
+//! - **Legacy agents** (`protocol_version < 2`, excluding claude-agent-acp,
+//!   plus goose builds without the system-prompt extension) receive it in the
+//!   session's *first user message only* — `format_prompt` gates standing
+//!   context behind `!standing_context_sent` so a large block is not re-sent
+//!   every turn. Fifty turns later these norms are old context competing with
+//!   everything since, so adherence degrades over a long session.
+//!
+//! Re-sending per turn was considered and rejected: it would re-add the entire
+//! standing block (base prompt, persona, team instructions, memory, canvas) on
+//! the legacy path, since `StandingContext::sections()` renders them together.
+//! The honest summary is that these are durable defaults for modern agents and
+//! best-effort for legacy ones. If a legacy agent slips late in a long
+//! session, this gate is the first place to look.
 
 /// The `[Defaults]` section leading every agent's standing context.
 ///
@@ -33,9 +55,20 @@
 /// mis-gendering outlives the conversation where it happened. Same-turn
 /// correction matches the existing "evict completed work the same turn"
 /// memory discipline in the base prompt.
+///
+/// That bullet also carries the pubkey-keying clause, even though
+/// `base_prompt.md` states it at length. Display names are not unique on a
+/// relay (`buzz_sdk::mentions::match_names_to_profiles` deliberately returns
+/// every pubkey sharing a name), so pronouns read off one profile can attach
+/// to a same-named stranger — an error that cites a real source and therefore
+/// survives scrutiny a guess would not. The fuller rule lives in the base
+/// prompt, which `BUZZ_ACP_BASE_PROMPT_FILE` replaces wholesale; keeping the
+/// short form here means an operator with a custom base prompt cannot end up
+/// with the pronoun default but not the binding rule, which is exactly the
+/// combination that produces confidently-sourced mis-gendering.
 pub(crate) const INTERACTION_NORMS_PREAMBLE: &str = "[Defaults]\n\
 - Never infer anyone's gender or pronouns — the user, channel members, people mentioned, or other agents — from a name, avatar, persona theme, or writing style. Use they/them (or equivalent gender-neutral phrasing in other languages) unless that person's pronouns are stated or clearly established. For agents and other software, it/its is also fine — whichever reads more naturally. This is a default: pronouns someone states always win.\n\
-- Record a person's pronouns in memory only when they are stated or clearly established — never a guess. If someone states pronouns that contradict your stored memory, correct the memory the same turn.";
+- Record a person's pronouns in memory only when they are stated or clearly established — never a guess, and keyed to their pubkey, since display names are not unique. If someone states pronouns that contradict your stored memory, correct the memory the same turn.";
 
 #[cfg(test)]
 mod tests {
@@ -85,5 +118,15 @@ mod tests {
         // gender recorded once would be re-asserted everywhere, forever.
         assert!(INTERACTION_NORMS_PREAMBLE.contains("never a guess"));
         assert!(INTERACTION_NORMS_PREAMBLE.contains("correct the memory the same turn"));
+    }
+
+    #[test]
+    fn preamble_keys_remembered_pronouns_to_a_pubkey() {
+        // base_prompt.md states this at length, but it is replaceable via
+        // BUZZ_ACP_BASE_PROMPT_FILE. Carrying the short form here keeps an
+        // operator from ending up with the pronoun default but not the
+        // binding rule — the combination that yields sourced mis-gendering.
+        assert!(INTERACTION_NORMS_PREAMBLE.contains("keyed to their pubkey"));
+        assert!(INTERACTION_NORMS_PREAMBLE.contains("display names are not unique"));
     }
 }
