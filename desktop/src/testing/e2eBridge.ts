@@ -113,6 +113,7 @@ type MockManagedAgentRuntimeSeed = {
 
 type MockRelayAgentSeed = {
   pubkey: string;
+  ownerPubkey?: string | null;
   name: string;
   agentType?: string;
   capabilities?: string[];
@@ -236,6 +237,8 @@ type E2eConfig = {
     acpAuthMethods?: Record<string, RawAcpAuthMethodsResult>;
     acpAuthMethodsErrors?: Record<string, string>;
     acpAuthMethodsError?: string;
+    /** When set, workflow updates fail with this message. */
+    workflowUpdateError?: string;
     /** When set, the `delete_custom_harness` mock command throws with this message. */
     deleteCustomHarnessError?: string;
     connectAcpRuntimeResult?: RawConnectAcpRuntimeResult;
@@ -293,6 +296,10 @@ type E2eConfig = {
     personaSharePublicationStatuses?: Array<"published" | "queued">;
     teams?: MockTeamSeed[];
     relayAgents?: MockRelayAgentSeed[];
+    /** Reject successive relay-agent directory reads, then resume. */
+    relayAgentListErrors?: (string | null)[];
+    /** Pubkeys omitted only from targeted send-time authorization checks. */
+    relayAgentRevalidationRevokedPubkeys?: string[];
     /** Native-like huddle state seeded from authoritative role-bearing membership. */
     huddle?: MockHuddleSeed;
     agentListDelayMs?: number;
@@ -313,6 +320,10 @@ type E2eConfig = {
     /** Reject successive mock `join_channel` calls, then resume. */
     joinChannelErrors?: string[];
     channelsReadDelayMs?: number;
+    /** Return not-modified for this many reads before resuming full payloads. */
+    channelsNotModifiedResponses?: number;
+    /** When true, a matching knownHash returns a not-modified channel payload. */
+    honorChannelsKnownHash?: boolean;
     /** Number of seeded rows in the deep-history fixture. Defaults to 600. */
     deepHistoryMessageCount?: number;
     feedReadError?: string;
@@ -320,6 +331,8 @@ type E2eConfig = {
     /** Delay (ms) for `apply_workspace` so e2e tests can observe the
      *  community-switch gate. 0/undefined = instant. */
     applyCommunityDelayMs?: number;
+    /** Reject `clear_pending_navigation_deep_links` with this message. */
+    clearPendingNavigationDeepLinksError?: string;
     openDmDelayMs?: number;
     sendMessageDelayMs?: number;
     /** Hold the media proxy at port 0 until the E2E release seam is invoked. */
@@ -369,11 +382,15 @@ type E2eConfig = {
       } | null
     >;
     linkPreviewMetadataDelayMs?: number;
+    /** Hold metadata until the E2E release seam is invoked. */
+    deferLinkPreviewMetadata?: boolean;
     /** Simulates native cold-cache startup work before the async response. */
     linkPreviewMetadataStartBlockMs?: number;
     /** Delays link-preview snapshot media uploads so specs can exercise the
      *  composer's settle-gated disabled state before the snapshot tag is ready. */
     linkPreviewUploadDelayMs?: number;
+    /** Hold link-preview uploads before mock-native cancellation registration. */
+    deferLinkPreviewUploadRegistration?: boolean;
     /** Substrings of `link-preview-*` upload filenames whose `upload_media_bytes`
      *  call should reject, so specs can drive a per-media snapshot upload failure
      *  (e.g. `["link-preview-image"]` fails only the thumbnail, favicon survives). */
@@ -469,6 +486,19 @@ type E2eConfig = {
       relayUrl: string;
       code?: string | null;
       name?: string | null;
+    }>;
+    pendingNavigationDeepLinks?: Array<{
+      id: string;
+      kind: "channel" | "message";
+      channelId: string;
+      messageId?: string | null;
+      threadRootId?: string | null;
+    }>;
+    // Entity links captured before React mounts. The app drains and acknowledges
+    // this mocked Rust-side queue after installing its event listener.
+    pendingEntityDeepLinks?: Array<{
+      id: string;
+      href: string;
     }>;
     // When true, `get_identity` returns `lost: true` until `persist_current_identity`
     // or `import_identity` is called. Drives the identity-lost recovery UX in tests.
@@ -824,6 +854,7 @@ type RawSendChannelMessageResponse = {
 
 type RawRelayAgent = {
   pubkey: string;
+  owner_pubkey?: string | null;
   name: string;
   agent_type: string;
   channels: string[];
@@ -1375,6 +1406,12 @@ declare global {
     __BUZZ_E2E_RELEASE_CHANNELS_READ__?: () => number;
     /** Number of channel reads currently held by the seam. */
     __BUZZ_E2E_CHANNELS_READ_PENDING__?: number;
+    /** Release all link-preview metadata commands held by the mock bridge. */
+    __BUZZ_E2E_RELEASE_LINK_PREVIEW_METADATA__?: () => number;
+    /** Release link-preview uploads held before mock-native registration. */
+    __BUZZ_E2E_RELEASE_LINK_PREVIEW_UPLOADS__?: () => number;
+    /** Uploads that passed mock-native registration and began relay work. */
+    __BUZZ_E2E_LINK_PREVIEW_UPLOAD_STARTS__?: number;
   }
 }
 
@@ -1479,6 +1516,9 @@ type DeferredGetEvent = {
   run: () => Promise<string>;
 };
 let deferredGetEventQueue: DeferredGetEvent[] = [];
+let deferredLinkPreviewMetadataQueue: Array<() => void> = [];
+let deferredLinkPreviewUploadQueue: Array<() => void> = [];
+let cancelledMediaUploadIds = new Set<string>();
 let deferNextChannelsRead = false;
 let deferredChannelsReadResolve: (() => void) | null = null;
 
@@ -2290,6 +2330,7 @@ function resetMockRelayAgents(config?: E2eConfig) {
     });
     mockRelayAgents.push({
       pubkey: seed.pubkey,
+      owner_pubkey: seed.ownerPubkey ?? null,
       name: seed.name,
       agent_type: seed.agentType ?? "goose",
       channels: channels.map((channel) => channel.name),
@@ -2374,9 +2415,9 @@ function resetMockPersonas(config?: E2eConfig) {
     },
     {
       id: "builtin:bumble",
-      display_name: "Bumble",
+      display_name: "Pollen",
       avatar_url: null,
-      system_prompt: "You are Bumble.",
+      system_prompt: "You are Pollen.",
     },
   ];
   mockPersonas = builtInPersonas.map((persona) => ({
@@ -3342,6 +3383,7 @@ let mockRelayAgents: RawRelayAgent[] = defaultMockRelayAgents.map((agent) => ({
 
 type MockWorkflow = {
   id: string;
+  revision: string;
   name: string;
   owner_pubkey: string;
   channel_id: string | null;
@@ -3374,6 +3416,7 @@ type RawWorkflowRun = {
   execution_trace: RawWorkflowTraceEntry[];
   started_at: number | null;
   completed_at: number | null;
+  error_code: string | null;
   error_message: string | null;
   created_at: number;
 };
@@ -3428,6 +3471,7 @@ function handleCreateWorkflow(args: {
       : `workflow_${mockWorkflowIdCounter}`;
   const workflow: MockWorkflow = {
     id: `mock-wf-${mockWorkflowIdCounter}`,
+    revision: `mock-revision-${mockWorkflowIdCounter}-1`,
     name,
     owner_pubkey: MOCK_IDENTITY_PUBKEY,
     channel_id: args.channelId,
@@ -3451,13 +3495,22 @@ function handleCreateWorkflow(args: {
 function handleUpdateWorkflow(args: {
   workflowId: string;
   yamlDefinition: string;
+  expectedRevision: string;
 }) {
   const workflow = mockWorkflows.find((w) => w.id === args.workflowId);
   if (!workflow) throw new Error(`Workflow ${args.workflowId} not found`);
+  const configuredError = window.__BUZZ_E2E__?.mock?.workflowUpdateError;
+  if (configuredError) throw new Error(configuredError);
+  if (workflow.revision !== args.expectedRevision) {
+    throw new Error(
+      "workflow changed since it was loaded; refresh and try again",
+    );
+  }
   const definition = parseWorkflowDefinition(args.yamlDefinition);
   if (typeof definition.name === "string") workflow.name = definition.name;
   workflow.definition = definition;
   workflow.updated_at = Math.floor(Date.now() / 1000);
+  workflow.revision = `mock-revision-${workflow.id}-${workflow.updated_at}-${Math.random()}`;
 
   const trigger = definition.trigger as Record<string, unknown> | undefined;
   return {
@@ -3533,6 +3586,7 @@ function buildMockWorkflowRun(workflow: MockWorkflow): RawWorkflowRun {
     execution_trace: executionTrace,
     started_at: startedAt,
     completed_at: completedAt,
+    error_code: null,
     error_message: null,
     created_at: createdAt,
   };
@@ -3557,11 +3611,14 @@ function handleGetWorkflowRuns(args: {
   const runs = mockWorkflowRuns.filter(
     (run) => run.workflow_id === args.workflowId,
   );
-  return args.limit ? runs.slice(0, args.limit) : runs;
+  return {
+    runs: args.limit ? runs.slice(0, args.limit) : runs,
+    next: null,
+  };
 }
 
 function handleGetRunApprovals(_args: { workflowId: string; runId: string }) {
-  return [];
+  return { approvals: [] };
 }
 
 const mockProfiles = new Map<string, RawProfile>([
@@ -4370,6 +4427,32 @@ function resetMockPendingCommunityDeepLinks(config: E2eConfig | null) {
     code: pending.code ?? null,
     name: pending.name ?? null,
   }));
+}
+
+let mockPendingNavigationDeepLinks: Array<{
+  id: string;
+  kind: "channel" | "message";
+  channelId: string;
+  messageId: string | null;
+  threadRootId: string | null;
+}> = [];
+
+function resetMockPendingNavigationDeepLinks(config: E2eConfig | null) {
+  mockPendingNavigationDeepLinks = (
+    config?.mock?.pendingNavigationDeepLinks ?? []
+  ).map((pending) => ({
+    ...pending,
+    messageId: pending.messageId ?? null,
+    threadRootId: pending.threadRootId ?? null,
+  }));
+}
+
+let mockPendingEntityDeepLinks: Array<{ id: string; href: string }> = [];
+
+function resetMockPendingEntityDeepLinks(config: E2eConfig | null) {
+  mockPendingEntityDeepLinks = (config?.mock?.pendingEntityDeepLinks ?? []).map(
+    (pending) => ({ ...pending }),
+  );
 }
 
 function recordMockUserStatus(event: RelayEvent) {
@@ -5583,6 +5666,18 @@ function filterMockProjectEvents(filter: MockFilter): RelayEvent[] {
       ) {
         return false;
       }
+      if (
+        filter["#e"] &&
+        !event.tags.some(
+          (tag) => tag[0] === "e" && filter["#e"]?.includes(tag[1]),
+        )
+      ) {
+        return false;
+      }
+      // Inclusive `until`, like the relay's SQL `created_at <= $until`.
+      if (filter.until !== undefined && event.created_at > filter.until) {
+        return false;
+      }
       return true;
     })
     .sort((left, right) => right.created_at - left.created_at)
@@ -5601,7 +5696,9 @@ function createMockEvent(
   tags: string[][],
   pubkey = DEFAULT_MOCK_IDENTITY.pubkey,
   createdAt = Math.floor(Date.now() / 1000),
-  id = crypto.randomUUID().replace(/-/g, ""),
+  // 64 hex chars like a real event id — share-link builders reject shorter
+  // ids, so copy-link buttons only render with full-length ids.
+  id = (crypto.randomUUID() + crypto.randomUUID()).replace(/-/g, ""),
 ): RelayEvent {
   return {
     id,
@@ -5729,7 +5826,10 @@ function buildLastMessages(
   return map;
 }
 
-async function handleGetChannels(config: E2eConfig | undefined) {
+async function handleGetChannels(
+  payload: unknown,
+  config: E2eConfig | undefined,
+) {
   const channelsReadDelayMs = config?.mock?.channelsReadDelayMs ?? 0;
   if (channelsReadDelayMs > 0) {
     await new Promise((resolve) =>
@@ -5746,15 +5846,25 @@ async function handleGetChannels(config: E2eConfig | undefined) {
 
   const identity = getIdentity(config);
   if (!identity) {
-    // The hash is constant ("mock-hash") and channels are always returned in
-    // full — the not-modified short-circuit is intentionally never exercised
-    // here: mock channel data mutates during tests (last_message_at updates on
-    // message emission) while the hash never changes, so honoring knownHash
-    // would wrongly short-circuit after mutations.
+    // The hash is constant ("mock-hash") and full lists remain the default:
+    // mock channel data mutates during tests while the hash does not. Focused
+    // snapshot specs can opt into the not-modified branch explicitly.
     const channels = listMockChannels(config);
+    const hash = "mock-hash";
+    const knownHash = (payload as { knownHash?: unknown } | null)?.knownHash;
+    const forcedNotModified =
+      (config?.mock?.channelsNotModifiedResponses ?? 0) > 0;
+    if (forcedNotModified && config?.mock) {
+      config.mock.channelsNotModifiedResponses =
+        (config.mock.channelsNotModifiedResponses ?? 1) - 1;
+    }
     return {
-      hash: "mock-hash",
-      channels,
+      hash,
+      channels:
+        forcedNotModified ||
+        (config?.mock?.honorChannelsKnownHash && knownHash === hash)
+          ? null
+          : channels,
       last_messages: buildLastMessages(channels),
     };
   }
@@ -7461,6 +7571,8 @@ async function handleListRelayAgents(
   config: E2eConfig | undefined,
 ): Promise<RawRelayAgent[]> {
   await delayAgentList(config);
+  const error = config?.mock?.relayAgentListErrors?.shift();
+  if (error) throw new Error(error);
   syncMockRelayAgentsFromManagedAgents();
   return mockRelayAgents.map(cloneRelayAgent);
 }
@@ -8139,10 +8251,11 @@ function upsertMockPersonaRelayEvent(event: RelayEvent): void {
   mockPersonaEvents.push(event);
 }
 
-function upsertMockPersonaEvent(persona: RawPersona): void {
-  const event: RelayEvent = {
-    id: mockEventId(),
-    pubkey: MOCK_IDENTITY_PUBKEY,
+function upsertMockPersonaEvent(
+  persona: RawPersona,
+  identity?: TestIdentity,
+): void {
+  const template = {
     created_at: Math.floor(Date.now() / 1_000),
     kind: KIND_PERSONA,
     tags: [["d", persona.id], ...(persona.shared ? [["shared", "true"]] : [])],
@@ -8158,8 +8271,15 @@ function upsertMockPersonaEvent(persona: RawPersona): void {
       respond_to_allowlist: persona.respond_to_allowlist ?? [],
       parallelism: persona.parallelism ?? null,
     }),
-    sig: "0".repeat(128),
   };
+  const event: RelayEvent = identity
+    ? finalizeEvent(template, hexToBytes(identity.privateKey))
+    : {
+        ...template,
+        id: mockEventId(),
+        pubkey: MOCK_IDENTITY_PUBKEY,
+        sig: "0".repeat(128),
+      };
   upsertMockPersonaRelayEvent(event);
   emitMockGlobalEvent(event);
 }
@@ -8184,7 +8304,7 @@ function publishMockPersonaHead(
       personaSharePublicationCallCount++
     ] ?? "published";
   if (publicationStatus === "published") {
-    upsertMockPersonaEvent(persona);
+    upsertMockPersonaEvent(persona, getActiveIdentity(config));
   }
   return {
     persona: { ...persona },
@@ -9073,6 +9193,16 @@ async function handleSendChannelMessage(
     );
   }
 
+  // Mirror the WebSocket send path's failure injection so specs that route
+  // the first message through the acknowledged HTTP transport still exercise
+  // `sendMessageErrors`. The real command rejects on a relay `OK false`, which
+  // surfaces to callers as a thrown error carrying the relay reason.
+  const sendMessageError =
+    kind === 9 ? config?.mock?.sendMessageErrors?.shift() : null;
+  if (sendMessageError) {
+    throw new Error(sendMessageError);
+  }
+
   // NIP-92 imeta attachments. The real relay echoes these back on the stored
   // event; mirror that here so attachment renderers (FileCard, images, video)
   // have the imeta tags they key on. `null`/empty → no extra tags.
@@ -9848,10 +9978,12 @@ function sendToMockSocket(args: {
     }
 
     // Project queries: NIP-34 kinds, or kind:1 comments scoped by repo `a`
-    // tag (PR/issue discussions, approvals, review requests).
+    // tag or by issue/PR root `e` tag (discussions, approvals, review
+    // requests, assignment operations). Channel messages are kind 9, so a
+    // kind:1 `#e` query can only target project discussion events.
     if (
       filter.kinds?.some((kind) => MOCK_PROJECT_KINDS.has(kind)) ||
-      (filter.kinds?.includes(1) && filter["#a"])
+      (filter.kinds?.includes(1) && (filter["#a"] || filter["#e"]))
     ) {
       window.__BUZZ_E2E_PROJECT_QUERY_FILTERS__ ??= [];
       window.__BUZZ_E2E_PROJECT_QUERY_FILTERS__.push(filter);
@@ -10137,6 +10269,20 @@ export function maybeInstallE2eTauriMocks() {
   mockChannelHistoryCloses.length = 0;
   relayWebsocketConnectAttemptStarts.length = 0;
   deferredSendMessageLiveEchoes.length = 0;
+  deferredLinkPreviewMetadataQueue = [];
+  deferredLinkPreviewUploadQueue = [];
+  cancelledMediaUploadIds = new Set<string>();
+  window.__BUZZ_E2E_LINK_PREVIEW_UPLOAD_STARTS__ = 0;
+  window.__BUZZ_E2E_RELEASE_LINK_PREVIEW_METADATA__ = () => {
+    const queued = deferredLinkPreviewMetadataQueue.splice(0);
+    for (const release of queued) release();
+    return queued.length;
+  };
+  window.__BUZZ_E2E_RELEASE_LINK_PREVIEW_UPLOADS__ = () => {
+    const queued = deferredLinkPreviewUploadQueue.splice(0);
+    for (const release of queued) release();
+    return queued.length;
+  };
   mockGlobalAgentConfig = config.mock?.globalAgentConfig
     ? { ...config.mock.globalAgentConfig }
     : null;
@@ -10152,6 +10298,8 @@ export function maybeInstallE2eTauriMocks() {
   resetMockPersonaCatalogEvents(config);
   resetMockSaveSubscriptions(config);
   resetMockPendingCommunityDeepLinks(config);
+  resetMockPendingNavigationDeepLinks(config);
+  resetMockPendingEntityDeepLinks(config);
   initializeMockHuddle(config.mock?.huddle, config);
   mockWebsocketSendMutexWedged = false;
   if (config.mock?.windowLabel) {
@@ -11380,6 +11528,11 @@ export function maybeInstallE2eTauriMocks() {
       case "fetch_join_policy":
         return activeConfig?.mock?.joinPolicy ?? null;
       case "fetch_link_preview_metadata": {
+        if (activeConfig?.mock?.deferLinkPreviewMetadata) {
+          await new Promise<void>((resolve) => {
+            deferredLinkPreviewMetadataQueue.push(resolve);
+          });
+        }
         const startBlockMs =
           activeConfig?.mock?.linkPreviewMetadataStartBlockMs ?? 0;
         if (startBlockMs > 0) {
@@ -11772,6 +11925,87 @@ export function maybeInstallE2eTauriMocks() {
           message: `Deleted branch ${input.branch}.`,
         };
       }
+      case "publish_project_owner_announcement": {
+        const { input } = payload as {
+          input: {
+            content: string;
+            createdAt?: number;
+            kind: number;
+            tags: string[][];
+            targetOwner: string;
+          };
+        };
+        const normalizedTargetOwner = input.targetOwner.toLowerCase();
+        const canSignAsOwner =
+          (identity?.pubkey ?? MOCK_IDENTITY_PUBKEY).toLowerCase() ===
+            normalizedTargetOwner ||
+          mockManagedAgents.some(
+            (agent) => agent.pubkey.toLowerCase() === normalizedTargetOwner,
+          );
+        if (!canSignAsOwner) {
+          throw new Error(
+            "Only the owner identity or the owner of its managed agent can perform this action.",
+          );
+        }
+        const event = createMockEvent(
+          input.kind,
+          input.content,
+          input.tags,
+          normalizedTargetOwner,
+          input.createdAt,
+        );
+        window.__BUZZ_E2E_SIGNED_EVENTS__?.push({
+          content: event.content,
+          createdAt: event.created_at,
+          kind: event.kind,
+          tags: event.tags,
+        });
+
+        let publicationError: string | null = null;
+        if (
+          event.kind === KIND_PROJECT_ANNOUNCEMENT &&
+          window.__BUZZ_E2E_UNSUPPORTED_PROJECT_ANNOUNCEMENTS__
+        ) {
+          publicationError = "restricted: unknown event kind";
+        } else {
+          const rejectionIndex =
+            window.__BUZZ_E2E_REJECT_PROJECT_EVENT_KINDS__?.indexOf(
+              event.kind,
+            ) ?? -1;
+          if (rejectionIndex >= 0) {
+            window.__BUZZ_E2E_REJECT_PROJECT_EVENT_KINDS__?.splice(
+              rejectionIndex,
+              1,
+            );
+            publicationError = "mock project event rejection";
+          } else {
+            getMockProjectEventStore().push(event);
+            const acceptedProjectEvents =
+              window.__BUZZ_E2E_ACCEPTED_PROJECT_EVENTS__ ?? [];
+            acceptedProjectEvents.push({
+              content: event.content,
+              kind: event.kind,
+              tags: event.tags,
+            });
+            window.__BUZZ_E2E_ACCEPTED_PROJECT_EVENTS__ = acceptedProjectEvents;
+            const failedAckIndex =
+              window.__BUZZ_E2E_FAIL_PROJECT_EVENT_ACK_KINDS__?.indexOf(
+                event.kind,
+              ) ?? -1;
+            if (failedAckIndex >= 0) {
+              window.__BUZZ_E2E_FAIL_PROJECT_EVENT_ACK_KINDS__?.splice(
+                failedAckIndex,
+                1,
+              );
+              publicationError = "mock lost project acknowledgement";
+            }
+          }
+        }
+        return {
+          event: JSON.stringify(event),
+          publication_error: publicationError,
+        };
+      }
       case "sign_project_pull_request_status": {
         const { input } = payload as {
           input: {
@@ -11961,6 +12195,32 @@ export function maybeInstallE2eTauriMocks() {
         mockPendingCommunityDeepLinks.splice(index, 1);
         return true;
       }
+      case "clear_pending_navigation_deep_links":
+        if (activeConfig?.mock?.clearPendingNavigationDeepLinksError) {
+          throw new Error(
+            activeConfig.mock.clearPendingNavigationDeepLinksError,
+          );
+        }
+        mockPendingNavigationDeepLinks.length = 0;
+        return;
+      case "take_pending_navigation_deep_link":
+        return mockPendingNavigationDeepLinks[0] ?? null;
+      case "acknowledge_pending_navigation_deep_link": {
+        const { id } = payload as { id: string };
+        if (mockPendingNavigationDeepLinks[0]?.id !== id) return false;
+        mockPendingNavigationDeepLinks.shift();
+        return true;
+      }
+      case "take_pending_entity_deep_link":
+        return mockPendingEntityDeepLinks[0] ?? null;
+      case "acknowledge_pending_entity_deep_link": {
+        const { id } = payload as { id: string };
+        if (mockPendingEntityDeepLinks[0]?.id !== id) {
+          return false;
+        }
+        mockPendingEntityDeepLinks.shift();
+        return true;
+      }
       case "get_relay_http_url":
         return getRelayHttpUrl(activeConfig);
       case "relay_requires_membership":
@@ -12018,7 +12278,7 @@ export function maybeInstallE2eTauriMocks() {
         // invocation's completion. Later reads pass through and cannot join it.
         const deferred = deferNextChannelsRead;
         deferNextChannelsRead = false;
-        const channels = handleGetChannels(activeConfig);
+        const channels = handleGetChannels(payload, activeConfig);
         if (deferred) {
           await new Promise<void>((resolve) => {
             deferredChannelsReadResolve = resolve;
@@ -12034,6 +12294,27 @@ export function maybeInstallE2eTauriMocks() {
         );
       case "list_relay_agents":
         return handleListRelayAgents(activeConfig);
+      case "revalidate_relay_agents": {
+        const agents = await handleListRelayAgents(activeConfig);
+        const { pubkeys, channelId } = payload as {
+          pubkeys: string[];
+          channelId?: string;
+        };
+        const requested = new Set(
+          pubkeys.map((pubkey) => pubkey.toLowerCase()),
+        );
+        const revoked = new Set(
+          (activeConfig?.mock?.relayAgentRevalidationRevokedPubkeys ?? []).map(
+            (pubkey) => pubkey.toLowerCase(),
+          ),
+        );
+        return agents.filter(
+          (agent) =>
+            requested.has(agent.pubkey.toLowerCase()) &&
+            !revoked.has(agent.pubkey.toLowerCase()) &&
+            (!channelId || agent.channel_ids.includes(channelId)),
+        );
+      }
       case "list_personas":
         return handleListPersonas();
       case "create_persona":
@@ -12798,11 +13079,39 @@ export function maybeInstallE2eTauriMocks() {
         return await resolveMockUploadDescriptors(activeConfig);
       case "pick_and_upload_image":
         return (await resolveMockUploadDescriptors(activeConfig))[0] ?? null;
-      case "upload_media_bytes":
-        return resolveMockUploadDescriptorForBytes(
-          payload as { data: number[]; filename?: string | null },
-          activeConfig,
-        );
+      case "upload_media_bytes": {
+        const input = payload as {
+          data: number[];
+          filename?: string | null;
+          progressId?: string | null;
+        };
+        if (
+          activeConfig?.mock?.deferLinkPreviewUploadRegistration &&
+          input.filename?.startsWith("link-preview-")
+        ) {
+          await new Promise<void>((resolve) => {
+            deferredLinkPreviewUploadQueue.push(resolve);
+          });
+        }
+        if (input.progressId && cancelledMediaUploadIds.has(input.progressId)) {
+          throw new Error("upload cancelled");
+        }
+        if (input.filename?.startsWith("link-preview-")) {
+          window.__BUZZ_E2E_LINK_PREVIEW_UPLOAD_STARTS__ =
+            (window.__BUZZ_E2E_LINK_PREVIEW_UPLOAD_STARTS__ ?? 0) + 1;
+        }
+        return resolveMockUploadDescriptorForBytes(input, activeConfig);
+      }
+      case "cancel_media_upload": {
+        const progressId = (payload as { progressId?: string }).progressId;
+        if (progressId) cancelledMediaUploadIds.add(progressId);
+        return null;
+      }
+      case "release_media_upload": {
+        const progressId = (payload as { progressId?: string }).progressId;
+        if (progressId) cancelledMediaUploadIds.delete(progressId);
+        return null;
+      }
       case "upload_media_bytes_raw":
         return resolveMockUploadDescriptorForBytes(
           {

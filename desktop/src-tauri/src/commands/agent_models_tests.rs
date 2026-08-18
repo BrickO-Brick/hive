@@ -1,6 +1,50 @@
 use super::*;
 
 #[test]
+fn access_policy_change_requires_runtime_refresh_for_effective_gate_changes() {
+    use crate::managed_agents::RespondTo;
+
+    let allowlist_a = vec!["a".repeat(64)];
+    let allowlist_b = vec!["b".repeat(64)];
+
+    assert!(managed_agent_access_policy_changed(
+        RespondTo::Anyone,
+        &[],
+        RespondTo::OwnerOnly,
+        &[],
+        false,
+    ));
+    assert!(managed_agent_access_policy_changed(
+        RespondTo::Allowlist,
+        &allowlist_a,
+        RespondTo::Allowlist,
+        &allowlist_b,
+        false,
+    ));
+    assert!(!managed_agent_access_policy_changed(
+        RespondTo::OwnerOnly,
+        &allowlist_a,
+        RespondTo::OwnerOnly,
+        &allowlist_b,
+        false,
+    ));
+    assert!(!managed_agent_access_policy_changed(
+        RespondTo::Anyone,
+        &[],
+        RespondTo::OwnerOnly,
+        &[],
+        true,
+    ));
+    assert!(!managed_agent_access_policy_changed(
+        RespondTo::Allowlist,
+        &allowlist_a,
+        RespondTo::Allowlist,
+        &allowlist_b,
+        true,
+    ));
+}
+
+#[test]
 fn openai_model_normalization_keeps_agent_text_models() {
     let models = normalize_openai_compatible_models(
         OpenAiModelListResponse {
@@ -509,7 +553,8 @@ fn linked_instance_ignores_model_provider_prompt_writes() {
         Some(Some("explicit-model".to_string())),
         Some(Some("explicit-prov".to_string())),
         Some(Some("explicit-prompt".to_string())),
-    );
+    )
+    .unwrap();
 
     assert!(
         record.model.is_none(),
@@ -560,7 +605,8 @@ fn definition_less_instance_accepts_model_provider_prompt_writes() {
         Some(Some("new-model".to_string())),
         Some(Some("new-prov".to_string())),
         Some(Some("new-prompt".to_string())),
-    );
+    )
+    .unwrap();
 
     assert_eq!(record.model.as_deref(), Some("new-model"));
     assert_eq!(record.provider.as_deref(), Some("new-prov"));
