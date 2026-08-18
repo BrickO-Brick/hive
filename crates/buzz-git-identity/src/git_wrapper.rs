@@ -54,19 +54,42 @@ struct Authority {
     email: String,
 }
 
+/// Result of locating the wrapper's identity authority.
+enum AuthorityState {
+    /// The wrapper was not reached through an install symlink on `PATH`, so its
+    /// own dir (and any manifest) cannot be located. This is the accepted local
+    /// ceiling — e.g. the real `git` invoked by absolute path — so there is no
+    /// authority to enforce against: passthrough.
+    Unmanaged,
+    /// The install dir is located and holds a valid manifest: enforce.
+    Managed(Authority),
+    /// The install dir is located but its manifest is missing, empty, or lacks
+    /// a usable `user.email`. A managed install always writes a valid manifest,
+    /// so this means the authority was deleted or corrupted after install —
+    /// fail closed rather than silently drop enforcement.
+    Tampered,
+}
+
 impl Authority {
-    /// Load the authority from the wrapper's own install dir, or `None` when no
-    /// manifest is present (keyless/unmanaged session — passthrough). A manifest
-    /// that exists but lacks a usable `user.email` is treated as absent: without
-    /// a trustworthy expected identity there is nothing to enforce against.
-    fn load() -> Option<Self> {
-        let dir = locate_install_dir()?;
-        let entries = crate::read_identity_manifest(&dir)?;
-        let email = entries
+    /// Locate and classify the wrapper's identity authority. Distinguishing a
+    /// genuinely unmanaged wrapper (no install dir on `PATH`) from a located
+    /// install dir whose manifest was removed/corrupted is load-bearing: the
+    /// former passes through (accepted ceiling), the latter fails closed.
+    fn load() -> AuthorityState {
+        let Some(dir) = locate_install_dir() else {
+            return AuthorityState::Unmanaged;
+        };
+        let Some(entries) = crate::read_identity_manifest(&dir) else {
+            return AuthorityState::Tampered; // manifest missing/unreadable
+        };
+        let Some(email) = entries
             .iter()
             .find(|(k, _)| k == "user.email")
-            .map(|(_, v)| v.clone())?;
-        Some(Self { entries, email })
+            .map(|(_, v)| v.clone())
+        else {
+            return AuthorityState::Tampered; // present but no usable identity
+        };
+        AuthorityState::Managed(Self { entries, email })
     }
 }
 
@@ -74,7 +97,23 @@ impl Authority {
 /// (execs real git on Unix); returns the process exit code on Windows/error.
 pub fn run() -> i32 {
     let argv: Vec<String> = std::env::args().skip(1).collect();
-    let authority = Authority::load();
+
+    // Classify the authority. `Tampered` (install dir located but manifest
+    // missing/corrupt) fails closed for every command: a managed install always
+    // writes a valid manifest, so its absence means the authority was removed or
+    // damaged after install, and continuing would silently drop enforcement.
+    let authority = match Authority::load() {
+        AuthorityState::Managed(a) => Some(a),
+        AuthorityState::Unmanaged => None,
+        AuthorityState::Tampered => {
+            eprintln!(
+                "buzz git wrapper: refusing to run — this `git` is a managed enforcement \
+                 wrapper but its identity manifest is missing or unreadable. Enforcement fails \
+                 closed rather than fall back to an ambient identity."
+            );
+            return 1;
+        }
+    };
 
     if let Err(msg) = enforce(&argv, authority.as_ref()) {
         eprintln!("{msg}");
@@ -111,9 +150,25 @@ pub fn run() -> i32 {
     // `alias.pub = push` reaches the real push after we hand off — keying on the
     // literal token alone would let an alias slip a wrong-authored commit past.
     if let Some(auth) = &authority {
-        if is_push_command(&real_git, &argv, &ctx) {
-            if let Err(msg) = verify_push(&real_git, &argv, &ctx, auth) {
-                eprintln!("{msg}");
+        match is_push_command(&real_git, &argv, &ctx) {
+            PushKind::NotPush => {}
+            PushKind::Push => {
+                if let Err(msg) = verify_push(&real_git, &argv, &ctx, auth) {
+                    eprintln!("{msg}");
+                    return 1;
+                }
+            }
+            // A shell (`!`) alias whose body may push is opaque: we cannot
+            // resolve its transport plan without executing arbitrary shell code,
+            // and executing it as a probe would let it transmit before
+            // verification. Reject loudly rather than run it.
+            PushKind::OpaqueShellAlias(name) => {
+                eprintln!(
+                    "buzz git wrapper: refusing `{name}` — it is a shell (`!`) alias whose \
+                     effective command may push, and its outgoing commits cannot be verified \
+                     without executing it. Run the underlying `git push` directly so agent \
+                     authorship can be checked."
+                );
                 return 1;
             }
         }
@@ -167,23 +222,39 @@ fn repo_context_args(argv: &[String]) -> Vec<String> {
     ctx
 }
 
-/// Whether the invocation's *effective* command is `push`, resolving git
+/// The effective-command classification of an invocation.
+enum PushKind {
+    /// The effective command is not `push`.
+    NotPush,
+    /// The effective command resolves to `push` through ordinary (config/inline)
+    /// git aliases; its transport plan can be resolved safely with `--dry-run`.
+    Push,
+    /// The effective command is a shell (`!`) alias whose body may push. Its
+    /// plan cannot be resolved without executing arbitrary shell code, so it is
+    /// rejected rather than probed. Carries the alias name for the message.
+    OpaqueShellAlias(String),
+}
+
+/// Classify the invocation's *effective* command, resolving ordinary git
 /// aliases so `git pub` (with `alias.pub = push`) and `git -c alias.pub=push
 /// pub` are both recognized. Config aliases are read under `ctx` so a
-/// `-C <repo>` push consults the target repo's aliases. Shell aliases (`!…`)
-/// are opaque to arg parsing, so an alias body that invokes `push` is treated
-/// as a push (over-verification only ever rejects wrong-authored commits, never
-/// legitimate ones). Recursion is bounded to defeat cyclic alias definitions.
-fn is_push_command(real_git: &Path, argv: &[String], ctx: &[String]) -> bool {
+/// `-C <repo>` push consults the target repo's aliases.
+///
+/// Shell aliases (`!…`) are NOT expanded into a plan: resolving their transport
+/// would require running the shell body, and the dry-run probe would let that
+/// body transmit before verification. A shell alias whose body invokes `push`
+/// is returned as [`PushKind::OpaqueShellAlias`] and rejected by the caller.
+/// Recursion is bounded to defeat cyclic alias definitions.
+fn is_push_command(real_git: &Path, argv: &[String], ctx: &[String]) -> PushKind {
     let (globals, _) = split_globals(argv);
     let inline = inline_aliases(&globals);
     let mut name = match subcommand(argv) {
         Some(s) => s,
-        None => return false,
+        None => return PushKind::NotPush,
     };
     for _ in 0..10 {
         if name == "push" {
-            return true;
+            return PushKind::Push;
         }
         let def = inline.get(&name).cloned().or_else(|| {
             capture(
@@ -194,20 +265,25 @@ fn is_push_command(real_git: &Path, argv: &[String], ctx: &[String]) -> bool {
         });
         let def = match def {
             Some(d) => d,
-            None => return false, // not an alias — this is the effective command
+            None => return PushKind::NotPush, // not an alias — effective command
         };
         if let Some(body) = def.strip_prefix('!') {
-            // Shell alias: opaque; verify if its body invokes push anywhere.
-            return body
+            // Shell alias: opaque. If its body may push, reject (never probe it).
+            let may_push = body
                 .split_whitespace()
                 .any(|t| t == "push" || t.ends_with("/git-push"));
+            return if may_push {
+                PushKind::OpaqueShellAlias(name)
+            } else {
+                PushKind::NotPush
+            };
         }
         match def.split_whitespace().next() {
             Some(first) => name = first.to_string(),
-            None => return false,
+            None => return PushKind::NotPush,
         }
     }
-    false
+    PushKind::NotPush
 }
 
 /// Map of inline `-c alias.NAME=BODY` definitions passed on the command line.
@@ -375,11 +451,14 @@ fn subcommand(argv: &[String]) -> Option<String> {
 /// `--no-verify` on the real push cannot bypass it.
 ///
 /// Scope guard against false positives: `rev-list <from> --not --remotes`
-/// yields only commits absent from every remote-tracking ref, so pre-existing
-/// human commits pulled in via a merge/rebase of `main` are excluded (they are
-/// reachable from `refs/remotes/*`). Only genuinely new local ("session")
-/// commits are checked — exactly the set that must be agent-authored, which is
-/// why rebase/cherry-pick of upstream history push cleanly.
+/// yields only commits absent from every remote-tracking ref. Pre-existing
+/// human commits pulled in by a plain merge are excluded (they are reachable
+/// from `refs/remotes/*`). A commit that a cherry-pick or rebase *replayed*
+/// gets a new SHA, so it is NOT reachable from a remote and would be flagged —
+/// but its patch is identical to an upstream commit, so it is exempted by
+/// patch-equivalence ([`patch_equivalent_upstream`]): only genuinely new
+/// agent work is required to carry the agent identity. This is what lets a
+/// branch carrying rebased/cherry-picked upstream human commits push cleanly.
 fn verify_push(
     real_git: &Path,
     argv: &[String],
@@ -417,10 +496,30 @@ fn verify_push(
                 ))
             }
         };
+        // Patch-ids of commits on a remote but not on this tip — the pool a
+        // replayed (cherry-picked/rebased) upstream commit matches. Computed
+        // lazily and only when a non-agent author is actually found, so the
+        // ordinary all-agent push pays nothing.
+        let mut upstream: Option<std::collections::HashSet<String>> = None;
         for sha in shas {
             match commit_author_email(real_git, ctx, &sha) {
                 Some(email) if &email == expected => {}
-                Some(email) => offenders.push((sha, email)),
+                Some(email) => {
+                    // A non-agent author is allowed only when this commit is a
+                    // replay (same patch-id) of a commit already upstream —
+                    // i.e. a cherry-picked/rebased human commit, which is
+                    // correct attribution, not new agent work masquerading as
+                    // someone else. Any other non-agent author is an offender.
+                    let pool =
+                        upstream.get_or_insert_with(|| upstream_patch_ids(real_git, ctx, &from));
+                    match commit_patch_id(real_git, ctx, &sha) {
+                        Some(pid) if pool.contains(&pid) => {} // replayed upstream — exempt
+                        Some(_) => offenders.push((sha, email)),
+                        // No patch-id (e.g. a merge, or diff-tree failed) means
+                        // we cannot prove it is a replay: fail closed on it.
+                        None => offenders.push((sha, email)),
+                    }
+                }
                 // Author lookup failed for a commit that rev-list just listed:
                 // fail closed rather than silently skip.
                 None => {
@@ -474,7 +573,9 @@ fn resolve_push_sources(real_git: &Path, argv: &[String]) -> Option<Vec<String>>
         ["--dry-run", "--porcelain", "--no-verify"].map(String::from),
     );
     let arg_refs: Vec<&str> = full.iter().map(String::as_str).collect();
-    let out = capture_raw(real_git, &arg_refs)?;
+    // Bounded: the probe contacts the remote, so an unresponsive remote must not
+    // hang the wrapper. Timeout returns `None`, which the caller fails closed on.
+    let out = capture_raw_bounded(real_git, &arg_refs, DRY_RUN_TIMEOUT)?;
     if !out.status.success() {
         return None;
     }
@@ -596,6 +697,75 @@ fn commit_author_email(real_git: &Path, ctx: &[String], sha: &str) -> Option<Str
     capture(real_git, ctx, &["show", "-s", "--format=%ae", sha])
 }
 
+/// The stable patch-id of a single commit, or `None` if it has no diff patch-id
+/// (e.g. a merge commit, or `diff-tree` produced nothing). Used to recognize a
+/// cherry-picked/rebased copy of an upstream commit by patch content rather than
+/// SHA, which the replay rewrote.
+fn commit_patch_id(real_git: &Path, ctx: &[String], sha: &str) -> Option<String> {
+    let diff = {
+        let mut args = ctx.to_vec();
+        args.extend(["diff-tree", "--root", "-p", sha].map(String::from));
+        let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let out = capture_raw(real_git, &arg_refs)?;
+        if !out.status.success() {
+            return None;
+        }
+        out.stdout
+    };
+    let ids = patch_ids_from_diff(real_git, ctx, &diff);
+    ids.into_iter().next()
+}
+
+/// Patch-ids of every commit reachable from a remote-tracking ref but not from
+/// `from` — the pool a replayed upstream commit's patch-id must match. Bounded
+/// to the divergence (`--remotes --not <from>`), and computed in one
+/// `diff-tree | patch-id` pipeline. Empty on any failure, so a commit can only
+/// be *exempted* when a match is positively proven (fail-closed for the gate).
+fn upstream_patch_ids(
+    real_git: &Path,
+    ctx: &[String],
+    from: &str,
+) -> std::collections::HashSet<String> {
+    let mut revs_args = ctx.to_vec();
+    revs_args.extend(["rev-list", "--remotes", "--not", from].map(String::from));
+    let revs_refs: Vec<&str> = revs_args.iter().map(String::as_str).collect();
+    let revs = match capture_raw(real_git, &revs_refs) {
+        Some(o) if o.status.success() => o.stdout,
+        _ => return std::collections::HashSet::new(),
+    };
+    // Feed the SHA list to `diff-tree --stdin -p`, whose diff stream goes to
+    // `patch-id`. Do it in two hops (diff-tree captured, then piped to
+    // patch-id) to reuse the stdin helper without a shell.
+    let diff = {
+        let mut args = ctx.to_vec();
+        args.extend(["diff-tree", "--stdin", "--root", "-p"].map(String::from));
+        let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        match capture_raw_with_stdin(real_git, &arg_refs, &revs) {
+            Some(o) if o.status.success() => o.stdout,
+            _ => return std::collections::HashSet::new(),
+        }
+    };
+    patch_ids_from_diff(real_git, ctx, &diff)
+        .into_iter()
+        .collect()
+}
+
+/// Run `git patch-id --stable` over a diff stream and return each patch-id (the
+/// first whitespace field of every output line).
+fn patch_ids_from_diff(real_git: &Path, ctx: &[String], diff: &[u8]) -> Vec<String> {
+    let mut args = ctx.to_vec();
+    args.extend(["patch-id", "--stable"].map(String::from));
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let out = match capture_raw_with_stdin(real_git, &arg_refs, diff) {
+        Some(o) if o.status.success() => o.stdout,
+        _ => return Vec::new(),
+    };
+    String::from_utf8_lossy(&out)
+        .lines()
+        .filter_map(|l| l.split_whitespace().next().map(str::to_string))
+        .collect()
+}
+
 /// Commits reachable from `tip` but not from any remote-tracking ref. `None`
 /// when `tip` does not resolve (rev-list exits non-zero).
 fn rev_list_outgoing(real_git: &Path, ctx: &[String], tip: &str) -> Option<Vec<String>> {
@@ -634,6 +804,66 @@ fn capture_raw(real_git: &Path, args: &[&str]) -> Option<std::process::Output> {
     cmd.args(args);
     scrub_env(&mut cmd);
     cmd.output().ok()
+}
+
+/// Run `git <args...>` feeding `stdin` to its standard input and capture the
+/// output. Used for the `diff-tree --stdin` / `patch-id` pipeline without a
+/// shell. These operate on local objects only (no network), so no timeout.
+fn capture_raw_with_stdin(
+    real_git: &Path,
+    args: &[&str],
+    stdin: &[u8],
+) -> Option<std::process::Output> {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut child = {
+        let mut cmd = std::process::Command::new(real_git);
+        cmd.args(args);
+        scrub_env(&mut cmd);
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        cmd.spawn().ok()?
+    };
+    child.stdin.take()?.write_all(stdin).ok()?;
+    child.wait_with_output().ok()
+}
+
+/// Hard ceiling on the push `--dry-run` probe. The probe contacts the remote to
+/// resolve `old..new`, so an unresponsive remote could otherwise block the
+/// wrapper — and therefore the agent's `git push` — indefinitely. A synchronous
+/// unbounded subprocess in an enforcement path is a defect on its own; this
+/// bounds it and the caller treats a timeout as fail-closed.
+const DRY_RUN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Like [`capture_raw`] but killed if it runs past `timeout`. Returns `None` on
+/// spawn failure OR timeout (caller fails closed). The process is killed and
+/// reaped on timeout so no zombie or detached network client survives.
+fn capture_raw_bounded(
+    real_git: &Path,
+    args: &[&str],
+    timeout: std::time::Duration,
+) -> Option<std::process::Output> {
+    use std::process::Stdio;
+    use wait_timeout::ChildExt;
+    let mut child = {
+        let mut cmd = std::process::Command::new(real_git);
+        cmd.args(args);
+        scrub_env(&mut cmd);
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        cmd.spawn().ok()?
+    };
+    match child.wait_timeout(timeout).ok()? {
+        Some(_status) => child.wait_with_output().ok(),
+        None => {
+            // Timed out: kill and reap, then report failure (None).
+            let _ = child.kill();
+            let _ = child.wait();
+            None
+        }
+    }
 }
 
 fn scrub_env(cmd: &mut std::process::Command) {
@@ -675,41 +905,45 @@ fn find_real_git() -> Option<PathBuf> {
     None
 }
 
-/// Re-apply the authoritative identity/signing config as `GIT_CONFIG_*` pairs
-/// on `cmd`, appended at the highest indices so they win over any inherited
-/// config (last-index-wins). This is what defeats the env-var identity vector:
-/// `env -u GIT_CONFIG_COUNT git commit`, or rewritten `GIT_CONFIG_*` entries,
-/// can no longer drop or shadow the agent identity, because the wrapper always
-/// re-appends it from the manifest before exec. The base count is read from the
-/// live environment (whatever the agent left it at, possibly 0) and our entries
-/// extend it, so composed config (e.g. the desktop's credential helper) that we
-/// don't re-specify is preserved at its lower indices.
-fn apply_authority_env(cmd: &mut std::process::Command, authority: Option<&Authority>) {
+/// Build the real-git argv with the authoritative identity/signing config
+/// injected as command-line `-c key=value` options placed immediately before
+/// the subcommand — i.e. after every global option the caller passed.
+///
+/// Command-line `-c` is git's highest-precedence configuration channel: it wins
+/// over repo/global/system config files, over the `GIT_CONFIG_*` environment,
+/// over `GIT_CONFIG_PARAMETERS`, and over `-c include.path=…`/`includeIf`
+/// includes (whose settings enter at the position of their own `-c`, which the
+/// caller can only place *before* ours). Placing our entries last among the
+/// globals therefore makes them win regardless of what config channel the agent
+/// used — the whole class of "some other channel outranks the appended env"
+/// bypasses — without the wrapper having to enumerate or reject those channels.
+///
+/// Author/committer env vars and the command-line `--author`/`--reset-author`/
+/// `--no-gpg-sign`/`-c <protected>` forms outrank even command-line `-c`; those
+/// are handled separately (scrubbed and rejected in [`enforce`]).
+fn inject_identity_args(argv: &[String], authority: Option<&Authority>) -> Vec<String> {
     let Some(authority) = authority else {
-        return;
+        return argv.to_vec();
     };
-    let base: usize = std::env::var("GIT_CONFIG_COUNT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0);
-    cmd.env(
-        "GIT_CONFIG_COUNT",
-        (base + authority.entries.len()).to_string(),
-    );
-    for (i, (key, val)) in authority.entries.iter().enumerate() {
-        let idx = base + i;
-        cmd.env(format!("GIT_CONFIG_KEY_{idx}"), key);
-        cmd.env(format!("GIT_CONFIG_VALUE_{idx}"), val);
+    // Splice point: the subcommand index (first non-option token), or the end
+    // for a bare `git`/`git --version`-style call where the position is moot.
+    let at = split_globals(argv).1.unwrap_or(argv.len());
+    let mut out = argv[..at].to_vec();
+    for (key, value) in &authority.entries {
+        out.push("-c".to_string());
+        out.push(format!("{key}={value}"));
     }
+    out.extend_from_slice(&argv[at..]);
+    out
 }
 
 #[cfg(unix)]
 fn exec_real_git(real_git: &Path, argv: &[String], authority: Option<&Authority>) -> i32 {
     use std::os::unix::process::CommandExt;
+    let full = inject_identity_args(argv, authority);
     let mut cmd = std::process::Command::new(real_git);
-    cmd.args(argv);
+    cmd.args(&full);
     scrub_env(&mut cmd);
-    apply_authority_env(&mut cmd, authority);
     // exec replaces this process; on success it never returns. If it returns,
     // the exec itself failed.
     let err = cmd.exec();
@@ -719,10 +953,10 @@ fn exec_real_git(real_git: &Path, argv: &[String], authority: Option<&Authority>
 
 #[cfg(not(unix))]
 fn exec_real_git(real_git: &Path, argv: &[String], authority: Option<&Authority>) -> i32 {
+    let full = inject_identity_args(argv, authority);
     let mut cmd = std::process::Command::new(real_git);
-    cmd.args(argv);
+    cmd.args(&full);
     scrub_env(&mut cmd);
-    apply_authority_env(&mut cmd, authority);
     match cmd.status() {
         Ok(status) => status.code().unwrap_or(1),
         Err(e) => {
@@ -751,6 +985,19 @@ mod tests {
                 ("user.name".into(), "Agent".into()),
                 ("user.email".into(), AGENT_EMAIL.into()),
                 ("commit.gpgSign".into(), "true".into()),
+            ],
+            email: AGENT_EMAIL.into(),
+        }
+    }
+
+    /// Like [`managed`] but with signing disabled, for tests that create real
+    /// commits through the injected argv (no GPG key available in CI).
+    fn managed_nosign() -> Authority {
+        Authority {
+            entries: vec![
+                ("user.name".into(), "Agent".into()),
+                ("user.email".into(), AGENT_EMAIL.into()),
+                ("commit.gpgSign".into(), "false".into()),
             ],
             email: AGENT_EMAIL.into(),
         }
@@ -1025,26 +1272,31 @@ mod tests {
         let (_d, repo) = human_authored_repo();
         let ctx = vec!["-C".to_string(), repo.to_string_lossy().into_owned()];
         // `git pub` → alias.pub = push.
-        assert!(is_push_command(
-            &real_git(),
-            &v(&["-C", repo.to_str().unwrap(), "pub"]),
-            &ctx
+        assert!(matches!(
+            is_push_command(
+                &real_git(),
+                &v(&["-C", repo.to_str().unwrap(), "pub"]),
+                &ctx
+            ),
+            PushKind::Push
         ));
         // A non-push subcommand is not misclassified.
-        assert!(!is_push_command(
-            &real_git(),
-            &v(&["-C", repo.to_str().unwrap(), "status"]),
-            &ctx
+        assert!(matches!(
+            is_push_command(
+                &real_git(),
+                &v(&["-C", repo.to_str().unwrap(), "status"]),
+                &ctx
+            ),
+            PushKind::NotPush
         ));
     }
 
     #[test]
     fn inline_alias_resolving_to_push_is_recognized() {
         let ctx: Vec<String> = vec![];
-        assert!(is_push_command(
-            &real_git(),
-            &v(&["-c", "alias.pub=push", "pub"]),
-            &ctx
+        assert!(matches!(
+            is_push_command(&real_git(), &v(&["-c", "alias.pub=push", "pub"]), &ctx),
+            PushKind::Push
         ));
     }
 
@@ -1163,5 +1415,338 @@ mod tests {
             &agent,
         )
         .is_ok());
+    }
+
+    // ── helpers for exec-level identity/push tests ─────────────────────────────
+
+    /// Run `git` in `repo` with the given argv and hermetic global/system config.
+    fn git_in(repo: &Path, args: &[&str]) -> std::process::Output {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .output()
+            .unwrap()
+    }
+
+    /// Author email of `rev` in `repo`, trimmed.
+    fn author_email(repo: &Path, rev: &str) -> String {
+        let out = git_in(repo, &["show", "-s", "--format=%ae", rev]);
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    // ── C1: injected `-c` identity outranks every other config channel ─────────
+
+    /// The wrapper's re-applied command-line `-c user.email=…` must dominate the
+    /// author even when the agent tries to smuggle a human identity in through a
+    /// lower-precedence channel: `GIT_CONFIG_PARAMETERS`, a `-c include.path`
+    /// include, and repo-file config. Exercised through `inject_identity_args`
+    /// (what `exec_real_git` splices) plus a real `git commit`.
+    #[test]
+    fn injected_identity_outranks_config_parameters_and_include_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        git_in(repo, &["init", "-q", "-b", "main"]);
+        // Repo-file config claims a human identity (a legitimate lower channel).
+        git_in(repo, &["config", "user.name", "Human"]);
+        git_in(repo, &["config", "user.email", "human@example.com"]);
+        git_in(repo, &["config", "commit.gpgSign", "false"]);
+
+        // An include file that also tries to set a human identity.
+        let inc = repo.join("evil.inc");
+        std::fs::write(&inc, "[user]\n\temail = include@evil.com\n").unwrap();
+
+        std::fs::write(repo.join("f"), "x").unwrap();
+        git_in(repo, &["add", "f"]);
+
+        // Caller argv smuggles identity via a `-c include.path` global. The
+        // wrapper splices its authoritative `-c user.email=<agent>` AFTER this,
+        // so command-line precedence (last `-c` wins) must make the agent win.
+        let caller = v(&[
+            "-c",
+            &format!("include.path={}", inc.display()),
+            "commit",
+            "-qm",
+            "smuggled",
+        ]);
+        let full = inject_identity_args(&caller, Some(&managed_nosign()));
+        let refs: Vec<&str> = full.iter().map(String::as_str).collect();
+
+        // Also arm the env channel the wrapper re-append is meant to defeat.
+        let params = "'user.email=params@evil.com'";
+        let out = std::process::Command::new("git")
+            .args(&refs)
+            .current_dir(repo)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env("GIT_CONFIG_PARAMETERS", params)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "commit failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            author_email(repo, "HEAD"),
+            AGENT_EMAIL,
+            "injected -c identity must beat include.path, GIT_CONFIG_PARAMETERS, and repo config"
+        );
+    }
+
+    // ── C2: a shell (`!`) alias that may push is rejected, never probed ────────
+
+    /// `is_push_command` must classify a `!`-shell alias whose body invokes
+    /// `push` as `OpaqueShellAlias` (rejected by the caller) rather than resolve
+    /// it — resolving would require executing the shell body, which could push
+    /// before verification.
+    #[test]
+    fn shell_alias_that_may_push_is_opaque_not_probed() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        git_in(repo, &["init", "-q", "-b", "main"]);
+        // A `!`-alias whose body would push. A sentinel file proves the body
+        // never runs during classification.
+        let sentinel = repo.join("ran");
+        let body = format!("!touch {} && git push", sentinel.display());
+        git_in(repo, &["config", "alias.deploy", &body]);
+
+        let ctx = vec!["-C".to_string(), repo.to_string_lossy().into_owned()];
+        let kind = is_push_command(
+            &real_git(),
+            &v(&["-C", repo.to_str().unwrap(), "deploy"]),
+            &ctx,
+        );
+        match kind {
+            PushKind::OpaqueShellAlias(name) => assert_eq!(name, "deploy"),
+            _ => panic!("expected OpaqueShellAlias"),
+        }
+        assert!(
+            !sentinel.exists(),
+            "classification must not execute the shell alias body"
+        );
+    }
+
+    /// A `!`-shell alias whose body does NOT push is not misclassified as a push
+    /// (it needs no push verification).
+    #[test]
+    fn shell_alias_without_push_is_not_a_push() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        git_in(repo, &["init", "-q", "-b", "main"]);
+        git_in(repo, &["config", "alias.st", "!git status"]);
+        let ctx = vec!["-C".to_string(), repo.to_string_lossy().into_owned()];
+        assert!(matches!(
+            is_push_command(&real_git(), &v(&["-C", repo.to_str().unwrap(), "st"]), &ctx),
+            PushKind::NotPush
+        ));
+    }
+
+    // ── I3: cherry-picked / rebased upstream human commits are exempt ──────────
+
+    /// Build `(dir, local, remote)` where `remote` (a real bare repo wired as
+    /// `origin` and fetched) carries a human-authored commit, and `local` is on
+    /// a branch forked from the shared base. Returns paths for building the two
+    /// rebase/cherry-pick shapes on top.
+    fn repo_with_upstream_human_commit() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let remote = dir.path().join("remote.git");
+        let local = dir.path().join("local");
+        // Seed remote via a scratch working clone, then discard it.
+        git_in(
+            dir.path(),
+            &["init", "-q", "--bare", remote.to_str().unwrap()],
+        );
+        let seed = dir.path().join("seed");
+        git_in(
+            dir.path(),
+            &[
+                "clone",
+                "-q",
+                remote.to_str().unwrap(),
+                seed.to_str().unwrap(),
+            ],
+        );
+        git_in(&seed, &["config", "user.name", "Human"]);
+        git_in(&seed, &["config", "user.email", "human@example.com"]);
+        git_in(&seed, &["config", "commit.gpgSign", "false"]);
+        std::fs::write(seed.join("base"), "b").unwrap();
+        git_in(&seed, &["add", "base"]);
+        git_in(&seed, &["commit", "-qm", "base"]);
+        std::fs::write(seed.join("human"), "h").unwrap();
+        git_in(&seed, &["add", "human"]);
+        git_in(&seed, &["commit", "-qm", "human work"]);
+        git_in(&seed, &["push", "-q", "origin", "HEAD:main"]);
+
+        // Local clone forked from the shared BASE (not the human tip).
+        git_in(
+            dir.path(),
+            &[
+                "clone",
+                "-q",
+                remote.to_str().unwrap(),
+                local.to_str().unwrap(),
+            ],
+        );
+        git_in(&local, &["config", "user.name", "Agent"]);
+        git_in(&local, &["config", "user.email", AGENT_EMAIL]);
+        git_in(&local, &["config", "commit.gpgSign", "false"]);
+        (dir, local, remote)
+    }
+
+    /// I3 shape B (the shape that exercises the fix): the agent rebases/rewrites
+    /// the UPSTREAM human commit onto a new base, giving it a fresh SHA. That
+    /// new SHA is not reachable from `refs/remotes/*`, so the naive
+    /// `rev-list --not --remotes` flags it — but its patch-id matches the
+    /// upstream original, so the exemption must let the push through.
+    #[test]
+    fn verify_push_exempts_rebased_upstream_human_commit_by_patch_id() {
+        let (_d, local, _remote) = repo_with_upstream_human_commit();
+        // Reset local to the shared base, then cherry-pick the upstream human
+        // commit — a replay that rewrites its SHA but preserves its patch and
+        // its human author. This is the correct-attribution case the gate must
+        // NOT refuse.
+        git_in(&local, &["reset", "-q", "--hard", "origin/main~1"]);
+        let human_sha =
+            String::from_utf8_lossy(&git_in(&local, &["rev-parse", "origin/main"]).stdout)
+                .trim()
+                .to_string();
+        // Add an agent commit first, then replay the human commit on top so the
+        // outgoing range is {agent, replayed-human} — both must be allowed.
+        std::fs::write(local.join("agent"), "a").unwrap();
+        git_in(&local, &["add", "agent"]);
+        git_in(&local, &["commit", "-qm", "agent work"]);
+        let cp = git_in(&local, &["cherry-pick", &human_sha]);
+        assert!(
+            cp.status.success(),
+            "cherry-pick failed: {}",
+            String::from_utf8_lossy(&cp.stderr)
+        );
+
+        let ctx = vec!["-C".to_string(), local.to_string_lossy().into_owned()];
+        let res = verify_push(
+            &real_git(),
+            &v(&[
+                "-C",
+                local.to_str().unwrap(),
+                "push",
+                "origin",
+                "HEAD:refs/heads/feature",
+            ]),
+            &ctx,
+            &managed_nosign(),
+        );
+        assert!(
+            res.is_ok(),
+            "replayed upstream human commit must be exempt by patch-id, got: {res:?}"
+        );
+    }
+
+    /// I3 shape A (agent-onto-human, the ordinary rebase): the agent's own
+    /// commit sits on top of the upstream human tip. Only the agent commit is
+    /// outgoing; the human commit is already reachable from `refs/remotes/*`.
+    /// The push must be allowed, and it exercises the no-exemption-needed path.
+    #[test]
+    fn verify_push_allows_agent_commit_atop_upstream_human_tip() {
+        let (_d, local, _remote) = repo_with_upstream_human_commit();
+        std::fs::write(local.join("agent"), "a").unwrap();
+        git_in(&local, &["add", "agent"]);
+        git_in(&local, &["commit", "-qm", "agent work"]);
+        let ctx = vec!["-C".to_string(), local.to_string_lossy().into_owned()];
+        let res = verify_push(
+            &real_git(),
+            &v(&[
+                "-C",
+                local.to_str().unwrap(),
+                "push",
+                "origin",
+                "HEAD:refs/heads/feature",
+            ]),
+            &ctx,
+            &managed_nosign(),
+        );
+        assert!(
+            res.is_ok(),
+            "agent commit atop upstream human tip must be allowed: {res:?}"
+        );
+    }
+
+    /// A genuinely NEW human-authored commit (no upstream patch-id match) is
+    /// still refused — the patch-id exemption must not become a blanket pass.
+    #[test]
+    fn verify_push_still_rejects_new_human_commit_without_upstream_match() {
+        let (_d, local, _remote) = repo_with_upstream_human_commit();
+        // A fresh human-authored commit that exists nowhere upstream.
+        std::fs::write(local.join("new"), "n").unwrap();
+        git_in(&local, &["add", "new"]);
+        git_in(
+            &local,
+            &[
+                "-c",
+                "user.name=Human",
+                "-c",
+                "user.email=human@example.com",
+                "commit",
+                "-qm",
+                "brand-new human work",
+            ],
+        );
+        let ctx = vec!["-C".to_string(), local.to_string_lossy().into_owned()];
+        let err = verify_push(
+            &real_git(),
+            &v(&[
+                "-C",
+                local.to_str().unwrap(),
+                "push",
+                "origin",
+                "HEAD:refs/heads/feature",
+            ]),
+            &ctx,
+            &managed_nosign(),
+        )
+        .expect_err("a brand-new human commit must be refused");
+        assert!(err.contains("not authored by your agent identity"), "{err}");
+    }
+
+    // ── I6: the dry-run probe is bounded and a timeout fails closed ────────────
+
+    /// `capture_raw_bounded` must kill and report failure (`None`) when the
+    /// child outlives the timeout, so a hung remote probe cannot block the
+    /// wrapper indefinitely. Uses a tiny timeout against a sleep to prove the
+    /// bound fires without depending on real network latency.
+    #[test]
+    fn capture_raw_bounded_times_out_and_fails_closed() {
+        // `sleep` via any binary on PATH would do; use the shell so the timeout
+        // is deterministic regardless of installed git. We invoke `sh -c sleep`
+        // as the "real git" stand-in — capture_raw_bounded only cares that the
+        // child runs longer than the timeout.
+        let start = std::time::Instant::now();
+        let out = capture_raw_bounded(
+            Path::new("sh"),
+            &["-c", "sleep 5"],
+            std::time::Duration::from_millis(200),
+        );
+        assert!(
+            out.is_none(),
+            "a child exceeding the timeout must yield None"
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(3),
+            "the bound must fire well before the child would finish"
+        );
+    }
+
+    /// A child that completes within the timeout returns its output normally.
+    #[test]
+    fn capture_raw_bounded_returns_output_within_timeout() {
+        let out = capture_raw_bounded(
+            Path::new("sh"),
+            &["-c", "printf ok"],
+            std::time::Duration::from_secs(5),
+        )
+        .expect("fast child must produce output");
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "ok");
     }
 }

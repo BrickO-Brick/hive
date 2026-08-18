@@ -462,11 +462,15 @@ fn install_git_identity(
     use std::io::{Error, ErrorKind};
     use std::os::unix::fs::{symlink, PermissionsExt};
 
-    // Canonical agent key, in precedence order. Absent entirely → unconfigured
-    // session, spawn without identity (Ok(None)).
+    // Canonical agent key. `BUZZ_PRIVATE_KEY` (the documented secret) always
+    // outranks `NOSTR_PRIVATE_KEY`, at BOTH layers, so a stale or conflicting
+    // child-staged `NOSTR_PRIVATE_KEY` can never split identity away from the
+    // canonical `BUZZ_PRIVATE_KEY`. Within a var name, an explicitly cmd-staged
+    // value (a persona) wins over the ambient process env. Absent entirely →
+    // unconfigured session, spawn without identity (Ok(None)).
     let Some(raw_key) = child_env(cmd, "BUZZ_PRIVATE_KEY")
-        .or_else(|| child_env(cmd, "NOSTR_PRIVATE_KEY"))
         .or_else(|| std::env::var_os("BUZZ_PRIVATE_KEY"))
+        .or_else(|| child_env(cmd, "NOSTR_PRIVATE_KEY"))
         .or_else(|| std::env::var_os("NOSTR_PRIVATE_KEY"))
     else {
         return Ok(None);
@@ -475,12 +479,12 @@ fn install_git_identity(
         .into_string()
         .map_err(|_| Error::new(ErrorKind::InvalidInput, "agent key is not valid UTF-8"))?;
 
-    // Stage NOSTR_PRIVATE_KEY on the child (from the canonical key) so dev-mcp's
-    // shim — which reads that var — installs identity for its own subtree even
-    // when only BUZZ_PRIVATE_KEY was provided.
-    if child_env(cmd, "NOSTR_PRIVATE_KEY").is_none() {
-        cmd.env("NOSTR_PRIVATE_KEY", &raw_key);
-    }
+    // Stage the canonical key as the child's `NOSTR_PRIVATE_KEY` unconditionally
+    // — overwriting any pre-staged value — so dev-mcp's shim (which reads that
+    // var) installs the SAME identity for its own subtree. Staging only when
+    // absent would let a conflicting child `NOSTR_PRIVATE_KEY` drive the shim to
+    // a different identity than the one enforced here.
+    cmd.env("NOSTR_PRIVATE_KEY", &raw_key);
 
     let self_exe = std::env::current_exe()?;
 
@@ -5190,6 +5194,64 @@ mod tests {
         assert!(
             msg.contains("sandbox_workspace_write"),
             "error must mention sandbox_workspace_write"
+        );
+    }
+
+    /// I5: `BUZZ_PRIVATE_KEY` (the documented secret) must win over a
+    /// conflicting `NOSTR_PRIVATE_KEY`, and the canonical key must be staged as
+    /// the child's `NOSTR_PRIVATE_KEY` — overwriting the conflicting value — so
+    /// the harness layer and dev-mcp's shim can never install split identities.
+    /// Both keys are staged on the command (which outranks the process env for
+    /// each name), so the test is deterministic regardless of ambient env.
+    #[cfg(unix)]
+    #[test]
+    fn install_git_identity_prefers_buzz_key_and_restages_nostr() {
+        use nostr::ToBech32;
+
+        let buzz_keys = nostr::Keys::generate();
+        let nostr_keys = nostr::Keys::generate();
+        let buzz_nsec = buzz_keys.secret_key().to_bech32().unwrap();
+        let nostr_nsec = nostr_keys.secret_key().to_bech32().unwrap();
+        assert_ne!(buzz_nsec, nostr_nsec, "distinct conflicting keys");
+        let buzz_hex = buzz_keys.public_key().to_hex();
+        let nostr_hex = nostr_keys.public_key().to_hex();
+
+        let mut cmd = tokio::process::Command::new("true");
+        cmd.env("BUZZ_PRIVATE_KEY", &buzz_nsec);
+        cmd.env("NOSTR_PRIVATE_KEY", &nostr_nsec);
+
+        let dir = install_git_identity(&mut cmd)
+            .expect("install must succeed with a valid key")
+            .expect("a configured key must install identity");
+
+        // The manifest — the wrapper's authority — must name the BUZZ key. Assert
+        // on the pubkey (the stable identity), not the host, so the test does not
+        // depend on a process-global `BUZZ_RELAY_URL` other tests may mutate.
+        let entries =
+            buzz_git_identity::read_identity_manifest(dir.path()).expect("manifest written");
+        let email = entries
+            .iter()
+            .find(|(k, _)| k == "user.email")
+            .map(|(_, v)| v.clone())
+            .expect("manifest has user.email");
+        assert!(
+            email.starts_with(&format!("{buzz_hex}@")),
+            "BUZZ_PRIVATE_KEY must outrank the conflicting NOSTR_PRIVATE_KEY; got {email:?}"
+        );
+        assert!(
+            !email.contains(&nostr_hex),
+            "the conflicting NOSTR key must not have won; got {email:?}"
+        );
+
+        // The child's NOSTR_PRIVATE_KEY must have been overwritten to the
+        // canonical (BUZZ) key, not left at the conflicting staged value.
+        let staged = child_env(&cmd, "NOSTR_PRIVATE_KEY")
+            .and_then(|v| v.into_string().ok())
+            .expect("NOSTR_PRIVATE_KEY staged on child");
+        assert_eq!(
+            staged, buzz_nsec,
+            "child NOSTR_PRIVATE_KEY must be the canonical BUZZ key, so dev-mcp's shim \
+             installs the same identity"
         );
     }
 }

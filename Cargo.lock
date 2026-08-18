@@ -1130,6 +1130,7 @@ version = "0.1.0"
 dependencies = [
  "nostr 0.44.7",
  "tempfile",
+ "wait-timeout",
  "zeroize",
 ]
 

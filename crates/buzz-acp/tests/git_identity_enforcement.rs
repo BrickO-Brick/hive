@@ -16,6 +16,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use nostr::ToBech32;
+
 const AGENT_EMAIL: &str =
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@relay.test";
 
@@ -194,5 +196,98 @@ fn wrapper_reapplies_agent_identity_over_repo_config() {
         String::from_utf8_lossy(&author.stdout).trim(),
         AGENT_EMAIL,
         "commit must be authored as the agent identity, not the repo-local human"
+    );
+}
+
+/// I4: the spawn-path wiring — `AcpClient::spawn` → `install_git_identity` —
+/// must actually install the wrapper + manifest onto the agent-runtime child.
+///
+/// The tests above manufacture their own `.git-identity` manifest, so they stay
+/// green even if the `install_git_identity(&mut cmd)?` call in `spawn` is
+/// deleted. This one drives the REAL `buzz-acp` binary through `buzz-acp models`
+/// (whose spawn path is the code under test) with a script agent that runs a
+/// bare `git commit` in a human-configured repo and records the resulting
+/// author. It passes only when the spawn path installed the wrapper `git` ahead
+/// of real git AND wrote a manifest naming the configured key's identity — so
+/// removing the `install_git_identity` call makes it go RED (the commit lands as
+/// the repo-local human, or fails).
+///
+/// `BUZZ_AUTH_TAG` is cleared so `git-sign-nostr` signs offline (no NIP-OA owner
+/// attestation to verify against a relay); signing itself needs no network.
+#[cfg(unix)]
+#[test]
+fn spawn_path_installs_identity_so_agent_commits_land_agent_authored() {
+    use std::os::unix::fs::PermissionsExt;
+
+    // A configured agent key and its derived author email (the wrapper builds
+    // `<pubkey_hex>@<relay_host>` from BUZZ_RELAY_URL).
+    let keys = nostr::Keys::generate();
+    let nsec = keys.secret_key().to_bech32().unwrap();
+    let pubkey_hex = keys.public_key().to_hex();
+    let expected_email = format!("{pubkey_hex}@relay.test");
+
+    // A human-configured repo with a staged file, ready for one commit.
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let g = |args: &[&str]| {
+        assert!(Command::new("git")
+            .args(args)
+            .current_dir(&repo)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .status()
+            .unwrap()
+            .success());
+    };
+    g(&["init", "-q", "-b", "main"]);
+    g(&["config", "user.name", "Human Dev"]);
+    g(&["config", "user.email", "human@example.com"]);
+    std::fs::write(repo.join("f"), "hi").unwrap();
+    g(&["add", "f"]);
+
+    // Script "agent": commit in the repo using whatever `git` its PATH resolves
+    // (the wrapper, if the spawn path installed it), record the author, exit.
+    let out_file = work.path().join("author.txt");
+    let agent = work.path().join("agent.sh");
+    std::fs::write(
+        &agent,
+        format!(
+            "#!/usr/bin/env bash\n\
+             cd {repo:?}\n\
+             git commit -m 'agent authored' >/dev/null 2>&1\n\
+             git show -s --format=%ae HEAD > {out:?} 2>/dev/null\n\
+             exit 0\n",
+            repo = repo,
+            out = out_file,
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    // Drive the real binary. `models` spawns the agent (running install_git_identity),
+    // then fails init (the script exits) — expected; we assert on the side effect.
+    let output = Command::new(env!("CARGO_BIN_EXE_buzz-acp"))
+        .args([
+            "models",
+            "--agent-command",
+            agent.to_str().unwrap(),
+            "--agent-args",
+            "",
+        ])
+        .env("BUZZ_PRIVATE_KEY", &nsec)
+        .env("BUZZ_RELAY_URL", "wss://relay.test")
+        .env_remove("NOSTR_PRIVATE_KEY")
+        .env_remove("BUZZ_AUTH_TAG")
+        .output()
+        .expect("run buzz-acp models");
+
+    let author = std::fs::read_to_string(&out_file).unwrap_or_default();
+    assert_eq!(
+        author.trim(),
+        expected_email,
+        "spawn path must install the wrapper + manifest so the agent's commit is \
+         authored as the configured key's identity; got {author:?}. models stderr: {}",
+        String::from_utf8_lossy(&output.stderr),
     );
 }
