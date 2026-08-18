@@ -500,7 +500,7 @@ export const MessageRow = React.memo(
         )}
       >
         <MessageTimestamp
-          className="opacity-0 transition-opacity group-hover/message:opacity-100 group-focus-within/message:opacity-100"
+          className="opacity-0 group-hover/message:opacity-100 group-focus-within/message:opacity-100"
           createdAt={message.createdAt}
           hideDayPeriod
         />
@@ -866,7 +866,7 @@ export const MessageRow = React.memo(
 
         <article
           className={cn(
-            "group/message relative z-10 rounded-2xl transition-colors",
+            "group/message relative z-10 rounded-2xl",
             playEntrance && "motion-enter-conversation",
             "py-1",
             hoverBackground
