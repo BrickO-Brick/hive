@@ -608,6 +608,7 @@ mod tests {
     Q::Vector { id: "anthropic-opus-5-prefix-probe", provider: "anthropic", raw_model_id: "claude-opus-5-20270101", note: Some("Probes the claude-opus-5 prefix rule.") },
     Q::Vector { id: "dbv2-gpt-5-6-sol-normalization-probe", provider: "databricks_v2", raw_model_id: "databricks-gpt-5-6-sol", note: Some("Probes the sol exact record's normalization and effort axes.") },
     Q::Vector { id: "dbv2-gpt-5-6-luna-exact-record-probe", provider: "databricks_v2", raw_model_id: "databricks-gpt-5-6-luna", note: Some("Probes the luna exact record against its family rule.") },
+    Q::Vector { id: "dbv2-deepseek-v4-flash-max-probe", provider: "databricks_v2", raw_model_id: "databricks-deepseek-v4-flash-0731", note: Some("Probes that the validated DeepSeek endpoint preserves max instead of inheriting the concrete-unknown max-to-xhigh clamp.") },
     Q::Vector { id: "dbv2-gpt-5-6-terra-exact-record-probe", provider: "databricks_v2", raw_model_id: "databricks-gpt-5-6-terra", note: Some("Probes the terra exact record against its family rule.") },
     Q::Vector { id: "dbv2-gpt-5-4-nano-exact-record-probe", provider: "databricks_v2", raw_model_id: "databricks-gpt-5-4-nano", note: Some("Probes the gpt-5-4-nano exact record and its label.") },
     Q::Vector { id: "openrouter-concrete-unknown-probe", provider: "openrouter", raw_model_id: "some-model-xyz", note: Some("Probes an uncatalogued openrouter model id.") },
@@ -746,7 +747,7 @@ mod tests {
     }
 
     #[test]
-    fn corpus_has_exactly_103_executable_vectors() {
+    fn corpus_has_exactly_104_executable_vectors() {
         // Locks the vector count so a silent INPUTS edit can't quietly drop
         // coverage; must equal the gate in the TS harness
         // (modelCapabilitiesCorpus.test.mjs).
@@ -755,7 +756,7 @@ mod tests {
             .filter(|q| matches!(q, Q::Vector { .. }))
             .count();
         assert_eq!(
-            vectors, 103,
+            vectors, 104,
             "corpus executable-vector count changed; update this gate deliberately"
         );
     }
