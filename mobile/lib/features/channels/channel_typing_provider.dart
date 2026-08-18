@@ -12,11 +12,13 @@ class TypingEntry {
 
   final String pubkey;
   final String? threadHeadId;
+  final String? turnId;
   final int expiresAtMs;
 
   const TypingEntry({
     required this.pubkey,
     this.threadHeadId,
+    this.turnId,
     required this.expiresAtMs,
   });
 
@@ -77,6 +79,7 @@ class ChannelTypingNotifier extends Notifier<List<TypingEntry>> {
     final entry = TypingEntry(
       pubkey: event.pubkey,
       threadHeadId: event.getTagValue('e'),
+      turnId: event.getTagValue('turn'),
       expiresAtMs: now + TypingEntry.ttl.inMilliseconds,
     );
 

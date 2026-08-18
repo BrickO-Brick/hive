@@ -700,7 +700,7 @@ impl AgentPool {
         &mut self.task_map
     }
 
-    /// Try to send a goose-native steer request to the in-flight task for
+    /// Try to send a non-cancelling steer request to the in-flight task for
     /// `channel_id`.
     ///
     /// Returns `Ok(())` if the request was accepted by the read loop's
@@ -738,6 +738,24 @@ impl AgentPool {
             .ok_or_else(|| SteerError::Transport("steer_tx not installed".into()))?;
         tx.try_send(request)
             .map_err(|e| SteerError::Transport(e.to_string()))
+    }
+
+    /// Update the presentation scope for a successfully steered in-flight turn.
+    ///
+    /// Native steering keeps the same ACP turn alive, but the triggering Buzz
+    /// message can come from another thread. The returned turn ID lets the
+    /// caller publish an explicit rescope frame for observer consumers.
+    pub fn rescope_in_flight_turn(
+        &mut self,
+        channel_id: Uuid,
+        thread_head_id: Option<String>,
+    ) -> Option<String> {
+        let meta = self
+            .task_map
+            .values_mut()
+            .find(|meta| meta.channel_id == Some(channel_id))?;
+        meta.thread_head_id = thread_head_id;
+        Some(meta.turn_id.clone())
     }
 
     /// Durably associate a successful steer with the exact ACP session that

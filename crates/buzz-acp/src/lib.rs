@@ -1542,6 +1542,7 @@ struct RespawnResult {
 struct SteerAckEvent {
     channel_id: Uuid,
     event_id: String,
+    thread_tags: ThreadTags,
     /// `Ok` if the read loop sent any of the locked `SteerAck` variants.
     /// `Err` if the oneshot was dropped without a send — should not happen
     /// under the current read-loop drains, but if it ever does the main
@@ -3134,10 +3135,16 @@ async fn tokio_main() -> Result<()> {
                     // they're ephemeral and must not block the main loop during
                     // relay reconnection (#35).
                     for (&ch, thread_tags) in &typing_channels {
+                        let turn_id = pool
+                            .task_map()
+                            .values()
+                            .find(|meta| meta.channel_id == Some(ch))
+                            .map(|meta| meta.turn_id.as_str());
                         if let Ok(event) = relay.build_typing_event(
                             ch,
                             thread_tags.root_event_id.as_deref(),
                             thread_tags.parent_event_id.as_deref(),
+                            turn_id,
                         ) {
                             if let Err(e) = relay.try_publish_event(event) {
                                 tracing::debug!("typing indicator dropped for {ch}: {e}");
@@ -3224,6 +3231,7 @@ async fn tokio_main() -> Result<()> {
             Some(PoolEvent::SteerAck(SteerAckEvent {
                 channel_id,
                 event_id,
+                thread_tags,
                 ack,
             })) => {
                 // Mid-turn steer attempt resolved (either transport:
@@ -3336,6 +3344,31 @@ async fn tokio_main() -> Result<()> {
                     "non-cancelling steer ack received"
                 );
                 if let Ok(pool::SteerAck::Success { session_id }) = &ack {
+                    let steered_turn = rescope_successful_steer(
+                        &mut pool,
+                        &mut typing_channels,
+                        channel_id,
+                        &thread_tags,
+                    );
+                    if let Some(turn_id) = steered_turn {
+                        if let Some(observer) = observer.as_ref() {
+                            let mut context =
+                                observer::context_for(Some(channel_id), None, Some(turn_id));
+                            context.thread_head_id = thread_tags.root_event_id.clone();
+                            observer.emit(
+                                "turn_rescoped",
+                                None,
+                                &context,
+                                serde_json::json!({ "triggeringEventId": event_id }),
+                            );
+                        }
+                    } else {
+                        tracing::warn!(
+                            channel = %channel_id,
+                            event_id = %event_id,
+                            "successful steer could not rescope in-flight observer telemetry"
+                        );
+                    }
                     queue.extend_in_flight_deadline(channel_id, config.max_turn_duration_secs);
                     if !pool.record_successful_steer(
                         channel_id,
@@ -3750,6 +3783,7 @@ fn try_native_steer(
     // steering (which is to inject only what's new).
     let (header, closing) = queue::native_steer_framing();
     let event_id_hex = event.id.to_hex();
+    let thread_tags = queue::parse_thread_tags(&event);
     let be = queue::BatchEvent {
         event,
         prompt_tag: prompt_tag.clone(),
@@ -3794,6 +3828,7 @@ fn try_native_steer(
                 let _ = ack_tx_clone.send(SteerAckEvent {
                     channel_id,
                     event_id: event_id_for_watcher,
+                    thread_tags,
                     ack,
                 });
             });
@@ -3808,6 +3843,22 @@ fn try_native_steer(
             false
         }
     }
+}
+
+/// Rescope a successful non-cancelling steer while its original turn is live.
+///
+/// The prompt result and steer acknowledgement race in the main `select!` loop.
+/// If the result won, its handler already removed the typing entry and retired
+/// the `TaskMeta`; a late acknowledgement must not resurrect typing forever.
+fn rescope_successful_steer(
+    pool: &mut AgentPool,
+    typing_channels: &mut HashMap<Uuid, ThreadTags>,
+    channel_id: Uuid,
+    thread_tags: &ThreadTags,
+) -> Option<String> {
+    let turn_id = pool.rescope_in_flight_turn(channel_id, thread_tags.root_event_id.clone())?;
+    typing_channels.insert(channel_id, thread_tags.clone());
+    Some(turn_id)
 }
 
 // ── dispatch_pending ──────────────────────────────────────────────────────────
@@ -7430,6 +7481,66 @@ mod error_outcome_emission_tests {
             // non-systemPrompt path, the simplest valid value.
             protocol_version: 1,
         }
+    }
+
+    #[tokio::test]
+    async fn stale_successful_steer_ack_does_not_resurrect_typing() {
+        let channel_id = Uuid::new_v4();
+        let mut pool = AgentPool::from_slots(vec![]);
+        let mut typing_channels = HashMap::new();
+        let thread_tags = ThreadTags {
+            root_event_id: Some("thread-b".into()),
+            parent_event_id: Some("message-b".into()),
+            mentioned_pubkeys: vec![],
+        };
+
+        assert_eq!(
+            rescope_successful_steer(&mut pool, &mut typing_channels, channel_id, &thread_tags,),
+            None,
+        );
+        assert!(typing_channels.is_empty());
+    }
+
+    #[tokio::test]
+    async fn live_successful_steer_ack_rescopes_turn_and_typing() {
+        let channel_id = Uuid::new_v4();
+        let mut pool = AgentPool::from_slots(vec![None]);
+        let task_id = pool.join_set.spawn(async {}).id();
+        pool.task_map_mut().insert(
+            task_id,
+            crate::pool::TaskMeta {
+                agent_index: 0,
+                channel_id: Some(channel_id),
+                thread_head_id: Some("thread-a".into()),
+                turn_id: "turn-1".into(),
+                recoverable_batch: None,
+                control_tx: None,
+                steer_tx: None,
+                successful_steer_deliveries: HashSet::new(),
+            },
+        );
+        let mut typing_channels = HashMap::new();
+        let thread_tags = ThreadTags {
+            root_event_id: Some("thread-b".into()),
+            parent_event_id: Some("message-b".into()),
+            mentioned_pubkeys: vec![],
+        };
+
+        assert_eq!(
+            rescope_successful_steer(&mut pool, &mut typing_channels, channel_id, &thread_tags,)
+                .as_deref(),
+            Some("turn-1"),
+        );
+        let updated_typing = typing_channels.get(&channel_id).expect("typing scope");
+        assert_eq!(updated_typing.root_event_id.as_deref(), Some("thread-b"));
+        assert_eq!(updated_typing.parent_event_id.as_deref(), Some("message-b"));
+        assert_eq!(
+            pool.task_map()
+                .values()
+                .find(|meta| meta.channel_id == Some(channel_id))
+                .and_then(|meta| meta.thread_head_id.as_deref()),
+            Some("thread-b"),
+        );
     }
 
     #[tokio::test]

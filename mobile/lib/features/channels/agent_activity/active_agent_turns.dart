@@ -174,6 +174,25 @@ List<AgentTurnState> reduceAgentTurnStates(
             at: frameAt,
             errorMessage: _turnError(frame.payload),
           );
+        case 'turn_rescoped':
+          final turnId = frame.turnId;
+          if (turnId == null) continue;
+          final existing = turnsById[turnId];
+          if (existing == null) continue;
+          turnsById[turnId] = AgentTurnState(
+            agentPubkey: existing.agentPubkey,
+            channelId: existing.channelId,
+            threadHeadId: frame.threadHeadId,
+            turnId: existing.turnId,
+            startedAt: existing.startedAt,
+            lastActivityAt: frameAt,
+            livenessTimeout: existing.livenessTimeout,
+            phase: existing.phase,
+            terminalAt: existing.terminalAt,
+            errorMessage: existing.errorMessage,
+            triggeringEventId:
+                _triggeringEventId(frame.payload) ?? existing.triggeringEventId,
+          );
         case 'acp_read':
         case 'acp_write':
         case 'turn_liveness':
@@ -330,6 +349,10 @@ DateTime _safeStartedAt(ObserverFrame frame, DateTime frameAt) {
 
 String? _triggeringEventId(dynamic payload) {
   if (payload is! Map) return null;
+  final directEventId = payload['triggeringEventId'];
+  if (directEventId is String && directEventId.isNotEmpty) {
+    return directEventId;
+  }
   final eventIds = payload['triggeringEventIds'];
   if (eventIds is! List) return null;
   for (final eventId in eventIds) {

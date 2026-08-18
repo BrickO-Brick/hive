@@ -28,6 +28,36 @@ void main() {
     expect(turns.single.lastActivityAt, DateTime.utc(2026, 8, 16, 12, 0, 20));
   });
 
+  test('rescopes a continuing turn after a successful native steer', () {
+    final turns = reduceAgentTurnStates({
+      'agent-a': [
+        _frame(
+          seq: 1,
+          second: 1,
+          kind: 'turn_started',
+          threadHeadId: 'thread-a',
+          receivedSecond: 1,
+          payload: {
+            'triggeringEventIds': ['message-a'],
+          },
+        ),
+        _frame(
+          seq: 2,
+          second: 2,
+          kind: 'turn_rescoped',
+          threadHeadId: 'thread-b',
+          receivedSecond: 2,
+          payload: {'triggeringEventId': 'message-b'},
+        ),
+      ],
+    }, now: DateTime.utc(2026, 8, 16, 12, 0, 3));
+
+    expect(turns.single.threadHeadId, 'thread-b');
+    expect(turns.single.triggeringEventId, 'message-b');
+    expect(turns.single.turnId, 'turn-1');
+    expect(turns.single.isWorking, isTrue);
+  });
+
   test('preserves explicit completion and error outcomes', () {
     final turns = reduceAgentTurnStates({
       'agent-a': [

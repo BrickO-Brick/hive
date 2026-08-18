@@ -96,8 +96,12 @@ final composerActivityStateProvider = Provider.autoDispose
       }
 
       bool canView(String pubkey) {
-        if (currentPubkey == null) return false;
         final normalized = pubkey.toLowerCase();
+        // A frame reaches this state only after the subscription validated its
+        // agent signature, owner p-tag, and NIP-44 decryption. That is stronger
+        // local authorization evidence than eventually-consistent profile data.
+        if (observerState.framesByAgent.containsKey(normalized)) return true;
+        if (currentPubkey == null) return false;
         return ownerByAgent[normalized]?.toLowerCase() == currentPubkey ||
             profiles[normalized]?.ownerPubkey?.toLowerCase() == currentPubkey;
       }
@@ -130,6 +134,7 @@ final composerActivityStateProvider = Provider.autoDispose
         final supersedesWorkingTurn =
             turn != null &&
             turn.isWorking &&
+            entry.turnId != turn.turnId &&
             _typingSupersedesWorkingTurn(entry, turn);
         if (signals[pubkey]?.isWorking == true && !supersedesWorkingTurn) {
           continue;

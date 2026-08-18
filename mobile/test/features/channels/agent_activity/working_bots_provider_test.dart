@@ -183,6 +183,60 @@ void main() {
     );
   }
 
+  test('same-turn typing preserves observer identity past a long cadence', () {
+    final observerTurn = _turn(
+      'agent-a',
+      threadHeadId: 'thread-1',
+      turnId: 'turn-1',
+      lastActivityAt: DateTime.utc(2026, 8, 16, 12),
+      livenessTimeout: const Duration(minutes: 2, seconds: 30),
+    );
+    final container = ProviderContainer(
+      overrides: [
+        currentPubkeyProvider.overrideWith((ref) => 'owner'),
+        channelMembersProvider(
+          _channelId,
+        ).overrideWith((ref) async => const <ChannelMember>[]),
+        channelTypingProvider(_channelId).overrideWith(
+          () => _FakeTypingNotifier([
+            _typingEntry(
+              'agent-a',
+              threadHeadId: 'thread-1',
+              turnId: 'turn-1',
+              receivedAt: DateTime.utc(2026, 8, 16, 12, 3),
+            ),
+          ]),
+        ),
+        agentMentionPubkeysProvider(
+          _channelId,
+        ).overrideWith((ref) => const {'agent-a'}),
+        agentOwnersProvider.overrideWithValue(const AsyncData({})),
+        userCacheProvider.overrideWith(_FakeUserCacheNotifier.new),
+        observerRelayProvider.overrideWith(
+          () => _FakeObserverRelayNotifier({
+            'agent-a': [_observerFrame('agent-a')],
+          }),
+        ),
+        composerAgentTurnStatesProvider.overrideWithValue([observerTurn]),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    final signal = container
+        .read(
+          composerActivityStateProvider((
+            channelId: _channelId,
+            threadHeadId: 'thread-1',
+          )),
+        )
+        .agents
+        .single;
+
+    expect(signal.source, AgentWorkingSource.observer);
+    expect(signal.turnId, 'turn-1');
+    expect(signal.canViewActivity, isTrue);
+  });
+
   test('fresh typing supersedes a stale working turn in the same scope', () {
     final staleTurn = _turn(
       'agent-a',
@@ -515,12 +569,14 @@ AgentTurnState _turn(
 TypingEntry _typingEntry(
   String pubkey, {
   String? threadHeadId,
+  String? turnId,
   DateTime? receivedAt,
 }) {
   final received = receivedAt ?? DateTime.utc(2026, 8, 16, 12);
   return TypingEntry(
     pubkey: pubkey,
     threadHeadId: threadHeadId,
+    turnId: turnId,
     expiresAtMs: received.add(TypingEntry.ttl).millisecondsSinceEpoch,
   );
 }
