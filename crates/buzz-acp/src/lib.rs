@@ -4564,28 +4564,20 @@ mod agent_draft_prompt_tests {
 
     #[test]
     fn shared_base_prompt_teaches_gender_neutral_agent_drafts_and_memory() {
-        // Two authoring/memory rules backing the [Defaults] interaction norms
+        // Authoring and memory rules backing the [Defaults] interaction norms
         // (interaction_norms.rs): drafted agents get no unrequested gender, and
-        // pronouns enter shared memory only as stated — never as a guess.
+        // facts about people enter shared memory only as stated and bound to a
+        // pubkey — display names are not unique on a relay (see
+        // buzz_sdk::mentions::match_names_to_profiles, which intentionally
+        // returns every pubkey sharing a name), and a misbound fact looks
+        // sourced, so it outlives a guess.
         let prompt = include_str!("base_prompt.md");
-        assert!(prompt.contains("do not give the agent a gender"));
-        assert!(prompt.contains("unless the creator asked for one"));
-        assert!(prompt.contains("Record facts about people only as stated, never as guessed"));
-        assert!(prompt.contains("correct the memory the same turn"));
+        assert!(prompt.contains("no gender or gendered pronouns unless the creator asked"));
         // Stating the neutral case beats omitting it — silence is the gap that
         // gets filled from a name.
         assert!(prompt.contains("no gender — refer to me by name"));
-    }
-
-    #[test]
-    fn shared_base_prompt_keys_remembered_people_by_pubkey() {
-        // Display names are not unique on the relay (see
-        // buzz_sdk::mentions::match_names_to_profiles, which intentionally
-        // returns every pubkey sharing a name). A fact misbound to a same-named
-        // stranger looks sourced, so it outlives a guess.
-        let prompt = include_str!("base_prompt.md");
-        assert!(prompt.contains("Key facts about people by pubkey, not display name"));
-        assert!(prompt.contains("confirm it belongs to that pubkey"));
+        assert!(prompt.contains("never as guessed, and keyed to their pubkey"));
+        assert!(prompt.contains("display names are not unique"));
     }
 
     #[test]

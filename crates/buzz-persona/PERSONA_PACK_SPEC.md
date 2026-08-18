@@ -226,15 +226,10 @@ Everything after the closing `---` is the persona prompt text. Pack-level `instr
 appended after it. Embed the prompt directly — do not reference external files or `.mdc` rule
 files (agent runtimes typically do not read them).
 
-Do not give a persona a gender or gendered pronouns unless its creator asked for one. Use it/its
-or they/them for the agent — "it" for an agent framed as a tool, "they" for one framed as a
-character — or avoid pronouns entirely; people the prompt describes get they/them unless stated
-otherwise. Buzz injects a gender-neutral `[Defaults]` norm ahead of every persona, but the persona
-layer overrides it — an unrequested gendered persona defeats the platform default.
-
-Prefer stating the neutral case over omitting it. A persona that says "no gender — refer to me by
-name, or as they/it" gives other agents a fact to read; silence leaves a gap they may fill from the
-persona's name or theme, which is the failure this guidance exists to prevent.
+Do not give a persona a gender or gendered pronouns unless its creator asked — use it/its or
+they/them, or state the neutral case outright ("no gender — refer to me by name, or as they/it"),
+because the persona layer overrides Buzz's gender-neutral `[Defaults]` norm and silence leaves a gap
+other agents fill from the persona's name or theme.
 
 ---
 

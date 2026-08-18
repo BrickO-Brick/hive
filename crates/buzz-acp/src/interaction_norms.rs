@@ -67,8 +67,8 @@
 /// with the pronoun default but not the binding rule, which is exactly the
 /// combination that produces confidently-sourced mis-gendering.
 pub(crate) const INTERACTION_NORMS_PREAMBLE: &str = "[Defaults]\n\
-- Never infer anyone's gender or pronouns — the user, channel members, people mentioned, or other agents — from a name, avatar, persona theme, or writing style. Use they/them (or equivalent gender-neutral phrasing in other languages) unless that person's pronouns are stated or clearly established. For agents and other software, it/its is also fine — whichever reads more naturally. This is a default: pronouns someone states always win.\n\
-- Record a person's pronouns in memory only when they are stated or clearly established — never a guess, and keyed to their pubkey, since display names are not unique. If someone states pronouns that contradict your stored memory, correct the memory the same turn.";
+- Never infer anyone's gender or pronouns from a name, avatar, persona theme, or writing style: use they/them (it/its for agents) unless stated, and stated pronouns always win.\n\
+- Record pronouns only as stated and keyed to the person's pubkey, since display names are not unique; correct contradicting memory the same turn.";
 
 #[cfg(test)]
 mod tests {
@@ -79,7 +79,7 @@ mod tests {
         assert!(INTERACTION_NORMS_PREAMBLE.starts_with("[Defaults]\n"));
         assert!(INTERACTION_NORMS_PREAMBLE.contains("Never infer anyone's gender"));
         assert!(INTERACTION_NORMS_PREAMBLE.contains("they/them"));
-        assert!(INTERACTION_NORMS_PREAMBLE.contains("pronouns someone states always win"));
+        assert!(INTERACTION_NORMS_PREAMBLE.contains("stated pronouns always win"));
     }
 
     #[test]
@@ -116,17 +116,29 @@ mod tests {
     fn preamble_covers_persistent_memory() {
         // Buzz-specific: core memory is shared across sessions, so a guessed
         // gender recorded once would be re-asserted everywhere, forever.
-        assert!(INTERACTION_NORMS_PREAMBLE.contains("never a guess"));
-        assert!(INTERACTION_NORMS_PREAMBLE.contains("correct the memory the same turn"));
+        assert!(INTERACTION_NORMS_PREAMBLE.contains("only as stated"));
+        assert!(INTERACTION_NORMS_PREAMBLE.contains("correct contradicting memory the same turn"));
     }
 
     #[test]
     fn preamble_keys_remembered_pronouns_to_a_pubkey() {
-        // base_prompt.md states this at length, but it is replaceable via
-        // BUZZ_ACP_BASE_PROMPT_FILE. Carrying the short form here keeps an
+        // base_prompt.md states this too, but it is replaceable via
+        // BUZZ_ACP_BASE_PROMPT_FILE. Carrying the clause here keeps an
         // operator from ending up with the pronoun default but not the
         // binding rule — the combination that yields sourced mis-gendering.
-        assert!(INTERACTION_NORMS_PREAMBLE.contains("keyed to their pubkey"));
+        assert!(INTERACTION_NORMS_PREAMBLE.contains("keyed to the person's pubkey"));
         assert!(INTERACTION_NORMS_PREAMBLE.contains("display names are not unique"));
+    }
+
+    #[test]
+    fn preamble_stays_small() {
+        // This block is prepended to every send of every session, so its size
+        // is a standing tax. Feedback was that prompts are already too long;
+        // the ceiling makes a regression fail here rather than in a bill.
+        assert!(
+            INTERACTION_NORMS_PREAMBLE.len() < 400,
+            "preamble grew to {} bytes — keep it tight or drop a norm",
+            INTERACTION_NORMS_PREAMBLE.len()
+        );
     }
 }
