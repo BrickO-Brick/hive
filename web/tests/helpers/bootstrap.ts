@@ -37,11 +37,11 @@ export async function bootstrapE2ePage(
     throw bootstrapFailure(expectedOrigin, page.url(), error);
   }
 
-  if (!response?.ok()) {
+  if (response && !response.ok()) {
     throw bootstrapFailure(
       expectedOrigin,
       page.url(),
-      `navigation returned HTTP ${response?.status() ?? "no response"}`,
+      `navigation returned HTTP ${response.status()}`,
     );
   }
 
