@@ -19,9 +19,13 @@ The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHALL**, **SHALL NOT**,
 **OPTIONAL** are to be interpreted as described in BCP 14 when, and only when,
 they appear in all capitals.
 
-`transport_contract_id` and every identifier serialized by this document are
-interoperability-critical. Local adapter revision identifiers and key identifiers
-are deployment-local and MUST NOT appear in public discovery.
+Every identifier this document serializes on the wire — header names, the
+profile identifier, provenance envelope fields, and proof transport codes — is
+interoperability-critical. `transport_contract_id` remains deployment-local as
+core classifies it: its value is opaque outside a deployment, while the
+canonical contract semantics this profile contributes to it are normative and
+fixed here. Local adapter revision identifiers and key identifiers are
+deployment-local and MUST NOT appear in public discovery.
 
 ## Common trusted-edge requirements
 

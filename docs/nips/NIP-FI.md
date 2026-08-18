@@ -447,8 +447,10 @@ assertion revalidation material is destroyed on expiry, close, or invalidation.
 ## Rejection and privacy
 
 Public class is a function only of evidence the requester supplied, never of
-private server state. Under the private-posture rule, even `key_mismatch` joins
-the private-state anonymity set.
+private per-principal server state; `authorization_unavailable` is the sole
+exception and reveals only that a required authoritative dependency is
+unreadable, never any per-principal fact. Under the private-posture rule, even
+`key_mismatch` joins the private-state anonymity set.
 
 | Private condition | Public class | Nostr prefix and exact text | HTTP response |
 |---|---|---|---|
@@ -578,8 +580,8 @@ atomically. Availability failures deny rather than degrade to Nostr-only access.
 
 ## Sources
 
-- NIP-42 authentication: <https://github.com/nostr-protocol/nips/blob/6d2979b369329748734c66846989e453270ced03/42.md>
-- NIP-98 HTTP authentication: <https://github.com/nostr-protocol/nips/blob/6d2979b369329748734c66846989e453270ced03/98.md>
+- NIP-42 authentication: <https://github.com/nostr-protocol/nips/blob/6d2979b3f503a8539c983efbcdcf901bbcf9ed23/42.md>
+- NIP-98 HTTP authentication: <https://github.com/nostr-protocol/nips/blob/6d2979b3f503a8539c983efbcdcf901bbcf9ed23/98.md>
 - JWT BCP: <https://www.rfc-editor.org/rfc/rfc8725>
 - JWT access-token profile: <https://www.rfc-editor.org/rfc/rfc9068>
 - Non-normative composed model: [NIP-FI-MODEL.md](NIP-FI-MODEL.md)
