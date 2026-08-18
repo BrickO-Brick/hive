@@ -906,8 +906,6 @@ pub fn spawn_agent_child(
         None
     };
 
-    // Receipt persistence belongs to the caller's atomic register transition.
-
     // Windows: assign the harness to a Job Object so its whole tree dies with
     // the handle. The Unix process-group equivalent is set above.
     #[cfg(windows)]
@@ -997,6 +995,5 @@ pub fn start_managed_agent_process(
 
 #[cfg(test)]
 mod test_fixtures;
-
 #[cfg(test)]
 mod tests;

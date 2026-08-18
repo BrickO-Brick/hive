@@ -428,7 +428,6 @@ export function AgentInstanceEditDialog({
     selectedRuntime,
   });
 
-
   // D2/D3: the top-level API key owns display while the readiness gate keeps the
   // complete required-key list; advancedRequiredEnvKeys drives EnvVarsEditor
   // display only. The effective snapshot covers persona inheritance during an
@@ -647,7 +646,6 @@ export function AgentInstanceEditDialog({
         prospectiveRuntimeId,
         runtimeSupportsLlmProviderSelection(prospectiveRuntimeId),
       );
-      // Provider + env to persist — the shared inherited-submission snapshot
       // (same values the credential gate validates), so gate ↔ record ↔ spawn
       // all agree. See resolveInheritedRuntimeSubmission.
       const normalizedSubmitProvider = inheritedSubmission.provider;
@@ -1127,10 +1125,7 @@ export function AgentInstanceEditDialog({
                 </p>
               ) : null}
             </div>
-
-
             <EffortPickerField agent={agent} config={configSurfaceQuery.data} />
-
 
             <AgentAiDefaultsNotice
               onEditDefaults={() => setAiDefaultsOpen(true)}

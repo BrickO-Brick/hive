@@ -467,7 +467,6 @@ fn buzz_agent_requirements(effective: &EffectiveAgentEnv) -> Vec<Requirement> {
         });
     }
 
-    // Resolve the model with provider-specific fallbacks used by buzz-agent.
     let provider_model_key = match provider.as_deref() {
         Some("databricks") | Some("databricks_v2") | Some("databricks-v2") => {
             Some("DATABRICKS_MODEL")
@@ -1736,8 +1735,6 @@ mod tests {
         );
     }
 }
-// Goose file-config-aware requirement tests live in a sibling file so this
-// module stays under the desktop file-size ratchet.
 #[cfg(test)]
 #[path = "readiness_goose_file_config_tests.rs"]
 mod goose_file_config_tests;
