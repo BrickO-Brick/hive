@@ -118,7 +118,7 @@
 //! 5. the four `project_git_workflow` PR-status/merge sends (items 5–8).
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Condvar, LazyLock, Mutex};
 
 use tokio::sync::Notify;
 
@@ -165,6 +165,12 @@ struct Registry {
     generation: AtomicU64,
     /// Notified when `in_flight` reaches zero so the drain can wake.
     drained: Notify,
+    /// Blocking analogue of `drained` for the C5 coordinator's synchronous
+    /// drain: the barrier runs inside a `spawn_blocking` critical section that
+    /// holds two `std::sync::Mutex` guards it cannot carry across `.await`, so
+    /// it awaits lease-drain on this condvar (paired with `inner`) rather than
+    /// the async `drained`. Both are notified from the lease `Drop` impls.
+    drained_blocking: Condvar,
 }
 
 static REGISTRY: LazyLock<Registry> = LazyLock::new(|| Registry {
@@ -174,6 +180,7 @@ static REGISTRY: LazyLock<Registry> = LazyLock::new(|| Registry {
     }),
     generation: AtomicU64::new(0),
     drained: Notify::new(),
+    drained_blocking: Condvar::new(),
 });
 
 fn lock_inner() -> std::sync::MutexGuard<'static, RegistryInner> {
@@ -242,8 +249,12 @@ impl Drop for OwnerIdentityEgressLease {
         drop(inner);
         if drained {
             // Wake a drain awaiting the last in-flight lease. Harmless when no
-            // drain is in progress (no waiter registered).
+            // drain is in progress (no waiter registered). Both the async
+            // (`drained`) and blocking (`drained_blocking`) drains are woken;
+            // each re-checks `in_flight` under the lock, so notifying the one
+            // with no waiter is a no-op.
             REGISTRY.drained.notify_waiters();
+            REGISTRY.drained_blocking.notify_all();
         }
     }
 }
@@ -307,8 +318,6 @@ fn admit_owner_identity_after_wait() -> Result<OwnerIdentityEgressLease, String>
 /// Idempotent-guard: only transitions from `Live`. Returns `Err` if a
 /// transition is already in flight or latched — the coordinator serializes
 /// transitions under its own guards, so this is a defensive invariant check.
-// Consumed by C5 (P25/P28 coordinator); remove allow when C5 lands.
-#[allow(dead_code)]
 pub fn begin_egress_drain() -> Result<u64, String> {
     let mut inner = lock_inner();
     if inner.state != IdentityPersistenceState::Live {
@@ -344,12 +353,40 @@ pub async fn await_egress_drain() {
     }
 }
 
+/// Synchronously await every in-flight lease admitted before the drain began —
+/// the C5 coordinator's blocking analogue of [`await_egress_drain`]. Returns
+/// once no lease is outstanding.
+///
+/// The coordinator barrier runs inside a `spawn_blocking` critical section that
+/// holds two `std::sync::Mutex` guards (`managed_agent_runtime_transition`,
+/// `managed_agents_store_lock`) it cannot carry across `.await`, so it drains
+/// on the `drained_blocking` condvar rather than the async `drained`. Called
+/// after [`begin_egress_drain`] and BEFORE revoke/journal/persist.
+///
+/// # Deadlock-freedom (load-bearing invariant)
+///
+/// Blocking on lease-drain while the caller owns both Layer-2 guards cannot
+/// cycle: a lease `Drop` acquires ONLY the egress registry mutex (never either
+/// managed-agent guard), and a tree sweep found ZERO sites that hold an egress
+/// lease while acquiring either guard. `wait_while` releases the registry mutex
+/// while parked, so an in-flight lease's `Drop` always makes progress and
+/// notifies. The wait has NO timeout, matching [`await_egress_drain`]: every
+/// in-flight lease is a network op with its own timeout, so the wait is bounded
+/// transitively — a defensive timeout would only mask a leaked lease.
+pub fn wait_egress_drain_blocking() {
+    let inner = lock_inner();
+    // wait_while re-checks under the lock and releases it while parked, so a
+    // lease Drop that reaches zero between the check and the park is not lost.
+    let _guard = REGISTRY
+        .drained_blocking
+        .wait_while(inner, |inner| inner.in_flight != 0)
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+}
+
 /// Resume admission at a proven transition exit (`Committed` finished, or
 /// `DefinitelyUnchanged` / verified-rollback): state → `Live`. The generation
 /// is already current for the winning identity, so leases admitted from here
 /// carry it.
-// Consumed by C5 (P25/P28 coordinator); remove allow when C5 lands.
-#[allow(dead_code)]
 pub fn resume_egress_live() {
     lock_inner().state = IdentityPersistenceState::Live;
 }
@@ -358,8 +395,6 @@ pub fn resume_egress_live() {
 /// → `Indeterminate`. Owner-identity egress admission and the checked key
 /// accessors refuse until [`resume_egress_live`] is called after reconciliation
 /// proves one durable identity canonical.
-// Consumed by C5 (P25/P28 coordinator); remove allow when C5 lands.
-#[allow(dead_code)]
 pub fn latch_identity_indeterminate() {
     lock_inner().state = IdentityPersistenceState::Indeterminate;
 }
@@ -449,7 +484,10 @@ impl Drop for ManagedAgentEgressLease {
         let drained = inner.in_flight == 0;
         drop(inner);
         if drained {
+            // Wake both the async and blocking drains; each re-checks
+            // `in_flight` under the lock, so the one with no waiter is a no-op.
             REGISTRY.drained.notify_waiters();
+            REGISTRY.drained_blocking.notify_all();
         }
     }
 }
@@ -505,10 +543,9 @@ pub use durable::{
     register_owner_artifact, register_owner_bearer, register_owner_session, BearerPolicy,
     OwnerIdentityCapability, SessionPolicy, StampedArtifact,
 };
-// The C5 coordinator barrier and its registration-completeness reader; no
-// production caller until C5, so the re-exports are unused today. Consumed by
-// C5 (P25/P28); remove allow when C5 lands.
-#[allow(unused_imports)]
+// The C5 coordinator barrier's durable-capability revocation, consumed by
+// `import_identity_blocking`. Its registration-completeness reader
+// (`live_durable_capability_count`) stays test-only; retired in F.
 pub use durable::revoke_durable_capabilities_before;
 // The artifact policy marker and its wire stamp are named at the frontend
 // application sites in C6/C7 (generation-compare) and by the §7 artifact
@@ -553,12 +590,27 @@ pub(crate) fn test_owner_egress_lease() -> EgressLease {
 mod tests {
     use super::*;
 
-    fn guard() -> std::sync::MutexGuard<'static, ()> {
+    /// RAII test guard: resets the process-global registry on BOTH entry and
+    /// drop. Resetting on drop is load-bearing — a test that latches
+    /// `Indeterminate` (or leaves the state `Draining`) must not leak that into
+    /// tests elsewhere in the crate that read the indeterminate-gated key
+    /// accessors (`signing_keys`) WITHOUT holding `EGRESS_REGISTRY_TEST_LOCK`.
+    /// Holding only on entry left the last-run state resident until the next
+    /// registry test entered, which those unguarded readers observed as a leak.
+    struct RegistryGuard(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+
+    impl Drop for RegistryGuard {
+        fn drop(&mut self) {
+            reset_registry_for_test();
+        }
+    }
+
+    fn guard() -> RegistryGuard {
         let g = EGRESS_REGISTRY_TEST_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         reset_registry_for_test();
-        g
+        RegistryGuard(g)
     }
 
     #[test]
@@ -677,6 +729,39 @@ mod tests {
         await_egress_drain().await;
         assert_eq!(lock_inner().in_flight, 0, "drain awaited the lease drop");
         handle.await.unwrap();
+    }
+
+    #[test]
+    fn blocking_drain_returns_immediately_with_no_in_flight_leases() {
+        let _g = guard();
+        begin_egress_drain().unwrap();
+        // No leases outstanding — the synchronous drain returns without parking.
+        wait_egress_drain_blocking();
+        assert_eq!(lock_inner().in_flight, 0);
+    }
+
+    #[test]
+    fn blocking_drain_awaits_an_in_flight_lease_then_completes() {
+        let _g = guard();
+        let lease = admit_owner_identity_after_wait().unwrap();
+        begin_egress_drain().unwrap();
+        assert_eq!(lock_inner().in_flight, 1);
+
+        // The blocking drain must not return while the lease is held. Drop it
+        // from another THREAD (not a task — the wait parks the OS thread) after
+        // the drain has begun parking; the condvar notify on lease Drop wakes it.
+        let handle = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            drop(lease);
+        });
+
+        wait_egress_drain_blocking();
+        assert_eq!(
+            lock_inner().in_flight,
+            0,
+            "blocking drain awaited the lease drop"
+        );
+        handle.join().unwrap();
     }
 
     #[test]

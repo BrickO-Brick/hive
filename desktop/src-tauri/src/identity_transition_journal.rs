@@ -39,8 +39,6 @@ fn journal_path(data_dir: &Path) -> PathBuf {
 /// durable — the coordinator must treat that as a hard failure and NOT proceed
 /// to the durable dispatch, because an undurable journal cannot fail closed on
 /// restart.
-// Consumed by C5 (P28 coordinator); remove allow when the coordinator writes it.
-#[allow(dead_code)]
 pub(crate) fn write_pending(
     data_dir: &Path,
     pending: &IdentityTransitionPending,
@@ -63,8 +61,6 @@ pub(crate) fn write_pending(
 /// identity must never be blocked by a stale journal delete failure; the next
 /// coordinator run or a manual retry can clear it. Returns `Err` only to
 /// surface a diagnostic; callers on the proven-exit path log and continue.
-// Consumed by C5 (P28 coordinator); remove allow when the coordinator clears it.
-#[allow(dead_code)]
 pub(crate) fn clear_pending(data_dir: &Path) -> Result<(), String> {
     let path = journal_path(data_dir);
     match std::fs::remove_file(&path) {

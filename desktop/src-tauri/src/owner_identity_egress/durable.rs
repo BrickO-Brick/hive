@@ -396,8 +396,6 @@ fn register_durable<P: CapabilityPolicy>(
 /// [`begin_egress_drain`]/[`await_egress_drain`] and BEFORE the journal write +
 /// durable B dispatch, so no old-generation session or bearer can transmit
 /// across the durable boundary. It only *invokes* the handles C2 registered.
-// Consumed by C5 (P25/P28 coordinator barrier); remove allow when C5 lands.
-#[allow(dead_code)]
 pub fn revoke_durable_capabilities_before(winning_generation: u64) -> usize {
     let mut durable = lock_durable();
     let stale: Vec<u64> = durable

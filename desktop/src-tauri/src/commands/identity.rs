@@ -387,35 +387,30 @@ pub async fn import_identity(
     run_identity_transition(app_handle, nsec, password, None, || Ok(())).await
 }
 
-/// Commit an imported identity: durably persist, swap in-memory keys, clear
-/// recovery flags, then remove the previous identity's stale app-managed
-/// backup. Caller must hold `state.identity_mutation`.
+/// Finish an imported identity commit whose durable persist already succeeded
+/// (`PersistenceOutcome::Committed`): swap in-memory keys, clear recovery flags,
+/// then remove the previous identity's stale app-managed backup. Caller must
+/// hold `state.identity_mutation` and have proven B durably canonical via
+/// [`persist_imported_identity_classified`](crate::identity_persistence::persist_imported_identity_classified).
 ///
-/// Ordering is the contract:
-///
-/// 1. `persist` runs FIRST. If it fails (`Err` from both keyring and file
-///    fallback), nothing has changed — the previous identity stays live in
-///    memory AND its valid canonical `identity.ncryptsec` stays on disk.
-/// 2. Only after durable persistence do we swap `state.keys` and clear the
-///    recovery flags.
-/// 3. Stale-backup cleanup runs LAST and is deliberately best-effort: at that
-///    point the import is durably committed, so reporting a cleanup failure
-///    as a command `Err` would claim a half-applied import that actually
-///    succeeded. The leftover blob is still passphrase-encrypted and is
-///    replaced by the next backup creation; we log and move on.
+/// `storage` records where B durably landed (reported on the success result).
+/// Splitting the durable persist (now the classifier's, run under the egress
+/// barrier) from this in-memory swap is the P27-C1 shape: this function runs
+/// ONLY on the `Committed` arm, so it never restores live A beside durable B.
+/// Stale-backup cleanup runs LAST and is best-effort: B is already durable, so
+/// a cleanup failure must not be reported as a failed commit. The leftover blob
+/// is still passphrase-encrypted and is replaced by the next backup creation.
 pub(crate) fn commit_imported_identity(
     state: &AppState,
     data_dir: &std::path::Path,
     keys: nostr::Keys,
-    persist: impl FnOnce(&nostr::Keys) -> Result<crate::app_state::IdentityStorage, String>,
+    storage: crate::app_state::IdentityStorage,
 ) -> Result<(nostr::PublicKey, crate::app_state::IdentityStorage), String> {
     // Capture the previous pubkey up front for post-commit cleanup.
     let previous_pubkey = state
         .identity_lifecycle_keys_guard()
         .map_err(|e| e.to_string())?
         .public_key();
-
-    let storage = persist(&keys)?;
 
     // Update in-memory keys BEFORE clearing recovery flags. The Release
     // stores below pair with Acquire loads in get_identity: a reader

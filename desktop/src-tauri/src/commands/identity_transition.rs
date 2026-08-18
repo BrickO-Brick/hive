@@ -25,6 +25,39 @@ fn drain_managed_agent_runtimes_for_import(
     }
 }
 
+/// Compensate a drained runtime set with NO durable identity write — the shared
+/// unwind for every barrier abort (drain failure, fenced-gate/journal failure,
+/// `DefinitelyUnchanged`). The store guard is dropped FIRST because
+/// [`compensate_drain`](crate::managed_agents::compensate_drain) re-acquires it,
+/// and the runtime-transition guard is passed BY VALUE so compensation runs
+/// without any interleave window. `scope`/`rt_guard` are `None` on the no-scope
+/// path (nothing drained); either being `None` skips compensation. Returns a
+/// combined diagnostic string when compensation itself fails.
+fn compensate_import_drain(
+    app_handle: &tauri::AppHandle,
+    stopped: &[crate::managed_agents::DrainJournalEntry],
+    scope: Option<&crate::managed_agents::scope::WorkspaceAgentScope>,
+    rt_guard: Option<std::sync::MutexGuard<'_, ()>>,
+    store_guard: Option<std::sync::MutexGuard<'_, ()>>,
+    reason: &str,
+) -> String {
+    // Drop the store lock before compensating (compensate_drain re-acquires it).
+    drop(store_guard);
+    let comp_err = match (scope, rt_guard) {
+        (Some(scope), Some(rt_guard)) => {
+            crate::managed_agents::compensate_drain(app_handle, stopped, scope, rt_guard)
+        }
+        (_, leftover_guard) => {
+            drop(leftover_guard);
+            None
+        }
+    };
+    match comp_err {
+        Some(comp) => format!("{reason}; compensation failed: {comp}"),
+        None => reason.to_string(),
+    }
+}
+
 /// The shared identity-transition coordinator (P25-C1): the ONE sink both
 /// runtime identity-swap callers route through. Acquires the transition locks
 /// in ONE unconditional order — `identity_mutation` → `workspace_transition`
@@ -190,6 +223,15 @@ fn import_identity_blocking(
     let pre_import_scope = state.capture_active_scope();
     let has_active_scope = pre_import_scope.is_some();
 
+    // The identity active before this transition (A), captured for the P28-C1
+    // journal BEFORE any swap. `to_pubkey` is the imported identity (B).
+    let from_pubkey = state
+        .identity_lifecycle_keys_guard()
+        .map_err(|e| format!("read current identity for transition journal: {e}"))?
+        .public_key()
+        .to_hex();
+    let to_pubkey = keys.public_key().to_hex();
+
     let _rt_transition_guard = if has_active_scope {
         Some(
             state
@@ -216,28 +258,14 @@ fn import_identity_blocking(
         match drain_managed_agent_runtimes_for_import(&app_handle, &state) {
             Ok(stopped) => stopped,
             Err((stopped, drain_err)) => {
-                // Drain failed — drop the store lock BEFORE compensating
-                // (compensate_drain re-acquires it), but pass the transition
-                // guard into compensate_drain so there is no interleave window.
-                drop(_store_guard);
-                let comp_err = match (pre_import_scope.as_ref(), _rt_transition_guard) {
-                    (Some(scope), Some(rt_guard)) => crate::managed_agents::compensate_drain(
-                        &app_handle,
-                        &stopped,
-                        scope,
-                        rt_guard,
-                    ),
-                    (_, leftover_guard) => {
-                        drop(leftover_guard);
-                        None
-                    }
-                };
-                let msg = match comp_err {
-                    Some(comp) => format!(
-                        "identity import drain failed: {drain_err}; compensation failed: {comp}"
-                    ),
-                    None => format!("identity import drain failed: {drain_err}"),
-                };
+                let msg = compensate_import_drain(
+                    &app_handle,
+                    &stopped,
+                    pre_import_scope.as_ref(),
+                    _rt_transition_guard,
+                    _store_guard,
+                    &format!("identity import drain failed: {drain_err}"),
+                );
                 return Err(msg);
             }
         }
@@ -245,66 +273,125 @@ fn import_identity_blocking(
         vec![]
     };
 
-    // ── Fenced pre-commit gate + durable commit (P25-C1 / P26-C1) ─────────
-    // After a successful drain, immediately before the durable commit. The
-    // commit fence (when supplied) is acquired FIRST, the validity check runs
-    // under it, and the durable commit runs under the SAME held guard — so a
-    // racing supersession can neither slip between the check and the commit nor
-    // interleave with it. A failed check short-circuits and NEVER commits.
-    let commit_result = commit_under_fence(commit_fence.as_deref(), validity_check, || {
-        super::commit_imported_identity(&state, &data_dir, keys, |keys| {
-            // Persist into the OS keyring first (store → read-back verify →
-            // marker → delete file). Falls back to the 0o600 file when the
-            // keyring is unavailable; returns Err only when both backends fail.
-            let store =
-                crate::secret_store::SecretStore::shared(crate::app_state::keyring_service());
-            crate::app_state::persist_imported_identity(store, keys, &key_path, &data_dir)
-        })
+    // ── Owner-identity egress barrier (P29/P30-C1) ────────────────────────
+    // Between the runtime drain and the durable dispatch, drain owner-identity
+    // egress: bump the identity-persistence generation, refuse new lease
+    // admission, await in-flight leases, and revoke old-generation durable
+    // capabilities (sessions/bearers). Both Layer-2 guards remain held
+    // continuously across this barrier — releasing either permits A-runtime
+    // resurrection before B commits (Thufir UNSAFE verdict on the three-phase
+    // split, Paul-ruled `092acdeb75`). The wait is synchronous
+    // (`wait_egress_drain_blocking`) because this body holds two std mutex
+    // guards that cannot cross `.await`; deadlock-freedom rests on leases
+    // taking only the egress registry mutex (zero lease-vs-guard sites).
+    //
+    // The barrier runs UNCONDITIONALLY, even on the no-scope path: owner sends
+    // are scope-independent, so an in-flight owner lease can exist with no
+    // active agent scope.
+    let winning_generation = crate::owner_identity_egress::begin_egress_drain()?;
+    crate::owner_identity_egress::wait_egress_drain_blocking();
+    crate::owner_identity_egress::revoke_durable_capabilities_before(winning_generation);
+
+    // ── Fenced pre-commit gate → journal → classified durable persist ─────
+    // The commit fence (when supplied) is acquired FIRST and held across the
+    // journal write AND the durable persist (P26-C1 fence retention): a racing
+    // supersession that must take the same fence can neither slip between the
+    // check and the durable dispatch nor interleave with it. The P28-C1 journal
+    // is written ONLY after the validity gate passes, so a superseded recovery
+    // leaves no journal residue. The persist is CLASSIFIED against durable fact
+    // (P27-C1) — never the kernel's `Ok`/`Err`.
+    let store = crate::secret_store::SecretStore::shared(crate::app_state::keyring_service());
+    let pending = crate::identity_transition_journal::IdentityTransitionPending {
+        from_pubkey,
+        to_pubkey,
+    };
+    let barrier_result = commit_under_fence(commit_fence.as_deref(), validity_check, || {
+        crate::identity_transition_journal::write_pending(&data_dir, &pending)?;
+        Ok(
+            crate::identity_persistence::persist_imported_identity_classified(
+                &keys,
+                store,
+                &key_path,
+                || crate::app_state::persist_imported_identity(store, &keys, &key_path, &data_dir),
+            ),
+        )
     });
 
-    // If the fenced gate or the durable persist failed after a successful
-    // drain, compensate the drained runtimes with NO durable identity write.
-    // Drop the store lock BEFORE calling compensate_drain; pass the transition
-    // guard into it so there is no interleave window.
-    let (pubkey, storage) = match commit_result {
-        Ok(result) => result,
+    use crate::identity_persistence::PersistenceOutcome;
+    let (pubkey, storage) = match barrier_result {
+        // Validity gate or journal write failed BEFORE any durable B persist:
+        // reopen admission, compensate the drained runtimes, no durable write.
         Err(e) => {
-            if !stopped_entries.is_empty() {
-                drop(_store_guard);
-                let comp_err = match (pre_import_scope.as_ref(), _rt_transition_guard) {
-                    (Some(scope), Some(rt_guard)) => crate::managed_agents::compensate_drain(
-                        &app_handle,
-                        &stopped_entries,
-                        scope,
-                        rt_guard,
-                    ),
-                    (_, leftover_guard) => {
-                        drop(leftover_guard);
-                        None
-                    }
-                };
-                if let Some(comp_err) = comp_err {
-                    eprintln!(
-                        "buzz-desktop: identity import persist failed, compensation failed: {comp_err}"
-                    );
+            crate::owner_identity_egress::resume_egress_live();
+            let msg = compensate_import_drain(
+                &app_handle,
+                &stopped_entries,
+                pre_import_scope.as_ref(),
+                _rt_transition_guard,
+                _store_guard,
+                &e,
+            );
+            return Err(msg);
+        }
+        // Durable B proven canonical: finish the in-memory swap through the
+        // already-held guards (no fallible acquisition after durability,
+        // P26-C2), clear the journal, and reopen admission at generation B.
+        Ok(PersistenceOutcome::Committed(storage)) => {
+            let committed = super::commit_imported_identity(&state, &data_dir, keys, storage);
+            match committed {
+                Ok(committed) => committed,
+                // The in-memory swap itself failed after durable B landed —
+                // a poisoned `state.keys` guard. B IS durable, so this is NOT
+                // compensatable: latch fail-closed and leave the journal for
+                // boot reconciliation rather than restoring live A beside B.
+                Err(e) => {
+                    crate::owner_identity_egress::latch_identity_indeterminate();
+                    return Err(format!(
+                        "identity B durably committed but the in-memory swap failed: {e}; \
+                         latched indeterminate — relaunch to reconcile from durable fact"
+                    ));
                 }
             }
-            return Err(e);
+        }
+        // B never landed, A intact: the only outcome permitted to compensate.
+        Ok(PersistenceOutcome::DefinitelyUnchanged) => {
+            let _ = crate::identity_transition_journal::clear_pending(&data_dir);
+            crate::owner_identity_egress::resume_egress_live();
+            let msg = compensate_import_drain(
+                &app_handle,
+                &stopped_entries,
+                pre_import_scope.as_ref(),
+                _rt_transition_guard,
+                _store_guard,
+                "identity import persist failed and durable A is still canonical",
+            );
+            return Err(msg);
+        }
+        // Neither identity provable: latch the durable fail-closed state, LEAVE
+        // the journal, do NOT compensate or clear scope — runtimes stay down.
+        // Boot/reconciliation resolves it later from durable fact (P28-C1).
+        Ok(PersistenceOutcome::Indeterminate(reason)) => {
+            crate::owner_identity_egress::latch_identity_indeterminate();
+            return Err(format!(
+                "identity import could not prove either identity canonical: {reason}; \
+                 latched indeterminate — relaunch to reconcile"
+            ));
         }
     };
 
-    // ── Clear active scope and bump generation ────────────────────────────
-    // For no-active-scope path: no scope was ever set; clearing is a no-op
-    // but bumping generation invalidates any in-flight stale operations.
-    // For live-active path: agents are stopped; clearing scope makes all
-    // agent commands fail closed until the frontend re-applies a workspace.
-    //
-    // Invariant: the fallback relay can never claim legacy data — claims
-    // are only written inside apply_workspace's prepare stage.
-    //
-    // `clear_active_scope()` internally calls `next_scope_generation()` —
-    // no additional bump is needed here.
+    // ── Proven Committed: clear journal, scope, reopen admission ──────────
+    // The journal is cleared only here, at the proven `Committed` exit after
+    // the in-memory swap completed (best-effort — a proven-canonical identity
+    // must never be blocked by a stale delete). `clear_active_scope()` bumps
+    // the scope generation, making all agent commands fail closed until the
+    // frontend re-applies a workspace. `resume_egress_live()` reopens egress at
+    // generation B. The fallback relay can never claim legacy data — claims are
+    // only written inside apply_workspace's prepare stage.
+    if let Err(e) = crate::identity_transition_journal::clear_pending(&data_dir) {
+        eprintln!("buzz-desktop: identity committed, but journal clear failed: {e}");
+    }
     state.clear_active_scope();
+    crate::owner_identity_egress::resume_egress_live();
 
     let pubkey_hex = pubkey.to_hex();
     let display_name = super::truncated_display_name(&pubkey)?;
