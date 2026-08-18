@@ -70,8 +70,25 @@
 //!   `commands::channels` (×3), and the huddle STT task (per-send inline
 //!   owner lease).
 //! - `commands::identity::create_auth_event` — the relay-WS reconnection
-//!   NIP-42 handshake (per-send lease; frontend session registration defers to
-//!   C6/C7 with the frontend identity store).
+//!   NIP-42 handshake (per-send lease). The signed auth event is an
+//!   owner-signed relay-event ARTIFACT: stamped and threaded to the frontend
+//!   as `{value, artifact}`, validated in C6/C7. Frontend session REGISTRATION
+//!   (native-WS teardown handle) defers to C6/C7 with the frontend identity
+//!   store.
+//! - **Owner-identity artifacts** — the seven `commands::identity` producers
+//!   `sign_event`, `create_auth_event`, `build_observer_control_event`,
+//!   `sign_nostr_identity_binding`, `nip44_encrypt_to_self`,
+//!   `nip44_decrypt_from_self`, and `decrypt_observer_event` admit a bounded
+//!   lease BEFORE the owner-key sign/encrypt/decrypt, register an
+//!   [`OwnerIdentityCapability<ArtifactPolicy>`], and return the owner-key
+//!   value wrapped as [`StampedArtifact`] (`{value, artifact:{id,generation}}`).
+//!   Artifacts carry NO side-effecting teardown: their only revocation is the
+//!   application-site generation compare, triggered by the transition bump
+//!   (shape (ii)). The frontend threads the pair opaque; C6/C7 adds the
+//!   compare at each application boundary. Rust-consumed / collapsed-transaction
+//!   artifacts (`project_git_workflow` sign+submit, archive-ingest decrypts,
+//!   snapshot-import, engram-listing decrypt) exercise synchronously inside
+//!   their lease and keep the collapsed shape — inventoried for C5/C6.
 //! - **Durable bearers** — `commands::media::mint_media_get_auth` (Blossom
 //!   `t=get`) and the `do_upload` `t=upload` mint sign under a bounded lease
 //!   and register an [`OwnerIdentityCapability<BearerPolicy>`]; the four
@@ -475,14 +492,20 @@ fn admit_managed_agent_after_wait() -> Result<ManagedAgentEgressLease, String> {
 /// file-size discipline; it shares this module's one registry.
 mod durable;
 pub use durable::{
-    register_owner_bearer, register_owner_session, BearerPolicy, OwnerIdentityCapability,
-    SessionPolicy,
+    register_owner_artifact, register_owner_bearer, register_owner_session, BearerPolicy,
+    OwnerIdentityCapability, SessionPolicy, StampedArtifact,
 };
 // The C5 coordinator barrier and its registration-completeness reader; no
 // production caller until C5, so the re-exports are unused today. Consumed by
 // C5 (P25/P28); remove allow when C5 lands.
 #[allow(unused_imports)]
 pub use durable::revoke_durable_capabilities_before;
+// The artifact policy marker and its wire stamp are named at the frontend
+// application sites in C6/C7 (generation-compare) and by the §7 artifact
+// schedules; no production Rust caller names them today. Remove allow when
+// C6/C7 lands.
+#[allow(unused_imports)]
+pub use durable::{ArtifactPolicy, ArtifactStamp};
 
 /// Process-global mutex serializing tests that mutate the registry's
 /// process-global state. Any test that admits a lease, drives a drain, or

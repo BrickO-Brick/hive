@@ -110,8 +110,13 @@ pub async fn sign_event(
     created_at: Option<u64>,
     tags: Vec<Vec<String>>,
     state: State<'_, AppState>,
-) -> Result<String, String> {
+) -> Result<crate::owner_identity_egress::StampedArtifact<String>, String> {
     let keys = state.signing_keys()?;
+    // Admit BEFORE signing (the F1 lesson): the sign that derives this artifact
+    // is a leased owner-identity operation, and the artifact is stamped with
+    // the lease's generation so a signature produced across a transition fails
+    // closed at its frontend application site (C6/C7).
+    let lease = crate::owner_identity_egress::try_admit_owner_identity_egress().await?;
 
     tauri::async_runtime::spawn_blocking(move || {
         let nostr_tags = tags
@@ -128,7 +133,10 @@ pub async fn sign_event(
             .sign_with_keys(&keys)
             .map_err(|error| format!("sign failed: {error}"))?;
 
-        Ok(event.as_json())
+        // Stamp the issuing lease's generation, then wrap the value; the
+        // frontend threads {value, artifact} opaque — validated in C6/C7.
+        let artifact = crate::owner_identity_egress::register_owner_artifact(&lease);
+        Ok(artifact.stamp_value(event.as_json()))
     })
     .await
     .map_err(|e| format!("spawn_blocking failed: {e}"))?
@@ -138,8 +146,11 @@ pub async fn sign_event(
 pub async fn decrypt_observer_event(
     event_json: String,
     state: State<'_, AppState>,
-) -> Result<serde_json::Value, String> {
+) -> Result<crate::owner_identity_egress::StampedArtifact<serde_json::Value>, String> {
     let keys = state.signing_keys()?;
+    // Admit BEFORE decrypting: the owner-key decryption is a leased operation
+    // and the decrypted payload is a stamped artifact — see `sign_event`.
+    let lease = crate::owner_identity_egress::try_admit_owner_identity_egress().await?;
 
     tauri::async_runtime::spawn_blocking(move || {
         let event =
@@ -153,20 +164,26 @@ pub async fn decrypt_observer_event(
             return Err("observer event has invalid signature".into());
         }
 
-        buzz_core_pkg::observer::decrypt_observer_payload(&keys, &event)
-            .map_err(|error| format!("decrypt observer event failed: {error}"))
+        let payload = buzz_core_pkg::observer::decrypt_observer_payload(&keys, &event)
+            .map_err(|error| format!("decrypt observer event failed: {error}"))?;
+        // Stamp the decrypted payload; frontend validates in C6/C7.
+        let artifact = crate::owner_identity_egress::register_owner_artifact(&lease);
+        Ok(artifact.stamp_value(payload))
     })
     .await
     .map_err(|e| format!("spawn_blocking failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn build_observer_control_event(
+pub async fn build_observer_control_event(
     agent_pubkey: String,
     payload: serde_json::Value,
     state: State<'_, AppState>,
-) -> Result<String, String> {
+) -> Result<crate::owner_identity_egress::StampedArtifact<String>, String> {
     let keys = state.signing_keys()?;
+    // Admit BEFORE encrypt+sign: the owner-signed observer control frame is a
+    // leased artifact stamped with the lease's generation — see `sign_event`.
+    let lease = crate::owner_identity_egress::try_admit_owner_identity_egress().await?;
     let agent_pubkey = PublicKey::from_hex(agent_pubkey.trim())
         .map_err(|error| format!("invalid agent pubkey: {error}"))?;
     let agent_pubkey_hex = agent_pubkey.to_hex();
@@ -183,7 +200,9 @@ pub fn build_observer_control_event(
     let event = builder
         .sign_with_keys(&keys)
         .map_err(|error| format!("sign observer control failed: {error}"))?;
-    Ok(event.as_json())
+    // Stamp the issuing lease's generation; frontend validates in C6/C7.
+    let artifact = crate::owner_identity_egress::register_owner_artifact(&lease);
+    Ok(artifact.stamp_value(event.as_json()))
 }
 
 #[tauri::command]
@@ -825,7 +844,7 @@ pub async fn sign_nostr_identity_binding(
     origin: String,
     expires_at: String,
     state: State<'_, AppState>,
-) -> Result<String, String> {
+) -> Result<crate::owner_identity_egress::StampedArtifact<String>, String> {
     nostr_bind::validate_signing_request(
         &challenge_id,
         &nonce,
@@ -835,6 +854,9 @@ pub async fn sign_nostr_identity_binding(
     )?;
 
     let keys = state.signing_keys()?;
+    // Admit BEFORE signing: the identity-binding response is a leased artifact
+    // stamped with the lease's generation — see `sign_event`.
+    let lease = crate::owner_identity_egress::try_admit_owner_identity_egress().await?;
 
     tauri::async_runtime::spawn_blocking(move || {
         let event = build_nostr_identity_binding_event(
@@ -846,7 +868,8 @@ pub async fn sign_nostr_identity_binding(
             &expires_at,
         )?;
 
-        Ok(event.as_json())
+        let artifact = crate::owner_identity_egress::register_owner_artifact(&lease);
+        Ok(artifact.stamp_value(event.as_json()))
     })
     .await
     .map_err(|e| format!("spawn_blocking failed: {e}"))?
@@ -857,15 +880,16 @@ pub async fn create_auth_event(
     challenge: String,
     relay_url: String,
     state: State<'_, AppState>,
-) -> Result<String, String> {
+) -> Result<crate::owner_identity_egress::StampedArtifact<String>, String> {
     let keys = state.signing_keys()?;
     // The relay-WS reconnection handshake signs a NIP-42 auth event under a
     // per-send bounded egress lease: reconnection cannot re-authenticate
     // mid-transition because the drain refuses new admission (spec — the
     // frontend session's authority is gated the same as every other owner
-    // sign). Frontend session REGISTRATION (capability + native-WS teardown
-    // handle) defers to C6/C7 with the frontend identity store; this lands the
-    // spec-mandated admission gate now.
+    // sign). The signed auth event is an owner-signed relay-event ARTIFACT
+    // (stamped and threaded to the frontend, validated in C6/C7); frontend
+    // session REGISTRATION (native-WS teardown handle) defers to C6/C7 with the
+    // frontend identity store.
     let lease = crate::owner_identity_egress::try_admit_owner_identity_egress().await?;
 
     tauri::async_runtime::spawn_blocking(move || {
@@ -880,9 +904,10 @@ pub async fn create_auth_event(
             .tags(tags)
             .sign_with_keys(&keys)
             .map_err(|error| format!("sign failed: {error}"))?;
-        // Sign complete: the lease has served its sign→return window.
-        drop(lease);
-        Ok(event.as_json())
+        // Stamp the issuing lease's generation, consuming the lease as the
+        // sign→return window closes; frontend validates in C6/C7.
+        let artifact = crate::owner_identity_egress::register_owner_artifact(&lease);
+        Ok(artifact.stamp_value(event.as_json()))
     })
     .await
     .map_err(|e| format!("spawn_blocking failed: {e}"))?
@@ -892,17 +917,22 @@ pub async fn create_auth_event(
 pub async fn nip44_encrypt_to_self(
     plaintext: String,
     state: State<'_, AppState>,
-) -> Result<String, String> {
+) -> Result<crate::owner_identity_egress::StampedArtifact<String>, String> {
     let keys = state.signing_keys()?;
+    // Admit BEFORE encrypting: the encrypt-to-self ciphertext is a leased
+    // artifact stamped with the lease's generation — see `sign_event`.
+    let lease = crate::owner_identity_egress::try_admit_owner_identity_egress().await?;
 
     tauri::async_runtime::spawn_blocking(move || {
-        nip44::encrypt(
+        let ciphertext = nip44::encrypt(
             keys.secret_key(),
             &keys.public_key(),
             &plaintext,
             nip44::Version::V2,
         )
-        .map_err(|e| format!("nip44 encrypt failed: {e}"))
+        .map_err(|e| format!("nip44 encrypt failed: {e}"))?;
+        let artifact = crate::owner_identity_egress::register_owner_artifact(&lease);
+        Ok(artifact.stamp_value(ciphertext))
     })
     .await
     .map_err(|e| format!("spawn_blocking failed: {e}"))?
@@ -912,12 +942,17 @@ pub async fn nip44_encrypt_to_self(
 pub async fn nip44_decrypt_from_self(
     ciphertext: String,
     state: State<'_, AppState>,
-) -> Result<String, String> {
+) -> Result<crate::owner_identity_egress::StampedArtifact<String>, String> {
     let keys = state.signing_keys()?;
+    // Admit BEFORE decrypting: the decrypted plaintext is a leased artifact
+    // stamped with the lease's generation — see `sign_event`.
+    let lease = crate::owner_identity_egress::try_admit_owner_identity_egress().await?;
 
     tauri::async_runtime::spawn_blocking(move || {
-        nip44::decrypt(keys.secret_key(), &keys.public_key(), &ciphertext)
-            .map_err(|e| format!("nip44 decrypt failed: {e}"))
+        let plaintext = nip44::decrypt(keys.secret_key(), &keys.public_key(), &ciphertext)
+            .map_err(|e| format!("nip44 decrypt failed: {e}"))?;
+        let artifact = crate::owner_identity_egress::register_owner_artifact(&lease);
+        Ok(artifact.stamp_value(plaintext))
     })
     .await
     .map_err(|e| format!("spawn_blocking failed: {e}"))?

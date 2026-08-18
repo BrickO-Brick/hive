@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::{LazyLock, Mutex};
 
+use serde::Serialize;
 use tokio_util::sync::CancellationToken;
 
 use super::{lock_inner, IdentityPersistenceState, OwnerIdentityEgressLease, REGISTRY};
@@ -86,17 +87,45 @@ pub struct SessionPolicy;
 #[derive(Debug)]
 pub struct BearerPolicy;
 
+/// A generation-stamped owner-key-derived VALUE (owner-signed relay event JSON,
+/// identity-binding response, encrypt-to-self ciphertext, or the plaintext of
+/// an owner-key decryption) that leaves its producing lease and is exercised —
+/// exported, published, signed around, or applied to identity-indexed state —
+/// LATER. Unlike a session or bearer, an artifact owns NO side-effecting
+/// teardown: a stamped `String`/JSON value has nothing to cancel or remove. Its
+/// only revocation mechanism is the exercise-time generation compare, which the
+/// generation bump at [`begin_egress_drain`] triggers by construction — so the
+/// registry keeps NO artifact entry for the barrier to invalidate (shape (ii),
+/// acked by Paul 2026-08-18). The registered revocation handle is therefore
+/// [`RevocationHandle::Artifact`], a marker carrying no teardown authority; the
+/// capability's `id` is correlation/diagnostic only, never a revocation target.
+///
+/// Rust-consumed / collapsed-transaction artifacts (project git-workflow
+/// sign+submit, archive-ingest decrypts, snapshot-import, engram-listing
+/// decrypt) exercise synchronously inside their producing lease and validate
+/// via [`OwnerIdentityCapability::admit_exercise`] before their local
+/// application — identical to a bounded lease. Boundary-crossing artifacts (the
+/// frontend-consumed producers) serialize their stamp across the Tauri boundary
+/// as [`ArtifactStamp`]; the frontend threads it opaque until C6/C7 adds the
+/// generation-compare at each application site.
+#[derive(Debug)]
+pub struct ArtifactPolicy;
+
 impl CapabilityPolicy for SessionPolicy {
     const KIND: &'static str = "session";
 }
 impl CapabilityPolicy for BearerPolicy {
     const KIND: &'static str = "bearer";
 }
+impl CapabilityPolicy for ArtifactPolicy {
+    const KIND: &'static str = "artifact";
+}
 
 mod private {
     pub trait Sealed {}
     impl Sealed for super::SessionPolicy {}
     impl Sealed for super::BearerPolicy {}
+    impl Sealed for super::ArtifactPolicy {}
 }
 
 /// The revocation authority for one registered durable capability, invoked by
@@ -109,6 +138,16 @@ enum RevocationHandle {
     /// invalidation, so no side-effecting handle is needed. The variant exists
     /// so the registry records the capability's kind for the per-kind barrier.
     Bearer,
+    /// Artifact invalidation is BY GENERATION BUMP, not by entry: a stamped
+    /// value owns no side-effecting teardown, and its only revocation is the
+    /// exercise-time / application-site generation compare failing once the
+    /// bump advances the current generation (shape (ii)). The registry keeps NO
+    /// artifact entry for the barrier to invalidate — this marker exists only
+    /// so `register_owner_artifact` shares the one registration path; the entry
+    /// is removed immediately on the handle's Drop (serialization time for a
+    /// boundary-crossing artifact, scope end for a collapsed one), so the id is
+    /// correlation/diagnostic only, never a revocation target.
+    Artifact,
 }
 
 /// Registry of live durable capabilities, keyed by capability id, under its
@@ -234,6 +273,85 @@ pub fn register_owner_bearer(
     register_durable(lease.generation(), RevocationHandle::Bearer)
 }
 
+/// The wire form of an artifact's generation stamp, serialized across the Tauri
+/// boundary alongside the owner-key-derived value as `{ value, artifact }`.
+///
+/// The frontend threads this pair OPAQUE (never unwrapping and discarding it at
+/// the adapter — the witness must survive to the application site); C6/C7 adds
+/// the generation-compare at each application boundary using `generation`. The
+/// `id` is correlation/diagnostic only (log correlation, completeness count),
+/// never a revocation target — see [`ArtifactPolicy`] for the shape (ii)
+/// rationale.
+#[derive(Debug, Clone, Serialize)]
+pub struct ArtifactStamp {
+    /// Correlation id — monotonic, diagnostic only, never a revocation target.
+    pub id: u64,
+    /// The identity-persistence generation this artifact was issued under; the
+    /// application-site compare (C6/C7) refuses once the current generation
+    /// advances past it.
+    pub generation: u64,
+}
+
+/// The serialized `{ value, artifact }` pair a boundary-crossing producer
+/// returns across the Tauri boundary. The frontend threads this OPAQUE (the
+/// witness must survive to the application site — never unwrap-and-discard at
+/// the adapter); C6/C7 adds the generation-compare against `artifact.generation`
+/// immediately before each irreversible application effect.
+#[derive(Debug, Serialize)]
+pub struct StampedArtifact<T: Serialize> {
+    /// The owner-key-derived value (signed event JSON, ciphertext, decrypted
+    /// payload). Consumers destructure `.value` at their current use point.
+    pub value: T,
+    /// The generation stamp carried alongside the value.
+    pub artifact: ArtifactStamp,
+}
+
+impl OwnerIdentityCapability<ArtifactPolicy> {
+    /// The wire stamp for a boundary-crossing artifact, serialized alongside
+    /// the value as `{ value, artifact: ArtifactStamp }`. Producing the stamp
+    /// does not consume the capability; the caller drops the capability once
+    /// the pair is serialized (the entry is correlation-only — see
+    /// [`ArtifactPolicy`]).
+    pub fn stamp(&self) -> ArtifactStamp {
+        ArtifactStamp {
+            id: self.id,
+            generation: self.generation,
+        }
+    }
+
+    /// Wrap a boundary-crossing `value` with this capability's stamp, consuming
+    /// the capability. The returned [`StampedArtifact`] serializes as
+    /// `{ value, artifact }`; the capability's registry entry deregisters as it
+    /// drops at the end of this call (the entry is correlation-only under shape
+    /// (ii), so early deregistration loses no revocation authority).
+    pub fn stamp_value<T: Serialize>(self, value: T) -> StampedArtifact<T> {
+        StampedArtifact {
+            value,
+            artifact: self.stamp(),
+        }
+    }
+}
+
+/// Issue a durable owner-identity artifact capability over an owner-key-derived
+/// value, stamped with the issuing lease's generation.
+///
+/// Stamps the issuing [`OwnerIdentityEgressLease`]'s generation, not a re-read
+/// one — see [`register_owner_session`] for why re-reading is a barrier bypass.
+/// The F1 lesson applies identically: the signing/decryption that derives the
+/// value runs under the lease, and the stamp must be that lease's generation so
+/// a value derived across a bump fails closed at its application site.
+///
+/// Call this AFTER the owner-key operation completes under the lease (admit
+/// before sign/decrypt, stamp after). A Rust-consumed / collapsed artifact
+/// validates via [`OwnerIdentityCapability::admit_exercise`] before its local
+/// application; a boundary-crossing artifact serializes [`ArtifactStamp`] via
+/// [`OwnerIdentityCapability::stamp`] and the frontend validates in C6/C7.
+pub fn register_owner_artifact(
+    lease: &OwnerIdentityEgressLease,
+) -> OwnerIdentityCapability<ArtifactPolicy> {
+    register_durable(lease.generation(), RevocationHandle::Artifact)
+}
+
 /// Register a durable capability stamped with `generation` and carrying
 /// `handle` as its revocation authority. Shared by both constructors so the
 /// id allocation and registry insert live in one place.
@@ -258,6 +376,22 @@ fn register_durable<P: CapabilityPolicy>(
 /// later attach fails [`OwnerIdentityCapability::admit_exercise`]). Returns the
 /// number of capabilities revoked.
 ///
+/// ARTIFACTS ARE NOT REVOKED HERE, and this is correct, not a gap (shape (ii),
+/// acked by Paul 2026-08-18). The spec text reads "invalidates every
+/// old-generation bearer AND artifact"; a reviewer diffing against it will look
+/// for artifact handling in this function and find none. An artifact owns no
+/// side-effecting teardown — it is a stamped value, not a socket or a bearer
+/// entry — so its ONLY revocation mechanism is the exercise-time /
+/// application-site generation compare, which the generation bump at
+/// [`begin_egress_drain`] triggers by construction. The bump IS the artifact
+/// invalidation, and it precedes this call (and the journal write) in the
+/// coordinator sequence, so every old-generation artifact is already
+/// invalidated before the durable boundary without a per-entry action. Per-entry
+/// work here is reserved for authorities with side-effecting teardown (session
+/// cancel-tokens, bearer entries). Any artifact entry that happens to be live
+/// at barrier time (a producer between lease-drop and value-serialization)
+/// self-deregisters on its imminent Drop and is skipped either way.
+///
 /// The C5 coordinator barrier calls this after
 /// [`begin_egress_drain`]/[`await_egress_drain`] and BEFORE the journal write +
 /// durable B dispatch, so no old-generation session or bearer can transmit
@@ -269,7 +403,11 @@ pub fn revoke_durable_capabilities_before(winning_generation: u64) -> usize {
     let stale: Vec<u64> = durable
         .entries
         .iter()
-        .filter(|(_, (gen, _))| *gen < winning_generation)
+        .filter(|(_, (gen, handle))| {
+            // Artifacts are generation-invalidated (shape (ii)); the barrier
+            // acts only on side-effecting authorities.
+            *gen < winning_generation && !matches!(handle, RevocationHandle::Artifact)
+        })
         .map(|(id, _)| *id)
         .collect();
     for id in &stale {
@@ -489,6 +627,138 @@ mod tests {
         assert!(
             session.admit_exercise().is_ok(),
             "with no transition the session still transmits"
+        );
+    }
+
+    // §7 artifact schedules (P31-C1) — three schedules proving shape (ii): the
+    // generation bump reaches artifacts WITHOUT a barrier registry entry, so a
+    // stamped value's application is refused post-bump by the generation
+    // compare alone. `admit_exercise` on an ArtifactPolicy capability stands in
+    // for both the collapsed-artifact local check and the boundary-crossing
+    // artifact's simulated application-site compare (C6/C7).
+
+    // P31-C1 (a): a Rust-consumed / collapsed artifact stamped under A refuses
+    // its local application after the generation advances to B.
+    #[test]
+    fn stale_artifact_application_refuses_after_a_generation_bump() {
+        let _g = guard();
+        let artifact = register_owner_artifact(&lease());
+        begin_egress_drain().unwrap();
+        resume_egress_live();
+        assert!(
+            artifact.admit_exercise().is_err(),
+            "an artifact stamped under A must refuse application after B wins"
+        );
+    }
+
+    // P31-C1 (b): the barrier does NOT revoke artifacts by entry — the bump is
+    // the invalidation. `revoke_durable_capabilities_before` reports zero
+    // side-effecting revocations for a registry holding only artifacts, and the
+    // stamped artifact still refuses application by generation compare. This is
+    // the test-level proof that the bump reaches artifacts without registry
+    // entries (Paul's condition 2).
+    #[test]
+    fn barrier_leaves_artifacts_to_generation_compare_not_entry_revocation() {
+        let _g = guard();
+        let artifact = register_owner_artifact(&lease());
+        assert_eq!(live_durable_capability_count(), 1);
+        let winning = begin_egress_drain().unwrap();
+        resume_egress_live();
+        assert_eq!(
+            revoke_durable_capabilities_before(winning),
+            0,
+            "the barrier performs no per-entry revocation for artifacts (shape (ii))"
+        );
+        assert!(
+            artifact.admit_exercise().is_err(),
+            "the bump alone invalidates the artifact — the generation compare refuses"
+        );
+    }
+
+    // P31-C1 (c): a boundary-crossing artifact's wire stamp carries the issuing
+    // generation, and once the generation advances the stamp is stale relative
+    // to the current generation — the invariant C6/C7's application-site
+    // compare enforces against `ArtifactStamp::generation`.
+    #[test]
+    fn boundary_crossing_artifact_stamp_is_stale_after_a_bump() {
+        let _g = guard();
+        let artifact = register_owner_artifact(&lease());
+        let stamp = artifact.stamp();
+        assert_eq!(stamp.generation, current_identity_persistence_generation());
+        let winning = begin_egress_drain().unwrap();
+        resume_egress_live();
+        assert_ne!(
+            stamp.generation, winning,
+            "the wire stamp is stale relative to the winning generation; the C6/C7 \
+             application-site compare refuses it"
+        );
+        assert!(
+            artifact.admit_exercise().is_err(),
+            "and the capability itself refuses local application"
+        );
+    }
+
+    // §7 decryption-artifact schedules (P32-C1) — two schedules for the
+    // decryption outputs (nip44_decrypt_from_self / decrypt_observer_event):
+    // the decrypted plaintext stamped under A refuses application after B, and
+    // a no-transition control keeps it applicable.
+
+    // P32-C1 (a): a decryption-output artifact stamped under A refuses
+    // application after the generation advances to B.
+    #[test]
+    fn stale_decryption_artifact_application_refuses_after_a_bump() {
+        let _g = guard();
+        let decrypted = register_owner_artifact(&lease());
+        begin_egress_drain().unwrap();
+        resume_egress_live();
+        assert!(
+            decrypted.admit_exercise().is_err(),
+            "a decryption output stamped under A must refuse application after B wins"
+        );
+    }
+
+    // P32-C1 (b): no-transition control — a decryption-output artifact with no
+    // intervening bump stays applicable and the barrier revokes nothing.
+    #[test]
+    fn no_transition_leaves_decryption_artifact_applicable() {
+        let _g = guard();
+        let decrypted = register_owner_artifact(&lease());
+        let current = current_identity_persistence_generation();
+        assert_eq!(
+            revoke_durable_capabilities_before(current),
+            0,
+            "no side-effecting revocation with no transition"
+        );
+        assert!(
+            decrypted.admit_exercise().is_ok(),
+            "with no transition the decryption output stays applicable"
+        );
+    }
+
+    // Wire-shape LOCK (Paul's condition 2): the boundary payload serializes as
+    // exactly `{ value, artifact: { id, generation } }`. C6/C7 inherits this
+    // contract — the frontend `StampedArtifact<T>` mirror and every
+    // application-site compare read `artifact.generation`, so a silent drift
+    // here (renamed/reshaped field) would break C6/C7 undetectably. Pinning it
+    // now makes any drift a test failure, not a C6/C7 rediscovery.
+    #[test]
+    fn stamped_artifact_serializes_to_the_locked_wire_shape() {
+        let stamped = StampedArtifact {
+            value: "signed-event-json",
+            artifact: ArtifactStamp {
+                id: 7,
+                generation: 3,
+            },
+        };
+        let json = serde_json::to_value(&stamped).expect("serializes");
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "value": "signed-event-json",
+                "artifact": { "id": 7, "generation": 3 },
+            }),
+            "the boundary payload must be {{value, artifact:{{id, generation}}}} \
+             — the contract C6/C7 threads to application sites"
         );
     }
 }
