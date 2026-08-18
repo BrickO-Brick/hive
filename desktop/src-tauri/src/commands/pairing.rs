@@ -9,7 +9,7 @@ use buzz_core_pkg::pairing::types::{AbortReason, PayloadType};
 use futures_util::{SinkExt, StreamExt};
 use nostr::ToBech32;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, State};
 use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tokio_util::sync::CancellationToken;
@@ -466,31 +466,24 @@ async fn import_recovered_identity(
     generation_fence: &Arc<std::sync::Mutex<()>>,
     task_generation: u64,
 ) -> Result<(), String> {
-    let app = app.clone();
     let generation = Arc::clone(generation);
-    let generation_fence = Arc::clone(generation_fence);
-    tokio::task::spawn_blocking(move || {
-        let keys = nostr::Keys::parse(nsec.trim())
-            .map_err(|e| format!("Phone sent an invalid identity: {e}"))?;
-        let state = app.state::<AppState>();
-        let _mutation_guard = state.identity_mutation.blocking_lock();
-        commit_recovery_if_current(&generation, &generation_fence, task_generation, || {
-            let data_dir = app
-                .path()
-                .app_data_dir()
-                .map_err(|e| format!("app data dir: {e}"))?;
-            std::fs::create_dir_all(&data_dir).map_err(|e| format!("create app data dir: {e}"))?;
-            let key_path = data_dir.join("identity.key");
-            crate::commands::identity::commit_imported_identity(&state, &data_dir, keys, |keys| {
-                let store =
-                    crate::secret_store::SecretStore::shared(crate::app_state::keyring_service());
-                crate::app_state::persist_imported_identity(store, keys, &key_path, &data_dir)
-            })?;
-            Ok(())
-        })
-    })
+    // Route the phone-recovery identity swap through the SHARED
+    // identity-transition coordinator (P25-C1) so it drains managed-agent
+    // runtimes, clears the active scope, and bumps the scope generation — none
+    // of which the old direct `commit_imported_identity` path performed. The
+    // pairing `generation_fence` is the coordinator's commit fence and the
+    // task-currency check is its pre-commit validity check, held across the
+    // durable commit (P26-C1): a superseded recovery compensates the drain and
+    // commits NO identity; a recovery that wins the fence commits durably.
+    crate::commands::identity::run_identity_transition(
+        app.clone(),
+        nsec.trim().to_string(),
+        None,
+        Some(Arc::clone(generation_fence)),
+        move || ensure_pairing_task_is_current(&generation, task_generation),
+    )
     .await
-    .map_err(|e| format!("identity recovery task failed: {e}"))?
+    .map(|_| ())
 }
 
 fn ensure_pairing_task_is_current(
@@ -510,17 +503,6 @@ fn invalidate_pairing_generation(
 ) -> Result<u64, String> {
     let _fence = generation_fence.lock().map_err(|e| e.to_string())?;
     Ok(generation.fetch_add(1, Ordering::SeqCst).wrapping_add(1))
-}
-
-fn commit_recovery_if_current<T>(
-    generation: &AtomicU64,
-    generation_fence: &std::sync::Mutex<()>,
-    task_generation: u64,
-    commit: impl FnOnce() -> Result<T, String>,
-) -> Result<T, String> {
-    let _fence = generation_fence.lock().map_err(|e| e.to_string())?;
-    ensure_pairing_task_is_current(generation, task_generation)?;
-    commit()
 }
 
 fn recovery_result_after_completion(

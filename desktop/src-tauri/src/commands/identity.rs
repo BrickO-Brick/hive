@@ -395,6 +395,29 @@ pub async fn import_identity(
     password: Option<String>,
     app_handle: tauri::AppHandle,
 ) -> Result<IdentityInfo, String> {
+    // Normal import: no supersession fence, always-valid pre-commit check.
+    run_identity_transition(app_handle, nsec, password, None, || Ok(())).await
+}
+
+/// The shared identity-transition coordinator (P25-C1): the ONE sink both
+/// runtime identity-swap callers route through. Acquires the transition locks
+/// in the prescribed order (`identity_mutation` → `workspace_transition`
+/// [+ Mesh preflight when active]), captures the active-scope snapshot under
+/// the held transition guard, then runs the journaled drain + fenced commit in
+/// [`import_identity_blocking`].
+///
+/// `commit_fence` + `validity_check` are threaded to the pre-commit boundary:
+/// normal import supplies `None` + always-`Ok`; the phone-recovery continuation
+/// supplies the pairing `generation_fence` + its generation-current check, so a
+/// superseded recovery compensates the drain and commits NO identity while a
+/// recovery that wins the fence commits durably (P26-C1).
+pub(crate) async fn run_identity_transition(
+    app_handle: tauri::AppHandle,
+    nsec: String,
+    password: Option<String>,
+    commit_fence: Option<std::sync::Arc<std::sync::Mutex<()>>>,
+    validity_check: impl FnOnce() -> Result<(), String> + Send + 'static,
+) -> Result<IdentityInfo, String> {
     // ── Layer 1: identity_mutation (async serialization lock) ────────────────
     // Held for the full import to prevent a concurrent stale persist from
     // overwriting the imported key. Lock order: identity_mutation →
@@ -425,6 +448,7 @@ pub async fn import_identity(
         let app_for_preflight_body = app_handle.clone();
         let nsec_for_body = nsec;
         let password_for_body = password;
+        let fence_for_body = commit_fence;
 
         #[cfg(feature = "mesh-llm")]
         let branch_result =
@@ -438,6 +462,8 @@ pub async fn import_identity(
                                 nsec_for_body,
                                 password_for_body,
                                 true,
+                                fence_for_body,
+                                validity_check,
                             )
                         })
                         .await
@@ -456,6 +482,8 @@ pub async fn import_identity(
                     nsec_for_body,
                     password_for_body,
                     true,
+                    fence_for_body,
+                    validity_check,
                 )
             })
             .await
@@ -465,7 +493,14 @@ pub async fn import_identity(
         branch_result
     } else {
         tokio::task::spawn_blocking(move || {
-            import_identity_blocking(app_handle, nsec, password, false)
+            import_identity_blocking(
+                app_handle,
+                nsec,
+                password,
+                false,
+                commit_fence,
+                validity_check,
+            )
         })
         .await
         .map_err(|e| format!("spawn_blocking failed: {e}"))?
@@ -478,14 +513,48 @@ pub async fn import_identity(
     result
 }
 
+/// Run `commit` under the transition commit fence, gated on `validity_check`.
+///
+/// When `fence` is supplied it is locked FIRST and held for the whole call, so
+/// the validity check and the durable commit are indivisible against a racing
+/// supersession that must take the same fence to invalidate the transition
+/// (P26-C1). The check runs under the held fence; on `Err` it short-circuits
+/// and `commit` is NEVER run. This is the single fence-guarded commit primitive
+/// shared by the identity-transition coordinator and its supersession tests.
+pub(crate) fn commit_under_fence<T>(
+    fence: Option<&std::sync::Mutex<()>>,
+    validity_check: impl FnOnce() -> Result<(), String>,
+    commit: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let _fence = match fence.map(|m| m.lock()) {
+        Some(Ok(guard)) => Some(guard),
+        Some(Err(e)) => return Err(format!("identity transition fence poisoned: {e}")),
+        None => None,
+    };
+    validity_check()?;
+    commit()
+}
+
 /// Blocking body of [`import_identity`]: key recovery, journaled drain (when
 /// `has_active_scope`), identity commit, and scope clear.  The caller has
 /// already acquired `workspace_transition` when `has_active_scope` is true.
+///
+/// `validity_check` runs at the pre-commit boundary — after a successful drain,
+/// immediately before the durable identity commit — while `commit_fence` (when
+/// supplied) is held. When it returns `Err`, the drained runtimes are
+/// compensated and NO identity is committed. `commit_fence` is held ALIVE
+/// across the durable commit (P26-C1): for the phone-recovery caller this is
+/// the pairing `generation_fence`, so a supersession that races the commit
+/// either compensates (cancelled during drain, before the fence is taken) or
+/// loses to the committed recovery (cancelled after the fenced commit begins).
+/// Normal import supplies `None` + an always-`Ok(())` check.
 fn import_identity_blocking(
     app_handle: tauri::AppHandle,
     nsec: String,
     password: Option<String>,
     has_active_scope: bool,
+    commit_fence: Option<std::sync::Arc<std::sync::Mutex<()>>>,
+    validity_check: impl FnOnce() -> Result<(), String>,
 ) -> Result<IdentityInfo, String> {
     // NIP-49 backups require a passphrase and decrypt entirely in Rust.
     // Raw nsec/hex input follows the existing parser path unchanged.
@@ -568,17 +637,27 @@ fn import_identity_blocking(
         vec![]
     };
 
-    let commit_result = commit_imported_identity(&state, &data_dir, keys, |keys| {
-        // Persist into the OS keyring first (store → read-back verify →
-        // marker → delete file). Falls back to the 0o600 file when the
-        // keyring is unavailable; returns Err only when both backends fail.
-        let store = crate::secret_store::SecretStore::shared(crate::app_state::keyring_service());
-        crate::app_state::persist_imported_identity(store, keys, &key_path, &data_dir)
+    // ── Fenced pre-commit gate + durable commit (P25-C1 / P26-C1) ─────────
+    // After a successful drain, immediately before the durable commit. The
+    // commit fence (when supplied) is acquired FIRST, the validity check runs
+    // under it, and the durable commit runs under the SAME held guard — so a
+    // racing supersession can neither slip between the check and the commit nor
+    // interleave with it. A failed check short-circuits and NEVER commits.
+    let commit_result = commit_under_fence(commit_fence.as_deref(), validity_check, || {
+        commit_imported_identity(&state, &data_dir, keys, |keys| {
+            // Persist into the OS keyring first (store → read-back verify →
+            // marker → delete file). Falls back to the 0o600 file when the
+            // keyring is unavailable; returns Err only when both backends fail.
+            let store =
+                crate::secret_store::SecretStore::shared(crate::app_state::keyring_service());
+            crate::app_state::persist_imported_identity(store, keys, &key_path, &data_dir)
+        })
     });
 
-    // If identity persist failed after a successful drain, compensate.
-    // Drop the store lock BEFORE calling compensate_drain; pass the
-    // transition guard into it so there is no interleave window.
+    // If the fenced gate or the durable persist failed after a successful
+    // drain, compensate the drained runtimes with NO durable identity write.
+    // Drop the store lock BEFORE calling compensate_drain; pass the transition
+    // guard into it so there is no interleave window.
     let (pubkey, storage) = match commit_result {
         Ok(result) => result,
         Err(e) => {
