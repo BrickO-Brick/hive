@@ -11,6 +11,7 @@ mod events;
 mod huddle;
 mod identity_persistence;
 mod identity_storage;
+mod identity_transition_journal;
 mod initial_window;
 mod key_backup;
 mod link_preview_tags;
