@@ -92,6 +92,8 @@ export type MessageComposerProps = {
       threadHeadId: string | null;
     } | null,
     createdAt?: number,
+    /** Route through the REST publisher even when best-effort enrichment settled empty. */
+    forceRest?: boolean,
   ) => Promise<void>;
   placeholder?: string;
   profiles?: UserProfileLookup;

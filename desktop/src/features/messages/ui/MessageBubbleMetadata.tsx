@@ -60,11 +60,9 @@ export function MessageAvatarPosition({
 export function MessageHoverTimestampGutter({
   createdAt,
   isThreadReplyLayout,
-  time,
 }: {
   createdAt: number;
   isThreadReplyLayout: boolean;
-  time: string;
 }) {
   return (
     <div
@@ -78,25 +76,18 @@ export function MessageHoverTimestampGutter({
         className="opacity-0 transition-opacity group-hover/message:opacity-100 group-focus-within/message:opacity-100"
         createdAt={createdAt}
         hideDayPeriod
-        time={time}
       />
     </div>
   );
 }
 
-export function MessageHoverTimestamp({
-  createdAt,
-  time,
-}: {
-  createdAt: number;
-  time: string;
-}) {
+export function MessageHoverTimestamp({ createdAt }: { createdAt: number }) {
   return (
     <div
       className="message-hover-timestamp pointer-events-none flex shrink-0 items-center"
       data-testid="message-hover-timestamp"
     >
-      <MessageTimestamp createdAt={createdAt} hideDayPeriod time={time} />
+      <MessageTimestamp createdAt={createdAt} hideDayPeriod />
     </div>
   );
 }

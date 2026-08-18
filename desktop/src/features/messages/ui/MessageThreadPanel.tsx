@@ -92,6 +92,7 @@ type MessageThreadPanelProps = ThreadPanelLayoutProps & {
       threadHeadId: string | null;
     } | null,
     createdAt?: number,
+    forceRest?: boolean,
   ) => Promise<void>;
   onSendToChannel?: (
     message: TimelineMessage,

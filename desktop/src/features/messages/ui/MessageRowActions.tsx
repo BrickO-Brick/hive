@@ -71,10 +71,7 @@ export function MessageRowActions({
       )}
     >
       {showHoverTimestamp && bubbleAlignment === "right" ? (
-        <MessageHoverTimestamp
-          createdAt={message.createdAt}
-          time={message.time}
-        />
+        <MessageHoverTimestamp createdAt={message.createdAt} />
       ) : null}
       <MessageActionBar
         actionAlign={bubbleAlignment === "left" ? "start" : "end"}
@@ -98,10 +95,7 @@ export function MessageRowActions({
         reactions={reactions}
       />
       {showHoverTimestamp && bubbleAlignment === "left" ? (
-        <MessageHoverTimestamp
-          createdAt={message.createdAt}
-          time={message.time}
-        />
+        <MessageHoverTimestamp createdAt={message.createdAt} />
       ) : null}
     </div>
   );

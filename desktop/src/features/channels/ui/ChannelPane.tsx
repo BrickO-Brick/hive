@@ -308,6 +308,7 @@ export const ChannelPane = React.memo(function ChannelPane({
         threadHeadId: string | null;
       } | null,
       createdAt?: number,
+      forceRest?: boolean,
     ) => {
       const shouldCompleteWelcomeBanner =
         isActiveWelcomeChannel &&
@@ -322,6 +323,7 @@ export const ChannelPane = React.memo(function ChannelPane({
         channelId,
         threadContext,
         createdAt,
+        forceRest,
       );
 
       if (
@@ -913,7 +915,6 @@ export const ChannelPane = React.memo(function ChannelPane({
             const panel = (
               <UserProfilePanel
                 currentPubkey={currentPubkey}
-                callerChannelId={activeChannelId}
                 isSinglePanelView={
                   useSplitAuxiliaryPane ? false : isSinglePanelView
                 }

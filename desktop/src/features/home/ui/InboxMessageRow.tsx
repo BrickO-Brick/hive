@@ -31,9 +31,11 @@ import { cn } from "@/shared/lib/cn";
 import { useMessageStyle } from "@/shared/lib/messageStylePreference";
 import { useOwnMessageAlignment } from "@/shared/lib/ownMessageAlignmentPreference";
 import { normalizePubkey } from "@/shared/lib/pubkey";
-import { Markdown } from "@/shared/ui/markdown";
 import { hasLinkPreviewSuppression } from "@/features/messages/lib/formatTimelineMessages";
 import { UserAvatar } from "@/shared/ui/UserAvatar";
+import type { VideoReviewContext } from "@/shared/ui/VideoPlayer";
+import { VideoReviewCommentMarkdown } from "@/shared/ui/VideoReviewCommentMarkdown";
+import { parseImetaTags } from "@/shared/ui/markdown/parseImeta";
 
 export type InboxDisplayMessage = InboxContextMessage & {
   depth: number;
@@ -50,6 +52,7 @@ type InboxMessageRowProps = {
   isFirst?: boolean;
   isFocusHighlightVisible: boolean;
   message: InboxDisplayMessage;
+  onDelete?: (message: InboxDisplayMessage) => void;
   onEdit?: (message: InboxDisplayMessage) => void;
   onSelectReplyTarget: (message: InboxDisplayMessage) => void;
   onToggleReaction?: (
@@ -58,6 +61,8 @@ type InboxMessageRowProps = {
     remove: boolean,
   ) => Promise<void>;
   showUnreadBoundary?: boolean;
+  videoReviewCommentRootId?: string;
+  videoReviewContext?: VideoReviewContext;
 };
 
 export function InboxMessageRow({
@@ -70,10 +75,13 @@ export function InboxMessageRow({
   isFirst = false,
   isFocusHighlightVisible,
   message,
+  onDelete,
   onEdit,
   onSelectReplyTarget,
   onToggleReaction,
   showUnreadBoundary = false,
+  videoReviewCommentRootId,
+  videoReviewContext,
 }: InboxMessageRowProps) {
   const showMessageBubbles = useMessageStyle() === "bubbles";
   const ownMessageAlignment = useOwnMessageAlignment();
@@ -87,6 +95,10 @@ export function InboxMessageRow({
   const timelineMessage = React.useMemo(
     () => toTimelineMessage(message),
     [message],
+  );
+  const imetaByUrl = React.useMemo(
+    () => (message.tags ? parseImetaTags(message.tags) : undefined),
+    [message.tags],
   );
   const { customEmoji, emojiOnly } = useMessageEmoji(
     message.content,
@@ -127,13 +139,14 @@ export function InboxMessageRow({
     alignOwnMessageRight ? "right" : "left",
   );
   const hoverTimestampNode = useGroupedBubbleLayout ? (
-    <MessageHoverTimestamp
-      createdAt={timelineMessage.createdAt}
-      time={timelineMessage.time}
-    />
+    <MessageHoverTimestamp createdAt={timelineMessage.createdAt} />
   ) : null;
   const actionBarNode =
-    canReply || canToggleReactions || onEdit || useGroupedBubbleLayout ? (
+    canReply ||
+    canToggleReactions ||
+    onDelete ||
+    onEdit ||
+    useGroupedBubbleLayout ? (
       <div
         className={cn(
           "absolute z-10 flex items-center gap-2",
@@ -151,6 +164,7 @@ export function InboxMessageRow({
           actionAlign={alignOwnMessageRight ? "end" : "start"}
           channelId={channelId}
           message={timelineMessage}
+          onDelete={onDelete ? () => onDelete(message) : undefined}
           onEdit={onEdit ? () => onEdit(message) : undefined}
           onReactionSelect={
             canToggleReactions ? handleReactionSelect : undefined
@@ -328,7 +342,7 @@ export function InboxMessageRow({
                     pending={timelineMessage.pending}
                   />
                 ) : null}
-                <Markdown
+                <VideoReviewCommentMarkdown
                   className={cn(
                     "message-bubble-markdown max-w-full text-left text-message",
                     alignOwnMessageRight
@@ -347,12 +361,15 @@ export function InboxMessageRow({
                     timelineMessage.tags,
                   )}
                   customEmoji={customEmoji}
+                  imetaByUrl={imetaByUrl}
                   mentionNames={message.mentionNames}
                   mentionPubkeysByName={message.mentionPubkeysByName}
+                  videoReviewCommentRootId={videoReviewCommentRootId}
+                  videoReviewContext={videoReviewContext}
                 />
               </div>
             ) : (
-              <Markdown
+              <VideoReviewCommentMarkdown
                 className={cn(
                   "max-w-full text-left text-message text-foreground",
                   emojiOnly &&
@@ -368,8 +385,11 @@ export function InboxMessageRow({
                   timelineMessage.tags,
                 )}
                 customEmoji={customEmoji}
+                imetaByUrl={imetaByUrl}
                 mentionNames={message.mentionNames}
                 mentionPubkeysByName={message.mentionPubkeysByName}
+                videoReviewCommentRootId={videoReviewCommentRootId}
+                videoReviewContext={videoReviewContext}
               />
             )}
             <MessageReactions

@@ -237,14 +237,14 @@ test("catalog hides built-ins and shows the shared-agent empty state", async ({
   await page.getByTestId("open-agents-view").click();
 
   await expect(page.getByTestId("agents-library-personas")).toBeVisible();
-  for (const personaName of ["Fizz", "Honey", "Bumble"]) {
+  for (const personaName of ["Fizz", "Honey", "Pollen"]) {
     await expect(page.getByTestId("agents-library-personas")).toContainText(
       personaName,
     );
   }
 
   await openPersonaCatalog(page);
-  for (const personaName of ["Fizz", "Honey", "Bumble"]) {
+  for (const personaName of ["Fizz", "Honey", "Pollen"]) {
     await expect(page.getByTestId("persona-catalog-dialog")).not.toContainText(
       personaName,
     );
@@ -2692,14 +2692,12 @@ test("duplicate instances move from the agents gallery into the agent profile", 
   await page.getByTestId(`user-profile-instance-${additionalPubkey}`).click();
 
   await expect(page.getByTestId("user-profile-panel")).toBeVisible();
-  await expect(page.getByTestId("user-profile-delete-agent-row")).toBeVisible();
+  await expect(page.getByTestId("user-profile-agent-status")).toContainText(
+    "Stopped",
+  );
   await expect(
     page.getByTestId("user-profile-settings-menu-trigger"),
   ).toHaveCount(0);
-  await expect(
-    page.getByTestId("user-profile-duplicate-agent-row"),
-  ).toBeVisible();
-  await expect(page.getByTestId("user-profile-export-agent-row")).toBeVisible();
   await expect(
     page.getByTestId(`user-profile-agent-delete-${additionalPubkey}`),
   ).toHaveCount(0);

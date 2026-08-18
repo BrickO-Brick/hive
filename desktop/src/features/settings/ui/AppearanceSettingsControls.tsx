@@ -47,6 +47,7 @@ import {
   useSavedOwnMessageAlignment,
   type OwnMessageAlignment,
 } from "@/shared/lib/ownMessageAlignmentPreference";
+import { isLinuxPlatform } from "@/shared/lib/platform";
 import {
   ACCENT_COLORS,
   DEFAULT_GLASS_OPACITY,
@@ -548,6 +549,9 @@ export function GlassBackgroundSetting() {
     setGlassOpacity,
   } = useTheme();
   const shouldReduceMotion = useReducedMotion();
+
+  if (isLinuxPlatform()) return null;
+
   const shouldShowOpacity = glassBackgroundSupported && glassBackground;
   const opacityRow = (
     <SettingsOptionRow data-testid="glass-opacity-row">
