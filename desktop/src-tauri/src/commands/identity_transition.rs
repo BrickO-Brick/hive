@@ -27,10 +27,17 @@ fn drain_managed_agent_runtimes_for_import(
 
 /// The shared identity-transition coordinator (P25-C1): the ONE sink both
 /// runtime identity-swap callers route through. Acquires the transition locks
-/// in the prescribed order (`identity_mutation` → `workspace_transition`
-/// [+ Mesh preflight when active]), captures the active-scope snapshot under
-/// the held transition guard, then runs the journaled drain + fenced commit in
-/// [`import_identity_blocking`].
+/// in ONE unconditional order — `identity_mutation` → `workspace_transition`
+/// (ALWAYS, incl. Mesh preflight when the feature is active) — then runs the
+/// journaled drain + fenced commit in [`import_identity_blocking`], which
+/// decides the active/no-scope branch ONLY from a scope snapshot taken UNDER
+/// the held transition guard (P26-C1). Taking `workspace_transition` even on
+/// the no-scope path closes the `None → Some` activation race: a concurrent
+/// `apply_workspace` cannot commit a new active scope between this
+/// coordinator's scope sample and its durable commit, because both serialize
+/// on `workspace_transition`. No deadlock: `apply_workspace` takes only
+/// `workspace_transition` (never `identity_mutation`), so the global order
+/// `identity_mutation` → `workspace_transition` has no cycle.
 ///
 /// `commit_fence` + `validity_check` are threaded to the pre-commit boundary:
 /// normal import supplies `None` + always-`Ok`; the phone-recovery continuation
@@ -47,7 +54,7 @@ pub(crate) async fn run_identity_transition(
     // ── Layer 1: identity_mutation (async serialization lock) ────────────────
     // Held for the full import to prevent a concurrent stale persist from
     // overwriting the imported key. Lock order: identity_mutation →
-    // workspace_transition (when active scope present).
+    // workspace_transition (UNCONDITIONALLY — P26-C1).
     //
     // Use a cloned handle for lock acquisition so the original `app_handle` is
     // free for the spawned blocking body below (no borrow conflict).
@@ -55,78 +62,45 @@ pub(crate) async fn run_identity_transition(
     let lock_state = lock_handle.state::<AppState>();
     let _mutation_guard = lock_state.identity_mutation.lock().await;
 
-    // Capture whether an active scope exists BEFORE branching.
-    let has_active_scope = lock_state.capture_active_scope().is_some();
+    // ── Layer 1b: workspace_transition + Mesh preflight (UNCONDITIONAL) ──────
+    // Always route through the transition lock, whether or not a scope appears
+    // active — the active/no-scope decision is made INSIDE the blocking body
+    // from a snapshot taken under this guard, so a concurrent apply_workspace
+    // can neither slip a `None → Some` activation past the scope sample nor
+    // race the durable commit (P26-C1). When the `mesh-llm` feature is enabled,
+    // `with_workspace_transition_preflight` acquires `workspace_transition`,
+    // runs `fail_if_client_mesh_active`, then invokes the body while the lock
+    // remains held — the same orchestration path `apply_workspace` uses.
+    // Without `mesh-llm`, acquire `workspace_transition` manually (no mesh
+    // check needed) and invoke the blocking body under it.
+    let app_for_body = app_handle.clone();
 
-    // ── Layer 1b: workspace_transition + mesh preflight (active-scope path) ──
-    // When a workspace scope is live, route through the production
-    // `with_workspace_transition_preflight` helper (when the `mesh-llm`
-    // feature is enabled): it acquires `workspace_transition`, runs
-    // `fail_if_client_mesh_active`, then invokes the body while the lock
-    // remains held — the same orchestration path used by `apply_workspace`.
-    //
-    // Without `mesh-llm`, manually acquire `workspace_transition` (no mesh
-    // check needed) and invoke the blocking body.
-    //
-    // When no scope is active, skip the lock — there is no workspace to
-    // serialize against.
-    let result = if has_active_scope {
-        let app_for_preflight_body = app_handle.clone();
-        let nsec_for_body = nsec;
-        let password_for_body = password;
-        let fence_for_body = commit_fence;
-
-        #[cfg(feature = "mesh-llm")]
-        let branch_result =
-            crate::commands::mesh_llm::scope_impl::with_workspace_transition_preflight(
-                &app_handle,
-                move || {
-                    Box::pin(async move {
-                        tokio::task::spawn_blocking(move || {
-                            import_identity_blocking(
-                                app_for_preflight_body,
-                                nsec_for_body,
-                                password_for_body,
-                                true,
-                                fence_for_body,
-                                validity_check,
-                            )
-                        })
-                        .await
-                        .map_err(|e| format!("spawn_blocking failed: {e}"))?
-                    })
-                },
-            )
-            .await;
-
-        #[cfg(not(feature = "mesh-llm"))]
-        let branch_result = {
-            let _transition_guard = lock_state.workspace_transition.lock().await;
-            tokio::task::spawn_blocking(move || {
-                import_identity_blocking(
-                    app_for_preflight_body,
-                    nsec_for_body,
-                    password_for_body,
-                    true,
-                    fence_for_body,
-                    validity_check,
-                )
+    #[cfg(feature = "mesh-llm")]
+    let result = crate::commands::mesh_llm::scope_impl::with_workspace_transition_preflight(
+        &app_handle,
+        move || {
+            Box::pin(async move {
+                tokio::task::spawn_blocking(move || {
+                    import_identity_blocking(
+                        app_for_body,
+                        nsec,
+                        password,
+                        commit_fence,
+                        validity_check,
+                    )
+                })
+                .await
+                .map_err(|e| format!("spawn_blocking failed: {e}"))?
             })
-            .await
-            .map_err(|e| format!("spawn_blocking failed: {e}"))?
-        };
+        },
+    )
+    .await;
 
-        branch_result
-    } else {
+    #[cfg(not(feature = "mesh-llm"))]
+    let result = {
+        let _transition_guard = lock_state.workspace_transition.lock().await;
         tokio::task::spawn_blocking(move || {
-            import_identity_blocking(
-                app_handle,
-                nsec,
-                password,
-                false,
-                commit_fence,
-                validity_check,
-            )
+            import_identity_blocking(app_for_body, nsec, password, commit_fence, validity_check)
         })
         .await
         .map_err(|e| format!("spawn_blocking failed: {e}"))?
@@ -161,9 +135,11 @@ pub(crate) fn commit_under_fence<T>(
     commit()
 }
 
-/// Blocking body of [`import_identity`]: key recovery, journaled drain (when
-/// `has_active_scope`), identity commit, and scope clear.  The caller has
-/// already acquired `workspace_transition` when `has_active_scope` is true.
+/// Blocking body of [`import_identity`]: key recovery, journaled drain (when a
+/// scope is active), identity commit, and scope clear.  The caller has ALWAYS
+/// acquired `workspace_transition` before invoking this (P26-C1); the
+/// active/no-scope branch is decided here from a scope snapshot taken under
+/// that held guard.
 ///
 /// `validity_check` runs at the pre-commit boundary — after a successful drain,
 /// immediately before the durable identity commit — while `commit_fence` (when
@@ -178,7 +154,6 @@ fn import_identity_blocking(
     app_handle: tauri::AppHandle,
     nsec: String,
     password: Option<String>,
-    has_active_scope: bool,
     commit_fence: Option<std::sync::Arc<std::sync::Mutex<()>>>,
     validity_check: impl FnOnce() -> Result<(), String>,
 ) -> Result<IdentityInfo, String> {
@@ -205,6 +180,16 @@ fn import_identity_blocking(
     // `apply_workspace`.  The store lock is held through drain/save; on drain
     // failure the transition guard is passed into compensate_drain so
     // compensation runs without any interleave window.
+    //
+    // The active/no-scope branch is decided HERE, from a scope snapshot taken
+    // UNDER the `workspace_transition` guard the caller holds unconditionally
+    // (P26-C1). Sampling under the held guard is what closes the `None → Some`
+    // activation race: a concurrent `apply_workspace` cannot commit a new
+    // active scope between this sample and the durable identity commit, because
+    // both serialize on `workspace_transition`.
+    let pre_import_scope = state.capture_active_scope();
+    let has_active_scope = pre_import_scope.is_some();
+
     let _rt_transition_guard = if has_active_scope {
         Some(
             state
@@ -226,9 +211,6 @@ fn import_identity_blocking(
     } else {
         None
     };
-
-    // Capture the pre-import scope for compensation validation.
-    let pre_import_scope = state.capture_active_scope();
 
     let stopped_entries = if has_active_scope {
         match drain_managed_agent_runtimes_for_import(&app_handle, &state) {
