@@ -67,6 +67,44 @@ void main() {
     expect(state.humanTyping.single.pubkey, 'human');
   });
 
+  test('validated observer work survives unavailable agent lookups', () {
+    final observerTurn = _turn('agent-a');
+    final container = ProviderContainer(
+      overrides: [
+        currentPubkeyProvider.overrideWith((ref) => 'owner'),
+        channelMembersProvider(
+          _channelId,
+        ).overrideWith((ref) => Future<List<ChannelMember>>.error('offline')),
+        channelTypingProvider(
+          _channelId,
+        ).overrideWith(() => _FakeTypingNotifier(const [])),
+        agentMentionPubkeysProvider(
+          _channelId,
+        ).overrideWith((ref) => const <String>{}),
+        agentOwnersProvider.overrideWithValue(const AsyncLoading()),
+        userCacheProvider.overrideWith(_FakeUserCacheNotifier.new),
+        observerRelayProvider.overrideWith(
+          () => _FakeObserverRelayNotifier({
+            'agent-a': [_observerFrame('agent-a')],
+          }),
+        ),
+        composerAgentTurnStatesProvider.overrideWithValue([observerTurn]),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    final state = container.read(
+      composerActivityStateProvider((
+        channelId: _channelId,
+        threadHeadId: null,
+      )),
+    );
+
+    expect(state.agents.single.pubkey, 'agent-a');
+    expect(state.agents.single.source, AgentWorkingSource.observer);
+    expect(state.agents.single.canViewActivity, isTrue);
+  });
+
   test(
     'thread scope requires typing and does not surface observer-only work',
     () {

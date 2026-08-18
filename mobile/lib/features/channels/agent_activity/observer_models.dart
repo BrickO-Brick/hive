@@ -15,6 +15,7 @@ class ObserverFrame {
   final int? agentIndex;
   final String? channelId;
   final String? threadHeadId;
+  final bool hasThreadScope;
   final String? sessionId;
   final String? turnId;
   final String? startedAt;
@@ -28,12 +29,13 @@ class ObserverFrame {
     this.agentIndex,
     this.channelId,
     this.threadHeadId,
+    bool? hasThreadScope,
     this.sessionId,
     this.turnId,
     this.startedAt,
     this.receivedAt,
     this.payload,
-  });
+  }) : hasThreadScope = hasThreadScope ?? threadHeadId != null;
 
   factory ObserverFrame.fromJson(
     Map<String, dynamic> json, {
@@ -45,6 +47,7 @@ class ObserverFrame {
     agentIndex: json['agentIndex'] as int?,
     channelId: json['channelId'] as String?,
     threadHeadId: json['threadHeadId'] as String?,
+    hasThreadScope: json.containsKey('threadHeadId'),
     sessionId: json['sessionId'] as String?,
     turnId: json['turnId'] as String?,
     startedAt: json['startedAt'] as String?,

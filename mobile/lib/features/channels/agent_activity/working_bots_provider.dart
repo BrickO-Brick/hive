@@ -108,7 +108,11 @@ final composerActivityStateProvider = Provider.autoDispose
 
       final signals = <String, WorkingAgentSignal>{};
       for (final entry in activeByAgent.entries) {
-        if (!channelAgents.contains(entry.key)) continue;
+        final hasValidatedObserverFrame = observerState.framesByAgent
+            .containsKey(entry.key);
+        if (!channelAgents.contains(entry.key) && !hasValidatedObserverFrame) {
+          continue;
+        }
         final turn = entry.value;
         if (!turn.isWorking && !canView(entry.key)) continue;
         signals[entry.key] = WorkingAgentSignal(

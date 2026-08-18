@@ -47,22 +47,26 @@ class AgentTurnState {
 
   bool get isWorking => phase == AgentTurnPhase.working;
 
-  AgentTurnState withActivity({required DateTime at, Duration? timeout}) =>
-      AgentTurnState(
-        agentPubkey: agentPubkey,
-        channelId: channelId,
-        threadHeadId: threadHeadId,
-        turnId: turnId,
-        startedAt: startedAt,
-        lastActivityAt: at,
-        livenessTimeout: timeout ?? livenessTimeout,
-        phase: AgentTurnPhase.working,
-        triggeringEventId: triggeringEventId,
-      );
+  AgentTurnState withActivity({
+    required DateTime at,
+    required String? threadHeadId,
+    Duration? timeout,
+  }) => AgentTurnState(
+    agentPubkey: agentPubkey,
+    channelId: channelId,
+    threadHeadId: threadHeadId,
+    turnId: turnId,
+    startedAt: startedAt,
+    lastActivityAt: at,
+    livenessTimeout: timeout ?? livenessTimeout,
+    phase: AgentTurnPhase.working,
+    triggeringEventId: triggeringEventId,
+  );
 
   AgentTurnState withTerminal({
     required AgentTurnPhase phase,
     required DateTime at,
+    required String? threadHeadId,
     String? errorMessage,
   }) => AgentTurnState(
     agentPubkey: agentPubkey,
@@ -133,6 +137,9 @@ List<AgentTurnState> reduceAgentTurnStates(
                 existing?.withTerminal(
                   phase: terminalPhase,
                   at: frameAt,
+                  threadHeadId: frame.hasThreadScope
+                      ? frame.threadHeadId
+                      : existing.threadHeadId,
                   errorMessage: _turnError(frame.payload),
                 ) ??
                 AgentTurnState(
@@ -172,6 +179,9 @@ List<AgentTurnState> reduceAgentTurnStates(
           turnsById[matching.turnId] = matching.withTerminal(
             phase: terminalPhase,
             at: frameAt,
+            threadHeadId: frame.hasThreadScope
+                ? frame.threadHeadId
+                : matching.threadHeadId,
             errorMessage: _turnError(frame.payload),
           );
         case 'turn_rescoped':
@@ -202,6 +212,9 @@ List<AgentTurnState> reduceAgentTurnStates(
           if (existing?.isWorking == true) {
             turnsById[turnId] = existing!.withActivity(
               at: frameAt,
+              threadHeadId: frame.hasThreadScope
+                  ? frame.threadHeadId
+                  : existing.threadHeadId,
               timeout: frame.kind == 'turn_liveness'
                   ? _livenessTimeout(frame.payload)
                   : null,

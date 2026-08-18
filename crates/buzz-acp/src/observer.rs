@@ -104,8 +104,9 @@ pub struct ObserverEvent {
     pub agent_index: Option<usize>,
     /// Buzz channel UUID for channel-scoped events.
     pub channel_id: Option<String>,
-    /// NIP-10 thread root for thread-scoped events.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// NIP-10 thread root for this frame's turn. Serializes as null for the
+    /// channel root so consumers can distinguish an explicit root rescope from
+    /// legacy frames that omitted scope metadata.
     pub thread_head_id: Option<String>,
     /// ACP session ID when known.
     pub session_id: Option<String>,
@@ -206,5 +207,30 @@ pub fn context_for_turn(
         session_id,
         turn_id: Some(turn_id),
         started_at: Some(started_at),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn channel_root_scope_serializes_as_explicit_null() {
+        let event = ObserverEvent {
+            seq: 1,
+            timestamp: "2026-08-18T00:00:00Z".into(),
+            kind: "turn_liveness".into(),
+            agent_index: Some(0),
+            channel_id: Some("channel-1".into()),
+            thread_head_id: None,
+            session_id: Some("session-1".into()),
+            turn_id: Some("turn-1".into()),
+            started_at: None,
+            payload: serde_json::json!({}),
+        };
+
+        let json = serde_json::to_value(event).expect("serialize observer event");
+        assert!(json.get("threadHeadId").is_some());
+        assert!(json["threadHeadId"].is_null());
     }
 }

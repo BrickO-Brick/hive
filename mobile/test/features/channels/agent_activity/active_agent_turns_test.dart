@@ -58,6 +58,112 @@ void main() {
     expect(turns.single.isWorking, isTrue);
   });
 
+  test(
+    'terminal and activity frames carry a rescope without a rescope event',
+    () {
+      final terminal = reduceAgentTurnStates({
+        'agent-a': [
+          _frame(
+            seq: 1,
+            second: 1,
+            kind: 'turn_started',
+            threadHeadId: 'thread-a',
+          ),
+          _frame(
+            seq: 2,
+            second: 2,
+            kind: 'turn_completed',
+            threadHeadId: 'thread-b',
+          ),
+        ],
+      }, now: DateTime.utc(2026, 8, 16, 12, 0, 3));
+
+      expect(terminal.single.threadHeadId, 'thread-b');
+      expect(terminal.single.phase, AgentTurnPhase.finished);
+
+      final working = reduceAgentTurnStates({
+        'agent-a': [
+          _frame(
+            seq: 1,
+            second: 1,
+            kind: 'turn_started',
+            threadHeadId: 'thread-a',
+          ),
+          _frame(
+            seq: 2,
+            second: 2,
+            kind: 'turn_liveness',
+            threadHeadId: 'thread-b',
+          ),
+        ],
+      }, now: DateTime.utc(2026, 8, 16, 12, 0, 3));
+
+      expect(working.single.threadHeadId, 'thread-b');
+      expect(working.single.isWorking, isTrue);
+    },
+  );
+
+  test(
+    'explicit null scope moves later activity and terminal frames to root',
+    () {
+      List<ObserverFrame> frames(String kind) => [
+        _frame(
+          seq: 1,
+          second: 1,
+          kind: 'turn_started',
+          threadHeadId: 'thread-a',
+        ),
+        _frame(seq: 2, second: 2, kind: kind, hasThreadScope: true),
+      ];
+
+      final working = reduceAgentTurnStates({
+        'agent-a': frames('turn_liveness'),
+      }, now: DateTime.utc(2026, 8, 16, 12, 0, 3));
+      expect(working.single.threadHeadId, isNull);
+      expect(working.single.isWorking, isTrue);
+
+      final terminal = reduceAgentTurnStates({
+        'agent-a': frames('turn_completed'),
+      }, now: DateTime.utc(2026, 8, 16, 12, 0, 3));
+      expect(terminal.single.threadHeadId, isNull);
+      expect(terminal.single.phase, AgentTurnPhase.finished);
+    },
+  );
+
+  test('legacy scope omission preserves the latest known thread', () {
+    final turns = reduceAgentTurnStates({
+      'agent-a': [
+        _frame(
+          seq: 1,
+          second: 1,
+          kind: 'turn_started',
+          threadHeadId: 'thread-a',
+        ),
+        _frame(seq: 2, second: 2, kind: 'turn_liveness'),
+      ],
+    }, now: DateTime.utc(2026, 8, 16, 12, 0, 3));
+
+    expect(turns.single.threadHeadId, 'thread-a');
+  });
+
+  test('explicit rescope event moves a turn from a thread to root', () {
+    final turns = reduceAgentTurnStates({
+      'agent-a': [
+        _frame(
+          seq: 1,
+          second: 1,
+          kind: 'turn_started',
+          threadHeadId: 'thread-a',
+        ),
+        _frame(seq: 2, second: 2, kind: 'turn_rescoped'),
+        _frame(seq: 3, second: 3, kind: 'turn_liveness'),
+      ],
+    }, now: DateTime.utc(2026, 8, 16, 12, 0, 4));
+
+    expect(turns.single.threadHeadId, isNull);
+    expect(turns.single.isWorking, isTrue);
+  });
+
   test('preserves explicit completion and error outcomes', () {
     final turns = reduceAgentTurnStates({
       'agent-a': [
@@ -436,6 +542,7 @@ ObserverFrame _frame({
   String? turnId = 'turn-1',
   String channelId = 'channel-1',
   String? threadHeadId,
+  bool? hasThreadScope,
   String? sessionId,
   int? receivedSecond,
   String? startedAt,
@@ -447,6 +554,7 @@ ObserverFrame _frame({
     kind: kind,
     channelId: channelId,
     threadHeadId: threadHeadId,
+    hasThreadScope: hasThreadScope,
     sessionId: sessionId,
     turnId: turnId,
     startedAt: startedAt,

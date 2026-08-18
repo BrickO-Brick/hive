@@ -10,6 +10,28 @@ import 'package:buzz/shared/crypto/nip44.dart';
 import 'package:buzz/shared/relay/relay.dart';
 
 void main() {
+  test('decodes explicit root scope separately from legacy omission', () {
+    final explicitRoot = ObserverFrame.fromJson({
+      'seq': 1,
+      'timestamp': '2026-04-30T12:00:01.000Z',
+      'kind': 'turn_liveness',
+      'channelId': 'channel-1',
+      'threadHeadId': null,
+      'turnId': 'turn-1',
+    });
+    final legacy = ObserverFrame.fromJson({
+      'seq': 2,
+      'timestamp': '2026-04-30T12:00:02.000Z',
+      'kind': 'turn_liveness',
+      'channelId': 'channel-1',
+      'turnId': 'turn-1',
+    });
+
+    expect(explicitRoot.hasThreadScope, isTrue);
+    expect(explicitRoot.threadHeadId, isNull);
+    expect(legacy.hasThreadScope, isFalse);
+  });
+
   test('turn-scoped provider does not merge concurrent agent turns', () {
     final container = ProviderContainer(
       overrides: [
