@@ -12,7 +12,7 @@
 //!
 //! # Signalling a stop reason
 //!
-//! `StateEffect` can append messages and `yielded()` can end the turn, but
+//! `ConversationEffect` can append messages and `yielded()` can end the turn, but
 //! neither carries *why*. buzz's caller has to answer `session/prompt` with a
 //! specific ACP `stopReason`, so operations record it in a shared [`Outcome`]
 //! cell that the driving loop reads after the step. This is the one piece of
@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 use async_trait::async_trait;
 use goose::agents::state_machine::{
-    applied, not_applicable, yielded, Emitter, Operation, OperationResult, StateEffect,
+    applied, not_applicable, yielded, ConversationEffect, Emitter, Operation, OperationResult,
 };
 use goose::agents::Agent;
 use goose::conversation::Conversation;
@@ -130,7 +130,7 @@ impl BuzzMaxRoundsOperation {
 }
 
 #[async_trait]
-impl Operation for BuzzMaxRoundsOperation {
+impl Operation<Session, ConversationEffect> for BuzzMaxRoundsOperation {
     fn name(&self) -> &'static str {
         "buzz_max_rounds"
     }
@@ -140,7 +140,7 @@ impl Operation for BuzzMaxRoundsOperation {
         _session: &Session,
         conversation: &Conversation,
         _emit: &Emitter,
-    ) -> Result<OperationResult> {
+    ) -> Result<OperationResult<ConversationEffect>> {
         // Counted from the kickoff message, so the budget is per *turn* and
         // does not leak across prompts in a long-lived session. Counting
         // assistant turns rather than loop iterations also means the bound
@@ -236,7 +236,7 @@ impl BuzzStopVetoOperation {
 const OBJECTED: &str = "objected";
 
 #[async_trait]
-impl Operation for BuzzStopVetoOperation {
+impl Operation<Session, ConversationEffect> for BuzzStopVetoOperation {
     fn name(&self) -> &'static str {
         "buzz_stop_veto"
     }
@@ -246,7 +246,7 @@ impl Operation for BuzzStopVetoOperation {
         session: &Session,
         conversation: &Conversation,
         _emit: &Emitter,
-    ) -> Result<OperationResult> {
+    ) -> Result<OperationResult<ConversationEffect>> {
         let Some(messages) = messages_since_kickoff(conversation) else {
             return not_applicable();
         };
@@ -349,7 +349,7 @@ impl BuzzReplyGuardOperation {
 }
 
 #[async_trait]
-impl Operation for BuzzReplyGuardOperation {
+impl Operation<Session, ConversationEffect> for BuzzReplyGuardOperation {
     fn name(&self) -> &'static str {
         "buzz_reply_guard"
     }
@@ -359,7 +359,7 @@ impl Operation for BuzzReplyGuardOperation {
         _session: &Session,
         conversation: &Conversation,
         _emit: &Emitter,
-    ) -> Result<OperationResult> {
+    ) -> Result<OperationResult<ConversationEffect>> {
         let Some(messages) = messages_since_kickoff(conversation) else {
             return not_applicable();
         };
@@ -423,7 +423,7 @@ impl BuzzSteerOperation {
 }
 
 #[async_trait]
-impl Operation for BuzzSteerOperation {
+impl Operation<Session, ConversationEffect> for BuzzSteerOperation {
     fn name(&self) -> &'static str {
         "buzz_steer"
     }
@@ -433,7 +433,7 @@ impl Operation for BuzzSteerOperation {
         _session: &Session,
         _conversation: &Conversation,
         _emit: &Emitter,
-    ) -> Result<OperationResult> {
+    ) -> Result<OperationResult<ConversationEffect>> {
         let messages = self.steers.drain().await;
         if messages.is_empty() {
             return not_applicable();
@@ -442,7 +442,7 @@ impl Operation for BuzzSteerOperation {
             count = messages.len(),
             "steer messages drained into the turn"
         );
-        applied(messages.into_iter().map(StateEffect::AppendMessage))
+        applied(messages.into_iter().map(ConversationEffect::AppendMessage))
     }
 }
 
@@ -481,7 +481,7 @@ impl BuzzCompactionOperation {
 }
 
 #[async_trait]
-impl Operation for BuzzCompactionOperation {
+impl Operation<Session, ConversationEffect> for BuzzCompactionOperation {
     fn name(&self) -> &'static str {
         "buzz_compaction"
     }
@@ -491,7 +491,7 @@ impl Operation for BuzzCompactionOperation {
         session: &Session,
         conversation: &Conversation,
         _emit: &Emitter,
-    ) -> Result<OperationResult> {
+    ) -> Result<OperationResult<ConversationEffect>> {
         let provider = self.model.provider().await;
         if !goose::context_mgmt::check_if_compaction_needed(
             provider.as_ref(),
@@ -516,13 +516,11 @@ impl Operation for BuzzCompactionOperation {
 
         tracing::info!(target: "buzz_agent::compaction", "history compacted");
 
-        let mut effects = vec![StateEffect::ReplaceConversation {
-            conversation: result.conversation,
-            // `None`, deliberately: the running total described a conversation
-            // that no longer exists, so goose re-estimates from the compacted
-            // messages rather than carrying a stale count forward.
-            usage: None,
-        }];
+        // `ConversationEffect::ReplaceConversation` carries no usage figure, so
+        // the running total is reset by the driving loop's `apply_effects`
+        // instead: the old total described a conversation that no longer
+        // exists, and carrying it forward would re-trigger compaction at once.
+        let mut effects = vec![ConversationEffect::ReplaceConversation(result.conversation)];
 
         if let Some(extension) = &self.hook_extension {
             if let Some(reported) =
@@ -531,7 +529,7 @@ impl Operation for BuzzCompactionOperation {
                 // `[PostCompact]` prefix preserved from the inline version:
                 // it is how the model tells re-injected state apart from a
                 // user turn, and dropping it would change what it reads.
-                effects.push(StateEffect::AppendMessage(
+                effects.push(ConversationEffect::AppendMessage(
                     Message::user()
                         .with_text(format!("[PostCompact] {reported}"))
                         .with_visibility(false, true),
@@ -554,15 +552,15 @@ pub fn round_gate(
     cancel: tokio_util::sync::CancellationToken,
     stop_veto: Option<(Arc<Agent>, String)>,
     require_reply: bool,
-) -> goose::agents::state_machine::StateMachine<'static> {
+) -> goose::agents::state_machine::StateMachine<'static, Session, ConversationEffect> {
     use goose::agents::state_machine::Step;
 
     // Order is precedence. The round budget is checked first: once it is
     // spent the turn ends, and asking `_Stop` to veto a turn we are ending
     // anyway would dispatch a tool call whose answer cannot be honoured.
-    let mut steps: Vec<Step> = vec![Step::Operation(Arc::new(BuzzMaxRoundsOperation::new(
-        max_rounds, outcome,
-    )))];
+    let mut steps: Vec<Step<Session, ConversationEffect>> = vec![Step::Operation(Arc::new(
+        BuzzMaxRoundsOperation::new(max_rounds, outcome),
+    ))];
     if let Some((agent, extension)) = stop_veto {
         steps.push(Step::Operation(Arc::new(BuzzStopVetoOperation::new(
             agent,
@@ -592,7 +590,7 @@ pub fn round_start(
     steers: crate::steer::SteerQueue,
     compaction: BuzzCompactionOperation,
     cancel: tokio_util::sync::CancellationToken,
-) -> goose::agents::state_machine::StateMachine<'static> {
+) -> goose::agents::state_machine::StateMachine<'static, Session, ConversationEffect> {
     use goose::agents::state_machine::Step;
 
     // Steer before compaction: a steer that arrives just as the window fills

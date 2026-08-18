@@ -16,10 +16,11 @@
 pub mod auth;
 pub mod catalog;
 pub mod config;
+pub mod model_capabilities;
 pub mod types;
 
-pub use catalog::{discover_databricks_models, ModelEntry, DATABRICKS_V2_KNOWN_MODELS};
-pub use config::{Config, Provider};
+pub use catalog::{discover_databricks_models, ModelEntry};
+pub use config::{Config, Provider, ThinkingEffort};
 pub use types::AgentError;
 
 /// PKCE configuration for Databricks OAuth against `host`.

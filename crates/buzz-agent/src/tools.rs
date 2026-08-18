@@ -112,7 +112,7 @@ async fn run_one(
 /// failing in a loop cannot flood the context.
 ///
 /// **Deliberately not a goose `Operation`**, unlike the other loop decisions.
-/// An operation cannot reach inside a tool result: `StateEffect` can append a
+/// An operation cannot reach inside a tool result: `ConversationEffect` can append a
 /// message or patch a request's *metadata*
 /// (`PatchToolRequestMeta`, which goose applies through `SessionManager` --
 /// the store buzz does not write to), but nothing edits result *content*. As

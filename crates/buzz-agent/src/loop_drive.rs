@@ -52,7 +52,17 @@ use goose_provider_types::conversation::message::{Message, MessageContent, ToolR
 use goose_provider_types::conversation::Conversation;
 
 use crate::types::{AgentError, StopReason};
-use goose::agents::state_machine::Emitter;
+use goose::agents::state_machine::{ConversationEffect, Emitter};
+
+/// buzz's state machine, spelled once.
+///
+/// goose made `StateMachine` generic over the session and effect types when the
+/// loop moved into the `goose-agent` crate. buzz's operations are typed for
+/// goose's `Session` and the plain `ConversationEffect` set, deliberately not
+/// goose's own `GooseEffect`: the extra variants there (recipes, extension
+/// data, recorded usage) exist for operations buzz does not run, so naming the
+/// narrower type keeps unreachable cases out of `apply_effects` entirely.
+type BuzzMachine<'a> = goose::agents::state_machine::StateMachine<'a, Session, ConversationEffect>;
 
 use crate::wire::WireSender;
 
@@ -278,7 +288,7 @@ enum Gate {
     Open,
     /// An operation applied; the loop continues with its effects in state
     /// rather than ending.
-    Applied(Vec<goose::agents::state_machine::StateEffect>),
+    Applied(Vec<ConversationEffect>),
     /// An operation ended the turn.
     Ended,
 }
@@ -288,11 +298,7 @@ enum Gate {
 /// Called at the top of every round, and again when a round wants to end --
 /// that second call is what gives `_Stop` its veto, since its operation only
 /// applies to a conversation whose last message ends the turn.
-async fn gate(
-    machine: &goose::agents::state_machine::StateMachine<'_>,
-    session: &Session,
-    emitter: &Emitter,
-) -> Gate {
+async fn gate(machine: &BuzzMachine<'_>, session: &Session, emitter: &Emitter) -> Gate {
     match machine.step(session, emitter).await {
         Ok(Some(result)) if result.yield_to_client => Gate::Ended,
         Ok(Some(result)) => Gate::Applied(result.effects),
@@ -310,28 +316,27 @@ async fn gate(
 /// Apply an operation's effects to the turn's state.
 ///
 /// buzz's operations produce two kinds: appended messages (objections,
-/// reminders, steers) and a whole replaced conversation (compaction). Other
-/// `StateEffect` variants belong to goose's own operations -- recipes,
-/// approval, extension data -- and have no meaning in this loop, so ignoring
-/// them is correct rather than lossy.
+/// reminders, steers) and a whole replaced conversation (compaction). The two
+/// remaining `ConversationEffect` variants -- `PatchToolRequestMeta` and
+/// `SetMessageVisibility` -- annotate messages already persisted in goose's
+/// session store, which this loop does not write to, so ignoring them is
+/// correct rather than lossy.
 ///
 /// Returns whether anything was actually applied: an operation that applied
 /// without changing state has given the model no new work, and treating that
 /// as progress would spin the loop.
 fn apply_effects(
     state: &mut crate::turn_state::TurnState,
-    effects: Vec<goose::agents::state_machine::StateEffect>,
+    effects: Vec<ConversationEffect>,
 ) -> bool {
-    use goose::agents::state_machine::StateEffect;
-
     let mut changed = false;
     for effect in effects {
         match effect {
-            StateEffect::AppendMessage(message) => {
+            ConversationEffect::AppendMessage(message) => {
                 state.push(message);
                 changed = true;
             }
-            StateEffect::ReplaceConversation { conversation, .. } => {
+            ConversationEffect::ReplaceConversation(conversation) => {
                 state.replace(conversation);
                 // The running total described a conversation that no longer
                 // exists; let goose re-estimate from the compacted messages.
@@ -579,13 +584,13 @@ mod tests {
     /// with the model's work unseen.
     #[test]
     fn only_effects_that_change_state_count_as_progress() {
-        use goose::agents::state_machine::StateEffect;
-
         let mut state = turn_state();
         assert!(
             apply_effects(
                 &mut state,
-                vec![StateEffect::AppendMessage(Message::user().with_text("hi"))]
+                vec![ConversationEffect::AppendMessage(
+                    Message::user().with_text("hi")
+                )]
             ),
             "an appended message is progress"
         );
@@ -601,7 +606,7 @@ mod tests {
         assert!(
             !apply_effects(
                 &mut state,
-                vec![StateEffect::PatchToolRequestMeta {
+                vec![ConversationEffect::PatchToolRequestMeta {
                     tool_call_id: "x".into(),
                     patch: serde_json::json!({}),
                 }]
@@ -617,8 +622,6 @@ mod tests {
     /// goose think the window is still nearly full and compact again.
     #[test]
     fn compaction_replaces_the_conversation_and_resets_the_token_total() {
-        use goose::agents::state_machine::StateEffect;
-
         let mut state = turn_state();
         state.push(Message::user().with_text("one"));
         state.push(Message::assistant().with_text("two"));
@@ -627,10 +630,7 @@ mod tests {
         let compacted = Conversation::new_unvalidated(vec![Message::user().with_text("summary")]);
         assert!(apply_effects(
             &mut state,
-            vec![StateEffect::ReplaceConversation {
-                conversation: compacted,
-                usage: None,
-            }]
+            vec![ConversationEffect::ReplaceConversation(compacted)]
         ));
 
         assert_eq!(state.conversation().len(), 1);

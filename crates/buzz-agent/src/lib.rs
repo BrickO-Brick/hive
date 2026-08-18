@@ -602,6 +602,17 @@ async fn session_new(app: &Arc<App>, id: Value, params: Value, wire_tx: &WireSen
     wire::send(wire_tx, wire::ok(id, result)).await;
 }
 
+/// Human label for a model id, from the capability manifest when it knows the id.
+///
+/// The manifest's label registry is Databricks-scoped today, so this is a no-op
+/// for every other provider — which is the correct behaviour either way: an
+/// unknown id must reach the picker as itself, never blanked or guessed.
+fn curated_model_label(id: &str) -> String {
+    buzz_model_catalog::model_capabilities::databricks_registry_label(id)
+        .unwrap_or(id)
+        .to_string()
+}
+
 /// Build the `{currentModelId, availableModels}` object for `session/new`.
 ///
 /// Mirrors goose's own `build_model_state`, including its rule that the
@@ -612,19 +623,24 @@ async fn session_new(app: &Arc<App>, id: Value, params: Value, wire_tx: &WireSen
 /// `fetch_supported_models` defaults to an empty list). A missing catalog is
 /// degraded UX, never a session failure — buzz-agent's Databricks discovery
 /// made the same choice (`catalog.rs:52-80`).
+///
+/// `name` is curated through the capability manifest (#5597): the provider APIs
+/// return no display-name field, so a raw id like `databricks-gpt-5-5` would
+/// otherwise reach the picker verbatim instead of `GPT-5.5`. Ids the manifest
+/// does not know pass through unchanged, which is also the non-Databricks case.
 async fn discover_models(model: &crate::model::SessionModel, current_model: &str) -> Option<Value> {
     let provider = model.provider().await;
     let ids = provider.fetch_supported_models().await.ok()?;
 
     let mut available: Vec<Value> = ids
         .iter()
-        .map(|id| json!({ "modelId": id, "name": id }))
+        .map(|id| json!({ "modelId": id, "name": curated_model_label(id) }))
         .collect();
 
     if !ids.iter().any(|id| id == current_model) {
         available.insert(
             0,
-            json!({ "modelId": current_model, "name": current_model }),
+            json!({ "modelId": current_model, "name": curated_model_label(current_model) }),
         );
     }
 

@@ -276,6 +276,10 @@ desktop-e2e-smoke:
 desktop-e2e-integration: _ensure-migrations
     cd {{desktop_dir}} && pnpm test:e2e:integration
 
+# Run the deterministic desktop correctness smoke against an isolated local relay
+desktop-release-smoke:
+    ./scripts/run-desktop-release-smoke.sh
+
 # Run only the e2e specs changed vs origin/main (both projects) before pushing
 desktop-e2e-pre-push: _ensure-migrations
     git fetch origin main
@@ -319,6 +323,16 @@ test-unit:
         # because nothing in CI runs `cargo test --workspace` — workspace
         # membership alone buys clippy/check, not a single executed test.
         cargo nextest run -p buzz-backend-kubernetes
+        # model-capabilities corpus: the Rust half of the cross-language drift
+        # guard. `model_capabilities.rs` embeds scripts/model-capabilities.json
+        # + scripts/normative-corpus.json via include_str! and replays all 103
+        # vectors as pure in-process tests (no infra). It lives in
+        # buzz-model-catalog rather than buzz-agent because the desktop reads
+        # capabilities without linking goose. Enumerated explicitly because
+        # nothing in CI runs `cargo test --workspace`; without this step a
+        # manifest edit that diverges Rust from the corpus ships green.
+        cargo nextest run -p buzz-agent --lib
+        cargo nextest run -p buzz-model-catalog --lib
     else
         ./scripts/run-tests.sh unit
     fi
@@ -326,6 +340,15 @@ test-unit:
 # Run integration tests only (starts services if needed)
 test-integration:
     ./scripts/run-tests.sh integration
+
+# Regenerate the model-capability normative corpus from the production Rust
+# resolver. The corpus is a golden snapshot, never hand-edited: this runs the
+# `#[ignore]`d writer test in buzz-model-catalog, which serializes `resolve()` over the
+# inputs-only question table to scripts/normative-corpus.json. Run this after
+# any model-capabilities.json edit, then commit the regenerated file. The
+# `corpus_matches_generated_snapshot` gate fails CI if the committed file drifts.
+regen-model-corpus:
+    cargo test -p buzz-model-catalog --lib model_capabilities::tests::regen_corpus_file -- --ignored --exact
 
 # Buzz shared compute e2e: current desktop discovery/admission logic and
 # Playwright UI coverage.

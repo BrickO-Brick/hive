@@ -12,6 +12,27 @@
 /// Provider families the desktop model picker can discover models for.
 ///
 /// Names preserved verbatim: the desktop constructs these variants directly.
+/// Reasoning/thinking effort level for providers that support it.
+///
+/// Retained in this crate because the model-capability manifest
+/// ([`crate::model_capabilities`]) is typed in terms of it, and the desktop
+/// model picker reads capabilities without linking goose. The request-path
+/// mapping that used to live alongside it went with `buzz-agent`'s own HTTP
+/// transport — goose owns the wire now, so only the vocabulary remains.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Deserialize, serde::Serialize,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum ThinkingEffort {
+    None,
+    Minimal,
+    Low,
+    Medium,
+    High,
+    XHigh,
+    Max,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Provider {
     Anthropic,
