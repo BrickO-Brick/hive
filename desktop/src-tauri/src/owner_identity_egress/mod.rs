@@ -69,6 +69,9 @@
 //! - `managed_agents::persona_events`, `commands::personas::sharing`,
 //!   `commands::channels` (×3), and the huddle STT task (per-send inline
 //!   owner lease).
+//! - `commands::identity::create_auth_event` — the relay-WS reconnection
+//!   NIP-42 handshake (per-send lease; frontend session registration defers to
+//!   C6/C7 with the frontend identity store).
 //! - **Durable bearers** — `commands::media::mint_media_get_auth` (Blossom
 //!   `t=get`) and the `do_upload` `t=upload` mint sign under a bounded lease
 //!   and register an [`OwnerIdentityCapability<BearerPolicy>`]; the four
@@ -87,12 +90,10 @@
 //!    `ManagedAgentKeyed` sites).
 //! 5. the four `project_git_workflow` PR-status/merge sends (items 5–8).
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
 
 use tokio::sync::Notify;
-use tokio_util::sync::CancellationToken;
 
 /// Admission state of owner-identity egress — the third recovery state
 /// (`Indeterminate`) extends the existing `AppState::identity_lost` /
@@ -199,8 +200,8 @@ pub struct OwnerIdentityEgressLease {
 
 impl OwnerIdentityEgressLease {
     /// The identity-persistence generation this lease was admitted under.
-    // Consumed by C5 (P25/P28 coordinator); remove allow when C5 lands.
-    #[allow(dead_code)]
+    /// Stamped onto durable capabilities issued under this lease so they fail
+    /// closed if a transition bumped the generation after admission.
     pub fn generation(&self) -> u64 {
         self.generation
     }
@@ -469,259 +470,19 @@ fn admit_managed_agent_after_wait() -> Result<ManagedAgentEgressLease, String> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Durable owner-identity capabilities (C2 / P30-C1)
-// ---------------------------------------------------------------------------
-
-/// A generation-stamped, registry-tracked owner-identity capability whose
-/// authority OUTLIVES the bounded lease that derived it.
-///
-/// The bounded [`OwnerIdentityEgressLease`] above covers authority derived and
-/// consumed inside one sign → auth → transmit window. But two owner-key
-/// operations mint authority that a LATER, separate operation exercises:
-///
-/// - **Sessions** ([`SessionPolicy`]) — the huddle audio socket authenticates
-///   ONCE with a NIP-42 event, then a long-lived task emits unsigned frames
-///   over the established peer indefinitely; the frontend relay WS is the same
-///   shape (`create_auth_event` signs the handshake, later frames ride the
-///   connection). Cloning the owner keys before the transition cannot express
-///   that a later unsigned frame inherits pre-transition authority.
-/// - **Bearers** ([`BearerPolicy`]) — `mint_media_get_auth` /
-///   `sign_blossom_upload_auth` sign a server-scoped Blossom header that
-///   callers attach at LATER HTTP transmissions, up to ten minutes after
-///   issuance. The bearer TTL is wider than a transition, so TTL is not a
-///   substitute for invalidation.
-///
-/// Every durable capability is REGISTERED in this same egress registry and
-/// STAMPED with the identity-persistence generation current at issuance
-/// (issuance itself runs under a bounded lease — the signing that derives the
-/// capability is an ordinary leased operation). Every transmission over it
-/// validates, immediately before the irreversible boundary (frame send /
-/// header attach), BOTH current egress admission AND
-/// `capability_generation == current identity-persistence generation`
-/// ([`OwnerIdentityCapability::admit_exercise`]) — a stale capability is
-/// refused with zero bytes sent. The type is the only carrier of that stamped
-/// generation, so no exercise site can skip the check (there is no raw handle
-/// to exercise).
-///
-/// The registry additionally holds each capability's REVOCATION HANDLE (the
-/// session cancellation token; the bearer's registry id for invalidation), so
-/// the C5 coordinator barrier only *invokes* what C2 already registered — it
-/// never retrofits the registry schema. Registering the teardown authority is
-/// substrate (C2); invoking it at the transition barrier is C5.
-#[derive(Debug)]
-#[must_use = "a durable owner-identity capability must be validated \
-              (admit_exercise) immediately before every transmission over it"]
-pub struct OwnerIdentityCapability<P: CapabilityPolicy> {
-    /// Registry id — the key under which this capability's revocation handle
-    /// lives, so the C5 barrier can invalidate it by generation.
-    id: u64,
-    /// The identity-persistence generation current when this capability was
-    /// issued. Exercise is refused once the registry generation advances past
-    /// it.
-    generation: u64,
-    _policy: std::marker::PhantomData<P>,
-}
-
-/// A policy distinguishing the durable capability kinds. Zero-sized markers —
-/// the shared behavior (registration, generation-stamp, exercise validation,
-/// revocation-handle storage) lives on [`OwnerIdentityCapability`]; the policy
-/// only names the kind so the constructor inventory and the registry's
-/// per-kind revocation are type-directed.
-pub trait CapabilityPolicy: std::fmt::Debug + private::Sealed {
-    /// A human label for diagnostics and the closed-world inventory.
-    const KIND: &'static str;
-}
-
-/// Authenticated-connection authority (huddle audio socket, frontend relay
-/// WS). The registered revocation handle is a [`CancellationToken`] whose
-/// cancellation tears the connection down.
-#[derive(Debug)]
-pub struct SessionPolicy;
-/// Pre-minted bearer authority (Blossom `t=get`/`t=upload` headers). The
-/// registered revocation handle is the registry id; invalidation removes the
-/// entry so a later attach fails admission.
-#[derive(Debug)]
-pub struct BearerPolicy;
-
-impl CapabilityPolicy for SessionPolicy {
-    const KIND: &'static str = "session";
-}
-impl CapabilityPolicy for BearerPolicy {
-    const KIND: &'static str = "bearer";
-}
-
-mod private {
-    pub trait Sealed {}
-    impl Sealed for super::SessionPolicy {}
-    impl Sealed for super::BearerPolicy {}
-}
-
-/// The revocation authority for one registered durable capability, invoked by
-/// the C5 coordinator barrier to tear down old-generation authority before the
-/// journal write + durable dispatch.
-enum RevocationHandle {
-    /// Cancel the connection (huddle socket / frontend WS teardown path).
-    Session(CancellationToken),
-    /// Bearer invalidation is by-entry: removing the registry entry is the
-    /// invalidation, so no side-effecting handle is needed. The variant exists
-    /// so the registry records the capability's kind for the per-kind barrier.
-    Bearer,
-}
-
-/// Registry of live durable capabilities, keyed by capability id. Guarded by
-/// the same lock as the bounded-lease state so registration, exercise
-/// validation, and the C5 barrier all linearize against generation bumps.
-#[derive(Default)]
-struct DurableRegistry {
-    /// Next capability id. Monotonic; ids are never reused.
-    next_id: u64,
-    /// Live capabilities: id → (issued generation, revocation handle).
-    entries: HashMap<u64, (u64, RevocationHandle)>,
-}
-
-static DURABLE: LazyLock<Mutex<DurableRegistry>> =
-    LazyLock::new(|| Mutex::new(DurableRegistry::default()));
-
-fn lock_durable() -> std::sync::MutexGuard<'static, DurableRegistry> {
-    DURABLE.lock().unwrap_or_else(|p| p.into_inner())
-}
-
-impl<P: CapabilityPolicy> OwnerIdentityCapability<P> {
-    /// The identity-persistence generation this capability was issued under.
-    // Consumed by C5 (barrier introspection) and the C2 tests; remove allow
-    // when a production caller reads it.
-    #[allow(dead_code)]
-    pub fn generation(&self) -> u64 {
-        self.generation
-    }
-
-    /// Validate this capability immediately before an irreversible
-    /// transmission over it (frame send / header attach). Succeeds only when
-    /// egress admission is `Live` AND the stamped generation still equals the
-    /// current identity-persistence generation. A stale or drained capability
-    /// is refused so the caller sends zero bytes.
-    ///
-    /// This is a cheap compare, not a re-authentication: the durable
-    /// capability already proved identity at issuance; exercise only confirms
-    /// that proof has not been superseded by a transition.
-    pub fn admit_exercise(&self) -> Result<(), String> {
-        let inner = lock_inner();
-        if inner.state != IdentityPersistenceState::Live {
-            return Err(format!(
-                "owner-identity {} capability cannot transmit: egress is {:?}",
-                P::KIND,
-                inner.state
-            ));
-        }
-        let current = REGISTRY.generation.load(Ordering::Acquire);
-        if self.generation != current {
-            return Err(format!(
-                "owner-identity {} capability is stale (issued under generation \
-                 {}, current {}); the identity transitioned and this authority \
-                 was revoked",
-                P::KIND,
-                self.generation,
-                current
-            ));
-        }
-        Ok(())
-    }
-}
-
-impl<P: CapabilityPolicy> Drop for OwnerIdentityCapability<P> {
-    fn drop(&mut self) {
-        // Dropping the capability handle deregisters it — a session whose task
-        // has ended or a bearer no longer attachable must not linger as a
-        // revocation target. Barrier invalidation (C5) also removes entries;
-        // the id is unique and never reused, so a double-remove is a no-op.
-        lock_durable().entries.remove(&self.id);
-    }
-}
-
-/// Issue a durable owner-identity session capability, registering its
-/// cancellation token so the C5 barrier can tear the connection down.
-///
-/// Call this AFTER the authenticating sign/auth has completed under a bounded
-/// lease (issuance is an ordinary leased operation, spec L4569–4570) and the
-/// connection is established. The returned capability stamps the current
-/// generation; the connection's send task validates it via
-/// [`OwnerIdentityCapability::admit_exercise`] before each frame.
-pub fn register_owner_session(cancel: CancellationToken) -> OwnerIdentityCapability<SessionPolicy> {
-    let generation = REGISTRY.generation.load(Ordering::Acquire);
-    let mut durable = lock_durable();
-    let id = durable.next_id;
-    durable.next_id += 1;
-    durable
-        .entries
-        .insert(id, (generation, RevocationHandle::Session(cancel)));
-    OwnerIdentityCapability {
-        id,
-        generation,
-        _policy: std::marker::PhantomData,
-    }
-}
-
-/// Issue a durable owner-identity bearer capability, registering it so the C5
-/// barrier can invalidate it by generation.
-///
-/// Call this immediately after minting the bearer header under a bounded lease.
-/// The returned capability stamps the current generation; every attach site
-/// validates it via [`OwnerIdentityCapability::admit_exercise`] before the HTTP
-/// dispatch.
-pub fn register_owner_bearer() -> OwnerIdentityCapability<BearerPolicy> {
-    let generation = REGISTRY.generation.load(Ordering::Acquire);
-    let mut durable = lock_durable();
-    let id = durable.next_id;
-    durable.next_id += 1;
-    durable
-        .entries
-        .insert(id, (generation, RevocationHandle::Bearer));
-    OwnerIdentityCapability {
-        id,
-        generation,
-        _policy: std::marker::PhantomData,
-    }
-}
-
-/// Revoke every durable capability issued under a generation older than
-/// `winning_generation`: cancel old sessions (invoking each registered
-/// [`CancellationToken`]) and drop old bearers (removing their entries so a
-/// later attach fails [`OwnerIdentityCapability::admit_exercise`]). Returns the
-/// number of capabilities revoked.
-///
-/// The C5 coordinator barrier calls this after
-/// [`begin_egress_drain`]/[`await_egress_drain`] and BEFORE the journal write +
-/// durable B dispatch, so no old-generation session or bearer can transmit
-/// across the durable boundary. It only *invokes* the handles C2 registered.
-// Consumed by C5 (P25/P28 coordinator barrier); remove allow when C5 lands.
-#[allow(dead_code)]
-pub fn revoke_durable_capabilities_before(winning_generation: u64) -> usize {
-    let mut durable = lock_durable();
-    let stale: Vec<u64> = durable
-        .entries
-        .iter()
-        .filter(|(_, (gen, _))| *gen < winning_generation)
-        .map(|(id, _)| *id)
-        .collect();
-    for id in &stale {
-        if let Some((_, RevocationHandle::Session(cancel))) = durable.entries.remove(id) {
-            cancel.cancel();
-        }
-    }
-    stale.len()
-}
-
-/// The number of live durable capabilities registered. Used by the
-/// registration-completeness assertion (C2) to prove every issued
-/// session/bearer is present with a revocation handle the C5 barrier can
-/// invoke.
-// Consumed by C5 and the C2 registration-completeness tests; remove allow when
-// a production caller lands.
-#[allow(dead_code)]
-pub fn live_durable_capability_count() -> usize {
-    lock_durable().entries.len()
-}
+/// Durable owner-identity capabilities (sessions, bearers) — authority that
+/// outlives the bounded lease that derived it. Split into a child module for
+/// file-size discipline; it shares this module's one registry.
+mod durable;
+pub use durable::{
+    register_owner_bearer, register_owner_session, BearerPolicy, OwnerIdentityCapability,
+    SessionPolicy,
+};
+// The C5 coordinator barrier and its registration-completeness reader; no
+// production caller until C5, so the re-exports are unused today. Consumed by
+// C5 (P25/P28); remove allow when C5 lands.
+#[allow(unused_imports)]
+pub use durable::revoke_durable_capabilities_before;
 
 /// Process-global mutex serializing tests that mutate the registry's
 /// process-global state. Any test that admits a lease, drives a drain, or
@@ -739,8 +500,7 @@ pub(crate) fn reset_registry_for_test() {
     inner.state = IdentityPersistenceState::Live;
     inner.in_flight = 0;
     drop(inner);
-    let mut durable = lock_durable();
-    durable.entries.clear();
+    durable::reset_for_test();
     // next_id is monotonic and never resets, mirroring the generation: tests
     // assert on presence/count and relative generation, never absolute ids.
 }
@@ -1005,151 +765,5 @@ mod tests {
             "a refused admission leases nothing"
         );
         crate::relay_admission::reset_rate_limit_gate();
-    }
-
-    // -----------------------------------------------------------------------
-    // Durable capability substrate (C2 / P30-C1)
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn durable_capabilities_stamp_the_current_generation() {
-        let _g = guard();
-        let session = register_owner_session(CancellationToken::new());
-        let bearer = register_owner_bearer();
-        let current = current_identity_persistence_generation();
-        assert_eq!(session.generation(), current);
-        assert_eq!(bearer.generation(), current);
-    }
-
-    #[test]
-    fn durable_capability_exercise_admits_when_live_and_current() {
-        let _g = guard();
-        let session = register_owner_session(CancellationToken::new());
-        let bearer = register_owner_bearer();
-        assert!(session.admit_exercise().is_ok());
-        assert!(bearer.admit_exercise().is_ok());
-    }
-
-    // §7 revocation schedule (session): a session issued under A cannot
-    // transmit after the generation advances to B — the frame send is refused
-    // with zero bytes. Drives the registry generation directly (C1 drain-test
-    // pattern); no production transition driver exists until C5.
-    #[test]
-    fn stale_session_exercise_refuses_after_a_generation_bump() {
-        let _g = guard();
-        let session = register_owner_session(CancellationToken::new());
-        // A transition drains then resumes at the winning generation.
-        begin_egress_drain().unwrap();
-        resume_egress_live();
-        assert!(
-            session.admit_exercise().is_err(),
-            "a session stamped under A must refuse to transmit after B wins"
-        );
-    }
-
-    // §7 revocation schedule (bearer): same stale-generation control for the
-    // pre-minted bearer attach path.
-    #[test]
-    fn stale_bearer_exercise_refuses_after_a_generation_bump() {
-        let _g = guard();
-        let bearer = register_owner_bearer();
-        begin_egress_drain().unwrap();
-        resume_egress_live();
-        assert!(
-            bearer.admit_exercise().is_err(),
-            "a bearer minted under A must refuse to attach after B wins"
-        );
-    }
-
-    // Stale-capability ZERO-BYTES control (Paul's condition a): exercise
-    // validation fails BEFORE any transmission, for both durable kinds, under
-    // both a generation mismatch and the drain/latch state — so no site can
-    // send a byte on stale authority.
-    #[test]
-    fn durable_exercise_refuses_while_draining_and_while_latched() {
-        let _g = guard();
-        let session = register_owner_session(CancellationToken::new());
-        let bearer = register_owner_bearer();
-        begin_egress_drain().unwrap();
-        assert!(
-            session.admit_exercise().is_err(),
-            "draining refuses session"
-        );
-        assert!(bearer.admit_exercise().is_err(), "draining refuses bearer");
-        latch_identity_indeterminate();
-        assert!(session.admit_exercise().is_err(), "latch refuses session");
-        assert!(bearer.admit_exercise().is_err(), "latch refuses bearer");
-    }
-
-    // The C5 barrier cancels old-generation sessions and drops old bearers,
-    // and does NOT touch capabilities issued at the winning generation.
-    #[test]
-    fn barrier_revokes_old_generation_capabilities_only() {
-        let _g = guard();
-        let old_session_cancel = CancellationToken::new();
-        let old_session = register_owner_session(old_session_cancel.clone());
-        let _old_bearer = register_owner_bearer();
-        assert_eq!(live_durable_capability_count(), 2);
-
-        // Transition to B.
-        let winning = begin_egress_drain().unwrap();
-        resume_egress_live();
-        // A capability issued at the winning generation survives the barrier.
-        let new_session = register_owner_session(CancellationToken::new());
-
-        let revoked = revoke_durable_capabilities_before(winning);
-        assert_eq!(revoked, 2, "both old-generation capabilities revoked");
-        assert!(
-            old_session_cancel.is_cancelled(),
-            "the old session's registered token was invoked"
-        );
-        assert_eq!(
-            live_durable_capability_count(),
-            1,
-            "only the winning-generation capability remains"
-        );
-        assert!(
-            new_session.admit_exercise().is_ok(),
-            "the winning-generation session still transmits"
-        );
-        // old_session is now deregistered by the barrier; dropping it is a
-        // no-op remove.
-        drop(old_session);
-    }
-
-    // Registration-completeness assertion (Paul's condition b): every issued
-    // durable capability is present in the registry with a revocation handle
-    // the C5 barrier can invoke, and dropping the handle deregisters it so a
-    // dead session/bearer is never a stale revocation target.
-    #[test]
-    fn issued_capabilities_are_registered_and_deregister_on_drop() {
-        let _g = guard();
-        assert_eq!(live_durable_capability_count(), 0);
-        let session = register_owner_session(CancellationToken::new());
-        assert_eq!(live_durable_capability_count(), 1);
-        let bearer = register_owner_bearer();
-        assert_eq!(live_durable_capability_count(), 2);
-        drop(session);
-        assert_eq!(live_durable_capability_count(), 1, "session deregistered");
-        drop(bearer);
-        assert_eq!(live_durable_capability_count(), 0, "bearer deregistered");
-    }
-
-    // A no-transition control: with no generation bump, a registered
-    // capability keeps transmitting and the barrier revokes nothing.
-    #[test]
-    fn no_transition_leaves_durable_capabilities_intact() {
-        let _g = guard();
-        let session = register_owner_session(CancellationToken::new());
-        let current = current_identity_persistence_generation();
-        assert_eq!(
-            revoke_durable_capabilities_before(current),
-            0,
-            "nothing older than the current generation to revoke"
-        );
-        assert!(
-            session.admit_exercise().is_ok(),
-            "with no transition the session still transmits"
-        );
     }
 }

@@ -127,9 +127,19 @@ pub(crate) async fn connect_audio_relay(
         .send(WsMsg::Text(auth_msg.to_string().into()))
         .await
         .map_err(|e| format!("send auth: {e}"))?;
-    // Sign → auth-send complete: the bounded lease has served its purpose.
-    // Drop it before awaiting `joined` so it does not span the wait (spec
-    // L4505-4508); the session capability below carries authority forward.
+    // Register the durable session capability WHILE the auth lease is still
+    // held, so it stamps the generation that lease was admitted under — the
+    // generation the NIP-42 auth was signed under. Registering after the
+    // `joined` await (where the lease is already dropped) would re-read a
+    // generation that a concurrent transition may have bumped, stamping the
+    // winning generation onto authority derived from the losing identity — a
+    // barrier bypass. Its cancellation token is the C5 barrier's teardown
+    // handle; the send task validates it before every frame.
+    let cancel = CancellationToken::new();
+    let session = crate::owner_identity_egress::register_owner_session(&auth_lease, cancel.clone());
+    // Sign → auth-send → register complete: the bounded lease has served its
+    // purpose. Drop it before awaiting `joined` so it does not span the wait
+    // (spec L4505-4508); the session capability carries authority forward.
     drop(auth_lease);
 
     let initial_peers: Vec<(u8, String)> = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
@@ -171,14 +181,7 @@ pub(crate) async fn connect_audio_relay(
     .map_err(|_| "timeout waiting for joined from relay".to_string())?
     .map_err(|e: String| e)?;
 
-    let cancel = CancellationToken::new();
     let cancel_clone = cancel.clone();
-    // Register the durable session capability, stamped with the current
-    // identity-persistence generation and carrying THIS connection's
-    // cancellation token as its revocation handle. The send task validates it
-    // before every frame; the C5 coordinator barrier invokes the registered
-    // token to tear the socket down when an identity transition supersedes it.
-    let session = crate::owner_identity_egress::register_owner_session(cancel.clone());
     let (pcm_tx, pcm_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(50);
     let output_device_name = state
         .huddle_audio
