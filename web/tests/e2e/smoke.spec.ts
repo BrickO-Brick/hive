@@ -2,12 +2,14 @@ import { createHash } from "node:crypto";
 import { expect, test, bootstrapE2ePage } from "../helpers/test";
 
 test("home page loads with Buzz branding", async ({ page }) => {
+  await bootstrapE2ePage(page);
   await expect(
     page.getByRole("main").getByRole("img", { name: "Buzz" }),
   ).toBeVisible();
 });
 
 test("home page shows repositories section", async ({ page }) => {
+  await bootstrapE2ePage(page);
   await expect(page.getByText("Repositories")).toBeVisible();
 });
 
