@@ -36,6 +36,7 @@ import type { AcpRuntime, ChannelType, ManagedAgent } from "@/shared/api/types";
 import { normalizePubkey, truncatePubkey } from "@/shared/lib/pubkey";
 import { buildCustomEmojiTags } from "@/shared/lib/customEmojiTags";
 import {
+  createMentionSendFailureRecovery,
   getErrorMessage,
   isManagedAgentRunning,
   isProviderBackedAgent,
@@ -495,70 +496,21 @@ export function useMentionSendFlow({
         let mediaMessageSent = false;
         let linkMessageSent = false;
         let remainingTextContent = draft.savedContent;
-        const persistCanceledDraft = ({
-          content = draft.savedContent,
-          withoutMedia = false,
-        }: {
-          content?: string;
-          withoutMedia?: boolean;
-        } = {}) => {
-          if (isSendCancelled() || !draft.recoveryDraftKey) return;
-          const existing = drafts.loadDraft(draft.recoveryDraftKey);
-          if (
-            existing &&
-            (existing.content !== draft.savedContent ||
-              existing.channelId !==
-                (draft.capturedChannelId ?? draft.recoveryDraftKey) ||
-              JSON.stringify(existing.pendingImeta) !==
-                JSON.stringify(draft.savedImeta) ||
-              JSON.stringify(existing.spoileredAttachmentUrls) !==
-                JSON.stringify([...draft.savedSpoileredAttachmentUrls]))
-          ) {
-            return;
-          }
-          drafts.persistDraft(
-            draft.recoveryDraftKey,
-            content,
-            draft.capturedChannelId ?? draft.recoveryDraftKey,
-            withoutMedia ? [] : draft.savedImeta,
-            withoutMedia ? [] : [...draft.savedSpoileredAttachmentUrls],
-            draft.savedMentionRefs,
-          );
-        };
-        const restoreComposerAfterFailure = ({
-          content = draft.savedContent,
-          withoutMedia = false,
-        }: {
-          content?: string;
-          withoutMedia?: boolean;
-        } = {}) => {
-          if (isSendCancelled()) return;
-          persistCanceledDraft({ content, withoutMedia });
-          const canRestoreCurrentComposer =
-            isMountedRef.current &&
-            (draft.capturedChannelId === channelIdRef.current ||
-              channelIdRef.current === null) &&
-            contentRef.current.trim().length === 0 &&
-            !hasUnsavedMedia();
-          if (!canRestoreCurrentComposer && draft.recoveryDraftKey) {
-            saveQueuedAttachmentsForDraft(
-              draft.recoveryDraftKey,
-              withoutMedia ? [] : draft.queuedAttachments,
-            );
-          }
-          if (!canRestoreCurrentComposer) {
-            return;
-          }
-          setContent(content);
-          contentRef.current = content;
-          richText.setContent(content);
-          setPendingImeta(withoutMedia ? [] : draft.savedImeta);
-          restoreQueuedAttachments(withoutMedia ? [] : draft.queuedAttachments);
-          mentions.restoreDraftMentionRefs(draft.savedMentionRefs);
-          setSpoileredAttachmentUrls?.(
-            new Set(withoutMedia ? [] : draft.savedSpoileredAttachmentUrls),
-          );
-        };
+        const restoreComposerAfterFailure = createMentionSendFailureRecovery({
+          contentRef,
+          draft,
+          drafts,
+          getCurrentChannelId: () => channelIdRef.current,
+          hasUnsavedMedia,
+          isMounted: () => isMountedRef.current,
+          isSendCancelled,
+          restoreDraftMentionRefs: mentions.restoreDraftMentionRefs,
+          restoreQueuedAttachments,
+          setContent,
+          setPendingImeta,
+          setRichTextContent: richText.setContent,
+          setSpoileredAttachmentUrls,
+        });
         const finishSend = async (
           uploaded: ImetaMedia[],
           signal?: AbortSignal,

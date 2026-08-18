@@ -3,9 +3,15 @@ import {
   type ImetaMedia,
   mergeOutgoingTags,
 } from "@/features/messages/lib/imetaMediaMarkdown";
-import type { QueuedMediaAttachment } from "@/features/messages/lib/backgroundMediaUploadStore";
+import {
+  type QueuedMediaAttachment,
+  saveQueuedAttachmentsForDraft,
+} from "@/features/messages/lib/backgroundMediaUploadStore";
 import type { PreparedBackgroundLinkPreviews } from "@/features/messages/lib/linkPreviewPreparationStore";
-import type { DraftMentionRef } from "@/features/messages/lib/useDrafts";
+import type {
+  DraftMentionRef,
+  UseDraftsResult,
+} from "@/features/messages/lib/useDrafts";
 import { normalizePubkey } from "@/shared/lib/pubkey";
 import { MENTION_REFERENCE_TAG } from "@/shared/lib/resolveMentionNames";
 
@@ -95,4 +101,99 @@ export function isManagedAgentRunning(agent: ManagedAgent) {
 
 export function isProviderBackedAgent(agent: ManagedAgent) {
   return agent.backend.type === "provider";
+}
+
+type RestoreComposerAfterFailureOptions = {
+  content?: string;
+  withoutMedia?: boolean;
+};
+
+export function createMentionSendFailureRecovery({
+  contentRef,
+  draft,
+  drafts,
+  getCurrentChannelId,
+  hasUnsavedMedia,
+  isMounted,
+  isSendCancelled,
+  restoreDraftMentionRefs,
+  restoreQueuedAttachments,
+  setContent,
+  setPendingImeta,
+  setRichTextContent,
+  setSpoileredAttachmentUrls,
+}: {
+  contentRef: { current: string };
+  draft: PendingNonMemberMentionSend;
+  drafts: Pick<UseDraftsResult, "loadDraft" | "persistDraft">;
+  getCurrentChannelId: () => string | null;
+  hasUnsavedMedia: () => boolean;
+  isMounted: () => boolean;
+  isSendCancelled: () => boolean;
+  restoreDraftMentionRefs: (refs: DraftMentionRef[]) => void;
+  restoreQueuedAttachments: (attachments: QueuedMediaAttachment[]) => void;
+  setContent: (content: string) => void;
+  setPendingImeta: (pendingImeta: ImetaMedia[]) => void;
+  setRichTextContent: (content: string) => void;
+  setSpoileredAttachmentUrls?: (urls: Set<string>) => void;
+}) {
+  const persistCanceledDraft = ({
+    content = draft.savedContent,
+    withoutMedia = false,
+  }: RestoreComposerAfterFailureOptions = {}) => {
+    if (isSendCancelled() || !draft.recoveryDraftKey) return;
+    const existing = drafts.loadDraft(draft.recoveryDraftKey);
+    if (
+      existing &&
+      (existing.content !== draft.savedContent ||
+        existing.channelId !==
+          (draft.capturedChannelId ?? draft.recoveryDraftKey) ||
+        JSON.stringify(existing.pendingImeta) !==
+          JSON.stringify(draft.savedImeta) ||
+        JSON.stringify(existing.spoileredAttachmentUrls) !==
+          JSON.stringify([...draft.savedSpoileredAttachmentUrls]))
+    ) {
+      return;
+    }
+    drafts.persistDraft(
+      draft.recoveryDraftKey,
+      content,
+      draft.capturedChannelId ?? draft.recoveryDraftKey,
+      withoutMedia ? [] : draft.savedImeta,
+      withoutMedia ? [] : [...draft.savedSpoileredAttachmentUrls],
+      draft.savedMentionRefs,
+    );
+  };
+
+  return ({
+    content = draft.savedContent,
+    withoutMedia = false,
+  }: RestoreComposerAfterFailureOptions = {}) => {
+    if (isSendCancelled()) return;
+    persistCanceledDraft({ content, withoutMedia });
+    const currentChannelId = getCurrentChannelId();
+    const canRestoreCurrentComposer =
+      isMounted() &&
+      (draft.capturedChannelId === currentChannelId ||
+        currentChannelId === null) &&
+      contentRef.current.trim().length === 0 &&
+      !hasUnsavedMedia();
+    if (!canRestoreCurrentComposer && draft.recoveryDraftKey) {
+      saveQueuedAttachmentsForDraft(
+        draft.recoveryDraftKey,
+        withoutMedia ? [] : draft.queuedAttachments,
+      );
+    }
+    if (!canRestoreCurrentComposer) return;
+
+    setContent(content);
+    contentRef.current = content;
+    setRichTextContent(content);
+    setPendingImeta(withoutMedia ? [] : draft.savedImeta);
+    restoreQueuedAttachments(withoutMedia ? [] : draft.queuedAttachments);
+    restoreDraftMentionRefs(draft.savedMentionRefs);
+    setSpoileredAttachmentUrls?.(
+      new Set(withoutMedia ? [] : draft.savedSpoileredAttachmentUrls),
+    );
+  };
 }
