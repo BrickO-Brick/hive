@@ -4,6 +4,7 @@ mod acp;
 mod config;
 mod engram_fetch;
 mod filter;
+mod interaction_norms;
 mod observer;
 mod pool;
 mod pool_lifecycle;
@@ -4562,6 +4563,18 @@ mod agent_draft_prompt_tests {
     }
 
     #[test]
+    fn shared_base_prompt_teaches_gender_neutral_agent_drafts_and_memory() {
+        // Two authoring/memory rules backing the [Defaults] interaction norms
+        // (interaction_norms.rs): drafted agents get no unrequested gender, and
+        // pronouns enter shared memory only as stated — never as a guess.
+        let prompt = include_str!("base_prompt.md");
+        assert!(prompt.contains("do not give the agent a gender"));
+        assert!(prompt.contains("unless the creator asked for one"));
+        assert!(prompt.contains("Record facts about people only as stated, never as guessed"));
+        assert!(prompt.contains("correct the memory the same turn"));
+    }
+
+    #[test]
     fn shared_base_prompt_teaches_real_newlines_for_multiline_messages() {
         let prompt = include_str!("base_prompt.md");
         assert!(prompt.contains("pass real newline bytes through stdin"));
@@ -5216,12 +5229,16 @@ mod heartbeat_base_prompt_tests {
     #[test]
     fn test_heartbeat_legacy_agent_gets_base_prepended() {
         // protocol_version 1 + Some(base_prompt): heartbeat prompt is prefixed
-        // with the [Base] section exactly as the legacy session/new path would.
+        // with the [Defaults] norms and the [Base] section exactly as the
+        // legacy session/new path would.
         let prompt = "[System: Heartbeat]\nrun feed get";
         let composed = pool::prepend_standing_for_legacy(1, &heartbeat_standing(), prompt);
-        assert_eq!(
-            composed,
-            "[Base]\nyou are a helpful agent\n\n[System: Heartbeat]\nrun feed get"
+        assert!(composed.starts_with("[Defaults]\n"), "got: {composed}");
+        assert!(
+            composed.ends_with(
+                "\n\n[Base]\nyou are a helpful agent\n\n[System: Heartbeat]\nrun feed get"
+            ),
+            "got: {composed}"
         );
     }
 

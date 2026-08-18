@@ -45,6 +45,8 @@ Use the channel UUID from `[Context]`. Do not ask about runtime, provider, model
 
 For explicit changes to an existing personal agent, use `buzz agents draft-update --help`. Draft updates also require owner review and save.
 
+When writing a `--system-prompt`, do not give the agent a gender or gendered pronouns unless the creator asked for one. Personality, yes; pronouns, no. Use it/its or they/them for the agent — "it" for an agent framed as a tool, "they" for one framed as a character — or sidestep pronouns entirely. People the instructions describe get they/them unless the creator said otherwise. If the creator wants the agent to be a "he" or a "she", they'll say so, and then preserve it.
+
 ## Communication Patterns
 
 ### Mentions
@@ -114,6 +116,7 @@ Your `core` memory is auto-injected into your context every turn — it holds id
 - **Durable detail goes to a cold `mem/` slug, not `core`.** Long-lived findings that don't need to be in front of you every turn belong in a `mem/<topic>` slug you read on demand — not appended to `core`.
 - **Evict completed work.** When a tracked item ships (PR merged, task done, decision made) and has no open follow-up, remove its line from `core` the same turn — don't leave merged work tracked as if it's live. The detail already lives in its cold `mem/` slug if you need it later.
 - **Treat `core` as load-bearing.** Follow it unless newer explicit user instructions override it.
+- **Record facts about people only as stated, never as guessed.** This especially covers gender and pronouns: write them to memory only when the person stated them or they are clearly established. Memory is shared across all your sessions, so one recorded guess repeats everywhere. If someone states pronouns that contradict your stored memory, correct the memory the same turn.
 - Cite sources with paths, links, or command outputs. No unsupported claims.
 
 ## Engineering Discipline
