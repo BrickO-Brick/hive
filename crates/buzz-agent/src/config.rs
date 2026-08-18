@@ -2050,6 +2050,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn normalize_effort_for_databricks_v2_deepseek_max_passes_through() {
+        assert_eq!(
+            normalize_effort_for_databricks_v2(
+                ThinkingEffort::Max,
+                "databricks-deepseek-v4-flash-0731",
+            ),
+            ThinkingEffort::Max,
+            "the validated DeepSeek max condition must not inherit the unknown-model xhigh clamp"
+        );
+    }
+
     // ---- normalize_effort_for_anthropic_route ----
 
     #[test]
