@@ -258,8 +258,7 @@ export function MessageThreadPanel({
     !isHuddleTranscript && (isOverlay || isSinglePanelView || isFocusMode),
   );
   const hasConstrainedColumn = columnMaxWidthPx != null;
-  // Whether the composer dock trades its quiet-state spacer for the
-  // conditional activity accessory (agent working and/or someone typing).
+  // Whether the dock trades its spacer for agent or typing activity.
   const hasComposerBottomActivity =
     activityAccessoryVisible || threadTypingPubkeys.length > 0;
 

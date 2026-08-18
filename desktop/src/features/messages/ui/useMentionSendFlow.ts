@@ -43,7 +43,7 @@ import {
   mergeOutgoingTagsWithReferenceMentions,
   type PendingNonMemberMentionSend,
   type SendMessageWithMentionFlowInput,
-  resolvePreviewTags,
+  resolvePreviewTags as previewTags,
   uniqueNormalizedPubkeys,
 } from "./useMentionSendFlow.helpers";
 type UseMentionSendFlowOptions = {
@@ -444,7 +444,6 @@ export function useMentionSendFlow({
             return;
           }
         }
-
         const agentReadiness = await ensureManagedAgentMentionsReady(
           managedMentionPubkeys.filter(
             (pubkey) => !readyAgentPubkeys.has(normalizePubkey(pubkey)),
@@ -543,20 +542,14 @@ export function useMentionSendFlow({
           restoreQueuedAttachments(withoutMedia ? [] : draft.queuedAttachments);
           mentions.restoreDraftMentionRefs(draft.savedMentionRefs);
           setSpoileredAttachmentUrls?.(
-            withoutMedia
-              ? new Set()
-              : new Set(draft.savedSpoileredAttachmentUrls),
+            new Set(withoutMedia ? [] : draft.savedSpoileredAttachmentUrls),
           );
         };
         const finishSend = async (
           uploaded: ImetaMedia[],
           signal?: AbortSignal,
         ) => {
-          const textTags = await resolvePreviewTags(
-            draft,
-            undefined,
-            outgoingTags,
-          );
+          const textTags = await previewTags(draft, undefined, outgoingTags);
           if (!textTags || signal?.aborted || isSendCancelled()) return;
           const parts = buildOutgoingMessageParts({
             body: draft.trimmed,

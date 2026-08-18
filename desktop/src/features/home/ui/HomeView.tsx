@@ -111,9 +111,8 @@ export function HomeView({
     homeInboxWidthPx < INBOX_SINGLE_COLUMN_BREAKPOINT_PX;
   const [filter, setFilter] = React.useState<InboxFilter>("all");
   const [unreadOnly, setUnreadOnly] = React.useState(false);
-  // Explicit selections are mirrored to `?item=`, so navigation and reloads
-  // restore the detail pane. Default/automatic selection stays local-only —
-  // background data loads must never trigger navigations.
+  // Explicit selections mirror to `?item=` for navigation and reloads; default
+  // selection stays local so background data never triggers navigation.
   const { applyPatch: applyInboxSearchPatch, values: inboxSearchValues } =
     useHistorySearchState(INBOX_SEARCH_KEYS);
   const isReminders = filter === "reminders";
