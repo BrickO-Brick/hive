@@ -31,17 +31,10 @@ pub struct AppState {
     /// response (surfaced as an error) so the auth token never leaves the
     /// validated relay origin.
     pub media_fetch_client: reqwest::Client,
-    /// Workspace-provided relay URL override. Set by `apply_workspace` on app
-    /// init and takes priority over env vars and compile-time defaults.
     pub relay_url_override: Mutex<Option<String>>,
-    /// Serializes workspace mutation transactions. Each caller also takes a
-    /// generation ticket before queueing so an older queued apply fails closed
-    /// rather than running after a newer workspace has won.
     pub workspace_apply_lock: AsyncMutex<()>,
     pub workspace_apply_generation: AtomicU64,
-    /// Set during backend setup when managed agents are eligible for launch
-    /// restore. `apply_workspace` consumes it after installing the workspace
-    /// relay and identity, so agents never start against the fallback relay.
+    /// Defers managed-agent restore until `apply_workspace` installs relay and identity.
     pub managed_agent_restore_pending: AtomicBool,
     /// Disabled by agent-managed profiles so agent profile updates survive start/restore.
     pub managed_agent_profile_reconcile_enabled: AtomicBool,
