@@ -157,7 +157,7 @@ Everything is environment variables. No flags, no config files. (We are a subpro
 | `BUZZ_AGENT_MAX_TOKEN_RECOVERIES` | `3` | Retries after a successful response is truncated at the output-token limit. `0` disables recovery; the finite value and `BUZZ_AGENT_MAX_ROUNDS` prevent infinite retries. |
 | `BUZZ_AGENT_MAX_CONTEXT_TOKENS` | `200000` | Provider context window used by the handoff gate. |
 | `BUZZ_AGENT_MAX_HANDOFFS` | — | **No longer read.** goose's compaction replaced the handoff mechanism it bounded. |
-| `BUZZ_AGENT_LLM_TIMEOUT_SECS` | — | **No longer read.** goose owns provider transport and its own per-provider timeouts (`OPENAI_TIMEOUT`, `ANTHROPIC_TIMEOUT`, default 600s). |
+| `BUZZ_AGENT_LLM_TIMEOUT_SECS` | goose's own (600 s) | Per-request timeout. goose owns provider transport and reads this **per provider**, so buzz projects the value onto the variable belonging to the configured provider — `OPENAI_TIMEOUT` (which covers `relay-mesh` and the other OpenAI-wire providers), `ANTHROPIC_TIMEOUT`, `OLLAMA_TIMEOUT`, `LITELLM_TIMEOUT`. Providers goose gives no timeout knob (databricks) cannot honour it. |
 | `BUZZ_AGENT_TOOL_TIMEOUT_SECS` | `660` | Per-tool call timeout in seconds. Projected onto goose's `GOOSE_DEFAULT_EXTENSION_TIMEOUT`. |
 | `BUZZ_AGENT_MAX_PARALLEL_TOOLS` | — | **No longer read.** All of a round's tool calls are dispatched concurrently; there is no cap to configure. |
 | `BUZZ_AGENT_MAX_SESSIONS` | unlimited | Max concurrent ACP sessions. Sessions are cheap; default has no cap. |
@@ -333,7 +333,7 @@ The trust boundary is **the operator who launched the agent**. The harness, MCP 
 | Tool schema bytes | 4 KiB | `MAX_SCHEMA_BYTES` (oversize → replaced with `{}`) |
 | Tool calls per turn | 64 | `MAX_TOOL_CALLS_PER_TURN` |
 | Loop rounds | 0 (unlimited) | `BUZZ_AGENT_MAX_ROUNDS` |
-| LLM read inactivity timeout | 240 s | `BUZZ_AGENT_LLM_TIMEOUT_SECS` |
+| LLM request timeout | goose's own (600 s) | `BUZZ_AGENT_LLM_TIMEOUT_SECS` (projected per provider) |
 | Tool call timeout | 660 s | `BUZZ_AGENT_TOOL_TIMEOUT_SECS` |
 
 ## What This Is NOT

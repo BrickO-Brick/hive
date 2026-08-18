@@ -122,6 +122,26 @@ fn goose_provider_name(provider: &str) -> &str {
     }
 }
 
+/// goose's per-request timeout variable for a Buzz provider id, if it has one.
+///
+/// goose reads the timeout per provider rather than globally, so the name
+/// depends on which provider the agent is configured for. `relay-mesh` and the
+/// other OpenAI-wire providers all run through goose's `openai` provider and so
+/// read `OPENAI_TIMEOUT` (`goose/src/providers/openai_def.rs:118`).
+///
+/// Returns `None` for providers whose goose implementation has no timeout knob
+/// (databricks among them) — there the buzz value cannot be honoured, and
+/// inventing a variable goose never reads would be worse than not setting one.
+fn provider_timeout_env_key(provider: &str) -> Option<&'static str> {
+    match goose_provider_name(provider) {
+        "openai" => Some("OPENAI_TIMEOUT"),
+        "anthropic" => Some("ANTHROPIC_TIMEOUT"),
+        "ollama" => Some("OLLAMA_TIMEOUT"),
+        "litellm" => Some("LITELLM_TIMEOUT"),
+        _ => None,
+    }
+}
+
 fn env_str(key: &str) -> Option<String> {
     std::env::var(key).ok().filter(|s| !s.trim().is_empty())
 }
@@ -263,6 +283,27 @@ impl Config {
                 .unwrap_or_else(|| DEFAULT_TOOL_RESULT_TEXT_BYTES.to_string()),
         );
 
+        // Per-LLM-call timeout. goose has no single provider-agnostic name for
+        // this — each provider reads its own (`OPENAI_TIMEOUT`,
+        // `ANTHROPIC_TIMEOUT`, ...) — so this projects onto the one belonging
+        // to the provider actually in use.
+        //
+        // This is load-bearing for shared compute, not hygiene. The desktop
+        // seeds `BUZZ_AGENT_LLM_TIMEOUT_SECS=660` for mesh agents
+        // (`managed_agents/relay_mesh.rs`, PR #6115) because MeshLLM's own
+        // backend budget is 600 s and a cold prefill of a large prompt can
+        // legitimately take ~500 s. Without this projection that seed reaches
+        // nothing on this branch: goose's default is 600 s, just under the
+        // server's, so the client would abort a request the mesh is still
+        // serving — the exact failure #6115 diagnosed and fixed.
+        if let Some(timeout) = env_str("BUZZ_AGENT_LLM_TIMEOUT_SECS") {
+            if let Some(key) =
+                provider_timeout_env_key(&env_str("BUZZ_AGENT_PROVIDER").unwrap_or_default())
+            {
+                set_if_absent(key, &timeout);
+            }
+        }
+
         // `BUZZ_AGENT_NO_HINTS=1` suppressed AGENTS.md/.goosehints loading.
         // goose has no boolean for this, but it takes the *filename list* —
         // an empty list finds nothing, which is the same outcome.
@@ -298,6 +339,69 @@ mod tests {
 
     // Env is process-global; these tests set disjoint keys and assert only on
     // the pure mapping helpers where possible.
+
+    /// The mesh client budget must outlast the mesh server's own.
+    ///
+    /// The desktop seeds `BUZZ_AGENT_LLM_TIMEOUT_SECS=660` for mesh agents
+    /// (PR #6115) against MeshLLM's 600 s backend budget. goose reads the
+    /// timeout per provider, so without the projection under test the seed
+    /// reaches nothing and goose's own 600 s default applies — under the
+    /// server's, which is what made Buzz abandon prefills the mesh was still
+    /// serving. Asserts the invariant (`> 600`) rather than the literal.
+    #[test]
+    fn mesh_llm_timeout_outlasts_the_mesh_backend_budget() {
+        let _guard = env_lock();
+        for key in [
+            "BUZZ_AGENT_LLM_TIMEOUT_SECS",
+            "BUZZ_AGENT_PROVIDER",
+            "OPENAI_TIMEOUT",
+            "GOOSE_PROVIDER",
+        ] {
+            std::env::remove_var(key);
+        }
+
+        std::env::set_var("BUZZ_AGENT_PROVIDER", "relay-mesh");
+        std::env::set_var("BUZZ_AGENT_LLM_TIMEOUT_SECS", "660");
+        Config::project_goose_env();
+
+        let seated: u64 = std::env::var("OPENAI_TIMEOUT")
+            .expect("mesh agents must carry a timeout onto goose's openai provider")
+            .parse()
+            .expect("timeout must be numeric");
+        assert!(
+            seated > 600,
+            "client budget {seated}s must outlast MeshLLM's 600s backend budget"
+        );
+
+        for key in [
+            "BUZZ_AGENT_LLM_TIMEOUT_SECS",
+            "BUZZ_AGENT_PROVIDER",
+            "OPENAI_TIMEOUT",
+            "GOOSE_PROVIDER",
+        ] {
+            std::env::remove_var(key);
+        }
+    }
+
+    /// A provider goose gives no timeout knob must not get a bogus one.
+    #[test]
+    fn provider_without_a_timeout_knob_projects_nothing() {
+        assert_eq!(
+            provider_timeout_env_key("relay-mesh"),
+            Some("OPENAI_TIMEOUT")
+        );
+        assert_eq!(
+            provider_timeout_env_key("openai-compat"),
+            Some("OPENAI_TIMEOUT")
+        );
+        assert_eq!(
+            provider_timeout_env_key("anthropic"),
+            Some("ANTHROPIC_TIMEOUT")
+        );
+        // goose's databricks providers read no timeout variable; inventing one
+        // would be a silent no-op dressed up as support.
+        assert_eq!(provider_timeout_env_key("databricks-v2"), None);
+    }
 
     /// Every `BUZZ_AGENT_*` knob whose implementation moved to goose must
     /// still reach goose under its goose name. A knob that silently stops
