@@ -57,7 +57,15 @@ impl Shim {
         // applied it.
         let git_env = match buzz_git_identity::take_key_and_write(dir.path()) {
             Some(id) => {
-                let mut entries = buzz_git_identity::identity_signing_entries(&id);
+                let identity = buzz_git_identity::identity_signing_entries(&id);
+                // Write the authoritative identity manifest the enforcement
+                // wrapper reads (its expected author + the config it re-applies
+                // before exec). Without it the wrapper cannot fail closed on an
+                // env-scrubbed identity, so a manifest-write failure disables
+                // enforcement — treat it as fatal rather than ship a wrapper
+                // that silently trusts mutable env.
+                buzz_git_identity::write_identity_manifest(dir.path(), &identity)?;
+                let mut entries = identity;
                 entries.extend(buzz_git_identity::nostr_credential_entries());
                 buzz_git_identity::to_git_config_env(&entries)
             }

@@ -182,6 +182,45 @@ pub fn identity_signing_entries(id: &KeyIdentity) -> Vec<(String, String)> {
     entries
 }
 
+/// Filename of the harness-owned identity manifest, written 0600 beside the
+/// keyfile in the same 0700 install dir. It is the wrapper's authoritative
+/// source for the identity/signing config it re-applies and the expected author
+/// email it verifies pushes against — never the caller-mutable `GIT_CONFIG_*`
+/// environment the wrapper is meant to constrain.
+pub const IDENTITY_MANIFEST_NAME: &str = ".git-identity";
+
+/// Serialize identity/signing `(key, value)` entries into the manifest and
+/// write it 0600 into `dir` (which the caller created 0700). One `key=value`
+/// per line; keys are fixed git config names (no `=`) so a first-`=` split
+/// round-trips values that themselves contain `=`. Values never contain a
+/// newline — [`sanitize_git_user_name`] strips control characters and the
+/// keyfile path/email cannot — so lines are unambiguous.
+pub fn write_identity_manifest(dir: &Path, entries: &[(String, String)]) -> std::io::Result<()> {
+    let mut body = String::new();
+    for (key, value) in entries {
+        body.push_str(key);
+        body.push('=');
+        body.push_str(value);
+        body.push('\n');
+    }
+    write_keyfile_atomic(&dir.join(IDENTITY_MANIFEST_NAME), body.as_bytes())
+}
+
+/// Parse the identity manifest in `dir`, or `None` when it is absent/unreadable.
+/// A present-but-empty or entry-less manifest yields `Some(vec![])`, which the
+/// wrapper treats as an inconsistent authority and fails closed on.
+pub fn read_identity_manifest(dir: &Path) -> Option<Vec<(String, String)>> {
+    let body = std::fs::read_to_string(dir.join(IDENTITY_MANIFEST_NAME)).ok()?;
+    Some(
+        body.lines()
+            .filter_map(|line| {
+                line.split_once('=')
+                    .map(|(k, v)| (k.to_owned(), v.to_owned()))
+            })
+            .collect(),
+    )
+}
+
 /// The nostr credential helper git config (relay git-over-HTTP auth). Additive:
 /// the helper silently declines non-Buzz remotes, so git falls through to
 /// system helpers for GitHub/GitLab/etc.
