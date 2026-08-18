@@ -616,18 +616,13 @@ fn resolve_identity_with_store(
         }
         KeyringProbe::Unreachable => {
             // Keyring down this boot. If a recoverable file is present, use it
-            // (and do NOT migrate — re-importing later could resurrect a
-            // rotated key). With NO file, the marker disambiguates two states
-            // that are otherwise byte-identical (Unreachable + no file):
-            //   - marker present → the key was migrated into the keyring and the
-            //     file deleted. The real key is unreachable this boot but still
-            //     exists in the keyring. Boot keyring-locked recovery (ephemeral
-            //     key, all signing disabled) so the app can at least open; the
-            //     frontend shows a "unlock the keyring and relaunch" screen.
-            //     Fail-closed semantics are preserved: nothing is ever persisted
-            //     under the ephemeral key, so no silent identity rotation occurs.
-            //   - no marker → genuine first-ever launch with nothing to protect.
-            //     Generate to the `0o600` file (legitimate first-run).
+            // (do NOT migrate — a later import could resurrect a rotated key).
+            // With NO file, the marker disambiguates two byte-identical states:
+            //   - marker present → key was migrated to the keyring and the file
+            //     deleted. It is unreachable this boot but still in the keyring:
+            //     boot keyring-locked recovery (ephemeral key, signing disabled),
+            //     nothing persisted, so no silent rotation.
+            //   - no marker → genuine first-ever launch; generate to `0o600`.
             if !legacy_path.exists() && migration_marker_path(data_dir).exists() {
                 let ephemeral = Keys::generate();
                 eprintln!(
@@ -641,6 +636,11 @@ fn resolve_identity_with_store(
                     recovery: RecoveryState::KeyringLocked,
                     storage: IdentityStorage::Ephemeral,
                 });
+            }
+            // P28-C1: pending transition journal + unreachable keyring → fail closed.
+            use crate::identity_transition_journal::recovery_blocked_boot_if_pending;
+            if let Some(resolved) = recovery_blocked_boot_if_pending(data_dir) {
+                return Ok(resolved);
             }
             let keys = load_file_or_generate(legacy_path, data_dir)?;
             return Ok(ResolvedIdentity {

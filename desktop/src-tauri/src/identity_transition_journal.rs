@@ -100,10 +100,38 @@ pub(crate) fn read_pending(data_dir: &Path) -> Result<Option<IdentityTransitionP
 /// Whether a pending-transition row exists at all, regardless of parseability.
 /// This is the startup fail-closed gate: any surviving journal means the last
 /// transition did not reach a proven exit.
-// Consumed by C5 (P28 startup); remove allow when startup checks it.
-#[allow(dead_code)]
 pub(crate) fn pending_exists(data_dir: &Path) -> bool {
     journal_path(data_dir).exists()
+}
+
+/// Startup override (P28-C1). When a pending-transition row survives AND the
+/// keyring is unreachable this boot, the durable-B candidate cannot be
+/// reconciled yet: loading the A-valued `identity.key` would resume
+/// fully-signable A over a possibly-canonical B — the split-state the journal
+/// exists to prevent. Returns a recovery-blocked [`ResolvedIdentity`]
+/// (ephemeral key, all signing disabled — the same fail-closed posture the base
+/// migration-marker branch uses), NEVER `RecoveryState::None`. Returns `None`
+/// when no row survives, so the caller falls through to its normal A-file load.
+/// The reachable-keyring reconciliation arm is the coordinator's, not startup's.
+pub(crate) fn recovery_blocked_boot_if_pending(
+    data_dir: &Path,
+) -> Option<crate::identity_storage::ResolvedIdentity> {
+    use crate::identity_storage::{IdentityStorage, RecoveryState, ResolvedIdentity};
+    if !pending_exists(data_dir) {
+        return None;
+    }
+    let ephemeral = nostr::Keys::generate();
+    eprintln!(
+        "buzz-desktop: identity-transition journal pending but keyring unreachable; \
+         booting recovery-blocked with ephemeral key {} — unlock the keyring and \
+         relaunch to reconcile",
+        ephemeral.public_key().to_hex()
+    );
+    Some(ResolvedIdentity {
+        keys: ephemeral,
+        recovery: RecoveryState::KeyringLocked,
+        storage: IdentityStorage::Ephemeral,
+    })
 }
 
 #[cfg(test)]
@@ -146,5 +174,32 @@ mod tests {
         assert!(pending_exists(dir.path()));
         let read = read_pending(dir.path()).unwrap();
         assert!(read.is_some(), "corrupt row must not read as absent");
+    }
+
+    #[test]
+    fn recovery_blocked_boot_with_no_row_falls_through() {
+        let dir = tempfile::tempdir().unwrap();
+        // No journal → startup takes its normal A-file load path.
+        assert!(recovery_blocked_boot_if_pending(dir.path()).is_none());
+    }
+
+    #[test]
+    fn recovery_blocked_boot_with_pending_row_is_recovery_blocked() {
+        use crate::identity_storage::{IdentityStorage, RecoveryState};
+        let dir = tempfile::tempdir().unwrap();
+        write_pending(dir.path(), &pending()).unwrap();
+        let resolved = recovery_blocked_boot_if_pending(dir.path())
+            .expect("pending row must override to recovery-blocked boot");
+        // Ephemeral posture, signing disabled — NEVER RecoveryState::None.
+        assert_eq!(resolved.recovery, RecoveryState::KeyringLocked);
+        assert_eq!(resolved.storage, IdentityStorage::Ephemeral);
+    }
+
+    #[test]
+    fn recovery_blocked_boot_with_corrupt_row_still_fails_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(journal_path(dir.path()), b"{ not json").unwrap();
+        // A corrupt row is still "pending, unresolved" — must fail closed.
+        assert!(recovery_blocked_boot_if_pending(dir.path()).is_some());
     }
 }

@@ -47,6 +47,9 @@ pub(crate) enum PersistenceOutcome {
     DefinitelyUnchanged,
     /// Durable B is proven canonical. The coordinator must finish the B commit;
     /// compensation is forbidden. `storage` records where B durably landed.
+    // `storage` consumed by C5 (P29/P30 barrier finishes the B commit); remove
+    // allow when the coordinator reads it.
+    #[allow(dead_code)]
     Committed(IdentityStorage),
     /// Neither state is proven. The coordinator latches the durable fail-closed
     /// state (P28-C1). `reason` is a diagnostic, never a control signal.
