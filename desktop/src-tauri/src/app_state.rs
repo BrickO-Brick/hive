@@ -17,7 +17,12 @@ use crate::managed_agents::scope::WorkspaceAgentScope;
 use crate::managed_agents::{ManagedAgentPairRuntime, ManagedAgentRuntimeKey};
 
 pub struct AppState {
-    pub keys: Mutex<Keys>,
+    /// Identity signing keys. PRIVATE (P29-C1): reach through
+    /// [`AppState::signing_keys`] (refuses in recovery / under the latch),
+    /// [`AppState::current_pubkey`] (pubkey-only), or
+    /// [`AppState::identity_lifecycle_keys_guard`] (transition/import commit +
+    /// lost-state persist only). No signing path may touch the raw field.
+    keys: Mutex<Keys>,
     /// Durable backend holding `keys`. Updated after the key write and before
     /// recovery flags are cleared so `get_identity` reports a consistent state.
     pub(crate) identity_storage: AtomicU8,
@@ -267,10 +272,51 @@ impl AppState {
                  until the identity is restored and Buzz is relaunched"
                 .to_string());
         }
+        // P29-C1: also refuse while owner-identity persistence is latched
+        // `Indeterminate`. A completed transition that could not prove either
+        // durable identity canonical must not sign under the unresolved
+        // identity. The latch is only set by the C5 identity-transition
+        // coordinator, so this is inert (never `true`) until C5 lands, but the
+        // gate is in place at every signer now.
+        if crate::owner_identity_egress::is_identity_indeterminate() {
+            return Err("owner identity is in an indeterminate recovery state; \
+                 event signing is disabled until the identity is reconciled \
+                 and Buzz is relaunched"
+                .to_string());
+        }
         self.keys
             .lock()
             .map_err(|e| e.to_string())
             .map(|k| k.clone())
+    }
+
+    /// The current identity's public key, for routing, query filters, and
+    /// display. Unlike [`signing_keys`](Self::signing_keys) this does NOT
+    /// refuse in recovery: a public key is not signing capability, and the
+    /// recovery-reporting surfaces (`get_identity`) need it to describe the
+    /// recovery state itself. Reads through this accessor rather than the
+    /// private `keys` field so no caller can reach the secret key for a
+    /// pubkey-only need.
+    pub fn current_pubkey(&self) -> Result<nostr::PublicKey, String> {
+        self.keys
+            .lock()
+            .map_err(|e| e.to_string())
+            .map(|k| k.public_key())
+    }
+
+    /// Raw guard on the identity keys for the identity-lifecycle paths ONLY:
+    /// the `apply_workspace` and `import_identity` commit stages (which swap
+    /// keys under their transition guards) and `persist_current_identity`
+    /// (which clones the ephemeral lost-state key to make it durable). These
+    /// paths legitimately operate on keys DURING recovery, so they cannot go
+    /// through [`signing_keys`](Self::signing_keys). Signing and publishing
+    /// MUST use [`signing_keys`](Self::signing_keys), never this — the field
+    /// is private so this is the only write door, and it is named to make a
+    /// signing misuse obvious in review.
+    pub(crate) fn identity_lifecycle_keys_guard(
+        &self,
+    ) -> std::sync::LockResult<std::sync::MutexGuard<'_, Keys>> {
+        self.keys.lock()
     }
 
     /// Emit the current huddle state to the frontend via Tauri event.

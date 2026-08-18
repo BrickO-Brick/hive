@@ -28,6 +28,7 @@ mod models;
 mod native_websocket;
 mod nostr_bind;
 pub mod nostr_convert;
+mod owner_identity_egress;
 mod prevent_sleep;
 mod ptt_shortcut;
 mod relay;

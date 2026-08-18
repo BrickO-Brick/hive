@@ -12,10 +12,7 @@ fn verification_returns_only_public_identity_and_match_status() {
     let state = build_app_state();
     let backup = create_backup_with_log_n(&state, PASSWORD, FAST_LOG_N).unwrap();
     let result = verify_ncryptsec_backup_inner(&state, &backup, PASSWORD).unwrap();
-    assert_eq!(
-        result.pubkey,
-        state.keys.lock().unwrap().public_key().to_hex()
-    );
+    assert_eq!(result.pubkey, state.current_pubkey().unwrap().to_hex());
     assert!(result.npub.starts_with("npub1"));
     assert!(result.matches_current_identity);
 }
@@ -112,7 +109,7 @@ fn recovery_mode_blocks_backup_creation() {
 #[test]
 fn concurrent_identity_swap_vs_backup_is_serialized() {
     let state = std::sync::Arc::new(build_app_state());
-    let key_a = state.keys.lock().unwrap().clone();
+    let key_a = state.identity_lifecycle_keys_guard().unwrap().clone();
     let key_b = Keys::generate();
 
     let swapper = {
@@ -122,7 +119,7 @@ fn concurrent_identity_swap_vs_backup_is_serialized() {
             // Mirrors import_identity's locking: mutation guard held
             // across the key swap.
             let _guard = state.identity_mutation.blocking_lock();
-            *state.keys.lock().unwrap() = key_b;
+            *state.identity_lifecycle_keys_guard().unwrap() = key_b;
         })
     };
 

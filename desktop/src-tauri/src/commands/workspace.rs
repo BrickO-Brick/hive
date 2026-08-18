@@ -56,11 +56,11 @@ pub struct ActiveWorkspaceInfo {
 /// Returns the current active workspace info (relay URL + pubkey).
 #[tauri::command]
 pub fn get_active_workspace(state: State<'_, AppState>) -> Result<ActiveWorkspaceInfo, String> {
-    let keys = state.keys.lock().map_err(|e| e.to_string())?;
+    let pubkey = state.current_pubkey()?;
     let relay_url = relay::relay_ws_url_with_override(&state);
     Ok(ActiveWorkspaceInfo {
         relay_url,
-        pubkey: keys.public_key().to_hex(),
+        pubkey: pubkey.to_hex(),
     })
 }
 
@@ -193,12 +193,7 @@ async fn apply_workspace_body(
             let base_dir = crate::managed_agents::managed_agents_base_dir(&app).unwrap_or_default();
             let effective_owner_pubkey = match &parsed_keys {
                 Some(keys) => keys.public_key().to_hex(),
-                None => state
-                    .keys
-                    .lock()
-                    .map_err(|e| e.to_string())?
-                    .public_key()
-                    .to_hex(),
+                None => state.current_pubkey()?.to_hex(),
             };
             let target_scope_id =
                 crate::managed_agents::scope::derive_scope_id(&relay_url, &effective_owner_pubkey);
@@ -297,7 +292,7 @@ async fn apply_workspace_body(
                     return Ok(WorkspaceApplyResult::drain_failed(msg));
                 }
             };
-            let mut keys_guard = match state.keys.lock() {
+            let mut keys_guard = match state.identity_lifecycle_keys_guard() {
                 Ok(g) => g,
                 Err(e) => {
                     drop(override_guard);

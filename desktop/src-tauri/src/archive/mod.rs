@@ -46,8 +46,7 @@ fn open_db() -> Result<Connection, String> {
 }
 
 fn identity_pubkey(state: &AppState) -> Result<String, String> {
-    let keys = state.keys.lock().map_err(|e| e.to_string())?;
-    Ok(keys.public_key().to_hex())
+    Ok(state.current_pubkey()?.to_hex())
 }
 
 fn now_secs() -> i64 {
@@ -156,11 +155,7 @@ pub async fn archive_events(
     let bucket_results = query_buckets(plan.buckets, state_ref).await;
 
     // ── Phase 3: persist (blocking SQLite) ──────────────────────────────────
-    let owner_keys = {
-        let keys_guard = state.keys.lock().map_err(|e| e.to_string())?;
-        keys_guard.clone()
-        // guard drops here, before awaiting the blocking commit task.
-    };
+    let owner_keys = state.signing_keys()?;
     let commit_identity_pk = identity_pk.clone();
     let commit_relay_url = relay_url.clone();
     run_archive_db_task(move |conn| {

@@ -290,11 +290,7 @@ fn start_pair_under_held_locks<R: tauri::Runtime>(
     runtimes.remove(&key);
     terminate_untracked_pair_runtime(app, &key)?;
 
-    let owner = state
-        .keys
-        .lock()
-        .ok()
-        .map(|keys| keys.public_key().to_hex());
+    let owner = state.current_pubkey().ok().map(|pk| pk.to_hex());
     let scope_id = state
         .capture_active_scope()
         .map(|scope| scope.scope_id.clone());
@@ -421,6 +417,11 @@ async fn probe_agent_relay_access(
     let keys = nostr::Keys::parse(record.private_key_nsec.trim())
         .map_err(|error| format!("invalid managed-agent key: {error}"))?;
     let api_base = crate::relay::relay_http_base_url(&key.relay_url);
+    // Managed-agent egress construction site (P29-C1 closed-world sink). Admit
+    // the interim keyed-egress lease before the probe query.
+    let lease = crate::owner_identity_egress::EgressLease::ManagedAgentKeyed(
+        crate::owner_identity_egress::admit_managed_agent_egress().await?,
+    );
     tokio::time::timeout(
         std::time::Duration::from_secs(10),
         crate::relay::query_relay_at_with_keys(
@@ -429,6 +430,7 @@ async fn probe_agent_relay_access(
             &[serde_json::json!({"kinds": [39002], "#p": [record.pubkey]})],
             &keys,
             record.auth_tag.as_deref(),
+            &lease,
         ),
     )
     .await

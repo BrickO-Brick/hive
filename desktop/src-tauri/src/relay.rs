@@ -103,16 +103,26 @@ pub fn build_nip98_auth_header(
     url: &str,
     body: &[u8],
     state: &AppState,
+    lease: &crate::owner_identity_egress::EgressLease,
 ) -> Result<String, String> {
-    let keys = state.keys.lock().map_err(|error| error.to_string())?;
-    build_nip98_auth_header_for_keys(&keys, method, url, body)
+    let keys = state.signing_keys()?;
+    build_nip98_auth_header_for_keys(&keys, method, url, body, lease)
 }
 
+/// Build a NIP-98 HTTP-auth header signed with an explicit identity.
+///
+/// Requires an [`EgressLease`](crate::owner_identity_egress::EgressLease)
+/// witness (P29-C1): this is one of the explicit-key egress funnels the
+/// spec names, so no caller can sign NIP-98 auth with a raw `&Keys` without
+/// first proving a lease. The lease is admitted post-rate-limit-wait, so
+/// signing here always follows the wait — freshness (NIP-98 ±60s) holds even
+/// under a ≤300s gate hold.
 pub fn build_nip98_auth_header_for_keys(
     keys: &Keys,
     method: &Method,
     url: &str,
     body: &[u8],
+    _lease: &crate::owner_identity_egress::EgressLease,
 ) -> Result<String, String> {
     let payload_hash = hex::encode(Sha256::digest(body));
 
@@ -317,11 +327,17 @@ pub async fn query_relay_at(
     api_base_url: &str,
     filters: &[serde_json::Value],
 ) -> Result<Vec<nostr::Event>, String> {
-    crate::relay_admission::wait_for_rate_limit().await;
+    // Owner-default query: admit the owner-identity egress lease (which waits
+    // out the rate-limit gate internally, then validates the latch) and hold
+    // it across sign → auth → transmit. The wrapper self-admits so its many
+    // transitive callers need no witness.
+    let lease = crate::owner_identity_egress::EgressLease::OwnerIdentity(
+        crate::owner_identity_egress::try_admit_owner_identity_egress().await?,
+    );
     let url = format!("{}/query", api_base_url);
     let body_bytes =
         serde_json::to_vec(filters).map_err(|e| format!("filter serialization failed: {e}"))?;
-    let auth = build_nip98_auth_header(&Method::POST, &url, &body_bytes, state)?;
+    let auth = build_nip98_auth_header(&Method::POST, &url, &body_bytes, state, &lease)?;
 
     let response = state
         .http_client
@@ -346,12 +362,12 @@ pub async fn query_relay_at_with_keys(
     filters: &[serde_json::Value],
     keys: &Keys,
     auth_tag: Option<&str>,
+    lease: &crate::owner_identity_egress::EgressLease,
 ) -> Result<Vec<nostr::Event>, String> {
-    crate::relay_admission::wait_for_rate_limit().await;
     let url = format!("{}/query", api_base_url);
     let body_bytes =
         serde_json::to_vec(filters).map_err(|e| format!("filter serialization failed: {e}"))?;
-    let auth = build_nip98_auth_header_for_keys(keys, &Method::POST, &url, &body_bytes)?;
+    let auth = build_nip98_auth_header_for_keys(keys, &Method::POST, &url, &body_bytes, lease)?;
     let mut request = state
         .http_client
         .post(&url)
@@ -445,7 +461,13 @@ pub async fn sync_managed_agent_profile(
     avatar_url: Option<&str>,
     auth_tag: Option<&str>, // NIP-OA auth tag JSON
 ) -> Result<(), String> {
-    crate::relay_admission::wait_for_rate_limit().await;
+    // Managed-agent egress construction site (P29-C1 closed-world sink). Admit
+    // the interim keyed-egress lease, which waits out the rate-limit gate then
+    // refuses under the identity-persistence latch/drain, and hold it across
+    // sign → auth → transmit.
+    let lease = crate::owner_identity_egress::EgressLease::ManagedAgentKeyed(
+        crate::owner_identity_egress::admit_managed_agent_egress().await?,
+    );
     // Build a signed kind:0 profile event (with optional NIP-OA auth tag).
     let event = build_profile_event(agent_keys, display_name, avatar_url, auth_tag)?;
     let event_json = event.as_json();
@@ -453,7 +475,8 @@ pub async fn sync_managed_agent_profile(
     crate::egress_guard::assert_no_key_backup_bytes(&body_bytes, "agent profile sync")?;
 
     let url = format!("{}/events", relay_http_base_url(relay_url));
-    let auth = build_nip98_auth_header_for_keys(agent_keys, &Method::POST, &url, &body_bytes)?;
+    let auth =
+        build_nip98_auth_header_for_keys(agent_keys, &Method::POST, &url, &body_bytes, &lease)?;
 
     let mut request = state
         .http_client
@@ -547,11 +570,12 @@ pub async fn submit_event_with_keys(
     state: &AppState,
     keys: &Keys,
     auth_tag: Option<&str>,
+    lease: &crate::owner_identity_egress::EgressLease,
 ) -> Result<SubmitEventResponse, String> {
     let event = builder
         .sign_with_keys(keys)
         .map_err(|e| format!("failed to sign event: {e}"))?;
-    submit_signed_event_with_keys(&event, state, keys, auth_tag).await
+    submit_signed_event_with_keys(&event, state, keys, auth_tag, lease).await
 }
 
 /// POST an already-signed event using the same explicit identity for NIP-98.
@@ -560,15 +584,16 @@ pub async fn submit_signed_event_with_keys(
     state: &AppState,
     keys: &Keys,
     auth_tag: Option<&str>,
+    lease: &crate::owner_identity_egress::EgressLease,
 ) -> Result<SubmitEventResponse, String> {
     if event.pubkey != keys.public_key() {
         return Err("signed event does not match the publishing identity".to_string());
     }
-    crate::relay_admission::wait_for_rate_limit().await;
     let url = format!("{}/events", relay_api_base_url_with_override(state));
     let body_bytes = event.as_json().into_bytes();
     crate::egress_guard::assert_no_key_backup_bytes(&body_bytes, "signed event submit (keys)")?;
-    let auth_header = build_nip98_auth_header_for_keys(keys, &Method::POST, &url, &body_bytes)?;
+    let auth_header =
+        build_nip98_auth_header_for_keys(keys, &Method::POST, &url, &body_bytes, lease)?;
 
     let mut request = state
         .http_client

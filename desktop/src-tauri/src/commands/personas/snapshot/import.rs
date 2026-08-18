@@ -870,11 +870,16 @@ pub(crate) async fn submit_engram_event(
 
     crate::egress_guard::assert_no_key_backup_bytes(event_json, "persona snapshot engram submit")?;
 
-    // Wait before signing: the relay enforces NIP-98 freshness (±60s) and the
-    // gate may hold for up to MAX_HINT_SECONDS (300s). Building auth before the
-    // wait produces a stale `created_at` that the relay will reject.
-    crate::relay_admission::wait_for_rate_limit().await;
-    let auth = build_nip98_auth_header_for_keys(agent_keys, &Method::POST, url, event_json)?;
+    // Managed-agent egress construction site (P29-C1 closed-world sink). Admit
+    // the interim keyed-egress lease, which waits out the rate-limit gate then
+    // refuses under the identity-persistence latch/drain. The event is
+    // pre-signed by the caller (freshness is caller-determined), so this is
+    // admit-before-submit.
+    let lease = crate::owner_identity_egress::EgressLease::ManagedAgentKeyed(
+        crate::owner_identity_egress::admit_managed_agent_egress().await?,
+    );
+    let auth =
+        build_nip98_auth_header_for_keys(agent_keys, &Method::POST, url, event_json, &lease)?;
     let mut request = state
         .http_client
         .post(url)

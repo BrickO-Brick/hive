@@ -55,7 +55,7 @@ fn setup_team_import_app_with_scope(
     let owner_keys = nostr::Keys::generate();
     let state = crate::app_state::build_app_state();
     {
-        let mut locked = state.keys.lock().unwrap();
+        let mut locked = state.identity_lifecycle_keys_guard().unwrap();
         *locked = owner_keys.clone();
     }
 

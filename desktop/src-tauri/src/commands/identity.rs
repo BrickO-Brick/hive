@@ -26,8 +26,7 @@ fn truncated_display_name(pubkey: &PublicKey) -> Result<String, String> {
 
 #[tauri::command]
 pub fn get_identity(state: State<'_, AppState>) -> Result<IdentityInfo, String> {
-    let keys = state.keys.lock().map_err(|error| error.to_string())?;
-    let pubkey = keys.public_key();
+    let pubkey = state.current_pubkey()?;
     let pubkey_hex = pubkey.to_hex();
     let display_name = truncated_display_name(&pubkey)?;
     let lost = state
@@ -619,7 +618,10 @@ pub(crate) fn commit_imported_identity(
     persist: impl FnOnce(&nostr::Keys) -> Result<crate::app_state::IdentityStorage, String>,
 ) -> Result<(nostr::PublicKey, crate::app_state::IdentityStorage), String> {
     // Capture the previous pubkey up front for post-commit cleanup.
-    let previous_pubkey = state.keys.lock().map_err(|e| e.to_string())?.public_key();
+    let previous_pubkey = state
+        .identity_lifecycle_keys_guard()
+        .map_err(|e| e.to_string())?
+        .public_key();
 
     let storage = persist(&keys)?;
 
@@ -628,7 +630,9 @@ pub(crate) fn commit_imported_identity(
     // observing false is guaranteed to see the updated keys.
     let pubkey = keys.public_key();
     {
-        let mut active_keys = state.keys.lock().map_err(|e| e.to_string())?;
+        let mut active_keys = state
+            .identity_lifecycle_keys_guard()
+            .map_err(|e| e.to_string())?;
         *active_keys = keys;
         state.set_identity_storage(storage);
     }
@@ -692,7 +696,13 @@ pub async fn persist_current_identity(
         }
 
         // Clone current keys without holding the mutex across keyring I/O.
-        let keys = state.keys.lock().map_err(|e| e.to_string())?.clone();
+        // Lost-state path: `signing_keys()` would refuse here, but this command
+        // exists to make the ephemeral lost-state key durable, so it reads the
+        // raw guard directly.
+        let keys = state
+            .identity_lifecycle_keys_guard()
+            .map_err(|e| e.to_string())?
+            .clone();
 
         let data_dir = app_handle
             .path()
@@ -824,11 +834,7 @@ pub async fn sign_nostr_identity_binding(
         &expires_at,
     )?;
 
-    let keys = state
-        .keys
-        .lock()
-        .map_err(|error| error.to_string())?
-        .clone();
+    let keys = state.signing_keys()?;
 
     tauri::async_runtime::spawn_blocking(move || {
         let event = build_nostr_identity_binding_event(

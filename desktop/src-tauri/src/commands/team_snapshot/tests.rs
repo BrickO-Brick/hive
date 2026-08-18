@@ -778,7 +778,7 @@ mod egress_guard_boundary {
     ) -> crate::app_state::AppState {
         let state = crate::app_state::build_app_state();
         {
-            let mut locked = state.keys.lock().unwrap();
+            let mut locked = state.identity_lifecycle_keys_guard().unwrap();
             *locked = owner_keys;
         }
         if let Some(s) = scope {

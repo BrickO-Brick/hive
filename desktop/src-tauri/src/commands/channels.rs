@@ -78,10 +78,7 @@ fn classify_pending_owner(state: &AppState, my_pubkey: &str, d_tag: Option<&str>
 #[tauri::command]
 pub async fn get_channels(state: State<'_, AppState>) -> Result<Vec<ChannelInfo>, String> {
     let _profile_start = std::time::Instant::now();
-    let my_pubkey = {
-        let keys = state.keys.lock().map_err(|e| e.to_string())?;
-        keys.public_key().to_hex()
-    };
+    let my_pubkey = state.current_pubkey()?.to_hex();
 
     // Step 1: find all kind:39002 (members) events that mention me, then
     // pull the channel ids out of their `d` tags.
@@ -511,8 +508,11 @@ async fn ensure_starter_channel_memberships(
         }
 
         let channel_uuid = parse_channel_uuid(&channel.id)?;
+        let lease = crate::owner_identity_egress::EgressLease::OwnerIdentity(
+            crate::owner_identity_egress::try_admit_owner_identity_egress().await?,
+        );
         let builder = events::build_join(channel_uuid)?;
-        submit_event_with_keys(builder, state, keys, None).await?;
+        submit_event_with_keys(builder, state, keys, None, &lease).await?;
         channel.is_member = true;
     }
 
@@ -579,7 +579,10 @@ pub async fn create_channel(
     // able to retarget the mark onto the new identity.
     let creator_keys = state.signing_keys()?;
     let creator_pubkey = creator_keys.public_key().to_hex();
-    submit_event_with_keys(builder, &state, &creator_keys, None).await?;
+    let lease = crate::owner_identity_egress::EgressLease::OwnerIdentity(
+        crate::owner_identity_egress::try_admit_owner_identity_egress().await?,
+    );
+    submit_event_with_keys(builder, &state, &creator_keys, None, &lease).await?;
 
     // Mark this channel pending-owner: we just created it, so we know we're
     // the owner, but the relay's kind:39002 membership entry (#1761) is
@@ -630,6 +633,9 @@ pub async fn ensure_starter_channels(
         let channel_uuid = starter_channel_uuid(&relay_scope, spec.slug);
         let channel_uuid_string = channel_uuid.to_string();
         starter_ids.push(channel_uuid_string.clone());
+        let lease = crate::owner_identity_egress::EgressLease::OwnerIdentity(
+            crate::owner_identity_egress::try_admit_owner_identity_egress().await?,
+        );
         let builder = events::build_create_channel(
             channel_uuid,
             spec.name,
@@ -639,7 +645,7 @@ pub async fn ensure_starter_channels(
             None,
         )?;
 
-        match submit_event_with_keys(builder, &state, &creator_keys, None).await {
+        match submit_event_with_keys(builder, &state, &creator_keys, None, &lease).await {
             Ok(_) => {
                 state.mark_pending_owned_channel(&creator_pubkey, &channel_uuid_string);
                 created_ids.insert(channel_uuid_string.clone());

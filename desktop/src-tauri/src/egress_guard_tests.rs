@@ -91,6 +91,7 @@ async fn boundary_submit_event_at_with_keys_blocks_ncryptsec() {
         &state,
         "http://127.0.0.1:9", // discard port — must never be reached
         &keys,
+        &crate::owner_identity_egress::test_owner_egress_lease(),
     )
     .await
     .unwrap_err();
@@ -130,6 +131,7 @@ async fn boundary_submit_signed_event_at_with_keys_blocks_ncryptsec() {
         &state,
         "http://127.0.0.1:9", // discard port — must never be reached
         &keys,
+        &crate::owner_identity_egress::test_owner_egress_lease(),
     )
     .await
     .unwrap_err();
@@ -145,9 +147,15 @@ async fn boundary_submit_signed_event_with_keys_blocks_ncryptsec() {
     let event = nostr::EventBuilder::new(nostr::Kind::Custom(9), NCRYPTSEC)
         .sign_with_keys(&keys)
         .unwrap();
-    let err = crate::relay::submit_signed_event_with_keys(&event, &state, &keys, None)
-        .await
-        .unwrap_err();
+    let err = crate::relay::submit_signed_event_with_keys(
+        &event,
+        &state,
+        &keys,
+        None,
+        &crate::owner_identity_egress::test_owner_egress_lease(),
+    )
+    .await
+    .unwrap_err();
     assert_guard_error(&err);
 }
 

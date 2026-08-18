@@ -61,10 +61,7 @@ pub async fn get_feed(
         .map(|t| t.split(',').any(|s| s.trim() == "needs_action"))
         .unwrap_or(true);
 
-    let my_pubkey = {
-        let keys = state.keys.lock().map_err(|e| e.to_string())?;
-        keys.public_key().to_hex()
-    };
+    let my_pubkey = state.current_pubkey()?.to_hex();
 
     // Mentions: messages that reference me via #p.
     let mut mention_filter = serde_json::json!({
@@ -736,7 +733,7 @@ fn managed_agent_submission_auth_tag(
         return Ok(Some(auth_tag));
     }
 
-    let owner_keys = state.keys.lock().map_err(|error| error.to_string())?;
+    let owner_keys = state.signing_keys()?;
     legacy_managed_agent_auth_tag(&owner_keys, agent_pubkey)
 }
 
@@ -846,6 +843,12 @@ pub async fn send_managed_agent_channel_message(
         }
     }
     let mentions = mention_pubkeys.unwrap_or_default();
+    // Managed-agent channel send (P29-C1 closed-world sink, widest blast
+    // radius). Admit BEFORE building the message so the kind:9 `created_at` is
+    // stamped after the rate-limit wait.
+    let lease = crate::owner_identity_egress::EgressLease::ManagedAgentKeyed(
+        crate::owner_identity_egress::admit_managed_agent_egress().await?,
+    );
     let builder = build_managed_agent_channel_message(
         channel_uuid,
         trimmed,
@@ -853,8 +856,14 @@ pub async fn send_managed_agent_channel_message(
         &mentions,
         &client_tags,
     )?;
-    let result =
-        submit_event_with_keys(builder, &state, &keys, submission_auth_tag.as_deref()).await?;
+    let result = submit_event_with_keys(
+        builder,
+        &state,
+        &keys,
+        submission_auth_tag.as_deref(),
+        &lease,
+    )
+    .await?;
 
     Ok(SendChannelMessageResponse {
         event_id: result.event_id,
@@ -892,10 +901,7 @@ pub async fn remove_reaction(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     // Find our own kind:7 reaction event referencing the target.
-    let my_pubkey = {
-        let keys = state.keys.lock().map_err(|e| e.to_string())?;
-        keys.public_key().to_hex()
-    };
+    let my_pubkey = state.current_pubkey()?.to_hex();
     let target = event_id.trim();
     let trimmed_emoji = emoji.trim();
 

@@ -105,7 +105,7 @@ fn frozen_linkage_corrective_failure_errs_and_boot_reconcile_converges() {
     // Mock Tauri app whose active scope points its definitions dir at the
     // seeded store; the signing keys are the event's author.
     let state = crate::app_state::build_app_state();
-    *state.keys.lock().unwrap() = owner_keys.clone();
+    *state.identity_lifecycle_keys_guard().unwrap() = owner_keys.clone();
     let app = tauri::test::mock_builder()
         .manage(state)
         .build(tauri::test::mock_context(tauri::test::noop_assets()))

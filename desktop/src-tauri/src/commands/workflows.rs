@@ -290,8 +290,7 @@ pub async fn deny_approval(
 // ── Helpers (pure, unit-tested in workflows_tests.rs) ─────────────────────────
 
 fn current_pubkey_hex(state: &AppState) -> Result<String, String> {
-    let keys = state.keys.lock().map_err(|e| e.to_string())?;
-    Ok(keys.public_key().to_hex())
+    Ok(state.current_pubkey()?.to_hex())
 }
 
 fn now_secs() -> i64 {

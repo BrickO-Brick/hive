@@ -32,7 +32,7 @@ fn make_scope_with_keys(tmp: &tempfile::TempDir, owner_keys: &nostr::Keys) -> Wo
 fn build_import_state(owner_keys: nostr::Keys) -> AppState {
     let state = build_app_state();
     {
-        let mut locked = state.keys.lock().unwrap();
+        let mut locked = state.identity_lifecycle_keys_guard().unwrap();
         *locked = owner_keys;
     }
     state
