@@ -1,11 +1,11 @@
 import { expect, test as base } from "@playwright/test";
 
-import { bootstrapE2ePage } from "./bootstrap";
+import { E2E_APP_ORIGIN, bootstrapE2ePage } from "./bootstrap";
 
-export { expect };
 export type * from "@playwright/test";
 
 type E2eFixtures = {
+  automaticE2eBootstrap: void;
   /**
    * Set false only when a test must inspect or configure the page before its
    * first app navigation.
@@ -13,71 +13,28 @@ type E2eFixtures = {
   e2eBootstrap: boolean;
 };
 
-type TestBody = (
-  fixtures: Record<string, unknown>,
-  testInfo: unknown,
-) => unknown;
-
-const baseTest = base.extend<E2eFixtures>({
+const test = base.extend<E2eFixtures>({
   e2eBootstrap: [true, { option: true }],
+  automaticE2eBootstrap: [
+    async ({ page, baseURL, e2eBootstrap }, use) => {
+      if (e2eBootstrap) {
+        if (!baseURL) {
+          throw new Error(
+            "E2E app navigation requires Playwright use.baseURL.",
+          );
+        }
+        const expectedOrigin = new URL(baseURL).origin;
+        if (expectedOrigin !== E2E_APP_ORIGIN) {
+          throw new Error(
+            `E2E app origin mismatch: Playwright baseURL resolves to ${expectedOrigin}, expected ${E2E_APP_ORIGIN}.`,
+          );
+        }
+        await bootstrapE2ePage(page, { expectedOrigin });
+      }
+      await use();
+    },
+    { auto: true },
+  ],
 });
 
-function withAutomaticBootstrap(register: (...args: unknown[]) => unknown) {
-  return new Proxy(register, {
-    apply(target, thisArg, args: unknown[]) {
-      const bodyIndex = args.length - 1;
-      const body = args[bodyIndex];
-      if (typeof body !== "function")
-        return Reflect.apply(target, thisArg, args);
-
-      args[bodyIndex] = async (
-        {
-          page,
-          baseURL,
-          e2eBootstrap,
-          browser,
-          context,
-          request,
-        }: {
-          page: import("@playwright/test").Page;
-          baseURL?: string;
-          e2eBootstrap: boolean;
-          browser: unknown;
-          context: unknown;
-          request: unknown;
-        },
-        testInfo: unknown,
-      ) => {
-        if (e2eBootstrap) {
-          if (!baseURL) {
-            throw new Error(
-              "E2E app navigation requires Playwright use.baseURL.",
-            );
-          }
-          await bootstrapE2ePage(page, {
-            expectedOrigin: new URL(baseURL).origin,
-          });
-        }
-        return (body as TestBody)(
-          { page, baseURL, e2eBootstrap, browser, context, request },
-          testInfo,
-        );
-      };
-      return Reflect.apply(target, thisArg, args);
-    },
-    get(target, property, receiver) {
-      const value = Reflect.get(target, property, receiver);
-      return typeof property === "string" &&
-        ["only", "skip", "fixme", "fail"].includes(property) &&
-        typeof value === "function"
-        ? withAutomaticBootstrap(value)
-        : value;
-    },
-  });
-}
-
-/**
- * Playwright test API that bootstraps the app after suite and test hooks have
- * registered their init scripts, but before each test body can use the page.
- */
-export const test = withAutomaticBootstrap(baseTest) as typeof baseTest;
+export { expect, test };
