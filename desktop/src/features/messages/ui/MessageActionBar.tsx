@@ -74,9 +74,11 @@ type MoreActionsMenuProps = {
   side?: "bottom" | "top";
   isFollowingThread?: boolean;
   isUnread?: boolean;
+  align?: "end" | "start";
 };
 
 function MoreActionsMenu({
+  align = "end",
   channelId,
   compact = false,
   message,
@@ -146,7 +148,7 @@ function MoreActionsMenu({
           <TooltipContent>More actions</TooltipContent>
         </Tooltip>
         <DropdownMenuContent
-          align="end"
+          align={align}
           side={side}
           sideOffset={6}
           onCloseAutoFocus={(event) => {
@@ -415,6 +417,7 @@ function isCustomEmojiShortcode(emoji: string) {
 }
 
 export const MessageActionBar = React.memo(function MessageActionBar({
+  actionAlign = "end",
   channelId,
   message,
   onDelete,
@@ -435,6 +438,7 @@ export const MessageActionBar = React.memo(function MessageActionBar({
   presentation = "tray",
   actions = "all",
 }: {
+  actionAlign?: "end" | "start";
   /** Channel UUID — required for the "Copy link" action; when omitted the
    *  action is hidden (callers like the home inbox that lack the context). */
   channelId?: string | null;
@@ -549,7 +553,7 @@ export const MessageActionBar = React.memo(function MessageActionBar({
         <TooltipContent>React</TooltipContent>
       </Tooltip>
       <PopoverContent
-        align="end"
+        align={actionAlign}
         className="w-auto overflow-hidden rounded-2xl border-0 bg-transparent p-0 shadow-none"
         side="top"
         sideOffset={10}
@@ -593,6 +597,7 @@ export const MessageActionBar = React.memo(function MessageActionBar({
       className={cn(
         "transition-opacity duration-150 ease-out",
         presentation === "tray" && "-m-1 p-1",
+        presentation === "inline" && "p-1",
         "opacity-100 sm:pointer-events-none sm:opacity-0",
         "sm:group-hover/message:pointer-events-auto sm:group-hover/message:opacity-100",
         "sm:group-focus-within/message:pointer-events-auto sm:group-focus-within/message:opacity-100",
@@ -614,7 +619,9 @@ export const MessageActionBar = React.memo(function MessageActionBar({
             "flex items-center gap-0.5",
             presentation === "tray"
               ? "p-1"
-              : "gap-0 bg-transparent [&_button]:h-6 [&_button]:w-6",
+              : presentation === "inline"
+                ? "gap-1 bg-transparent [&_button]:h-7 [&_button]:w-7"
+                : "gap-0 bg-transparent [&_button]:h-6 [&_button]:w-6",
           )}
         >
           {presentation === "menu" ? (
@@ -683,6 +690,7 @@ export const MessageActionBar = React.memo(function MessageActionBar({
 
               {hasMoreMenuActions ? (
                 <MoreActionsMenu
+                  align={actionAlign}
                   channelId={channelId}
                   message={message}
                   onDelete={onDelete}

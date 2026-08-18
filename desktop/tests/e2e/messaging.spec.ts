@@ -2187,8 +2187,7 @@ test("opens a single-level thread panel with inline expansion", async ({
   );
 
   await rootMessage.hover();
-  await rootMessage.getByRole("button", { name: "More actions" }).click();
-  await page.getByRole("menuitem", { name: "Reply", exact: true }).click();
+  await rootMessage.getByRole("button", { name: "Reply" }).click();
   await expect(threadPanel).toBeVisible();
   await expect(threadPanel.getByTestId("message-thread-head")).toContainText(
     "Welcome to #general",
@@ -2356,63 +2355,55 @@ test("opens a single-level thread panel with inline expansion", async ({
   const inlineActions = firstReplyRow.locator(
     '[data-testid^="message-action-bar-"]',
   );
-  await expect(inlineActions).toHaveAttribute("data-presentation", "menu");
+  await expect(inlineActions).toHaveAttribute("data-presentation", "inline");
   await expect(inlineActions.locator('[aria-label^="React with"]')).toHaveCount(
     0,
   );
   await expect(
     inlineActions.getByRole("button", { name: "Open reactions" }),
-  ).toHaveCount(0);
+  ).toBeVisible();
   await expect(
     inlineActions.getByRole("button", { name: "Reply" }),
-  ).toHaveCount(0);
-  const compactMoreActions = firstReplyRow.getByRole("button", {
+  ).toBeVisible();
+  const moreActions = firstReplyRow.getByRole("button", {
     name: "More actions",
   });
-  await expect(compactMoreActions).toBeVisible();
-  const [compactMoreActionsBox, threadResizeHandleBox] = await Promise.all([
-    compactMoreActions.boundingBox(),
+  await expect(moreActions).toBeVisible();
+  const [moreActionsBox, threadResizeHandleBox] = await Promise.all([
+    moreActions.boundingBox(),
     page.getByTestId("right-auxiliary-pane-resize-handle").boundingBox(),
   ]);
-  if (!compactMoreActionsBox || !threadResizeHandleBox) {
+  if (!moreActionsBox || !threadResizeHandleBox) {
     throw new Error("Expected measurable thread action gutter.");
   }
-  expect(compactMoreActionsBox.x).toBeGreaterThanOrEqual(
+  expect(moreActionsBox.x).toBeGreaterThanOrEqual(
     threadResizeHandleBox.x + threadResizeHandleBox.width,
   );
-  const [inlineActionsBox, replyBubbleBox, rootFontSize] = await Promise.all([
+  const [inlineActionsBox, replyBubbleBox] = await Promise.all([
     inlineActions.boundingBox(),
     firstReplyRow.getByTestId("message-body-surface").boundingBox(),
-    page.evaluate(() =>
-      Number.parseFloat(getComputedStyle(document.documentElement).fontSize),
-    ),
   ]);
   if (!inlineActionsBox || !replyBubbleBox) {
-    throw new Error("Expected top-right thread action geometry.");
+    throw new Error("Expected inline thread action geometry.");
   }
+  expect(inlineActionsBox.x).toBeGreaterThanOrEqual(
+    replyBubbleBox.x + replyBubbleBox.width + 7,
+  );
   expect(
     Math.abs(
-      inlineActionsBox.x +
-        inlineActionsBox.width -
-        replyBubbleBox.x -
-        replyBubbleBox.width -
-        rootFontSize * 0.5,
+      inlineActionsBox.y +
+        inlineActionsBox.height / 2 -
+        (replyBubbleBox.y + replyBubbleBox.height / 2),
     ),
   ).toBeLessThanOrEqual(1);
-  expect(
-    Math.abs(inlineActionsBox.y - replyBubbleBox.y + rootFontSize * 0.5),
-  ).toBeLessThanOrEqual(1);
-  await compactMoreActions.click();
+  await moreActions.click();
   await expect(page.getByRole("menu")).toBeVisible();
   await expect(
     page.locator('[data-testid^="message-quick-reactions-"]'),
-  ).toBeVisible();
+  ).toHaveCount(0);
   await expect(
     page.getByRole("menuitem", { name: "Reply", exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: /^React with / }).first(),
-  ).toBeVisible();
+  ).toHaveCount(0);
   const [threadContentColumnBox, threadComposerBox, threadRowFrame] =
     await Promise.all([
       firstReplyRow.getByTestId("message-content-column").boundingBox(),
@@ -2437,13 +2428,6 @@ test("opens a single-level thread panel with inline expansion", async ({
     ),
   ).toBeLessThanOrEqual(1);
   expect(
-    Math.abs(
-      replyBubbleBox.x +
-        replyBubbleBox.width -
-        (threadComposerBox.x + threadComposerBox.width),
-    ),
-  ).toBeLessThanOrEqual(1);
-  expect(
     Math.abs(threadRowFrame.contentLeft - threadComposerBox.x),
   ).toBeLessThanOrEqual(1);
   expect(
@@ -2456,7 +2440,9 @@ test("opens a single-level thread panel with inline expansion", async ({
   await threadPanel.screenshot({
     path: "test-results/message-feedback/thread-inline-actions.png",
   });
-  await page.getByRole("menuitem", { name: "Reply", exact: true }).click();
+  await page.keyboard.press("Escape");
+  await firstReplyRow.hover();
+  await firstReplyRow.getByRole("button", { name: "Reply" }).click();
 
   await expect(threadPanel.getByTestId("message-thread-head")).toContainText(
     "Welcome to #general",

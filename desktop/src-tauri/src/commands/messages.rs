@@ -1,4 +1,4 @@
-use nostr::{Event, EventId, Keys, PublicKey};
+use nostr::{Event, EventId, Keys, PublicKey, Timestamp};
 use tauri::{AppHandle, State};
 
 mod forum;
@@ -489,6 +489,7 @@ pub async fn send_channel_message(
     sent_from_thread_tag: Option<Vec<String>>,
     mention_pubkeys: Option<Vec<String>>,
     kind: Option<u32>,
+    created_at: Option<u64>,
     state: State<'_, AppState>,
 ) -> Result<SendChannelMessageResponse, String> {
     let channel_uuid = uuid::Uuid::parse_str(&channel_id)
@@ -554,6 +555,11 @@ pub async fn send_channel_message(
         }
     };
 
+    let event_created_at = created_at.unwrap_or_else(|| Timestamp::now().as_secs());
+    let response_created_at = i64::try_from(event_created_at)
+        .map_err(|_| "message timestamp exceeds the supported range".to_string())?;
+    let builder = builder.custom_created_at(Timestamp::from(event_created_at));
+
     let result = submit_event(builder, &state).await?;
 
     let depth = match (&parent_event_id, &resolved_root) {
@@ -568,7 +574,7 @@ pub async fn send_channel_message(
         root_event_id: resolved_root,
         parent_event_id,
         depth,
-        created_at: chrono::Utc::now().timestamp(),
+        created_at: response_created_at,
     })
 }
 

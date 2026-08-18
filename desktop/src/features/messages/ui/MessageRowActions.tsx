@@ -4,9 +4,11 @@ import type {
 } from "@/features/messages/types";
 import { cn } from "@/shared/lib/cn";
 import { MessageActionBar } from "./MessageActionBar";
+import { MessageHoverTimestamp } from "./MessageBubbleMetadata";
 
 type MessageRowActionsProps = {
   anchorToBubble: boolean;
+  bubbleAlignment: "left" | "right";
   channelId?: string | null;
   isFollowingThread?: boolean;
   isUnread?: boolean;
@@ -25,10 +27,12 @@ type MessageRowActionsProps = {
   reactionErrorMessage?: string | null;
   reactions: TimelineReaction[];
   showMessageBubbles: boolean;
+  showHoverTimestamp?: boolean;
 };
 
 export function MessageRowActions({
   anchorToBubble,
+  bubbleAlignment,
   channelId,
   isFollowingThread,
   isUnread,
@@ -47,19 +51,33 @@ export function MessageRowActions({
   reactionErrorMessage,
   reactions,
   showMessageBubbles,
+  showHoverTimestamp = false,
 }: MessageRowActionsProps) {
+  const showInlineBubbleActions = showMessageBubbles && anchorToBubble;
+
   return (
     <div
       className={cn(
-        "absolute z-10",
-        showMessageBubbles
-          ? anchorToBubble
-            ? "-right-2 -top-2"
-            : "right-1 top-1"
+        "absolute z-10 flex items-center gap-2",
+        showInlineBubbleActions && "text-foreground",
+        showInlineBubbleActions
+          ? cn(
+              "top-1/2 -translate-y-1/2",
+              bubbleAlignment === "right"
+                ? "right-full mr-3"
+                : "left-full ml-3",
+            )
           : "right-1 top-1",
       )}
     >
+      {showHoverTimestamp && bubbleAlignment === "right" ? (
+        <MessageHoverTimestamp
+          createdAt={message.createdAt}
+          time={message.time}
+        />
+      ) : null}
       <MessageActionBar
+        actionAlign={bubbleAlignment === "left" ? "start" : "end"}
         channelId={channelId}
         isFollowingThread={isFollowingThread}
         isUnread={isUnread}
@@ -75,10 +93,16 @@ export function MessageRowActions({
         onReply={onReply}
         onSendToChannel={onSendToChannel}
         onUnfollowThread={onUnfollowThread}
-        presentation="menu"
+        presentation={showInlineBubbleActions ? "inline" : "menu"}
         reactionErrorMessage={reactionErrorMessage}
         reactions={reactions}
       />
+      {showHoverTimestamp && bubbleAlignment === "left" ? (
+        <MessageHoverTimestamp
+          createdAt={message.createdAt}
+          time={message.time}
+        />
+      ) : null}
     </div>
   );
 }

@@ -245,6 +245,11 @@ export function NewMessageScreen() {
       mentionPubkeys: string[],
       mediaTags?: string[][],
       targetChannelId?: string | null,
+      _threadContext?: {
+        parentEventId: string | null;
+        threadHeadId: string | null;
+      } | null,
+      createdAt?: number,
     ) => {
       const preparedDirectMessage = preparedDirectMessageRef.current;
       const directMessage =
@@ -263,6 +268,7 @@ export function NewMessageScreen() {
           content,
           mentionPubkeys,
           mediaTags,
+          createdAt,
         });
       } catch (error) {
         preparedDirectMessageRef.current = null;

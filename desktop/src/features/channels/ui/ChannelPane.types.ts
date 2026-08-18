@@ -106,6 +106,11 @@ export type ChannelPaneProps = {
     mentionPubkeys: string[],
     mediaTags?: string[][],
     channelId?: string | null,
+    threadContext?: {
+      parentEventId: string | null;
+      threadHeadId: string | null;
+    } | null,
+    createdAt?: number,
   ) => Promise<void>;
   onSendToChannel: (
     message: TimelineMessage,
@@ -128,6 +133,7 @@ export type ChannelPaneProps = {
       parentEventId: string | null;
       threadHeadId: string | null;
     } | null,
+    createdAt?: number,
   ) => Promise<void>;
   onTargetReached?: (messageId: string) => void;
   onToggleReaction?: (

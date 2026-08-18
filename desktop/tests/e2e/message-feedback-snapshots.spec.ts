@@ -34,6 +34,15 @@ async function seedMessageBubbles(page: import("@playwright/test").Page) {
   });
 }
 
+async function seedRightAlignedOwnBubbles(
+  page: import("@playwright/test").Page,
+) {
+  await page.addInitScript(() => {
+    window.localStorage.setItem("buzz.appearance.messageStyle", "bubbles");
+    window.localStorage.setItem("buzz.appearance.ownMessageAlignment", "right");
+  });
+}
+
 test("pending continuation keeps Sending next to its timestamp", async ({
   page,
 }) => {
@@ -118,6 +127,72 @@ test("profile hover uses the channel hover surface", async ({ page }) => {
   await page
     .getByTestId("app-sidebar")
     .screenshot({ path: `${SHOTS}/profile-hover.png` });
+});
+
+test("appearance previews right-aligned own-message bubbles", async ({
+  page,
+}) => {
+  await installMockBridge(page);
+  await page.goto("/");
+  await page.getByTestId("open-settings").click();
+  await page.getByTestId("profile-popover-settings").click();
+  await page.getByTestId("settings-nav-appearance").click();
+
+  const displaySettings = page.getByTestId("conversation-display-group");
+  await expect(displaySettings).toBeVisible();
+  await expect(
+    displaySettings.getByTestId("own-message-alignment-row"),
+  ).toHaveCount(0);
+
+  await displaySettings.getByTestId("message-style-bubbles").click();
+  const alignmentRow = displaySettings.getByTestId("own-message-alignment-row");
+  await expect(alignmentRow).toBeVisible();
+  await alignmentRow.getByTestId("own-message-alignment-right").click();
+
+  const preview = displaySettings.getByTestId("conversation-preview");
+  const otherMessage = preview
+    .getByTestId("conversation-preview-message-surface")
+    .first();
+  const ownMessage = preview.locator('[data-own-message="true"]');
+  const [otherBox, ownBox] = await Promise.all([
+    otherMessage.boundingBox(),
+    ownMessage.boundingBox(),
+  ]);
+  if (!otherBox || !ownBox) {
+    throw new Error("Expected both settings preview messages.");
+  }
+  expect(ownBox.x).toBeGreaterThan(otherBox.x);
+  await expect(
+    preview.getByTestId("conversation-preview-message-header"),
+  ).toHaveCount(1);
+  await expect(
+    otherMessage.getByTestId("conversation-preview-message-header"),
+  ).toHaveCount(0);
+  await expect(
+    ownMessage.getByTestId("conversation-preview-message-header"),
+  ).toHaveCount(0);
+  const otherPreviewSurfaceWrapper = otherMessage.locator("..");
+  const otherPreviewTimestamp = otherPreviewSurfaceWrapper.getByTestId(
+    "conversation-preview-hover-timestamp",
+  );
+  const ownPreviewSurfaceWrapper = ownMessage.locator("..");
+  const ownPreviewTimestamp = ownPreviewSurfaceWrapper.getByTestId(
+    "conversation-preview-hover-timestamp",
+  );
+  await expect(otherPreviewTimestamp).toHaveCSS("opacity", "0");
+  await expect(ownPreviewTimestamp).toHaveCSS("opacity", "0");
+  await otherPreviewSurfaceWrapper.hover();
+  await expect(otherPreviewTimestamp).toHaveCSS("opacity", "1");
+  await ownPreviewSurfaceWrapper.hover();
+  await expect(ownPreviewTimestamp).toHaveCSS("opacity", "1");
+  await expect(
+    alignmentRow.getByText("Show your messages on the right."),
+  ).toBeVisible();
+
+  await waitForAnimations(page);
+  await displaySettings.screenshot({
+    path: `${SHOTS}/right-aligned-own-bubbles-setting.png`,
+  });
 });
 
 test("open messages use the compact ellipsis actions menu", async ({
@@ -244,8 +319,36 @@ test("left-aligned continuation bubbles join on the left edge", async ({
     page.getByTestId("message-row").filter({ hasText: content });
   const firstRow = rowFor(messages.first);
   const middleRow = rowFor(messages.middle);
+  const lastRow = rowFor(messages.last);
   const isolatedRow = rowFor(messages.isolated);
   await expect(isolatedRow).toBeVisible();
+
+  const firstBubble = firstRow.getByTestId("message-body-surface");
+  const lastBubble = lastRow.getByTestId("message-body-surface");
+  await expect(firstRow.getByTestId("message-author")).toHaveCount(1);
+  await expect(firstBubble.getByTestId("message-author")).toHaveCount(0);
+  await expect(middleRow.getByTestId("message-author")).toHaveCount(0);
+  await expect(lastRow.getByTestId("message-author")).toHaveCount(0);
+  await expect(
+    firstRow.locator('[data-testid^="message-avatar-"]'),
+  ).toHaveCount(0);
+  await expect(
+    middleRow.locator('[data-testid^="message-avatar-"]'),
+  ).toHaveCount(0);
+  await expect(
+    lastRow.getByTestId("message-bubble-avatar-anchor"),
+  ).toBeVisible();
+
+  const hoverTimestamp = lastRow.getByTestId("message-hover-timestamp");
+  await expect(hoverTimestamp).toHaveCSS("opacity", "0");
+
+  const dayGroup = page.getByTestId("message-timeline-day-group").first();
+  await expect(dayGroup).toBeVisible();
+  expect(
+    await dayGroup.evaluate(
+      (element) => getComputedStyle(element, "::before").content,
+    ),
+  ).toBe("none");
 
   const radii = async (content: string) =>
     rowFor(content)
@@ -306,53 +409,60 @@ test("left-aligned continuation bubbles join on the left edge", async ({
   expect(mentionStyle.paddingLeft).toBe(0);
   expect(mentionStyle.paddingRight).toBe(0);
 
-  await middleRow.hover();
-  const actionBar = middleRow.locator('[data-testid^="message-action-bar-"]');
+  await lastRow.hover();
+  await expect(hoverTimestamp).toHaveCSS("opacity", "1");
+  const actionBar = lastRow.locator('[data-testid^="message-action-bar-"]');
   await expect(actionBar).toBeVisible();
-  await expect(actionBar).toHaveAttribute("data-presentation", "menu");
-  const [hoverBubble, actionBarBox, rootFontSize] = await Promise.all([
-    middleRow.getByTestId("message-body-surface").boundingBox(),
+  await expect(actionBar).toHaveAttribute("data-presentation", "inline");
+  await expect(
+    actionBar.getByRole("button", { name: "Open reactions" }),
+  ).toBeVisible();
+  await expect(actionBar.getByRole("button", { name: "Reply" })).toBeVisible();
+  await expect(
+    actionBar.getByRole("button", { name: "More actions" }),
+  ).toBeVisible();
+  await expect(actionBar.locator('[aria-label^="React with"]')).toHaveCount(0);
+  const actionButtons = actionBar.getByRole("button");
+  const [firstActionBox, secondActionBox] = await Promise.all([
+    actionButtons.nth(0).boundingBox(),
+    actionButtons.nth(1).boundingBox(),
+  ]);
+  if (!firstActionBox || !secondActionBox) {
+    throw new Error("Expected spaced inline action buttons.");
+  }
+  expect(firstActionBox.width).toBeGreaterThanOrEqual(28);
+  expect(secondActionBox.x - (firstActionBox.x + firstActionBox.width)).toBe(4);
+  const [hoverBubble, actionBarBox] = await Promise.all([
+    lastBubble.boundingBox(),
     actionBar.boundingBox(),
-    page.evaluate(() =>
-      Number.parseFloat(getComputedStyle(document.documentElement).fontSize),
-    ),
   ]);
   if (!hoverBubble || !actionBarBox) {
-    throw new Error("Expected bubble and top-right action geometry.");
+    throw new Error("Expected bubble and inline action geometry.");
   }
+  expect(actionBarBox.x).toBeGreaterThanOrEqual(
+    hoverBubble.x + hoverBubble.width + 7,
+  );
   expect(
     Math.abs(
-      actionBarBox.x +
-        actionBarBox.width -
-        hoverBubble.x -
-        hoverBubble.width -
-        rootFontSize * 0.5,
+      actionBarBox.y +
+        actionBarBox.height / 2 -
+        (hoverBubble.y + hoverBubble.height / 2),
     ),
   ).toBeLessThanOrEqual(1);
-  expect(
-    Math.abs(actionBarBox.y - hoverBubble.y + rootFontSize * 0.5),
-  ).toBeLessThanOrEqual(1);
 
-  await middleRow.getByRole("button", { name: "More actions" }).click();
-  await expect(page.getByRole("menu")).toBeVisible();
-  const combinedTray = page.locator(
-    '[data-testid^="message-quick-reactions-"]',
-  );
-  await expect(combinedTray).toBeVisible();
   await waitForAnimations(page);
-  await page.screenshot({ path: `${SHOTS}/combined-message-actions.png` });
-  await combinedTray.getByRole("button", { name: "Open reactions" }).click();
-  await expect(page.locator("em-emoji-picker")).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(page.locator("em-emoji-picker")).toHaveCount(0);
-  await expect(page.getByRole("menu")).toBeVisible();
-  await combinedTray.getByRole("button", { name: "React with :+1:" }).click();
-  const reactionBar = middleRow.getByTestId("message-reactions");
+  await page.screenshot({ path: `${SHOTS}/inline-message-actions.png` });
+  await actionBar.getByRole("button", { name: "Open reactions" }).click();
+  const picker = page.locator("em-emoji-picker");
+  await expect(picker).toBeVisible();
+  await picker.locator("input[type='search']").fill("thumbs up");
+  await picker.locator("button[aria-label='👍']").first().click();
+  const reactionBar = lastRow.getByTestId("message-reactions");
   await expect(reactionBar).toBeVisible();
   await expect
     .poll(async () => {
       const [bubble, reactions, firstPill] = await Promise.all([
-        middleRow.getByTestId("message-body-surface").boundingBox(),
+        lastBubble.boundingBox(),
         reactionBar.boundingBox(),
         reactionBar.getByRole("button").first().boundingBox(),
       ]);
@@ -377,6 +487,33 @@ test("left-aligned continuation bubbles join on the left edge", async ({
   expect(reactionPillStyle.opacity).toBe(1);
   expect(reactionPillStyle.backgroundColor).not.toBe("rgba(0, 0, 0, 0)");
   expect(reactionPillStyle.color).not.toContain("/");
+
+  const [avatarBox, lastBubbleBox, reactionBarBox] = await Promise.all([
+    lastRow.locator('[data-testid^="message-avatar-"]').boundingBox(),
+    lastBubble.boundingBox(),
+    reactionBar.boundingBox(),
+  ]);
+  if (!avatarBox || !lastBubbleBox || !reactionBarBox) {
+    throw new Error("Expected final avatar, bubble, and reaction geometry.");
+  }
+  expect(
+    Math.abs(
+      avatarBox.y + avatarBox.height - (lastBubbleBox.y + lastBubbleBox.height),
+    ),
+  ).toBeLessThanOrEqual(1);
+  expect(reactionBarBox.y + reactionBarBox.height).toBeGreaterThan(
+    avatarBox.y + avatarBox.height,
+  );
+
+  await actionBar.getByRole("button", { name: "More actions" }).click();
+  await expect(page.getByRole("menu")).toBeVisible();
+  await expect(
+    page.locator('[data-testid^="message-quick-reactions-"]'),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("menuitem", { name: "Reply", exact: true }),
+  ).toHaveCount(0);
+  await page.keyboard.press("Escape");
 
   await page.waitForTimeout(1_200);
   await page.mouse.move(0, 0);
@@ -467,6 +604,248 @@ test("direct messages use the same grouped message bubbles", async ({
 
   await waitForAnimations(page);
   await page.screenshot({ path: `${SHOTS}/direct-message-bubbles.png` });
+});
+
+test("own-message bubbles align right and use the primary token", async ({
+  page,
+}) => {
+  await seedRightAlignedOwnBubbles(page);
+  await installMockBridge(page);
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+  await expect(page.getByTestId("chat-title")).toHaveText("general");
+  await waitForMockLiveSubscription(page, "general");
+
+  const suffix = Date.now();
+  const otherContent = `Left-aligned message ${suffix}. ${"This longer message should use the wider conversation canvas without becoming difficult to scan. ".repeat(18)}`;
+  const ownFirstContent = `My first right-aligned message ${suffix}`;
+  const ownSecondContent = `My continued right-aligned message ${suffix}`;
+  await page.evaluate(
+    ({ alicePubkey, other, ownFirst, ownSecond, timestamp }) => {
+      const emit = window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__;
+      emit?.({
+        channelName: "general",
+        content: other,
+        createdAt: timestamp,
+        pubkey: alicePubkey,
+      });
+      const ownRoot = emit?.({
+        channelName: "general",
+        content: ownFirst,
+        createdAt: timestamp + 1,
+      });
+      if (ownRoot) {
+        emit?.({
+          channelName: "general",
+          content: `A reply to ${ownFirst}`,
+          createdAt: timestamp + 2,
+          parentEventId: ownRoot.id,
+          pubkey: alicePubkey,
+        });
+      }
+      emit?.({
+        channelName: "general",
+        content: ownSecond,
+        createdAt: timestamp + 3,
+      });
+    },
+    {
+      alicePubkey: TEST_IDENTITIES.alice.pubkey,
+      other: otherContent,
+      ownFirst: ownFirstContent,
+      ownSecond: ownSecondContent,
+      timestamp: Math.floor(Date.now() / 1_000),
+    },
+  );
+
+  const rowFor = (content: string) =>
+    page.getByTestId("message-row").filter({ hasText: content });
+  const otherRow = rowFor(otherContent);
+  const ownFirstRow = rowFor(ownFirstContent);
+  const ownSecondRow = rowFor(ownSecondContent);
+  await expect(ownSecondRow).toBeVisible();
+  await expect(ownFirstRow).toHaveClass(/own-message-row/);
+  await expect(otherRow).not.toHaveClass(/own-message-row/);
+
+  const [otherBubbleBox, ownBubbleBox] = await Promise.all([
+    otherRow.getByTestId("message-body-surface").boundingBox(),
+    ownFirstRow.getByTestId("message-body-surface").boundingBox(),
+  ]);
+  if (!otherBubbleBox || !ownBubbleBox) {
+    throw new Error("Expected own-message bubble geometry.");
+  }
+  expect(ownBubbleBox.x).toBeGreaterThan(otherBubbleBox.x);
+  await expect(
+    ownFirstRow.locator('[data-testid^="message-avatar-"]'),
+  ).toHaveCount(0);
+  const ownHoverTimestamp = ownFirstRow.getByTestId("message-hover-timestamp");
+  await expect(ownHoverTimestamp).toHaveCSS("opacity", "0");
+  await ownFirstRow.getByTestId("message-body-surface").hover();
+  await expect(ownHoverTimestamp).toHaveCSS("opacity", "1");
+  const ownActions = ownFirstRow.locator(
+    '[data-testid^="message-action-bar-"]',
+  );
+  await expect(ownActions).toHaveAttribute("data-presentation", "inline");
+  await expect
+    .poll(() =>
+      ownActions.evaluate((actions) =>
+        Number.parseFloat(getComputedStyle(actions).opacity),
+      ),
+    )
+    .toBeGreaterThan(0.8);
+  const [timestampTransition, actionTransition] = await Promise.all([
+    ownHoverTimestamp.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return {
+        delay: style.transitionDelay,
+        duration: style.transitionDuration,
+      };
+    }),
+    ownActions.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return {
+        delay: style.transitionDelay,
+        duration: style.transitionDuration,
+      };
+    }),
+  ]);
+  expect(timestampTransition).toEqual(actionTransition);
+  expect(timestampTransition.delay).toBe("0s");
+  await expect(
+    ownActions.getByRole("button", { name: "Open reactions" }),
+  ).toBeVisible();
+  await expect(ownActions.getByRole("button", { name: "Reply" })).toBeVisible();
+  await expect(
+    ownActions.getByRole("button", { name: "More actions" }),
+  ).toBeVisible();
+  const ownActionsBox = await ownActions.boundingBox();
+  if (!ownActionsBox) {
+    throw new Error("Expected own-message inline action geometry.");
+  }
+  expect(ownActionsBox.x + ownActionsBox.width).toBeLessThanOrEqual(
+    ownBubbleBox.x - 7,
+  );
+  expect(
+    Math.abs(
+      ownActionsBox.y +
+        ownActionsBox.height / 2 -
+        (ownBubbleBox.y + ownBubbleBox.height / 2),
+    ),
+  ).toBeLessThanOrEqual(2);
+
+  const ownBubbleStyle = await ownFirstRow
+    .getByTestId("message-body-surface")
+    .evaluate((bubble) => {
+      const style = getComputedStyle(bubble);
+      const reference = document.createElement("div");
+      reference.className = "bg-primary text-primary-foreground";
+      document.body.append(reference);
+      const referenceStyle = getComputedStyle(reference);
+      const result = {
+        backgroundColor: style.backgroundColor,
+        color: style.color,
+        primaryBackgroundColor: referenceStyle.backgroundColor,
+        primaryForegroundColor: referenceStyle.color,
+      };
+      reference.remove();
+      return result;
+    });
+  expect(ownBubbleStyle.backgroundColor).toBe(
+    ownBubbleStyle.primaryBackgroundColor,
+  );
+  expect(ownBubbleStyle.color).toBe(ownBubbleStyle.primaryForegroundColor);
+  const ownActionColor = await ownActions
+    .getByRole("button", { name: "Open reactions" })
+    .evaluate((button) => getComputedStyle(button).color);
+  expect(ownActionColor).not.toBe(ownBubbleStyle.primaryForegroundColor);
+  await expect(ownFirstRow.locator(".message-markdown")).toHaveCSS(
+    "text-align",
+    "left",
+  );
+  await expect(ownFirstRow.getByTestId("message-author")).toHaveCount(0);
+  const otherBubble = otherRow.getByTestId("message-body-surface");
+  await expect(otherBubble.getByTestId("message-author")).toHaveCount(0);
+  await expect(
+    ownSecondRow.locator('[data-testid^="message-avatar-"]'),
+  ).toHaveCount(0);
+  await expect(otherRow.getByTestId("message-author")).toHaveCount(1);
+  await expect(
+    otherBubble.getByTestId("message-bubble-avatar-anchor"),
+  ).toBeVisible();
+
+  const otherHoverTimestamp = otherRow.getByTestId("message-hover-timestamp");
+  await expect(
+    otherHoverTimestamp.getByTestId("message-timestamp"),
+  ).toHaveCount(1);
+  await expect(otherHoverTimestamp).toHaveCSS("opacity", "0");
+  await otherBubble.hover();
+  await expect(otherHoverTimestamp).toHaveCSS("opacity", "1");
+
+  const [otherAvatarBox, otherAlignedBubbleBox] = await Promise.all([
+    otherRow.locator('[data-testid^="message-avatar-"]').boundingBox(),
+    otherBubble.boundingBox(),
+  ]);
+  if (!otherAvatarBox || !otherAlignedBubbleBox) {
+    throw new Error("Expected incoming avatar and bubble geometry.");
+  }
+  expect(
+    Math.abs(
+      otherAvatarBox.y +
+        otherAvatarBox.height -
+        (otherAlignedBubbleBox.y + otherAlignedBubbleBox.height),
+    ),
+  ).toBeLessThanOrEqual(1);
+
+  const threadSummary = ownFirstRow.getByTestId("message-thread-summary");
+  await expect(threadSummary).toBeVisible();
+  const bubbleForeground = ownBubbleStyle.primaryForegroundColor;
+  await threadSummary.hover();
+  await expect(threadSummary).toHaveCSS("color", bubbleForeground);
+  await expect(
+    threadSummary.getByTestId("message-thread-summary-reply-count"),
+  ).toHaveCSS("color", bubbleForeground);
+  await expect(
+    threadSummary.getByTestId("message-thread-summary-hover-action"),
+  ).toHaveCSS("color", bubbleForeground);
+  await expect(
+    threadSummary.getByTestId("message-thread-summary-surface"),
+  ).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+
+  const contentColumnBox = await otherRow
+    .getByTestId("message-content-column")
+    .boundingBox();
+  if (!contentColumnBox) {
+    throw new Error("Expected own-message content-column geometry.");
+  }
+  expect(otherAlignedBubbleBox.width).toBeGreaterThan(
+    contentColumnBox.width * (2 / 3),
+  );
+  expect(otherAlignedBubbleBox.width).toBeLessThanOrEqual(
+    contentColumnBox.width * 0.72 + 1,
+  );
+
+  const [firstRadii, secondRadii] = await Promise.all([
+    ownFirstRow.getByTestId("message-body-surface").evaluate((bubble) => {
+      const style = getComputedStyle(bubble);
+      return {
+        bottomLeft: Number.parseFloat(style.borderBottomLeftRadius),
+        bottomRight: Number.parseFloat(style.borderBottomRightRadius),
+      };
+    }),
+    ownSecondRow.getByTestId("message-body-surface").evaluate((bubble) => {
+      const style = getComputedStyle(bubble);
+      return {
+        topLeft: Number.parseFloat(style.borderTopLeftRadius),
+        topRight: Number.parseFloat(style.borderTopRightRadius),
+      };
+    }),
+  ]);
+  expect(firstRadii.bottomRight).toBeLessThan(firstRadii.bottomLeft);
+  expect(secondRadii.topRight).toBeLessThan(secondRadii.topLeft);
+
+  await ownFirstRow.getByTestId("message-body-surface").hover();
+  await waitForAnimations(page);
+  await page.screenshot({ path: `${SHOTS}/right-aligned-own-bubbles.png` });
 });
 
 test("standalone huddle cards do not get a second message container", async ({

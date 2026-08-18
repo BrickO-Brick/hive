@@ -95,6 +95,7 @@ export function createOptimisticMessage(
   mediaTags: string[][] = [],
   sentFromThreadRootId: string | null = null,
   sentFromThreadRootExcerpt: string | null = null,
+  createdAt?: number,
 ): RelayEvent {
   const localKey = `optimistic-${crypto.randomUUID()}`;
   const tags: string[][] = [];
@@ -133,7 +134,7 @@ export function createOptimisticMessage(
     id: localKey,
     localKey,
     pubkey: identity.pubkey,
-    created_at: Math.floor(Date.now() / 1_000),
+    created_at: createdAt ?? Math.floor(Date.now() / 1_000),
     kind: KIND_STREAM_MESSAGE,
     tags,
     content,
@@ -452,6 +453,7 @@ export function useSendMessageMutation(
       mediaTags?: string[][];
       sentFromThreadRootId?: string | null;
       sentFromThreadRootExcerpt?: string | null;
+      createdAt?: number;
     },
     MessageQueryContext | undefined
   >({
@@ -464,6 +466,7 @@ export function useSendMessageMutation(
       mediaTags,
       sentFromThreadRootId,
       sentFromThreadRootExcerpt,
+      createdAt,
     }) => {
       // Prefer a channel captured by the caller at compose time. Otherwise,
       // resolve a captured id from the shared channel cache so navigation
@@ -543,6 +546,7 @@ export function useSendMessageMutation(
           mentionTags,
           linkPreviewTags,
           sentFromThreadTag,
+          createdAt,
         );
 
         // Build tags matching relay-emitted shape: h, author p, mention ps, reply es, imeta, emoji.
@@ -604,6 +608,7 @@ export function useSendMessageMutation(
       mediaTags,
       sentFromThreadRootId,
       sentFromThreadRootExcerpt,
+      createdAt,
     }) => {
       // Mirror mutationFn's target resolution so the optimistic message lands
       // in the cache for the same channel as the real send. A caller-supplied
@@ -641,6 +646,7 @@ export function useSendMessageMutation(
         mediaTags ?? [],
         sentFromThreadRootId ?? null,
         sentFromThreadRootExcerpt ?? null,
+        createdAt,
       );
 
       const nextWindow = mergeLiveChannelWindowEvent(

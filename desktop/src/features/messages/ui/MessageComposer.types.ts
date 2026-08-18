@@ -91,6 +91,7 @@ export type MessageComposerProps = {
       parentEventId: string | null;
       threadHeadId: string | null;
     } | null,
+    createdAt?: number,
   ) => Promise<void>;
   placeholder?: string;
   profiles?: UserProfileLookup;

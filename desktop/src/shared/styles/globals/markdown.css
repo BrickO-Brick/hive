@@ -206,6 +206,38 @@
   transform: none;
 }
 
+/* The signed-in account's right-aligned bubble uses the live primary token.
+   Keep inline affordances legible without nesting opaque chips in that fill. */
+.message-markdown.message-bubble-own {
+  color: hsl(var(--primary-foreground));
+}
+
+.message-markdown.message-bubble-own .mention-chip,
+.message-markdown.message-bubble-own .mention-chip-hover:hover,
+.message-markdown.message-bubble-own a:not(.linear-link) {
+  color: hsl(var(--primary-foreground));
+}
+
+.message-markdown.message-bubble-own .inline-code-chip,
+.message-markdown.message-bubble-own :not(pre) > code {
+  background: hsl(var(--primary-foreground) / 0.16);
+  color: hsl(var(--primary-foreground));
+}
+
+.message-markdown.message-bubble-own blockquote {
+  border-color: hsl(var(--primary-foreground) / 0.35);
+  color: hsl(var(--primary-foreground) / 0.82);
+}
+
+.message-markdown.message-bubble-own :is(ol, ul) ::marker,
+.message-markdown.message-bubble-own h6 {
+  color: hsl(var(--primary-foreground) / 0.82);
+}
+
+.message-markdown.message-bubble-own hr {
+  border-color: hsl(var(--primary-foreground) / 0.35);
+}
+
 .message-markdown .agent-mention-at-hidden {
   display: inline-block;
   width: 0;

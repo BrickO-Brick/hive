@@ -227,14 +227,26 @@ function SidebarLoadingRow({
 }) {
   return (
     <SidebarMenuItem>
-      <div className="flex h-8 items-center gap-2 rounded-md px-2">
+      <div
+        className={cn(
+          "flex items-center gap-2 rounded-md",
+          avatar ? "h-8 px-2" : "h-12 p-1 pr-2",
+        )}
+      >
         <Skeleton
           className={cn(
             "shrink-0",
-            avatar ? "h-5 w-5 rounded-full" : "h-4 w-4 rounded-sm",
+            avatar ? "h-5 w-5 rounded-full" : "size-10 rounded-xl",
           )}
         />
-        <Skeleton className={cn("h-4 min-w-0", widthClass)} />
+        {avatar ? (
+          <Skeleton className={cn("h-4 min-w-0", widthClass)} />
+        ) : (
+          <div className="min-w-0 flex-1 space-y-1">
+            <Skeleton className={cn("h-3.5 min-w-0", widthClass)} />
+            <Skeleton className="h-3 w-full max-w-32" />
+          </div>
+        )}
       </div>
     </SidebarMenuItem>
   );

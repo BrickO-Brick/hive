@@ -53,3 +53,13 @@ export function resolveChannelDisplayLabel(
       )
     : channel.name;
 }
+
+export function resolveChannelSidebarSubtitle(channel: Channel): string {
+  const description = channel.description.trim();
+  if (description) return description;
+
+  const typeLabel = channel.channelType === "forum" ? "forum" : "channel";
+  return channel.visibility === "private"
+    ? `Private ${typeLabel}`
+    : `Open ${typeLabel}`;
+}

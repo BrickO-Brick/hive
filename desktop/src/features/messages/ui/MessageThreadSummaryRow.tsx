@@ -253,7 +253,10 @@ export function MessageThreadSummaryRow({
         </div>
         <div className="relative z-10 min-w-0">
           <div>
-            <span className="font-medium transition-colors group-hover:text-foreground">
+            <span
+              className="font-medium transition-colors group-hover:text-foreground"
+              data-testid="message-thread-summary-reply-count"
+            >
               {summary.replyCount} {replyLabel}
             </span>
             {unreadCount != null && unreadCount > 0 ? (
@@ -263,7 +266,10 @@ export function MessageThreadSummaryRow({
             ) : null}
             {summary.lastReplyAt ? (
               <>
-                <span className="mx-1 font-normal text-muted-foreground/50">
+                <span
+                  className="mx-1 font-normal text-muted-foreground/50"
+                  data-testid="message-thread-summary-separator"
+                >
                   ·
                 </span>
                 <span className="inline-grid font-normal text-muted-foreground/70">

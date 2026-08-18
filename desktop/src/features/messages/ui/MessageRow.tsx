@@ -34,6 +34,7 @@ import {
 import { getConfigNudgeAuthorPubkey } from "@/features/messages/ui/configNudgeAuthPubkey";
 import { cn } from "@/shared/lib/cn";
 import { useMessageStyle } from "@/shared/lib/messageStylePreference";
+import { useOwnMessageAlignment } from "@/shared/lib/ownMessageAlignmentPreference";
 import { normalizePubkey } from "@/shared/lib/pubkey";
 import { UserAvatar } from "@/shared/ui/UserAvatar";
 import { useChannelNavigation } from "@/shared/context/ChannelNavigationContext";
@@ -51,6 +52,13 @@ import { hasLinkPreviewSuppression } from "@/features/messages/lib/formatTimelin
 import { toast } from "sonner";
 import { MessageAgentOwner } from "./MessageAgentOwner";
 import { MessageAuthorText, MessageHeaderRow } from "./MessageHeader";
+import {
+  MessageAvatarPosition,
+  MessageAvatarProfile,
+  MessageBubbleStatusMetadata,
+  MessageHoverTimestampGutter,
+  MessageStatusMetadata,
+} from "./MessageBubbleMetadata";
 import { MessageTimestamp } from "./MessageTimestamp";
 import { MessageRowActions } from "./MessageRowActions";
 import type {
@@ -61,15 +69,16 @@ import {
   getMessageBubbleBottomPaddingClass,
   getMessageBubbleLayout,
   MESSAGE_BUBBLE_CONTENT_PADDING_CLASSES,
+  MESSAGE_BUBBLE_MAX_WIDTH_CLASSES,
 } from "./messageBubbleLayout";
 import { SentFromThreadLine } from "./SentFromThreadLine";
 import { WaveMessageAttachment } from "./WaveMessageAttachment";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 
 const DiffMessage = React.lazy(() => import("./DiffMessage"));
 const DiffMessageExpanded = React.lazy(() => import("./DiffMessageExpanded"));
 const MESSAGE_BODY_SURFACE_CLASSES = cn(
-  "w-fit max-w-full bg-muted/50",
+  "w-fit bg-muted/50",
+  MESSAGE_BUBBLE_MAX_WIDTH_CLASSES,
   MESSAGE_BUBBLE_CONTENT_PADDING_CLASSES,
 );
 
@@ -121,6 +130,7 @@ export const MessageRow = React.memo(
     // it into a grouped message row with no header.
     const isDisplayedAsContinuation = isContinuation && !message.pending;
     const showMessageBubbles = useMessageStyle() === "bubbles";
+    const ownMessageAlignment = useOwnMessageAlignment();
     const [expandedDiffId, setExpandedDiffId] = React.useState<string | null>(
       null,
     );
@@ -258,6 +268,12 @@ export const MessageRow = React.memo(
       message.kind === KIND_HUDDLE_STARTED ||
       message.kind === KIND_STREAM_MESSAGE_DIFF ||
       waveMessage !== null;
+    const useGroupedBubbleLayout =
+      showMessageBubbles && !hasStandaloneCardSurface;
+    const alignOwnMessageRight =
+      useGroupedBubbleLayout &&
+      ownMessageAlignment === "right" &&
+      message.accent;
     const bodyOffsetClass = emojiOnly ? "mt-1" : "mt-conversation-body";
 
     const { nonDmChannelNames: channelNames } = useChannelNavigation();
@@ -378,8 +394,9 @@ export const MessageRow = React.memo(
             <Markdown
               channelNames={channelNames}
               className={cn(
-                "max-w-full text-message",
+                "max-w-full text-left text-message",
                 showMessageBubbles && "message-bubble-markdown",
+                alignOwnMessageRight && "message-bubble-own",
                 emojiOnly &&
                   "text-4xl leading-tight [&_p]:leading-tight [&_img[data-custom-emoji]]:h-[1.45em] [&_img[data-custom-emoji]]:align-middle [&_button:has(img[data-custom-emoji])]:align-middle",
               )}
@@ -429,8 +446,6 @@ export const MessageRow = React.memo(
 
     const isThreadReplyLayout = layoutVariant === "thread-reply";
     const guideBleedRem = isThreadReplyLayout ? 0.25 : 0;
-    const avatarButtonRadiusClass = "rounded-full";
-
     const showRespondToIndicator =
       message.respondTo === "anyone" || message.respondTo === "allowlist";
 
@@ -475,45 +490,38 @@ export const MessageRow = React.memo(
       </div>
     );
 
-    const continuationTimestampGutter = (
-      <div
-        aria-hidden
-        className={cn(
-          "relative flex w-9 shrink-0 justify-end items-start pt-0.5",
-          isThreadReplyLayout ? "self-start" : "self-stretch",
-        )}
-      >
-        <MessageTimestamp
-          className="opacity-0 transition-opacity group-hover/message:opacity-100 group-focus-within/message:opacity-100"
-          createdAt={message.createdAt}
-          hideDayPeriod
-          time={message.time}
-        />
-      </div>
-    );
-
-    const avatarGutterNode = isDisplayedAsContinuation ? (
-      continuationTimestampGutter
-    ) : message.pubkey ? (
-      <UserProfilePopover
+    const profileAvatarNode = (
+      <MessageAvatarProfile
+        author={message.author}
         pubkey={message.pubkey}
         role={profilePopoverRole}
-        botIdenticonValue={message.author}
       >
-        <button
-          className={cn(
-            "flex shrink-0 items-start focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
-            avatarButtonRadiusClass,
-          )}
-          type="button"
-        >
-          {avatarNode}
-        </button>
-      </UserProfilePopover>
-    ) : (
-      <div className="flex shrink-0 items-start">{avatarNode}</div>
+        {avatarNode}
+      </MessageAvatarProfile>
     );
-
+    const visibleAvatarGutterNode = (
+      <MessageAvatarPosition>{profileAvatarNode}</MessageAvatarPosition>
+    );
+    const bubbleAvatarNode =
+      useGroupedBubbleLayout &&
+      !alignOwnMessageRight &&
+      !isFollowedByContinuation ? (
+        <MessageAvatarPosition anchorToBubble>
+          {profileAvatarNode}
+        </MessageAvatarPosition>
+      ) : null;
+    const avatarGutterNode =
+      alignOwnMessageRight ? null : useGroupedBubbleLayout ? (
+        <div aria-hidden className="w-9 shrink-0" />
+      ) : isDisplayedAsContinuation ? (
+        <MessageHoverTimestampGutter
+          createdAt={message.createdAt}
+          isThreadReplyLayout={isThreadReplyLayout}
+          time={message.time}
+        />
+      ) : (
+        visibleAvatarGutterNode
+      );
     const authorNode = message.pubkey ? (
       <MessageAuthorText hoverUnderline>{message.author}</MessageAuthorText>
     ) : (
@@ -525,13 +533,13 @@ export const MessageRow = React.memo(
         ownerPubkey={message.ownerPubkey}
       />
     ) : null;
-
     const anchorActionBarToBubble =
       showMessageBubbles && !hasStandaloneCardSurface;
 
     const actionBarNode = (
       <MessageRowActions
         anchorToBubble={anchorActionBarToBubble}
+        bubbleAlignment={alignOwnMessageRight ? "right" : "left"}
         channelId={channelId}
         isFollowingThread={isFollowingThread}
         isUnread={isUnread}
@@ -556,82 +564,70 @@ export const MessageRow = React.memo(
         reactionErrorMessage={reactionErrorMessage}
         reactions={reactions}
         showMessageBubbles={showMessageBubbles}
+        showHoverTimestamp={useGroupedBubbleLayout}
       />
     );
-
-    const statusMetadataNode =
-      message.pending || message.edited ? (
-        <>
-          {message.pending ? (
-            <p
-              className="font-normal text-muted-foreground/70"
-              data-testid="message-send-status"
-            >
-              Sending…
-            </p>
-          ) : null}
-          {message.edited ? (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <p className="text-muted-foreground/70">(edited)</p>
-              </TooltipTrigger>
-              <TooltipContent>This message has been edited</TooltipContent>
-            </Tooltip>
-          ) : null}
-        </>
-      ) : null;
-
+    const hasStatusMetadata = message.pending || message.edited;
+    const statusMetadataNode = (
+      <MessageStatusMetadata
+        edited={message.edited}
+        pending={message.pending}
+      />
+    );
     const inlineMetadataNode = (
       <div className="flex shrink-0 items-baseline gap-2 text-xs">
         <MessageTimestamp createdAt={message.createdAt} time={message.time} />
         {statusMetadataNode}
       </div>
     );
-
     const continuationMetadataNode =
-      isDisplayedAsContinuation && statusMetadataNode ? (
+      !useGroupedBubbleLayout &&
+      (isDisplayedAsContinuation || alignOwnMessageRight) &&
+      hasStatusMetadata ? (
         <div className="mt-0.5 flex items-baseline gap-2 text-xs">
           {statusMetadataNode}
         </div>
       ) : null;
-
-    const headerNode = isDisplayedAsContinuation ? null : (
-      <MessageHeaderRow>
-        {message.pubkey ? (
-          <UserProfilePopover
-            pubkey={message.pubkey}
-            role={profilePopoverRole}
-            botIdenticonValue={message.author}
-          >
-            <button
-              className="truncate rounded leading-message-author focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
-              type="button"
+    const headerNode =
+      isDisplayedAsContinuation ||
+      (useGroupedBubbleLayout && alignOwnMessageRight) ? null : (
+        <MessageHeaderRow>
+          {message.pubkey ? (
+            <UserProfilePopover
+              pubkey={message.pubkey}
+              role={profilePopoverRole}
+              botIdenticonValue={message.author}
             >
-              {authorNode}
-            </button>
-          </UserProfilePopover>
-        ) : (
-          authorNode
-        )}
-        {agentOwnerNode}
-        {inlineMetadataNode}
-        {message.personaDisplayName &&
-        message.personaDisplayName !== message.author ? (
-          <span className="text-xs text-muted-foreground">
-            {message.personaDisplayName}
-          </span>
-        ) : null}
-      </MessageHeaderRow>
-    );
-    const bodyContainerClass = isDisplayedAsContinuation
-      ? "mt-0"
-      : bodyOffsetClass;
+              <button
+                className="truncate rounded leading-message-author focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+                type="button"
+              >
+                {authorNode}
+              </button>
+            </UserProfilePopover>
+          ) : (
+            authorNode
+          )}
+          {agentOwnerNode}
+          {message.personaDisplayName &&
+          message.personaDisplayName !== message.author ? (
+            <span className="text-xs text-muted-foreground">
+              {message.personaDisplayName}
+            </span>
+          ) : null}
+          {useGroupedBubbleLayout ? null : inlineMetadataNode}
+        </MessageHeaderRow>
+      );
+    const bodyContainerClass =
+      isDisplayedAsContinuation || useGroupedBubbleLayout
+        ? "mt-0"
+        : bodyOffsetClass;
     const { radiusClass, rowSpacingClass: bubbleRowSpacingClass } =
       getMessageBubbleLayout(
         isDisplayedAsContinuation,
         isFollowedByContinuation,
+        alignOwnMessageRight ? "right" : "left",
       );
-
     const coreMessageBodyNode = (
       <>
         <SentFromThreadLine channelId={channelId} tags={message.tags} />
@@ -639,6 +635,14 @@ export const MessageRow = React.memo(
         {continuationMetadataNode}
       </>
     );
+    const bubbleStatusNode =
+      useGroupedBubbleLayout && hasStatusMetadata ? (
+        <MessageBubbleStatusMetadata
+          edited={message.edited}
+          isOwn={alignOwnMessageRight}
+          pending={message.pending}
+        />
+      ) : null;
     const expandedDiffNode =
       expandedDiffId === message.id ? (
         <React.Suspense
@@ -690,7 +694,12 @@ export const MessageRow = React.memo(
       </div>
     );
     const bubbleMessageBodyNode = (
-      <div className={cn(bodyContainerClass, "w-fit max-w-full")}>
+      <div
+        className={cn(
+          bodyContainerClass,
+          hasStandaloneCardSurface ? "w-fit max-w-full" : "w-full max-w-full",
+        )}
+      >
         {hasStandaloneCardSurface ? (
           <div data-testid="message-standalone-card-content">
             {coreMessageBodyNode}
@@ -707,7 +716,9 @@ export const MessageRow = React.memo(
             )}
             data-testid="message-body-surface"
           >
+            {bubbleAvatarNode}
             {anchorActionBarToBubble ? actionBarNode : null}
+            {bubbleStatusNode}
             {coreMessageBodyNode}
             {expandedDiffNode}
             {bodyFooter}
@@ -881,7 +892,7 @@ export const MessageRow = React.memo(
 
         <article
           className={cn(
-            "group/message relative z-10 rounded-2xl transition-colors",
+            "group/message message-hover-region relative z-10 rounded-2xl transition-colors",
             playEntrance && "motion-enter-conversation",
             showMessageBubbles ? bubbleRowSpacingClass : "py-conversation-row",
             showMessageBubbles
@@ -894,6 +905,7 @@ export const MessageRow = React.memo(
                   ? "mx-1 px-2"
                   : "px-2",
             "flex gap-2.5",
+            alignOwnMessageRight && "own-message-row flex-row-reverse",
             isDisplayedAsContinuation ? "items-center" : "items-start",
             hasActiveReminder ? "bg-blue-500/10" : "",
             highlighted

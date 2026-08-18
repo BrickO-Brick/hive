@@ -5690,7 +5690,12 @@ async function relayQuery(
 
 async function submitSignedEvent(
   config: E2eConfig | undefined,
-  template: { kind: number; content: string; tags: string[][] },
+  template: {
+    kind: number;
+    content: string;
+    createdAt?: number;
+    tags: string[][];
+  },
 ): Promise<{ event_id: string; accepted: boolean; message: string }> {
   const identity = getRelayIdentity(config);
   const signed = await signWithIdentity(identity, template);
@@ -9067,6 +9072,7 @@ async function handleSendChannelMessage(
     linkPreviewTags?: string[][] | null;
     sentFromThreadTag?: string[] | null;
     suppressLinkPreviews?: boolean;
+    createdAt?: number | null;
   },
   config: E2eConfig | undefined,
 ): Promise<RawSendChannelMessageResponse> {
@@ -9077,6 +9083,7 @@ async function handleSendChannelMessage(
       window.setTimeout(resolve, sendMessageDelayMs),
     );
   }
+  const createdAt = args.createdAt ?? Math.floor(Date.now() / 1000);
 
   // NIP-92 imeta attachments. The real relay echoes these back on the stored
   // event; mirror that here so attachment renderers (FileCard, images, video)
@@ -9130,18 +9137,23 @@ async function handleSendChannelMessage(
   ];
   const identity = getIdentity(config);
   if (!identity) {
-    const createdAt = Math.floor(Date.now() / 1000);
     const mockPubkey = getMockMemberPubkey(config);
 
     if (!args.parentEventId) {
-      const event = createMockEvent(kind, args.content, [
-        ...buildTopLevelMessageTags(
-          args.channelId,
-          args.mentionPubkeys,
-          mockPubkey,
-        ),
-        ...extraTags,
-      ]);
+      const event = createMockEvent(
+        kind,
+        args.content,
+        [
+          ...buildTopLevelMessageTags(
+            args.channelId,
+            args.mentionPubkeys,
+            mockPubkey,
+          ),
+          ...extraTags,
+        ],
+        mockPubkey,
+        createdAt,
+      );
       recordMockMessage(args.channelId, event);
       emitOrDeferMockSendMessageLiveEcho(args.channelId, event, config);
 
@@ -9235,6 +9247,7 @@ async function handleSendChannelMessage(
   const result = await submitSignedEvent(config, {
     kind,
     content: args.content.trim(),
+    createdAt,
     tags: [...tags, ...extraTags],
   });
 
@@ -9243,7 +9256,7 @@ async function handleSendChannelMessage(
     parent_event_id: args.parentEventId ?? null,
     root_event_id: args.parentEventId ?? null,
     depth: args.parentEventId ? 1 : 0,
-    created_at: Math.floor(Date.now() / 1000),
+    created_at: createdAt,
   };
 }
 

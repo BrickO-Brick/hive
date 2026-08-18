@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 import { installMockBridge } from "../helpers/bridge";
-import { selectMessageQuickReaction } from "../helpers/messageActions";
+import { openMessageReactionPicker } from "../helpers/messageActions";
 import { waitForAnimations } from "../helpers/animations";
 
 // Reaction ordering end-to-end guard.
@@ -92,13 +92,16 @@ async function getReactionBubbleGeometry(
   };
 }
 
-/** Click a quick-reaction tray button by emoji (hover → click tray button). */
-async function addQuickReaction(
+/** Add a reaction through the bubble's direct reaction button. */
+async function addReaction(
   row: import("@playwright/test").Locator,
   emoji: string,
-  label: string,
+  search: string,
 ) {
-  await selectMessageQuickReaction(row, `React with ${label}`);
+  await openMessageReactionPicker(row);
+  const picker = row.page().locator("em-emoji-picker");
+  await picker.locator("input[type='search']").fill(search);
+  await picker.locator(`button[aria-label='${emoji}']`).first().click();
   // Wait for the optimistic pill to appear before continuing.
   await expect(
     row
@@ -125,11 +128,11 @@ test("reaction pills render left-to-right in the order reactions were added", as
   // Add three reactions in order: 👍 → ❤️ → 😂.
   // Wait >1 s between each so mock bridge timestamps differ by at least 1 Unix
   // second — the formatter sorts by created_at, so distinct seconds matter.
-  await addQuickReaction(row, "👍", ":+1:");
+  await addReaction(row, "👍", "thumbs up");
   await page.waitForTimeout(1100);
-  await addQuickReaction(row, "❤️", ":heart:");
+  await addReaction(row, "❤️", "red heart");
   await page.waitForTimeout(1100);
-  await addQuickReaction(row, "😂", ":joy:");
+  await addReaction(row, "😂", "face with tears of joy");
 
   const pills = await getPillOrder(row);
   expect(pills).toEqual(["👍", "❤️", "😂"]);
@@ -175,9 +178,9 @@ test("a later emoji that accrues more reactors stays to the right of an earlier 
   // since the key invariant is positional stability: even if ❤️ had higher
   // count it must stay right of 👍.
   // We use 🎉 (added second) and verify it stays right of 👍 (added first).
-  await addQuickReaction(row, "👍", ":+1:");
+  await addReaction(row, "👍", "thumbs up");
   await page.waitForTimeout(1100);
-  await addQuickReaction(row, "🎉", ":tada:");
+  await addReaction(row, "🎉", "party popper");
 
   // Both pills present in chronological order: 👍 left, 🎉 right.
   const afterAdd = await getPillOrder(row);

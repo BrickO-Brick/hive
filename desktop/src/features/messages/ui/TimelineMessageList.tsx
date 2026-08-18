@@ -25,6 +25,7 @@ import type { TimelineMessage } from "@/features/messages/types";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import type { ChannelType } from "@/shared/api/types";
 import { cn } from "@/shared/lib/cn";
+import { useMessageStyle } from "@/shared/lib/messageStylePreference";
 import { channelChrome } from "@/shared/layout/chromeLayout";
 import { DayDivider } from "./DayDivider";
 import { MessageRowItem, SystemRow } from "./TimelineMessageRow";
@@ -168,6 +169,7 @@ export const TimelineMessageList = React.memo(function TimelineMessageList({
   onVirtualizerRangeChanged,
   onVirtualizerScrollerChange,
 }: TimelineMessageListProps) {
+  const showMessageBubbles = useMessageStyle() === "bubbles";
   const entries = React.useMemo(
     () =>
       mainEntries ??
@@ -329,6 +331,7 @@ export const TimelineMessageList = React.memo(function TimelineMessageList({
         onVirtualizerRangeChanged={onVirtualizerRangeChanged}
         onVirtualizerScrollerChange={onVirtualizerScrollerChange}
         renderItem={renderItem}
+        showMessageBubbles={showMessageBubbles}
       />
     );
   }
@@ -341,6 +344,7 @@ export const TimelineMessageList = React.memo(function TimelineMessageList({
             "relative flex flex-col",
             !hideDayDividers &&
               group.headingTimestamp !== null &&
+              !showMessageBubbles &&
               "before:absolute before:inset-x-0 before:top-1/2 before:h-px before:-translate-y-1/2 before:bg-border/35 before:content-['']",
           )}
           data-day-label={
@@ -385,6 +389,7 @@ type VirtualizedTimelineRowsProps = {
   onVirtualizerRangeChanged?: () => void;
   onVirtualizerScrollerChange?: (element: HTMLDivElement | null) => void;
   renderItem: (item: TimelineNonDayItem) => React.ReactNode;
+  showMessageBubbles: boolean;
 };
 
 type VirtualizedTimelineItemShellProps = {
@@ -425,6 +430,7 @@ function VirtualizedTimelineRows({
   onVirtualizerRangeChanged,
   onVirtualizerScrollerChange,
   renderItem,
+  showMessageBubbles,
 }: VirtualizedTimelineRowsProps) {
   const listRef = React.useRef<VListHandle>(null);
   const hostRef = React.useRef<HTMLDivElement>(null);
@@ -765,7 +771,11 @@ function VirtualizedTimelineRows({
               const dayLabel = formatDayHeading(item.headingTimestamp);
               return (
                 <div
-                  className="relative flex flex-col before:absolute before:inset-x-0 before:top-1/2 before:h-px before:-translate-y-1/2 before:bg-border/35 before:content-['']"
+                  className={cn(
+                    "relative flex flex-col",
+                    !showMessageBubbles &&
+                      "before:absolute before:inset-x-0 before:top-1/2 before:h-px before:-translate-y-1/2 before:bg-border/35 before:content-['']",
+                  )}
                   data-day-label={dayLabel}
                   data-testid="message-timeline-day-group"
                   key={virtualizedItemKey(item)}

@@ -24,11 +24,8 @@ import {
 } from "@/features/messages/lib/backgroundMediaUploadStore";
 import type { UseChannelLinksResult } from "@/features/messages/lib/useChannelLinks";
 import type { UseEmojiAutocompleteResult } from "@/features/messages/lib/useEmojiAutocomplete";
-import {
-  buildOutgoingMessage,
-  type ImetaMedia,
-  mergeOutgoingTags,
-} from "@/features/messages/lib/imetaMediaMarkdown";
+import type { ImetaMedia } from "@/features/messages/lib/imetaMediaMarkdown";
+import { buildOutgoingMessageParts } from "@/features/messages/lib/outgoingMessageParts";
 import type { UseMentionsResult } from "@/features/messages/lib/useMentions";
 import type { UseRichTextEditorResult } from "@/features/messages/lib/useRichTextEditor";
 import type { UseDraftsResult } from "@/features/messages/lib/useDrafts";
@@ -69,6 +66,7 @@ type UseMentionSendFlowOptions = {
         parentEventId: string | null;
         threadHeadId: string | null;
       } | null,
+      createdAt?: number,
     ) => Promise<void>
   >;
   richText: Pick<
@@ -488,7 +486,8 @@ export function useMentionSendFlow({
           );
 
         const send = onSendRef.current;
-        const persistCanceledDraft = () => {
+        let mediaMessageSent = false;
+        const persistCanceledDraft = (withoutMedia = false) => {
           if (!draft.recoveryDraftKey) return;
           const existing = drafts.loadDraft(draft.recoveryDraftKey);
           if (
@@ -507,13 +506,13 @@ export function useMentionSendFlow({
             draft.recoveryDraftKey,
             draft.savedContent,
             draft.capturedChannelId ?? draft.recoveryDraftKey,
-            draft.savedImeta,
-            [...draft.savedSpoileredAttachmentUrls],
+            withoutMedia ? [] : draft.savedImeta,
+            withoutMedia ? [] : [...draft.savedSpoileredAttachmentUrls],
             draft.savedMentionRefs,
           );
         };
-        const restoreComposerAfterFailure = () => {
-          persistCanceledDraft();
+        const restoreComposerAfterFailure = (withoutMedia = false) => {
+          persistCanceledDraft(withoutMedia);
           const canRestoreCurrentComposer =
             isMountedRef.current &&
             (draft.capturedChannelId === channelIdRef.current ||
@@ -523,7 +522,7 @@ export function useMentionSendFlow({
           if (!canRestoreCurrentComposer && draft.recoveryDraftKey) {
             saveQueuedAttachmentsForDraft(
               draft.recoveryDraftKey,
-              draft.queuedAttachments,
+              withoutMedia ? [] : draft.queuedAttachments,
             );
           }
           if (!canRestoreCurrentComposer) {
@@ -532,21 +531,23 @@ export function useMentionSendFlow({
           setContent(draft.savedContent);
           contentRef.current = draft.savedContent;
           richText.setContent(draft.savedContent);
-          setPendingImeta(draft.savedImeta);
-          restoreQueuedAttachments(draft.queuedAttachments);
+          setPendingImeta(withoutMedia ? [] : draft.savedImeta);
+          restoreQueuedAttachments(withoutMedia ? [] : draft.queuedAttachments);
           mentions.restoreDraftMentionRefs(draft.savedMentionRefs);
           setSpoileredAttachmentUrls?.(
-            new Set(draft.savedSpoileredAttachmentUrls),
+            withoutMedia
+              ? new Set()
+              : new Set(draft.savedSpoileredAttachmentUrls),
           );
         };
         const finishSend = async (
           uploaded: ImetaMedia[],
           signal?: AbortSignal,
         ) => {
-          const { content: finalContent, mediaTags } = buildOutgoingMessage(
-            draft.trimmed,
-            [...draft.savedImeta, ...uploaded],
-            new Set([
+          const parts = buildOutgoingMessageParts({
+            body: draft.trimmed,
+            media: [...draft.savedImeta, ...uploaded],
+            spoileredMediaUrls: new Set([
               ...draft.savedSpoileredAttachmentUrls,
               ...draft.queuedAttachments.flatMap((attachment, index) =>
                 attachment.spoilered && uploaded[index]
@@ -554,24 +555,25 @@ export function useMentionSendFlow({
                   : [],
               ),
             ]),
-          );
-          const finalOutgoingTags = mergeOutgoingTags(
-            mediaTags,
-            outgoingTags ?? [],
-          );
+            textTags: outgoingTags,
+          });
           if (signal?.aborted) return;
-          await send(
-            finalContent,
-            mentionPubkeys,
-            finalOutgoingTags,
-            sendChannelId,
-            draft.capturedThreadContext,
-          );
+          for (const part of parts) {
+            await send(
+              part.content,
+              part.kind === "text" ? mentionPubkeys : [],
+              part.outgoingTags,
+              sendChannelId,
+              draft.capturedThreadContext,
+              part.createdAt,
+            );
+            if (part.kind === "media") mediaMessageSent = true;
+            if (signal?.aborted) return;
+          }
           if (signal?.aborted) return;
           if (effectiveExplicitAgentPubkeys.length > 0) {
-            // Promote only explicitly authored agents that remained effective
-            // for this successful send. "Send without inviting" removes its
-            // excluded recipients here as well as from event routing.
+            // Promote only explicitly authored agents that remained effective.
+            // "Send without inviting" removes excluded recipients here too.
             onSuccessfulExplicitAgentAudience?.({
               channelId: sendChannelId ?? draft.capturedChannelId ?? "",
               expectedGeneration: draft.audienceGeneration,
@@ -595,7 +597,7 @@ export function useMentionSendFlow({
               try {
                 await finishSend(uploaded, signal);
               } catch {
-                restoreComposerAfterFailure();
+                restoreComposerAfterFailure(mediaMessageSent);
               }
             },
             onError: (error) => {
@@ -605,7 +607,7 @@ export function useMentionSendFlow({
               );
             },
             onCancel: () => {
-              restoreComposerAfterFailure();
+              restoreComposerAfterFailure(mediaMessageSent);
             },
           });
           if (!uploadStarted) {
@@ -629,7 +631,7 @@ export function useMentionSendFlow({
           try {
             await finishSend([]);
           } catch {
-            restoreComposerAfterFailure();
+            restoreComposerAfterFailure(mediaMessageSent);
           }
         }
       } finally {

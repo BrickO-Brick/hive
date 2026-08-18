@@ -22,6 +22,77 @@
     content-visibility: visible;
   }
 
+  .own-message-row [data-testid="message-content-column"] {
+    align-items: flex-end;
+  }
+
+  .own-message-row [data-testid="message-body-surface"] {
+    background: hsl(var(--primary));
+    color: hsl(var(--primary-foreground));
+    margin-left: auto;
+  }
+
+  .own-message-row [data-testid="message-reactions"] {
+    justify-content: flex-end;
+  }
+
+  .own-message-row [data-testid="message-thread-summary"] {
+    color: hsl(var(--primary-foreground) / 0.78);
+  }
+
+  .own-message-row [data-testid="message-thread-summary-separator"] {
+    color: hsl(var(--primary-foreground) / 0.42);
+  }
+
+  .own-message-row [data-testid="message-thread-summary-last-reply"] {
+    color: hsl(var(--primary-foreground) / 0.64);
+  }
+
+  .own-message-row [data-testid="message-thread-summary-hover-action"] {
+    color: hsl(var(--primary-foreground));
+  }
+
+  .own-message-row
+    [data-testid="message-thread-summary"]:is(:hover, :focus-visible) {
+    color: hsl(var(--primary-foreground));
+    opacity: 1;
+  }
+
+  .own-message-row
+    [data-testid="message-thread-summary"]:is(:hover, :focus-visible)
+    [data-testid="message-thread-summary-reply-count"] {
+    color: hsl(var(--primary-foreground));
+  }
+
+  .own-message-row
+    [data-testid="message-thread-summary"]:is(:hover, :focus-visible)
+    [data-testid="message-thread-summary-surface"] {
+    --tw-ring-color: hsl(var(--primary-foreground) / 0.28);
+
+    background: hsl(var(--primary-foreground) / 0.12);
+  }
+
+  .message-hover-timestamp {
+    opacity: 0;
+    transition: opacity 150ms ease-out;
+  }
+
+  .message-hover-region:focus-within .message-hover-timestamp {
+    opacity: 1;
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .message-hover-region:hover .message-hover-timestamp {
+      opacity: 1;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .message-hover-timestamp {
+      transition-duration: 0ms;
+    }
+  }
+
   .content-visibility-auto-interactive {
     content-visibility: auto;
     contain-intrinsic-size: auto 200px;
@@ -31,10 +102,10 @@
     content-visibility: visible;
   }
 
-  /* Compact variant for short single-line rows (sidebar channels, etc). */
+  /* Compact variant for sidebar channel rows. */
   .content-visibility-auto-row {
     content-visibility: auto;
-    contain-intrinsic-size: auto 2rem;
+    contain-intrinsic-size: auto 3rem;
   }
 
   .buzz-huddle-tooltip {

@@ -544,6 +544,7 @@ export async function sendChannelMessage(
   mentionTags?: string[][],
   linkPreviewTags?: string[][],
   sentFromThreadTag?: string[],
+  createdAt?: number,
 ): Promise<SendChannelMessageResult> {
   const response = await invokeTauri<RawSendChannelMessageResult>(
     "send_channel_message",
@@ -558,6 +559,7 @@ export async function sendChannelMessage(
       sentFromThreadTag: sentFromThreadTag ?? null,
       mentionPubkeys: mentionPubkeys ?? null,
       kind: kind ?? null,
+      createdAt: createdAt ?? null,
     },
   );
   return {
@@ -580,7 +582,6 @@ export type BlobDescriptor = {
   thumb?: string;
   duration?: number;
   image?: string;
-  /** Original filename captured client-side. */
   filename?: string;
 };
 
@@ -601,7 +602,6 @@ export async function pickAndUploadMedia(
 export async function uploadMediaBytes(
   data: number[],
   filename?: string,
-  /** Correlation id for `media-upload-progress` events from the Rust side. */
   progressId?: string,
 ): Promise<BlobDescriptor> {
   return invokeTauri<BlobDescriptor>("upload_media_bytes", {

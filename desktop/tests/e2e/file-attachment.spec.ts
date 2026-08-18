@@ -237,6 +237,87 @@ test("upload a file and see a FileCard in the timeline", async ({ page }) => {
     .toContain("download_file");
 });
 
+test("sends uploaded media before accompanying text as separate messages", async ({
+  page,
+}) => {
+  const text = `Notes for the attachment ${Date.now()}`;
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+  await choosePhoto(page);
+  await expect(page.getByTestId("send-message")).toBeEnabled({
+    timeout: 5_000,
+  });
+  await page.getByTestId("message-input").fill(text);
+  await page.getByTestId("send-message").click();
+
+  const rows = page.getByTestId("message-row");
+  const mediaRow = rows.filter({ has: page.getByTestId("file-card") }).last();
+  const textRow = rows.filter({ hasText: text });
+  await expect(mediaRow).toBeVisible();
+  await expect(textRow).toBeVisible();
+  await expect(mediaRow).not.toContainText(text);
+  await expect(textRow.getByTestId("file-card")).toHaveCount(0);
+
+  const [mediaBox, textBox] = await Promise.all([
+    mediaRow.boundingBox(),
+    textRow.boundingBox(),
+  ]);
+  if (!mediaBox || !textBox) {
+    throw new Error("Expected separate media and text message geometry.");
+  }
+  expect(mediaBox.y).toBeLessThan(textBox.y);
+
+  const mediaSend = await page.evaluate(() =>
+    (window.__BUZZ_E2E_COMMAND_PAYLOADS__ ?? []).find(
+      (entry) => entry.command === "send_channel_message",
+    ),
+  );
+  const payload = mediaSend?.payload as
+    | { content?: string; mediaTags?: string[][]; mentionPubkeys?: string[] }
+    | undefined;
+  expect(payload?.content).not.toContain(text);
+  expect(payload?.mediaTags).toHaveLength(1);
+  expect(payload?.mentionPubkeys).toEqual([]);
+});
+
+test("does not restore already-sent media when the text send fails", async ({
+  page,
+}) => {
+  const text = `Retry only these notes ${Date.now()}`;
+  await page.goto("/");
+  await page.evaluate(() => {
+    if (window.__BUZZ_E2E__?.mock) {
+      window.__BUZZ_E2E__.mock.sendMessageErrors = [
+        "Mock accompanying text send failed.",
+      ];
+    }
+  });
+  await page.getByTestId("channel-general").click();
+  await choosePhoto(page);
+  await expect(page.getByTestId("send-message")).toBeEnabled({
+    timeout: 5_000,
+  });
+  const input = page.getByTestId("message-input");
+  await input.fill(text);
+  await page.getByTestId("send-message").click();
+
+  await expect(page.getByTestId("file-card")).toHaveCount(1);
+  await expect(input).toContainText(text);
+  await expect(page.getByTestId("message-composer")).not.toContainText(
+    "quarterly-report.pdf",
+  );
+  await expect(
+    page.getByTestId("message-row").filter({ hasText: text }),
+  ).toHaveCount(0);
+
+  await expect(page.getByTestId("send-message")).toBeEnabled();
+  await input.press("Enter");
+  await expect(
+    page.getByTestId("message-row").filter({ hasText: text }),
+  ).toBeVisible();
+  await expect(page.getByTestId("file-card")).toHaveCount(1);
+});
+
 test("sends immediately and keeps upload progress across channels", async ({
   page,
 }) => {

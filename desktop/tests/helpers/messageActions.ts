@@ -18,6 +18,14 @@ export async function selectMessageAction(row: Locator, name: string) {
 }
 
 export async function openMessageReactionPicker(row: Locator) {
+  await row.hover();
+  const directTrigger = row.getByRole("button", { name: "Open reactions" });
+  if (await directTrigger.count()) {
+    await expect(directTrigger).toBeVisible();
+    await directTrigger.click();
+    return;
+  }
+
   const menu = await openMessageActions(row);
   await menu.getByRole("button", { name: "Open reactions" }).click();
 }

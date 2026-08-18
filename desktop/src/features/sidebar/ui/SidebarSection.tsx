@@ -16,6 +16,7 @@ import {
 } from "@/shared/ui/context-menu";
 
 import { ChannelContextMenuItems } from "@/features/sidebar/ui/ChannelContextMenu";
+import { resolveChannelSidebarSubtitle } from "@/features/sidebar/lib/channelLabels";
 import type { ActiveChannelTurnSummary } from "@/features/agents/activeAgentTurnsStore";
 import { formatElapsed } from "@/features/agents/ui/agentSessionUtils";
 import { getEphemeralChannelDisplay } from "@/features/channels/lib/ephemeralChannel";
@@ -273,6 +274,8 @@ export function ChannelMenuButton({
   onSelectChannel: (channelId: string) => void;
 }) {
   const resolvedLabel = label ?? channel.name;
+  const isDm = channel.channelType === "dm";
+  const subtitle = isDm ? null : resolveChannelSidebarSubtitle(channel);
   const ephemeralDisplay = getEphemeralChannelDisplay(channel);
   const {
     hasSidebarUnreadProjections,
@@ -303,6 +306,7 @@ export function ChannelMenuButton({
     <SidebarMenuButton
       className={cn(
         "data-[active=true]:font-normal",
+        !isDm && "h-12 gap-2 p-1 pr-2 group-data-[collapsible=icon]:!p-0",
         isActive
           ? "group-hover/menu-item:bg-sidebar-active group-hover/menu-item:text-sidebar-active-foreground"
           : "group-hover/menu-item:bg-sidebar-accent group-hover/menu-item:text-sidebar-foreground",
@@ -313,23 +317,62 @@ export function ChannelMenuButton({
       data-testid={`channel-${channel.name}`}
       isActive={isActive}
       onClick={() => onSelectChannel(channel.id)}
+      size={isDm ? "default" : "lg"}
       tooltip={resolvedLabel}
       type="button"
     >
-      <SidebarChannelIcon
-        channel={channel}
-        className={
-          channel.channelType === "dm" ? undefined : inactiveContentOpacity
-        }
-        dmParticipants={dmParticipants}
-        presenceStatus={presenceStatus}
-      />
-      <span
-        className={cn("min-w-0 flex-1 truncate", inactiveContentOpacity)}
-        data-sidebar-row-label
-      >
-        {resolvedLabel}
-      </span>
+      {isDm ? (
+        <SidebarChannelIcon
+          channel={channel}
+          dmParticipants={dmParticipants}
+          presenceStatus={presenceStatus}
+        />
+      ) : (
+        <span
+          aria-hidden="true"
+          className={cn(
+            "flex size-10 shrink-0 items-center justify-center rounded-xl bg-sidebar-border/55 text-sidebar-foreground/65 transition-colors group-data-[collapsible=icon]:size-8 group-data-[collapsible=icon]:rounded-md group-data-[collapsible=icon]:bg-transparent",
+            isActive &&
+              "bg-sidebar-active-foreground/10 text-sidebar-active-foreground",
+            inactiveContentOpacity,
+          )}
+          data-testid={`channel-icon-container-${channel.name}`}
+        >
+          <SidebarChannelIcon channel={channel} className="size-6" />
+        </span>
+      )}
+      {isDm ? (
+        <span
+          className={cn("min-w-0 flex-1 truncate", inactiveContentOpacity)}
+          data-sidebar-row-label
+        >
+          {resolvedLabel}
+        </span>
+      ) : (
+        <span
+          className={cn(
+            "min-w-0 flex-1 group-data-[collapsible=icon]:hidden",
+            inactiveContentOpacity,
+          )}
+        >
+          <span
+            className={cn(
+              "block truncate text-sm leading-tight",
+              hasTopLevelUnread ? "font-bold" : "font-medium",
+            )}
+            data-sidebar-row-label
+          >
+            {resolvedLabel}
+          </span>
+          <span
+            className="mt-0.5 block truncate text-xs font-normal leading-tight text-sidebar-foreground/55"
+            data-testid={`channel-subtitle-${channel.name}`}
+            title={subtitle ?? undefined}
+          >
+            {subtitle}
+          </span>
+        </span>
+      )}
       {ephemeralDisplay ? (
         <EphemeralChannelBadge
           display={ephemeralDisplay}

@@ -122,6 +122,7 @@ type InboxDetailPaneProps = {
     mediaTags?: string[][];
     mentionPubkeys: string[];
     parentEventId: string | null;
+    createdAt?: number;
   }) => Promise<void>;
   onToggleReaction?: (
     message: TimelineMessage,
@@ -678,6 +679,7 @@ function InboxMessageDetailPane({
                   agentPubkeys={agentPubkeys}
                   canReply={canReply}
                   channelId={item.item.channelId}
+                  currentPubkey={currentPubkey}
                   isContinuation={isContinuation}
                   isFollowedByContinuation={isFollowedByContinuation}
                   isFirst={index === 0}
@@ -769,9 +771,17 @@ function InboxMessageDetailPane({
                 });
                 onEditTargetChange(null);
               }}
-              onSend={(content, mentionPubkeys, mediaTags) =>
+              onSend={(
+                content,
+                mentionPubkeys,
+                mediaTags,
+                _channelId,
+                _threadContext,
+                createdAt,
+              ) =>
                 onSendReply({
                   content,
+                  createdAt,
                   mediaTags,
                   mentionPubkeys,
                   parentEventId: composerParentEventId,

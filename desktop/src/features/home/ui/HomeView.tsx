@@ -111,9 +111,8 @@ export function HomeView({
     homeInboxWidthPx < INBOX_SINGLE_COLUMN_BREAKPOINT_PX;
   const [filter, setFilter] = React.useState<InboxFilter>("all");
   const [unreadOnly, setUnreadOnly] = React.useState(false);
-  // Explicit selections are mirrored to the URL (`?item=`), so back/forward
-  // restores the detail pane each history entry was showing and reloads
-  // restore it from the URL. Default/automatic selection stays local-only —
+  // Explicit selections are mirrored to `?item=`, so navigation and reloads
+  // restore the detail pane. Default/automatic selection stays local-only —
   // background data loads must never trigger navigations.
   const { applyPatch: applyInboxSearchPatch, values: inboxSearchValues } =
     useHistorySearchState(INBOX_SEARCH_KEYS);
@@ -834,6 +833,7 @@ export function HomeView({
                 mediaTags,
                 mentionPubkeys,
                 parentEventId,
+                createdAt,
               }) => {
                 const channelId = selectedItem?.item.channelId;
                 if (!selectedItem || !channelId || !canReply) {
@@ -857,6 +857,7 @@ export function HomeView({
                     undefined,
                     emojiTags,
                     mentionTags,
+                    ...([undefined, undefined, createdAt] as const),
                   );
                   const authorPubkey = currentPubkey ?? itemToReply.item.pubkey;
                   const reply: InboxReply = {

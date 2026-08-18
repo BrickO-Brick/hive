@@ -10,6 +10,7 @@ import {
 import { useCommunities } from "@/features/communities/useCommunities";
 import { AvatarFramingSlider } from "@/features/profile/ui/AnimatedAvatarControls";
 import { contrastColorForBackground } from "@/features/profile/ui/ProfileAvatarEditor.utils";
+import { MESSAGE_BUBBLE_MAX_WIDTH_CLASSES } from "@/features/messages/ui/messageBubbleLayout";
 import { cn } from "@/shared/lib/cn";
 import {
   previewLinkPreviewStyle,
@@ -39,6 +40,13 @@ import {
   useSavedMessageStyle,
   type MessageStyle,
 } from "@/shared/lib/messageStylePreference";
+import {
+  previewOwnMessageAlignment,
+  setOwnMessageAlignment,
+  useOwnMessageAlignment,
+  useSavedOwnMessageAlignment,
+  type OwnMessageAlignment,
+} from "@/shared/lib/ownMessageAlignmentPreference";
 import {
   ACCENT_COLORS,
   DEFAULT_GLASS_OPACITY,
@@ -152,42 +160,106 @@ const MESSAGE_STYLE_OPTIONS: readonly {
   },
 ];
 
+const OWN_MESSAGE_ALIGNMENT_OPTIONS: readonly {
+  value: OwnMessageAlignment;
+  label: string;
+}[] = [
+  {
+    value: "left",
+    label: "Left",
+  },
+  {
+    value: "right",
+    label: "Right",
+  },
+];
+
 function ConversationDensityPreviewMessage({
   avatar,
   author,
   children,
+  isOwn = false,
   timestamp,
 }: {
   avatar: string;
   author: string;
   children: ReactNode;
+  isOwn?: boolean;
   timestamp: string;
 }) {
   const messageStyle = useMessageStyle();
+  const ownMessageAlignment = useOwnMessageAlignment();
   const showBubble = messageStyle === "bubbles";
+  const useGroupedBubbleLayout = showBubble;
+  const alignRight =
+    useGroupedBubbleLayout && ownMessageAlignment === "right" && isOwn;
 
   return (
-    <article className="flex gap-2.5 py-conversation-row">
-      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-semibold text-muted-foreground">
-        {avatar}
-      </div>
-      <div className="min-w-0 flex-1">
-        <div className="flex min-w-0 flex-wrap items-baseline gap-x-1.5 leading-message-author">
-          <span className="text-message font-semibold leading-message-author tracking-normal text-foreground">
-            {author}
-          </span>
-          <span className="text-message-timestamp font-normal text-muted-foreground/65">
-            {timestamp}
-          </span>
+    <article
+      className={cn(
+        "group/preview-message message-hover-region flex gap-2.5 py-conversation-row",
+        useGroupedBubbleLayout && !alignRight && "items-end",
+        alignRight && "flex-row-reverse",
+      )}
+    >
+      {alignRight ? null : (
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-semibold text-muted-foreground">
+          {avatar}
         </div>
-        <div
-          className={cn(
-            "mt-conversation-body w-fit max-w-full text-message font-normal tracking-normal text-foreground",
-            showBubble && "rounded-2xl bg-muted/50 px-3.5 py-2.5",
-          )}
-          data-testid="conversation-preview-message-surface"
-        >
-          {children}
+      )}
+      <div
+        className={cn(
+          "min-w-0 flex-1",
+          alignRight && "flex flex-col items-end",
+        )}
+      >
+        {useGroupedBubbleLayout && alignRight ? null : (
+          <div
+            className={cn(
+              "flex min-w-0 flex-wrap items-baseline gap-x-1.5 leading-message-author",
+              useGroupedBubbleLayout && "mb-0.5",
+            )}
+            data-testid="conversation-preview-message-header"
+          >
+            <span className="text-message font-semibold leading-message-author tracking-normal text-foreground">
+              {author}
+            </span>
+            {useGroupedBubbleLayout ? null : (
+              <span className="text-message-timestamp font-normal text-muted-foreground/65">
+                {timestamp}
+              </span>
+            )}
+          </div>
+        )}
+        <div className="relative w-fit max-w-full">
+          {useGroupedBubbleLayout ? (
+            <span
+              className={cn(
+                "message-hover-timestamp pointer-events-none absolute top-1/2 -translate-y-1/2 shrink-0 whitespace-nowrap text-message-timestamp font-normal tabular-nums text-muted-foreground/55",
+                alignRight ? "right-full mr-2" : "left-full ml-2",
+              )}
+              data-testid="conversation-preview-hover-timestamp"
+            >
+              {timestamp}
+            </span>
+          ) : null}
+          <div
+            className={cn(
+              "w-fit max-w-full text-left text-message font-normal tracking-normal text-foreground",
+              useGroupedBubbleLayout ? "mt-0" : "mt-conversation-body",
+              showBubble &&
+                cn(
+                  MESSAGE_BUBBLE_MAX_WIDTH_CLASSES,
+                  "rounded-2xl px-3.5 py-2.5",
+                ),
+              showBubble && !alignRight && "bg-muted/50",
+              alignRight && "bg-primary text-primary-foreground",
+            )}
+            data-testid="conversation-preview-message-surface"
+            data-own-message={isOwn ? "true" : undefined}
+          >
+            {children}
+          </div>
         </div>
       </div>
     </article>
@@ -215,7 +287,8 @@ function ConversationPreview() {
           </ConversationDensityPreviewMessage>
           <ConversationDensityPreviewMessage
             avatar="T"
-            author="Theo"
+            author="You"
+            isOwn
             timestamp="9:43"
           >
             <p>
@@ -237,6 +310,7 @@ export function ConversationDisplaySettings() {
   const density = useConversationDensity();
   const fontSize = useFontSize();
   const messageStyle = useSavedMessageStyle();
+  const ownMessageAlignment = useSavedOwnMessageAlignment();
   const activeMessageStyle =
     MESSAGE_STYLE_OPTIONS.find((option) => option.value === messageStyle) ??
     MESSAGE_STYLE_OPTIONS[0];
@@ -306,6 +380,31 @@ export function ConversationDisplaySettings() {
           value={messageStyle}
         />
       </SettingsOptionRow>
+      {messageStyle === "bubbles" ? (
+        <SettingsOptionRow data-testid="own-message-alignment-row">
+          <div className="min-w-0">
+            <p className="text-sm font-medium">My messages</p>
+            <p
+              className="text-sm font-normal text-muted-foreground/70"
+              data-settings-subcopy
+            >
+              {ownMessageAlignment === "right"
+                ? "Show your messages on the right."
+                : "Keep your messages aligned with the conversation."}
+            </p>
+          </div>
+          <SettingsSegmentedControl
+            className="w-72"
+            legend="My messages"
+            onPreviewChange={previewOwnMessageAlignment}
+            onValueChange={setOwnMessageAlignment}
+            optionTestIdPrefix="own-message-alignment"
+            options={OWN_MESSAGE_ALIGNMENT_OPTIONS}
+            testId="own-message-alignment-control"
+            value={ownMessageAlignment}
+          />
+        </SettingsOptionRow>
+      ) : null}
       <ConversationPreview />
     </div>
   );

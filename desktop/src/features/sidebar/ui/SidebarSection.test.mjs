@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
+import { resolveChannelSidebarSubtitle } from "../lib/channelLabels.ts";
 import { formatWorkingTooltip } from "./SidebarSection.tsx";
 
 function summary(agentNames, agentCount = agentNames.length) {
@@ -47,6 +48,33 @@ describe("formatWorkingTooltip", () => {
     assert.equal(
       formatWorkingTooltip(summary(["Ned"], 3)),
       "Ned and 2 agents working",
+    );
+  });
+});
+
+describe("resolveChannelSidebarSubtitle", () => {
+  const channel = {
+    channelType: "stream",
+    description: "Design and engineering updates",
+    visibility: "open",
+  };
+
+  it("uses the channel description", () => {
+    assert.equal(
+      resolveChannelSidebarSubtitle(channel),
+      "Design and engineering updates",
+    );
+  });
+
+  it("falls back to the channel type and visibility", () => {
+    assert.equal(
+      resolveChannelSidebarSubtitle({
+        ...channel,
+        channelType: "forum",
+        description: " ",
+        visibility: "private",
+      }),
+      "Private forum",
     );
   });
 });

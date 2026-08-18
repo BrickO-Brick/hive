@@ -522,6 +522,27 @@ test("sidebar shows all channel types", async ({ page }) => {
   await expect(dmList).toContainText("bob-tyler");
 });
 
+test("channel sidebar rows use a large icon tile and description", async ({
+  page,
+}) => {
+  await page.goto("/");
+
+  const iconContainer = page.getByTestId("channel-icon-container-general");
+  await expect(iconContainer).toBeVisible();
+  await expect(iconContainer).toHaveCSS("width", "40px");
+  await expect(iconContainer).toHaveCSS("height", "40px");
+  await expect(iconContainer.locator("svg")).toHaveCSS("width", "24px");
+  await expect(iconContainer.locator("svg")).toHaveCSS("height", "24px");
+  await expect(page.getByTestId("channel-subtitle-general")).toHaveText(
+    "General discussion for everyone",
+  );
+  await expect(
+    page
+      .getByTestId("channel-alice-tyler")
+      .locator('[data-testid^="channel-icon-container-"]'),
+  ).toHaveCount(0);
+});
+
 test("shows cached profile labels while relay profiles revalidate", {
   tag: CACHED_PROFILE_LABELS_TAG,
 }, async ({ page }) => {

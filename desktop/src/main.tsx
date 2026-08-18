@@ -23,6 +23,7 @@ import { startLocalStorageSweep } from "@/shared/lib/localStorageSweep";
 import { initializeConversationDensityPreference } from "@/shared/lib/conversationDensityPreference";
 import { initializeFontSizePreference } from "@/shared/lib/fontSizePreference";
 import { initializeMessageStylePreference } from "@/shared/lib/messageStylePreference";
+import { initializeOwnMessageAlignmentPreference } from "@/shared/lib/ownMessageAlignmentPreference";
 
 type E2eWindow = Window & {
   __BUZZ_E2E__?: unknown;
@@ -130,6 +131,7 @@ async function bootstrap() {
   initializeConversationDensityPreference();
   initializeFontSizePreference();
   initializeMessageStylePreference();
+  initializeOwnMessageAlignmentPreference();
   startLocalStorageSweep();
   await installE2eBridgeIfConfigured();
   await migrateLegacyCommunityStorageBeforeRender();
