@@ -445,6 +445,8 @@ fn collect_missing_requirements(
     }
 }
 
+mod openai_origin;
+
 /// Requirements for buzz-agent (provider + model + provider-specific creds).
 fn buzz_agent_requirements(effective: &EffectiveAgentEnv) -> Vec<Requirement> {
     let mut missing = Vec::new();
@@ -454,9 +456,6 @@ fn buzz_agent_requirements(effective: &EffectiveAgentEnv) -> Vec<Requirement> {
         missing.push(Requirement::GitBash);
     }
 
-    // Provider is required — maps to BUZZ_AGENT_PROVIDER in the effective env.
-    // An empty string is treated as absent: a key set to "" is not a valid
-    // provider and must not pass the readiness gate.
     let provider = effective
         .env
         .get("BUZZ_AGENT_PROVIDER")
@@ -468,13 +467,7 @@ fn buzz_agent_requirements(effective: &EffectiveAgentEnv) -> Vec<Requirement> {
         });
     }
 
-    // Model is required — maps to BUZZ_AGENT_MODEL in the effective env.
-    // Same empty-string treatment as provider.
-    // Also accept provider-specific model fallback keys, matching buzz-agent's
-    // own config.rs `from_env()` resolution order (e.g. DATABRICKS_MODEL for
-    // databricks/databricks_v2, ANTHROPIC_MODEL for anthropic, etc.). The
-    // baked buzz-releases env sets DATABRICKS_MODEL but not BUZZ_AGENT_MODEL,
-    // so without this fallback agents baked from releases appear "not ready".
+    // Resolve the model with provider-specific fallbacks used by buzz-agent.
     let provider_model_key = match provider.as_deref() {
         Some("databricks") | Some("databricks_v2") | Some("databricks-v2") => {
             Some("DATABRICKS_MODEL")
@@ -540,6 +533,10 @@ fn buzz_agent_requirements(effective: &EffectiveAgentEnv) -> Vec<Requirement> {
             // Unknown provider or no provider yet — only the NormalizedField
             // requirement above captures this gap.
         }
+    }
+
+    if provider.as_deref() == Some("openai") {
+        openai_origin::require_safe_official_origin(effective, &mut missing);
     }
 
     missing
@@ -659,6 +656,10 @@ fn goose_requirements(
             });
         }
         _ => {}
+    }
+
+    if effective_provider == Some("openai") {
+        openai_origin::require_safe_official_origin(effective, &mut missing);
     }
 
     missing

@@ -88,6 +88,13 @@ fn migrate_openai_credential_record(
     true
 }
 
+#[derive(Clone, Debug)]
+struct DefinitionContext {
+    provider: Option<String>,
+    runtime: Option<String>,
+    env: Map<String, Value>,
+}
+
 fn sibling_path(path: &Path, suffix: &str) -> PathBuf {
     let file_name = path
         .file_name()
@@ -102,7 +109,9 @@ fn sibling_path(path: &Path, suffix: &str) -> PathBuf {
 fn migrate_openai_credentials_in_file(
     path: &Path,
     effective_provider: Option<&str>,
+    effective_runtime: Option<&str>,
     inherited_env_vars: Option<&Map<String, Value>>,
+    harness_env_by_runtime: &std::collections::HashMap<String, Map<String, Value>>,
 ) -> Result<(), String> {
     let marker_path = sibling_path(path, MIGRATION_SUFFIX);
     if marker_path.exists() {
@@ -124,10 +133,7 @@ fn migrate_openai_credentials_in_file(
             // not from the instance's legacy snapshot. Build that inheritance
             // view before mutating any record so classification follows the same
             // precedence as spawn/readiness.
-            let definitions: std::collections::HashMap<
-                String,
-                (Option<String>, Map<String, Value>),
-            > = records
+            let definitions: std::collections::HashMap<String, DefinitionContext> = records
                 .iter()
                 .filter_map(Value::as_object)
                 .filter(|record| record.get("pubkey").and_then(Value::as_str) == Some(""))
@@ -137,12 +143,23 @@ fn migrate_openai_credentials_in_file(
                         .get("provider")
                         .and_then(Value::as_str)
                         .map(str::to_owned);
+                    let runtime = record
+                        .get("runtime")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned);
                     let env = record
                         .get("env_vars")
                         .and_then(Value::as_object)
                         .cloned()
                         .unwrap_or_default();
-                    Some((slug, (provider, env)))
+                    Some((
+                        slug,
+                        DefinitionContext {
+                            provider,
+                            runtime,
+                            env,
+                        },
+                    ))
                 })
                 .collect();
             let mut changed = false;
@@ -164,7 +181,8 @@ fn migrate_openai_credentials_in_file(
                 // value so mutating the record below cannot overlap a borrow of
                 // its provider field.
                 let effective_provider = match definition {
-                    Some((definition_provider, _)) => definition_provider
+                    Some(definition) => definition
+                        .provider
                         .as_deref()
                         .map(str::trim)
                         .filter(|provider| !provider.is_empty())
@@ -172,11 +190,29 @@ fn migrate_openai_credentials_in_file(
                         .or_else(|| effective_provider.map(str::to_owned)),
                     None => local_provider.or_else(|| effective_provider.map(str::to_owned)),
                 };
-                let merged_inherited_env = definition.map(|(_, definition_env)| {
-                    let mut merged = inherited_env_vars.cloned().unwrap_or_default();
-                    merged.extend(definition_env.clone());
-                    merged
-                });
+                let local_runtime = record
+                    .get("runtime")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|runtime| !runtime.is_empty());
+                let selected_runtime = local_runtime
+                    .or_else(|| definition.and_then(|definition| definition.runtime.as_deref()))
+                    .map(str::trim)
+                    .filter(|runtime| !runtime.is_empty())
+                    .or(effective_runtime);
+                let merged_inherited_env = {
+                    let mut merged = selected_runtime
+                        .and_then(|runtime| harness_env_by_runtime.get(runtime))
+                        .cloned()
+                        .unwrap_or_default();
+                    if let Some(inherited) = inherited_env_vars {
+                        merged.extend(inherited.clone());
+                    }
+                    if let Some(definition) = definition {
+                        merged.extend(definition.env.clone());
+                    }
+                    (!merged.is_empty()).then_some(merged)
+                };
                 changed |= migrate_openai_credential_record(
                     record,
                     effective_provider.as_deref(),
@@ -186,7 +222,20 @@ fn migrate_openai_credentials_in_file(
             changed
         }
         Value::Object(record) => {
-            migrate_openai_credential_record(record, effective_provider, inherited_env_vars)
+            let selected_runtime = record
+                .get("preferred_runtime")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|runtime| !runtime.is_empty())
+                .or(effective_runtime);
+            let merged_inherited_env = selected_runtime
+                .and_then(|runtime| harness_env_by_runtime.get(runtime))
+                .cloned();
+            migrate_openai_credential_record(
+                record,
+                effective_provider,
+                merged_inherited_env.as_ref().or(inherited_env_vars),
+            )
         }
         _ => {
             return Err(format!(
@@ -212,8 +261,28 @@ pub(super) fn migrate_openai_credentials(app: &tauri::AppHandle) {
     let Ok(agents_dir) = crate::managed_agents::managed_agents_base_dir(app) else {
         return;
     };
+    let custom_harnesses_dir = agents_dir
+        .parent()
+        .map(|path| path.join("custom_harnesses"));
+    let harness_env_by_runtime: std::collections::HashMap<String, Map<String, Value>> =
+        custom_harnesses_dir
+            .as_deref()
+            .map(crate::managed_agents::custom_harnesses::load_custom_harnesses)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|definition| {
+                let env = definition
+                    .env
+                    .into_iter()
+                    .map(|(key, value)| (key, Value::String(value)))
+                    .collect();
+                (definition.id, env)
+            })
+            .collect();
     let global_path = agents_dir.join("global-agent-config.json");
-    if let Err(error) = migrate_openai_credentials_in_file(&global_path, None, None) {
+    if let Err(error) =
+        migrate_openai_credentials_in_file(&global_path, None, None, None, &harness_env_by_runtime)
+    {
         eprintln!("buzz-desktop: openai-credential-migration: {error}");
     }
 
@@ -229,6 +298,11 @@ pub(super) fn migrate_openai_credentials(app: &tauri::AppHandle) {
         .and_then(|root| root.get("provider"))
         .and_then(Value::as_str)
         .map(str::to_owned);
+    let global_runtime = global
+        .as_ref()
+        .and_then(|root| root.get("preferred_runtime"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
     let global_env = global
         .as_ref()
         .and_then(|root| root.get("env_vars"))
@@ -238,7 +312,9 @@ pub(super) fn migrate_openai_credentials(app: &tauri::AppHandle) {
     if let Err(error) = migrate_openai_credentials_in_file(
         &managed_path,
         global_provider.as_deref(),
+        global_runtime.as_deref(),
         global_env.as_ref(),
+        &harness_env_by_runtime,
     ) {
         eprintln!("buzz-desktop: openai-credential-migration: {error}");
     }
@@ -247,6 +323,20 @@ pub(super) fn migrate_openai_credentials(app: &tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn migrate_file(
+        path: &Path,
+        effective_provider: Option<&str>,
+        inherited_env_vars: Option<&Map<String, Value>>,
+    ) -> Result<(), String> {
+        migrate_openai_credentials_in_file(
+            path,
+            effective_provider,
+            None,
+            inherited_env_vars,
+            &std::collections::HashMap::new(),
+        )
+    }
 
     fn migrate(value: Value) -> (Value, bool) {
         let mut record = value.as_object().unwrap().clone();
@@ -435,6 +525,44 @@ mod tests {
     }
 
     #[test]
+    fn custom_harness_origin_prevents_official_credential_relabeling() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("managed-agents.json");
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!([{
+                "pubkey": "",
+                "slug": "custom-definition",
+                "runtime": "custom-gateway",
+                "provider": "openai",
+                "env_vars": { "OPENAI_COMPAT_API_KEY": "compat-secret" }
+            }]))
+            .unwrap(),
+        )
+        .unwrap();
+        let harness_env = std::collections::HashMap::from([(
+            "custom-gateway".to_string(),
+            serde_json::json!({
+                "OPENAI_COMPAT_BASE_URL": "https://gateway.example/v1"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        )]);
+
+        migrate_openai_credentials_in_file(&path, None, None, None, &harness_env).unwrap();
+        let records: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+
+        assert_eq!(records[0]["provider"], "openai-compat");
+        assert_eq!(
+            records[0]["env_vars"][OPENAI_COMPAT_API_KEY],
+            "compat-secret"
+        );
+        assert!(records[0]["env_vars"].get(OPENAI_API_KEY).is_none());
+    }
+
+    #[test]
     fn linked_instance_uses_definition_provider_and_layered_endpoint() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("managed-agents.json");
@@ -461,7 +589,7 @@ mod tests {
         )
         .unwrap();
 
-        migrate_openai_credentials_in_file(&path, Some("openai"), None).unwrap();
+        migrate_file(&path, Some("openai"), None).unwrap();
         let records: Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
 
@@ -498,7 +626,7 @@ mod tests {
         )
         .unwrap();
 
-        migrate_openai_credentials_in_file(&path, Some("openai"), None).unwrap();
+        migrate_file(&path, Some("openai"), None).unwrap();
         let records: Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
 
@@ -530,7 +658,7 @@ mod tests {
         )
         .unwrap();
 
-        migrate_openai_credentials_in_file(&path, None, None).unwrap();
+        migrate_file(&path, None, None).unwrap();
         let records: Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(records[0]["env_vars"][OPENAI_API_KEY], "first");
@@ -551,13 +679,13 @@ mod tests {
         )
         .unwrap();
 
-        migrate_openai_credentials_in_file(&path, None, None).unwrap();
+        migrate_file(&path, None, None).unwrap();
         let mut records: Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         records[0]["env_vars"][OPENAI_COMPAT_API_KEY] = Value::String("new-compat".to_string());
         std::fs::write(&path, serde_json::to_vec(&records).unwrap()).unwrap();
 
-        migrate_openai_credentials_in_file(&path, None, None).unwrap();
+        migrate_file(&path, None, None).unwrap();
         let records: Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(records[0]["env_vars"][OPENAI_API_KEY], "legacy-secret");
@@ -575,7 +703,7 @@ mod tests {
         let original_bytes = serde_json::to_vec(&original).unwrap();
         std::fs::write(&path, &original_bytes).unwrap();
 
-        migrate_openai_credentials_in_file(&path, None, None).unwrap();
+        migrate_file(&path, None, None).unwrap();
 
         assert_eq!(
             std::fs::read(sibling_path(&path, BACKUP_SUFFIX)).unwrap(),
@@ -597,7 +725,7 @@ mod tests {
         let original = b"{ not valid json";
         std::fs::write(&path, original).unwrap();
 
-        let error = migrate_openai_credentials_in_file(&path, None, None).unwrap_err();
+        let error = migrate_file(&path, None, None).unwrap_err();
 
         assert!(error.contains("failed to parse"), "{error}");
         assert_eq!(std::fs::read(&path).unwrap(), original);
@@ -609,7 +737,7 @@ mod tests {
     fn absent_file_is_not_marked_so_later_legacy_content_can_be_migrated() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("global-agent-config.json");
-        migrate_openai_credentials_in_file(&path, None, None).unwrap();
+        migrate_file(&path, None, None).unwrap();
         assert!(!sibling_path(&path, MIGRATION_SUFFIX).exists());
         let legacy = serde_json::json!({
             "provider": "openai",
@@ -617,7 +745,7 @@ mod tests {
         });
         std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
 
-        migrate_openai_credentials_in_file(&path, None, None).unwrap();
+        migrate_file(&path, None, None).unwrap();
         let after: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(after["env_vars"][OPENAI_API_KEY], "official-secret");
         assert!(after["env_vars"].get(OPENAI_COMPAT_API_KEY).is_none());

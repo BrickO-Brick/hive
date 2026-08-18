@@ -67,7 +67,7 @@ import { SettingsOptionGroup } from "@/features/settings/ui/SettingsOptionGroup"
 import { AdvancedRequiredBadge } from "./AdvancedRequiredBadge";
 import { CardMintKeyCue } from "./CardMintKeyCue";
 import { getGlobalAgentCredentialState } from "./globalAgentCredentialState";
-import { envVarsClearingOpenAiCompatBaseUrl } from "./providerEnvVarUpdates";
+import { envVarsClearingManagedApiKey } from "./providerEnvVarUpdates";
 
 export const EMPTY_GLOBAL_CONFIG: GlobalAgentConfig = {
   env_vars: {},
@@ -95,21 +95,20 @@ type AgentConfigDisclosure =
 // onboarding's values won every call and are now the only behavior:
 // - auto-select a valid model when the provider changes
 // - keep the model select usable during discovery
-// - preserve credential env vars across provider switches (the abandoned
-//   provider's key stays in env_vars — visible/deletable under Advanced), except
-//   provider-owned endpoint metadata is cleared when it would affect the next
-//   provider.
+// - clear a managed provider credential when its identity changes; unrelated
+//   env vars remain visible/deletable under Advanced.
+// - clear provider-owned endpoint metadata when leaving openai-compat.
 // - require a provider before model/effort are editable (no saveable
 //   invalid state — design principle #4)
 const autoSelectModelOnProviderChange = true;
 const disableModelSelectDuringDiscovery = false;
-const preserveCredentialEnvVarsOnProviderChange = true;
+const clearManagedCredentialOnProviderChange = true;
 const requireProviderForModelAndEffort = true;
 /** The canonical behavior contract, exported for the contract test. */
 export const CANONICAL_CONFIG_BEHAVIORS = {
   autoSelectModelOnProviderChange,
   disableModelSelectDuringDiscovery,
-  preserveCredentialEnvVarsOnProviderChange,
+  clearManagedCredentialOnProviderChange,
   requireProviderForModelAndEffort,
 } as const;
 /** Disclosure preset → the eight visibility decisions it owns. Exported for the contract test. */
@@ -524,7 +523,7 @@ export function AgentConfigFields({
   function handleProviderChange(value: string) {
     userEditedProviderRef.current = true;
     if (value === CUSTOM_PROVIDER_DROPDOWN_VALUE) {
-      const nextEnvVars = envVarsClearingOpenAiCompatBaseUrl(
+      const nextEnvVars = envVarsClearingManagedApiKey(
         config.env_vars,
         effectiveProvider,
         "",
@@ -535,7 +534,7 @@ export function AgentConfigFields({
     }
     const nextProvider =
       value === AUTO_PROVIDER_DROPDOWN_VALUE || value === "" ? null : value;
-    const nextEnvVars = envVarsClearingOpenAiCompatBaseUrl(
+    const nextEnvVars = envVarsClearingManagedApiKey(
       config.env_vars,
       effectiveProvider,
       nextProvider ?? bakedProvider ?? "",
