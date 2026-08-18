@@ -1,4 +1,4 @@
-import { expect, test } from "../helpers/test";
+import { expect, test, bootstrapE2ePage } from "../helpers/test";
 
 import { waitForAnimations } from "../helpers/animations";
 import { installMockBridge, TEST_IDENTITIES } from "../helpers/bridge";
@@ -25,7 +25,7 @@ test("top-level project lists align dates and overflow actions", async ({
     window.localStorage.setItem("buzz.projects.viewMode", "list");
   });
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
   await expect(
     page.getByRole("heading", { level: 1, name: "Projects" }),
@@ -218,7 +218,7 @@ test("creating a project publishes its initial repository grouping", async ({
 }) => {
   await enableProjectsFeature(page);
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
   await page.getByTestId("projects-create-menu").hover();
   await page.getByRole("menuitem", { name: "Project" }).click();
@@ -288,7 +288,7 @@ test("unsupported relays keep the initial repository accessible", async ({
     window.__BUZZ_E2E_UNSUPPORTED_PROJECT_ANNOUNCEMENTS__ = true;
   });
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
   await page.getByTestId("projects-create-menu").hover();
   await page.getByRole("menuitem", { name: "Project" }).click();
@@ -336,7 +336,7 @@ test("project creation can retry after its repository publication fails", async 
     window.__BUZZ_E2E_REJECT_PROJECT_EVENT_KINDS__ = [30621];
   });
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
   await page.getByTestId("projects-create-menu").hover();
   await page.getByRole("menuitem", { name: "Project" }).click();
@@ -365,7 +365,7 @@ test("project creation is idempotent after a lost publish acknowledgement", asyn
     window.__BUZZ_E2E_FAIL_PROJECT_EVENT_ACK_KINDS__ = [30621];
   });
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
   await page.getByTestId("projects-create-menu").hover();
   await page.getByRole("menuitem", { name: "Project" }).click();
@@ -405,7 +405,7 @@ test("multi-repository projects switch the active repository", async ({
 }) => {
   await enableProjectsFeature(page);
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
   await page.getByTestId("projects-section-projects").click();
   await page
@@ -493,7 +493,7 @@ test("commit detail opens from the commits feed with a diff", async ({
   await installMockBridge(page);
   // The preview server is a static file server without SPA fallback, so
   // enter at "/" and navigate via the sidebar.
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
 
   // The overview no longer lists repository cards — switch to the
@@ -604,7 +604,7 @@ test("pull request and issue feeds share the commit row structure", async ({
 }) => {
   await enableProjectsFeature(page);
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
 
   // The overview no longer lists repository cards — switch to the
@@ -667,7 +667,7 @@ test("adding a repository retries and reports an error when the 30617 publicatio
     window.__BUZZ_E2E_REJECT_PROJECT_EVENT_KINDS__ = [30617, 30617];
   });
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
   await page.getByTestId("projects-section-projects").click();
   await page
@@ -734,7 +734,7 @@ test("adding a repository treats a lost 30617 acknowledgement as success", async
     window.__BUZZ_E2E_FAIL_PROJECT_EVENT_ACK_KINDS__ = [30617];
   });
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
   await page.getByTestId("projects-section-projects").click();
   await page
@@ -802,7 +802,7 @@ test("adding a repository blocks when a standalone 30617 already exists at that 
     { owner: MOCK_OWNER, dtag: STANDALONE_DTAG },
   );
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
   await page.getByTestId("projects-section-projects").click();
   await page
@@ -895,7 +895,8 @@ test("navigating via a 30617 entity-link route opens the correct non-primary rep
   // TanStack Router's param extractor receives the raw decoded segment, and
   // %3A would be passed through literally (as the string "30617%3A…") rather
   // than decoded to "30617:…", causing the project lookup to fail.
-  await page.goto(
+  await bootstrapE2ePage(
+    page,
     `/#/projects/${RELAY_TOOLS_ADDRESS}?pullRequestId=${KNOWN_PR_ID}`,
     { waitUntil: "domcontentloaded" },
   );

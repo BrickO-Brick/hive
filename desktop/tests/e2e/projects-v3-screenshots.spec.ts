@@ -1,4 +1,4 @@
-import { expect, test } from "../helpers/test";
+import { expect, test, bootstrapE2ePage } from "../helpers/test";
 
 import { waitForAnimations } from "../helpers/animations";
 import { installMockBridge } from "../helpers/bridge";
@@ -6,7 +6,7 @@ import { installMockBridge } from "../helpers/bridge";
 const SHOTS = "test-results/projects-v3-screenshots";
 
 async function openBuzzProject(page: import("@playwright/test").Page) {
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
   await page.getByTestId("projects-section-projects").click();
   const projectEntry = page
@@ -202,7 +202,7 @@ test("projects v3 work-item list metadata", async ({ page }) => {
     window.localStorage.setItem("buzz.projects.viewMode", "list");
   });
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
 
   await page.getByTestId("projects-section-prs").click();

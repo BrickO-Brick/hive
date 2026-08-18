@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "../helpers/test";
+import { expect, test, type Page, bootstrapE2ePage } from "../helpers/test";
 
 import { E2E_APP_ORIGIN } from "../helpers/bootstrap";
 import { installMockBridge, openChannelBrowser } from "../helpers/bridge";
@@ -30,6 +30,14 @@ test.beforeEach(async ({ page }, testInfo) => {
       ? { createChannelErrors: ["Create failed"] }
       : undefined,
   );
+  if (
+    testInfo.title.includes("custom section") ||
+    testInfo.title.includes("canceling section create") ||
+    testInfo.title.includes("failed section create")
+  ) {
+    await seedCustomSection(page);
+  }
+  await bootstrapE2ePage(page);
 });
 
 test("keyboard shortcut opens the channel browser dialog", async ({ page }) => {
@@ -220,8 +228,6 @@ test("sidebar add-channel button creates without treating the click as a callbac
 test("custom section add button creates directly into that section", async ({
   page,
 }) => {
-  await seedCustomSection(page);
-
   const addButton = page.getByTestId(
     `section-actions-${CUSTOM_SECTION.id}-quick-create`,
   );
@@ -245,8 +251,6 @@ test("custom section add button creates directly into that section", async ({
 test("canceling section create does not affect the next global create", async ({
   page,
 }) => {
-  await seedCustomSection(page);
-
   await page
     .getByTestId(`section-actions-${CUSTOM_SECTION.id}-quick-create`)
     .click();
@@ -273,8 +277,6 @@ test("canceling section create does not affect the next global create", async ({
 test("failed section create retry still assigns to the section", async ({
   page,
 }) => {
-  await seedCustomSection(page);
-
   await page
     .getByTestId(`section-actions-${CUSTOM_SECTION.id}-quick-create`)
     .click();

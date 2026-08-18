@@ -1,4 +1,4 @@
-import { expect, test, type Browser } from "../helpers/test";
+import { expect, test, type Browser, bootstrapE2ePage } from "../helpers/test";
 
 import {
   installRelayBridge,
@@ -184,7 +184,7 @@ test("create channel and verify in sidebar", async ({ page }) => {
   const channelName = `integration-e2e-${Date.now()}`;
 
   await installRelayBridge(page, "tyler");
-  await page.goto("/");
+  await bootstrapE2ePage(page, "/");
   await openCreateChannelDialog(page);
   await page.getByTestId("create-channel-name").fill(channelName);
   await page.getByTestId("create-channel-submit").click();
@@ -383,7 +383,7 @@ test("live forum mentions refetch the home feed without waiting for polling", as
 
 test("DM channel appears in sidebar", async ({ page }) => {
   await installRelayBridge(page, "tyler");
-  await page.goto("/");
+  await bootstrapE2ePage(page, "/");
 
   await expect(page.getByTestId("dm-list")).toContainText("alice-tyler");
 });
@@ -392,7 +392,7 @@ test("send message to DM", async ({ page }) => {
   const message = `DM message ${Date.now()}`;
 
   await installRelayBridge(page, "tyler");
-  await page.goto("/");
+  await bootstrapE2ePage(page, "/");
   await page.getByTestId("channel-alice-tyler").click();
   await expect(page.getByTestId("chat-title")).toHaveText("alice-tyler");
 
@@ -404,7 +404,7 @@ test("send message to DM", async ({ page }) => {
 
 test("forum channel appears in sidebar", async ({ page }) => {
   await installRelayBridge(page, "tyler");
-  await page.goto("/");
+  await bootstrapE2ePage(page, "/");
 
   await expect(page.getByTestId("forum-list")).toContainText("watercooler");
 });
@@ -414,7 +414,7 @@ test("create channel with description", async ({ page }) => {
   const description = `Description for ${channelName}`;
 
   await installRelayBridge(page, "tyler");
-  await page.goto("/");
+  await bootstrapE2ePage(page, "/");
   await createStream(page, channelName, description);
 
   await expect(page.getByTestId("chat-title")).toHaveAttribute(
@@ -429,7 +429,7 @@ test("multiple channels independent", async ({ page }) => {
   const messageA = `Message in A ${Date.now()}`;
 
   await installRelayBridge(page, "tyler");
-  await page.goto("/");
+  await bootstrapE2ePage(page, "/");
 
   await openCreateChannelDialog(page);
   await page.getByTestId("create-channel-name").fill(channelA);
@@ -466,7 +466,7 @@ test("manage sheet updates channel details through the relay", async ({
   const updatedDescription = `Updated description ${stamp}`;
 
   await installRelayBridge(page, "tyler");
-  await page.goto("/");
+  await bootstrapE2ePage(page, "/");
   await createStream(page, initialName, initialDescription);
 
   await openChannelManagement(page);
@@ -527,7 +527,7 @@ test("manage sheet archive and unarchive survives a reload through the relay", a
   const channelName = `archive-integration-${Date.now()}`;
 
   await installRelayBridge(page, "tyler");
-  await page.goto("/");
+  await bootstrapE2ePage(page, "/");
   await createStream(page, channelName, "Archive integration channel");
 
   await openChannelManagement(page);

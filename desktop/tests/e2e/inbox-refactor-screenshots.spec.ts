@@ -11,7 +11,7 @@
  * Output: test-results/inbox-refactor/
  */
 import { type Page } from "@playwright/test";
-import { expect, test } from "../helpers/test";
+import { bootstrapE2ePage, expect, test } from "../helpers/test";
 
 import { waitForAnimations } from "../helpers/animations";
 import { installMockBridge, TEST_IDENTITIES } from "../helpers/bridge";
@@ -214,7 +214,7 @@ test.describe("inbox refactor screenshots", () => {
     await seedTwoDrafts(page);
     await installMockBridge(page, { mode: "mock" });
 
-    await page.goto("/", { waitUntil: "domcontentloaded" });
+    await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId("home-inbox")).toBeVisible({
       timeout: 10_000,
     });
@@ -235,7 +235,7 @@ test.describe("inbox refactor screenshots", () => {
   }) => {
     await installMockBridge(page, { mode: "mock" });
 
-    await page.goto("/", { waitUntil: "domcontentloaded" });
+    await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId("home-inbox")).toBeVisible({
       timeout: 10_000,
     });
@@ -262,7 +262,7 @@ test.describe("inbox refactor screenshots", () => {
   }) => {
     await installMockBridge(page, { mode: "mock" });
 
-    await page.goto("/", { waitUntil: "domcontentloaded" });
+    await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
     await waitForMockFeedHelpers(page);
 
     const dmIds = ["shot-dm-first", "shot-dm-second", "shot-dm-third"];
@@ -332,7 +332,7 @@ test.describe("inbox refactor screenshots", () => {
     await seedConversationPreferences(page, "default", "comfortable");
     await installMockBridge(page, { mode: "mock" });
 
-    await page.goto("/", { waitUntil: "domcontentloaded" });
+    await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
     await waitForMockFeedHelpers(page);
 
     const replyIds = [

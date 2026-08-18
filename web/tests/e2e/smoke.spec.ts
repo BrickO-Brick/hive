@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { expect, test } from "../helpers/test";
+import { expect, test, bootstrapE2ePage } from "../helpers/test";
 
 test("home page loads with Buzz branding", async ({ page }) => {
   await expect(
@@ -64,7 +64,7 @@ test("invite requires age and legal consent before opening Buzz", async ({
       ]),
     });
   });
-  await page.goto("/invite/demo-code");
+  await bootstrapE2ePage(page, "/invite/demo-code");
 
   await expect(
     page.getByRole("link", { name: "Download it now" }),
@@ -196,7 +196,7 @@ test("invite can enroll a NIP-07 identity for browser access", async ({
   });
 
   await installNip07Extension();
-  await page.goto("/invite/browser-code");
+  await bootstrapE2ePage(page, "/invite/browser-code");
   await page.getByRole("button", { name: "Join in browser" }).click();
   await expect(page).toHaveURL("/");
   expect(claimObserved).toBe(true);
@@ -228,7 +228,7 @@ test("invite asks Safari users to choose their Mac download", async ({
     await route.fulfill({ status: 500 });
   });
 
-  await page.goto("/invite/demo-code");
+  await bootstrapE2ePage(page, "/invite/demo-code");
   const download = page.getByRole("link", { name: "Download it now" });
   await expect(download).toHaveAttribute("aria-haspopup", "dialog");
   await download.click();
@@ -340,7 +340,7 @@ test("invite download falls back for mobile and non-desktop devices", async ({
       });
     });
 
-    await page.goto("/invite/demo-code");
+    await bootstrapE2ePage(page, "/invite/demo-code");
     await expect(
       page.getByRole("link", { name: "Download it now" }),
       device.name,

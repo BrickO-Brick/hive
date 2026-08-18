@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "../helpers/test";
+import { expect, test, type Page, bootstrapE2ePage } from "../helpers/test";
 import { installMockBridge } from "../helpers/bridge";
 
 const TERM = 'section[aria-label="Buzz Term"]';
@@ -145,7 +145,7 @@ async function reveal(page: Page) {
   await page.setViewportSize({ width: 1280, height: 800 });
   await installTerminalBackend(page);
   await installMockBridge(page);
-  await page.goto("/");
+  await bootstrapE2ePage(page, "/");
   await expect(page.getByTestId("home-inbox-list")).toBeVisible();
   // Buzz Term needs a channel: TerminalBootstrap's context is null on Home, so
   // no session spawns and the chord is inert.

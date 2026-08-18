@@ -1,4 +1,4 @@
-import { expect, test } from "../helpers/test";
+import { expect, test, bootstrapE2ePage } from "../helpers/test";
 
 import { installMockBridge } from "../helpers/bridge";
 import { openSettings } from "../helpers/settings";
@@ -13,7 +13,7 @@ test.beforeEach(async ({ page }) => {
 });
 
 async function navigateToWorkflows(page: import("@playwright/test").Page) {
-  await page.goto("/");
+  await bootstrapE2ePage(page, "/");
   await page.getByTestId("open-workflows-view").click();
   await expect(page).toHaveURL(/#\/workflows$/);
   await expect(page.getByTestId("workflows-view")).toBeVisible();
@@ -33,7 +33,7 @@ async function createWorkflow(
 }
 
 test("global back and forward move across channel routes", async ({ page }) => {
-  await page.goto("/");
+  await bootstrapE2ePage(page, "/");
 
   await page.getByTestId("channel-general").click();
   await expect(page.getByTestId("chat-title")).toHaveText("general");
@@ -55,7 +55,7 @@ test("back/forward keyboard chords work while the composer has focus", async ({
   const forwardChord =
     process.platform === "darwin" ? "Meta+]" : "Alt+ArrowRight";
 
-  await page.goto("/");
+  await bootstrapE2ePage(page, "/");
 
   await page.getByTestId("channel-general").click();
   await expect(page.getByTestId("chat-title")).toHaveText("general");
@@ -86,7 +86,8 @@ test("back/forward keyboard chords work while the composer has focus", async ({
 test.fixme("direct forum thread links close back to the forum route", async ({
   page,
 }) => {
-  await page.goto(
+  await bootstrapE2ePage(
+    page,
     `/#/channels/${WATERCOLOR_CHANNEL_ID}/posts/${FORUM_POST_ID}`,
   );
 
@@ -122,7 +123,7 @@ test("direct workflow detail links close back to workflows", async ({
 
   expect(workflowId).toBeTruthy();
 
-  await page.goto(`/#/workflows/${workflowId}`);
+  await bootstrapE2ePage(page, `/#/workflows/${workflowId}`);
 
   await expect(page.getByTestId("workflow-detail-panel")).toBeVisible();
   await page.getByRole("button", { name: "Close detail panel" }).click();
@@ -132,7 +133,8 @@ test("direct workflow detail links close back to workflows", async ({
 });
 
 test("forum reply deep links survive reload", async ({ page }) => {
-  await page.goto(
+  await bootstrapE2ePage(
+    page,
     `/#/channels/${WATERCOLOR_CHANNEL_ID}/posts/${FORUM_POST_ID}?replyId=${FORUM_REPLY_ID}`,
   );
 
@@ -150,7 +152,7 @@ test("forum reply deep links survive reload", async ({ page }) => {
 });
 
 test("back and forward restore open thread panels", async ({ page }) => {
-  await page.goto("/");
+  await bootstrapE2ePage(page, "/");
 
   await page.getByTestId("channel-general").click();
   await expect(page.getByTestId("chat-title")).toHaveText("general");
@@ -180,7 +182,7 @@ test("back and forward restore open thread panels", async ({ page }) => {
 });
 
 test("back undoes closing a thread panel", async ({ page }) => {
-  await page.goto("/");
+  await bootstrapE2ePage(page, "/");
 
   await page.getByTestId("channel-general").click();
   await expect(page.getByTestId("chat-title")).toHaveText("general");
@@ -203,7 +205,7 @@ test("back undoes closing a thread panel", async ({ page }) => {
 });
 
 test("open thread panels survive reload", async ({ page }) => {
-  await page.goto("/");
+  await bootstrapE2ePage(page, "/");
 
   await page.getByTestId("channel-general").click();
   await expect(page.getByTestId("chat-title")).toHaveText("general");
@@ -228,7 +230,7 @@ test("open thread panels survive reload", async ({ page }) => {
 test("home inbox selection survives reload and back restores it", async ({
   page,
 }) => {
-  await page.goto("/");
+  await bootstrapE2ePage(page, "/");
 
   const inboxList = page.getByTestId("home-inbox-list");
   await expect(inboxList).toBeVisible();
@@ -265,7 +267,7 @@ test("home inbox selection survives reload and back restores it", async ({
 test("settings is a route: section survives reload, closing returns to the previous panel state", async ({
   page,
 }) => {
-  await page.goto("/");
+  await bootstrapE2ePage(page, "/");
 
   // Open a channel with a thread panel so there's panel state to come back to.
   await page.getByTestId("channel-general").click();
@@ -300,7 +302,7 @@ test("settings is a route: section survives reload, closing returns to the previ
 test("settings shortcut returns without opening search dialog", async ({
   page,
 }) => {
-  await page.goto("/");
+  await bootstrapE2ePage(page, "/");
   await page.getByTestId("channel-general").click();
   await expect(page.getByTestId("chat-title")).toHaveText("general");
   const channelUrl = page.url();
@@ -340,7 +342,7 @@ test("settings shortcut returns without opening search dialog", async ({
 test("mixed Buzz permalinks render as chips in the composer", async ({
   page,
 }) => {
-  await page.goto("/");
+  await bootstrapE2ePage(page, "/");
   await page.getByTestId("channel-general").click();
   await expect(page.getByTestId("chat-title")).toHaveText("general");
 
@@ -395,7 +397,7 @@ test("mixed Buzz permalinks render as chips in the composer", async ({
 test("message links to visible root messages open the thread panel", async ({
   page,
 }) => {
-  await page.goto("/");
+  await bootstrapE2ePage(page, "/");
   await page.getByTestId("channel-general").click();
   await expect(page.getByTestId("chat-title")).toHaveText("general");
   await expect(page.getByTestId("message-timeline")).toContainText(
@@ -484,7 +486,8 @@ test("message links to visible root messages open the thread panel", async ({
 test("message links reopen a closed thread when the same messageId is already in the URL", async ({
   page,
 }) => {
-  await page.goto(
+  await bootstrapE2ePage(
+    page,
     "/#/channels/9a1657ac-f7aa-5db0-b632-d8bbeb6dfb50?messageId=mock-general-welcome",
   );
   await expect(page.getByTestId("chat-title")).toHaveText("general");
@@ -523,7 +526,8 @@ test("message links reopen a closed thread when the same messageId is already in
 });
 
 test("message deep links survive reload", async ({ page }) => {
-  await page.goto(
+  await bootstrapE2ePage(
+    page,
     `/#/channels/${ENGINEERING_CHANNEL_ID}?messageId=mock-engineering-shipped`,
   );
 
@@ -555,7 +559,7 @@ test("cold-start channel deep link drains after the router mounts", async ({
     ],
   });
 
-  await page.goto("/");
+  await bootstrapE2ePage(page, "/");
 
   await expect(page.getByTestId("chat-title")).toHaveText("engineering");
   await expect(page).toHaveURL(
@@ -593,7 +597,7 @@ test("cold-start message deep link preserves its thread target", async ({
     ],
   });
 
-  await page.goto("/");
+  await bootstrapE2ePage(page, "/");
 
   await expect(page.getByTestId("chat-title")).toHaveText("watercooler");
   await expect(page).toHaveURL(/messageId=mock-forum-release-reply/);

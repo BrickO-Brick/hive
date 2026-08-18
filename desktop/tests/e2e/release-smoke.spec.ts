@@ -1,7 +1,13 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
-import { expect, test, type Page, type TestInfo } from "../helpers/test";
+import {
+  expect,
+  test,
+  type Page,
+  type TestInfo,
+  bootstrapE2ePage,
+} from "../helpers/test";
 
 import { installRelayBridge } from "../helpers/bridge";
 import { assertRelaySeeded } from "../helpers/seed";
@@ -55,7 +61,7 @@ async function writeArtifact(testInfo: TestInfo, artifact: ScenarioArtifact) {
 
 async function openGeneral(page: Page) {
   await installRelayBridge(page, "tyler");
-  await page.goto("/");
+  await bootstrapE2ePage(page, "/");
   await page.getByTestId("channel-general").click();
   await expect(page.getByTestId("chat-title")).toHaveText("general");
   await expect(page.locator('[data-render-pending="true"]')).toHaveCount(0);

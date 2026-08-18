@@ -17,18 +17,22 @@ type BootstrapE2ePageOptions = {
  */
 export async function bootstrapE2ePage(
   page: Page,
-  {
+  pathOrOptions: string | BootstrapE2ePageOptions = {},
+  gotoOptions?: Parameters<Page["goto"]>[1],
+): Promise<void> {
+  const {
     path = "/",
     beforeNavigate,
     expectedOrigin = E2E_APP_ORIGIN,
-  }: BootstrapE2ePageOptions = {},
-): Promise<void> {
+  } = typeof pathOrOptions === "string"
+    ? { path: pathOrOptions }
+    : pathOrOptions;
   await beforeNavigate?.();
 
   const target = new URL(path, expectedOrigin).toString();
   let response: Awaited<ReturnType<Page["goto"]>>;
   try {
-    response = await page.goto(target);
+    response = await page.goto(target, gotoOptions);
   } catch (error) {
     throw bootstrapFailure(expectedOrigin, page.url(), error);
   }

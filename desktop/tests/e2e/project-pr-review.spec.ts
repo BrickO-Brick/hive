@@ -1,4 +1,4 @@
-import { expect, test } from "../helpers/test";
+import { expect, test, bootstrapE2ePage } from "../helpers/test";
 
 import { waitForAnimations } from "../helpers/animations";
 import { installMockBridge, TEST_IDENTITIES } from "../helpers/bridge";
@@ -20,7 +20,7 @@ async function enableProjectsFeature(page: import("@playwright/test").Page) {
 }
 
 async function openBuzzProject(page: import("@playwright/test").Page) {
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
   await page.getByTestId("projects-section-projects").click();
   const projectEntry = page
@@ -777,7 +777,7 @@ test("project pull requests preserve partial results from batched queries", asyn
     window.__BUZZ_E2E_REJECT_PROJECT_QUERY_KINDS__ = [1619];
   });
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
   await page
     .getByRole("button", { name: "Pull Requests", exact: true })
@@ -832,7 +832,7 @@ test("project pull request author rollover stays identity-only", async ({
 }) => {
   await enableProjectsFeature(page);
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
   await page
     .getByRole("button", { name: "Pull Requests", exact: true })
@@ -865,7 +865,7 @@ test("project issue author rollover matches pull requests", async ({
 }) => {
   await enableProjectsFeature(page);
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
   await page.getByRole("button", { name: "Issues", exact: true }).click();
   await page.getByRole("button", { name: "List layout" }).click();
@@ -899,7 +899,7 @@ test("project pull requests report aggregate root query failures", async ({
     window.__BUZZ_E2E_REJECT_PROJECT_QUERY_KINDS__ = [1618];
   });
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
   await page
     .getByRole("button", { name: "Pull Requests", exact: true })
@@ -927,7 +927,7 @@ test("project issues preserve partial results from aggregate queries", async ({
     window.__BUZZ_E2E_REJECT_PROJECT_QUERY_KINDS__ = [1];
   });
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
   await page.getByRole("button", { name: "Issues", exact: true }).click();
 
@@ -959,7 +959,7 @@ test("project overview reports aggregate work-item failures", async ({
     window.__BUZZ_E2E_REJECT_PROJECT_QUERY_KINDS__ = [1618];
   });
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
 
   await expect(
@@ -981,7 +981,7 @@ test("project overview does not paint a background behind its cards", async ({
 }) => {
   await enableProjectsFeature(page);
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
 
   await expect(page.getByTestId("projects-overview-panel")).toHaveCSS(
@@ -1014,7 +1014,7 @@ test("project overview does not paint a background behind its cards", async ({
 test("repository rows identify their git host", async ({ page }) => {
   await enableProjectsFeature(page);
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
   await page.getByRole("button", { name: "Repositories", exact: true }).click();
   await page.getByRole("button", { name: "List layout" }).click();
@@ -1043,7 +1043,7 @@ test("project subsections do not paint backgrounds behind list or grid items", a
 }) => {
   await enableProjectsFeature(page);
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
 
   for (const section of ["Repositories", "Pull Requests", "Issues"] as const) {

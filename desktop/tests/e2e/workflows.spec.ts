@@ -1,4 +1,4 @@
-import { expect, test } from "../helpers/test";
+import { expect, test, bootstrapE2ePage } from "../helpers/test";
 
 import { installMockBridge } from "../helpers/bridge";
 
@@ -7,7 +7,7 @@ test.beforeEach(async ({ page }) => {
 });
 
 async function navigateToWorkflows(page: import("@playwright/test").Page) {
-  await page.goto("/");
+  await bootstrapE2ePage(page, "/");
   await page.getByTestId("open-workflows-view").click();
   await expect(page).toHaveURL(/#\/workflows$/);
   await expect(page.getByTestId("workflows-view")).toBeVisible();

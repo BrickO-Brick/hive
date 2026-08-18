@@ -1,4 +1,4 @@
-import { expect, test } from "../helpers/test";
+import { expect, test, bootstrapE2ePage } from "../helpers/test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -44,7 +44,7 @@ async function waitForMockLiveSubscription(
 }
 
 async function openGeneral(page: import("@playwright/test").Page) {
-  await page.goto("/");
+  await bootstrapE2ePage(page, "/");
   await page.getByTestId("channel-general").click();
   await expect(page.getByTestId("chat-title")).toHaveText("general");
   await waitForMockLiveSubscription(page, "general");
