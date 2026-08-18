@@ -416,7 +416,11 @@ any policy-required current matching issuer attestation. [FI-TRACE-LIFECYCLE-AUT
   non-retired target key, retires the old pair, and creates a fresh binding
   version. The replacement provenance is `attested-key` when current matching
   issuer attestation was validated and `provisioned` otherwise. Rotation does
-  not globally revoke the old key.
+  not globally revoke the old key. Rotation continues one grant onto a new key
+  rather than establishing a new one: the replacement preserves every
+  profile-defined administrative bound carried by the binding it replaces, as an
+  opaque field core neither interprets nor clears. Only the authority that set
+  such a bound can change it. [FI-TRACE-LIFECYCLE-AUTHORITY]
 
 Failure or stale state causes no partial mutation. Ordinary authorization cannot
 perform or undo these transitions. Extended disablement, re-enablement,
