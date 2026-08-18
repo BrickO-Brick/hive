@@ -64,6 +64,16 @@ def test_parse_usage_log_reads_the_coloured_lines_a_real_trial_produces():
     )
 
 
+def test_parse_usage_log_reads_optional_counters_from_current_buzz_acp():
+    text = (
+        "2026-08-18T23:25:39Z DEBUG acp::usage: goose usage update "
+        "session_id=ses_current input=Some(5738) output=Some(1802) cached=0"
+    )
+    assert accounting.parse_usage_log(text) == (
+        accounting.SessionUsage("ses_current", 5738, 1802, 0),
+    )
+
+
 def test_parse_handoffs_reads_coloured_lines_too():
     """Same formatter, same escapes — the compaction bound must not silently zero."""
     text = (
