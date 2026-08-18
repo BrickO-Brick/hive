@@ -111,6 +111,7 @@ export function AppSidebar({
   onSelectProjects,
   onSelectPulse,
   onSelectWorkflows,
+  onSelectWorkstreamBoard,
   onSelectHome,
   onSelectChannel,
   onOpenSearchResult,
