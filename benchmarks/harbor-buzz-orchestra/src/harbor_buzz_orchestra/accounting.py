@@ -84,8 +84,12 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 # fields) degrades to "no samples" rather than a wrong number.
 USAGE_MARKER = "goose usage update"
 _SESSION_RE = re.compile(r"\bsession_id=(\S+)")
-_INPUT_RE = re.compile(r"\binput=(\d+)\b")
-_OUTPUT_RE = re.compile(r"\boutput=(\d+)\b")
+# Older buzz-acp builds render cumulative counters as `input=123`; current
+# builds retain their optional type in the tracing field and render
+# `input=Some(123)`. Accept both representations so a source update cannot make
+# a real, billed run look like zero usage.
+_INPUT_RE = re.compile(r"\binput=(?:Some\()?(\d+)(?:\))?")
+_OUTPUT_RE = re.compile(r"\boutput=(?:Some\()?(\d+)(?:\))?")
 # The cache-served subset of `input`, added to the usage line by buzz-acp. Absent
 # in logs written by an agent build that predates it, which is why a missing
 # field must read as "unknown" (fall back to the modelled rate) and never as 0 —
