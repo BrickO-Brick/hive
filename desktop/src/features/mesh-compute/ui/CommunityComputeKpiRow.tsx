@@ -20,7 +20,7 @@ export function CommunityComputeKpiRow({
     {
       label: "Contributed VRAM",
       value: formatCapacity(kpis.sharedCapacityGb),
-      detail: `${formatCount(kpis.deploymentCount)} deployments`,
+      detail: `${formatCount(kpis.deploymentCount)} models available`,
     },
     {
       label: "VRAM allocated",

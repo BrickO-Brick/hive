@@ -8,7 +8,6 @@ import {
   SMALL_COMPANY_COMMUNITY_COMPUTE_FIXTURE,
 } from "../communityComputeFixtures.ts";
 import { deriveCommunityComputeMapModel } from "../communityComputeMapModel.ts";
-import { CommunityComputeHealthScorecard } from "./CommunityComputeHealthScorecard.tsx";
 import { CommunityComputeKpiRow } from "./CommunityComputeKpiRow.tsx";
 import { CommunityComputeTerritoryMap } from "./CommunityComputeTerritoryMap.tsx";
 
@@ -17,7 +16,7 @@ const smallModel = deriveCommunityComputeMapModel(
 );
 
 describe("community compute visual components", () => {
-  it("renders contract-backed KPI values", () => {
+  it("renders contract-backed headline values", () => {
     const html = renderToStaticMarkup(
       React.createElement(CommunityComputeKpiRow, { kpis: smallModel.kpis }),
     );
@@ -28,18 +27,7 @@ describe("community compute visual components", () => {
     assert.match(html, />2,744 GB</);
   });
 
-  it("renders only health states production can derive", () => {
-    const html = renderToStaticMarkup(
-      React.createElement(CommunityComputeHealthScorecard, {
-        health: smallModel.health,
-      }),
-    );
-    assert.match(html, /data-status="healthy"/);
-    assert.match(html, /No reported issues/);
-    assert.match(html, /data-testid="community-compute-health-healthy"/);
-  });
-
-  it("renders one accessible territory and list item per ready model", () => {
+  it("renders a simple accessible territory map without dashboard modules", () => {
     const html = renderToStaticMarkup(
       React.createElement(CommunityComputeTerritoryMap, { model: smallModel }),
     );
@@ -52,37 +40,14 @@ describe("community compute visual components", () => {
       ].length,
       smallModel.deployments.length,
     );
-    assert.equal(
-      [
-        ...html.matchAll(
-          /data-testid="community-compute-deployment-deployment-/g,
-        ),
-      ].length,
-      smallModel.deployments.length,
-    );
     assert.match(html, /tabindex="0"/);
-    assert.match(html, /Search models or devices/);
-    assert.match(html, /Model footprint/);
-    assert.doesNotMatch(html, /Utilization|Region|Split across machines/);
+    assert.doesNotMatch(
+      html,
+      /Search models or devices|community-compute-deployment-list|community-compute-contributor-avatar|animate-mesh-inference|Map legend|Gold|selected/,
+    );
   });
 
-  it("keeps the production map static and supports explicit tutorial motion", () => {
-    const html = renderToStaticMarkup(
-      React.createElement(CommunityComputeTerritoryMap, { model: smallModel }),
-    );
-    assert.doesNotMatch(html, /animate-mesh-inference/);
-
-    const tutorialHtml = renderToStaticMarkup(
-      React.createElement(CommunityComputeTerritoryMap, {
-        model: smallModel,
-        inferenceDeploymentIds: [smallModel.deployments[0].id],
-      }),
-    );
-    assert.match(tutorialHtml, /animate-mesh-inference/);
-    assert.doesNotMatch(html, /community-compute-split-boundary/);
-  });
-
-  it("renders a static empty state without a deployment list", () => {
+  it("renders a static empty state without extra controls", () => {
     const emptyModel = deriveCommunityComputeMapModel(
       EMPTY_COMMUNITY_COMPUTE_FIXTURE.snapshot,
     );
@@ -90,6 +55,6 @@ describe("community compute visual components", () => {
       React.createElement(CommunityComputeTerritoryMap, { model: emptyModel }),
     );
     assert.match(html, /data-testid="community-compute-map-empty"/);
-    assert.doesNotMatch(html, /community-compute-deployment-list/);
+    assert.doesNotMatch(html, /community-compute-deployment-list|Search/);
   });
 });

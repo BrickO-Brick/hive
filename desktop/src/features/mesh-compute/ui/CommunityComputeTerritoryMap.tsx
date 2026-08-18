@@ -1,8 +1,6 @@
 import * as React from "react";
 
 import { cn } from "@/shared/lib/cn";
-import { getAvatarSnapshotUrl } from "@/shared/lib/animatedAvatar";
-import { rewriteRelayUrl } from "@/shared/lib/mediaUrl";
 import {
   hexTerritoryBoundaryEdges,
   layoutCommunityComputeHexTerritories,
@@ -10,18 +8,12 @@ import {
 } from "../communityComputeHexLayout";
 import type {
   CommunityComputeDeployment,
-  CommunityComputeDeploymentHealth,
   CommunityComputeMapModel,
 } from "../communityComputeMapModel";
 
 export type CommunityComputeTerritoryMapProps = {
   model: CommunityComputeMapModel;
-  selectedDeploymentId?: string | null;
-  onSelectedDeploymentChange?: (deploymentId: string) => void;
   className?: string;
-  /** Tutorial-only simulated activity; live snapshots cannot attribute requests. */
-  inferenceDeploymentIds?: readonly string[];
-  contributorProfiles?: ContributorProfiles;
 };
 
 type Point = { x: number; y: number };
@@ -45,15 +37,8 @@ const SQRT_THREE = Math.sqrt(3);
  */
 export function CommunityComputeTerritoryMap({
   model,
-  selectedDeploymentId,
-  onSelectedDeploymentChange,
   className,
-  inferenceDeploymentIds = [],
-  contributorProfiles = {},
 }: CommunityComputeTerritoryMapProps) {
-  const [internalSelection, setInternalSelection] = React.useState<
-    string | null
-  >(null);
   const deploymentById = React.useMemo(
     () =>
       new Map(
@@ -75,29 +60,14 @@ export function CommunityComputeTerritoryMap({
   React.useEffect(() => {
     previousLayoutRef.current = layout;
   }, [layout]);
-  const fallbackId = model.deployments[0]?.id ?? null;
-  const requestedId = selectedDeploymentId ?? internalSelection;
-  const activeId =
-    requestedId !== null && deploymentById.has(requestedId)
-      ? requestedId
-      : fallbackId;
-  const activeDeployment = activeId
-    ? (deploymentById.get(activeId) ?? null)
-    : null;
   const viewBox = computeViewBox(layout.cells);
-  const inferenceIds = React.useMemo(
-    () => new Set(inferenceDeploymentIds),
-    [inferenceDeploymentIds],
-  );
   const [hoveredId, setHoveredId] = React.useState<string | null>(null);
   const lowerTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
-  const [deploymentSearch, setDeploymentSearch] = React.useState("");
   const hoveredDeployment = hoveredId
     ? (deploymentById.get(hoveredId) ?? null)
     : null;
-  const isHeroDeployment = model.deployments.length === 1;
   const isDenseMap = model.deployments.length >= 50;
 
   React.useEffect(
@@ -109,24 +79,16 @@ export function CommunityComputeTerritoryMap({
 
   function raiseTerritory(deploymentId: string, territoryElement: SVGGElement) {
     if (lowerTimerRef.current) clearTimeout(lowerTimerRef.current);
-    // SVG paints in DOM order. Move the existing node rather than sorting the
-    // React children: sorting reconstructs animated SVG content and restarts
-    // its breathing phase whenever hover changes.
+    // SVG paints in DOM order. Move the existing node instead of rebuilding
+    // children so hover stays smooth as territories scale.
     territoryElement.parentNode?.appendChild(territoryElement);
     setHoveredId(deploymentId);
   }
 
   function lowerTerritory() {
     if (lowerTimerRef.current) clearTimeout(lowerTimerRef.current);
-    // Delay only the contributor overlay; the CSS scale settles independently.
+    // Let the detail card linger briefly while the territory settles.
     lowerTimerRef.current = setTimeout(() => setHoveredId(null), 280);
-  }
-
-  function selectDeployment(deploymentId: string) {
-    if (selectedDeploymentId === undefined) {
-      setInternalSelection(deploymentId);
-    }
-    onSelectedDeploymentChange?.(deploymentId);
   }
 
   if (model.status === "loading") {
@@ -142,7 +104,7 @@ export function CommunityComputeTerritoryMap({
       >
         <div className="h-48 animate-pulse rounded-lg bg-muted/50 motion-reduce:animate-none" />
         <p className="mt-3 text-sm text-muted-foreground">
-          Mapping community deployments…
+          Mapping community compute…
         </p>
       </section>
     );
@@ -161,7 +123,8 @@ export function CommunityComputeTerritoryMap({
         <EmptyHexes />
         <p className="mt-3 text-sm font-medium">No compute territories yet</p>
         <p className="mt-1 max-w-sm text-xs leading-relaxed text-muted-foreground">
-          Deployments appear here when members share compute with the community.
+          Shared compute appears here when members make it available to the
+          community.
         </p>
       </section>
     );
@@ -177,9 +140,8 @@ export function CommunityComputeTerritoryMap({
       data-testid="community-compute-territory-map"
     >
       <div className="relative flex min-h-72 min-w-0 flex-col items-center justify-center gap-4 overflow-hidden rounded-lg border border-border/50 bg-background/70 p-3 sm:min-h-96">
-        <MapLegend dense={isDenseMap} />
         <svg
-          aria-label={`${model.deployments.length} community compute deployments. Select a territory for details.`}
+          aria-label={`${model.deployments.length} community compute territories. Focus or hover a territory for details.`}
           className="h-auto max-h-[28rem] w-full overflow-visible"
           data-testid="community-compute-map-svg"
           preserveAspectRatio="xMidYMid meet"
@@ -189,28 +151,16 @@ export function CommunityComputeTerritoryMap({
           {layout.territories.map((territory) => {
             const deployment = deploymentById.get(territory.deploymentId);
             if (!deployment) return null;
-            const selected = deployment.id === activeId;
-            const inferenceActive = inferenceIds.has(deployment.id);
             return (
-              // SVG groups have no semantic button equivalent; keyboard selection remains in the adjacent deployment list.
-              // biome-ignore lint/a11y/useSemanticElements: SVG has no native button element.
+              // SVG groups have no semantic element for hover/focus detail disclosure.
+              // biome-ignore lint/a11y/noStaticElementInteractions: keyboard focus mirrors hover without making the territory an action.
               <g
                 aria-label={territoryAccessibleLabel(deployment)}
-                className="cursor-pointer origin-center outline-hidden [transform-box:fill-box] transition-[opacity,transform,filter] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] hover:scale-[var(--mesh-hover-scale)] hover:drop-shadow-[0_0_0.22rem_rgba(255,216,77,0.42)] focus-visible:scale-[var(--mesh-hover-scale)] focus-visible:opacity-90 motion-reduce:transition-none"
+                className="origin-center outline-hidden [transform-box:fill-box] transition-[opacity,transform] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] hover:scale-[var(--mesh-hover-scale)] focus-visible:scale-[var(--mesh-hover-scale)] focus-visible:opacity-90 motion-reduce:transition-none"
                 data-deployment-id={deployment.id}
-                data-health={deployment.health}
                 data-cell-count={deployment.cellCount}
-                data-inference-active={inferenceActive}
-                data-selected={selected}
                 data-testid={`community-compute-territory-${testId(deployment.id)}`}
                 key={deployment.id}
-                onClick={() => selectDeployment(deployment.id)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ") {
-                    event.preventDefault();
-                    selectDeployment(deployment.id);
-                  }
-                }}
                 onBlur={lowerTerritory}
                 onFocus={(event) =>
                   raiseTerritory(deployment.id, event.currentTarget)
@@ -219,7 +169,6 @@ export function CommunityComputeTerritoryMap({
                   raiseTerritory(deployment.id, event.currentTarget)
                 }
                 onMouseLeave={lowerTerritory}
-                role="button"
                 style={territoryHoverStyle(
                   territory.cells,
                   viewBox,
@@ -228,31 +177,11 @@ export function CommunityComputeTerritoryMap({
                 tabIndex={0}
               >
                 <title>{territoryAccessibleLabel(deployment)}</title>
-                <TerritoryShape
-                  avatarUrl={contributorAvatarUrl(
-                    deployment.source.memberPubkey,
-                    contributorProfiles,
-                  )}
-                  cells={territory.cells}
-                  contributorLabel={contributorLabel(
-                    deployment,
-                    contributorProfiles,
-                  )}
-                  inferenceActive={inferenceActive}
-                  selected={selected}
-                  showContributor={!isDenseMap || hoveredId === deployment.id}
-                  territoryCenter={territory.center}
-                />
+                <TerritoryShape cells={territory.cells} />
               </g>
             );
           })}
         </svg>
-        {isHeroDeployment && activeDeployment ? (
-          <HeroDeploymentOverlay
-            deployment={activeDeployment}
-            inferenceActive={inferenceIds.has(activeDeployment.id)}
-          />
-        ) : null}
         {hoveredDeployment ? (
           <div
             className="pointer-events-none absolute bottom-3 left-3 max-w-64 rounded-xl border border-border/70 bg-popover/95 px-3 py-2 shadow-lg backdrop-blur-sm"
@@ -268,224 +197,43 @@ export function CommunityComputeTerritoryMap({
               {hoveredDeployment.deviceLabel} ·{" "}
               {formatCapacity(hoveredDeployment.capacityGb)}
             </p>
-            <p className="mt-1 text-2xs capitalize text-muted-foreground">
-              {inferenceIds.has(hoveredDeployment.id)
-                ? "Simulated inference"
-                : hoveredDeployment.health}{" "}
-              · {hoveredDeployment.cellCount}{" "}
-              {hoveredDeployment.cellCount === 1 ? "cell" : "cells"}
+            <p className="mt-1 text-2xs text-muted-foreground">
+              Available to the community
             </p>
           </div>
-        ) : null}
-      </div>
-
-      <div className="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(16rem,0.36fr)]">
-        <DeploymentList
-          activeId={activeId}
-          deployments={model.deployments}
-          onSearchChange={setDeploymentSearch}
-          onSelect={selectDeployment}
-          search={deploymentSearch}
-        />
-        {activeDeployment ? (
-          <DeploymentDetails deployment={activeDeployment} />
         ) : null}
       </div>
     </section>
   );
 }
 
-function MapLegend({ dense }: { dense: boolean }) {
-  return (
-    <div
-      aria-label="Map legend"
-      role="note"
-      className="pointer-events-none z-10 flex w-fit max-w-full flex-wrap items-center justify-center gap-x-3 gap-y-1 self-end rounded-lg border border-border/60 bg-background/90 px-2.5 py-2 text-2xs text-muted-foreground shadow-sm backdrop-blur-sm"
-      data-testid="community-compute-map-legend"
-    >
-      <span className="flex items-center gap-1.5">
-        <span className="size-2.5 rotate-45 bg-foreground" />
-        Area = model memory
-      </span>
-      <span className="flex items-center gap-1.5">
-        <span className="size-2.5 animate-pulse rounded-full bg-[#f5b800] motion-reduce:animate-none" />
-        Gold breath = serving
-      </span>
-      <span className="flex items-center gap-1.5">
-        <span className="size-3 rounded-full border border-border bg-muted" />
-        {dense ? "Hover = contributor" : "Avatar = contributor"}
-      </span>
-      <span className="flex items-center gap-1.5">
-        <span className="size-2.5 rotate-45 border-2 border-[#ffd84d]" />
-        Gold border = selected
-      </span>
-    </div>
-  );
-}
-
-function HeroDeploymentOverlay({
-  deployment,
-  inferenceActive,
-}: {
-  deployment: CommunityComputeDeployment;
-  inferenceActive: boolean;
-}) {
-  return (
-    <div
-      className="pointer-events-none absolute bottom-3 left-1/2 w-[min(19rem,calc(100%-2rem))] -translate-x-1/2 rounded-xl border border-background/20 bg-background/90 p-3 text-center shadow-xl backdrop-blur-md"
-      data-testid="community-compute-hero-deployment"
-    >
-      <div className="flex items-center justify-center gap-2">
-        <span
-          className={cn(
-            "size-2 rounded-full",
-            deployment.health === "healthy"
-              ? "bg-emerald-500"
-              : "bg-muted-foreground",
-          )}
-        />
-        <span className="text-2xs font-semibold uppercase tracking-wide text-muted-foreground">
-          {inferenceActive ? "Serving now" : deployment.health}
-        </span>
-      </div>
-      <h3
-        className="mt-1 truncate text-sm font-semibold"
-        title={deployment.modelId}
-      >
-        {shortModelName(deployment.modelId)}
-      </h3>
-      <p className="mt-0.5 truncate text-xs text-muted-foreground">
-        {deployment.deviceLabel}
-        {deployment.isSelf ? " · This machine" : ""}
-      </p>
-      <dl className="mt-2 grid grid-cols-3 divide-x divide-border/60 rounded-lg border border-border/60 bg-background/70 py-2">
-        <HeroMetric
-          label="Shared memory"
-          value={formatCapacity(deployment.capacityGb)}
-        />
-        <HeroMetric
-          label="Model footprint"
-          value={formatCapacity(deployment.source.modelSizeGb ?? null)}
-        />
-        <HeroMetric label="Availability" value="Community ready" />
-      </dl>
-    </div>
-  );
-}
-
-function HeroMetric({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="min-w-0 px-2">
-      <dt className="truncate text-3xs uppercase tracking-wide text-muted-foreground">
-        {label}
-      </dt>
-      <dd className="mt-0.5 truncate text-2xs font-semibold" title={value}>
-        {value}
-      </dd>
-    </div>
-  );
-}
-
 function TerritoryShape({
-  avatarUrl,
   cells,
-  contributorLabel,
-  inferenceActive,
-  selected,
-  showContributor,
-  territoryCenter,
 }: {
-  avatarUrl: string | null;
   cells: readonly CommunityComputeHexCell[];
-  contributorLabel: string;
-  inferenceActive: boolean;
-  selected: boolean;
-  showContributor: boolean;
-  territoryCenter: { q: number; r: number };
 }) {
   const boundary = hexTerritoryBoundaryEdges(cells);
-  const fillClass = "fill-foreground";
-  const territoryAnimationStyle = inferenceActive
-    ? ({
-        "--mesh-breath-duration": `${5.8 + (stableVisualHash(cells[0]?.deploymentId ?? "") % 7) * 0.24}s`,
-        animationDelay: `${-((stableVisualHash(`${cells[0]?.deploymentId}:phase`) % 37) / 10)}s`,
-      } as React.CSSProperties)
-    : undefined;
-  const center = axialToPoint(territoryCenter.q, territoryCenter.r);
-  const avatarRadius = 0.42;
-  const avatarClipId = `contributor-${testId(cells[0]?.deploymentId ?? "unknown")}`;
   return (
     <g>
-      <defs>
-        <clipPath id={avatarClipId}>
-          <circle cx={center.x} cy={center.y} r={avatarRadius} />
-        </clipPath>
-      </defs>
       {cells.map((cell) => {
         const center = axialToPoint(cell.q, cell.r);
         return (
           <polygon
-            className={cn(
-              fillClass,
-              "stroke-transparent",
-              inferenceActive &&
-                "animate-mesh-inference motion-reduce:animate-none",
-            )}
+            className="fill-foreground stroke-transparent"
             data-testid="community-compute-tile"
             key={cell.id}
             points={hexPoints(center, FUSED_TILE_RADIUS)}
-            style={territoryAnimationStyle}
           />
         );
       })}
       <path
-        className={cn(
-          "fill-none transition-[opacity,stroke-width] duration-200 motion-reduce:transition-none",
-          selected ? "stroke-[#f5b800]" : "stroke-background",
-        )}
+        className="fill-none stroke-background"
         d={edgesToPath(boundary)}
         data-testid="community-compute-territory-boundary"
         strokeLinecap="round"
         strokeLinejoin="round"
-        // Selection uses Buzz gold while the normal perimeter cuts a clean gutter.
-        strokeWidth={selected ? TILE_EDGE_WIDTH * 2.1 : TILE_EDGE_WIDTH}
+        strokeWidth={TILE_EDGE_WIDTH}
       />
-      {showContributor ? (
-        <circle
-          className={cn(
-            "fill-background stroke-background",
-            selected && "stroke-[#f5b800]",
-          )}
-          cx={center.x}
-          cy={center.y}
-          data-testid="community-compute-contributor-avatar"
-          r={avatarRadius + 0.09}
-          strokeWidth={0.09}
-        />
-      ) : null}
-      {showContributor && avatarUrl ? (
-        <image
-          aria-label={`${contributorLabel} avatar`}
-          clipPath={`url(#${avatarClipId})`}
-          height={avatarRadius * 2}
-          href={avatarUrl}
-          preserveAspectRatio="xMidYMid slice"
-          width={avatarRadius * 2}
-          x={center.x - avatarRadius}
-          y={center.y - avatarRadius}
-        />
-      ) : showContributor ? (
-        <text
-          className="pointer-events-none fill-foreground font-bold"
-          dominantBaseline="central"
-          fontSize={0.42}
-          textAnchor="middle"
-          x={center.x}
-          y={center.y}
-        >
-          {contributorInitials(contributorLabel)}
-        </text>
-      ) : null}
     </g>
   );
 }
@@ -519,169 +267,6 @@ function edgesToPath(
         `M ${edge.start.x} ${edge.start.y} L ${edge.end.x} ${edge.end.y}`,
     )
     .join(" ");
-}
-
-function DeploymentList({
-  deployments,
-  activeId,
-  onSearchChange,
-  onSelect,
-  search,
-}: {
-  deployments: readonly CommunityComputeDeployment[];
-  activeId: string | null;
-  onSearchChange: (value: string) => void;
-  onSelect: (id: string) => void;
-  search: string;
-}) {
-  const query = search.trim().toLowerCase();
-  const visibleDeployments = query
-    ? deployments.filter((deployment) =>
-        [deployment.modelId, deployment.deviceLabel]
-          .filter(Boolean)
-          .some((value) => value?.toLowerCase().includes(query)),
-      )
-    : deployments;
-  return (
-    <div className="min-w-0">
-      <div className="mb-2 flex items-center justify-between gap-3">
-        <p className="text-xs font-medium text-muted-foreground">Deployments</p>
-        <span className="text-2xs tabular-nums text-muted-foreground">
-          {visibleDeployments.length} of {deployments.length}
-        </span>
-      </div>
-      <input
-        aria-label="Search deployments"
-        className="mb-2 h-9 w-full rounded-lg border border-input/60 bg-background px-3 text-xs outline-hidden placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
-        onChange={(event) => onSearchChange(event.target.value)}
-        placeholder="Search models or devices"
-        type="search"
-        value={search}
-      />
-      <ul
-        aria-label="Community compute deployments"
-        className="max-h-72 space-y-1 overflow-y-auto pr-1"
-        data-testid="community-compute-deployment-list"
-      >
-        {visibleDeployments.map((deployment) => {
-          const selected = deployment.id === activeId;
-          return (
-            <li key={deployment.id}>
-              <button
-                aria-pressed={selected}
-                className={cn(
-                  "flex w-full items-center gap-2 rounded-lg border border-transparent px-2.5 py-2 text-left text-xs transition-colors hover:bg-muted/60 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
-                  selected && "border-border bg-muted/70 text-foreground",
-                )}
-                data-testid={`community-compute-deployment-${testId(deployment.id)}`}
-                onClick={() => onSelect(deployment.id)}
-                type="button"
-              >
-                <HealthGlyph health={deployment.health} />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate font-medium">
-                    {shortModelName(deployment.modelId)}
-                  </span>
-                  <span className="block truncate text-2xs text-muted-foreground">
-                    {deployment.deviceLabel}
-                  </span>
-                </span>
-                <span className="shrink-0 text-2xs capitalize text-muted-foreground">
-                  {deployment.health}
-                </span>
-              </button>
-            </li>
-          );
-        })}
-      </ul>
-    </div>
-  );
-}
-
-function DeploymentDetails({
-  deployment,
-}: {
-  deployment: CommunityComputeDeployment;
-}) {
-  return (
-    <article
-      aria-live="polite"
-      className="min-w-0 rounded-lg border border-border/60 bg-background/80 p-3"
-      data-testid="community-compute-deployment-details"
-    >
-      <div className="flex items-start gap-2">
-        <HealthGlyph health={deployment.health} />
-        <div className="min-w-0 flex-1">
-          <h3
-            className="truncate text-sm font-semibold"
-            title={deployment.modelId}
-          >
-            {shortModelName(deployment.modelId)}
-          </h3>
-          <p className="mt-0.5 truncate text-xs text-muted-foreground">
-            {deployment.deviceLabel}
-            {deployment.isSelf ? " · This machine" : ""}
-          </p>
-          <p className="mt-0.5 text-2xs capitalize text-muted-foreground">
-            {deployment.health} · {deployment.cellCount}{" "}
-            {deployment.cellCount === 1 ? "cell" : "cells"}
-          </p>
-        </div>
-      </div>
-      {deployment.healthReason ? (
-        <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-          {deployment.healthReason}
-        </p>
-      ) : null}
-      <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
-        <Detail
-          label="Shared memory"
-          value={formatCapacity(deployment.capacityGb)}
-        />
-        <Detail label="Model" value={deployment.modelId} />
-        <Detail
-          label="Reported"
-          value={formatReportedAt(deployment.source.reportedAt)}
-        />
-        <Detail
-          label="Model footprint"
-          value={formatCapacity(deployment.source.modelSizeGb ?? null)}
-        />
-      </dl>
-    </article>
-  );
-}
-
-function Detail({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="min-w-0">
-      <dt className="text-2xs text-muted-foreground">{label}</dt>
-      <dd className="mt-0.5 truncate font-medium" title={value}>
-        {value}
-      </dd>
-    </div>
-  );
-}
-
-function HealthGlyph({ health }: { health: CommunityComputeDeploymentHealth }) {
-  const cue = healthCue(health);
-  return (
-    <span
-      aria-hidden="true"
-      className={cn(
-        "flex size-4 shrink-0 items-center justify-center rounded-full border border-foreground/45 text-3xs font-bold leading-none",
-        health === "warming" &&
-          "animate-pulse border-dashed motion-reduce:animate-none",
-        health === "idle" && "border-dotted text-muted-foreground",
-        health === "degraded" && "border-dashed",
-        health === "offline" &&
-          "border-muted-foreground/60 text-muted-foreground",
-        health === "unknown" && "border-dotted text-muted-foreground",
-      )}
-    >
-      {cue.glyph}
-    </span>
-  );
 }
 
 function EmptyHexes() {
@@ -734,97 +319,22 @@ function computeViewBox(
   };
 }
 
-function healthCue(health: CommunityComputeDeploymentHealth): {
-  dashArray?: string;
-  glyph: string;
-  strokeWidth: number;
-} {
-  switch (health) {
-    case "healthy":
-      return { glyph: "✓", strokeWidth: 0.075 };
-    case "warming":
-      return { glyph: "↻", dashArray: "0.2 0.12", strokeWidth: 0.085 };
-    case "idle":
-      return { glyph: "–", dashArray: "0.04 0.14", strokeWidth: 0.08 };
-    case "degraded":
-      return { glyph: "!", dashArray: "0.3 0.12", strokeWidth: 0.11 };
-    case "offline":
-      return { glyph: "×", dashArray: "0.08 0.1", strokeWidth: 0.075 };
-    case "unknown":
-      return { glyph: "?", dashArray: "0.03 0.12", strokeWidth: 0.075 };
-  }
-}
-
-function stableVisualHash(value: string): number {
-  let hash = 2166136261;
-  for (const character of value) {
-    hash ^= character.codePointAt(0) ?? 0;
-    hash = Math.imul(hash, 16777619);
-  }
-  return hash >>> 0;
-}
-
 function shortModelName(modelId: string): string {
   const tail = modelId.split("/").at(-1) ?? modelId;
   return tail.length > 34 ? `${tail.slice(0, 31)}…` : tail;
-}
-
-type ContributorProfiles = Record<
-  string,
-  { avatarUrl: string | null; displayName: string | null }
->;
-
-function contributorProfile(
-  pubkey: string | null | undefined,
-  profiles: ContributorProfiles,
-) {
-  return pubkey ? profiles[pubkey.trim().toLowerCase()] : undefined;
-}
-
-function contributorAvatarUrl(
-  pubkey: string | null | undefined,
-  profiles: ContributorProfiles,
-): string | null {
-  const avatarUrl = contributorProfile(pubkey, profiles)?.avatarUrl ?? null;
-  const snapshotUrl = getAvatarSnapshotUrl(avatarUrl);
-  return snapshotUrl ? rewriteRelayUrl(snapshotUrl) : null;
-}
-
-function contributorLabel(
-  deployment: CommunityComputeDeployment,
-  profiles: ContributorProfiles,
-): string {
-  return (
-    contributorProfile(deployment.source.memberPubkey, profiles)?.displayName ??
-    (deployment.isSelf ? "You" : deployment.deviceLabel)
-  );
-}
-
-function contributorInitials(label: string): string {
-  const words = label.trim().split(/\s+/).filter(Boolean);
-  return words
-    .slice(0, 2)
-    .map((word) => word[0]?.toUpperCase() ?? "")
-    .join("");
 }
 
 function territoryAccessibleLabel(
   deployment: CommunityComputeDeployment,
 ): string {
   const capacity = formatCapacity(deployment.capacityGb);
-  return `${deployment.modelId} on ${deployment.deviceLabel}, ${deployment.health}, ${capacity}, ${deployment.cellCount} ${deployment.cellCount === 1 ? "cell" : "cells"}`;
+  return `${deployment.modelId} on ${deployment.deviceLabel}, ${capacity}`;
 }
 
 function formatCapacity(value: number | null): string {
   return value === null
     ? "Capacity not reported"
     : `${Math.round(value)} GB shared`;
-}
-
-function formatReportedAt(value: number | null | undefined): string {
-  if (value === null || value === undefined) return "Not reported";
-  const milliseconds = value < 10_000_000_000 ? value * 1000 : value;
-  return new Date(milliseconds).toLocaleString();
 }
 
 function testId(value: string): string {

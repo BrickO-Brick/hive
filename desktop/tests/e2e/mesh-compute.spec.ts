@@ -166,13 +166,12 @@ test("Shared Compute is only available from Settings", async ({ page }) => {
   await page.goto("/");
 
   await expect(page.getByTestId("sidebar-mesh-compute-row")).toHaveCount(0);
-  await page.getByTestId("open-settings").click();
-  await page.getByTestId("settings-nav-compute").click();
+  await openSettings(page, "compute");
 
   await expect(page.getByTestId("settings-mesh-compute-page")).toBeVisible();
 });
 
-test("Community Compute shows live KPIs and the tutorial simulation", async ({
+test("Community Compute keeps the live community topology focused", async ({
   page,
 }) => {
   await installMockBridge(page);
@@ -222,66 +221,26 @@ test("Community Compute shows live KPIs and the tutorial simulation", async ({
   await expect(
     page.getByTestId("community-compute-territory-map"),
   ).toBeVisible();
-  await expect(
-    page.getByTestId("community-compute-deployment-list"),
-  ).toContainText("Alpha Studio");
-  await page.getByLabel("Search deployments").fill("Beta");
-  await expect(
-    page.getByTestId("community-compute-deployment-list"),
-  ).toContainText("Beta Workstation");
-  await expect(
-    page.getByTestId("community-compute-deployment-list"),
-  ).not.toContainText("Alpha Studio");
-  await page.getByLabel("Search deployments").fill("");
 
-  const tutorialButton = page.getByTestId("community-compute-tutorial-button");
-  await tutorialButton.click();
-  await expect(tutorialButton).toHaveAttribute("aria-pressed", "true");
   await expect(
-    page.getByTestId("community-compute-simulated-banner"),
-  ).toBeVisible();
+    page.getByTestId("community-compute-tutorial-button"),
+  ).toHaveCount(0);
+  await expect(page.getByTestId("compute-token-leaderboard")).toHaveCount(0);
   await expect(
-    page.getByTestId("community-compute-tutorial-panel"),
-  ).toContainText("Every territory is a model deployment");
-  await expect(page.getByTestId("compute-share-banner")).toHaveCount(0);
-  const tutorialTile = page
-    .locator('[data-inference-active="true"]')
-    .first()
-    .getByTestId("community-compute-tile")
-    .first();
-  await expect(tutorialTile).toBeVisible();
-  await expect
-    .poll(() =>
-      tutorialTile.evaluate(
-        (element) => getComputedStyle(element).animationName,
-      ),
-    )
-    .toBe("mesh-breath");
-  await page.getByLabel("Preview scenario").selectOption("single-device");
+    page.getByTestId("community-compute-deployment-list"),
+  ).toHaveCount(0);
+  await expect(page.getByText("Mesh health", { exact: true })).toHaveCount(0);
   await expect(
-    page.getByTestId("community-compute-kpi-members-sharing"),
-  ).toContainText("1");
-  await page.getByRole("button", { name: "Next" }).click();
-  await expect(
-    page.getByTestId("community-compute-tutorial-panel"),
-  ).toContainText("Area represents memory");
-  await page.getByRole("button", { name: "Next" }).click();
-  await expect(
-    page.getByTestId("community-compute-tutorial-panel"),
-  ).toContainText("Motion illustrates inference in flight");
+    page.getByTestId("community-compute-contributor-avatar"),
+  ).toHaveCount(0);
+  await expect(page.locator('[data-inference-active="true"]')).toHaveCount(0);
+
   const territory = page.locator("[data-cell-count]").first();
-  await territory.click();
-  await expect(territory).toHaveAttribute("data-selected", "true");
   await territory.hover();
   await expect(
     page.getByTestId("community-compute-hover-details"),
-  ).toContainText("Simulated inference");
-  await tutorialButton.click();
-  await expect(tutorialButton).toHaveAttribute("aria-pressed", "false");
+  ).toContainText("Alpha Studio");
   await expect(
-    page.getByTestId("community-compute-simulated-banner"),
-  ).toHaveCount(0);
-  await expect(
-    page.getByTestId("community-compute-kpi-members-sharing"),
-  ).toContainText("2");
+    page.getByTestId("community-compute-hover-details"),
+  ).toContainText("Available to the community");
 });
