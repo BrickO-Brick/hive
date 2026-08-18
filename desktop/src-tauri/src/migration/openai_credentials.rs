@@ -95,41 +95,15 @@ struct DefinitionContext {
     env: Map<String, Value>,
 }
 
-#[derive(Clone, Debug)]
-struct HarnessContext {
-    command: String,
-    env: Map<String, Value>,
-}
-
-fn harness_env_for_record(
-    command_override: Option<&str>,
+fn harness_env_for_runtime(
     runtime: Option<&str>,
-    harnesses: &std::collections::HashMap<String, HarnessContext>,
+    harnesses: &std::collections::HashMap<String, Map<String, Value>>,
 ) -> Result<Map<String, Value>, String> {
-    if let Some(command) = command_override
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        if crate::managed_agents::known_acp_runtime(command).is_some() {
-            return Ok(Map::new());
-        }
-        let normalized = crate::managed_agents::normalize_command_identity(command);
-        return harnesses
-            .iter()
-            .find(|(id, harness)| {
-                id.as_str() == command
-                    || crate::managed_agents::normalize_command_identity(&harness.command)
-                        == normalized
-            })
-            .map(|(_, harness)| harness.env.clone())
-            .ok_or_else(|| format!("unresolved custom harness override {command:?}"));
-    }
-
     let Some(runtime) = runtime.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(Map::new());
     };
-    if let Some(harness) = harnesses.get(runtime) {
-        return Ok(harness.env.clone());
+    if let Some(env) = harnesses.get(runtime) {
+        return Ok(env.clone());
     }
     if crate::managed_agents::custom_harnesses::check_id_collision(runtime).is_ok() {
         return Err(format!("unresolved custom harness {runtime:?}"));
@@ -152,7 +126,7 @@ fn migrate_openai_credentials_in_file(
     path: &Path,
     effective_provider: Option<&str>,
     inherited_env_vars: Option<&Map<String, Value>>,
-    harnesses: &std::collections::HashMap<String, HarnessContext>,
+    harnesses: &std::collections::HashMap<String, Map<String, Value>>,
 ) -> Result<(), String> {
     let marker_path = sibling_path(path, MIGRATION_SUFFIX);
     if marker_path.exists() {
@@ -240,10 +214,8 @@ fn migrate_openai_credentials_in_file(
                     .or_else(|| definition.and_then(|definition| definition.runtime.as_deref()))
                     .map(str::trim)
                     .filter(|runtime| !runtime.is_empty());
-                let command_override = record.get("agent_command_override").and_then(Value::as_str);
                 let merged_inherited_env = {
-                    let mut merged =
-                        harness_env_for_record(command_override, selected_runtime, harnesses)?;
+                    let mut merged = harness_env_for_runtime(selected_runtime, harnesses)?;
                     if let Some(inherited) = inherited_env_vars {
                         merged.extend(inherited.clone());
                     }
@@ -297,7 +269,7 @@ pub(super) fn migrate_openai_credentials(app: &tauri::AppHandle) {
             .map(crate::managed_agents::custom_harnesses::load_custom_harnesses)
             .unwrap_or_default(),
     );
-    let harnesses: std::collections::HashMap<String, HarnessContext> = harness_definitions
+    let harnesses: std::collections::HashMap<String, Map<String, Value>> = harness_definitions
         .into_iter()
         .map(|definition| {
             let env = definition
@@ -305,13 +277,7 @@ pub(super) fn migrate_openai_credentials(app: &tauri::AppHandle) {
                 .into_iter()
                 .map(|(key, value)| (key, Value::String(value)))
                 .collect();
-            (
-                definition.id,
-                HarnessContext {
-                    command: definition.command,
-                    env,
-                },
-            )
+            (definition.id, env)
         })
         .collect();
     let global_path = agents_dir.join("global-agent-config.json");
@@ -351,18 +317,15 @@ pub(super) fn migrate_openai_credentials(app: &tauri::AppHandle) {
 mod tests {
     use super::*;
 
-    fn custom_gateway_harnesses() -> std::collections::HashMap<String, HarnessContext> {
+    fn custom_gateway_harnesses() -> std::collections::HashMap<String, Map<String, Value>> {
         std::collections::HashMap::from([(
             "custom-gateway".to_string(),
-            HarnessContext {
-                command: "gateway-acp".to_string(),
-                env: serde_json::json!({
-                    "OPENAI_COMPAT_BASE_URL": "https://gateway.example/v1"
-                })
-                .as_object()
-                .unwrap()
-                .clone(),
-            },
+            serde_json::json!({
+                "OPENAI_COMPAT_BASE_URL": "https://gateway.example/v1"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
         )])
     }
 
@@ -623,32 +586,28 @@ mod tests {
     }
 
     #[test]
-    fn unresolved_custom_override_leaves_file_unmarked() {
+    fn raw_command_override_does_not_block_runtime_less_record_migration() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("managed-agents.json");
-        let original = serde_json::to_vec(&serde_json::json!([{
-            "pubkey": "agent-pubkey",
-            "agent_command_override": "missing-acp",
-            "provider": "openai",
-            "env_vars": { "OPENAI_COMPAT_API_KEY": "compat-secret" }
-        }]))
-        .unwrap();
-        std::fs::write(&path, &original).unwrap();
-
-        let error = migrate_openai_credentials_in_file(
+        std::fs::write(
             &path,
-            None,
-            None,
-            &std::collections::HashMap::new(),
+            serde_json::to_vec(&serde_json::json!([{
+                "pubkey": "agent-pubkey",
+                "agent_command_override": "/opt/custom/my-agent",
+                "provider": "openai",
+                "env_vars": { "OPENAI_COMPAT_API_KEY": "official-secret" }
+            }]))
+            .unwrap(),
         )
-        .unwrap_err();
+        .unwrap();
 
-        assert!(
-            error.contains("unresolved custom harness override"),
-            "{error}"
-        );
-        assert_eq!(std::fs::read(&path).unwrap(), original);
-        assert!(!sibling_path(&path, MIGRATION_SUFFIX).exists());
+        migrate_openai_credentials_in_file(&path, None, None, &std::collections::HashMap::new())
+            .unwrap();
+        let records: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+
+        assert_eq!(records[0]["env_vars"][OPENAI_API_KEY], "official-secret");
+        assert!(sibling_path(&path, MIGRATION_SUFFIX).exists());
     }
 
     #[test]
@@ -700,7 +659,7 @@ mod tests {
     }
 
     #[test]
-    fn builtin_override_beats_custom_record_runtime() {
+    fn command_override_does_not_suppress_record_runtime_env() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("managed-agents.json");
         std::fs::write(
@@ -721,8 +680,12 @@ mod tests {
         let records: Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
 
-        assert_eq!(records[0]["provider"], "openai");
-        assert_eq!(records[0]["env_vars"][OPENAI_API_KEY], "official-secret");
+        assert_eq!(records[0]["provider"], "openai-compat");
+        assert_eq!(
+            records[0]["env_vars"][OPENAI_COMPAT_API_KEY],
+            "official-secret"
+        );
+        assert!(records[0]["env_vars"].get(OPENAI_API_KEY).is_none());
     }
 
     #[test]
