@@ -8,6 +8,8 @@ import '../../shared/relay/relay.dart';
 /// A single typing indicator entry.
 @immutable
 class TypingEntry {
+  static const ttl = Duration(seconds: 8);
+
   final String pubkey;
   final String? threadHeadId;
   final int expiresAtMs;
@@ -17,6 +19,12 @@ class TypingEntry {
     this.threadHeadId,
     required this.expiresAtMs,
   });
+
+  /// Local receipt time reconstructed from the fixed typing TTL.
+  DateTime get receivedAt => DateTime.fromMillisecondsSinceEpoch(
+    expiresAtMs - ttl.inMilliseconds,
+    isUtc: true,
+  );
 }
 
 /// Tracks who is currently typing in a specific channel.
@@ -24,7 +32,6 @@ class TypingEntry {
 /// Subscribes to kind:20002 (typing indicator) events via websocket.
 /// Entries expire after 8 seconds (matching the desktop TTL).
 class ChannelTypingNotifier extends Notifier<List<TypingEntry>> {
-  static const _ttlMs = 8000;
   static const _pruneIntervalMs = 1000;
 
   final String channelId;
@@ -70,7 +77,7 @@ class ChannelTypingNotifier extends Notifier<List<TypingEntry>> {
     final entry = TypingEntry(
       pubkey: event.pubkey,
       threadHeadId: event.getTagValue('e'),
-      expiresAtMs: now + _ttlMs,
+      expiresAtMs: now + TypingEntry.ttl.inMilliseconds,
     );
 
     // Upsert: replace existing entry for same pubkey+thread, or add.

@@ -14,7 +14,10 @@ const _channelId = 'channel-1';
 
 void main() {
   test('prefers observer work and keeps human typing separate', () {
-    final observerTurn = _turn('agent-a');
+    final observerTurn = _turn(
+      'agent-a',
+      livenessTimeout: const Duration(seconds: 40),
+    );
     final container = ProviderContainer(
       overrides: [
         currentPubkeyProvider.overrideWith((ref) => 'owner'),
@@ -22,10 +25,13 @@ void main() {
           _channelId,
         ).overrideWith((ref) async => const <ChannelMember>[]),
         channelTypingProvider(_channelId).overrideWith(
-          () => _FakeTypingNotifier(const [
-            TypingEntry(pubkey: 'agent-a', expiresAtMs: 9999999999999),
-            TypingEntry(pubkey: 'agent-b', expiresAtMs: 9999999999999),
-            TypingEntry(pubkey: 'human', expiresAtMs: 9999999999999),
+          () => _FakeTypingNotifier([
+            _typingEntry(
+              'agent-a',
+              receivedAt: DateTime.utc(2026, 8, 16, 12, 0, 9),
+            ),
+            _typingEntry('agent-b'),
+            _typingEntry('human'),
           ]),
         ),
         agentMentionPubkeysProvider(
@@ -176,6 +182,62 @@ void main() {
       },
     );
   }
+
+  test('fresh typing supersedes a stale working turn in the same scope', () {
+    final staleTurn = _turn(
+      'agent-a',
+      threadHeadId: 'thread-1',
+      lastActivityAt: DateTime.utc(2026, 8, 16, 12),
+      livenessTimeout: const Duration(days: 7, seconds: 30),
+    );
+    final container = ProviderContainer(
+      overrides: [
+        currentPubkeyProvider.overrideWith((ref) => 'owner'),
+        channelMembersProvider(
+          _channelId,
+        ).overrideWith((ref) async => const <ChannelMember>[]),
+        channelTypingProvider(_channelId).overrideWith(
+          () => _FakeTypingNotifier([
+            _typingEntry(
+              'agent-a',
+              threadHeadId: 'thread-1',
+              receivedAt: DateTime.utc(2026, 8, 16, 12, 0, 31),
+            ),
+          ]),
+        ),
+        agentMentionPubkeysProvider(
+          _channelId,
+        ).overrideWith((ref) => const {'agent-a'}),
+        agentOwnersProvider.overrideWithValue(
+          const AsyncData({'agent-a': 'owner'}),
+        ),
+        userCacheProvider.overrideWith(_FakeUserCacheNotifier.new),
+        observerRelayProvider.overrideWith(
+          () => _FakeObserverRelayNotifier({
+            'agent-a': [_observerFrame('agent-a')],
+          }),
+        ),
+        composerAgentTurnStatesProvider.overrideWithValue([staleTurn]),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    final signal = container
+        .read(
+          composerActivityStateProvider((
+            channelId: _channelId,
+            threadHeadId: 'thread-1',
+          )),
+        )
+        .agents
+        .single;
+
+    expect(signal.source, AgentWorkingSource.typing);
+    expect(signal.isWorking, isTrue);
+    expect(signal.turnId, isNull);
+    expect(signal.startedAt, isNull);
+    expect(container.read(workingBotPubkeysProvider(_channelId)), {'agent-a'});
+  });
 
   test(
     'keeps a scoped terminal outcome reachable after thread typing stops',
@@ -435,6 +497,7 @@ AgentTurnState _turn(
   String? threadHeadId,
   DateTime? startedAt,
   DateTime? lastActivityAt,
+  Duration livenessTimeout = const Duration(seconds: 30),
 }) => AgentTurnState(
   agentPubkey: pubkey,
   channelId: _channelId,
@@ -442,12 +505,25 @@ AgentTurnState _turn(
   turnId: turnId ?? 'turn-$pubkey',
   startedAt: startedAt ?? DateTime.utc(2026, 8, 16, 12),
   lastActivityAt: lastActivityAt ?? DateTime.utc(2026, 8, 16, 12),
-  livenessTimeout: const Duration(seconds: 30),
+  livenessTimeout: livenessTimeout,
   phase: phase,
   terminalAt: phase == AgentTurnPhase.working
       ? null
       : DateTime.utc(2026, 8, 16, 12, 0, 5),
 );
+
+TypingEntry _typingEntry(
+  String pubkey, {
+  String? threadHeadId,
+  DateTime? receivedAt,
+}) {
+  final received = receivedAt ?? DateTime.utc(2026, 8, 16, 12);
+  return TypingEntry(
+    pubkey: pubkey,
+    threadHeadId: threadHeadId,
+    expiresAtMs: received.add(TypingEntry.ttl).millisecondsSinceEpoch,
+  );
+}
 
 ObserverFrame _observerFrame(String pubkey) => ObserverFrame(
   seq: 1,

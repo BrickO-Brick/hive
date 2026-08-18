@@ -8,6 +8,9 @@ import '../channel_typing_provider.dart';
 import 'active_agent_turns.dart';
 import 'observer_subscription.dart';
 
+const _observerLivenessSlack = Duration(seconds: 30);
+const _maximumTypingSupersedeGrace = Duration(seconds: 30);
+
 /// Composer activity is scoped either to a channel or to one thread.
 typedef ComposerActivityKey = ({String channelId, String? threadHeadId});
 
@@ -123,9 +126,17 @@ final composerActivityStateProvider = Provider.autoDispose
           humans.add(entry);
           continue;
         }
-        if (signals[pubkey]?.isWorking == true) continue;
         final turn = activeByAgent[pubkey];
-        final liveTurn = turn?.isWorking == true ? turn : null;
+        final supersedesWorkingTurn =
+            turn != null &&
+            turn.isWorking &&
+            _typingSupersedesWorkingTurn(entry, turn);
+        if (signals[pubkey]?.isWorking == true && !supersedesWorkingTurn) {
+          continue;
+        }
+        final liveTurn = turn?.isWorking == true && !supersedesWorkingTurn
+            ? turn
+            : null;
         signals[pubkey] = WorkingAgentSignal(
           pubkey: pubkey,
           source: AgentWorkingSource.typing,
@@ -186,4 +197,21 @@ int _compareComposerTurnRecency(AgentTurnState a, AgentTurnState b) {
   if (started != 0) return started;
   if (a.isWorking != b.isWorking) return a.isWorking ? 1 : -1;
   return a.turnId.compareTo(b.turnId);
+}
+
+bool _typingSupersedesWorkingTurn(TypingEntry typing, AgentTurnState turn) {
+  final advertisedCadenceMs =
+      turn.livenessTimeout.inMilliseconds -
+      _observerLivenessSlack.inMilliseconds;
+  final graceMs = advertisedCadenceMs <= 0
+      ? _maximumTypingSupersedeGrace.inMilliseconds
+      : advertisedCadenceMs
+            .clamp(
+              TypingEntry.ttl.inMilliseconds,
+              _maximumTypingSupersedeGrace.inMilliseconds,
+            )
+            .toInt();
+  return typing.receivedAt.isAfter(
+    turn.lastActivityAt.add(Duration(milliseconds: graceMs)),
+  );
 }
