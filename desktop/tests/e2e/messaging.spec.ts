@@ -1285,6 +1285,91 @@ test("rapid Enter presses on a ready link preview send exactly once", async ({
     .toBe(1);
 });
 
+test("mixed link preview and prose send as separate link-first messages", async ({
+  page,
+}) => {
+  const previewUrl = "https://github.com/block/buzz/pull/3246?split=1";
+  const prose = `Context for the shared link ${Date.now()}`;
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+  const input = page.getByTestId("message-input");
+  await input.fill(`${prose} ${previewUrl}`);
+  await waitForReadyComposerSnapshots(page);
+  await page.getByTestId("send-message").click();
+
+  const rows = page.getByTestId("message-row");
+  const linkRow = rows
+    .filter({ has: page.locator("[data-link-preview]") })
+    .last();
+  const proseRow = rows.filter({ hasText: prose });
+  await expect(linkRow).toContainText(previewUrl);
+  await expect(linkRow).not.toContainText(prose);
+  await expect(proseRow).toBeVisible();
+  await expect(proseRow.locator("[data-link-preview]")).toHaveCount(0);
+
+  const [linkBox, proseBox] = await Promise.all([
+    linkRow.boundingBox(),
+    proseRow.boundingBox(),
+  ]);
+  if (!linkBox || !proseBox) {
+    throw new Error("Expected separate link and prose message geometry.");
+  }
+  expect(linkBox.y).toBeLessThan(proseBox.y);
+
+  const calls = await page.evaluate(() =>
+    (window.__BUZZ_E2E_COMMAND_PAYLOADS__ ?? []).filter(
+      (entry) => entry.command === "send_channel_message",
+    ),
+  );
+  expect(calls).toHaveLength(2);
+  expect(calls[0]?.payload).toMatchObject({
+    content: previewUrl,
+    mentionPubkeys: [],
+  });
+  expect(
+    (calls[0]?.payload as { linkPreviewTags?: string[][] }).linkPreviewTags,
+  ).toHaveLength(1);
+  expect(calls[1]?.payload).toMatchObject({ content: prose });
+  expect(
+    (calls[1]?.payload as { linkPreviewTags?: string[][] }).linkPreviewTags ??
+      [],
+  ).toEqual([]);
+});
+
+test("a failed prose send restores text without duplicating its sent link preview", async ({
+  page,
+}) => {
+  const previewUrl = "https://github.com/block/buzz/pull/3246?retry=1";
+  const prose = `Retry only this link context ${Date.now()}`;
+  await page.goto("/");
+  await page.evaluate(() => {
+    if (window.__BUZZ_E2E__?.mock) {
+      window.__BUZZ_E2E__.mock.sendMessageErrors = [
+        "",
+        "Mock accompanying prose send failed.",
+      ];
+    }
+  });
+  await page.getByTestId("channel-general").click();
+  const input = page.getByTestId("message-input");
+  await input.fill(`${prose} ${previewUrl}`);
+  await waitForReadyComposerSnapshots(page);
+  await page.getByTestId("send-message").click();
+
+  await expect(page.locator("[data-link-preview]")).toHaveCount(1);
+  await expect(input).toContainText(prose);
+  await expect(input).not.toContainText(previewUrl);
+  await expect(
+    page.getByTestId("message-row").filter({ hasText: prose }),
+  ).toHaveCount(0);
+
+  await input.press("Enter");
+  await expect(
+    page.getByTestId("message-row").filter({ hasText: prose }),
+  ).toBeVisible();
+  await expect(page.locator("[data-link-preview]")).toHaveCount(1);
+});
+
 test("pasting a link and immediately pressing Enter prepares it after submit", async ({
   page,
 }) => {

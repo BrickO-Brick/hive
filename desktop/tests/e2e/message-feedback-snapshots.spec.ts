@@ -606,6 +606,55 @@ test("direct messages use the same grouped message bubbles", async ({
   await page.screenshot({ path: `${SHOTS}/direct-message-bubbles.png` });
 });
 
+test("bubble mentions keep their prefix icon beside the name", async ({
+  page,
+}) => {
+  await seedMessageBubbles(page);
+  await installMockBridge(page);
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+  await expect(page.getByTestId("chat-title")).toHaveText("general");
+  await waitForMockLiveSubscription(page, "general");
+
+  const content = `Bubble mention @bob ${Date.now()}`;
+  const visibleContent = content.replace("@", "");
+  await page.evaluate(
+    ({ bobPubkey, message }) => {
+      window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
+        channelName: "general",
+        content: message,
+        mentionPubkeys: [bobPubkey],
+      });
+    },
+    { bobPubkey: TEST_IDENTITIES.bob.pubkey, message: content },
+  );
+
+  const mention = page
+    .getByTestId("message-row")
+    .filter({ hasText: visibleContent })
+    .locator("[data-mention]");
+  await expect(mention).toHaveText("bob");
+  const geometry = await mention.evaluate((element) => {
+    const style = getComputedStyle(element);
+    const iconStyle = getComputedStyle(element, "::before");
+    const textNode = element.firstChild;
+    if (!textNode) throw new Error("Expected mention label text.");
+    const range = document.createRange();
+    range.selectNodeContents(textNode);
+    const elementBox = element.getBoundingClientRect();
+    return {
+      iconRight:
+        elementBox.left +
+        Number.parseFloat(iconStyle.left) +
+        Number.parseFloat(iconStyle.width),
+      paddingLeft: Number.parseFloat(style.paddingLeft),
+      textLeft: range.getBoundingClientRect().left,
+    };
+  });
+  expect(geometry.paddingLeft).toBeGreaterThan(0);
+  expect(geometry.iconRight).toBeLessThanOrEqual(geometry.textLeft + 0.5);
+});
+
 test("own-message bubbles align right and use the primary token", async ({
   page,
 }) => {

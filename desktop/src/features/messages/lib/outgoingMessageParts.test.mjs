@@ -51,3 +51,89 @@ test("text-only submissions remain one text event", () => {
     { content: "hello", kind: "text", outgoingTags: undefined },
   ]);
 });
+
+test("mixed link submissions put the link preview before remaining text", () => {
+  const previewTag = [
+    "link-preview",
+    "snapshot",
+    "1",
+    "https://example.com/launch",
+  ];
+  const emojiTag = ["emoji", "ship", "https://relay.example/ship.png"];
+  const parts = buildOutgoingMessageParts({
+    body: "Launch notes https://example.com/launch are ready :ship:",
+    media: [],
+    nowSeconds: 100,
+    textTags: [previewTag, emojiTag],
+  });
+
+  assert.deepEqual(parts, [
+    {
+      content: "https://example.com/launch",
+      createdAt: 99,
+      kind: "link",
+      outgoingTags: [previewTag],
+    },
+    {
+      content: "Launch notes are ready :ship:",
+      kind: "text",
+      outgoingTags: [emojiTag],
+    },
+  ]);
+});
+
+test("attachment, link, and prose events keep media-first ordering", () => {
+  const parts = buildOutgoingMessageParts({
+    body: "Context for https://example.com/launch",
+    media: [image],
+    nowSeconds: 100,
+  });
+
+  assert.equal(parts.length, 3);
+  assert.equal(parts[0].kind, "media");
+  assert.equal(parts[0].createdAt, 98);
+  assert.equal(parts[1].kind, "link");
+  assert.equal(parts[1].createdAt, 99);
+  assert.equal(parts[2].kind, "text");
+  assert.equal(parts[2].createdAt, undefined);
+});
+
+test("link-only submissions remain one link event", () => {
+  assert.deepEqual(
+    buildOutgoingMessageParts({
+      body: "https://example.com/launch",
+      media: [],
+      nowSeconds: 100,
+    }),
+    [
+      {
+        content: "https://example.com/launch",
+        kind: "link",
+        outgoingTags: undefined,
+      },
+    ],
+  );
+});
+
+test("markdown link labels remain readable in the prose event", () => {
+  assert.deepEqual(
+    buildOutgoingMessageParts({
+      body: "Please review [the launch plan](https://example.com/launch).",
+      media: [],
+      nowSeconds: 100,
+    }),
+    [
+      {
+        content: "https://example.com/launch",
+        createdAt: 99,
+        kind: "link",
+        outgoingTags: undefined,
+      },
+      {
+        content: "Please review the launch plan.",
+        kind: "text",
+        outgoingTags: undefined,
+      },
+    ],
+  );
+});

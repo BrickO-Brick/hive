@@ -529,10 +529,18 @@ test("channel sidebar rows use a large icon tile and description", async ({
 
   const iconContainer = page.getByTestId("channel-icon-container-general");
   await expect(iconContainer).toBeVisible();
+  await expect(page.getByTestId("channel-general")).toHaveCSS(
+    "border-radius",
+    "16px",
+  );
   await expect(iconContainer).toHaveCSS("width", "40px");
   await expect(iconContainer).toHaveCSS("height", "40px");
-  await expect(iconContainer.locator("svg")).toHaveCSS("width", "24px");
-  await expect(iconContainer.locator("svg")).toHaveCSS("height", "24px");
+  const backgroundColor = await page
+    .locator("body")
+    .evaluate((element) => getComputedStyle(element).backgroundColor);
+  await expect(iconContainer).toHaveCSS("background-color", backgroundColor);
+  await expect(iconContainer.locator("svg")).toHaveCSS("width", "16px");
+  await expect(iconContainer.locator("svg")).toHaveCSS("height", "16px");
   await expect(page.getByTestId("channel-subtitle-general")).toHaveText(
     "General discussion for everyone",
   );

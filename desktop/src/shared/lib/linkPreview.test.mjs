@@ -5,6 +5,7 @@ import {
   extractSupportedLinkPreviews,
   isSupportedLinkAutolinkLabel,
   parseSupportedLinkPreview,
+  splitOutgoingLinkContent,
 } from "./linkPreview.ts";
 
 test("parseSupportedLinkPreview parses GitHub pull request URLs", () => {
@@ -558,4 +559,48 @@ test("extractSupportedLinkPreviews finds generic links and preserves exclusions"
       { kind: "generic-link", title: "the details" },
     ],
   );
+});
+
+test("splitOutgoingLinkContent separates visible links from prose", () => {
+  assert.deepEqual(
+    splitOutgoingLinkContent(
+      "Review [the plan](https://example.com/plan), then share <https://example.com/launch>.",
+    ),
+    {
+      linkContent: "https://example.com/plan\n<https://example.com/launch>",
+      textContent: "Review the plan, then share.",
+    },
+  );
+});
+
+test("splitOutgoingLinkContent includes links without rich previews", () => {
+  assert.deepEqual(
+    splitOutgoingLinkContent(
+      "Source https://github.com/block/buzz/blob/main/README.md and http://example.com/docs",
+    ),
+    {
+      linkContent:
+        "https://github.com/block/buzz/blob/main/README.md\nhttp://example.com/docs",
+      textContent: "Source and",
+    },
+  );
+});
+
+test("splitOutgoingLinkContent preserves hidden and image links", () => {
+  const content = [
+    "Visible https://example.com/visible",
+    "`https://example.com/code`",
+    "||https://example.com/spoiler||",
+    "![image](https://example.com/image.png)",
+  ].join("\n");
+
+  assert.deepEqual(splitOutgoingLinkContent(content), {
+    linkContent: "https://example.com/visible",
+    textContent: [
+      "Visible",
+      "`https://example.com/code`",
+      "||https://example.com/spoiler||",
+      "![image](https://example.com/image.png)",
+    ].join("\n"),
+  });
 });

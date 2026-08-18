@@ -52,6 +52,10 @@ const SUPPORTED_URL_RE =
   /(^|[\s([{<>"'])(https:\/\/[^\s<>"'\]]+|https?:\/\/[^\s<>"'\]]+\/git\/[a-f0-9]{64}\/[^\s<>"'\]]+|buzz:\/\/(?:pr|issue|repo|project)\?[^\s<>"'\]]+|(?:(?:www\.)?github\.com|(?:www\.)?linear\.app|drive\.google\.com|docs\.google\.com)\/[^\s<>"'\]]+)/gi;
 const MARKDOWN_SUPPORTED_LINK_RE =
   /!?\[([^\]\n]+)\]\((https:\/\/[^)\s<>"']+|https?:\/\/[^)\s<>"']+\/git\/[a-f0-9]{64}\/[^)\s<>"']+|buzz:\/\/(?:pr|issue|repo|project)\?[^)\s<>"']+|(?:(?:www\.)?github\.com|(?:www\.)?linear\.app|drive\.google\.com|docs\.google\.com)\/[^)\s<>"']+)\)/gi;
+const OUTGOING_URL_RE =
+  /(^|[\s([{<>"'])(https?:\/\/[^\s<>"'\]]+|buzz:\/\/(?:pr|issue|repo|project)\?[^\s<>"'\]]+)/gi;
+const MARKDOWN_OUTGOING_LINK_RE =
+  /!?\[([^\]\n]+)\]\((https?:\/\/[^)\s<>"']+|buzz:\/\/(?:pr|issue|repo|project)\?[^)\s<>"']+)\)/gi;
 const MAX_PREVIEWS = 8;
 
 type HiddenRange = {
@@ -124,12 +128,17 @@ function collectCodeRanges(content: string): HiddenRange[] {
 function collectMarkdownImageLinkRanges(content: string): HiddenRange[] {
   const ranges: HiddenRange[] = [];
 
-  for (const match of content.matchAll(MARKDOWN_SUPPORTED_LINK_RE)) {
-    if (!match[0]?.startsWith("!")) continue;
-    ranges.push({
-      start: match.index ?? 0,
-      end: (match.index ?? 0) + match[0].length,
-    });
+  for (const expression of [
+    MARKDOWN_SUPPORTED_LINK_RE,
+    MARKDOWN_OUTGOING_LINK_RE,
+  ]) {
+    for (const match of content.matchAll(expression)) {
+      if (!match[0]?.startsWith("!")) continue;
+      ranges.push({
+        start: match.index ?? 0,
+        end: (match.index ?? 0) + match[0].length,
+      });
+    }
   }
 
   return ranges;
@@ -618,30 +627,31 @@ function withTitle(
 }
 
 type LinkPreviewCandidate = {
+  end: number;
   href: string;
   index: number;
   label?: string;
+  linkSource: string;
   order: number;
+  replacement: string;
 };
 
-/** Extract supported link previews from message text, preserving first-seen order. */
-export function extractSupportedLinkPreviews(
-  content: string,
-  activeRelayOrigin?: string | null,
-): SupportedLinkPreview[] {
-  const previews: SupportedLinkPreview[] = [];
-  const seen = new Set<string>();
+function collectLinkPreviewCandidates(content: string): LinkPreviewCandidate[] {
   const searchable = stripHiddenLinkPreviewContent(content);
   const candidates: LinkPreviewCandidate[] = [];
   let order = 0;
 
   for (const match of searchable.matchAll(MARKDOWN_SUPPORTED_LINK_RE)) {
     if (match[0]?.startsWith("!")) continue;
+    const index = match.index ?? 0;
     candidates.push({
+      end: index + match[0].length,
       href: match[2],
-      index: match.index ?? 0,
+      index,
       label: match[1],
+      linkSource: match[2],
       order,
+      replacement: match[1],
     });
     order += 1;
   }
@@ -650,18 +660,96 @@ export function extractSupportedLinkPreviews(
     const prefix = match[1] ?? "";
     const href = match[2];
     if (!href) continue;
+    const trimmedHref = trimUrlCandidate(href);
+    let index = (match.index ?? 0) + prefix.length;
+    let end = index + trimmedHref.length;
+    if (content[index - 1] === "<" && content[end] === ">") {
+      index -= 1;
+      end += 1;
+    }
     candidates.push({
-      href,
-      index: (match.index ?? 0) + prefix.length,
+      end,
+      href: trimmedHref,
+      index,
+      linkSource: content.slice(index, end),
       order,
+      replacement: "",
     });
     order += 1;
   }
 
   candidates.sort((a, b) => a.index - b.index || a.order - b.order);
+  return candidates;
+}
+
+function collectOutgoingLinkCandidates(
+  content: string,
+): LinkPreviewCandidate[] {
+  const searchable = stripHiddenLinkPreviewContent(content);
+  const candidates = collectLinkPreviewCandidates(content);
+  let order = candidates.length;
+
+  for (const match of searchable.matchAll(MARKDOWN_OUTGOING_LINK_RE)) {
+    if (match[0]?.startsWith("!")) continue;
+    const index = match.index ?? 0;
+    candidates.push({
+      end: index + match[0].length,
+      href: match[2],
+      index,
+      label: match[1],
+      linkSource: match[2],
+      order,
+      replacement: match[1],
+    });
+    order += 1;
+  }
+
+  for (const match of searchable.matchAll(OUTGOING_URL_RE)) {
+    const prefix = match[1] ?? "";
+    const href = match[2];
+    if (!href) continue;
+    const trimmedHref = trimUrlCandidate(href);
+    let index = (match.index ?? 0) + prefix.length;
+    let end = index + trimmedHref.length;
+    if (content[index - 1] === "<" && content[end] === ">") {
+      index -= 1;
+      end += 1;
+    }
+    candidates.push({
+      end,
+      href: trimmedHref,
+      index,
+      linkSource: content.slice(index, end),
+      order,
+      replacement: "",
+    });
+    order += 1;
+  }
+
+  candidates.sort((a, b) => a.index - b.index || a.order - b.order);
+  return candidates;
+}
+
+function isOutgoingLink(href: string): boolean {
+  if (isEntityLink(href)) return true;
+  try {
+    const parsed = new URL(href);
+    return parsed.protocol === "https:" || parsed.protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+
+/** Extract supported link previews from message text, preserving first-seen order. */
+export function extractSupportedLinkPreviews(
+  content: string,
+  activeRelayOrigin?: string | null,
+): SupportedLinkPreview[] {
+  const previews: SupportedLinkPreview[] = [];
+  const seen = new Set<string>();
 
   const relayOrigin = activeRelayOrigin ?? null;
-  for (const candidate of candidates) {
+  for (const candidate of collectLinkPreviewCandidates(content)) {
     const preview = parseSupportedLinkPreview(candidate.href, relayOrigin);
     if (!preview || seen.has(preview.href)) continue;
 
@@ -678,4 +766,65 @@ export function extractSupportedLinkPreviews(
   }
 
   return previews;
+}
+
+export type OutgoingLinkContentParts = {
+  linkContent: string;
+  textContent: string;
+};
+
+/**
+ * Lift web and Buzz entity links out of authored prose without disturbing links
+ * hidden inside code, spoilers, or image markdown. Markdown link labels remain
+ * in the prose so `Review [this PR](…)` becomes `Review this PR`.
+ */
+export function splitOutgoingLinkContent(
+  content: string,
+  activeRelayOrigin?: string | null,
+): OutgoingLinkContentParts {
+  const relayOrigin = activeRelayOrigin ?? null;
+  const candidates: LinkPreviewCandidate[] = [];
+
+  for (const candidate of collectOutgoingLinkCandidates(content)) {
+    if (
+      !parseSupportedLinkPreview(candidate.href, relayOrigin) &&
+      !isOutgoingLink(candidate.href)
+    ) {
+      continue;
+    }
+    const previousCandidate = candidates[candidates.length - 1];
+    if (!previousCandidate || candidate.index >= previousCandidate.end) {
+      candidates.push(candidate);
+    }
+  }
+
+  if (candidates.length === 0) {
+    return { linkContent: "", textContent: content };
+  }
+
+  let textContent = "";
+  let cursor = 0;
+  for (const candidate of candidates) {
+    textContent += content.slice(cursor, candidate.index);
+    textContent += candidate.replacement;
+    cursor = candidate.end;
+
+    if (!candidate.replacement) {
+      if (/[ \t]$/.test(textContent) && /^[ \t]/.test(content.slice(cursor))) {
+        cursor += 1;
+      }
+      if (
+        /[ \t]$/.test(textContent) &&
+        /^(?:\n|[,.;:!?])/.test(content.slice(cursor))
+      ) {
+        textContent = textContent.replace(/[ \t]+$/, "");
+      }
+    }
+  }
+  textContent += content.slice(cursor);
+
+  return {
+    linkContent: candidates.map((candidate) => candidate.linkSource).join("\n"),
+    textContent: textContent.trim(),
+  };
 }

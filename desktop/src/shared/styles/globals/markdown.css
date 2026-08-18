@@ -338,11 +338,15 @@
     center / contain no-repeat;
 }
 
-.message-markdown.message-bubble-markdown .agent-mention-highlight {
-  padding-left: calc(var(--agent-icon-size) + var(--agent-icon-gap));
+.message-markdown.message-bubble-markdown .inline-chip-with-icon {
+  display: inline-block;
+  padding-left: calc(
+    var(--inline-chip-icon-size) +
+    var(--inline-chip-icon-gap)
+  );
 }
 
-.message-markdown.message-bubble-markdown .agent-mention-highlight::before {
+.message-markdown.message-bubble-markdown .inline-chip-with-icon::before {
   left: 0;
 }
 

@@ -493,7 +493,15 @@ export function useMentionSendFlow({
           );
         const send = onSendRef.current;
         let mediaMessageSent = false;
-        const persistCanceledDraft = (withoutMedia = false) => {
+        let linkMessageSent = false;
+        let remainingTextContent = draft.savedContent;
+        const persistCanceledDraft = ({
+          content = draft.savedContent,
+          withoutMedia = false,
+        }: {
+          content?: string;
+          withoutMedia?: boolean;
+        } = {}) => {
           if (isSendCancelled() || !draft.recoveryDraftKey) return;
           const existing = drafts.loadDraft(draft.recoveryDraftKey);
           if (
@@ -510,16 +518,22 @@ export function useMentionSendFlow({
           }
           drafts.persistDraft(
             draft.recoveryDraftKey,
-            draft.savedContent,
+            content,
             draft.capturedChannelId ?? draft.recoveryDraftKey,
             withoutMedia ? [] : draft.savedImeta,
             withoutMedia ? [] : [...draft.savedSpoileredAttachmentUrls],
             draft.savedMentionRefs,
           );
         };
-        const restoreComposerAfterFailure = (withoutMedia = false) => {
+        const restoreComposerAfterFailure = ({
+          content = draft.savedContent,
+          withoutMedia = false,
+        }: {
+          content?: string;
+          withoutMedia?: boolean;
+        } = {}) => {
           if (isSendCancelled()) return;
-          persistCanceledDraft(withoutMedia);
+          persistCanceledDraft({ content, withoutMedia });
           const canRestoreCurrentComposer =
             isMountedRef.current &&
             (draft.capturedChannelId === channelIdRef.current ||
@@ -535,9 +549,9 @@ export function useMentionSendFlow({
           if (!canRestoreCurrentComposer) {
             return;
           }
-          setContent(draft.savedContent);
-          contentRef.current = draft.savedContent;
-          richText.setContent(draft.savedContent);
+          setContent(content);
+          contentRef.current = content;
+          richText.setContent(content);
           setPendingImeta(withoutMedia ? [] : draft.savedImeta);
           restoreQueuedAttachments(withoutMedia ? [] : draft.queuedAttachments);
           mentions.restoreDraftMentionRefs(draft.savedMentionRefs);
@@ -564,6 +578,8 @@ export function useMentionSendFlow({
             ]),
             textTags,
           });
+          remainingTextContent =
+            parts.find((part) => part.kind === "text")?.content ?? "";
           const revalidatedMentionPubkeys =
             await mentions.revalidateMentionPubkeys(mentionPubkeys);
           if (signal?.aborted || isSendCancelled()) return;
@@ -583,6 +599,7 @@ export function useMentionSendFlow({
               draft.preparedLinkPreviews != null,
             );
             if (part.kind === "media") mediaMessageSent = true;
+            if (part.kind === "link") linkMessageSent = true;
             if (signal?.aborted || isSendCancelled()) return;
           }
           if (signal?.aborted || isSendCancelled()) return;
@@ -610,7 +627,12 @@ export function useMentionSendFlow({
               try {
                 await finishSend(uploaded, signal);
               } catch {
-                restoreComposerAfterFailure(mediaMessageSent);
+                restoreComposerAfterFailure({
+                  content: linkMessageSent
+                    ? remainingTextContent
+                    : draft.savedContent,
+                  withoutMedia: mediaMessageSent,
+                });
               }
             },
             onError: (error) => {
@@ -620,7 +642,12 @@ export function useMentionSendFlow({
               );
             },
             onCancel: () => {
-              restoreComposerAfterFailure(mediaMessageSent);
+              restoreComposerAfterFailure({
+                content: linkMessageSent
+                  ? remainingTextContent
+                  : draft.savedContent,
+                withoutMedia: mediaMessageSent,
+              });
             },
           });
           if (!uploadStarted) {
@@ -640,7 +667,12 @@ export function useMentionSendFlow({
           try {
             await finishSend([]);
           } catch {
-            restoreComposerAfterFailure(mediaMessageSent);
+            restoreComposerAfterFailure({
+              content: linkMessageSent
+                ? remainingTextContent
+                : draft.savedContent,
+              withoutMedia: mediaMessageSent,
+            });
           }
         }
       } finally {

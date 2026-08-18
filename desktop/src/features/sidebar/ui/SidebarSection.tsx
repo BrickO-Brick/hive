@@ -306,7 +306,8 @@ export function ChannelMenuButton({
     <SidebarMenuButton
       className={cn(
         "data-[active=true]:font-normal",
-        !isDm && "h-12 gap-2 p-1 pr-2 group-data-[collapsible=icon]:!p-0",
+        !isDm &&
+          "h-12 gap-2 rounded-2xl p-1 pr-2 group-data-[collapsible=icon]:!p-0 group-data-[collapsible=icon]:rounded-md",
         isActive
           ? "group-hover/menu-item:bg-sidebar-active group-hover/menu-item:text-sidebar-active-foreground"
           : "group-hover/menu-item:bg-sidebar-accent group-hover/menu-item:text-sidebar-foreground",
@@ -331,14 +332,13 @@ export function ChannelMenuButton({
         <span
           aria-hidden="true"
           className={cn(
-            "flex size-10 shrink-0 items-center justify-center rounded-xl bg-sidebar-border/55 text-sidebar-foreground/65 transition-colors group-data-[collapsible=icon]:size-8 group-data-[collapsible=icon]:rounded-md group-data-[collapsible=icon]:bg-transparent",
-            isActive &&
-              "bg-sidebar-active-foreground/10 text-sidebar-active-foreground",
+            "flex size-10 shrink-0 items-center justify-center rounded-xl bg-background text-sidebar-foreground/65 transition-colors group-data-[collapsible=icon]:size-8 group-data-[collapsible=icon]:rounded-md group-data-[collapsible=icon]:bg-transparent",
+            isActive && "text-sidebar-active-foreground",
             inactiveContentOpacity,
           )}
           data-testid={`channel-icon-container-${channel.name}`}
         >
-          <SidebarChannelIcon channel={channel} className="size-6" />
+          <SidebarChannelIcon channel={channel} className="size-4" />
         </span>
       )}
       {isDm ? (

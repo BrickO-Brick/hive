@@ -288,6 +288,7 @@ test("does not restore already-sent media when the text send fails", async ({
   await page.evaluate(() => {
     if (window.__BUZZ_E2E__?.mock) {
       window.__BUZZ_E2E__.mock.sendMessageErrors = [
+        "",
         "Mock accompanying text send failed.",
       ];
     }
