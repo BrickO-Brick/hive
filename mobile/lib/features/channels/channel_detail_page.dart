@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'dart:math' show min;
+import 'dart:math' show max, min;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show ScrollDirection;
@@ -23,8 +23,8 @@ import '../../shared/widgets/modal_presentation.dart';
 import '../../shared/widgets/skeleton.dart';
 import '../profile/presence_cache_provider.dart';
 import '../profile/profile_provider.dart';
-import '../profile/user_cache_provider.dart';
-import '../profile/user_profile.dart';
+import '../../shared/profile/user_cache_provider.dart';
+import '../../shared/profile/user_profile.dart';
 import '../forum/forum_posts_view.dart';
 import 'android_ime_lift.dart';
 import 'channel.dart';
@@ -44,7 +44,7 @@ import 'day_divider.dart';
 import 'dm_channel_labels.dart';
 import 'ephemeral_channel_display.dart';
 import 'ime_metrics_settle_observer.dart';
-import 'latest_message_button.dart';
+import 'jump_to_latest_button.dart';
 import 'members_sheet.dart';
 import 'message_actions.dart';
 import 'message_long_press_region.dart';
@@ -57,6 +57,7 @@ import 'reaction_row.dart';
 import 'send_message_provider.dart';
 import '../profile/user_profile_sheet.dart';
 import 'small_avatar.dart';
+import 'sticky_date_header.dart';
 import 'thread_detail_page.dart';
 import 'timeline_message.dart';
 
@@ -121,21 +122,36 @@ int? _channelReadTimestamp({
   return dateTimeToUnixSeconds(channel.lastMessageAt);
 }
 
+/// Controls how a hydrated initial thread is added to the navigation stack.
+enum InitialThreadRouteBehavior {
+  /// Keep the channel route beneath the thread.
+  push,
+
+  /// Replace the temporary channel route so Back returns to its origin.
+  replaceCurrentRoute,
+}
+
 class ChannelDetailPage extends HookConsumerWidget {
   final Channel channel;
   final String? initialMessageId;
   final String? initialThreadRootId;
+
+  /// How the automatically opened initial thread affects the route stack.
+  final InitialThreadRouteBehavior initialThreadRouteBehavior;
 
   const ChannelDetailPage({
     super.key,
     required this.channel,
     this.initialMessageId,
     this.initialThreadRootId,
+    this.initialThreadRouteBehavior = InitialThreadRouteBehavior.push,
   });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final composerDockHeight = useState(0.0);
+    final composerFocusNode = useFocusNode();
+    final restoreComposerFocus = useRef<VoidCallback?>(null);
     final sendMessage = ref.read(sendMessageProvider);
     final detailsAsync = ref.watch(channelDetailsProvider(channel.id));
     final channelsAsync = ref.watch(channelsProvider);
@@ -232,9 +248,10 @@ class ChannelDetailPage extends HookConsumerWidget {
         !resolvedChannel.isForum &&
         isConnectionInProgress &&
         !messagesNotifier.hasLoadedMessages;
-    final appBarTitleContentHeight = resolvedChannel.isDm
-        ? _dmAppBarTitleContentHeight(context)
-        : 0.0;
+    final appBarTitleContentHeight = _twoLineAppBarTitleContentHeight(
+      context,
+      isDm: resolvedChannel.isDm,
+    );
     final readTimestamp = _channelReadTimestamp(
       channel: resolvedChannel,
       messagesState: messagesState,
@@ -300,65 +317,53 @@ class ChannelDetailPage extends HookConsumerWidget {
                 channel: resolvedChannel,
                 currentPubkey: currentPubkey,
               )
-            : Row(
-                children: [
-                  SizedBox.square(
-                    dimension: 22,
-                    child: Center(
-                      child: Icon(channelIcon(resolvedChannel), size: 18),
-                    ),
-                  ),
-                  const SizedBox(width: Grid.half),
-                  Expanded(
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Flexible(
-                          child: Text(
-                            resolveDmChannelDisplayLabel(
-                              resolvedChannel,
-                              currentPubkey: currentPubkey,
-                            ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                        if (resolvedChannel.isEphemeral) ...[
-                          const SizedBox(width: Grid.quarter),
-                          _HeaderEphemeralBadge(channel: resolvedChannel),
-                        ],
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-        actions: [
-          if (_showsMembersAction(resolvedChannel))
-            _MembersButton(
-              channelId: resolvedChannel.id,
-              channel: resolvedChannel,
-              currentPubkey: currentPubkey,
-            ),
-          IconButton(
-            color: context.colors.primary,
-            onPressed: () async {
-              final shouldClose = await showChannelActionsSheet(
-                context: context,
+            : _ChannelAppBarTitle(
                 channel: resolvedChannel,
-                isUnread: false,
-                sectionId: ref
-                    .read(channelSectionsProvider)
-                    .store
-                    .assignments[resolvedChannel.id],
-              );
-              if (shouldClose == true && context.mounted) {
-                Navigator.of(context).pop();
-              }
-            },
-            tooltip: 'Channel actions',
-            icon: const Icon(LucideIcons.ellipsisVertical, size: 22),
-          ),
-        ],
+                onTap: () async {
+                  final shouldClose = await showChannelDetailsPage(
+                    context: context,
+                    channel: resolvedChannel,
+                    currentPubkey: currentPubkey,
+                    onMemberTap: showUserProfileSheet,
+                    sectionId: ref
+                        .read(channelSectionsProvider)
+                        .store
+                        .assignments[resolvedChannel.id],
+                  );
+                  if (shouldClose == true && context.mounted) {
+                    Navigator.of(context).pop();
+                  }
+                },
+              ),
+        actions: resolvedChannel.isDm
+            ? [
+                if (_showsMembersAction(resolvedChannel))
+                  _MembersButton(
+                    channelId: resolvedChannel.id,
+                    channel: resolvedChannel,
+                    currentPubkey: currentPubkey,
+                  ),
+                IconButton(
+                  color: context.colors.primary,
+                  onPressed: () async {
+                    final shouldClose = await showChannelActionsSheet(
+                      context: context,
+                      channel: resolvedChannel,
+                      isUnread: false,
+                      sectionId: ref
+                          .read(channelSectionsProvider)
+                          .store
+                          .assignments[resolvedChannel.id],
+                    );
+                    if (shouldClose == true && context.mounted) {
+                      Navigator.of(context).pop();
+                    }
+                  },
+                  tooltip: 'Channel actions',
+                  icon: const Icon(LucideIcons.ellipsisVertical, size: 22),
+                ),
+              ]
+            : const [],
       ),
       body: Stack(
         fit: StackFit.expand,
@@ -439,6 +444,8 @@ class ChannelDetailPage extends HookConsumerWidget {
                               allMessages: messages,
                               initialMessageId: initialMessageId,
                               initialThreadRootId: initialThreadRootId,
+                              initialThreadRouteBehavior:
+                                  initialThreadRouteBehavior,
                               initialOrdinaryUnreadMessageIds:
                                   initialOrdinaryUnreadMessageIds,
                               initialOldestOrdinaryUnreadMessageId:
@@ -461,6 +468,12 @@ class ChannelDetailPage extends HookConsumerWidget {
                               composerBottomInset: showsComposer
                                   ? composerDockHeight.value
                                   : 0,
+                              composerFocusNode: showsComposer
+                                  ? composerFocusNode
+                                  : null,
+                              restoreComposerFocus: showsComposer
+                                  ? () => restoreComposerFocus.value?.call()
+                                  : null,
                             );
                           },
                         ),
@@ -499,10 +512,10 @@ class ChannelDetailPage extends HookConsumerWidget {
                         activityIndicatorBuilder:
                             (
                               composerWidthAnimation,
-                              composerFocusNode,
+                              activityFocusNode,
                               composerInteractionLock,
                               composerActivationRequests,
-                              restoreComposerFocus,
+                              restoreActivityComposerFocus,
                             ) => ComposerAgentActivityIndicator(
                               channelId: channel.id,
                               horizontalInset: 0,
@@ -512,12 +525,16 @@ class ChannelDetailPage extends HookConsumerWidget {
                               ),
                               compactWidthFactor: 0.85,
                               composerWidthAnimation: composerWidthAnimation,
-                              composerFocusNode: composerFocusNode,
+                              composerFocusNode: activityFocusNode,
                               composerInteractionLock: composerInteractionLock,
                               composerActivationRequests:
                                   composerActivationRequests,
-                              onRestoreComposerFocus: restoreComposerFocus,
+                              onRestoreComposerFocus:
+                                  restoreActivityComposerFocus,
                             ),
+                        focusNode: composerFocusNode,
+                        onFocusRestorerChanged: (restoreFocus) =>
+                            restoreComposerFocus.value = restoreFocus,
                         channelName: resolvedChannel.isDm
                             ? ''
                             : resolvedChannel.name,

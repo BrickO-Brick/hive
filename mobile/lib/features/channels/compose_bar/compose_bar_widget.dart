@@ -10,6 +10,12 @@ class ComposeBar extends HookConsumerWidget {
   /// Runs before editor focus so a parent can prepare focus-dependent layout.
   final VoidCallback? onFocusRequested;
 
+  /// Parent-owned if set; otherwise internally created and disposed.
+  final FocusNode? focusNode;
+
+  /// Receives a restorer which becomes a no-op after replacement/unmount.
+  final ValueChanged<VoidCallback>? onFocusRestorerChanged;
+
   /// Optional thread IDs for thread-scoped typing indicators.
   final String? threadHeadId;
   final String? rootId;
@@ -20,6 +26,8 @@ class ComposeBar extends HookConsumerWidget {
     this.hintText,
     this.threadHeadId,
     this.rootId,
+    this.focusNode,
+    this.onFocusRestorerChanged,
     this.onFocusRequested,
     this.activityIndicatorBuilder,
     required this.onSend,
@@ -32,8 +40,9 @@ class ComposeBar extends HookConsumerWidget {
       () => controller.text,
     );
     useEffect(() => controller.dispose, [controller]);
-    // Key drafts by relay + pubkey so in-place identity switches cannot
-    // persist the previous identity's mounted controller text.
+    // Draft identity is part of the effect key because an in-place account or
+    // community switch can leave this composer mounted. Reload that identity's
+    // draft so old text cannot be persisted into the new identity's store.
     final draftKey = composeDraftKey(channelId, threadHeadId: threadHeadId);
     final draftRevision = useRef(0);
     final draftIdentity =
@@ -44,17 +53,15 @@ class ComposeBar extends HookConsumerWidget {
       defaultTargetPlatform != TargetPlatform.android,
     );
     final androidImeFallbackTimer = useRef<Timer?>(null);
-    final focusNode = useFocusNode();
+    final ownedFocusNode = useFocusNode();
+    final focusNode = this.focusNode ?? ownedFocusNode;
     final activityInteractionLock = useState(false);
     final composerActivationRequests = useState(0);
     useEffect(
-      () =>
-          () => androidImeFallbackTimer.value?.cancel(),
-      [androidImeFallbackTimer],
-    );
-    useEffect(
-      () =>
-          () => _dismissComposerKeyboard(focusNode),
+      () => () {
+        androidImeFallbackTimer.value?.cancel();
+        _dismissComposerKeyboard(focusNode);
+      },
       [focusNode],
     );
     final isEmojiPickerOpen = useState(false);
@@ -861,6 +868,13 @@ class ComposeBar extends HookConsumerWidget {
         androidImeFallbackTimer: androidImeFallbackTimer,
       );
     }
+
+    _useComposerFocusRestorer(
+      onChanged: onFocusRestorerChanged,
+      isExpanded: isComposerExpanded,
+      focusNode: focusNode,
+      expand: expandComposer,
+    );
 
     final suggestionPanel = _composerSuggestionPanel(
       channelSuggestions: channelSuggestions,
