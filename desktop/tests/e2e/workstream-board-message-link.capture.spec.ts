@@ -5,8 +5,8 @@ import { installMockBridge } from "../helpers/bridge";
 test.use({ video: "on" });
 
 const CHANNEL_ID = "7b4d3d2e-3c15-4e88-9a11-1c0f7d2b6e44";
-const ROOT_EVENT_ID = "1".repeat(64);
-const TARGET_EVENT_ID = "2".repeat(64);
+const ROOT_EVENT_ID = "a1".repeat(32);
+const TARGET_EVENT_ID = "b2".repeat(32);
 const MESSAGE_LINK = `buzz://message?channel=${CHANNEL_ID}&id=${TARGET_EVENT_ID}&thread=${ROOT_EVENT_ID}`;
 const CANVAS = `# Slice 7 message-linked blocker demo
 
