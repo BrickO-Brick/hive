@@ -24,16 +24,23 @@ pub(crate) fn runtime_metadata_env_vars<'a>(
     vars
 }
 
-pub(crate) fn scrub_unconfigured_openai_compat_key(
+pub(crate) fn scrub_ambient_openai_env(
     command: &mut std::process::Command,
     effective_provider: Option<&str>,
     env: &std::collections::BTreeMap<String, String>,
 ) {
-    if effective_provider
-        .is_some_and(|provider| provider.trim().eq_ignore_ascii_case("openai-compat"))
-        && !env.contains_key("OPENAI_COMPAT_API_KEY")
-    {
-        command.env_remove("OPENAI_COMPAT_API_KEY");
+    match effective_provider.map(str::trim) {
+        Some(provider) if provider.eq_ignore_ascii_case("openai") => {
+            command.env_remove("OPENAI_COMPAT_API_KEY");
+            command.env_remove("OPENAI_COMPAT_BASE_URL");
+        }
+        Some(provider) if provider.eq_ignore_ascii_case("openai-compat") => {
+            command.env_remove("OPENAI_API_KEY");
+            if !env.contains_key("OPENAI_COMPAT_API_KEY") {
+                command.env_remove("OPENAI_COMPAT_API_KEY");
+            }
+        }
+        _ => {}
     }
 }
 
@@ -89,14 +96,14 @@ pub(crate) fn resolve_session_title(display_name: Option<&str>, name: &str) -> O
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_session_title, scrub_unconfigured_openai_compat_key};
+    use super::{resolve_session_title, scrub_ambient_openai_env};
     use std::collections::BTreeMap;
 
     #[test]
     fn keyless_openai_compat_scrubs_parent_process_credential() {
         let mut command = std::process::Command::new("echo");
         command.env("OPENAI_COMPAT_API_KEY", "ambient-secret");
-        scrub_unconfigured_openai_compat_key(&mut command, Some("openai-compat"), &BTreeMap::new());
+        scrub_ambient_openai_env(&mut command, Some("openai-compat"), &BTreeMap::new());
         assert!(command
             .get_envs()
             .any(|(key, value)| key == "OPENAI_COMPAT_API_KEY" && value.is_none()));
@@ -106,10 +113,23 @@ mod tests {
     fn configured_openai_compat_key_is_preserved() {
         let mut command = std::process::Command::new("echo");
         let env = BTreeMap::from([("OPENAI_COMPAT_API_KEY".to_string(), "key".to_string())]);
-        scrub_unconfigured_openai_compat_key(&mut command, Some("openai-compat"), &env);
+        scrub_ambient_openai_env(&mut command, Some("openai-compat"), &env);
         assert!(!command
             .get_envs()
             .any(|(key, value)| key == "OPENAI_COMPAT_API_KEY" && value.is_none()));
+    }
+
+    #[test]
+    fn official_openai_scrubs_ambient_compat_routing() {
+        let mut command = std::process::Command::new("echo");
+        command.env("OPENAI_COMPAT_API_KEY", "ambient-secret");
+        command.env("OPENAI_COMPAT_BASE_URL", "http://localhost:11434/v1");
+        scrub_ambient_openai_env(&mut command, Some("openai"), &BTreeMap::new());
+        for key in ["OPENAI_COMPAT_API_KEY", "OPENAI_COMPAT_BASE_URL"] {
+            assert!(command
+                .get_envs()
+                .any(|(name, value)| name == key && value.is_none()));
+        }
     }
 
     #[test]

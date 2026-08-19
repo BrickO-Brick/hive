@@ -399,7 +399,7 @@ fn set_provider(store: &mut Store, owner: Owner, provider: &str) -> Result<(), S
 
 fn plan_store(mut store: Store) -> Result<(Store, Vec<Consumer>), String> {
     let consumers = collect_consumers(&store)?;
-    let mut provider_targets: HashMap<Owner, (Identity, bool)> = HashMap::new();
+    let mut provider_targets: HashMap<Owner, (Option<Identity>, bool)> = HashMap::new();
     for consumer in &consumers {
         let expected = if consumer.identity == Identity::Official {
             "openai"
@@ -408,21 +408,19 @@ fn plan_store(mut store: Store) -> Result<(Store, Vec<Consumer>), String> {
         };
         match provider_targets.entry(consumer.provider_owner.clone()) {
             std::collections::hash_map::Entry::Vacant(entry) => {
-                entry.insert((consumer.identity, consumer.provider != expected));
+                entry.insert((Some(consumer.identity), consumer.provider != expected));
             }
             std::collections::hash_map::Entry::Occupied(mut entry) => {
-                if entry.get().0 != consumer.identity {
-                    return Err(format!(
-                        "provider owner {:?} feeds mixed official/custom consumers",
-                        consumer.provider_owner
-                    ));
+                if entry.get().0 != Some(consumer.identity) {
+                    entry.get_mut().0 = None;
+                } else {
+                    entry.get_mut().1 |= consumer.provider != expected;
                 }
-                entry.get_mut().1 |= consumer.provider != expected;
             }
         }
     }
     for (owner, (identity, needs_change)) in provider_targets {
-        if needs_change {
+        if let (Some(identity), true) = (identity, needs_change) {
             set_provider(
                 &mut store,
                 owner,
@@ -435,35 +433,27 @@ fn plan_store(mut store: Store) -> Result<(Store, Vec<Consumer>), String> {
         }
     }
 
-    let mut legacy_targets: HashMap<Owner, Identity> = HashMap::new();
+    let mut official_legacy_targets = Vec::new();
     for consumer in &consumers {
-        if consumer.identity == Identity::Official
-            && consumer
+        if consumer.identity != Identity::Official
+            || consumer
                 .official_key
                 .as_ref()
                 .is_some_and(|v| !v.value.is_empty())
         {
             continue;
         }
-        let Some(legacy) = &consumer.legacy_key else {
-            continue;
-        };
-        if let Some(previous) = legacy_targets.insert(legacy.owner.clone(), consumer.identity) {
-            if previous != consumer.identity {
-                return Err(format!(
-                    "credential owner {:?} feeds mixed official/custom consumers",
-                    legacy.owner
-                ));
-            }
+        if let Some(legacy) = &consumer.legacy_key {
+            official_legacy_targets.push(legacy.owner.clone());
         }
     }
-    for (owner, identity) in legacy_targets {
-        if identity == Identity::Official {
-            let env = env_mut(&mut store, owner)?;
-            if env.get(OPENAI_API_KEY).is_none_or(|value| value.is_empty()) {
-                if let Some(value) = env.remove(OPENAI_COMPAT_API_KEY) {
-                    env.insert(OPENAI_API_KEY.into(), value);
-                }
+    official_legacy_targets.sort_by_key(|owner| format!("{owner:?}"));
+    official_legacy_targets.dedup();
+    for owner in official_legacy_targets {
+        let env = env_mut(&mut store, owner)?;
+        if env.get(OPENAI_API_KEY).is_none_or(|value| value.is_empty()) {
+            if let Some(value) = env.get(OPENAI_COMPAT_API_KEY).cloned() {
+                env.insert(OPENAI_API_KEY.into(), value);
             }
         }
     }
@@ -566,17 +556,6 @@ fn verify_post_split(before: &[Consumer], after: &Store) -> Result<(), String> {
         let record_index = old
             .record_index
             .ok_or("managed consumer has no record index")?;
-        let config =
-            match resolve_effective_config(&after.records[record_index], &defs, &after.global) {
-                EffectiveConfigResult::Resolved(c) => c,
-                _ => return Err(format!("consumer {:?} became unresolved", old.label)),
-            };
-        if config.provider.value.as_deref() != Some(expected_provider) {
-            return Err(format!(
-                "consumer {:?} resolves provider {:?}, expected {expected_provider}",
-                old.label, config.provider.value
-            ));
-        }
         let descriptor = crate::managed_agents::resolve_effective_harness_descriptor(
             &after.records[record_index],
             &defs,

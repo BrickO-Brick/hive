@@ -52,7 +52,7 @@ fn inbound_legacy_openai_provider_keeps_local_custom_origin_compatible() {
 
     apply_inbound_persona(&mut personas, inbound);
 
-    assert_eq!(personas[0].provider.as_deref(), Some("openai-compat"));
+    assert_eq!(personas[0].provider.as_deref(), Some("openai"));
 }
 
 #[test]

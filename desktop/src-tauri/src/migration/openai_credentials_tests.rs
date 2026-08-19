@@ -63,6 +63,16 @@ fn whole_store_matrix_classifies_origins_and_moves_only_official_credentials() {
                 .map(String::as_str),
             Some("secret")
         );
+        if expected_provider == "openai" {
+            assert_eq!(
+                store.records[0]
+                    .env_vars
+                    .get(OPENAI_COMPAT_API_KEY)
+                    .map(String::as_str),
+                Some("secret"),
+                "migration copies the shared legacy key during compatibility"
+            );
+        }
         if expected_provider == "openai" && origin.is_some() {
             assert_eq!(
                 store.records[0]
@@ -173,7 +183,7 @@ fn existing_official_key_wins_without_copying_legacy_secret() {
 }
 
 #[test]
-fn mixed_global_provider_owner_is_rejected() {
+fn mixed_global_provider_owner_is_resolved_per_consumer() {
     let global = GlobalAgentConfig {
         provider: Some("openai".into()),
         ..Default::default()
@@ -190,9 +200,22 @@ fn mixed_global_provider_owner_is_rejected() {
         OPENAI_COMPAT_BASE_URL.into(),
         "https://gateway.example/v1".into(),
     );
-    assert!(planned(global, vec![official, custom])
-        .unwrap_err()
-        .contains("mixed official/custom"));
+    let store = planned(global, vec![official, custom]).unwrap();
+    assert_eq!(store.global.provider.as_deref(), Some("openai"));
+    assert_eq!(
+        store.records[0]
+            .env_vars
+            .get(OPENAI_API_KEY)
+            .map(String::as_str),
+        Some("a")
+    );
+    assert_eq!(
+        store.records[1]
+            .env_vars
+            .get(OPENAI_COMPAT_API_KEY)
+            .map(String::as_str),
+        Some("b")
+    );
 }
 
 #[test]
@@ -236,7 +259,7 @@ fn linked_provider_snapshot_is_ignored_and_definition_is_mutated() {
 }
 
 #[test]
-fn linked_local_identity_that_definition_cannot_represent_is_rejected() {
+fn linked_local_identity_is_resolved_per_consumer() {
     let mut def = definition("shared");
     def.provider = Some("openai".into());
     let mut official = record("official", "official");
@@ -253,10 +276,21 @@ fn linked_local_identity_that_definition_cannot_represent_is_rejected() {
         OPENAI_COMPAT_BASE_URL.into(),
         "https://gateway.example/v1".into(),
     );
-    assert!(
-        planned(GlobalAgentConfig::default(), vec![def, official, custom])
-            .unwrap_err()
-            .contains("mixed official/custom")
+    let store = planned(GlobalAgentConfig::default(), vec![def, official, custom]).unwrap();
+    assert_eq!(store.records[0].provider.as_deref(), Some("openai"));
+    assert_eq!(
+        store.records[1]
+            .env_vars
+            .get(OPENAI_API_KEY)
+            .map(String::as_str),
+        Some("a")
+    );
+    assert_eq!(
+        store.records[2]
+            .env_vars
+            .get(OPENAI_COMPAT_API_KEY)
+            .map(String::as_str),
+        Some("b")
     );
 }
 

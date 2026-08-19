@@ -61,8 +61,12 @@ pub(super) fn openai_compatible_models_url_for_discovery(
 ) -> Result<String, String> {
     let is_compat =
         provider.is_some_and(|value| value.trim().eq_ignore_ascii_case("openai-compat"));
-    let configured_base_url =
-        env_or_process_override(env, "OPENAI_COMPAT_BASE_URL").filter(|value| !value.is_empty());
+    let configured_base_url = if is_compat {
+        env_or_process_override(env, "OPENAI_COMPAT_BASE_URL")
+    } else {
+        env_value(env, "OPENAI_COMPAT_BASE_URL")
+    }
+    .filter(|value| !value.is_empty());
     if !is_compat {
         if configured_base_url
             .as_deref()
@@ -106,7 +110,7 @@ pub(super) fn redaction_env_with_value(
 /// turn the subprocess catalog into `config: ANTHROPIC_API_KEY required`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct DiscoveryProvider {
-    value: Option<String>,
+    pub(super) value: Option<String>,
     inferred: bool,
 }
 

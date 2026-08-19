@@ -40,6 +40,27 @@ fn provider_env_canonicalization_isolates_consumers() {
 }
 
 #[test]
+fn inherited_legacy_custom_configuration_normalizes_per_consumer() {
+    let mut env = BTreeMap::from([
+        ("BUZZ_AGENT_PROVIDER".into(), "openai".into()),
+        ("OPENAI_COMPAT_API_KEY".into(), "legacy".into()),
+        (
+            "OPENAI_COMPAT_BASE_URL".into(),
+            "http://localhost:11434/v1".into(),
+        ),
+    ]);
+    assert_eq!(
+        canonicalize_openai_provider_env(&mut env, Some("openai")).as_deref(),
+        Some("openai-compat")
+    );
+    assert_eq!(
+        env.get("BUZZ_AGENT_PROVIDER").map(String::as_str),
+        Some("openai-compat")
+    );
+    assert!(!env.contains_key("OPENAI_API_KEY"));
+}
+
+#[test]
 fn keyless_compatible_provider_gets_explicit_blank_credential() {
     let mut env = BTreeMap::from([(
         "OPENAI_COMPAT_BASE_URL".into(),

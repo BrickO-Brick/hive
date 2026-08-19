@@ -534,6 +534,8 @@ impl Config {
         let openai_key = env("OPENAI_API_KEY");
         let legacy_openai_key = env("OPENAI_COMPAT_API_KEY");
         let openai_base_url = env("OPENAI_COMPAT_BASE_URL");
+        let selected_openai_key =
+            first_nonempty(openai_key.as_deref(), legacy_openai_key.as_deref());
         let provider = resolve_provider(
             normalize_legacy_openai_provider(
                 requested_provider.as_deref(),
@@ -543,7 +545,7 @@ impl Config {
             )
             .as_deref(),
             env("ANTHROPIC_API_KEY").as_deref(),
-            openai_key.as_deref().or(legacy_openai_key.as_deref()),
+            selected_openai_key,
             env("OPENROUTER_API_KEY").as_deref(),
         )?;
 
@@ -571,10 +573,8 @@ impl Config {
                 OpenAiApi::Auto, // unused for Anthropic
             ),
             Provider::OpenAi => (
-                openai_key
-                    .clone()
-                    .or_else(|| legacy_openai_key.clone())
-                    .filter(|value| !value.trim().is_empty())
+                selected_openai_key
+                    .map(str::to_string)
                     .ok_or_else(|| "config: OPENAI_API_KEY required".to_string())?,
                 resolve_model(
                     buzz_agent_model.as_deref(),
@@ -815,6 +815,12 @@ fn resolve_model(
     provider_default: Option<&str>,
 ) -> Option<String> {
     explicit_override.or(provider_default).map(str::to_owned)
+}
+
+fn first_nonempty<'a>(primary: Option<&'a str>, fallback: Option<&'a str>) -> Option<&'a str> {
+    primary
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| fallback.filter(|value| !value.trim().is_empty()))
 }
 
 fn present_nonempty(v: Option<&str>) -> bool {
@@ -1231,6 +1237,12 @@ mod tests {
             resolve_provider(Some("openai"), None, Some("sk-openai"), None).unwrap(),
             Provider::OpenAi
         );
+    }
+
+    #[test]
+    fn empty_official_key_falls_back_to_populated_legacy_key() {
+        assert_eq!(first_nonempty(Some(""), Some("legacy")), Some("legacy"));
+        assert_eq!(first_nonempty(Some("   "), Some("legacy")), Some("legacy"));
     }
 
     #[test]

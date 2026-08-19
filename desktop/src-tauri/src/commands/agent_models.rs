@@ -99,9 +99,9 @@ pub async fn get_agent_models(
     let mut merged_env = discovery_env_with_baked_floor(merged_env);
     // Resolve against the baked/process env when the record saved no provider,
     // so a build-provided provider still gets live discovery.
-    let effective_provider =
+    let mut effective_provider =
         effective_discovery_provider(saved_provider.as_deref(), provider_env_var, &merged_env);
-    crate::managed_agents::readiness::canonicalize_openai_provider_env(
+    effective_provider.value = crate::managed_agents::readiness::canonicalize_openai_provider_env(
         &mut merged_env,
         effective_provider.as_deref(),
     );
@@ -238,12 +238,12 @@ pub async fn discover_agent_models(
     let mut merged_env = discovery_env_with_baked_floor(merged_env);
     // Recover a build-provided provider when the form has none, so the create
     // dialog discovers live models instead of falling through to the subprocess.
-    let effective_provider = effective_discovery_provider(
+    let mut effective_provider = effective_discovery_provider(
         input.provider.as_deref(),
         runtime_meta.and_then(|meta| meta.provider_env_var),
         &merged_env,
     );
-    crate::managed_agents::readiness::canonicalize_openai_provider_env(
+    effective_provider.value = crate::managed_agents::readiness::canonicalize_openai_provider_env(
         &mut merged_env,
         effective_provider.as_deref(),
     );

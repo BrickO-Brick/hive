@@ -269,7 +269,7 @@ fn resolve_effective_agent_env_with_def(
     );
     env.extend(user_env);
 
-    canonicalize_openai_provider_env(&mut env, effective_provider.as_deref());
+    let _ = canonicalize_openai_provider_env(&mut env, effective_provider.as_deref());
 
     // Buzz shared compute is a native Buzz provider. Translate it to buzz-agent's
     // OpenAI-compatible transport only in the effective runtime environment.
@@ -290,12 +290,27 @@ fn resolve_effective_agent_env_with_def(
 pub(crate) fn canonicalize_openai_provider_env(
     env: &mut BTreeMap<String, String>,
     provider: Option<&str>,
-) {
-    match provider
-        .map(str::trim)
-        .map(str::to_ascii_lowercase)
-        .as_deref()
-    {
+) -> Option<String> {
+    let mut provider = provider.map(str::trim).map(str::to_ascii_lowercase);
+    if provider.as_deref() == Some("openai") {
+        let has_official_key = env
+            .get("OPENAI_API_KEY")
+            .is_some_and(|value| !value.trim().is_empty());
+        let has_legacy_key = env
+            .get("OPENAI_COMPAT_API_KEY")
+            .is_some_and(|value| !value.trim().is_empty());
+        let has_custom_origin = env
+            .get("OPENAI_COMPAT_BASE_URL")
+            .map(String::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_some_and(|value| value.trim_end_matches('/') != "https://api.openai.com/v1");
+        if !has_official_key && has_legacy_key && has_custom_origin {
+            provider = Some("openai-compat".to_string());
+        }
+    }
+
+    match provider.as_deref() {
         Some("openai") => {
             env.remove("OPENAI_COMPAT_BASE_URL");
             env.remove("OPENAI_COMPAT_API_KEY");
@@ -306,6 +321,10 @@ pub(crate) fn canonicalize_openai_provider_env(
         }
         _ => {}
     }
+    if let (Some(value), Some(slot)) = (provider.as_ref(), env.get_mut("BUZZ_AGENT_PROVIDER")) {
+        *slot = value.clone();
+    }
+    provider
 }
 
 // ── Requirement types ─────────────────────────────────────────────────────────

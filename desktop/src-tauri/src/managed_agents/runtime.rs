@@ -24,7 +24,7 @@ pub(crate) use super::access_policy::{build_respond_to_env_with_policy, RespondT
 mod metadata;
 pub(crate) use metadata::{
     apply_agent_display_env, resolve_session_title, runtime_metadata_env_vars,
-    scrub_unconfigured_openai_compat_key, DISPLAY_NAME_ENV_VAR, SESSION_TITLE_ENV_VAR,
+    scrub_ambient_openai_env, DISPLAY_NAME_ENV_VAR, SESSION_TITLE_ENV_VAR,
 };
 
 mod stop;
@@ -711,7 +711,11 @@ pub fn spawn_agent_child(
     let mesh_model_id = effective_cfg.relay_mesh_model_id();
     let effective_prompt = effective_cfg.system_prompt.value;
     let effective_model = effective_cfg.model.value;
-    let effective_provider = effective_cfg.provider.value;
+    let effective_provider = descriptor
+        .env
+        .get("BUZZ_AGENT_PROVIDER")
+        .cloned()
+        .or(effective_cfg.provider.value);
 
     if let Some(prompt) = &effective_prompt {
         command.env("BUZZ_ACP_SYSTEM_PROMPT", prompt);
@@ -810,11 +814,7 @@ pub fn spawn_agent_child(
         command.env(key, value);
     }
 
-    scrub_unconfigured_openai_compat_key(
-        &mut command,
-        effective_provider.as_deref(),
-        &descriptor.env,
-    );
+    scrub_ambient_openai_env(&mut command, effective_provider.as_deref(), &descriptor.env);
 
     // (ANTHROPIC_MODEL is applied post-loop for the same reason). When effort_level is
     // None there is no canonical value to assert, so env passthrough stands — user env
