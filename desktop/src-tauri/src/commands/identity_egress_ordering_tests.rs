@@ -7,10 +7,12 @@
 // pinned STRUCTURALLY: `try_admit_owner_identity_egress()` holds a lease that
 // `begin_egress_drain` must await before B commits, so a key read that happens
 // AFTER admission cannot observe a mid-transition swap. This scan asserts that
-// ordering for every command in the C2 set — a future edit that reads
-// `signing_keys()` before admitting fails to compile-in the bug because this
-// test rejects it. The lease-blocks-the-drain half of the invariant is driven
-// at the registry seam in
+// ordering for every source-discovered candidate. Discovery takes the union of
+// owner-key reads, egress admissions, and owner-artifact constructions; each
+// discovered function must then be explicitly classified. A future producer
+// that reads `signing_keys()` before admitting therefore fails closed instead
+// of being omitted from a nominal command list. The lease-blocks-the-drain half
+// of the invariant is driven at the registry seam in
 // `owner_identity_egress::tests::key_read_under_lease_blocks_commit_b`.
 
 /// The owner-key read accessor guarded by admission. `state.signing_keys()` is
@@ -24,36 +26,72 @@ fn admit_needle() -> String {
     ["try_admit_owner_", "identity_egress"].concat()
 }
 
-/// The direct owner-artifact commands whose artifacts can be stamped as a
-/// post-transition identity if they clone the owner key before admission.
-const C2_COMMANDS: &[&str] = &[
-    // The C2 artifact-command universe is closed by the owner-artifact inventory
-    // in `owner_identity_egress`: every direct producer that reads
-    // `state.signing_keys()` must admit before that read. The NIP-49 backup is
-    // structurally different — its helper reads under its caller-held
-    // `identity_mutation` + admitted lease, which the C3 schedule and helper
-    // precondition test pin separately.
-    "pub async fn sign_event(",
-    "pub async fn decrypt_observer_event(",
-    "pub async fn build_observer_control_event(",
-    "pub async fn get_nsec(",
-    "pub async fn sign_nostr_identity_binding(",
-    "pub async fn create_auth_event(",
-    "pub async fn nip44_encrypt_to_self(",
-    "pub async fn nip44_decrypt_from_self(",
+/// This spelling avoids turning the ordering-only test module into NIP-49
+/// material, which the egress guard deliberately confines to its allowlist.
+const BACKUP_CREATE_INNER: &str = concat!("create_", "ncrypt", "sec_backup_inner");
+const BACKUP_VERIFY_INNER: &str = concat!("verify_", "ncrypt", "sec_backup_inner");
+
+/// Every source-discovered C2 candidate is classified exactly once. Discovery
+/// is structural; these names classify the discovered functions rather than
+/// defining their universe.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProducerClassification {
+    /// Direct owner-artifact producer: admission must precede its key read.
+    C2Ordering,
+    /// The backup pair: the caller holds `identity_mutation` before admission,
+    /// and the helper reads the key under that caller-held mutation lock.
+    BackupCallerHeldMutation,
+    /// Reads the owner key but constructs no owner artifact, so C2 does not
+    /// apply. It remains explicit to prevent silently losing a future producer.
+    NonArtifactKeyReader,
+}
+
+/// Classifications for every current source-discovered candidate. A new
+/// candidate is a failure until it is deliberately classified here.
+const PRODUCER_CLASSIFICATIONS: &[(&str, ProducerClassification)] = &[
+    ("sign_event", ProducerClassification::C2Ordering),
+    ("decrypt_observer_event", ProducerClassification::C2Ordering),
+    (
+        "build_observer_control_event",
+        ProducerClassification::C2Ordering,
+    ),
+    ("get_nsec", ProducerClassification::C2Ordering),
+    (
+        "sign_nostr_identity_binding",
+        ProducerClassification::C2Ordering,
+    ),
+    ("create_auth_event", ProducerClassification::C2Ordering),
+    ("nip44_encrypt_to_self", ProducerClassification::C2Ordering),
+    (
+        "nip44_decrypt_from_self",
+        ProducerClassification::C2Ordering,
+    ),
+    (
+        "create_backup_with_log_n",
+        ProducerClassification::BackupCallerHeldMutation,
+    ),
+    (
+        BACKUP_CREATE_INNER,
+        ProducerClassification::BackupCallerHeldMutation,
+    ),
+    (
+        BACKUP_VERIFY_INNER,
+        ProducerClassification::NonArtifactKeyReader,
+    ),
+    (
+        "persist_current_identity",
+        ProducerClassification::NonArtifactKeyReader,
+    ),
 ];
 
 /// Split the module source into `(fn signature line, body)` segments at
-/// top-level `fn` boundaries (column-0 `fn`, `pub fn`, `pub async fn`,
-/// `pub(crate) fn`). Every leased command is a top-level fn, so this bounds
-/// each body without a brace parser.
+/// top-level `fn` boundaries (private or any `pub… fn` form). Every leased
+/// command is a top-level fn, so this bounds each body without a brace parser.
 fn top_level_fns(content: &str) -> Vec<(String, String)> {
     let is_fn_decl = |line: &str| {
         line.starts_with("fn ")
-            || line.starts_with("pub fn ")
-            || line.starts_with("pub async fn ")
-            || line.starts_with("pub(crate) fn ")
             || line.starts_with("async fn ")
+            || (line.starts_with("pub") && line.contains(" fn "))
     };
     let mut segments = Vec::new();
     let mut current: Option<(String, Vec<&str>)> = None;
@@ -81,35 +119,81 @@ fn first_call(body: &str, needle: &str) -> Option<usize> {
     })
 }
 
-/// Violations: a command in the C2 set either omits admission or reads the
-/// owner key before it admits.
+/// Return a function name from a top-level signature line.
+fn function_name(sig: &str) -> Option<&str> {
+    sig.split_once("fn ")?.1.split(['(', '<']).next()
+}
+
+/// Source-discovered candidates use the union of the three C2 boundary markers:
+/// admission, owner-key read, and owner-artifact construction. This catches a
+/// future producer even when it omits one of the markers the ordering rule
+/// requires.
+fn is_candidate(body: &str, key: &str, admit: &str) -> bool {
+    body.contains(admit) || body.contains(key) || body.contains("register_owner_artifact")
+}
+
+fn classification_for(name: &str) -> Option<ProducerClassification> {
+    PRODUCER_CLASSIFICATIONS
+        .iter()
+        .find_map(|(candidate, classification)| (*candidate == name).then_some(*classification))
+}
+
+/// Violations cover the closed source-discovered candidate universe: every
+/// candidate must have exactly one explicit classification. C2 producers must
+/// then admit before reading the owner key; NIP-49 and non-artifact readers
+/// stay explicit rather than becoming silent exclusions.
 fn admission_ordering_violations(content: &str) -> Vec<String> {
     let key = key_read_needle();
     let admit = admit_needle();
+    let discovered = top_level_fns(content)
+        .into_iter()
+        .filter(|(_, body)| is_candidate(body, &key, &admit))
+        .collect::<Vec<_>>();
     let mut violations = Vec::new();
-    for (sig, body) in top_level_fns(content) {
-        if !C2_COMMANDS.iter().any(|command| sig.contains(command)) {
+
+    for (name, _) in PRODUCER_CLASSIFICATIONS {
+        let matches = PRODUCER_CLASSIFICATIONS
+            .iter()
+            .filter(|(candidate, _)| candidate == name)
+            .count();
+        if matches != 1 {
+            violations.push(format!(
+                "{name}: discovered candidates require exactly one classification (found {matches})"
+            ));
+        }
+    }
+
+    for (sig, body) in discovered {
+        let Some(name) = function_name(&sig) else {
+            violations.push(format!("{sig}: cannot classify discovered C2 candidate"));
+            continue;
+        };
+        let Some(classification) = classification_for(name) else {
+            violations.push(format!(
+                "{name}: unclassified owner-artifact candidate — add an explicit C2, NIP-49, or non-artifact classification"
+            ));
+            continue;
+        };
+        if classification != ProducerClassification::C2Ordering {
             continue;
         }
+
         let Some(admit_at) = first_call(&body, &admit) else {
             violations.push(format!(
-                "{}: C2 command must admit before reading {key}",
-                sig.trim()
+                "{name}: C2 producer must admit before reading {key}"
             ));
             continue;
         };
         let Some(key_at) = first_call(&body, &key) else {
             violations.push(format!(
-                "{}: C2 command must read {key} under its admission lease",
-                sig.trim()
+                "{name}: C2 producer must read {key} under its admission lease"
             ));
             continue;
         };
         if key_at < admit_at {
             violations.push(format!(
-                "{}: reads {key} at body line {} but admits the lease at body line {} — \
+                "{name}: reads {key} at body line {} but admits the lease at body line {} — \
                  admission MUST precede every owner-key read (C2)",
-                sig.trim(),
                 key_at + 1,
                 admit_at + 1,
             ));
@@ -149,6 +233,29 @@ fn scan_catches_a_read_before_admit() {
     assert!(
         violations.iter().any(|v| v.contains("sign_event")),
         "a read-before-admit command must trip the scan: {violations:?}"
+    );
+}
+
+/// Mutation proof: a newly named owner-artifact producer is discovered even
+/// before anyone adds a classification for it.
+#[test]
+fn scan_catches_an_unclassified_new_owner_artifact_producer() {
+    let content = format!(
+        "pub async fn future_owner_artifact(state: State) {{\n    \
+         let keys = state.{}?;\n    \
+         let lease = crate::owner_identity_egress::{}().await?;\n    \
+         let artifact = crate::owner_identity_egress::register_owner_artifact(&lease);\n    \
+         Ok(artifact.stamp_value(keys.public_key().to_hex()))\n}}\n",
+        key_read_needle(),
+        admit_needle(),
+    );
+    let violations = admission_ordering_violations(&content);
+    assert!(
+        violations.iter().any(|violation| {
+            violation.contains("future_owner_artifact")
+                && violation.contains("unclassified owner-artifact candidate")
+        }),
+        "a new owner-artifact construction site must require classification: {violations:?}"
     );
 }
 
