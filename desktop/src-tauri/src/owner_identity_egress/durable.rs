@@ -184,9 +184,7 @@ pub(super) fn reset_for_test() {
 
 impl<P: CapabilityPolicy> OwnerIdentityCapability<P> {
     /// The identity-persistence generation this capability was issued under.
-    // Consumed by C5 (barrier introspection) and the C2 tests; remove allow
-    // when a production caller reads it.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn generation(&self) -> u64 {
         self.generation
     }
@@ -393,7 +391,7 @@ fn register_durable<P: CapabilityPolicy>(
 /// self-deregisters on its imminent Drop and is skipped either way.
 ///
 /// The C5 coordinator barrier calls this after
-/// [`begin_egress_drain`]/[`await_egress_drain`] and BEFORE the journal write +
+/// [`begin_egress_drain`]/`await_egress_drain` and BEFORE the journal write +
 /// durable B dispatch, so no old-generation session or bearer can transmit
 /// across the durable boundary. It only *invokes* the handles C2 registered.
 pub fn revoke_durable_capabilities_before(winning_generation: u64) -> usize {
@@ -420,9 +418,7 @@ pub fn revoke_durable_capabilities_before(winning_generation: u64) -> usize {
 /// registration-completeness assertion (C2) to prove every issued
 /// session/bearer is present with a revocation handle the C5 barrier can
 /// invoke.
-// Consumed by C5 and the C2 registration-completeness tests; remove allow when
-// a production caller lands.
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn live_durable_capability_count() -> usize {
     lock_durable().entries.len()
 }

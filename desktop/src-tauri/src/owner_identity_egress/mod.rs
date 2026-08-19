@@ -28,7 +28,7 @@
 //!   rate-limit waits, which bounds the drain below.
 //! - The identity-transition coordinator, after the runtime drain and BEFORE
 //!   the journal write + durable B dispatch, calls [`begin_egress_drain`] to
-//!   bump the generation and refuse new admission, then [`await_egress_drain`]
+//!   bump the generation and refuse new admission, then `await_egress_drain`
 //!   to await every in-flight lease — so no send begun under identity A can
 //!   cross the durable-dispatch boundary. The TOCTOU window is closed by
 //!   linearization (admission and state transitions share one lock), not by
@@ -135,8 +135,6 @@ pub enum IdentityPersistenceState {
     /// keys, because already-admitted in-flight leases hold their own captures
     /// and complete under the outgoing identity before the durable dispatch.
     /// Transient and in-memory only — cleared at a proven exit.
-    // Consumed by C5 (P25/P28 coordinator); remove allow when C5 lands.
-    #[allow(dead_code)]
     Draining,
     /// A completed transition could not prove EITHER durable identity
     /// canonical. Latched durable fail-closed: owner-identity egress admission
@@ -196,15 +194,13 @@ fn lock_inner() -> std::sync::MutexGuard<'static, RegistryInner> {
 
 /// The current identity-persistence generation. A lease is valid only while
 /// this equals the generation captured at its admission.
-// Consumed by C5 (P25/P28 coordinator); remove allow when C5 lands.
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn current_identity_persistence_generation() -> u64 {
     REGISTRY.generation.load(Ordering::Acquire)
 }
 
 /// The current admission state.
-// Consumed by C5 (P25/P28 coordinator); remove allow when C5 lands.
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn identity_persistence_state() -> IdentityPersistenceState {
     lock_inner().state
 }
@@ -227,8 +223,6 @@ pub fn is_identity_indeterminate() -> bool {
               hold it across that window and drop it immediately after"]
 pub struct OwnerIdentityEgressLease {
     /// The identity-persistence generation current at admission.
-    // Consumed by C5 (P25/P28 coordinator); remove allow when C5 lands.
-    #[allow(dead_code)]
     generation: u64,
 }
 
@@ -313,7 +307,7 @@ fn admit_owner_identity_after_wait() -> Result<OwnerIdentityEgressLease, String>
 /// Begin the coordinator's egress drain: bump the identity-persistence
 /// generation and close new admission (state → `Draining`). Returns the new
 /// generation. Call this after the runtime drain and BEFORE the journal write
-/// + durable B dispatch, then [`await_egress_drain`] to await in-flight leases.
+/// + durable B dispatch, then `await_egress_drain` to await in-flight leases.
 ///
 /// Idempotent-guard: only transitions from `Live`. Returns `Err` if a
 /// transition is already in flight or latched — the coordinator serializes
@@ -337,8 +331,7 @@ pub fn begin_egress_drain() -> Result<u64, String> {
 /// no lease is outstanding. Holds no lock across its await, and an in-flight
 /// lease never re-acquires a state guard mid-lease, so the drain cannot
 /// deadlock against a send it is waiting on.
-// Consumed by C5 (P25/P28 coordinator); remove allow when C5 lands.
-#[allow(dead_code)]
+#[cfg(test)]
 pub async fn await_egress_drain() {
     loop {
         let notified = REGISTRY.drained.notified();
@@ -354,7 +347,7 @@ pub async fn await_egress_drain() {
 }
 
 /// Synchronously await every in-flight lease admitted before the drain began —
-/// the C5 coordinator's blocking analogue of [`await_egress_drain`]. Returns
+/// the C5 coordinator's blocking analogue of `await_egress_drain`. Returns
 /// once no lease is outstanding.
 ///
 /// The coordinator barrier runs inside a `spawn_blocking` critical section that
@@ -370,7 +363,7 @@ pub async fn await_egress_drain() {
 /// managed-agent guard), and a tree sweep found ZERO sites that hold an egress
 /// lease while acquiring either guard. `wait_while` releases the registry mutex
 /// while parked, so an in-flight lease's `Drop` always makes progress and
-/// notifies. The wait has NO timeout, matching [`await_egress_drain`]: every
+/// notifies. The wait has NO timeout, matching `await_egress_drain`: every
 /// in-flight lease is a network op with its own timeout, so the wait is bounded
 /// transitively — a defensive timeout would only mask a leaked lease.
 pub fn wait_egress_drain_blocking() {
@@ -421,14 +414,15 @@ pub fn latch_identity_indeterminate() {
 ///   [`ManagedAgentEgressLease`] for the Phase-4 contract this interim shape
 ///   defers.
 #[derive(Debug)]
+// Both payloads are RAII witnesses: the funnels take `&EgressLease` so an
+// unleased send is a compile error, and each inner lease decrements `in_flight`
+// on Drop to release the coordinator's drain. Neither is ever read out, so the
+// dead-code lint fires on the fields despite the values being load-bearing.
+#[allow(dead_code)]
 pub enum EgressLease {
     /// The fully-real owner-identity capability (P29-C1).
-    // Consumed by C5 (P25/P28 coordinator); remove allow when C5 lands.
-    #[allow(dead_code)]
     OwnerIdentity(OwnerIdentityEgressLease),
     /// The interim managed-agent-key capability (Phase 4 completes it).
-    // Consumed by C5 (P25/P28 coordinator); remove allow when C5 lands.
-    #[allow(dead_code)]
     ManagedAgentKeyed(ManagedAgentEgressLease),
 }
 
@@ -458,24 +452,7 @@ pub enum EgressLease {
 #[derive(Debug)]
 #[must_use = "a managed-agent egress capability authorizes exactly one \
               agent-key sign/auth/transmit window"]
-pub struct ManagedAgentEgressLease {
-    /// The owner identity-persistence generation current at admission. Held so
-    /// the coordinator's drain awaits agent sends in flight at the barrier,
-    /// exactly as it awaits owner leases.
-    // Consumed by C5 (P25/P28 coordinator); remove allow when C5 lands.
-    #[allow(dead_code)]
-    generation: u64,
-}
-
-impl ManagedAgentEgressLease {
-    /// The owner identity-persistence generation this capability was admitted
-    /// under.
-    // Consumed by C5 (P25/P28 coordinator); remove allow when C5 lands.
-    #[allow(dead_code)]
-    pub fn generation(&self) -> u64 {
-        self.generation
-    }
-}
+pub struct ManagedAgentEgressLease;
 
 impl Drop for ManagedAgentEgressLease {
     fn drop(&mut self) {
@@ -517,9 +494,7 @@ fn admit_managed_agent_after_wait() -> Result<ManagedAgentEgressLease, String> {
     match inner.state {
         IdentityPersistenceState::Live => {
             inner.in_flight += 1;
-            Ok(ManagedAgentEgressLease {
-                generation: REGISTRY.generation.load(Ordering::Acquire),
-            })
+            Ok(ManagedAgentEgressLease)
         }
         IdentityPersistenceState::Draining => Err(
             "owner-identity egress is draining for an identity transition; \
@@ -545,7 +520,7 @@ pub use durable::{
 };
 // The C5 coordinator barrier's durable-capability revocation, consumed by
 // `import_identity_blocking`. Its registration-completeness reader
-// (`live_durable_capability_count`) stays test-only; retired in F.
+// (`live_durable_capability_count`) is test-only.
 pub use durable::revoke_durable_capabilities_before;
 // The artifact policy marker and its wire stamp are named at the frontend
 // application sites in C6/C7 (generation-compare) and by the §7 artifact
@@ -779,11 +754,7 @@ mod tests {
     #[test]
     fn managed_agent_admits_when_live() {
         let _g = guard();
-        let lease = admit_managed_agent_after_wait().expect("live admits agent egress");
-        assert_eq!(
-            lease.generation(),
-            current_identity_persistence_generation()
-        );
+        let _lease = admit_managed_agent_after_wait().expect("live admits agent egress");
     }
 
     #[test]

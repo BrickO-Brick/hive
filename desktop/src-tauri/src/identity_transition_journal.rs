@@ -74,8 +74,7 @@ pub(crate) fn clear_pending(data_dir: &Path) -> Result<(), String> {
 /// present-but-unparseable row is still "pending" (fail closed) — the file
 /// existing at all proves the coordinator began a transition it could not prove
 /// resolved. Returns `Ok(None)` only when no file exists.
-// Consumed by C5 (P28 startup); remove allow when startup reads it.
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn read_pending(data_dir: &Path) -> Result<Option<IdentityTransitionPending>, String> {
     let path = journal_path(data_dir);
     match std::fs::read(&path) {
