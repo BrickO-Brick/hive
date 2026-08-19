@@ -886,4 +886,55 @@ mod tests {
             "the refusal must name the indeterminate recovery state: {err}"
         );
     }
+
+    /// C2 schedule at the registry seam: once a command admits (the ordering
+    /// the `identity.rs` scan enforces), the owner-key read that follows runs
+    /// UNDER the held lease, and a transition's `begin_egress_drain` +
+    /// `wait_egress_drain_blocking` cannot complete — so commit-B cannot
+    /// proceed — until that lease drops. This closes the "clone A's key, pause,
+    /// let B commit, admit at B" race: the admitted lease pins generation A
+    /// across the whole read, and the drain that would bump to B is forced to
+    /// wait it out. (The command boundary itself takes `State<AppState>`, which
+    /// a mock cannot swap mid-call, so the property is pinned here at the
+    /// hermetically drivable seam and structurally in the `identity.rs`
+    /// ordering scan.)
+    #[test]
+    fn key_read_under_lease_blocks_commit_b() {
+        let _g = guard();
+
+        // The command admits first; the key read happens under this lease.
+        let lease = admit_owner_identity_after_wait().unwrap();
+        let read_generation = lease.generation();
+        assert_eq!(
+            read_generation,
+            current_identity_persistence_generation(),
+            "the key read observes generation A under the held lease"
+        );
+
+        // A transition begins draining toward B. It bumps the generation and
+        // refuses NEW admission, but must await this in-flight lease before it
+        // can commit B.
+        let bumped = begin_egress_drain().unwrap();
+        assert!(bumped > read_generation, "the drain bumps toward B");
+        assert_eq!(
+            lock_inner().in_flight,
+            1,
+            "the pre-drain lease is in flight"
+        );
+
+        // Drop the lease from another thread AFTER the blocking wait parks —
+        // the drain (and thus commit-B) can only make progress once the
+        // A-generation read has finished and released its lease.
+        let handle = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            drop(lease);
+        });
+        wait_egress_drain_blocking();
+        assert_eq!(
+            lock_inner().in_flight,
+            0,
+            "commit-B waited out the A-generation key read"
+        );
+        handle.join().unwrap();
+    }
 }

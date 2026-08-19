@@ -111,12 +111,14 @@ pub async fn sign_event(
     tags: Vec<Vec<String>>,
     state: State<'_, AppState>,
 ) -> Result<crate::owner_identity_egress::StampedArtifact<String>, String> {
-    let keys = state.signing_keys()?;
-    // Admit BEFORE signing (the F1 lesson): the sign that derives this artifact
-    // is a leased owner-identity operation, and the artifact is stamped with
-    // the lease's generation so a signature produced across a transition fails
-    // closed at its frontend application site (C6/C7).
+    // Admit BEFORE reading the owner key (the F1 lesson): the admitted lease
+    // pins the identity generation, and `begin_egress_drain` cannot proceed
+    // while it is in flight — so the key clone below cannot observe a
+    // mid-transition swap, and the artifact is stamped with the lease's
+    // generation so a signature produced across a transition fails closed at
+    // its frontend application site (C6/C7).
     let lease = crate::owner_identity_egress::try_admit_owner_identity_egress().await?;
+    let keys = state.signing_keys()?;
 
     tauri::async_runtime::spawn_blocking(move || {
         let nostr_tags = tags
@@ -147,10 +149,11 @@ pub async fn decrypt_observer_event(
     event_json: String,
     state: State<'_, AppState>,
 ) -> Result<crate::owner_identity_egress::StampedArtifact<serde_json::Value>, String> {
-    let keys = state.signing_keys()?;
-    // Admit BEFORE decrypting: the owner-key decryption is a leased operation
-    // and the decrypted payload is a stamped artifact — see `sign_event`.
+    // Admit BEFORE reading the owner key: the admitted lease pins the identity
+    // generation for the key clone below, and the decrypted payload is a
+    // stamped artifact — see `sign_event`.
     let lease = crate::owner_identity_egress::try_admit_owner_identity_egress().await?;
+    let keys = state.signing_keys()?;
 
     tauri::async_runtime::spawn_blocking(move || {
         let event =
@@ -180,10 +183,11 @@ pub async fn build_observer_control_event(
     payload: serde_json::Value,
     state: State<'_, AppState>,
 ) -> Result<crate::owner_identity_egress::StampedArtifact<String>, String> {
-    let keys = state.signing_keys()?;
-    // Admit BEFORE encrypt+sign: the owner-signed observer control frame is a
-    // leased artifact stamped with the lease's generation — see `sign_event`.
+    // Admit BEFORE reading the owner key: the admitted lease pins the identity
+    // generation for the key clone below, and the owner-signed observer control
+    // frame is a stamped artifact — see `sign_event`.
     let lease = crate::owner_identity_egress::try_admit_owner_identity_egress().await?;
+    let keys = state.signing_keys()?;
     let agent_pubkey = PublicKey::from_hex(agent_pubkey.trim())
         .map_err(|error| format!("invalid agent pubkey: {error}"))?;
     let agent_pubkey_hex = agent_pubkey.to_hex();
@@ -209,13 +213,14 @@ pub async fn build_observer_control_event(
 pub async fn get_nsec(
     state: State<'_, AppState>,
 ) -> Result<crate::owner_identity_egress::StampedArtifact<String>, String> {
-    let keys = state.signing_keys()?;
-    // Admit BEFORE reading the secret key (the F1 lesson): the raw-identity
-    // export is a leased owner-identity operation and its value is a P33
-    // identity-export artifact stamped with the issuing lease's generation, so
-    // an nsec revealed across a transition fails closed at its frontend
-    // reveal/copy boundary (C6/C7).
+    // Admit BEFORE reading the secret key (the F1 lesson): the admitted lease
+    // pins the identity generation, and `begin_egress_drain` cannot proceed
+    // while it is in flight — so the secret-key read below cannot observe a
+    // mid-transition swap. The value is a P33 identity-export artifact stamped
+    // with the issuing lease's generation, so an nsec revealed across a
+    // transition fails closed at its frontend reveal/copy boundary (C6/C7).
     let lease = crate::owner_identity_egress::try_admit_owner_identity_egress().await?;
+    let keys = state.signing_keys()?;
     let nsec = keys
         .secret_key()
         .to_bech32()
@@ -637,10 +642,10 @@ pub async fn sign_nostr_identity_binding(
         &expires_at,
     )?;
 
-    let keys = state.signing_keys()?;
-    // Admit BEFORE signing: the identity-binding response is a leased artifact
-    // stamped with the lease's generation — see `sign_event`.
+    // Admission precedes the key clone: the lease pins the identity generation
+    // for the signed artifact — see `sign_event`.
     let lease = crate::owner_identity_egress::try_admit_owner_identity_egress().await?;
+    let keys = state.signing_keys()?;
 
     tauri::async_runtime::spawn_blocking(move || {
         let event = build_nostr_identity_binding_event(
@@ -665,7 +670,6 @@ pub async fn create_auth_event(
     relay_url: String,
     state: State<'_, AppState>,
 ) -> Result<crate::owner_identity_egress::StampedArtifact<String>, String> {
-    let keys = state.signing_keys()?;
     // The relay-WS reconnection handshake signs a NIP-42 auth event under a
     // per-send bounded egress lease: reconnection cannot re-authenticate
     // mid-transition because the drain refuses new admission (spec — the
@@ -675,6 +679,7 @@ pub async fn create_auth_event(
     // session REGISTRATION (native-WS teardown handle) defers to C6/C7 with the
     // frontend identity store.
     let lease = crate::owner_identity_egress::try_admit_owner_identity_egress().await?;
+    let keys = state.signing_keys()?;
 
     tauri::async_runtime::spawn_blocking(move || {
         let tags = vec![
@@ -702,10 +707,10 @@ pub async fn nip44_encrypt_to_self(
     plaintext: String,
     state: State<'_, AppState>,
 ) -> Result<crate::owner_identity_egress::StampedArtifact<String>, String> {
-    let keys = state.signing_keys()?;
-    // Admit BEFORE encrypting: the encrypt-to-self ciphertext is a leased
-    // artifact stamped with the lease's generation — see `sign_event`.
+    // Admission precedes the key clone: the lease pins the identity generation
+    // for the ciphertext artifact — see `sign_event`.
     let lease = crate::owner_identity_egress::try_admit_owner_identity_egress().await?;
+    let keys = state.signing_keys()?;
 
     tauri::async_runtime::spawn_blocking(move || {
         let ciphertext = nip44::encrypt(
@@ -727,10 +732,10 @@ pub async fn nip44_decrypt_from_self(
     ciphertext: String,
     state: State<'_, AppState>,
 ) -> Result<crate::owner_identity_egress::StampedArtifact<String>, String> {
-    let keys = state.signing_keys()?;
-    // Admit BEFORE decrypting: the decrypted plaintext is a leased artifact
-    // stamped with the lease's generation — see `sign_event`.
+    // Admission precedes the key clone: the lease pins the identity generation
+    // for the plaintext artifact — see `sign_event`.
     let lease = crate::owner_identity_egress::try_admit_owner_identity_egress().await?;
+    let keys = state.signing_keys()?;
 
     tauri::async_runtime::spawn_blocking(move || {
         let plaintext = nip44::decrypt(keys.secret_key(), &keys.public_key(), &ciphertext)
@@ -749,3 +754,7 @@ mod nostr_identity_binding_tests;
 #[cfg(test)]
 #[path = "identity_key_backup_tests.rs"]
 mod identity_key_backup_tests;
+
+#[cfg(test)]
+#[path = "identity_egress_ordering_tests.rs"]
+mod identity_egress_ordering_tests;
