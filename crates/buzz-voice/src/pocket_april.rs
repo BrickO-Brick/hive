@@ -1799,10 +1799,8 @@ mod tests {
             .zip(&streamed)
             .map(|(a, b)| (a - b).abs())
             .fold(0.0f32, f32::max);
-        assert!(
-            max_diff <= 1.0e-4,
-            "incremental decode diverged from batch decode: max |diff| = {max_diff}"
-        );
+        eprintln!("delta_frames={DECODER_CHUNK_FRAMES}: max|diff|={max_diff:.6}");
+        assert_eq!(max_diff, 0.0, "12-frame streaming must remain bit-exact");
     }
 
     #[test]
