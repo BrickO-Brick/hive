@@ -21,6 +21,7 @@ use nostr::ToBech32;
 
 const AGENT_EMAIL: &str =
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@relay.test";
+const ALIAS_HOP_LIMIT: usize = 10;
 
 /// Directory of the first real `git` on PATH; the wrapper is installed ahead
 /// of it so `find_real_git` skips our shim symlink and reaches this one.
@@ -86,6 +87,49 @@ fn human_repo() -> tempfile::TempDir {
     d
 }
 
+/// A fresh repo with a staged file but no commit object.
+fn unborn_repo() -> tempfile::TempDir {
+    let d = tempfile::tempdir().unwrap();
+    let p = d.path();
+    let g = |args: &[&str]| {
+        let ok = Command::new("git")
+            .args(args)
+            .current_dir(p)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "git {args:?} failed");
+    };
+    g(&["init", "-q", "-b", "main"]);
+    g(&["config", "user.name", "Human Dev"]);
+    g(&["config", "user.email", "human@example.com"]);
+    g(&["config", "commit.gpgSign", "false"]);
+    std::fs::write(p.join("f"), "staged").unwrap();
+    g(&["add", "f"]);
+    d
+}
+
+/// Number of commit objects in `repo`, including unreachable objects.
+fn commit_object_count(repo: &Path) -> usize {
+    let out = Command::new("git")
+        .args([
+            "-C",
+            repo.to_str().unwrap(),
+            "cat-file",
+            "--batch-all-objects",
+            "--batch-check",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "enumerating git objects failed");
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|line| line.split_whitespace().nth(1) == Some("commit"))
+        .count()
+}
+
 /// Invoke the wrapper (`git` on the shim PATH) with `args`, in `cwd`.
 fn wrapper(path: &str, cwd: &Path, args: &[&str]) -> std::process::Output {
     Command::new("git")
@@ -104,6 +148,9 @@ fn head_sha(repo: &Path) -> String {
         .args(["-C", repo.to_str().unwrap(), "rev-parse", "HEAD"])
         .output()
         .unwrap();
+    if !out.status.success() {
+        return String::new();
+    }
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
@@ -343,6 +390,89 @@ fn wrapper_rejects_bare_word_alias_carried_identity_and_signing_flags() {
             "{label} must not create a commit"
         );
     }
+}
+
+#[test]
+fn wrapper_refuses_alias_chain_beyond_limit_and_allows_exact_limit() {
+    let (_shim, path) = shim_env(&manifest());
+    let repo = unborn_repo();
+
+    // Exactly ALIAS_HOP_LIMIT substitutions end at real `commit`, so the wrapper
+    // must preserve the boundary's useful side: it resolves and commits under
+    // the managed agent identity.
+    for index in 0..ALIAS_HOP_LIMIT {
+        let name = format!("at{index}");
+        let next = if index + 1 == ALIAS_HOP_LIMIT {
+            "commit".to_string()
+        } else {
+            format!("at{}", index + 1)
+        };
+        wrapper(
+            &path,
+            repo.path(),
+            &["config", &format!("alias.{name}"), &next],
+        );
+    }
+    let out = wrapper(&path, repo.path(), &["at0", "-m", "at the alias limit"]);
+    assert!(
+        out.status.success(),
+        "chain at the limit must reach the real command; stderr={}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let author = Command::new("git")
+        .args([
+            "-C",
+            repo.path().to_str().unwrap(),
+            "show",
+            "-s",
+            "--format=%ae",
+            "HEAD",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&author.stdout).trim(), AGENT_EMAIL);
+
+    // Thufir's limit+1 counterexample: the wrapper must not hand a partial
+    // expansion to git. A human-author `commit` beyond the bound is refused
+    // before git runs, leaving the fresh repo unborn with no commit objects.
+    let beyond = unborn_repo();
+    for index in 0..=ALIAS_HOP_LIMIT {
+        let name = format!("a{index}");
+        let next = if index == ALIAS_HOP_LIMIT {
+            "commit --author Human<human@human.test>".to_string()
+        } else {
+            format!("a{}", index + 1)
+        };
+        wrapper(
+            &path,
+            beyond.path(),
+            &["config", &format!("alias.{name}"), &next],
+        );
+    }
+    let out = wrapper(&path, beyond.path(), &["a0", "-m", "leak"]);
+    assert!(
+        !out.status.success(),
+        "chain past the limit must be refused; stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains(&format!("after {ALIAS_HOP_LIMIT} expansions")),
+        "expected the alias-limit refusal; stderr={}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let beyond_head = head_sha(beyond.path());
+    assert!(
+        beyond_head.is_empty(),
+        "HEAD must remain unborn; HEAD={beyond_head:?}; stderr={}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert_eq!(
+        commit_object_count(beyond.path()),
+        0,
+        "the refused chain must not create an unreachable commit object"
+    );
 }
 
 #[test]

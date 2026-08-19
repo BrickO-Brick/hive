@@ -30,6 +30,11 @@ const SCRUBBED_ENV: &[&str] = &[
     "GIT_COMMITTER_EMAIL",
 ];
 
+/// Maximum number of ordinary alias substitutions the managed wrapper resolves.
+/// The next command token is always inspected too, so a chain with exactly this
+/// many aliases may terminate at a real subcommand; a further alias is refused.
+const MAX_ALIAS_HOPS: usize = 10;
+
 /// Long global options that consume the *following* argv token as their value
 /// (the `--opt value` form; the `--opt=value` form is self-contained). Needed
 /// only to locate the subcommand correctly; agents almost never pass these.
@@ -344,8 +349,9 @@ fn inline_aliases(globals: &[String]) -> std::collections::HashMap<String, Strin
 ///
 /// Allowed shapes stay working: `alias.ci = commit`, `alias.st = status`,
 /// `alias.lg = log --oneline`, `alias.pub = push origin main`. Recursion is
-/// bounded to defeat cyclic alias definitions; a non-alias subcommand resolves
-/// immediately.
+/// bounded to defeat cyclic alias definitions. After the bound is reached, the
+/// next command token must be a real subcommand or the wrapper refuses rather
+/// than treating a partial expansion as resolved.
 fn verify_alias_safety(
     real_git: &Path,
     argv: &[String],
@@ -360,7 +366,7 @@ fn verify_alias_safety(
     // argv. Typed globals (argv[..sub_idx]) are prepended to the final result.
     let mut chain: Vec<String> = argv[sub_idx..].to_vec();
     let mut resolved_any = false;
-    for _ in 0..10 {
+    for _ in 0..MAX_ALIAS_HOPS {
         // The command word within the current chain (git re-parses leading
         // options as globals after each expansion, so a body may begin with
         // bare-word options before its subcommand).
@@ -388,6 +394,20 @@ fn verify_alias_safety(
         // Substitute the command word with its body, exactly as git does.
         chain.splice(cmd_idx..=cmd_idx, body);
         resolved_any = true;
+    }
+    let Some(cmd_idx) = split_globals(&chain).1 else {
+        return Err(alias_limit_reject_message());
+    };
+    let name = &chain[cmd_idx];
+    if inline.contains_key(name)
+        || capture(
+            real_git,
+            ctx,
+            &["config", "--get", &format!("alias.{name}")],
+        )
+        .is_some()
+    {
+        return Err(alias_limit_reject_message());
     }
     if !resolved_any {
         return Ok(None);
@@ -431,6 +451,15 @@ fn alias_reject_message(name: &str) -> String {
          value-bearing option). Aliases that could carry configuration are refused because \
          git applies alias config after the managed agent identity and signing config. Run \
          the underlying git command directly; agent commit identity and signing are \
+         machine-managed."
+    )
+}
+
+fn alias_limit_reject_message() -> String {
+    format!(
+        "buzz git wrapper: refusing alias chain after {MAX_ALIAS_HOPS} expansions — the managed \
+         wrapper only runs a command after proving its final command word is not another git alias. \
+         Run the underlying git command directly; agent commit identity and signing are \
          machine-managed."
     )
 }
