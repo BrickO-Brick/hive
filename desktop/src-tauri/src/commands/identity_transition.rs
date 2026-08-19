@@ -672,4 +672,305 @@ mod tests {
 
         reset_registry_for_test();
     }
+
+    /// Minimal `Send + Sync + 'static` [`IdentityKeyStore`] for the
+    /// commit-driving fixtures below: a reachable keyring backed by a `Mutex`
+    /// slot, so `store` + read-back `verify_stored` both succeed and the
+    /// classifier returns `Committed(SystemKeyring)` — the durable outcome the
+    /// §7 no-scope / activation-race schedules require. `RefCell`-backed
+    /// `FakeIdentityStore` is `!Sync` and cannot cross the coordinator's
+    /// `spawn_blocking`, so this is the seam-injection payload.
+    struct SyncKeyringStore {
+        slot: std::sync::Mutex<std::collections::HashMap<String, String>>,
+    }
+
+    impl SyncKeyringStore {
+        fn reachable() -> Self {
+            Self {
+                slot: std::sync::Mutex::new(std::collections::HashMap::new()),
+            }
+        }
+        fn holds(&self, key: &str) -> Option<String> {
+            self.slot.lock().unwrap().get(key).cloned()
+        }
+    }
+
+    impl crate::app_state::IdentityKeyStore for SyncKeyringStore {
+        fn probe(&self, _name: &str) -> crate::secret_store::KeyringProbe {
+            crate::secret_store::KeyringProbe::ReachableButEmpty
+        }
+        fn load(&self, name: &str) -> Result<Option<String>, String> {
+            Ok(self.slot.lock().unwrap().get(name).cloned())
+        }
+        fn store(&self, name: &str, value: &str) -> Result<(), String> {
+            self.slot
+                .lock()
+                .unwrap()
+                .insert(name.to_string(), value.to_string());
+            Ok(())
+        }
+        fn delete(&self, name: &str) -> Result<(), String> {
+            self.slot.lock().unwrap().remove(name);
+            Ok(())
+        }
+        fn verify_stored(&self, name: &str, expected: &str) -> Result<bool, String> {
+            Ok(self
+                .slot
+                .lock()
+                .unwrap()
+                .get(name)
+                .is_some_and(|v| v == expected))
+        }
+    }
+
+    /// Build a fresh mock app + a leaked reachable store, resetting both the
+    /// egress registry and returning the imported identity B's nsec. The store
+    /// is `Box::leak`ed to satisfy the coordinator's `store: &'static S`; each
+    /// fixture builds its own so no state bleeds across tests.
+    fn commit_fixture_setup() -> (
+        tauri::App<tauri::test::MockRuntime>,
+        &'static SyncKeyringStore,
+        std::path::PathBuf,
+        nostr::Keys,
+        String,
+    ) {
+        use nostr::ToBech32;
+        use tauri::Manager;
+        crate::owner_identity_egress::reset_registry_for_test();
+        let app = tauri::test::mock_builder()
+            .manage(crate::app_state::build_app_state())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("failed to build mock app");
+        let store: &'static SyncKeyringStore = Box::leak(Box::new(SyncKeyringStore::reachable()));
+        let data_dir = tempfile::tempdir().unwrap().keep();
+        let keys_b = nostr::Keys::generate();
+        let nsec_b = keys_b.secret_key().to_bech32().unwrap();
+        let _ = app.state::<crate::app_state::AppState>();
+        (app, store, data_dir, keys_b, nsec_b)
+    }
+
+    /// NO-ACTIVE-SCOPE recovery schedule (P26-C1, spec §7): with no workspace
+    /// applied, the coordinator still acquires `workspace_transition`, selects
+    /// the no-scope branch from the snapshot taken UNDER the held guard (no
+    /// drain, no Mesh preflight), and drives a REAL durable commit — proving
+    /// the injected seams reach persistence hermetically. The identity is
+    /// committed once and both the persistence generation (egress barrier, run
+    /// unconditionally) and the scope generation (`clear_active_scope` on the
+    /// `Committed` arm) advance exactly once.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn no_active_scope_recovery_commits_and_bumps_generation_once() {
+        use crate::managed_agents::scope::{current_scope_generation, SCOPE_GENERATION_TEST_LOCK};
+        use crate::owner_identity_egress::{
+            current_identity_persistence_generation, identity_persistence_state,
+            reset_registry_for_test, IdentityPersistenceState, EGRESS_REGISTRY_TEST_LOCK,
+        };
+        use nostr::ToBech32;
+        use tauri::Manager;
+
+        let _egress_guard = EGRESS_REGISTRY_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _scope_guard = SCOPE_GENERATION_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
+        let (app, store, data_dir, keys_b, nsec_b) = commit_fixture_setup();
+        let app_handle = app.handle().clone();
+        let state = app.state::<crate::app_state::AppState>();
+
+        assert!(
+            state.capture_active_scope().is_none(),
+            "pre-condition: no active scope"
+        );
+        let persistence_gen_before = current_identity_persistence_generation();
+        let scope_gen_before = current_scope_generation();
+
+        let info = super::run_identity_transition(
+            app_handle,
+            nsec_b,
+            None,
+            None,
+            store,
+            data_dir,
+            || Ok(()),
+            || Ok(()),
+        )
+        .await
+        .expect("no-scope recovery must commit");
+
+        // Identity B is now the live in-memory identity and durably in the store.
+        assert_eq!(info.pubkey, keys_b.public_key().to_hex());
+        assert_eq!(
+            state.current_pubkey().unwrap(),
+            keys_b.public_key(),
+            "in-memory identity must be B after commit"
+        );
+        assert_eq!(
+            store.holds(crate::app_state::IDENTITY_KEY_NAME),
+            Some(keys_b.secret_key().to_bech32().unwrap()),
+            "B must be durably persisted through the injected store"
+        );
+
+        // No scope committed, egress reopened at generation B, each generation
+        // advanced exactly once.
+        assert!(
+            state.capture_active_scope().is_none(),
+            "no-scope recovery must not leave an active scope"
+        );
+        assert_eq!(identity_persistence_state(), IdentityPersistenceState::Live);
+        assert_eq!(
+            current_identity_persistence_generation(),
+            persistence_gen_before + 1,
+            "the egress barrier must bump the persistence generation exactly once"
+        );
+        assert_eq!(
+            current_scope_generation(),
+            scope_gen_before + 1,
+            "the Committed arm's clear_active_scope must bump the scope generation once"
+        );
+
+        reset_registry_for_test();
+    }
+
+    /// `None → Some` activation race, ORDER (a) — recovery wins the lock
+    /// (P26-C1, spec §7). The two orderings are the two deterministic outcomes
+    /// of the unconditional `workspace_transition` serialization; forcing a
+    /// live race is nondeterministic, so each resolved order is pinned
+    /// directly. Here the recovery acquires the guard first, takes a TRUE
+    /// no-scope snapshot, and commits identity B; the activation that follows
+    /// then applies cleanly against B. No durable swap lands beside an
+    /// undrained scope — the recovery saw none.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn activation_race_recovery_wins_commits_under_no_scope_snapshot() {
+        use crate::managed_agents::scope::{
+            next_scope_generation, WorkspaceAgentScope, SCOPE_GENERATION_TEST_LOCK,
+        };
+        use crate::owner_identity_egress::{reset_registry_for_test, EGRESS_REGISTRY_TEST_LOCK};
+        use tauri::Manager;
+
+        let _egress_guard = EGRESS_REGISTRY_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _scope_guard = SCOPE_GENERATION_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
+        let (app, store, data_dir, keys_b, nsec_b) = commit_fixture_setup();
+        let app_handle = app.handle().clone();
+        let state = app.state::<crate::app_state::AppState>();
+        let activation_dir = data_dir.clone();
+
+        // Recovery wins the lock: no scope is present when it takes its snapshot.
+        let info = super::run_identity_transition(
+            app_handle,
+            nsec_b,
+            None,
+            None,
+            store,
+            data_dir,
+            || Ok(()),
+            || Ok(()),
+        )
+        .await
+        .expect("recovery must commit under a no-scope snapshot");
+
+        assert_eq!(info.pubkey, keys_b.public_key().to_hex());
+        assert!(
+            state.capture_active_scope().is_none(),
+            "recovery must have committed under a no-scope snapshot"
+        );
+
+        // The activation that lost the race now applies cleanly against B.
+        let gen = next_scope_generation();
+        state.commit_active_scope(WorkspaceAgentScope {
+            scope_id: "activation-wins-b".to_string(),
+            relay_url: "wss://relay.example".to_string(),
+            owner_pubkey: keys_b.public_key().to_hex(),
+            definitions_dir: activation_dir,
+            generation: gen,
+        });
+
+        assert_eq!(
+            state.current_pubkey().unwrap(),
+            keys_b.public_key(),
+            "identity B stays live under the activation applied after recovery"
+        );
+        assert!(
+            state.capture_active_scope().is_some(),
+            "the activation must apply against committed identity B"
+        );
+
+        reset_registry_for_test();
+    }
+
+    /// `None → Some` activation race, ORDER (b) — activation wins the lock
+    /// (P26-C1, spec §7). A scope is committed BEFORE the recovery acquires
+    /// `workspace_transition`; the recovery's snapshot — taken UNDER the held
+    /// guard — therefore observes the NEW active scope and runs the full
+    /// active-scope protocol (drain, commit B, scope clear). B does not land
+    /// beside an undrained live scope: the scope the recovery saw is drained
+    /// and cleared as part of the commit.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn activation_race_activation_wins_recovery_takes_active_scope_path() {
+        use crate::managed_agents::scope::{
+            next_scope_generation, WorkspaceAgentScope, SCOPE_GENERATION_TEST_LOCK,
+        };
+        use crate::owner_identity_egress::{reset_registry_for_test, EGRESS_REGISTRY_TEST_LOCK};
+        use tauri::Manager;
+
+        let _egress_guard = EGRESS_REGISTRY_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _scope_guard = SCOPE_GENERATION_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
+        let (app, store, data_dir, keys_b, nsec_b) = commit_fixture_setup();
+        let app_handle = app.handle().clone();
+        let state = app.state::<crate::app_state::AppState>();
+
+        // Activation won the lock first: a scope is live before the recovery
+        // takes its under-guard snapshot.
+        let gen = next_scope_generation();
+        let scope = WorkspaceAgentScope {
+            scope_id: "activation-first".to_string(),
+            relay_url: "wss://relay.example".to_string(),
+            owner_pubkey: "aa".repeat(32),
+            definitions_dir: data_dir.clone(),
+            generation: gen,
+        };
+        state.commit_active_scope(scope);
+        assert!(state.capture_active_scope().is_some());
+
+        let info = super::run_identity_transition(
+            app_handle,
+            nsec_b,
+            None,
+            None,
+            store,
+            data_dir,
+            || Ok(()),
+            || Ok(()),
+        )
+        .await
+        .expect("active-scope recovery must commit");
+
+        // The recovery observed the pre-committed scope, ran the active path,
+        // committed B, and cleared the scope — no swap beside a live scope.
+        assert_eq!(info.pubkey, keys_b.public_key().to_hex());
+        assert_eq!(
+            state.current_pubkey().unwrap(),
+            keys_b.public_key(),
+            "in-memory identity must be B after the active-scope commit"
+        );
+        assert!(
+            state.capture_active_scope().is_none(),
+            "the active-scope Committed arm must clear the scope the recovery drained"
+        );
+
+        reset_registry_for_test();
+    }
 }
