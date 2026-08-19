@@ -3,7 +3,6 @@ import type { ReactNode, Ref } from "react";
 import {
   Hand,
   Headphones,
-  IdCard,
   MessageSquare,
   Play,
   RefreshCw,
@@ -38,7 +37,6 @@ export function ProfilePrimaryActions({
   onAgentRestart,
   onHuddle,
   onMessage,
-  onOpenPassport,
   onWave,
   pubkey,
   unfollowMutation,
@@ -58,7 +56,6 @@ export function ProfilePrimaryActions({
   onAgentRestart?: () => void;
   onHuddle?: () => void;
   onMessage?: () => void;
-  onOpenPassport?: () => void;
   onWave?: () => void;
   pubkey: string;
   unfollowMutation: ReturnType<typeof useUnfollowMutation>;
@@ -81,7 +78,6 @@ export function ProfilePrimaryActions({
     onWave !== undefined ||
     onMessage !== undefined ||
     onHuddle !== undefined ||
-    onOpenPassport !== undefined ||
     (onAgentPrimaryAction !== undefined && agentActionLabel !== undefined) ||
     onAgentRestart !== undefined;
 
@@ -144,14 +140,6 @@ export function ProfilePrimaryActions({
           testId="user-profile-wave"
         />
       ) : null}
-      {onOpenPassport ? (
-        <ProfileActionTile
-          icon={IdCard}
-          label="Passport"
-          onClick={onOpenPassport}
-          testId="user-profile-passport"
-        />
-      ) : null}
       {showFollowAction ? (
         <ProfileActionTile
           active={isFollowing}
@@ -191,38 +179,6 @@ export function ProfilePersonaPrimaryActions({
         label="Start agent"
         onClick={onStartAgent}
         testId="user-profile-start-agent"
-      />
-    </ProfileActionGroup>
-  );
-}
-
-/**
- * Actions when viewing your own profile — today just the Passport. A
- * dedicated row so self profiles gain identity actions without the
- * follow/message set meant for other people.
- */
-export function ProfileSelfPrimaryActions({
-  actionGroupRef,
-  className,
-  concealed = false,
-  onOpenPassport,
-}: {
-  actionGroupRef?: Ref<HTMLDivElement>;
-  className?: string;
-  concealed?: boolean;
-  onOpenPassport: () => void;
-}) {
-  return (
-    <ProfileActionGroup
-      className={className}
-      concealed={concealed}
-      ref={actionGroupRef}
-    >
-      <ProfileActionTile
-        icon={IdCard}
-        label="Passport"
-        onClick={onOpenPassport}
-        testId="user-profile-passport"
       />
     </ProfileActionGroup>
   );

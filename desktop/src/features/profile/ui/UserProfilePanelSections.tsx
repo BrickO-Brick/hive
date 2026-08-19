@@ -1,5 +1,5 @@
 import * as React from "react";
-import { ChevronDown, ChevronUp, Pencil } from "lucide-react";
+import { ChevronDown, ChevronUp, IdCard, Pencil } from "lucide-react";
 
 import { useAgentWorking } from "@/features/agents/agentWorkingSignal";
 import {
@@ -38,7 +38,6 @@ import { PassportDialog } from "@/features/profile/ui/PassportDialog";
 import {
   ProfilePersonaPrimaryActions,
   ProfilePrimaryActions,
-  ProfileSelfPrimaryActions,
 } from "@/features/profile/ui/UserProfilePrimaryActions";
 import { StatusEmoji } from "@/features/user-status/ui/StatusEmoji";
 import { BotIdenticon } from "@/features/messages/ui/BotIdenticon";
@@ -51,6 +50,7 @@ import { cn } from "@/shared/lib/cn";
 import { observeElementBlockSize } from "@/shared/layout/observeElementBlockSize";
 import { useMeasuredCssVariable } from "@/shared/layout/useMeasuredCssVariable";
 import { Badge } from "@/shared/ui/badge";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 
 export { AgentInstructionsFocusedView } from "@/features/profile/ui/UserProfilePanelAgentDetails";
 
@@ -414,6 +414,7 @@ export function ProfileSummaryView({
           displayName={displayName}
           isBot={isBot}
           onEditAgent={canEditAgent ? handleEditAgent : undefined}
+          onOpenPassport={onOpenPassport}
           presenceStatus={avatarStatus}
           profile={profile}
           userStatus={userStatus}
@@ -434,7 +435,6 @@ export function ProfileSummaryView({
           className={primaryActionsMotionClassName}
           concealed={primaryActionsConcealed}
           followMutation={followMutation}
-          onOpenPassport={onOpenPassport}
           agentActionDisabled={isAgentActionPending}
           agentActionLabel={
             isOwner === true && managedAgent
@@ -467,13 +467,6 @@ export function ProfileSummaryView({
           pubkey={pubkey}
           unfollowMutation={unfollowMutation}
           wavePending={isWavePending}
-        />
-      ) : isSelf && onOpenPassport ? (
-        <ProfileSelfPrimaryActions
-          actionGroupRef={setPrimaryActionsElement}
-          className={primaryActionsMotionClassName}
-          concealed={primaryActionsConcealed}
-          onOpenPassport={onOpenPassport}
         />
       ) : null}
 
@@ -630,6 +623,7 @@ function ProfileHero({
   displayName,
   isBot,
   onEditAgent,
+  onOpenPassport,
   presenceStatus,
   profile,
   userStatus,
@@ -637,6 +631,7 @@ function ProfileHero({
   displayName: string;
   isBot: boolean;
   onEditAgent?: () => void;
+  onOpenPassport?: () => void;
   presenceStatus: "online" | "away" | "offline" | undefined;
   profile: ProfileSummaryViewProps["profile"];
   userStatus: ProfileSummaryViewProps["userStatus"];
@@ -686,37 +681,60 @@ function ProfileHero({
       </MaskedAvatarBadgeFrame>
 
       <div className="flex flex-col items-center gap-1">
-        {onEditAgent ? (
-          <h3 className="max-w-full" data-testid="user-profile-name-row">
-            <button
-              aria-label={`Edit ${displayName}`}
-              className="group relative flex max-w-full items-center justify-center gap-2 rounded-lg px-1 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
-              data-testid="user-profile-edit-agent"
-              onClick={onEditAgent}
-              type="button"
+        <div className="flex max-w-full items-center justify-center gap-1.5">
+          {onOpenPassport ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  aria-label="View passport"
+                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-muted/60 text-foreground transition-colors hover:bg-muted/80 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+                  data-testid="user-profile-passport"
+                  onClick={onOpenPassport}
+                  type="button"
+                >
+                  <IdCard className="h-3.5 w-3.5" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent align="center" side="top">
+                Passport
+              </TooltipContent>
+            </Tooltip>
+          ) : null}
+          {onEditAgent ? (
+            <h3
+              className="min-w-0 max-w-full"
+              data-testid="user-profile-name-row"
             >
-              <span className="truncate text-xl font-semibold tracking-tight">
-                {displayName}
-              </span>
-              {botIndicator}
-              <span
-                aria-hidden="true"
-                className="pointer-events-none absolute top-1/2 left-full ml-1 -translate-y-1/2 text-muted-foreground opacity-0 transition-[color,opacity] duration-150 ease-out group-hover:text-foreground group-hover:opacity-100 group-focus-visible:opacity-100"
-                data-testid="user-profile-edit-agent-icon"
+              <button
+                aria-label={`Edit ${displayName}`}
+                className="group relative flex max-w-full items-center justify-center gap-2 rounded-lg px-1 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+                data-testid="user-profile-edit-agent"
+                onClick={onEditAgent}
+                type="button"
               >
-                <Pencil className="h-4 w-4" />
-              </span>
-            </button>
-          </h3>
-        ) : (
-          <h3
-            className="flex max-w-full items-center justify-center gap-2 text-xl font-semibold tracking-tight"
-            data-testid="user-profile-name-row"
-          >
-            <span className="truncate">{displayName}</span>
-            {botIndicator}
-          </h3>
-        )}
+                <span className="truncate text-xl font-semibold tracking-tight">
+                  {displayName}
+                </span>
+                {botIndicator}
+                <span
+                  aria-hidden="true"
+                  className="pointer-events-none absolute top-1/2 left-full ml-1 -translate-y-1/2 text-muted-foreground opacity-0 transition-[color,opacity] duration-150 ease-out group-hover:text-foreground group-hover:opacity-100 group-focus-visible:opacity-100"
+                  data-testid="user-profile-edit-agent-icon"
+                >
+                  <Pencil className="h-4 w-4" />
+                </span>
+              </button>
+            </h3>
+          ) : (
+            <h3
+              className="flex min-w-0 max-w-full items-center justify-center gap-2 text-xl font-semibold tracking-tight"
+              data-testid="user-profile-name-row"
+            >
+              <span className="truncate">{displayName}</span>
+              {botIndicator}
+            </h3>
+          )}
+        </div>
 
         {profile?.about?.trim() ? (
           <ProfileHeroDescription
