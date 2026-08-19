@@ -76,6 +76,67 @@ fn whole_store_matrix_classifies_origins_and_moves_only_official_credentials() {
 }
 
 #[test]
+fn global_only_defaults_are_migrated_without_managed_consumers() {
+    for (origin, expected_provider, expected_key) in [
+        (None, "openai", OPENAI_API_KEY),
+        (
+            Some("https://gateway.example/v1"),
+            "openai-compat",
+            OPENAI_COMPAT_API_KEY,
+        ),
+    ] {
+        let mut global = GlobalAgentConfig {
+            provider: Some("openai".into()),
+            env_vars: BTreeMap::from([(OPENAI_COMPAT_API_KEY.into(), "global-secret".into())]),
+            ..Default::default()
+        };
+        if let Some(origin) = origin {
+            global
+                .env_vars
+                .insert(OPENAI_COMPAT_BASE_URL.into(), origin.into());
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let agents = dir.path();
+        let global_path = agents.join("global-agent-config.json");
+        std::fs::write(&global_path, serde_json::to_vec(&global).unwrap()).unwrap();
+        migrate_pair(agents).unwrap();
+
+        let migrated: GlobalAgentConfig =
+            serde_json::from_slice(&std::fs::read(&global_path).unwrap()).unwrap();
+        assert_eq!(migrated.provider.as_deref(), Some(expected_provider));
+        assert_eq!(
+            migrated.env_vars.get(expected_key).map(String::as_str),
+            Some("global-secret")
+        );
+        assert!(agents.join(MANIFEST_FILE).exists());
+        assert_eq!(std::fs::read(agents.join(MARKER_FILE)).unwrap(), b"1\n");
+        assert!(sibling_path(&global_path, BACKUP_SUFFIX).exists());
+    }
+}
+
+#[test]
+fn global_only_unowned_legacy_state_creates_no_transaction_artifacts() {
+    let dir = tempfile::tempdir().unwrap();
+    let agents = dir.path();
+    let global = GlobalAgentConfig {
+        env_vars: BTreeMap::from([(OPENAI_COMPAT_API_KEY.into(), "unowned-secret".into())]),
+        ..Default::default()
+    };
+    let source = serde_json::to_vec(&global).unwrap();
+    let global_path = agents.join("global-agent-config.json");
+    std::fs::write(&global_path, &source).unwrap();
+
+    assert!(migrate_pair(agents)
+        .unwrap_err()
+        .contains("has no provider owner"));
+    assert_eq!(std::fs::read(&global_path).unwrap(), source);
+    assert!(!agents.join(MANIFEST_FILE).exists());
+    assert!(!agents.join(MARKER_FILE).exists());
+    assert!(!sibling_path(&global_path, BACKUP_SUFFIX).exists());
+}
+
+#[test]
 fn malformed_origin_fails_before_mutation() {
     let mut agent = record("agent", "agent");
     agent.provider = Some("openai".into());

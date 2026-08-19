@@ -46,7 +46,7 @@ struct ResolvedValue {
 #[derive(Clone, Debug)]
 struct Consumer {
     label: String,
-    record_index: usize,
+    record_index: Option<usize>,
     provider: String,
     provider_owner: Owner,
     identity: Identity,
@@ -238,6 +238,52 @@ fn classify_endpoint(endpoint: Option<&str>) -> Result<Identity, String> {
 fn collect_consumers(store: &Store) -> Result<Vec<Consumer>, String> {
     let defs = definitions(store);
     let mut consumers = Vec::new();
+    if let Some(provider) = store
+        .global
+        .provider
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .filter(|value| {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "openai" | "openai-compat"
+            )
+        })
+    {
+        let endpoint = store
+            .global
+            .env_vars
+            .get(OPENAI_COMPAT_BASE_URL)
+            .map(|value| ResolvedValue {
+                value: value.clone(),
+                owner: Owner::Global,
+            });
+        consumers.push(Consumer {
+            label: "global defaults".into(),
+            record_index: None,
+            provider: provider.to_ascii_lowercase(),
+            provider_owner: Owner::Global,
+            identity: classify_endpoint(endpoint.as_ref().map(|value| value.value.as_str()))?,
+            endpoint,
+            legacy_key: store
+                .global
+                .env_vars
+                .get(OPENAI_COMPAT_API_KEY)
+                .map(|value| ResolvedValue {
+                    value: value.clone(),
+                    owner: Owner::Global,
+                }),
+            official_key: store
+                .global
+                .env_vars
+                .get(OPENAI_API_KEY)
+                .map(|value| ResolvedValue {
+                    value: value.clone(),
+                    owner: Owner::Global,
+                }),
+        });
+    }
     for (index, record) in store.records.iter().enumerate() {
         let def = selected_definition(record, &defs);
         if record.persona_id.is_some() && def.is_none() {
@@ -298,7 +344,7 @@ fn collect_consumers(store: &Store) -> Result<Vec<Consumer>, String> {
                 .clone()
                 .or_else(|| (!record.pubkey.is_empty()).then(|| record.pubkey.clone()))
                 .unwrap_or_else(|| format!("record-{index}")),
-            record_index: index,
+            record_index: Some(index),
             provider: provider.to_ascii_lowercase(),
             provider_owner,
             identity,
@@ -306,6 +352,13 @@ fn collect_consumers(store: &Store) -> Result<Vec<Consumer>, String> {
             legacy_key: resolve_key(&resolved_layers, OPENAI_COMPAT_API_KEY),
             official_key: resolve_key(&resolved_layers, OPENAI_API_KEY),
         });
+    }
+    if consumers.is_empty()
+        && [OPENAI_COMPAT_API_KEY, OPENAI_COMPAT_BASE_URL]
+            .iter()
+            .any(|key| store.global.env_vars.contains_key(*key))
+    {
+        return Err("global OpenAI-compatible state has no provider owner".into());
     }
     Ok(consumers)
 }
@@ -427,7 +480,7 @@ fn plan_store(mut store: Store) -> Result<(Store, Vec<Consumer>), String> {
                 if legacy.as_ref().is_some_and(|value| value.owner == owner) {
                     let relevant = consumers
                         .iter()
-                        .find(|consumer| consumer.record_index == *index);
+                        .find(|consumer| consumer.record_index == Some(*index));
                     if relevant.is_none_or(|consumer| consumer.identity != Identity::Official) {
                         return Err(format!(
                             "credential owner {owner:?} is shared with a non-official consumer"
@@ -474,7 +527,7 @@ fn plan_store(mut store: Store) -> Result<(Store, Vec<Consumer>), String> {
             if endpoint.as_ref().is_some_and(|value| value.owner == owner) {
                 let relevant = consumers
                     .iter()
-                    .find(|consumer| consumer.record_index == *index);
+                    .find(|consumer| consumer.record_index == Some(*index));
                 if relevant.is_none_or(|consumer| consumer.identity != Identity::Official) {
                     return Err(format!(
                         "endpoint owner {owner:?} is shared with a non-official consumer"
@@ -531,14 +584,42 @@ fn verify_post_split(before: &[Consumer], after: &Store) -> Result<(), String> {
         } else {
             "openai-compat"
         };
-        let config = match resolve_effective_config(
-            &after.records[old.record_index],
-            &defs,
-            &after.global,
-        ) {
-            EffectiveConfigResult::Resolved(c) => c,
-            _ => return Err(format!("consumer {:?} became unresolved", old.label)),
-        };
+        if old.record_index.is_none() {
+            if new.provider != expected_provider {
+                return Err(format!(
+                    "consumer {:?} resolves provider {:?}, expected {expected_provider}",
+                    old.label, new.provider
+                ));
+            }
+            let expected_key = if old.identity == Identity::Official {
+                old.official_key
+                    .as_ref()
+                    .filter(|value| !value.value.is_empty())
+                    .or(old.legacy_key.as_ref())
+            } else {
+                old.legacy_key.as_ref()
+            };
+            let selected_key = if old.identity == Identity::Official {
+                new.official_key.as_ref()
+            } else {
+                new.legacy_key.as_ref()
+            };
+            if expected_key.map(|value| &value.value) != selected_key.map(|value| &value.value) {
+                return Err(format!(
+                    "consumer {:?} changed selected credential",
+                    old.label
+                ));
+            }
+            continue;
+        }
+        let record_index = old
+            .record_index
+            .ok_or("managed consumer has no record index")?;
+        let config =
+            match resolve_effective_config(&after.records[record_index], &defs, &after.global) {
+                EffectiveConfigResult::Resolved(c) => c,
+                _ => return Err(format!("consumer {:?} became unresolved", old.label)),
+            };
         if config.provider.value.as_deref() != Some(expected_provider) {
             return Err(format!(
                 "consumer {:?} resolves provider {:?}, expected {expected_provider}",
@@ -546,7 +627,7 @@ fn verify_post_split(before: &[Consumer], after: &Store) -> Result<(), String> {
             ));
         }
         let descriptor = crate::managed_agents::resolve_effective_harness_descriptor(
-            &after.records[old.record_index],
+            &after.records[record_index],
             &defs,
             &after.global,
         )
@@ -557,7 +638,7 @@ fn verify_post_split(before: &[Consumer], after: &Store) -> Result<(), String> {
             old.legacy_key.as_ref()
         };
         let effective = crate::managed_agents::resolve_effective_agent_env(
-            &after.records[old.record_index],
+            &after.records[record_index],
             &defs,
             crate::managed_agents::known_acp_runtime(&descriptor.command),
             &after.global,
