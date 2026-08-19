@@ -105,7 +105,7 @@ export class CommunityThemeSyncManager {
   private readonly onPublished: (published: PublishedCommunityTheme) => void;
   private readonly getLegacyFallback: () => CommunityThemePreference;
   private publishGeneration = 0;
-  private activePublishSubmitted = false;
+  private activeSubmittedPublish: PublishedCommunityTheme | null = null;
   private replacementAfterCancel: CommunityThemePreference | null = null;
 
   constructor(
@@ -174,12 +174,12 @@ export class CommunityThemeSyncManager {
   private startPublish(): void {
     if (this.destroyed || this.publishInFlight || !this.pending) return;
     this.publishInFlight = true;
-    this.activePublishSubmitted = false;
+    this.activeSubmittedPublish = null;
     const preference = this.pending;
     const generation = this.publishGeneration;
     void this.doPublish(preference, generation).finally(() => {
       this.publishInFlight = false;
-      this.activePublishSubmitted = false;
+      this.activeSubmittedPublish = null;
       if (this.replacementAfterCancel) {
         this.pending = this.replacementAfterCancel;
         this.replacementAfterCancel = null;
@@ -222,8 +222,17 @@ export class CommunityThemeSyncManager {
 
   cancelPendingPublish(
     replacementAfterSubmit?: CommunityThemePreference,
+    acceptedRemote?: RemoteCommunityTheme,
   ): boolean {
-    const submitted = this.activePublishSubmitted;
+    if (
+      this.activeSubmittedPublish &&
+      acceptedRemote &&
+      acceptedRemote.createdAt === this.activeSubmittedPublish.createdAt &&
+      acceptedRemote.eventId === this.activeSubmittedPublish.eventId
+    ) {
+      return false;
+    }
+    const submitted = this.activeSubmittedPublish !== null;
     this.replacementAfterCancel =
       submitted && replacementAfterSubmit ? replacementAfterSubmit : null;
     this.publishGeneration += 1;
@@ -272,7 +281,11 @@ export class CommunityThemeSyncManager {
         ],
       });
       if (wasCancelled()) return;
-      this.activePublishSubmitted = true;
+      this.activeSubmittedPublish = {
+        preference,
+        createdAt: event.created_at,
+        eventId: event.id,
+      };
       await relayClient.publishEvent(
         event,
         "Timed out publishing community theme.",

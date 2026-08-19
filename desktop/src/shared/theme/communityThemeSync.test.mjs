@@ -745,6 +745,74 @@ test("remote accepted after submit is republished after the stale event settles"
   }
 });
 
+test("migration self-echo during submission acknowledges without replacement", async () => {
+  const timer = installFakeTimer();
+  const publish = Promise.withResolvers();
+  const published = [];
+  const acknowledgements = [];
+  let liveCallback;
+  let signed = 0;
+  globalThis.window.__TAURI_INTERNALS__ = {
+    invoke(command, args) {
+      if (command === "nip44_encrypt_to_self") return Promise.resolve("cipher");
+      if (command === "nip44_decrypt_from_self") {
+        return Promise.resolve(JSON.stringify(preference));
+      }
+      if (command === "sign_event") {
+        signed += 1;
+        return Promise.resolve(
+          JSON.stringify(
+            relayEvent({
+              id: `event-${signed}`,
+              content: args.content,
+              created_at: args.createdAt,
+            }),
+          ),
+        );
+      }
+      throw new Error(`unexpected command: ${command}`);
+    },
+  };
+  mock.method(relayClient, "subscribeLive", (_filter, callback) => {
+    liveCallback = callback;
+    return Promise.resolve(async () => {});
+  });
+  mock.method(relayClient, "publishEvent", (event) => {
+    published.push(event);
+    return publish.promise;
+  });
+  try {
+    const manager = new CommunityThemeSyncManager("alice", (event) => {
+      acknowledgements.push(event);
+    });
+    await manager.subscribe((remote) => {
+      manager.acceptRemote(remote);
+      manager.cancelPendingPublish(remote.preference, remote);
+    });
+    manager.publish(preference);
+    timer.fire();
+    await waitUntil(() => published.length === 1);
+
+    liveCallback(published[0]);
+    await new Promise((resolve) => setImmediate(resolve));
+    publish.resolve();
+    await waitUntil(() => acknowledgements.length === 1);
+
+    assert.equal(published.length, 1);
+    assert.equal(timer.pending(), false);
+    assert.deepEqual(manager.getPending(), null);
+    assert.deepEqual(acknowledgements[0], {
+      preference,
+      createdAt: published[0].created_at,
+      eventId: published[0].id,
+    });
+  } finally {
+    delete globalThis.window.__TAURI_INTERNALS__;
+    timer.restore();
+    mock.reset();
+  }
+});
+
 test("live legacy updates inherit the latest complete appearance", async () => {
   const initial = { ...preference, glassOpacity: 40 };
   const latest = {

@@ -228,6 +228,7 @@ export function CommunityThemeController() {
       clearCommunityThemeMigrationOutbox(pubkey, relayUrl);
       const migrationWasSubmitted = manager.cancelPendingPublish(
         remote.preference,
+        remote,
       );
       cacheAndApplyCommunityTheme(
         pubkey,
