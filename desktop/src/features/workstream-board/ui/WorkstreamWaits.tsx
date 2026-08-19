@@ -1,6 +1,8 @@
 import { ExternalLink } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
+import { useAppNavigation } from "@/app/navigation/useAppNavigation";
+import { parseWorkstreamWaitMessageLink } from "@/features/workstream-board/lib/workstreamWaits";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import type { WorkstreamPullRequestReference } from "@/features/workstream-board/lib/workstreamPullRequestStatus";
 import type { WorkstreamWait } from "@/features/workstream-board/lib/workstreamWaits";
@@ -59,6 +61,7 @@ export function WorkstreamWaits({
 }) {
   const now = useNow(60_000);
   const openEntityLink = useOpenEntityLink();
+  const { goChannel } = useAppNavigation();
   if (waits.length === 0) return null;
   const referencesByIdentity = new Map(
     references.map((reference) => [reference.identity, reference]),
@@ -88,16 +91,28 @@ export function WorkstreamWaits({
         {orderedWaits.map((wait) => {
           const age = waitAge(wait.since, now);
           const reference = referencesByIdentity.get(wait.key);
-          const open = reference
-            ? () => {
-                const parsed =
-                  reference.kind === "buzz"
-                    ? parseEntityLink(reference.href)
-                    : null;
-                if (parsed?.ok) openEntityLink(parsed.value);
-                else void openUrl(reference.href);
-              }
-            : undefined;
+          const messageDestination = parseWorkstreamWaitMessageLink(
+            wait.message,
+          );
+          const open =
+            wait.message !== undefined
+              ? messageDestination
+                ? () =>
+                    void goChannel(messageDestination.channelId, {
+                      messageId: messageDestination.messageId,
+                      threadRootId: messageDestination.threadRootId,
+                    })
+                : undefined
+              : reference
+                ? () => {
+                    const parsed =
+                      reference.kind === "buzz"
+                        ? parseEntityLink(reference.href)
+                        : null;
+                    if (parsed?.ok) openEntityLink(parsed.value);
+                    else void openUrl(reference.href);
+                  }
+                : undefined;
           const content = (
             <>
               <WaitAvatar profiles={profiles} wait={wait} />
