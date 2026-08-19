@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use tauri::AppHandle;
 
 use super::agent_env::{build_buzz_agent_provider_defaults, idle_pool_sleep_env};
-
+use super::openai_env::effective_runtime_provider;
 use crate::{
     managed_agents::{
         append_log_marker, known_acp_runtime, login_shell_path, managed_agent_log_path,
@@ -204,7 +204,7 @@ pub fn build_managed_agent_summary(
         personas,
         global_config,
     );
-    let (effective_model, effective_provider, effective_prompt, model_source) = match effective_cfg
+    let (effective_model, configured_provider, effective_prompt, model_source) = match effective_cfg
     {
         crate::managed_agents::effective_config::EffectiveConfigResult::Resolved(cfg) => {
             let source = cfg.model.source.clone();
@@ -293,6 +293,8 @@ pub fn build_managed_agent_summary(
             env: Default::default(),
         }
     });
+    let effective_provider =
+        effective_runtime_provider(&descriptor.command, configured_provider, &descriptor.env);
     let effective_mcp_command = known_acp_runtime(&descriptor.command)
         .and_then(|r| r.mcp_command)
         .unwrap_or("")
@@ -711,11 +713,9 @@ pub fn spawn_agent_child(
     let mesh_model_id = effective_cfg.relay_mesh_model_id();
     let effective_prompt = effective_cfg.system_prompt.value;
     let effective_model = effective_cfg.model.value;
-    let effective_provider = descriptor
-        .env
-        .get("BUZZ_AGENT_PROVIDER")
-        .cloned()
-        .or(effective_cfg.provider.value);
+    let configured_provider = effective_cfg.provider.value;
+    let effective_provider =
+        effective_runtime_provider(&descriptor.command, configured_provider, &descriptor.env);
 
     if let Some(prompt) = &effective_prompt {
         command.env("BUZZ_ACP_SYSTEM_PROMPT", prompt);

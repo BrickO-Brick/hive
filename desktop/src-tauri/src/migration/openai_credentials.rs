@@ -235,56 +235,79 @@ fn classify_endpoint(endpoint: Option<&str>) -> Result<Identity, String> {
     })
 }
 
+fn is_buzz_agent_consumer(record: &ManagedAgentRecord, defs: &[AgentDefinition]) -> bool {
+    crate::managed_agents::known_acp_runtime(&crate::managed_agents::record_agent_command(
+        record, defs,
+    ))
+    .is_some_and(|runtime| runtime.id == "buzz-agent")
+}
+
+fn global_defaults_target_buzz_agent(store: &Store) -> bool {
+    match store.global.preferred_runtime.as_deref().map(str::trim) {
+        Some("") | None => true,
+        Some(runtime_id) => crate::managed_agents::known_acp_runtime_exact(runtime_id)
+            .is_some_and(|runtime| runtime.id == "buzz-agent"),
+    }
+}
+
 fn collect_consumers(store: &Store) -> Result<Vec<Consumer>, String> {
     let defs = definitions(store);
+    let has_managed_buzz_agent = store
+        .records
+        .iter()
+        .filter(|record| !record.pubkey.is_empty())
+        .any(|record| is_buzz_agent_consumer(record, &defs));
     let mut consumers = Vec::new();
-    if let Some(provider) = store
-        .global
-        .provider
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .filter(|value| {
-            matches!(
-                value.to_ascii_lowercase().as_str(),
-                "openai" | "openai-compat"
-            )
-        })
-    {
-        let endpoint = store
+    if !has_managed_buzz_agent && global_defaults_target_buzz_agent(store) {
+        if let Some(provider) = store
             .global
-            .env_vars
-            .get(OPENAI_COMPAT_BASE_URL)
-            .map(|value| ResolvedValue {
-                value: value.clone(),
-                owner: Owner::Global,
+            .provider
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .filter(|value| {
+                matches!(
+                    value.to_ascii_lowercase().as_str(),
+                    "openai" | "openai-compat"
+                )
+            })
+        {
+            let endpoint = store
+                .global
+                .env_vars
+                .get(OPENAI_COMPAT_BASE_URL)
+                .map(|value| ResolvedValue {
+                    value: value.clone(),
+                    owner: Owner::Global,
+                });
+            consumers.push(Consumer {
+                label: "global defaults".into(),
+                record_index: None,
+                provider: provider.to_ascii_lowercase(),
+                provider_owner: Owner::Global,
+                identity: classify_endpoint(endpoint.as_ref().map(|value| value.value.as_str()))?,
+                endpoint,
+                legacy_key: store
+                    .global
+                    .env_vars
+                    .get(OPENAI_COMPAT_API_KEY)
+                    .map(|value| ResolvedValue {
+                        value: value.clone(),
+                        owner: Owner::Global,
+                    }),
+                official_key: store.global.env_vars.get(OPENAI_API_KEY).map(|value| {
+                    ResolvedValue {
+                        value: value.clone(),
+                        owner: Owner::Global,
+                    }
+                }),
             });
-        consumers.push(Consumer {
-            label: "global defaults".into(),
-            record_index: None,
-            provider: provider.to_ascii_lowercase(),
-            provider_owner: Owner::Global,
-            identity: classify_endpoint(endpoint.as_ref().map(|value| value.value.as_str()))?,
-            endpoint,
-            legacy_key: store
-                .global
-                .env_vars
-                .get(OPENAI_COMPAT_API_KEY)
-                .map(|value| ResolvedValue {
-                    value: value.clone(),
-                    owner: Owner::Global,
-                }),
-            official_key: store
-                .global
-                .env_vars
-                .get(OPENAI_API_KEY)
-                .map(|value| ResolvedValue {
-                    value: value.clone(),
-                    owner: Owner::Global,
-                }),
-        });
+        }
     }
     for (index, record) in store.records.iter().enumerate() {
+        if record.pubkey.is_empty() || !is_buzz_agent_consumer(record, &defs) {
+            continue;
+        }
         let def = selected_definition(record, &defs);
         if record.persona_id.is_some() && def.is_none() {
             return Err(format!(
@@ -354,6 +377,7 @@ fn collect_consumers(store: &Store) -> Result<Vec<Consumer>, String> {
         });
     }
     if consumers.is_empty()
+        && global_defaults_target_buzz_agent(store)
         && [OPENAI_COMPAT_API_KEY, OPENAI_COMPAT_BASE_URL]
             .iter()
             .any(|key| store.global.env_vars.contains_key(*key))

@@ -240,6 +240,75 @@ fn unrelated_consumer_does_not_claim_global_openai_credential() {
 }
 
 #[test]
+fn shared_global_legacy_key_supports_official_and_custom_buzz_agents() {
+    let global = GlobalAgentConfig {
+        provider: Some("openai".into()),
+        env_vars: BTreeMap::from([(OPENAI_COMPAT_API_KEY.into(), "shared-key".into())]),
+        ..Default::default()
+    };
+    let official = record("official", "official");
+    let mut custom = record("custom", "custom");
+    custom.env_vars.insert(
+        OPENAI_COMPAT_BASE_URL.into(),
+        "https://gateway.example/v1".into(),
+    );
+
+    let (store, before) = plan_store(Store {
+        global,
+        records: vec![official, custom],
+    })
+    .unwrap();
+    assert_eq!(
+        store
+            .global
+            .env_vars
+            .get(OPENAI_API_KEY)
+            .map(String::as_str),
+        Some("shared-key")
+    );
+    verify_post_split(&before, &store).unwrap();
+
+    let defs = definitions(&store);
+    let custom_descriptor = crate::managed_agents::resolve_effective_harness_descriptor(
+        &store.records[1],
+        &defs,
+        &store.global,
+    )
+    .unwrap();
+    assert_eq!(
+        custom_descriptor
+            .env
+            .get("BUZZ_AGENT_PROVIDER")
+            .map(String::as_str),
+        Some("openai-compat")
+    );
+    assert!(!custom_descriptor.env.contains_key(OPENAI_API_KEY));
+}
+
+#[test]
+fn goose_records_are_not_openai_migration_consumers() {
+    let global = GlobalAgentConfig {
+        provider: Some("openai".into()),
+        preferred_runtime: Some("goose".into()),
+        env_vars: BTreeMap::from([
+            (OPENAI_COMPAT_API_KEY.into(), "goose-owned".into()),
+            (
+                OPENAI_COMPAT_BASE_URL.into(),
+                "https://gateway.example/v1".into(),
+            ),
+        ]),
+        ..Default::default()
+    };
+    let mut goose = record("goose", "goose");
+    goose.runtime = Some("goose".into());
+    goose.provider = Some("openai".into());
+
+    let store = planned(global.clone(), vec![goose.clone()]).unwrap();
+    assert_eq!(store.global, global);
+    assert_eq!(store.records[0].provider, goose.provider);
+}
+
+#[test]
 fn linked_provider_snapshot_is_ignored_and_definition_is_mutated() {
     let mut def = definition("shared");
     def.provider = Some("openai".into());

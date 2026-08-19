@@ -22,7 +22,10 @@ fn provider_env_canonicalization_isolates_consumers() {
         ),
     ]);
     let mut official = shared.clone();
-    canonicalize_openai_provider_env(&mut official, Some("openai"));
+    crate::managed_agents::openai_env::canonicalize_openai_provider_env(
+        &mut official,
+        Some("openai"),
+    );
     assert_eq!(
         official.get("OPENAI_API_KEY").map(String::as_str),
         Some("official")
@@ -31,7 +34,10 @@ fn provider_env_canonicalization_isolates_consumers() {
     assert!(!official.contains_key("OPENAI_COMPAT_BASE_URL"));
 
     let mut compatible = shared;
-    canonicalize_openai_provider_env(&mut compatible, Some("openai-compat"));
+    crate::managed_agents::openai_env::canonicalize_openai_provider_env(
+        &mut compatible,
+        Some("openai-compat"),
+    );
     assert!(!compatible.contains_key("OPENAI_API_KEY"));
     assert_eq!(
         compatible.get("OPENAI_COMPAT_API_KEY").map(String::as_str),
@@ -50,7 +56,11 @@ fn inherited_legacy_custom_configuration_normalizes_per_consumer() {
         ),
     ]);
     assert_eq!(
-        canonicalize_openai_provider_env(&mut env, Some("openai")).as_deref(),
+        crate::managed_agents::openai_env::canonicalize_openai_provider_env(
+            &mut env,
+            Some("openai")
+        )
+        .as_deref(),
         Some("openai-compat")
     );
     assert_eq!(
@@ -61,12 +71,51 @@ fn inherited_legacy_custom_configuration_normalizes_per_consumer() {
 }
 
 #[test]
+fn copied_official_key_does_not_mask_legacy_custom_identity() {
+    let mut env = BTreeMap::from([
+        ("BUZZ_AGENT_PROVIDER".into(), "openai".into()),
+        ("OPENAI_API_KEY".into(), "copied-legacy".into()),
+        ("OPENAI_COMPAT_API_KEY".into(), "copied-legacy".into()),
+        (
+            "OPENAI_COMPAT_BASE_URL".into(),
+            "https://gateway.example/v1".into(),
+        ),
+    ]);
+    assert_eq!(
+        crate::managed_agents::openai_env::canonicalize_openai_provider_env(
+            &mut env,
+            Some("openai")
+        )
+        .as_deref(),
+        Some("openai-compat")
+    );
+    assert!(!env.contains_key("OPENAI_API_KEY"));
+}
+
+#[test]
+fn non_buzz_harness_keeps_its_configured_provider() {
+    let env = BTreeMap::from([("BUZZ_AGENT_PROVIDER".into(), "openai-compat".into())]);
+    assert_eq!(
+        crate::managed_agents::openai_env::effective_runtime_provider(
+            "goose",
+            Some("openai".into()),
+            &env,
+        )
+        .as_deref(),
+        Some("openai")
+    );
+}
+
+#[test]
 fn keyless_compatible_provider_gets_explicit_blank_credential() {
     let mut env = BTreeMap::from([(
         "OPENAI_COMPAT_BASE_URL".into(),
         "http://localhost:11434/v1".into(),
     )]);
-    canonicalize_openai_provider_env(&mut env, Some("openai-compat"));
+    crate::managed_agents::openai_env::canonicalize_openai_provider_env(
+        &mut env,
+        Some("openai-compat"),
+    );
     assert_eq!(
         env.get("OPENAI_COMPAT_API_KEY").map(String::as_str),
         Some("")

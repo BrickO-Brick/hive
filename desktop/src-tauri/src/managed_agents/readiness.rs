@@ -269,7 +269,14 @@ fn resolve_effective_agent_env_with_def(
     );
     env.extend(user_env);
 
-    let _ = canonicalize_openai_provider_env(&mut env, effective_provider.as_deref());
+    if crate::managed_agents::known_acp_runtime(&effective_command)
+        .is_some_and(|runtime| runtime.id == "buzz-agent")
+    {
+        let _ = crate::managed_agents::openai_env::canonicalize_openai_provider_env(
+            &mut env,
+            effective_provider.as_deref(),
+        );
+    }
 
     // Buzz shared compute is a native Buzz provider. Translate it to buzz-agent's
     // OpenAI-compatible transport only in the effective runtime environment.
@@ -285,46 +292,6 @@ fn resolve_effective_agent_env_with_def(
         config_file_path: runtime.and_then(|r| r.config_file_path),
         effective_command,
     }
-}
-
-pub(crate) fn canonicalize_openai_provider_env(
-    env: &mut BTreeMap<String, String>,
-    provider: Option<&str>,
-) -> Option<String> {
-    let mut provider = provider.map(str::trim).map(str::to_ascii_lowercase);
-    if provider.as_deref() == Some("openai") {
-        let has_official_key = env
-            .get("OPENAI_API_KEY")
-            .is_some_and(|value| !value.trim().is_empty());
-        let has_legacy_key = env
-            .get("OPENAI_COMPAT_API_KEY")
-            .is_some_and(|value| !value.trim().is_empty());
-        let has_custom_origin = env
-            .get("OPENAI_COMPAT_BASE_URL")
-            .map(String::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .is_some_and(|value| value.trim_end_matches('/') != "https://api.openai.com/v1");
-        if !has_official_key && has_legacy_key && has_custom_origin {
-            provider = Some("openai-compat".to_string());
-        }
-    }
-
-    match provider.as_deref() {
-        Some("openai") => {
-            env.remove("OPENAI_COMPAT_BASE_URL");
-            env.remove("OPENAI_COMPAT_API_KEY");
-        }
-        Some("openai-compat") => {
-            env.remove("OPENAI_API_KEY");
-            env.entry("OPENAI_COMPAT_API_KEY".to_string()).or_default();
-        }
-        _ => {}
-    }
-    if let (Some(value), Some(slot)) = (provider.as_ref(), env.get_mut("BUZZ_AGENT_PROVIDER")) {
-        *slot = value.clone();
-    }
-    provider
 }
 
 // ── Requirement types ─────────────────────────────────────────────────────────
