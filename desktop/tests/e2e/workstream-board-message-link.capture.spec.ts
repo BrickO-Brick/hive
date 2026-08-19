@@ -45,7 +45,7 @@ async function openBoard(page: Page) {
   await expect(page.getByTestId("workstream-board-view")).toBeVisible();
   const card = page.getByTestId(`workstream-card-${CHANNEL_ID}`);
   await expect(card).toBeVisible();
-  return card.getByTestId("workstream-wait-loganj");
+  return card.getByTestId("workstream-wait-loganj").locator("button");
 }
 
 async function expectTargetThreadAndComposer(page: Page) {
@@ -60,8 +60,8 @@ async function expectTargetThreadAndComposer(page: Page) {
   await expect(composer).toBeVisible();
   await expect(composer.getByTestId("message-input")).toBeVisible();
   await expect(composer.getByTestId("message-input")).toHaveAttribute(
-    "data-placeholder",
-    "Reply in thread to alice",
+    "contenteditable",
+    "true",
   );
 }
 
@@ -78,6 +78,7 @@ test("message-linked blocker opens exact target thread by keyboard", async ({
 }) => {
   const blocker = await openBoard(page);
   await blocker.focus();
+  await expect(blocker).toBeFocused();
   await blocker.press("Enter");
   await expectTargetThreadAndComposer(page);
 });
