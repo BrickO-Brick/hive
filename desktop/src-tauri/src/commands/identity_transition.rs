@@ -10,8 +10,8 @@ use tauri::Manager;
 /// Drain live managed-agent runtimes for identity import (Layer 2 protocol).
 /// Caller must hold `managed_agent_runtime_transition`. Returns stopped entries
 /// or `Err((stopped, msg))` on failure.
-fn drain_managed_agent_runtimes_for_import(
-    app: &tauri::AppHandle,
+fn drain_managed_agent_runtimes_for_import<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     state: &AppState,
 ) -> Result<
     Vec<crate::managed_agents::DrainJournalEntry>,
@@ -33,8 +33,8 @@ fn drain_managed_agent_runtimes_for_import(
 /// without any interleave window. `scope`/`rt_guard` are `None` on the no-scope
 /// path (nothing drained); either being `None` skips compensation. Returns a
 /// combined diagnostic string when compensation itself fails.
-fn compensate_import_drain(
-    app_handle: &tauri::AppHandle,
+fn compensate_import_drain<R: tauri::Runtime>(
+    app_handle: &tauri::AppHandle<R>,
     stopped: &[crate::managed_agents::DrainJournalEntry],
     scope: Option<&crate::managed_agents::scope::WorkspaceAgentScope>,
     rt_guard: Option<std::sync::MutexGuard<'_, ()>>,
@@ -102,8 +102,8 @@ fn compensate_import_drain(
 /// runtimes compensate, but revoked owner-identity durable capabilities stay
 /// revoked. This is design-conformant fail-closed churn, not a split state —
 /// see `CROSS_WORKSPACE_AGENT_LIBRARY.md` §3.3a (barrier sequence is fixed).
-pub(crate) async fn run_identity_transition(
-    app_handle: tauri::AppHandle,
+pub(crate) async fn run_identity_transition<R: tauri::Runtime>(
+    app_handle: tauri::AppHandle<R>,
     nsec: String,
     password: Option<String>,
     commit_fence: Option<std::sync::Arc<std::sync::Mutex<()>>>,
@@ -200,8 +200,8 @@ pub(crate) fn commit_under_fence<T>(
 /// either compensates (cancelled during drain, before the fence is taken) or
 /// loses to the committed recovery (cancelled after the fenced commit begins).
 /// Normal import supplies `None` + an always-`Ok(())` check.
-fn import_identity_blocking(
-    app_handle: tauri::AppHandle,
+fn import_identity_blocking<R: tauri::Runtime>(
+    app_handle: tauri::AppHandle<R>,
     nsec: String,
     password: Option<String>,
     commit_fence: Option<std::sync::Arc<std::sync::Mutex<()>>>,

@@ -717,8 +717,8 @@ pub(crate) fn execute_drain_journal_with_stop_fn(
 /// entries that were successfully killed (compensation restores these).
 /// `remaining` contains entries that were NOT attempted (due to early-exit on
 /// first failure). On success `remaining` is empty.
-pub(crate) fn drain_scope_runtimes(
-    app: &AppHandle,
+pub(crate) fn drain_scope_runtimes<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     state: &AppState,
 ) -> (
     Vec<DrainJournalEntry>,
