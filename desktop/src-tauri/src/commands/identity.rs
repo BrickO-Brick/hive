@@ -245,6 +245,17 @@ pub fn generate_backup_passphrase(
 
 /// Core of [`create_ncryptsec_backup`], factored so tests can drive it with a
 /// bare `AppState` + temp dir (and a fast scrypt tier) without an `AppHandle`.
+///
+/// **Caller precondition:** the caller MUST hold `state.identity_mutation`
+/// across this call. The backup blob must be derived from — and the KDF
+/// concurrency capped over — one stable identity, and the guard must be taken
+/// BEFORE the egress lease so the lock order matches the identity-transition
+/// coordinator (`identity_mutation` → egress lease). Reacquiring the guard here
+/// would invert that order and deadlock the coordinator (it holds
+/// `identity_mutation` and then blocks awaiting in-flight egress leases). The
+/// guard reference cannot cross the command's `spawn_blocking` boundary, so the
+/// precondition is held on the caller's async stack rather than passed as a
+/// param — the same shape `run_identity_transition` relies on.
 pub(crate) fn create_backup_with_log_n(
     state: &AppState,
     password: &str,
@@ -257,11 +268,6 @@ pub(crate) fn create_backup_with_log_n(
         ));
     }
 
-    // Serialize against import_identity/persist_current_identity: the blob
-    // must be derived from — and persisted for — one stable identity. Also
-    // caps KDF concurrency at one.
-    let _mutation_guard = state.identity_mutation.blocking_lock();
-
     // Recovery mode (lost/locked) → Err, same gate as signing.
     let keys = state.signing_keys()?;
 
@@ -271,19 +277,47 @@ pub(crate) fn create_backup_with_log_n(
 /// Create a NIP-49 backup of the live identity in memory.
 ///
 /// Encrypts under `password`, decrypt-verifies the fresh blob against the live
-/// pubkey, and returns the `ncryptsec1…` string for the native save flow. The
-/// body runs under `identity_mutation`, so identity changes cannot race the KDF.
+/// pubkey, and returns the `ncryptsec1…` string for the native save flow.
+///
+/// Lock order (uniform with `run_identity_transition`): `identity_mutation` is
+/// acquired FIRST and held across the blocking KDF, THEN the egress lease is
+/// admitted under that stable epoch. Because the transition coordinator holds
+/// `identity_mutation` for its whole drain, a backup can never hold a lease
+/// while the coordinator awaits the drain — the earlier inverse order
+/// (lease-then-`identity_mutation`) deadlocked the transition.
 #[tauri::command]
 pub async fn create_ncryptsec_backup(
     password: String,
     app_handle: tauri::AppHandle,
 ) -> Result<crate::owner_identity_egress::StampedArtifact<String>, String> {
-    // Admit BEFORE deriving the backup: the NIP-49 blob recovers the owner
-    // identity itself (the strongest P33 identity-export artifact), so it is
-    // stamped with the issuing lease's generation. The witness survives
-    // reducer/provider retention (settings + onboarding); every save boundary
-    // validates current admission + generation in C6/C7, and a transition
-    // invalidates the retained backup with zero write.
+    create_ncryptsec_backup_inner(password, app_handle).await
+}
+
+/// Runtime-generic core for [`create_ncryptsec_backup`]. Keeping the lock and
+/// admission order here lets the mock-runtime concurrency schedule exercise the
+/// exact command body rather than a parallel test-only implementation.
+async fn create_ncryptsec_backup_inner<R: tauri::Runtime>(
+    password: String,
+    app_handle: tauri::AppHandle<R>,
+) -> Result<crate::owner_identity_egress::StampedArtifact<String>, String> {
+    // ── identity_mutation FIRST (uniform lock order) ─────────────────────────
+    // Held on this async stack across the blocking body below (never moved into
+    // the closure — a guard cannot cross the `'static` `spawn_blocking`
+    // boundary), so the KDF derives from one stable identity and no concurrent
+    // swap can race it. A cloned handle keeps `app_handle` free for the body.
+    let lock_handle = app_handle.clone();
+    let lock_state = lock_handle.state::<AppState>();
+    let _mutation_guard = lock_state.identity_mutation.lock().await;
+
+    // Admit BEFORE deriving the backup, UNDER the held `identity_mutation`: the
+    // NIP-49 blob recovers the owner identity itself (the strongest P33
+    // identity-export artifact), so it is stamped with the issuing lease's
+    // generation. Admitting under the guard pins a stable Live epoch — a
+    // transition draining toward B holds `identity_mutation`, so it cannot be
+    // in flight here. The witness survives reducer/provider retention (settings
+    // + onboarding); every save boundary validates current admission +
+    // generation in C6/C7, and a transition invalidates the retained backup
+    // with zero write.
     let lease = crate::owner_identity_egress::try_admit_owner_identity_egress().await?;
     tokio::task::spawn_blocking(move || {
         let password = zeroize::Zeroizing::new(password);

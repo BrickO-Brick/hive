@@ -310,8 +310,15 @@ where
     // resurrection before B commits (Thufir UNSAFE verdict on the three-phase
     // split, Paul-ruled `092acdeb75`). The wait is synchronous
     // (`wait_egress_drain_blocking`) because this body holds two std mutex
-    // guards that cannot cross `.await`; deadlock-freedom rests on leases
-    // taking only the egress registry mutex (zero lease-vs-guard sites).
+    // guards that cannot cross `.await`.
+    //
+    // Deadlock-freedom is a lock-order invariant, not a source-text heuristic:
+    // every operation that needs a coordinator-held lock acquires it BEFORE
+    // egress admission. The owner-identity artifact commands are structurally
+    // pinned by `identity_egress_ordering_tests`; the backup's transition-held-
+    // mutation schedule is driven in `identity_key_backup_tests`. A future
+    // admission site must preserve that order and add an operation-level
+    // schedule if it crosses another coordinator-held lock.
     //
     // The barrier runs UNCONDITIONALLY, even on the no-scope path: owner sends
     // are scope-independent, so an in-flight owner lease can exist with no

@@ -205,6 +205,13 @@ pub fn identity_persistence_state() -> IdentityPersistenceState {
     lock_inner().state
 }
 
+/// Number of leases currently admitted. Test-only observability for schedules
+/// that prove an operation has not entered the egress registry yet.
+#[cfg(test)]
+pub(crate) fn in_flight_egress_leases_for_test() -> u64 {
+    lock_inner().in_flight
+}
+
 /// Whether owner-identity persistence is latched `Indeterminate`. The checked
 /// key accessors (P28-C1) refuse when this is `true`.
 pub fn is_identity_indeterminate() -> bool {
@@ -358,14 +365,17 @@ pub async fn await_egress_drain() {
 ///
 /// # Deadlock-freedom (load-bearing invariant)
 ///
-/// Blocking on lease-drain while the caller owns both Layer-2 guards cannot
-/// cycle: a lease `Drop` acquires ONLY the egress registry mutex (never either
-/// managed-agent guard), and a tree sweep found ZERO sites that hold an egress
-/// lease while acquiring either guard. `wait_while` releases the registry mutex
-/// while parked, so an in-flight lease's `Drop` always makes progress and
-/// notifies. The wait has NO timeout, matching `await_egress_drain`: every
-/// in-flight lease is a network op with its own timeout, so the wait is bounded
-/// transitively — a defensive timeout would only mask a leaked lease.
+/// Blocking on lease-drain while the caller owns `identity_mutation` and both
+/// Layer-2 guards cannot cycle when any operation needing one of those locks
+/// acquires it **before** egress admission. A lease `Drop` acquires only this
+/// registry mutex, and `wait_while` releases that mutex while parked, so an
+/// in-flight lease's `Drop` always makes progress and notifies. The command
+/// ordering and the backup's transition-held-mutation schedule live beside the
+/// affected operations; a source-text scan would be unsound because it cannot
+/// prove lease lifetime across explicit drops or helper calls. The wait has NO
+/// timeout, matching `await_egress_drain`: every in-flight lease is a network
+/// op with its own timeout, so the wait is bounded transitively — a defensive
+/// timeout would only mask a leaked lease.
 pub fn wait_egress_drain_blocking() {
     let inner = lock_inner();
     // wait_while re-checks under the lock and releases it while parked, so a
