@@ -715,25 +715,40 @@ impl EventQueue {
     ///
     /// Also clears any `retry_after` throttle for the channel.
     ///
-    /// Returns the event IDs of dropped events so the caller can clean up
-    /// any reactions (👀) that were added at queue-push time.
+    /// Returns the visible event IDs that own lifecycle reactions for every
+    /// dropped event so the caller can clean up any 👀 added at queue-push time.
     pub fn drain_channel(&mut self, channel_id: Uuid) -> Vec<String> {
-        let ids = self
-            .queues
-            .remove(&channel_id)
-            .map(|q| q.into_iter().map(|e| e.event.id.to_hex()).collect())
-            .unwrap_or_default();
+        let mut ids: HashSet<String> = HashSet::new();
+        if let Some(events) = self.queues.remove(&channel_id) {
+            ids.extend(
+                events
+                    .into_iter()
+                    .map(|event| reaction_target_id(&event.event)),
+            );
+        }
+        if let Some(events) = self.cancelled_batches.remove(&channel_id) {
+            ids.extend(
+                events
+                    .into_iter()
+                    .map(|event| reaction_target_id(&event.event)),
+            );
+        }
+        if let Some(events) = self.withheld_native_steer.remove(&channel_id) {
+            ids.extend(
+                events
+                    .into_iter()
+                    .map(|event| reaction_target_id(&event.event)),
+            );
+        }
         self.retry_after.remove(&channel_id);
         self.retry_counts.remove(&channel_id);
-        self.cancelled_batches.remove(&channel_id);
         self.cancel_reasons.remove(&channel_id);
-        self.withheld_native_steer.remove(&channel_id);
         // Preserve in_flight_channels AND in_flight_deadlines: the in-flight
         // task will eventually complete (calling mark_complete) or the deadline
         // will expire (auto-cleaning the channel). Removing deadlines without
         // removing in_flight_channels would disable auto-expiry and leave a
         // wedged task permanently blocking the channel.
-        ids
+        ids.into_iter().collect()
     }
 
     /// Whether a prompt is currently in-flight for the given channel.
@@ -4040,6 +4055,33 @@ mod tests {
         let drained = q.drain_channel(ch);
         assert_eq!(drained.len(), 2);
         assert_eq!(pending_count(&q), 0);
+    }
+
+    #[test]
+    fn test_drain_channel_returns_visible_edit_targets_including_withheld() {
+        let mut q = EventQueue::new(DedupMode::Queue);
+        let ch = Uuid::new_v4();
+        let queued_target = "77".repeat(32);
+        let withheld_target = "88".repeat(32);
+
+        let queued = QueuedEvent {
+            channel_id: ch,
+            event: edit_event(&queued_target),
+            received_at: Instant::now(),
+            prompt_tag: "test".into(),
+        };
+        let withheld = QueuedEvent {
+            channel_id: ch,
+            event: edit_event(&withheld_target),
+            received_at: Instant::now(),
+            prompt_tag: "test".into(),
+        };
+        q.push(queued);
+        q.withheld_native_steer.insert(ch, vec![withheld]);
+
+        let drained: HashSet<String> = q.drain_channel(ch).into_iter().collect();
+        assert_eq!(drained, HashSet::from([queued_target, withheld_target]));
+        assert!(q.withheld_native_steer.is_empty());
     }
 
     #[test]

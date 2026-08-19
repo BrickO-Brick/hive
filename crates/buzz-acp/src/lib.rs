@@ -2472,7 +2472,7 @@ async fn tokio_main() -> Result<()> {
             // arrive when the channel is silent.
             if queue.has_flushable_work() {
                 for (channel_id, thread_tags) in
-                    dispatch_pending(&mut pool, &mut queue, &ctx, &mut last_activity)
+                    dispatch_pending(&mut pool, &mut queue, &ctx, &mut last_activity).await
                 {
                     typing_channels.insert(channel_id, thread_tags);
                 }
@@ -2524,7 +2524,7 @@ async fn tokio_main() -> Result<()> {
         // next relay event arrives — which can be minutes on quiet channels.
         if respawn_collected {
             for (channel_id, thread_tags) in
-                dispatch_pending(&mut pool, &mut queue, &ctx, &mut last_activity)
+                dispatch_pending(&mut pool, &mut queue, &ctx, &mut last_activity).await
             {
                 typing_channels.insert(channel_id, thread_tags);
             }
@@ -3006,6 +3006,7 @@ async fn tokio_main() -> Result<()> {
                             if pool_ready {
                                 for (channel_id, thread_tags) in
                                     dispatch_pending(&mut pool, &mut queue, &ctx, &mut last_activity)
+                        .await
                                 {
                                     typing_channels.insert(channel_id, thread_tags);
                                 }
@@ -3106,6 +3107,7 @@ async fn tokio_main() -> Result<()> {
                         tracing::debug!("heartbeat_skipped_events");
                         for (channel_id, thread_tags) in
                             dispatch_pending(&mut pool, &mut queue, &ctx, &mut last_activity)
+                        .await
                         {
                             typing_channels.insert(channel_id, thread_tags);
                         }
@@ -3204,7 +3206,7 @@ async fn tokio_main() -> Result<()> {
                     break;
                 }
                 for (channel_id, thread_tags) in
-                    dispatch_pending(&mut pool, &mut queue, &ctx, &mut last_activity)
+                    dispatch_pending(&mut pool, &mut queue, &ctx, &mut last_activity).await
                 {
                     typing_channels.insert(channel_id, thread_tags);
                 }
@@ -3229,7 +3231,7 @@ async fn tokio_main() -> Result<()> {
                     break;
                 }
                 for (channel_id, thread_tags) in
-                    dispatch_pending(&mut pool, &mut queue, &ctx, &mut last_activity)
+                    dispatch_pending(&mut pool, &mut queue, &ctx, &mut last_activity).await
                 {
                     typing_channels.insert(channel_id, thread_tags);
                 }
@@ -3384,7 +3386,7 @@ async fn tokio_main() -> Result<()> {
                 // queue drains. We still try here in case the in-flight
                 // task has already returned.
                 for (channel_id, thread_tags) in
-                    dispatch_pending(&mut pool, &mut queue, &ctx, &mut last_activity)
+                    dispatch_pending(&mut pool, &mut queue, &ctx, &mut last_activity).await
                 {
                     typing_channels.insert(channel_id, thread_tags);
                 }
@@ -3412,7 +3414,7 @@ async fn tokio_main() -> Result<()> {
                             None,
                         );
                         for (channel_id, thread_tags) in
-                            dispatch_pending(&mut pool, &mut queue, &ctx, &mut last_activity)
+                            dispatch_pending(&mut pool, &mut queue, &ctx, &mut last_activity).await
                         {
                             typing_channels.insert(channel_id, thread_tags);
                         }
@@ -3825,8 +3827,44 @@ fn try_native_steer(
 
 // ── dispatch_pending ──────────────────────────────────────────────────────────
 
+fn typing_scope_for_event(
+    event: &nostr::Event,
+    resolved_edit: Option<&queue::ResolvedEdit>,
+) -> ThreadTags {
+    resolved_edit
+        .map(|edit| edit.target_thread_tags.clone())
+        .unwrap_or_else(|| queue::parse_thread_tags(event))
+}
+
+#[cfg(test)]
+mod typing_scope_tests {
+    use super::*;
+    use nostr::{EventBuilder, Keys, Kind, Tag};
+
+    #[test]
+    fn edit_typing_scope_uses_the_resolved_original_thread() {
+        let target_id = "11".repeat(32);
+        let root_id = "22".repeat(32);
+        let edit = EventBuilder::new(Kind::Custom(40003), "edited request")
+            .tags([Tag::parse(["e", target_id.as_str()]).expect("edit target")])
+            .sign_with_keys(&Keys::generate())
+            .expect("signed edit");
+        let resolved = queue::ResolvedEdit {
+            target_event_id: target_id,
+            target_thread_tags: ThreadTags {
+                root_event_id: Some(root_id.clone()),
+                parent_event_id: None,
+                mentioned_pubkeys: Vec::new(),
+            },
+        };
+
+        let scope = typing_scope_for_event(&edit, Some(&resolved));
+        assert_eq!(scope.root_event_id.as_deref(), Some(root_id.as_str()));
+    }
+}
+
 /// Flush queued work to available agents.
-fn dispatch_pending(
+async fn dispatch_pending(
     pool: &mut AgentPool,
     queue: &mut EventQueue,
     ctx: &Arc<PromptContext>,
@@ -3839,11 +3877,14 @@ fn dispatch_pending(
             None => break,
         };
         let channel_id = batch.channel_id;
-        let typing_scope = batch
-            .events
-            .last()
-            .map(|event| queue::parse_thread_tags(&event.event))
-            .unwrap_or_default();
+        let typing_scope = match batch.events.last() {
+            Some(event) => {
+                let resolved_edit =
+                    pool::resolve_edit_routing(&event.event, &ctx.rest_client).await;
+                typing_scope_for_event(&event.event, resolved_edit.as_ref())
+            }
+            None => ThreadTags::default(),
+        };
         let affinity_hit = pool.has_session_for(channel_id);
         let mut agent = match pool.try_claim(Some(channel_id)) {
             Some(a) => a,

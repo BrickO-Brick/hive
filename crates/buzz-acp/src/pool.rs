@@ -3325,7 +3325,7 @@ fn conversation_context_delta(
 
 /// Resolve a kind:40003 edit through its original event for reply routing.
 /// Failure deliberately falls back to the edit target id in `format_prompt`.
-async fn resolve_edit_routing(
+pub(crate) async fn resolve_edit_routing(
     event: &nostr::Event,
     rest: &RestClient,
 ) -> Option<crate::queue::ResolvedEdit> {
