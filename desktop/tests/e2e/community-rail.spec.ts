@@ -1237,7 +1237,7 @@ test.describe("community rail", () => {
     await page.setViewportSize({ width: 740, height: 516 });
     await installMockBridge(page, undefined, { skipCommunitySeed: true });
     await seedCommunities(page, [COMMUNITY_A], COMMUNITY_A.id);
-    await page.goto("/");
+    await bootstrapE2ePage(page, "/");
 
     await page
       .getByRole("button", { name: "Toggle Sidebar", exact: true })

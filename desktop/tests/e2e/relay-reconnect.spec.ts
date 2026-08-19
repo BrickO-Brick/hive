@@ -173,7 +173,7 @@ test("stalled early AUTH signing times out and starts a replacement dial", async
     websocketAuthBeforeConnectResolves: true,
     stallFirstAuthSigning: true,
   });
-  await page.goto("/");
+  await bootstrapE2ePage(page, "/");
 
   await expect
     .poll(() => getMockWebsocketConnectAttempts(page), { timeout: 32_000 })
@@ -193,7 +193,7 @@ test("AUTH arriving before connect resolves does not lose the first send", async
   await installMockBridge(page, {
     websocketAuthBeforeConnectResolves: true,
   });
-  await page.goto("/");
+  await bootstrapE2ePage(page, "/");
   await expect
     .poll(
       () =>

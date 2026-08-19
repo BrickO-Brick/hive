@@ -53,7 +53,7 @@ test("composer toolbar tooltip dismisses when cursor leaves the trigger", async 
 test("adjacent composer tooltips each require a fresh dwell", async ({
   page,
 }) => {
-  await page.goto("/");
+  await bootstrapE2ePage(page, "/");
   await page.getByTestId("channel-general").click();
   await expect(page.getByTestId("chat-title")).toHaveText("general");
 

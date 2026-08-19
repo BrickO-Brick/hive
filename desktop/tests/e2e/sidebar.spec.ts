@@ -534,7 +534,7 @@ test("aligns the sidebar search with the channel title outside the Buzz theme", 
 test("scales the sidebar backward while its chrome closes", async ({
   page,
 }) => {
-  await page.goto("/");
+  await bootstrapE2ePage(page, "/");
 
   const sidebar = page.getByTestId("app-sidebar");
   const sidebarSurface = sidebar.locator("[data-sidebar-transition-content]");
@@ -585,7 +585,7 @@ test("disables the sidebar collapse transition for reduced motion", async ({
   page,
 }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.goto("/");
+  await bootstrapE2ePage(page, "/");
 
   const sidebarSurface = page
     .getByTestId("app-sidebar")

@@ -2562,7 +2562,7 @@ test("storage clear resets composed font size and keyboard zoom across windows",
   context,
   page,
 }) => {
-  await page.goto("/");
+  await bootstrapE2ePage(page, "/");
   await openSettings(page, "appearance");
   await page.getByTestId("font-size-larger").click();
 
@@ -2604,7 +2604,7 @@ test("storage clear resets composed font size and keyboard zoom across windows",
 
   const peerPage = await context.newPage();
   await installMockBridge(peerPage);
-  await peerPage.goto("/");
+  await bootstrapE2ePage(peerPage, "/");
   await peerPage.evaluate(() => localStorage.clear());
 
   await expect
