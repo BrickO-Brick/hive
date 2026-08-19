@@ -29,7 +29,7 @@ const overrides = new Set([
   "src/features/projects/ui/ProjectsView.tsx:166",
   "src/features/projects/ui/ProjectsOverviewPanel.tsx:209",
   "src/features/passport/ui/PassportRecordSections.tsx:207",
-  "src/features/passport/ui/PassportScreen.tsx:142",
+  "src/features/passport/ui/PassportScreen.tsx:144",
 ]);
 
 await runPubkeyTruncationCheck({
