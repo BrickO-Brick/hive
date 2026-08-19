@@ -6,9 +6,35 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::app_state::AppState;
 use crate::managed_agents::{
     effective_repos_dir, ensure_repos_symlink, nest_dir, restore_managed_agents_on_launch,
-    try_regenerate_nest, write_persisted_repos_dir,
+    write_persisted_repos_dir,
 };
 use crate::relay;
+
+const WORKSPACE_APPLY_SUPERSEDED: &str = "workspace apply superseded by a newer request";
+
+fn next_apply_generation(generation: &std::sync::atomic::AtomicU64) -> u64 {
+    generation.fetch_add(1, Ordering::AcqRel).wrapping_add(1)
+}
+
+fn assert_current_apply_generation(
+    generation: &std::sync::atomic::AtomicU64,
+    ticket: u64,
+) -> Result<(), String> {
+    if generation.load(Ordering::Acquire) == ticket {
+        Ok(())
+    } else {
+        Err(WORKSPACE_APPLY_SUPERSEDED.to_string())
+    }
+}
+
+async fn begin_workspace_apply(
+    lock: std::sync::Arc<tokio::sync::Mutex<()>>,
+    generation: &std::sync::atomic::AtomicU64,
+) -> (tokio::sync::OwnedMutexGuard<()>, u64) {
+    let guard = lock.lock_owned().await;
+    let ticket = next_apply_generation(generation);
+    (guard, ticket)
+}
 
 #[derive(Deserialize)]
 struct RelayInfoIcon {
@@ -160,6 +186,20 @@ async fn apply_workspace_body(
     use crate::managed_agents::scope::WorkspaceApplyResult;
 
     let restore_app = app.clone();
+    // #6003: take the apply epoch under the durable apply lock. The owned guard
+    // transfers into the fire-and-forget restore spawn below, so a queued apply
+    // cannot mutate relay/identity until this apply's restore has finished every
+    // mutable workspace read — it outlives the command return that
+    // `workspace_transition` bounds. The generation lets each post-`await` phase
+    // detect it was superseded by a newer apply and abort.
+    let (apply_guard, apply_generation) = {
+        let lock_state = restore_app.state::<AppState>();
+        begin_workspace_apply(
+            lock_state.workspace_apply_lock.clone(),
+            &lock_state.workspace_apply_generation,
+        )
+        .await
+    };
     // Capture the caller's relay before the blocking apply. Reading shared
     // state afterward could pick up a newer concurrent community switch.
     let profile_reconcile_relay = relay_url.clone();
@@ -210,6 +250,12 @@ async fn apply_workspace_body(
             )?;
 
             // ── Layer 2: drain + commit under one continuous lock ─────────────
+            // #6003 defense in depth: this transaction still owns the apply
+            // generation before its first mutation (the drain below). A queued
+            // apply cannot advance it — it is blocked on `workspace_apply_lock`,
+            // which this transaction holds via `apply_guard` — so this assert
+            // only ever trips if the invariant is violated.
+            assert_current_apply_generation(&state.workspace_apply_generation, apply_generation)?;
             // `managed_agent_runtime_transition` is held from journal creation
             // through the end of the commit swap so no start/reconcile can insert
             // a new runtime into the gap between drain and scope publication.
@@ -397,11 +443,21 @@ async fn apply_workspace_body(
     // ── Post-commit (non-rollback) ──────────────────────────────────────
     // The workspace HAS switched. Post-commit failures surface as degradation
     // on the applied result — we never pretend the old scope survived.
+    // #6003: re-assert the epoch before the awaited post-commit phases. We hold
+    // `apply_guard` across the whole body, so a queued apply is still blocked on
+    // `workspace_apply_lock` and cannot have advanced the generation; this is
+    // defense in depth against a future refactor that releases the guard early.
+    {
+        let state = restore_app.state::<AppState>();
+        assert_current_apply_generation(&state.workspace_apply_generation, apply_generation)?;
+    }
     let mut degraded: Vec<String> = Vec::new();
 
     // Nest context reflects the active scope's agents.md — regenerate now that
-    // the scope is committed. Best-effort; agents run fine with a stale AGENTS.md.
-    if let Err(error) = try_regenerate_nest(&restore_app) {
+    // the scope is committed. Awaited (not fire-and-forget) so a regeneration
+    // failure surfaces as applied-but-degraded rather than vanishing on a
+    // spawned task. Agents still run fine against a stale AGENTS.md.
+    if let Err(error) = crate::managed_agents::regenerate_nest_now(&restore_app).await {
         degraded.push(format!("nest context regeneration failed: {error}"));
     }
 
@@ -508,7 +564,12 @@ async fn apply_workspace_body(
     #[cfg(feature = "mesh-llm")]
     {
         let app = restore_app.clone();
+        // #6003: transfer the apply guard into the restore task so a queued
+        // apply stays blocked on `workspace_apply_lock` until restore's every
+        // mutable workspace read completes — the guard outlives this return.
+        let restore_lock = apply_guard;
         tauri::async_runtime::spawn(async move {
+            let _restore_lock = restore_lock;
             let state = app.state::<AppState>();
             // Restore mesh sharing first so a slow stopped-status request cannot
             // overwrite a newly restored serving status.
@@ -530,7 +591,12 @@ async fn apply_workspace_body(
     #[cfg(not(feature = "mesh-llm"))]
     {
         let app = restore_app.clone();
+        // #6003: transfer the apply guard into the restore task (see mesh-llm
+        // branch) so a queued apply cannot mutate relay/identity until restore
+        // finishes.
+        let restore_lock = apply_guard;
         tauri::async_runtime::spawn(async move {
+            let _restore_lock = restore_lock;
             let state = app.state::<AppState>();
             if let Err(error) =
                 restore_managed_agents_on_launch(&app, &state.shutdown_started).await
@@ -550,5 +616,54 @@ async fn apply_workspace_body(
             .fold(WorkspaceApplyResult::success(), |r, msg| {
                 r.with_degradation(msg)
             }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    };
+
+    use super::{assert_current_apply_generation, begin_workspace_apply, next_apply_generation};
+
+    #[test]
+    fn explicit_newer_generation_supersedes_older_ticket() {
+        let generation = AtomicU64::new(0);
+        let older = next_apply_generation(&generation);
+        let newer = next_apply_generation(&generation);
+
+        let error = assert_current_apply_generation(&generation, older).unwrap_err();
+        assert!(error.contains("superseded"), "{error}");
+        assert_current_apply_generation(&generation, newer).unwrap();
+    }
+
+    #[tokio::test]
+    async fn queued_apply_cannot_supersede_running_transaction_or_restore_phase() {
+        let lock = Arc::new(tokio::sync::Mutex::new(()));
+        let generation = Arc::new(AtomicU64::new(0));
+        let (running_guard, running_ticket) =
+            begin_workspace_apply(Arc::clone(&lock), &generation).await;
+
+        let queued_lock = Arc::clone(&lock);
+        let queued_generation = Arc::clone(&generation);
+        let queued = tokio::spawn(async move {
+            let (_guard, ticket) = begin_workspace_apply(queued_lock, &queued_generation).await;
+            ticket
+        });
+        tokio::task::yield_now().await;
+
+        // A queued workspace has not advanced the generation, so every awaited
+        // phase of the running transaction, including one-shot launch restore,
+        // remains authoritative while it holds the lock.
+        assert_eq!(generation.load(Ordering::Acquire), running_ticket);
+        assert_current_apply_generation(&generation, running_ticket).unwrap();
+        assert!(!queued.is_finished());
+
+        drop(running_guard);
+        let queued_ticket = queued.await.unwrap();
+        assert!(queued_ticket > running_ticket);
+        assert_current_apply_generation(&generation, queued_ticket).unwrap();
     }
 }

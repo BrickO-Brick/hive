@@ -110,6 +110,7 @@ async fn test_full_tail_stop_spawn_receipt_register_save() {
         definition_respond_to_allowlist: Default::default(),
         definition_parallelism: None,
         relay_mesh: None,
+        effort_level: None,
         runtime: None,
         name_pool: vec![],
     };
@@ -554,6 +555,7 @@ async fn test_relay_mesh_preflight_precedes_stop() {
         definition_respond_to_allowlist: Default::default(),
         definition_parallelism: None,
         relay_mesh: None,
+        effort_level: None,
         runtime: None,
         name_pool: vec![],
     };

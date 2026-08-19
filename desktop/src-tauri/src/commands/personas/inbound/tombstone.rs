@@ -145,7 +145,7 @@ pub(super) fn reconcile_inbound_tombstone(
         }
         _ => unreachable!("target kind gated above"),
     }
-    try_regenerate_nest(app).ok();
+    try_regenerate_nest(app);
 
     // Refresh the live UI on inbound deletion — a removal is as user-visible as
     // an upsert and the Agents tab must drop the tombstoned record without restart.

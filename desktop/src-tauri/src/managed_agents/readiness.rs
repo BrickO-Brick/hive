@@ -430,8 +430,7 @@ fn collect_missing_requirements(
     match rt.id {
         "buzz-agent" => buzz_agent_requirements(effective),
         "goose" => {
-            // Read the file config once at the call site so the inner fn is
-            // pure and unit-testable by injection.
+            // Read the file config once at the call site so the inner fn is pure and unit-testable by injection.
             let file_cfg = read_goose_file_config();
             goose_requirements(effective, file_cfg.as_ref())
         }
@@ -1532,6 +1531,7 @@ mod tests {
             definition_respond_to_allowlist: Vec::new(),
             definition_parallelism: None,
             relay_mesh: None,
+            effort_level: None,
         };
 
         let runtime = known_acp_runtime_exact("buzz-agent");

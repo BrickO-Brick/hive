@@ -268,7 +268,7 @@ pub async fn delete_persona(id: String, app: AppHandle) -> Result<(), String> {
             // _store_guard drops here, before try_regenerate_nest.
         }
 
-        try_regenerate_nest(&app).ok();
+        try_regenerate_nest(&app);
 
         Ok(())
     })
@@ -322,7 +322,7 @@ pub async fn set_persona_active(
 
         let updated = persona.clone();
         save_personas(&app, &personas)?;
-        try_regenerate_nest(&app).ok();
+        try_regenerate_nest(&app);
         Ok(updated)
     })
     .await

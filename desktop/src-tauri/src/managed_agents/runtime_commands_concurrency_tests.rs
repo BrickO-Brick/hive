@@ -95,6 +95,7 @@ fn test_compensate_drain_writer_vs_compensation_deterministic() {
         definition_respond_to_allowlist: Default::default(),
         definition_parallelism: None,
         relay_mesh: None,
+        effort_level: None,
         runtime: None,
         name_pool: vec![],
     };
@@ -348,6 +349,7 @@ fn test_compensate_drain_concurrent_start_is_blocked() {
         definition_respond_to_allowlist: Default::default(),
         definition_parallelism: None,
         relay_mesh: None,
+        effort_level: None,
         runtime: None,
         name_pool: vec![],
     };

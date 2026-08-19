@@ -132,6 +132,8 @@ pub async fn reconcile_inbound_persona_event(
                 &config,
                 agent_json,
                 cached_binary_path.as_deref(),
+                None,
+                None,
             )
             .await
             .map_err(|error| {
@@ -433,7 +435,7 @@ fn apply_inbound_upsert_in_scope<R: tauri::Runtime>(
         }
         _ => unreachable!("kind gated above"),
     }
-    try_regenerate_nest(app).ok();
+    try_regenerate_nest(app);
 
     // Signal the live UI to refetch agents data — inbound relay events otherwise
     // land on disk silently, leaving the Agents tab stale until restart.

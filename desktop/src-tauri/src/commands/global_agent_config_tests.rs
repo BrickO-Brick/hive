@@ -637,6 +637,7 @@ async fn test_record_mesh_change_after_preflight_aborts_before_stop() {
         definition_respond_to_allowlist: Default::default(),
         definition_parallelism: None,
         relay_mesh: None, // no relay-mesh marker; pre-stop resolve yields None
+        effort_level: None,
         runtime: None,
         name_pool: vec![],
     };

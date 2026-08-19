@@ -349,6 +349,7 @@ fn bare_record() -> ManagedAgentRecord {
         source_team_persona_slug: None,
         catalog_source: None,
         relay_mesh: None,
+        effort_level: None,
         auto_restart_on_config_change: false,
         library_ref: None,
         library_applied_revision: None,

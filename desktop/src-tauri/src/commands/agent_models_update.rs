@@ -259,7 +259,7 @@ pub async fn update_managed_agent(
         )
     }; // lock dropped here
 
-    try_regenerate_nest(&app).ok();
+    try_regenerate_nest(&app);
 
     // Phase 2: relay sync (async, outside lock). The owner-signed managed
     // policy is security-sensitive: an access reduction must replace the old

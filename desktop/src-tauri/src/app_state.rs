@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     io::Write,
     sync::{
-        atomic::{AtomicBool, AtomicU16, AtomicU8},
+        atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicU8},
         Arc, Mutex,
     },
 };
@@ -36,8 +36,6 @@ pub struct AppState {
     /// response (surfaced as an error) so the auth token never leaves the
     /// validated relay origin.
     pub media_fetch_client: reqwest::Client,
-    /// Workspace-provided relay URL override. Set by `apply_workspace` on app
-    /// init and takes priority over env vars and compile-time defaults.
     pub relay_url_override: Mutex<Option<String>>,
     /// Whether desktop may repair managed-agent kind:0 profiles from its local
     /// records. Disabled by the agent-managed profiles experiment so an agent's
@@ -68,14 +66,11 @@ pub struct AppState {
     /// lives there. An ephemeral key is generated so the app can open; all
     /// signing commands check this flag via [`AppState::signing_keys`] and
     /// return `Err` so no events are published under the inaccessible identity.
-    /// Mutually exclusive with `identity_lost` (guaranteed by `RecoveryState`
-    /// at the resolve boundary).
-    ///
+    /// Mutually exclusive with `identity_lost` (guaranteed by `RecoveryState`).
     /// Ordering: writers store with `Ordering::Release` after `state.keys` is
-    /// updated, so a reader observing `false` with `Ordering::Acquire` is
-    /// guaranteed to see the updated keys. Writers: `setup()` (initial
-    /// resolution via `resolve_persisted_identity`) and `import_identity`
-    /// (clears the flag when the user successfully imports a new key).
+    /// updated, so a reader observing `false` with `Ordering::Acquire` sees the
+    /// updated keys. Writers: `setup()` (initial resolution) and
+    /// `import_identity` (clears the flag on a successful key import).
     pub keyring_locked: AtomicBool,
     /// Set when identity resolution detected a "lost" state: the migration
     /// marker was present but the keyring was empty and no plaintext fallback
@@ -101,6 +96,9 @@ pub struct AppState {
     /// Serializes workspace transitions (`apply_workspace` and live identity
     /// import). Layer 1 async lock; taken after `identity_mutation`.
     pub workspace_transition: AsyncMutex<()>,
+    /// #6003 durable-apply lock (owned guard transfers into the restore spawn) + supersede epoch.
+    pub workspace_apply_lock: Arc<AsyncMutex<()>>,
+    pub workspace_apply_generation: AtomicU64,
     /// Active workspace agent scope. `None` until first `apply_workspace`.
     /// Every agent command fails closed on `None` — no legacy-root fallback.
     /// Layer 2 commit epoch (no `.await` while `managed_agents_store_lock` held).
@@ -132,13 +130,12 @@ pub struct AppState {
     /// channel's owner reads back as `is_member=false` until the snapshot
     /// propagates, disabling their own composer. Entries are bound to the
     /// creating identity so an in-process identity swap (`import_identity`,
-    /// workspace apply) can never inherit another identity's stale
-    /// membership. Populated only by this process's own `create_channel`
-    /// calls — a relay can never write into it — so it carries no
-    /// trust-boundary risk. `get_channels` clears an entry once the real
-    /// kind:39002 is observed for the current identity, keeping the set
-    /// bounded and letting a later leave correctly flip the channel back to
-    /// `is_member=false`.
+    /// workspace apply) can never inherit another identity's stale membership.
+    /// Populated only by this process's own `create_channel` calls (a relay can
+    /// never write into it), so it carries no trust-boundary risk. `get_channels`
+    /// clears an entry once the real kind:39002 is observed for the current
+    /// identity, keeping the set bounded and letting a later leave flip the
+    /// channel back to `is_member=false`.
     pub pending_owned_channels: Mutex<std::collections::HashSet<(String, String)>>,
 }
 
@@ -219,6 +216,8 @@ pub fn build_app_state() -> AppState {
         managed_agent_runtime_transition: Mutex::new(()),
         identity_mutation: AsyncMutex::new(()),
         workspace_transition: AsyncMutex::new(()),
+        workspace_apply_lock: Arc::new(AsyncMutex::new(())),
+        workspace_apply_generation: AtomicU64::new(0),
         active_agent_scope: Mutex::new(None),
         managed_agents_store_lock: Mutex::new(()),
         channel_templates_store_lock: Mutex::new(()),

@@ -645,6 +645,7 @@ where
             definition_respond_to_allowlist: definition.respond_to_allowlist.clone(),
             definition_parallelism: minted_parallelism,
             relay_mesh: None,
+            effort_level: None,
             runtime: member.definition.runtime.clone(),
             name_pool: member.definition.name_pool.clone(),
         };
@@ -788,7 +789,7 @@ where
         // team retention writes to the correct workspace even after a switch.
         crate::commands::teams::retain_team_pending_in_scope(&retention_scope, &imported_team);
 
-        crate::managed_agents::try_regenerate_nest(app).ok();
+        crate::managed_agents::try_regenerate_nest(app);
         let _ = app.emit("agents-data-changed", ());
 
         imported_team

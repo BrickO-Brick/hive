@@ -664,6 +664,7 @@ where
             definition_respond_to_allowlist: minted.respond_to_allowlist.clone(),
             definition_parallelism: minted_parallelism,
             relay_mesh: None,
+            effort_level: None,
             runtime: snapshot.definition.runtime.clone(),
             name_pool: snapshot.definition.name_pool.clone(),
         };
@@ -671,7 +672,7 @@ where
         records.push(record.clone());
         crate::managed_agents::storage::save_managed_agents_at(&definitions_dir, &records)?;
         retain_agent_pending(&retention_scope, &record);
-        crate::managed_agents::try_regenerate_nest(app).ok();
+        crate::managed_agents::try_regenerate_nest(app);
         let _ = app.emit("agents-data-changed", ());
 
         (persona, record)

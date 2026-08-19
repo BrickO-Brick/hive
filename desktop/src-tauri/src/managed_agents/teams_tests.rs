@@ -217,6 +217,7 @@ fn managed_agent(name: &str) -> ManagedAgentRecord {
         library_ref: None,
         library_applied_revision: None,
         last_completed_deploy_attempt_id: None,
+        effort_level: None,
         definition_respond_to: None,
         definition_respond_to_allowlist: vec![],
         definition_parallelism: None,
