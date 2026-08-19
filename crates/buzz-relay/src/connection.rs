@@ -220,12 +220,20 @@ impl ConnectionState {
         }
     }
 
-    pub(crate) async fn send_historical_if_permitted(
+    /// Queue output owned by one REQ only while its lease remains live.
+    ///
+    /// The lifecycle lock covers the complete batch so a paired NOTICE/CLOSED
+    /// response cannot straddle a same-ID replacement or CLOSE cutover. The
+    /// same fence also covers historical EVENT/EOSE output.
+    pub(crate) async fn send_req_messages_if_permitted<I>(
         &self,
         sub_id: &str,
         pending: &Arc<PendingSubscription>,
-        msg: String,
-    ) -> bool {
+        messages: I,
+    ) -> bool
+    where
+        I: IntoIterator<Item = String>,
+    {
         let pending_subscriptions = self.pending_subscriptions.lock().await;
         let permitted = pending_subscriptions
             .get(sub_id)
@@ -234,10 +242,20 @@ impl ConnectionState {
             return false;
         }
 
-        // Keep the lifecycle lock through queue insertion. Replacement commit
-        // and CLOSE take the same lock, so neither can publish its cutover and
-        // then be followed by a stale historical frame from this lease.
-        self.send(msg)
+        // Keep the lifecycle lock through every queue insertion. Replacement
+        // commit and CLOSE take the same lock, so neither can publish its
+        // cutover and then be followed by output from this lease.
+        messages.into_iter().all(|msg| self.send(msg))
+    }
+
+    pub(crate) async fn send_historical_if_permitted(
+        &self,
+        sub_id: &str,
+        pending: &Arc<PendingSubscription>,
+        msg: String,
+    ) -> bool {
+        self.send_req_messages_if_permitted(sub_id, pending, [msg])
+            .await
     }
 
     /// Sends a data message to this connection's outbound channel.
@@ -1107,6 +1125,109 @@ mod tests {
 
         assert!(!old_event.await.expect("old event task"));
         assert_eq!(send_rx.recv().await, Some(WsMessage::Text("closed".into())));
+        assert!(send_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn stale_req_rejection_is_fenced_after_same_id_replacement_commits() {
+        let (send_tx, mut send_rx) = mpsc::channel(8);
+        let conn = Arc::new(ConnectionState {
+            conn_id: Uuid::new_v4(),
+            tenant: TenantContext::resolved(
+                buzz_core::CommunityId::from_uuid(Uuid::new_v4()),
+                "lease.test",
+            ),
+            remote_addr: "127.0.0.1:1234".parse().expect("socket address"),
+            auth_state: RwLock::new(AuthState::Failed),
+            subscriptions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            pending_subscriptions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            send_tx,
+            ctrl_tx: mpsc::channel(1).0,
+            cancel: CancellationToken::new(),
+            backpressure_count: Arc::new(AtomicU8::new(0)),
+            grace_limit: 3,
+        });
+        let predecessor = conn.begin_pending_subscription("same-id").await;
+        let replacement = conn.begin_pending_subscription("same-id").await;
+        let lifecycle = conn.pending_subscriptions.lock().await;
+
+        // Model A resuming from an access-resolution error while B is at its
+        // registration cutover. A must wait for the lifecycle lock rather than
+        // queue its terminal response directly.
+        let stale_rejection = tokio::spawn({
+            let conn = Arc::clone(&conn);
+            let predecessor = Arc::clone(&predecessor);
+            async move {
+                conn.send_req_messages_if_permitted(
+                    "same-id",
+                    &predecessor,
+                    ["old-notice".into(), "old-closed".into()],
+                )
+                .await
+            }
+        });
+        tokio::task::yield_now().await;
+
+        replacement.commit();
+        assert!(conn.send("new-owner".into()));
+        drop(lifecycle);
+
+        assert!(!stale_rejection.await.expect("stale rejection task"));
+        assert_eq!(
+            send_rx.recv().await,
+            Some(WsMessage::Text("new-owner".into()))
+        );
+        assert!(send_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn stale_req_rejection_is_fenced_after_close_acknowledgement() {
+        let (send_tx, mut send_rx) = mpsc::channel(8);
+        let conn = Arc::new(ConnectionState {
+            conn_id: Uuid::new_v4(),
+            tenant: TenantContext::resolved(
+                buzz_core::CommunityId::from_uuid(Uuid::new_v4()),
+                "lease.test",
+            ),
+            remote_addr: "127.0.0.1:1234".parse().expect("socket address"),
+            auth_state: RwLock::new(AuthState::Failed),
+            subscriptions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            pending_subscriptions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            send_tx,
+            ctrl_tx: mpsc::channel(1).0,
+            cancel: CancellationToken::new(),
+            backpressure_count: Arc::new(AtomicU8::new(0)),
+            grace_limit: 3,
+        });
+        let pending = conn.begin_pending_subscription("same-id").await;
+        let mut lifecycle = conn.pending_subscriptions.lock().await;
+
+        let stale_rejection = tokio::spawn({
+            let conn = Arc::clone(&conn);
+            let pending = Arc::clone(&pending);
+            async move {
+                conn.send_req_messages_if_permitted(
+                    "same-id",
+                    &pending,
+                    ["old-notice".into(), "old-closed".into()],
+                )
+                .await
+            }
+        });
+        tokio::task::yield_now().await;
+
+        lifecycle
+            .remove("same-id")
+            .expect("pending owner")
+            .cancel_lineage();
+        assert!(conn.send("close-ack".into()));
+        drop(lifecycle);
+
+        assert!(!stale_rejection.await.expect("stale rejection task"));
+        assert_eq!(
+            send_rx.recv().await,
+            Some(WsMessage::Text("close-ack".into()))
+        );
         assert!(send_rx.try_recv().is_err());
     }
 

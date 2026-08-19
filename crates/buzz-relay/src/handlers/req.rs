@@ -81,11 +81,14 @@ pub(crate) async fn handle_req(
         match &*auth {
             AuthState::Authenticated(ctx) => {
                 if !ctx.scopes.is_empty() && !ctx.scopes.contains(&Scope::MessagesRead) {
-                    conn.send(RelayMessage::notice("restricted: insufficient scope"));
-                    conn.send(RelayMessage::closed(
+                    send_req_rejection(
+                        &conn,
                         &sub_id,
+                        &pending,
+                        Some("restricted: insufficient scope"),
                         "restricted: insufficient scope",
-                    ));
+                    )
+                    .await;
                     return;
                 }
 
@@ -93,23 +96,28 @@ pub(crate) async fn handle_req(
 
                 let subs = conn.subscriptions.lock().await;
                 if !subs.contains_key(&sub_id) && subs.len() >= MAX_SUBSCRIPTIONS {
-                    conn.send(RelayMessage::closed(
+                    send_req_rejection(
+                        &conn,
                         &sub_id,
+                        &pending,
+                        None,
                         "error: too many subscriptions",
-                    ));
+                    )
+                    .await;
                     return;
                 }
 
                 (conn.conn_id, pk_bytes, ctx.channel_ids.clone())
             }
             _ => {
-                conn.send(RelayMessage::notice(
-                    "auth-required: authenticate before subscribing",
-                ));
-                conn.send(RelayMessage::closed(
+                send_req_rejection(
+                    &conn,
                     &sub_id,
+                    &pending,
+                    Some("auth-required: authenticate before subscribing"),
                     "auth-required: not authenticated",
-                ));
+                )
+                .await;
                 return;
             }
         }
@@ -119,10 +127,14 @@ pub(crate) async fn handle_req(
     let requested_channel_ids = match extract_channel_ids_from_filters_limited(&filters) {
         Ok(ids) => ids,
         Err(()) => {
-            conn.send(RelayMessage::closed(
+            send_req_rejection(
+                &conn,
                 &sub_id,
+                &pending,
+                None,
                 "restricted: too many explicit channels",
-            ));
+            )
+            .await;
             return;
         }
     };
@@ -139,7 +151,7 @@ pub(crate) async fn handle_req(
             Ok(ids) => ids,
             Err(e) => {
                 warn!(conn_id = %conn_id, "Failed to get accessible channels: {e}");
-                conn.send(RelayMessage::closed(&sub_id, "error: database error"));
+                send_req_rejection(&conn, &sub_id, &pending, None, "error: database error").await;
                 return;
             }
         }
@@ -192,7 +204,8 @@ pub(crate) async fn handle_req(
                     }
                     Err(e) => {
                         warn!(conn_id = %conn_id, "Channel membership confirmation failed: {e}");
-                        conn.send(RelayMessage::closed(&sub_id, "error: database error"));
+                        send_req_rejection(&conn, &sub_id, &pending, None, "error: database error")
+                            .await;
                         return;
                     }
                 }
@@ -223,10 +236,14 @@ pub(crate) async fn handle_req(
         .as_ref()
         .is_some_and(|authorized| authorized.is_empty())
     {
-        conn.send(RelayMessage::closed(
+        send_req_rejection(
+            &conn,
             &sub_id,
+            &pending,
+            None,
             "restricted: not a channel member",
-        ));
+        )
+        .await;
         return;
     }
 
@@ -241,24 +258,36 @@ pub(crate) async fn handle_req(
     if channel_id.is_none() {
         let authed_pubkey_hex = hex::encode(&pubkey_bytes);
         if !p_gated_filters_authorized(&filters, &authed_pubkey_hex) {
-            conn.send(RelayMessage::closed(
+            send_req_rejection(
+                &conn,
                 &sub_id,
+                &pending,
+                None,
                 "restricted: p-gated events require #p matching your pubkey",
-            ));
+            )
+            .await;
             return;
         }
         if !engram_filters_authorized(&filters, &authed_pubkey_hex) {
-            conn.send(RelayMessage::closed(
+            send_req_rejection(
+                &conn,
                 &sub_id,
+                &pending,
+                None,
                 "restricted: agent-engram reads require authors=[self] or #p=[self]",
-            ));
+            )
+            .await;
             return;
         }
         if !author_only_filters_authorized(&filters, &authed_pubkey_hex) {
-            conn.send(RelayMessage::closed(
+            send_req_rejection(
+                &conn,
                 &sub_id,
+                &pending,
+                None,
                 "restricted: author-only kinds require authors=[self]",
-            ));
+            )
+            .await;
             return;
         }
     }
@@ -270,10 +299,14 @@ pub(crate) async fn handle_req(
     let has_search = filters.iter().any(|f| f.search.is_some());
     if has_search {
         if filters.iter().any(|f| f.search.is_none()) {
-            conn.send(RelayMessage::closed(
+            send_req_rejection(
+                &conn,
                 &sub_id,
+                &pending,
+                None,
                 "error: mixed search and non-search filters not supported",
-            ));
+            )
+            .await;
             return;
         }
         handle_search_req(
@@ -493,6 +526,23 @@ pub(crate) async fn handle_req(
 /// hits, so the scan fetches candidates in full pages rather than sizing
 /// pages to the request.
 const SEARCH_PAGE_SIZE: u32 = 100;
+
+/// Send a terminal response owned by this REQ while its lifecycle lease is current.
+/// A paired NOTICE and CLOSED are queued as one fenced batch.
+async fn send_req_rejection(
+    conn: &ConnectionState,
+    sub_id: &str,
+    pending: &Arc<PendingSubscription>,
+    notice: Option<&str>,
+    reason: &str,
+) -> bool {
+    let messages = notice
+        .into_iter()
+        .map(RelayMessage::notice)
+        .chain(std::iter::once(RelayMessage::closed(sub_id, reason)));
+    conn.send_req_messages_if_permitted(sub_id, pending, messages)
+        .await
+}
 
 /// Atomically commit a REQ into the per-connection map, fan-out registry, and
 /// Redis topic refcount only while it still owns the pending lease. CLOSE uses
