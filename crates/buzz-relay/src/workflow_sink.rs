@@ -13,10 +13,11 @@ use buzz_core::tenant::CommunityId;
 use buzz_workflow::action_sink::{ActionSink, ActionSinkError};
 use chrono::Utc;
 use nostr::{EventBuilder, Kind, Tag};
-use tracing::info;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::handlers::event::dispatch_persistent_event;
+use crate::handlers::side_effects::resurface_dm_for_message_recipients;
 use crate::state::AppState;
 
 /// Resolves `@Name` mentions in workflow message text to the pubkeys of the
@@ -401,6 +402,23 @@ impl ActionSink for RelayActionSink {
             // 5. Post-persist side effects (fan-out, search, audit)
             //    Only if actually inserted (idempotency guard).
             if was_inserted {
+                if channel.channel_type == "dm" {
+                    if let Err(e) = resurface_dm_for_message_recipients(
+                        &tenant,
+                        &state,
+                        channel_uuid,
+                        &author_pubkey_bytes,
+                    )
+                    .await
+                    {
+                        warn!(
+                            event_id = %event_id_hex,
+                            channel_id = %channel_uuid,
+                            "Workflow DM recipient resurface failed: {e}"
+                        );
+                    }
+                }
+
                 let _ = dispatch_persistent_event(
                     &tenant,
                     &state,

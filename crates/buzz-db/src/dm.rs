@@ -448,6 +448,46 @@ pub async fn unhide_dm(
     Ok(())
 }
 
+/// Clear the hidden state for every active recipient of a DM message.
+///
+/// The sender is deliberately excluded: receiving new activity resurfaces a
+/// conversation, while sending from another surface must not silently rewrite
+/// the sender's own sidebar preference. Returns only the pubkeys whose hidden
+/// state changed so callers can publish targeted visibility snapshots.
+pub async fn unhide_dm_recipients(
+    pool: &PgPool,
+    community_id: CommunityId,
+    channel_id: Uuid,
+    sender_pubkey: &[u8],
+) -> Result<Vec<Vec<u8>>> {
+    let rows = sqlx::query(
+        r#"
+        UPDATE channel_members cm
+        SET hidden_at = NULL
+        FROM channels c
+        WHERE cm.community_id = $1
+          AND cm.channel_id = $2
+          AND cm.pubkey != $3
+          AND cm.removed_at IS NULL
+          AND cm.hidden_at IS NOT NULL
+          AND c.community_id = cm.community_id
+          AND c.id = cm.channel_id
+          AND c.channel_type = 'dm'
+          AND c.deleted_at IS NULL
+        RETURNING cm.pubkey
+        "#,
+    )
+    .bind(community_id.as_uuid())
+    .bind(channel_id)
+    .bind(sender_pubkey)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| row.try_get::<Vec<u8>, _>("pubkey").map_err(Into::into))
+        .collect()
+}
+
 /// Return the channel IDs of all DMs the given user currently has hidden
 /// (`hidden_at IS NOT NULL`) while still being an active member. Used to build
 /// the relay-signed NIP-DV visibility snapshot.

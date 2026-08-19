@@ -29,7 +29,7 @@ use buzz_core::kind::{event_kind_u32, KIND_STREAM_MESSAGE};
 use buzz_core::tenant::TenantContext;
 
 use super::event::dispatch_persistent_event;
-use super::side_effects::emit_group_discovery_events;
+use super::side_effects::{emit_group_discovery_events, publish_dm_visibility_snapshot};
 use crate::state::AppState;
 
 /// Tag naming the moderation source row (report/action) a notice was derived
@@ -126,6 +126,9 @@ pub async fn send_moderation_notice(
         .db
         .unhide_dm(tenant.community(), dm_channel_id, recipient_pubkey)
         .await?;
+    if let Err(e) = publish_dm_visibility_snapshot(tenant, state, recipient_pubkey).await {
+        warn!(error = %e, "moderation DM visibility snapshot failed (continuing)");
+    }
 
     // Idempotency: a notice for this source id already exists in this DM ⇒ no-op.
     // The source (report/action) row id is carried in a `moderation_source` tag

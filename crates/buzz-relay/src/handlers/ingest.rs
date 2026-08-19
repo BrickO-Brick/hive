@@ -3103,6 +3103,25 @@ async fn ingest_event_inner(
         });
     }
 
+    if kind_u32 == KIND_STREAM_MESSAGE {
+        if let (Some(ch_id), Some(channel)) = (channel_id, channel_row.as_ref()) {
+            if channel.channel_type == "dm" {
+                let sender = effective_message_author(&event, &state.relay_keypair.public_key());
+                if let Err(e) = crate::handlers::side_effects::resurface_dm_for_message_recipients(
+                    tenant, state, ch_id, &sender,
+                )
+                .await
+                {
+                    error!(
+                        event_id = %event_id_hex,
+                        channel_id = %ch_id,
+                        "Failed to resurface DM for message recipients: {e}"
+                    );
+                }
+            }
+        }
+    }
+
     if crate::handlers::side_effects::is_side_effect_kind(kind_u32) {
         if let Err(e) =
             crate::handlers::side_effects::handle_side_effects(tenant, kind_u32, &event, state)

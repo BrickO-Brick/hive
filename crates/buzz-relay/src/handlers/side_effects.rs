@@ -3469,6 +3469,45 @@ pub async fn publish_dm_visibility_snapshot(
     Ok(())
 }
 
+/// Resurface a DM for recipients of a newly accepted message.
+///
+/// Hidden state is per viewer, so only active members other than the effective
+/// message author are changed. Fresh NIP-DV snapshots make that server-side
+/// change observable immediately to every connected client and across devices.
+pub async fn resurface_dm_for_message_recipients(
+    tenant: &TenantContext,
+    state: &Arc<AppState>,
+    channel_id: Uuid,
+    sender_pubkey: &[u8],
+) -> anyhow::Result<()> {
+    let recipients = state
+        .db
+        .unhide_dm_recipients(tenant.community(), channel_id, sender_pubkey)
+        .await?;
+
+    let results = futures_util::future::join_all(
+        recipients
+            .iter()
+            .map(|recipient| publish_dm_visibility_snapshot(tenant, state, recipient)),
+    )
+    .await;
+
+    let failures = results
+        .into_iter()
+        .filter_map(Result::err)
+        .map(|error| error.to_string())
+        .collect::<Vec<_>>();
+    if !failures.is_empty() {
+        anyhow::bail!(
+            "failed to publish {} DM visibility snapshot(s): {}",
+            failures.len(),
+            failures.join("; ")
+        );
+    }
+
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn publish_nipia_delta(
     tenant: &TenantContext,
