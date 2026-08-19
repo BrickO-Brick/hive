@@ -216,7 +216,7 @@ test("loads the home feed from the relay", async ({ browser }) => {
     await installRelayBridge(page, "tyler");
     await installRelayBridge(senderPage, "alice");
     await bootstrapE2ePage(page, "/");
-    await senderPage.goto("/");
+    await bootstrapE2ePage(senderPage, "/");
 
     await expect(page.getByTestId("home-inbox")).toBeVisible();
     await expect(page.getByTestId("home-inbox-list")).toBeVisible();
@@ -249,7 +249,7 @@ test("shows sent inbox replies immediately in the inbox detail pane", async ({
     await installRelayBridge(page, "tyler");
     await installRelayBridge(senderPage, "alice");
     await bootstrapE2ePage(page, "/");
-    await senderPage.goto("/");
+    await bootstrapE2ePage(senderPage, "/");
 
     await sendChannelMessage(senderPage, {
       channelName: "general",
@@ -316,8 +316,8 @@ test("delivers a message to a second browser context in real time", async ({
     await installRelayBridge(pageOne, "tyler");
     await installRelayBridge(pageTwo, "alice");
 
-    await pageOne.goto("/");
-    await pageTwo.goto("/");
+    await bootstrapE2ePage(pageOne, "/");
+    await bootstrapE2ePage(pageTwo, "/");
     await createAndJoinSharedStream(pageOne, pageTwo, channelName);
 
     await pageOne.getByTestId("message-input").fill(message);
@@ -349,8 +349,8 @@ test("stays pinned to the latest message when new messages arrive at the bottom"
     await installRelayBridge(pageOne, "tyler");
     await installRelayBridge(pageTwo, "alice");
 
-    await pageOne.goto("/");
-    await pageTwo.goto("/");
+    await bootstrapE2ePage(pageOne, "/");
+    await bootstrapE2ePage(pageTwo, "/");
     await createAndJoinSharedStream(pageOne, pageTwo, channelName, { prefix });
     await expect
       .poll(async () => (await getTimelineMetrics(pageTwo)).distanceFromBottom)
@@ -394,8 +394,8 @@ test("stays pinned after you send a message and a remote reply arrives right aft
     await installRelayBridge(pageOne, "tyler");
     await installRelayBridge(pageTwo, "alice");
 
-    await pageOne.goto("/");
-    await pageTwo.goto("/");
+    await bootstrapE2ePage(pageOne, "/");
+    await bootstrapE2ePage(pageTwo, "/");
     await createAndJoinSharedStream(pageOne, pageTwo, channelName, { prefix });
     await expect
       .poll(async () => (await getTimelineMetrics(pageTwo)).distanceFromBottom)
@@ -443,8 +443,8 @@ test("keeps bottom-pinned scrolling after the composer grows", async ({
     await installRelayBridge(pageOne, "tyler");
     await installRelayBridge(pageTwo, "alice");
 
-    await pageOne.goto("/");
-    await pageTwo.goto("/");
+    await bootstrapE2ePage(pageOne, "/");
+    await bootstrapE2ePage(pageTwo, "/");
     await createAndJoinSharedStream(pageOne, pageTwo, channelName, { prefix });
     await expect
       .poll(async () => (await getTimelineMetrics(pageTwo)).distanceFromBottom)
@@ -499,8 +499,8 @@ test("keeps scroll position when new messages arrive above the fold", async ({
     await installRelayBridge(pageOne, "tyler");
     await installRelayBridge(pageTwo, "alice");
 
-    await pageOne.goto("/");
-    await pageTwo.goto("/");
+    await bootstrapE2ePage(pageOne, "/");
+    await bootstrapE2ePage(pageTwo, "/");
     const minAwayDistance = 80;
     await createAndJoinSharedStream(pageOne, pageTwo, channelName, {
       prefix,

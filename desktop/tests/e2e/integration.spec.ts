@@ -208,13 +208,13 @@ test("two users see the same channel", async ({
     await installRelayBridge(pageOne, "tyler");
     await installRelayBridge(pageTwo, "alice");
 
-    await pageOne.goto("/");
+    await bootstrapE2ePage(pageOne, "/");
     await openCreateChannelDialog(pageOne);
     await pageOne.getByTestId("create-channel-name").fill(channelName);
     await pageOne.getByTestId("create-channel-submit").click();
     await expect(pageOne.getByTestId("stream-list")).toContainText(channelName);
 
-    await pageTwo.goto("/");
+    await bootstrapE2ePage(pageTwo, "/");
     await openChannelBrowser(pageTwo);
     await expect(pageTwo.getByTestId("channel-browser-dialog")).toBeVisible();
     await pageTwo
@@ -243,8 +243,8 @@ test("message delivery across users", async ({
     await installRelayBridge(pageOne, "tyler");
     await installRelayBridge(pageTwo, "alice");
 
-    await pageOne.goto("/");
-    await pageTwo.goto("/");
+    await bootstrapE2ePage(pageOne, "/");
+    await bootstrapE2ePage(pageTwo, "/");
 
     await pageOne.getByTestId("channel-general").click();
     await pageTwo.getByTestId("channel-general").click();
@@ -278,8 +278,8 @@ test("live mentions refetch the home feed without waiting for polling", async ({
     await installRelayBridge(targetPage, "tyler");
     await installRelayBridge(senderPage, "alice");
 
-    await targetPage.goto("/");
-    await senderPage.goto("/");
+    await bootstrapE2ePage(targetPage, "/");
+    await bootstrapE2ePage(senderPage, "/");
     await assertDesktopNotificationsEnabled(targetPage);
 
     await targetPage.getByTestId("channel-general").click();
@@ -339,8 +339,8 @@ test("live forum mentions refetch the home feed without waiting for polling", as
     await installRelayBridge(targetPage, "tyler");
     await installRelayBridge(senderPage, "alice");
 
-    await targetPage.goto("/");
-    await senderPage.goto("/");
+    await bootstrapE2ePage(targetPage, "/");
+    await bootstrapE2ePage(senderPage, "/");
     await assertDesktopNotificationsEnabled(targetPage);
 
     await targetPage.getByTestId("channel-general").click();
