@@ -68,6 +68,19 @@ pub(crate) const MAX_EXPLICIT_CHANNEL_VALUES: usize = 128;
 // the range fails the build.
 const _: () = assert!(FILTER_QUERY_CONCURRENCY >= 2 && FILTER_QUERY_CONCURRENCY <= 8);
 
+async fn resolve_accessible_channel_ids(
+    state: &AppState,
+    conn: &ConnectionState,
+    pubkey_bytes: &[u8],
+) -> Result<Vec<uuid::Uuid>, buzz_db::DbError> {
+    #[cfg(test)]
+    pause_access_resolution_for_test(conn.conn_id).await?;
+
+    state
+        .get_accessible_channel_ids_cached(conn.tenant.community(), pubkey_bytes)
+        .await
+}
+
 /// Handle a REQ message: register the subscription, deliver historical events, then send EOSE.
 pub(crate) async fn handle_req(
     sub_id: String,
@@ -144,10 +157,7 @@ pub(crate) async fn handle_req(
             .increment(1);
         Vec::new()
     } else {
-        match state
-            .get_accessible_channel_ids_cached(conn.tenant.community(), &pubkey_bytes)
-            .await
-        {
+        match resolve_accessible_channel_ids(&state, &conn, &pubkey_bytes).await {
             Ok(ids) => ids,
             Err(e) => {
                 warn!(conn_id = %conn_id, "Failed to get accessible channels: {e}");
@@ -1553,6 +1563,57 @@ pub(crate) fn author_only_filters_authorized(filters: &[Filter], authed_pubkey_h
 }
 
 #[cfg(test)]
+struct AccessResolutionTestHook {
+    started: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    resume: Arc<tokio::sync::Notify>,
+    fail: bool,
+}
+
+#[cfg(test)]
+fn access_resolution_test_hooks(
+) -> &'static std::sync::Mutex<std::collections::HashMap<uuid::Uuid, Arc<AccessResolutionTestHook>>>
+{
+    static HOOKS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<uuid::Uuid, Arc<AccessResolutionTestHook>>>,
+    > = std::sync::OnceLock::new();
+    HOOKS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+#[cfg(test)]
+async fn pause_access_resolution_for_test(conn_id: uuid::Uuid) -> Result<(), buzz_db::DbError> {
+    let hook = access_resolution_test_hooks()
+        .lock()
+        .expect("access-resolution hook mutex")
+        .get(&conn_id)
+        .cloned();
+    let Some(hook) = hook else {
+        return Ok(());
+    };
+
+    if let Some(started) = hook
+        .started
+        .lock()
+        .expect("access-resolution started mutex")
+        .take()
+    {
+        let _ = started.send(());
+    }
+    hook.resume.notified().await;
+    access_resolution_test_hooks()
+        .lock()
+        .expect("access-resolution hook mutex")
+        .remove(&conn_id);
+
+    if hook.fail {
+        Err(buzz_db::DbError::InvalidData(
+            "injected access-resolution failure".to_owned(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashMap;
@@ -1567,10 +1628,12 @@ mod tests {
     use tokio::task::JoinSet;
     use tokio_util::sync::CancellationToken;
 
-    fn test_connection(tenant: TenantContext) -> Arc<ConnectionState> {
-        let (send_tx, _send_rx) = mpsc::channel::<WsMessage>(8);
+    fn test_connection_with_receiver(
+        tenant: TenantContext,
+    ) -> (Arc<ConnectionState>, mpsc::Receiver<WsMessage>) {
+        let (send_tx, send_rx) = mpsc::channel::<WsMessage>(8);
         let (ctrl_tx, _ctrl_rx) = mpsc::channel::<WsMessage>(8);
-        Arc::new(ConnectionState {
+        let conn = Arc::new(ConnectionState {
             conn_id: uuid::Uuid::new_v4(),
             tenant,
             remote_addr: "127.0.0.1:1234".parse().expect("socket address"),
@@ -1582,7 +1645,12 @@ mod tests {
             cancel: CancellationToken::new(),
             backpressure_count: Arc::new(AtomicU8::new(0)),
             grace_limit: 3,
-        })
+        });
+        (conn, send_rx)
+    }
+
+    fn test_connection(tenant: TenantContext) -> Arc<ConnectionState> {
+        test_connection_with_receiver(tenant).0
     }
 
     async fn test_pubsub() -> Arc<PubSubManager> {
@@ -1804,6 +1872,106 @@ mod tests {
                 .await,
             1
         );
+    }
+
+    #[tokio::test]
+    async fn stale_handle_req_rejection_after_same_id_replacement_is_suppressed() {
+        let community = CommunityId::from_uuid(uuid::Uuid::new_v4());
+        let (conn, mut send_rx) =
+            test_connection_with_receiver(TenantContext::resolved(community, "race.test"));
+        let keys = Keys::generate();
+        *conn.auth_state.write().await = AuthState::Authenticated(buzz_auth::AuthContext {
+            pubkey: keys.public_key(),
+            scopes: vec![],
+            channel_ids: None,
+            auth_method: buzz_auth::AuthMethod::Nip42,
+            agent_owner_pubkey: None,
+        });
+
+        let mut config = crate::config::Config::from_env().expect("default config loads");
+        config.redis_url = "redis://127.0.0.1:6379".to_owned();
+        let pool = sqlx::PgPool::connect_lazy(&config.database_url).expect("lazy pg pool");
+        let db = buzz_db::Db::from_pool(pool.clone());
+        let redis_pool = deadpool_redis::Config::from_url(&config.redis_url)
+            .create_pool(Some(deadpool_redis::Runtime::Tokio1))
+            .expect("redis pool");
+        let pubsub = test_pubsub().await;
+        let auth = buzz_auth::AuthService::new(config.auth.clone());
+        let search = buzz_search::SearchService::new(pool);
+        let workflow_engine = Arc::new(buzz_workflow::WorkflowEngine::new(
+            db.clone(),
+            buzz_workflow::WorkflowConfig::default(),
+        ));
+        let media_storage = buzz_media::MediaStorage::new(&config.media).expect("media storage");
+        let (state, _audit_shutdown) = AppState::new(
+            config,
+            db,
+            redis_pool,
+            None,
+            Arc::clone(&pubsub),
+            auth,
+            search,
+            workflow_engine,
+            Keys::generate(),
+            media_storage,
+        );
+        let state = Arc::new(state);
+
+        let sub_id = "handler-replacement-race".to_owned();
+        let stale_filters = vec![Filter::new().kind(Kind::TextNote)];
+        let survivor_filters = vec![Filter::new().kind(Kind::Metadata)];
+        let stale = conn.begin_pending_subscription(&sub_id).await;
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let resume = Arc::new(Notify::new());
+        access_resolution_test_hooks()
+            .lock()
+            .expect("access-resolution hook mutex")
+            .insert(
+                conn.conn_id,
+                Arc::new(AccessResolutionTestHook {
+                    started: std::sync::Mutex::new(Some(started_tx)),
+                    resume: Arc::clone(&resume),
+                    fail: true,
+                }),
+            );
+
+        let stale_task = tokio::spawn(handle_req(
+            sub_id.clone(),
+            stale_filters,
+            Arc::clone(&conn),
+            Arc::clone(&state),
+            Arc::clone(&stale),
+        ));
+        started_rx
+            .await
+            .expect("stale REQ reached access resolution");
+
+        let survivor = conn.begin_pending_subscription(&sub_id).await;
+        assert!(
+            register_subscription_if_current(
+                &sub_id,
+                &survivor_filters,
+                &crate::subscription::SubscriptionScope::Global,
+                &conn,
+                &state.sub_registry,
+                state.pubsub.as_ref(),
+                &survivor,
+            )
+            .await
+        );
+        resume.notify_one();
+        stale_task.await.expect("stale handle_req task");
+
+        assert!(
+            send_rx.try_recv().is_err(),
+            "stale handler must not queue NOTICE or CLOSED after replacement"
+        );
+        assert_eq!(
+            conn.subscriptions.lock().await.get(&sub_id),
+            Some(&survivor_filters),
+            "same-ID survivor must remain registered"
+        );
+        assert_eq!(state.sub_registry.total_subscriptions(), 1);
     }
 
     #[test]
