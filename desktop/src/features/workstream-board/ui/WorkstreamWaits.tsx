@@ -2,10 +2,13 @@ import { ExternalLink } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
 import { useAppNavigation } from "@/app/navigation/useAppNavigation";
-import { parseWorkstreamWaitMessageLink } from "@/features/workstream-board/lib/workstreamWaits";
+import {
+  parseWorkstreamWaitMessageLink,
+  type WorkstreamWait,
+} from "@/features/workstream-board/lib/workstreamWaits";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import type { WorkstreamPullRequestReference } from "@/features/workstream-board/lib/workstreamPullRequestStatus";
-import type { WorkstreamWait } from "@/features/workstream-board/lib/workstreamWaits";
+import type { ParsedMessageLink } from "@/features/messages/lib/messageLink";
 import { parseEntityLink } from "@/shared/lib/entityLink";
 import { normalizePubkey } from "@/shared/lib/pubkey";
 import { useNow } from "@/shared/lib/useNow";
@@ -21,6 +24,24 @@ export function waitAge(since: string | undefined, now: number): string {
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return `${hours}h`;
   return `${Math.floor(hours / 24)}d`;
+}
+
+type WorkstreamWaitLinkResolution =
+  | { kind: "message"; destination: ParsedMessageLink }
+  | { kind: "reference"; reference: WorkstreamPullRequestReference }
+  | null;
+
+/** Preserve the distinction between an absent message field and a malformed one. */
+export function resolveWorkstreamWaitLink(
+  wait: Pick<WorkstreamWait, "message" | "messagePresent">,
+  reference: WorkstreamPullRequestReference | undefined,
+): WorkstreamWaitLinkResolution {
+  const messagePresent = wait.messagePresent ?? wait.message !== undefined;
+  if (messagePresent) {
+    const destination = parseWorkstreamWaitMessageLink(wait.message);
+    return destination ? { kind: "message", destination } : null;
+  }
+  return reference ? { kind: "reference", reference } : null;
 }
 
 function WaitAvatar({
@@ -91,26 +112,22 @@ export function WorkstreamWaits({
         {orderedWaits.map((wait) => {
           const age = waitAge(wait.since, now);
           const reference = referencesByIdentity.get(wait.key);
-          const messageDestination = parseWorkstreamWaitMessageLink(
-            wait.message,
-          );
+          const link = resolveWorkstreamWaitLink(wait, reference);
           const open =
-            wait.message !== undefined
-              ? messageDestination
-                ? () =>
-                    void goChannel(messageDestination.channelId, {
-                      messageId: messageDestination.messageId,
-                      threadRootId: messageDestination.threadRootId,
-                    })
-                : undefined
-              : reference
+            link?.kind === "message"
+              ? () =>
+                  void goChannel(link.destination.channelId, {
+                    messageId: link.destination.messageId,
+                    threadRootId: link.destination.threadRootId,
+                  })
+              : link?.kind === "reference"
                 ? () => {
                     const parsed =
-                      reference.kind === "buzz"
-                        ? parseEntityLink(reference.href)
+                      link.reference.kind === "buzz"
+                        ? parseEntityLink(link.reference.href)
                         : null;
                     if (parsed?.ok) openEntityLink(parsed.value);
-                    else void openUrl(reference.href);
+                    else void openUrl(link.reference.href);
                   }
                 : undefined;
           const content = (

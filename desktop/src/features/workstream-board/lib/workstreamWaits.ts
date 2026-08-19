@@ -21,6 +21,8 @@ export type WorkstreamWait = {
   since?: string;
   /** Optional canonical `buzz://message?...` destination from the canvas. */
   message?: string;
+  /** True when the canvas explicitly supplied a `message` field, even if malformed. */
+  messagePresent?: boolean;
   source: "manual" | "derived";
 };
 
@@ -114,12 +116,15 @@ export function parseManualWorkstreamWaits(
   for (const value of values) {
     if (!isWorkstreamWait(value) || keys.has(value.key)) continue;
     keys.add(value.key);
+    const messagePresent = Object.hasOwn(value, "message");
     const message =
       typeof value.message === "string" ? value.message : undefined;
     waits.push({
-      ...value,
-      ...(message === undefined ? { message: undefined } : { message }),
+      key: value.key,
       actor: { ...value.actor },
+      reason: value.reason,
+      ...(value.since === undefined ? {} : { since: value.since }),
+      ...(messagePresent ? { message, messagePresent: true } : {}),
       source: "manual",
     });
   }
