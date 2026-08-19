@@ -1,7 +1,8 @@
 # Glob patterns below mirror the `changes` job's dorny/paths-filter groups in
 # .github/workflows/ci.yml — keep the two in sync. Deliberate deviations:
 # - The `.github/workflows/ci.yml` path CI adds to its `rust`/`mobile` filters
-#   is omitted; a CI-workflow-only edit doesn't need a local test run.
+#   and the desktop CI system-dependency helper are omitted; CI-only edits
+#   don't need a local application test run.
 # - `desktop-check`/`desktop-typecheck`/`desktop-test` don't trigger on `rust`
 #   changes, though CI's Desktop Core job does. Those commands are pure TS
 #   (biome + tsc + node:test) with no Rust dependency, so the extra trigger
