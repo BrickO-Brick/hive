@@ -173,53 +173,81 @@ fn wrapper_refuses_to_push_human_authored_commit() {
     );
 }
 
-/// A real-wrapper regression for the ordinary-alias config-injection bypass:
-/// a non-shell alias whose body carries global `-c` config expands *after* the
-/// wrapper's injected identity/signing `-c`, so before this guard it could
-/// author a human, unsigned commit through the managed wrapper (rc 0). The
-/// wrapper must now refuse it loudly before git runs, and the repo HEAD must be
-/// unchanged. A plain-subcommand alias must still resolve and commit as the
-/// agent identity — the fix must not regress ordinary aliases.
+/// R4 real-wrapper regression for the allowlist alias guard. Two Thufir p3
+/// bypass probes must be refused through the actual `buzz-acp`-as-`git`
+/// multicall, and neither may create a commit:
+///
+/// (a) a *quoted* config alias — git's quote-aware parser dequotes `'-c'`
+///     `'user.email=…'` into real `-c` config that the whitespace-naive
+///     round-3 scan missed;
+/// (b) a *shell* (`!`) commit alias — git runs it with real git ahead of the
+///     wrapper on PATH, so its inner `-c` re-authors the commit.
+///
+/// A plain-subcommand alias must still resolve and commit as the agent
+/// identity, proving the allowlist did not over-reject Gurney's working shapes.
 #[test]
-fn wrapper_rejects_config_bearing_alias_and_allows_plain_alias() {
+fn wrapper_rejects_quoted_and_shell_aliases_and_allows_plain_alias() {
     let (_shim, path) = shim_env(&manifest());
     let repo = human_repo();
 
-    // A config-bearing commit alias, exactly the Thufir p3 bypass shape.
+    // (a) quoted config alias — the parser-parity bypass.
     wrapper(
         &path,
         repo.path(),
         &[
             "config",
-            "alias.hcommit",
-            "-c user.name=AliasHuman -c user.email=alias@human.test -c commit.gpgSign=false commit",
+            "alias.quoted",
+            "'-c' 'user.name=QuotedHuman' '-c' 'user.email=quoted@human.test' '-c' 'commit.gpgSign=false' commit",
         ],
     );
-    // A plain-subcommand alias that carries no global config.
+    // (b) shell commit alias — git prepends real git to PATH for `!` bodies.
+    wrapper(
+        &path,
+        repo.path(),
+        &[
+            "config",
+            "alias.sc",
+            "!f(){ git -c user.name=ShellHuman -c user.email=shell@human.test -c commit.gpgSign=false commit \"$@\"; }; f",
+        ],
+    );
+    // A plain-subcommand alias that must keep working.
     wrapper(&path, repo.path(), &["config", "alias.ci", "commit"]);
 
     let head_before = head_sha(repo.path());
-
     std::fs::write(repo.path().join("f"), "two").unwrap();
     wrapper(&path, repo.path(), &["add", "f"]);
 
-    // The config-bearing alias must be refused before git commits.
-    let out = wrapper(&path, repo.path(), &["hcommit", "-m", "via alias"]);
+    // (a) refused, no commit created.
+    let out = wrapper(&path, repo.path(), &["quoted", "-m", "via quoted alias"]);
     assert!(
         !out.status.success(),
-        "config-bearing alias must be refused; stdout={} stderr={}",
+        "quoted config alias must be refused; stdout={} stderr={}",
         String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr),
-    );
-    assert!(
-        String::from_utf8_lossy(&out.stderr).contains("expands to global"),
-        "expected the alias-config rejection; stderr={}",
         String::from_utf8_lossy(&out.stderr),
     );
     assert_eq!(
         head_sha(repo.path()),
         head_before,
-        "no commit should have been created by the refused alias"
+        "the refused quoted alias must not create a commit"
+    );
+
+    // (b) refused, no commit created.
+    let out = wrapper(&path, repo.path(), &["sc", "-m", "via shell alias"]);
+    assert!(
+        !out.status.success(),
+        "shell commit alias must be refused; stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("shell (`!`) git alias"),
+        "expected the shell-alias rejection; stderr={}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert_eq!(
+        head_sha(repo.path()),
+        head_before,
+        "the refused shell alias must not create a commit"
     );
 
     // The plain alias must still resolve and commit as the agent identity.

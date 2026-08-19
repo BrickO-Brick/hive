@@ -170,19 +170,6 @@ pub fn run() -> i32 {
                     return 1;
                 }
             }
-            // A shell (`!`) alias whose body may push is opaque: we cannot
-            // resolve its transport plan without executing arbitrary shell code,
-            // and executing it as a probe would let it transmit before
-            // verification. Reject loudly rather than run it.
-            PushKind::OpaqueShellAlias(name) => {
-                eprintln!(
-                    "buzz git wrapper: refusing `{name}` — it is a shell (`!`) alias whose \
-                     effective command may push, and its outgoing commits cannot be verified \
-                     without executing it. Run the underlying `git push` directly so agent \
-                     authorship can be checked."
-                );
-                return 1;
-            }
         }
     }
 
@@ -241,10 +228,6 @@ enum PushKind {
     /// The effective command resolves to `push` through ordinary (config/inline)
     /// git aliases; its transport plan can be resolved safely with `--dry-run`.
     Push,
-    /// The effective command is a shell (`!`) alias whose body may push. Its
-    /// plan cannot be resolved without executing arbitrary shell code, so it is
-    /// rejected rather than probed. Carries the alias name for the message.
-    OpaqueShellAlias(String),
 }
 
 /// Classify the invocation's *effective* command, resolving ordinary git
@@ -252,10 +235,9 @@ enum PushKind {
 /// pub` are both recognized. Config aliases are read under `ctx` so a
 /// `-C <repo>` push consults the target repo's aliases.
 ///
-/// Shell aliases (`!…`) are NOT expanded into a plan: resolving their transport
-/// would require running the shell body, and the dry-run probe would let that
-/// body transmit before verification. A shell alias whose body invokes `push`
-/// is returned as [`PushKind::OpaqueShellAlias`] and rejected by the caller.
+/// This runs only in a managed session, *after* [`verify_alias_safety`] has
+/// already refused every shell (`!`) alias and every non-shell alias that is
+/// not a trivially-safe bare-word chain — so a shell alias never reaches here.
 /// Recursion is bounded to defeat cyclic alias definitions.
 fn is_push_command(real_git: &Path, argv: &[String], ctx: &[String]) -> PushKind {
     let (globals, _) = split_globals(argv);
@@ -279,16 +261,8 @@ fn is_push_command(real_git: &Path, argv: &[String], ctx: &[String]) -> PushKind
             Some(d) => d,
             None => return PushKind::NotPush, // not an alias — effective command
         };
-        if let Some(body) = def.strip_prefix('!') {
-            // Shell alias: opaque. If its body may push, reject (never probe it).
-            let may_push = body
-                .split_whitespace()
-                .any(|t| t == "push" || t.ends_with("/git-push"));
-            return if may_push {
-                PushKind::OpaqueShellAlias(name)
-            } else {
-                PushKind::NotPush
-            };
+        if def.starts_with('!') {
+            return PushKind::NotPush; // shell alias — already refused upstream
         }
         match def.split_whitespace().next() {
             Some(first) => name = first.to_string(),
@@ -316,22 +290,30 @@ fn inline_aliases(globals: &[String]) -> std::collections::HashMap<String, Strin
     map
 }
 
-/// Reject an ordinary (non-shell) alias whose expansion introduces global
-/// configuration (`-c`/`-c<key>=<val>`/`--config-env`). Git expands such an
-/// alias *in-process, after* the identity/signing `-c` options this wrapper
-/// injects before the subcommand ([`inject_identity_args`]), so the alias-added
-/// config lands at a higher precedence and can silently re-author or unsign the
-/// commit. [`enforce`] cannot catch this: it inspects the literal argv and never
-/// reads the alias body. Following the favor-rejection principle, this refuses
-/// the invocation rather than modeling git's full alias-expansion grammar.
+/// Refuse any alias the wrapper cannot *trivially* prove safe. Git expands an
+/// alias in-process, and its config-bearing globals land *after* the identity/
+/// signing `-c` options this wrapper injects before the subcommand
+/// ([`inject_identity_args`]), so an alias can otherwise plant higher-precedence
+/// config that re-authors or unsigns the commit. [`enforce`] cannot catch this:
+/// it inspects the literal argv and never reads the alias body.
 ///
-/// Plain-subcommand aliases (`alias.st = status`, `alias.lg = log --oneline`)
-/// carry no global config and are unaffected — `--oneline` is a subcommand
-/// argument, not a global option. Shell (`!`) aliases are out of scope here:
-/// git runs their body in a shell, so any `git` they invoke re-enters this
-/// wrapper on PATH (config caught by [`enforce`]) and push-bearing ones are
-/// already rejected by [`PushKind::OpaqueShellAlias`]. Recursion is bounded to
-/// defeat cyclic alias definitions; a non-alias subcommand resolves immediately.
+/// This is an allowlist, not a blocklist. Rather than model git's alias grammar
+/// (whose quote-aware parser would let `'-c' 'user.email=…'` slip past a
+/// naive token scan), it admits an alias only when every token of its body is a
+/// trivially-safe bare word: no quote or backslash characters, no `-c`/
+/// `--config-env` config channel, and no `=`-valued option. Anything the
+/// wrapper cannot classify at a glance is refused (favor-rejection).
+///
+/// Shell (`!`) aliases are refused outright in a managed session. Git runs an
+/// `!` alias with its own exec-path prepended to `PATH`, so the inner `git` is
+/// the *real* binary, not this wrapper — its `-c` outranks the inherited env
+/// authority and can commit as an arbitrary human, unsigned. Their bodies are
+/// arbitrary shell, so there is no safe subset to allow.
+///
+/// Allowed shapes stay working: `alias.ci = commit`, `alias.st = status`,
+/// `alias.lg = log --oneline`, `alias.pub = push origin main`. Recursion is
+/// bounded to defeat cyclic alias definitions; a non-alias subcommand resolves
+/// immediately.
 fn verify_alias_safety(real_git: &Path, argv: &[String], ctx: &[String]) -> Result<(), String> {
     let (globals, _) = split_globals(argv);
     let inline = inline_aliases(&globals);
@@ -352,14 +334,13 @@ fn verify_alias_safety(real_git: &Path, argv: &[String], ctx: &[String]) -> Resu
             None => return Ok(()), // not an alias — a real subcommand
         };
         if def.starts_with('!') {
-            return Ok(()); // shell alias: re-enters the wrapper / handled on push
+            return Err(shell_alias_reject_message(&name));
         }
         let body: Vec<String> = def.split_whitespace().map(String::from).collect();
-        let (body_globals, sub_idx) = split_globals(&body);
-        if body_globals.iter().any(|t| is_config_bearing_global(t)) {
+        if !body.iter().all(|t| is_safe_alias_token(t)) {
             return Err(alias_reject_message(&name));
         }
-        match sub_idx.map(|i| body[i].clone()) {
+        match split_globals(&body).1.map(|i| body[i].clone()) {
             Some(next) => name = next, // resolved subcommand may itself be an alias
             None => return Ok(()),     // no subcommand token — nothing to expand
         }
@@ -367,24 +348,50 @@ fn verify_alias_safety(real_git: &Path, argv: &[String], ctx: &[String]) -> Resu
     Ok(())
 }
 
-/// True when `token` is a global option that injects git configuration — the
-/// command-line `-c key=value` (standalone or `-ckey=value` attached form) and
-/// `--config-env=key=VAR`. These are exactly the channels an alias body can use
-/// to plant config that outranks the wrapper's injected authority.
-fn is_config_bearing_global(token: &str) -> bool {
-    token == "-c"
-        || (token.starts_with("-c") && token.len() > 2)
+/// A single alias-body token is safe only when it is a plain bare word that
+/// introduces no configuration and needs no shell/quote interpretation. This is
+/// deliberately conservative: git's quote-aware alias parser sees a token
+/// differently from our whitespace split, so any token carrying a quote or
+/// escape is refused rather than guessed at.
+fn is_safe_alias_token(token: &str) -> bool {
+    // Quote/escape characters: git would dequote these, changing the token from
+    // what we scanned. Refuse — the allowlist never reasons about quoted forms.
+    if token.contains(['\'', '"', '\\']) {
+        return false;
+    }
+    // The config-injection channels, in any spelling.
+    if token == "-c"
+        || token.starts_with("-c")
         || token == "--config-env"
-        || token.starts_with("--config-env=")
+        || token.starts_with("--config-env")
+    {
+        return false;
+    }
+    // Any other option carrying a `=` value (e.g. `--author=…`, `--foo=bar`)
+    // can redirect identity/behaviour we cannot classify — refuse.
+    if token.starts_with('-') && token.contains('=') {
+        return false;
+    }
+    true
 }
 
 fn alias_reject_message(name: &str) -> String {
     format!(
-        "buzz git wrapper: refusing `{name}` — this git alias expands to global \
-         configuration (`-c`/`--config-env`) that git applies after the managed agent \
-         identity and signing config, so it could re-author or disable signing on the \
-         commit. Run the underlying git command directly; agent commit identity and \
-         signing are machine-managed."
+        "buzz git wrapper: refusing `{name}` — this git alias contains tokens the managed \
+         wrapper cannot verify as safe (quoting/escaping, `-c`/`--config-env`, or a \
+         value-bearing option). Aliases that could carry configuration are refused because \
+         git applies alias config after the managed agent identity and signing config. Run \
+         the underlying git command directly; agent commit identity and signing are \
+         machine-managed."
+    )
+}
+
+fn shell_alias_reject_message(name: &str) -> String {
+    format!(
+        "buzz git wrapper: refusing `{name}` — it is a shell (`!`) git alias. Git runs `!` \
+         aliases with the real git ahead of this wrapper on PATH, so their body can commit \
+         or push under an arbitrary identity, unsigned. Run the underlying git command \
+         directly; agent commit identity and signing are machine-managed."
     )
 }
 
@@ -1384,67 +1391,113 @@ mod tests {
         ));
     }
 
-    // ── verify_alias_safety ───────────────────────────────────────────────────
+    // ── verify_alias_safety (allowlist) ───────────────────────────────────────
 
     #[test]
-    fn is_config_bearing_global_recognizes_c_and_config_env_forms() {
-        assert!(is_config_bearing_global("-c"));
-        assert!(is_config_bearing_global("-cuser.email=x"));
-        assert!(is_config_bearing_global("--config-env"));
-        assert!(is_config_bearing_global("--config-env=user.name=VAR"));
-        // Not config-bearing: subcommand args and unrelated globals.
-        assert!(!is_config_bearing_global("commit"));
-        assert!(!is_config_bearing_global("--oneline"));
-        assert!(!is_config_bearing_global("-C"));
-        assert!(!is_config_bearing_global("--amend"));
+    fn is_safe_alias_token_admits_only_trivial_bare_words() {
+        // Safe: bare subcommands and plain arguments.
+        assert!(is_safe_alias_token("commit"));
+        assert!(is_safe_alias_token("status"));
+        assert!(is_safe_alias_token("--oneline"));
+        assert!(is_safe_alias_token("origin"));
+        assert!(is_safe_alias_token("main"));
+        // Unsafe: config channels in any spelling.
+        assert!(!is_safe_alias_token("-c"));
+        assert!(!is_safe_alias_token("-cuser.email=x"));
+        assert!(!is_safe_alias_token("--config-env"));
+        assert!(!is_safe_alias_token("--config-env=user.name=VAR"));
+        // Unsafe: any quote/escape (git dequotes; we never guess).
+        assert!(!is_safe_alias_token("'-c'"));
+        assert!(!is_safe_alias_token("\"commit\""));
+        assert!(!is_safe_alias_token("a\\b"));
+        // Unsafe: a value-bearing option.
+        assert!(!is_safe_alias_token("--author=Evil <e@x>"));
     }
 
     #[test]
-    fn verify_alias_safety_rejects_inline_config_bearing_alias() {
-        // Inline alias whose body carries `-c` config — the ordinary-alias
-        // bypass. Uses inline definitions so no repo/config probe is needed.
+    fn verify_alias_safety_rejects_config_and_quoted_aliases() {
         let ctx: Vec<String> = vec![];
+        // Bare `-c` config channel.
         assert!(verify_alias_safety(
             &real_git(),
             &v(&["-c", "alias.hc=-c user.email=e@x commit", "hc"]),
             &ctx
         )
         .is_err());
+        // `--config-env` channel.
         assert!(verify_alias_safety(
             &real_git(),
             &v(&["-c", "alias.hc=--config-env=user.name=V commit", "hc"]),
             &ctx
         )
         .is_err());
+        // Quoted tokens — the parser-parity bypass; refused without dequoting.
+        assert!(verify_alias_safety(
+            &real_git(),
+            &v(&["-c", "alias.q='-c' 'user.email=q@x' commit", "q"]),
+            &ctx
+        )
+        .is_err());
     }
 
     #[test]
-    fn verify_alias_safety_allows_plain_and_arg_only_aliases() {
+    fn verify_alias_safety_rejects_all_shell_aliases() {
         let ctx: Vec<String> = vec![];
-        // Plain subcommand alias.
+        // A shell alias with no push and no config is still refused in managed mode.
+        assert!(
+            verify_alias_safety(&real_git(), &v(&["-c", "alias.sh=!git status", "sh"]), &ctx)
+                .is_err()
+        );
+        // The commit-path shell bypass Thufir demonstrated.
+        assert!(verify_alias_safety(
+            &real_git(),
+            &v(&[
+                "-c",
+                "alias.sc=!f(){ git -c user.email=shell@x commit \"$@\"; }; f",
+                "sc",
+            ]),
+            &ctx
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn verify_alias_safety_allows_bare_word_aliases() {
+        let ctx: Vec<String> = vec![];
+        // Gurney's certified working shapes must all stay allowed.
+        assert!(
+            verify_alias_safety(&real_git(), &v(&["-c", "alias.ci=commit", "ci"]), &ctx).is_ok()
+        );
         assert!(
             verify_alias_safety(&real_git(), &v(&["-c", "alias.st=status", "st"]), &ctx).is_ok()
         );
-        // Subcommand args (`--oneline`) are not global config.
         assert!(verify_alias_safety(
             &real_git(),
             &v(&["-c", "alias.lg=log --oneline", "lg"]),
             &ctx
         )
         .is_ok());
+        assert!(verify_alias_safety(
+            &real_git(),
+            &v(&["-c", "alias.pub=push origin main", "pub"]),
+            &ctx
+        )
+        .is_ok());
         // A real (non-alias) subcommand resolves immediately.
         assert!(verify_alias_safety(&real_git(), &v(&["commit", "-m", "x"]), &ctx).is_ok());
-        // A shell alias is out of scope here (handled on push / re-entry).
-        assert!(
-            verify_alias_safety(&real_git(), &v(&["-c", "alias.sh=!git commit", "sh"]), &ctx)
-                .is_ok()
-        );
     }
 
     #[test]
-    fn verify_alias_safety_follows_alias_chains_to_config_bearing_body() {
-        // `a` → `b` → config-bearing `commit`; the chain must be walked.
+    fn verify_alias_safety_walks_bare_word_chains_and_rejects_config_at_the_end() {
         let ctx: Vec<String> = vec![];
+        // `a` → `b` (both bare-word) → allowed.
+        assert!(verify_alias_safety(
+            &real_git(),
+            &v(&["-c", "alias.a=b", "-c", "alias.b=commit", "a"]),
+            &ctx
+        )
+        .is_ok());
+        // `a` → `b` where `b` introduces config → refused via the chain.
         assert!(verify_alias_safety(
             &real_git(),
             &v(&[
@@ -1654,52 +1707,50 @@ mod tests {
         );
     }
 
-    // ── C2: a shell (`!`) alias that may push is rejected, never probed ────────
+    // ── C2: shell (`!`) aliases are refused outright in a managed session ─────
 
-    /// `is_push_command` must classify a `!`-shell alias whose body invokes
-    /// `push` as `OpaqueShellAlias` (rejected by the caller) rather than resolve
-    /// it — resolving would require executing the shell body, which could push
-    /// before verification.
+    /// `verify_alias_safety` must refuse a `!`-shell alias (here one whose body
+    /// would push) without executing it. A sentinel file proves the body never
+    /// runs during classification — refusal is by source inspection only.
     #[test]
-    fn shell_alias_that_may_push_is_opaque_not_probed() {
+    fn shell_alias_is_refused_without_executing_its_body() {
         let dir = tempfile::tempdir().unwrap();
         let repo = dir.path();
         git_in(repo, &["init", "-q", "-b", "main"]);
-        // A `!`-alias whose body would push. A sentinel file proves the body
-        // never runs during classification.
         let sentinel = repo.join("ran");
         let body = format!("!touch {} && git push", sentinel.display());
         git_in(repo, &["config", "alias.deploy", &body]);
 
         let ctx = vec!["-C".to_string(), repo.to_string_lossy().into_owned()];
-        let kind = is_push_command(
+        let err = verify_alias_safety(
             &real_git(),
             &v(&["-C", repo.to_str().unwrap(), "deploy"]),
             &ctx,
         );
-        match kind {
-            PushKind::OpaqueShellAlias(name) => assert_eq!(name, "deploy"),
-            _ => panic!("expected OpaqueShellAlias"),
-        }
+        assert!(err.is_err(), "shell alias must be refused");
+        assert!(
+            err.unwrap_err().contains("shell (`!`) git alias"),
+            "expected the shell-alias rejection message"
+        );
         assert!(
             !sentinel.exists(),
             "classification must not execute the shell alias body"
         );
     }
 
-    /// A `!`-shell alias whose body does NOT push is not misclassified as a push
-    /// (it needs no push verification).
+    /// A non-push `!`-shell alias is refused too — the ruling rejects ALL shell
+    /// aliases in a managed session, not only push-bearing ones.
     #[test]
-    fn shell_alias_without_push_is_not_a_push() {
+    fn shell_alias_without_push_is_also_refused() {
         let dir = tempfile::tempdir().unwrap();
         let repo = dir.path();
         git_in(repo, &["init", "-q", "-b", "main"]);
         git_in(repo, &["config", "alias.st", "!git status"]);
         let ctx = vec!["-C".to_string(), repo.to_string_lossy().into_owned()];
-        assert!(matches!(
-            is_push_command(&real_git(), &v(&["-C", repo.to_str().unwrap(), "st"]), &ctx),
-            PushKind::NotPush
-        ));
+        assert!(
+            verify_alias_safety(&real_git(), &v(&["-C", repo.to_str().unwrap(), "st"]), &ctx)
+                .is_err()
+        );
     }
 
     // ── I3: cherry-picked / rebased upstream human commits are exempt ──────────
