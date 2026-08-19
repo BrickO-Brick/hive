@@ -3,25 +3,19 @@ import path from "node:path";
 import ts from "typescript";
 
 const SPEC_PATTERN = /\.(spec|perf)\.ts$/;
-const CANONICAL_TEST_HELPER = "../helpers/test";
 const exempt = new Set(["agents-everywhere.live.spec.ts"]);
-
-function namedImport(declaration, name) {
-  return declaration.importClause?.namedBindings?.elements.some(
-    (element) =>
-      element.name.text === name && element.propertyName === undefined,
-  );
-}
+const TEST_MEMBERS = new Set(["only", "skip", "fixme", "fail"]);
+const CONTAINERS = new Set(["forEach", "map"]);
 
 function callbackOf(call) {
-  const candidate = call.arguments.at(-1);
-  return candidate &&
-    (ts.isArrowFunction(candidate) || ts.isFunctionExpression(candidate))
-    ? candidate
+  const callback = call.arguments.at(-1);
+  return callback &&
+    (ts.isArrowFunction(callback) || ts.isFunctionExpression(callback))
+    ? callback
     : undefined;
 }
 
-function testMember(call) {
+function memberOf(call) {
   return ts.isPropertyAccessExpression(call.expression) &&
     ts.isIdentifier(call.expression.expression) &&
     call.expression.expression.text === "test"
@@ -29,137 +23,312 @@ function testMember(call) {
     : undefined;
 }
 
-function isTestRegistration(call) {
-  if (ts.isIdentifier(call.expression)) return call.expression.text === "test";
-  const member = testMember(call);
+function helperImport(file, filename, canonicalHelperPath) {
+  for (const statement of file.statements) {
+    if (
+      !ts.isImportDeclaration(statement) ||
+      !ts.isStringLiteral(statement.moduleSpecifier)
+    )
+      continue;
+    const resolved = path.resolve(
+      path.dirname(filename),
+      `${statement.moduleSpecifier.text}.ts`,
+    );
+    const canonical = canonicalHelperPath
+      ? resolved === canonicalHelperPath
+      : statement.moduleSpecifier.text === "../helpers/test";
+    if (!canonical) continue;
+    const elements = statement.importClause?.namedBindings;
+    if (!elements || !ts.isNamedImports(elements)) return undefined;
+    const names = new Map(
+      elements.elements.map((element) => [
+        element.name.text,
+        element.propertyName?.text ?? element.name.text,
+      ]),
+    );
+    if (
+      names.get("test") === "test" &&
+      names.get("bootstrapE2ePage") === "bootstrapE2ePage"
+    )
+      return { test: "test", bootstrap: "bootstrapE2ePage" };
+  }
+}
+
+function hasShadowingDeclaration(file, canonical) {
+  let shadowed = false;
+  const visit = (node) => {
+    if (shadowed) return;
+    if (
+      (ts.isVariableDeclaration(node) ||
+        ts.isFunctionDeclaration(node) ||
+        ts.isClassDeclaration(node)) &&
+      node.name &&
+      ts.isIdentifier(node.name) &&
+      (node.name.text === canonical.test ||
+        node.name.text === canonical.bootstrap)
+    ) {
+      shadowed = true;
+      return;
+    }
+    if (
+      (ts.isArrowFunction(node) ||
+        ts.isFunctionExpression(node) ||
+        ts.isFunctionDeclaration(node)) &&
+      node.parameters.some(
+        (parameter) =>
+          ts.isIdentifier(parameter.name) &&
+          (parameter.name.text === canonical.test ||
+            parameter.name.text === canonical.bootstrap),
+      )
+    ) {
+      shadowed = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  for (const statement of file.statements) {
+    if (ts.isImportDeclaration(statement)) continue;
+    visit(statement);
+  }
+  return shadowed;
+}
+
+function collectModuleHelpers(file) {
+  const helpers = new Map();
+  for (const statement of file.statements) {
+    if (ts.isFunctionDeclaration(statement) && statement.name && statement.body)
+      helpers.set(statement.name.text, statement);
+    if (ts.isVariableStatement(statement)) {
+      for (const declaration of statement.declarationList.declarations) {
+        if (
+          ts.isIdentifier(declaration.name) &&
+          declaration.initializer &&
+          (ts.isArrowFunction(declaration.initializer) ||
+            ts.isFunctionExpression(declaration.initializer))
+        )
+          helpers.set(declaration.name.text, declaration.initializer);
+      }
+    }
+  }
+  return helpers;
+}
+
+function awaitedCall(statement) {
+  const expression =
+    ts.isExpressionStatement(statement) || ts.isReturnStatement(statement)
+      ? statement.expression
+      : ts.isVariableStatement(statement) &&
+          statement.declarationList.declarations.length === 1
+        ? statement.declarationList.declarations[0].initializer
+        : undefined;
+  return expression &&
+    ts.isAwaitExpression(expression) &&
+    ts.isCallExpression(expression.expression)
+    ? expression.expression
+    : undefined;
+}
+
+function isAwaitedCall(statement, name) {
+  const call = awaitedCall(statement);
   return (
-    member !== undefined &&
-    ![
-      "beforeEach",
-      "afterEach",
-      "beforeAll",
-      "afterAll",
-      "describe",
-      "use",
-      "setTimeout",
-      "slow",
-      "step",
-      "skip",
-      "fixme",
-      "fail",
-    ].includes(member)
+    call && ts.isIdentifier(call.expression) && call.expression.text === name
   );
 }
 
-function collectFunctionDeclarations(file) {
-  const functions = new Map();
-  const visit = (node) => {
-    if (ts.isFunctionDeclaration(node) && node.name)
-      functions.set(node.name.text, node);
-    if (
-      ts.isVariableDeclaration(node) &&
-      ts.isIdentifier(node.name) &&
-      node.initializer &&
-      (ts.isArrowFunction(node.initializer) ||
-        ts.isFunctionExpression(node.initializer))
-    ) {
-      functions.set(node.name.text, node.initializer);
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(file);
-  return functions;
+function isStaticallyEmptyLoop(statement) {
+  if (ts.isForStatement(statement))
+    return statement.condition?.kind === ts.SyntaxKind.FalseKeyword;
+  if (ts.isWhileStatement(statement))
+    return statement.expression.kind === ts.SyntaxKind.FalseKeyword;
+  if (ts.isForOfStatement(statement)) {
+    const expression = statement.expression;
+    return (
+      (ts.isArrayLiteralExpression(expression) &&
+        !expression.elements.length) ||
+      (ts.isStringLiteral(expression) && !expression.text.length)
+    );
+  }
+  if (ts.isForInStatement(statement))
+    return (
+      ts.isObjectLiteralExpression(statement.expression) &&
+      !statement.expression.properties.length
+    );
+  return false;
 }
 
-function callbackBootstraps(callback, functions) {
-  const visitedFunctions = new Set();
-  const inspect = (node) => {
-    let found = false;
-    const visit = (child) => {
+function statementBootstraps(statement, canonical, helpers, seen) {
+  if (isAwaitedCall(statement, canonical.bootstrap)) return true;
+  const call = awaitedCall(statement);
+  if (call && ts.isIdentifier(call.expression)) {
+    const helperName = call.expression.text;
+    const helper = helpers.get(helperName);
+    if (helper && !seen.has(helperName)) {
+      seen.add(helperName);
+      if (callbackBootstraps(helper, canonical, helpers, seen)) return true;
+    }
+  }
+  if (ts.isBlock(statement))
+    return statement.statements.some((child) =>
+      statementBootstraps(child, canonical, helpers, seen),
+    );
+  if (ts.isTryStatement(statement))
+    return (
+      statementBootstraps(statement.tryBlock, canonical, helpers, seen) ||
+      Boolean(
+        statement.finallyBlock &&
+          statementBootstraps(statement.finallyBlock, canonical, helpers, seen),
+      )
+    );
+  if (
+    (ts.isForStatement(statement) ||
+      ts.isForInStatement(statement) ||
+      ts.isForOfStatement(statement) ||
+      ts.isWhileStatement(statement) ||
+      ts.isDoStatement(statement)) &&
+    !isStaticallyEmptyLoop(statement)
+  )
+    return statementBootstraps(statement.statement, canonical, helpers, seen);
+  return false;
+}
+
+function callbackBootstraps(callback, canonical, helpers, seen = new Set()) {
+  const statements = ts.isBlock(callback.body)
+    ? callback.body.statements
+    : [ts.factory.createExpressionStatement(callback.body)];
+  return statements.some((statement) =>
+    statementBootstraps(statement, canonical, helpers, seen),
+  );
+}
+
+function makeScope(parent) {
+  return { parent, hooks: [], tests: [], children: [] };
+}
+
+function scanFile(file, canonical) {
+  const helpers = collectModuleHelpers(file);
+  const root = makeScope(undefined);
+  const isTestCall = (call) =>
+    ts.isIdentifier(call.expression) && call.expression.text === canonical.test;
+  const isMember = (call, name) => memberOf(call) === name;
+
+  const scanStatements = (statements, scope) => {
+    for (const statement of statements) {
+      if (ts.isBlock(statement)) {
+        scanStatements(statement.statements, scope);
+        continue;
+      }
       if (
-        ts.isAwaitExpression(child) &&
-        ts.isCallExpression(child.expression) &&
-        ts.isIdentifier(child.expression.expression) &&
-        child.expression.expression.text === "bootstrapE2ePage"
+        ts.isForStatement(statement) ||
+        ts.isForInStatement(statement) ||
+        ts.isForOfStatement(statement)
       ) {
-        found = true;
-        return;
+        scanStatements(
+          ts.isBlock(statement.statement)
+            ? statement.statement.statements
+            : [statement.statement],
+          scope,
+        );
+        continue;
       }
-      if (ts.isCallExpression(child) && ts.isIdentifier(child.expression)) {
-        const declaration = functions.get(child.expression.text);
-        if (declaration && !visitedFunctions.has(child.expression.text)) {
-          visitedFunctions.add(child.expression.text);
-          if (inspect(declaration.body)) found = true;
-        }
+      if (
+        !ts.isExpressionStatement(statement) ||
+        !ts.isCallExpression(statement.expression)
+      )
+        continue;
+      const call = statement.expression;
+      const callback = callbackOf(call);
+      if (isMember(call, "describe") && callback) {
+        const child = makeScope(scope);
+        scope.children.push(child);
+        if (ts.isBlock(callback.body))
+          scanStatements(callback.body.statements, child);
+        continue;
       }
-      if (!found) ts.forEachChild(child, visit);
-    };
-    ts.forEachChild(node, visit);
-    return found;
-  };
-  return inspect(callback.body);
-}
-
-function scanFile(file, functions) {
-  const hooks = [];
-  const tests = [];
-  const visit = (node) => {
-    if (ts.isCallExpression(node)) {
-      const callback = callbackOf(node);
-      const member = testMember(node);
-      if (member === "beforeEach" && callback)
-        hooks.push(callbackBootstraps(callback, functions));
-      else if (isTestRegistration(node) && callback)
-        tests.push(callbackBootstraps(callback, functions));
+      if (isMember(call, "beforeEach") && callback) {
+        scope.hooks.push(callbackBootstraps(callback, canonical, helpers));
+        continue;
+      }
+      if (
+        isTestCall(call) ||
+        (memberOf(call) && TEST_MEMBERS.has(memberOf(call)))
+      ) {
+        if (callback)
+          scope.tests.push(callbackBootstraps(callback, canonical, helpers));
+        continue;
+      }
+      if (
+        ts.isPropertyAccessExpression(call.expression) &&
+        CONTAINERS.has(call.expression.name.text) &&
+        callback &&
+        ts.isArrayLiteralExpression(call.expression.expression)
+      ) {
+        if (ts.isBlock(callback.body))
+          scanStatements(callback.body.statements, scope);
+      }
     }
-    ts.forEachChild(node, visit);
   };
-  visit(file);
-  return { hooks, tests };
+  scanStatements(file.statements, root);
+  return root;
 }
 
-export function checkSource(source, filename = "fixture.spec.ts") {
+function everyTestCovered(scope, inheritedHook = false) {
+  const coveredByHook = inheritedHook || scope.hooks.some(Boolean);
+  return (
+    scope.tests.every((covered) => coveredByHook || covered) &&
+    scope.children.every((child) => everyTestCovered(child, coveredByHook))
+  );
+}
+
+function testCount(scope) {
+  return (
+    scope.tests.length +
+    scope.children.reduce((count, child) => count + testCount(child), 0)
+  );
+}
+
+export function checkSource(
+  source,
+  filename = "fixture.spec.ts",
+  canonicalHelperPath,
+) {
   const file = ts.createSourceFile(
     filename,
     source,
     ts.ScriptTarget.Latest,
     true,
   );
-  const helperImports = file.statements.filter(
-    (statement) =>
-      ts.isImportDeclaration(statement) &&
-      ts.isStringLiteral(statement.moduleSpecifier) &&
-      statement.moduleSpecifier.text === CANONICAL_TEST_HELPER,
-  );
-  if (
-    !helperImports.some((declaration) => namedImport(declaration, "test")) ||
-    !helperImports.some((declaration) =>
-      namedImport(declaration, "bootstrapE2ePage"),
-    )
-  ) {
-    return "must directly import unaliased test and bootstrapE2ePage from ../helpers/test";
-  }
+  const canonical = helperImport(file, filename, canonicalHelperPath);
+  if (!canonical)
+    return "must directly import unaliased test and bootstrapE2ePage from the canonical tests/helpers/test module";
+  if (hasShadowingDeclaration(file, canonical))
+    return "must not shadow canonical test or bootstrapE2ePage imports";
+  const scope = scanFile(file, canonical);
+  if (!testCount(scope)) return "does not register a browser test";
+  if (!everyTestCovered(scope))
+    return "must structurally await bootstrapE2ePage for every test, directly or through an applicable ancestor test.beforeEach";
+}
 
-  const { hooks, tests } = scanFile(file, collectFunctionDeclarations(file));
-  if (!tests.length) return "does not register a browser test";
-  if (!hooks.some(Boolean) && !tests.some(Boolean)) {
-    return "must await bootstrapE2ePage on every test path, directly or through a registered test.beforeEach";
-  }
+function specFiles(directory) {
+  return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const child = path.join(directory, entry.name);
+    if (entry.isDirectory()) return specFiles(child);
+    return entry.isFile() && SPEC_PATTERN.test(entry.name) ? [child] : [];
+  });
 }
 
 export function runCheck(projectRoot) {
-  const violations = [];
-  for (const name of fs
-    .readdirSync(path.join(projectRoot, "tests/e2e"))
-    .filter((name) => SPEC_PATTERN.test(name))) {
-    if (exempt.has(name)) continue;
+  const e2eRoot = path.join(projectRoot, "tests/e2e");
+  const canonicalHelperPath = path.join(projectRoot, "tests/helpers/test.ts");
+  return specFiles(e2eRoot).flatMap((filename) => {
+    const relative = path.relative(e2eRoot, filename);
+    if (exempt.has(relative)) return [];
     const violation = checkSource(
-      fs.readFileSync(path.join(projectRoot, "tests/e2e", name), "utf8"),
-      name,
+      fs.readFileSync(filename, "utf8"),
+      filename,
+      canonicalHelperPath,
     );
-    if (violation) violations.push(`${name}: ${violation}`);
-  }
-  return violations;
+    return violation ? [`${relative}: ${violation}`] : [];
+  });
 }
 
 if (process.argv[1] === import.meta.filename) {
