@@ -884,4 +884,35 @@ mod tests {
         );
         crate::relay_admission::reset_rate_limit_gate();
     }
+
+    /// Accessor-level proof of the P29-C1 latch integration: once the
+    /// coordinator latches `Indeterminate`, [`AppState::signing_keys`] refuses —
+    /// a completed transition that could not prove either durable identity
+    /// canonical must not sign under the unresolved identity. The `guard()`
+    /// resets the registry on entry (so the control read below is Live) and on
+    /// drop (so the latch never leaks into other crate tests).
+    #[test]
+    fn signing_keys_refuses_under_the_indeterminate_latch() {
+        let _g = guard();
+        let state = crate::app_state::build_app_state();
+
+        // Control: with the registry Live, the gate is transparent.
+        assert!(
+            state.signing_keys().is_ok(),
+            "signing_keys must sign while the identity is Live"
+        );
+
+        // Latch indeterminate (drain first — the latch is only reachable from a
+        // draining transition, matching the coordinator's fail-closed exit).
+        begin_egress_drain().unwrap();
+        latch_identity_indeterminate();
+
+        let err = state
+            .signing_keys()
+            .expect_err("signing_keys must refuse under the indeterminate latch");
+        assert!(
+            err.contains("indeterminate"),
+            "the refusal must name the indeterminate recovery state: {err}"
+        );
+    }
 }

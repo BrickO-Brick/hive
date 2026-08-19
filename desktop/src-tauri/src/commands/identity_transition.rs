@@ -424,3 +424,238 @@ fn import_identity_blocking<R: tauri::Runtime>(
         reset_failed: false,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    //! Closed-world identity-swap sink test (P25-C1, spec §7): the durable
+    //! in-memory identity swap has exactly ONE reachable site —
+    //! [`commit_imported_identity`], called ONLY from this coordinator's
+    //! `Committed` arm. A third path calling it directly would re-open the
+    //! P25/P26 split-state (swap identity B without the drain / scope clear /
+    //! generation bump the coordinator performs), so the number of CALL sites
+    //! is fixed by inventory. Adding a caller — in a new file or an existing
+    //! one — trips this scan until its row is updated, which is the deliberate
+    //! act that must accompany routing a new swap path through the coordinator.
+
+    /// Per-file inventory of expected `commit_imported_identity` CALL sites
+    /// (`(file suffix, expected calls)`). The `fn commit_imported_identity`
+    /// DEFINITION and doc/comment mentions are excluded by [`call_sites`]; only
+    /// call expressions count. The sole legitimate caller is this module.
+    const SINK_INVENTORY: &[(&str, usize)] = &[("src/commands/identity_transition.rs", 1)];
+
+    fn needle() -> String {
+        // Assembled at runtime so this scan file's own inventory row (1) is the
+        // real call in `import_identity_blocking`, not a literal in the table.
+        ["commit_imported", "_identity"].concat()
+    }
+
+    fn src_rust_files() -> Vec<std::path::PathBuf> {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                    out.push(path);
+                }
+            }
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut out = Vec::new();
+        walk(&root, &mut out);
+        out
+    }
+
+    fn read_src_files() -> Vec<(String, String)> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        src_rust_files()
+            .into_iter()
+            .map(|path| {
+                let rel = path
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                (rel, std::fs::read_to_string(&path).unwrap())
+            })
+            .collect()
+    }
+
+    /// Count call sites of the sink in one file's content: lines that invoke
+    /// `commit_imported_identity(` but are neither the `fn` definition nor a
+    /// `//` comment. `pub(crate) use ...` re-exports are definitions of a name,
+    /// not calls, and carry no `(`, so they never match.
+    fn call_sites(content: &str, needle: &str) -> usize {
+        let call = format!("{needle}(");
+        content
+            .lines()
+            .filter(|line| {
+                let trimmed = line.trim_start();
+                !trimmed.starts_with("//")
+                    && !trimmed.contains(&format!("fn {call}"))
+                    && trimmed.contains(&call)
+            })
+            .count()
+    }
+
+    fn sink_violations(files: &[(String, String)]) -> Vec<String> {
+        let needle = needle();
+        let mut violations = Vec::new();
+        for (rel, content) in files {
+            let expected = SINK_INVENTORY
+                .iter()
+                .find(|(suffix, _)| rel.ends_with(suffix))
+                .map(|&(_, e)| e)
+                .unwrap_or(0);
+            let found = call_sites(content, &needle);
+            if found != expected {
+                violations.push(format!(
+                    "{rel}: found {found} commit_imported_identity call site(s), \
+                     inventory expects {expected}"
+                ));
+            }
+        }
+        violations
+    }
+
+    /// Closed world: every `commit_imported_identity` call site in
+    /// `desktop/src-tauri/src` matches the inventory — exactly one, in this
+    /// coordinator. A new caller anywhere fails this until its row is updated.
+    #[test]
+    fn commit_imported_identity_sink_is_closed_world() {
+        let violations = sink_violations(&read_src_files());
+        assert!(
+            violations.is_empty(),
+            "identity-swap sink drift — a new commit_imported_identity caller must \
+             route through run_identity_transition, not call the swap directly; then \
+             update SINK_INVENTORY:\n{}",
+            violations.join("\n")
+        );
+    }
+
+    /// Mutation proof: a second caller added to an already-inventoried file
+    /// (this one) is caught — the scan is not vacuously passing.
+    #[test]
+    fn sink_scan_catches_a_new_caller_in_an_inventoried_file() {
+        let mut files = read_src_files();
+        let me = files
+            .iter_mut()
+            .find(|(rel, _)| rel.ends_with("src/commands/identity_transition.rs"))
+            .expect("this module must be in the scan set");
+        me.1.push_str(&format!(
+            "\n    let _ = {}(&state, dir, keys, storage);\n",
+            needle()
+        ));
+        let violations = sink_violations(&files);
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.contains("src/commands/identity_transition.rs")),
+            "a second sink caller must trip the scan: {violations:?}"
+        );
+    }
+
+    /// Mutation proof: a caller in a brand-new file (no inventory row) is
+    /// caught — the closed world admits no unlisted swap path.
+    #[test]
+    fn sink_scan_catches_a_caller_in_a_new_file() {
+        let mut files = read_src_files();
+        files.push((
+            "src/sneaky_swap.rs".to_string(),
+            format!("fn bypass() {{ {}(&s, d, k, st); }}", needle()),
+        ));
+        let violations = sink_violations(&files);
+        assert!(
+            violations.iter().any(|v| v.contains("src/sneaky_swap.rs")),
+            "a sink caller in an unlisted file must trip the scan: {violations:?}"
+        );
+    }
+
+    /// EARLY-gate zero-disruptive-work schedule (P26-C1, spec §7): a recovery
+    /// superseded while it queued on the transition locks is rejected by
+    /// `early_validity_check` — which runs under the held `workspace_transition`
+    /// guard, immediately after acquisition and BEFORE the Mesh preflight and
+    /// the `spawn_blocking` body — having done ZERO disruptive work. Because the
+    /// gate short-circuits with `?` before any disruptive call, "zero work" is
+    /// structural; this fixture pins it by driving the real coordinator and
+    /// asserting the durable side-effect surfaces are untouched: egress never
+    /// left `Live` (no `begin_egress_drain`), the persistence generation did not
+    /// move, and no active scope was committed. The `nsec` is deliberately
+    /// invalid — reaching key recovery at all would prove the gate leaked past
+    /// its boundary.
+    #[tokio::test]
+    // The two process-global test-serialization guards are held across the
+    // coordinator `.await` deliberately: they must cover the whole transition
+    // so a sibling egress/scope test cannot observe or mutate the shared
+    // registry mid-drive. No other task contends for them inside this test's
+    // runtime, so holding them across the await cannot stall or deadlock it.
+    #[allow(clippy::await_holding_lock)]
+    async fn early_gate_rejection_does_zero_disruptive_work() {
+        use crate::managed_agents::scope::SCOPE_GENERATION_TEST_LOCK;
+        use crate::owner_identity_egress::{
+            current_identity_persistence_generation, identity_persistence_state,
+            reset_registry_for_test, IdentityPersistenceState, EGRESS_REGISTRY_TEST_LOCK,
+        };
+        use tauri::Manager;
+
+        // Serialize against every other egress/scope-sensitive test.
+        let _egress_guard = EGRESS_REGISTRY_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _scope_guard = SCOPE_GENERATION_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        reset_registry_for_test();
+
+        let app = tauri::test::mock_builder()
+            .manage(crate::app_state::build_app_state())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("failed to build mock app");
+        let app_handle = app.handle().clone();
+        let state = app.state::<crate::app_state::AppState>();
+
+        let generation_before = current_identity_persistence_generation();
+        assert_eq!(identity_persistence_state(), IdentityPersistenceState::Live);
+        assert!(
+            state.capture_active_scope().is_none(),
+            "pre-condition: no active scope"
+        );
+
+        // Drive the coordinator with an early gate that is already superseded.
+        // The late gate would never be reached, so it asserts unreachable.
+        let result = super::run_identity_transition(
+            app_handle,
+            "nsec-invalid-must-never-be-parsed".to_string(),
+            None,
+            None,
+            || Err("superseded while queued".to_string()),
+            || unreachable!("late gate must not run after an early-gate rejection"),
+        )
+        .await;
+
+        assert_eq!(
+            result.err().expect("early-gate rejection must return Err"),
+            "superseded while queued",
+            "the early-gate error must propagate verbatim"
+        );
+
+        // Zero disruptive work: egress untouched (never drained), no generation
+        // movement, no scope committed.
+        assert_eq!(
+            identity_persistence_state(),
+            IdentityPersistenceState::Live,
+            "early-gate rejection must not begin the egress drain"
+        );
+        assert_eq!(
+            current_identity_persistence_generation(),
+            generation_before,
+            "early-gate rejection must not bump the persistence generation"
+        );
+        assert!(
+            state.capture_active_scope().is_none(),
+            "early-gate rejection must not commit a scope"
+        );
+
+        reset_registry_for_test();
+    }
+}
