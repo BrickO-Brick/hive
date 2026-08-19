@@ -250,7 +250,7 @@ export function ReadmePanel({
     return (
       <section className="overflow-hidden">
         {header}
-        <div className="p-6 text-sm text-muted-foreground">
+        <div className="px-8 py-6 text-sm text-muted-foreground">
           {gitDataState === "empty"
             ? "No files have been pushed to this repository yet."
             : "Add a README to this repository to describe setup, usage, and project context."}
@@ -268,11 +268,13 @@ export function ReadmePanel({
   return (
     <section className="overflow-hidden">
       {header}
-      <div className="p-4">
+      <div className="min-w-0 px-8 py-6">
         {isMarkdown ? (
           <Markdown
+            blockCode
             className="text-sm"
             content={readmeContent}
+            hardLineBreaks={false}
             interactive={false}
           />
         ) : language ? (
