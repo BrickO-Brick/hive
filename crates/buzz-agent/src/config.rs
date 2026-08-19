@@ -530,10 +530,20 @@ impl Config {
     pub fn from_env() -> Result<Self, String> {
         let databricks_host = env("DATABRICKS_HOST");
         let databricks_model = env("DATABRICKS_MODEL");
+        let requested_provider = env("BUZZ_AGENT_PROVIDER");
+        let openai_key = env("OPENAI_API_KEY");
+        let legacy_openai_key = env("OPENAI_COMPAT_API_KEY");
+        let openai_base_url = env("OPENAI_COMPAT_BASE_URL");
         let provider = resolve_provider(
-            env("BUZZ_AGENT_PROVIDER").as_deref(),
+            normalize_legacy_openai_provider(
+                requested_provider.as_deref(),
+                openai_base_url.as_deref(),
+                openai_key.as_deref(),
+                legacy_openai_key.as_deref(),
+            )
+            .as_deref(),
             env("ANTHROPIC_API_KEY").as_deref(),
-            env("OPENAI_API_KEY").as_deref(),
+            openai_key.as_deref().or(legacy_openai_key.as_deref()),
             env("OPENROUTER_API_KEY").as_deref(),
         )?;
 
@@ -561,7 +571,11 @@ impl Config {
                 OpenAiApi::Auto, // unused for Anthropic
             ),
             Provider::OpenAi => (
-                req("OPENAI_API_KEY")?,
+                openai_key
+                    .clone()
+                    .or_else(|| legacy_openai_key.clone())
+                    .filter(|value| !value.trim().is_empty())
+                    .ok_or_else(|| "config: OPENAI_API_KEY required".to_string())?,
                 resolve_model(
                     buzz_agent_model.as_deref(),
                     env("OPENAI_COMPAT_MODEL").as_deref(),
@@ -805,6 +819,33 @@ fn resolve_model(
 
 fn present_nonempty(v: Option<&str>) -> bool {
     v.map(str::trim).is_some_and(|s| !s.is_empty())
+}
+
+fn normalize_legacy_openai_provider(
+    requested: Option<&str>,
+    openai_base_url: Option<&str>,
+    openai_key: Option<&str>,
+    legacy_openai_key: Option<&str>,
+) -> Option<String> {
+    let requested = requested?.trim();
+    if !requested.eq_ignore_ascii_case("openai") {
+        return Some(requested.to_string());
+    }
+    // OPENAI_API_KEY is the post-split discriminator. Only configurations that
+    // still rely exclusively on the legacy key are eligible for URL-based
+    // normalization; an explicit official key must never be routed elsewhere.
+    if present_nonempty(openai_key) || !present_nonempty(legacy_openai_key) {
+        return Some("openai".to_string());
+    }
+    let custom_origin = openai_base_url
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some_and(|value| value.trim_end_matches('/') != "https://api.openai.com/v1");
+    Some(if custom_origin {
+        "openai-compat".to_string()
+    } else {
+        "openai".to_string()
+    })
 }
 
 fn resolve_provider(
@@ -1149,6 +1190,35 @@ mod tests {
         }
         let err = parse_openai_api(Some("nope")).unwrap_err();
         assert!(err.contains("OPENAI_COMPAT_API=nope"), "{err}");
+    }
+
+    #[test]
+    fn legacy_openai_provider_normalizes_custom_origins_only_without_new_key() {
+        assert_eq!(
+            normalize_legacy_openai_provider(
+                Some("openai"),
+                Some("http://localhost:11434/v1"),
+                None,
+                Some("legacy-key"),
+            )
+            .as_deref(),
+            Some("openai-compat")
+        );
+        assert_eq!(
+            normalize_legacy_openai_provider(
+                Some("openai"),
+                Some("http://localhost:11434/v1"),
+                Some("official-key"),
+                Some("legacy-key"),
+            )
+            .as_deref(),
+            Some("openai")
+        );
+        assert_eq!(
+            normalize_legacy_openai_provider(Some("openai"), None, None, Some("legacy-key"),)
+                .as_deref(),
+            Some("openai")
+        );
     }
 
     #[test]

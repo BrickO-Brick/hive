@@ -2,6 +2,8 @@
 //! projections and their NIP-09 tombstones. Extracted from the parent module to
 //! keep it under the file-size cap.
 
+use std::collections::BTreeMap;
+
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::{
@@ -509,6 +511,32 @@ fn event_d_tag(event: &nostr::Event) -> Result<String, String> {
         .ok_or_else(|| "inbound event missing d-tag".to_string())
 }
 
+fn normalize_inbound_openai_provider(
+    provider: Option<String>,
+    local_env: &BTreeMap<String, String>,
+) -> Option<String> {
+    let is_legacy_openai = provider
+        .as_deref()
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("openai"))
+        && local_env
+            .get("OPENAI_API_KEY")
+            .is_none_or(|value| value.trim().is_empty())
+        && local_env
+            .get("OPENAI_COMPAT_API_KEY")
+            .is_some_and(|value| !value.trim().is_empty());
+    let has_custom_origin = local_env
+        .get("OPENAI_COMPAT_BASE_URL")
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some_and(|value| value.trim_end_matches('/') != "https://api.openai.com/v1");
+    if is_legacy_openai && has_custom_origin {
+        Some("openai-compat".to_string())
+    } else {
+        provider
+    }
+}
+
 /// Merge a parsed inbound persona into the local set: patch the matching record
 /// in place, or push it when none matches.
 ///
@@ -530,7 +558,7 @@ fn apply_inbound_persona(personas: &mut Vec<AgentDefinition>, inbound: AgentDefi
             local.system_prompt = inbound.system_prompt;
             local.runtime = inbound.runtime;
             local.model = inbound.model;
-            local.provider = inbound.provider;
+            local.provider = normalize_inbound_openai_provider(inbound.provider, &local.env_vars);
             local.name_pool = inbound.name_pool;
             local.respond_to = inbound.respond_to;
             local.respond_to_allowlist = inbound.respond_to_allowlist;
@@ -576,7 +604,7 @@ fn apply_inbound_managed_agent(
         if !definition_linked {
             local.system_prompt = inbound.system_prompt;
             local.model = inbound.model;
-            local.provider = inbound.provider;
+            local.provider = normalize_inbound_openai_provider(inbound.provider, &local.env_vars);
             local.persona_source_version = inbound.persona_source_version;
         }
         local.parallelism = inbound.parallelism;

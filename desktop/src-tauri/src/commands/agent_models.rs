@@ -8,12 +8,12 @@ use super::agent_model_process::run_agent_models_command;
 use super::managed_agent_definition::apply_model_provider_prompt_update;
 // The map-only lookup is reached solely from an Anthropic base-URL helper used
 // by unit tests; discovery itself always goes through the process-env variant.
-#[cfg(test)]
-use super::agent_models_env::env_value;
 use super::agent_models_env::{
-    effective_discovery_provider, env_or_process_override, env_or_process_value,
-    openai_compatible_models_url_for_discovery, redaction_env_with_value, DiscoveryProvider,
+    effective_discovery_provider, env_or_process_value, openai_compatible_models_url_for_discovery,
+    redaction_env_with_value, DiscoveryProvider,
 };
+#[cfg(test)]
+use super::agent_models_env::{env_or_process_override, env_value};
 use super::agent_update_rollback::{rollback_failed_agent_update, AgentUpdateRollback};
 
 use crate::{
@@ -96,11 +96,15 @@ pub async fn get_agent_models(
         command: _,
     } = discovery;
 
-    let merged_env = discovery_env_with_baked_floor(merged_env);
+    let mut merged_env = discovery_env_with_baked_floor(merged_env);
     // Resolve against the baked/process env when the record saved no provider,
     // so a build-provided provider still gets live discovery.
     let effective_provider =
         effective_discovery_provider(saved_provider.as_deref(), provider_env_var, &merged_env);
+    crate::managed_agents::readiness::canonicalize_openai_provider_env(
+        &mut merged_env,
+        effective_provider.as_deref(),
+    );
     if let Some(models) = discover_openrouter_models(
         &state.http_client,
         &effective_provider,
@@ -231,13 +235,17 @@ pub async fn discover_agent_models(
         &input.definition_env,
         &input.env_vars,
     );
-    let merged_env = discovery_env_with_baked_floor(merged_env);
+    let mut merged_env = discovery_env_with_baked_floor(merged_env);
     // Recover a build-provided provider when the form has none, so the create
     // dialog discovers live models instead of falling through to the subprocess.
     let effective_provider = effective_discovery_provider(
         input.provider.as_deref(),
         runtime_meta.and_then(|meta| meta.provider_env_var),
         &merged_env,
+    );
+    crate::managed_agents::readiness::canonicalize_openai_provider_env(
+        &mut merged_env,
+        effective_provider.as_deref(),
     );
 
     // Buzz shared compute discovery must not depend on the local OpenAI ingress: that
@@ -495,7 +503,9 @@ async fn discover_openai_compatible_models(
     let api_key = if relay_mesh {
         crate::managed_agents::RELAY_MESH_API_KEY_PLACEHOLDER.to_string()
     } else if is_compat {
-        env_or_process_override(env, api_key_env_var).unwrap_or_default()
+        env.get(api_key_env_var)
+            .map(|value| value.trim().to_string())
+            .unwrap_or_default()
     } else {
         match provider.required_env(env, api_key_env_var)? {
             Some(api_key) => api_key,

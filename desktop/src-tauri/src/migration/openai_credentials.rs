@@ -212,7 +212,7 @@ fn classify_endpoint(endpoint: Option<&str>) -> Result<Identity, String> {
     let Some(value) = endpoint.map(str::trim).filter(|v| !v.is_empty()) else {
         return Ok(Identity::Official);
     };
-    let url = url::Url::parse(value).map_err(|_| format!("invalid OpenAI endpoint {value:?}"))?;
+    let url = url::Url::parse(value).map_err(|_| "invalid OpenAI endpoint".to_string())?;
     if !matches!(url.scheme(), "http" | "https")
         || url.host_str().is_none()
         || !url.username().is_empty()
@@ -220,7 +220,7 @@ fn classify_endpoint(endpoint: Option<&str>) -> Result<Identity, String> {
         || url.query().is_some()
         || url.fragment().is_some()
     {
-        return Err(format!("invalid OpenAI endpoint {value:?}"));
+        return Err("invalid OpenAI endpoint".to_string());
     }
     let official = url.scheme() == "https"
         && url
@@ -399,23 +399,6 @@ fn set_provider(store: &mut Store, owner: Owner, provider: &str) -> Result<(), S
 
 fn plan_store(mut store: Store) -> Result<(Store, Vec<Consumer>), String> {
     let consumers = collect_consumers(&store)?;
-    let all_env_consumers: Vec<_> = store
-        .records
-        .iter()
-        .enumerate()
-        .map(|(index, record)| {
-            let defs = definitions(&store);
-            let def = selected_definition(record, &defs);
-            layers(&store, record, def).map(|layers| {
-                (
-                    index,
-                    resolve_key(&layers, OPENAI_COMPAT_API_KEY),
-                    resolve_key(&layers, OPENAI_API_KEY),
-                    resolve_key(&layers, OPENAI_COMPAT_BASE_URL),
-                )
-            })
-        })
-        .collect::<Result<_, _>>()?;
     let mut provider_targets: HashMap<Owner, (Identity, bool)> = HashMap::new();
     for consumer in &consumers {
         let expected = if consumer.identity == Identity::Official {
@@ -476,26 +459,6 @@ fn plan_store(mut store: Store) -> Result<(Store, Vec<Consumer>), String> {
     }
     for (owner, identity) in legacy_targets {
         if identity == Identity::Official {
-            for (index, legacy, official, _) in &all_env_consumers {
-                if legacy.as_ref().is_some_and(|value| value.owner == owner) {
-                    let relevant = consumers
-                        .iter()
-                        .find(|consumer| consumer.record_index == Some(*index));
-                    if relevant.is_none_or(|consumer| consumer.identity != Identity::Official) {
-                        return Err(format!(
-                            "credential owner {owner:?} is shared with a non-official consumer"
-                        ));
-                    }
-                    if official
-                        .as_ref()
-                        .is_some_and(|value| !value.value.is_empty())
-                    {
-                        return Err(format!(
-                            "credential owner {owner:?} is also visible beside an existing distinct official credential"
-                        ));
-                    }
-                }
-            }
             let env = env_mut(&mut store, owner)?;
             if env.get(OPENAI_API_KEY).is_none_or(|value| value.is_empty()) {
                 if let Some(value) = env.remove(OPENAI_COMPAT_API_KEY) {
@@ -523,18 +486,6 @@ fn plan_store(mut store: Store) -> Result<(Store, Vec<Consumer>), String> {
     alias_owners.sort_by_key(|owner| format!("{owner:?}"));
     alias_owners.dedup();
     for owner in alias_owners {
-        for (index, _, _, endpoint) in &all_env_consumers {
-            if endpoint.as_ref().is_some_and(|value| value.owner == owner) {
-                let relevant = consumers
-                    .iter()
-                    .find(|consumer| consumer.record_index == Some(*index));
-                if relevant.is_none_or(|consumer| consumer.identity != Identity::Official) {
-                    return Err(format!(
-                        "endpoint owner {owner:?} is shared with a non-official consumer"
-                    ));
-                }
-            }
-        }
         env_mut(&mut store, owner)?.insert(
             OPENAI_COMPAT_BASE_URL.into(),
             CANONICAL_OPENAI_ORIGIN.into(),

@@ -24,6 +24,19 @@ pub(crate) fn runtime_metadata_env_vars<'a>(
     vars
 }
 
+pub(crate) fn scrub_unconfigured_openai_compat_key(
+    command: &mut std::process::Command,
+    effective_provider: Option<&str>,
+    env: &std::collections::BTreeMap<String, String>,
+) {
+    if effective_provider
+        .is_some_and(|provider| provider.trim().eq_ignore_ascii_case("openai-compat"))
+        && !env.contains_key("OPENAI_COMPAT_API_KEY")
+    {
+        command.env_remove("OPENAI_COMPAT_API_KEY");
+    }
+}
+
 /// Env var carrying the session title to the harness. Shared with
 /// `spawn_snapshot` so the restart badge records the same key the spawn writes.
 pub(crate) const SESSION_TITLE_ENV_VAR: &str = "BUZZ_ACP_SESSION_TITLE";
@@ -76,7 +89,28 @@ pub(crate) fn resolve_session_title(display_name: Option<&str>, name: &str) -> O
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_session_title;
+    use super::{resolve_session_title, scrub_unconfigured_openai_compat_key};
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn keyless_openai_compat_scrubs_parent_process_credential() {
+        let mut command = std::process::Command::new("echo");
+        command.env("OPENAI_COMPAT_API_KEY", "ambient-secret");
+        scrub_unconfigured_openai_compat_key(&mut command, Some("openai-compat"), &BTreeMap::new());
+        assert!(command
+            .get_envs()
+            .any(|(key, value)| key == "OPENAI_COMPAT_API_KEY" && value.is_none()));
+    }
+
+    #[test]
+    fn configured_openai_compat_key_is_preserved() {
+        let mut command = std::process::Command::new("echo");
+        let env = BTreeMap::from([("OPENAI_COMPAT_API_KEY".to_string(), "key".to_string())]);
+        scrub_unconfigured_openai_compat_key(&mut command, Some("openai-compat"), &env);
+        assert!(!command
+            .get_envs()
+            .any(|(key, value)| key == "OPENAI_COMPAT_API_KEY" && value.is_none()));
+    }
 
     #[test]
     fn resolve_session_title_prefers_display_name() {

@@ -196,7 +196,7 @@ fn mixed_global_provider_owner_is_rejected() {
 }
 
 #[test]
-fn mixed_global_credential_owner_is_rejected_even_for_unrelated_consumer() {
+fn unrelated_consumer_does_not_claim_global_openai_credential() {
     let global = GlobalAgentConfig {
         provider: Some("openai".into()),
         env_vars: BTreeMap::from([(OPENAI_COMPAT_API_KEY.into(), "shared".into())]),
@@ -205,9 +205,15 @@ fn mixed_global_credential_owner_is_rejected_even_for_unrelated_consumer() {
     let official = record("official", "official");
     let mut unrelated = record("unrelated", "unrelated");
     unrelated.provider = Some("anthropic".into());
-    assert!(planned(global, vec![official, unrelated])
-        .unwrap_err()
-        .contains("shared with a non-official consumer"));
+    let store = planned(global, vec![official, unrelated]).unwrap();
+    assert_eq!(
+        store
+            .global
+            .env_vars
+            .get(OPENAI_API_KEY)
+            .map(String::as_str),
+        Some("shared")
+    );
 }
 
 #[test]
@@ -274,7 +280,7 @@ fn first_fold_builtin_link_does_not_block_unrelated_official_consumer() {
 }
 
 #[test]
-fn shared_global_official_alias_with_non_openai_consumer_is_rejected() {
+fn unrelated_consumer_does_not_claim_global_openai_endpoint() {
     let global = GlobalAgentConfig {
         provider: Some("openai".into()),
         env_vars: BTreeMap::from([(
@@ -286,9 +292,15 @@ fn shared_global_official_alias_with_non_openai_consumer_is_rejected() {
     let official = record("official", "official");
     let mut unrelated = record("unrelated", "unrelated");
     unrelated.provider = Some("anthropic".into());
-    assert!(planned(global, vec![official, unrelated])
-        .unwrap_err()
-        .contains("endpoint owner"));
+    let store = planned(global, vec![official, unrelated]).unwrap();
+    assert_eq!(
+        store
+            .global
+            .env_vars
+            .get(OPENAI_COMPAT_BASE_URL)
+            .map(String::as_str),
+        Some(CANONICAL_OPENAI_ORIGIN)
+    );
 }
 
 #[test]

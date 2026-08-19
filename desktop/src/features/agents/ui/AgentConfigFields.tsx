@@ -67,7 +67,7 @@ import { SettingsOptionGroup } from "@/features/settings/ui/SettingsOptionGroup"
 import { AdvancedRequiredBadge } from "./AdvancedRequiredBadge";
 import { CardMintKeyCue } from "./CardMintKeyCue";
 import { getGlobalAgentCredentialState } from "./globalAgentCredentialState";
-import { envVarsClearingManagedApiKey } from "./providerEnvVarUpdates";
+import { envVarsPreservingProviderState } from "./providerEnvVarUpdates";
 
 export const EMPTY_GLOBAL_CONFIG: GlobalAgentConfig = {
   env_vars: {},
@@ -523,7 +523,7 @@ export function AgentConfigFields({
   function handleProviderChange(value: string) {
     userEditedProviderRef.current = true;
     if (value === CUSTOM_PROVIDER_DROPDOWN_VALUE) {
-      const nextEnvVars = envVarsClearingManagedApiKey(
+      const nextEnvVars = envVarsPreservingProviderState(
         config.env_vars,
         effectiveProvider,
         "",
@@ -534,7 +534,7 @@ export function AgentConfigFields({
     }
     const nextProvider =
       value === AUTO_PROVIDER_DROPDOWN_VALUE || value === "" ? null : value;
-    const nextEnvVars = envVarsClearingManagedApiKey(
+    const nextEnvVars = envVarsPreservingProviderState(
       config.env_vars,
       effectiveProvider,
       nextProvider ?? bakedProvider ?? "",

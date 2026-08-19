@@ -107,12 +107,11 @@ with a TypeScript lookup table or an id comparison in a component.
    starts on the Buzz Agent-first deployment fallback and carries that visible
    harness into the next saved edit. Provider credentials have distinct
    identities: official OpenAI uses `OPENAI_API_KEY`, while arbitrary
-   OpenAI-compatible origins use `OPENAI_COMPAT_API_KEY`. Provider changes
-   apply the shared managed-key clearing policy so one provider's credential is
-   never relabeled as the other's. `OPENAI_COMPAT_BASE_URL` is provider-owned
-   routing state and must be cleared whenever a defaults/onboarding transition
-   leaves `openai-compat`; otherwise official OpenAI discovery inherits the
-   stale custom endpoint. Persisted pre-split credentials are migrated once at
+   OpenAI-compatible origins use `OPENAI_COMPAT_API_KEY`. Provider changes preserve the shared env map; provider-specific consumers
+   select only their own credential and routing values. Official OpenAI pins its
+   origin and ignores compatible routing state, so changing the default never
+   destroys credentials or endpoints still used by explicitly configured agents
+   or card minting. Persisted pre-split credentials are migrated once at
    boot: official `api.openai.com` records move to `OPENAI_API_KEY`, while
    custom origins remain `openai-compat` and retain `OPENAI_COMPAT_API_KEY`.
    The `progressive-defaults` disclosure

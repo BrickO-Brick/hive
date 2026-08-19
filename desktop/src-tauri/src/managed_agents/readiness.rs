@@ -269,6 +269,8 @@ fn resolve_effective_agent_env_with_def(
     );
     env.extend(user_env);
 
+    canonicalize_openai_provider_env(&mut env, effective_provider.as_deref());
+
     // Buzz shared compute is a native Buzz provider. Translate it to buzz-agent's
     // OpenAI-compatible transport only in the effective runtime environment.
     #[cfg(feature = "mesh-llm")]
@@ -282,6 +284,27 @@ fn resolve_effective_agent_env_with_def(
         env,
         config_file_path: runtime.and_then(|r| r.config_file_path),
         effective_command,
+    }
+}
+
+pub(crate) fn canonicalize_openai_provider_env(
+    env: &mut BTreeMap<String, String>,
+    provider: Option<&str>,
+) {
+    match provider
+        .map(str::trim)
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("openai") => {
+            env.remove("OPENAI_COMPAT_BASE_URL");
+            env.remove("OPENAI_COMPAT_API_KEY");
+        }
+        Some("openai-compat") => {
+            env.remove("OPENAI_API_KEY");
+            env.entry("OPENAI_COMPAT_API_KEY".to_string()).or_default();
+        }
+        _ => {}
     }
 }
 
@@ -744,52 +767,6 @@ mod tests {
         assert!(result.requirements().contains(&Requirement::EnvKey {
             key: "ANTHROPIC_API_KEY".to_string()
         }));
-    }
-
-    #[test]
-    fn buzz_agent_missing_openai_key_returns_not_ready() {
-        let env = make_env(
-            "buzz-agent",
-            env_with(&[
-                ("BUZZ_AGENT_PROVIDER", "openai"),
-                ("BUZZ_AGENT_MODEL", "gpt-4o"),
-                ("OPENAI_COMPAT_API_KEY", "must-not-cross-provider-boundary"),
-            ]),
-        );
-        let result = agent_readiness(&env);
-        assert!(!result.is_ready());
-        assert!(result.requirements().contains(&Requirement::EnvKey {
-            key: "OPENAI_API_KEY".to_string()
-        }));
-    }
-
-    #[test]
-    fn buzz_agent_openai_compat_requires_url_but_not_key() {
-        let without_url = make_env(
-            "buzz-agent",
-            env_with(&[
-                ("BUZZ_AGENT_PROVIDER", "openai-compat"),
-                ("BUZZ_AGENT_MODEL", "llama3"),
-            ]),
-        );
-        let result = agent_readiness(&without_url);
-        assert!(!result.is_ready());
-        assert!(result.requirements().contains(&Requirement::EnvKey {
-            key: "OPENAI_COMPAT_BASE_URL".to_string()
-        }));
-        assert!(!result.requirements().contains(&Requirement::EnvKey {
-            key: "OPENAI_COMPAT_API_KEY".to_string()
-        }));
-
-        let with_url = make_env(
-            "buzz-agent",
-            env_with(&[
-                ("BUZZ_AGENT_PROVIDER", " OpenAI-Compat "),
-                ("BUZZ_AGENT_MODEL", "llama3"),
-                ("OPENAI_COMPAT_BASE_URL", "http://localhost:11434/v1"),
-            ]),
-        );
-        assert!(agent_readiness(&with_url).is_ready());
     }
 
     #[test]
@@ -1738,3 +1715,6 @@ mod tests {
 #[cfg(test)]
 #[path = "readiness_goose_file_config_tests.rs"]
 mod goose_file_config_tests;
+#[cfg(test)]
+#[path = "readiness_openai_tests.rs"]
+mod openai_tests;

@@ -1,95 +1,26 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  envVarsClearingManagedApiKey,
-  envVarsClearingOpenAiCompatBaseUrl,
-  envVarsWithoutKey,
-} from "./providerEnvVarUpdates.ts";
+import { envVarsPreservingProviderState } from "./providerEnvVarUpdates.ts";
 
-test("envVarsWithoutKey removes a present key", () => {
-  assert.deepEqual(envVarsWithoutKey({ A: "1", B: "2" }, "A"), { B: "2" });
-});
-
-test("envVarsWithoutKey returns the same reference when the key is absent", () => {
-  const current = { A: "1" };
-  assert.equal(envVarsWithoutKey(current, "B"), current);
-});
-
-test("envVarsClearingManagedApiKey clears the previous provider's key on switch", () => {
-  const next = envVarsClearingManagedApiKey(
-    { ANTHROPIC_API_KEY: "sk-1", KEEP: "x" },
-    "anthropic",
-    "openai",
-  );
-  assert.deepEqual(next, { KEEP: "x" });
-});
-
-test("envVarsClearingManagedApiKey clears when leaving to a custom/empty provider", () => {
-  // The dialogs' CUSTOM-provider paths delete unconditionally; empty next
-  // provider has no managed key, so the inequality always holds — same rule.
-  const next = envVarsClearingManagedApiKey(
-    { ANTHROPIC_API_KEY: "sk-1" },
-    "anthropic",
-    "",
-  );
-  assert.deepEqual(next, {});
-});
-
-test("envVarsClearingOpenAiCompatBaseUrl clears only the compatible URL", () => {
+test("provider changes preserve shared credentials and routing state", () => {
   const current = {
-    OPENAI_COMPAT_API_KEY: "sk-1",
+    ANTHROPIC_API_KEY: "anthropic-key",
+    OPENAI_API_KEY: "openai-key",
+    OPENAI_COMPAT_API_KEY: "compat-key",
     OPENAI_COMPAT_BASE_URL: "http://localhost:11434/v1",
-    KEEP: "x",
   };
-  assert.deepEqual(
-    envVarsClearingOpenAiCompatBaseUrl(current, " OpenAI-Compat ", "openai"),
-    {
-      OPENAI_COMPAT_API_KEY: "sk-1",
-      KEEP: "x",
-    },
-  );
+
   assert.equal(
-    envVarsClearingOpenAiCompatBaseUrl(
-      current,
-      "openai-compat",
-      "OPENAI-COMPAT",
-    ),
+    envVarsPreservingProviderState(current, "openai-compat", "openai"),
     current,
   );
-});
-
-test("envVarsClearingManagedApiKey clears the compat credential and URL when switching to OpenAI", () => {
-  const next = envVarsClearingManagedApiKey(
-    {
-      OPENAI_COMPAT_API_KEY: "compat-key",
-      OPENAI_COMPAT_BASE_URL: "http://localhost:11434/v1",
-      KEEP: "x",
-    },
-    "openai-compat",
-    "openai",
-  );
-  assert.deepEqual(next, { KEEP: "x" });
-});
-
-test("envVarsClearingManagedApiKey clears the OpenAI credential when switching to compat", () => {
-  const next = envVarsClearingManagedApiKey(
-    { OPENAI_API_KEY: "openai-key", KEEP: "x" },
-    "openai",
-    "openai-compat",
-  );
-  assert.deepEqual(next, { KEEP: "x" });
-});
-
-test("envVarsClearingManagedApiKey is a no-op when the provider is unchanged or unmanaged", () => {
-  const current = { ANTHROPIC_API_KEY: "sk-1" };
   assert.equal(
-    envVarsClearingManagedApiKey(current, "anthropic", "anthropic"),
+    envVarsPreservingProviderState(current, "openai", "anthropic"),
     current,
   );
-  const noManaged = { X: "1" };
   assert.equal(
-    envVarsClearingManagedApiKey(noManaged, "", "openai"),
-    noManaged,
+    envVarsPreservingProviderState(current, "anthropic", ""),
+    current,
   );
 });
