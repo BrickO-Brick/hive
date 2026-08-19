@@ -257,14 +257,13 @@ function commitMatchesViewerGitIdentity(
   commit: ProjectRepoCommit,
   viewer: ViewerGitIdentity,
 ) {
-  const name = commit.authorName.trim().toLowerCase();
+  // Email-only equality. A display name is not an identity: two contributors
+  // can share "Alex Chen", and a name-based match would borrow the viewer's
+  // avatar for a stranger's commit. The git email is what the viewer's own
+  // commits actually carry, so requiring it loses nothing legitimate.
   const email = commit.authorEmail.trim().toLowerCase();
-  const viewerName = viewer.name?.trim().toLowerCase() ?? "";
   const viewerEmail = viewer.email?.trim().toLowerCase() ?? "";
-  return (
-    (email.length > 0 && email === viewerEmail) ||
-    (name.length > 0 && name === viewerName)
-  );
+  return email.length > 0 && email === viewerEmail;
 }
 
 /**

@@ -143,6 +143,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
       defaultBranch,
       projectAvailable: Boolean(repository),
       projectPending: projectQuery.isPending,
+      repositoryId: repository?.id ?? null,
       tags: repoStateQuery.data?.tags ?? [],
     });
   const activeTag =

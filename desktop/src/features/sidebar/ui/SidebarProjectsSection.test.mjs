@@ -174,6 +174,43 @@ test("listSidebarProjects owned filter hides contributed projects", () => {
   );
 });
 
+test("listSidebarProjects owned filter surfaces owned projects never added", () => {
+  const owned = makeProject({
+    dtag: "owned",
+    id: `30621:${VIEWER}:owned`,
+    name: "Owned",
+    owner: VIEWER,
+    projectAddress: `30621:${VIEWER}:owned`,
+  });
+  const other = makeProject({ name: "Other" });
+
+  // The owned project is absent from the added set: "owned" must still
+  // discover it, while "added" keeps listing only explicit membership.
+  const addedProjectAddresses = new Set([other.projectAddress]);
+  const ownedListing = listSidebarProjects({
+    addedProjectAddresses,
+    currentPubkey: VIEWER,
+    filter: "owned",
+    projects: [other, owned],
+    sort: "name",
+  });
+  assert.deepEqual(
+    ownedListing.map((project) => project.name),
+    ["Owned"],
+  );
+  const addedListing = listSidebarProjects({
+    addedProjectAddresses,
+    currentPubkey: VIEWER,
+    filter: "added",
+    projects: [other, owned],
+    sort: "name",
+  });
+  assert.deepEqual(
+    addedListing.map((project) => project.name),
+    ["Other"],
+  );
+});
+
 test("listSidebarProjects newest sort orders by createdAt then name", () => {
   const older = makeProject({
     createdAt: 10,

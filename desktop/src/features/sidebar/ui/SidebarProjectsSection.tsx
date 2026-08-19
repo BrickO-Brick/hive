@@ -140,11 +140,11 @@ function SidebarProjectsSectionContent() {
   const [projectToDelete, setProjectToDelete] = React.useState<Project | null>(
     null,
   );
-  const [filter, setFilter] = React.useState<SidebarProjectsFilter>(
-    readSidebarProjectsFilter,
+  const [filter, setFilter] = React.useState<SidebarProjectsFilter>(() =>
+    readSidebarProjectsFilter(relayOrigin, currentPubkey),
   );
-  const [sort, setSort] = React.useState<SidebarProjectsSort>(
-    readSidebarProjectsSort,
+  const [sort, setSort] = React.useState<SidebarProjectsSort>(() =>
+    readSidebarProjectsSort(relayOrigin, currentPubkey),
   );
   const [projectExpansion, setProjectExpansion] =
     React.useState<SidebarProjectExpansionState>(() =>
@@ -161,6 +161,10 @@ function SidebarProjectsSectionContent() {
     setProjectExpansion(
       readSidebarProjectExpansion(relayOrigin, currentPubkey),
     );
+    // Filter/sort are scoped like expansion: re-read on identity/community
+    // change (currentPubkey is undefined until the identity query resolves).
+    setFilter(readSidebarProjectsFilter(relayOrigin, currentPubkey));
+    setSort(readSidebarProjectsSort(relayOrigin, currentPubkey));
   }, [currentPubkey, relayOrigin]);
   const addedProjectAddressSet = React.useMemo(
     () => new Set(addedProjectAddresses),
@@ -197,11 +201,11 @@ function SidebarProjectsSectionContent() {
 
   const handleFilterChange = (next: SidebarProjectsFilter) => {
     setFilter(next);
-    writeSidebarProjectsFilter(next);
+    writeSidebarProjectsFilter(next, relayOrigin, currentPubkey);
   };
   const handleSortChange = (next: SidebarProjectsSort) => {
     setSort(next);
-    writeSidebarProjectsSort(next);
+    writeSidebarProjectsSort(next, relayOrigin, currentPubkey);
   };
   const setProjectExpanded = (project: Project, expanded: boolean) => {
     setProjectExpansion((current) => {

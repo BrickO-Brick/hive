@@ -16,11 +16,6 @@
  */
 
 import type { SearchHit } from "@/shared/api/searchTypes";
-import type { RelayEvent } from "@/shared/api/types";
-import {
-  getChannelIdFromTags,
-  getThreadReference,
-} from "@/features/messages/lib/threading";
 
 export type DiscussionChannel = {
   id: string;
@@ -42,8 +37,11 @@ export function entityDiscussionQuery(eventId: string): string {
   return eventId;
 }
 
-/** Channel the entity was created from (`h` tag). Search will not find that
- * thread: those messages predate the share link. */
+/** Channel the entity was created from (`h` tag, author-claimed). The tag
+ * proves only the channel — no event ties any specific message to the
+ * entity, so the origin renders as a channel-only row: never fetch nearby
+ * channel traffic to fabricate, quote, or attribute a "spawning"
+ * conversation. */
 export type DiscussionOrigin = {
   channelId: string;
   createdAt: number;
@@ -70,42 +68,6 @@ export function mergeOriginDiscussionChannel(
     },
     ...channels,
   ];
-}
-
-/** Newest origin-author message, else the newest message in the channel. */
-export function pickOriginConversationEvent<
-  T extends { pubkey: string; created_at: number },
->(events: readonly T[], origin: DiscussionOrigin): T | null {
-  if (events.length === 0) return null;
-  const author = origin.pubkey.toLowerCase();
-  const byAuthor = events.filter(
-    (event) => event.pubkey.toLowerCase() === author,
-  );
-  const pool = byAuthor.length > 0 ? byAuthor : events;
-  return [...pool].sort((left, right) => right.created_at - left.created_at)[0];
-}
-
-/** Shape the origin channel event into the hit the conversation panel expects. */
-export function relayEventToSearchHit(
-  event: Pick<
-    RelayEvent,
-    "id" | "content" | "kind" | "pubkey" | "created_at" | "tags"
-  >,
-  channelId: string,
-  channelName?: string | null,
-): SearchHit {
-  const thread = getThreadReference(event.tags);
-  return {
-    eventId: event.id,
-    content: event.content,
-    kind: event.kind,
-    pubkey: event.pubkey,
-    channelId: getChannelIdFromTags(event.tags) ?? channelId,
-    channelName: channelName ?? null,
-    createdAt: event.created_at,
-    score: 0,
-    threadRootId: thread.rootId ?? thread.parentId ?? event.id,
-  };
 }
 
 /**

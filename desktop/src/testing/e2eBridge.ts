@@ -341,6 +341,9 @@ type E2eConfig = {
     clearPendingNavigationDeepLinksError?: string;
     openDmDelayMs?: number;
     sendMessageDelayMs?: number;
+    /** Delay (ms) for `start_managed_agent` so e2e tests can switch the
+     *  community mid-startup and observe the fail-closed scope check. */
+    startManagedAgentDelayMs?: number;
     /** Hold the media proxy at port 0 until the E2E release seam is invoked. */
     mediaProxyInitiallyUnavailable?: boolean;
     /** Hold mock send live echoes until the E2E release seam is invoked. */
@@ -3815,6 +3818,71 @@ function getRelayWsUrl(config: E2eConfig | undefined): string {
   return config?.relayWsUrl ?? DEFAULT_RELAY_WS_URL;
 }
 
+/**
+ * Mirror of the backend's `assert_expected_relay_scope`: a caller-captured
+ * tenant scope must still match the active community when the command runs.
+ * The mock's "active relay" is the active community's relayUrl in
+ * localStorage (specs switch communities by rewriting it), falling back to
+ * the configured mock relay. Lets specs drive the mid-flight community
+ * switch with `openDmDelayMs` / `sendMessageDelayMs` and prove the send
+ * fails closed.
+ */
+function assertExpectedRelayScope(
+  expectedRelayUrl: string | null | undefined,
+  config: E2eConfig | undefined,
+): void {
+  const expected = expectedRelayUrl?.trim();
+  if (!expected) return;
+  let active: string | null = null;
+  try {
+    const activeId = window.localStorage.getItem("buzz-active-community-id");
+    const communities = JSON.parse(
+      window.localStorage.getItem("buzz-communities") ?? "[]",
+    ) as { id: string; relayUrl: string }[];
+    active =
+      communities.find((community) => community.id === activeId)?.relayUrl ??
+      null;
+  } catch {
+    active = null;
+  }
+  if (
+    normalizeMockRelayUrl(active ?? getRelayWsUrl(config)) !==
+    normalizeMockRelayUrl(expected)
+  ) {
+    throw new Error(
+      "active community changed before the message was submitted; not sent",
+    );
+  }
+}
+
+/** Same ws(s) normalization the app applies to community relay URLs. */
+function normalizeMockRelayUrl(url: string): string {
+  if (!url.startsWith("ws://") && !url.startsWith("wss://")) {
+    return `wss://${url}`;
+  }
+  return url;
+}
+
+/**
+ * Mirror of the backend's `assert_expected_signer`: a caller-captured signer
+ * identity must still match the active identity when the command runs. The
+ * real backend reads relay and keys under separate locks, so the signer scope
+ * is asserted independently of the relay scope.
+ */
+function assertExpectedSigner(
+  expectedSignerPubkey: string | null | undefined,
+  config: E2eConfig | undefined,
+): void {
+  const expected = expectedSignerPubkey?.trim();
+  if (!expected) return;
+  const active = getMockMemberPubkey(config);
+  if (expected.toLowerCase() !== active.toLowerCase()) {
+    throw new Error(
+      "active identity changed before the message was submitted; not sent",
+    );
+  }
+}
+
 function getIdentity(config: E2eConfig | undefined): TestIdentity | undefined {
   if (!isRelayMode(config)) {
     return undefined;
@@ -6521,6 +6589,8 @@ async function handleCreateChannel(
 async function handleOpenDm(
   args: {
     pubkeys: string[];
+    expectedRelayUrl?: string | null;
+    expectedSignerPubkey?: string | null;
   },
   config: E2eConfig | undefined,
 ) {
@@ -6528,6 +6598,11 @@ async function handleOpenDm(
   if (delayMs > 0) {
     await new Promise((resolve) => window.setTimeout(resolve, delayMs));
   }
+  // After the injected delay, like the real command's post-await check: a
+  // caller-captured tenant scope and signer identity must still match the
+  // active community/identity.
+  assertExpectedRelayScope(args.expectedRelayUrl, config);
+  assertExpectedSigner(args.expectedSignerPubkey, config);
 
   const normalizedPubkeys = normalizeParticipantPubkeys(args.pubkeys);
   if (normalizedPubkeys.length === 0) {
@@ -8730,9 +8805,21 @@ function isRelayMeshManagedAgent(agent: MockManagedAgent): boolean {
 async function handleStartManagedAgent(
   args: {
     pubkey: string;
+    expectedRelayUrl?: string | null;
+    expectedSignerPubkey?: string | null;
   },
   config?: E2eConfig,
 ): Promise<RawManagedAgent> {
+  const delayMs = config?.mock?.startManagedAgentDelayMs ?? 0;
+  if (delayMs > 0) {
+    await new Promise((resolve) => window.setTimeout(resolve, delayMs));
+  }
+  // After the injected delay, like the real command's checks before any
+  // spawn/deploy side effect: a caller-captured tenant scope and signer
+  // identity must still match the active community/identity.
+  assertExpectedRelayScope(args.expectedRelayUrl, config);
+  assertExpectedSigner(args.expectedSignerPubkey, config);
+
   const startError = config?.mock?.startManagedAgentErrors?.shift();
   if (startError) {
     throw new Error(startError);
@@ -9189,6 +9276,8 @@ async function handleSendChannelMessage(
     linkPreviewTags?: string[][] | null;
     sentFromThreadTag?: string[] | null;
     suppressLinkPreviews?: boolean;
+    expectedRelayUrl?: string | null;
+    expectedSignerPubkey?: string | null;
   },
   config: E2eConfig | undefined,
 ): Promise<RawSendChannelMessageResponse> {
@@ -9199,6 +9288,11 @@ async function handleSendChannelMessage(
       window.setTimeout(resolve, sendMessageDelayMs),
     );
   }
+  // After the injected delay, like the real command's post-await check: a
+  // caller-captured tenant scope and signer identity must still match the
+  // active community/identity.
+  assertExpectedRelayScope(args.expectedRelayUrl, config);
+  assertExpectedSigner(args.expectedSignerPubkey, config);
 
   // Mirror the WebSocket send path's failure injection so specs that route
   // the first message through the acknowledged HTTP transport still exercise
