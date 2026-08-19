@@ -914,6 +914,7 @@ export function AppShell() {
                       onChange={setTerminalContextOverride}
                     >
                       <AppShellChannelSurface
+                        hasCommunityRail={hasCommunityRail}
                         isHuddleRoom={isHuddleRoom}
                         isHuddleRoomStarting={isHuddleRoomStarting}
                         mainInsetRef={mainInsetRef}
