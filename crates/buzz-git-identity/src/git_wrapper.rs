@@ -133,6 +133,18 @@ pub fn run() -> i32 {
 
     let ctx = repo_context_args(&argv);
 
+    // Alias-config preflight: an ordinary (non-shell) alias whose body carries
+    // global `-c`/`--config-env` is expanded by git *after* our injected
+    // identity/signing `-c` options, so the alias-added config wins and can
+    // silently re-author or unsign the commit. `enforce` sees only the literal
+    // argv, never the alias body, so it cannot catch this — reject here.
+    if authority.is_some() {
+        if let Err(msg) = verify_alias_safety(&real_git, &argv, &ctx) {
+            eprintln!("{msg}");
+            return 1;
+        }
+    }
+
     // Author preflight (E): commit modes that reuse or preserve another author
     // (`-C`/`-c <sha>`, `--amend`) create NEW commits stamped with that author.
     // Re-applied identity config cannot fix this — git honours the reused
@@ -302,6 +314,78 @@ fn inline_aliases(globals: &[String]) -> std::collections::HashMap<String, Strin
         }
     }
     map
+}
+
+/// Reject an ordinary (non-shell) alias whose expansion introduces global
+/// configuration (`-c`/`-c<key>=<val>`/`--config-env`). Git expands such an
+/// alias *in-process, after* the identity/signing `-c` options this wrapper
+/// injects before the subcommand ([`inject_identity_args`]), so the alias-added
+/// config lands at a higher precedence and can silently re-author or unsign the
+/// commit. [`enforce`] cannot catch this: it inspects the literal argv and never
+/// reads the alias body. Following the favor-rejection principle, this refuses
+/// the invocation rather than modeling git's full alias-expansion grammar.
+///
+/// Plain-subcommand aliases (`alias.st = status`, `alias.lg = log --oneline`)
+/// carry no global config and are unaffected — `--oneline` is a subcommand
+/// argument, not a global option. Shell (`!`) aliases are out of scope here:
+/// git runs their body in a shell, so any `git` they invoke re-enters this
+/// wrapper on PATH (config caught by [`enforce`]) and push-bearing ones are
+/// already rejected by [`PushKind::OpaqueShellAlias`]. Recursion is bounded to
+/// defeat cyclic alias definitions; a non-alias subcommand resolves immediately.
+fn verify_alias_safety(real_git: &Path, argv: &[String], ctx: &[String]) -> Result<(), String> {
+    let (globals, _) = split_globals(argv);
+    let inline = inline_aliases(&globals);
+    let mut name = match subcommand(argv) {
+        Some(s) => s,
+        None => return Ok(()),
+    };
+    for _ in 0..10 {
+        let def = inline.get(&name).cloned().or_else(|| {
+            capture(
+                real_git,
+                ctx,
+                &["config", "--get", &format!("alias.{name}")],
+            )
+        });
+        let def = match def {
+            Some(d) => d,
+            None => return Ok(()), // not an alias — a real subcommand
+        };
+        if def.starts_with('!') {
+            return Ok(()); // shell alias: re-enters the wrapper / handled on push
+        }
+        let body: Vec<String> = def.split_whitespace().map(String::from).collect();
+        let (body_globals, sub_idx) = split_globals(&body);
+        if body_globals.iter().any(|t| is_config_bearing_global(t)) {
+            return Err(alias_reject_message(&name));
+        }
+        match sub_idx.map(|i| body[i].clone()) {
+            Some(next) => name = next, // resolved subcommand may itself be an alias
+            None => return Ok(()),     // no subcommand token — nothing to expand
+        }
+    }
+    Ok(())
+}
+
+/// True when `token` is a global option that injects git configuration — the
+/// command-line `-c key=value` (standalone or `-ckey=value` attached form) and
+/// `--config-env=key=VAR`. These are exactly the channels an alias body can use
+/// to plant config that outranks the wrapper's injected authority.
+fn is_config_bearing_global(token: &str) -> bool {
+    token == "-c"
+        || (token.starts_with("-c") && token.len() > 2)
+        || token == "--config-env"
+        || token.starts_with("--config-env=")
+}
+
+fn alias_reject_message(name: &str) -> String {
+    format!(
+        "buzz git wrapper: refusing `{name}` — this git alias expands to global \
+         configuration (`-c`/`--config-env`) that git applies after the managed agent \
+         identity and signing config, so it could re-author or disable signing on the \
+         commit. Run the underlying git command directly; agent commit identity and \
+         signing are machine-managed."
+    )
 }
 
 /// Reject the flag-based identity- and signing-override vectors. `Ok(())` means
@@ -1298,6 +1382,81 @@ mod tests {
             is_push_command(&real_git(), &v(&["-c", "alias.pub=push", "pub"]), &ctx),
             PushKind::Push
         ));
+    }
+
+    // ── verify_alias_safety ───────────────────────────────────────────────────
+
+    #[test]
+    fn is_config_bearing_global_recognizes_c_and_config_env_forms() {
+        assert!(is_config_bearing_global("-c"));
+        assert!(is_config_bearing_global("-cuser.email=x"));
+        assert!(is_config_bearing_global("--config-env"));
+        assert!(is_config_bearing_global("--config-env=user.name=VAR"));
+        // Not config-bearing: subcommand args and unrelated globals.
+        assert!(!is_config_bearing_global("commit"));
+        assert!(!is_config_bearing_global("--oneline"));
+        assert!(!is_config_bearing_global("-C"));
+        assert!(!is_config_bearing_global("--amend"));
+    }
+
+    #[test]
+    fn verify_alias_safety_rejects_inline_config_bearing_alias() {
+        // Inline alias whose body carries `-c` config — the ordinary-alias
+        // bypass. Uses inline definitions so no repo/config probe is needed.
+        let ctx: Vec<String> = vec![];
+        assert!(verify_alias_safety(
+            &real_git(),
+            &v(&["-c", "alias.hc=-c user.email=e@x commit", "hc"]),
+            &ctx
+        )
+        .is_err());
+        assert!(verify_alias_safety(
+            &real_git(),
+            &v(&["-c", "alias.hc=--config-env=user.name=V commit", "hc"]),
+            &ctx
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn verify_alias_safety_allows_plain_and_arg_only_aliases() {
+        let ctx: Vec<String> = vec![];
+        // Plain subcommand alias.
+        assert!(
+            verify_alias_safety(&real_git(), &v(&["-c", "alias.st=status", "st"]), &ctx).is_ok()
+        );
+        // Subcommand args (`--oneline`) are not global config.
+        assert!(verify_alias_safety(
+            &real_git(),
+            &v(&["-c", "alias.lg=log --oneline", "lg"]),
+            &ctx
+        )
+        .is_ok());
+        // A real (non-alias) subcommand resolves immediately.
+        assert!(verify_alias_safety(&real_git(), &v(&["commit", "-m", "x"]), &ctx).is_ok());
+        // A shell alias is out of scope here (handled on push / re-entry).
+        assert!(
+            verify_alias_safety(&real_git(), &v(&["-c", "alias.sh=!git commit", "sh"]), &ctx)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn verify_alias_safety_follows_alias_chains_to_config_bearing_body() {
+        // `a` → `b` → config-bearing `commit`; the chain must be walked.
+        let ctx: Vec<String> = vec![];
+        assert!(verify_alias_safety(
+            &real_git(),
+            &v(&[
+                "-c",
+                "alias.a=b",
+                "-c",
+                "alias.b=-c commit.gpgSign=false commit",
+                "a",
+            ]),
+            &ctx
+        )
+        .is_err());
     }
 
     #[test]

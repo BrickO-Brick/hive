@@ -16,6 +16,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[cfg(unix)]
 use nostr::ToBech32;
 
 const AGENT_EMAIL: &str =
@@ -97,6 +98,15 @@ fn wrapper(path: &str, cwd: &Path, args: &[&str]) -> std::process::Output {
         .expect("run wrapper git")
 }
 
+/// The current `HEAD` commit SHA of `repo`, via real git (empty if unborn).
+fn head_sha(repo: &Path) -> String {
+    let out = Command::new("git")
+        .args(["-C", repo.to_str().unwrap(), "rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
 #[test]
 fn wrapper_rejects_flag_based_identity_override() {
     let (_shim, path) = shim_env(&manifest());
@@ -160,6 +170,80 @@ fn wrapper_refuses_to_push_human_authored_commit() {
         refs.stdout.is_empty(),
         "no ref should have reached the remote: {}",
         String::from_utf8_lossy(&refs.stdout),
+    );
+}
+
+/// A real-wrapper regression for the ordinary-alias config-injection bypass:
+/// a non-shell alias whose body carries global `-c` config expands *after* the
+/// wrapper's injected identity/signing `-c`, so before this guard it could
+/// author a human, unsigned commit through the managed wrapper (rc 0). The
+/// wrapper must now refuse it loudly before git runs, and the repo HEAD must be
+/// unchanged. A plain-subcommand alias must still resolve and commit as the
+/// agent identity — the fix must not regress ordinary aliases.
+#[test]
+fn wrapper_rejects_config_bearing_alias_and_allows_plain_alias() {
+    let (_shim, path) = shim_env(&manifest());
+    let repo = human_repo();
+
+    // A config-bearing commit alias, exactly the Thufir p3 bypass shape.
+    wrapper(
+        &path,
+        repo.path(),
+        &[
+            "config",
+            "alias.hcommit",
+            "-c user.name=AliasHuman -c user.email=alias@human.test -c commit.gpgSign=false commit",
+        ],
+    );
+    // A plain-subcommand alias that carries no global config.
+    wrapper(&path, repo.path(), &["config", "alias.ci", "commit"]);
+
+    let head_before = head_sha(repo.path());
+
+    std::fs::write(repo.path().join("f"), "two").unwrap();
+    wrapper(&path, repo.path(), &["add", "f"]);
+
+    // The config-bearing alias must be refused before git commits.
+    let out = wrapper(&path, repo.path(), &["hcommit", "-m", "via alias"]);
+    assert!(
+        !out.status.success(),
+        "config-bearing alias must be refused; stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("expands to global"),
+        "expected the alias-config rejection; stderr={}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert_eq!(
+        head_sha(repo.path()),
+        head_before,
+        "no commit should have been created by the refused alias"
+    );
+
+    // The plain alias must still resolve and commit as the agent identity.
+    let out = wrapper(&path, repo.path(), &["ci", "-m", "via plain alias"]);
+    assert!(
+        out.status.success(),
+        "plain-subcommand alias must still commit; stderr={}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let author = Command::new("git")
+        .args([
+            "-C",
+            repo.path().to_str().unwrap(),
+            "show",
+            "-s",
+            "--format=%ae",
+            "HEAD",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&author.stdout).trim(),
+        AGENT_EMAIL,
+        "plain-alias commit must be authored as the agent identity"
     );
 }
 
