@@ -479,11 +479,17 @@ async fn import_recovered_identity(
     // identity). `ensure_pairing_task_is_current` is an idempotent currency
     // read, so both gates get an independent clone of the same check.
     let early_generation = Arc::clone(&generation);
+    let data_dir = tauri::Manager::path(app)
+        .app_data_dir()
+        .map_err(|e| format!("app data dir: {e}"))?;
+    let store = crate::secret_store::SecretStore::shared(crate::app_state::keyring_service());
     crate::commands::identity::run_identity_transition(
         app.clone(),
         nsec.trim().to_string(),
         None,
         Some(Arc::clone(generation_fence)),
+        store,
+        data_dir,
         move || ensure_pairing_task_is_current(&early_generation, task_generation),
         move || ensure_pairing_task_is_current(&generation, task_generation),
     )

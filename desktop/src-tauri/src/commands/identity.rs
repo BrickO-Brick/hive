@@ -383,9 +383,24 @@ pub async fn import_identity(
     password: Option<String>,
     app_handle: tauri::AppHandle,
 ) -> Result<IdentityInfo, String> {
+    let data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("app data dir: {e}"))?;
+    let store = crate::secret_store::SecretStore::shared(crate::app_state::keyring_service());
     // Normal import: no supersession fence, both validity gates always pass —
     // there is no queued-task currency to check.
-    run_identity_transition(app_handle, nsec, password, None, || Ok(()), || Ok(())).await
+    run_identity_transition(
+        app_handle,
+        nsec,
+        password,
+        None,
+        store,
+        data_dir,
+        || Ok(()),
+        || Ok(()),
+    )
+    .await
 }
 
 /// Finish an imported identity commit whose durable persist already succeeded

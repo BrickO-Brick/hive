@@ -888,10 +888,10 @@ fn persist_imported_identity_impl(
     }
 }
 
-/// Public entry point binding [`persist_imported_identity_impl`] to the shared
-/// [`crate::secret_store::SecretStore`]. See the impl for the persistence policy.
+/// Public entry point for imported-identity persistence over any
+/// [`IdentityKeyStore`] (production passes the shared `SecretStore`).
 pub(crate) fn persist_imported_identity(
-    store: &crate::secret_store::SecretStore,
+    store: &impl IdentityKeyStore,
     keys: &Keys,
     legacy_path: &std::path::Path,
     data_dir: &std::path::Path,

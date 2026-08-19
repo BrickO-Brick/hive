@@ -102,14 +102,21 @@ fn compensate_import_drain<R: tauri::Runtime>(
 /// runtimes compensate, but revoked owner-identity durable capabilities stay
 /// revoked. This is design-conformant fail-closed churn, not a split state —
 /// see `CROSS_WORKSPACE_AGENT_LIBRARY.md` §3.3a (barrier sequence is fixed).
-pub(crate) async fn run_identity_transition<R: tauri::Runtime>(
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_identity_transition<R, S>(
     app_handle: tauri::AppHandle<R>,
     nsec: String,
     password: Option<String>,
     commit_fence: Option<std::sync::Arc<std::sync::Mutex<()>>>,
+    store: &'static S,
+    data_dir: std::path::PathBuf,
     early_validity_check: impl FnOnce() -> Result<(), String>,
     late_validity_check: impl FnOnce() -> Result<(), String> + Send + 'static,
-) -> Result<IdentityInfo, String> {
+) -> Result<IdentityInfo, String>
+where
+    R: tauri::Runtime,
+    S: crate::app_state::IdentityKeyStore + Send + Sync + 'static,
+{
     // ── Layer 1: identity_mutation (async serialization lock) ────────────────
     // Held for the full import to prevent a concurrent stale persist from
     // overwriting the imported key. Lock order: identity_mutation →
@@ -149,6 +156,8 @@ pub(crate) async fn run_identity_transition<R: tauri::Runtime>(
             nsec,
             password,
             commit_fence,
+            store,
+            data_dir,
             late_validity_check,
         )
     })
@@ -200,13 +209,19 @@ pub(crate) fn commit_under_fence<T>(
 /// either compensates (cancelled during drain, before the fence is taken) or
 /// loses to the committed recovery (cancelled after the fenced commit begins).
 /// Normal import supplies `None` + an always-`Ok(())` check.
-fn import_identity_blocking<R: tauri::Runtime>(
+fn import_identity_blocking<R, S>(
     app_handle: tauri::AppHandle<R>,
     nsec: String,
     password: Option<String>,
     commit_fence: Option<std::sync::Arc<std::sync::Mutex<()>>>,
+    store: &S,
+    data_dir: std::path::PathBuf,
     validity_check: impl FnOnce() -> Result<(), String>,
-) -> Result<IdentityInfo, String> {
+) -> Result<IdentityInfo, String>
+where
+    R: tauri::Runtime,
+    S: crate::app_state::IdentityKeyStore,
+{
     // NIP-49 backups require a passphrase and decrypt entirely in Rust.
     // Raw nsec/hex input follows the existing parser path unchanged.
     let password = password.map(zeroize::Zeroizing::new);
@@ -217,10 +232,6 @@ fn import_identity_blocking<R: tauri::Runtime>(
 
     let state = app_handle.state::<AppState>();
 
-    let data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("app data dir: {e}"))?;
     std::fs::create_dir_all(&data_dir).map_err(|e| format!("create app data dir: {e}"))?;
     let key_path = data_dir.join("identity.key");
 
@@ -316,8 +327,9 @@ fn import_identity_blocking<R: tauri::Runtime>(
     // check and the durable dispatch nor interleave with it. The P28-C1 journal
     // is written ONLY after the validity gate passes, so a superseded recovery
     // leaves no journal residue. The persist is CLASSIFIED against durable fact
-    // (P27-C1) — never the kernel's `Ok`/`Err`.
-    let store = crate::secret_store::SecretStore::shared(crate::app_state::keyring_service());
+    // (P27-C1) — never the kernel's `Ok`/`Err`. `store` and `data_dir` are the
+    // durable-persist seams injected by the caller (production: the shared
+    // `SecretStore` + real `app_data_dir()`; tests: a fake store + tempdir).
     let pending = crate::identity_transition_journal::IdentityTransitionPending {
         from_pubkey,
         to_pubkey,
@@ -628,6 +640,8 @@ mod tests {
             "nsec-invalid-must-never-be-parsed".to_string(),
             None,
             None,
+            crate::secret_store::SecretStore::shared(crate::app_state::keyring_service()),
+            std::env::temp_dir(),
             || Err("superseded while queued".to_string()),
             || unreachable!("late gate must not run after an early-gate rejection"),
         )
