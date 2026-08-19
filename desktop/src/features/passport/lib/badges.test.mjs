@@ -8,22 +8,32 @@ const DAY = 86_400;
 
 function baseInputs(overrides = {}) {
   return {
+    acceptedReplyCount: 0,
     activeTurnCount: 0,
+    agentMentionNoteCount: 0,
+    assignedDoneCount: 0,
     channelCount: 0,
     closedPrCount: 0,
+    distinctNoteDays: 0,
     firstSeenAt: null,
     hasAbout: false,
     hasAvatar: false,
     hasHandle: false,
     hasName: false,
     hasOwner: false,
+    issueDoneCount: 0,
+    issueHelpCount: 0,
     issuesOpenedCount: 0,
     memoryCount: null,
     mergedPrCount: 0,
     noteCount: 0,
+    pairPrCount: 0,
+    peerReviewCount: 0,
+    quickdrawCount: 0,
     reactionCount: 0,
     repoCount: 0,
     reviewCount: 0,
+    yoloMergeCount: 0,
     now: NOW,
     ...overrides,
   };
@@ -165,4 +175,57 @@ test("on duty appears while the agent is actively working", () => {
   const badges = computeAgentBadges(baseInputs({ activeTurnCount: 2 }));
   assert.equal(badges[0].id, "on-duty");
   assert.match(badges[0].description, /2 channels/);
+});
+
+test("GitHub-style YOLO and Quickdraw fire from a single qualifying event", () => {
+  const yolo = computeAgentBadges(baseInputs({ yoloMergeCount: 1 }));
+  assert.equal(yolo[0].id, "yolo");
+  assert.equal(yolo[0].name, "YOLO");
+
+  const quickdraw = computeAgentBadges(baseInputs({ quickdrawCount: 2 }));
+  assert.equal(quickdraw[0].id, "quickdraw");
+  assert.match(quickdraw[0].description, /2 items/);
+});
+
+test("Pair Extraordinaire and Team Player reward working with other agents", () => {
+  const pair = computeAgentBadges(baseInputs({ pairPrCount: 10 }));
+  assert.equal(pair[0].id, "pair-extraordinaire");
+  assert.equal(pair[0].tier, 2);
+
+  const team = computeAgentBadges(baseInputs({ peerReviewCount: 15 }));
+  assert.equal(team[0].name, "Squad Lead");
+  assert.equal(team[0].id, "team-player");
+});
+
+test("closer, helping hand, and assignee ladders track issue follow-through", () => {
+  const badges = computeAgentBadges(
+    baseInputs({
+      assignedDoneCount: 5,
+      issueDoneCount: 1,
+      issueHelpCount: 10,
+    }),
+  );
+  assert.deepEqual(badgeIds(badges), ["closer", "helping-hand", "assignee"]);
+  assert.equal(badges[0].name, "Closer");
+  assert.equal(badges[1].name, "First Responder");
+  assert.equal(badges[2].name, "Owner");
+});
+
+test("Galaxy Brain, Daily Driver, and Crew Caller are activity ladders", () => {
+  const galaxy = computeAgentBadges(baseInputs({ acceptedReplyCount: 16 }));
+  assert.equal(galaxy[0].id, "galaxy-brain");
+  assert.equal(galaxy[0].name, "Galaxy Brain");
+  assert.equal(galaxy[0].tier, 3);
+
+  const daily = computeAgentBadges(baseInputs({ distinctNoteDays: 7 }));
+  assert.equal(daily[0].name, "Weekender");
+
+  const crew = computeAgentBadges(baseInputs({ agentMentionNoteCount: 3 }));
+  assert.equal(crew[0].name, "Crew Caller");
+});
+
+test("the shipped ladder uses GitHub's Pull Shark name at tier 2", () => {
+  const shark = computeAgentBadges(baseInputs({ mergedPrCount: 5 }));
+  assert.equal(shark[0].name, "Pull Shark");
+  assert.equal(shark[0].tier, 2);
 });

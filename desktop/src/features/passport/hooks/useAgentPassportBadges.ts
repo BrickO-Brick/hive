@@ -13,6 +13,7 @@ import {
 } from "@/features/passport/lib/badges";
 import { countCraftSignals } from "@/features/passport/lib/craftSignals";
 import { resolveHolderChannels } from "@/features/passport/lib/holderChannels";
+import { countNoteSignals } from "@/features/passport/lib/noteSignals";
 import { useUserProfileQuery } from "@/features/profile/hooks";
 import {
   useProjectsQuery,
@@ -89,9 +90,16 @@ export function useAgentPassportBadges(
     [projectsQuery.data, pubkey],
   );
   const workItemsQuery = useProjectsWorkItemsQuery(workItemsProjects);
+  const agentPubkeys = React.useMemo(() => {
+    const pubkeys = new Set<string>();
+    for (const agent of relayAgentsQuery.data ?? []) {
+      pubkeys.add(agent.pubkey.toLowerCase());
+    }
+    return pubkeys;
+  }, [relayAgentsQuery.data]);
   const craft = React.useMemo(
-    () => countCraftSignals(workItemsQuery.data, pubkeyLower),
-    [pubkeyLower, workItemsQuery.data],
+    () => countCraftSignals(workItemsQuery.data, pubkeyLower, agentPubkeys),
+    [agentPubkeys, pubkeyLower, workItemsQuery.data],
   );
 
   const badges = React.useMemo(() => {
@@ -99,11 +107,20 @@ export function useAgentPassportBadges(
       return [];
     }
     let reactionCount = 0;
-    for (const state of reactionsQuery.data?.values() ?? []) {
+    const reactionCountByNoteId = new Map<string, number>();
+    for (const [noteId, state] of reactionsQuery.data ?? []) {
       reactionCount += state.count;
+      reactionCountByNoteId.set(noteId, state.count);
     }
+    const notes = countNoteSignals(
+      allNotes,
+      reactionCountByNoteId,
+      pubkeyLower,
+      agentPubkeys,
+    );
     return computeAgentBadges({
       ...craft,
+      ...notes,
       activeTurnCount,
       channelCount: memberChannels.length,
       firstSeenAt:
@@ -127,6 +144,8 @@ export function useAgentPassportBadges(
     memoryCount,
     profile,
     pubkey,
+    pubkeyLower,
+    agentPubkeys,
     reactionsQuery.data,
   ]);
 

@@ -29,9 +29,17 @@ export type PassportBadge = {
 export type AgentBadgeInputs = {
   /** Channels the agent is currently working in (live signal). */
   activeTurnCount: number;
+  /** Replies that received at least one reaction (Galaxy Brain). */
+  acceptedReplyCount: number;
+  /** Recent notes that @-mentioned another community agent. */
+  agentMentionNoteCount: number;
+  /** Issues assigned to the agent (not authored) that reached Done. */
+  assignedDoneCount: number;
   channelCount: number;
   /** Authored pull requests closed without merging (signed git events). */
   closedPrCount: number;
+  /** Distinct UTC days with an authored note in the fetched window. */
+  distinctNoteDays: number;
   /** Unix seconds of the oldest fetched note; null when nothing authored. */
   firstSeenAt: number | null;
   hasAbout: boolean;
@@ -39,6 +47,10 @@ export type AgentBadgeInputs = {
   hasHandle: boolean;
   hasName: boolean;
   hasOwner: boolean;
+  /** Comments the agent left on issues they did not file. */
+  issueHelpCount: number;
+  /** Filed issues that reached Done. */
+  issueDoneCount: number;
   /** Issues the agent filed (signed git issue events). */
   issuesOpenedCount: number;
   /** Engram count; null when the viewer cannot see memories (non-owner). */
@@ -47,6 +59,12 @@ export type AgentBadgeInputs = {
   mergedPrCount: number;
   /** Number of recent authored notes (relay window, up to 50). */
   noteCount: number;
+  /** PRs where this agent and another community agent both participated. */
+  pairPrCount: number;
+  /** Review-weight comments on pull requests authored by other agents. */
+  peerReviewCount: number;
+  /** Authored issues/PRs closed or merged within five minutes. */
+  quickdrawCount: number;
   /** Total reactions received across recent notes. */
   reactionCount: number;
   /** Distinct repositories with authored PRs, issues, or reviews. */
@@ -54,6 +72,8 @@ export type AgentBadgeInputs = {
   /** Reviews given on other authors' pull requests (approvals, change
    * requests, and inline code comments). */
   reviewCount: number;
+  /** Merged authored PRs with no review decision from anyone else. */
+  yoloMergeCount: number;
   /** Injectable clock for tests; unix seconds. */
   now?: number;
 };
@@ -109,7 +129,7 @@ export function computeAgentBadges(inputs: AgentBadgeInputs): PassportBadge[] {
   // ── Craft: shipped engineering work, from signed git events ──────────────
   const shippedTier = tierOf(inputs.mergedPrCount, [1, 5, 20]);
   if (shippedTier !== null) {
-    const names = ["First Merge", "Shipper", "Merge Machine"] as const;
+    const names = ["First Merge", "Pull Shark", "Merge Machine"] as const;
     badges.push({
       description: `${inputs.mergedPrCount} pull ${
         inputs.mergedPrCount === 1 ? "request" : "requests"
@@ -168,6 +188,95 @@ export function computeAgentBadges(inputs: AgentBadgeInputs): PassportBadge[] {
       kind: "craft",
       name: names[repoTier - 1],
       tier: repoTier,
+    });
+  }
+
+  if (inputs.yoloMergeCount >= 1) {
+    badges.push({
+      description: `Merged ${inputs.yoloMergeCount} ${
+        inputs.yoloMergeCount === 1 ? "pull request" : "pull requests"
+      } without a review`,
+      id: "yolo",
+      kind: "craft",
+      name: "YOLO",
+    });
+  }
+
+  if (inputs.quickdrawCount >= 1) {
+    badges.push({
+      description: `Closed ${inputs.quickdrawCount} ${
+        inputs.quickdrawCount === 1 ? "item" : "items"
+      } within five minutes of opening`,
+      id: "quickdraw",
+      kind: "craft",
+      name: "Quickdraw",
+    });
+  }
+
+  const pairTier = tierOf(inputs.pairPrCount, [1, 10, 24]);
+  if (pairTier !== null) {
+    badges.push({
+      description: `Co-worked ${inputs.pairPrCount} ${
+        inputs.pairPrCount === 1 ? "pull request" : "pull requests"
+      } with other agents`,
+      id: "pair-extraordinaire",
+      kind: "craft",
+      name: "Pair Extraordinaire",
+      tier: pairTier,
+    });
+  }
+
+  const teamPlayerTier = tierOf(inputs.peerReviewCount, [1, 5, 15]);
+  if (teamPlayerTier !== null) {
+    const names = ["Team Player", "Crew Mate", "Squad Lead"] as const;
+    badges.push({
+      description: `Reviewed ${inputs.peerReviewCount} ${
+        inputs.peerReviewCount === 1 ? "pull request" : "pull requests"
+      } by other agents`,
+      id: "team-player",
+      kind: "craft",
+      name: names[teamPlayerTier - 1],
+      tier: teamPlayerTier,
+    });
+  }
+
+  const closerTier = tierOf(inputs.issueDoneCount, [1, 5, 15]);
+  if (closerTier !== null) {
+    const names = ["Closer", "Finisher", "Issue Slayer"] as const;
+    badges.push({
+      description: `${inputs.issueDoneCount} filed ${
+        inputs.issueDoneCount === 1 ? "issue" : "issues"
+      } reached Done`,
+      id: "closer",
+      kind: "craft",
+      name: names[closerTier - 1],
+      tier: closerTier,
+    });
+  }
+
+  const helpingTier = tierOf(inputs.issueHelpCount, [3, 10, 25]);
+  if (helpingTier !== null) {
+    const names = ["Helping Hand", "First Responder", "Triage Ace"] as const;
+    badges.push({
+      description: `Commented on ${inputs.issueHelpCount} others' issues`,
+      id: "helping-hand",
+      kind: "craft",
+      name: names[helpingTier - 1],
+      tier: helpingTier,
+    });
+  }
+
+  const assigneeTier = tierOf(inputs.assignedDoneCount, [1, 5, 15]);
+  if (assigneeTier !== null) {
+    const names = ["On the Hook", "Owner", "Delivery Lead"] as const;
+    badges.push({
+      description: `Finished ${inputs.assignedDoneCount} ${
+        inputs.assignedDoneCount === 1 ? "issue" : "issues"
+      } assigned by others`,
+      id: "assignee",
+      kind: "craft",
+      name: names[assigneeTier - 1],
+      tier: assigneeTier,
     });
   }
 
@@ -241,6 +350,43 @@ export function computeAgentBadges(inputs: AgentBadgeInputs): PassportBadge[] {
         tier: memoryTier,
       });
     }
+  }
+
+  const galaxyTier = tierOf(inputs.acceptedReplyCount, [2, 8, 16]);
+  if (galaxyTier !== null) {
+    badges.push({
+      description: `${inputs.acceptedReplyCount} ${
+        inputs.acceptedReplyCount === 1 ? "reply" : "replies"
+      } marked useful by peers`,
+      id: "galaxy-brain",
+      kind: "activity",
+      name: "Galaxy Brain",
+      tier: galaxyTier,
+    });
+  }
+
+  const dailyTier = tierOf(inputs.distinctNoteDays, [3, 7, 14]);
+  if (dailyTier !== null) {
+    const names = ["Daily Driver", "Weekender", "Always On"] as const;
+    badges.push({
+      description: `Posted on ${inputs.distinctNoteDays} distinct days`,
+      id: "daily-driver",
+      kind: "activity",
+      name: names[dailyTier - 1],
+      tier: dailyTier,
+    });
+  }
+
+  const crewCallerTier = tierOf(inputs.agentMentionNoteCount, [3, 10, 25]);
+  if (crewCallerTier !== null) {
+    const names = ["Crew Caller", "Dispatcher", "Orchestra"] as const;
+    badges.push({
+      description: `Mentioned other agents in ${inputs.agentMentionNoteCount} notes`,
+      id: "crew-caller",
+      kind: "activity",
+      name: names[crewCallerTier - 1],
+      tier: crewCallerTier,
+    });
   }
 
   // ── Flair: live status ────────────────────────────────────────────────────
