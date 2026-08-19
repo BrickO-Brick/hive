@@ -133,22 +133,42 @@ pub fn run() -> i32 {
 
     let ctx = repo_context_args(&argv);
 
-    // Alias-config preflight: an ordinary (non-shell) alias whose body carries
-    // global `-c`/`--config-env` is expanded by git *after* our injected
-    // identity/signing `-c` options, so the alias-added config wins and can
-    // silently re-author or unsign the commit. `enforce` sees only the literal
-    // argv, never the alias body, so it cannot catch this — reject here.
-    if authority.is_some() {
-        if let Err(msg) = verify_alias_safety(&real_git, &argv, &ctx) {
-            eprintln!("{msg}");
-            return 1;
+    // Alias preflight + unification. `verify_alias_safety` refuses every shell
+    // (`!`) alias and every non-shell alias carrying config/quoting the wrapper
+    // cannot classify; on success it returns the alias's fully-resolved bare-word
+    // expansion (or `None` when no alias was involved). We then hold that
+    // expansion to the SAME `enforce`/`verify_commit_author` policy as a directly
+    // typed command — keyed on the *expanded* subcommand — so an alias can never
+    // do more than its expansion could. `enforce`/`verify_commit_author` on the
+    // literal argv below cannot catch alias-carried flags (`git human` expands to
+    // `commit --author …`, but the literal subcommand is `human`); the expanded
+    // preflight closes that gap by construction, with no alias-specific flag list.
+    if let Some(auth) = &authority {
+        match verify_alias_safety(&real_git, &argv, &ctx) {
+            Ok(None) => {}
+            Ok(Some(expanded)) => {
+                if let Err(msg) = enforce(&expanded, Some(auth)) {
+                    eprintln!("{msg}");
+                    return 1;
+                }
+                if let Err(msg) = verify_commit_author(&real_git, &expanded, &ctx, auth) {
+                    eprintln!("{msg}");
+                    return 1;
+                }
+            }
+            Err(msg) => {
+                eprintln!("{msg}");
+                return 1;
+            }
         }
     }
 
     // Author preflight (E): commit modes that reuse or preserve another author
     // (`-C`/`-c <sha>`, `--amend`) create NEW commits stamped with that author.
     // Re-applied identity config cannot fix this — git honours the reused
-    // author — so reject when the resulting author would not be the agent.
+    // author — so reject when the resulting author would not be the agent. This
+    // covers a directly-typed `commit`; an alias resolving to one is covered by
+    // the expanded-command preflight above.
     if let Some(auth) = &authority {
         if let Err(msg) = verify_commit_author(&real_git, &argv, &ctx, auth) {
             eprintln!("{msg}");
@@ -290,12 +310,17 @@ fn inline_aliases(globals: &[String]) -> std::collections::HashMap<String, Strin
     map
 }
 
-/// Refuse any alias the wrapper cannot *trivially* prove safe. Git expands an
-/// alias in-process, and its config-bearing globals land *after* the identity/
-/// signing `-c` options this wrapper injects before the subcommand
-/// ([`inject_identity_args`]), so an alias can otherwise plant higher-precedence
-/// config that re-authors or unsigns the commit. [`enforce`] cannot catch this:
-/// it inspects the literal argv and never reads the alias body.
+/// Refuse any alias the wrapper cannot *trivially* prove safe, and — on success
+/// — return the alias's fully-resolved expansion so the caller can hold it to
+/// the same policy as a directly-typed command. Git expands an alias in-process,
+/// and its config-bearing globals land *after* the identity/signing `-c` options
+/// this wrapper injects before the subcommand ([`inject_identity_args`]), so an
+/// alias could otherwise plant higher-precedence config that re-authors or
+/// unsigns the commit. It could equally carry identity/signing *flags*
+/// (`--author`, `--no-gpg-sign`, `--amend`, commit reuse). [`enforce`] and
+/// [`verify_commit_author`] cannot catch either on the literal argv: they key on
+/// the typed subcommand, which for `git human` is the alias name `human`, never
+/// the expanded `commit`.
 ///
 /// This is an allowlist, not a blocklist. Rather than model git's alias grammar
 /// (whose quote-aware parser would let `'-c' 'user.email=…'` slip past a
@@ -303,6 +328,13 @@ fn inline_aliases(globals: &[String]) -> std::collections::HashMap<String, Strin
 /// trivially-safe bare word: no quote or backslash characters, no `-c`/
 /// `--config-env` config channel, and no `=`-valued option. Anything the
 /// wrapper cannot classify at a glance is refused (favor-rejection).
+///
+/// The returned expansion is exactly the token list git would run — the typed
+/// globals, then the recursively-expanded command with accumulated body tokens
+/// and the user's trailing argv. Holding it to [`enforce`]/[`verify_commit_author`]
+/// keyed on the *expanded* subcommand means an alias can never do more than its
+/// expansion could typed directly, so no alias-specific flag list exists to keep
+/// in sync. `Ok(None)` means the typed subcommand was a real command (no alias).
 ///
 /// Shell (`!`) aliases are refused outright in a managed session. Git runs an
 /// `!` alias with its own exec-path prepended to `PATH`, so the inner `git` is
@@ -314,38 +346,55 @@ fn inline_aliases(globals: &[String]) -> std::collections::HashMap<String, Strin
 /// `alias.lg = log --oneline`, `alias.pub = push origin main`. Recursion is
 /// bounded to defeat cyclic alias definitions; a non-alias subcommand resolves
 /// immediately.
-fn verify_alias_safety(real_git: &Path, argv: &[String], ctx: &[String]) -> Result<(), String> {
-    let (globals, _) = split_globals(argv);
+fn verify_alias_safety(
+    real_git: &Path,
+    argv: &[String],
+    ctx: &[String],
+) -> Result<Option<Vec<String>>, String> {
+    let (globals, sub_idx) = split_globals(argv);
     let inline = inline_aliases(&globals);
-    let mut name = match subcommand(argv) {
-        Some(s) => s,
-        None => return Ok(()),
+    let Some(sub_idx) = sub_idx else {
+        return Ok(None); // no subcommand — nothing to expand
     };
+    // The command chain being expanded: the subcommand token and its trailing
+    // argv. Typed globals (argv[..sub_idx]) are prepended to the final result.
+    let mut chain: Vec<String> = argv[sub_idx..].to_vec();
+    let mut resolved_any = false;
     for _ in 0..10 {
-        let def = inline.get(&name).cloned().or_else(|| {
+        // The command word within the current chain (git re-parses leading
+        // options as globals after each expansion, so a body may begin with
+        // bare-word options before its subcommand).
+        let Some(cmd_idx) = split_globals(&chain).1 else {
+            break; // no command word left
+        };
+        let name = &chain[cmd_idx];
+        let def = inline.get(name).cloned().or_else(|| {
             capture(
                 real_git,
                 ctx,
                 &["config", "--get", &format!("alias.{name}")],
             )
         });
-        let def = match def {
-            Some(d) => d,
-            None => return Ok(()), // not an alias — a real subcommand
+        let Some(def) = def else {
+            break; // real subcommand — chain is fully expanded
         };
         if def.starts_with('!') {
-            return Err(shell_alias_reject_message(&name));
+            return Err(shell_alias_reject_message(name));
         }
         let body: Vec<String> = def.split_whitespace().map(String::from).collect();
         if !body.iter().all(|t| is_safe_alias_token(t)) {
-            return Err(alias_reject_message(&name));
+            return Err(alias_reject_message(name));
         }
-        match split_globals(&body).1.map(|i| body[i].clone()) {
-            Some(next) => name = next, // resolved subcommand may itself be an alias
-            None => return Ok(()),     // no subcommand token — nothing to expand
-        }
+        // Substitute the command word with its body, exactly as git does.
+        chain.splice(cmd_idx..=cmd_idx, body);
+        resolved_any = true;
     }
-    Ok(())
+    if !resolved_any {
+        return Ok(None);
+    }
+    let mut expanded = argv[..sub_idx].to_vec();
+    expanded.extend(chain);
+    Ok(Some(expanded))
 }
 
 /// A single alias-body token is safe only when it is a plain bare word that
@@ -1464,27 +1513,101 @@ mod tests {
     #[test]
     fn verify_alias_safety_allows_bare_word_aliases() {
         let ctx: Vec<String> = vec![];
-        // Gurney's certified working shapes must all stay allowed.
-        assert!(
-            verify_alias_safety(&real_git(), &v(&["-c", "alias.ci=commit", "ci"]), &ctx).is_ok()
+        // Gurney's certified working shapes must all stay allowed, and resolve to
+        // their expansion so the caller can hold it to the direct-command policy.
+        assert_eq!(
+            verify_alias_safety(&real_git(), &v(&["-c", "alias.ci=commit", "ci"]), &ctx).unwrap(),
+            Some(v(&["-c", "alias.ci=commit", "commit"]))
         );
-        assert!(
-            verify_alias_safety(&real_git(), &v(&["-c", "alias.st=status", "st"]), &ctx).is_ok()
+        assert_eq!(
+            verify_alias_safety(&real_git(), &v(&["-c", "alias.st=status", "st"]), &ctx).unwrap(),
+            Some(v(&["-c", "alias.st=status", "status"]))
         );
-        assert!(verify_alias_safety(
-            &real_git(),
-            &v(&["-c", "alias.lg=log --oneline", "lg"]),
-            &ctx
-        )
-        .is_ok());
-        assert!(verify_alias_safety(
-            &real_git(),
-            &v(&["-c", "alias.pub=push origin main", "pub"]),
-            &ctx
-        )
-        .is_ok());
-        // A real (non-alias) subcommand resolves immediately.
-        assert!(verify_alias_safety(&real_git(), &v(&["commit", "-m", "x"]), &ctx).is_ok());
+        assert_eq!(
+            verify_alias_safety(
+                &real_git(),
+                &v(&["-c", "alias.lg=log --oneline", "lg"]),
+                &ctx
+            )
+            .unwrap(),
+            Some(v(&["-c", "alias.lg=log --oneline", "log", "--oneline"]))
+        );
+        assert_eq!(
+            verify_alias_safety(
+                &real_git(),
+                &v(&["-c", "alias.pub=push origin main", "pub"]),
+                &ctx
+            )
+            .unwrap(),
+            Some(v(&[
+                "-c",
+                "alias.pub=push origin main",
+                "push",
+                "origin",
+                "main"
+            ]))
+        );
+        // A real (non-alias) subcommand resolves immediately with no expansion.
+        assert_eq!(
+            verify_alias_safety(&real_git(), &v(&["commit", "-m", "x"]), &ctx).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn verify_alias_safety_expands_bare_word_flags_and_appends_trailing_argv() {
+        let ctx: Vec<String> = vec![];
+        // Thufir's rd-4 bypass shape: every body token is a bare word, so the
+        // allowlist admits it — but the returned expansion carries the flags and
+        // the caller's trailing argv, so the direct-command preflight can catch
+        // `--author`/`--no-gpg-sign`. This is the unification contract.
+        assert_eq!(
+            verify_alias_safety(
+                &real_git(),
+                &v(&[
+                    "-c",
+                    "alias.human=commit --author Human<h@x> --no-gpg-sign",
+                    "human",
+                    "-m",
+                    "leak",
+                ]),
+                &ctx
+            )
+            .unwrap(),
+            Some(v(&[
+                "-c",
+                "alias.human=commit --author Human<h@x> --no-gpg-sign",
+                "commit",
+                "--author",
+                "Human<h@x>",
+                "--no-gpg-sign",
+                "-m",
+                "leak",
+            ]))
+        );
+        // A chain accumulates body tokens across hops onto the final command.
+        assert_eq!(
+            verify_alias_safety(
+                &real_git(),
+                &v(&[
+                    "-c",
+                    "alias.chain=co --no-gpg-sign",
+                    "-c",
+                    "alias.co=commit",
+                    "chain",
+                ]),
+                &ctx
+            )
+            .unwrap(),
+            Some(v(&[
+                "-c",
+                "alias.chain=co --no-gpg-sign",
+                "-c",
+                "alias.co=commit",
+                "commit",
+                "--no-gpg-sign",
+            ]))
+        );
     }
 
     #[test]

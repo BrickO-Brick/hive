@@ -275,6 +275,76 @@ fn wrapper_rejects_quoted_and_shell_aliases_and_allows_plain_alias() {
     );
 }
 
+/// R5 real-wrapper regression for the alias-unification fix (Thufir's rd-4
+/// IMPORTANT). A bare-word alias whose body carries identity/signing *flags*
+/// passes the allowlist (every token is a plain bare word), but after the alias
+/// is expanded the wrapper holds the expansion to the SAME `enforce`/author
+/// policy as a directly-typed command — so the alias can do no more than its
+/// expansion could. Three shapes, each of which is refused when typed directly,
+/// must therefore be refused through the alias too, with `HEAD` unchanged:
+///
+/// (a) Thufir's exact probe — `--author` (split form) plus `--no-gpg-sign`;
+/// (b) `--no-gpg-sign` alone, pinning that the fix is not one hard-coded string;
+/// (c) an alias *chain* that resolves to `commit --no-gpg-sign` through two
+///     hops, pinning that unification applies to the final accumulated command.
+#[test]
+fn wrapper_rejects_bare_word_alias_carried_identity_and_signing_flags() {
+    let (_shim, path) = shim_env(&manifest());
+    let repo = human_repo();
+
+    // (a) Thufir's exact bypass probe — bare-word `--author`/`--no-gpg-sign`.
+    wrapper(
+        &path,
+        repo.path(),
+        &[
+            "config",
+            "alias.human",
+            "commit --author Human<human@human.test> --no-gpg-sign",
+        ],
+    );
+    // (b) `--no-gpg-sign` alone.
+    wrapper(
+        &path,
+        repo.path(),
+        &["config", "alias.unsign", "commit --no-gpg-sign"],
+    );
+    // (c) an alias chain: `chain` → `co --no-gpg-sign` → `commit --no-gpg-sign`.
+    wrapper(&path, repo.path(), &["config", "alias.co", "commit"]);
+    wrapper(
+        &path,
+        repo.path(),
+        &["config", "alias.chain", "co --no-gpg-sign"],
+    );
+
+    let head_before = head_sha(repo.path());
+    std::fs::write(repo.path().join("f"), "two").unwrap();
+    wrapper(&path, repo.path(), &["add", "f"]);
+
+    for (alias, label) in [
+        ("human", "author+no-gpg-sign alias"),
+        ("unsign", "no-gpg-sign-only alias"),
+        ("chain", "chained no-gpg-sign alias"),
+    ] {
+        let out = wrapper(&path, repo.path(), &[alias, "-m", "leak"]);
+        assert!(
+            !out.status.success(),
+            "{label} must be refused; stdout={} stderr={}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("machine-managed"),
+            "{label} must give the identity/signing rejection; stderr={}",
+            String::from_utf8_lossy(&out.stderr),
+        );
+        assert_eq!(
+            head_sha(repo.path()),
+            head_before,
+            "{label} must not create a commit"
+        );
+    }
+}
+
 #[test]
 fn wrapper_reapplies_agent_identity_over_repo_config() {
     // The env-var / repo-config override vector: repo-local config names a
