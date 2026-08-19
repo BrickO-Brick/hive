@@ -670,7 +670,10 @@ test("projects v3 workspace screenshot states", async ({ page }) => {
     agentChatPanel.getByText("A persisted threaded agent response."),
   ).toBeVisible();
   await chatPanelTab.click();
-  await expect(agentChatPanel).toHaveCount(0);
+  // The rail collapses but retains the panel so conversation state survives
+  // toggling; assert the collapsed rail instead of a full unmount.
+  await expect(contextRail).toHaveCSS("width", "0px");
+  await expect(contextRail).toHaveAttribute("aria-hidden", "true");
   await expect(chatPanelTab).toHaveAttribute("aria-label", "Show project chat");
   await chatPanelTab.click();
   await expect(
@@ -697,11 +700,18 @@ test("projects v3 workspace screenshot states", async ({ page }) => {
     ]);
   expect(attachedContentSurfaceBounds).not.toBeNull();
   await expect(appContentSurface).toHaveCSS("box-shadow", "none");
-  expect(attachedContentSurfaceBounds?.x).toBe(projectContentPodBounds?.x);
-  expect(attachedContentSurfaceBounds?.y).toBe(projectContentPodBounds?.y);
-  expect(attachedContentSurfaceBounds?.height).toBe(
-    projectContentPodBounds?.height,
-  );
+  // The detached pod fills the surface minus its hairline top/left inset and
+  // the 8px bottom gutter (ml-px mt-px mb-2 on the pod wrapper).
+  expect(
+    (projectContentPodBounds?.x ?? 0) - (attachedContentSurfaceBounds?.x ?? 0),
+  ).toBe(1);
+  expect(
+    (projectContentPodBounds?.y ?? 0) - (attachedContentSurfaceBounds?.y ?? 0),
+  ).toBe(1);
+  expect(
+    (attachedContentSurfaceBounds?.height ?? 0) -
+      (projectContentPodBounds?.height ?? 0),
+  ).toBe(9);
   const viewportSize = page.viewportSize();
   expect(collapsedMainPaneBounds).not.toBeNull();
   expect(viewportSize).not.toBeNull();
