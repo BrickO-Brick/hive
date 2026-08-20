@@ -56,7 +56,6 @@ public struct BuzzPushNavigationTarget: Codable, Equatable, Sendable {
     let bytes = Array(value.utf8)
     guard bytes.count == 36,
       bytes[8] == 45, bytes[13] == 45, bytes[18] == 45, bytes[23] == 45,
-      bytes[14] == 52,
       [56, 57, 97, 98].contains(bytes[19])
     else { return false }
     return bytes.enumerated().allSatisfy { index, byte in

@@ -150,7 +150,7 @@ void main() {
     expect(apnsRegistrationError.value, 'denied');
   });
 
-  test('turns a warm notification response into a message link', () async {
+  test('routes a warm notification response with a UUIDv4 channel', () async {
     final response = Completer<ByteData?>();
     await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .handlePlatformMessage(
@@ -177,6 +177,58 @@ void main() {
       ),
     );
   });
+
+  test('routes a warm notification response with a UUIDv5 channel', () async {
+    final response = Completer<ByteData?>();
+    await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .handlePlatformMessage(
+          _channel.name,
+          _channel.codec.encodeMethodCall(
+            MethodCall('notificationOpened', {
+              'eventId': 'b' * 64,
+              'communityId': 'community-id',
+              'channelId': '9A1657AC-F7AA-5DB0-B632-D8BBEB6DFB50',
+            }),
+          ),
+          response.complete,
+        );
+
+    final envelope = await response.future;
+    expect(envelope, isNotNull);
+    expect(_channel.codec.decodeEnvelope(envelope!), 'handled');
+    expect(
+      pendingPushNotificationLink.value,
+      MessageDeepLink(
+        communityId: 'community-id',
+        channelId: '9a1657ac-f7aa-5db0-b632-d8bbeb6dfb50',
+        messageId: 'b' * 64,
+      ),
+    );
+  });
+
+  test(
+    'rejects a notification response with a malformed channel UUID',
+    () async {
+      final response = Completer<ByteData?>();
+      await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .handlePlatformMessage(
+            _channel.name,
+            _channel.codec.encodeMethodCall(
+              MethodCall('notificationOpened', {
+                'eventId': 'c' * 64,
+                'communityId': 'community-id',
+                'channelId': '9a1657ac-f7aa-5db0-7632-d8bbeb6dfb50',
+              }),
+            ),
+            response.complete,
+          );
+
+      final envelope = await response.future;
+      expect(envelope, isNotNull);
+      expect(_channel.codec.decodeEnvelope(envelope!), 'ignored');
+      expect(pendingPushNotificationLink.value, isNull);
+    },
+  );
 
   test('pulls a cold-start notification response from native iOS', () async {
     debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
