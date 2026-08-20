@@ -415,6 +415,15 @@ pub struct CliArgs {
     #[arg(long, env = "BUZZ_ACP_NO_BASE_PROMPT")]
     pub no_base_prompt: bool,
 
+    /// Custom base prompt text. Overrides the compiled-in default.
+    /// Mutually exclusive with --no-base-prompt and --base-prompt-file.
+    #[arg(
+        long,
+        env = "BUZZ_ACP_BASE_PROMPT",
+        conflicts_with_all = ["no_base_prompt", "base_prompt_file"]
+    )]
+    pub base_prompt: Option<String>,
+
     /// Path to a custom base prompt file. Overrides the compiled-in default.
     /// Mutually exclusive with --no-base-prompt.
     #[arg(
@@ -909,6 +918,14 @@ impl Config {
 
         let base_prompt_content = if args.no_base_prompt {
             None
+        } else if let Some(text) = args.base_prompt {
+            if text.len() > 1_048_576 {
+                return Err(ConfigError::ConfigFile(format!(
+                    "base prompt exceeds 1 MB limit ({} bytes)",
+                    text.len()
+                )));
+            }
+            Some(text)
         } else if let Some(ref path) = args.base_prompt_file {
             let content = std::fs::read_to_string(path)?;
             if content.len() > 1_048_576 {
@@ -2989,6 +3006,78 @@ channels = "ALL"
     fn compose_session_title_drops_the_channel_when_the_agent_name_fills_the_cap() {
         let agent = "a".repeat(SESSION_TITLE_MAX_CHARS);
         assert_eq!(compose_session_title(&agent, Some("buzz-dev")), agent);
+    }
+
+    // --- inline base prompt override ---
+
+    #[test]
+    fn base_prompt_inline_resolves_into_content() {
+        let args = CliArgs::try_parse_from([
+            "buzz-acp",
+            "--private-key",
+            TEST_PRIVATE_KEY,
+            "--base-prompt",
+            "custom orientation",
+        ])
+        .expect("clap should parse args");
+        let config = Config::from_args(args).expect("config should build");
+
+        assert_eq!(
+            config.base_prompt_content.as_deref(),
+            Some("custom orientation")
+        );
+        assert!(!config.no_base_prompt);
+    }
+
+    #[test]
+    fn base_prompt_inline_conflicts_with_no_base_prompt() {
+        let result = CliArgs::try_parse_from([
+            "buzz-acp",
+            "--private-key",
+            TEST_PRIVATE_KEY,
+            "--base-prompt",
+            "custom orientation",
+            "--no-base-prompt",
+        ]);
+        assert!(result.is_err(), "clap should reject the conflicting flags");
+    }
+
+    #[test]
+    fn base_prompt_inline_conflicts_with_base_prompt_file() {
+        let result = CliArgs::try_parse_from([
+            "buzz-acp",
+            "--private-key",
+            TEST_PRIVATE_KEY,
+            "--base-prompt",
+            "custom orientation",
+            "--base-prompt-file",
+            "/tmp/prompt.md",
+        ]);
+        assert!(result.is_err(), "clap should reject the conflicting flags");
+    }
+
+    #[test]
+    fn base_prompt_inline_over_1mb_rejected() {
+        let oversized = "a".repeat(1_048_577);
+        let args = CliArgs::try_parse_from([
+            "buzz-acp",
+            "--private-key",
+            TEST_PRIVATE_KEY,
+            "--base-prompt",
+            &oversized,
+        ])
+        .expect("clap should parse args");
+        let result = Config::from_args(args);
+
+        assert!(
+            result.is_err(),
+            "from_args should reject an oversized base prompt"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("1 MB limit"),
+            "error should mention the 1 MB limit: {msg}"
+        );
     }
 
     /// Every arg whose env var name contains KEY/SECRET/TOKEN/PASSWORD/CRED/AUTH

@@ -129,6 +129,20 @@ All configuration is via environment variables (or CLI flags — every env var h
 | `--heartbeat-prompt` | `BUZZ_ACP_HEARTBEAT_PROMPT` | (built-in) | Custom heartbeat prompt text. Conflicts with `--heartbeat-prompt-file`. |
 | `--heartbeat-prompt-file` | `BUZZ_ACP_HEARTBEAT_PROMPT_FILE` | — | Read heartbeat prompt from a file. Conflicts with `--heartbeat-prompt`. |
 
+### Prompts
+
+Every prompt the harness sends is assembled from a `[Base]` section (Buzz platform orientation, compiled in from `src/base_prompt.md`) followed by an optional `[System]` section (the agent's persona).
+
+| Flag | Env Var | Default | Description |
+|------|---------|---------|-------------|
+| `--system-prompt` | `BUZZ_ACP_SYSTEM_PROMPT` | — | Persona `[System]` prompt text. Conflicts with `--system-prompt-file`. |
+| `--system-prompt-file` | `BUZZ_ACP_SYSTEM_PROMPT_FILE` | — | Read the persona prompt from a file. Conflicts with `--system-prompt`. |
+| `--base-prompt` | `BUZZ_ACP_BASE_PROMPT` | (built-in) | Replace the shipped `[Base]` prompt with custom text (max 1 MB). Conflicts with `--no-base-prompt` and `--base-prompt-file`. |
+| `--base-prompt-file` | `BUZZ_ACP_BASE_PROMPT_FILE` | (built-in) | Replace the shipped `[Base]` prompt with the contents of a file (max 1 MB). Conflicts with `--no-base-prompt`. |
+| `--no-base-prompt` | `BUZZ_ACP_NO_BASE_PROMPT` | `false` | Drop the `[Base]` section entirely — agents receive only the persona `[System]` prompt with no Buzz orientation. |
+
+A custom base prompt fully replaces the shipped one — the harness does not merge them. Agents relying on the shipped orientation (CLI usage, mention rules, threading) lose it unless your replacement covers the same ground; start from [`src/base_prompt.md`](src/base_prompt.md) and edit.
+
 ### Inbound Author Gate
 
 Controls which authors' events the harness forwards to the agent. Events from disallowed authors are silently dropped before reaching subscription rules.
