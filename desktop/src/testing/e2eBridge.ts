@@ -402,6 +402,8 @@ type E2eConfig = {
       model: string | null;
       preferred_runtime?: string | null;
     };
+    /** Sequenced `get_global_agent_config` failures. Null succeeds; a string throws. */
+    globalAgentConfigErrors?: (string | null)[];
     /** File-layer config returned by runtime id. */
     runtimeFileConfigs?: Record<string, RuntimeFileConfigSubset | null>;
     /** Baked build env returned by the display and key-name Tauri commands. */
@@ -10954,6 +10956,8 @@ export function maybeInstallE2eTauriMocks() {
         return config.mock?.runtimeFileConfigs?.[runtimeId] ?? null;
       }
       case "get_global_agent_config": {
+        const readError = activeConfig?.mock?.globalAgentConfigErrors?.shift();
+        if (readError) throw new Error(readError);
         // Return the mutable persisted mock value, seeded from the test config.
         return (
           mockGlobalAgentConfig ?? {

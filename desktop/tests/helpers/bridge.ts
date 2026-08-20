@@ -422,6 +422,8 @@ type MockBridgeOptions = {
     model: string | null;
     preferred_runtime?: string | null;
   };
+  /** Sequenced `get_global_agent_config` failures. Null succeeds; a string throws. */
+  globalAgentConfigErrors?: (string | null)[];
   /** File-layer config returned by runtime id. */
   runtimeFileConfigs?: Record<
     string,

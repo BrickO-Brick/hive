@@ -60,6 +60,7 @@ type InstallResultState = {
 
 type SetupPlanKind =
   | "loading"
+  | "config-error"
   | "catalog-error"
   | "missing-runtime"
   | "needs-install"
@@ -547,6 +548,13 @@ export function DefaultConfigStep({
     });
   const [bakedEnv, setBakedEnv] = React.useState<BakedEnvEntry[]>([]);
   const [isConfigLoading, setIsConfigLoading] = React.useState(true);
+  const [configLoadError, setConfigLoadError] = React.useState<string | null>(
+    null,
+  );
+  const [configLoadNonce, retryConfigLoad] = React.useReducer(
+    (nonce: number) => nonce + 1,
+    0,
+  );
   const [configValid, setConfigValid] = React.useState(false);
   const [installResult, setInstallResult] = React.useState<InstallResultState>({
     error: null,
@@ -561,7 +569,9 @@ export function DefaultConfigStep({
   React.useEffect(() => {
     let unmounted = false;
 
-    async function loadDefaults() {
+    async function loadDefaults(_retryAttempt: number) {
+      setIsConfigLoading(true);
+      setConfigLoadError(null);
       const [configResult, bakedEnvResult] = await Promise.allSettled([
         getGlobalAgentConfig(),
         getBakedBuildEnv(),
@@ -569,41 +579,52 @@ export function DefaultConfigStep({
 
       if (unmounted) return;
 
-      if (configResult.status === "fulfilled") {
-        const harnessChanged =
-          selectedRuntimeId !== null &&
-          selectedRuntimeId !== configResult.value.preferred_runtime;
-        setConfig(
-          harnessChanged
-            ? resetConfigForHarnessChange(configResult.value, selectedRuntimeId)
-            : configResult.value,
-        );
-      }
       if (bakedEnvResult.status === "fulfilled") {
         setBakedEnv(bakedEnvResult.value);
       }
+
+      if (configResult.status === "rejected") {
+        setConfigLoadError(
+          configResult.reason instanceof Error
+            ? configResult.reason.message
+            : "Couldn't load your existing default harness.",
+        );
+        setIsConfigLoading(false);
+        return;
+      }
+
+      const harnessChanged =
+        selectedRuntimeId !== null &&
+        selectedRuntimeId !== configResult.value.preferred_runtime;
+      setConfig(
+        harnessChanged
+          ? resetConfigForHarnessChange(configResult.value, selectedRuntimeId)
+          : configResult.value,
+      );
       setIsConfigLoading(false);
     }
 
-    void loadDefaults();
+    void loadDefaults(configLoadNonce);
 
     return () => {
       unmounted = true;
     };
-  }, [selectedRuntimeId]);
+  }, [configLoadNonce, selectedRuntimeId]);
 
-  const plan: SetupPlanKind = runtimesQuery.isError
-    ? "catalog-error"
-    : deriveSetupPlan({
-        bakedEnv,
-        config,
-        isConfigLoading:
-          isConfigLoading ||
-          runtimesQuery.isLoading ||
-          runtimeFileConfigLoading,
-        runtime: selectedRuntime,
-        runtimeFileConfig,
-      });
+  const plan: SetupPlanKind = configLoadError
+    ? "config-error"
+    : runtimesQuery.isError
+      ? "catalog-error"
+      : deriveSetupPlan({
+          bakedEnv,
+          config,
+          isConfigLoading:
+            isConfigLoading ||
+            runtimesQuery.isLoading ||
+            runtimeFileConfigLoading,
+          runtime: selectedRuntime,
+          runtimeFileConfig,
+        });
   // Once this page has disclosed provider setup, keep those fields mounted as
   // they become valid. Validity gates Finish; it must not replace the form the
   // user is actively completing.
@@ -648,7 +669,7 @@ export function DefaultConfigStep({
   }, [installMutation, runtimesQuery, selectedRuntime]);
 
   const handleComplete = React.useCallback(async () => {
-    if (!effectiveSelectedRuntimeId) return;
+    if (!effectiveSelectedRuntimeId || !canFinish || isCompleting) return;
     setIsCompleting(true);
     setCompletionError(null);
     try {
@@ -661,7 +682,7 @@ export function DefaultConfigStep({
       setCompletionError("Couldn't save your default harness. Try again.");
       setIsCompleting(false);
     }
-  }, [actions, config, effectiveSelectedRuntimeId]);
+  }, [actions, canFinish, config, effectiveSelectedRuntimeId, isCompleting]);
 
   return (
     <OnboardingSlideTransition
@@ -681,6 +702,20 @@ export function DefaultConfigStep({
             <div className="flex items-center justify-center gap-2 py-4 text-sm text-muted-foreground">
               <Spinner className="h-4 w-4 border-2" />
               Loading…
+            </div>
+          ) : effectivePlan === "config-error" ? (
+            <div className="flex flex-col items-center gap-3 py-4 text-center text-sm">
+              <p className="text-destructive">
+                Couldn't load your existing default harness. Try again.
+              </p>
+              <Button
+                className={`${ONBOARDING_PRIMARY_CTA_CLASS} text-sm`}
+                disabled={isConfigLoading}
+                onClick={retryConfigLoad}
+                type="button"
+              >
+                {isConfigLoading ? "Checking…" : "Try again"}
+              </Button>
             </div>
           ) : effectivePlan === "catalog-error" ? (
             <div className="flex flex-col items-center gap-3 py-4 text-center text-sm">

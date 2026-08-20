@@ -684,6 +684,97 @@ test("Finish preserves existing values when the selected harness is unchanged", 
   });
 });
 
+test("failed config read blocks Finish, preserves existing config, and retry succeeds", async ({
+  page,
+}) => {
+  await installMockBridge(
+    page,
+    {
+      acpRuntimesCatalog: [
+        runtime("claude", "available", { status: "logged_in" }),
+        runtime("codex", "available", { status: "logged_in" }),
+      ],
+      globalAgentConfig: {
+        env_vars: {
+          ANTHROPIC_API_KEY: "sk-existing",
+          BUZZ_AGENT_THINKING_EFFORT: "high",
+        },
+        provider: "anthropic",
+        model: "claude-sonnet-4",
+        preferred_runtime: "claude",
+      },
+      globalAgentConfigErrors: ["temporary config read failure", null],
+    },
+    { skipCommunitySeed: true, skipOnboardingSeed: true },
+  );
+  await page.goto("/");
+  await navigateToChooserPage(page);
+  await page.getByTestId("onboarding-runtime-codex").click();
+
+  await expect(
+    page.getByText("Couldn't load your existing default harness. Try again."),
+  ).toBeVisible();
+  await expect(page.getByTestId("onboarding-finish")).toBeDisabled();
+  await page.getByTestId("onboarding-finish").click({ force: true });
+  await expect(page.getByTestId("onboarding-page-config")).toBeVisible();
+
+  let saved = await page.evaluate(async () => {
+    return await (
+      window as Window & {
+        __BUZZ_E2E_INVOKE_MOCK_COMMAND__?: (
+          command: string,
+          payload: unknown,
+        ) => Promise<{
+          env_vars: Record<string, string>;
+          model: string | null;
+          preferred_runtime: string | null;
+          provider: string | null;
+        }>;
+      }
+    ).__BUZZ_E2E_INVOKE_MOCK_COMMAND__?.("get_global_agent_config", null);
+  });
+  expect(saved).toMatchObject({
+    env_vars: {
+      ANTHROPIC_API_KEY: "sk-existing",
+      BUZZ_AGENT_THINKING_EFFORT: "high",
+    },
+    model: "claude-sonnet-4",
+    preferred_runtime: "claude",
+    provider: "anthropic",
+  });
+
+  await page.getByRole("button", { name: "Try again" }).click();
+  await expect(page.getByText(/Codex is ready/i)).toBeVisible();
+  await expect(page.getByTestId("onboarding-finish")).toBeEnabled();
+  await page.getByTestId("onboarding-finish").click();
+  await expect(page.getByText("Join or create a community")).toBeVisible();
+
+  saved = await page.evaluate(async () => {
+    return await (
+      window as Window & {
+        __BUZZ_E2E_INVOKE_MOCK_COMMAND__?: (
+          command: string,
+          payload: unknown,
+        ) => Promise<{
+          env_vars: Record<string, string>;
+          model: string | null;
+          preferred_runtime: string | null;
+          provider: string | null;
+        }>;
+      }
+    ).__BUZZ_E2E_INVOKE_MOCK_COMMAND__?.("get_global_agent_config", null);
+  });
+  expect(saved).toMatchObject({
+    env_vars: {
+      ANTHROPIC_API_KEY: "sk-existing",
+    },
+    model: null,
+    preferred_runtime: "codex",
+    provider: null,
+  });
+  expect(saved?.env_vars).not.toHaveProperty("BUZZ_AGENT_THINKING_EFFORT");
+});
+
 test("defaults hides model when optional harness has empty discovery", async ({
   page,
 }) => {
