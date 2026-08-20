@@ -39,6 +39,10 @@ fn legacy_custom_buzz_agent_snapshot_uses_runtime_provider_identity() {
     let mut rec = record();
     rec.runtime = Some("buzz-agent".into());
     rec.provider = Some("openai".into());
+    rec.env_vars.insert(
+        crate::managed_agents::openai_env::MIGRATED_OPENAI_PROVIDER_ENV.into(),
+        "openai-compat".into(),
+    );
     rec.env_vars
         .insert("OPENAI_COMPAT_API_KEY".into(), "shared-key".into());
     rec.env_vars.insert(

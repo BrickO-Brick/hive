@@ -635,18 +635,11 @@ fn goose_requirements(
             });
         }
         Some("openai")
-            if env_key_missing("OPENAI_API_KEY") && !file_key_present("OPENAI_API_KEY") =>
+            if env_key_missing("OPENAI_COMPAT_API_KEY")
+                && !file_key_present("OPENAI_COMPAT_API_KEY") =>
         {
             missing.push(Requirement::EnvKey {
-                key: "OPENAI_API_KEY".to_string(),
-            });
-        }
-        Some("openai-compat")
-            if env_key_missing("OPENAI_COMPAT_BASE_URL")
-                && !file_key_present("OPENAI_COMPAT_BASE_URL") =>
-        {
-            missing.push(Requirement::EnvKey {
-                key: "OPENAI_COMPAT_BASE_URL".to_string(),
+                key: "OPENAI_COMPAT_API_KEY".to_string(),
             });
         }
         Some("databricks") | Some("databricks_v2") | Some("databricks-v2")
@@ -664,10 +657,6 @@ fn goose_requirements(
             });
         }
         _ => {}
-    }
-
-    if effective_provider == Some("openai") {
-        openai_origin::require_safe_official_origin(effective, &mut missing);
     }
 
     missing

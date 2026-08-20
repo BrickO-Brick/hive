@@ -286,6 +286,58 @@ fn shared_global_legacy_key_supports_official_and_custom_buzz_agents() {
 }
 
 #[test]
+fn global_defaults_migrate_even_when_existing_buzz_agent_uses_anthropic() {
+    let global = GlobalAgentConfig {
+        provider: Some("openai".into()),
+        env_vars: BTreeMap::from([(OPENAI_COMPAT_API_KEY.into(), "future-default".into())]),
+        ..Default::default()
+    };
+    let mut anthropic = record("anthropic", "anthropic");
+    anthropic.provider = Some("anthropic".into());
+
+    let store = planned(global, vec![anthropic]).unwrap();
+    assert_eq!(store.global.provider.as_deref(), Some("openai"));
+    assert_eq!(
+        store
+            .global
+            .env_vars
+            .get(OPENAI_API_KEY)
+            .map(String::as_str),
+        Some("future-default")
+    );
+}
+
+#[test]
+fn shared_global_provider_is_not_rewritten_under_goose() {
+    let global = GlobalAgentConfig {
+        provider: Some("openai".into()),
+        preferred_runtime: Some("buzz-agent".into()),
+        env_vars: BTreeMap::from([
+            (OPENAI_COMPAT_API_KEY.into(), "shared".into()),
+            (
+                OPENAI_COMPAT_BASE_URL.into(),
+                "https://gateway.example/v1".into(),
+            ),
+        ]),
+        ..Default::default()
+    };
+    let buzz = record("buzz", "buzz");
+    let mut goose = record("goose", "goose");
+    goose.runtime = Some("goose".into());
+
+    let store = planned(global, vec![buzz, goose]).unwrap();
+    assert_eq!(store.global.provider.as_deref(), Some("openai"));
+    assert_eq!(store.records[0].provider, None);
+    assert_eq!(
+        store.records[0]
+            .env_vars
+            .get(crate::managed_agents::openai_env::MIGRATED_OPENAI_PROVIDER_ENV)
+            .map(String::as_str),
+        Some("openai-compat")
+    );
+}
+
+#[test]
 fn goose_records_are_not_openai_migration_consumers() {
     let global = GlobalAgentConfig {
         provider: Some("openai".into()),

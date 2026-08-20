@@ -814,10 +814,10 @@ pub fn spawn_agent_child(
         command.env(key, value);
     }
 
-    scrub_ambient_openai_env(&mut command, effective_provider.as_deref(), &descriptor.env);
-
+    if runtime_meta.is_some_and(|runtime| runtime.id == "buzz-agent") {
+        scrub_ambient_openai_env(&mut command, effective_provider.as_deref(), &descriptor.env);
+    }
     // (ANTHROPIC_MODEL is applied post-loop for the same reason). When effort_level is
-    // None there is no canonical value to assert, so env passthrough stands — user env
     // legitimately seeds startup effort in that case.
     apply_effort_env(&mut command, record.effort_level.as_deref());
 

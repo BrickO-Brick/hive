@@ -252,13 +252,8 @@ fn global_defaults_target_buzz_agent(store: &Store) -> bool {
 
 fn collect_consumers(store: &Store) -> Result<Vec<Consumer>, String> {
     let defs = definitions(store);
-    let has_managed_buzz_agent = store
-        .records
-        .iter()
-        .filter(|record| !record.pubkey.is_empty())
-        .any(|record| is_buzz_agent_consumer(record, &defs));
     let mut consumers = Vec::new();
-    if !has_managed_buzz_agent && global_defaults_target_buzz_agent(store) {
+    if global_defaults_target_buzz_agent(store) {
         if let Some(provider) = store
             .global
             .provider
@@ -421,6 +416,20 @@ fn set_provider(store: &mut Store, owner: Owner, provider: &str) -> Result<(), S
     }
 }
 
+fn shared_with_non_buzz_consumer(store: &Store, owner: &Owner) -> bool {
+    if owner != &Owner::Global {
+        return false;
+    }
+    let defs = definitions(store);
+    store.records.iter().any(|record| {
+        !record.pubkey.is_empty()
+            && !is_buzz_agent_consumer(record, &defs)
+            && resolve_effective_config(record, &defs, &store.global)
+                .require_resolved()
+                .is_ok_and(|config| config.provider.source == ConfigSource::Global)
+    })
+}
+
 fn plan_store(mut store: Store) -> Result<(Store, Vec<Consumer>), String> {
     let consumers = collect_consumers(&store)?;
     let mut provider_targets: HashMap<Owner, (Option<Identity>, bool)> = HashMap::new();
@@ -445,16 +454,33 @@ fn plan_store(mut store: Store) -> Result<(Store, Vec<Consumer>), String> {
     }
     for (owner, (identity, needs_change)) in provider_targets {
         if let (Some(identity), true) = (identity, needs_change) {
-            set_provider(
-                &mut store,
-                owner,
-                if identity == Identity::Official {
-                    "openai"
-                } else {
-                    "openai-compat"
-                },
-            )?;
+            if !shared_with_non_buzz_consumer(&store, &owner) {
+                set_provider(
+                    &mut store,
+                    owner,
+                    if identity == Identity::Official {
+                        "openai"
+                    } else {
+                        "openai-compat"
+                    },
+                )?;
+            }
         }
+    }
+    for consumer in &consumers {
+        let provider = if consumer.identity == Identity::Official {
+            "openai"
+        } else {
+            "openai-compat"
+        };
+        let owner = consumer
+            .record_index
+            .map(Owner::Record)
+            .unwrap_or(Owner::Global);
+        env_mut(&mut store, owner)?.insert(
+            crate::managed_agents::openai_env::MIGRATED_OPENAI_PROVIDER_ENV.into(),
+            provider.into(),
+        );
     }
 
     let mut official_legacy_targets = Vec::new();

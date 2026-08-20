@@ -46,9 +46,13 @@ fn provider_env_canonicalization_isolates_consumers() {
 }
 
 #[test]
-fn inherited_legacy_custom_configuration_normalizes_per_consumer() {
+fn migrated_identity_overrides_legacy_provider_without_secret_inference() {
     let mut env = BTreeMap::from([
         ("BUZZ_AGENT_PROVIDER".into(), "openai".into()),
+        (
+            crate::managed_agents::openai_env::MIGRATED_OPENAI_PROVIDER_ENV.into(),
+            "openai-compat".into(),
+        ),
         ("OPENAI_COMPAT_API_KEY".into(), "legacy".into()),
         (
             "OPENAI_COMPAT_BASE_URL".into(),
@@ -67,15 +71,14 @@ fn inherited_legacy_custom_configuration_normalizes_per_consumer() {
         env.get("BUZZ_AGENT_PROVIDER").map(String::as_str),
         Some("openai-compat")
     );
-    assert!(!env.contains_key("OPENAI_API_KEY"));
 }
 
 #[test]
-fn copied_official_key_does_not_mask_legacy_custom_identity() {
+fn equal_credentials_do_not_override_explicit_official_provider() {
     let mut env = BTreeMap::from([
         ("BUZZ_AGENT_PROVIDER".into(), "openai".into()),
-        ("OPENAI_API_KEY".into(), "copied-legacy".into()),
-        ("OPENAI_COMPAT_API_KEY".into(), "copied-legacy".into()),
+        ("OPENAI_API_KEY".into(), "same-secret".into()),
+        ("OPENAI_COMPAT_API_KEY".into(), "same-secret".into()),
         (
             "OPENAI_COMPAT_BASE_URL".into(),
             "https://gateway.example/v1".into(),
@@ -87,9 +90,10 @@ fn copied_official_key_does_not_mask_legacy_custom_identity() {
             Some("openai")
         )
         .as_deref(),
-        Some("openai-compat")
+        Some("openai")
     );
-    assert!(!env.contains_key("OPENAI_API_KEY"));
+    assert!(!env.contains_key("OPENAI_COMPAT_API_KEY"));
+    assert!(!env.contains_key("OPENAI_COMPAT_BASE_URL"));
 }
 
 #[test]
