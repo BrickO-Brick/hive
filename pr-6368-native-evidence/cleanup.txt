@@ -1,0 +1,10 @@
+Cleanup command: TERM process group 84227
+Native launcher completion: observed
+
+PASS app process group exited
+PASS Vite port 30355 released
+PASS no worktree agent sidecars remain
+
+Post-cleanup HEAD: ffb765e49e2db60fdb167fe58440f3c6d5efa17b
+Post-cleanup git status: clean
+Post-cleanup git diff --check: pass

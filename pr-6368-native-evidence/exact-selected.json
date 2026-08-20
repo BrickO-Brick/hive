@@ -1,0 +1,15 @@
+{
+  "description": "Select [redacted fixture title]",
+  "focused": true,
+  "position": [
+    335,
+    238
+  ],
+  "role": "AXCheckBox",
+  "size": [
+    12,
+    12
+  ],
+  "title": "Select [redacted fixture title]",
+  "value": "1"
+}

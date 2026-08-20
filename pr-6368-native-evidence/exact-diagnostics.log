@@ -1,0 +1,9 @@
+[2026-08-20T11:58:25Z] application=Buzz Dev (projects-v6-pt2-selectable-workspaces) pid=84587 windowId=29941 mode=exact
+[2026-08-20T11:58:25Z] AXPress Projects
+[2026-08-20T11:58:26Z] AXPress Tasks
+[2026-08-20T11:58:26Z] AXPress List layout
+[2026-08-20T11:58:27Z] focused setup control Open task [redacted fixture title]
+[2026-08-20T11:58:28Z] posted macOS HID Tab
+[2026-08-20T11:58:30Z] focus-ring bright pixels=732
+[2026-08-20T11:58:30Z] posted macOS HID Space
+[2026-08-20T11:58:31Z] PASS native Tab → entity checkbox → visible focus ring → Space selection

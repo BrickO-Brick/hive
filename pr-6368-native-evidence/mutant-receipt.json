@@ -1,0 +1,41 @@
+{
+  "adjacentControl": {
+    "description": "",
+    "focused": true,
+    "position": [
+      317,
+      224
+    ],
+    "role": "AXButton",
+    "size": [
+      1921,
+      40
+    ],
+    "title": "Open task [redacted fixture title]",
+    "value": ""
+  },
+  "applicationTitle": "Buzz Dev (projects-v6-pt2-selectable-workspaces)",
+  "clearSelectionFound": false,
+  "failure": "visible focus-ring assertion failed: expected >=100 bright pixels, got 0",
+  "focusRingBrightPixels": 0,
+  "focusedCheckbox": {
+    "description": "Select [redacted fixture title]",
+    "focused": true,
+    "position": [
+      335,
+      238
+    ],
+    "role": "AXCheckBox",
+    "size": [
+      12,
+      12
+    ],
+    "title": "Select [redacted fixture title]",
+    "value": "0"
+  },
+  "mode": "mutant",
+  "pid": 84587,
+  "selectedHeadingFound": false,
+  "status": "failed",
+  "windowId": 29941
+}
