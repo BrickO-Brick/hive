@@ -5875,6 +5875,54 @@ mod tests {
     }
 
     #[test]
+    fn test_json_to_context_message_projects_only_strict_board_references() {
+        let workstream_id = "123e4567-e89b-12d3-a456-426614174000";
+        let valid = json!({
+            "kind": "workstream",
+            "identity": workstream_id,
+            "snapshot": { "label": "Checkout recovery" },
+            "placement": {
+                "workstreamId": workstream_id,
+                "workstreamLabel": "checkout-recovery",
+                "sectionId": "workstream",
+                "sectionLabel": "Workstream"
+            }
+        });
+        let mut unknown = valid.clone();
+        unknown["snapshot"]["extra"] = json!(true);
+        let mut controlled = valid.clone();
+        controlled["snapshot"]["label"] = json!("bad\u{0085}label");
+        let mut forged = valid.clone();
+        forged["identity"] = json!("123e4567-e89b-12d3-a456-426614174001");
+        let tag = |value: serde_json::Value| {
+            json!([
+                buzz_sdk::BOARD_REFERENCE_TAG,
+                buzz_sdk::BOARD_REFERENCE_VERSION,
+                serde_json::to_string(&value).unwrap()
+            ])
+        };
+        let obj = json!({
+            "pubkey": "abc",
+            "content": "hello",
+            "created_at": 1710518400,
+            "tags": [
+                ["h", workstream_id],
+                tag(unknown),
+                tag(controlled),
+                tag(forged),
+                tag(valid.clone())
+            ]
+        });
+
+        let msg = json_to_context_message(&obj).expect("message survives bad references");
+        assert_eq!(msg.board_references.len(), 1);
+        assert_eq!(
+            serde_json::to_value(&msg.board_references[0]).unwrap(),
+            valid
+        );
+    }
+
+    #[test]
     fn test_collect_prompt_pubkeys_includes_authors_mentions_and_context() {
         let keys = Keys::generate();
         let p_tag = Tag::parse([

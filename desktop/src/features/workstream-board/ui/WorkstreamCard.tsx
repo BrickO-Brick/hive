@@ -40,6 +40,9 @@ type WorkstreamCardProps = {
   discussionMode?: boolean;
   selectedReferenceKeys?: ReadonlySet<string>;
   replayReferenceKeys?: ReadonlySet<string>;
+  replayFocusedReferenceKey?: string;
+  replayReferenceStates?: ReadonlyMap<string, "live" | "changed">;
+  historicalReplayReferences?: readonly BoardReference[];
   onToggleReference?: (reference: BoardReference) => void;
   onReferencesChange?: (references: readonly BoardReference[]) => void;
 };
@@ -55,6 +58,9 @@ export function WorkstreamCard({
   onReferencesChange,
   profiles,
   replayReferenceKeys,
+  replayFocusedReferenceKey,
+  replayReferenceStates,
+  historicalReplayReferences = [],
   selectedReferenceKeys,
 }: WorkstreamCardProps) {
   const canvasQuery = useCanvasQuery(channel.id);
@@ -178,14 +184,25 @@ export function WorkstreamCard({
     onReferencesChange?.(discussionReferences);
   }, [discussionReferences, onReferencesChange]);
 
+  const workstreamReference = discussionReferences[0];
+  const workstreamReferenceKey = workstreamReference
+    ? boardReferenceKey(workstreamReference)
+    : undefined;
+  const workstreamIsCurrent =
+    workstreamReferenceKey !== undefined &&
+    replayFocusedReferenceKey === workstreamReferenceKey;
+
   return (
     <div
+      aria-current={workstreamIsCurrent ? "true" : undefined}
       className={cn(
         "group relative w-full self-start overflow-hidden rounded-2xl border border-border/70 bg-muted/50 p-5 text-left text-foreground shadow-xs transition-all hover:-translate-y-0.5 hover:border-border hover:bg-muted/65 hover:shadow-md",
         waitingOnPrincipal && "border-t-4 border-t-amber-400/70",
         discussionReferences.some((reference) =>
           replayReferenceKeys?.has(boardReferenceKey(reference)),
-        ) && "ring-2 ring-primary ring-offset-2 ring-offset-background",
+        ) && "border-dashed border-2",
+        workstreamIsCurrent &&
+          "ring-2 ring-primary ring-offset-2 ring-offset-background",
       )}
       data-testid={`workstream-card-${channel.id}`}
     >
@@ -193,7 +210,7 @@ export function WorkstreamCard({
         className="absolute inset-0 z-0 rounded-2xl focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
         onClick={() =>
           discussionMode
-            ? onToggleReference?.(discussionReferences[0])
+            ? workstreamReference && onToggleReference?.(workstreamReference)
             : onSelect(channel.id)
         }
         type="button"
@@ -210,7 +227,7 @@ export function WorkstreamCard({
           className="pointer-events-auto flex max-w-[calc(100%-4rem)] items-center gap-1.5 text-xs font-semibold text-muted-foreground hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
           onClick={() =>
             discussionMode
-              ? onToggleReference?.(discussionReferences[0])
+              ? workstreamReference && onToggleReference?.(workstreamReference)
               : onSelect(channel.id)
           }
           type="button"
@@ -227,20 +244,47 @@ export function WorkstreamCard({
               const key = boardReferenceKey(reference);
               const selected = selectedReferenceKeys?.has(key) ?? false;
               const replayed = replayReferenceKeys?.has(key) ?? false;
+              const replayState = replayReferenceStates?.get(key);
+              const current =
+                reference.kind !== "workstream" &&
+                replayFocusedReferenceKey === key;
               return (
                 <button
                   aria-pressed={selected}
                   className={cn(
                     "rounded-full border px-2 py-1 text-3xs",
                     selected && "border-primary bg-primary/15",
-                    replayed && "ring-2 ring-primary",
+                    replayed && "border-dashed font-semibold",
+                    current && "ring-2 ring-primary ring-offset-2",
                   )}
+                  aria-current={current ? "true" : undefined}
                   key={key}
                   onClick={() => onToggleReference?.(reference)}
                   type="button"
                 >
                   {reference.kind}: {reference.snapshot.label}
+                  {replayed ? ` · Referenced · ${replayState}` : ""}
+                  {current ? " · Current" : ""}
                 </button>
+              );
+            })}
+            {historicalReplayReferences.map((reference) => {
+              const key = boardReferenceKey(reference);
+              const current = replayFocusedReferenceKey === key;
+              return (
+                <div
+                  aria-current={current ? "true" : undefined}
+                  className={cn(
+                    "rounded-md border border-dashed px-2 py-1 text-3xs font-semibold",
+                    current && "ring-2 ring-primary ring-offset-2",
+                  )}
+                  data-testid="historical-reference-placeholder"
+                  key={key}
+                >
+                  Historical {reference.placement.sectionLabel}:{" "}
+                  {reference.snapshot.label}
+                  {current ? " · Current" : ""}
+                </div>
               );
             })}
             <button

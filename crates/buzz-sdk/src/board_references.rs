@@ -106,13 +106,16 @@ pub enum BoardReference {
 }
 
 impl BoardReference {
-    fn dedup_key(&self) -> (&'static str, String) {
+    fn dedup_key(&self) -> (String, &'static str, String) {
+        let workstream_id = self.placement().workstream_id.clone();
         match self {
-            Self::Workstream { identity, .. } => ("workstream", identity.clone()),
-            Self::PullRequest { identity, .. } => ("pull-request", identity.clone()),
-            Self::Agent { identity, .. } => ("agent", identity.clone()),
-            Self::AgentGroup { identity, .. } => ("agent-group", identity.clone()),
-            Self::ThreadBlocker { identity, .. } => ("thread-blocker", identity.clone()),
+            Self::Workstream { identity, .. } => (workstream_id, "workstream", identity.clone()),
+            Self::PullRequest { identity, .. } => (workstream_id, "pull-request", identity.clone()),
+            Self::Agent { identity, .. } => (workstream_id, "agent", identity.clone()),
+            Self::AgentGroup { identity, .. } => (workstream_id, "agent-group", identity.clone()),
+            Self::ThreadBlocker { identity, .. } => {
+                (workstream_id, "thread-blocker", identity.clone())
+            }
         }
     }
 
@@ -157,6 +160,7 @@ impl BoardReference {
             && valid_label(&snapshot.label)
             && snapshot.detail.as_deref().is_none_or(valid_label)
             && match self {
+                Self::Workstream { identity, .. } => identity == &placement.workstream_id,
                 Self::Agent { identity, .. } => valid_hex64(identity),
                 Self::ThreadBlocker { destination, .. } => {
                     valid_uuid(&destination.channel_id)
@@ -263,15 +267,15 @@ mod tests {
     use super::*;
     use nostr::Tags;
 
-    fn reference(identity: &str) -> BoardReference {
+    fn reference(workstream_id: &str) -> BoardReference {
         BoardReference::Workstream {
-            identity: identity.into(),
+            identity: workstream_id.into(),
             snapshot: BoardSnapshot {
                 label: "Checkout recovery".into(),
                 detail: Some("Active".into()),
             },
             placement: BoardPlacement {
-                workstream_id: "123e4567-e89b-12d3-a456-426614174000".into(),
+                workstream_id: workstream_id.into(),
                 workstream_label: "checkout-recovery".into(),
                 section_id: "workstream".into(),
                 section_label: "Workstream".into(),
@@ -281,29 +285,102 @@ mod tests {
 
     #[test]
     fn round_trip_preserves_order() {
-        let tags = build_board_reference_tags(&[reference("one"), reference("two")]).unwrap();
+        let tags = build_board_reference_tags(&[
+            reference("123e4567-e89b-12d3-a456-426614174000"),
+            reference("123e4567-e89b-12d3-a456-426614174001"),
+        ])
+        .unwrap();
         let parsed = parse_board_references(&Tags::from_list(tags));
-        assert_eq!(parsed, vec![reference("one"), reference("two")]);
+        assert_eq!(
+            parsed,
+            vec![
+                reference("123e4567-e89b-12d3-a456-426614174000"),
+                reference("123e4567-e89b-12d3-a456-426614174001")
+            ]
+        );
     }
 
     #[test]
     fn malformed_unknown_and_duplicate_entries_fail_closed() {
-        let mut tags = build_board_reference_tags(&[reference("one")]).unwrap();
+        let mut tags =
+            build_board_reference_tags(&[reference("123e4567-e89b-12d3-a456-426614174000")])
+                .unwrap();
         tags.push(Tag::parse([BOARD_REFERENCE_TAG, "99", "{}"]).unwrap());
         tags.push(Tag::parse([BOARD_REFERENCE_TAG, BOARD_REFERENCE_VERSION, "not-json"]).unwrap());
-        tags.extend(build_board_reference_tags(&[reference("one"), reference("two")]).unwrap());
+        tags.extend(
+            build_board_reference_tags(&[
+                reference("123e4567-e89b-12d3-a456-426614174000"),
+                reference("123e4567-e89b-12d3-a456-426614174001"),
+            ])
+            .unwrap(),
+        );
         assert_eq!(
             parse_board_references(&Tags::from_list(tags)),
-            vec![reference("one"), reference("two")]
+            vec![
+                reference("123e4567-e89b-12d3-a456-426614174000"),
+                reference("123e4567-e89b-12d3-a456-426614174001")
+            ]
         );
     }
     #[test]
-    fn cross_workstream_references_fail_closed() {
-        let allowed = reference("allowed");
-        let mut other = reference("other");
-        if let BoardReference::Workstream { placement, .. } = &mut other {
-            placement.workstream_id = "123e4567-e89b-12d3-a456-426614174001".into();
+    fn strict_unknown_controls_and_forged_workstream_binding_fail_closed() {
+        let valid = reference("123e4567-e89b-12d3-a456-426614174000");
+        let payload = serde_json::to_value(&valid).unwrap();
+        let mut invalid = Vec::new();
+        for path in ["top", "snapshot", "placement"] {
+            let mut value = payload.clone();
+            let target = match path {
+                "top" => value.as_object_mut().unwrap(),
+                "snapshot" => value.get_mut("snapshot").unwrap().as_object_mut().unwrap(),
+                _ => value.get_mut("placement").unwrap().as_object_mut().unwrap(),
+            };
+            target.insert("extra".into(), serde_json::json!(true));
+            invalid.push(value);
         }
+        let mut controlled = payload.clone();
+        controlled["snapshot"]["label"] = serde_json::json!("bad\u{0085}label");
+        invalid.push(controlled);
+        let mut forged = payload;
+        forged["identity"] = serde_json::json!("123e4567-e89b-12d3-a456-426614174001");
+        invalid.push(forged);
+
+        let mut tags = invalid
+            .into_iter()
+            .map(|value| {
+                Tag::parse([
+                    BOARD_REFERENCE_TAG,
+                    BOARD_REFERENCE_VERSION,
+                    serde_json::to_string(&value).unwrap().as_str(),
+                ])
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
+        tags.extend(build_board_reference_tags(&[valid.clone()]).unwrap());
+        assert_eq!(parse_board_references(&Tags::from_list(tags)), vec![valid]);
+    }
+
+    #[test]
+    fn dedup_key_is_scoped_to_workstream_placement() {
+        let first = reference("123e4567-e89b-12d3-a456-426614174000");
+        let mut second = first.clone();
+        if let BoardReference::Workstream {
+            identity,
+            placement,
+            ..
+        } = &mut second
+        {
+            *identity = "123e4567-e89b-12d3-a456-426614174001".into();
+            placement.workstream_id = identity.clone();
+        }
+        let tags =
+            Tags::from_list(build_board_reference_tags(&[first.clone(), second.clone()]).unwrap());
+        assert_eq!(parse_board_references(&tags), vec![first, second]);
+    }
+
+    #[test]
+    fn cross_workstream_references_fail_closed() {
+        let allowed = reference("123e4567-e89b-12d3-a456-426614174000");
+        let other = reference("123e4567-e89b-12d3-a456-426614174001");
         let tags = Tags::from_list(build_board_reference_tags(&[allowed.clone(), other]).unwrap());
         assert_eq!(
             parse_board_references_for_workstream(&tags, "123e4567-e89b-12d3-a456-426614174000"),

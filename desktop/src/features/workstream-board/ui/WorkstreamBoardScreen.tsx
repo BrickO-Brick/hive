@@ -22,8 +22,10 @@ import {
 } from "@/features/workstream-board/lib/workstreamWaits";
 import { WorkstreamCard } from "@/features/workstream-board/ui/WorkstreamCard";
 import { BOARD_REPLAY_STORAGE_KEY } from "@/features/workstream-board/ui/BoardReferenceSet";
+import { BoardReferenceItems } from "@/features/workstream-board/ui/BoardReferenceItems";
 import { useIdentityQuery } from "@/shared/api/hooks";
 import { Button } from "@/shared/ui/button";
+import { cn } from "@/shared/lib/cn";
 import { PageHeader } from "@/shared/ui/PageHeader";
 
 const WORKSTREAM_CARD_GRID_CLASS =
@@ -59,16 +61,26 @@ export function WorkstreamBoardScreen() {
     BoardReference[]
   >([]);
   const [replayFocusIndex, setReplayFocusIndex] = React.useState(0);
+  const startReplay = React.useCallback((references: BoardReference[]) => {
+    setReplayFocusIndex(0);
+    setReplayReferences(references);
+  }, []);
   React.useEffect(() => {
     if (!discussionMode && replayReferences.length === 0) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         if (replayReferences.length > 0) setReplayReferences([]);
         else if (
-          selectedReferences.length === 0 ||
-          window.confirm("Discard the unsent reference tray?")
-        )
+          (selectedReferences.length === 0 && draft.length === 0) ||
+          window.confirm(
+            "Discard the unsent discussion draft and reference tray?",
+          )
+        ) {
           setDiscussionMode(false);
+          setSelectedReferences([]);
+          setDiscussionChannelId(null);
+          setDraft("");
+        }
       } else if (
         replayReferences.length > 0 &&
         (event.key === "ArrowRight" || event.key === "]")
@@ -90,7 +102,7 @@ export function WorkstreamBoardScreen() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [discussionMode, replayReferences, selectedReferences.length]);
+  }, [discussionMode, draft, replayReferences, selectedReferences.length]);
   const [liveReferencesByChannel, setLiveReferencesByChannel] = React.useState<
     ReadonlyMap<string, readonly BoardReference[]>
   >(() => new Map());
@@ -101,7 +113,7 @@ export function WorkstreamBoardScreen() {
     try {
       const parsed: unknown = JSON.parse(stored);
       if (Array.isArray(parsed)) {
-        setReplayReferences(
+        startReplay(
           parsed.flatMap((value) => {
             const references = parseBoardReferences([
               ["buzz:board-ref", "1", JSON.stringify(value)],
@@ -113,7 +125,7 @@ export function WorkstreamBoardScreen() {
     } catch {
       // Malformed cross-route replay state fails closed.
     }
-  }, []);
+  }, [startReplay]);
   const workstreamChannels = filterWorkstreamChannels(channelsQuery.data ?? []);
   const discussionChannel =
     workstreamChannels.find((channel) => channel.id === discussionChannelId) ??
@@ -131,6 +143,9 @@ export function WorkstreamBoardScreen() {
     () => new Set(replayReferences.map(boardReferenceKey)),
     [replayReferences],
   );
+  const replayFocusedKey = replayReferences[replayFocusIndex]
+    ? boardReferenceKey(replayReferences[replayFocusIndex])
+    : undefined;
   const liveReferences = React.useMemo(
     () =>
       new Map(
@@ -139,6 +154,21 @@ export function WorkstreamBoardScreen() {
           .map((reference) => [boardReferenceKey(reference), reference]),
       ),
     [liveReferencesByChannel],
+  );
+  const resolvedReplayReferences = React.useMemo(
+    () => resolveBoardReferences(replayReferences, liveReferences),
+    [liveReferences, replayReferences],
+  );
+  const replayReferenceStates = React.useMemo(
+    () =>
+      new Map(
+        resolvedReplayReferences.flatMap((item) =>
+          item.state === "historical"
+            ? []
+            : [[boardReferenceKey(item.reference), item.state] as const],
+        ),
+      ),
+    [resolvedReplayReferences],
   );
   const onReferencesChange = React.useCallback(
     (channelId: string, references: readonly BoardReference[]) => {
@@ -242,14 +272,17 @@ export function WorkstreamBoardScreen() {
               onClick={() => {
                 if (
                   discussionMode &&
-                  selectedReferences.length > 0 &&
-                  !window.confirm("Discard the unsent reference tray?")
+                  (selectedReferences.length > 0 || draft.length > 0) &&
+                  !window.confirm(
+                    "Discard the unsent discussion draft and reference tray?",
+                  )
                 )
                   return;
                 setDiscussionMode(!discussionMode);
                 setSelectedReferences([]);
                 setReplayReferences([]);
                 setDiscussionChannelId(null);
+                setDraft("");
               }}
               variant={discussionMode ? "secondary" : "default"}
             >
@@ -270,25 +303,10 @@ export function WorkstreamBoardScreen() {
               <p className="text-sm font-semibold">
                 Reference tray ({selectedReferences.length})
               </p>
-              <ol className="space-y-1">
-                {selectedReferences.map((reference, index) => (
-                  <li
-                    className="flex items-center gap-2 text-xs"
-                    key={boardReferenceKey(reference)}
-                  >
-                    <span>
-                      {index + 1}. {reference.kind}: {reference.snapshot.label}
-                    </span>
-                    <button
-                      className="underline"
-                      onClick={() => toggleReference(reference)}
-                      type="button"
-                    >
-                      Remove
-                    </button>
-                  </li>
-                ))}
-              </ol>
+              <BoardReferenceItems
+                onRemove={toggleReference}
+                references={selectedReferences}
+              />
               <textarea
                 aria-label="Discussion message"
                 className="min-h-20 w-full rounded-md border bg-background p-2 text-sm"
@@ -329,15 +347,11 @@ export function WorkstreamBoardScreen() {
                         <button
                           className="block w-full rounded-md border bg-background p-2 text-left text-xs"
                           key={event.id}
-                          onClick={() => setReplayReferences(refs)}
+                          onClick={() => startReplay(refs)}
                           type="button"
                         >
                           <span className="block">{event.content}</span>
-                          <span className="text-muted-foreground">
-                            {refs
-                              .map((reference) => reference.snapshot.label)
-                              .join(" · ")}
-                          </span>
+                          <BoardReferenceItems references={refs} />
                         </button>
                       );
                     })}
@@ -349,9 +363,15 @@ export function WorkstreamBoardScreen() {
               )}
               {replayReferences.length > 0
                 ? (() => {
-                    const resolved = resolveBoardReferences(
-                      replayReferences,
-                      liveReferences,
+                    const resolved = resolvedReplayReferences;
+                    const fallbackHistorical = resolved.filter(
+                      (item) =>
+                        item.state === "historical" &&
+                        !workstreamChannels.some(
+                          (channel) =>
+                            channel.id ===
+                            item.reference.placement.workstreamId,
+                        ),
                     );
                     return (
                       <div className="text-xs">
@@ -403,20 +423,30 @@ export function WorkstreamBoardScreen() {
                             Next
                           </button>
                         </span>
-                        {resolved.some(
-                          (item) => item.state === "historical",
-                        ) ? (
+                        {fallbackHistorical.length > 0 ? (
                           <div className="mt-2 rounded-md border border-dashed p-2">
                             <strong>Historical references</strong>
-                            {resolved
-                              .filter((item) => item.state === "historical")
-                              .map((item) => (
-                                <p key={boardReferenceKey(item.reference)}>
+                            {fallbackHistorical.map((item) => {
+                              const key = boardReferenceKey(item.reference);
+                              const current = replayFocusedKey === key;
+                              return (
+                                <p
+                                  aria-current={current ? "true" : undefined}
+                                  className={cn(
+                                    "rounded px-1",
+                                    current &&
+                                      "font-bold outline outline-2 outline-offset-2",
+                                  )}
+                                  data-testid="historical-reference-placeholder"
+                                  key={key}
+                                >
                                   {item.reference.snapshot.label} · formerly{" "}
                                   {item.reference.placement.workstreamLabel} /{" "}
                                   {item.reference.placement.sectionLabel}
+                                  {current ? " · Current" : ""}
                                 </p>
-                              ))}
+                              );
+                            })}
                           </div>
                         ) : null}
                       </div>
@@ -457,6 +487,15 @@ export function WorkstreamBoardScreen() {
                     onReferencesChange(channel.id, references)
                   }
                   replayReferenceKeys={replayKeys}
+                  replayFocusedReferenceKey={replayFocusedKey}
+                  replayReferenceStates={replayReferenceStates}
+                  historicalReplayReferences={resolvedReplayReferences
+                    .filter(
+                      (item) =>
+                        item.state === "historical" &&
+                        item.reference.placement.workstreamId === channel.id,
+                    )
+                    .map((item) => item.reference)}
                   selectedReferenceKeys={selectedKeys}
                   currentOwnerPubkey={identityQuery.data?.pubkey}
                   key={channel.id}

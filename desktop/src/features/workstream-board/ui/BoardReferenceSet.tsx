@@ -1,5 +1,6 @@
 import { useAppNavigation } from "@/app/navigation/useAppNavigation";
 import { parseBoardReferences } from "@/features/workstream-board/lib/boardReferences";
+import { BoardReferenceItems } from "@/features/workstream-board/ui/BoardReferenceItems";
 
 export const BOARD_REPLAY_STORAGE_KEY = "buzz:board-replay:v1";
 
@@ -26,14 +27,7 @@ export function BoardReferenceSet({
       }}
       type="button"
     >
-      {references.map((reference, index) => (
-        <span
-          className="rounded-full border bg-background px-2 py-1 text-3xs"
-          key={`${reference.kind}:${reference.identity}`}
-        >
-          {index + 1}. {reference.kind}: {reference.snapshot.label}
-        </span>
-      ))}
+      <BoardReferenceItems references={references} />
     </button>
   );
 }
