@@ -1175,10 +1175,21 @@ pub(crate) fn format_event_block(
     if let Ok(tags_str) = serde_json::to_string(&tags_json) {
         block.push_str(&format!("\nTags: {tags_str}"));
     }
-    append_board_references(
-        &mut block,
-        &buzz_sdk::parse_board_references(&be.event.tags),
-    );
+    let board_references = be
+        .event
+        .tags
+        .iter()
+        .find_map(|tag| {
+            let values = tag.as_slice();
+            (values.first().map(String::as_str) == Some("h"))
+                .then(|| values.get(1))
+                .flatten()
+        })
+        .map(|workstream_id| {
+            buzz_sdk::parse_board_references_for_workstream(&be.event.tags, workstream_id)
+        })
+        .unwrap_or_default();
+    append_board_references(&mut block, &board_references);
 
     // Parsed structural fields.
     let thread = parse_thread_tags(&be.event);

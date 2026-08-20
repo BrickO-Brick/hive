@@ -4,11 +4,13 @@ import { parseBoardReferences } from "@/features/workstream-board/lib/boardRefer
 export const BOARD_REPLAY_STORAGE_KEY = "buzz:board-replay:v1";
 
 export function BoardReferenceSet({
+  channelId,
   tags,
 }: {
+  channelId?: string | null;
   tags?: readonly (readonly string[])[];
 }) {
-  const references = parseBoardReferences(tags);
+  const references = parseBoardReferences(tags, channelId ?? undefined);
   const { goWorkstreams } = useAppNavigation();
   if (references.length === 0) return null;
   return (

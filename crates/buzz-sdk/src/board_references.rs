@@ -106,6 +106,16 @@ pub enum BoardReference {
 }
 
 impl BoardReference {
+    fn dedup_key(&self) -> (&'static str, String) {
+        match self {
+            Self::Workstream { identity, .. } => ("workstream", identity.clone()),
+            Self::PullRequest { identity, .. } => ("pull-request", identity.clone()),
+            Self::Agent { identity, .. } => ("agent", identity.clone()),
+            Self::AgentGroup { identity, .. } => ("agent-group", identity.clone()),
+            Self::ThreadBlocker { identity, .. } => ("thread-blocker", identity.clone()),
+        }
+    }
+
     fn identity(&self) -> &str {
         match self {
             Self::Workstream { identity, .. }
@@ -195,7 +205,7 @@ pub fn build_board_reference_tags(
     references
         .iter()
         .map(|reference| {
-            if !reference.validate() || !identities.insert(reference.identity().to_string()) {
+            if !reference.validate() || !identities.insert(reference.dedup_key()) {
                 return Err(crate::SdkError::InvalidInput(
                     "invalid or duplicate Board reference".into(),
                 ));
@@ -231,10 +241,20 @@ pub fn parse_board_references(tags: &nostr::Tags) -> Vec<BoardReference> {
                 return None;
             }
             let reference: BoardReference = serde_json::from_str(&values[2]).ok()?;
-            (reference.validate() && identities.insert(reference.identity().to_string()))
-                .then_some(reference)
+            (reference.validate() && identities.insert(reference.dedup_key())).then_some(reference)
         })
         .take(MAX_BOARD_REFERENCES)
+        .collect()
+}
+
+/// Parse references authorized for one current Board workstream.
+pub fn parse_board_references_for_workstream(
+    tags: &nostr::Tags,
+    workstream_id: &str,
+) -> Vec<BoardReference> {
+    parse_board_references(tags)
+        .into_iter()
+        .filter(|reference| reference.placement().workstream_id == workstream_id)
         .collect()
 }
 
@@ -275,6 +295,19 @@ mod tests {
         assert_eq!(
             parse_board_references(&Tags::from_list(tags)),
             vec![reference("one"), reference("two")]
+        );
+    }
+    #[test]
+    fn cross_workstream_references_fail_closed() {
+        let allowed = reference("allowed");
+        let mut other = reference("other");
+        if let BoardReference::Workstream { placement, .. } = &mut other {
+            placement.workstream_id = "123e4567-e89b-12d3-a456-426614174001".into();
+        }
+        let tags = Tags::from_list(build_board_reference_tags(&[allowed.clone(), other]).unwrap());
+        assert_eq!(
+            parse_board_references_for_workstream(&tags, "123e4567-e89b-12d3-a456-426614174000"),
+            vec![allowed]
         );
     }
 }

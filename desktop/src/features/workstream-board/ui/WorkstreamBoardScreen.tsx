@@ -58,6 +58,39 @@ export function WorkstreamBoardScreen() {
   const [replayReferences, setReplayReferences] = React.useState<
     BoardReference[]
   >([]);
+  const [replayFocusIndex, setReplayFocusIndex] = React.useState(0);
+  React.useEffect(() => {
+    if (!discussionMode && replayReferences.length === 0) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        if (replayReferences.length > 0) setReplayReferences([]);
+        else if (
+          selectedReferences.length === 0 ||
+          window.confirm("Discard the unsent reference tray?")
+        )
+          setDiscussionMode(false);
+      } else if (
+        replayReferences.length > 0 &&
+        (event.key === "ArrowRight" || event.key === "]")
+      ) {
+        event.preventDefault();
+        setReplayFocusIndex(
+          (current) => (current + 1) % replayReferences.length,
+        );
+      } else if (
+        replayReferences.length > 0 &&
+        (event.key === "ArrowLeft" || event.key === "[")
+      ) {
+        event.preventDefault();
+        setReplayFocusIndex(
+          (current) =>
+            (current - 1 + replayReferences.length) % replayReferences.length,
+        );
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [discussionMode, replayReferences, selectedReferences.length]);
   const [liveReferencesByChannel, setLiveReferencesByChannel] = React.useState<
     ReadonlyMap<string, readonly BoardReference[]>
   >(() => new Map());
@@ -103,7 +136,7 @@ export function WorkstreamBoardScreen() {
       new Map(
         [...liveReferencesByChannel.values()]
           .flat()
-          .map((reference) => [reference.identity, reference]),
+          .map((reference) => [boardReferenceKey(reference), reference]),
       ),
     [liveReferencesByChannel],
   );
@@ -322,7 +355,10 @@ export function WorkstreamBoardScreen() {
                     );
                     return (
                       <div className="text-xs">
-                        <strong>Replay:</strong>{" "}
+                        <strong>
+                          Replay {replayFocusIndex + 1}/
+                          {replayReferences.length}:
+                        </strong>{" "}
                         {
                           resolved.filter((item) => item.state === "live")
                             .length
@@ -338,6 +374,35 @@ export function WorkstreamBoardScreen() {
                             .length
                         }{" "}
                         historical
+                        <span className="ml-2 inline-flex gap-1">
+                          <button
+                            aria-label="Previous reference"
+                            className="underline"
+                            onClick={() =>
+                              setReplayFocusIndex(
+                                (current) =>
+                                  (current - 1 + replayReferences.length) %
+                                  replayReferences.length,
+                              )
+                            }
+                            type="button"
+                          >
+                            Previous
+                          </button>
+                          <button
+                            aria-label="Next reference"
+                            className="underline"
+                            onClick={() =>
+                              setReplayFocusIndex(
+                                (current) =>
+                                  (current + 1) % replayReferences.length,
+                              )
+                            }
+                            type="button"
+                          >
+                            Next
+                          </button>
+                        </span>
                         {resolved.some(
                           (item) => item.state === "historical",
                         ) ? (

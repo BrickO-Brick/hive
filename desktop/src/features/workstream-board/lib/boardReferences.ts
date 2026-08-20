@@ -95,9 +95,9 @@ export function boardReferenceTags(
     throw new Error(`Select at most ${MAX_BOARD_REFERENCES} references.`);
   const seen = new Set<string>();
   return references.map((reference) => {
-    if (!isBoardReference(reference) || seen.has(reference.identity))
+    if (!isBoardReference(reference) || seen.has(boardReferenceKey(reference)))
       throw new Error("Invalid or duplicate Board reference.");
-    seen.add(reference.identity);
+    seen.add(boardReferenceKey(reference));
     const payload = JSON.stringify(reference);
     if (new TextEncoder().encode(payload).length > 4096)
       throw new Error("Board reference is too large.");
@@ -107,6 +107,7 @@ export function boardReferenceTags(
 
 export function parseBoardReferences(
   tags: readonly (readonly string[])[] | undefined,
+  workstreamId?: string,
 ): BoardReference[] {
   const result: BoardReference[] = [];
   const seen = new Set<string>();
@@ -121,8 +122,12 @@ export function parseBoardReferences(
       continue;
     try {
       const value: unknown = JSON.parse(tag[2]);
-      if (isBoardReference(value) && !seen.has(value.identity)) {
-        seen.add(value.identity);
+      if (
+        isBoardReference(value) &&
+        (!workstreamId || value.placement.workstreamId === workstreamId) &&
+        !seen.has(boardReferenceKey(value))
+      ) {
+        seen.add(boardReferenceKey(value));
         result.push(value);
       }
     } catch {
@@ -141,7 +146,7 @@ export function resolveBoardReferences(
   live: ReadonlyMap<string, BoardReference>,
 ): BoardReferenceResolution[] {
   return references.map((reference) => {
-    const current = live.get(reference.identity);
+    const current = live.get(boardReferenceKey(reference));
     return {
       reference,
       state: !current

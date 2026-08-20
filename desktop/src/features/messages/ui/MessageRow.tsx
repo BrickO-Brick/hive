@@ -894,7 +894,10 @@ export const MessageRow = React.memo(
                 {headerNode}
                 <div className={bodyContainerClass} data-testid="message-body">
                   {messageBodyNode}
-                  <BoardReferenceSet tags={message.tags} />
+                  <BoardReferenceSet
+                    channelId={channelId}
+                    tags={message.tags}
+                  />
                 </div>
               </div>
             </>
@@ -905,7 +908,10 @@ export const MessageRow = React.memo(
                 {headerNode}
                 <div className={bodyContainerClass} data-testid="message-body">
                   {messageBodyNode}
-                  <BoardReferenceSet tags={message.tags} />
+                  <BoardReferenceSet
+                    channelId={channelId}
+                    tags={message.tags}
+                  />
                 </div>
               </div>
             </>

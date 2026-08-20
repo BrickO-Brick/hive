@@ -3800,7 +3800,16 @@ fn json_board_references(obj: &serde_json::Value) -> Vec<buzz_sdk::BoardReferenc
             nostr::Tag::parse(parts).ok()
         })
         .collect::<Vec<_>>();
-    buzz_sdk::parse_board_references(&nostr::Tags::from_list(tags))
+    let tags = nostr::Tags::from_list(tags);
+    let workstream_id = tags.iter().find_map(|tag| {
+        let values = tag.as_slice();
+        (values.first().map(String::as_str) == Some("h"))
+            .then(|| values.get(1))
+            .flatten()
+    });
+    workstream_id
+        .map(|id| buzz_sdk::parse_board_references_for_workstream(&tags, id))
+        .unwrap_or_default()
 }
 
 /// Extract a `ContextMessage` from a JSON message object.
