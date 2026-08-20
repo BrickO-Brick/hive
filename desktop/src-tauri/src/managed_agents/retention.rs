@@ -255,11 +255,17 @@ pub enum InboundOutcome {
 /// - No local row, or inbound strictly newer (`created_at >`): apply the
 ///   inbound event, clearing `pending_sync`. Inbound wins; a stale local edit
 ///   the relay already superseded stops republishing instead of looping.
-/// - Equal `created_at`: skip. Nostr time is seconds-granularity, so a pending
-///   local edit and an inbound event can share a timestamp; applying here would
-///   clear `pending_sync` and drop the local publish. Skipping leaves the
-///   pending row intact so the flush republishes and the relay resolves
-///   last-writer-wins. (A re-received echo at equal time is also a no-op.)
+/// - Equal `created_at`: NIP-01 addressable-event tiebreak — the event with
+///   the lexicographically LOWEST id wins, exactly the head the relay itself
+///   retains. Nostr time is seconds-granularity, so two devices can retain
+///   distinct successors in the same second; without a shared deterministic
+///   winner each side skips the other's head on every replay and the devices
+///   diverge permanently. A pending local edit that WINS the tie stays
+///   pending and republishes; one that LOSES is superseded — the relay would
+///   refuse it as the head anyway, so clearing its `pending_sync` is what
+///   converges both devices onto the relay's answer. (A re-received echo has
+///   an equal id and stays a no-op; if either id is unavailable the inbound
+///   event is skipped, preserving any pending local publish.)
 /// - Inbound older: skip — nothing to change.
 ///
 /// Decide whether an inbound event is newer than the retained coordinate without
@@ -274,10 +280,37 @@ pub fn inbound_event_outcome(
     Ok(match existing {
         None => InboundOutcome::Applied,
         Some(row) if event.created_at > row.created_at => InboundOutcome::Applied,
-        // Equal or older: skip. Equal time may collide with a pending local
-        // edit, so we never clear its `pending_sync`; older is stale.
+        Some(row)
+            if event.created_at == row.created_at
+                && equal_second_inbound_wins(&event.raw_event, &row.raw_event) =>
+        {
+            InboundOutcome::Applied
+        }
+        // Older, or an equal-second loser/echo: skip. A pending local edit
+        // that won (or an undecidable tie) keeps its `pending_sync`.
         Some(_) => InboundOutcome::Skipped,
     })
+}
+
+/// NIP-01 addressable-event tiebreak at equal `created_at`: the event with the
+/// lexicographically lowest id is the head the relay retains. Returns `true`
+/// only when BOTH ids are present and the inbound id is strictly lower —
+/// an undecidable or equal comparison must not clobber the retained row (or a
+/// pending local publish riding on it).
+fn equal_second_inbound_wins(inbound_raw: &str, retained_raw: &str) -> bool {
+    match (raw_event_id(inbound_raw), raw_event_id(retained_raw)) {
+        (Some(inbound_id), Some(retained_id)) => inbound_id < retained_id,
+        _ => false,
+    }
+}
+
+/// Extract the `id` field from a raw event JSON string, if present.
+fn raw_event_id(raw_event: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(raw_event)
+        .ok()?
+        .get("id")?
+        .as_str()
+        .map(str::to_owned)
 }
 
 pub fn retain_inbound_event(
@@ -853,7 +886,8 @@ mod tests {
     #[test]
     fn inbound_equal_second_skips_and_preserves_pending() {
         let conn = test_db();
-        // Pending local edit at t=1000.
+        // Pending local edit at t=1000. Same raw-event id as the inbound below
+        // (an echo / undecidable tie), so the tiebreak cannot decide a winner.
         let local = sample_event();
         retain_event(&conn, &local).unwrap();
 
@@ -875,6 +909,114 @@ mod tests {
             .unwrap();
         assert!(row.pending_sync);
         assert!(row.content.contains("Test"));
+    }
+
+    /// Issue-3 regression: two devices retain DISTINCT successors in the same
+    /// second, then each receives the other's. Without a deterministic
+    /// equal-second winner both sides skip forever and diverge permanently.
+    /// The NIP-01 tiebreak (lowest event id wins) makes opposite delivery
+    /// orders converge on the SAME head — the one the relay itself retains.
+    #[test]
+    fn inbound_equal_second_opposite_delivery_orders_converge() {
+        let event_low = RetainedEvent {
+            content: r#"{"display_name":"Low"}"#.to_string(),
+            raw_event: r#"{"id":"0aaa"}"#.to_string(),
+            pending_sync: false,
+            ..sample_event()
+        };
+        let event_high = RetainedEvent {
+            content: r#"{"display_name":"High"}"#.to_string(),
+            raw_event: r#"{"id":"0bbb"}"#.to_string(),
+            pending_sync: false,
+            ..sample_event()
+        };
+
+        // Device A: low first, then high. High loses the tie — skipped.
+        let device_a = test_db();
+        assert_eq!(
+            retain_inbound_event(&device_a, &event_low).unwrap(),
+            InboundOutcome::Applied
+        );
+        assert_eq!(
+            retain_inbound_event(&device_a, &event_high).unwrap(),
+            InboundOutcome::Skipped
+        );
+
+        // Device B: high first, then low. Low wins the tie — applied.
+        let device_b = test_db();
+        assert_eq!(
+            retain_inbound_event(&device_b, &event_high).unwrap(),
+            InboundOutcome::Applied
+        );
+        assert_eq!(
+            retain_inbound_event(&device_b, &event_low).unwrap(),
+            InboundOutcome::Applied
+        );
+
+        // Both devices converge on the lexically-lowest id.
+        for conn in [&device_a, &device_b] {
+            let row = get_retained_event(conn, 30175, "abc123", "test-persona")
+                .unwrap()
+                .unwrap();
+            assert!(
+                row.content.contains("Low"),
+                "both delivery orders must converge on the lowest event id"
+            );
+        }
+    }
+
+    /// A pending local edit that WINS the equal-second tie keeps its
+    /// `pending_sync` (the flush republishes it); one that LOSES is superseded
+    /// by the relay's head and stops republishing a refused event.
+    #[test]
+    fn inbound_equal_second_pending_local_winner_and_loser() {
+        // Local pending edit with the LOWER id: inbound loses, pending stays.
+        let conn = test_db();
+        let local_low = RetainedEvent {
+            raw_event: r#"{"id":"0aaa"}"#.to_string(),
+            ..sample_event()
+        };
+        retain_event(&conn, &local_low).unwrap();
+        let inbound_high = RetainedEvent {
+            content: r#"{"display_name":"Remote"}"#.to_string(),
+            raw_event: r#"{"id":"0bbb"}"#.to_string(),
+            pending_sync: false,
+            ..sample_event()
+        };
+        assert_eq!(
+            retain_inbound_event(&conn, &inbound_high).unwrap(),
+            InboundOutcome::Skipped
+        );
+        let row = get_retained_event(&conn, 30175, "abc123", "test-persona")
+            .unwrap()
+            .unwrap();
+        assert!(row.pending_sync, "the winning local edit keeps its publish");
+
+        // Local pending edit with the HIGHER id: inbound wins, pending clears.
+        let conn = test_db();
+        let local_high = RetainedEvent {
+            raw_event: r#"{"id":"0bbb"}"#.to_string(),
+            ..sample_event()
+        };
+        retain_event(&conn, &local_high).unwrap();
+        let inbound_low = RetainedEvent {
+            content: r#"{"display_name":"Remote"}"#.to_string(),
+            raw_event: r#"{"id":"0aaa"}"#.to_string(),
+            pending_sync: false,
+            ..sample_event()
+        };
+        assert_eq!(
+            retain_inbound_event(&conn, &inbound_low).unwrap(),
+            InboundOutcome::Applied
+        );
+        let row = get_retained_event(&conn, 30175, "abc123", "test-persona")
+            .unwrap()
+            .unwrap();
+        assert!(
+            !row.pending_sync,
+            "the losing local edit stops republishing a head the relay refused"
+        );
+        assert!(row.content.contains("Remote"));
     }
 
     #[test]
