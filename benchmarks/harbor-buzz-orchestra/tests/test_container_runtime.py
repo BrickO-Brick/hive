@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import re
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,7 @@ from harbor_buzz_orchestra.container_runtime import (
 )
 from harbor_buzz_orchestra.manifest import ExperimentManifest
 from harbor_buzz_orchestra.provisioning import AgentCredential, TrialHandle
+from harbor_buzz_orchestra.task_fixtures import fixture_for
 
 
 def write_manifest(
@@ -195,6 +197,51 @@ def test_user_relay_url_prefers_host_view(tmp_path):
     )
     # pre-v1.2 handles fall back to deriving http from the agents' ws view.
     assert rt._user_relay_url(trial_handle(())) == "http://host.docker.internal:3600"
+
+
+async def test_collects_task_declared_channel_membership(tmp_path, monkeypatch):
+    rt = runtime(tmp_path)
+    trial = replace(
+        trial_handle((credential("orch-1", "orchestrator", "orch-model"),)),
+        task_name="create-channel-invite-users",
+    )
+    calls = []
+
+    async def buzz_json(credential_arg, trial_arg, *args):
+        calls.append((credential_arg, trial_arg, args))
+        if args[:2] == ("channels", "search"):
+            return [
+                {
+                    "channel_id": "created-channel",
+                    "name": "fix-pr-1234",
+                    "channel_type": "stream",
+                    "visibility": "private",
+                    "archived": False,
+                    "ttl_seconds": 3600,
+                }
+            ]
+        return [{"pubkey": "member", "role": "member"}]
+
+    monkeypatch.setattr(rt, "_buzz_json", buzz_json)
+
+    observed = await rt._collect_observed_channels(trial)
+
+    assert observed[0]["members"] == [{"pubkey": "member", "role": "member"}]
+    assert calls[0][0].agent_id == "orch-1"
+    assert calls[0][2] == (
+        "channels",
+        "search",
+        "--query",
+        "fix-pr-1234",
+        "--exact",
+        "--include-archived",
+    )
+    assert calls[1][2] == (
+        "channels",
+        "members",
+        "--channel",
+        "created-channel",
+    )
     with pytest.raises(RuntimeLaunchError, match="ws://"):
         rt._cli_relay_url("http://relay")
 

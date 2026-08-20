@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import {
+  databricksRegistryLabelForRecords,
   ManifestSchema,
   resolveModelCapabilities,
 } from "./modelCapabilities.ts";
