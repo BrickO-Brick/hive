@@ -6904,6 +6904,7 @@ async function handleOpenDm(
     pubkeys: string[];
     expectedRelayUrl?: string | null;
     expectedSignerPubkey?: string | null;
+    boardReferences?: Array<Record<string, unknown>> | null;
   },
   config: E2eConfig | undefined,
 ) {
@@ -9591,6 +9592,7 @@ async function handleSendChannelMessage(
     suppressLinkPreviews?: boolean;
     expectedRelayUrl?: string | null;
     expectedSignerPubkey?: string | null;
+    boardReferences?: Array<Record<string, unknown>> | null;
   },
   config: E2eConfig | undefined,
 ): Promise<RawSendChannelMessageResponse> {
@@ -9666,6 +9668,11 @@ async function handleSendChannelMessage(
     ...linkPreviewTags,
     ...(args.sentFromThreadTag ? [args.sentFromThreadTag] : []),
     ...(args.suppressLinkPreviews ? [["link-preview", "none"]] : []),
+    ...(args.boardReferences ?? []).map((reference) => [
+      "buzz:board-ref",
+      "1",
+      JSON.stringify(reference),
+    ]),
   ];
   const identity = getIdentity(config);
   if (!identity) {
@@ -9796,6 +9803,7 @@ async function handleSendManagedAgentChannelMessage(
     mentionPubkeys?: string[] | null;
     parentEventId?: string | null;
     additionalMarkers?: string[] | null;
+    boardReferences?: Array<Record<string, unknown>> | null;
   },
   _config: E2eConfig | undefined,
 ): Promise<RawSendChannelMessageResponse> {
@@ -9832,6 +9840,9 @@ async function handleSendManagedAgentChannelMessage(
         args.mentionPubkeys ?? undefined,
         agent.pubkey,
       );
+  for (const reference of args.boardReferences ?? []) {
+    tags.push(["buzz:board-ref", "1", JSON.stringify(reference)]);
+  }
   for (const clientMarker of [marker, ...(args.additionalMarkers ?? [])]) {
     if (clientMarker?.trim()) tags.push(["client", clientMarker.trim()]);
   }
