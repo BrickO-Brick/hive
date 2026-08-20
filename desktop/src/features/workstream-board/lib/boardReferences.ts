@@ -41,7 +41,7 @@ const CONTROL_CHARACTER = /\p{Cc}/u;
 const safe = (value: unknown, max = 160): value is string =>
   typeof value === "string" &&
   value.trim().length > 0 &&
-  value.length <= max &&
+  new TextEncoder().encode(value).byteLength <= max &&
   !CONTROL_CHARACTER.test(value);
 
 const hasExactKeys = (

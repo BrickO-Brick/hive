@@ -67,6 +67,56 @@ test("strict decoding rejects unknown fields and Unicode controls per reference"
   );
 });
 
+test("strict decoding enforces Rust-compatible UTF-8 byte limits without hiding the message", () => {
+  const valid = ref("pull-request", "valid");
+  const exact160Bytes = "é".repeat(80);
+  const exact512Bytes = "é".repeat(256);
+  const over160Bytes = "é".repeat(100);
+  const over512Bytes = "é".repeat(300);
+  const malformed = [
+    { ...valid, snapshot: { ...valid.snapshot, label: over160Bytes } },
+    { ...valid, snapshot: { ...valid.snapshot, detail: over160Bytes } },
+    {
+      ...valid,
+      placement: { ...valid.placement, workstreamLabel: over160Bytes },
+    },
+    { ...valid, placement: { ...valid.placement, sectionLabel: over160Bytes } },
+    { ...valid, identity: over512Bytes },
+    { ...valid, placement: { ...valid.placement, sectionId: over512Bytes } },
+  ];
+  const exactBoundary = {
+    ...valid,
+    identity: exact512Bytes,
+    snapshot: { label: exact160Bytes, detail: exact160Bytes },
+    placement: {
+      ...valid.placement,
+      workstreamLabel: exact160Bytes,
+      sectionId: exact512Bytes,
+      sectionLabel: exact160Bytes,
+    },
+  };
+  assert.equal(Buffer.byteLength(exact160Bytes, "utf8"), 160);
+  assert.equal(Buffer.byteLength(exact512Bytes, "utf8"), 512);
+  assert.ok(over160Bytes.length < 160);
+  assert.ok(Buffer.byteLength(over160Bytes, "utf8") > 160);
+  assert.ok(over512Bytes.length < 512);
+  assert.ok(Buffer.byteLength(over512Bytes, "utf8") > 512);
+
+  const malformedTags = malformed.map((value) => [
+    "buzz:board-ref",
+    "1",
+    JSON.stringify(value),
+  ]);
+  assert.deepEqual(
+    parseBoardReferences([
+      ...malformedTags,
+      ["client-only", "message remains usable"],
+      ...boardReferenceTags([exactBoundary, valid]),
+    ]),
+    [exactBoundary, valid],
+  );
+});
+
 test("workstream identity is canonically bound to placement", () => {
   const forged = ref("workstream", OTHER);
   forged.placement.workstreamId = WS;
