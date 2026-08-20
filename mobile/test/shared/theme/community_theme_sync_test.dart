@@ -304,6 +304,64 @@ void main() {
     },
   );
 
+  test(
+    're-merges desktop fields when remote advances during submission',
+    () async {
+      final firstSubmission = Completer<void>();
+      final relay = _FakeSignedRelay(
+        eventId: 'a-mobile',
+        firstSubmissionGate: firstSubmission.future,
+      );
+      final session = _FakeSession();
+      final acknowledgements = <CommunityThemePreference>[];
+      final manager = _manager(
+        session,
+        relay,
+        onPublished: acknowledgements.add,
+      );
+      await manager.initialize();
+      manager.publish(local);
+      final firstFlush = manager.flush();
+      await _waitUntil(() => relay.attempts == 1);
+
+      const desktop = CommunityThemePreference(
+        theme: 'dracula',
+        accent: '#ef4444',
+        followSystem: false,
+        glassBackground: false,
+        glassOpacity: 80,
+        prominentActiveTab: true,
+      );
+      session.emit(
+        _event(
+          id: 'z-desktop',
+          createdAt: relay.startedCreatedAts.single,
+          content: jsonEncode(desktop.toJson()),
+        ),
+      );
+      firstSubmission.complete();
+      await firstFlush;
+
+      expect(acknowledgements, isEmpty);
+      expect(manager.pending, local);
+      await _waitUntil(() => relay.attempts == 2);
+
+      final recovered =
+          jsonDecode(relay.submissions[1].content) as Map<String, dynamic>;
+      expect(recovered['theme'], local.theme);
+      expect(recovered['accent'], local.accent);
+      expect(recovered['glassBackground'], false);
+      expect(recovered['glassOpacity'], 80);
+      expect(recovered['prominentActiveTab'], true);
+      expect(
+        relay.submittedEvents[1].createdAt,
+        greaterThan(relay.startedCreatedAts.first),
+      );
+      expect(acknowledgements, [local]);
+      expect(manager.pending, isNull);
+    },
+  );
+
   test('remote coordinate advances pending local publish timestamp', () async {
     final relay = _FakeSignedRelay();
     final session = _FakeSession();
@@ -709,6 +767,7 @@ class _FakeSignedRelay implements SignedEventRelay {
   final String eventId;
   final Future<void>? firstSubmissionGate;
   int attempts = 0;
+  final startedCreatedAts = <int>[];
   final submissions = <_Submission>[];
   final submittedEvents = <NostrEvent>[];
   @override
@@ -722,6 +781,7 @@ class _FakeSignedRelay implements SignedEventRelay {
     void Function(NostrEvent)? onSigned,
   }) async {
     attempts++;
+    startedCreatedAts.add(createdAt ?? 0);
     if (attempts == 1 && firstSubmissionGate != null) {
       await firstSubmissionGate;
     }

@@ -105,8 +105,12 @@ export class CommunityThemeSyncManager {
   private readonly onPublished: (published: PublishedCommunityTheme) => void;
   private readonly getLegacyFallback: () => CommunityThemePreference;
   private publishGeneration = 0;
+  private publishRevision = 0;
   private activeSubmittedPublish: PublishedCommunityTheme | null = null;
-  private replacementAfterCancel: CommunityThemePreference | null = null;
+  private replacementAfterCancel: {
+    preference: CommunityThemePreference;
+    publishRevision: number;
+  } | null = null;
 
   constructor(
     pubkey: string,
@@ -155,6 +159,7 @@ export class CommunityThemeSyncManager {
 
   publish(preference: CommunityThemePreference): void {
     if (this.destroyed) return;
+    this.publishRevision += 1;
     this.pending = preference;
     this.publishRetryAttempt = 0;
     this.schedulePublish(DEBOUNCE_MS);
@@ -177,17 +182,24 @@ export class CommunityThemeSyncManager {
     this.activeSubmittedPublish = null;
     const preference = this.pending;
     const generation = this.publishGeneration;
+    const publishRevision = this.publishRevision;
     void this.doPublish(preference, generation).finally(() => {
       this.publishInFlight = false;
       this.activeSubmittedPublish = null;
-      if (this.replacementAfterCancel) {
-        this.pending = this.replacementAfterCancel;
-        this.replacementAfterCancel = null;
+      const replacement = this.replacementAfterCancel;
+      this.replacementAfterCancel = null;
+      if (
+        replacement &&
+        this.pending === null &&
+        replacement.publishRevision === this.publishRevision
+      ) {
+        this.pending = replacement.preference;
       }
       if (
         !this.destroyed &&
         this.pending &&
-        !sameCommunityThemePreference(this.pending, preference) &&
+        (this.publishRevision !== publishRevision ||
+          !sameCommunityThemePreference(this.pending, preference)) &&
         this.debounceTimer === null
       ) {
         this.schedulePublish(0);
@@ -234,7 +246,12 @@ export class CommunityThemeSyncManager {
     }
     const submitted = this.activeSubmittedPublish !== null;
     this.replacementAfterCancel =
-      submitted && replacementAfterSubmit ? replacementAfterSubmit : null;
+      submitted && replacementAfterSubmit
+        ? {
+            preference: replacementAfterSubmit,
+            publishRevision: this.publishRevision,
+          }
+        : null;
     this.publishGeneration += 1;
     if (this.debounceTimer !== null) {
       window.clearTimeout(this.debounceTimer);

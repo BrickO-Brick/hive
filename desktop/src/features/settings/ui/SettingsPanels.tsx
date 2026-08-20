@@ -656,7 +656,7 @@ function ThemeSettingsCard() {
                 Icon,
               }))}
               testId="appearance-color-mode-control"
-              value={selectedMode}
+              value={activeMode}
             />
           </SettingsOptionRow>
 

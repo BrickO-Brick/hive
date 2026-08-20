@@ -7,6 +7,11 @@ import {
   isNewerCommunityThemeCoordinate,
   shouldSeedCommunityTheme,
 } from "./communityThemeSync.ts";
+import {
+  clearCommunityThemeOutbox,
+  readCommunityThemeOutbox,
+  writeCommunityThemeOutbox,
+} from "./communityThemePreference.ts";
 
 const preference = {
   version: 1,
@@ -17,6 +22,15 @@ const preference = {
   glassOpacity: 48,
   prominentActiveTab: false,
 };
+
+function localStorageStub() {
+  const data = new Map();
+  return {
+    getItem: (key) => data.get(key) ?? null,
+    setItem: (key, value) => data.set(key, String(value)),
+    removeItem: (key) => data.delete(key),
+  };
+}
 
 function installFakeTimer() {
   globalThis.window ??= {};
@@ -740,6 +754,87 @@ test("remote accepted after submit is republished after the stale event settles"
     assert.deepEqual(manager.getPending(), null);
   } finally {
     delete globalThis.window.__TAURI_INTERNALS__;
+    timer.restore();
+    mock.reset();
+  }
+});
+
+test("a user edit after migration cancellation survives the stale submission", async () => {
+  const timer = installFakeTimer();
+  const firstPublish = Promise.withResolvers();
+  const published = [];
+  const acknowledgements = [];
+  const userPreference = { ...preference, accent: "#ef4444" };
+  let signed = 0;
+  globalThis.window.localStorage = localStorageStub();
+  globalThis.window.__TAURI_INTERNALS__ = {
+    invoke(command, args) {
+      if (command === "nip44_encrypt_to_self") return Promise.resolve("cipher");
+      if (command === "sign_event") {
+        signed += 1;
+        return Promise.resolve(
+          JSON.stringify(
+            relayEvent({
+              id: `event-${signed}`,
+              content: args.content,
+              created_at: args.createdAt,
+            }),
+          ),
+        );
+      }
+      throw new Error(`unexpected command: ${command}`);
+    },
+  };
+  mock.method(relayClient, "publishEvent", (event) => {
+    published.push(event);
+    return published.length === 1 ? firstPublish.promise : Promise.resolve();
+  });
+  try {
+    const manager = new CommunityThemeSyncManager("alice", (event) => {
+      acknowledgements.push(event);
+      clearCommunityThemeOutbox(
+        "alice",
+        "wss://relay.example",
+        event.preference,
+      );
+    });
+    manager.publish(preference);
+    timer.fire();
+    await waitUntil(() => published.length === 1);
+
+    const remotePreference = { ...preference, theme: "dracula" };
+    manager.acceptRemote({
+      preference: remotePreference,
+      createdAt: published[0].created_at + 100,
+      eventId: "remote-winner",
+      needsUpgrade: false,
+    });
+    assert.equal(manager.cancelPendingPublish(remotePreference), true);
+
+    writeCommunityThemeOutbox("alice", "wss://relay.example", userPreference);
+    manager.publish(userPreference);
+    firstPublish.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
+    await waitUntil(() => timer.pending());
+
+    assert.deepEqual(manager.getPending(), userPreference);
+    assert.deepEqual(
+      readCommunityThemeOutbox("alice", "wss://relay.example"),
+      userPreference,
+    );
+
+    timer.fire();
+    await waitUntil(() => acknowledgements.length === 1);
+    assert.equal(published.length, 2);
+    assert.ok(published[1].created_at > published[0].created_at + 100);
+    assert.deepEqual(acknowledgements[0].preference, userPreference);
+    assert.equal(
+      readCommunityThemeOutbox("alice", "wss://relay.example"),
+      null,
+    );
+  } finally {
+    delete globalThis.window.__TAURI_INTERNALS__;
+    delete globalThis.window.localStorage;
     timer.restore();
     mock.reset();
   }

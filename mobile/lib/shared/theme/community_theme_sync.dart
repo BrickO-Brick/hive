@@ -62,6 +62,7 @@ class CommunityThemeSyncManager {
   int _publishRetryAttempt = 0;
   bool _publishInFlight = false;
   bool _publishRequestedWhileInFlight = false;
+  int _remoteRevision = 0;
   bool _hydrationObserved = false;
   bool _disposed = false;
 
@@ -333,6 +334,7 @@ class CommunityThemeSyncManager {
       // a desktop client's glass and prominent-tab choices. Bookkeeping stays on
       // the local `preference` so the outbox ack contract is unaffected.
       final remote = _lastRemote?.preference;
+      final remoteRevision = _remoteRevision;
       final outgoing = remote == null
           ? preference
           : preference.mergeDesktopAppearanceFrom(remote);
@@ -357,6 +359,12 @@ class CommunityThemeSyncManager {
       final published = signed;
       if (published == null) {
         throw StateError('Signed event coordinate unavailable');
+      }
+      if (_remoteRevision != remoteRevision) {
+        _lastPublished = null;
+        _publishRetryAttempt = 0;
+        if (_pending == preference) _schedulePublish(Duration.zero);
+        return;
       }
       final publishedCoordinateIsStale =
           _lastCreatedAt > published.createdAt ||
@@ -427,6 +435,7 @@ class CommunityThemeSyncManager {
     _lastCreatedAt = remote.createdAt;
     _lastEventId = remote.eventId;
     _lastRemote = remote;
+    _remoteRevision++;
     _observeHydration();
     if (_pending != null) {
       _lastPublished = null;

@@ -175,11 +175,12 @@ void main() {
         tester,
         SettingsPage(
           profileHeader: const SizedBox.shrink(),
+          invitePageBuilder: (_) => const SizedBox.shrink(),
           identityRecoveryPageBuilder: (_) => const SizedBox.shrink(),
         ),
       );
 
-      expect(find.text('Theme · This community'), findsOneWidget);
+      expect(find.text('Style · This community'), findsOneWidget);
       expect(find.text('Color mode'), findsOneWidget);
       expect(find.text('Color style'), findsOneWidget);
     });
