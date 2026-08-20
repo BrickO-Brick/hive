@@ -33,10 +33,7 @@ import {
   type ProjectsOverviewSection,
   projectsOverviewContext,
 } from "./projectsOverviewContext";
-import {
-  ProjectsOverviewActivityGraph,
-  ProjectsOverviewPeople,
-} from "./ProjectsOverviewRail";
+import { ProjectsOverviewPeople } from "./ProjectsOverviewRail";
 
 export type { ProjectsOverviewSection };
 
@@ -260,19 +257,12 @@ export function ProjectsOverviewContextPanel({
                 ))}
               </section>
             </div>
-            {context.people.length > 0 || context.activityByDay ? (
+            {context.people.length > 0 ? (
               <div className="mt-3 space-y-3 py-3">
                 <ProjectsOverviewPeople
                   people={context.people}
                   profiles={profiles}
                 />
-                {context.activityByDay ? (
-                  <div data-testid="projects-overview-activity">
-                    <ProjectsOverviewActivityGraph
-                      activityByDay={context.activityByDay}
-                    />
-                  </div>
-                ) : null}
               </div>
             ) : null}
           </>

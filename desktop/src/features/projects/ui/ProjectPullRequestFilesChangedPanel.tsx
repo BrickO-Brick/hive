@@ -820,11 +820,11 @@ export function ProjectDiffFilesPanel({
     }
   }, [filteredFiles, selectedPath]);
 
-  if (isLoading) {
+  if (isLoading && !diff) {
     return <BuzzLoadingState label="Loading changed files" />;
   }
 
-  if (error) {
+  if (error && !diff) {
     const message = errorMessage(error);
     return (
       <div

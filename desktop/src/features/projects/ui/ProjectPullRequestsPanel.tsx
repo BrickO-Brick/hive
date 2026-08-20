@@ -537,13 +537,14 @@ export function ProjectPullRequestDetail({
           ) : null}
           {pullRequest.updates.length > 0 ? (
             <div
-              className={pullRequest.content ? "mt-4 space-y-3" : "space-y-3"}
+              className={pullRequest.content ? "mt-4 space-y-4" : "space-y-4"}
             >
               <h4 className="text-sm font-semibold text-foreground">Updates</h4>
               {pullRequest.updates.map((update) => (
                 <article className="space-y-1" key={update.id}>
                   <div className="flex min-w-0 items-center justify-between gap-3">
                     <AuthorIdentity
+                      avatarSize="sm"
                       profiles={profiles}
                       pubkey={update.author}
                       role={
@@ -855,7 +856,7 @@ export function PullRequestsPanel({
   profiles,
   project,
   pullRequests,
-  selectedPullRequestId,
+  selectedPullRequest,
 }: {
   diffStats?: { additions: number; deletions: number } | null;
   error: unknown;
@@ -870,21 +871,9 @@ export function PullRequestsPanel({
   profiles?: UserProfileLookup;
   project: Project;
   pullRequests: ProjectPullRequest[];
-  selectedPullRequestId: string | null;
+  selectedPullRequest: ProjectPullRequest | null;
 }) {
-  const selectedPullRequest =
-    pullRequests.find((item) => item.id === selectedPullRequestId) ?? null;
-
-  React.useEffect(() => {
-    if (
-      selectedPullRequestId &&
-      !pullRequests.some((item) => item.id === selectedPullRequestId)
-    ) {
-      onSelectedPullRequestIdChange(null);
-    }
-  }, [onSelectedPullRequestIdChange, pullRequests, selectedPullRequestId]);
-
-  if (isLoading) {
+  if (isLoading && !selectedPullRequest) {
     return <BuzzLoadingState label="Loading reviews" />;
   }
 

@@ -391,7 +391,10 @@ export function DiscussionChannelsPanel({
   }
   if (channels.length === 0) {
     return (
-      <p className="px-4 py-6 text-sm text-muted-foreground">
+      <p
+        className="px-4 py-6 text-sm text-muted-foreground"
+        data-testid="project-discussion-channels-panel"
+      >
         No channels reference this repository yet. Paste its link (or a review
         or task link) in a channel and it will show up here.
       </p>
@@ -407,7 +410,7 @@ export function DiscussionChannelsPanel({
   );
 
   return (
-    <div>
+    <div className="px-4" data-testid="project-discussion-channels-panel">
       <ul data-testid="discussion-channels">
         {channels.map((channel) => {
           const name = channelName(channel.id, channel.name);

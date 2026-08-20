@@ -136,8 +136,6 @@ export function ProjectsView() {
       : storedFilter;
   });
   const [overviewPanelOpen, setOverviewPanelOpen] = React.useState(true);
-  // Narrow layouts present the same context as a dismissible sheet instead of
-  // the docked rail; the sheet starts closed so resizing never pops a modal.
   const [narrowContextOpen, setNarrowContextOpen] = React.useState(false);
   const contextToggleRef = React.useRef<HTMLButtonElement | null>(null);
   const isNarrowProjectsLayout = useMediaBreakpoint(
@@ -640,7 +638,6 @@ export function ProjectsView() {
   const listHeaderBar = (
     <ProjectsListHeaderBar
       filter={filter}
-      variant="bar"
       issueScope={issueScope}
       onIssueScopeChange={handleIssueScopeChange}
       onPullRequestScopeChange={handlePullRequestScopeChange}
@@ -854,7 +851,7 @@ export function ProjectsView() {
                     </div>
                     <div
                       className={
-                        filter === "all" ? "mx-auto w-full max-w-xl" : "w-full"
+                        filter === "all" ? "mx-auto w-full max-w-2xl" : "w-full"
                       }
                     >
                       {filter === "all" ? (
@@ -867,14 +864,16 @@ export function ProjectsView() {
                       ) : (
                         <>
                           <ProjectSectionHeader
-                            className="-mx-4"
+                            className="mb-2 rounded-xl bg-muted/40"
                             icon={projectsSectionIcon(filter)}
                             testId="projects-page-header"
                             title={projectsSectionTitle(filter)}
+                            trailing={
+                              filter === "channels" ? undefined : listHeaderBar
+                            }
                           />
                           <section>
                             <div className="space-y-3">
-                              {filter === "channels" ? null : listHeaderBar}
                               {filter === "prs" ? (
                                 <ProjectsPullRequestsList
                                   embedded={viewMode === "list"}
