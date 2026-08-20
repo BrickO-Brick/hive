@@ -1,0 +1,191 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://buzz.local/schemas/wkwebview/fixture-v1.json",
+  "title": "Buzz packaged WKWebView acceptance fixture",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "fixtureId",
+    "version",
+    "relayFixtureVersion",
+    "materialization",
+    "inputSemantics",
+    "channels",
+    "scenarioTaxonomy",
+    "correctnessCeilings"
+  ],
+  "properties": {
+    "fixtureId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "version": {
+      "type": "integer",
+      "const": 1
+    },
+    "relayFixtureVersion": {
+      "type": "string",
+      "minLength": 1
+    },
+    "materialization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "generator",
+        "generatorVersion",
+        "algorithm",
+        "seedHex",
+        "referenceTime",
+        "signerPrivateKeyHex",
+        "signatureContract",
+        "eventKind",
+        "tagContract",
+        "contentContract",
+        "eventIdContract",
+        "orderingContract",
+        "createdAtStepSeconds",
+        "outputEventCount",
+        "outputBytes",
+        "outputSha256"
+      ],
+      "properties": {
+        "generator": {
+          "const": "buzz-wkwebview-fixture"
+        },
+        "generatorVersion": {
+          "const": "1.0.0"
+        },
+        "algorithm": {
+          "const": "nostr-canonical-sha256-v1"
+        },
+        "seedHex": {
+          "type": "string",
+          "pattern": "^[0-9a-f]+$"
+        },
+        "referenceTime": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "signerPrivateKeyHex": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "signatureContract": {
+          "const": "BIP340 with 32 zero aux-rand bytes"
+        },
+        "eventKind": {
+          "const": 9
+        },
+        "tagContract": {
+          "const": "[[\"h\",channelId],[\"fixture\",fixtureId],[\"ordinal\",zeroBasedOrdinal decimal]]"
+        },
+        "contentContract": {
+          "const": "UTF-8 fixture:{contentProfile}:{seedHex}:{zeroBasedOrdinal decimal}"
+        },
+        "eventIdContract": {
+          "const": "NIP-01 sha256 canonical [0,pubkey,created_at,kind,tags,content]"
+        },
+        "orderingContract": {
+          "const": "created_at-ascending-then-event-id-ascending"
+        },
+        "createdAtStepSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "outputEventCount": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "outputBytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "outputSha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "inputSemantics": {
+      "const": "native-wheel-trackpad-keyboard"
+    },
+    "channels": {
+      "type": "array",
+      "minItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "messageCount", "contentProfile"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "messageCount": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "contentProfile": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "scenarioTaxonomy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "switch",
+        "input",
+        "timeline",
+        "plateau",
+        "ipc",
+        "recovery",
+        "crash"
+      ],
+      "properties": {
+        "switch": {
+          "$ref": "#/$defs/scenarios"
+        },
+        "input": {
+          "$ref": "#/$defs/scenarios"
+        },
+        "timeline": {
+          "$ref": "#/$defs/scenarios"
+        },
+        "plateau": {
+          "$ref": "#/$defs/scenarios"
+        },
+        "ipc": {
+          "$ref": "#/$defs/scenarios"
+        },
+        "recovery": {
+          "$ref": "#/$defs/scenarios"
+        },
+        "crash": {
+          "$ref": "#/$defs/scenarios"
+        }
+      }
+    },
+    "correctnessCeilings": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "number",
+        "minimum": 0
+      },
+      "minProperties": 1
+    }
+  },
+  "$defs": {
+    "scenarios": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}

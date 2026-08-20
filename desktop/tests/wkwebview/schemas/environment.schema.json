@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://buzz.local/schemas/wkwebview/environment-v1.json",
+  "title": "Buzz packaged WKWebView acceptance environment",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "capture",
+    "build",
+    "package",
+    "hardware",
+    "platform",
+    "display",
+    "runtimeState",
+    "fixture",
+    "relay",
+    "nativeDriver"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "capture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tool", "version", "capturedAt", "infoPlistSha256"],
+      "properties": {
+        "tool": { "const": "buzz-wkwebview-environment-capture" },
+        "version": { "const": "1.0.0" },
+        "capturedAt": { "type": "string", "format": "date-time" },
+        "infoPlistSha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gitSha"],
+      "properties": {
+        "gitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+      }
+    },
+    "package": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "appPath",
+        "bundleIdentifier",
+        "version",
+        "identity",
+        "entitlementsSha256"
+      ],
+      "properties": {
+        "appPath": { "type": "string", "pattern": "\\.app$" },
+        "bundleIdentifier": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "identity": { "type": "string", "minLength": 1 },
+        "entitlementsSha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "hardware": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model", "cpu", "memoryBytes"],
+      "properties": {
+        "model": { "type": "string", "minLength": 1 },
+        "cpu": { "type": "string", "minLength": 1 },
+        "memoryBytes": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "platform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["macosVersion", "webkitVersion"],
+      "properties": {
+        "macosVersion": { "type": "string", "minLength": 1 },
+        "webkitVersion": { "type": "string", "minLength": 1 }
+      }
+    },
+    "display": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["refreshRateHz", "widthPx", "heightPx", "scaleFactor"],
+      "properties": {
+        "refreshRateHz": { "type": "number", "exclusiveMinimum": 0 },
+        "widthPx": { "type": "integer", "minimum": 1 },
+        "heightPx": { "type": "integer", "minimum": 1 },
+        "scaleFactor": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "runtimeState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["powerSource", "lowPowerMode", "thermalState"],
+      "properties": {
+        "powerSource": { "enum": ["ac", "battery"] },
+        "lowPowerMode": { "type": "boolean" },
+        "thermalState": { "enum": ["nominal", "fair", "serious", "critical"] }
+      }
+    },
+    "fixture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fixtureId", "version", "sha256"],
+      "properties": {
+        "fixtureId": { "type": "string", "minLength": 1 },
+        "version": { "type": "integer", "minimum": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "relay": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "fixtureVersion"],
+      "properties": {
+        "version": { "type": "string", "minLength": 1 },
+        "fixtureVersion": { "type": "string", "minLength": 1 }
+      }
+    },
+    "nativeDriver": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "version", "sha256"],
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "version": { "type": "string", "minLength": 1 },
+            "sha256": { "$ref": "#/$defs/sha256" }
+          }
+        }
+      ]
+    }
+  },
+  "$defs": { "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" } }
+}

@@ -1,0 +1,103 @@
+{
+  "fixtureId": "buzz-wkwebview-acceptance",
+  "version": 1,
+  "relayFixtureVersion": "wkwebview-relay-v1",
+  "materialization": {
+    "generator": "buzz-wkwebview-fixture",
+    "generatorVersion": "1.0.0",
+    "algorithm": "nostr-canonical-sha256-v1",
+    "seedHex": "62757a7a2d776b776965772d616363657074616e63652d7631",
+    "referenceTime": "2026-08-20T00:00:00.000Z",
+    "signerPrivateKeyHex": "0000000000000000000000000000000000000000000000000000000000000001",
+    "signatureContract": "BIP340 with 32 zero aux-rand bytes",
+    "eventKind": 9,
+    "tagContract": "[[\"h\",channelId],[\"fixture\",fixtureId],[\"ordinal\",zeroBasedOrdinal decimal]]",
+    "contentContract": "UTF-8 fixture:{contentProfile}:{seedHex}:{zeroBasedOrdinal decimal}",
+    "eventIdContract": "NIP-01 sha256 canonical [0,pubkey,created_at,kind,tags,content]",
+    "orderingContract": "created_at-ascending-then-event-id-ascending",
+    "createdAtStepSeconds": 1,
+    "outputEventCount": 8740,
+    "outputBytes": 4255320,
+    "outputSha256": "ac948604f0100b93ce9d6f143b7160b6cd7f1389e1be407ed15fc45dca72edca"
+  },
+  "inputSemantics": "native-wheel-trackpad-keyboard",
+  "channels": [
+    {
+      "id": "shallow",
+      "messageCount": 40,
+      "contentProfile": "plain"
+    },
+    {
+      "id": "deep",
+      "messageCount": 7500,
+      "contentProfile": "mixed"
+    },
+    {
+      "id": "rich",
+      "messageCount": 1200,
+      "contentProfile": "media-code-embeds-reactions-threads"
+    }
+  ],
+  "scenarioTaxonomy": {
+    "switch": [
+      "cold-switch",
+      "warm-switch",
+      "repeated-a-b-switch",
+      "shallow-deep-rich-switch"
+    ],
+    "input": [
+      "composer-quiet",
+      "composer-agent-busy",
+      "composer-ipc-storm",
+      "composer-combined-load",
+      "wheel-momentum",
+      "keyboard-navigation"
+    ],
+    "timeline": [
+      "cascading-prepend-15-pages",
+      "commit-during-momentum",
+      "positioned-insert-above",
+      "positioned-insert-in-viewport",
+      "positioned-insert-below",
+      "append-at-floor",
+      "append-while-reading",
+      "late-geometry-growth",
+      "deep-target-with-interruption"
+    ],
+    "plateau": [
+      "full-traversal-steady-state",
+      "pagination-steady-state",
+      "channel-switch-steady-state"
+    ],
+    "ipc": [
+      "live-agent-storm",
+      "shadow-delta-coalescing",
+      "invalidate-overflow-backpressure"
+    ],
+    "recovery": [
+      "offline-reconnect",
+      "relay-restart",
+      "app-restart",
+      "compatible-migration",
+      "unknown-newer-replica",
+      "rebuild-downgrade"
+    ],
+    "crash": [
+      "web-process-death",
+      "app-process-death",
+      "termination-before-native-commit",
+      "termination-after-native-commit-before-delta",
+      "termination-after-renderer-delta"
+    ]
+  },
+  "correctnessCeilings": {
+    "physicalBottomPx": 1,
+    "prependAnchorDriftPx": 5,
+    "richResizeAnchorDriftPx": 2,
+    "mountedRows": 400,
+    "queueOverflows": 0,
+    "blankOrStaleFrames": 0,
+    "droppedInputs": 0,
+    "unexplainedDataGaps": 0
+  }
+}

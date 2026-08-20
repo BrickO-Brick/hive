@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://buzz.local/schemas/wkwebview/run-v1.json",
+  "title": "Buzz packaged WKWebView acceptance run",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "createdAt",
+    "status",
+    "appPath",
+    "fixtureManifestPath",
+    "environmentPath",
+    "environmentSha256",
+    "resultPath"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "runId": { "type": "string", "minLength": 1 },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "status": { "enum": ["blocked", "running", "completed", "failed"] },
+    "blockedReason": { "enum": ["native-driver-not-supplied"] },
+    "failureReason": { "type": "string", "minLength": 1 },
+    "appPath": { "type": "string", "pattern": "\\.app$" },
+    "fixtureManifestPath": { "type": "string", "minLength": 1 },
+    "environmentPath": { "type": "string", "minLength": 1 },
+    "environmentSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "resultPath": { "type": "string", "minLength": 1 },
+    "nativeDriverPath": { "type": "string", "minLength": 1 }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "blocked" } } },
+      "then": { "required": ["blockedReason"] }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": { "enum": ["running", "completed", "failed"] }
+        }
+      },
+      "then": { "required": ["nativeDriverPath"] }
+    },
+    {
+      "if": { "properties": { "status": { "const": "failed" } } },
+      "then": { "required": ["failureReason"] }
+    }
+  ]
+}

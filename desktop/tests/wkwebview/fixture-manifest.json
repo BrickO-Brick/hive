@@ -1,0 +1,12 @@
+{
+  "manifestVersion": 1,
+  "fixtures": [
+    {
+      "fixtureId": "buzz-wkwebview-acceptance",
+      "version": 1,
+      "path": "fixtures/acceptance-v1.json",
+      "bytes": 3041,
+      "sha256": "efdb8dc8ef0624be8ba86dc3fc0bb3374bd266b63f5a0f661df02797bc107000"
+    }
+  ]
+}
