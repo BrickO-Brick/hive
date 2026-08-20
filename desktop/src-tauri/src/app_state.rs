@@ -53,7 +53,6 @@ pub struct AppState {
     pub huddle_state: Mutex<HuddleState>,
     pub huddle_audio: crate::huddle::tts_settings::HuddleAudioSettingsState,
     /// Tauri handle for emitting huddle events.
-    ///
     /// Set once during `setup()` in `lib.rs`; never cleared.
     pub app_handle: Mutex<Option<AppHandle>>,
     /// Port of the localhost media streaming proxy (set during setup).
