@@ -72,13 +72,40 @@ pub(crate) fn reconcile_agents_to_events(
 /// Returns the number of agents (re)written to the retention store.
 #[cfg(test)]
 pub(crate) fn reconcile_agents_in_dir(base_dir: &Path, keys: &nostr::Keys) -> Result<u32, String> {
-    reconcile_agents_in_dir_at(base_dir, keys, &base_dir.join("retention.db"))
+    // No key store: unit tests must never touch the live OS keyring (a macOS
+    // Keychain ACL prompt blocks a headless test binary forever). Tests that
+    // exercise key hydration inject a fake via
+    // [`reconcile_agents_in_dir_with`].
+    reconcile_agents_in_dir_with(
+        base_dir,
+        keys,
+        &base_dir.join("retention.db"),
+        None::<&crate::secret_store::SecretStore>,
+    )
 }
 
+/// Production entry: hydrates keys from the real agent secret store (`None`
+/// on builds without a keyring backend, where keys stay inline in the JSON).
 fn reconcile_agents_in_dir_at(
     base_dir: &Path,
     keys: &nostr::Keys,
     db_path: &Path,
+) -> Result<u32, String> {
+    reconcile_agents_in_dir_with(
+        base_dir,
+        keys,
+        db_path,
+        super::storage::agent_secret_store(),
+    )
+}
+
+/// Testable core, generic over the [`super::storage::KeyStore`] seam so unit
+/// tests never reach the live OS keyring.
+fn reconcile_agents_in_dir_with(
+    base_dir: &Path,
+    keys: &nostr::Keys,
+    db_path: &Path,
+    store: Option<&impl super::storage::KeyStore>,
 ) -> Result<u32, String> {
     let store_path = base_dir.join("managed-agents.json");
     if !store_path.exists() {
@@ -101,7 +128,9 @@ fn reconcile_agents_in_dir_at(
     // default `system-keyring` build lives in the keyring and NOT in the JSON.
     // Without this, `retain_private_agent_record`'s empty-nsec skip fires for
     // every untouched agent and boot reconcile publishes zero 30179s.
-    super::storage::hydrate_keys(&mut records);
+    if let Some(store) = store {
+        super::storage::hydrate_keys_with(store, &mut records);
+    }
 
     let conn =
         open_retention_db(db_path).map_err(|e| format!("failed to open retention db: {e}"))?;

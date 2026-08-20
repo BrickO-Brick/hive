@@ -195,6 +195,69 @@ fn missing_store_is_noop() {
     assert_eq!(reconcile_agents_in_dir(dir.path(), &keys).unwrap(), 0);
 }
 
+/// Boot reconcile on a default `system-keyring` build reads the agent nsec
+/// from the keyring, not the JSON. Hydration through the [`KeyStore`] seam
+/// must fill it in so the first 30179 gets published; without it, the
+/// empty-nsec skip fires and only the 30177 lands. The `None`-store control
+/// pins the other side: no store, no 30179 — which is also why the plain
+/// [`reconcile_agents_in_dir`] test helper can never hit the live OS keyring
+/// (a macOS Keychain ACL prompt blocks a headless test binary forever).
+#[test]
+fn keyring_resident_nsec_is_hydrated_for_private_config() {
+    use crate::managed_agents::storage::{agent_keyring_name, tests::FakeKeyStore};
+    use nostr::ToBech32;
+
+    let owner_keys = nostr::Keys::generate();
+    let agent_keys = nostr::Keys::generate();
+    let pubkey = agent_keys.public_key().to_hex();
+    let nsec = agent_keys.secret_key().to_bech32().unwrap();
+    // JSON carries an empty nsec — keyring-resident, as on a default build.
+    let record = sample_record(&pubkey, "keyring-agent");
+    assert!(record.private_key_nsec.is_empty());
+
+    // Control: no key store → empty-nsec skip → no 30179 head.
+    let dir = TempDir::new().unwrap();
+    write_store(&dir, std::slice::from_ref(&record));
+    let db_path = dir.path().join("retention.db");
+    reconcile_agents_in_dir_with(
+        dir.path(),
+        &owner_keys,
+        &db_path,
+        None::<&crate::secret_store::SecretStore>,
+    )
+    .unwrap();
+    let conn = open_retention_db(&db_path).unwrap();
+    assert!(get_retained_event(
+        &conn,
+        KIND_PRIVATE_MANAGED_AGENT,
+        &owner_keys.public_key().to_hex(),
+        &pubkey,
+    )
+    .unwrap()
+    .is_none());
+    drop(conn);
+
+    // With the key in the (fake) keyring, hydration fills the nsec and the
+    // first 30179 is retained — and decrypts back to that exact key.
+    let dir = TempDir::new().unwrap();
+    write_store(&dir, &[record]);
+    let db_path = dir.path().join("retention.db");
+    let store = FakeKeyStore::reachable().with_key(&agent_keyring_name(&pubkey), &nsec);
+    reconcile_agents_in_dir_with(dir.path(), &owner_keys, &db_path, Some(&store)).unwrap();
+    let conn = open_retention_db(&db_path).unwrap();
+    let row = get_retained_event(
+        &conn,
+        KIND_PRIVATE_MANAGED_AGENT,
+        &owner_keys.public_key().to_hex(),
+        &pubkey,
+    )
+    .unwrap()
+    .expect("hydrated nsec must publish the first 30179");
+    let event = nostr::Event::from_json(&row.raw_event).unwrap();
+    let (_, payload) = private_managed_agent::validate_and_decrypt(&event, &owner_keys).unwrap();
+    assert_eq!(payload.identity.private_key_nsec, nsec);
+}
+
 #[test]
 fn fresh_record_is_retained_pending() {
     let dir = TempDir::new().unwrap();
