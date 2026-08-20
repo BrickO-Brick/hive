@@ -10,9 +10,9 @@ public struct BuzzPushNavigationTarget: Codable, Equatable, Sendable {
   public let channelID: String
 
   public init(eventID: String, communityID: String, channelID: String) {
-    self.eventID = eventID.lowercased()
+    self.eventID = eventID
     self.communityID = communityID
-    self.channelID = channelID.lowercased()
+    self.channelID = channelID
   }
 
   public var userInfoValue: [String: String] {
@@ -32,9 +32,9 @@ public struct BuzzPushNavigationTarget: Codable, Equatable, Sendable {
       let eventID = raw["event_id"] as? String,
       let communityID = raw["community_id"] as? String,
       let channelID = raw["channel_id"] as? String,
+      !eventID.isEmpty,
       !communityID.isEmpty,
-      isLowercaseHex64(eventID.lowercased()),
-      isChannelID(channelID.lowercased())
+      !channelID.isEmpty
     else {
       return nil
     }
@@ -45,24 +45,6 @@ public struct BuzzPushNavigationTarget: Codable, Equatable, Sendable {
     )
   }
 
-  private static func isLowercaseHex64(_ value: String) -> Bool {
-    value.utf8.count == 64
-      && value.utf8.allSatisfy {
-        ($0 >= 48 && $0 <= 57) || ($0 >= 97 && $0 <= 102)
-      }
-  }
-
-  private static func isChannelID(_ value: String) -> Bool {
-    let bytes = Array(value.utf8)
-    guard bytes.count == 36,
-      bytes[8] == 45, bytes[13] == 45, bytes[18] == 45, bytes[23] == 45,
-      [56, 57, 97, 98].contains(bytes[19])
-    else { return false }
-    return bytes.enumerated().allSatisfy { index, byte in
-      if [8, 13, 18, 23].contains(index) { return byte == 45 }
-      return (byte >= 48 && byte <= 57) || (byte >= 97 && byte <= 102)
-    }
-  }
 }
 
 /// Thread-safe one-item buffer spanning notification delivery and Flutter

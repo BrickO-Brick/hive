@@ -24,32 +24,23 @@ final pushEndpointGrantError = ValueNotifier<String?>(null);
 /// notifier also carries warm responses into the existing deep-link pipeline.
 final pendingPushNotificationLink = ValueNotifier<MessageDeepLink?>(null);
 
-final _pushEventIdPattern = RegExp(r'^[0-9a-f]{64}$');
-final _pushChannelIdPattern = RegExp(
-  r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
-);
-
 MessageDeepLink? _pushNotificationLink(Object? arguments) {
   if (arguments is! Map) return null;
   final eventId = arguments['eventId'];
   final communityId = arguments['communityId'];
   final channelId = arguments['channelId'];
-  final normalizedEventId = eventId is String ? eventId.toLowerCase() : '';
-  final normalizedChannelId = channelId is String
-      ? channelId.toLowerCase()
-      : '';
   if (eventId is! String ||
-      !_pushEventIdPattern.hasMatch(normalizedEventId) ||
+      eventId.isEmpty ||
       communityId is! String ||
       communityId.isEmpty ||
       channelId is! String ||
-      !_pushChannelIdPattern.hasMatch(normalizedChannelId)) {
+      channelId.isEmpty) {
     return null;
   }
   return MessageDeepLink(
     communityId: communityId,
-    channelId: normalizedChannelId,
-    messageId: normalizedEventId,
+    channelId: channelId,
+    messageId: eventId,
   );
 }
 
