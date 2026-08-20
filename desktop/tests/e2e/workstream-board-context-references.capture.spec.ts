@@ -100,11 +100,17 @@ test("human and orchestrator references replay live and removed Board context", 
     .fill("Human: use this workstream and blocker context.");
   await page.getByRole("button", { name: "Send", exact: true }).click();
 
-  const humanMessage = page.getByRole("button", {
-    name: /Human: use this workstream and blocker context\./,
-  });
+  await options.getByRole("button", { name: "Open", exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/channels/${CHANNEL_ID}`));
+  const humanMessage = page.getByText(
+    "Human: use this workstream and blocker context.",
+  );
   await expect(humanMessage).toBeVisible();
-  await humanMessage.click();
+  await humanMessage
+    .locator("xpath=ancestor::*[@data-testid='message-row']")
+    .getByTestId("message-board-references")
+    .click();
+  await expect(page).toHaveURL(/\/workstreams$/);
   await expect(page.getByTestId("board-discussion")).toContainText(
     "Replay 1/2: 2 live",
   );
@@ -282,4 +288,75 @@ test("unavailable workstream cards cannot mutate the discussion tray", async ({
     unavailableOptions.getByRole("button", { name: "Open", exact: true }),
   ).toBeVisible();
   expect(pageErrors).toEqual([]);
+});
+
+test("emptying the tray lets the next workstream become the send destination", async ({
+  page,
+}) => {
+  const channelBId = "4da24e0a-e0b5-4baf-bf3a-9ef26fe88c0d";
+  const channelBName = "loganj-ws-board-context-b";
+  await installMockBridge(page, {
+    workstreamBoardFixtures: [
+      {
+        channelId: CHANNEL_ID,
+        channelName: "loganj-ws-board-context",
+        canvas: CANVAS,
+        rootEventId: ROOT_EVENT_ID,
+        targetEventId: TARGET_EVENT_ID,
+      },
+      {
+        channelId: channelBId,
+        channelName: channelBName,
+        canvas: CANVAS.replaceAll(CHANNEL_ID, channelBId).replaceAll(
+          "loganj-ws-board-context",
+          channelBName,
+        ),
+        rootEventId: "e5".repeat(32),
+        targetEventId: "f6".repeat(32),
+      },
+    ],
+  });
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByTestId("open-workstream-board-view").click();
+  const board = page.getByTestId("workstream-board-view");
+  await expect(board).toBeVisible();
+  await board.getByRole("button", { name: "Discuss Board" }).click();
+
+  const channelAOptions = page.getByTestId(
+    `board-reference-options-${CHANNEL_ID}`,
+  );
+  await channelAOptions.getByRole("button", { name: /workstream:/ }).click();
+  await expect(page.getByText("Reference tray (1)")).toBeVisible();
+  await page
+    .getByRole("button", { name: "Remove loganj-ws-board-context" })
+    .click();
+  await expect(page.getByText("Reference tray (0)")).toBeVisible();
+  await expect(
+    page.getByText(
+      "Select an object in one workstream to choose the discussion.",
+    ),
+  ).toBeVisible();
+
+  const channelBOptions = page.getByTestId(
+    `board-reference-options-${channelBId}`,
+  );
+  await channelBOptions.getByRole("button", { name: /workstream:/ }).click();
+  await page
+    .getByLabel("Discussion message")
+    .fill("Send only through workstream B.");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  const sends = await page.evaluate(() =>
+    (window.__BUZZ_E2E_COMMAND_PAYLOADS__ ?? []).filter(
+      (entry) => entry.command === "send_channel_message",
+    ),
+  );
+  expect(sends).toHaveLength(1);
+  expect(sends[0]?.payload).toMatchObject({
+    channelId: channelBId,
+    boardReferences: [
+      {
+        placement: { workstreamId: channelBId },
+      },
+    ],
+  });
 });

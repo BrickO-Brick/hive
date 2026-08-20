@@ -349,6 +349,7 @@ type E2eConfig = {
     canvasReadError?: string;
     /** Optional deterministic Workstream Board blocker/thread fixture. */
     workstreamBoardFixture?: MockWorkstreamBoardFixture;
+    workstreamBoardFixtures?: MockWorkstreamBoardFixture[];
     /** Delay (ms) for `apply_workspace` so e2e tests can observe the
      *  community-switch gate. 0/undefined = instant. */
     applyCommunityDelayMs?: number;
@@ -3086,11 +3087,19 @@ const mockChannels: MockChannel[] = [
   }),
 ];
 
-function ensureMockWorkstreamBoardFixture(config?: E2eConfig | null) {
-  const fixture = config?.mock?.workstreamBoardFixture;
-  if (!fixture) return;
+function getMockWorkstreamBoardFixtures(config?: E2eConfig | null) {
+  return [
+    ...(config?.mock?.workstreamBoardFixture
+      ? [config.mock.workstreamBoardFixture]
+      : []),
+    ...(config?.mock?.workstreamBoardFixtures ?? []),
+  ];
+}
 
-  if (!mockChannels.some((channel) => channel.id === fixture.channelId)) {
+function ensureMockWorkstreamBoardFixture(config?: E2eConfig | null) {
+  for (const fixture of getMockWorkstreamBoardFixtures(config)) {
+    if (mockChannels.some((channel) => channel.id === fixture.channelId))
+      continue;
     mockChannels.push(
       createMockChannel({
         id: fixture.channelId,
@@ -3115,9 +3124,8 @@ function ensureMockWorkstreamBoardFixture(config?: E2eConfig | null) {
         members: [createMockMember(MOCK_IDENTITY_PUBKEY, "owner", 10)],
       }),
     );
+    getMockMessageStore(fixture.channelId);
   }
-
-  getMockMessageStore(fixture.channelId);
 }
 
 const mockMessages = new Map<string, RelayEvent[]>();
@@ -4372,8 +4380,10 @@ function getMockMessageStore(channelId: string): RelayEvent[] {
     return existing;
   }
 
-  const fixture = getConfig()?.mock?.workstreamBoardFixture;
-  if (fixture?.channelId === channelId) {
+  const fixture = getMockWorkstreamBoardFixtures(getConfig()).find(
+    (candidate) => candidate.channelId === channelId,
+  );
+  if (fixture) {
     const seeded: RelayEvent[] = [
       {
         id: fixture.rootEventId,
@@ -13803,8 +13813,10 @@ export function maybeInstallE2eTauriMocks() {
           throw new Error(canvasReadError);
         }
         const channelId = (payload as { channelId?: string }).channelId;
-        const fixture = activeConfig?.mock?.workstreamBoardFixture;
-        if (fixture && fixture.channelId === channelId) {
+        const fixture = getMockWorkstreamBoardFixtures(activeConfig).find(
+          (candidate) => candidate.channelId === channelId,
+        );
+        if (fixture) {
           return {
             content: fixture.canvas,
             event_id: "slice7-workstream-fixture-canvas",

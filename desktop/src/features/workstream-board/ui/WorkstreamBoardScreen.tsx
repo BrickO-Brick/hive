@@ -53,9 +53,8 @@ export function WorkstreamBoardScreen() {
   const [selectedReferences, setSelectedReferences] = React.useState<
     BoardReference[]
   >([]);
-  const [discussionChannelId, setDiscussionChannelId] = React.useState<
-    string | null
-  >(null);
+  const discussionChannelId =
+    selectedReferences[0]?.placement.workstreamId ?? null;
   const [draft, setDraft] = React.useState("");
   const [replayReferences, setReplayReferences] = React.useState<
     BoardReference[]
@@ -79,7 +78,6 @@ export function WorkstreamBoardScreen() {
         ) {
           setDiscussionMode(false);
           setSelectedReferences([]);
-          setDiscussionChannelId(null);
           setDraft("");
         }
       } else if (
@@ -185,9 +183,6 @@ export function WorkstreamBoardScreen() {
     [],
   );
   const toggleReference = React.useCallback((reference: BoardReference) => {
-    setDiscussionChannelId(
-      (current) => current ?? reference.placement.workstreamId,
-    );
     setSelectedReferences((current) => {
       if (
         current.length > 0 &&
@@ -282,7 +277,6 @@ export function WorkstreamBoardScreen() {
                 setDiscussionMode(!discussionMode);
                 setSelectedReferences([]);
                 setReplayReferences([]);
-                setDiscussionChannelId(null);
                 setDraft("");
               }}
               variant={discussionMode ? "secondary" : "default"}
