@@ -54,9 +54,19 @@ test("filter and unread-only restore from the per-user, per-relay cache", async 
   const originalFetchEvents = relayClient.fetchEvents;
   const originalSubscribeLive = relayClient.subscribeLive;
   const originalSubscribeToReconnects = relayClient.subscribeToReconnects;
-  relayClient.fetchEvents = async () => [];
-  relayClient.subscribeLive = async () => async () => {};
-  relayClient.subscribeToReconnects = () => () => {};
+  let relayOperations = 0;
+  relayClient.fetchEvents = async () => {
+    relayOperations += 1;
+    return [];
+  };
+  relayClient.subscribeLive = async () => {
+    relayOperations += 1;
+    return async () => {};
+  };
+  relayClient.subscribeToReconnects = () => {
+    relayOperations += 1;
+    return () => {};
+  };
 
   const pubkey = "pk-inbox-view";
   const relayUrl = "wss://relay.example";
@@ -79,6 +89,7 @@ test("filter and unread-only restore from the per-user, per-relay cache", async 
     assert.equal(restored.result.current.filter, "mention");
     assert.equal(restored.result.current.unreadOnly, true);
     restored.unmount();
+    assert.equal(relayOperations, 0);
   } finally {
     cleanup();
     relayClient.fetchEvents = originalFetchEvents;
