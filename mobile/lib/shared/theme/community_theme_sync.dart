@@ -62,6 +62,9 @@ class CommunityThemeSyncManager {
   int _publishRetryAttempt = 0;
   bool _publishInFlight = false;
   bool _publishRequestedWhileInFlight = false;
+  int? _activePublishCreatedAt;
+  String? _activePublishEventId;
+  int? _activePublishRemoteRevision;
   int _remoteRevision = 0;
   bool _hydrationObserved = false;
   bool _disposed = false;
@@ -345,6 +348,7 @@ class CommunityThemeSyncManager {
         _lastCreatedAt + 1,
       );
       NostrEvent? signed;
+      _activePublishRemoteRevision = remoteRevision;
       await signedEventRelay.submit(
         kind: EventKind.readState,
         content: content,
@@ -353,7 +357,11 @@ class CommunityThemeSyncManager {
           ['t', communityThemeDTag],
         ],
         createdAt: createdAt,
-        onSigned: (event) => signed = event,
+        onSigned: (event) {
+          signed = event;
+          _activePublishCreatedAt = event.createdAt;
+          _activePublishEventId = event.id;
+        },
       );
       if (_disposed) return;
       final published = signed;
@@ -395,6 +403,9 @@ class CommunityThemeSyncManager {
       _schedulePublish(Duration(milliseconds: retryMs));
     } finally {
       _publishInFlight = false;
+      _activePublishCreatedAt = null;
+      _activePublishEventId = null;
+      _activePublishRemoteRevision = null;
       if (!_disposed &&
           _pending != null &&
           (_publishRequestedWhileInFlight || _pending != preference) &&
@@ -432,10 +443,21 @@ class CommunityThemeSyncManager {
             remote.eventId.compareTo(_lastEventId) >= 0)) {
       return;
     }
+    final isActivePublishEcho =
+        _publishInFlight &&
+        remote.createdAt == _activePublishCreatedAt &&
+        remote.eventId == _activePublishEventId;
+    final competingRemoteSeen =
+        _activePublishRemoteRevision != null &&
+        _remoteRevision != _activePublishRemoteRevision;
     _lastCreatedAt = remote.createdAt;
     _lastEventId = remote.eventId;
-    _lastRemote = remote;
-    _remoteRevision++;
+    if (!isActivePublishEcho || !competingRemoteSeen) {
+      _lastRemote = remote;
+    }
+    if (!isActivePublishEcho) {
+      _remoteRevision++;
+    }
     _observeHydration();
     if (_pending != null) {
       _lastPublished = null;

@@ -308,11 +308,12 @@ void main() {
     're-merges desktop fields when remote advances during submission',
     () async {
       final firstSubmission = Completer<void>();
+      final session = _FakeSession();
       final relay = _FakeSignedRelay(
         eventId: 'a-mobile',
         firstSubmissionGate: firstSubmission.future,
+        onBeforeAcknowledge: session.emit,
       );
-      final session = _FakeSession();
       final acknowledgements = <CommunityThemePreference>[];
       final manager = _manager(
         session,
@@ -357,6 +358,29 @@ void main() {
         relay.submittedEvents[1].createdAt,
         greaterThan(relay.startedCreatedAts.first),
       );
+      expect(acknowledgements, [local]);
+      expect(manager.pending, isNull);
+    },
+  );
+
+  test(
+    'matching self echo before acknowledgement does not republish',
+    () async {
+      final session = _FakeSession();
+      final relay = _FakeSignedRelay(onBeforeAcknowledge: session.emit);
+      final acknowledgements = <CommunityThemePreference>[];
+      final manager = _manager(
+        session,
+        relay,
+        onPublished: acknowledgements.add,
+      );
+      await manager.initialize();
+      manager.publish(local);
+
+      await manager.flush();
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      expect(relay.attempts, 1);
       expect(acknowledgements, [local]);
       expect(manager.pending, isNull);
     },
@@ -762,10 +786,12 @@ class _FakeSignedRelay implements SignedEventRelay {
     this.failuresRemaining = 0,
     this.eventId = 'event',
     this.firstSubmissionGate,
+    this.onBeforeAcknowledge,
   });
   int failuresRemaining;
   final String eventId;
   final Future<void>? firstSubmissionGate;
+  final void Function(NostrEvent)? onBeforeAcknowledge;
   int attempts = 0;
   final startedCreatedAts = <int>[];
   final submissions = <_Submission>[];
@@ -797,6 +823,7 @@ class _FakeSignedRelay implements SignedEventRelay {
     );
     onSigned?.call(event);
     submittedEvents.add(event);
+    onBeforeAcknowledge?.call(event);
     return event;
   }
 }
