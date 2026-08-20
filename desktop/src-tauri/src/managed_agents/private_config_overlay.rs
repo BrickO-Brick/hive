@@ -575,6 +575,12 @@ mod write_site_resolve_guard {
                 include_str!("../commands/personas/update.rs"),
                 1,
             ),
+            // The launch-restore fold: every Phase-A spawn candidate is
+            // resolved through the overlay before Phase B spawns it. Without
+            // this, a follower device hydrates relay config B and then
+            // auto-starts stale disk config A (obsolete prompt/model/ACL/
+            // identity) — the boot-time variant of the stale-republish bug.
+            ("managed_agents/restore.rs", include_str!("restore.rs"), 1),
         ]
     }
 
