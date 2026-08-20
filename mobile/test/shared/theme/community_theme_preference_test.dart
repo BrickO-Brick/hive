@@ -77,6 +77,8 @@ void main() {
     final glassOpacity = properties['glassOpacity'] as Map<String, dynamic>;
     final prominentActiveTab =
         properties['prominentActiveTab'] as Map<String, dynamic>;
+    final theme = properties['theme'] as Map<String, dynamic>;
+    final accent = properties['accent'] as Map<String, dynamic>;
 
     expect(defaultCommunityGlassBackground, glassBackground['default'] as bool);
     expect(defaultCommunityGlassOpacity, glassOpacity['default'] as int);
@@ -85,6 +87,14 @@ void main() {
     expect(
       defaultCommunityProminentActiveTab,
       prominentActiveTab['default'] as bool,
+    );
+    expect(
+      theme['enum'],
+      unorderedEquals(themeCatalog.map((entry) => entry.name)),
+    );
+    expect(
+      accent['enum'],
+      unorderedEquals(accentColors.map((entry) => entry.wireValue)),
     );
   });
 

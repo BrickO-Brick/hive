@@ -25,7 +25,12 @@ import {
   writeCommunityThemeOutbox,
   writeCommunityThemePreference,
 } from "./communityThemePreference.ts";
-import { GLASS_OPACITY_MAX, GLASS_OPACITY_MIN } from "./ThemeProvider.tsx";
+import {
+  ACCENT_COLORS,
+  GLASS_OPACITY_MAX,
+  GLASS_OPACITY_MIN,
+} from "./ThemeProvider.tsx";
+import { SYNTAX_THEMES } from "./theme-loader.ts";
 
 function localStorageStub() {
   const data = new Map();
@@ -360,6 +365,14 @@ test("desktop appearance limits match the shared wire contract", () => {
   assert.equal(
     DEFAULT_COMMUNITY_THEME.prominentActiveTab,
     contract.properties.prominentActiveTab.default,
+  );
+  assert.deepEqual(
+    [...contract.properties.theme.enum].sort(),
+    [...SYNTAX_THEMES].sort(),
+  );
+  assert.deepEqual(
+    [...contract.properties.accent.enum].sort(),
+    ACCENT_COLORS.map(({ value }) => value).sort(),
   );
 });
 
