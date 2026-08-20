@@ -26,12 +26,7 @@ import {
 } from "@/features/projects/lib/projectContributorMatching";
 import { repositoryDiscussionQuery } from "@/features/projects/lib/discussionChannels";
 import type { ProjectRepoHost } from "@/features/projects/lib/projectRepoHost";
-import {
-  currentPullRequestForSelection,
-  projectReviewFilesChangedBody,
-  retainLatestByKey,
-  shouldReplaceRetainedPullRequest,
-} from "@/features/projects/lib/projectReviewDisplay";
+import { projectReviewFilesChangedBody } from "@/features/projects/lib/projectReviewDisplay";
 import { projectRepoUnavailableReason } from "@/features/projects/lib/projectRepoAvailability";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import { normalizePubkey } from "@/shared/lib/pubkey";
@@ -113,11 +108,11 @@ export function WorkspaceTabs({
   repoDiffLoading,
   selectedCommitHash,
   selectedIssueId,
+  selectedPullRequest,
   selectedPullRequestId,
   sharedHeaderBackdrop,
   pullRequests,
   pullRequestsError,
-  pullRequestsFetching,
   pullRequestsLoading,
   onSelectedCommitHashChange,
   onFilesContextChange,
@@ -160,12 +155,11 @@ export function WorkspaceTabs({
   repoDiffLoading: boolean;
   selectedCommitHash: string | null;
   selectedIssueId: string | null;
+  selectedPullRequest: ProjectPullRequest | null;
   selectedPullRequestId: string | null;
   sharedHeaderBackdrop?: boolean;
   pullRequests: ProjectPullRequest[];
   pullRequestsError: unknown;
-  /** True while a pull-request list fetch (including refetch) is in flight. */
-  pullRequestsFetching: boolean;
   pullRequestsLoading: boolean;
   onSelectedCommitHashChange: (hash: string | null) => void;
   onFilesContextChange?: (context: {
@@ -245,21 +239,6 @@ export function WorkspaceTabs({
         retryPending={sourceControls?.fetchPending}
       />
     ) : null;
-  const currentSelectedPullRequest = currentPullRequestForSelection({
-    pullRequests,
-    selectedPullRequestId,
-  });
-  const selectedPullRequestCacheKey = `${project.id}:${selectedPullRequestId ?? "none"}`;
-  const selectedPullRequestCache = React.useRef({
-    key: selectedPullRequestCacheKey,
-    value: currentSelectedPullRequest,
-  });
-  const selectedPullRequest = retainLatestByKey(
-    selectedPullRequestCache,
-    selectedPullRequestCacheKey,
-    currentSelectedPullRequest,
-    (next) => shouldReplaceRetainedPullRequest(next, pullRequestsFetching),
-  );
   const filesChangedBody = projectReviewFilesChangedBody({
     hasPopulatedDiff: (repoDiff?.files.length ?? 0) > 0,
     hasSelectedPullRequest: Boolean(selectedPullRequest),

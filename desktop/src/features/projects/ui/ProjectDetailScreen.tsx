@@ -188,6 +188,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
     activeRepoPullRequest,
     openBranchPullRequest,
     selectedBranchPullRequest,
+    selectedPullRequest,
   } = useRetainedPullRequestSelection({
     activeBranch,
     isFetching: pullRequestsQuery.isFetching,
@@ -688,9 +689,6 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
   const displayedRepositoryContributors =
     displayedRepositorySnapshot?.contributors ?? repoContributors;
   const displayedRepositoryFiles = displayedRepositorySnapshot?.files ?? [];
-  const selectedPullRequest =
-    pullRequestsQuery.data?.find((item) => item.id === selectedPullRequestId) ??
-    null;
   const selectedIssue =
     issuesQuery.data?.find((item) => item.id === selectedIssueId) ?? null;
   const displayedSnapshotCommits =
@@ -910,13 +908,13 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
                     repoDiffLoading={displayedRepoDiffLoading}
                     pullRequests={pullRequestsQuery.data ?? []}
                     pullRequestsError={pullRequestsQuery.error}
-                    pullRequestsFetching={pullRequestsQuery.isFetching}
                     pullRequestsLoading={pullRequestsQuery.isLoading}
                     repoContributors={repoContributors}
                     repoHost={repoRemote.host}
                     repoSource={repoSource}
                     selectedCommitHash={selectedCommitHash}
                     selectedIssueId={selectedIssueId}
+                    selectedPullRequest={selectedPullRequest}
                     selectedPullRequestId={selectedPullRequestId}
                     sharedHeaderBackdrop={sharedHeaderBackdrop}
                     snapshot={displayedRepoSnapshot}

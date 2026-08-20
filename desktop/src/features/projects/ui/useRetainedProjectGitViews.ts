@@ -64,29 +64,32 @@ export function useRetainedPullRequestSelection({
     selectedBranchPullRequest?.status === "Draft"
       ? selectedBranchPullRequest
       : null;
-  const currentRepoPullRequest = currentPullRequestForSelection({
-    fallback: selectedBranchPullRequest,
+  const currentSelectedPullRequest = currentPullRequestForSelection({
     pullRequests,
     selectedPullRequestId,
   });
-  const activeRepoPullRequestKey = [
+  const selectedPullRequestKey = [
     repository?.id ?? "none",
-    selectedPullRequestId ?? `branch:${activeBranch}`,
+    selectedPullRequestId ?? "none",
   ].join(":");
-  const activeRepoPullRequestCache = React.useRef({
-    key: activeRepoPullRequestKey,
-    value: currentRepoPullRequest,
+  const selectedPullRequestCache = React.useRef({
+    key: selectedPullRequestKey,
+    value: currentSelectedPullRequest,
   });
-  const activeRepoPullRequest = retainLatestByKey(
-    activeRepoPullRequestCache,
-    activeRepoPullRequestKey,
-    currentRepoPullRequest,
+  const selectedPullRequest = retainLatestByKey(
+    selectedPullRequestCache,
+    selectedPullRequestKey,
+    currentSelectedPullRequest,
     (next) => shouldReplaceRetainedPullRequest(next, isFetching),
   );
+  const activeRepoPullRequest = selectedPullRequestId
+    ? selectedPullRequest
+    : selectedBranchPullRequest;
   return {
     activeRepoPullRequest,
     openBranchPullRequest,
     selectedBranchPullRequest,
+    selectedPullRequest,
   };
 }
 
