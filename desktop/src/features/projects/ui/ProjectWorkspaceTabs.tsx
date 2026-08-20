@@ -27,8 +27,10 @@ import {
 import { repositoryDiscussionQuery } from "@/features/projects/lib/discussionChannels";
 import type { ProjectRepoHost } from "@/features/projects/lib/projectRepoHost";
 import {
+  currentPullRequestForSelection,
   projectReviewFilesChangedBody,
   retainLatestByKey,
+  shouldReplaceRetainedPullRequest,
 } from "@/features/projects/lib/projectReviewDisplay";
 import { projectRepoUnavailableReason } from "@/features/projects/lib/projectRepoAvailability";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
@@ -115,6 +117,7 @@ export function WorkspaceTabs({
   sharedHeaderBackdrop,
   pullRequests,
   pullRequestsError,
+  pullRequestsFetching,
   pullRequestsLoading,
   onSelectedCommitHashChange,
   onFilesContextChange,
@@ -161,6 +164,8 @@ export function WorkspaceTabs({
   sharedHeaderBackdrop?: boolean;
   pullRequests: ProjectPullRequest[];
   pullRequestsError: unknown;
+  /** True while a pull-request list fetch (including refetch) is in flight. */
+  pullRequestsFetching: boolean;
   pullRequestsLoading: boolean;
   onSelectedCommitHashChange: (hash: string | null) => void;
   onFilesContextChange?: (context: {
@@ -240,10 +245,10 @@ export function WorkspaceTabs({
         retryPending={sourceControls?.fetchPending}
       />
     ) : null;
-  const currentSelectedPullRequest =
-    pullRequests.find(
-      (pullRequest) => pullRequest.id === selectedPullRequestId,
-    ) ?? null;
+  const currentSelectedPullRequest = currentPullRequestForSelection({
+    pullRequests,
+    selectedPullRequestId,
+  });
   const selectedPullRequestCacheKey = `${project.id}:${selectedPullRequestId ?? "none"}`;
   const selectedPullRequestCache = React.useRef({
     key: selectedPullRequestCacheKey,
@@ -253,7 +258,7 @@ export function WorkspaceTabs({
     selectedPullRequestCache,
     selectedPullRequestCacheKey,
     currentSelectedPullRequest,
-    (next) => Boolean(next),
+    (next) => shouldReplaceRetainedPullRequest(next, pullRequestsFetching),
   );
   const filesChangedBody = projectReviewFilesChangedBody({
     hasPopulatedDiff: (repoDiff?.files.length ?? 0) > 0,

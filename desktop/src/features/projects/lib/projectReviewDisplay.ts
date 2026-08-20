@@ -26,6 +26,40 @@ export function retainLatestByKey<T>(
 }
 
 /**
+ * Keep a selected review through transient empty refetches. Once the fetch
+ * is idle, accept the completed result — including null — so the rendered
+ * identity can match the diff-query identity.
+ */
+export function shouldReplaceRetainedPullRequest(
+  next: unknown,
+  isFetching: boolean,
+): boolean {
+  return Boolean(next) || !isFetching;
+}
+
+/**
+ * Resolve the current review for a selection. An explicit ID that is missing
+ * from the list is `null` so a completed refetch can clear it; pass
+ * `fallback` only when no ID is selected (branch auto-select).
+ */
+export function currentPullRequestForSelection<T extends { id: string }>({
+  fallback = null,
+  pullRequests,
+  selectedPullRequestId,
+}: {
+  fallback?: T | null;
+  pullRequests: readonly T[] | undefined;
+  selectedPullRequestId: string | null;
+}): T | null {
+  if (selectedPullRequestId) {
+    return (
+      pullRequests?.find((item) => item.id === selectedPullRequestId) ?? null
+    );
+  }
+  return fallback;
+}
+
+/**
  * Which body to render under a review's Files changed section.
  * A populated diff must keep the files panel mounted even when the repository
  * snapshot briefly looks unavailable — swapping in the unavailable placeholder

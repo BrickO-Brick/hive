@@ -33,6 +33,23 @@ async function enableProjectsFeature(page: import("@playwright/test").Page) {
   });
 }
 
+async function waitForMockLiveSubscription(
+  page: import("@playwright/test").Page,
+  channelName: string,
+) {
+  await expect
+    .poll(() =>
+      page.evaluate(
+        (name) =>
+          window.__BUZZ_E2E_HAS_MOCK_LIVE_SUBSCRIPTION__?.({
+            channelName: name,
+          }) ?? false,
+        channelName,
+      ),
+    )
+    .toBe(true);
+}
+
 async function openBuzzProject(page: import("@playwright/test").Page) {
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
@@ -1453,6 +1470,67 @@ test("project detail lists follow overview header geometry", async ({
     "padding-right",
     "16px",
   );
+});
+
+test("channels tab opens the latest matching conversation without leaving the project", async ({
+  page,
+}) => {
+  await enableProjectsFeature(page);
+  await installMockBridge(page);
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByTestId("channel-general").click();
+  await waitForMockLiveSubscription(page, "general");
+
+  const olderContent = "Older matching conversation for channels tab";
+  const latestContent = "Latest matching conversation for channels tab";
+  await page.evaluate(
+    ({ author, latestContent, olderContent, repoToken }) => {
+      const now = Math.floor(Date.now() / 1_000);
+      window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
+        channelName: "general",
+        content: `${olderContent} ${repoToken}`,
+        createdAt: now - 1,
+        kind: 9,
+        pubkey: author,
+      });
+      window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
+        channelName: "general",
+        content: `${latestContent} ${repoToken}`,
+        createdAt: now,
+        kind: 9,
+        pubkey: author,
+      });
+    },
+    {
+      author: TEST_IDENTITIES.alice.pubkey,
+      latestContent,
+      olderContent,
+      repoToken: `${DEFAULT_MOCK_PUBKEY} buzz`,
+    },
+  );
+
+  await page.getByTestId("open-projects-view").click();
+  await page.getByTestId("projects-section-projects").click();
+  const projectEntry = page
+    .locator(
+      '[data-testid="project-card-buzz"], [data-testid="project-row-buzz"]',
+    )
+    .first();
+  await expect(projectEntry).toBeVisible({ timeout: 10_000 });
+  await projectEntry.click();
+  await page.getByRole("tab", { name: "Channels", exact: true }).click();
+  const channelRow = page.getByTestId("project-channel-row").first();
+  await expect(channelRow).toBeVisible({ timeout: 10_000 });
+  await channelRow.click();
+
+  const panel = page.getByTestId("project-conversation-panel");
+  await expect(panel).toBeVisible();
+  await expect(panel).toContainText(latestContent);
+  await expect(panel).not.toContainText(olderContent);
+  await expect(page.getByTestId("project-detail-scroll")).toBeVisible();
+  await expect(
+    page.getByRole("tab", { name: "Channels", exact: true }),
+  ).toHaveAttribute("aria-selected", "true");
 });
 
 test("overview list titles share a row with controls and task groups align", async ({

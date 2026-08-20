@@ -11,8 +11,10 @@ import {
   useProjectRepoSnapshotQuery,
 } from "@/features/projects/hooks";
 import {
+  currentPullRequestForSelection,
   retainLatestByKey,
   reviewDiffWorkspaceBranch,
+  shouldReplaceRetainedPullRequest,
 } from "@/features/projects/lib/projectReviewDisplay";
 import { normalizeRepositoryUrl } from "@/features/projects/lib/projectsViewHelpers";
 import { useProjectCommitDiffQuery } from "@/features/projects/useProjectCommitDiff";
@@ -55,16 +57,18 @@ export function useRetainedPullRequestSelection({
     selectedBranchPullRequestCache,
     selectedBranchPullRequestKey,
     currentBranchPullRequest,
-    (next) => Boolean(next) || !isFetching,
+    (next) => shouldReplaceRetainedPullRequest(next, isFetching),
   );
   const openBranchPullRequest =
     selectedBranchPullRequest?.status === "Open" ||
     selectedBranchPullRequest?.status === "Draft"
       ? selectedBranchPullRequest
       : null;
-  const currentRepoPullRequest =
-    pullRequests?.find((item) => item.id === selectedPullRequestId) ??
-    selectedBranchPullRequest;
+  const currentRepoPullRequest = currentPullRequestForSelection({
+    fallback: selectedBranchPullRequest,
+    pullRequests,
+    selectedPullRequestId,
+  });
   const activeRepoPullRequestKey = [
     repository?.id ?? "none",
     selectedPullRequestId ?? `branch:${activeBranch}`,
@@ -77,7 +81,7 @@ export function useRetainedPullRequestSelection({
     activeRepoPullRequestCache,
     activeRepoPullRequestKey,
     currentRepoPullRequest,
-    (next) => Boolean(next) || !isFetching,
+    (next) => shouldReplaceRetainedPullRequest(next, isFetching),
   );
   return {
     activeRepoPullRequest,

@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  currentPullRequestForSelection,
   projectReviewFilesChangedBody,
   retainLatestByKey,
   reviewDiffWorkspaceBranch,
+  shouldReplaceRetainedPullRequest,
 } from "./projectReviewDisplay.ts";
 
 test("retainLatestByKey keeps the previous value when shouldReplace is false", () => {
@@ -33,6 +35,89 @@ test("retainLatestByKey takes a new key immediately", () => {
   );
 
   assert.deepEqual(retained, { files: [] });
+});
+
+test("an explicit selected review does not fall back to another identity", () => {
+  const selected = { id: "pr-a" };
+  const branchReview = { id: "pr-branch" };
+
+  assert.equal(
+    currentPullRequestForSelection({
+      fallback: branchReview,
+      pullRequests: [selected, branchReview],
+      selectedPullRequestId: "pr-a",
+    }),
+    selected,
+  );
+  assert.equal(
+    currentPullRequestForSelection({
+      fallback: branchReview,
+      pullRequests: [branchReview],
+      selectedPullRequestId: "pr-a",
+    }),
+    null,
+  );
+  assert.equal(
+    currentPullRequestForSelection({
+      fallback: branchReview,
+      pullRequests: [branchReview],
+      selectedPullRequestId: null,
+    }),
+    branchReview,
+  );
+});
+
+test("retained review identity stays aligned with the diff-query identity across fetch phases", () => {
+  const reviewA = { id: "pr-a" };
+  const renderedCache = { current: { key: "repo:pr-a", value: reviewA } };
+  const diffQueryCache = { current: { key: "repo:pr-a", value: reviewA } };
+
+  const renderedDuringFetch = retainLatestByKey(
+    renderedCache,
+    "repo:pr-a",
+    currentPullRequestForSelection({
+      fallback: { id: "pr-branch" },
+      pullRequests: [],
+      selectedPullRequestId: "pr-a",
+    }),
+    (next) => shouldReplaceRetainedPullRequest(next, true),
+  );
+  const diffDuringFetch = retainLatestByKey(
+    diffQueryCache,
+    "repo:pr-a",
+    currentPullRequestForSelection({
+      fallback: { id: "pr-branch" },
+      pullRequests: [],
+      selectedPullRequestId: "pr-a",
+    }),
+    (next) => shouldReplaceRetainedPullRequest(next, true),
+  );
+  assert.equal(renderedDuringFetch, reviewA);
+  assert.equal(diffDuringFetch, reviewA);
+  assert.equal(renderedDuringFetch.id, diffDuringFetch.id);
+
+  const renderedAfterComplete = retainLatestByKey(
+    renderedCache,
+    "repo:pr-a",
+    currentPullRequestForSelection({
+      fallback: { id: "pr-branch" },
+      pullRequests: [],
+      selectedPullRequestId: "pr-a",
+    }),
+    (next) => shouldReplaceRetainedPullRequest(next, false),
+  );
+  const diffAfterComplete = retainLatestByKey(
+    diffQueryCache,
+    "repo:pr-a",
+    currentPullRequestForSelection({
+      fallback: { id: "pr-branch" },
+      pullRequests: [],
+      selectedPullRequestId: "pr-a",
+    }),
+    (next) => shouldReplaceRetainedPullRequest(next, false),
+  );
+  assert.equal(renderedAfterComplete, null);
+  assert.equal(diffAfterComplete, null);
 });
 
 test("review files stay mounted when a populated diff races an unavailable snapshot", () => {
