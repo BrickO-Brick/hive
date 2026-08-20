@@ -782,7 +782,7 @@ mod tests {
     }
 
     #[test]
-    fn corpus_has_exactly_104_executable_vectors() {
+    fn corpus_has_exactly_114_executable_vectors() {
         // Locks the vector count so a silent INPUTS edit can't quietly drop
         // coverage; must equal the gate in the TS harness
         // (modelCapabilitiesCorpus.test.mjs).
@@ -791,7 +791,7 @@ mod tests {
             .filter(|q| matches!(q, Q::Vector { .. }))
             .count();
         assert_eq!(
-            vectors, 104,
+            vectors, 114,
             "corpus executable-vector count changed; update this gate deliberately"
         );
     }
