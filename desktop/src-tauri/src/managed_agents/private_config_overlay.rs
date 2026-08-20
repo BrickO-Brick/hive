@@ -154,6 +154,7 @@ impl PrivateConfigPatch {
             runtime_pid: None,
             backend: BackendKind::Local,
             backend_agent_id: None,
+            provider_policy_pending: false,
             provider_binary_path: None,
             persona_team_dir: None,
             persona_name_in_team: None,
@@ -180,6 +181,7 @@ impl PrivateConfigPatch {
             definition_respond_to_allowlist: vec![],
             definition_parallelism: None,
             relay_mesh: None,
+            effort_level: None,
         };
         self.apply(&mut record);
         record
@@ -547,19 +549,26 @@ mod write_site_resolve_guard {
     fn sites() -> Vec<(&'static str, &'static str, usize)> {
         vec![
             (
-                "commands/agent_models.rs",
-                include_str!("../commands/agent_models.rs"),
+                "commands/agent_models_update.rs",
+                include_str!("../commands/agent_models_update.rs"),
                 1,
             ),
             // 4 = the 3 sites Carl already resolved correctly (start/stop/
-            // delete, ~:999/:1069/:1149) plus the pair-start snapshot re-apply
-            // fixed here (~:276). The count is deliberately exact rather than
-            // `>= 1`: a lower bound would not notice a site losing its resolve
-            // while another gained one.
+            // delete) plus the pair-start snapshot re-apply. The count is
+            // deliberately exact rather than `>= 1`: a lower bound would not
+            // notice a site losing its resolve while another gained one.
             (
                 "commands/agents.rs",
                 include_str!("../commands/agents.rs"),
                 4,
+            ),
+            // 2 = the preflight snapshot resolve plus the locked spawn-record
+            // resolve in `start_local_agent_with_preflight` (extracted from
+            // agents.rs by the upstream file-size split).
+            (
+                "commands/agents_lifecycle.rs",
+                include_str!("../commands/agents_lifecycle.rs"),
+                2,
             ),
             (
                 "commands/personas/update.rs",

@@ -251,16 +251,16 @@ fn absorb_retained_head_leaves_the_overlay_alone_when_there_is_no_head() {
 /// exists in the one helper that all five writers funnel through.
 #[cfg(test)]
 mod retain_managed_agent_pending_writes_through_to_the_overlay {
-    const AGENTS_RS: &str = include_str!("../../../commands/agents.rs");
+    const AGENTS_PENDING_RS: &str = include_str!("../../../commands/agents_pending.rs");
 
     /// Exactly one — the single seam. A second copy would mean a per-caller
     /// write-through crept back in, which is the shape this fix replaced.
     #[test]
-    fn agents_rs_absorbs_the_retained_head_exactly_once() {
+    fn agents_pending_rs_absorbs_the_retained_head_exactly_once() {
         assert_eq!(
-            AGENTS_RS.matches("absorb_retained_head(").count(),
+            AGENTS_PENDING_RS.matches("absorb_retained_head(").count(),
             1,
-            "commands/agents.rs must write the just-retained 30179 head back to \
+            "commands/agents_pending.rs must write the just-retained 30179 head back to \
              the overlay exactly once, in `retain_managed_agent_pending`. Without \
              it the overlay stays pinned at the last RECEIVED generation and the \
              next edit republishes a revert of the previous one (see \
@@ -274,10 +274,10 @@ mod retain_managed_agent_pending_writes_through_to_the_overlay {
     /// the source order too — the behavioural test pins the runtime ordering.
     #[test]
     fn the_absorb_follows_the_retain() {
-        let retain = AGENTS_RS
+        let retain = AGENTS_PENDING_RS
             .find("retain_agent_record(&conn")
             .expect("positive control: the retain call must be present");
-        let absorb = AGENTS_RS
+        let absorb = AGENTS_PENDING_RS
             .find("absorb_retained_head(")
             .expect("positive control: the absorb call must be present");
         assert!(
@@ -290,8 +290,13 @@ mod retain_managed_agent_pending_writes_through_to_the_overlay {
     /// this a typo in either literal makes both guards vacuous.
     #[test]
     fn the_guard_can_fail() {
-        let stripped = AGENTS_RS.replace("absorb_retained_head(", "REMOVED(");
+        let stripped = AGENTS_PENDING_RS.replace("absorb_retained_head(", "REMOVED(");
         assert_eq!(stripped.matches("absorb_retained_head(").count(), 0);
-        assert_ne!(AGENTS_RS.matches("retain_agent_record(&conn").count(), 0);
+        assert_ne!(
+            AGENTS_PENDING_RS
+                .matches("retain_agent_record(&conn")
+                .count(),
+            0
+        );
     }
 }

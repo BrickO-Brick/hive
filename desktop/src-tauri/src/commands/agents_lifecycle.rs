@@ -4,8 +4,9 @@ pub(super) async fn start_local_agent_with_preflight(
     app: &AppHandle,
     state: &AppState,
     pubkey: &str,
-    owner_hex: &str,
     allow_fresh_create_start: bool,
+    expected_relay_url: Option<&str>,
+    expected_signer_pubkey: Option<&str>,
 ) -> Result<ManagedAgentSummary, String> {
     let record_snapshot = {
         let _store_guard = state
@@ -40,6 +41,24 @@ pub(super) async fn start_local_agent_with_preflight(
             &global,
         );
     ensure_relay_mesh_for_record(app, mesh_model_id.as_deref(), allow_fresh_create_start).await?;
+
+    // The mesh preflight above is the suspension window Projects callbacks
+    // capture their scope against: a community switch during that await
+    // would otherwise spawn this pair keyed to the *new* workspace relay.
+    // Read the workspace relay ONCE, assert the caller's captured scope
+    // against that exact read, and hand the same bound value to the spawn
+    // below — the check is tied to its use, so a switch landing after this
+    // point can no longer retarget the spawn (it only changes state this
+    // call no longer consults).
+    let workspace_relay_url = crate::relay::bind_expected_relay_scope(
+        expected_relay_url,
+        crate::relay::relay_ws_url_with_override(state),
+    )?;
+    // Bind the active owner after the same final await as the relay. A
+    // same-relay identity replacement during mesh preflight must not release
+    // the stale preflight owner to spawn.
+    let workspace_owner =
+        crate::relay::bind_expected_signer(expected_signer_pubkey, workspace_owner_hex(state)?)?;
 
     let _transition_guard = state
         .managed_agent_runtime_transition
@@ -88,7 +107,13 @@ pub(super) async fn start_local_agent_with_preflight(
             }
         }
     }
-    start_managed_agent_process(app, &mut resolved_record, &mut runtimes, Some(owner_hex))?;
+    start_managed_agent_process(
+        app,
+        &mut resolved_record,
+        &mut runtimes,
+        Some(workspace_owner.as_str()),
+        &workspace_relay_url,
+    )?;
     // Persist operational lifecycle metadata only. Relay-owned configuration
     // remains an in-memory overlay and is never copied over device-local fields.
     crate::managed_agents::private_config_overlay::copy_lifecycle_state(
@@ -105,6 +130,7 @@ pub(super) async fn start_local_agent_with_preflight(
         &resolved_record,
         &runtimes,
         &personas,
+        &load_teams(app).unwrap_or_default(),
         &crate::managed_agents::load_global_agent_config(app).unwrap_or_default(),
     )
 }
