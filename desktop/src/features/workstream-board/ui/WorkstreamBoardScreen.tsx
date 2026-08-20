@@ -3,6 +3,16 @@ import * as React from "react";
 import { useAppNavigation } from "@/app/navigation/useAppNavigation";
 import { useActiveAgentTurnsByChannel } from "@/features/agents/activeAgentTurnsStore";
 import { useChannelsQuery } from "@/features/channels/hooks";
+import {
+  useChannelMessagesQuery,
+  useSendMessageMutation,
+} from "@/features/messages/hooks";
+import {
+  parseBoardReferences,
+  boardReferenceKey,
+  resolveBoardReferences,
+  type BoardReference,
+} from "@/features/workstream-board/lib/boardReferences";
 import { useUsersBatchQuery } from "@/features/profile/hooks";
 import { filterWorkstreamChannels } from "@/features/workstream-board/lib/discoverWorkstreamChannels";
 import { getActiveWorkstreamTurns } from "@/features/workstream-board/lib/activeWorkstreamTurns";
@@ -11,6 +21,7 @@ import {
   type WorkstreamWait,
 } from "@/features/workstream-board/lib/workstreamWaits";
 import { WorkstreamCard } from "@/features/workstream-board/ui/WorkstreamCard";
+import { BOARD_REPLAY_STORAGE_KEY } from "@/features/workstream-board/ui/BoardReferenceSet";
 import { useIdentityQuery } from "@/shared/api/hooks";
 import { Button } from "@/shared/ui/button";
 import { PageHeader } from "@/shared/ui/PageHeader";
@@ -36,7 +47,95 @@ export function WorkstreamBoardScreen() {
   const { goChannel } = useAppNavigation();
   const identityQuery = useIdentityQuery();
   const channelsQuery = useChannelsQuery();
+  const [discussionMode, setDiscussionMode] = React.useState(false);
+  const [selectedReferences, setSelectedReferences] = React.useState<
+    BoardReference[]
+  >([]);
+  const [discussionChannelId, setDiscussionChannelId] = React.useState<
+    string | null
+  >(null);
+  const [draft, setDraft] = React.useState("");
+  const [replayReferences, setReplayReferences] = React.useState<
+    BoardReference[]
+  >([]);
+  const [liveReferencesByChannel, setLiveReferencesByChannel] = React.useState<
+    ReadonlyMap<string, readonly BoardReference[]>
+  >(() => new Map());
+  React.useEffect(() => {
+    const stored = sessionStorage.getItem(BOARD_REPLAY_STORAGE_KEY);
+    if (!stored) return;
+    sessionStorage.removeItem(BOARD_REPLAY_STORAGE_KEY);
+    try {
+      const parsed: unknown = JSON.parse(stored);
+      if (Array.isArray(parsed)) {
+        setReplayReferences(
+          parsed.flatMap((value) => {
+            const references = parseBoardReferences([
+              ["buzz:board-ref", "1", JSON.stringify(value)],
+            ]);
+            return references;
+          }),
+        );
+      }
+    } catch {
+      // Malformed cross-route replay state fails closed.
+    }
+  }, []);
   const workstreamChannels = filterWorkstreamChannels(channelsQuery.data ?? []);
+  const discussionChannel =
+    workstreamChannels.find((channel) => channel.id === discussionChannelId) ??
+    null;
+  const discussionMessages = useChannelMessagesQuery(discussionChannel);
+  const sendMessage = useSendMessageMutation(
+    discussionChannel,
+    identityQuery.data,
+  );
+  const selectedKeys = React.useMemo(
+    () => new Set(selectedReferences.map(boardReferenceKey)),
+    [selectedReferences],
+  );
+  const replayKeys = React.useMemo(
+    () => new Set(replayReferences.map(boardReferenceKey)),
+    [replayReferences],
+  );
+  const liveReferences = React.useMemo(
+    () =>
+      new Map(
+        [...liveReferencesByChannel.values()]
+          .flat()
+          .map((reference) => [reference.identity, reference]),
+      ),
+    [liveReferencesByChannel],
+  );
+  const onReferencesChange = React.useCallback(
+    (channelId: string, references: readonly BoardReference[]) => {
+      setLiveReferencesByChannel((current) => {
+        const previous = current.get(channelId);
+        if (JSON.stringify(previous) === JSON.stringify(references))
+          return current;
+        const next = new Map(current);
+        next.set(channelId, references);
+        return next;
+      });
+    },
+    [],
+  );
+  const toggleReference = React.useCallback((reference: BoardReference) => {
+    setDiscussionChannelId(
+      (current) => current ?? reference.placement.workstreamId,
+    );
+    setSelectedReferences((current) => {
+      if (
+        current.length > 0 &&
+        current[0].placement.workstreamId !== reference.placement.workstreamId
+      )
+        return current;
+      const key = boardReferenceKey(reference);
+      return current.some((item) => boardReferenceKey(item) === key)
+        ? current.filter((item) => boardReferenceKey(item) !== key)
+        : [...current, reference];
+    });
+  }, []);
   const activeTurnsByChannel = useActiveAgentTurnsByChannel();
   const activeWorkstreamTurns = React.useMemo(
     () => getActiveWorkstreamTurns(workstreamChannels, activeTurnsByChannel),
@@ -105,6 +204,162 @@ export function WorkstreamBoardScreen() {
             description="Live canvases for active workstream channels."
             title="Workstream Board"
           />
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              onClick={() => {
+                if (
+                  discussionMode &&
+                  selectedReferences.length > 0 &&
+                  !window.confirm("Discard the unsent reference tray?")
+                )
+                  return;
+                setDiscussionMode(!discussionMode);
+                setSelectedReferences([]);
+                setReplayReferences([]);
+                setDiscussionChannelId(null);
+              }}
+              variant={discussionMode ? "secondary" : "default"}
+            >
+              {discussionMode ? "Exit discussion" : "Discuss Board"}
+            </Button>
+            {replayReferences.length > 0 ? (
+              <Button onClick={() => setReplayReferences([])} variant="outline">
+                End replay
+              </Button>
+            ) : null}
+          </div>
+          {discussionMode ? (
+            <section
+              aria-label="Board discussion"
+              className="space-y-3 rounded-xl border bg-muted/30 p-4"
+              data-testid="board-discussion"
+            >
+              <p className="text-sm font-semibold">
+                Reference tray ({selectedReferences.length})
+              </p>
+              <ol className="space-y-1">
+                {selectedReferences.map((reference, index) => (
+                  <li
+                    className="flex items-center gap-2 text-xs"
+                    key={boardReferenceKey(reference)}
+                  >
+                    <span>
+                      {index + 1}. {reference.kind}: {reference.snapshot.label}
+                    </span>
+                    <button
+                      className="underline"
+                      onClick={() => toggleReference(reference)}
+                      type="button"
+                    >
+                      Remove
+                    </button>
+                  </li>
+                ))}
+              </ol>
+              <textarea
+                aria-label="Discussion message"
+                className="min-h-20 w-full rounded-md border bg-background p-2 text-sm"
+                onChange={(event) => setDraft(event.target.value)}
+                placeholder="Discuss these Board references…"
+                value={draft}
+              />
+              <Button
+                disabled={
+                  !discussionChannel ||
+                  (!draft.trim() && selectedReferences.length === 0) ||
+                  sendMessage.isPending
+                }
+                onClick={async () => {
+                  if (!discussionChannel) return;
+                  await sendMessage.mutateAsync({
+                    content: draft || "Board references",
+                    boardReferences: selectedReferences,
+                  });
+                  setDraft("");
+                  setSelectedReferences([]);
+                }}
+              >
+                Send
+              </Button>
+              {discussionChannel ? (
+                <div className="space-y-2 border-t pt-3">
+                  <p className="text-xs font-semibold">
+                    #{discussionChannel.name} messages
+                  </p>
+                  {(discussionMessages.data ?? [])
+                    .filter(
+                      (event) => parseBoardReferences(event.tags).length > 0,
+                    )
+                    .map((event) => {
+                      const refs = parseBoardReferences(event.tags);
+                      return (
+                        <button
+                          className="block w-full rounded-md border bg-background p-2 text-left text-xs"
+                          key={event.id}
+                          onClick={() => setReplayReferences(refs)}
+                          type="button"
+                        >
+                          <span className="block">{event.content}</span>
+                          <span className="text-muted-foreground">
+                            {refs
+                              .map((reference) => reference.snapshot.label)
+                              .join(" · ")}
+                          </span>
+                        </button>
+                      );
+                    })}
+                </div>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  Select an object in one workstream to choose the discussion.
+                </p>
+              )}
+              {replayReferences.length > 0
+                ? (() => {
+                    const resolved = resolveBoardReferences(
+                      replayReferences,
+                      liveReferences,
+                    );
+                    return (
+                      <div className="text-xs">
+                        <strong>Replay:</strong>{" "}
+                        {
+                          resolved.filter((item) => item.state === "live")
+                            .length
+                        }{" "}
+                        live ·{" "}
+                        {
+                          resolved.filter((item) => item.state === "changed")
+                            .length
+                        }{" "}
+                        changed ·{" "}
+                        {
+                          resolved.filter((item) => item.state === "historical")
+                            .length
+                        }{" "}
+                        historical
+                        {resolved.some(
+                          (item) => item.state === "historical",
+                        ) ? (
+                          <div className="mt-2 rounded-md border border-dashed p-2">
+                            <strong>Historical references</strong>
+                            {resolved
+                              .filter((item) => item.state === "historical")
+                              .map((item) => (
+                                <p key={boardReferenceKey(item.reference)}>
+                                  {item.reference.snapshot.label} · formerly{" "}
+                                  {item.reference.placement.workstreamLabel} /{" "}
+                                  {item.reference.placement.sectionLabel}
+                                </p>
+                              ))}
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })()
+                : null}
+            </section>
+          ) : null}
           {channelsQuery.isLoading ? (
             <p className="text-sm text-muted-foreground">
               Loading workstreams…
@@ -131,6 +386,13 @@ export function WorkstreamBoardScreen() {
                 <WorkstreamCard
                   activeWorking={activeTurnsByChannelId.get(channel.id)}
                   channel={channel}
+                  discussionMode={discussionMode}
+                  onToggleReference={toggleReference}
+                  onReferencesChange={(references) =>
+                    onReferencesChange(channel.id, references)
+                  }
+                  replayReferenceKeys={replayKeys}
+                  selectedReferenceKeys={selectedKeys}
                   currentOwnerPubkey={identityQuery.data?.pubkey}
                   key={channel.id}
                   onSelect={(channelId) => void goChannel(channelId)}

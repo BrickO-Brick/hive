@@ -155,3 +155,9 @@ export function resolveBoardReferences(
     };
   });
 }
+
+export function boardReferenceKey(
+  reference: Pick<BoardReference, "kind" | "identity">,
+): string {
+  return `${reference.kind}:${reference.identity}`;
+}
