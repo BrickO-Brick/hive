@@ -38,6 +38,20 @@ pub struct DmParticipant {
     pub role: String,
 }
 
+/// One bounded retry-queue claim for a relay-authored DM visibility snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaimedDmVisibilityViewer {
+    /// Community containing the viewer's DM memberships.
+    pub community_id: CommunityId,
+    /// Canonical host used to construct the tenant context for fan-out.
+    pub community_host: String,
+    /// Viewer whose kind:30622 projection needs rebuilding.
+    pub viewer: Vec<u8>,
+    /// Claim fence used to release a failed publication without touching a
+    /// newer mutation that reset the queue row.
+    pub claim_id: Uuid,
+}
+
 // -- Pure helpers -------------------------------------------------------------
 
 /// Compute a stable SHA-256 fingerprint for a set of participant pubkeys.
@@ -402,9 +416,25 @@ pub async fn hide_dm(
 ) -> Result<()> {
     let result = sqlx::query(
         r#"
-        UPDATE channel_members
-        SET hidden_at = NOW()
-        WHERE community_id = $1 AND channel_id = $2 AND pubkey = $3 AND removed_at IS NULL
+        WITH changed AS (
+            UPDATE channel_members
+            SET hidden_at = NOW()
+            WHERE community_id = $1
+              AND channel_id = $2
+              AND pubkey = $3
+              AND removed_at IS NULL
+            RETURNING pubkey
+        )
+        INSERT INTO dm_visibility_dirty_viewers (community_id, viewer)
+        SELECT $1, pubkey FROM changed
+        ON CONFLICT (community_id, viewer) DO UPDATE SET
+            generation = dm_visibility_dirty_viewers.generation + 1,
+            state = 'pending',
+            dirty_at = NOW(),
+            next_attempt_at = NOW(),
+            claim_id = NULL,
+            lease_until = NULL,
+            attempts = 0
         "#,
     )
     .bind(community_id.as_uuid())
@@ -434,9 +464,25 @@ pub async fn unhide_dm(
 ) -> Result<()> {
     sqlx::query(
         r#"
-        UPDATE channel_members
-        SET hidden_at = NULL
-        WHERE community_id = $1 AND channel_id = $2 AND pubkey = $3 AND removed_at IS NULL
+        WITH changed AS (
+            UPDATE channel_members
+            SET hidden_at = NULL
+            WHERE community_id = $1
+              AND channel_id = $2
+              AND pubkey = $3
+              AND removed_at IS NULL
+            RETURNING pubkey
+        )
+        INSERT INTO dm_visibility_dirty_viewers (community_id, viewer)
+        SELECT $1, pubkey FROM changed
+        ON CONFLICT (community_id, viewer) DO UPDATE SET
+            generation = dm_visibility_dirty_viewers.generation + 1,
+            state = 'pending',
+            dirty_at = NOW(),
+            next_attempt_at = NOW(),
+            claim_id = NULL,
+            lease_until = NULL,
+            attempts = 0
         "#,
     )
     .bind(community_id.as_uuid())
@@ -462,19 +508,32 @@ pub async fn unhide_dm_recipients(
 ) -> Result<Vec<Vec<u8>>> {
     let rows = sqlx::query(
         r#"
-        UPDATE channel_members cm
-        SET hidden_at = NULL
-        FROM channels c
-        WHERE cm.community_id = $1
-          AND cm.channel_id = $2
-          AND cm.pubkey != $3
-          AND cm.removed_at IS NULL
-          AND cm.hidden_at IS NOT NULL
-          AND c.community_id = cm.community_id
-          AND c.id = cm.channel_id
-          AND c.channel_type = 'dm'
-          AND c.deleted_at IS NULL
-        RETURNING cm.pubkey
+        WITH changed AS (
+            UPDATE channel_members cm
+            SET hidden_at = NULL
+            FROM channels c
+            WHERE cm.community_id = $1
+              AND cm.channel_id = $2
+              AND cm.pubkey != $3
+              AND cm.removed_at IS NULL
+              AND cm.hidden_at IS NOT NULL
+              AND c.community_id = cm.community_id
+              AND c.id = cm.channel_id
+              AND c.channel_type = 'dm'
+              AND c.deleted_at IS NULL
+            RETURNING cm.pubkey
+        )
+        INSERT INTO dm_visibility_dirty_viewers (community_id, viewer)
+        SELECT $1, pubkey FROM changed
+        ON CONFLICT (community_id, viewer) DO UPDATE SET
+            generation = dm_visibility_dirty_viewers.generation + 1,
+            state = 'pending',
+            dirty_at = NOW(),
+            next_attempt_at = NOW(),
+            claim_id = NULL,
+            lease_until = NULL,
+            attempts = 0
+        RETURNING viewer
         "#,
     )
     .bind(community_id.as_uuid())
@@ -484,8 +543,93 @@ pub async fn unhide_dm_recipients(
     .await?;
 
     rows.into_iter()
-        .map(|row| row.try_get::<Vec<u8>, _>("pubkey").map_err(Into::into))
+        .map(|row| row.try_get::<Vec<u8>, _>("viewer").map_err(Into::into))
         .collect()
+}
+
+/// Claim at most `limit` indexed dirty-viewer rows across active communities.
+/// Expired claims are recovered by the same bounded query.
+pub async fn claim_dm_visibility_dirty_viewers(
+    pool: &PgPool,
+    limit: i64,
+    lease_seconds: i64,
+) -> Result<Vec<ClaimedDmVisibilityViewer>> {
+    let claim_id = Uuid::new_v4();
+    let rows = sqlx::query(
+        r#"
+        WITH candidates AS (
+            SELECT q.community_id, q.viewer
+            FROM dm_visibility_dirty_viewers q
+            JOIN communities c ON c.id = q.community_id
+            WHERE c.archived_at IS NULL
+              AND c.deleted_at IS NULL
+              AND c.deletion_state = 'active'
+              AND community_write_allowed(q.community_id)
+              AND (
+                  (q.state = 'pending' AND q.next_attempt_at <= NOW())
+                  OR (q.state = 'publishing' AND q.lease_until <= NOW())
+              )
+            ORDER BY COALESCE(q.lease_until, q.next_attempt_at), q.dirty_at
+            FOR UPDATE OF q SKIP LOCKED
+            LIMIT $1
+        )
+        UPDATE dm_visibility_dirty_viewers q
+        SET state = 'publishing',
+            claim_id = $2,
+            lease_until = NOW() + make_interval(secs => $3::int),
+            attempts = q.attempts + 1
+        FROM candidates candidate, communities c
+        WHERE q.community_id = candidate.community_id
+          AND q.viewer = candidate.viewer
+          AND c.id = q.community_id
+        RETURNING q.community_id, c.host, q.viewer
+        "#,
+    )
+    .bind(limit.clamp(1, 1_000))
+    .bind(claim_id)
+    .bind(lease_seconds.clamp(1, 3_600) as i32)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(ClaimedDmVisibilityViewer {
+                community_id: CommunityId::from_uuid(row.try_get("community_id")?),
+                community_host: row.try_get("host")?,
+                viewer: row.try_get("viewer")?,
+                claim_id,
+            })
+        })
+        .collect()
+}
+
+/// Release a failed queue claim for a bounded retry. A mutation that occurred
+/// after the claim resets `claim_id`, so this cannot overwrite newer work.
+pub async fn retry_dm_visibility_dirty_viewer(
+    pool: &PgPool,
+    community_id: CommunityId,
+    viewer: &[u8],
+    claim_id: Uuid,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        UPDATE dm_visibility_dirty_viewers
+        SET state = 'pending',
+            next_attempt_at = NOW() + INTERVAL '5 seconds',
+            claim_id = NULL,
+            lease_until = NULL
+        WHERE community_id = $1
+          AND viewer = $2
+          AND state = 'publishing'
+          AND claim_id = $3
+        "#,
+    )
+    .bind(community_id.as_uuid())
+    .bind(viewer)
+    .bind(claim_id)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 /// Return the channel IDs of all DMs the given user currently has hidden

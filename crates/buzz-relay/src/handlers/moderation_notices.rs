@@ -94,6 +94,30 @@ pub async fn send_moderation_notice(
         return Ok(());
     }
 
+    // A crash retry for an already-delivered source must be a complete no-op,
+    // including preserving a later user hide. `open_dm` deliberately unhides
+    // an existing thread, so perform this check before calling it.
+    let source_id = notice.source_id();
+    let participant_hash =
+        buzz_db::dm::compute_participant_hash(&[recipient_pubkey, relay_pubkey_bytes.as_slice()]);
+    if let Some(existing_dm) = state
+        .db
+        .find_dm_by_participants(tenant.community(), &participant_hash)
+        .await?
+    {
+        if notice_already_sent(
+            state,
+            tenant,
+            existing_dm.id,
+            &relay_pubkey_bytes,
+            source_id,
+        )
+        .await?
+        {
+            return Ok(());
+        }
+    }
+
     // 1. Create/reuse the two-party DM channel {relay mod key, recipient}.
     //    `open_dm` is participant-hash idempotent, so re-delivery to the same
     //    user reuses the one thread per (community, user).
@@ -128,20 +152,6 @@ pub async fn send_moderation_notice(
         .await?;
     if let Err(e) = publish_dm_visibility_snapshot(tenant, state, recipient_pubkey).await {
         warn!(error = %e, "moderation DM visibility snapshot failed (continuing)");
-    }
-
-    // Idempotency: a notice for this source id already exists in this DM ⇒ no-op.
-    // The source (report/action) row id is carried in a `moderation_source` tag
-    // (NOT `e` — `e` is reserved for 32-byte event ids; this is an opaque row
-    // UUID). Keyed on it, a retry after a crash between insert and fan-out is a
-    // safe no-op. Note: this is query-then-insert, so it is crash-retry safe but
-    // not concurrency-safe — two simultaneous deliveries for the same source can
-    // both miss the pre-query. Callers invoke this once per action from
-    // already-serialized side-effect paths; hard per-source serialization is a
-    // noted follow-up, not done here.
-    let source_id = notice.source_id();
-    if notice_already_sent(state, tenant, dm_channel_id, &relay_pubkey_bytes, source_id).await? {
-        return Ok(());
     }
 
     // 2. Ensure the relay's "{host} Moderation" kind:0 profile exists, and 3.
@@ -397,5 +407,184 @@ mod tests {
         .body(&t);
         assert!(body.contains("took action on your content"));
         assert!(body.contains("Off-topic."));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn delivered_notice_retry_preserves_a_later_user_hide() {
+        use nostr::Keys;
+        use sqlx::{PgPool, Row};
+
+        let admin_url = std::env::var("TEST_DATABASE_URL")
+            .unwrap_or_else(|_| "postgres://buzz:buzz_dev@localhost:5432/buzz".into());
+        let admin = PgPool::connect(&admin_url).await.expect("connect admin");
+        let scratch_name = format!("moderation_notice_{}", Uuid::new_v4().simple());
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "CREATE DATABASE {scratch_name}"
+        )))
+        .execute(&admin)
+        .await
+        .expect("create scratch database");
+        let slash = admin_url.rfind('/').expect("database URL path");
+        let scratch_url = format!("{}/{}", &admin_url[..slash], scratch_name);
+        let pool = PgPool::connect(&scratch_url)
+            .await
+            .expect("connect scratch database");
+        buzz_db::migration::run_migrations(&pool)
+            .await
+            .expect("migrate scratch database");
+
+        let community_uuid = Uuid::new_v4();
+        let host = format!("moderation-{}.example", community_uuid.simple());
+        sqlx::query("INSERT INTO communities (id, host) VALUES ($1, $2)")
+            .bind(community_uuid)
+            .bind(&host)
+            .execute(&pool)
+            .await
+            .expect("insert community");
+        let tenant =
+            TenantContext::resolved(buzz_core::CommunityId::from_uuid(community_uuid), host);
+        let relay_keys = Keys::generate();
+        let recipient = Keys::generate();
+        let recipient_bytes = recipient.public_key().to_bytes();
+
+        let mut config = crate::config::Config::from_env().expect("default config");
+        config.database_url = scratch_url;
+        config.read_database_url = None;
+        config.require_relay_membership = false;
+        config.redis_url = "redis://127.0.0.1:1".into();
+        let db = buzz_db::Db::from_pool(pool.clone());
+        let redis_pool = deadpool_redis::Config::from_url(&config.redis_url)
+            .create_pool(Some(deadpool_redis::Runtime::Tokio1))
+            .expect("redis pool");
+        let pubsub = Arc::new(
+            buzz_pubsub::PubSubManager::new(&config.redis_url, redis_pool.clone())
+                .await
+                .expect("pubsub manager"),
+        );
+        let audit = buzz_audit::AuditService::new(pool.clone());
+        let auth = buzz_auth::AuthService::new(config.auth.clone());
+        let search = buzz_search::SearchService::new(pool.clone());
+        let workflow_engine = Arc::new(buzz_workflow::WorkflowEngine::new(
+            db.clone(),
+            buzz_workflow::WorkflowConfig::default(),
+        ));
+        let media_storage = buzz_media::MediaStorage::new(&config.media).expect("media storage");
+        let (state, audit_shutdown) = AppState::new(
+            config,
+            db,
+            redis_pool,
+            audit,
+            pubsub,
+            auth,
+            search,
+            workflow_engine,
+            relay_keys.clone(),
+            media_storage,
+        );
+        let state = Arc::new(state);
+
+        let notice = ModerationNotice::Restriction {
+            action_id: Uuid::new_v4(),
+            kind: "timeout".into(),
+            public_reason: "Cool off.".into(),
+        };
+        send_moderation_notice(&tenant, &state, recipient_bytes.as_slice(), notice.clone())
+            .await
+            .expect("deliver notice");
+
+        let participant_hash = buzz_db::dm::compute_participant_hash(&[
+            recipient_bytes.as_slice(),
+            relay_keys.public_key().to_bytes().as_slice(),
+        ]);
+        let dm = state
+            .db
+            .find_dm_by_participants(tenant.community(), &participant_hash)
+            .await
+            .expect("find moderation DM")
+            .expect("moderation DM exists");
+        state
+            .db
+            .hide_dm(tenant.community(), dm.id, recipient_bytes.as_slice())
+            .await
+            .expect("hide moderation DM");
+        publish_dm_visibility_snapshot(&tenant, &state, recipient_bytes.as_slice())
+            .await
+            .expect("publish hidden snapshot");
+
+        let notice_count_before: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM events \
+             WHERE community_id = $1 AND channel_id = $2 AND kind = $3 \
+               AND pubkey = $4 AND deleted_at IS NULL",
+        )
+        .bind(tenant.community().as_uuid())
+        .bind(dm.id)
+        .bind(KIND_STREAM_MESSAGE as i32)
+        .bind(relay_keys.public_key().to_bytes().as_slice())
+        .fetch_one(&pool)
+        .await
+        .expect("count notices before retry");
+
+        send_moderation_notice(&tenant, &state, recipient_bytes.as_slice(), notice)
+            .await
+            .expect("retry delivered notice");
+
+        let hidden: bool = sqlx::query(
+            "SELECT hidden_at IS NOT NULL AS hidden FROM channel_members \
+             WHERE community_id = $1 AND channel_id = $2 AND pubkey = $3",
+        )
+        .bind(tenant.community().as_uuid())
+        .bind(dm.id)
+        .bind(recipient_bytes.as_slice())
+        .fetch_one(&pool)
+        .await
+        .expect("read hidden state")
+        .try_get("hidden")
+        .expect("decode hidden state");
+        assert!(hidden, "duplicate notice must preserve the user's hide");
+
+        let snapshot = state
+            .db
+            .query_events(&buzz_db::event::EventQuery {
+                kinds: Some(vec![buzz_core::kind::KIND_DM_VISIBILITY as i32]),
+                pubkey: Some(relay_keys.public_key().to_bytes().to_vec()),
+                d_tag: Some(recipient.public_key().to_hex()),
+                limit: Some(1),
+                ..buzz_db::event::EventQuery::for_community(tenant.community())
+            })
+            .await
+            .expect("read visibility snapshot")
+            .into_iter()
+            .next()
+            .expect("visibility snapshot exists");
+        assert!(snapshot.event.tags.iter().any(|tag| {
+            let parts = tag.as_slice();
+            parts.len() >= 2 && parts[0] == "h" && parts[1] == dm.id.to_string()
+        }));
+
+        let notice_count_after: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM events \
+             WHERE community_id = $1 AND channel_id = $2 AND kind = $3 \
+               AND pubkey = $4 AND deleted_at IS NULL",
+        )
+        .bind(tenant.community().as_uuid())
+        .bind(dm.id)
+        .bind(KIND_STREAM_MESSAGE as i32)
+        .bind(relay_keys.public_key().to_bytes().as_slice())
+        .fetch_one(&pool)
+        .await
+        .expect("count notices after retry");
+        assert_eq!(notice_count_after, notice_count_before);
+
+        audit_shutdown
+            .drain(std::time::Duration::from_secs(5))
+            .await;
+        drop(state);
+        pool.close().await;
+        let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DROP DATABASE IF EXISTS {scratch_name} WITH (FORCE)"
+        )))
+        .execute(&admin)
+        .await;
     }
 }

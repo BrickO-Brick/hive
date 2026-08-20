@@ -559,17 +559,8 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    // NIP-DV: repair any viewer snapshot publication that failed after the
-    // canonical hidden-state mutation committed. Run once before accepting
-    // traffic, then periodically so transient failures converge without
-    // requiring another message in that DM.
-    match buzz_relay::handlers::side_effects::reconcile_dm_visibility_snapshots(&state).await {
-        Ok(count) => info!(count, "DM visibility snapshots reconciled on startup"),
-        Err(error) => {
-            tracing::warn!(%error, "DM visibility snapshot startup reconciliation failed")
-        }
-    }
-
+    // NIP-DV: process the durable dirty-viewer queue in bounded batches. The
+    // task's first interval tick is immediate but never delays listener startup.
     {
         let reconcile_state = Arc::clone(&state);
         let interval_secs = std::env::var("BUZZ_DM_VISIBILITY_RECONCILE_INTERVAL_SECS")
@@ -579,7 +570,6 @@ async fn main() -> anyhow::Result<()> {
             .max(1);
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
-            interval.tick().await;
             loop {
                 interval.tick().await;
                 match buzz_relay::handlers::side_effects::reconcile_dm_visibility_snapshots(

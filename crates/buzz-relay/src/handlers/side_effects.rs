@@ -3415,60 +3415,50 @@ pub async fn publish_dm_visibility_snapshot(
     Ok(())
 }
 
-/// Repair relay-authored DM visibility snapshots from canonical membership
-/// rows across every active community.
+/// Publish one bounded batch from the durable DM visibility dirty-viewer queue.
 ///
-/// This is the durable retry path for a snapshot publication that fails after
-/// a hide/unhide mutation commits. The sweep is safe at startup and
-/// periodically because it publishes only viewers whose current `h` tags
-/// differ from `channel_members.hidden_at`.
+/// Hide/unhide mutations enqueue their viewer in the same transaction as the
+/// canonical membership change. This worker therefore does work proportional
+/// to failed projections and never scans deployment-wide DM history.
 pub async fn reconcile_dm_visibility_snapshots(state: &Arc<AppState>) -> anyhow::Result<usize> {
-    const BATCH_LIMIT: i64 = 1_000;
+    const BATCH_LIMIT: i64 = 100;
+    const CLAIM_LEASE_SECONDS: i64 = 60;
 
-    let communities = state.db.usage_community_hosts().await?;
-    let relay_pubkey = state.relay_keypair.public_key();
+    let claims = state
+        .db
+        .claim_dm_visibility_dirty_viewers(BATCH_LIMIT, CLAIM_LEASE_SECONDS)
+        .await?;
     let mut reconciled = 0usize;
 
-    for community in communities {
-        let community_id = buzz_core::CommunityId::from_uuid(community.id);
-        let host = community.host;
-        match state.db.is_community_active(community_id).await {
-            Ok(true) => {}
-            Ok(false) => continue,
+    for claim in claims {
+        let tenant = TenantContext::resolved(claim.community_id, claim.community_host.clone());
+        match publish_dm_visibility_snapshot(&tenant, state, &claim.viewer).await {
+            Ok(()) => reconciled += 1,
             Err(error) => {
                 metrics::counter!("buzz_dm_visibility_reconciliation_failures_total").increment(1);
-                warn!(%community_id, %host, %error, "DM visibility lifecycle check failed");
-                continue;
-            }
-        }
-        let viewers = match state
-            .db
-            .dm_visibility_viewers_needing_reconciliation(community_id, &relay_pubkey, BATCH_LIMIT)
-            .await
-        {
-            Ok(viewers) => viewers,
-            Err(error) => {
-                metrics::counter!("buzz_dm_visibility_reconciliation_failures_total").increment(1);
-                warn!(%community_id, %host, %error, "DM visibility drift scan failed");
-                continue;
-            }
-        };
-
-        let tenant = TenantContext::resolved(community_id, host.clone());
-        for viewer in viewers {
-            match publish_dm_visibility_snapshot(&tenant, state, &viewer).await {
-                Ok(()) => reconciled += 1,
-                Err(error) => {
-                    metrics::counter!("buzz_dm_visibility_reconciliation_failures_total")
-                        .increment(1);
+                if let Err(retry_error) = state
+                    .db
+                    .retry_dm_visibility_dirty_viewer(
+                        claim.community_id,
+                        &claim.viewer,
+                        claim.claim_id,
+                    )
+                    .await
+                {
                     warn!(
-                        %community_id,
-                        %host,
-                        viewer = %hex::encode(&viewer),
-                        %error,
-                        "DM visibility snapshot reconciliation failed"
+                        community_id = %claim.community_id,
+                        viewer = %hex::encode(&claim.viewer),
+                        %retry_error,
+                        "DM visibility retry release failed; claim lease will recover it"
                     );
                 }
+                warn!(
+                    community_id = %claim.community_id,
+                    host = %claim.community_host,
+                    viewer = %hex::encode(&claim.viewer),
+                    %error,
+                    "DM visibility snapshot reconciliation failed"
+                );
             }
         }
     }

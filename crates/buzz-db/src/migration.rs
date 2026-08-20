@@ -1105,6 +1105,24 @@ mod tests {
     }
 
     #[test]
+    fn dm_visibility_dirty_viewers_is_a_bounded_community_scoped_queue() {
+        let migration = MIGRATOR
+            .iter()
+            .find(|migration| migration.version == 32)
+            .expect("DM visibility queue migration");
+        let sql = migration.sql.as_str();
+        assert!(sql.contains("CREATE TABLE dm_visibility_dirty_viewers"));
+        assert!(sql.contains("PRIMARY KEY (community_id, viewer)"));
+        assert!(sql.contains("dm_visibility_dirty_viewers_due"));
+        assert!(sql.contains("WHERE state = 'pending'"));
+        assert!(sql.contains("attach_community_write_fence('dm_visibility_dirty_viewers')"));
+
+        let desired_schema = include_str!("../../../schema/schema.sql");
+        assert!(desired_schema.contains("CREATE TABLE dm_visibility_dirty_viewers"));
+        assert!(desired_schema.contains("dm_visibility_dirty_viewers_recovery"));
+    }
+
+    #[test]
     fn migration_lint_detects_tables_missing_community_id_by_default() {
         let sql = r#"
             CREATE TABLE communities (id UUID PRIMARY KEY);
@@ -1542,6 +1560,9 @@ mod tests {
         let mut expected_fences = migration.fence_attachments.clone();
         expected_fences.remove("product_feedback");
         expected_fences.remove("rate_limit_violations");
+        // Added after the deletion control plane; migration 0032 attaches the
+        // same universal write fence when upgrading an existing database.
+        expected_fences.insert("dm_visibility_dirty_viewers".into());
         assert_eq!(
             expected_fences, schema.fence_attachments,
             "write-fence attachment targets differ after recovery policy"
