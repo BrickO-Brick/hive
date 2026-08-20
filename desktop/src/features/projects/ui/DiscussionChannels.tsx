@@ -2,7 +2,7 @@ import { Hash } from "lucide-react";
 import * as React from "react";
 
 import { useAppNavigation } from "@/app/navigation/useAppNavigation";
-import { useChannelsQuery } from "@/features/channels/hooks";
+import { useChannelReferences } from "@/features/channels/openChannelDirectory";
 import { useUsersBatchQuery } from "@/features/profile/hooks";
 import {
   resolveUserLabel,
@@ -111,16 +111,16 @@ function openDiscussionHit({
   panel.openConversation(latestHit);
 }
 
-/** Channel display name, preferring the hit's name, then the channel list,
- * then a short id so private/renamed channels still render something. */
-function useChannelNameLookup(enabled: boolean) {
-  const channelsQuery = useChannelsQuery({ enabled });
+/** Channel display name, preferring the hit's name, then bounded metadata,
+ * then a short id so inaccessible/renamed channels still render something. */
+function useChannelNameLookup(channelIds: readonly string[]) {
+  const { channelsById } = useChannelReferences(channelIds, {
+    enabled: channelIds.length > 0,
+  });
   return React.useCallback(
     (id: string, nameFromHit: string | null) =>
-      nameFromHit ??
-      channelsQuery.data?.find((channel) => channel.id === id)?.name ??
-      id.slice(0, 8),
-    [channelsQuery.data],
+      nameFromHit ?? channelsById.get(id)?.name ?? id.slice(0, 8),
+    [channelsById],
   );
 }
 
@@ -175,7 +175,11 @@ export function DiscussedInChannels({
   const { goChannel, openSearchHit } = useAppNavigation();
   const projectConversationPanel = useProjectConversationPanel();
   const [expanded, setExpanded] = React.useState(false);
-  const channelName = useChannelNameLookup(channels.length > 0);
+  const channelIds = React.useMemo(
+    () => channels.map((channel) => channel.id),
+    [channels],
+  );
+  const channelName = useChannelNameLookup(channelIds);
   const visible = expanded
     ? channels
     : channels.slice(0, COLLAPSED_MENTION_ROWS);
@@ -379,7 +383,12 @@ export function DiscussionChannelsPanel({
   const { goChannel, openSearchHit } = useAppNavigation();
   const projectConversationPanel = useProjectConversationPanel();
   const latestHitByChannel = useLatestHitByChannel(hits);
-  const channelName = useChannelNameLookup(channels.length > 0);
+  const channelIds = React.useMemo(
+    () => channels.map((channel) => channel.id),
+    [channels],
+  );
+  const channelName = useChannelNameLookup(channelIds);
+
   const profilesQuery = useUsersBatchQuery(
     channels.flatMap((channel) => channel.participants),
     { enabled: channels.length > 0 },
