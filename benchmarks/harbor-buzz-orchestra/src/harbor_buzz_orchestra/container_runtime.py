@@ -15,6 +15,7 @@ import json
 import os
 import shlex
 import time
+import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -24,11 +25,11 @@ from harbor.environments.base import BaseEnvironment
 
 from . import accounting, bundle
 from .accounting import TURN_ENDED_MARKERS, USAGE_MARKER
+from .evidence import build_buzz_evidence
 from .manifest import AgentClass, ExperimentManifest, GenerationConfig
 from .provisioning import AgentCredential, TrialHandle
 from .runtime import RuntimeResult
 from .task_fixtures import fixture_for
-
 
 # Tool/LLM rounds allowed per agent turn (BUZZ_AGENT_MAX_ROUNDS).
 #
@@ -353,6 +354,9 @@ class BuzzContainerRuntime:
 
         agents: list[_Agent] = []
         infra: list[_Agent] = []
+        task_event_id: str | None = None
+        final_message: dict[str, Any] | None = None
+        evidence_exported = False
         trust_store = "unknown"
         verifier_deps = "unknown"
         try:
@@ -393,10 +397,16 @@ class BuzzContainerRuntime:
             )
             # The task arrives exactly as it would in production Buzz: a
             # user prompt @mentioning the orchestrator. The harness never
-            # speaks as any agent.
+            # speaks as any agent. The orchestrator is mentioned by pubkey,
+            # not by name resolution: task text is untrusted payload, and any
+            # @-token inside it must remain part of the task rather than being
+            # interpreted as another relay mention.
             active_started = time.monotonic()
-            await self._send(
-                trial.user, trial, f"@{orchestrator.agent_id} {instruction}"
+            task_event = await self._send(
+                trial.user,
+                trial,
+                f"@{orchestrator.agent_id} {instruction}",
+                mention=orchestrator.nostr_pubkey,
             )
             if isinstance(task_event, dict) and isinstance(
                 task_event.get("event_id"), str
@@ -448,12 +458,18 @@ class BuzzContainerRuntime:
             # agent/buzz/ holding nothing but the system prompts, which reads
             # as "the agents never ran" rather than "teardown stalled".
             await self._collect_logs(environment, trial_dir)
+            evidence_exported = await self._collect_evidence(
+                environment=environment,
+                trial=trial,
+                trial_dir=trial_dir,
+                task_event_id=task_event_id,
+                completion_message_id=(
+                    final_message.get("id") if final_message is not None else None
+                ),
+            )
             # After the agents are stopped, so the tool never reaches them, and
             # before Harbor's verifier phase, which is what needs it.
             verifier_deps = await self._preinstall_verifier_deps(environment)
-            # Before bundle.write, so the transcript is listed in the bundle's
-            # file index and covered by its secret scan.
-            await self._collect_transcript(trial, trial_dir)
             # Accounting runs even when the trial failed or timed out: a trial
             # that burned tokens and then stalled still cost money, and
             # excluding it would bias the sweep's cost figures toward successes.
@@ -491,6 +507,15 @@ class BuzzContainerRuntime:
                 endpoints=self.endpoints,
             )
 
+        # A missing snapshot is a harness failure only for Buzz-native tasks
+        # that grade relay state. Terminal-Bench tasks remain independently
+        # gradable even if this diagnostic export fails.
+        if fixture_for(trial.task_name).requires_evidence and not evidence_exported:
+            raise RuntimeLaunchError(
+                "failed to export buzz-evidence.json; the trial has no "
+                "verifiable relay state and must not be scored"
+            )
+
         return RuntimeResult(
             input_tokens=trial_accounting.input_tokens,
             output_tokens=trial_accounting.output_tokens,
@@ -506,6 +531,7 @@ class BuzzContainerRuntime:
                 # often is a finding, so it is recorded per trial rather than
                 # inferred later from an empty message id.
                 "stopped_without_done": final_message is None,
+                "buzz_evidence_exported": evidence_exported,
                 "agent_runtime": "in-container",
                 "agent_active_seconds": timing["agent_active_seconds"],
                 "usage_settle_seconds": timing["usage_settle_seconds"],
@@ -1238,14 +1264,6 @@ class BuzzContainerRuntime:
                 return
             await asyncio.sleep(self.poll_seconds)
 
-    @staticmethod
-    async def _turn_ended(environment: BaseEnvironment, agent: _Agent) -> bool:
-        result = await environment.exec(
-            f"cat {shlex.quote(agent.stdout_log)} "
-            f"{shlex.quote(agent.stderr_log)} 2>/dev/null"
-        )
-        return any(marker in (result.stdout or "") for marker in TURN_ENDED_MARKERS)
-
     async def _raise_for_dead_agents(
         self, environment: BaseEnvironment, agents: list[_Agent]
     ) -> None:
@@ -1295,7 +1313,7 @@ class BuzzContainerRuntime:
             await environment.exec(sweep)
             await asyncio.sleep(2)
             await environment.exec(sweep.replace("-TERM", "-KILL"))
-        except Exception:  # noqa: BLE001 — environment may already be gone
+        except Exception:  # noqa: BLE001, S110 — environment may already be gone
             pass
 
     async def _collect_logs(
@@ -1303,7 +1321,7 @@ class BuzzContainerRuntime:
     ) -> None:
         try:
             await environment.download_dir(REMOTE_LOGS, trial_dir)
-        except Exception:  # noqa: BLE001 — best effort; env may be torn down
+        except Exception:  # noqa: BLE001, S110 — best effort; env may be torn down
             pass
 
     async def _collect_transcript(self, trial: TrialHandle, trial_dir: Path) -> None:
@@ -1634,9 +1652,11 @@ class BuzzContainerRuntime:
             "",
             f"You are `{credential.agent_id}` (pubkey `{credential.nostr_pubkey}`).",
             f"The team coordinates in Buzz channel `{trial.channel_id}`.",
-            f"Tasks come from the user `{trial.user.agent_id}` "
-            f"(pubkey `{trial.user.nostr_pubkey}`); address your final report "
-            "to them.",
+            (
+                f"Tasks come from the user `{trial.user.agent_id}` "
+                f"(pubkey `{trial.user.nostr_pubkey}`); address your final report "
+                "to them."
+            ),
             "",
         ]
         if teammates:

@@ -24,7 +24,6 @@ from harbor_buzz_orchestra.container_runtime import (
 )
 from harbor_buzz_orchestra.manifest import ExperimentManifest
 from harbor_buzz_orchestra.provisioning import AgentCredential, TrialHandle
-from harbor_buzz_orchestra.task_fixtures import fixture_for
 
 
 def write_manifest(
@@ -554,8 +553,10 @@ async def test_launch_enables_the_usage_log_target(tmp_path):
         # the harness reads: tokens, and whether a turn has ended.
         (
             "buzz_acp=trace",
-            "buzz_acp=trace,acp::usage=debug,pool::prompt=info,"
-            "acp::stream=info,acp::tool=info",
+            (
+                "buzz_acp=trace,acp::usage=debug,pool::prompt=info,"
+                "acp::stream=info,acp::tool=info"
+            ),
         ),
         # A target the operator already set keeps the operator's level.
         (
