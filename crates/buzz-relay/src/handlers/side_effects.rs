@@ -3391,82 +3391,90 @@ pub async fn publish_dm_visibility_snapshot(
     state: &Arc<AppState>,
     viewer: &[u8],
 ) -> anyhow::Result<()> {
-    let viewer_hex = hex::encode(viewer);
-    let hidden = state.db.list_hidden_dms(tenant.community(), viewer).await?;
     let relay_pubkey_hex = state.relay_keypair.public_key().to_hex();
-
-    let mut tags: Vec<Tag> = Vec::with_capacity(hidden.len() + 2);
-    tags.push(
-        Tag::parse(["d", &viewer_hex])
-            .map_err(|e| anyhow::anyhow!("failed to build d tag: {e}"))?,
-    );
-    // `p` = viewer so the relay's `#p`-gated read path scopes the snapshot to
-    // its owner; no one else may query another viewer's hidden-DM set.
-    tags.push(
-        Tag::parse(["p", &viewer_hex])
-            .map_err(|e| anyhow::anyhow!("failed to build p tag: {e}"))?,
-    );
-    for channel_id in &hidden {
-        tags.push(
-            Tag::parse(["h", &channel_id.to_string()])
-                .map_err(|e| anyhow::anyhow!("failed to build h tag: {e}"))?,
-        );
-    }
-
-    // Force created_at strictly past any prior snapshot for this viewer: a same-second
-    // replacement whose random event id sorts higher is rejected by stale-write
-    // protection, so a hide→re-open within one second could otherwise strand the stale
-    // snapshot. Same guard as emit_addressable_discovery_event.
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let ts = {
-        let existing = state
-            .db
-            .query_events(&buzz_db::event::EventQuery {
-                kinds: Some(vec![KIND_DM_VISIBILITY as i32]),
-                pubkey: Some(state.relay_keypair.public_key().to_bytes().to_vec()),
-                d_tag: Some(viewer_hex.clone()),
-                limit: Some(1),
-                ..buzz_db::event::EventQuery::for_community(tenant.community())
-            })
-            .await
-            .unwrap_or_default();
-        existing
-            .first()
-            .map(|e| (e.event.created_at.as_secs() + 1).max(now))
-            .unwrap_or(now)
-    };
-
-    let event = EventBuilder::new(Kind::Custom(KIND_DM_VISIBILITY as u16), "")
-        .tags(tags)
-        .custom_created_at(nostr::Timestamp::from(ts))
-        .sign_with_keys(&state.relay_keypair)
-        .map_err(|e| anyhow::anyhow!("failed to sign kind:{KIND_DM_VISIBILITY}: {e}"))?;
-
-    let (stored, was_inserted) = state
+    let viewer_hex = hex::encode(viewer);
+    let (stored, hidden_count) = state
         .db
-        .replace_parameterized_event(tenant.community(), &event, &viewer_hex, None)
+        .publish_dm_visibility_locked(tenant.community(), viewer, &state.relay_keypair)
         .await?;
-    if was_inserted {
-        dispatch_persistent_event(
-            tenant,
-            state,
-            &stored,
-            KIND_DM_VISIBILITY,
-            &relay_pubkey_hex,
-            None,
-        )
-        .await;
-    }
+    dispatch_persistent_event(
+        tenant,
+        state,
+        &stored,
+        KIND_DM_VISIBILITY,
+        &relay_pubkey_hex,
+        None,
+    )
+    .await;
 
     info!(
         viewer = %viewer_hex,
-        hidden_count = hidden.len(),
+        hidden_count,
         "NIP-DV DM visibility snapshot published"
     );
     Ok(())
+}
+
+/// Repair relay-authored DM visibility snapshots from canonical membership
+/// rows across every active community.
+///
+/// This is the durable retry path for a snapshot publication that fails after
+/// a hide/unhide mutation commits. The sweep is safe at startup and
+/// periodically because it publishes only viewers whose current `h` tags
+/// differ from `channel_members.hidden_at`.
+pub async fn reconcile_dm_visibility_snapshots(state: &Arc<AppState>) -> anyhow::Result<usize> {
+    const BATCH_LIMIT: i64 = 1_000;
+
+    let communities = state.db.usage_community_hosts().await?;
+    let relay_pubkey = state.relay_keypair.public_key();
+    let mut reconciled = 0usize;
+
+    for community in communities {
+        let community_id = buzz_core::CommunityId::from_uuid(community.id);
+        let host = community.host;
+        match state.db.is_community_active(community_id).await {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(error) => {
+                metrics::counter!("buzz_dm_visibility_reconciliation_failures_total").increment(1);
+                warn!(%community_id, %host, %error, "DM visibility lifecycle check failed");
+                continue;
+            }
+        }
+        let viewers = match state
+            .db
+            .dm_visibility_viewers_needing_reconciliation(community_id, &relay_pubkey, BATCH_LIMIT)
+            .await
+        {
+            Ok(viewers) => viewers,
+            Err(error) => {
+                metrics::counter!("buzz_dm_visibility_reconciliation_failures_total").increment(1);
+                warn!(%community_id, %host, %error, "DM visibility drift scan failed");
+                continue;
+            }
+        };
+
+        let tenant = TenantContext::resolved(community_id, host.clone());
+        for viewer in viewers {
+            match publish_dm_visibility_snapshot(&tenant, state, &viewer).await {
+                Ok(()) => reconciled += 1,
+                Err(error) => {
+                    metrics::counter!("buzz_dm_visibility_reconciliation_failures_total")
+                        .increment(1);
+                    warn!(
+                        %community_id,
+                        %host,
+                        viewer = %hex::encode(&viewer),
+                        %error,
+                        "DM visibility snapshot reconciliation failed"
+                    );
+                }
+            }
+        }
+    }
+
+    metrics::counter!("buzz_dm_visibility_reconciliations_total").increment(reconciled as u64);
+    Ok(reconciled)
 }
 
 /// Resurface a DM for recipients of a newly accepted message.

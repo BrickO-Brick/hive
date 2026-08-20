@@ -80,11 +80,16 @@ async fn create_test_channel(keys: &Keys) -> String {
     channel_uuid.to_string()
 }
 
-/// Send a message via a signed kind:9 event and return the event_id hex.
-async fn send_rest_message(keys: &Keys, channel_id: &str, content: &str) -> String {
+/// Send a message with an explicit supported message kind and return its event id.
+async fn send_rest_message_with_kind(
+    keys: &Keys,
+    channel_id: &str,
+    content: &str,
+    kind: u16,
+) -> String {
     let client = reqwest::Client::new();
     let pubkey_hex = keys.public_key().to_hex();
-    let event = EventBuilder::new(Kind::Custom(9), content)
+    let event = EventBuilder::new(Kind::Custom(kind), content)
         .tags(vec![Tag::parse(["h", channel_id]).unwrap()])
         .sign_with_keys(keys)
         .unwrap();
@@ -103,6 +108,11 @@ async fn send_rest_message(keys: &Keys, channel_id: &str, content: &str) -> Stri
     );
     let body: serde_json::Value = resp.json().await.expect("parse event response");
     body["event_id"].as_str().expect("event_id").to_string()
+}
+
+/// Send the legacy kind:9 stream-message form used by most interop fixtures.
+async fn send_rest_message(keys: &Keys, channel_id: &str, content: &str) -> String {
+    send_rest_message_with_kind(keys, channel_id, content, 9).await
 }
 
 /// Create a DM via a signed kind:41010 (DM open) command event and return the
@@ -1323,38 +1333,53 @@ async fn test_nipdv_hide_then_reopen_updates_snapshot() {
 /// author's own preference.
 #[tokio::test]
 #[ignore]
-async fn test_nipdv_incoming_message_resurfaces_hidden_dm_for_recipient() {
-    let keys_a = Keys::generate();
-    let keys_b = Keys::generate();
-    let a_pubkey_hex = keys_a.public_key().to_hex();
-    let b_pubkey_hex = keys_b.public_key().to_hex();
-    let channel_id = create_dm(&keys_a, &b_pubkey_hex).await;
+async fn test_nipdv_supported_message_kinds_resurface_hidden_dm_for_recipient() {
+    for kind in [9, 40002] {
+        let keys_a = Keys::generate();
+        let keys_b = Keys::generate();
+        let keys_c = Keys::generate();
+        let a_pubkey_hex = keys_a.public_key().to_hex();
+        let b_pubkey_hex = keys_b.public_key().to_hex();
+        let c_pubkey_hex = keys_c.public_key().to_hex();
+        let channel_id = create_dm(&keys_a, &b_pubkey_hex).await;
+        let unrelated_channel_id = create_dm(&keys_b, &c_pubkey_hex).await;
 
-    for keys in [&keys_a, &keys_b] {
-        post_signed_event(keys, 41012, vec![Tag::parse(["h", &channel_id]).unwrap()]).await;
+        for keys in [&keys_a, &keys_b] {
+            post_signed_event(keys, 41012, vec![Tag::parse(["h", &channel_id]).unwrap()]).await;
+        }
+        post_signed_event(
+            &keys_b,
+            41012,
+            vec![Tag::parse(["h", &unrelated_channel_id]).unwrap()],
+        )
+        .await;
+
+        send_rest_message_with_kind(&keys_a, &channel_id, "new inbound activity", kind).await;
+
+        let mut client_a = BuzzTestClient::connect(&relay_url(), &keys_a)
+            .await
+            .expect("client A connect");
+        let a_hidden = read_hidden_dms(&mut client_a, &a_pubkey_hex).await;
+        assert!(
+            a_hidden.contains(&channel_id),
+            "kind {kind} sending must not rewrite the author's hidden state; A sees: {a_hidden:?}"
+        );
+        client_a.disconnect().await.expect("disconnect A");
+
+        let mut client_b = BuzzTestClient::connect(&relay_url(), &keys_b)
+            .await
+            .expect("client B connect");
+        let b_hidden = read_hidden_dms(&mut client_b, &b_pubkey_hex).await;
+        assert!(
+            !b_hidden.contains(&channel_id),
+            "kind {kind} inbound activity must resurface the DM for B; B sees: {b_hidden:?}"
+        );
+        assert!(
+            b_hidden.contains(&unrelated_channel_id),
+            "kind {kind} activity in one DM must not resurface an unrelated DM; B sees: {b_hidden:?}"
+        );
+        client_b.disconnect().await.expect("disconnect B");
     }
-
-    send_rest_message(&keys_a, &channel_id, "new inbound activity").await;
-
-    let mut client_a = BuzzTestClient::connect(&relay_url(), &keys_a)
-        .await
-        .expect("client A connect");
-    let a_hidden = read_hidden_dms(&mut client_a, &a_pubkey_hex).await;
-    assert!(
-        a_hidden.contains(&channel_id),
-        "sending must not rewrite the author's hidden state; A sees: {a_hidden:?}"
-    );
-    client_a.disconnect().await.expect("disconnect A");
-
-    let mut client_b = BuzzTestClient::connect(&relay_url(), &keys_b)
-        .await
-        .expect("client B connect");
-    let b_hidden = read_hidden_dms(&mut client_b, &b_pubkey_hex).await;
-    assert!(
-        !b_hidden.contains(&channel_id),
-        "new inbound activity must resurface the DM for B; B sees: {b_hidden:?}"
-    );
-    client_b.disconnect().await.expect("disconnect B");
 }
 
 /// Group-DM delivery resurfaces the row for every hidden recipient, not only

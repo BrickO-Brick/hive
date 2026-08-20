@@ -3103,7 +3103,7 @@ async fn ingest_event_inner(
         });
     }
 
-    if kind_u32 == KIND_STREAM_MESSAGE {
+    if matches!(kind_u32, KIND_STREAM_MESSAGE | KIND_STREAM_MESSAGE_V2) {
         if let (Some(ch_id), Some(channel)) = (channel_id, channel_row.as_ref()) {
             if channel.channel_type == "dm" {
                 let sender = effective_message_author(&event, &state.relay_keypair.public_key());

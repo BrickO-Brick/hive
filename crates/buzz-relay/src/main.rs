@@ -559,6 +559,47 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // NIP-DV: repair any viewer snapshot publication that failed after the
+    // canonical hidden-state mutation committed. Run once before accepting
+    // traffic, then periodically so transient failures converge without
+    // requiring another message in that DM.
+    match buzz_relay::handlers::side_effects::reconcile_dm_visibility_snapshots(&state).await {
+        Ok(count) => info!(count, "DM visibility snapshots reconciled on startup"),
+        Err(error) => {
+            tracing::warn!(%error, "DM visibility snapshot startup reconciliation failed")
+        }
+    }
+
+    {
+        let reconcile_state = Arc::clone(&state);
+        let interval_secs = std::env::var("BUZZ_DM_VISIBILITY_RECONCILE_INTERVAL_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(60)
+            .max(1);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                match buzz_relay::handlers::side_effects::reconcile_dm_visibility_snapshots(
+                    &reconcile_state,
+                )
+                .await
+                {
+                    Ok(count) if count > 0 => {
+                        info!(count, "DM visibility snapshots repaired")
+                    }
+                    Ok(_) => {}
+                    Err(error) => tracing::warn!(
+                        %error,
+                        "periodic DM visibility snapshot reconciliation failed"
+                    ),
+                }
+            }
+        });
+    }
+
     // NIP-43: reconcile the event-backed roster for every provisioned
     // community before opening the listener. `relay_members` is canonical;
     // this repairs pre-snapshot communities and any publication that failed
