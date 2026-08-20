@@ -243,19 +243,15 @@ fn validate_wav_metadata_free(bytes: &[u8]) -> Result<(), MediaError> {
             if len != 16 {
                 return Err(MediaError::MetadataForbidden);
             }
-            let format = u16::from_le_bytes(
-                bytes
-                    .get(offset + 8..offset + 10)
-                    .and_then(|value| value.try_into().ok())
-                    .ok_or(MediaError::MetadataForbidden)?,
-            );
-            let channels = u16::from_le_bytes(bytes[offset + 10..offset + 12].try_into().unwrap());
-            let sample_rate =
-                u32::from_le_bytes(bytes[offset + 12..offset + 16].try_into().unwrap());
-            let byte_rate = u32::from_le_bytes(bytes[offset + 16..offset + 20].try_into().unwrap());
-            let block_align =
-                u16::from_le_bytes(bytes[offset + 20..offset + 22].try_into().unwrap());
-            let bits = u16::from_le_bytes(bytes[offset + 22..offset + 24].try_into().unwrap());
+            let body = bytes
+                .get(offset + 8..offset + 24)
+                .ok_or(MediaError::MetadataForbidden)?;
+            let format = u16::from_le_bytes([body[0], body[1]]);
+            let channels = u16::from_le_bytes([body[2], body[3]]);
+            let sample_rate = u32::from_le_bytes([body[4], body[5], body[6], body[7]]);
+            let byte_rate = u32::from_le_bytes([body[8], body[9], body[10], body[11]]);
+            let block_align = u16::from_le_bytes([body[12], body[13]]);
+            let bits = u16::from_le_bytes([body[14], body[15]]);
             let valid_bits = match format {
                 1 => matches!(bits, 8 | 16 | 24 | 32),
                 3 => matches!(bits, 32 | 64),
@@ -330,7 +326,7 @@ fn validate_ogg_metadata_free(bytes: &[u8]) -> Result<(), MediaError> {
         let granule = u64::from_le_bytes(header[6..14].try_into().unwrap());
         if flags & !7 != 0
             || (offset == 0) != (flags & 2 != 0)
-            || (!packet.is_empty()) != (flags & 1 != 0)
+            || packet.is_empty() == (flags & 1 != 0)
             || (packets < 3 && granule != 0)
         {
             return Err(MediaError::MetadataForbidden);
@@ -1885,6 +1881,35 @@ mod tests {
             .enumerate()
             .flat_map(|(sequence, (packet, flags))| ogg_page(packet, *flags, sequence as u32))
             .collect()
+    }
+
+    #[test]
+    fn test_audio_validators_reject_every_truncated_prefix() {
+        let mp3 = mp3_frame([0xff, 0xfb, 0x90, 0], 417);
+        let wav = canonical_wav();
+        let ogg = canonical_ogg();
+
+        for (name, bytes, validate) in [
+            (
+                "mp3",
+                mp3.as_slice(),
+                validate_mp3_metadata_free as fn(&[u8]) -> Result<(), MediaError>,
+            ),
+            ("wav", wav.as_slice(), validate_wav_metadata_free),
+            ("ogg", ogg.as_slice(), validate_ogg_metadata_free),
+        ] {
+            assert!(validate(bytes).is_ok(), "canonical {name} fixture");
+            for end in 0..bytes.len() {
+                let mut truncated = bytes[..end].to_vec();
+                if name == "wav" && end >= 8 {
+                    truncated[4..8].copy_from_slice(&((end - 8) as u32).to_le_bytes());
+                }
+                assert!(
+                    validate(&truncated).is_err(),
+                    "{name} prefix ending at byte {end} must be rejected"
+                );
+            }
+        }
     }
 
     #[test]
