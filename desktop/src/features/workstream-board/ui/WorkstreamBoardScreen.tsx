@@ -340,10 +340,15 @@ export function WorkstreamBoardScreen() {
                   </p>
                   {(discussionMessages.data ?? [])
                     .filter(
-                      (event) => parseBoardReferences(event.tags).length > 0,
+                      (event) =>
+                        parseBoardReferences(event.tags, discussionChannel.id)
+                          .length > 0,
                     )
                     .map((event) => {
-                      const refs = parseBoardReferences(event.tags);
+                      const refs = parseBoardReferences(
+                        event.tags,
+                        discussionChannel.id,
+                      );
                       return (
                         <button
                           className="block w-full rounded-md border bg-background p-2 text-left text-xs"

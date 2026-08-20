@@ -5,6 +5,7 @@ import { installMockBridge } from "../helpers/bridge";
 test.use({ video: "on" });
 
 const CHANNEL_ID = "7b4d3d2e-3c15-4e88-9a11-1c0f7d2b6e55";
+const OTHER_CHANNEL_ID = "da7ab52e-a378-4888-8291-1a11d0ab8068";
 const ROOT_EVENT_ID = "c3".repeat(32);
 const TARGET_EVENT_ID = "d4".repeat(32);
 const AGENT_PUBKEY = "6".repeat(64);
@@ -31,7 +32,7 @@ ${JSON.stringify({
 \`\`\``;
 
 type BoardReference = {
-  kind: "thread-blocker";
+  kind: "workstream" | "thread-blocker";
   identity: string;
   snapshot: { label: string; detail?: string };
   placement: {
@@ -40,7 +41,7 @@ type BoardReference = {
     sectionId: string;
     sectionLabel: string;
   };
-  destination: {
+  destination?: {
     channelId: string;
     messageId: string;
     threadRootId?: string;
@@ -110,6 +111,9 @@ test("human and orchestrator references replay live and removed Board context", 
   const card = page.getByTestId(`workstream-card-${CHANNEL_ID}`);
   await expect(card).toHaveAttribute("aria-current", "true");
   await expect(card).toHaveClass(/border-dashed/);
+  await expect(card.getByTestId("current-workstream-reference")).toHaveText(
+    "Current reference",
+  );
   await expect(
     options.getByRole("button", { name: /workstream:/ }),
   ).toContainText("Referenced");
@@ -127,6 +131,45 @@ test("human and orchestrator references replay live and removed Board context", 
   });
   await page.waitForTimeout(1_500);
 
+  const crossWorkstreamReference: BoardReference = {
+    kind: "thread-blocker",
+    identity: "cross-workstream-forgery",
+    snapshot: { label: "Other workstream blocker" },
+    placement: {
+      workstreamId: OTHER_CHANNEL_ID,
+      workstreamLabel: "other-workstream",
+      sectionId: "blockers",
+      sectionLabel: "Blockers",
+    },
+    destination: {
+      channelId: OTHER_CHANNEL_ID,
+      messageId: TARGET_EVENT_ID,
+      threadRootId: ROOT_EVENT_ID,
+    },
+  };
+  await invoke(page, "send_managed_agent_channel_message", {
+    agentPubkey: AGENT_PUBKEY,
+    channelId: CHANNEL_ID,
+    content: "Forged cross-workstream Board history entry",
+    marker: "board-context-cross-workstream",
+    boardReferences: [crossWorkstreamReference],
+  });
+  await page.waitForTimeout(500);
+  await expect(page.getByTestId("board-discussion")).not.toContainText(
+    "Forged cross-workstream Board history entry",
+  );
+
+  const orchestratorWorkstreamReference: BoardReference = {
+    kind: "workstream",
+    identity: CHANNEL_ID,
+    snapshot: { label: "loganj-ws-board-context" },
+    placement: {
+      workstreamId: CHANNEL_ID,
+      workstreamLabel: "loganj-ws-board-context",
+      sectionId: "workstream",
+      sectionLabel: "Workstream",
+    },
+  };
   const removedReference: BoardReference = {
     kind: "thread-blocker",
     identity: "removed-deployment-gate",
@@ -152,7 +195,7 @@ test("human and orchestrator references replay live and removed Board context", 
     content:
       "Orchestrator: this points to the approval removed after state advanced.",
     marker: "board-context-orchestrator",
-    boardReferences: [removedReference],
+    boardReferences: [orchestratorWorkstreamReference, removedReference],
   });
 
   // Open the workstream conversation, where the orchestrator-authored live
@@ -171,14 +214,19 @@ test("human and orchestrator references replay live and removed Board context", 
   await expect(page).toHaveURL(/\/workstreams$/);
   await expect(page.getByTestId("workstream-board-view")).toBeVisible();
   await expect(page.getByTestId("board-discussion")).toContainText(
-    "Replay 1/1: 0 live · 0 changed · 1 historical",
+    "Replay 1/2: 0 live · 1 changed · 1 historical",
   );
   const historical = page.getByTestId("historical-reference-placeholder");
   await expect(historical).toBeVisible();
   await expect(historical).toContainText(
-    "Historical Blockers: Removed deployment approval · Current",
+    "Historical Blockers: Removed deployment approval",
   );
-  await expect(historical).toHaveAttribute("aria-current", "true");
+  await expect(historical).not.toHaveAttribute("aria-current");
+  await expect(
+    page
+      .getByTestId(`workstream-card-${CHANNEL_ID}`)
+      .getByTestId("current-workstream-reference"),
+  ).toHaveText("Current reference");
   await page.screenshot({
     path: testInfo.outputPath("orchestrator-removed-replay.png"),
     fullPage: true,
@@ -196,4 +244,42 @@ test("human and orchestrator references replay live and removed Board context", 
   await page.keyboard.press("Escape");
   await expect(draft).toHaveValue("Keep this unsent draft");
   await page.waitForTimeout(1_500);
+});
+
+test("unavailable workstream cards cannot mutate the discussion tray", async ({
+  page,
+}) => {
+  const pageErrors: Error[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error));
+  await installMockBridge(page, {
+    canvasReadError: "Canvas unavailable",
+    workstreamBoardFixture: {
+      channelId: CHANNEL_ID,
+      channelName: "loganj-ws-board-context",
+      canvas: CANVAS,
+      rootEventId: ROOT_EVENT_ID,
+      targetEventId: TARGET_EVENT_ID,
+    },
+  });
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByTestId("open-workstream-board-view").click();
+  const board = page.getByTestId("workstream-board-view");
+  await expect(board).toBeVisible();
+  const card = page.getByTestId(`workstream-card-${CHANNEL_ID}`);
+  await expect(card).toContainText("Card details unavailable");
+  await board.getByRole("button", { name: "Discuss Board" }).click();
+
+  await card
+    .getByRole("button", { name: /Open #loganj-ws-board-context/ })
+    .click();
+
+  await expect(page.getByText("Reference tray (0)")).toBeVisible();
+  const unavailableOptions = page.getByTestId(
+    `board-reference-options-${CHANNEL_ID}`,
+  );
+  await expect(unavailableOptions.getByRole("button")).toHaveCount(1);
+  await expect(
+    unavailableOptions.getByRole("button", { name: "Open", exact: true }),
+  ).toBeVisible();
+  expect(pageErrors).toEqual([]);
 });

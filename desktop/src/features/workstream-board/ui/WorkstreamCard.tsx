@@ -235,6 +235,14 @@ export function WorkstreamCard({
           <Hash className="h-3.5 w-3.5 shrink-0" />
           <span className="truncate">{channel.name}</span>
         </button>
+        {workstreamIsCurrent ? (
+          <span
+            className="mt-2 w-fit rounded-full border border-foreground/60 px-2 py-1 text-3xs font-bold uppercase tracking-wider"
+            data-testid="current-workstream-reference"
+          >
+            Current reference
+          </span>
+        ) : null}
         {discussionMode ? (
           <div
             className="pointer-events-auto mt-3 flex flex-wrap gap-1.5"
