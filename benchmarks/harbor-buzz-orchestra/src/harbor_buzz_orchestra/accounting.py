@@ -84,8 +84,11 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 # fields) degrades to "no samples" rather than a wrong number.
 USAGE_MARKER = "goose usage update"
 _SESSION_RE = re.compile(r"\bsession_id=(\S+)")
-_INPUT_RE = re.compile(r"\binput=(\d+)\b")
-_OUTPUT_RE = re.compile(r"\boutput=(\d+)\b")
+# ACP serializes optional counters as ``Some(123)`` in current builds and older
+# builds emitted bare ``123``. Accept both so an instrumentation formatting
+# change cannot silently turn a paid trial into a zero-token result.
+_INPUT_RE = re.compile(r"\binput=(?:Some\()?(\d+)\)?\b")
+_OUTPUT_RE = re.compile(r"\boutput=(?:Some\()?(\d+)\)?\b")
 # The cache-served subset of `input`, added to the usage line by buzz-acp. Absent
 # in logs written by an agent build that predates it, which is why a missing
 # field must read as "unknown" (fall back to the modelled rate) and never as 0 —

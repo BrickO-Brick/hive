@@ -64,6 +64,16 @@ def test_parse_usage_log_reads_the_coloured_lines_a_real_trial_produces():
     )
 
 
+def test_parse_usage_log_reads_current_optional_counter_format():
+    text = (
+        "2026-08-20T20:37:07Z DEBUG acp::usage: goose usage update "
+        "session_id=ses-current input=Some(7474) output=Some(701) cached=4608"
+    )
+    assert accounting.parse_usage_log(text) == (
+        accounting.SessionUsage("ses-current", 7474, 701, 4608),
+    )
+
+
 def test_parse_handoffs_reads_coloured_lines_too():
     """Same formatter, same escapes — the compaction bound must not silently zero."""
     text = (
@@ -370,9 +380,7 @@ def test_collect_keeps_the_handoff_bound_out_of_the_metered_cost(
     assert "floor" in result.reconciliation_note
 
 
-def test_collect_warns_when_an_agent_truncated_its_own_history(
-    tmp_path, solo_manifest
-):
+def test_collect_warns_when_an_agent_truncated_its_own_history(tmp_path, solo_manifest):
     write_log(
         tmp_path,
         "opus-orchestrator-1",

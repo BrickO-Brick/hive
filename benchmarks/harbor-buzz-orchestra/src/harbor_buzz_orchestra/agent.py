@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from harbor.agents.base import BaseAgent
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
+from harbor.models.trajectories import Agent, FinalMetrics, Step, Trajectory
+from harbor.utils.trajectory_utils import format_trajectory_json
 
 from .container_runtime import BuzzContainerRuntime, EndpointLaunchConfig
 from .manifest import ExperimentManifest
@@ -18,8 +22,7 @@ from .runtime import OrchestraRuntime
 class BuzzOrchestraAgent(BaseAgent):
     """Coordinate an arbitrary manifest-defined team through a Buzz trial."""
 
-    # Set True only once the runtime writes a validated agent/trajectory.json.
-    SUPPORTS_ATIF = False
+    SUPPORTS_ATIF = True
 
     def __init__(
         self,
@@ -76,6 +79,94 @@ class BuzzOrchestraAgent(BaseAgent):
 
     def version(self) -> str:
         return "0.1.0"
+
+    def _write_trajectory(
+        self,
+        *,
+        instruction: str,
+        trial_id: str,
+        result: Any,
+    ) -> None:
+        """Write the ATIF artifact required by Harbor leaderboard submissions.
+
+        Buzz is a composite runtime, so its canonical cross-agent record is the
+        relay transcript. Detailed ACP streaming and tool events remain beside
+        it in ``buzz/<agent>.stdout.log``; the ATIF file captures the complete
+        user/agent message history without inventing tool outputs that Buzz does
+        not currently persist in a structured form.
+        """
+        transcript_path = self.logs_dir / "buzz" / "transcript.json"
+        messages: list[dict[str, Any]] = []
+        if transcript_path.is_file():
+            payload = json.loads(transcript_path.read_text(encoding="utf-8"))
+            raw_messages = payload.get("messages", [])
+            if isinstance(raw_messages, list):
+                messages = [
+                    message for message in raw_messages if isinstance(message, dict)
+                ]
+
+        steps: list[Step] = []
+        for message in messages:
+            content = message.get("content")
+            if not isinstance(content, str):
+                continue
+            author = str(message.get("author") or "unknown")
+            created_at = message.get("created_at")
+            timestamp = None
+            if isinstance(created_at, (int, float)):
+                timestamp = (
+                    datetime.fromtimestamp(created_at, UTC)
+                    .isoformat()
+                    .replace("+00:00", "Z")
+                )
+            steps.append(
+                Step(
+                    step_id=len(steps) + 1,
+                    timestamp=timestamp,
+                    source="user" if author == "user" else "agent",
+                    message=content,
+                    extra={"buzz_author": author},
+                )
+            )
+
+        if not steps:
+            steps.append(Step(step_id=1, source="user", message=instruction))
+            completion = result.metadata.get("completion_message")
+            if isinstance(completion, str) and completion:
+                steps.append(Step(step_id=2, source="agent", message=completion))
+
+        model_revisions = sorted(
+            {entry.model_revision or entry.endpoint for entry in self.manifest.roster}
+        )
+        trajectory = Trajectory(
+            schema_version="ATIF-v1.7",
+            session_id=trial_id,
+            agent=Agent(
+                name=self.name(),
+                version=self.version(),
+                model_name=model_revisions[0] if len(model_revisions) == 1 else None,
+                extra={
+                    "condition": self.manifest.condition,
+                    "model_revisions": model_revisions,
+                },
+            ),
+            steps=steps,
+            notes=(
+                "Composite Buzz relay transcript. Detailed ACP streaming and tool "
+                "events are preserved in buzz/<agent>.stdout.log."
+            ),
+            final_metrics=FinalMetrics(
+                total_prompt_tokens=result.input_tokens,
+                total_cached_tokens=result.cached_input_tokens,
+                total_completion_tokens=result.output_tokens,
+                total_cost_usd=result.cost_usd,
+                total_steps=len(steps),
+            ),
+        )
+        (self.logs_dir / "trajectory.json").write_text(
+            format_trajectory_json(trajectory.to_json_dict()) + "\n",
+            encoding="utf-8",
+        )
 
     @staticmethod
     def _load_mapping(
@@ -210,6 +301,12 @@ class BuzzOrchestraAgent(BaseAgent):
             )
         finally:
             self.provisioner.teardown(handle)
+
+        self._write_trajectory(
+            instruction=instruction,
+            trial_id=trial_id,
+            result=result,
+        )
 
         context.n_input_tokens = result.input_tokens
         context.n_cache_tokens = result.cached_input_tokens
