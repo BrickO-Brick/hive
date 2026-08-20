@@ -27,6 +27,38 @@ test("mediaProxyUrl: uses the IPv4 loopback literal for the localhost proxy", ()
   );
 });
 
+test("rewriteRelayUrl: routes each supported audio format through the authenticated proxy", async () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = {
+    __TAURI_INTERNALS__: {
+      invoke(command) {
+        if (command === "get_media_proxy_port") return Promise.resolve(54321);
+        if (command === "get_relay_http_url") {
+          return Promise.resolve("https://relay.example");
+        }
+        return Promise.reject(new Error(`Unexpected command: ${command}`));
+      },
+    },
+  };
+
+  try {
+    const mediaUrl = await import(`./mediaUrl.ts?audioProxy=${Date.now()}`);
+    mediaUrl.rewriteRelayUrl(`https://relay.example/media/${HASH}.mp3`);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    for (const extension of ["mp3", "wav", "ogg"]) {
+      assert.equal(
+        mediaUrl.rewriteRelayUrl(
+          `https://relay.example/media/${HASH}.${extension}`,
+        ),
+        `http://127.0.0.1:54321/media/${HASH}.${extension}`,
+      );
+    }
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
 test("media-proxy port store: resolved port publishes and reset notifies subscribers", async () => {
   const previousWindow = globalThis.window;
   let notifications = 0;

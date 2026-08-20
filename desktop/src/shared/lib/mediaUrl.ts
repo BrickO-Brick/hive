@@ -20,7 +20,7 @@ import { invoke } from "@tauri-apps/api/core";
 // Matches: https://anything.com/media/{64-hex}.{ext}
 // Also matches thumbnails: /media/{64-hex}.thumb.jpg
 const RELAY_MEDIA_RE =
-  /^(?:https?:\/\/[^/]+)\/media\/([\da-f]{64}(?:\.thumb)?\.(?:jpg|png|gif|webp|mp4|webm|mov)(?:\?.*)?)$/;
+  /^(?:https?:\/\/[^/]+)\/media\/([\da-f]{64}(?:\.thumb)?\.(?:jpg|png|gif|webp|mp4|webm|mov|mp3|wav|ogg)(?:\?.*)?)$/;
 
 /** Cached proxy port — fetched once from the Tauri backend. */
 let cachedPort: number | null = null;
