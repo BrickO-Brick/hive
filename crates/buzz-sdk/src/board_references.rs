@@ -355,7 +355,7 @@ mod tests {
                 .unwrap()
             })
             .collect::<Vec<_>>();
-        tags.extend(build_board_reference_tags(&[valid.clone()]).unwrap());
+        tags.extend(build_board_reference_tags(std::slice::from_ref(&valid)).unwrap());
         assert_eq!(parse_board_references(&Tags::from_list(tags)), vec![valid]);
     }
 

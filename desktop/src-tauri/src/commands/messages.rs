@@ -522,7 +522,7 @@ pub async fn send_channel_message(
                 }
                 None => None,
             };
-            events::build_message(
+            events::build_message_with_client_tags(
                 channel_uuid,
                 content.trim(),
                 thread_ref.as_ref(),
