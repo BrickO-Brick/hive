@@ -3785,6 +3785,24 @@ fn parse_dm_response(json: serde_json::Value, limit: u32) -> Option<Conversation
     })
 }
 
+fn json_board_references(obj: &serde_json::Value) -> Vec<buzz_sdk::BoardReference> {
+    let Some(raw_tags) = obj.get("tags").and_then(|value| value.as_array()) else {
+        return Vec::new();
+    };
+    let tags = raw_tags
+        .iter()
+        .filter_map(|value| {
+            let parts = value
+                .as_array()?
+                .iter()
+                .map(|part| part.as_str().map(str::to_string))
+                .collect::<Option<Vec<_>>>()?;
+            nostr::Tag::parse(parts).ok()
+        })
+        .collect::<Vec<_>>();
+    buzz_sdk::parse_board_references(&nostr::Tags::from_list(tags))
+}
+
 /// Extract a `ContextMessage` from a JSON message object.
 ///
 /// Works with both thread reply objects and channel message objects.
@@ -3819,6 +3837,7 @@ fn json_to_context_message(obj: &serde_json::Value) -> Option<ContextMessage> {
         pubkey: pubkey.to_string(),
         timestamp,
         content: content.to_string(),
+        board_references: json_board_references(obj),
     })
 }
 
@@ -5875,6 +5894,7 @@ mod tests {
                 pubkey: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
                 timestamp: "2026-03-25T05:51:25Z".into(),
                 content: "follow up".into(),
+                board_references: vec![],
             }],
             total: 1,
             truncated: false,
@@ -5951,6 +5971,7 @@ mod tests {
             pubkey: "author".into(),
             timestamp: "2026-08-09T00:00:00Z".into(),
             content: content.into(),
+            board_references: vec![],
         }
     }
 
