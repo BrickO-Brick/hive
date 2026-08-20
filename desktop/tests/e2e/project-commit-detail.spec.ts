@@ -693,7 +693,10 @@ test("commit detail opens from the commits feed with a diff", async ({
   await expect(commitHeader).toContainText("Committed");
   await expect(commitHeader).not.toContainText("Brain");
   await expect(commitHeader.locator("img")).toHaveCount(0);
-  await expect(commitDetail).toHaveCSS("max-width", "768px");
+  await expect(commitDetail.locator(":scope > div").first()).toHaveCSS(
+    "max-width",
+    "768px",
+  );
   await expect(
     commitDetail.getByRole("heading", {
       name: "Add Trello board workflow details",
@@ -867,7 +870,7 @@ test("pull request and issue feeds use compact work item rows", async ({
     page.getByTestId("project-work-item-group-header").first(),
   ).toBeVisible();
   await expect(
-    prRows.first().locator("button").filter({ hasText: /.+/ }).nth(1),
+    prRows.first().locator("[data-projects-text-priority='primary']"),
   ).toHaveCSS("font-weight", "400");
   await waitForAnimations(page);
   await page.screenshot({ fullPage: false, path: `${SHOTS}/03-prs-feed.png` });

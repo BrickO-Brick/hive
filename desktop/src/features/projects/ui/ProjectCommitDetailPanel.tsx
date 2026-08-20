@@ -76,11 +76,6 @@ export function ProjectCommitDetailPanel({
                 {commitDateLabel(commit.timestamp)}
               </span>
             ) : null}
-            {commit?.authorName ? (
-              <span className="min-w-0 truncate" title={commit.authorEmail}>
-                by <span className="text-foreground">{commit.authorName}</span>
-              </span>
-            ) : null}
             <ProjectOriginReference
               agentName={originAgentName}
               channelId={originChannelId}

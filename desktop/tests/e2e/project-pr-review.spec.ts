@@ -3140,7 +3140,10 @@ test("pushed local branch can open a pull request", async ({ page }) => {
     .getByRole("menuitemradio", { name: "feature/projects-workflow" })
     .click();
   await page.getByRole("tab", { name: "Review", exact: true }).click();
-  await page.getByRole("button", { name: "Create review" }).click();
+  await page
+    .getByTestId("project-section-header")
+    .getByRole("button", { name: "Create review" })
+    .click();
   await expect(page.getByTestId("create-pull-request-repository")).toHaveValue(
     /:buzz$/,
   );
