@@ -244,7 +244,7 @@ fn parse_ogg(body: &[u8]) -> Result<(u32, Vec<OggPacket>), String> {
         expected_sequence = expected_sequence
             .checked_add(1)
             .ok_or("Ogg sequence overflow")?;
-        if (flags & 1 != 0) != !partial.is_empty() {
+        if (flags & 1 != 0) == partial.is_empty() {
             return Err("invalid Ogg packet continuation".into());
         }
         if sequence == 0 && flags & 2 == 0 {
