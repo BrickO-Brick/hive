@@ -62,6 +62,7 @@ export function WorkstreamBoardScreen() {
   >([]);
   const [replayFocusIndex, setReplayFocusIndex] = React.useState(0);
   const startReplay = React.useCallback((references: BoardReference[]) => {
+    setDiscussionMode(true);
     setReplayFocusIndex(0);
     setReplayReferences(references);
   }, []);

@@ -107,9 +107,20 @@ test("human and orchestrator references replay live and removed Board context", 
   await expect(page.getByTestId("board-discussion")).toContainText(
     "Replay 1/2: 2 live",
   );
-  await expect(page.getByTestId(`workstream-card-${CHANNEL_ID}`)).toHaveClass(
-    /ring-2/,
-  );
+  const card = page.getByTestId(`workstream-card-${CHANNEL_ID}`);
+  await expect(card).toHaveAttribute("aria-current", "true");
+  await expect(card).toHaveClass(/border-dashed/);
+  await expect(
+    options.getByRole("button", { name: /workstream:/ }),
+  ).toContainText("Referenced");
+  await page.getByRole("button", { name: "Next reference" }).click();
+  const currentBlocker = options.getByRole("button", {
+    name: /thread-blocker:/,
+  });
+  await expect(currentBlocker).toHaveAttribute("aria-current", "true");
+  await expect(currentBlocker).toContainText("Current");
+  await page.keyboard.press("ArrowLeft");
+  await expect(card).toHaveAttribute("aria-current", "true");
   await page.screenshot({
     path: testInfo.outputPath("human-live-replay.png"),
     fullPage: true,
@@ -162,13 +173,27 @@ test("human and orchestrator references replay live and removed Board context", 
   await expect(page.getByTestId("board-discussion")).toContainText(
     "Replay 1/1: 0 live · 0 changed · 1 historical",
   );
-  await expect(page.getByText("Historical references")).toBeVisible();
-  await expect(
-    page.getByText(/Removed deployment approval · formerly/),
-  ).toContainText("loganj-ws-board-context / Blockers");
+  const historical = page.getByTestId("historical-reference-placeholder");
+  await expect(historical).toBeVisible();
+  await expect(historical).toContainText(
+    "Historical Blockers: Removed deployment approval · Current",
+  );
+  await expect(historical).toHaveAttribute("aria-current", "true");
   await page.screenshot({
     path: testInfo.outputPath("orchestrator-removed-replay.png"),
     fullPage: true,
   });
-  await page.waitForTimeout(2_500);
+  await page.waitForTimeout(1_500);
+
+  // Draft text alone is unsent state. Cancelling either exit path preserves it.
+  await page.keyboard.press("Escape");
+  const draft = page.getByLabel("Discussion message");
+  await draft.fill("Keep this unsent draft");
+  page.once("dialog", async (dialog) => dialog.dismiss());
+  await board.getByRole("button", { name: "Exit discussion" }).click();
+  await expect(draft).toHaveValue("Keep this unsent draft");
+  page.once("dialog", async (dialog) => dialog.dismiss());
+  await page.keyboard.press("Escape");
+  await expect(draft).toHaveValue("Keep this unsent draft");
+  await page.waitForTimeout(1_500);
 });
