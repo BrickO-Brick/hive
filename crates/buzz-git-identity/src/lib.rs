@@ -37,6 +37,63 @@ pub struct KeyIdentity {
 /// attribution must not follow a mutable, channel-qualified title.
 pub const DISPLAY_NAME_ENV_VAR: &str = "BUZZ_ACP_DISPLAY_NAME";
 
+/// Operator-controlled selector for whose identity an agent's commits carry.
+///
+/// Read **once by the harness/shim at spawn** — never by the wrapper
+/// per-invocation, which would let any agent `export BUZZ_GIT_IDENTITY=user`
+/// mid-session and hollow out enforcement. Sovereignty lever, not an agent
+/// escape hatch (VISION_SOVEREIGN.md: the operator overrides platform policy
+/// on their own machine).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GitIdentityMode {
+    /// Default. Commits are authored + NIP-GS-signed as the agent identity;
+    /// the full enforcement wrapper is installed.
+    Agent,
+    /// The operator's own git identity authors commits. No wrapper, manifest,
+    /// or injected authorship/signing config — vanilla git resolves the
+    /// operator's repo/global config. Relay git-over-HTTP auth (the nostr
+    /// credential helper) is unaffected: auth ≠ attribution.
+    User,
+}
+
+impl GitIdentityMode {
+    /// The operator-facing environment variable that selects the mode.
+    pub const ENV_VAR: &'static str = "BUZZ_GIT_IDENTITY";
+
+    /// Resolve from an explicit optional raw value: unset (`None`) → [`Agent`];
+    /// exactly `agent` or `user` (surrounding whitespace tolerated) → the
+    /// matching mode; anything else → `Err`.
+    ///
+    /// An unrecognized value **fails loudly** rather than silently falling back
+    /// to either mode — silent fallback in an identity control is the failure
+    /// class this whole feature exists to close.
+    ///
+    /// [`Agent`]: GitIdentityMode::Agent
+    pub fn from_value(raw: Option<&std::ffi::OsStr>) -> Result<Self, String> {
+        let Some(os) = raw else {
+            return Ok(Self::Agent);
+        };
+        let value = os
+            .to_str()
+            .ok_or_else(|| format!("{} must be valid UTF-8 (`agent` or `user`)", Self::ENV_VAR))?;
+        match value.trim() {
+            "agent" => Ok(Self::Agent),
+            "user" => Ok(Self::User),
+            other => Err(format!(
+                "{} must be `agent` or `user`, got {other:?}",
+                Self::ENV_VAR
+            )),
+        }
+    }
+
+    /// Resolve from this process's environment. See [`from_value`].
+    ///
+    /// [`from_value`]: GitIdentityMode::from_value
+    pub fn from_env() -> Result<Self, String> {
+        Self::from_value(std::env::var_os(Self::ENV_VAR).as_deref())
+    }
+}
+
 /// Max characters in a git author name. Nostr display names are unbounded.
 const MAX_GIT_USER_NAME_CHARS: usize = 80;
 
@@ -168,8 +225,18 @@ pub fn signing_entries(id: &KeyIdentity) -> Vec<(String, String)> {
         ("commit.gpgSign".into(), "true".into()),
         ("tag.gpgSign".into(), "true".into()),
         ("user.signingkey".into(), id.pubkey_hex.clone()),
-        ("nostr.keyfile".into(), id.keyfile_path.clone()),
+        keyfile_entry(id),
     ]
+}
+
+/// The `nostr.keyfile` git config pointing at the 0600 keyfile. Both
+/// `git-sign-nostr` and `git-credential-nostr` fall back to it to load the
+/// secret when `NOSTR_PRIVATE_KEY` is scrubbed from the child env. It is part
+/// of [`signing_entries`], but the credential helper needs it even in
+/// `user`-identity mode (where signing/authorship are off) — auth ≠
+/// attribution — so it is exposed separately.
+pub fn keyfile_entry(id: &KeyIdentity) -> (String, String) {
+    ("nostr.keyfile".into(), id.keyfile_path.clone())
 }
 
 /// The identity + signing git config for an agent, as ordered `(key, value)`
@@ -686,6 +753,50 @@ mod tests {
             .iter()
             .find(|(k, _)| k == key)
             .map(|(_, v)| v.clone())
+    }
+
+    // ── GitIdentityMode ───────────────────────────────────────────────────────
+
+    #[test]
+    fn mode_unset_defaults_to_agent() {
+        assert_eq!(
+            GitIdentityMode::from_value(None).unwrap(),
+            GitIdentityMode::Agent
+        );
+    }
+
+    #[test]
+    fn mode_parses_agent_and_user_tolerating_whitespace() {
+        use std::ffi::OsStr;
+        for raw in ["agent", " agent ", "agent\n"] {
+            assert_eq!(
+                GitIdentityMode::from_value(Some(OsStr::new(raw))).unwrap(),
+                GitIdentityMode::Agent,
+                "{raw:?} must parse as Agent"
+            );
+        }
+        for raw in ["user", " user ", "user\n"] {
+            assert_eq!(
+                GitIdentityMode::from_value(Some(OsStr::new(raw))).unwrap(),
+                GitIdentityMode::User,
+                "{raw:?} must parse as User"
+            );
+        }
+    }
+
+    #[test]
+    fn mode_rejects_unrecognized_value_naming_var_and_accepted_values() {
+        use std::ffi::OsStr;
+        // No silent fallback in an identity control: typos, empty, and
+        // case-variants all fail loudly (git config values are case-sensitive).
+        for raw in ["usr", "Agent", "USER", "true", "", "1"] {
+            let err = GitIdentityMode::from_value(Some(OsStr::new(raw)))
+                .expect_err(&format!("{raw:?} must be rejected"));
+            assert!(
+                err.contains("BUZZ_GIT_IDENTITY") && err.contains("agent") && err.contains("user"),
+                "error must name the var and both values; got {err:?}"
+            );
+        }
     }
 
     // ── derive_git_email ──────────────────────────────────────────────────────

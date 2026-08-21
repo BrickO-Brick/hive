@@ -462,6 +462,30 @@ fn install_git_identity(
     use std::io::{Error, ErrorKind};
     use std::os::unix::fs::{symlink, PermissionsExt};
 
+    // Operator's identity mode, read once here at spawn — never by the wrapper
+    // per-invocation, which would let any agent `export BUZZ_GIT_IDENTITY=user`
+    // mid-session and hollow out enforcement. A persona-staged value (on `cmd`)
+    // outranks the harness process env, so a per-agent `user` setting wins;
+    // absent both, the default is `agent`. An unrecognized value fails the
+    // spawn loudly rather than silently picking a mode.
+    let mode = buzz_git_identity::GitIdentityMode::from_value(
+        child_env(cmd, buzz_git_identity::GitIdentityMode::ENV_VAR)
+            .or_else(|| std::env::var_os(buzz_git_identity::GitIdentityMode::ENV_VAR))
+            .as_deref(),
+    )
+    .map_err(|e| Error::new(ErrorKind::InvalidInput, e))?;
+
+    // `user` mode: install NO identity machinery — no wrapper on PATH, no
+    // manifest, no keyfile, no injected identity/signing config. This is the
+    // existing, review-hardened unconfigured-session path: the child's git is
+    // vanilla git resolving the operator's own repo/global identity and
+    // signing. The nostr credential helper (relay git-over-HTTP auth) is
+    // installed independently by the desktop and dev-mcp's shim — auth ≠
+    // attribution — so it is unaffected here.
+    if mode == buzz_git_identity::GitIdentityMode::User {
+        return Ok(None);
+    }
+
     // Canonical agent key. `BUZZ_PRIVATE_KEY` (the documented secret) always
     // outranks `NOSTR_PRIVATE_KEY`, at BOTH layers, so a stale or conflicting
     // child-staged `NOSTR_PRIVATE_KEY` can never split identity away from the
@@ -5252,6 +5276,68 @@ mod tests {
             staged, buzz_nsec,
             "child NOSTR_PRIVATE_KEY must be the canonical BUZZ key, so dev-mcp's shim \
              installs the same identity"
+        );
+    }
+
+    /// `BUZZ_GIT_IDENTITY=user` (staged per-agent on the command) takes the
+    /// unconfigured path: no identity installed even with a valid key present,
+    /// so the child's git resolves the operator's own identity. The staged
+    /// value outranks the harness process env, proving per-agent control.
+    #[cfg(unix)]
+    #[test]
+    fn install_git_identity_user_mode_installs_nothing() {
+        use nostr::ToBech32;
+
+        let nsec = nostr::Keys::generate().secret_key().to_bech32().unwrap();
+        let mut cmd = tokio::process::Command::new("true");
+        cmd.env("BUZZ_PRIVATE_KEY", &nsec);
+        cmd.env("BUZZ_GIT_IDENTITY", "user");
+
+        let dir = install_git_identity(&mut cmd).expect("user mode must not error");
+        assert!(
+            dir.is_none(),
+            "user mode must install no identity dir (unconfigured path)"
+        );
+        // No identity/signing config staged: the child git is vanilla git.
+        assert!(
+            child_env(&cmd, "GIT_CONFIG_COUNT").is_none(),
+            "user mode must not inject GIT_CONFIG_* identity/signing config"
+        );
+    }
+
+    /// `agent` (explicit) still enforces: a valid key installs the identity dir
+    /// and injects config, identical to the unset default.
+    #[cfg(unix)]
+    #[test]
+    fn install_git_identity_agent_mode_enforces() {
+        use nostr::ToBech32;
+
+        let nsec = nostr::Keys::generate().secret_key().to_bech32().unwrap();
+        let mut cmd = tokio::process::Command::new("true");
+        cmd.env("BUZZ_PRIVATE_KEY", &nsec);
+        cmd.env("BUZZ_GIT_IDENTITY", "agent");
+
+        let dir = install_git_identity(&mut cmd)
+            .expect("agent mode must not error")
+            .expect("agent mode with a key must install identity");
+        assert!(
+            buzz_git_identity::read_identity_manifest(dir.path()).is_some(),
+            "agent mode must write the enforcement manifest"
+        );
+    }
+
+    /// An unrecognized value fails the spawn loudly rather than silently
+    /// picking a mode — the #3140 failure class.
+    #[cfg(unix)]
+    #[test]
+    fn install_git_identity_rejects_invalid_mode() {
+        let mut cmd = tokio::process::Command::new("true");
+        cmd.env("BUZZ_GIT_IDENTITY", "usr");
+        let err = install_git_identity(&mut cmd).expect_err("invalid mode must error");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(
+            err.to_string().contains("BUZZ_GIT_IDENTITY"),
+            "error must name the var; got {err}"
         );
     }
 }
