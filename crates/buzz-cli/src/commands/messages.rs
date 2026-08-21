@@ -826,13 +826,20 @@ pub async fn cmd_delete_message(
 ) -> Result<(), CliError> {
     validate_hex64(event_id)?;
 
-    // Resolve channel_id from the event's h-tag
-    let channel_uuid = resolve_channel_id(client, event_id).await?;
+    // Resolve the target once so self-delete and moderation routing use the
+    // same event snapshot.
+    let target_event = fetch_event(client, event_id).await?;
+    let channel_uuid = channel_id_from_event(event_id, &target_event)?;
     let target_eid = parse_event_id(event_id)?;
+    let is_self_authored = target_event
+        .get("pubkey")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|pubkey| pubkey.eq_ignore_ascii_case(&client.keys().public_key().to_hex()));
 
     let builder = build_cli_delete_message(
         channel_uuid,
         target_eid,
+        is_self_authored,
         DeleteMessageOptions {
             action_id,
             reason_code,
@@ -851,12 +858,14 @@ pub async fn cmd_delete_message(
 fn build_cli_delete_message(
     channel_id: Uuid,
     target_event_id: nostr::EventId,
+    is_self_authored: bool,
     options: DeleteMessageOptions<'_>,
 ) -> Result<nostr::EventBuilder, buzz_sdk::SdkError> {
-    // Keep ordinary agent/member deletes aligned with Desktop's NIP-09 path.
-    // Any moderation metadata is an explicit opt-in to the audited kind:9005
-    // command and its visible room-facing tombstone.
-    if options.action_id.is_none()
+    // Keep proven self-deletes aligned with Desktop's NIP-09 path. Foreign
+    // targets and any moderation metadata retain the audited kind:9005 command
+    // and its visible room-facing tombstone.
+    if is_self_authored
+        && options.action_id.is_none()
         && options.reason_code.is_none()
         && options.public_reason.is_none()
     {
@@ -1101,6 +1110,7 @@ mod tests {
         let builder = build_cli_delete_message(
             Uuid::nil(),
             nostr::EventId::all_zeros(),
+            true,
             buzz_sdk::DeleteMessageOptions::default(),
         )
         .unwrap();
@@ -1114,6 +1124,7 @@ mod tests {
         let builder = build_cli_delete_message(
             Uuid::nil(),
             nostr::EventId::all_zeros(),
+            true,
             buzz_sdk::DeleteMessageOptions {
                 action_id: Some(Uuid::nil()),
                 reason_code: Some("spam"),
@@ -1130,6 +1141,20 @@ mod tests {
                 .iter()
                 .any(|tag| tag.kind().to_string() == tag_name));
         }
+    }
+
+    #[test]
+    fn foreign_plain_delete_keeps_moderation_kind() {
+        let builder = build_cli_delete_message(
+            Uuid::nil(),
+            nostr::EventId::all_zeros(),
+            false,
+            buzz_sdk::DeleteMessageOptions::default(),
+        )
+        .unwrap();
+        let event = builder.sign_with_keys(&Keys::generate()).unwrap();
+
+        assert_eq!(event.kind.as_u16(), 9005);
     }
 
     #[tokio::test]
