@@ -359,8 +359,9 @@ pub async fn upsert_workflow(
     Ok(())
 }
 
-/// Insert a workflow with its first accepted request revision, or update it
-/// only when `expected_revision` still matches.
+/// Insert a workflow with its first accepted request revision. Existing rows
+/// use compare-and-swap when `expected_revision` is present; a missing revision
+/// preserves the legacy same-author kind-30620 replacement path.
 ///
 /// The transaction is supplied by the relay so the client request, workflow
 /// row, and relay-signed current-state projection can commit together.
@@ -397,8 +398,7 @@ pub async fn upsert_workflow_with_revision(
             updated_at = NOW()
         WHERE workflows.owner_pubkey = EXCLUDED.owner_pubkey
           AND workflows.channel_id IS NOT DISTINCT FROM EXCLUDED.channel_id
-          AND $9::bytea IS NOT NULL
-          AND workflows.revision_event_id = $9
+          AND ($9::bytea IS NULL OR workflows.revision_event_id = $9)
         RETURNING id, community_id, name, owner_pubkey, channel_id, definition,
                   definition_hash, revision_event_id, status::text AS status,
                   enabled, created_at, updated_at
@@ -1917,7 +1917,7 @@ mod tests {
 
     use crate::user::ensure_user;
 
-    const TEST_DB_URL: &str = "postgres://buzz:buzz_dev@localhost:5432/buzz";
+    const TEST_DB_URL: &str = "postgres://buzz:buzz_dev@localhost:5432/buzz"; // sadscan:disable np.postgres.1 -- local test-only credentials from .env.example
 
     async fn setup_pool() -> PgPool {
         let database_url = std::env::var("BUZZ_TEST_DATABASE_URL")
@@ -2093,6 +2093,60 @@ mod tests {
         assert_eq!(created.owner_pubkey, owner);
         assert_eq!(created.channel_id, Some(channel_id));
         assert_eq!(created.revision_event_id, Some(revision));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn workflow_revision_upsert_accepts_legacy_tagless_update() {
+        let pool = setup_pool().await;
+        let community = make_community(&pool).await;
+        let owner = vec![0xe5; 32];
+        ensure_user(&pool, community, &owner)
+            .await
+            .expect("ensure owner");
+        let channel_id = make_channel(&pool, community, &owner).await;
+        let workflow_id = Uuid::new_v4();
+        let first_revision = vec![0xf5; 32];
+        let next_revision = vec![0xa6; 32];
+
+        let mut create_tx = pool.begin().await.expect("begin create");
+        upsert_workflow_with_revision(
+            &mut create_tx,
+            community,
+            workflow_id,
+            Some(channel_id),
+            &owner,
+            "before",
+            r#"{"name":"before"}"#,
+            &[0xb6; 32],
+            None,
+            &first_revision,
+        )
+        .await
+        .expect("create workflow");
+        create_tx.commit().await.expect("commit create");
+
+        let mut update_tx = pool.begin().await.expect("begin legacy update");
+        let updated = upsert_workflow_with_revision(
+            &mut update_tx,
+            community,
+            workflow_id,
+            Some(channel_id),
+            &owner,
+            "after",
+            r#"{"name":"after"}"#,
+            &[0xc6; 32],
+            None,
+            &next_revision,
+        )
+        .await
+        .expect("tagless same-author update remains compatible");
+        update_tx.commit().await.expect("commit legacy update");
+
+        assert_eq!(updated.name, "after");
+        assert_eq!(updated.owner_pubkey, owner);
+        assert_eq!(updated.channel_id, Some(channel_id));
+        assert_eq!(updated.revision_event_id, Some(next_revision));
     }
 
     /// Confinement: a duplicate workflow UUID existing in both community A and
