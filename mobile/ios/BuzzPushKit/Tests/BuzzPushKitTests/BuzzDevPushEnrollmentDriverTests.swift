@@ -124,17 +124,21 @@ final class BuzzDevPushEnrollmentDriverTests: XCTestCase {
     try assertMatchesVector(
       "enroll",
       actual: appAttest.clientData[0],
-      expectedSHA256: "58274bd9e9a86489fe5bae36aecbe89618824433189405ff4de8b18b58384270",
-      fixture: makeFixtureTranscript(name: "enroll", replacements: [])
+      expectedSHA256: "8250aa191e62be0ad9d26ad7425ec99fb4df13ede580f01205fde057dacaea11",
+      fixture: makeFixtureTranscript(
+        name: "enroll",
+        replacements: [("https://push.buzz.xyz", "http://push.example")]
+      )
     )
     try assertMatchesVector(
       "delegate",
       actual: appAttest.clientData[1],
-      expectedSHA256: "f186db11cb53e4e80f09489c11dd18afc9b641683c3d72a67113c57d32fca323",
+      expectedSHA256: "c4d1c03d89f044b6a00818069002a6318b5ee42c246a5dbcca3722ab6377df49",
       fixture: makeFixtureTranscript(
         name: "delegate",
         replacements: [
-          (Self.firstChallengeId, Self.secondChallengeId)
+          (Self.firstChallengeId, Self.secondChallengeId),
+          ("https://push.buzz.xyz", "http://push.example"),
         ]
       )
     )

@@ -56,6 +56,7 @@ pub struct AppState {
     /// ID before the profile is persisted as installation authority.
     pub profiles: Arc<HashMap<AppProfile, ProfileRuntime>>,
     pub delivery_url: url::Url,
+    pub public_origin: url::Url,
     pub max_grant_lifetime_seconds: i64,
     pub max_installation_lifetime_seconds: i64,
     pub endpoint_quota_window_seconds: i64,
@@ -158,7 +159,7 @@ async fn challenge(State(s): State<AppState>, body: Bytes) -> Response {
 #[derive(serde::Serialize)]
 struct EnrollTranscript<'a> {
     v: u8,
-    audience: &'static str,
+    audience: &'a str,
     challenge_id: uuid::Uuid,
     challenge: &'a str,
     key_id: &'a str,
@@ -192,9 +193,13 @@ async fn enroll(State(s): State<AppState>, body: Bytes) -> Response {
         Some(v) => v,
         None => return error(StatusCode::BAD_REQUEST, "invalid_request"),
     };
+    let audience = match s.public_origin.join("/v1/installations") {
+        Ok(value) => value,
+        Err(_) => return error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable"),
+    };
     let t = EnrollTranscript {
         v: r.v,
-        audience: "https://push.buzz.xyz/v1/installations",
+        audience: audience.as_str(),
         challenge_id: r.challenge_id,
         challenge: &r.challenge,
         key_id: &r.key_id,
@@ -303,7 +308,7 @@ async fn verify_installation_assertion<T: serde::Serialize>(
 #[derive(serde::Serialize)]
 struct DelegateTranscript<'a> {
     v: u8,
-    audience: &'static str,
+    audience: &'a str,
     challenge_id: uuid::Uuid,
     challenge: &'a str,
     installation_handle: uuid::Uuid,
@@ -329,9 +334,13 @@ async fn delegate(State(s): State<AppState>, body: Bytes) -> Response {
     {
         return error(StatusCode::BAD_REQUEST, "invalid_request");
     }
+    let audience = match s.public_origin.join("/v1/delegations") {
+        Ok(value) => value,
+        Err(_) => return error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable"),
+    };
     let t = DelegateTranscript {
         v: r.v,
-        audience: "https://push.buzz.xyz/v1/delegations",
+        audience: audience.as_str(),
         challenge_id: r.challenge_id,
         challenge: &r.challenge,
         installation_handle: r.installation_handle,
@@ -392,7 +401,7 @@ async fn delegate(State(s): State<AppState>, body: Bytes) -> Response {
 #[derive(serde::Serialize)]
 struct RotateTranscript<'a> {
     v: u8,
-    audience: &'static str,
+    audience: &'a str,
     challenge_id: uuid::Uuid,
     challenge: &'a str,
     installation_handle: uuid::Uuid,
@@ -423,9 +432,13 @@ async fn rotate_endpoint(State(s): State<AppState>, body: Bytes) -> Response {
         Ok(i) => i,
         Err(e) => return authority_error(e),
     };
+    let audience = match s.public_origin.join("/v1/installations/endpoint") {
+        Ok(value) => value,
+        Err(_) => return error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable"),
+    };
     let t = RotateTranscript {
         v: r.v,
-        audience: "https://push.buzz.xyz/v1/installations/endpoint",
+        audience: audience.as_str(),
         challenge_id: r.challenge_id,
         challenge: &r.challenge,
         installation_handle: r.installation_handle,
@@ -468,7 +481,7 @@ async fn rotate_endpoint(State(s): State<AppState>, body: Bytes) -> Response {
 #[derive(serde::Serialize)]
 struct RevokeDelegationTranscript<'a> {
     v: u8,
-    audience: &'static str,
+    audience: &'a str,
     challenge_id: uuid::Uuid,
     challenge: &'a str,
     installation_handle: uuid::Uuid,
@@ -483,9 +496,13 @@ async fn revoke_delegation(State(s): State<AppState>, body: Bytes) -> Response {
     if r.v != WIRE_VERSION || !valid_relay_pubkey(&r.relay_pubkey) || r.generation < 1 {
         return error(StatusCode::BAD_REQUEST, "invalid_request");
     }
+    let audience = match s.public_origin.join("/v1/delegations/revoke") {
+        Ok(value) => value,
+        Err(_) => return error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable"),
+    };
     let t = RevokeDelegationTranscript {
         v: r.v,
-        audience: "https://push.buzz.xyz/v1/delegations/revoke",
+        audience: audience.as_str(),
         challenge_id: r.challenge_id,
         challenge: &r.challenge,
         installation_handle: r.installation_handle,
@@ -517,7 +534,7 @@ async fn revoke_delegation(State(s): State<AppState>, body: Bytes) -> Response {
 #[derive(serde::Serialize)]
 struct RevokeInstallationTranscript<'a> {
     v: u8,
-    audience: &'static str,
+    audience: &'a str,
     challenge_id: uuid::Uuid,
     challenge: &'a str,
     installation_handle: uuid::Uuid,
@@ -535,9 +552,13 @@ async fn revoke_installation(State(s): State<AppState>, body: Bytes) -> Response
     {
         return error(StatusCode::BAD_REQUEST, "invalid_request");
     }
+    let audience = match s.public_origin.join("/v1/installations/revoke") {
+        Ok(value) => value,
+        Err(_) => return error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable"),
+    };
     let t = RevokeInstallationTranscript {
         v: r.v,
-        audience: "https://push.buzz.xyz/v1/installations/revoke",
+        audience: audience.as_str(),
         challenge_id: r.challenge_id,
         challenge: &r.challenge,
         installation_handle: r.installation_handle,

@@ -1,5 +1,6 @@
-//! Narrow App Attest verification boundary. Production enrollment accepts only
-//! Apple production AAGUID material; unsupported devices have no bypass path.
+//! Narrow App Attest verification boundary for the personal development
+//! gateway. Apple production and development AAGUID material are verified
+//! cryptographically; unsupported devices have no bypass path.
 use appattest::{assertion::Assertion, attestation::Attestation};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use byteorder::{BigEndian, ByteOrder};
@@ -304,26 +305,24 @@ mod tests {
     }
 
     #[test]
-    fn wrong_aaguid_is_rejected_as_invalid_aaguid() {
+    fn development_aaguid_is_accepted_for_the_development_gateway() {
         let fixture = fixture(WRONG_AAGUID_FIXTURE_JSON);
         assert_eq!(fixture.aaguid, "appattestdevelop");
-        assert_eq!(
-            verify_dependency(
-                &fixture,
-                &fixture.app_id,
-                &fixture.challenge,
-                &fixture.key_id_b64,
-                fixture.root_cert_pem.as_bytes(),
-            ),
-            Err(DependencyAppAttestError::InvalidAAGUID)
-        );
+        verify_dependency(
+            &fixture,
+            &fixture.app_id,
+            &fixture.challenge,
+            &fixture.key_id_b64,
+            fixture.root_cert_pem.as_bytes(),
+        )
+        .expect("development App Attest AAGUID is enabled on this development branch");
         assert!(verifier(&fixture.app_id, fixture.root_cert_pem.as_bytes())
             .verify_attestation(
                 &fixture.attestation_b64,
                 &fixture.key_id_b64,
                 fixture.challenge.as_bytes(),
             )
-            .is_err());
+            .is_ok());
     }
 
     #[test]

@@ -109,6 +109,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
     let accepting = Arc::new(AtomicBool::new(true));
+    let mut public_origin = c.public_delivery_url.clone();
+    public_origin.set_path("/");
     let (public, health) = router_with_metrics(
         AppState {
             grant_keyring: Arc::new(grant_keyring),
@@ -116,6 +118,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             token_keyring: Arc::new(token_keyring),
             profiles: Arc::new(profiles),
             delivery_url: c.public_delivery_url,
+            public_origin,
             max_grant_lifetime_seconds: c.max_grant_lifetime_seconds,
             max_installation_lifetime_seconds: c.max_installation_lifetime_seconds,
             endpoint_quota_window_seconds: c.endpoint_quota_window_seconds,

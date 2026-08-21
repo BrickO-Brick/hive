@@ -503,7 +503,8 @@ public final class BuzzDevPushEnrollmentDriver {
         appProfile: Self.appProfile,
         endpoint: endpoint,
         endpointEpoch: Self.endpointEpoch,
-        expiresAt: expiresAt
+        expiresAt: expiresAt,
+        gatewayOrigin: gatewayBaseURL.absoluteString
       )
       let attestation = try await appAttest.attestation(
         preparedAttestation,
@@ -549,7 +550,8 @@ public final class BuzzDevPushEnrollmentDriver {
       generation: generation,
       relayPubkey: relayPubkey,
       notBefore: nowSeconds,
-      expiresAt: expiresAt
+      expiresAt: expiresAt,
+      gatewayOrigin: gatewayBaseURL.absoluteString
     )
     let assertion = try await appAttest.assertion(clientData: delegationClientData)
     let endpointGrant = try await delegate(

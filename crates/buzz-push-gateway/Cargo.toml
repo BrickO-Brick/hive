@@ -21,7 +21,7 @@ path = "src/main.rs"
 
 [dependencies]
 aes-gcm = "0.10"
-appattest = { version = "0.1.1", default-features = false }
+appattest = { version = "0.1.1", default-features = false, features = ["testing"] }
 axum = { workspace = true }
 async-trait = "0.1"
 base64 = "0.22"

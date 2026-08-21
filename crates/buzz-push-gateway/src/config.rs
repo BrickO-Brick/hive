@@ -178,7 +178,7 @@ impl Config {
             .parse::<url::Url>()
             .map_err(|_| ConfigError::Invalid("BUZZ_PUSH_PUBLIC_DELIVERY_URL"))?;
         if public_delivery_url.scheme() != "https"
-            || public_delivery_url.host_str() != Some("push.buzz.xyz")
+            || public_delivery_url.host_str().is_none()
             || public_delivery_url.port().is_some()
             || public_delivery_url.path() != "/v1/deliveries/apns"
             || public_delivery_url.query().is_some()
@@ -426,10 +426,6 @@ mod tests {
                 "BUZZ_PUSH_PUBLIC_DELIVERY_URL",
                 "http://push.example/v1/deliveries/apns",
             ),
-            (
-                "BUZZ_PUSH_PUBLIC_DELIVERY_URL",
-                "https://push.example/v1/deliveries/apns",
-            ),
             ("BUZZ_PUSH_DOGFOOD_APP_ATTEST_APP_ID", ""),
             ("BUZZ_PUSH_DOGFOOD_APNS_ENVIRONMENT", "staging"),
             ("BUZZ_PUSH_ENABLED_PROFILES", "unknown-profile"),
@@ -441,6 +437,20 @@ mod tests {
             env.insert(key.into(), value.into());
             assert!(Config::from_map(&env).is_err(), "accepted {key}={value}");
         }
+    }
+
+    #[test]
+    fn custom_https_delivery_host_is_accepted() {
+        let mut env = base();
+        env.insert(
+            "BUZZ_PUSH_PUBLIC_DELIVERY_URL".into(),
+            "https://buzz-push-dev.up.railway.app/v1/deliveries/apns".into(),
+        );
+        let config = Config::from_map(&env).unwrap();
+        assert_eq!(
+            config.public_delivery_url.as_str(),
+            "https://buzz-push-dev.up.railway.app/v1/deliveries/apns"
+        );
     }
 
     #[test]
