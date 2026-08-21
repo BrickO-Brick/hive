@@ -457,6 +457,16 @@ mod tests {
         .unwrap_err();
         assert!(error.to_string().contains("immutable"));
 
+        state
+            .db
+            .soft_delete_event(tenant.community(), event.id.as_bytes())
+            .await
+            .unwrap();
+        assert!(handle_import(&tenant, &state, &event)
+            .await
+            .unwrap()
+            .message
+            .starts_with("duplicate:"));
         let mut conflicting = import.clone();
         conflicting.action_id = uuid::Uuid::new_v4();
         assert!(

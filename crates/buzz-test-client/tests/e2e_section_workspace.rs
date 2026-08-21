@@ -2,10 +2,12 @@
 
 use std::time::Duration;
 
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use buzz_test_client::BuzzTestClient;
 use nostr::{Alphabet, Event, EventBuilder, Filter, Keys, Kind, SingleLetterTag, Tag};
 use reqwest::Client;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 const IMPORT_KIND: u16 = 9050;
 const PROJECTION_KIND: u16 = 30623;
@@ -37,11 +39,31 @@ async fn ws_query(client: &mut BuzzTestClient, name: &str, filter: Filter) -> Ve
         .unwrap()
 }
 
+fn nip98(keys: &Keys, url: &str, body: &str) -> String {
+    let payload = hex::encode(Sha256::digest(body.as_bytes()));
+    let event = EventBuilder::new(Kind::Custom(27_235), "")
+        .tags([
+            Tag::parse(["u", url]).unwrap(),
+            Tag::parse(["method", "POST"]).unwrap(),
+            Tag::parse(["payload", &payload]).unwrap(),
+            Tag::parse(["nonce", &uuid::Uuid::new_v4().to_string()]).unwrap(),
+        ])
+        .sign_with_keys(keys)
+        .unwrap();
+    format!(
+        "Nostr {}",
+        BASE64.encode(serde_json::to_string(&event).unwrap())
+    )
+}
+
 async fn http_query(http: &Client, reader: &Keys, filter: Filter) -> Vec<Value> {
+    let url = format!("{}/query", http_url());
+    let body = serde_json::to_string(&vec![filter]).unwrap();
     let response = http
-        .post(format!("{}/query", http_url()))
-        .header("X-Pubkey", reader.public_key().to_hex())
-        .json(&vec![filter])
+        .post(&url)
+        .header("Authorization", nip98(reader, &url, &body))
+        .header("Content-Type", "application/json")
+        .body(body)
         .send()
         .await
         .unwrap();
@@ -54,10 +76,13 @@ async fn http_query(http: &Client, reader: &Keys, filter: Filter) -> Vec<Value> 
 }
 
 async fn http_count(http: &Client, reader: &Keys, filter: Filter) -> u64 {
+    let url = format!("{}/count", http_url());
+    let body = serde_json::to_string(&vec![filter]).unwrap();
     let response = http
-        .post(format!("{}/count", http_url()))
-        .header("X-Pubkey", reader.public_key().to_hex())
-        .json(&vec![filter])
+        .post(&url)
+        .header("Authorization", nip98(reader, &url, &body))
+        .header("Content-Type", "application/json")
+        .body(body)
         .send()
         .await
         .unwrap();
