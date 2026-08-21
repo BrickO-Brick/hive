@@ -357,6 +357,52 @@ pub(crate) fn materialize_relay_only_agent(
     Ok(())
 }
 
+/// Minimal valid decrypted kind:30179 payload for cross-module overlay tests
+/// (the pair-spawn, provider-deploy, and provider-access final-use-boundary
+/// regressions). Callers mutate `config` fields for scenario-specific shapes.
+#[cfg(test)]
+pub(crate) fn test_relay_payload(pubkey: &str) -> Payload {
+    use buzz_core_pkg::private_managed_agent::{PrivateConfig, PrivateIdentity, FORMAT, VERSION};
+    Payload {
+        format: FORMAT.into(),
+        version: VERSION,
+        agent_pubkey: pubkey.into(),
+        owner_pubkey: "11".repeat(32),
+        generation: 2,
+        previous_event_id: None,
+        updated_at: "2026-08-20T00:00:00Z".into(),
+        identity: PrivateIdentity {
+            private_key_nsec: "nsec-relay".into(),
+            auth_tag: None,
+        },
+        config: PrivateConfig {
+            relay_url: "wss://relay.example".into(),
+            name: "relay name".into(),
+            persona_id: None,
+            runtime: Some("goose".into()),
+            model: Some("relay-model".into()),
+            provider: None,
+            system_prompt: Some("relay prompt".into()),
+            parallelism: Some(4),
+            respond_to: None,
+            respond_to_allowlist: vec![],
+            agent_command_override: None,
+            agent_args: vec![],
+            idle_timeout_seconds: None,
+            max_turn_duration_seconds: None,
+            env_vars: BTreeMap::new(),
+            backend: serde_json::json!({"type":"local"}),
+            backend_agent_id: None,
+            team_id: None,
+            persona_name_in_team: None,
+            relay_mesh: None,
+            extra: serde_json::Map::new(),
+        },
+        extensions: BTreeMap::new(),
+        extra: serde_json::Map::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -581,6 +627,32 @@ mod write_site_resolve_guard {
             // auto-starts stale disk config A (obsolete prompt/model/ACL/
             // identity) — the boot-time variant of the stale-republish bug.
             ("managed_agents/restore.rs", include_str!("restore.rs"), 1),
+            // 2 = the pair-start spawn record (`start_pair`) plus the
+            // multi-community reconcile fan-out candidates — the final-use
+            // boundaries Pair Start/Restart and boot reconcile execute.
+            // Without these, a follower device showing relay config B
+            // pair-starts stale disk config A.
+            (
+                "managed_agents/runtime_commands.rs",
+                include_str!("runtime_commands.rs"),
+                2,
+            ),
+            // The post-deploy-lock payload rebuild: the exact bytes the
+            // provider invocation executes after waiting behind another
+            // deployment.
+            (
+                "commands/agents/provider_deploy.rs",
+                include_str!("../commands/agents/provider_deploy.rs"),
+                1,
+            ),
+            // Workspace provider-access reconciliation: both the target
+            // selection predicate and the redeploy payload read resolved
+            // records, not raw disk rows.
+            (
+                "commands/agents/provider_access.rs",
+                include_str!("../commands/agents/provider_access.rs"),
+                1,
+            ),
         ]
     }
 
