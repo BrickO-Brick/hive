@@ -466,6 +466,7 @@ void main() {
     );
     expect(session.dmVisibilitySubscribeFilters, hasLength(1));
     expect(session.dmVisibilitySubscribeFilters.single.tags['#p'], [myPk]);
+    expect(session.dmVisibilitySubscribeFilters.single.limit, 1);
 
     final visibleSnapshot = _hiddenDms(const [], pubkey: myPk);
     session.hiddenDmEvents = [visibleSnapshot];
@@ -484,6 +485,45 @@ void main() {
     expect(session.activeChannels, {_channelA, _channelB});
     expect(session.dmVisibilitySubscribeFilters, hasLength(1));
   });
+
+  test(
+    'visibility subscription replays a snapshot published during setup',
+    () async {
+      final session = _FakeRelaySession(
+        memberships: [
+          _membership(_channelA, myPk),
+          _membership(_channelB, myPk),
+        ],
+        metadata: [
+          _meta(id: _channelA, name: 'Alice', channelType: 'dm'),
+          _meta(id: _channelB, name: 'Bob', channelType: 'dm'),
+        ],
+        hiddenDmEvents: [
+          _hiddenDms([_channelA], pubkey: myPk),
+        ],
+      )..pauseNextSubscribe();
+      final container = _buildContainer(session: session);
+      addTearDown(container.dispose);
+
+      final initialLoad = container.read(channelsProvider.future);
+      await session.nextSubscribeStarted;
+      session.hiddenDmEvents = [_hiddenDms(const [], pubkey: myPk)];
+      session.resumePausedSubscribe();
+
+      await initialLoad;
+      await _waitUntil(
+        () =>
+            container
+                .read(channelsProvider)
+                .value
+                ?.map((channel) => channel.id)
+                .toSet()
+                .containsAll({_channelA, _channelB}) ==
+            true,
+      );
+      expect(session.activeChannels, {_channelA, _channelB});
+    },
+  );
 
   test(
     'archived kind:39000 metadata sets Channel.isArchived (covers TTL auto-archive)',
@@ -926,6 +966,11 @@ class _FakeRelaySession extends RelaySessionNotifier {
     }
     final subscriptionKey = ++_nextSubscriptionKey;
     _subscriptions[subscriptionKey] = (filter, onEvent);
+    if (filter.kinds.contains(EventKind.dmVisibility) && filter.limit > 0) {
+      for (final event in hiddenDmEvents.take(filter.limit)) {
+        onEvent(event);
+      }
+    }
     return () {
       final subscription = _subscriptions.remove(subscriptionKey);
       if (subscription == null) return;

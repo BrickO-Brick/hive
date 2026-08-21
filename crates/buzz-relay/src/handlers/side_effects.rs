@@ -1112,10 +1112,24 @@ pub async fn emit_group_discovery_events(
     channel_id: Uuid,
 ) -> anyhow::Result<()> {
     let channel = state.db.get_channel(tenant.community(), channel_id).await?;
-    let members = state.db.get_members(tenant.community(), channel_id).await?;
-
     let relay_pubkey_hex = hex::encode(state.relay_keypair.public_key().to_bytes());
     let group_id = channel_id.to_string();
+
+    // Establish the authoritative roster first, from one membership snapshot
+    // held behind the writer lock. Metadata/admin discovery is emitted only
+    // after that transaction commits, so a roster validation failure cannot
+    // strand a partial 39000/39001 generation without kind 39002. Keeping the
+    // captured members for all three events also prevents cross-query drift.
+    let relay_pubkey = state.relay_keypair.public_key().to_bytes();
+    let mut member_snapshot = state
+        .db
+        .lock_member_snapshot(tenant.community(), channel_id, &relay_pubkey)
+        .await?;
+    let members = member_snapshot.members.clone();
+    let stored_members =
+        store_group_members_event(tenant, state, channel_id, &mut member_snapshot).await?;
+    member_snapshot.release().await?;
+    dispatch_group_members_event(tenant, state, stored_members, &relay_pubkey_hex).await;
 
     {
         let mut tags: Vec<Tag> = vec![Tag::parse(["d", &group_id])?];
@@ -1199,19 +1213,6 @@ pub async fn emit_group_discovery_events(
         )
         .await?;
     }
-
-    // Re-capture membership behind the writer lock immediately before the
-    // authoritative 39002 replacement. Metadata/admin snapshots retain their
-    // existing behavior; only membership publication needs this freshness fence.
-    let relay_pubkey = state.relay_keypair.public_key().to_bytes();
-    let mut member_snapshot = state
-        .db
-        .lock_member_snapshot(tenant.community(), channel_id, &relay_pubkey)
-        .await?;
-    let stored_members =
-        store_group_members_event(tenant, state, channel_id, &mut member_snapshot).await?;
-    member_snapshot.release().await?;
-    dispatch_group_members_event(tenant, state, stored_members, &relay_pubkey_hex).await;
 
     Ok(())
 }

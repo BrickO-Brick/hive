@@ -118,6 +118,11 @@ pub async fn send_moderation_notice(
         )
         .await?
         {
+            // A prior attempt may have committed the notice before a
+            // transient discovery failure. Duplicate delivery is still a
+            // content no-op, but retry the idempotent discovery generation so
+            // the channel eventually has a complete 39000/39001/39002 set.
+            emit_group_discovery_events(tenant, state, existing_dm.id).await?;
             return Ok(());
         }
     }
@@ -146,20 +151,12 @@ pub async fn send_moderation_notice(
         .increment(1);
     }
 
-    // 2. Ensure the relay's "{host} Moderation" kind:0 profile exists, and 3.
-    //    the DM's kind:39000 discovery (with `hidden` / `t=dm` / `p`). Both are
-    //    replaceable events, so we emit them on EVERY send rather than gating on
-    //    first creation: if discovery failed on the first delivery (it is
-    //    `?`-propagated), a `was_created`-gated retry would skip it forever and
-    //    leave the thread permanently undiscoverable — a notice delivered into a
-    //    channel no client can render. Notices are rare; unconditional re-emit is
-    //    cheap and `replace_addressable_event` makes it idempotent.
+    // 2. Ensure the relay's "{host} Moderation" kind:0 profile exists.
     if let Err(e) = publish_moderation_profile(tenant, state, &relay_pubkey_hex).await {
         warn!(error = %e, "moderation profile publish failed (continuing)");
     }
-    emit_group_discovery_events(tenant, state, dm_channel_id).await?;
 
-    // 4. Insert the relay-signed kind:9 notice with `h=<dm_channel_id>` and a
+    // 3. Insert the relay-signed kind:9 notice with `h=<dm_channel_id>` and a
     //    `moderation_source` tag naming the source row id (idempotency +
     //    client linking).
     let tags = vec![
@@ -196,6 +193,14 @@ pub async fn send_moderation_notice(
 
     let kind_u32 = event_kind_u32(&stored.event);
     dispatch_persistent_event(tenant, state, &stored, kind_u32, &relay_pubkey_hex, None).await;
+
+    // 4. Publish the idempotent discovery generation after the notice is
+    // durable. The roster is established first inside the helper, so a roster
+    // failure cannot leave metadata/admin heads without kind 39002. Propagate
+    // any remaining failure after the notice commit; an idempotent caller retry
+    // takes the duplicate path above and repairs discovery without reinserting
+    // or resurfacing the notice.
+    emit_group_discovery_events(tenant, state, dm_channel_id).await?;
 
     Ok(())
 }
@@ -546,6 +551,20 @@ mod tests {
             hidden_after_failure,
             "failed notice insertion must not expose stale moderation content"
         );
+        let discovery_after_failure: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events \
+             WHERE community_id = $1 AND channel_id = $2 \
+               AND kind IN (39000, 39001, 39002) AND deleted_at IS NULL",
+        )
+        .bind(tenant.community().as_uuid())
+        .bind(preexisting_dm.id)
+        .fetch_one(&pool)
+        .await
+        .expect("count discovery after failed notice");
+        assert_eq!(
+            discovery_after_failure, 0,
+            "a rejected notice must not publish a partial discovery generation"
+        );
         sqlx::raw_sql(
             "DROP TRIGGER fail_moderation_notice_insert ON events; \
              DROP FUNCTION fail_moderation_notice_insert();",
@@ -554,9 +573,72 @@ mod tests {
         .await
         .expect("remove notice failure injection");
 
+        sqlx::raw_sql(
+            "CREATE FUNCTION fail_moderation_metadata_insert() RETURNS trigger \
+             LANGUAGE plpgsql AS $$ BEGIN \
+               IF NEW.kind = 39000 THEN RAISE EXCEPTION 'injected discovery failure'; END IF; \
+               RETURN NEW; \
+             END $$; \
+             CREATE TRIGGER fail_moderation_metadata_insert \
+             BEFORE INSERT ON events FOR EACH ROW \
+             EXECUTE FUNCTION fail_moderation_metadata_insert();",
+        )
+        .execute(&pool)
+        .await
+        .expect("install discovery failure injection");
         send_moderation_notice(&tenant, &state, recipient_bytes.as_slice(), notice.clone())
             .await
-            .expect("deliver notice");
+            .expect_err("post-commit discovery failure must request a retry");
+        let partial_discovery_kinds: Vec<i32> = sqlx::query_scalar(
+            "SELECT kind FROM events \
+             WHERE community_id = $1 AND channel_id = $2 \
+               AND kind IN (39000, 39001, 39002) AND deleted_at IS NULL \
+             ORDER BY kind",
+        )
+        .bind(tenant.community().as_uuid())
+        .bind(preexisting_dm.id)
+        .fetch_all(&pool)
+        .await
+        .expect("read roster-first discovery state");
+        assert_eq!(
+            partial_discovery_kinds,
+            vec![39002],
+            "metadata failure must not strand 39000/39001 without a roster"
+        );
+        let notice_count_after_discovery_failure: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events \
+             WHERE community_id = $1 AND channel_id = $2 AND kind = 9 \
+               AND deleted_at IS NULL",
+        )
+        .bind(tenant.community().as_uuid())
+        .bind(preexisting_dm.id)
+        .fetch_one(&pool)
+        .await
+        .expect("count durable notice after discovery failure");
+        assert_eq!(notice_count_after_discovery_failure, 1);
+        sqlx::raw_sql(
+            "DROP TRIGGER fail_moderation_metadata_insert ON events; \
+             DROP FUNCTION fail_moderation_metadata_insert();",
+        )
+        .execute(&pool)
+        .await
+        .expect("remove discovery failure injection");
+
+        send_moderation_notice(&tenant, &state, recipient_bytes.as_slice(), notice.clone())
+            .await
+            .expect("duplicate retry repairs discovery");
+        let discovery_kinds: Vec<i32> = sqlx::query_scalar(
+            "SELECT kind FROM events \
+             WHERE community_id = $1 AND channel_id = $2 \
+               AND kind IN (39000, 39001, 39002) AND deleted_at IS NULL \
+             ORDER BY kind",
+        )
+        .bind(tenant.community().as_uuid())
+        .bind(preexisting_dm.id)
+        .fetch_all(&pool)
+        .await
+        .expect("read converged moderation discovery");
+        assert_eq!(discovery_kinds, vec![39000, 39001, 39002]);
 
         let participant_hash = buzz_db::dm::compute_participant_hash(&[
             recipient_bytes.as_slice(),

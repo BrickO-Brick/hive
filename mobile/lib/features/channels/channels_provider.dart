@@ -40,6 +40,7 @@ class ChannelsNotifier extends AsyncNotifier<List<Channel>> {
   void Function()? _unsubscribeDmVisibility;
   String? _dmVisibilityRelayBaseUrl;
   String? _dmVisibilityPubkey;
+  String? _latestDmVisibilityEventId;
   Future<void> _liveSubscriptionQueue = Future.value();
   List<Channel> _desiredLiveChannels = const [];
   Set<String> _desiredLiveChannelIds = const {};
@@ -83,6 +84,7 @@ class ChannelsNotifier extends AsyncNotifier<List<Channel>> {
       _memberSnapshotRelayBaseUrl = relayBaseUrl;
       _memberSnapshotPubkey = pubkey;
       _memberSnapshotsByChannelId = const {};
+      _latestDmVisibilityEventId = null;
     }
     final connected = Completer<void>();
     final sessionState = ref.read(relaySessionProvider);
@@ -464,13 +466,17 @@ class ChannelsNotifier extends AsyncNotifier<List<Channel>> {
   ) async {
     try {
       final events = await session.fetchHistory(NostrFilters.hiddenDms(myPk));
-      if (events.isEmpty) return const {};
+      if (events.isEmpty) {
+        _latestDmVisibilityEventId = null;
+        return const {};
+      }
       NostrEvent latest = events.first;
       for (final event in events.skip(1)) {
         if (event.createdAt > latest.createdAt) {
           latest = event;
         }
       }
+      _latestDmVisibilityEventId = latest.id;
       return {
         for (final tag in latest.tags)
           if (tag.length >= 2 && tag[0] == 'h') tag[1],
@@ -601,7 +607,9 @@ class ChannelsNotifier extends AsyncNotifier<List<Channel>> {
             tags: {
               '#p': [myPk],
             },
-            limit: 0,
+            // Replay the latest snapshot before EOSE so a publication between
+            // the history fetch and this subscription cannot be missed.
+            limit: 1,
           ),
           _handleDmVisibilityEvent,
         );
@@ -808,6 +816,8 @@ class ChannelsNotifier extends AsyncNotifier<List<Channel>> {
 
   void _handleDmVisibilityEvent(NostrEvent event) {
     if (event.kind != EventKind.dmVisibility) return;
+    if (_latestDmVisibilityEventId == event.id) return;
+    _latestDmVisibilityEventId = event.id;
     unawaited(refresh());
   }
 
@@ -949,6 +959,7 @@ class ChannelsNotifier extends AsyncNotifier<List<Channel>> {
     _unsubscribeDmVisibility = null;
     _dmVisibilityRelayBaseUrl = null;
     _dmVisibilityPubkey = null;
+    _latestDmVisibilityEventId = null;
     _backstopTimer?.cancel();
     _backstopTimer = null;
   }
