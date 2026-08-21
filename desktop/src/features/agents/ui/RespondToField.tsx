@@ -7,7 +7,11 @@ import {
 import { truncatePubkey } from "@/shared/lib/pubkey";
 import { PubKey } from "@/shared/ui/PubKey";
 import { useIsArchivedPredicate } from "@/features/identity-archive/hooks";
-import { useUserSearchQuery } from "@/features/profile/hooks";
+import {
+  useFlattenedUserSearchResults,
+  useInfiniteUserSearchQuery,
+  useUserSearchFetchMoreOnScroll,
+} from "@/features/profile/hooks";
 import type { RespondToMode, UserSearchResult } from "@/shared/api/types";
 import { cn } from "@/shared/lib/cn";
 import { Input } from "@/shared/ui/input";
@@ -123,20 +127,22 @@ export function CreateAgentRespondToField({
     () => new Set(allowlist.map((p) => p.toLowerCase())),
     [allowlist],
   );
-  const userSearchQuery = useUserSearchQuery(deferredQuery, {
+  const userSearchQuery = useInfiniteUserSearchQuery(deferredQuery, {
     enabled: mode === "allowlist" && deferredQuery.length > 0,
-    limit: 8,
+    limit: 50,
   });
   const isArchivedDiscovery = useIsArchivedPredicate();
+  const userSearchResults = useFlattenedUserSearchResults(userSearchQuery.data);
   const searchResults = React.useMemo(
     () =>
-      (userSearchQuery.data ?? []).filter(
+      userSearchResults.filter(
         (user) =>
           !allowlistSet.has(user.pubkey.toLowerCase()) &&
           !isArchivedDiscovery(user.pubkey),
       ),
-    [allowlistSet, isArchivedDiscovery, userSearchQuery.data],
+    [allowlistSet, isArchivedDiscovery, userSearchResults],
   );
+  const handleSearchScroll = useUserSearchFetchMoreOnScroll(userSearchQuery);
 
   const pasteParsed = React.useMemo(
     () => parsePubkeyInput(pasteText),
@@ -254,6 +260,7 @@ export function CreateAgentRespondToField({
           onAddFromPaste={handleAddFromPaste}
           onAddRawPubkey={handleAddRawPubkey}
           onAddSearchResult={handleAddSearchResult}
+          onSearchScroll={handleSearchScroll}
           onPasteTextChange={setPasteText}
           onQueryChange={setQuery}
           onRemove={handleRemove}
@@ -288,6 +295,7 @@ function AllowlistPicker({
   onAddFromPaste,
   onAddRawPubkey,
   onAddSearchResult,
+  onSearchScroll,
   onPasteTextChange,
   onQueryChange,
   onRemove,
@@ -309,6 +317,7 @@ function AllowlistPicker({
   onAddFromPaste: () => void;
   onAddRawPubkey: (pubkey: string) => void;
   onAddSearchResult: (user: UserSearchResult) => void;
+  onSearchScroll: (event: React.UIEvent<HTMLDivElement>) => void;
   onPasteTextChange: (value: string) => void;
   onQueryChange: (value: string) => void;
   onRemove: (pubkey: string) => void;
@@ -406,7 +415,10 @@ function AllowlistPicker({
                 Searching…
               </p>
             ) : searchResults.length > 0 ? (
-              <div className="max-h-44 space-y-1 overflow-y-auto">
+              <div
+                className="max-h-44 space-y-1 overflow-y-auto"
+                onScroll={onSearchScroll}
+              >
                 {searchResults.map((result) => (
                   <button
                     className="flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-left transition-colors hover:bg-accent hover:text-accent-foreground"

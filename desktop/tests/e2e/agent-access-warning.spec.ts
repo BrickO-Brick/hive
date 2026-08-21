@@ -128,6 +128,51 @@ test("open agent access explains the available access before save", async ({
   await expect(warning).toHaveCount(0);
 });
 
+test("selected-people search keeps same-name people independently selectable", async ({
+  page,
+}) => {
+  const firstWillPubkey = "1".repeat(64);
+  const secondWillPubkey = "2".repeat(64);
+  const agent = TEST_IDENTITIES.charlie;
+  await installMockBridge(page, {
+    managedAgents: [
+      {
+        pubkey: agent.pubkey,
+        name: "Hack Day Helper",
+        status: "running",
+        channelNames: ["general"],
+        respondTo: "owner-only",
+      },
+    ],
+    searchProfiles: [
+      { pubkey: firstWillPubkey, displayName: "Will" },
+      { pubkey: secondWillPubkey, displayName: "Will" },
+    ],
+  });
+  await page.goto("/");
+  await openAgentAccessDialog(page, agent.pubkey);
+
+  await page.getByTestId("agent-respond-to-select").selectOption("allowlist");
+  await page.getByTestId("agent-respond-to-search").fill("Will");
+
+  const firstWill = page.getByTestId(
+    `agent-respond-to-result-${firstWillPubkey}`,
+  );
+  const secondWill = page.getByTestId(
+    `agent-respond-to-result-${secondWillPubkey}`,
+  );
+  await expect(firstWill).toContainText("Will");
+  await expect(firstWill).toContainText("11111111…1111");
+  await expect(secondWill).toContainText("Will");
+  await expect(secondWill).toContainText("22222222…2222");
+
+  await secondWill.click();
+  await expect(
+    page.getByTestId(`agent-respond-to-chip-${secondWillPubkey}`),
+  ).toBeVisible();
+  await expect(firstWill).toHaveCount(0);
+});
+
 test("full agent editor tightens the exact sidebar agent instance", async ({
   page,
 }) => {
