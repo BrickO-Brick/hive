@@ -1,7 +1,6 @@
 import type { Workflow } from "@/shared/api/types";
 import {
   AlertDialog,
-  AlertDialogAction,
   AlertDialogCancel,
   AlertDialogContent,
   AlertDialogDescription,
@@ -12,22 +11,29 @@ import {
 import { Button } from "@/shared/ui/button";
 
 type WorkflowDeleteDialogProps = {
-  isPending: boolean;
+  error?: string | null;
+  isPending?: boolean;
   open: boolean;
   workflow: Workflow | null;
-  onConfirm: (workflow: Workflow) => void;
+  onConfirm: (workflow: Workflow) => Promise<void>;
   onOpenChange: (open: boolean) => void;
 };
 
 export function WorkflowDeleteDialog({
-  isPending,
+  error,
+  isPending = false,
   open,
   workflow,
   onConfirm,
   onOpenChange,
 }: WorkflowDeleteDialogProps) {
   return (
-    <AlertDialog onOpenChange={onOpenChange} open={open}>
+    <AlertDialog
+      onOpenChange={(nextOpen) => {
+        if (!isPending) onOpenChange(nextOpen);
+      }}
+      open={open}
+    >
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>Delete workflow?</AlertDialogTitle>
@@ -36,6 +42,16 @@ export function WorkflowDeleteDialog({
               ? `Delete "${workflow.name}". This will stop all future triggers and remove the workflow permanently.`
               : "Delete this workflow."}
           </AlertDialogDescription>
+          {error ? (
+            <p
+              aria-live="polite"
+              className="rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+              role="alert"
+            >
+              Couldn’t delete workflow. {error} Try again or cancel to keep
+              editing.
+            </p>
+          ) : null}
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel asChild>
@@ -43,23 +59,18 @@ export function WorkflowDeleteDialog({
               Cancel
             </Button>
           </AlertDialogCancel>
-          <AlertDialogAction asChild>
-            <Button
-              disabled={isPending}
-              onClick={(event) => {
-                // Keep this controlled dialog open until the relay confirms
-                // deletion. On failure the toast appears and the user can retry.
-                event.preventDefault();
-                if (workflow) {
-                  onConfirm(workflow);
-                }
-              }}
-              type="button"
-              variant="destructive"
-            >
-              {isPending ? "Deleting…" : "Delete"}
-            </Button>
-          </AlertDialogAction>
+          <Button
+            disabled={!workflow || isPending}
+            onClick={() => {
+              if (workflow) {
+                void onConfirm(workflow);
+              }
+            }}
+            type="button"
+            variant="destructive"
+          >
+            {isPending ? "Deleting…" : "Delete"}
+          </Button>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
