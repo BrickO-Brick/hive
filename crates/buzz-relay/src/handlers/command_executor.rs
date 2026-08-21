@@ -68,6 +68,9 @@ pub async fn handle_command(
         KIND_DM_HIDE => handle_dm_hide(tenant, state, &event, &auth).await,
         KIND_WORKFLOW_DEF => handle_workflow_def(tenant, state, &event, &auth).await,
         KIND_WORKFLOW_TRIGGER => handle_workflow_trigger(tenant, state, &event, &auth).await,
+        KIND_WORKFLOW_OWNER_COMMAND => {
+            handle_workflow_owner_command(tenant, state, &event, &auth).await
+        }
         KIND_APPROVAL_GRANT => handle_approval_grant(tenant, state, &event, &auth).await,
         KIND_APPROVAL_DENY => handle_approval_deny(tenant, state, &event, &auth).await,
         _ => Err(IngestError::Rejected(format!(
@@ -892,6 +895,123 @@ async fn handle_workflow_def(
         event_id: event.id.to_hex(),
         accepted: true,
         message: format!("response:{}", resp),
+    })
+}
+
+async fn handle_workflow_owner_command(
+    tenant: &TenantContext,
+    state: &Arc<AppState>,
+    event: &Event,
+    auth: &IngestAuth,
+) -> Result<IngestResult, IngestError> {
+    use buzz_core::workflow_owner_command::{parse_owner_command, WorkflowOwnerOperation};
+    use buzz_db::workflow::WorkflowOwnerCommandAdmission;
+
+    let command = parse_owner_command(event)
+        .map_err(|error| IngestError::Rejected(format!("invalid: {error}")))?;
+    if auth.pubkey() != &event.pubkey {
+        return Err(IngestError::AuthFailed(
+            "workflow owner command author mismatch".into(),
+        ));
+    }
+    let operation = match command.operation {
+        WorkflowOwnerOperation::Update => "update",
+        WorkflowOwnerOperation::Enable => "enable",
+        WorkflowOwnerOperation::Disable => "disable",
+        WorkflowOwnerOperation::Retire => "retire",
+    };
+    let workflow = state
+        .db
+        .get_workflow(tenant.community(), command.workflow_id)
+        .await
+        .map_err(|_| IngestError::Rejected("invalid: workflow not found".into()))?;
+    let channel_id = workflow
+        .channel_id
+        .ok_or_else(|| IngestError::Rejected("invalid: workflow is not channel-scoped".into()))?;
+    if workflow.owner_pubkey != command.agent_pubkey.to_bytes()
+        || workflow.definition_event_id.as_deref() != Some(command.expected_revision.as_bytes())
+    {
+        return Err(IngestError::Rejected(
+            "conflict: workflow coordinate or revision changed".into(),
+        ));
+    }
+    if !state
+        .db
+        .is_agent_owner(
+            tenant.community(),
+            command.agent_pubkey.as_bytes(),
+            event.pubkey.as_bytes(),
+        )
+        .await
+        .map_err(|error| IngestError::Internal(format!("error: owner lookup: {error}")))?
+    {
+        return Err(IngestError::Rejected(
+            "forbidden: command author is not the immutable agent owner".into(),
+        ));
+    }
+    let mut tx = match persist_command_event(state, tenant, event, Some(channel_id)).await? {
+        PersistResult::Duplicate => {
+            return Ok(IngestResult {
+                event_id: event.id.to_hex(),
+                accepted: true,
+                message: "duplicate: already processed".into(),
+            });
+        }
+        PersistResult::Inserted(tx) => tx,
+    };
+    let admission = state
+        .db
+        .admit_workflow_owner_command(
+            &mut tx,
+            tenant.community(),
+            command.command_id,
+            event.id.as_bytes(),
+            event.pubkey.as_bytes(),
+            command.agent_pubkey.as_bytes(),
+            command.workflow_id,
+            command.expected_revision.as_bytes(),
+            operation,
+            command.yaml_definition.as_deref(),
+        )
+        .await
+        .map_err(|error| match error {
+            DbError::AccessDenied(_) => IngestError::Rejected(
+                "forbidden: command author is not the immutable agent owner".into(),
+            ),
+            DbError::InvalidData(_) => {
+                IngestError::Rejected("conflict: workflow revision changed".into())
+            }
+            other => IngestError::Internal(format!("error: owner command admission: {other}")),
+        })?;
+    tx.commit()
+        .await
+        .map_err(|error| IngestError::Internal(format!("error: commit command: {error}")))?;
+    state
+        .workflow_engine
+        .invalidate_channel_workflows(tenant.community(), channel_id);
+    let status = match admission {
+        WorkflowOwnerCommandAdmission::PendingAgent => "pending_agent",
+        WorkflowOwnerCommandAdmission::Applied => "applied",
+        WorkflowOwnerCommandAdmission::Duplicate => "duplicate",
+    };
+    Ok(IngestResult {
+        event_id: event.id.to_hex(),
+        accepted: true,
+        message: format!(
+            "response:{}",
+            serde_json::json!({
+                "command_id": command.command_id,
+                "target": format!(
+                    "{}:{}:{}",
+                    KIND_WORKFLOW_DEF,
+                    command.agent_pubkey.to_hex(),
+                    command.workflow_id
+                ),
+                "revision": command.expected_revision.to_hex(),
+                "operation": operation,
+                "status": status,
+            })
+        ),
     })
 }
 

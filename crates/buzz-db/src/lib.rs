@@ -4073,6 +4073,36 @@ impl Db {
         workflow::find_by_owner_and_name(&self.pool, community_id, owner_pubkey, name).await
     }
 
+    /// Verify and record one owner-authored workflow command in the caller transaction.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn admit_workflow_owner_command(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        community_id: CommunityId,
+        command_id: Uuid,
+        event_id: &[u8],
+        owner_pubkey: &[u8],
+        agent_pubkey: &[u8],
+        workflow_id: Uuid,
+        expected_revision: &[u8],
+        operation: &str,
+        proposed_yaml: Option<&str>,
+    ) -> Result<workflow::WorkflowOwnerCommandAdmission> {
+        workflow::admit_workflow_owner_command(
+            tx,
+            community_id,
+            command_id,
+            event_id,
+            owner_pubkey,
+            agent_pubkey,
+            workflow_id,
+            expected_revision,
+            operation,
+            proposed_yaml,
+        )
+        .await
+    }
+
     /// Create a new workflow run.
     #[datastore_span(name = "create_workflow_run", system = "postgresql")]
     pub async fn create_workflow_run(

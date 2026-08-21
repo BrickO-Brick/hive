@@ -839,7 +839,114 @@ pub async fn delete_workflow_for_owner(
     }
 }
 
-// -- Workflow Run CRUD --------------------------------------------------------
+/// Relay-ingest result for a managed-workflow owner command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkflowOwnerCommandAdmission {
+    /// The command was recorded and awaits the target agent for an update.
+    PendingAgent,
+    /// Relay-owned control state was changed synchronously.
+    Applied,
+    /// The command id or event id was already recorded.
+    Duplicate,
+}
+
+/// Atomically verify the immutable control-state binding, record replay state,
+/// and apply relay-owned control operations. Updates remain pending until the
+/// agent independently verifies the command and signs the replacement event.
+#[allow(clippy::too_many_arguments)]
+pub async fn admit_workflow_owner_command(
+    tx: &mut Transaction<'_, Postgres>,
+    community_id: CommunityId,
+    command_id: Uuid,
+    event_id: &[u8],
+    owner_pubkey: &[u8],
+    agent_pubkey: &[u8],
+    workflow_id: Uuid,
+    expected_revision: &[u8],
+    operation: &str,
+    proposed_yaml: Option<&str>,
+) -> Result<WorkflowOwnerCommandAdmission> {
+    let workflow = sqlx::query(
+        "SELECT owner_pubkey, definition_event_id FROM workflows WHERE community_id = $1 AND id = $2 FOR UPDATE",
+    )
+    .bind(community_id.as_uuid())
+    .bind(workflow_id)
+    .fetch_optional(&mut **tx)
+    .await?
+    .ok_or_else(|| DbError::NotFound(format!("workflow {workflow_id}")))?;
+    let workflow_owner: Vec<u8> = workflow.try_get("owner_pubkey")?;
+    let revision: Option<Vec<u8>> = workflow.try_get("definition_event_id")?;
+    if workflow_owner != agent_pubkey {
+        return Err(DbError::AccessDenied(
+            "workflow coordinate author mismatch".into(),
+        ));
+    }
+    if revision.as_deref() != Some(expected_revision) {
+        return Err(DbError::InvalidData("workflow revision conflict".into()));
+    }
+    let immutable_owner = sqlx::query_scalar::<_, bool>(
+        "SELECT agent_owner_pubkey = $3 FROM users WHERE community_id = $1 AND pubkey = $2 AND agent_owner_pubkey IS NOT NULL",
+    )
+    .bind(community_id.as_uuid())
+    .bind(agent_pubkey)
+    .bind(owner_pubkey)
+    .fetch_optional(&mut **tx)
+    .await?
+    .unwrap_or(false);
+    if !immutable_owner {
+        return Err(DbError::AccessDenied(
+            "command author is not the immutable agent owner".into(),
+        ));
+    }
+    let pending = operation == "update";
+    let inserted = sqlx::query(
+        r#"INSERT INTO workflow_owner_commands
+           (community_id, command_id, event_id, owner_pubkey, agent_pubkey, workflow_id,
+            expected_revision, operation, proposed_yaml, status, resulting_revision)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,
+                   CASE WHEN $10 THEN 'pending_agent'::workflow_owner_command_status ELSE 'applied'::workflow_owner_command_status END,
+                   CASE WHEN $10 THEN NULL ELSE $7 END)
+           ON CONFLICT DO NOTHING"#,
+    )
+    .bind(community_id.as_uuid())
+    .bind(command_id)
+    .bind(event_id)
+    .bind(owner_pubkey)
+    .bind(agent_pubkey)
+    .bind(workflow_id)
+    .bind(expected_revision)
+    .bind(operation)
+    .bind(proposed_yaml)
+    .bind(pending)
+    .execute(&mut **tx)
+    .await?
+    .rows_affected();
+    if inserted == 0 {
+        return Ok(WorkflowOwnerCommandAdmission::Duplicate);
+    }
+    if !pending {
+        let sql = match operation {
+            "enable" => "UPDATE workflows SET enabled = TRUE, updated_at = NOW() WHERE community_id = $1 AND id = $2",
+            "disable" => "UPDATE workflows SET enabled = FALSE, updated_at = NOW() WHERE community_id = $1 AND id = $2",
+            "retire" => "UPDATE workflows SET enabled = FALSE, status = 'archived', updated_at = NOW() WHERE community_id = $1 AND id = $2",
+            _ => {
+                return Err(DbError::InvalidData(
+                    "unknown workflow owner operation".into(),
+                ))
+            }
+        };
+        sqlx::query(sql)
+            .bind(community_id.as_uuid())
+            .bind(workflow_id)
+            .execute(&mut **tx)
+            .await?;
+    }
+    Ok(if pending {
+        WorkflowOwnerCommandAdmission::PendingAgent
+    } else {
+        WorkflowOwnerCommandAdmission::Applied
+    })
+}
 
 /// Insert a new workflow run. Returns the new run's UUID.
 ///
@@ -2296,6 +2403,227 @@ mod tests {
         .await
         .expect("create workflow");
         (workflow_id, community)
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn owner_commands_preserve_agent_authority_and_fail_atomically() {
+        let pool = setup_pool().await;
+        let community = make_community(&pool).await;
+        let owner = vec![0x41; 32];
+        let agent = vec![0x42; 32];
+        let stranger = vec![0x43; 32];
+        for key in [&owner, &agent, &stranger] {
+            ensure_user(&pool, community, key).await.unwrap();
+        }
+        sqlx::query("UPDATE users SET agent_owner_pubkey=$3 WHERE community_id=$1 AND pubkey=$2")
+            .bind(community.as_uuid())
+            .bind(&agent)
+            .bind(&owner)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let channel = make_channel(&pool, community, &owner).await;
+        let workflow = create_workflow(
+            &pool,
+            community,
+            Some(channel),
+            &agent,
+            "managed",
+            r#"{"trigger":{"on":"manual"},"steps":[]}"#,
+            &[0x61; 32],
+        )
+        .await
+        .unwrap();
+        let revision = vec![0x51; 32];
+        sqlx::query("UPDATE workflows SET definition_event_id=$3 WHERE community_id=$1 AND id=$2")
+            .bind(community.as_uuid())
+            .bind(workflow)
+            .bind(&revision)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        struct TestCommand<'a> {
+            actor: &'a [u8],
+            operation: &'a str,
+            id: Uuid,
+            event: &'a [u8],
+            yaml: Option<&'a str>,
+        }
+        async fn apply(
+            pool: &PgPool,
+            c: CommunityId,
+            w: Uuid,
+            rev: &[u8],
+            agent: &[u8],
+            command: TestCommand<'_>,
+        ) -> Result<WorkflowOwnerCommandAdmission> {
+            let mut tx = pool.begin().await?;
+            let result = admit_workflow_owner_command(
+                &mut tx,
+                c,
+                command.id,
+                command.event,
+                command.actor,
+                agent,
+                w,
+                rev,
+                command.operation,
+                command.yaml,
+            )
+            .await;
+            if result.is_ok() {
+                tx.commit().await?;
+            }
+            result
+        }
+        assert_eq!(
+            apply(
+                &pool,
+                community,
+                workflow,
+                &revision,
+                &agent,
+                TestCommand {
+                    actor: &owner,
+                    operation: "update",
+                    id: Uuid::new_v4(),
+                    event: &[0x71; 32],
+                    yaml: Some("name: replacement")
+                }
+            )
+            .await
+            .unwrap(),
+            WorkflowOwnerCommandAdmission::PendingAgent
+        );
+        let stored: Vec<u8> = sqlx::query_scalar(
+            "SELECT definition_event_id FROM workflows WHERE community_id=$1 AND id=$2",
+        )
+        .bind(community.as_uuid())
+        .bind(workflow)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(stored, revision);
+        let command = Uuid::new_v4();
+        let event = vec![0x72; 32];
+        assert_eq!(
+            apply(
+                &pool,
+                community,
+                workflow,
+                &revision,
+                &agent,
+                TestCommand {
+                    actor: &owner,
+                    operation: "disable",
+                    id: command,
+                    event: &event,
+                    yaml: None
+                }
+            )
+            .await
+            .unwrap(),
+            WorkflowOwnerCommandAdmission::Applied
+        );
+        assert_eq!(
+            apply(
+                &pool,
+                community,
+                workflow,
+                &revision,
+                &agent,
+                TestCommand {
+                    actor: &owner,
+                    operation: "disable",
+                    id: command,
+                    event: &event,
+                    yaml: None
+                }
+            )
+            .await
+            .unwrap(),
+            WorkflowOwnerCommandAdmission::Duplicate
+        );
+        let count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM workflow_owner_commands WHERE community_id=$1 AND workflow_id=$2",
+        )
+        .bind(community.as_uuid())
+        .bind(workflow)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(matches!(
+            apply(
+                &pool,
+                community,
+                workflow,
+                &revision,
+                &agent,
+                TestCommand {
+                    actor: &stranger,
+                    operation: "enable",
+                    id: Uuid::new_v4(),
+                    event: &[0x73; 32],
+                    yaml: None
+                }
+            )
+            .await
+            .unwrap_err(),
+            DbError::AccessDenied(_)
+        ));
+        let after: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM workflow_owner_commands WHERE community_id=$1 AND workflow_id=$2",
+        )
+        .bind(community.as_uuid())
+        .bind(workflow)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(after, count);
+        assert!(!sqlx::query_scalar::<_, bool>(
+            "SELECT enabled FROM workflows WHERE community_id=$1 AND id=$2"
+        )
+        .bind(community.as_uuid())
+        .bind(workflow)
+        .fetch_one(&pool)
+        .await
+        .unwrap());
+        apply(
+            &pool,
+            community,
+            workflow,
+            &revision,
+            &agent,
+            TestCommand {
+                actor: &owner,
+                operation: "enable",
+                id: Uuid::new_v4(),
+                event: &[0x74; 32],
+                yaml: None,
+            },
+        )
+        .await
+        .unwrap();
+        apply(
+            &pool,
+            community,
+            workflow,
+            &revision,
+            &agent,
+            TestCommand {
+                actor: &owner,
+                operation: "retire",
+                id: Uuid::new_v4(),
+                event: &[0x75; 32],
+                yaml: None,
+            },
+        )
+        .await
+        .unwrap();
+        let row:(bool,String,Vec<u8>)=sqlx::query_as("SELECT enabled,status::text,definition_event_id FROM workflows WHERE community_id=$1 AND id=$2").bind(community.as_uuid()).bind(workflow).fetch_one(&pool).await.unwrap();
+        assert_eq!(row, (false, "archived".into(), revision));
     }
 
     /// Confinement: a duplicate workflow UUID existing in both community A and
