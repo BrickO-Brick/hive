@@ -608,6 +608,14 @@ pub(crate) fn is_global_only_kind(kind: u32) -> bool {
     )
 }
 
+/// Only moderation and relay-admin commands bypass the shared timeout gate;
+/// their handlers perform their own durable ban checks so those tools remain
+/// usable to lift restrictions. Ordinary transactional commands are writes and
+/// must pass through the same gate as stored events.
+fn is_restriction_gate_exempt(kind: u32) -> bool {
+    buzz_core::kind::is_moderation_command_kind(kind) || is_relay_admin_kind(kind)
+}
+
 /// Kinds that require an `h` tag for channel scoping.
 pub(crate) fn requires_h_channel_scope(kind: u32) -> bool {
     matches!(
@@ -2054,12 +2062,6 @@ async fn ingest_event_inner(
         )));
     }
 
-    // Command kinds are routed AFTER signature verification, timestamp check,
-    // pubkey/auth match, and scope validation — never before.
-    if buzz_core::kind::is_command_kind(kind_u32) {
-        return super::command_executor::handle_command(tenant, state, event, auth).await;
-    }
-
     // Product feedback is sidecarred directly into its private deployment table.
     // It never enters ordinary event storage or subscription fan-out.
     if kind_u32 == KIND_PRODUCT_FEEDBACK {
@@ -2138,7 +2140,7 @@ async fn ingest_event_inner(
     // plumbing it through the whole transport boundary; the follow-up shape is
     // the restriction-state cache (see should-fix), which can fold in owner
     // resolution without a per-write DB round-trip.
-    if !buzz_core::kind::is_moderation_command_kind(kind_u32) && !is_relay_admin_kind(kind_u32) {
+    if !is_restriction_gate_exempt(kind_u32) {
         match state
             .db
             .moderation_restriction_state(tenant.community(), auth.pubkey().as_bytes())
@@ -2167,6 +2169,13 @@ async fn ingest_event_inner(
                 )));
             }
         }
+    }
+
+    // Transactional command kinds are routed only after the durable moderation
+    // gate. Their handlers assume signature, timestamp, identity, scope, and
+    // current ban/timeout authorization have all been checked here.
+    if buzz_core::kind::is_command_kind(kind_u32) {
+        return super::command_executor::handle_command(tenant, state, event, auth).await;
     }
 
     let mut channel_id = if kind_u32 == KIND_REACTION {
@@ -3496,6 +3505,21 @@ mod tests {
                 required_scope_for_kind(kind, &dummy).unwrap(),
                 Scope::MessagesWrite,
                 "kind {kind} should require MessagesWrite scope"
+            );
+        }
+    }
+
+    #[test]
+    fn workflow_commands_are_not_exempt_from_moderation_restrictions() {
+        for kind in [
+            KIND_WORKFLOW_DEF,
+            KIND_WORKFLOW_UPDATE,
+            KIND_WORKFLOW_TRIGGER,
+        ] {
+            assert!(buzz_core::kind::is_command_kind(kind));
+            assert!(
+                !is_restriction_gate_exempt(kind),
+                "workflow command {kind} must honor bans and timeouts"
             );
         }
     }

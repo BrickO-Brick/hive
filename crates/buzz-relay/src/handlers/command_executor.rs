@@ -8,6 +8,7 @@
 //! 2. Timestamp freshness (±15 min)
 //! 3. Pubkey/auth identity match
 //! 4. Per-kind scope authorization
+//! 5. Durable community ban and timeout authorization
 
 use std::sync::Arc;
 
@@ -1733,7 +1734,7 @@ mod tests {
     async fn persistence_test_context() -> (buzz_db::Db, TenantContext) {
         let url = std::env::var("BUZZ_TEST_DATABASE_URL")
             .or_else(|_| std::env::var("DATABASE_URL"))
-            .unwrap_or_else(|_| "postgres://buzz:buzz_dev@localhost:5432/buzz".to_string());
+            .unwrap_or_else(|_| "postgres://buzz:buzz_dev@localhost:5432/buzz".to_string()); // sadscan:disable np.postgres.1 -- local test-only credentials from .env.example
         let pool = sqlx::PgPool::connect(&url)
             .await
             .expect("connect workflow persistence test database");
