@@ -3340,19 +3340,30 @@ mod tests {
     /// Exercised through the real `AcpClient::spawn` merge loop (the unit tests
     /// write directly to `Command` and bypass it). No agent key is set, so
     /// `install_git_identity` returns early without installing anything — this
-    /// isolates the env-merge behavior, and valid mode values are harmless to
-    /// any concurrent spawn.
+    /// isolates the env-merge behavior.
     #[cfg(unix)]
     #[tokio::test]
     async fn spawn_persona_git_identity_overrides_global_process_env() {
         const VAR: &str = buzz_git_identity::GitIdentityMode::ENV_VAR;
+
+        /// Restore the process-global `VAR` to its prior state on drop, so this
+        /// test neither clobbers a caller-supplied value nor leaks its own.
+        struct EnvGuard(Option<std::ffi::OsString>);
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(prev) => std::env::set_var(VAR, prev),
+                    None => std::env::remove_var(VAR),
+                }
+            }
+        }
+        let _guard = EnvGuard(std::env::var_os(VAR));
 
         // parent=agent, persona=user → child sees the persona value.
         std::env::set_var(VAR, "agent");
         let observed =
             spawn_named_and_read_child_env("other-agent", VAR, &[(VAR.into(), "user".into())])
                 .await;
-        std::env::remove_var(VAR);
         assert_eq!(
             observed, "user",
             "persona `user` must override a global `agent` in the parent env"
@@ -3363,7 +3374,6 @@ mod tests {
         let observed =
             spawn_named_and_read_child_env("other-agent", VAR, &[(VAR.into(), "agent".into())])
                 .await;
-        std::env::remove_var(VAR);
         assert_eq!(
             observed, "agent",
             "persona `agent` must override a global `user` in the parent env"
