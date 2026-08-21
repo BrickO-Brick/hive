@@ -679,9 +679,11 @@ async fn cmd_create(client: &BuzzClient, args: PersonaCreateArgs) -> Result<(), 
     // record UUID, leaving two records of the same name. Adopt the published
     // coordinate — but only when its definition is the one being imported. A
     // shared display name alone can be a different persona, and adopting that
-    // coordinate would overwrite it. Only on --from: a flags-built persona
-    // declares a new one at the slug its name derives.
-    if args.from.is_some() {
+    // coordinate would overwrite it. Only on --from without --slug: a
+    // flags-built persona declares a new one at the slug its name derives, and
+    // an explicit --slug names a coordinate — the caller gets that coordinate
+    // or a conflict there, never a silent redirect (same guard as teams --id).
+    if args.from.is_some() && args.slug.is_none() {
         let (identical, same_name) = find_published_persona(client, &content).await?;
         match (identical, same_name) {
             (Some(existing), _) if existing != slug => {
