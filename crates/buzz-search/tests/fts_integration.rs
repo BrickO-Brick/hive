@@ -1,6 +1,6 @@
 //! Integration tests for community-scoped Postgres FTS.
 //!
-//! Run with a local PG: `BUZZ_TEST_DATABASE_URL=postgres://buzz:buzz_dev@localhost:5432/buzz cargo test -p buzz-search --tests -- --include-ignored`
+//! Run with a local PG: `BUZZ_TEST_DATABASE_URL=postgres://buzz:buzz_dev@localhost:5432/buzz cargo test -p buzz-search --tests -- --include-ignored` // sadscan:disable np.postgres.1
 //!
 //! Each test creates a uniquely-named schema, applies every FTS-affecting
 //! migration in order, exercises a scenario, and drops it. Tests are
@@ -1487,6 +1487,16 @@ async fn p_gated_persistent_kinds_have_storage_null_tsvector() {
         kinds.contains(&9),
         "kind:9 control row MUST be searchable, got kinds={kinds:?}",
     );
+
+    for required in [
+        buzz_core::kind::KIND_SECTION_WORKSPACE_IMPORT,
+        buzz_core::kind::KIND_SECTION_WORKSPACE_PROJECTION,
+    ] {
+        assert!(
+            persistent.contains(&required),
+            "workspace kind:{required} must remain p-gated"
+        );
+    }
 
     for &kind in &persistent {
         assert!(

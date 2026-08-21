@@ -1,0 +1,239 @@
+//! End-to-end privacy, immutability, and replay contract for Stage 1 section workspaces.
+
+use std::time::Duration;
+
+use buzz_test_client::BuzzTestClient;
+use nostr::{Alphabet, Event, EventBuilder, Filter, Keys, Kind, SingleLetterTag, Tag};
+use reqwest::Client;
+use serde_json::{json, Value};
+
+const IMPORT_KIND: u16 = 9050;
+const PROJECTION_KIND: u16 = 30623;
+
+fn relay_url() -> String {
+    std::env::var("RELAY_URL").unwrap_or_else(|_| "ws://localhost:3000".into())
+}
+
+fn http_url() -> String {
+    relay_url()
+        .replace("wss://", "https://")
+        .replace("ws://", "http://")
+        .trim_end_matches('/')
+        .into()
+}
+
+fn reader_filter(kind: u16, reader: &Keys) -> Filter {
+    Filter::new().kind(Kind::Custom(kind)).custom_tag(
+        SingleLetterTag::lowercase(Alphabet::P),
+        reader.public_key().to_hex(),
+    )
+}
+
+async fn ws_query(client: &mut BuzzTestClient, name: &str, filter: Filter) -> Vec<Event> {
+    client.subscribe(name, vec![filter]).await.unwrap();
+    client
+        .collect_until_eose(name, Duration::from_secs(5))
+        .await
+        .unwrap()
+}
+
+async fn http_query(http: &Client, reader: &Keys, filter: Filter) -> Vec<Value> {
+    let response = http
+        .post(format!("{}/query", http_url()))
+        .header("X-Pubkey", reader.public_key().to_hex())
+        .json(&vec![filter])
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        response.status().is_success(),
+        "query status={}",
+        response.status()
+    );
+    response.json().await.unwrap()
+}
+
+async fn http_count(http: &Client, reader: &Keys, filter: Filter) -> u64 {
+    let response = http
+        .post(format!("{}/count", http_url()))
+        .header("X-Pubkey", reader.public_key().to_hex())
+        .json(&vec![filter])
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        response.status().is_success(),
+        "count status={}",
+        response.status()
+    );
+    response.json::<Value>().await.unwrap()["count"]
+        .as_u64()
+        .unwrap()
+}
+
+fn import_event(owner: &Keys, source: &Event, action_id: uuid::Uuid, marker: &str) -> Event {
+    let content = json!({
+        "version": 1,
+        "action_id": action_id,
+        "source_event_id": source.id.to_hex(),
+        "source_hash": marker,
+        "key_epoch": 1,
+        "owner_key_envelope": format!("owner-envelope-{marker}"),
+        "sections": [],
+        "assignments": []
+    })
+    .to_string();
+    EventBuilder::new(Kind::Custom(IMPORT_KIND), content)
+        .tags([
+            Tag::parse(["p", &owner.public_key().to_hex()]).unwrap(),
+            Tag::parse(["action", &action_id.to_string()]).unwrap(),
+        ])
+        .allow_self_tagging()
+        .sign_with_keys(owner)
+        .unwrap()
+}
+
+#[tokio::test]
+#[ignore]
+async fn owner_import_projection_is_private_immutable_and_one_shot() {
+    let owner = Keys::generate();
+    let stranger = Keys::generate();
+    let mut owner_client = BuzzTestClient::connect(&relay_url(), &owner).await.unwrap();
+    let mut stranger_client = BuzzTestClient::connect(&relay_url(), &stranger)
+        .await
+        .unwrap();
+    let http = Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap();
+
+    let source = EventBuilder::new(Kind::Custom(30078), "legacy section state")
+        .sign_with_keys(&owner)
+        .unwrap();
+    assert!(
+        owner_client
+            .send_event(source.clone())
+            .await
+            .unwrap()
+            .accepted
+    );
+
+    let action_id = uuid::Uuid::new_v4();
+    let import = import_event(&owner, &source, action_id, &"33".repeat(32));
+    let accepted = owner_client.send_event(import.clone()).await.unwrap();
+    assert!(accepted.accepted, "{}", accepted.message);
+
+    let imports = ws_query(
+        &mut owner_client,
+        "owner-import",
+        reader_filter(IMPORT_KIND, &owner),
+    )
+    .await;
+    assert_eq!(imports.len(), 1);
+    assert_eq!(imports[0].id, import.id);
+    let projections = ws_query(
+        &mut owner_client,
+        "owner-projection",
+        reader_filter(PROJECTION_KIND, &owner),
+    )
+    .await;
+    assert_eq!(projections.len(), 1);
+    let projection = projections[0].clone();
+
+    for (kind, event) in [(IMPORT_KIND, &import), (PROJECTION_KIND, &projection)] {
+        assert!(ws_query(
+            &mut stranger_client,
+            &format!("stranger-kind-{kind}"),
+            reader_filter(kind, &stranger),
+        )
+        .await
+        .is_empty());
+        assert!(http_query(&http, &stranger, reader_filter(kind, &stranger))
+            .await
+            .is_empty());
+        assert_eq!(
+            http_count(&http, &stranger, reader_filter(kind, &stranger)).await,
+            0
+        );
+        assert!(ws_query(
+            &mut stranger_client,
+            &format!("stranger-id-{kind}"),
+            Filter::new().id(event.id),
+        )
+        .await
+        .is_empty());
+        assert!(http_query(&http, &stranger, Filter::new().id(event.id))
+            .await
+            .is_empty());
+        assert_eq!(
+            http_count(&http, &stranger, Filter::new().id(event.id)).await,
+            0
+        );
+        assert!(ws_query(
+            &mut stranger_client,
+            &format!("stranger-search-{kind}"),
+            Filter::new().id(event.id).search("owner-envelope"),
+        )
+        .await
+        .is_empty());
+        assert!(http_query(
+            &http,
+            &stranger,
+            Filter::new().id(event.id).search("owner-envelope"),
+        )
+        .await
+        .is_empty());
+
+        let deletion = EventBuilder::new(Kind::Custom(5), "")
+            .tags([Tag::parse(["e", &event.id.to_hex()]).unwrap()])
+            .sign_with_keys(&owner)
+            .unwrap();
+        let rejected = owner_client.send_event(deletion).await.unwrap();
+        assert!(
+            !rejected.accepted,
+            "kind {kind} event-id deletion was accepted"
+        );
+    }
+
+    let coordinate = format!(
+        "{}:{}:{}:{}",
+        PROJECTION_KIND,
+        projection.pubkey.to_hex(),
+        owner.public_key().to_hex(),
+        owner.public_key().to_hex()
+    );
+    let address_deletion = EventBuilder::new(Kind::Custom(5), "")
+        .tags([Tag::parse(["a", &coordinate]).unwrap()])
+        .sign_with_keys(&owner)
+        .unwrap();
+    assert!(
+        !owner_client
+            .send_event(address_deletion)
+            .await
+            .unwrap()
+            .accepted
+    );
+
+    let replay = owner_client.send_event(import.clone()).await.unwrap();
+    assert!(replay.accepted, "{}", replay.message);
+    assert!(replay.message.starts_with("duplicate:"));
+    assert_eq!(
+        ws_query(
+            &mut owner_client,
+            "projection-after-replay",
+            reader_filter(PROJECTION_KIND, &owner),
+        )
+        .await
+        .len(),
+        1
+    );
+
+    let changed = import_event(&owner, &source, uuid::Uuid::new_v4(), &"44".repeat(32));
+    let conflict = owner_client.send_event(changed).await.unwrap();
+    assert!(!conflict.accepted);
+    assert!(
+        conflict.message.starts_with("conflict:"),
+        "{}",
+        conflict.message
+    );
+}
