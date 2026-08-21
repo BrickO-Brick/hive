@@ -165,6 +165,9 @@ test("selected-people search keeps same-name people independently selectable", a
   await expect(firstWill).toContainText("11111111…1111");
   await expect(secondWill).toContainText("Will");
   await expect(secondWill).toContainText("22222222…2222");
+  await page
+    .getByTestId("agent-respond-to-allowlist")
+    .screenshot({ path: `${SHOTS}/duplicate-will-selected-people.png` });
 
   await secondWill.click();
   await expect(
@@ -172,6 +175,56 @@ test("selected-people search keeps same-name people independently selectable", a
   ).toBeVisible();
   await expect(firstWill).toHaveCount(0);
 });
+
+for (const selectedFirstPageCount of [50, 49]) {
+  test(`selected-people search fetches past a ${
+    selectedFirstPageCount === 50 ? "fully filtered" : "non-scrollable"
+  } first page`, async ({ page }) => {
+    const firstPageProfiles = Array.from({ length: 50 }, (_, index) => ({
+      pubkey: (index + 1).toString(16).padStart(64, "0"),
+      displayName: `Will ${String(index).padStart(2, "0")}`,
+    }));
+    const targetPubkey = "f".repeat(64);
+    const agent = TEST_IDENTITIES.charlie;
+    await installMockBridge(page, {
+      managedAgents: [
+        {
+          pubkey: agent.pubkey,
+          name: "Hack Day Helper",
+          status: "running",
+          channelNames: ["general"],
+          respondTo: "allowlist",
+          respondToAllowlist: firstPageProfiles
+            .slice(0, selectedFirstPageCount)
+            .map((profile) => profile.pubkey),
+        },
+      ],
+      searchProfiles: [
+        ...firstPageProfiles,
+        { pubkey: targetPubkey, displayName: "Will Target" },
+      ],
+    });
+    await page.goto("/");
+    await openAgentAccessDialog(page, agent.pubkey);
+
+    await page.getByTestId("agent-respond-to-search").fill("Will");
+
+    await expect
+      .poll(
+        () =>
+          page.evaluate(() =>
+            (window.__BUZZ_E2E_COMMAND_LOG__ ?? [])
+              .filter((entry) => entry.command === "search_users")
+              .map((entry) => entry.payload),
+          ),
+        { message: "search should request the second result page" },
+      )
+      .toContainEqual(expect.objectContaining({ cursor: "2" }));
+    await expect(
+      page.getByTestId(`agent-respond-to-result-${targetPubkey}`),
+    ).toContainText("Will Target");
+  });
+}
 
 test("full agent editor tightens the exact sidebar agent instance", async ({
   page,

@@ -8,6 +8,7 @@ import {
 
 const MOCK_VIEWER_PUBKEY = "deadbeef".repeat(8);
 const GENERAL_CHANNEL_ID = "9a1657ac-f7aa-5db0-b632-d8bbeb6dfb50";
+const SHOTS = "test-results/mentions";
 
 test.beforeEach(async ({ page }) => {
   await installMockBridge(page);
@@ -715,6 +716,11 @@ for (const selectedWill of ["first", "second"] as const) {
     await expect(firstWill).toBeVisible();
     await expect(secondWill).toBeVisible();
     await expect(dropdown.getByTestId("mention-collision-npub")).toHaveCount(2);
+    if (selectedWill === "first") {
+      await dropdown.screenshot({
+        path: `${SHOTS}/duplicate-will-autocomplete.png`,
+      });
+    }
 
     await dropdown.getByTestId(`mention-suggestion-${selectedPubkey}`).click();
     await page.keyboard.type(`hello ${selectedWill}`);

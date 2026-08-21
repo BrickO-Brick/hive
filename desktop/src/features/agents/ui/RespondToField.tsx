@@ -142,6 +142,24 @@ export function CreateAgentRespondToField({
       ),
     [allowlistSet, isArchivedDiscovery, userSearchResults],
   );
+  const searchViewportRef = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    const viewport = searchViewportRef.current;
+    if (
+      !viewport ||
+      !userSearchQuery.hasNextPage ||
+      userSearchQuery.isFetchingNextPage ||
+      viewport.scrollHeight > viewport.clientHeight
+    ) {
+      return;
+    }
+
+    void userSearchQuery.fetchNextPage();
+  }, [
+    userSearchQuery.fetchNextPage,
+    userSearchQuery.hasNextPage,
+    userSearchQuery.isFetchingNextPage,
+  ]);
   const handleSearchScroll = useUserSearchFetchMoreOnScroll(userSearchQuery);
 
   const pasteParsed = React.useMemo(
@@ -261,6 +279,7 @@ export function CreateAgentRespondToField({
           onAddRawPubkey={handleAddRawPubkey}
           onAddSearchResult={handleAddSearchResult}
           onSearchScroll={handleSearchScroll}
+          searchViewportRef={searchViewportRef}
           onPasteTextChange={setPasteText}
           onQueryChange={setQuery}
           onRemove={handleRemove}
@@ -296,6 +315,7 @@ function AllowlistPicker({
   onAddRawPubkey,
   onAddSearchResult,
   onSearchScroll,
+  searchViewportRef,
   onPasteTextChange,
   onQueryChange,
   onRemove,
@@ -318,6 +338,7 @@ function AllowlistPicker({
   onAddRawPubkey: (pubkey: string) => void;
   onAddSearchResult: (user: UserSearchResult) => void;
   onSearchScroll: (event: React.UIEvent<HTMLDivElement>) => void;
+  searchViewportRef: React.RefObject<HTMLDivElement | null>;
   onPasteTextChange: (value: string) => void;
   onQueryChange: (value: string) => void;
   onRemove: (pubkey: string) => void;
@@ -414,66 +435,69 @@ function AllowlistPicker({
               <p className="px-2 py-1 text-sm text-muted-foreground">
                 Searching…
               </p>
-            ) : searchResults.length > 0 ? (
+            ) : (
               <div
                 className="max-h-44 space-y-1 overflow-y-auto"
                 onScroll={onSearchScroll}
+                ref={searchViewportRef}
               >
-                {searchResults.map((result) => (
+                {searchResults.length > 0 ? (
+                  searchResults.map((result) => (
+                    <button
+                      className="flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-left transition-colors hover:bg-accent hover:text-accent-foreground"
+                      data-testid={`agent-respond-to-result-${result.pubkey}`}
+                      key={result.pubkey}
+                      onClick={() => onAddSearchResult(result)}
+                      type="button"
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <UserAvatar
+                          avatarUrl={result.avatarUrl}
+                          displayName={formatSearchUserName(result)}
+                          size="xs"
+                        />
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-medium leading-5">
+                            {formatSearchUserName(result)}
+                          </p>
+                          <p className="truncate text-xs text-muted-foreground">
+                            {formatSearchUserSecondary(result)}
+                          </p>
+                        </div>
+                      </div>
+                      <span className="text-xs text-muted-foreground">Add</span>
+                    </button>
+                  ))
+                ) : queryIsHexPubkey ? (
                   <button
                     className="flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-left transition-colors hover:bg-accent hover:text-accent-foreground"
-                    data-testid={`agent-respond-to-result-${result.pubkey}`}
-                    key={result.pubkey}
-                    onClick={() => onAddSearchResult(result)}
+                    data-testid="agent-respond-to-add-raw-pubkey"
+                    onClick={() => onAddRawPubkey(deferredQuery.toLowerCase())}
                     type="button"
                   >
                     <div className="flex items-center gap-2 min-w-0">
                       <UserAvatar
-                        avatarUrl={result.avatarUrl}
-                        displayName={formatSearchUserName(result)}
+                        avatarUrl={null}
+                        displayName={truncatePubkey(deferredQuery)}
                         size="xs"
                       />
                       <div className="min-w-0">
                         <p className="truncate text-sm font-medium leading-5">
-                          {formatSearchUserName(result)}
+                          {truncatePubkey(deferredQuery)}
                         </p>
                         <p className="truncate text-xs text-muted-foreground">
-                          {formatSearchUserSecondary(result)}
+                          Add pubkey directly
                         </p>
                       </div>
                     </div>
                     <span className="text-xs text-muted-foreground">Add</span>
                   </button>
-                ))}
+                ) : (
+                  <p className="px-2 py-1 text-sm text-muted-foreground">
+                    No matching users.
+                  </p>
+                )}
               </div>
-            ) : queryIsHexPubkey ? (
-              <button
-                className="flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-left transition-colors hover:bg-accent hover:text-accent-foreground"
-                data-testid="agent-respond-to-add-raw-pubkey"
-                onClick={() => onAddRawPubkey(deferredQuery.toLowerCase())}
-                type="button"
-              >
-                <div className="flex items-center gap-2 min-w-0">
-                  <UserAvatar
-                    avatarUrl={null}
-                    displayName={truncatePubkey(deferredQuery)}
-                    size="xs"
-                  />
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-medium leading-5">
-                      {truncatePubkey(deferredQuery)}
-                    </p>
-                    <p className="truncate text-xs text-muted-foreground">
-                      Add pubkey directly
-                    </p>
-                  </div>
-                </div>
-                <span className="text-xs text-muted-foreground">Add</span>
-              </button>
-            ) : (
-              <p className="px-2 py-1 text-sm text-muted-foreground">
-                No matching users.
-              </p>
             )}
           </div>
         ) : null}
