@@ -5178,6 +5178,17 @@ fn try_native_steer(
 
 // ── dispatch_pending ──────────────────────────────────────────────────────────
 
+/// Retain a checked-out batch for failure recovery when Queue semantics
+/// require it, or when a claimed durable workflow delivery needs exact batch
+/// ownership independent of the global deduplication mode.
+fn recoverable_dispatch_batch(
+    dedup_mode: DedupMode,
+    has_workflow_delivery: bool,
+    batch: &FlushBatch,
+) -> Option<FlushBatch> {
+    (matches!(dedup_mode, DedupMode::Queue) || has_workflow_delivery).then(|| batch.clone())
+}
+
 /// Flush queued work to available agents.
 fn dispatch_pending(
     pool: &mut AgentPool,
@@ -5212,11 +5223,6 @@ fn dispatch_pending(
         };
         tracing::debug!(agent = agent.index, channel = %channel_id, affinity_hit, "agent_claimed");
 
-        let recoverable_batch = match ctx.dedup_mode {
-            DedupMode::Queue => Some(batch.clone()),
-            DedupMode::Drop => None,
-        };
-
         let result_tx = pool.result_tx();
         let ctx_clone = Arc::clone(ctx);
         let agent_index = agent.index;
@@ -5245,9 +5251,17 @@ fn dispatch_pending(
             .chain(batch.cancelled_events.iter())
             .filter_map(|event| workflow_deliveries_by_event.remove(&event.event.id.to_hex()))
             .collect::<Vec<_>>();
-        if !task_workflow_deliveries.is_empty() {
+        let has_workflow_delivery = !task_workflow_deliveries.is_empty();
+        if has_workflow_delivery {
             workflow_deliveries_by_turn.insert(turn_id.clone(), task_workflow_deliveries);
         }
+        // Queue mode recovers every failed turn. Drop mode keeps its ordinary
+        // fire-and-forget semantics, except for batches carrying a claimed
+        // durable workflow delivery: terminal lease handling and panic
+        // recovery must still own the exact checked-out batch long enough to
+        // remove the terminal workflow event without losing co-batched work.
+        let recoverable_batch =
+            recoverable_dispatch_batch(ctx.dedup_mode, has_workflow_delivery, &batch);
 
         let abort_handle = pool.join_set.spawn(async move {
             pool::run_prompt_task(
@@ -11066,6 +11080,32 @@ mod error_outcome_emission_tests {
             queue.queued_event_count(&channel_id),
             1,
             "non-auth application error must preserve the event for retry"
+        );
+    }
+
+    #[test]
+    fn drop_mode_retains_only_workflow_batches_for_failure_recovery() {
+        let channel_id = Uuid::new_v4();
+        let keys = Keys::generate();
+        let event = EventBuilder::new(Kind::Custom(9), "test")
+            .sign_with_keys(&keys)
+            .unwrap();
+        let batch = FlushBatch {
+            channel_id,
+            events: vec![BatchEvent {
+                event,
+                prompt_tag: "test".into(),
+                received_at: std::time::Instant::now(),
+            }],
+            cancelled_events: vec![],
+            cancel_reason: None,
+        };
+
+        assert!(recoverable_dispatch_batch(DedupMode::Queue, false, &batch).is_some());
+        assert!(recoverable_dispatch_batch(DedupMode::Drop, true, &batch).is_some());
+        assert!(
+            recoverable_dispatch_batch(DedupMode::Drop, false, &batch).is_none(),
+            "ordinary Drop-mode traffic must not become retryable"
         );
     }
 

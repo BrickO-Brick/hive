@@ -3970,15 +3970,25 @@ fn requeue_cancelled_batch(
     signal: ControlSignal,
     batch: Option<FlushBatch>,
 ) -> Option<FlushBatch> {
-    let reason = match signal {
-        ControlSignal::Steer => CancelReason::Steer,
-        ControlSignal::TerminalWorkflowCancel
-        | ControlSignal::Interrupt
-        | ControlSignal::SwitchModel { .. } => CancelReason::Interrupt,
+    let (reason, preserve_in_drop) = match signal {
+        ControlSignal::Steer => (CancelReason::Steer, false),
+        // A terminal workflow cancellation is workflow-specific recovery, not
+        // a global change to Drop semantics. Preserve the checked-out batch so
+        // EventQueue can tombstone the terminal workflow event and retain only
+        // the remaining co-batched work.
+        ControlSignal::TerminalWorkflowCancel => (CancelReason::Interrupt, true),
+        ControlSignal::Interrupt | ControlSignal::SwitchModel { .. } => {
+            (CancelReason::Interrupt, false)
+        }
         // Cancel/Rotate discard the batch — no merged re-prompt.
         ControlSignal::Cancel | ControlSignal::Rotate => return None,
     };
-    requeue_batch_if_queue(ctx, batch).map(|mut b| {
+    let batch = if preserve_in_drop {
+        batch
+    } else {
+        requeue_batch_if_queue(ctx, batch)
+    };
+    batch.map(|mut b| {
         b.cancel_reason = Some(reason);
         b
     })
@@ -6859,6 +6869,32 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             }],
             cancelled_events: vec![],
             cancel_reason: None,
+        }
+    }
+
+    #[test]
+    fn terminal_workflow_cancel_is_the_only_drop_mode_cancel_that_preserves_batch() {
+        let mut ctx = make_prompt_context_no_owner();
+        ctx.dedup_mode = DedupMode::Drop;
+
+        let terminal = requeue_cancelled_batch(
+            &ctx,
+            ControlSignal::TerminalWorkflowCancel,
+            Some(one_event_batch(Uuid::new_v4())),
+        )
+        .expect("terminal workflow cancellation must preserve its exact batch");
+        assert_eq!(terminal.cancel_reason, Some(CancelReason::Interrupt));
+
+        for signal in [ControlSignal::Steer, ControlSignal::Interrupt] {
+            assert!(
+                requeue_cancelled_batch(
+                    &ctx,
+                    signal.clone(),
+                    Some(one_event_batch(Uuid::new_v4())),
+                )
+                .is_none(),
+                "ordinary {signal:?} must retain Drop semantics"
+            );
         }
     }
 
