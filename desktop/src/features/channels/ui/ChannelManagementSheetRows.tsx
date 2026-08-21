@@ -3,6 +3,7 @@ import {
   ChevronRight,
   Copy,
   Info,
+  type LucideIcon,
   MessageSquare,
   Pencil,
 } from "lucide-react";

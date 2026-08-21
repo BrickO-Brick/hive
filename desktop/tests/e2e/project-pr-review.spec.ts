@@ -1166,6 +1166,10 @@ test("sidebar distinguishes the Projects overview from an open project", async (
   await projectsOverview.click();
   await expect(projectsOverview).toHaveAttribute("data-active", "true");
   await expect(sidebarProject).toHaveAttribute("data-active", "false");
+  await expect(sidebarProject.locator("svg").first()).toHaveCSS(
+    "opacity",
+    "0.8",
+  );
   await expect(sidebarProject.locator('[data-sidebar="menu-label"]')).toHaveCSS(
     "opacity",
     "0.8",
