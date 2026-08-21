@@ -555,9 +555,13 @@ pub async fn claim_dm_visibility_dirty_viewers(
     lease_seconds: i64,
 ) -> Result<Vec<ClaimedDmVisibilityViewer>> {
     let claim_id = Uuid::new_v4();
+    let limit = limit.clamp(1, 1_000);
+    let fresh_limit = (limit + 1) / 2;
+    let retry_limit = (limit - fresh_limit + 1) / 2;
+    let recovery_limit = limit - fresh_limit - retry_limit;
     let rows = sqlx::query(
         r#"
-        WITH candidates AS (
+        WITH fresh_candidates AS (
             SELECT q.community_id, q.viewer
             FROM dm_visibility_dirty_viewers q
             JOIN communities c ON c.id = q.community_id
@@ -565,18 +569,50 @@ pub async fn claim_dm_visibility_dirty_viewers(
               AND c.deleted_at IS NULL
               AND c.deletion_state = 'active'
               AND community_write_allowed(q.community_id)
-              AND (
-                  (q.state = 'pending' AND q.next_attempt_at <= NOW())
-                  OR (q.state = 'publishing' AND q.lease_until <= NOW())
-              )
-            ORDER BY COALESCE(q.lease_until, q.next_attempt_at), q.dirty_at
+              AND q.state = 'pending'
+              AND q.attempts = 0
+              AND q.next_attempt_at <= NOW()
+            ORDER BY q.dirty_at, q.community_id, q.viewer
             FOR UPDATE OF q SKIP LOCKED
             LIMIT $1
+        ), retry_candidates AS (
+            SELECT q.community_id, q.viewer
+            FROM dm_visibility_dirty_viewers q
+            JOIN communities c ON c.id = q.community_id
+            WHERE c.archived_at IS NULL
+              AND c.deleted_at IS NULL
+              AND c.deletion_state = 'active'
+              AND community_write_allowed(q.community_id)
+              AND q.state = 'pending'
+              AND q.attempts > 0
+              AND q.next_attempt_at <= NOW()
+            ORDER BY q.next_attempt_at, q.dirty_at, q.community_id, q.viewer
+            FOR UPDATE OF q SKIP LOCKED
+            LIMIT $2
+        ), recovery_candidates AS (
+            SELECT q.community_id, q.viewer
+            FROM dm_visibility_dirty_viewers q
+            JOIN communities c ON c.id = q.community_id
+            WHERE c.archived_at IS NULL
+              AND c.deleted_at IS NULL
+              AND c.deletion_state = 'active'
+              AND community_write_allowed(q.community_id)
+              AND q.state = 'publishing'
+              AND q.lease_until <= NOW()
+            ORDER BY q.lease_until, q.community_id, q.viewer
+            FOR UPDATE OF q SKIP LOCKED
+            LIMIT $3
+        ), candidates AS (
+            SELECT community_id, viewer FROM fresh_candidates
+            UNION ALL
+            SELECT community_id, viewer FROM retry_candidates
+            UNION ALL
+            SELECT community_id, viewer FROM recovery_candidates
         )
         UPDATE dm_visibility_dirty_viewers q
         SET state = 'publishing',
-            claim_id = $2,
-            lease_until = NOW() + make_interval(secs => $3::int),
+            claim_id = $4,
+            lease_until = NOW() + make_interval(secs => $5::int),
             attempts = q.attempts + 1
         FROM candidates candidate, communities c
         WHERE q.community_id = candidate.community_id
@@ -585,7 +621,9 @@ pub async fn claim_dm_visibility_dirty_viewers(
         RETURNING q.community_id, c.host, q.viewer
         "#,
     )
-    .bind(limit.clamp(1, 1_000))
+    .bind(fresh_limit)
+    .bind(retry_limit)
+    .bind(recovery_limit)
     .bind(claim_id)
     .bind(lease_seconds.clamp(1, 3_600) as i32)
     .fetch_all(pool)
@@ -615,7 +653,12 @@ pub async fn retry_dm_visibility_dirty_viewer(
         r#"
         UPDATE dm_visibility_dirty_viewers
         SET state = 'pending',
-            next_attempt_at = NOW() + INTERVAL '5 seconds',
+            next_attempt_at = NOW() + make_interval(
+                secs => LEAST(
+                    300,
+                    5 * POWER(2, LEAST(GREATEST(attempts - 1, 0), 6))::INTEGER
+                )
+            ),
             claim_id = NULL,
             lease_until = NULL
         WHERE community_id = $1

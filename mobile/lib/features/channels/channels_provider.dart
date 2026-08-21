@@ -37,6 +37,9 @@ class ChannelsNotifier extends AsyncNotifier<List<Channel>> {
   static const _backstopInterval = Duration(seconds: 60);
 
   final Map<String, void Function()> _unsubscribersByChannel = {};
+  void Function()? _unsubscribeDmVisibility;
+  String? _dmVisibilityRelayBaseUrl;
+  String? _dmVisibilityPubkey;
   Future<void> _liveSubscriptionQueue = Future.value();
   List<Channel> _desiredLiveChannels = const [];
   Set<String> _desiredLiveChannelIds = const {};
@@ -582,6 +585,40 @@ class ChannelsNotifier extends AsyncNotifier<List<Channel>> {
     final session = ref.read(relaySessionProvider.notifier);
     final channelIds = _desiredLiveChannelIds;
 
+    final myPk = ref.read(myPubkeyProvider)?.toLowerCase();
+    if (_dmVisibilityRelayBaseUrl != relayBaseUrl ||
+        _dmVisibilityPubkey != myPk) {
+      _unsubscribeDmVisibility?.call();
+      _unsubscribeDmVisibility = null;
+      _dmVisibilityRelayBaseUrl = relayBaseUrl;
+      _dmVisibilityPubkey = myPk;
+    }
+    if (_unsubscribeDmVisibility == null && myPk != null) {
+      try {
+        final unsubscribe = await session.subscribe(
+          NostrFilter(
+            kinds: const [EventKind.dmVisibility],
+            tags: {
+              '#p': [myPk],
+            },
+            limit: 0,
+          ),
+          _handleDmVisibilityEvent,
+        );
+        if (ref.read(relaySessionProvider).status != SessionStatus.connected ||
+            ref.read(relayConfigProvider).baseUrl != relayBaseUrl ||
+            ref.read(myPubkeyProvider)?.toLowerCase() != myPk) {
+          unsubscribe();
+          return;
+        }
+        _unsubscribeDmVisibility = unsubscribe;
+      } catch (error) {
+        debugPrint(
+          '[ChannelsNotifier] DM visibility subscription failed: $error',
+        );
+      }
+    }
+
     for (final entry in _unsubscribersByChannel.entries.toList()) {
       if (channelIds.contains(entry.key)) continue;
       _unsubscribersByChannel.remove(entry.key);
@@ -769,6 +806,11 @@ class ChannelsNotifier extends AsyncNotifier<List<Channel>> {
     });
   }
 
+  void _handleDmVisibilityEvent(NostrEvent event) {
+    if (event.kind != EventKind.dmVisibility) return;
+    unawaited(refresh());
+  }
+
   Set<String> _mutedChannelIds() => {
     for (final entry in ref.read(channelMutesProvider).store.channels.entries)
       if (entry.value.muted) entry.key,
@@ -903,6 +945,10 @@ class ChannelsNotifier extends AsyncNotifier<List<Channel>> {
     }
     _unsubscribersByChannel.clear();
     _subscriptionRelayBaseUrl = null;
+    _unsubscribeDmVisibility?.call();
+    _unsubscribeDmVisibility = null;
+    _dmVisibilityRelayBaseUrl = null;
+    _dmVisibilityPubkey = null;
     _backstopTimer?.cancel();
     _backstopTimer = null;
   }

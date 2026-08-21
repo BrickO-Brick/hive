@@ -179,9 +179,13 @@ CREATE TABLE dm_visibility_dirty_viewers (
     )
 );
 
-CREATE INDEX dm_visibility_dirty_viewers_due
+CREATE INDEX dm_visibility_dirty_viewers_fresh
+    ON dm_visibility_dirty_viewers (dirty_at, community_id, viewer)
+    WHERE state = 'pending' AND attempts = 0;
+
+CREATE INDEX dm_visibility_dirty_viewers_retry
     ON dm_visibility_dirty_viewers (next_attempt_at, dirty_at, community_id, viewer)
-    WHERE state = 'pending';
+    WHERE state = 'pending' AND attempts > 0;
 
 CREATE INDEX dm_visibility_dirty_viewers_recovery
     ON dm_visibility_dirty_viewers (lease_until, community_id, viewer)

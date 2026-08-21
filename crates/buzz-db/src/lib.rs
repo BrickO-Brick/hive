@@ -7502,6 +7502,86 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires Postgres"]
+    async fn dm_visibility_fresh_claims_are_not_starved_by_poison_retries() {
+        let admin = PgPool::connect(&admin_url().await)
+            .await
+            .expect("connect admin");
+        let (pool, scratch_name) = create_scratch_db(&admin, "dm_visibility_fairness").await;
+        let db = Db::from_pool(pool.clone());
+        let community_uuid = Uuid::new_v4();
+        sqlx::query("INSERT INTO communities (id, host) VALUES ($1, $2)")
+            .bind(community_uuid)
+            .bind(format!("dm-fairness-{}.example", community_uuid.simple()))
+            .execute(&pool)
+            .await
+            .expect("insert community");
+
+        sqlx::query(
+            "INSERT INTO dm_visibility_dirty_viewers \
+             (community_id, viewer, attempts, dirty_at, next_attempt_at) \
+             SELECT $1, decode(lpad(to_hex(series), 64, '0'), 'hex'), 1, \
+                    NOW() - INTERVAL '10 minutes', NOW() - INTERVAL '5 minutes' \
+             FROM generate_series(1, 100) AS series",
+        )
+        .bind(community_uuid)
+        .execute(&pool)
+        .await
+        .expect("insert persistent retry rows");
+        let fresh_viewer = vec![0xff_u8; 32];
+        sqlx::query(
+            "INSERT INTO dm_visibility_dirty_viewers (community_id, viewer) VALUES ($1, $2)",
+        )
+        .bind(community_uuid)
+        .bind(&fresh_viewer)
+        .execute(&pool)
+        .await
+        .expect("insert later fresh viewer");
+
+        let claims = db
+            .claim_dm_visibility_dirty_viewers(100, 60)
+            .await
+            .expect("claim fair batch");
+        assert!(
+            claims.iter().any(|claim| claim.viewer == fresh_viewer),
+            "a full set of older poison retries must not starve newer work"
+        );
+        assert_eq!(
+            claims.len(),
+            26,
+            "the batch reserves half for fresh work and a quarter for retries"
+        );
+
+        let retry_claim = claims
+            .iter()
+            .find(|claim| claim.viewer != fresh_viewer)
+            .expect("retry claim");
+        db.retry_dm_visibility_dirty_viewer(
+            retry_claim.community_id,
+            &retry_claim.viewer,
+            retry_claim.claim_id,
+        )
+        .await
+        .expect("release retry claim");
+        let retry_delay_seconds: f64 = sqlx::query_scalar(
+            "SELECT EXTRACT(EPOCH FROM (next_attempt_at - NOW())) \
+             FROM dm_visibility_dirty_viewers \
+             WHERE community_id = $1 AND viewer = $2",
+        )
+        .bind(community_uuid)
+        .bind(&retry_claim.viewer)
+        .fetch_one(&pool)
+        .await
+        .expect("read exponential retry delay");
+        assert!(
+            (8.0..=11.0).contains(&retry_delay_seconds),
+            "second failure should back off for about ten seconds, got {retry_delay_seconds}"
+        );
+
+        drop_scratch_db(&admin, pool, &scratch_name).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
     async fn dm_visibility_failed_publication_is_discovered_and_reconciled() {
         use nostr::Keys;
 

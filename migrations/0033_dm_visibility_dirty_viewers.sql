@@ -21,12 +21,35 @@ CREATE TABLE dm_visibility_dirty_viewers (
     )
 );
 
-CREATE INDEX dm_visibility_dirty_viewers_due
+CREATE INDEX dm_visibility_dirty_viewers_fresh
+    ON dm_visibility_dirty_viewers (dirty_at, community_id, viewer)
+    WHERE state = 'pending' AND attempts = 0;
+
+CREATE INDEX dm_visibility_dirty_viewers_retry
     ON dm_visibility_dirty_viewers (next_attempt_at, dirty_at, community_id, viewer)
-    WHERE state = 'pending';
+    WHERE state = 'pending' AND attempts > 0;
 
 CREATE INDEX dm_visibility_dirty_viewers_recovery
     ON dm_visibility_dirty_viewers (lease_until, community_id, viewer)
     WHERE state = 'publishing';
 
 SELECT attach_community_write_fence('dm_visibility_dirty_viewers');
+
+-- Brownfield deployments can already contain canonical hidden-DM state whose
+-- relay-authored snapshot drifted before the durable queue existed. Enqueue
+-- each active DM viewer once so the bounded worker repairs that legacy state.
+INSERT INTO dm_visibility_dirty_viewers (community_id, viewer)
+SELECT cm.community_id, cm.pubkey
+FROM channel_members cm
+JOIN channels c
+  ON c.community_id = cm.community_id
+ AND c.id = cm.channel_id
+JOIN communities community ON community.id = cm.community_id
+WHERE cm.removed_at IS NULL
+  AND c.channel_type = 'dm'
+  AND c.deleted_at IS NULL
+  AND community.archived_at IS NULL
+  AND community.deleted_at IS NULL
+  AND community.deletion_state = 'active'
+GROUP BY cm.community_id, cm.pubkey
+ON CONFLICT (community_id, viewer) DO NOTHING;
