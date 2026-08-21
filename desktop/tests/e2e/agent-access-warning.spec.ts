@@ -145,8 +145,16 @@ test("selected-people search keeps same-name people independently selectable", a
       },
     ],
     searchProfiles: [
-      { pubkey: firstWillPubkey, displayName: "Will" },
-      { pubkey: secondWillPubkey, displayName: "Will" },
+      {
+        pubkey: firstWillPubkey,
+        displayName: "Will",
+        nip05Handle: "will@example.com",
+      },
+      {
+        pubkey: secondWillPubkey,
+        displayName: "Will",
+        nip05Handle: "will@example.com",
+      },
     ],
   });
   await page.goto("/");
@@ -162,18 +170,52 @@ test("selected-people search keeps same-name people independently selectable", a
     `agent-respond-to-result-${secondWillPubkey}`,
   );
   await expect(firstWill).toContainText("Will");
+  await expect(firstWill).toContainText("will@example.com");
   await expect(firstWill).toContainText("11111111…1111");
   await expect(secondWill).toContainText("Will");
+  await expect(secondWill).toContainText("will@example.com");
   await expect(secondWill).toContainText("22222222…2222");
+  const firstAdd = firstWill.getByRole("button", {
+    name: `Add Will, will@example.com, public key ${firstWillPubkey}`,
+  });
+  const secondAdd = secondWill.getByRole("button", {
+    name: `Add Will, will@example.com, public key ${secondWillPubkey}`,
+  });
+  await expect(firstAdd).toBeVisible();
+  await expect(secondAdd).toBeVisible();
   await page
     .getByTestId("agent-respond-to-allowlist")
     .screenshot({ path: `${SHOTS}/duplicate-will-selected-people.png` });
 
-  await secondWill.click();
+  await secondAdd.focus();
+  await secondAdd.press("Enter");
   await expect(
     page.getByTestId(`agent-respond-to-chip-${secondWillPubkey}`),
   ).toBeVisible();
-  await expect(firstWill).toHaveCount(0);
+  await expect(
+    page.getByTestId(`agent-respond-to-chip-${firstWillPubkey}`),
+  ).toHaveCount(0);
+  await page.getByRole("button", { name: "Save access" }).click();
+  const updateCommand = await page.evaluate(
+    (agentPubkey) =>
+      window.__BUZZ_E2E_COMMAND_LOG__?.findLast(
+        (entry) =>
+          entry.command === "update_managed_agent" &&
+          (entry.payload as { input?: { pubkey?: string } })?.input?.pubkey ===
+            agentPubkey,
+      ),
+    agent.pubkey,
+  );
+  expect(updateCommand?.payload).toMatchObject({
+    input: {
+      pubkey: agent.pubkey,
+      respondTo: "allowlist",
+      respondToAllowlist: [secondWillPubkey],
+    },
+  });
+  expect(updateCommand?.payload).not.toMatchObject({
+    input: { respondToAllowlist: [firstWillPubkey] },
+  });
 });
 
 for (const selectedFirstPageCount of [50, 49]) {

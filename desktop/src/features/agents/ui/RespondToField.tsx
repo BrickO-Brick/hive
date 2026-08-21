@@ -70,10 +70,13 @@ function formatSearchUserName(user: UserSearchResult) {
 function formatSearchUserSecondary(user: UserSearchResult) {
   const displayName = user.displayName?.trim();
   const nip05Handle = user.nip05Handle?.trim();
-  if (displayName && nip05Handle) {
-    return nip05Handle;
-  }
-  return truncatePubkey(user.pubkey);
+  return displayName && nip05Handle ? nip05Handle : null;
+}
+
+function formatSearchUserAccessibleName(user: UserSearchResult) {
+  const name = formatSearchUserName(user);
+  const secondary = formatSearchUserSecondary(user);
+  return `Add ${name}${secondary ? `, ${secondary}` : ""}, public key ${user.pubkey}`;
 }
 
 const RESPOND_TO_OPTIONS: PersonaDropdownOption[] = [
@@ -443,12 +446,10 @@ function AllowlistPicker({
               >
                 {searchResults.length > 0 ? (
                   searchResults.map((result) => (
-                    <button
+                    <div
                       className="flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-left transition-colors hover:bg-accent hover:text-accent-foreground"
                       data-testid={`agent-respond-to-result-${result.pubkey}`}
                       key={result.pubkey}
-                      onClick={() => onAddSearchResult(result)}
-                      type="button"
                     >
                       <div className="flex items-center gap-2 min-w-0">
                         <UserAvatar
@@ -460,13 +461,27 @@ function AllowlistPicker({
                           <p className="truncate text-sm font-medium leading-5">
                             {formatSearchUserName(result)}
                           </p>
-                          <p className="truncate text-xs text-muted-foreground">
-                            {formatSearchUserSecondary(result)}
-                          </p>
+                          {formatSearchUserSecondary(result) ? (
+                            <p className="truncate text-xs text-muted-foreground">
+                              {formatSearchUserSecondary(result)}
+                            </p>
+                          ) : null}
+                          <PubKey
+                            className="text-xs text-muted-foreground"
+                            pubkey={result.pubkey}
+                            testId={`agent-respond-to-result-pubkey-${result.pubkey}`}
+                          />
                         </div>
                       </div>
-                      <span className="text-xs text-muted-foreground">Add</span>
-                    </button>
+                      <button
+                        aria-label={formatSearchUserAccessibleName(result)}
+                        className="text-xs text-muted-foreground"
+                        onClick={() => onAddSearchResult(result)}
+                        type="button"
+                      >
+                        Add
+                      </button>
+                    </div>
                   ))
                 ) : queryIsHexPubkey ? (
                   <button
