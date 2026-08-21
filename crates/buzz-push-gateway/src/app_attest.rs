@@ -78,7 +78,10 @@ impl AppAttestVerifier {
                 key_id_b64,
                 &self.apple_root_cert_pem,
             )
-            .map_err(|_| AppAttestError::Invalid)?;
+            .map_err(|error| {
+                tracing::warn!(%error, "App Attest enrollment verification failed");
+                AppAttestError::Invalid
+            })?;
         let key_id = STANDARD
             .decode(key_id_b64)
             .map_err(|_| AppAttestError::Invalid)?;
