@@ -577,6 +577,7 @@ mod tests {
     /// correctly.
     #[test]
     fn the_agents_configured_provider_beats_an_inherited_goose_provider() {
+        let _guard = env_lock();
         // One test: `project_goose_env` mutates process-global env, so
         // splitting these would race the rest of the suite.
         let restore: Vec<(&str, Option<String>)> = [
