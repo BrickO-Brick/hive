@@ -2,7 +2,11 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const MAX_REQUEST_BYTES: usize = 8 * 1024;
+// Enrollment carries Apple's base64-encoded CBOR attestation, including its
+// certificate chain and receipt. Keep the HTTP envelope bounded while leaving
+// room for the verifier's 16 KiB decoded-attestation limit plus base64 and JSON
+// overhead.
+pub const MAX_REQUEST_BYTES: usize = 32 * 1024;
 pub const MAX_GRANT_BYTES: usize = 4096;
 pub const MAX_ENDPOINT_HEX_BYTES: usize = 512;
 pub const APNS_RECONNECT_PAYLOAD: &[u8] =
@@ -167,4 +171,28 @@ pub enum DeliveryResponse {
 #[derive(Debug, Clone, Serialize)]
 pub struct ErrorBody {
     pub error: &'static str,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+    #[test]
+    fn request_limit_fits_the_largest_verified_attestation_envelope() {
+        let request = InstallationEnrollRequest {
+            v: WIRE_VERSION,
+            challenge_id: uuid::Uuid::nil(),
+            challenge: "a".repeat(64),
+            key_id: STANDARD.encode([0; 32]),
+            attestation: STANDARD.encode(vec![0; 16 * 1024]),
+            app_profile: AppProfile::BuzzIosDogfood,
+            endpoint: "a".repeat(MAX_ENDPOINT_HEX_BYTES),
+            endpoint_epoch: 1,
+            expires_at: i64::MAX,
+        };
+
+        let encoded = serde_json::to_vec(&request).expect("serialize enrollment request");
+        assert!(encoded.len() <= MAX_REQUEST_BYTES);
+    }
 }
