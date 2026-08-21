@@ -126,6 +126,14 @@ export function WorkflowsView({
 
   const triggerMutation = useMutation({
     mutationFn: (workflowId: string) => triggerWorkflow(workflowId),
+    onError: (error) => {
+      toast.error("Couldn’t run workflow", {
+        description:
+          error instanceof Error
+            ? error.message
+            : "The workflow did not start. Try again.",
+      });
+    },
     onSuccess: () => {
       void queryClient.invalidateQueries({
         predicate: (query) => query.queryKey[0] === "workflow-runs",
@@ -135,7 +143,16 @@ export function WorkflowsView({
 
   const deleteMutation = useMutation({
     mutationFn: (workflowId: string) => deleteWorkflow(workflowId),
+    onError: (error) => {
+      toast.error("Couldn’t delete workflow", {
+        description:
+          error instanceof Error
+            ? error.message
+            : "The workflow was not deleted. Try again.",
+      });
+    },
     onSuccess: (_data, workflowId) => {
+      setDeleteTarget(null);
       if (selectedWorkflowId === workflowId) {
         onCloseWorkflow();
       }
@@ -194,7 +211,6 @@ export function WorkflowsView({
   const handleConfirmDelete = React.useCallback(
     (workflow: Workflow) => {
       deleteOne(workflow.id);
-      setDeleteTarget(null);
     },
     [deleteOne],
   );
@@ -314,9 +330,10 @@ export function WorkflowsView({
       />
 
       <WorkflowDeleteDialog
+        isPending={deleteMutation.isPending}
         onConfirm={handleConfirmDelete}
         onOpenChange={(open) => {
-          if (!open) setDeleteTarget(null);
+          if (!open && !deleteMutation.isPending) setDeleteTarget(null);
         }}
         open={deleteTarget !== null}
         workflow={deleteTarget}

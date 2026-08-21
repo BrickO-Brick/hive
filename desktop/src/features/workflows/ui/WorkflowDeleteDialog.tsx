@@ -12,6 +12,7 @@ import {
 import { Button } from "@/shared/ui/button";
 
 type WorkflowDeleteDialogProps = {
+  isPending: boolean;
   open: boolean;
   workflow: Workflow | null;
   onConfirm: (workflow: Workflow) => void;
@@ -19,6 +20,7 @@ type WorkflowDeleteDialogProps = {
 };
 
 export function WorkflowDeleteDialog({
+  isPending,
   open,
   workflow,
   onConfirm,
@@ -37,13 +39,17 @@ export function WorkflowDeleteDialog({
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel asChild>
-            <Button type="button" variant="outline">
+            <Button disabled={isPending} type="button" variant="outline">
               Cancel
             </Button>
           </AlertDialogCancel>
           <AlertDialogAction asChild>
             <Button
-              onClick={() => {
+              disabled={isPending}
+              onClick={(event) => {
+                // Keep this controlled dialog open until the relay confirms
+                // deletion. On failure the toast appears and the user can retry.
+                event.preventDefault();
                 if (workflow) {
                   onConfirm(workflow);
                 }
@@ -51,7 +57,7 @@ export function WorkflowDeleteDialog({
               type="button"
               variant="destructive"
             >
-              Delete
+              {isPending ? "Deleting…" : "Delete"}
             </Button>
           </AlertDialogAction>
         </AlertDialogFooter>
