@@ -8,6 +8,7 @@ import {
 } from "./channelWindowStore";
 import { reconcileChannelWindowMessages } from "./channelWindowReconciliation";
 import { channelHeadHydration } from "./channelHeadCache";
+import { hasInFlightChannelPrefetch } from "./channelWindowPrefetches";
 
 /** Keep the rendered timeline cache aligned with its authoritative window. */
 export function projectChannelWindowMessages(
@@ -44,6 +45,13 @@ export async function refreshChannelWindowMessages(
     query?.state.data !== undefined && query.state.dataUpdatedAt === 0;
   if (seeded) {
     await query.promise?.catch(() => {});
+  } else if (hasInFlightChannelPrefetch(channelId)) {
+    // A hover prefetch reached the relay before this subscription existed, so
+    // its snapshot can miss events that landed in between. Cancel it so the
+    // invalidate below issues a fetch that starts after this refresh; a cold
+    // mount fetch is still parked on the hydration gate above, carries no such
+    // gap, and keeps deduping.
+    await queryClient.cancelQueries({ queryKey, exact: true });
   }
   await queryClient.invalidateQueries(
     { queryKey, exact: true, refetchType: "active" },

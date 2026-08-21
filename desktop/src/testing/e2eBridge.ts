@@ -5620,20 +5620,39 @@ async function handleGetChannelWindow(
 
   const probe = window as unknown as {
     __CHANNEL_WINDOW_FETCH_COUNT__?: number;
+    __CHANNEL_WINDOW_HEAD_FETCH_COUNT__?: number;
+    __CHANNEL_WINDOW_HEAD_COMPLETE_COUNT__?: number;
     __CHANNEL_WINDOW_INFLIGHT__?: number;
     __CHANNEL_WINDOW_INFLIGHT_PEAK__?: number;
   };
-  if (args.cursor !== null) {
+  const isHead = args.cursor === null;
+  if (isHead) {
+    // TEST-ONLY probe: head (cursorless) window fetches, keyed for specs that
+    // assert prefetch behavior. Continuations keep their own counter below.
+    probe.__CHANNEL_WINDOW_HEAD_FETCH_COUNT__ =
+      (probe.__CHANNEL_WINDOW_HEAD_FETCH_COUNT__ ?? 0) + 1;
+  } else {
     probe.__CHANNEL_WINDOW_FETCH_COUNT__ =
       (probe.__CHANNEL_WINDOW_FETCH_COUNT__ ?? 0) + 1;
   }
 
-  const delayMs =
-    args.cursor === null
-      ? (getConfig()?.mock?.channelHeadDelayMs ?? 0)
-      : (getConfig()?.mock?.channelWindowDelayMs ?? 0);
+  // Completion counter: specs asserting a warmed cache must wait for this, not
+  // the start counter — a started-but-pending prefetch proves nothing. Counted
+  // on every head path, delayed or not.
+  const run = async () => {
+    const result = await execute();
+    if (isHead) {
+      probe.__CHANNEL_WINDOW_HEAD_COMPLETE_COUNT__ =
+        (probe.__CHANNEL_WINDOW_HEAD_COMPLETE_COUNT__ ?? 0) + 1;
+    }
+    return result;
+  };
+
+  const delayMs = isHead
+    ? (getConfig()?.mock?.channelHeadDelayMs ?? 0)
+    : (getConfig()?.mock?.channelWindowDelayMs ?? 0);
   if (delayMs <= 0) {
-    return execute();
+    return run();
   }
 
   probe.__CHANNEL_WINDOW_INFLIGHT__ =
@@ -5644,7 +5663,7 @@ async function handleGetChannelWindow(
   );
   await new Promise((resolve) => window.setTimeout(resolve, delayMs));
   try {
-    return await execute();
+    return await run();
   } finally {
     probe.__CHANNEL_WINDOW_INFLIGHT__ =
       (probe.__CHANNEL_WINDOW_INFLIGHT__ ?? 1) - 1;

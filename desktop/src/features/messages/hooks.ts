@@ -29,6 +29,10 @@ import {
   channelHeadHydration,
   consumeHydratedChannel,
 } from "@/features/messages/lib/channelHeadCache";
+import {
+  markChannelPrefetchSettled,
+  markChannelPrefetchStarted,
+} from "@/features/messages/lib/channelWindowPrefetches";
 import { storeChannelHeadCache } from "@/shared/api/tauriChannelHeadCache";
 import {
   mergeMessages,
@@ -284,13 +288,26 @@ export function reconcileFetchedChannelWindow(
   return reconcileChannelWindowMessages(next, previousMessages);
 }
 
-export function useChannelMessagesQuery(channel: Channel | null) {
-  const queryClient = useQueryClient();
+export const CHANNEL_MESSAGES_STALE_TIME_MS = 5 * 60 * 1_000;
+// Window-guarded like react-query's own server default (Infinity): an
+// explicit finite gcTime schedules a real, non-unref'd timeout per cache
+// entry, which keeps node test processes alive for the full hour.
+export const CHANNEL_MESSAGES_GC_TIME_MS =
+  typeof window === "undefined" ? Number.POSITIVE_INFINITY : 60 * 60 * 1_000;
+
+/**
+ * Shared query options for a channel's message window — the single source
+ * for `useChannelMessagesQuery` and the sidebar hover prefetch, so a
+ * prefetched entry is a byte-identical cache hit for the mounted query.
+ */
+export function channelMessagesQueryOptions(
+  queryClient: QueryClient,
+  channel: Channel | null,
+) {
   const queryKey = channelMessagesKey(channel?.id ?? "none");
-  return useQuery({
-    enabled: channel !== null && channel.channelType !== "forum",
+  return {
     queryKey,
-    queryFn: async ({ signal }) => {
+    queryFn: async ({ signal }: { signal: AbortSignal }) => {
       if (!channel) throw new Error("No channel selected.");
       // Persisted heads seed asynchronously; wait for that seed so a channel
       // opened during boot takes the hydrated path instead of racing it with
@@ -310,8 +327,34 @@ export function useChannelMessagesQuery(channel: Channel | null) {
         signal,
       );
     },
-    staleTime: 5 * 60 * 1_000,
-    gcTime: 60 * 60 * 1_000,
+    staleTime: CHANNEL_MESSAGES_STALE_TIME_MS,
+    gcTime: CHANNEL_MESSAGES_GC_TIME_MS,
+  };
+}
+
+/**
+ * Warms a channel's message window ahead of navigation (sidebar hover
+ * intent). Respects staleTime — a fresh window is a no-op — and dedupes with
+ * any in-flight fetch. Forums own their data elsewhere; huddle/forum-less
+ * gating matches useChannelMessagesQuery's enabled condition.
+ */
+export function prefetchChannelMessages(
+  queryClient: QueryClient,
+  channel: Channel,
+): void {
+  if (channel.channelType === "forum") return;
+  markChannelPrefetchStarted(channel.id);
+  void queryClient
+    .prefetchQuery(channelMessagesQueryOptions(queryClient, channel))
+    .finally(() => markChannelPrefetchSettled(channel.id));
+}
+
+export function useChannelMessagesQuery(channel: Channel | null) {
+  const queryClient = useQueryClient();
+
+  return useQuery({
+    enabled: channel !== null && channel.channelType !== "forum",
+    ...channelMessagesQueryOptions(queryClient, channel),
   });
 }
 

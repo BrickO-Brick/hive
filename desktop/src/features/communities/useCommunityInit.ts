@@ -34,6 +34,7 @@ import { resetAgentObserverStore } from "@/features/agents/observerRelayStore";
 import { resetAvatarPresentations } from "@/features/profile/avatarPresentationStore";
 import { resetAvatarProfileSync } from "@/features/profile/avatarProfileSync";
 import { resetSidebarRelayConnectionCardState } from "@/features/sidebar/ui/useSidebarRelayConnectionCard";
+import { resetChannelWindowPrefetches } from "@/features/messages/lib/channelWindowPrefetches";
 import { resetSettledTimelineChannels } from "@/features/messages/lib/settledTimelineChannels";
 import { clearMarkdownNodeCache } from "@/shared/ui/markdown/nodeCache";
 import { resetMessageLinkMetadataCache } from "@/shared/ui/markdown/useMessageLinkMetadata";
@@ -58,6 +59,7 @@ async function resetCommunityState({
   resetAvatarState: boolean;
 }): Promise<void> {
   relayClient.disconnect();
+  resetChannelWindowPrefetches();
   await resetNavigationDeepLinkDrain();
   resetRateLimitGate();
   clearAllDrafts();

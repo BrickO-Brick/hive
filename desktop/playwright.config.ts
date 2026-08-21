@@ -112,6 +112,7 @@ export default defineConfig({
         "**/timeline-no-shift.spec.ts",
         "**/thread-summary-stability.spec.ts",
         "**/channel-revisit-no-skeleton.spec.ts",
+        "**/sidebar-hover-prefetch.spec.ts",
         "**/human-edit-agent-content.spec.ts",
         "**/empty-edit-delete.spec.ts",
         "**/reaction-order.spec.ts",
