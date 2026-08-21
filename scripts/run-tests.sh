@@ -120,6 +120,8 @@ run_unit_tests() {
   # `just test-unit` — the two lists must stay in step.
   run_test_step "buzz-agent unit tests" \
     cargo test -p buzz-agent --lib -- --nocapture
+
+  run_test_step "buzz-model-catalog unit tests" \
     cargo test -p buzz-model-catalog --lib -- --nocapture
 }
 

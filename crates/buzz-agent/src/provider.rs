@@ -33,7 +33,9 @@
 use std::sync::Arc;
 
 use goose::providers::base::Provider;
-use goose_providers::databricks_auth::{DatabricksAuth, DatabricksOauthTokenProvider};
+use goose_providers::databricks_auth::{
+    DatabricksAuth, DatabricksOauthTokenProvider, DatabricksRefreshHook,
+};
 use goose_providers::databricks_v2::DatabricksV2Provider;
 
 use crate::types::AgentError;
@@ -83,6 +85,20 @@ fn databricks_v2_with_buzz_oauth(host: String) -> Result<Arc<dyn Provider>, Agen
         _ => DatabricksAuth::oauth(host.clone()),
     };
 
+    let oauth_token_source = match &auth {
+        DatabricksAuth::OAuth { .. } => Some(
+            buzz_model_catalog::auth::PkceOAuthTokenSource::new(
+                buzz_model_catalog::databricks_pkce_config(&host),
+            )
+            .map_err(|e| AgentError::Llm(format!("databricks oauth: {e}")))?,
+        ),
+        DatabricksAuth::Token(_) => None,
+    };
+    let oauth_token_provider = oauth_token_source
+        .as_ref()
+        .map(|source| buzz_oauth_token_provider(Arc::clone(source)));
+    let refresh_hook = oauth_token_source.map(buzz_oauth_refresh_hook);
+
     let retry_config = DatabricksV2Provider::load_retry_config(|key| std::env::var(key).ok());
 
     let provider = DatabricksV2Provider::new(
@@ -90,7 +106,7 @@ fn databricks_v2_with_buzz_oauth(host: String) -> Result<Arc<dyn Provider>, Agen
         auth,
         retry_config,
         None,
-        Some(buzz_oauth_token_provider()),
+        oauth_token_provider,
         Some(Arc::new(|| {
             std::env::var("DATABRICKS_TOKEN")
                 .ok()
@@ -99,7 +115,7 @@ fn databricks_v2_with_buzz_oauth(host: String) -> Result<Arc<dyn Provider>, Agen
         // Keeps the `agent-session-id` request header goose attaches for
         // provider-side attribution; dropping it would silently lose that.
         Some(goose::session_context::session_id_request_builder()),
-        None,
+        refresh_hook,
     )
     .map_err(|e| AgentError::Llm(format!("databricks provider: {e}")))?;
 
@@ -113,20 +129,28 @@ fn databricks_v2_with_buzz_oauth(host: String) -> Result<Arc<dyn Provider>, Agen
 /// request on a headless agent subprocess, where the browser step would hang
 /// with nobody to see it. Interactive login stays where a human can answer it
 /// — `buzz-agent auth databricks`, and the desktop model picker.
-fn buzz_oauth_token_provider() -> DatabricksOauthTokenProvider {
-    Arc::new(|host, _client_id, _redirect_url, _scopes| {
+fn buzz_oauth_token_provider(
+    source: Arc<buzz_model_catalog::auth::PkceOAuthTokenSource>,
+) -> DatabricksOauthTokenProvider {
+    Arc::new(move |_host, _client_id, _redirect_url, _scopes| {
+        let source = Arc::clone(&source);
         Box::pin(async move {
             use buzz_model_catalog::auth::TokenSource;
-            let source = buzz_model_catalog::auth::PkceOAuthTokenSource::new(
-                buzz_model_catalog::databricks_pkce_config(&host),
-            )
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
             source
                 .bearer_no_browser()
                 .await
                 .map_err(|e| anyhow::anyhow!("{e}"))
         })
     })
+}
+
+/// Goose's refresh hook is synchronous, so mark the rejected access token in
+/// shared state and let the next async token-provider call force-refresh it.
+/// This keeps the refresh grant headless and avoids blocking a runtime worker.
+fn buzz_oauth_refresh_hook(
+    source: Arc<buzz_model_catalog::auth::PkceOAuthTokenSource>,
+) -> DatabricksRefreshHook {
+    Arc::new(move || source.reject_current_bearer())
 }
 
 #[cfg(test)]

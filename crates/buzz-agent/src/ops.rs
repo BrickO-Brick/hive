@@ -294,6 +294,7 @@ impl Operation<Session, ConversationEffect> for BuzzStopVetoOperation {
 /// does not compel speech.
 pub struct BuzzReplyGuardOperation {
     max_nags: u32,
+    available_tools: std::collections::HashSet<String>,
 }
 
 /// Reminder text. Kept byte-identical to main's.
@@ -314,8 +315,11 @@ pub const MAX_REPLY_NAGS: u32 = 2;
 const NAGGED: &str = "nagged";
 
 impl BuzzReplyGuardOperation {
-    pub fn new(max_nags: u32) -> Self {
-        Self { max_nags }
+    pub fn new(max_nags: u32, available_tools: impl IntoIterator<Item = String>) -> Self {
+        Self {
+            max_nags,
+            available_tools: available_tools.into_iter().collect(),
+        }
     }
 
     /// Whether a tool request is a recognised attempt to publish to Buzz.
@@ -323,16 +327,14 @@ impl BuzzReplyGuardOperation {
     /// An *attempt*, not a success: a failed send already returns a non-zero
     /// exit and error JSON to the model, which is louder than this reminder.
     ///
-    /// Same matcher as main's `is_reply_shaped`, with one simplification the
-    /// port allows: main checked `mcp.has(name) && !mcp.is_hook(name)` first
-    /// because a hallucinated `fake__shell` would otherwise disarm the guard.
-    /// Here the conversation only contains requests goose actually dispatched,
-    /// so a hallucinated name never reaches this code.
-    fn is_reply_shaped(request: &ToolRequest) -> bool {
+    /// The available-tool check is load-bearing: provider output can contain a
+    /// hallucinated request that Goose later rejects at dispatch. Such a name
+    /// must not disarm the guard merely because it looks like a shell tool.
+    fn is_reply_shaped(&self, request: &ToolRequest) -> bool {
         let Ok(call) = &request.tool_call else {
             return false;
         };
-        if !call.name.ends_with("__shell") {
+        if !self.available_tools.contains(call.name.as_ref()) || !call.name.ends_with("__shell") {
             return false;
         }
         call.arguments
@@ -383,7 +385,7 @@ impl Operation<Session, ConversationEffect> for BuzzReplyGuardOperation {
                     content,
                     goose_provider_types::conversation::message::MessageContent::ToolRequest(
                         request,
-                    ) if Self::is_reply_shaped(request)
+                    ) if self.is_reply_shaped(request)
                 )
             })
         });
@@ -551,7 +553,7 @@ pub fn round_gate(
     outcome: Outcome,
     cancel: tokio_util::sync::CancellationToken,
     stop_veto: Option<(Arc<Agent>, String)>,
-    require_reply: bool,
+    reply_guard_tools: Option<Vec<String>>,
 ) -> goose::agents::state_machine::StateMachine<'static, Session, ConversationEffect> {
     use goose::agents::state_machine::Step;
 
@@ -571,9 +573,10 @@ pub fn round_gate(
     // After the `_Stop` veto: on main both objections rode the same gate, and
     // a hook objection already keeps the turn alive, so reminding as well
     // would spend two rounds where main spent one.
-    if require_reply {
+    if let Some(available_tools) = reply_guard_tools {
         steps.push(Step::Operation(Arc::new(BuzzReplyGuardOperation::new(
             MAX_REPLY_NAGS,
+            available_tools,
         ))));
     }
     goose::agents::state_machine::StateMachine::new(steps, cancel)
@@ -775,7 +778,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_reply_guard_reminds_when_nothing_was_published() {
-        let op = BuzzReplyGuardOperation::new(MAX_REPLY_NAGS);
+        let op = BuzzReplyGuardOperation::new(MAX_REPLY_NAGS, ["developer__shell".to_string()]);
         let result = op
             .run(&Session::default(), &conversation(1), &emitter())
             .await
@@ -791,7 +794,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_publish_attempt_disarms_the_guard() {
-        let op = BuzzReplyGuardOperation::new(MAX_REPLY_NAGS);
+        let op = BuzzReplyGuardOperation::new(MAX_REPLY_NAGS, ["developer__shell".to_string()]);
         for command in [
             "buzz messages send --channel x --content hi",
             "buzz messages send-diff --channel x",
@@ -814,7 +817,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_unrelated_tool_call_does_not_disarm_the_guard() {
-        let op = BuzzReplyGuardOperation::new(MAX_REPLY_NAGS);
+        let op = BuzzReplyGuardOperation::new(MAX_REPLY_NAGS, ["developer__shell".to_string()]);
         let result = op
             .run(
                 &Session::default(),
@@ -827,10 +830,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_hallucinated_shell_does_not_disarm_the_guard() {
+        let op = BuzzReplyGuardOperation::new(MAX_REPLY_NAGS, ["real__shell".to_string()]);
+        let result = op
+            .run(
+                &Session::default(),
+                &turn_with(shell_request("buzz messages send --channel x --content hi")),
+                &emitter(),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(result, OperationResult::Applied(_)));
+    }
+
+    #[tokio::test]
     async fn the_guard_stops_after_its_budget() {
         // Advisory, not compulsion: after MAX_REPLY_NAGS the turn ends whether
         // or not anything was published.
-        let op = BuzzReplyGuardOperation::new(MAX_REPLY_NAGS);
+        let op = BuzzReplyGuardOperation::new(MAX_REPLY_NAGS, ["developer__shell".to_string()]);
         let mut nag = Message::user()
             .with_text(REPLY_GUARD_NAG)
             .with_visibility(false, true);

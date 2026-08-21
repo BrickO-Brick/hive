@@ -25,6 +25,9 @@ pub const PROTOCOL_VERSION: u32 = 2;
 pub const MAX_PROMPT_BYTES: usize = 1024 * 1024;
 pub const MAX_SYSTEM_PROMPT_BYTES: usize = 512 * 1024;
 pub const MAX_LINE_BYTES: usize = 16 * 1024 * 1024;
+/// Maximum model-requested tool calls dispatched from one provider round.
+/// Preserved from the pre-Goose loop to bound fan-out and resource use.
+pub const MAX_TOOL_CALLS_PER_TURN: usize = 64;
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -148,6 +151,47 @@ fn env_str(key: &str) -> Option<String> {
 
 fn env_parse<T: std::str::FromStr>(key: &str) -> Option<T> {
     env_str(key).and_then(|s| s.parse().ok())
+}
+
+/// Derive a billing identity only when the configured provider endpoint is an
+/// official allowlisted origin. Custom/gateway endpoints deliberately return
+/// `None`, even when they speak a compatible wire protocol.
+pub fn pricing_identity(provider: &str, model: &str) -> Option<crate::types::PricingIdentity> {
+    let base_url = match goose_provider_name(provider) {
+        "anthropic" => {
+            env_str("ANTHROPIC_HOST").unwrap_or_else(|| "https://api.anthropic.com".to_string())
+        }
+        "openai" => env_str("OPENAI_BASE_URL")
+            .or_else(|| env_str("OPENAI_HOST"))
+            .unwrap_or_else(|| "https://api.openai.com/v1".to_string()),
+        "openrouter" => "https://openrouter.ai/api/v1".to_string(),
+        _ => return None,
+    };
+    pricing_authority(&base_url).map(|authority| crate::types::PricingIdentity {
+        authority: authority.to_string(),
+        model: model.to_string(),
+        cache_class: None,
+    })
+}
+
+fn pricing_authority(base_url: &str) -> Option<&'static str> {
+    let parsed = url::Url::parse(base_url).ok()?;
+    if parsed.scheme() != "https"
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+        || parsed.port().is_some_and(|port| port != 443)
+    {
+        return None;
+    }
+    let path = parsed.path().trim_end_matches('/');
+    match (parsed.host_str()?.to_ascii_lowercase().as_str(), path) {
+        ("api.anthropic.com", "") => Some("api.anthropic.com"),
+        ("api.openai.com", "/v1") => Some("api.openai.com"),
+        ("openrouter.ai", "/api/v1") => Some("openrouter.ai"),
+        _ => None,
+    }
 }
 
 impl Config {

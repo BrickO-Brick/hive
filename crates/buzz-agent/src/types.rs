@@ -182,6 +182,43 @@ pub struct PricingIdentity {
     pub cache_class: Option<String>,
 }
 
+/// Per-turn and per-session accumulator for one optional cache category.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CacheTotalState {
+    #[default]
+    Unseen,
+    Exact(u64),
+    Unknown,
+}
+
+impl CacheTotalState {
+    pub fn fold(self, value: Option<u64>) -> Self {
+        match (self, value) {
+            (Self::Unknown, _) | (_, None) => Self::Unknown,
+            (Self::Unseen, Some(n)) => Self::Exact(n),
+            (Self::Exact(acc), Some(n)) => acc.checked_add(n).map_or(Self::Unknown, Self::Exact),
+        }
+    }
+
+    pub fn merge_session(self, turn: Self) -> Self {
+        match (self, turn) {
+            (Self::Unknown, _) | (_, Self::Unknown) => Self::Unknown,
+            (acc, Self::Unseen) => acc,
+            (Self::Unseen, Self::Exact(n)) => Self::Exact(n),
+            (Self::Exact(acc), Self::Exact(n)) => {
+                acc.checked_add(n).map_or(Self::Unknown, Self::Exact)
+            }
+        }
+    }
+
+    pub fn exact_value(self) -> Option<u64> {
+        match self {
+            Self::Exact(n) => Some(n),
+            Self::Unseen | Self::Unknown => None,
+        }
+    }
+}
+
 /// Tri-state accumulator for provider-reported total tokens within one ACP turn.
 ///
 /// - `Unseen`: no usage-bearing response observed yet (initial state for each turn).

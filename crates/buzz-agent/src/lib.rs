@@ -103,12 +103,15 @@ struct Session {
     steers: crate::steer::SteerQueue,
     accumulated_input_tokens: u64,
     accumulated_output_tokens: u64,
-    /// Subset of `accumulated_input_tokens`, published as
-    /// `accumulatedCachedInputTokens` for buzz-acp pricing (#3463).
-    accumulated_cached_input_tokens: u64,
-    /// Session-cumulative provider total. `None` once any turn fails to report
-    /// one -- buzz-acp must not read a missing total as zero (#3593).
-    accumulated_total_tokens: Option<u64>,
+    /// Subset of `accumulated_input_tokens`, published as cache-read tokens.
+    accumulated_cached_input_tokens: crate::types::CacheTotalState,
+    /// Cache-written subset, billed independently from cache reads.
+    accumulated_cache_write_tokens: crate::types::CacheTotalState,
+    /// Session-cumulative provider total with sticky unknown semantics.
+    accumulated_total_tokens: crate::types::TurnTotalState,
+    /// Proven publisher identity across every usage-bearing turn. `Some(None)`
+    /// is sticky once any turn is untrusted or disagrees.
+    accumulated_pricing_identity: Option<Option<crate::types::PricingIdentity>>,
 }
 
 pub struct App {
@@ -577,8 +580,10 @@ async fn session_new(app: &Arc<App>, id: Value, params: Value, wire_tx: &WireSen
                 steers: crate::steer::SteerQueue::new(),
                 accumulated_input_tokens: 0,
                 accumulated_output_tokens: 0,
-                accumulated_cached_input_tokens: 0,
-                accumulated_total_tokens: Some(0),
+                accumulated_cached_input_tokens: crate::types::CacheTotalState::Unseen,
+                accumulated_cache_write_tokens: crate::types::CacheTotalState::Unseen,
+                accumulated_total_tokens: crate::types::TurnTotalState::Unseen,
+                accumulated_pricing_identity: None,
             },
         );
     }
@@ -801,18 +806,27 @@ async fn session_prompt(app: &Arc<App>, id: Value, params: Value, wire_tx: &Wire
                 .saturating_add(tokens.output.unwrap_or(0));
             s.accumulated_cached_input_tokens = s
                 .accumulated_cached_input_tokens
-                .saturating_add(tokens.cached_input.unwrap_or(0));
-            // Sticky-unknown: one turn without a provider total poisons the
-            // session cumulative, so we omit the field rather than under-report.
-            s.accumulated_total_tokens = match (s.accumulated_total_tokens, tokens.total) {
-                (Some(acc), Some(t)) => Some(acc.saturating_add(t)),
-                _ => None,
+                .merge_session(tokens.cached_input);
+            s.accumulated_cache_write_tokens = s
+                .accumulated_cache_write_tokens
+                .merge_session(tokens.cache_write);
+            s.accumulated_total_tokens = s.accumulated_total_tokens.merge_session(tokens.total);
+            s.accumulated_pricing_identity = match (
+                s.accumulated_pricing_identity.take(),
+                tokens.pricing_identity.clone(),
+            ) {
+                (None, identity) => identity,
+                (Some(Some(current)), Some(Some(turn))) if current == turn => Some(Some(current)),
+                (Some(_), Some(_)) => Some(None),
+                (current, None) => current,
             };
             (
                 s.accumulated_input_tokens,
                 s.accumulated_output_tokens,
                 s.accumulated_cached_input_tokens,
+                s.accumulated_cache_write_tokens,
                 s.accumulated_total_tokens,
+                s.accumulated_pricing_identity.clone(),
             )
         })
     };
@@ -832,7 +846,9 @@ async fn session_prompt(app: &Arc<App>, id: Value, params: Value, wire_tx: &Wire
     // flight; the response triggers take_turn_usage(). Reversing these
     // produces zero kind-44200 events, silently.
     if tokens.observed() {
-        if let Some((acc_in, acc_out, acc_cached, acc_total)) = accumulated {
+        if let Some((acc_in, acc_out, acc_cached, acc_written, acc_total, acc_identity)) =
+            accumulated
+        {
             let model = {
                 let sessions = app.sessions.lock().await;
                 sessions
@@ -845,29 +861,16 @@ async fn session_prompt(app: &Arc<App>, id: Value, params: Value, wire_tx: &Wire
                     .or_else(|| std::env::var("GOOSE_MODEL").ok())
                     .unwrap_or_default()
             };
-            wire::send(
-                wire_tx,
-                goose_session_update(&p.session_id, {
-                    let mut u = json!({
-                        "sessionUpdate": "usage_update",
-                        "used": acc_in.saturating_add(acc_out),
-                        "contextLimit": 0u64,
-                        "accumulatedInputTokens": acc_in,
-                        "accumulatedOutputTokens": acc_out,
-                        // A subset of accumulatedInputTokens, not an
-                        // addition to it (#3463).
-                        "accumulatedCachedInputTokens": acc_cached,
-                        "model": model,
-                    });
-                    // Only when exactly known; absent means "unknown",
-                    // which buzz-acp distinguishes from zero (#3593).
-                    if let Some(total) = acc_total {
-                        u["accumulatedTotalTokens"] = json!(total);
-                    }
-                    u
-                }),
-            )
-            .await;
+            let update = wire::usage_update_payload(
+                Some(acc_in),
+                Some(acc_out),
+                acc_cached.exact_value(),
+                acc_written.exact_value(),
+                acc_total,
+                &model,
+                acc_identity.as_ref().and_then(|identity| identity.as_ref()),
+            );
+            wire::send(wire_tx, goose_session_update(&p.session_id, update)).await;
         }
     }
 

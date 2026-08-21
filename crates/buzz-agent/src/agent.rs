@@ -30,18 +30,20 @@ use crate::wire::{self, WireSender};
 pub(crate) const KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Per-turn token accounting, mirroring buzz-agent's contract.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct TurnTokens {
     pub input: Option<u64>,
     pub output: Option<u64>,
-    /// Cache reads+writes. A *subset* of `input`, not an addition to it --
-    /// goose documents `cache_read_input_tokens`/`cache_write_input_tokens` as
-    /// already counted in `input_tokens` (`token_usage.rs:72-78`). buzz-acp
-    /// reads this as `accumulatedCachedInputTokens` for pricing (#3463).
-    pub cached_input: Option<u64>,
-    /// Provider-reported total, when it reports one. buzz-acp treats a missing
-    /// total as unknown rather than zero (#3593).
-    pub total: Option<u64>,
+    /// Cache-served input tokens, a subset of `input`.
+    pub cached_input: crate::types::CacheTotalState,
+    /// Cache-written input tokens, a subset of `input` but billed separately.
+    pub cache_write: crate::types::CacheTotalState,
+    /// Provider-reported total. A missing value on any usage-bearing response
+    /// poisons the turn rather than silently under-reporting it.
+    pub total: crate::types::TurnTotalState,
+    /// Proven publisher billing identity while every usage-bearing response
+    /// agrees; `Some(None)` is permanently poisoned for this turn.
+    pub pricing_identity: Option<Option<crate::types::PricingIdentity>>,
 }
 
 impl TurnTokens {

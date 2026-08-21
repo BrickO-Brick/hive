@@ -170,13 +170,25 @@ pub async fn run_turn(
     // different points: `start_machine` before inference, `machine` at the
     // round gate and again when a turn wants to end.
     let outcome = crate::ops::Outcome::new();
+    let reply_guard_tools = if ctx.require_reply {
+        Some(
+            ctx.agent
+                .list_tools(ctx.session_id, None)
+                .await
+                .into_iter()
+                .map(|tool| tool.name.to_string())
+                .collect(),
+        )
+    } else {
+        None
+    };
     let machine = crate::ops::round_gate(
         max_rounds,
         outcome.clone(),
         ctx.cancel.clone(),
         ctx.hook_extension
             .map(|extension| (Arc::clone(ctx.agent), extension.to_string())),
-        ctx.require_reply,
+        reply_guard_tools,
     );
     let start_machine = crate::ops::round_start(
         ctx.steers.clone(),
@@ -359,20 +371,25 @@ async fn round(
     let conversation = state.conversation();
 
     let assistant = match infer(ctx, state.session(), &conversation, tokens).await? {
-        Some(message) => message,
+        Some(Inference {
+            message,
+            total_tokens,
+        }) => {
+            // Goose's compaction gate needs current conversation occupancy,
+            // not the turn-cumulative sum of each round's full context.
+            state.set_total_tokens(total_tokens);
+            message
+        }
+        // Cancellation discards a partial inference but still has to preserve
+        // the ACP cancellation contract.
+        None if ctx.cancel.is_cancelled() => return Ok(Round::Stopped(StopReason::Cancelled)),
         // A provider that returns nothing is not a turn we can continue.
         None => return Ok(Round::Stopped(StopReason::EndTurn)),
     };
 
     state.push(assistant.clone());
-    // Keep the running total current: goose's compaction check prefers it
-    // over re-estimating the conversation.
-    // i32 because that is the width goose's `Usage` uses; a total beyond
-    // i32::MAX means something has gone very wrong upstream, and saturating is
-    // better than wrapping into a negative that reads as "no usage".
-    state.set_total_tokens(tokens.total.map(|t| i32::try_from(t).unwrap_or(i32::MAX)));
 
-    let requests: Vec<ToolRequest> = assistant
+    let mut requests: Vec<ToolRequest> = assistant
         .content
         .iter()
         .filter_map(|content| match content {
@@ -380,6 +397,15 @@ async fn round(
             _ => None,
         })
         .collect();
+
+    if requests.len() > crate::config::MAX_TOOL_CALLS_PER_TURN {
+        tracing::warn!(
+            requested = requests.len(),
+            limit = crate::config::MAX_TOOL_CALLS_PER_TURN,
+            "capping model-requested tool calls"
+        );
+        requests.truncate(crate::config::MAX_TOOL_CALLS_PER_TURN);
+    }
 
     if requests.is_empty() {
         return Ok(Round::WantsToEnd);
@@ -421,6 +447,12 @@ async fn round(
     Ok(Round::Continued)
 }
 
+/// One fully accumulated inference plus that response's own occupancy total.
+struct Inference {
+    message: Message,
+    total_tokens: Option<i32>,
+}
+
 /// Stream one assistant response, emitting chunks onto the ACP wire as they
 /// arrive and accumulating usage.
 async fn infer(
@@ -428,7 +460,7 @@ async fn infer(
     session: &Session,
     conversation: &Conversation,
     tokens: &mut super::agent::TurnTokens,
-) -> Result<Option<Message>, AgentError> {
+) -> Result<Option<Inference>, AgentError> {
     let provider = ctx.model.provider().await;
     let model_config = ctx.model.config().await;
 
@@ -443,9 +475,10 @@ async fn infer(
             &tools,
         )
         .await
-        .map_err(|e| classify_provider_error(&e.to_string()))?;
+        .map_err(classify_provider_error)?;
 
     let mut accumulated: Option<Message> = None;
+    let mut response_total: Option<i32> = None;
     let mut keepalive = tokio::time::interval(crate::agent::KEEPALIVE_INTERVAL);
     keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     keepalive.tick().await; // first tick is immediate; discard it
@@ -461,14 +494,15 @@ async fn infer(
             // dispatch there is no child process to notify, and the partial
             // response is discarded rather than persisted.
             _ = ctx.cancel.cancelled() => {
-                return Ok(accumulated);
+                return Ok(None);
             }
 
             next = stream.next() => {
                 let Some(item) = next else { break };
-                let (message, usage) = item.map_err(|e| classify_provider_error(&e.to_string()))?;
+                let (message, usage) = item.map_err(classify_provider_error)?;
 
                 if let Some(usage) = usage {
+                    response_total = usage.usage.total_tokens;
                     accumulate_usage(tokens, &usage);
                 }
 
@@ -487,7 +521,10 @@ async fn infer(
         }
     }
 
-    Ok(accumulated)
+    Ok(accumulated.map(|message| Inference {
+        message,
+        total_tokens: response_total,
+    }))
 }
 
 /// Fold a streamed chunk into the message being accumulated.
@@ -519,13 +556,25 @@ fn accumulate_usage(
     if let Some(o) = u.output_tokens {
         tokens.output = Some(tokens.output.unwrap_or(0) + o.max(0) as u64);
     }
-    if u.cache_read_input_tokens.is_some() || u.cache_write_input_tokens.is_some() {
-        let cached = u.cache_read_input_tokens.unwrap_or(0).max(0) as u64
-            + u.cache_write_input_tokens.unwrap_or(0).max(0) as u64;
-        tokens.cached_input = Some(tokens.cached_input.unwrap_or(0) + cached);
-    }
-    if let Some(t) = u.total_tokens {
-        tokens.total = Some(tokens.total.unwrap_or(0) + t.max(0) as u64);
+    let usage_bearing = u.input_tokens.is_some() || u.output_tokens.is_some();
+    if usage_bearing {
+        tokens.cached_input = tokens
+            .cached_input
+            .fold(u.cache_read_input_tokens.map(|n| n.max(0) as u64));
+        tokens.cache_write = tokens
+            .cache_write
+            .fold(u.cache_write_input_tokens.map(|n| n.max(0) as u64));
+        tokens.total = tokens.total.fold(u.total_tokens.map(|n| n.max(0) as u64));
+
+        let round_identity = crate::config::pricing_identity(
+            &std::env::var("GOOSE_PROVIDER").unwrap_or_default(),
+            &usage.model,
+        );
+        tokens.pricing_identity = Some(match tokens.pricing_identity.take() {
+            None => round_identity,
+            Some(Some(current)) if round_identity.as_ref() == Some(&current) => Some(current),
+            Some(Some(_)) | Some(None) => None,
+        });
     }
 }
 
@@ -550,14 +599,31 @@ fn push_tool_results(
 
 /// Preserve buzz-agent's error taxonomy so the harness's JSON-RPC code mapping
 /// stays meaningful.
-fn classify_provider_error(msg: &str) -> AgentError {
-    let lower = msg.to_lowercase();
-    if lower.contains("auth") || lower.contains("401") {
-        AgentError::LlmAuth(msg.to_string())
-    } else if lower.contains("model") && lower.contains("not found") {
-        AgentError::LlmModelNotFound(msg.to_string())
-    } else {
-        AgentError::Llm(msg.to_string())
+fn classify_provider_error(error: goose_provider_types::errors::ProviderError) -> AgentError {
+    use goose_provider_types::errors::ProviderError;
+    let message = error.to_string();
+    match error {
+        ProviderError::Authentication(_) | ProviderError::NotConfigured => {
+            AgentError::LlmAuth(message)
+        }
+        // Goose has no model-not-found variant; providers commonly surface it
+        // as a 404 endpoint error, preserving Buzz's dedicated wire code.
+        ProviderError::EndpointNotFound(details)
+            if details.to_ascii_lowercase().contains("model") =>
+        {
+            AgentError::LlmModelNotFound(message)
+        }
+        ProviderError::ContextLengthExceeded(_)
+        | ProviderError::RateLimitExceeded { .. }
+        | ProviderError::ServerError(_)
+        | ProviderError::NetworkError(_)
+        | ProviderError::RequestFailed(_)
+        | ProviderError::ExecutionError(_)
+        | ProviderError::UsageError(_)
+        | ProviderError::NotImplemented(_)
+        | ProviderError::EndpointNotFound(_)
+        | ProviderError::CreditsExhausted { .. }
+        | ProviderError::Refusal { .. } => AgentError::Llm(message),
     }
 }
 
@@ -576,6 +642,47 @@ mod tests {
 
     fn turn_state() -> crate::turn_state::TurnState {
         crate::turn_state::TurnState::new("s".to_string(), std::path::PathBuf::from("/tmp"), None)
+    }
+
+    fn usage(
+        model: &str,
+        input: i32,
+        output: i32,
+        total: Option<i32>,
+        read: Option<i32>,
+        write: Option<i32>,
+    ) -> goose::providers::base::ProviderUsage {
+        let mut provider_usage = goose_provider_types::conversation::token_usage::Usage::new(
+            Some(input),
+            Some(output),
+            total,
+        )
+        .with_cache_tokens(read, write);
+        // `Usage::new` synthesizes a total when absent; tests need to exercise
+        // a provider response that genuinely omitted it.
+        provider_usage.total_tokens = total;
+        goose::providers::base::ProviderUsage::new(model.to_string(), provider_usage)
+    }
+
+    #[test]
+    fn usage_keeps_cache_categories_separate_and_poisoned_totals_sticky() {
+        let mut tokens = crate::agent::TurnTokens::default();
+        accumulate_usage(
+            &mut tokens,
+            &usage("gpt-test", 100, 10, Some(110), Some(20), Some(30)),
+        );
+        accumulate_usage(
+            &mut tokens,
+            &usage("gpt-test", 120, 12, None, Some(25), Some(35)),
+        );
+        accumulate_usage(
+            &mut tokens,
+            &usage("gpt-test", 140, 14, Some(154), Some(30), Some(40)),
+        );
+
+        assert_eq!(tokens.cached_input.exact_value(), Some(75));
+        assert_eq!(tokens.cache_write.exact_value(), Some(105));
+        assert_eq!(tokens.total, crate::types::TurnTotalState::Unknown);
     }
 
     /// The loop treats "applied but changed nothing" as a reason to stop
@@ -666,16 +773,20 @@ mod tests {
 
     #[test]
     fn provider_errors_keep_buzz_agents_taxonomy() {
+        use goose_provider_types::errors::ProviderError;
+
         assert!(matches!(
-            classify_provider_error("401 Unauthorized"),
+            classify_provider_error(ProviderError::Authentication("expired".into())),
             AgentError::LlmAuth(_)
         ));
         assert!(matches!(
-            classify_provider_error("model gpt-9 not found"),
+            classify_provider_error(ProviderError::EndpointNotFound(
+                "model gpt-9 not found".into()
+            )),
             AgentError::LlmModelNotFound(_)
         ));
         assert!(matches!(
-            classify_provider_error("connection reset"),
+            classify_provider_error(ProviderError::NetworkError("connection reset".into())),
             AgentError::Llm(_)
         ));
     }
