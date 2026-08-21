@@ -1776,6 +1776,7 @@ CREATE TABLE workflow_owner_commands (
     proposed_yaml TEXT,
     status workflow_owner_command_status NOT NULL,
     resulting_revision BYTEA,
+    receipt_event_id BYTEA,
     terminal_reason TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
