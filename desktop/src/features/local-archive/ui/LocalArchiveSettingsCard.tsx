@@ -3,11 +3,15 @@ import * as React from "react";
 import { toast } from "sonner";
 
 import {
+  archiveSizeStats,
   createSaveSubscription,
   deleteSaveSubscription,
+  getObserverRetentionDays,
   listSaveSubscriptions,
   mergeSaveSubscriptionKinds,
   removeSaveSubscriptionKind,
+  setObserverRetentionDays,
+  type ArchiveSizeStats,
   type SaveSubscription,
   type ScopeType,
 } from "@/shared/api/tauriArchive";
@@ -27,6 +31,7 @@ import {
 import { SettingsSectionHeader } from "@/features/settings/ui/SettingsSectionHeader";
 import { setExplicitAgentMetricArchiveChoice } from "../agentMetricArchivePreference";
 import { setExplicitObserverArchiveChoice } from "../observerArchivePreference";
+import { deriveSizeReadout, parseRetentionDays } from "../retentionSettings";
 
 import {
   buildSubscriptionRequest,
@@ -147,6 +152,134 @@ function AgentMetricArchiveSection({
             id="local-archive-agent-metric-toggle"
             onCheckedChange={onToggle}
           />
+        </SettingsOptionRow>
+      </SettingsOptionGroup>
+    </div>
+  );
+}
+
+// ── Observer retention section ────────────────────────────────────────────────
+
+type RetentionSectionProps = {
+  /** Persisted value, or `null` while the initial load is in flight. */
+  savedDays: number | null;
+  onSaved: (days: number) => void;
+};
+
+export function ObserverRetentionSection({
+  savedDays,
+  onSaved,
+}: RetentionSectionProps) {
+  const [draft, setDraft] = React.useState("");
+  const [isSaving, setIsSaving] = React.useState(false);
+
+  // Seed the field from the persisted value once it loads, and re-seed whenever
+  // it changes underneath us (e.g. a successful save elsewhere).
+  React.useEffect(() => {
+    if (savedDays !== null) setDraft(String(savedDays));
+  }, [savedDays]);
+
+  const parsed = parseRetentionDays(draft);
+  const invalid = !parsed.ok;
+  const unchanged =
+    parsed.ok && savedDays !== null && parsed.days === savedDays;
+  const canSave = parsed.ok && !unchanged && !isSaving;
+
+  const handleSave = React.useCallback(async () => {
+    if (!parsed.ok) return;
+    setIsSaving(true);
+    try {
+      await setObserverRetentionDays(parsed.days);
+      onSaved(parsed.days);
+      toast.success("Retention window updated.");
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Failed to update retention.",
+      );
+    } finally {
+      setIsSaving(false);
+    }
+  }, [parsed, onSaved]);
+
+  return (
+    <div data-testid="local-archive-retention-section">
+      <SettingsOptionGroup
+        title="Observer frame retention"
+        description="Observer frames older than this many days are pruned from the local archive. NIP-AM turn metrics and every other archived kind are kept forever."
+      >
+        <div className="space-y-3 px-4 py-4">
+          <div className="flex items-end gap-2">
+            <div className="min-w-0">
+              <label
+                className="mb-1.5 block text-sm font-medium"
+                htmlFor="local-archive-retention-days"
+              >
+                Keep for (days)
+              </label>
+              <input
+                className="w-32 rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                data-testid="local-archive-retention-days"
+                disabled={savedDays === null}
+                id="local-archive-retention-days"
+                inputMode="numeric"
+                onChange={(e) => setDraft(e.target.value)}
+                placeholder="30"
+                type="text"
+                value={draft}
+              />
+            </div>
+            <Button
+              data-testid="local-archive-retention-save"
+              disabled={!canSave}
+              onClick={() => void handleSave()}
+              type="button"
+            >
+              {isSaving ? "Saving…" : "Save"}
+            </Button>
+          </div>
+          {invalid && draft.trim() !== "" && (
+            <p
+              className="text-xs text-destructive"
+              data-testid="local-archive-retention-error"
+            >
+              {parsed.error}
+            </p>
+          )}
+        </div>
+      </SettingsOptionGroup>
+    </div>
+  );
+}
+
+// ── Archive size readout section ──────────────────────────────────────────────
+
+export function ArchiveSizeSection({
+  stats,
+}: {
+  stats: ArchiveSizeStats | null;
+}) {
+  const readout = stats ? deriveSizeReadout(stats) : null;
+  return (
+    <div data-testid="local-archive-size-section">
+      <SettingsOptionGroup title="Storage">
+        <SettingsOptionRow>
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-medium">Archive size on disk</p>
+            <p
+              className="text-sm font-normal text-muted-foreground/70"
+              data-settings-subcopy
+            >
+              {readout === null
+                ? "Loading…"
+                : `Physical size ${readout.physicalLabel} (database + write-ahead log). ${readout.reclaimableLabel} is reclaimable after pruning — freed pages become reusable space; the file only shrinks after an offline compaction.`}
+            </p>
+          </div>
+          <span
+            className="shrink-0 text-sm font-medium tabular-nums"
+            data-testid="local-archive-size-physical"
+          >
+            {readout?.physicalLabel ?? "—"}
+          </span>
         </SettingsOptionRow>
       </SettingsOptionGroup>
     </div>
@@ -397,6 +530,10 @@ export function LocalArchiveSettingsCard() {
   const [isAddingOpen, setIsAddingOpen] = React.useState(false);
   const [observerToggling, setObserverToggling] = React.useState(false);
   const [metricToggling, setMetricToggling] = React.useState(false);
+  const [retentionDays, setRetentionDays] = React.useState<number | null>(null);
+  const [sizeStats, setSizeStats] = React.useState<ArchiveSizeStats | null>(
+    null,
+  );
 
   const pubkey = identityQuery.data?.pubkey ?? "";
 
@@ -427,6 +564,22 @@ export function LocalArchiveSettingsCard() {
   React.useEffect(() => {
     void reload();
   }, [reload]);
+
+  // Retention window + size readout load independently of the subscription
+  // list; a failure in either is non-fatal (the sections show their loading
+  // fallback) and must not blank the rest of the card.
+  React.useEffect(() => {
+    void getObserverRetentionDays()
+      .then(setRetentionDays)
+      .catch((err) =>
+        console.warn("[LocalArchiveSettingsCard] retention load failed:", err),
+      );
+    void archiveSizeStats()
+      .then(setSizeStats)
+      .catch((err) =>
+        console.warn("[LocalArchiveSettingsCard] size load failed:", err),
+      );
+  }, []);
 
   const handleDelete = React.useCallback(
     async (scopeType: ScopeType, scopeValue: string) => {
@@ -542,6 +695,15 @@ export function LocalArchiveSettingsCard() {
           onToggle={(checked) => void handleMetricToggle(checked)}
           toggling={metricToggling}
         />
+
+        {/* Observer frame retention window */}
+        <ObserverRetentionSection
+          onSaved={setRetentionDays}
+          savedDays={retentionDays}
+        />
+
+        {/* Archive size readout */}
+        <ArchiveSizeSection stats={sizeStats} />
 
         {/* Channel subscriptions */}
         <div data-testid="local-archive-subscriptions">
