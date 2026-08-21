@@ -590,7 +590,7 @@ export function AppearanceWorkspacePreview({
           )}
         >
           <div className="mb-3 flex items-center gap-2 px-1.5 py-1">
-            <div className="flex size-6 items-center justify-center rounded-lg bg-primary text-[10px] font-bold text-primary-foreground">
+            <div className="flex size-6 items-center justify-center rounded-lg bg-primary text-2xs font-bold text-primary-foreground">
               B
             </div>
             <span className="text-xs font-semibold">Buzz</span>
@@ -602,7 +602,7 @@ export function AppearanceWorkspacePreview({
           <button className={navItemClass(false)} type="button">
             <Inbox className="size-3.5" /> Inbox
           </button>
-          <p className="mb-1 mt-4 px-2 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+          <p className="mb-1 mt-4 px-2 text-3xs font-semibold uppercase tracking-wider text-muted-foreground/70">
             Channels
           </p>
           <button
