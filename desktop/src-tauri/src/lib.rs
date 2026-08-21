@@ -646,6 +646,7 @@ pub fn run() {
             get_forum_posts,
             get_forum_thread,
             get_thread_replies,
+            get_channel_reconnect_repair,
             get_channel_window,
             get_channel_messages_before,
             edit_message,
@@ -913,7 +914,6 @@ pub fn run() {
         RunEvent::Exit => {
             shut_down_app(app_handle, &run_shutdown_done);
             app_handle.state::<ClipboardState>().release();
-
             #[cfg(all(feature = "mesh-llm", target_os = "macos"))]
             if restart_requested.load(Ordering::SeqCst) {
                 relaunch_after_mesh_shutdown(app_handle);
