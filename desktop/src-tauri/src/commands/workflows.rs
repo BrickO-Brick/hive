@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde::Serialize;
 use serde_json::Value;
@@ -460,24 +460,43 @@ fn webhook_secret_from_message(message: &str) -> Option<String> {
 /// Fold relay-authored current state over legacy owner-authored definitions.
 /// A deleted state is authoritative and suppresses the legacy fallback.
 fn workflows_from_events(events: &[nostr::Event]) -> Vec<WorkflowWire> {
-    let projected_ids: HashSet<String> = events
-        .iter()
-        .filter(|event| event.kind.as_u16() == 30623)
-        .filter_map(|event| tag_value(event, "d"))
-        .collect();
+    let mut state_heads: HashMap<String, &nostr::Event> = HashMap::new();
+    for event in events.iter().filter(|event| event.kind.as_u16() == 30623) {
+        let Some(workflow_id) = tag_value(event, "d") else {
+            continue;
+        };
+        match state_heads.get(&workflow_id) {
+            Some(current) if !workflow_state_is_newer(event, current) => {}
+            _ => {
+                state_heads.insert(workflow_id, event);
+            }
+        }
+    }
+    let projected_ids: HashSet<String> = state_heads.keys().cloned().collect();
 
     events
         .iter()
         .filter(|event| {
             let is_state = event.kind.as_u16() == 30623;
             if is_state {
-                return tag_value(event, "status").as_deref() != Some("deleted");
+                return tag_value(event, "d").is_some_and(|workflow_id| {
+                    state_heads
+                        .get(&workflow_id)
+                        .is_some_and(|head| head.id == event.id)
+                        && tag_value(event, "status").as_deref() != Some("deleted")
+                });
             }
             event.kind.as_u16() == 30620
                 && tag_value(event, "d").is_some_and(|id| !projected_ids.contains(&id))
         })
         .map(workflow_from_event)
         .collect()
+}
+
+fn workflow_state_is_newer(candidate: &nostr::Event, current: &nostr::Event) -> bool {
+    candidate.created_at > current.created_at
+        || (candidate.created_at == current.created_at
+            && candidate.id.to_hex() < current.id.to_hex())
 }
 
 /// Convert a workflow definition or relay state event into a [`WorkflowWire`].

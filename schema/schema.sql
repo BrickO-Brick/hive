@@ -270,6 +270,9 @@ CREATE INDEX idx_events_addressable
 CREATE INDEX idx_events_parameterized
     ON events (community_id, kind, pubkey, d_tag, created_at DESC, id)
     WHERE d_tag IS NOT NULL AND deleted_at IS NULL;
+CREATE UNIQUE INDEX events_live_workflow_state_coordinate_idx
+    ON events (community_id, kind, d_tag)
+    WHERE kind = 30623 AND d_tag IS NOT NULL AND deleted_at IS NULL;
 CREATE INDEX idx_events_not_before ON events (community_id, not_before)
     WHERE not_before IS NOT NULL AND deleted_at IS NULL AND delivered_at IS NULL;
 -- Full-text search. Minimal GIN over the generated tsvector; community scoping

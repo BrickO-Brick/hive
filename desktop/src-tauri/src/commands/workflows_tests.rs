@@ -28,6 +28,19 @@ fn wf_state(
     status: &str,
     yaml: &str,
 ) -> nostr::Event {
+    wf_state_at(d, h, owner, revision, status, yaml, 100)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn wf_state_at(
+    d: &str,
+    h: &str,
+    owner: &nostr::PublicKey,
+    revision: &nostr::EventId,
+    status: &str,
+    yaml: &str,
+    created_at: u64,
+) -> nostr::Event {
     let relay = Keys::generate();
     let owner = owner.to_hex();
     let revision = revision.to_hex();
@@ -42,6 +55,7 @@ fn wf_state(
     .map(|tag| Tag::parse(tag).expect("parse tag"))
     .collect();
     EventBuilder::new(Kind::Custom(30623), yaml)
+        .custom_created_at(nostr::Timestamp::from(created_at))
         .tags(tags)
         .sign_with_keys(&relay)
         .expect("sign")
@@ -98,6 +112,43 @@ fn deleted_relay_state_suppresses_legacy_definition() {
     let legacy = wf_event(WF, CHAN, YAML);
     let deleted = wf_state(WF, CHAN, &legacy.pubkey, &legacy.id, "deleted", "");
     assert!(workflows_from_events(&[legacy, deleted]).is_empty());
+}
+
+#[test]
+fn relay_state_fold_selects_one_head_after_key_rotation() {
+    let owner = Keys::generate();
+    let first_request = EventBuilder::new(Kind::Custom(46021), "first")
+        .custom_created_at(nostr::Timestamp::from(100))
+        .tags([])
+        .sign_with_keys(&Keys::generate())
+        .expect("sign first request");
+    let second_request = EventBuilder::new(Kind::Custom(46021), "second")
+        .custom_created_at(nostr::Timestamp::from(200))
+        .tags([])
+        .sign_with_keys(&Keys::generate())
+        .expect("sign second request");
+    let first = wf_state_at(
+        WF,
+        CHAN,
+        &owner.public_key(),
+        &first_request.id,
+        "active",
+        "name: old\nsteps: []\n",
+        100,
+    );
+    let second = wf_state_at(
+        WF,
+        CHAN,
+        &owner.public_key(),
+        &second_request.id,
+        "active",
+        "name: new\nsteps: []\n",
+        200,
+    );
+
+    let workflows = workflows_from_events(&[first, second]);
+    assert_eq!(workflows.len(), 1);
+    assert_eq!(workflows[0].revision, second_request.id.to_hex());
 }
 
 #[test]

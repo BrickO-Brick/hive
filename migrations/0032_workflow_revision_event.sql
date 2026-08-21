@@ -26,3 +26,10 @@ WHERE definition.community_id = workflow.community_id
 ALTER TABLE workflows
     ADD CONSTRAINT workflows_revision_event_id_length
     CHECK (revision_event_id IS NULL OR octet_length(revision_event_id) = 32);
+
+-- Workflow state is a relay-owned projection whose coordinate survives relay
+-- signing-key rotation. There may be only one live head per workflow,
+-- regardless of which relay key authored it.
+CREATE UNIQUE INDEX events_live_workflow_state_coordinate_idx
+    ON events (community_id, kind, d_tag)
+    WHERE kind = 30623 AND d_tag IS NOT NULL AND deleted_at IS NULL;

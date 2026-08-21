@@ -93,12 +93,11 @@ pub(crate) async fn store_workflow_state(
 
     sqlx::query(
         "UPDATE events SET deleted_at = NOW() \
-         WHERE community_id = $1 AND kind = $2 AND pubkey = $3 AND d_tag = $4 \
+         WHERE community_id = $1 AND kind = $2 AND d_tag = $3 \
          AND deleted_at IS NULL",
     )
     .bind(community_id.as_uuid())
     .bind(KIND_WORKFLOW_STATE as i32)
-    .bind(pubkey.as_slice())
     .bind(&workflow_id)
     .execute(&mut **tx)
     .await?;

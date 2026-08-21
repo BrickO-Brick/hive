@@ -1071,9 +1071,11 @@ mod tests {
         assert!(sql.contains("WHERE kind = 30620"));
         assert!(sql.contains("definition.id"));
         assert!(sql.contains("octet_length(revision_event_id) = 32"));
+        assert!(sql.contains("events_live_workflow_state_coordinate_idx"));
         let desired_schema = include_str!("../../../schema/schema.sql");
         assert!(desired_schema.contains("revision_event_id BYTEA CHECK"));
         assert!(desired_schema.contains("octet_length(revision_event_id) = 32"));
+        assert!(desired_schema.contains("events_live_workflow_state_coordinate_idx"));
     }
 
     #[test]

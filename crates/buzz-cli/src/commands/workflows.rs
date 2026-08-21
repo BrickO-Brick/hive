@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use sha2::{Digest, Sha256};
 
@@ -21,22 +21,62 @@ fn json_tag(event: &serde_json::Value, name: &str) -> Option<String> {
 }
 
 fn current_workflow_events(events: &[serde_json::Value]) -> Vec<serde_json::Value> {
-    let projected: HashSet<String> = events
+    let mut state_heads: HashMap<String, &serde_json::Value> = HashMap::new();
+    for event in events
         .iter()
         .filter(|event| event.get("kind").and_then(|value| value.as_u64()) == Some(30623))
-        .filter_map(|event| json_tag(event, "d"))
-        .collect();
+    {
+        let Some(workflow_id) = json_tag(event, "d") else {
+            continue;
+        };
+        match state_heads.get(&workflow_id) {
+            Some(current) if !json_workflow_state_is_newer(event, current) => {}
+            _ => {
+                state_heads.insert(workflow_id, event);
+            }
+        }
+    }
+    let projected: HashSet<String> = state_heads.keys().cloned().collect();
     events
         .iter()
         .filter(
             |event| match event.get("kind").and_then(|value| value.as_u64()) {
-                Some(30623) => json_tag(event, "status").as_deref() != Some("deleted"),
+                Some(30623) => json_tag(event, "d").is_some_and(|workflow_id| {
+                    state_heads
+                        .get(&workflow_id)
+                        .is_some_and(|head| head.get("id") == event.get("id"))
+                        && json_tag(event, "status").as_deref() != Some("deleted")
+                }),
                 Some(30620) => json_tag(event, "d").is_some_and(|id| !projected.contains(&id)),
                 _ => false,
             },
         )
         .cloned()
         .collect()
+}
+
+fn json_workflow_state_is_newer(
+    candidate: &serde_json::Value,
+    current: &serde_json::Value,
+) -> bool {
+    let candidate_created = candidate
+        .get("created_at")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or_default();
+    let current_created = current
+        .get("created_at")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or_default();
+    let candidate_id = candidate
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let current_id = current
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    candidate_created > current_created
+        || (candidate_created == current_created && candidate_id < current_id)
 }
 
 fn workflow_owner(event: &serde_json::Value) -> Option<String> {
@@ -346,5 +386,23 @@ mod tests {
             "tags": [["d", id], ["status", "deleted"]]
         });
         assert!(current_workflow_events(&[legacy, deleted]).is_empty());
+    }
+
+    #[test]
+    fn relay_state_fold_selects_one_head_after_key_rotation() {
+        let id = uuid::Uuid::new_v4().to_string();
+        let old = serde_json::json!({
+            "id": "bb", "kind": 30623, "pubkey": "old-relay", "created_at": 100, "content": "old",
+            "tags": [["d", id.clone()], ["owner", "11"], ["e", "aa"], ["status", "active"]]
+        });
+        let current = serde_json::json!({
+            "id": "dd", "kind": 30623, "pubkey": "new-relay", "created_at": 200, "content": "new",
+            "tags": [["d", id], ["owner", "11"], ["e", "cc"], ["status", "active"]]
+        });
+
+        assert_eq!(
+            current_workflow_events(&[old, current.clone()]),
+            vec![current]
+        );
     }
 }

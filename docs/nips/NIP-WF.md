@@ -55,7 +55,7 @@ After accepting a create, update, or deletion request, the relay publishes kind 
 }
 ```
 
-Only the configured relay identity is authoritative for kind `30623`. Clients must not infer workflow ownership from the state event's relay pubkey; they use the `owner` tag.
+Kind `30623` is a relay-owned projection. Relay signing-key rotation replaces the existing workflow coordinate instead of creating a second head; clients select one deterministic current head per `d` tag. Clients must not infer workflow ownership from the state event's relay pubkey; they use the `owner` tag.
 
 A deleted state has empty content and `status=deleted`. Clients prefer valid relay-signed `30623` state over legacy `30620` definitions and hide deleted state.
 
