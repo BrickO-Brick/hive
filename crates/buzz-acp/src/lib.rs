@@ -460,7 +460,7 @@ async fn renew_owned_workflow_deliveries(
         tracing::error!(delivery = %delivery.id, channel = %delivery.channel_id,
             "workflow delivery lease cannot be maintained — stopping local ownership");
         signal_in_flight_task(pool, delivery.channel_id, ControlSignal::Cancel);
-        queue.remove_event(delivery.channel_id, &delivery.message_event_id);
+        queue.terminalize_workflow_event(delivery.channel_id, &delivery.message_event_id);
         match owner {
             Owner::Event(event_id) => {
                 workflow_deliveries_by_event.remove(&event_id);
@@ -6826,6 +6826,104 @@ mod workflow_authority_tests {
             observed.await.unwrap(),
             None,
             "forged, duplicate, and cross-channel wakes must invoke neither claim nor finish"
+        );
+    }
+
+    #[tokio::test]
+    async fn renewal_failure_records_one_terminal_finalization_intent() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = vec![0; 8192];
+            let read = socket.read(&mut request).await.unwrap();
+            let request = String::from_utf8_lossy(&request[..read]).into_owned();
+            let body = "{}";
+            let response = format!("HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+            socket.write_all(response.as_bytes()).await.unwrap();
+            request
+        });
+        let client = relay::RestClient {
+            http: reqwest::Client::new(),
+            base_url,
+            keys: Keys::generate(),
+            auth_tag_json: None,
+        };
+        let channel = Uuid::new_v4();
+        let event = EventBuilder::new(Kind::Custom(KIND_STREAM_MESSAGE as u16), "workflow")
+            .sign_with_keys(&Keys::generate())
+            .unwrap();
+        let event_id = event.id.to_hex();
+        let delivery = ClaimedWorkflowDelivery {
+            id: Uuid::new_v4(),
+            workflow_id: Uuid::new_v4(),
+            run_id: Uuid::new_v4(),
+            step_id: "step".into(),
+            definition_event_id: "11".repeat(32),
+            message_event_id: event_id.clone(),
+            channel_id: channel,
+            target_pubkey: "22".repeat(32),
+            attempt: 1,
+            claim_token: Uuid::new_v4(),
+            claim_expires_at: chrono::Utc::now(),
+            execution_trace: serde_json::json!([]),
+            trigger_context: Some(serde_json::json!({})),
+        };
+        let delivery_id = delivery.id;
+        let mut queue = EventQueue::new(config::DedupMode::Queue);
+        assert!(queue.push(QueuedEvent {
+            channel_id: channel,
+            event,
+            received_at: std::time::Instant::now(),
+            prompt_tag: "workflow".into()
+        }));
+        let _checked_out = queue.flush_next().expect("workflow batch in flight");
+        let mut pool = AgentPool::from_slots(vec![]);
+        let mut by_event = HashMap::from([(event_id, delivery)]);
+        let mut by_turn = HashMap::new();
+        let mut native = HashMap::new();
+        let mut completed = HashMap::new();
+        let mut finalizing = HashMap::new();
+        renew_owned_workflow_deliveries(
+            &client,
+            120,
+            &mut pool,
+            &mut queue,
+            &mut by_event,
+            &mut by_turn,
+            &mut native,
+            &mut completed,
+            &mut finalizing,
+        )
+        .await;
+        let request = server.await.unwrap();
+        assert!(request.contains(&format!("/workflows/agent-deliveries/{delivery_id}/renew")));
+        assert!(by_event.is_empty());
+        assert_eq!(finalizing.len(), 1, "one terminal intent per delivery");
+        let terminal = finalizing.get(&delivery_id).expect("terminal intent");
+        assert!(!terminal.delivered);
+        assert!(!terminal.retryable);
+        assert_eq!(
+            terminal.failure_code.as_deref(),
+            Some("lease_renewal_failed")
+        );
+        renew_owned_workflow_deliveries(
+            &client,
+            120,
+            &mut pool,
+            &mut queue,
+            &mut by_event,
+            &mut by_turn,
+            &mut native,
+            &mut completed,
+            &mut finalizing,
+        )
+        .await;
+        assert_eq!(
+            finalizing.len(),
+            1,
+            "renewal handling cannot duplicate finalization"
         );
     }
 
