@@ -8,9 +8,9 @@
 //! # Scheduling
 //!
 //! No cron. The worker is triggered opportunistically — once shortly after
-//! archive sync starts, and again after each archive commit — and gated two
-//! ways so those frequent triggers collapse into at most one real prune per
-//! day:
+//! application startup (after the archive init barrier warms), and again after
+//! each archive commit — and gated two ways so those frequent triggers collapse
+//! into at most one real prune per day:
 //!
 //! 1. **In-process single-flight** ([`super::ArchiveDb::try_prune_guard`]): a
 //!    `compare_exchange` on an `AtomicBool` admits exactly one prune at a time
@@ -97,14 +97,20 @@ LIMIT ?4
 /// the global gate covers the whole archive rather than just the partition that
 /// happened to be active when the trigger fired. A partition with no kind-24200
 /// scopes in range simply prunes nothing.
+///
+/// Ordered so the worklist is deterministic: a pass that fails partway leaves a
+/// well-defined prefix pruned, and the idempotent retry resumes the remainder
+/// in the same order (already-pruned partitions re-run as no-ops).
 pub(super) const PRUNE_PARTITIONS_SQL: &str = "
 SELECT DISTINCT identity_pubkey, relay_url FROM archived_event_scopes
+ORDER BY identity_pubkey, relay_url
 ";
 
-/// Spawn a detached prune pass keyed off the app handle. Called post-commit and
-/// at archive-sync startup. The prune runs on the async runtime and its result
-/// is swallowed, so a prune error never propagates into the archive write that
-/// triggered it.
+/// Spawn a detached prune pass keyed off the app handle. Called post-commit
+/// from the archive write path (the unconditional-startup trigger calls
+/// [`maybe_prune`] directly, since it already holds the [`AppState`]). The prune
+/// runs on the async runtime and its result is swallowed, so a prune error never
+/// propagates into the archive write that triggered it.
 pub fn trigger_prune(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let state = app.state::<AppState>();

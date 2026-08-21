@@ -54,12 +54,22 @@ const OBSERVER_FRAME_TELEMETRY: &str = "telemetry";
 /// `await`s this barrier before its first write, so warming it early avoids a
 /// stall on the first observer frame. Non-fatal: the first real archive command
 /// retries and surfaces any error.
+///
+/// This is also the archive's unconditional-startup prune trigger. After
+/// warming init, it runs one opportunistic global prune pass, so a launch whose
+/// archive sync never starts (reconciliation never succeeds) and which takes no
+/// new archive commits still prunes stale observer frames once the ≥24h gate
+/// allows — the plan's "startup" trigger. `maybe_prune` rides the same gated
+/// adapter (its own init `await`), and its single-flight flag + gate collapse
+/// this pass with the post-commit trigger into at most one real prune per day.
 pub fn spawn_warm_init(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         use tauri::Manager;
-        if let Err(error) = app.state::<AppState>().archive_db.warm_init().await {
+        let state = app.state::<AppState>();
+        if let Err(error) = state.archive_db.warm_init().await {
             eprintln!("buzz-desktop: archive DB init deferred: {error}");
         }
+        prune::maybe_prune(&state).await;
     });
 }
 

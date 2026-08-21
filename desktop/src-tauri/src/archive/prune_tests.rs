@@ -321,27 +321,57 @@ fn run_prune_if_due_prunes_every_partition_before_stamping() {
 }
 
 #[test]
-fn run_prune_if_due_leaves_gate_unstamped_when_a_partition_fails() {
-    // A mid-worklist failure must leave the gate unstamped so the idempotent
-    // pass retries the remainder. Force the failure by dropping the metric index
-    // (the last cascade stage), so whichever partition is pruned first errors
-    // before the worklist completes.
+fn run_prune_if_due_leaves_gate_unstamped_then_retry_completes_remainder() {
+    // A mid-worklist failure must commit the prefix, leave the gate unstamped,
+    // and let the idempotent retry finish the remainder. The worklist is
+    // ordered by (identity_pubkey, relay_url), so "idA" prunes before "idB".
+    // A BEFORE DELETE trigger that aborts only on partition idB's events fails
+    // the LATER partition — after idA has already committed its own batch.
     let db = NamedTempFile::new().unwrap();
     let conn = fresh(&db);
     seed_observer_in(&conn, "idA", "wss://a", "old_a", 100);
     seed_observer_in(&conn, "idB", "wss://b", "old_b", 100);
     retention::set_observer_retention_days(&conn, 1).unwrap();
-    conn.execute_batch("DROP TABLE agent_metric_index").unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER fail_idB BEFORE DELETE ON archived_events
+         WHEN OLD.identity_pubkey = 'idB'
+         BEGIN SELECT RAISE(ABORT, 'forced idB failure'); END",
+    )
+    .unwrap();
 
-    let result = run_prune_if_due(&conn, 10_000_000);
+    let now = 10_000_000;
+    let result = run_prune_if_due(&conn, now);
     assert!(
         result.is_err(),
-        "a failing partition must surface the error"
+        "the later partition's forced failure must surface"
+    );
+    assert!(
+        !event_exists(&conn, "old_a"),
+        "partition idA was pruned and committed before idB failed"
+    );
+    assert!(
+        event_exists(&conn, "old_b"),
+        "partition idB's batch rolled back on the forced failure"
     );
     assert_eq!(
         retention::get_prune_last_success_at(&conn).unwrap(),
         None,
         "a partial worklist must not stamp success — the pass retries"
+    );
+
+    // Clear the fault and rerun: idA is already pruned (a no-op), idB now
+    // prunes, and the complete worklist stamps success.
+    conn.execute_batch("DROP TRIGGER fail_idB").unwrap();
+    run_prune_if_due(&conn, now).unwrap();
+    assert!(
+        !event_exists(&conn, "old_b"),
+        "the retry prunes the remainder"
+    );
+    assert_eq!(count(&conn, "archived_events"), 0);
+    assert_eq!(
+        retention::get_prune_last_success_at(&conn).unwrap(),
+        Some(now),
+        "the completed worklist stamps success"
     );
 }
 
