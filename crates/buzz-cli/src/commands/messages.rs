@@ -830,7 +830,7 @@ pub async fn cmd_delete_message(
     let channel_uuid = resolve_channel_id(client, event_id).await?;
     let target_eid = parse_event_id(event_id)?;
 
-    let builder = buzz_sdk::build_delete_message_with_options(
+    let builder = build_cli_delete_message(
         channel_uuid,
         target_eid,
         DeleteMessageOptions {
@@ -846,6 +846,24 @@ pub async fn cmd_delete_message(
     let resp = client.submit_event(event).await?;
     println!("{}", normalize_write_response(&resp));
     Ok(())
+}
+
+fn build_cli_delete_message(
+    channel_id: Uuid,
+    target_event_id: nostr::EventId,
+    options: DeleteMessageOptions<'_>,
+) -> Result<nostr::EventBuilder, buzz_sdk::SdkError> {
+    // Keep ordinary agent/member deletes aligned with Desktop's NIP-09 path.
+    // Any moderation metadata is an explicit opt-in to the audited kind:9005
+    // command and its visible room-facing tombstone.
+    if options.action_id.is_none()
+        && options.reason_code.is_none()
+        && options.public_reason.is_none()
+    {
+        buzz_sdk::build_delete_compat(channel_id, target_event_id)
+    } else {
+        buzz_sdk::build_delete_message_with_options(channel_id, target_event_id, options)
+    }
 }
 
 /// Edit a message you previously sent.
@@ -1056,8 +1074,8 @@ pub async fn dispatch(
 #[cfg(test)]
 mod tests {
     use super::{
-        channel_id_from_event, cmd_get_thread, event_mention_pubkeys, find_root_from_tags,
-        match_profiles_by_name, merge_message_mentions, missing_members,
+        build_cli_delete_message, channel_id_from_event, cmd_get_thread, event_mention_pubkeys,
+        find_root_from_tags, match_profiles_by_name, merge_message_mentions, missing_members,
         normalize_explicit_mentions, parse_member_pubkeys, resolve_names_to_pubkeys,
         resolve_thread_target, thread_ref_from_event, thread_ref_from_parent_tags, BuzzClient,
         CliError, Uuid,
@@ -1077,6 +1095,42 @@ mod tests {
     const PK_VALID_A: &str = "35c18ae273fccfaf80d629e20e7f8721b90499379addff533054acc2504c12b4";
     const PK_VALID_B: &str = "c6237ef84fa537c78dcee78efd2d4e59f728859c7f194da42ac51ededfa0be05";
     const PK_VALID_C: &str = "f4a42a97e594b77bdbd8ee35191c8b28a94a4cb871d96f32921558275421fb68";
+
+    #[test]
+    fn plain_cli_delete_uses_nip09_self_delete() {
+        let builder = build_cli_delete_message(
+            Uuid::nil(),
+            nostr::EventId::all_zeros(),
+            buzz_sdk::DeleteMessageOptions::default(),
+        )
+        .unwrap();
+        let event = builder.sign_with_keys(&Keys::generate()).unwrap();
+
+        assert_eq!(event.kind.as_u16(), 5);
+    }
+
+    #[test]
+    fn delete_with_moderation_metadata_keeps_audited_kind() {
+        let builder = build_cli_delete_message(
+            Uuid::nil(),
+            nostr::EventId::all_zeros(),
+            buzz_sdk::DeleteMessageOptions {
+                action_id: Some(Uuid::nil()),
+                reason_code: Some("spam"),
+                public_reason: Some("Removed as spam"),
+            },
+        )
+        .unwrap();
+        let event = builder.sign_with_keys(&Keys::generate()).unwrap();
+
+        assert_eq!(event.kind.as_u16(), 9005);
+        for tag_name in ["action_id", "reason_code", "public_reason"] {
+            assert!(event
+                .tags
+                .iter()
+                .any(|tag| tag.kind().to_string() == tag_name));
+        }
+    }
 
     #[tokio::test]
     async fn malformed_channel_is_rejected_before_thread_fetch() {

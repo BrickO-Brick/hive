@@ -444,7 +444,10 @@ pub enum MessagesCmd {
         #[arg(long)]
         content: String,
     },
-    /// Delete a message by event ID
+    /// Delete a message by event ID.
+    ///
+    /// Plain deletes are NIP-09 self-deletes. Supplying moderation metadata
+    /// uses Buzz's audited moderation delete path instead.
     Delete {
         /// Event ID to delete (64-char hex)
         #[arg(long)]
