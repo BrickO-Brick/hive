@@ -29,12 +29,17 @@ let screen;
 let createElement;
 let ObserverRetentionSection;
 let ArchiveSizeSection;
+let LocalArchiveSettingsCard;
+let QueryClient;
+let QueryClientProvider;
+let CommunitiesProvider;
 
 before(async () => {
   Object.assign(globalThis, {
     document: dom.window.document,
     HTMLElement: dom.window.HTMLElement,
     window: dom.window,
+    localStorage: dom.window.localStorage,
     IS_REACT_ACT_ENVIRONMENT: true,
   });
   Object.defineProperty(globalThis, "navigator", {
@@ -60,8 +65,13 @@ before(async () => {
     "@testing-library/react"
   ));
   ({ createElement } = await import("react"));
-  ({ ObserverRetentionSection, ArchiveSizeSection } = await import(
-    "./LocalArchiveSettingsCard.tsx"
+  ({ ObserverRetentionSection, ArchiveSizeSection, LocalArchiveSettingsCard } =
+    await import("./LocalArchiveSettingsCard.tsx"));
+  ({ QueryClient, QueryClientProvider } = await import(
+    "@tanstack/react-query"
+  ));
+  ({ CommunitiesProvider } = await import(
+    "@/features/communities/useCommunities.tsx"
   ));
 });
 
@@ -79,6 +89,8 @@ test("retention field seeds from the saved value and disables Save while unchang
     render(
       createElement(ObserverRetentionSection, {
         savedDays: 30,
+        status: "loaded",
+        onRetry: () => {},
         onSaved: () => {},
       }),
     );
@@ -95,6 +107,8 @@ test("input disabled until the saved value loads", async () => {
     render(
       createElement(ObserverRetentionSection, {
         savedDays: null,
+        status: "loading",
+        onRetry: () => {},
         onSaved: () => {},
       }),
     );
@@ -111,6 +125,8 @@ test("out-of-bounds input surfaces an inline error and blocks Save", async () =>
     render(
       createElement(ObserverRetentionSection, {
         savedDays: 30,
+        status: "loaded",
+        onRetry: () => {},
         onSaved: () => {},
       }),
     );
@@ -131,6 +147,60 @@ test("out-of-bounds input surfaces an inline error and blocks Save", async () =>
   );
 });
 
+test("inline validation error is associated with the input via aria", async () => {
+  await act(async () => {
+    render(
+      createElement(ObserverRetentionSection, {
+        savedDays: 30,
+        status: "loaded",
+        onRetry: () => {},
+        onSaved: () => {},
+      }),
+    );
+  });
+
+  const input = screen.getByTestId("local-archive-retention-days");
+
+  // Valid state: no error wiring.
+  assert.equal(input.getAttribute("aria-invalid"), "false");
+  assert.equal(input.getAttribute("aria-describedby"), null);
+
+  await act(async () => {
+    fireEvent.change(input, { target: { value: "0" } });
+  });
+
+  const error = screen.getByTestId("local-archive-retention-error");
+  assert.equal(input.getAttribute("aria-invalid"), "true");
+  assert.equal(input.getAttribute("aria-describedby"), error.id);
+  assert.ok(error.id, "error message carries an id to reference");
+});
+
+test("retention load failure shows an error state with retry, not a stuck field", async () => {
+  let retries = 0;
+  await act(async () => {
+    render(
+      createElement(ObserverRetentionSection, {
+        savedDays: null,
+        status: "error",
+        onRetry: () => {
+          retries += 1;
+        },
+        onSaved: () => {},
+      }),
+    );
+  });
+
+  // The input/Save affordance is replaced by an explicit error+retry row.
+  assert.equal(screen.queryByTestId("local-archive-retention-days"), null);
+  const errorState = screen.getByTestId("local-archive-retention-error-state");
+  assert.match(errorState.textContent, /Couldn't load/);
+
+  await act(async () => {
+    fireEvent.click(errorState.querySelector("button"));
+  });
+  assert.equal(retries, 1, "Retry invokes the reload callback");
+});
+
 test("a valid change saves through the invoke and reports the new value", async () => {
   const setCalls = [];
   ipcHandlers.set("set_observer_retention_days", (args) => {
@@ -143,6 +213,8 @@ test("a valid change saves through the invoke and reports the new value", async 
     render(
       createElement(ObserverRetentionSection, {
         savedDays: 30,
+        status: "loaded",
+        onRetry: () => {},
         onSaved: (d) => {
           saved = d;
         },
@@ -172,6 +244,8 @@ test("size readout shows physical size and reclaimable bytes", async () => {
   await act(async () => {
     render(
       createElement(ArchiveSizeSection, {
+        status: "loaded",
+        onRetry: () => {},
         stats: {
           mainFileBytes: 1024 ** 3,
           walFileBytes: 512 * 1024 ** 2,
@@ -195,7 +269,13 @@ test("size readout shows physical size and reclaimable bytes", async () => {
 
 test("size readout shows a loading fallback before stats arrive", async () => {
   await act(async () => {
-    render(createElement(ArchiveSizeSection, { stats: null }));
+    render(
+      createElement(ArchiveSizeSection, {
+        stats: null,
+        status: "loading",
+        onRetry: () => {},
+      }),
+    );
   });
 
   assert.equal(
@@ -206,4 +286,106 @@ test("size readout shows a loading fallback before stats arrive", async () => {
     screen.getByTestId("local-archive-size-section").textContent,
     /Loading…/,
   );
+});
+
+test("size load failure shows an error state with retry", async () => {
+  let retries = 0;
+  await act(async () => {
+    render(
+      createElement(ArchiveSizeSection, {
+        stats: null,
+        status: "error",
+        onRetry: () => {
+          retries += 1;
+        },
+      }),
+    );
+  });
+
+  assert.equal(screen.queryByTestId("local-archive-size-physical"), null);
+  const errorState = screen.getByTestId("local-archive-size-error-state");
+  assert.match(errorState.textContent, /Couldn't load/);
+
+  await act(async () => {
+    fireEvent.click(errorState.querySelector("button"));
+  });
+  assert.equal(retries, 1, "Retry invokes the reload callback");
+});
+
+// ── Full-card get → set → get round trip ──────────────────────────────────────
+
+test("full card loads the persisted retention, saves an edit, and reflects it", async () => {
+  // No stored communities ⇒ activeCommunity is null ⇒ the channels query stays
+  // disabled, so only these archive commands fire. get_observer_retention_days
+  // reads the store on mount; set persists; the card advances its own state
+  // from the resolved set (no re-fetch), which is the get→set→get contract.
+  let stored = 30;
+  const setCalls = [];
+  ipcHandlers.set("get_identity", () =>
+    Promise.resolve({ pubkey: "f".repeat(64), display_name: "Tester" }),
+  );
+  ipcHandlers.set("list_save_subscriptions", () => Promise.resolve([]));
+  ipcHandlers.set("get_observer_retention_days", () => Promise.resolve(stored));
+  ipcHandlers.set("archive_size_stats", () =>
+    Promise.resolve({
+      mainFileBytes: 1024 ** 3,
+      walFileBytes: 0,
+      pageSize: 4096,
+      pageCount: 262_144,
+      freelistCount: 0,
+    }),
+  );
+  ipcHandlers.set("set_observer_retention_days", (args) => {
+    setCalls.push(args);
+    stored = args.days;
+    return Promise.resolve(null);
+  });
+
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, gcTime: 0 } },
+  });
+
+  await act(async () => {
+    render(
+      createElement(
+        QueryClientProvider,
+        { client },
+        createElement(
+          CommunitiesProvider,
+          null,
+          createElement(LocalArchiveSettingsCard),
+        ),
+      ),
+    );
+  });
+
+  // get: field seeded from the persisted 30, Save disabled while unchanged.
+  const input = screen.getByTestId("local-archive-retention-days");
+  assert.equal(input.value, "30");
+  assert.equal(
+    screen.getByTestId("local-archive-retention-save").disabled,
+    true,
+  );
+
+  // set: edit to a new valid value and save.
+  await act(async () => {
+    fireEvent.change(input, { target: { value: "7" } });
+  });
+  await act(async () => {
+    fireEvent.click(screen.getByTestId("local-archive-retention-save"));
+  });
+
+  assert.deepEqual(setCalls, [{ days: 7 }], "set invoke receives parsed days");
+  assert.equal(stored, 7, "backing store now holds the new value");
+
+  // get (post-set): the card advanced its saved value, so the field still shows
+  // 7 and Save has returned to disabled — the persisted value round-trips.
+  assert.equal(input.value, "7");
+  assert.equal(
+    screen.getByTestId("local-archive-retention-save").disabled,
+    true,
+    "Save re-disables once the edit matches the new saved value",
+  );
+
+  client.clear();
 });
