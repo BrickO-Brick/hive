@@ -63,14 +63,29 @@ impl AppAttestVerifier {
         key_id_b64: &str,
         client_data: &[u8],
     ) -> Result<VerifiedAttestation, AppAttestError> {
-        let cbor = STANDARD
-            .decode(attestation_b64)
-            .map_err(|_| AppAttestError::Invalid)?;
+        let cbor = STANDARD.decode(attestation_b64).map_err(|_| {
+            tracing::warn!(
+                "App Attest enrollment rejected before verification: invalid attestation base64"
+            );
+            AppAttestError::Invalid
+        })?;
         if cbor.is_empty() || cbor.len() > MAX_ATTESTATION_BYTES {
+            tracing::warn!(
+                attestation_bytes = cbor.len(),
+                "App Attest enrollment rejected before verification: invalid attestation size"
+            );
             return Err(AppAttestError::Invalid);
         }
-        let challenge = std::str::from_utf8(client_data).map_err(|_| AppAttestError::Invalid)?;
-        let att = Attestation::from_cbor_bytes(&cbor).map_err(|_| AppAttestError::Invalid)?;
+        let challenge = std::str::from_utf8(client_data).map_err(|_| {
+            tracing::warn!(
+                "App Attest enrollment rejected before verification: non-UTF-8 transcript"
+            );
+            AppAttestError::Invalid
+        })?;
+        let att = Attestation::from_cbor_bytes(&cbor).map_err(|error| {
+            tracing::warn!(%error, "App Attest enrollment rejected before verification: invalid CBOR");
+            AppAttestError::Invalid
+        })?;
         let (public_key, _) = att
             .verify(
                 challenge,
@@ -82,10 +97,17 @@ impl AppAttestVerifier {
                 tracing::warn!(%error, "App Attest enrollment verification failed");
                 AppAttestError::Invalid
             })?;
-        let key_id = STANDARD
-            .decode(key_id_b64)
-            .map_err(|_| AppAttestError::Invalid)?;
+        let key_id = STANDARD.decode(key_id_b64).map_err(|_| {
+            tracing::warn!(
+                "App Attest enrollment rejected after verification: invalid key ID base64"
+            );
+            AppAttestError::Invalid
+        })?;
         if key_id.len() != 32 {
+            tracing::warn!(
+                key_id_bytes = key_id.len(),
+                "App Attest enrollment rejected after verification: invalid key ID size"
+            );
             return Err(AppAttestError::Invalid);
         }
         Ok(VerifiedAttestation {
