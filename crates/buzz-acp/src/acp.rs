@@ -691,7 +691,14 @@ impl AcpClient {
                 // Handled by build_codex_config_env; skip here to avoid double-setting.
                 continue;
             }
-            if std::env::var_os(key).is_none() {
+            // `BUZZ_GIT_IDENTITY` is an operator-controlled per-agent exception to
+            // the parent-wins rule: a persona value must always reach the child so
+            // `install_git_identity`'s child-over-process lookup can honor a
+            // per-agent mode even when the harness process env sets a global one.
+            // Without this, a global `BUZZ_GIT_IDENTITY` silently defeats every
+            // per-agent override in both directions.
+            if key == buzz_git_identity::GitIdentityMode::ENV_VAR || std::env::var_os(key).is_none()
+            {
                 cmd.env(key, value);
             }
         }
@@ -3323,6 +3330,43 @@ mod tests {
             spawn_named_and_read_child_env("other-agent", VAR, &[]).await,
             "<unset>",
             "non-Hermes spawns must not receive Hermes defaults"
+        );
+    }
+
+    /// `BUZZ_GIT_IDENTITY` is an operator-controlled per-agent exception to the
+    /// parent-wins env merge: a persona value must always reach the child so the
+    /// child-over-process lookup in `install_git_identity` can honor a per-agent
+    /// mode even when the harness process env sets a conflicting global one.
+    /// Exercised through the real `AcpClient::spawn` merge loop (the unit tests
+    /// write directly to `Command` and bypass it). No agent key is set, so
+    /// `install_git_identity` returns early without installing anything — this
+    /// isolates the env-merge behavior, and valid mode values are harmless to
+    /// any concurrent spawn.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn spawn_persona_git_identity_overrides_global_process_env() {
+        const VAR: &str = buzz_git_identity::GitIdentityMode::ENV_VAR;
+
+        // parent=agent, persona=user → child sees the persona value.
+        std::env::set_var(VAR, "agent");
+        let observed =
+            spawn_named_and_read_child_env("other-agent", VAR, &[(VAR.into(), "user".into())])
+                .await;
+        std::env::remove_var(VAR);
+        assert_eq!(
+            observed, "user",
+            "persona `user` must override a global `agent` in the parent env"
+        );
+
+        // parent=user, persona=agent → child sees the persona value.
+        std::env::set_var(VAR, "user");
+        let observed =
+            spawn_named_and_read_child_env("other-agent", VAR, &[(VAR.into(), "agent".into())])
+                .await;
+        std::env::remove_var(VAR);
+        assert_eq!(
+            observed, "agent",
+            "persona `agent` must override a global `user` in the parent env"
         );
     }
 

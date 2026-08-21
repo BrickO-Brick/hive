@@ -13,6 +13,7 @@ use tempfile::TempDir;
 /// the buzz CLI). `NOSTR_PRIVATE_KEY` is removed from the process env after
 /// the keyfile is written — git helpers read from the keyfile only.
 /// Cleaned up on drop (TempDir).
+#[derive(Debug)]
 pub struct Shim {
     _dir: TempDir,
     pub path_env: String,
