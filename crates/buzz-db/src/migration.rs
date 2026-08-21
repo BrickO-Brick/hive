@@ -1071,11 +1071,14 @@ mod tests {
         assert!(sql.contains("WHERE kind = 30620"));
         assert!(sql.contains("definition.id"));
         assert!(sql.contains("octet_length(revision_event_id) = 32"));
-        assert!(sql.contains("events_live_workflow_state_coordinate_idx"));
+        // `events` is partitioned by created_at, so PostgreSQL cannot enforce a
+        // unique workflow coordinate without weakening it with that partition
+        // key. The relay serializes projection writers with an advisory lock.
+        assert!(!sql.contains("events_live_workflow_state_coordinate_idx"));
         let desired_schema = include_str!("../../../schema/schema.sql");
         assert!(desired_schema.contains("revision_event_id BYTEA CHECK"));
         assert!(desired_schema.contains("octet_length(revision_event_id) = 32"));
-        assert!(desired_schema.contains("events_live_workflow_state_coordinate_idx"));
+        assert!(!desired_schema.contains("events_live_workflow_state_coordinate_idx"));
     }
 
     #[test]

@@ -91,6 +91,16 @@ pub(crate) async fn store_workflow_state(
     let tags = serde_json::to_value(&event.tags)?;
     let received_at = chrono::Utc::now();
 
+    // NIP-33 normally keys replacement by author, but this relay-owned
+    // projection must keep one coordinate across relay signing-key rotation.
+    // Serialize every writer for (community, kind, d) before retiring the old
+    // head and inserting the new one. A hash collision only adds contention;
+    // it cannot weaken correctness.
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(workflow_state_lock_key(community_id, &workflow_id))
+        .execute(&mut **tx)
+        .await?;
+
     sqlx::query(
         "UPDATE events SET deleted_at = NOW() \
          WHERE community_id = $1 AND kind = $2 AND d_tag = $3 \
@@ -129,6 +139,21 @@ pub(crate) async fn store_workflow_state(
     ))
 }
 
+fn workflow_state_lock_key(community_id: CommunityId, workflow_id: &str) -> i64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in community_id
+        .as_uuid()
+        .as_bytes()
+        .iter()
+        .chain((KIND_WORKFLOW_STATE as i32).to_le_bytes().iter())
+        .chain(workflow_id.as_bytes())
+    {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash as i64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -146,6 +171,20 @@ mod tests {
                     .flatten()
             })
             .collect()
+    }
+
+    #[test]
+    fn state_lock_coordinate_does_not_depend_on_relay_key() {
+        let community = CommunityId::from_uuid(Uuid::new_v4());
+        let workflow = Uuid::new_v4().to_string();
+        assert_eq!(
+            workflow_state_lock_key(community, &workflow),
+            workflow_state_lock_key(community, &workflow)
+        );
+        assert_ne!(
+            workflow_state_lock_key(community, &workflow),
+            workflow_state_lock_key(community, &Uuid::new_v4().to_string())
+        );
     }
 
     #[test]
