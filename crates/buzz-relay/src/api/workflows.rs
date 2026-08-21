@@ -204,8 +204,20 @@ pub async fn run_approvals(
 pub struct ClaimDeliveryRequest {
     #[serde(default)]
     delivery_id: Option<Uuid>,
+    #[serde(default)]
+    expected: Option<ClaimDeliveryBindingRequest>,
     #[serde(default = "default_delivery_lease_seconds")]
     lease_seconds: i64,
+}
+
+/// Immutable delivery bindings authenticated from a relay-authored live wake.
+#[derive(Debug, Deserialize)]
+pub struct ClaimDeliveryBindingRequest {
+    run_id: Uuid,
+    step_id: String,
+    definition_event_id: String,
+    message_event_id: String,
+    channel_id: Uuid,
 }
 
 fn default_delivery_lease_seconds() -> i64 {
@@ -290,12 +302,44 @@ pub async fn claim_agent_delivery(
             "lease_seconds is outside the supported range",
         ));
     }
+    if request.delivery_id.is_none() && request.expected.is_some() {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "expected wake bindings require a specific delivery_id",
+        ));
+    }
+    let expected = request
+        .expected
+        .map(|binding| {
+            let definition_event_id = hex::decode(&binding.definition_event_id)
+                .map_err(|_| api_error(StatusCode::BAD_REQUEST, "invalid definition_event_id"))?;
+            let message_event_id = hex::decode(&binding.message_event_id)
+                .map_err(|_| api_error(StatusCode::BAD_REQUEST, "invalid message_event_id"))?;
+            if definition_event_id.len() != 32
+                || message_event_id.len() != 32
+                || binding.step_id.is_empty()
+            {
+                return Err(api_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid expected wake bindings",
+                ));
+            }
+            Ok(buzz_db::workflow::WorkflowAgentDeliveryBinding {
+                run_id: binding.run_id,
+                step_id: binding.step_id,
+                definition_event_id,
+                message_event_id,
+                channel_id: binding.channel_id,
+            })
+        })
+        .transpose()?;
     let delivery = state
         .db
         .claim_workflow_agent_delivery(
             tenant.community(),
             &agent.to_bytes(),
             request.delivery_id,
+            expected.as_ref(),
             request.lease_seconds,
         )
         .await

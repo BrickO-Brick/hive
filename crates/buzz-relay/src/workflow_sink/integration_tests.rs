@@ -10,8 +10,11 @@ use buzz_db::CreateCommunityWithOwnerResult;
 use std::sync::Arc;
 
 /// Real-PG state mirroring `handlers::event::tests::test_state_with_redis_url`.
-async fn test_state() -> Arc<AppState> {
+async fn test_state_with_database_url(database_url: Option<String>) -> Arc<AppState> {
     let mut config = crate::config::Config::from_env().expect("default config loads");
+    if let Some(database_url) = database_url {
+        config.database_url = database_url;
+    }
     config.require_relay_membership = false;
     let pool = sqlx::PgPool::connect_lazy(&config.database_url).expect("lazy pg pool");
     let db = buzz_db::Db::from_pool(pool.clone());
@@ -44,6 +47,217 @@ async fn test_state() -> Arc<AppState> {
         media_storage,
     );
     Arc::new(state)
+}
+
+async fn test_state() -> Arc<AppState> {
+    test_state_with_database_url(None).await
+}
+
+#[tokio::test]
+#[ignore = "requires Postgres"]
+async fn desired_schema_only_bootstrap_runs_durable_workflow_delivery_path() {
+    let base_url = std::env::var("BUZZ_TEST_DATABASE_URL")
+        .or_else(|_| std::env::var("DATABASE_URL"))
+        .unwrap_or_else(|_| {
+            "postgres://buzz:buzz_dev@localhost:5432/buzz".to_string() // sadscan:disable np.postgres.1 -- local test-only credentials
+        });
+    let admin = sqlx::PgPool::connect(&base_url)
+        .await
+        .expect("connect admin database");
+    let scratch_name = format!("buzz_workflow_schema_{}", Uuid::new_v4().simple());
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "CREATE DATABASE {scratch_name}"
+    )))
+    .execute(&admin)
+    .await
+    .expect("create desired-schema workflow database");
+    let (base_prefix, _) = base_url.rsplit_once('/').expect("database URL has path");
+    let scratch_url = format!("{base_prefix}/{scratch_name}");
+    let bootstrap = sqlx::PgPool::connect(&scratch_url)
+        .await
+        .expect("connect desired-schema workflow database");
+    sqlx::raw_sql(sqlx::AssertSqlSafe(include_str!(
+        "../../../../schema/schema.sql"
+    )))
+    .execute(&bootstrap)
+    .await
+    .expect("apply desired-state schema without migrations");
+    bootstrap.close().await;
+
+    let runtime_pool = sqlx::PgPool::connect(&scratch_url)
+        .await
+        .expect("connect runtime assertion pool");
+    let state = test_state_with_database_url(Some(scratch_url)).await;
+    let owner = nostr::Keys::generate();
+    let owner_hex = owner.public_key().to_hex();
+    let host = format!("wf-schema-{}.example", Uuid::new_v4().simple());
+    let community = match state
+        .db
+        .create_community_with_owner(&host, &owner_hex)
+        .await
+        .expect("create community through runtime DB path")
+    {
+        CreateCommunityWithOwnerResult::Created(record) => record.id,
+        other => panic!("expected fresh community, got {other:?}"),
+    };
+    state
+        .db
+        .ensure_user(community, &owner.public_key().to_bytes())
+        .await
+        .expect("ensure workflow owner");
+    let channel = state
+        .db
+        .create_channel(
+            community,
+            "schema-workflow",
+            ChannelType::Stream,
+            ChannelVisibility::Open,
+            None,
+            &owner.public_key().to_bytes(),
+            None,
+        )
+        .await
+        .expect("create workflow channel");
+    let workflow_id = Uuid::new_v4();
+    let definition = EventBuilder::new(
+        Kind::Custom(KIND_WORKFLOW_DEF as u16),
+        "name: schema-only\ntrigger:\n  on: webhook\nsteps:\n  - id: notify\n    action: send_message\n    text: schema-only\n",
+    )
+    .tags([
+        Tag::parse(["d", &workflow_id.to_string()]).expect("d tag"),
+        Tag::parse(["h", &channel.id.to_string()]).expect("h tag"),
+    ])
+    .sign_with_keys(&owner)
+    .expect("sign workflow definition");
+    state
+        .db
+        .insert_event(community, &definition, Some(channel.id))
+        .await
+        .expect("persist workflow definition");
+    let (_, definition_json) =
+        buzz_workflow::WorkflowEngine::parse_yaml(&definition.content).expect("parse workflow");
+    let definition_hash =
+        <sha2::Sha256 as sha2::Digest>::digest(definition_json.as_bytes()).to_vec();
+    state
+        .db
+        .upsert_workflow(
+            community,
+            workflow_id,
+            Some(channel.id),
+            &owner.public_key().to_bytes(),
+            "schema-only",
+            &definition_json,
+            &definition_hash,
+            definition.id.as_bytes(),
+            true,
+        )
+        .await
+        .expect("materialize workflow");
+    let trigger = serde_json::to_value(buzz_workflow::executor::TriggerContext {
+        channel_id: channel.id.to_string(),
+        definition_event_id: definition.id.to_hex(),
+        cause: Some(WorkflowCause::Webhook),
+        ..Default::default()
+    })
+    .expect("serialize trigger");
+    let run_id = state
+        .db
+        .create_workflow_run(community, workflow_id, None, Some(&trigger))
+        .await
+        .expect("create workflow run");
+    state
+        .db
+        .update_workflow_run(
+            community,
+            run_id,
+            buzz_db::workflow::RunStatus::Running,
+            0,
+            &serde_json::json!([]),
+            None,
+        )
+        .await
+        .expect("start workflow run");
+    let event_id = RelayActionSink::new(&state)
+        .send_message(
+            community,
+            workflow_id,
+            "notify",
+            &channel.id.to_string(),
+            "schema-only",
+            &owner_hex,
+            &DoorbellContext {
+                definition_event_id: definition.id.to_hex(),
+                run_id,
+                attempt: 1,
+                cause: WorkflowCause::Webhook,
+            },
+            None,
+        )
+        .await
+        .expect("run actual durable workflow message path");
+    let delivery_id: Uuid = sqlx::query_scalar(
+        "SELECT id FROM workflow_agent_deliveries WHERE community_id = $1 AND run_id = $2",
+    )
+    .bind(community.as_uuid())
+    .bind(run_id)
+    .fetch_one(&runtime_pool)
+    .await
+    .expect("lookup desired-schema delivery identity");
+    let wrong_binding = buzz_db::workflow::WorkflowAgentDeliveryBinding {
+        run_id,
+        step_id: "notify".to_string(),
+        definition_event_id: definition.id.as_bytes().to_vec(),
+        message_event_id: nostr::EventId::from_hex(&event_id)
+            .unwrap()
+            .as_bytes()
+            .to_vec(),
+        channel_id: Uuid::new_v4(),
+    };
+    assert!(
+        state
+            .db
+            .claim_workflow_agent_delivery(
+                community,
+                &owner.public_key().to_bytes(),
+                Some(delivery_id),
+                Some(&wrong_binding),
+                120,
+            )
+            .await
+            .expect("reject mismatched live-wake binding before claim")
+            .is_none(),
+        "an authenticated but cross-channel wake must not mutate the victim delivery"
+    );
+    let binding = buzz_db::workflow::WorkflowAgentDeliveryBinding {
+        channel_id: channel.id,
+        ..wrong_binding
+    };
+    let delivery = state
+        .db
+        .claim_workflow_agent_delivery(
+            community,
+            &owner.public_key().to_bytes(),
+            Some(delivery_id),
+            Some(&binding),
+            120,
+        )
+        .await
+        .expect("claim desired-schema delivery")
+        .expect("workflow path created a durable delivery");
+    assert_eq!(delivery.run_id, run_id);
+    assert_eq!(
+        delivery.message_event_id,
+        nostr::EventId::from_hex(&event_id).unwrap().as_bytes()
+    );
+
+    drop(state);
+    runtime_pool.close().await;
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "DROP DATABASE {scratch_name} WITH (FORCE)"
+    )))
+    .execute(&admin)
+    .await
+    .expect("drop desired-schema workflow database");
 }
 
 #[tokio::test]
@@ -557,7 +771,7 @@ async fn workflow_doorbell_routes_from_signed_template() {
 
     let delivery = state
         .db
-        .claim_workflow_agent_delivery(community, &author.public_key().to_bytes(), None, 120)
+        .claim_workflow_agent_delivery(community, &author.public_key().to_bytes(), None, None, 120)
         .await
         .expect("claim durable workflow delivery")
         .expect("delivery exists for signed target");
@@ -753,6 +967,7 @@ async fn workflow_doorbell_routes_from_signed_template() {
             community,
             &author.public_key().to_bytes(),
             Some(delivery.id),
+            None,
             120,
         )
         .await
@@ -786,6 +1001,7 @@ async fn workflow_doorbell_routes_from_signed_template() {
                 community,
                 &author.public_key().to_bytes(),
                 Some(delivery.id),
+                None,
                 120,
             )
             .await
@@ -848,6 +1064,7 @@ async fn workflow_doorbell_routes_from_signed_template() {
             community,
             &author.public_key().to_bytes(),
             Some(delivery.id),
+            None,
             120,
         )
         .await
@@ -871,6 +1088,7 @@ async fn workflow_doorbell_routes_from_signed_template() {
                 community,
                 &author.public_key().to_bytes(),
                 Some(delivery.id),
+                None,
                 120,
             )
             .await
@@ -892,6 +1110,7 @@ async fn workflow_doorbell_routes_from_signed_template() {
             community,
             &author.public_key().to_bytes(),
             Some(delivery.id),
+            None,
             120,
         )
         .await

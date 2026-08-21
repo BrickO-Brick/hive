@@ -839,6 +839,7 @@ pub const fn is_relay_only_kind(kind: u32) -> bool {
             | KIND_CHANNEL_SUMMARY
             | KIND_PRESENCE_SNAPSHOT
             | KIND_DM_VISIBILITY
+            | KIND_WORKFLOW_AGENT_WAKE
             | KIND_THREAD_SUMMARY
             | KIND_WINDOW_BOUNDS
     )

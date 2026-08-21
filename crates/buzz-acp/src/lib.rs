@@ -288,6 +288,15 @@ struct TrustedWorkflowDoorbell {
     webhook_definition: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+struct WorkflowDeliveryBinding {
+    run_id: Uuid,
+    step_id: String,
+    definition_event_id: String,
+    message_event_id: String,
+    channel_id: Uuid,
+}
+
 #[derive(Clone, Debug, serde::Deserialize)]
 struct ClaimedWorkflowDelivery {
     id: Uuid,
@@ -308,6 +317,7 @@ struct ClaimedWorkflowDelivery {
 async fn claim_workflow_delivery(
     rest_client: &relay::RestClient,
     delivery_id: Option<Uuid>,
+    expected: Option<&WorkflowDeliveryBinding>,
     lease_seconds: i64,
 ) -> Option<ClaimedWorkflowDelivery> {
     let response = rest_client
@@ -315,6 +325,7 @@ async fn claim_workflow_delivery(
             "/workflows/agent-deliveries/claim",
             &serde_json::json!({
                 "delivery_id": delivery_id,
+                "expected": expected,
                 "lease_seconds": lease_seconds,
             }),
         )
@@ -745,36 +756,75 @@ fn clear_completed_workflow_turn_if_resolved(
     }
 }
 
-fn wake_references_delivery(event: &nostr::Event, delivery: &ClaimedWorkflowDelivery) -> bool {
-    event.kind.as_u16() as u32 == KIND_WORKFLOW_AGENT_WAKE
-        && exact_tags(event, "delivery").as_slice().iter().any(|tag| {
-            tag.as_slice()
-                .get(1)
-                .is_some_and(|value| value == &delivery.id.to_string())
-        })
-        && exact_tags(event, "workflow-run")
-            .as_slice()
-            .iter()
-            .any(|tag| {
-                tag.as_slice()
-                    .get(1)
-                    .is_some_and(|value| value == &delivery.run_id.to_string())
-            })
-        && exact_tags(event, "workflow-step")
-            .as_slice()
-            .iter()
-            .any(|tag| {
-                tag.as_slice()
-                    .get(1)
-                    .is_some_and(|value| value == &delivery.step_id)
-            })
-        && exact_tags(event, "message").as_slice().iter().any(|tag| {
-            tag.as_slice()
-                .get(1)
-                .is_some_and(|value| value == &delivery.message_event_id)
-        })
+fn exact_single_tag_value<'a>(event: &'a nostr::Event, name: &str) -> Option<&'a str> {
+    let tags = exact_tags(event, name);
+    (tags.len() == 1 && tags[0].as_slice().len() == 2).then(|| tags[0].as_slice()[1].as_str())
 }
 
+/// Authenticate and parse a relay-authored live wake before claiming. Offline
+/// polling is the only path allowed to claim without an exact delivery id.
+fn trusted_live_workflow_wake_delivery_id(
+    event: &nostr::Event,
+    channel_id: Uuid,
+    agent_pubkey: &str,
+    relay_self: Option<&str>,
+) -> Option<(Uuid, WorkflowDeliveryBinding)> {
+    let relay_self = relay_self?;
+    if event.kind.as_u16() as u32 != KIND_WORKFLOW_AGENT_WAKE
+        || !event.pubkey.to_hex().eq_ignore_ascii_case(relay_self)
+        || event.verify().is_err()
+        || !exact_single_tag_value(event, "p")?.eq_ignore_ascii_case(agent_pubkey)
+        || exact_single_tag_value(event, "h")?.parse::<Uuid>().ok()? != channel_id
+    {
+        return None;
+    }
+    nostr::PublicKey::from_hex(exact_single_tag_value(event, "p")?).ok()?;
+    nostr::EventId::from_hex(exact_single_tag_value(event, "workflow-definition")?).ok()?;
+    nostr::EventId::from_hex(exact_single_tag_value(event, "message")?).ok()?;
+    let run_id = exact_single_tag_value(event, "workflow-run")?
+        .parse::<Uuid>()
+        .ok()?;
+    let step_id = exact_single_tag_value(event, "workflow-step")?;
+    if step_id.is_empty() {
+        return None;
+    }
+    let delivery_id = exact_single_tag_value(event, "delivery")?
+        .parse::<Uuid>()
+        .ok()?;
+    Some((
+        delivery_id,
+        WorkflowDeliveryBinding {
+            run_id,
+            step_id: step_id.to_owned(),
+            definition_event_id: exact_single_tag_value(event, "workflow-definition")?.to_owned(),
+            message_event_id: exact_single_tag_value(event, "message")?.to_owned(),
+            channel_id,
+        },
+    ))
+}
+
+fn wake_references_delivery(
+    event: &nostr::Event,
+    channel_id: Uuid,
+    agent_pubkey: &str,
+    relay_self: Option<&str>,
+    delivery: &ClaimedWorkflowDelivery,
+) -> bool {
+    trusted_live_workflow_wake_delivery_id(event, channel_id, agent_pubkey, relay_self)
+        .is_some_and(|(delivery_id, _)| delivery_id == delivery.id)
+        && exact_single_tag_value(event, "workflow-definition")
+            .is_some_and(|v| v.eq_ignore_ascii_case(&delivery.definition_event_id))
+        && exact_single_tag_value(event, "workflow-run")
+            .is_some_and(|v| v == delivery.run_id.to_string())
+        && exact_single_tag_value(event, "workflow-step").is_some_and(|v| v == delivery.step_id)
+        && exact_single_tag_value(event, "message")
+            .is_some_and(|v| v.eq_ignore_ascii_case(&delivery.message_event_id))
+        && exact_single_tag_value(event, "p")
+            .is_some_and(|v| v.eq_ignore_ascii_case(&delivery.target_pubkey))
+        && delivery.target_pubkey.eq_ignore_ascii_case(agent_pubkey)
+        && exact_single_tag_value(event, "h").is_some_and(|v| v == delivery.channel_id.to_string())
+        && delivery.channel_id == channel_id
+}
 fn exact_tags<'a>(event: &'a nostr::Event, name: &str) -> Vec<&'a nostr::Tag> {
     event
         .tags
@@ -3592,6 +3642,7 @@ async fn tokio_main() -> Result<()> {
                     if let Some(delivery) = claim_workflow_delivery(
                         &ctx.rest_client,
                         None,
+                        None,
                         workflow_lease_seconds(&config),
                     ).await {
                         match verified_workflow_delivery_message(
@@ -3676,18 +3727,31 @@ async fn tokio_main() -> Result<()> {
 
                             if kind_u32 == KIND_WORKFLOW_AGENT_WAKE {
                                 let wake = buzz_event.event.clone();
-                                let wake_delivery_id = exact_tags(&wake, "delivery")
-                                    .first()
-                                    .and_then(|tag| tag.as_slice().get(1))
-                                    .and_then(|value| value.parse::<Uuid>().ok());
+                                let wake_channel_id = buzz_event.channel_id;
+                                let Some((wake_delivery_id, wake_binding)) = trusted_live_workflow_wake_delivery_id(
+                                    &wake,
+                                    wake_channel_id,
+                                    &pubkey_hex,
+                                    relay_self.as_deref(),
+                                ) else {
+                                    tracing::warn!(event = %wake.id, "discarding untrusted workflow wake");
+                                    continue;
+                                };
                                 let Some(delivery) = claim_workflow_delivery(
                                     &ctx.rest_client,
-                                    wake_delivery_id,
+                                    Some(wake_delivery_id),
+                                    Some(&wake_binding),
                                     workflow_lease_seconds(&config),
                                 ).await else {
                                     continue;
                                 };
-                                if !wake_references_delivery(&wake, &delivery) {
+                                if !wake_references_delivery(
+                                    &wake,
+                                    wake_channel_id,
+                                    &pubkey_hex,
+                                    relay_self.as_deref(),
+                                    &delivery,
+                                ) {
                                     finish_workflow_delivery(
                                         &ctx.rest_client,
                                         &mut pending_workflow_finalizations,
@@ -6541,6 +6605,228 @@ mod workflow_authority_tests {
             ])
             .sign_with_keys(relay)
             .unwrap()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn workflow_wake(
+        signer: &Keys,
+        target: &Keys,
+        channel: Uuid,
+        delivery_id: Uuid,
+        definition_id: &str,
+        run_id: Uuid,
+        step_id: &str,
+        message_id: &str,
+        extra_tags: impl IntoIterator<Item = Tag>,
+    ) -> nostr::Event {
+        let mut tags = vec![
+            Tag::parse(["p", &target.public_key().to_hex()]).unwrap(),
+            Tag::parse(["h", &channel.to_string()]).unwrap(),
+            Tag::parse(["delivery", &delivery_id.to_string()]).unwrap(),
+            Tag::parse(["workflow-definition", definition_id]).unwrap(),
+            Tag::parse(["workflow-run", &run_id.to_string()]).unwrap(),
+            Tag::parse(["workflow-step", step_id]).unwrap(),
+            Tag::parse(["message", message_id]).unwrap(),
+        ];
+        tags.extend(extra_tags);
+        EventBuilder::new(Kind::Custom(KIND_WORKFLOW_AGENT_WAKE as u16), "")
+            .tags(tags)
+            .sign_with_keys(signer)
+            .unwrap()
+    }
+
+    #[test]
+    fn live_workflow_wake_authentication_is_exact_and_channel_bound() {
+        let relay = Keys::generate();
+        let attacker = Keys::generate();
+        let agent = Keys::generate();
+        let channel = Uuid::new_v4();
+        let other_channel = Uuid::new_v4();
+        let delivery_id = Uuid::new_v4();
+        let run_id = Uuid::new_v4();
+        let definition_id = "11".repeat(32);
+        let message_id = "22".repeat(32);
+        let valid = workflow_wake(
+            &relay,
+            &agent,
+            channel,
+            delivery_id,
+            &definition_id,
+            run_id,
+            "wake",
+            &message_id,
+            [],
+        );
+        let authenticate = |event: &nostr::Event, receiving_channel| {
+            trusted_live_workflow_wake_delivery_id(
+                event,
+                receiving_channel,
+                &agent.public_key().to_hex(),
+                Some(&relay.public_key().to_hex()),
+            )
+        };
+        assert_eq!(
+            authenticate(&valid, channel).map(|(id, _)| id),
+            Some(delivery_id)
+        );
+        assert_eq!(authenticate(&valid, other_channel), None);
+
+        let forged_author = workflow_wake(
+            &attacker,
+            &agent,
+            channel,
+            delivery_id,
+            &definition_id,
+            run_id,
+            "wake",
+            &message_id,
+            [],
+        );
+        assert_eq!(authenticate(&forged_author, channel), None);
+
+        let mut invalid_signature = valid.clone();
+        invalid_signature.content = "tampered".into();
+        assert_eq!(authenticate(&invalid_signature, channel), None);
+
+        let duplicate_delivery = workflow_wake(
+            &relay,
+            &agent,
+            channel,
+            delivery_id,
+            &definition_id,
+            run_id,
+            "wake",
+            &message_id,
+            [Tag::parse(["delivery", &Uuid::new_v4().to_string()]).unwrap()],
+        );
+        assert_eq!(authenticate(&duplicate_delivery, channel), None);
+
+        for malformed in [
+            workflow_wake(
+                &relay,
+                &agent,
+                channel,
+                delivery_id,
+                "not-an-event-id",
+                run_id,
+                "wake",
+                &message_id,
+                [],
+            ),
+            workflow_wake(
+                &relay,
+                &agent,
+                channel,
+                delivery_id,
+                &definition_id,
+                run_id,
+                "",
+                &message_id,
+                [],
+            ),
+        ] {
+            assert_eq!(authenticate(&malformed, channel), None);
+        }
+    }
+
+    #[tokio::test]
+    async fn untrusted_two_channel_live_wakes_never_reach_claim_or_finish() {
+        use tokio::io::AsyncReadExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let observed = tokio::spawn(async move {
+            match tokio::time::timeout(Duration::from_millis(300), listener.accept()).await {
+                Ok(Ok((mut socket, _))) => {
+                    let mut request = vec![0; 8192];
+                    let read = socket.read(&mut request).await.unwrap();
+                    Some(String::from_utf8_lossy(&request[..read]).into_owned())
+                }
+                _ => None,
+            }
+        });
+        let client = relay::RestClient {
+            http: reqwest::Client::new(),
+            base_url,
+            keys: Keys::generate(),
+            auth_tag_json: None,
+        };
+        let relay = Keys::generate();
+        let attacker = Keys::generate();
+        let agent = Keys::generate();
+        let victim_channel = Uuid::new_v4();
+        let attacker_channel = Uuid::new_v4();
+        let delivery_id = Uuid::new_v4();
+        let run_id = Uuid::new_v4();
+        let definition_id = "11".repeat(32);
+        let message_id = "22".repeat(32);
+        let forged = workflow_wake(
+            &attacker,
+            &agent,
+            victim_channel,
+            delivery_id,
+            &definition_id,
+            run_id,
+            "wake",
+            &message_id,
+            [],
+        );
+        let duplicate = workflow_wake(
+            &relay,
+            &agent,
+            victim_channel,
+            delivery_id,
+            &definition_id,
+            run_id,
+            "wake",
+            &message_id,
+            [Tag::parse(["workflow-run", &Uuid::new_v4().to_string()]).unwrap()],
+        );
+        let wrong_channel = workflow_wake(
+            &relay,
+            &agent,
+            victim_channel,
+            delivery_id,
+            &definition_id,
+            run_id,
+            "wake",
+            &message_id,
+            [],
+        );
+
+        for (wake, receiving_channel) in [
+            (&forged, victim_channel),
+            (&duplicate, victim_channel),
+            (&wrong_channel, attacker_channel),
+        ] {
+            if let Some((id, binding)) = trusted_live_workflow_wake_delivery_id(
+                wake,
+                receiving_channel,
+                &agent.public_key().to_hex(),
+                Some(&relay.public_key().to_hex()),
+            ) {
+                let claimed = claim_workflow_delivery(&client, Some(id), Some(&binding), 120).await;
+                if let Some(delivery) = claimed {
+                    let mut finalizations = HashMap::new();
+                    finish_workflow_delivery(
+                        &client,
+                        &mut finalizations,
+                        &delivery,
+                        false,
+                        false,
+                        Some("binding_mismatch"),
+                        Some("invalid wake"),
+                    )
+                    .await;
+                    reconcile_workflow_finalizations(&client, &mut finalizations).await;
+                }
+            }
+        }
+        assert_eq!(
+            observed.await.unwrap(),
+            None,
+            "forged, duplicate, and cross-channel wakes must invoke neither claim nor finish"
+        );
     }
 
     #[test]

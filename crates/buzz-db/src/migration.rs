@@ -1067,6 +1067,34 @@ mod tests {
         assert!(roster_fence.contains("snapshot_members IS DISTINCT FROM canonical_members"));
         assert!(roster_fence.contains("ERRCODE = '23514'"));
 
+        // Durable workflow-agent delivery schema must remain byte-for-byte equivalent at the
+        // statement level between migration and desired-state bootstrap. A fresh pgschema
+        // database does not run migration 0034, so drift here silently breaks the live path.
+        assert_eq!(migrations[33].version, 34);
+        let delivery_migration = migrations[33].sql.as_str();
+        for prefix in [
+            "CREATE TYPE workflow_agent_delivery_status",
+            "CREATE TABLE workflow_agent_deliveries",
+            "CREATE INDEX idx_workflow_agent_deliveries_pending",
+            "CREATE INDEX idx_workflow_agent_deliveries_run",
+        ] {
+            let from_migration = split_sql_statements(delivery_migration)
+                .into_iter()
+                .find(|statement| statement.trim_start().starts_with(prefix))
+                .unwrap_or_else(|| panic!("migration 0034 is missing {prefix}"));
+            let from_schema = split_sql_statements(desired_schema)
+                .into_iter()
+                .find(|statement| statement.trim_start().starts_with(prefix))
+                .unwrap_or_else(|| panic!("schema.sql is missing {prefix}"));
+            assert_eq!(
+                normalize_sql(&from_schema),
+                normalize_sql(&from_migration),
+                "desired-state {prefix} drifted from migration 0034"
+            );
+        }
+        assert!(desired_schema
+            .contains("SELECT attach_community_write_fence('workflow_agent_deliveries')"));
+
         // Fresh desired-state bootstrap must install the identical executable
         // fence as migration 0032. CI and isolated relay startup use schema.sql
         // without running migrations, so drift reopens rolling-deploy races.
@@ -1542,6 +1570,8 @@ mod tests {
         let mut expected_fences = migration.fence_attachments.clone();
         expected_fences.remove("product_feedback");
         expected_fences.remove("rate_limit_violations");
+        // Added by migration 0034 and therefore absent from migration 0029.
+        expected_fences.insert("workflow_agent_deliveries".to_string());
         assert_eq!(
             expected_fences, schema.fence_attachments,
             "write-fence attachment targets differ after recovery policy"

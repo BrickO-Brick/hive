@@ -4248,6 +4248,7 @@ impl Db {
         community_id: CommunityId,
         target_pubkey: &[u8],
         delivery_id: Option<Uuid>,
+        expected: Option<&workflow::WorkflowAgentDeliveryBinding>,
         lease_seconds: i64,
     ) -> Result<Option<workflow::WorkflowAgentDeliveryRecord>> {
         workflow::claim_workflow_agent_delivery(
@@ -4255,6 +4256,7 @@ impl Db {
             community_id,
             target_pubkey,
             delivery_id,
+            expected,
             lease_seconds,
         )
         .await

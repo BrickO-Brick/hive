@@ -1166,6 +1166,21 @@ pub async fn create_workflow_agent_delivery(
     Ok(affected == 1)
 }
 
+/// Immutable wake bindings that must match before a specific live delivery is claimed.
+#[derive(Debug, Clone)]
+pub struct WorkflowAgentDeliveryBinding {
+    /// Run identifier carried by the authenticated wake.
+    pub run_id: Uuid,
+    /// Step identifier carried by the authenticated wake.
+    pub step_id: String,
+    /// Definition event identifier carried by the authenticated wake.
+    pub definition_event_id: Vec<u8>,
+    /// Visible message event identifier carried by the authenticated wake.
+    pub message_event_id: Vec<u8>,
+    /// Receiving channel carried by the authenticated wake.
+    pub channel_id: Uuid,
+}
+
 /// Atomically acquire one due pending delivery for an agent.
 ///
 /// The requested lease must fit entirely within the row lifetime. Once claimed,
@@ -1176,6 +1191,7 @@ pub async fn claim_workflow_agent_delivery(
     community_id: CommunityId,
     target_pubkey: &[u8],
     delivery_id: Option<Uuid>,
+    expected: Option<&WorkflowAgentDeliveryBinding>,
     lease_seconds: i64,
 ) -> Result<Option<WorkflowAgentDeliveryRecord>> {
     let row = sqlx::query(
@@ -1184,7 +1200,12 @@ pub async fn claim_workflow_agent_delivery(
             SELECT community_id, id
             FROM workflow_agent_deliveries
             WHERE community_id = $1 AND target_pubkey = $2
-              AND ($3::uuid IS NULL OR id = $3)
+              AND ($3::uuid IS NULL OR id = $3::uuid)
+              AND ($5::uuid IS NULL OR run_id = $5::uuid)
+              AND ($6::text IS NULL OR step_id = $6::text)
+              AND ($7::bytea IS NULL OR definition_event_id = $7::bytea)
+              AND ($8::bytea IS NULL OR message_event_id = $8::bytea)
+              AND ($9::uuid IS NULL OR channel_id = $9::uuid)
               AND expires_at >= NOW() + make_interval(secs => $4)
               AND next_attempt_at <= NOW()
               AND attempt < 3
@@ -1210,6 +1231,11 @@ pub async fn claim_workflow_agent_delivery(
     .bind(target_pubkey)
     .bind(delivery_id)
     .bind(lease_seconds as f64)
+    .bind(expected.map(|binding| binding.run_id))
+    .bind(expected.map(|binding| binding.step_id.as_str()))
+    .bind(expected.map(|binding| binding.definition_event_id.as_slice()))
+    .bind(expected.map(|binding| binding.message_event_id.as_slice()))
+    .bind(expected.map(|binding| binding.channel_id))
     .fetch_optional(pool)
     .await?;
     row.map(row_to_agent_delivery_record).transpose()
