@@ -283,6 +283,7 @@ impl EventQueue {
             );
             self.in_flight_channels.remove(&id);
             self.in_flight_deadlines.remove(&id);
+            self.terminal_workflow_events.remove(&id);
             // Recover any withheld goose-native steer events for the expired
             // channel back to the queue front so normal dispatch delivers
             // them. Unlike the in-flight batch above (already delivered to a
@@ -435,7 +436,11 @@ impl EventQueue {
     ///
     /// Note: does NOT remove from `in_flight_channels` — caller must call
     /// `mark_complete` separately.
-    pub fn requeue(&mut self, batch: FlushBatch) -> Option<FlushBatch> {
+    pub fn requeue(&mut self, mut batch: FlushBatch) -> Option<FlushBatch> {
+        self.filter_terminal_workflow_events(&mut batch);
+        if batch.events.is_empty() && batch.cancelled_events.is_empty() {
+            return None;
+        }
         let channel_id = batch.channel_id;
         let attempt = {
             let count = self.retry_counts.entry(channel_id).or_insert(0);
@@ -483,7 +488,7 @@ impl EventQueue {
 
         let queue = self.queues.entry(channel_id).or_default();
         // Push to front in reverse order so original order is preserved.
-        for be in batch.events.into_iter().rev() {
+        for be in batch.cancelled_events.into_iter().chain(batch.events).rev() {
             queue.push_front(QueuedEvent {
                 channel_id,
                 event: be.event,
@@ -514,11 +519,12 @@ impl EventQueue {
     ///
     /// Does NOT set `retry_after`. Does NOT remove from `in_flight_channels` —
     /// caller must call `mark_complete` separately.
-    pub fn requeue_preserve_timestamps(&mut self, batch: FlushBatch) {
+    pub fn requeue_preserve_timestamps(&mut self, mut batch: FlushBatch) {
+        self.filter_terminal_workflow_events(&mut batch);
         let channel_id = batch.channel_id;
         let queue = self.queues.entry(channel_id).or_default();
         // Push to front in reverse order so original order is preserved.
-        for be in batch.events.into_iter().rev() {
+        for be in batch.cancelled_events.into_iter().chain(batch.events).rev() {
             queue.push_front(QueuedEvent {
                 channel_id,
                 event: be.event,
@@ -549,14 +555,7 @@ impl EventQueue {
     /// the generic queue — they are stored separately and merged by
     /// `flush_next()`. No retry throttle, no backoff.
     pub fn requeue_as_cancelled(&mut self, mut batch: FlushBatch, reason: CancelReason) {
-        if let Some(terminal) = self.terminal_workflow_events.get(&batch.channel_id) {
-            batch
-                .cancelled_events
-                .retain(|event| !terminal.contains(&event.event.id.to_hex()));
-            batch
-                .events
-                .retain(|event| !terminal.contains(&event.event.id.to_hex()));
-        }
+        self.filter_terminal_workflow_events(&mut batch);
         let entry = self.cancelled_batches.entry(batch.channel_id).or_default();
         // Preserve any already-cancelled events from a prior cancel (double-cancel).
         entry.extend(batch.cancelled_events);
@@ -596,6 +595,7 @@ impl EventQueue {
             );
             self.in_flight_channels.remove(&id);
             self.in_flight_deadlines.remove(&id);
+            self.terminal_workflow_events.remove(&id);
             // Symmetric with the flush_next expiry block: recover withheld
             // goose-native steer events for the expired channel so they are
             // not permanently orphaned in the side table.
@@ -815,6 +815,20 @@ impl EventQueue {
                         .iter()
                         .any(|event| event.event.id.to_hex() == event_id)
                 })
+    }
+
+    /// Remove terminal workflow events from a returning or recovered batch.
+    /// Every batch-fate path must cross this authority before requeueing.
+    fn filter_terminal_workflow_events(&self, batch: &mut FlushBatch) {
+        let Some(terminal) = self.terminal_workflow_events.get(&batch.channel_id) else {
+            return;
+        };
+        batch
+            .cancelled_events
+            .retain(|event| !terminal.contains(&event.event.id.to_hex()));
+        batch
+            .events
+            .retain(|event| !terminal.contains(&event.event.id.to_hex()));
     }
 
     /// Remove a terminal workflow event from every queued store and keep it
@@ -4246,6 +4260,50 @@ mod tests {
         assert!(!contents.contains(&"terminal workflow"));
         q.mark_complete(ch);
         assert!(q.flush_next().is_none(), "terminal workflow cannot reflush");
+    }
+
+    #[test]
+    fn terminal_workflow_retry_filters_both_event_buckets() {
+        let mut q = EventQueue::new(DedupMode::Queue);
+        let ch = Uuid::new_v4();
+        let workflow = make_queued(ch, "terminal workflow");
+        let workflow_id = workflow.event.id.to_hex();
+        q.push(workflow);
+        q.push(make_queued(ch, "unrelated event"));
+        let mut batch = q.flush_next().unwrap();
+        batch.cancelled_events.push(BatchEvent {
+            event: make_event("unrelated cancelled"),
+            prompt_tag: "test".into(),
+            received_at: Instant::now(),
+        });
+        batch.cancelled_events.push(batch.events[0].clone());
+        q.terminalize_workflow_event(ch, &workflow_id);
+        assert!(q.requeue(batch).is_none());
+        q.mark_complete(ch);
+        assert!(!q.contains_event(ch, &workflow_id));
+        assert_eq!(q.queued_event_count(&ch), 2);
+    }
+
+    #[test]
+    fn terminal_workflow_preserve_retry_filters_both_event_buckets() {
+        let mut q = EventQueue::new(DedupMode::Queue);
+        let ch = Uuid::new_v4();
+        let workflow = make_queued(ch, "terminal workflow");
+        let workflow_id = workflow.event.id.to_hex();
+        q.push(workflow);
+        q.push(make_queued(ch, "unrelated event"));
+        let mut batch = q.flush_next().unwrap();
+        batch.cancelled_events.push(BatchEvent {
+            event: make_event("unrelated cancelled"),
+            prompt_tag: "test".into(),
+            received_at: Instant::now(),
+        });
+        batch.cancelled_events.push(batch.events[0].clone());
+        q.terminalize_workflow_event(ch, &workflow_id);
+        q.requeue_preserve_timestamps(batch);
+        q.mark_complete(ch);
+        assert!(!q.contains_event(ch, &workflow_id));
+        assert_eq!(q.queued_event_count(&ch), 2);
     }
 
     #[test]

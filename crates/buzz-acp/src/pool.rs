@@ -346,6 +346,10 @@ fn apply_completed_before_control_signal(
 pub enum ControlSignal {
     /// Stop the current turn and drop its triggering batch.
     Cancel,
+    /// Stop a turn whose workflow delivery entered terminal handling. Preserve
+    /// the triggering batch so the queue can remove only terminal workflow
+    /// events while retaining unrelated co-batched work.
+    TerminalWorkflowCancel,
     /// Stop the current turn and requeue its triggering batch for a merged
     /// re-prompt framed as a **supersede**: the new request replaces the old.
     Interrupt,
@@ -3968,7 +3972,9 @@ fn requeue_cancelled_batch(
 ) -> Option<FlushBatch> {
     let reason = match signal {
         ControlSignal::Steer => CancelReason::Steer,
-        ControlSignal::Interrupt | ControlSignal::SwitchModel { .. } => CancelReason::Interrupt,
+        ControlSignal::TerminalWorkflowCancel
+        | ControlSignal::Interrupt
+        | ControlSignal::SwitchModel { .. } => CancelReason::Interrupt,
         // Cancel/Rotate discard the batch — no merged re-prompt.
         ControlSignal::Cancel | ControlSignal::Rotate => return None,
     };
@@ -6860,6 +6866,10 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
     fn test_requeue_cancelled_batch_maps_control_signal_to_cancel_reason() {
         let cases = [
             (ControlSignal::Steer, Some(CancelReason::Steer)),
+            (
+                ControlSignal::TerminalWorkflowCancel,
+                Some(CancelReason::Interrupt),
+            ),
             (ControlSignal::Interrupt, Some(CancelReason::Interrupt)),
             (
                 ControlSignal::SwitchModel {

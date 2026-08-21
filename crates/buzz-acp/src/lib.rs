@@ -459,7 +459,11 @@ async fn renew_owned_workflow_deliveries(
 
         tracing::error!(delivery = %delivery.id, channel = %delivery.channel_id,
             "workflow delivery lease cannot be maintained — stopping local ownership");
-        signal_in_flight_task(pool, delivery.channel_id, ControlSignal::Cancel);
+        signal_in_flight_task(
+            pool,
+            delivery.channel_id,
+            ControlSignal::TerminalWorkflowCancel,
+        );
         queue.terminalize_workflow_event(delivery.channel_id, &delivery.message_event_id);
         match owner {
             Owner::Event(event_id) => {
@@ -11063,6 +11067,143 @@ mod error_outcome_emission_tests {
             1,
             "non-auth application error must preserve the event for retry"
         );
+    }
+
+    #[tokio::test]
+    async fn terminal_workflow_non_cancel_error_preserves_only_unrelated_events() {
+        let keys = Keys::generate();
+        let workflow = EventBuilder::new(Kind::Custom(9), "terminal workflow")
+            .sign_with_keys(&keys)
+            .unwrap();
+        let unrelated = EventBuilder::new(Kind::Custom(9), "unrelated")
+            .sign_with_keys(&keys)
+            .unwrap();
+        let channel_id = Uuid::new_v4();
+        let mut queue = EventQueue::new(config::DedupMode::Queue);
+        for event in [workflow.clone(), unrelated.clone()] {
+            queue.push(QueuedEvent {
+                channel_id,
+                event,
+                received_at: std::time::Instant::now(),
+                prompt_tag: "test".into(),
+            });
+        }
+        let batch = queue.flush_next().expect("production checked-out batch");
+        queue.terminalize_workflow_event(channel_id, &workflow.id.to_hex());
+
+        let agent = dummy_agent(0).await;
+        let mut pool = AgentPool::from_slots(vec![None]);
+        let task_id = pool.join_set.spawn(async {}).id();
+        pool.task_map_mut().insert(
+            task_id,
+            crate::pool::TaskMeta {
+                agent_index: 0,
+                channel_id: Some(channel_id),
+                turn_id: "terminal-error".into(),
+                recoverable_batch: Some(batch.clone()),
+                control_tx: None,
+                steer_tx: None,
+                successful_steer_deliveries: HashSet::new(),
+            },
+        );
+        let mut heartbeat_in_flight = false;
+        let mut crash_history = vec![SlotCircuit {
+            crash_times: Vec::new(),
+            open_until: None,
+            respawn_in_flight: false,
+        }];
+        let (respawn_tx, _respawn_rx) = mpsc::channel(8);
+        let mut respawn_tasks = tokio::task::JoinSet::new();
+        handle_prompt_result(
+            &mut pool,
+            &mut queue,
+            &test_config(),
+            PromptResult {
+                agent,
+                source: PromptSource::Channel(channel_id),
+                turn_id: "terminal-error".into(),
+                outcome: PromptOutcome::Error(AcpError::AgentError {
+                    code: -32000,
+                    message: "retryable".into(),
+                }),
+                batch: Some(batch),
+            },
+            &mut heartbeat_in_flight,
+            &HashSet::new(),
+            &mut crash_history,
+            &respawn_tx,
+            &mut respawn_tasks,
+            None,
+            None,
+        );
+        assert!(!queue.contains_event(channel_id, &workflow.id.to_hex()));
+        assert!(queue.contains_event(channel_id, &unrelated.id.to_hex()));
+        assert_eq!(queue.queued_event_count(&channel_id), 1);
+    }
+
+    #[tokio::test]
+    async fn terminal_workflow_panic_recovery_preserves_only_unrelated_events() {
+        let keys = Keys::generate();
+        let workflow = EventBuilder::new(Kind::Custom(9), "terminal workflow")
+            .sign_with_keys(&keys)
+            .unwrap();
+        let unrelated = EventBuilder::new(Kind::Custom(9), "unrelated")
+            .sign_with_keys(&keys)
+            .unwrap();
+        let channel_id = Uuid::new_v4();
+        let mut queue = EventQueue::new(config::DedupMode::Queue);
+        for event in [workflow.clone(), unrelated.clone()] {
+            queue.push(QueuedEvent {
+                channel_id,
+                event,
+                received_at: std::time::Instant::now(),
+                prompt_tag: "test".into(),
+            });
+        }
+        let batch = queue.flush_next().expect("production checked-out batch");
+        queue.terminalize_workflow_event(channel_id, &workflow.id.to_hex());
+        let mut pool = AgentPool::from_slots(vec![]);
+        let abort_handle = pool.join_set.spawn(std::future::pending::<()>());
+        pool.task_map_mut().insert(
+            abort_handle.id(),
+            crate::pool::TaskMeta {
+                agent_index: 0,
+                channel_id: Some(channel_id),
+                turn_id: "terminal-panic".into(),
+                recoverable_batch: Some(batch),
+                control_tx: None,
+                steer_tx: None,
+                successful_steer_deliveries: HashSet::new(),
+            },
+        );
+        abort_handle.abort();
+        let join_error = pool.join_set.join_next().await.unwrap().unwrap_err();
+        let mut heartbeat_in_flight = false;
+        let mut typing_channels = HashMap::new();
+        let mut crash_history = vec![SlotCircuit {
+            crash_times: Vec::new(),
+            open_until: None,
+            respawn_in_flight: false,
+        }];
+        let (respawn_tx, _respawn_rx) = mpsc::channel(8);
+        let mut respawn_tasks = tokio::task::JoinSet::new();
+        recover_panicked_agent(
+            &mut pool,
+            &mut queue,
+            &test_config(),
+            join_error,
+            &mut heartbeat_in_flight,
+            &HashSet::new(),
+            &mut typing_channels,
+            &mut crash_history,
+            &respawn_tx,
+            &mut respawn_tasks,
+            None,
+        )
+        .expect("panic metadata survives recovery");
+        assert!(!queue.contains_event(channel_id, &workflow.id.to_hex()));
+        assert!(queue.contains_event(channel_id, &unrelated.id.to_hex()));
+        assert_eq!(queue.queued_event_count(&channel_id), 1);
     }
 
     fn claimed_delivery(event: &nostr::Event, channel_id: Uuid) -> ClaimedWorkflowDelivery {
