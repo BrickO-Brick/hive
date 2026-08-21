@@ -640,7 +640,7 @@ mod tests {
         let mut migrations: Vec<_> = MIGRATOR.iter().collect();
         migrations.sort_by_key(|migration| migration.version);
 
-        assert_eq!(migrations.len(), 32);
+        assert_eq!(migrations.len(), 34);
         assert_eq!(migrations[0].version, 1);
         assert_eq!(&*migrations[0].description, "initial schema");
         assert!(migrations[0]
@@ -1966,6 +1966,37 @@ mod tests {
         .await
         .expect("read post-push search behavior");
         assert_eq!(after, vec![(1, Some(true)), (30_350, None)]);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn workflow_agent_delivery_migration_binds_the_partitioned_event_key() {
+        let pool = connect_test_pool().await;
+        reset_public_schema(&pool).await;
+
+        MIGRATOR
+            .run_to(33, &pool)
+            .await
+            .expect("apply migrations through workflow definition event identity");
+        MIGRATOR
+            .run_to(34, &pool)
+            .await
+            .expect("apply workflow agent delivery migration");
+
+        assert_eq!(applied_versions(&pool).await.last(), Some(&34));
+        let foreign_key: String = sqlx::query_scalar(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint \
+             WHERE conrelid = 'workflow_agent_deliveries'::regclass \
+               AND contype = 'f' AND confrelid = 'events'::regclass",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("read delivery-to-event foreign key");
+        assert_eq!(
+            foreign_key,
+            "FOREIGN KEY (community_id, message_event_created_at, message_event_id) \
+             REFERENCES events(community_id, created_at, id) ON DELETE CASCADE"
+        );
     }
 
     #[tokio::test]
