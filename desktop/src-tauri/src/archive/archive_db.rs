@@ -169,7 +169,7 @@ impl ArchiveDb {
         self.prune_running
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
-            .then_some(PruneGuard(&self.prune_running))
+            .then(|| PruneGuard(&self.prune_running))
     }
 }
 
