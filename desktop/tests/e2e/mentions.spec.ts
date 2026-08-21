@@ -686,42 +686,47 @@ test("autocomplete searches global non-member people from the first typed charac
   await expect(tessaRow.getByText("not in channel")).toBeVisible();
 });
 
-test("autocomplete keeps same-name global people independently selectable", async ({
-  page,
-}) => {
-  const firstWillPubkey = "1".repeat(64);
-  const secondWillPubkey = "2".repeat(64);
-  await installMockBridge(page, {
-    searchProfiles: [
-      { pubkey: firstWillPubkey, displayName: "Will" },
-      { pubkey: secondWillPubkey, displayName: "Will" },
-    ],
+for (const selectedWill of ["first", "second"] as const) {
+  test(`autocomplete selects the exact ${selectedWill} same-name global person`, async ({
+    page,
+  }) => {
+    const firstWillPubkey = "1".repeat(64);
+    const secondWillPubkey = "2".repeat(64);
+    const selectedPubkey =
+      selectedWill === "first" ? firstWillPubkey : secondWillPubkey;
+    await installMockBridge(page, {
+      searchProfiles: [
+        { pubkey: firstWillPubkey, displayName: "Will" },
+        { pubkey: secondWillPubkey, displayName: "Will" },
+      ],
+    });
+    await page.goto("/");
+    await page.getByTestId("channel-general").click();
+
+    await page.getByTestId("message-input").fill("@Will");
+
+    const dropdown = autocomplete(page);
+    const firstWill = dropdown.getByTestId(
+      `mention-suggestion-${firstWillPubkey}`,
+    );
+    const secondWill = dropdown.getByTestId(
+      `mention-suggestion-${secondWillPubkey}`,
+    );
+    await expect(firstWill).toBeVisible();
+    await expect(secondWill).toBeVisible();
+    await expect(dropdown.getByTestId("mention-collision-npub")).toHaveCount(2);
+
+    await dropdown.getByTestId(`mention-suggestion-${selectedPubkey}`).click();
+    await page.keyboard.type(`hello ${selectedWill}`);
+    const message = `@Will hello ${selectedWill}`;
+    await expect(page.getByTestId("message-input")).toHaveText(message);
+    await page.getByTestId("send-message").click();
+    await page.getByRole("button", { name: "Invite" }).click();
+    await expect
+      .poll(() => readOutgoingMentionPubkeys(page, message))
+      .toEqual([selectedPubkey]);
   });
-  await page.goto("/");
-  await page.getByTestId("channel-general").click();
-
-  await page.getByTestId("message-input").fill("@Will");
-
-  const dropdown = autocomplete(page);
-  const firstWill = dropdown.getByTestId(
-    `mention-suggestion-${firstWillPubkey}`,
-  );
-  const secondWill = dropdown.getByTestId(
-    `mention-suggestion-${secondWillPubkey}`,
-  );
-  await expect(firstWill).toBeVisible();
-  await expect(secondWill).toBeVisible();
-  await expect(dropdown.getByTestId("mention-collision-npub")).toHaveCount(2);
-
-  await secondWill.click();
-  await page.keyboard.type("hello");
-  await expect(page.getByTestId("message-input")).toHaveText("@Will hello");
-  await page.getByTestId("send-message").click();
-  await page.getByRole("button", { name: "Invite" }).click();
-  await expect
-    .poll(() => readOutgoingMentionPubkeys(page, "@Will hello"))
-    .toEqual([secondWillPubkey]);
-});
+}
 
 test("mention autocomplete caps global people search at 50 results", async ({
   page,
