@@ -22,6 +22,7 @@ use nostr::{
     nips::nip98::{verify_auth_header, HttpMethod},
     Event, JsonUtil, Timestamp,
 };
+use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     sync::{
@@ -212,6 +213,10 @@ async fn enroll(State(s): State<AppState>, body: Bytes) -> Response {
         Some(v) => v,
         None => return error(StatusCode::BAD_REQUEST, "invalid_request"),
     };
+    tracing::info!(
+        transcript_sha256 = %hex::encode(Sha256::digest(signed.as_bytes())),
+        "App Attest enrollment transcript prepared"
+    );
     let verified = match profile.app_attest.as_ref().and_then(|policy| {
         policy
             .verify_attestation(&r.attestation, &r.key_id, signed.as_bytes())
@@ -835,7 +840,6 @@ pub fn router_with_metrics(
 #[cfg(test)]
 mod transcript_vector_tests {
     use super::*;
-    use sha2::{Digest, Sha256};
 
     const VECTORS_JSON: &str = include_str!("../tests/vectors/app_attest_transcripts.json");
 

@@ -2,6 +2,10 @@ import CryptoKit
 import DeviceCheck
 import Foundation
 
+#if canImport(OSLog)
+  import OSLog
+#endif
+
 #if canImport(Security)
   import Security
 #endif
@@ -506,6 +510,17 @@ public final class BuzzDevPushEnrollmentDriver {
         expiresAt: expiresAt,
         gatewayOrigin: gatewayBaseURL.absoluteString
       )
+#if canImport(OSLog)
+      let enrollmentTranscriptHash = Self.lowercaseHex(
+        Data(SHA256.hash(data: enrollmentClientData))
+      )
+      Logger(
+        subsystem: "com.tombrow.buzz.mobile",
+        category: "push-enrollment"
+      ).notice(
+        "App Attest enrollment transcript SHA-256: \(enrollmentTranscriptHash, privacy: .public)"
+      )
+#endif
       let attestation = try await appAttest.attestation(
         preparedAttestation,
         clientData: enrollmentClientData
