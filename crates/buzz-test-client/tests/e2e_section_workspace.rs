@@ -166,6 +166,14 @@ async fn owner_import_projection_is_private_immutable_and_one_shot() {
     let projection = projections[0].clone();
 
     for (kind, event) in [(IMPORT_KIND, &import), (PROJECTION_KIND, &projection)] {
+        let owner_events = http_query(&http, &owner, reader_filter(kind, &owner)).await;
+        assert_eq!(owner_events.len(), 1);
+        assert_eq!(owner_events[0]["id"], event.id.to_hex());
+        assert_eq!(
+            http_count(&http, &owner, reader_filter(kind, &owner)).await,
+            1
+        );
+
         assert!(ws_query(
             &mut stranger_client,
             &format!("stranger-kind-{kind}"),
