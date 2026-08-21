@@ -357,6 +357,63 @@ fn parse_workflow_update_target(event: &Event) -> Result<WorkflowUpdateTarget, I
     })
 }
 
+/// Resolve a kind-5 `a` coordinate when it targets a workflow definition.
+/// Other deletion coordinates return `None` and continue through ordinary
+/// NIP-09 handling.
+pub(crate) async fn resolve_workflow_delete_target(
+    tenant: &TenantContext,
+    state: &Arc<AppState>,
+    event: &Event,
+) -> Result<Option<buzz_db::workflow::WorkflowRecord>, IngestError> {
+    let Some(coordinate) = event.tags.iter().find_map(|tag| {
+        let parts = tag.as_slice();
+        (parts.first().map(String::as_str) == Some("a"))
+            .then(|| parts.get(1).map(String::as_str))
+            .flatten()
+    }) else {
+        return Ok(None);
+    };
+    let parts: Vec<&str> = coordinate.splitn(3, ':').collect();
+    if parts.first().copied() != Some("30620") {
+        return Ok(None);
+    }
+    if parts.len() != 3 {
+        return Err(IngestError::Rejected(
+            "invalid: malformed workflow deletion coordinate".into(),
+        ));
+    }
+    let owner = hex::decode(parts[1])
+        .map_err(|_| IngestError::Rejected("invalid: bad workflow owner pubkey".into()))?;
+    if owner.len() != 32 {
+        return Err(IngestError::Rejected(
+            "invalid: bad workflow owner pubkey".into(),
+        ));
+    }
+    let workflow = if let Ok(workflow_id) = Uuid::parse_str(parts[2]) {
+        state
+            .db
+            .get_workflow(tenant.community(), workflow_id)
+            .await
+            .map(Some)
+    } else {
+        state
+            .db
+            .find_workflow_by_owner_and_name(tenant.community(), &owner, parts[2])
+            .await
+    }
+    .map_err(|error| match error {
+        DbError::NotFound(_) => IngestError::Rejected("not found: workflow".into()),
+        other => IngestError::Internal(format!("error: resolve workflow deletion: {other}")),
+    })?
+    .ok_or_else(|| IngestError::Rejected("not found: workflow".into()))?;
+    if workflow.owner_pubkey != owner {
+        return Err(IngestError::Rejected(
+            "forbidden: workflow owner does not match deletion coordinate".into(),
+        ));
+    }
+    Ok(Some(workflow))
+}
+
 /// Extract all `p` tag values (hex pubkeys) from an event.
 fn extract_p_tags(event: &Event) -> Vec<String> {
     event
@@ -1207,6 +1264,15 @@ async fn handle_workflow_trigger(
             "forbidden: workflow has no channel scope".into(),
         ));
     };
+    let is_member = state
+        .is_member_cached(community_id, wf_channel_id, &self_bytes)
+        .await
+        .map_err(|e| IngestError::Internal(format!("error: membership check: {e}")))?;
+    if !is_member {
+        return Err(IngestError::Rejected(
+            "forbidden: not a member of this channel".into(),
+        ));
+    }
     state
         .workflow_engine
         .check_owner_authority(community_id, wf_channel_id, &workflow.owner_pubkey, &def)

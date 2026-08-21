@@ -2178,6 +2178,12 @@ async fn ingest_event_inner(
         return super::command_executor::handle_command(tenant, state, event, auth).await;
     }
 
+    let workflow_delete_target = if kind_u32 == KIND_DELETION {
+        super::command_executor::resolve_workflow_delete_target(tenant, state, &event).await?
+    } else {
+        None
+    };
+
     let mut channel_id = if kind_u32 == KIND_REACTION {
         match derive_reaction_channel(tenant.community(), &state.db, &event).await {
             ReactionChannelResult::Channel(ch_id) => Some(ch_id),
@@ -2205,39 +2211,45 @@ async fn ingest_event_inner(
         // kind:5 events don't carry an h-tag, so we look up the target event
         // and use its channel_id. This ensures token-channel, membership, and
         // archived checks run against the correct channel.
-        let target_hex = event.tags.iter().find_map(|t| {
-            if t.kind().to_string() == "e" {
-                t.content().and_then(|v| {
-                    if v.len() == 64 && v.chars().all(|c| c.is_ascii_hexdigit()) {
-                        Some(v.to_string())
-                    } else {
-                        None
-                    }
-                })
-            } else {
-                None
-            }
-        });
-        match target_hex {
-            Some(hex) => {
-                let target_bytes = hex::decode(&hex).map_err(|_| {
-                    IngestError::Rejected("invalid: malformed deletion target id".into())
-                })?;
-                match state
-                    .db
-                    .get_event_by_id(tenant.community(), &target_bytes)
-                    .await
-                {
-                    Ok(Some(target)) => target.channel_id,
-                    Ok(None) => None, // target not found — validate_standard_deletion will catch this
-                    Err(e) => {
-                        return Err(IngestError::Internal(format!(
-                            "error: looking up deletion target: {e}"
-                        )));
+        if workflow_delete_target.is_some() {
+            workflow_delete_target
+                .as_ref()
+                .and_then(|workflow| workflow.channel_id)
+        } else {
+            let target_hex = event.tags.iter().find_map(|t| {
+                if t.kind().to_string() == "e" {
+                    t.content().and_then(|v| {
+                        if v.len() == 64 && v.chars().all(|c| c.is_ascii_hexdigit()) {
+                            Some(v.to_string())
+                        } else {
+                            None
+                        }
+                    })
+                } else {
+                    None
+                }
+            });
+            match target_hex {
+                Some(hex) => {
+                    let target_bytes = hex::decode(&hex).map_err(|_| {
+                        IngestError::Rejected("invalid: malformed deletion target id".into())
+                    })?;
+                    match state
+                        .db
+                        .get_event_by_id(tenant.community(), &target_bytes)
+                        .await
+                    {
+                        Ok(Some(target)) => target.channel_id,
+                        Ok(None) => None, // target not found — validate_standard_deletion will catch this
+                        Err(e) => {
+                            return Err(IngestError::Internal(format!(
+                                "error: looking up deletion target: {e}"
+                            )));
+                        }
                     }
                 }
+                None => None, // no e-tag — caught by single-target enforcement
             }
-            None => None, // no e-tag — will be caught by single-target enforcement (step 12)
         }
     } else {
         extract_channel_id(&event)
@@ -2266,6 +2278,22 @@ async fn ingest_event_inner(
     }
 
     let pubkey_bytes = auth.pubkey().to_bytes().to_vec();
+    if let Some(workflow) = &workflow_delete_target {
+        let Some(workflow_channel) = workflow.channel_id else {
+            return Err(IngestError::Rejected(
+                "forbidden: workflow has no channel scope".into(),
+            ));
+        };
+        let is_member = state
+            .is_member_cached(tenant.community(), workflow_channel, &pubkey_bytes)
+            .await
+            .map_err(|e| IngestError::Internal(format!("error: membership check: {e}")))?;
+        if !is_member {
+            return Err(IngestError::Rejected(
+                "forbidden: not a member of this channel".into(),
+            ));
+        }
+    }
     // E1 (§4.8): fetch the community-scoped channel row once per request and
     // thread it through the gates below (membership open-fallback, archived
     // check, join visibility) instead of re-SELECTing it at each. `None` when

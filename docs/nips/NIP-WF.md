@@ -38,7 +38,7 @@ The relay evaluates elevated workflow actions and executes future runs using the
 
 ## Deletion request
 
-A workflow deletion is a kind `5` event with one `a` tag targeting the original owner's kind `30620` coordinate and an `expected-revision` tag naming the state the actor loaded. The relay rejects the deletion if a newer workflow revision has already been accepted. Legacy same-author deletions without the revision tag retain NIP-09 timestamp fencing.
+A workflow deletion is a kind `5` event with one `a` tag targeting the original owner's kind `30620` coordinate and an `expected-revision` tag naming the state the actor loaded. The relay rejects the deletion if a newer workflow revision has already been accepted. Legacy same-author deletions without the revision tag retain NIP-09 timestamp fencing. A delegated human manager must still be a current member of the workflow's channel when deleting or manually triggering it; removing that membership immediately revokes the delegated capability.
 
 ## Current state
 
