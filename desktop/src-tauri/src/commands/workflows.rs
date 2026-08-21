@@ -309,7 +309,8 @@ pub async fn delete_workflow(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let workflow = get_workflow(workflow_id.clone(), state.clone()).await?;
-    let builder = events::build_workflow_delete(&workflow_id, &workflow.owner_pubkey)?;
+    let builder =
+        events::build_workflow_delete(&workflow_id, &workflow.owner_pubkey, &workflow.revision)?;
     submit_event(builder, &state).await?;
     Ok(())
 }

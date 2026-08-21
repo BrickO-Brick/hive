@@ -910,20 +910,62 @@ pub async fn delete_workflow_for_owner(
     community_id: CommunityId,
     id: Uuid,
     owner_pubkey: &[u8],
+    expected_revision: Option<&[u8]>,
+    deletion_created_at_secs: i64,
 ) -> Result<Option<Uuid>> {
+    if expected_revision.is_some_and(|revision| revision.len() != 32) {
+        return Err(DbError::InvalidData(
+            "workflow revisions must be 32-byte event ids".to_string(),
+        ));
+    }
     let row = sqlx::query(
-        "DELETE FROM workflows WHERE community_id = $1 AND id = $2 AND owner_pubkey = $3 \
-         RETURNING channel_id",
+        r#"
+        DELETE FROM workflows AS workflow
+        WHERE workflow.community_id = $1
+          AND workflow.id = $2
+          AND workflow.owner_pubkey = $3
+          AND (
+                ($4::bytea IS NOT NULL AND workflow.revision_event_id = $4)
+                OR
+                ($4::bytea IS NULL AND (
+                    workflow.revision_event_id IS NULL
+                    OR EXISTS (
+                        SELECT 1 FROM events AS revision
+                        WHERE revision.community_id = workflow.community_id
+                          AND revision.id = workflow.revision_event_id
+                          AND revision.created_at <= to_timestamp($5)
+                    )
+                ))
+          )
+        RETURNING channel_id
+        "#,
     )
     .bind(community_id.as_uuid())
     .bind(id)
     .bind(owner_pubkey)
+    .bind(expected_revision)
+    .bind(deletion_created_at_secs)
     .fetch_optional(pool)
     .await?;
 
     match row {
         Some(row) => Ok(row.try_get("channel_id")?),
-        None => Err(DbError::NotFound(format!("workflow {id}"))),
+        None => {
+            let existing_owner: Option<Vec<u8>> = sqlx::query_scalar(
+                "SELECT owner_pubkey FROM workflows WHERE community_id = $1 AND id = $2",
+            )
+            .bind(community_id.as_uuid())
+            .bind(id)
+            .fetch_optional(pool)
+            .await?;
+            match existing_owner {
+                Some(owner) if owner == owner_pubkey => Err(DbError::WorkflowRevisionConflict(id)),
+                Some(_) => Err(DbError::AccessDenied(format!(
+                    "workflow {id} belongs to a different owner"
+                ))),
+                None => Err(DbError::NotFound(format!("workflow {id}"))),
+            }
+        }
     }
 }
 
@@ -2147,6 +2189,62 @@ mod tests {
         assert_eq!(updated.owner_pubkey, owner);
         assert_eq!(updated.channel_id, Some(channel_id));
         assert_eq!(updated.revision_event_id, Some(next_revision));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn workflow_delete_rejects_stale_revision() {
+        let pool = setup_pool().await;
+        let community = make_community(&pool).await;
+        let owner = vec![0xd6; 32];
+        ensure_user(&pool, community, &owner)
+            .await
+            .expect("ensure owner");
+        let channel_id = make_channel(&pool, community, &owner).await;
+        let workflow_id = Uuid::new_v4();
+        let current_revision = vec![0xe6; 32];
+        let mut tx = pool.begin().await.expect("begin create");
+        upsert_workflow_with_revision(
+            &mut tx,
+            community,
+            workflow_id,
+            Some(channel_id),
+            &owner,
+            "current",
+            r#"{"name":"current"}"#,
+            &[0xf6; 32],
+            None,
+            &current_revision,
+        )
+        .await
+        .expect("create workflow");
+        tx.commit().await.expect("commit create");
+
+        let stale = delete_workflow_for_owner(
+            &pool,
+            community,
+            workflow_id,
+            &owner,
+            Some(&[0xa7; 32]),
+            chrono::Utc::now().timestamp(),
+        )
+        .await;
+        assert!(matches!(stale, Err(DbError::WorkflowRevisionConflict(id)) if id == workflow_id));
+        assert!(get_workflow(&pool, community, workflow_id).await.is_ok());
+
+        assert_eq!(
+            delete_workflow_for_owner(
+                &pool,
+                community,
+                workflow_id,
+                &owner,
+                Some(&current_revision),
+                chrono::Utc::now().timestamp(),
+            )
+            .await
+            .expect("matching revision deletes"),
+            Some(channel_id)
+        );
     }
 
     /// Confinement: a duplicate workflow UUID existing in both community A and

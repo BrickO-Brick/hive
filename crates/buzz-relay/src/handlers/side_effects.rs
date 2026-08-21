@@ -2152,6 +2152,25 @@ async fn handle_a_tag_deletion(
             tracing::debug!(d_tag, "NIP-09 deletion ignored for push lease");
         }
         buzz_core::kind::KIND_WORKFLOW_DEF => {
+            let expected_revision = event
+                .tags
+                .iter()
+                .find_map(|tag| {
+                    let parts = tag.as_slice();
+                    (parts.first().map(String::as_str) == Some("expected-revision"))
+                        .then(|| parts.get(1).map(ToString::to_string))
+                        .flatten()
+                })
+                .map(hex::decode)
+                .transpose()
+                .map_err(|_| anyhow::anyhow!("invalid expected workflow revision"))?;
+            if expected_revision
+                .as_ref()
+                .is_some_and(|revision| revision.len() != 32)
+            {
+                return Err(anyhow::anyhow!("invalid expected workflow revision"));
+            }
+            let deletion_created_at_secs = event.created_at.as_secs() as i64;
             // Try UUID first (workflow_id); fall back to name-based lookup.
             if let Ok(wf_id) = uuid::Uuid::parse_str(d_tag) {
                 let workflow = state
@@ -2166,7 +2185,13 @@ async fn handle_a_tag_deletion(
                 }
                 let channel_id = state
                     .db
-                    .delete_workflow_for_owner(tenant.community(), wf_id, &target_owner)
+                    .delete_workflow_for_owner(
+                        tenant.community(),
+                        wf_id,
+                        &target_owner,
+                        expected_revision.as_deref(),
+                        deletion_created_at_secs,
+                    )
                     .await
                     .map_err(|e| anyhow::anyhow!("failed to delete workflow {wf_id}: {e}"))?;
                 if let Some(channel_id) = channel_id {
@@ -2195,7 +2220,13 @@ async fn handle_a_tag_deletion(
                     Ok(Some(wf)) => {
                         let channel_id = state
                             .db
-                            .delete_workflow_for_owner(tenant.community(), wf.id, &target_owner)
+                            .delete_workflow_for_owner(
+                                tenant.community(),
+                                wf.id,
+                                &target_owner,
+                                expected_revision.as_deref(),
+                                deletion_created_at_secs,
+                            )
                             .await
                             .map_err(|e| {
                                 anyhow::anyhow!("failed to delete workflow {}: {e}", wf.id)

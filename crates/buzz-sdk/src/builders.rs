@@ -1660,8 +1660,13 @@ pub fn build_workflow_update_request(
 pub fn build_workflow_delete(
     author_pubkey: &str,
     workflow_id: Uuid,
+    expected_revision: &str,
 ) -> Result<EventBuilder, SdkError> {
-    build_delete_addressable(KIND_WORKFLOW_DEF, author_pubkey, &workflow_id.to_string())
+    let revision = check_hex_exact(expected_revision, 64, "expected revision")?;
+    Ok(
+        build_delete_addressable(KIND_WORKFLOW_DEF, author_pubkey, &workflow_id.to_string())?
+            .tag(tag(&["expected-revision", &revision])?),
+    )
 }
 
 /// Build a workflow trigger event (kind 46020).
@@ -4033,17 +4038,19 @@ mod tests {
     fn workflow_delete_happy_path() {
         let pk = "a".repeat(64);
         let wid = uuid();
-        let ev = sign(build_workflow_delete(&pk, wid).unwrap());
+        let revision = "b".repeat(64);
+        let ev = sign(build_workflow_delete(&pk, wid, &revision).unwrap());
         assert_eq!(ev.kind.as_u16(), 5);
         let a_vals = tag_values(&ev, "a");
         assert_eq!(a_vals.len(), 1);
         assert!(a_vals[0].starts_with("30620:"));
         assert!(a_vals[0].contains(&wid.to_string()));
+        assert_eq!(tag_values(&ev, "expected-revision"), vec![revision]);
     }
 
     #[test]
     fn workflow_delete_rejects_bad_pubkey() {
-        let err = build_workflow_delete("bad", uuid()).unwrap_err();
+        let err = build_workflow_delete("bad", uuid(), &"a".repeat(64)).unwrap_err();
         assert!(matches!(err, SdkError::InvalidInput(_)));
     }
 

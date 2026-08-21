@@ -259,8 +259,11 @@ pub async fn cmd_delete_workflow(client: &BuzzClient, workflow_id: &str) -> Resu
         .ok_or_else(|| CliError::NotFound(format!("workflow {workflow_id} not found")))?;
     let owner = workflow_owner(&current)
         .ok_or_else(|| CliError::Other("workflow state is missing its owner".into()))?;
+    let expected_revision = workflow_revision(&current)
+        .ok_or_else(|| CliError::Other("workflow state is missing its revision".into()))?;
 
-    let builder = buzz_sdk::build_workflow_delete(&owner, wf_uuid).map_err(sdk_err)?;
+    let builder =
+        buzz_sdk::build_workflow_delete(&owner, wf_uuid, &expected_revision).map_err(sdk_err)?;
     let event = client.sign_event(builder)?;
 
     let resp = client.submit_event(event).await?;

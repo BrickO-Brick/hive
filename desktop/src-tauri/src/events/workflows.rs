@@ -48,9 +48,14 @@ pub fn build_workflow_update(
 pub fn build_workflow_delete(
     workflow_id: &str,
     owner_pubkey_hex: &str,
+    expected_revision: &str,
 ) -> Result<EventBuilder, String> {
+    EventId::from_hex(expected_revision).map_err(|_| "invalid workflow revision".to_string())?;
     let coord = format!("30620:{owner_pubkey_hex}:{workflow_id}");
-    let tags = vec![tag(vec!["a", &coord])?];
+    let tags = vec![
+        tag(vec!["a", &coord])?,
+        tag(vec!["expected-revision", expected_revision])?,
+    ];
     Ok(EventBuilder::new(Kind::Custom(5), "").tags(tags))
 }
 
@@ -112,5 +117,26 @@ mod tests {
         ]));
         assert!(tags.contains(&vec!["h".into(), channel_id]));
         assert!(tags.contains(&vec!["expected-revision".into(), revision]));
+    }
+
+    #[test]
+    fn delete_carries_the_loaded_revision() {
+        let owner = Keys::generate();
+        let workflow_id = uuid::Uuid::new_v4().to_string();
+        let revision = EventBuilder::new(Kind::TextNote, "revision")
+            .tags([])
+            .sign_with_keys(&owner)
+            .expect("sign revision")
+            .id
+            .to_hex();
+        let event = build_workflow_delete(&workflow_id, &owner.public_key().to_hex(), &revision)
+            .expect("build delete")
+            .sign_with_keys(&owner)
+            .expect("sign delete");
+
+        assert!(event
+            .tags
+            .iter()
+            .any(|tag| { tag.as_slice() == ["expected-revision".to_string(), revision.clone()] }));
     }
 }

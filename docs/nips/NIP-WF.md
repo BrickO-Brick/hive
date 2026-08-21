@@ -14,7 +14,7 @@ This document defines how a human manages a workflow created by their verified N
 | `46021` | Managing actor | Append-only workflow update request |
 | `30623` | Relay | Parameterized-replaceable current workflow state |
 | `46020` | Managing actor | Manual trigger request |
-| `5` | Managing actor | NIP-09 deletion request targeting the owner's `30620` coordinate |
+| `5` | Managing actor | NIP-09 deletion request targeting the owner's `30620` coordinate and expected revision |
 
 ## Update request
 
@@ -35,6 +35,10 @@ A kind `46021` event contains the proposed YAML and exactly one of each required
 The event signer is the managing actor. The relay permits the request when the actor is either the stored workflow owner or the human owner of that agent according to the community-scoped, cryptographically verified NIP-OA mapping. Channel access checks still apply.
 
 The relay evaluates elevated workflow actions and executes future runs using the unchanged stored workflow owner.
+
+## Deletion request
+
+A workflow deletion is a kind `5` event with one `a` tag targeting the original owner's kind `30620` coordinate and an `expected-revision` tag naming the state the actor loaded. The relay rejects the deletion if a newer workflow revision has already been accepted. Legacy same-author deletions without the revision tag retain NIP-09 timestamp fencing.
 
 ## Current state
 
