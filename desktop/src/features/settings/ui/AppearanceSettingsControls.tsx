@@ -367,9 +367,22 @@ export function AppearanceWorkspacePreview({
   const [threadOpen, setThreadOpen] = React.useState(true);
   const linkStyle = previewLinkStyle ?? savedLinkStyle;
   const threadMode = previewThreadMode ?? savedThreadMode;
+  React.useEffect(() => {
+    if (previewThreadMode !== null && previewThreadMode !== undefined) {
+      setThreadOpen(true);
+    } else if (previewLinkStyle !== null && previewLinkStyle !== undefined) {
+      setThreadOpen(false);
+    }
+  }, [previewLinkStyle, previewThreadMode]);
+  const previousThreadOpenRef = React.useRef(threadOpen);
+  const threadVisibilityChanged = previousThreadOpenRef.current !== threadOpen;
+  React.useEffect(() => {
+    previousThreadOpenRef.current = threadOpen;
+  }, [threadOpen]);
   const directManipulationActive =
-    (previewLinkStyle !== null && previewLinkStyle !== undefined) ||
-    (previewThreadMode !== null && previewThreadMode !== undefined);
+    !threadVisibilityChanged &&
+    ((previewLinkStyle !== null && previewLinkStyle !== undefined) ||
+      (previewThreadMode !== null && previewThreadMode !== undefined));
   const previousThreadModeRef = React.useRef(threadMode);
   const threadModeChanged = previousThreadModeRef.current !== threadMode;
   React.useEffect(() => {
@@ -634,7 +647,16 @@ export function LinkPreviewStyleSetting({
     [onPreviewChange],
   );
   return (
-    <div data-testid="link-preview-style-group">
+    <div
+      data-testid="link-preview-style-group"
+      onBlurCapture={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) {
+          handlePreviewChange(null);
+        }
+      }}
+      onFocusCapture={() => handlePreviewChange(style)}
+      onPointerDownCapture={() => handlePreviewChange(style)}
+    >
       <SettingsOptionRow>
         <div className="min-w-0">
           <p className="text-sm font-medium">Link previews</p>
@@ -797,7 +819,16 @@ export function ThreadLayoutSetting({
     THREAD_VIEW_MODE_OPTIONS[0];
 
   return (
-    <div data-testid="thread-layout-group">
+    <div
+      data-testid="thread-layout-group"
+      onBlurCapture={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) {
+          handlePreviewChange(null);
+        }
+      }}
+      onFocusCapture={() => handlePreviewChange(threadViewMode)}
+      onPointerDownCapture={() => handlePreviewChange(threadViewMode)}
+    >
       <SettingsOptionRow>
         <div className="min-w-0">
           <p className="text-sm font-medium">

@@ -94,6 +94,12 @@ test("workspace preview updates locally and commits only on selection", async ({
   const linkControl = page.getByTestId("link-preview-style-control");
   const richOption = page.getByTestId("link-preview-style-rich");
   await scrubTo(linkControl, richOption);
+  await expect(
+    page.getByTestId("appearance-workspace-preview-thread"),
+  ).toHaveCount(0);
+  await expect(
+    page.getByTestId("appearance-preview-open-thread"),
+  ).toBeVisible();
   await expect(workspace).toHaveAttribute("data-link-style", "rich");
   await expect(
     page.getByTestId("appearance-workspace-preview-channel").last(),
@@ -134,6 +140,9 @@ test("workspace preview updates locally and commits only on selection", async ({
   const threadControl = page.getByTestId("thread-layout-control");
   const focusOption = page.getByTestId("thread-layout-focus");
   await scrubTo(threadControl, focusOption);
+  await expect(
+    page.getByTestId("appearance-workspace-preview-thread").last(),
+  ).toBeVisible();
   await expect(workspace).toHaveAttribute("data-thread-mode", "focus");
   const directThread = page
     .getByTestId("appearance-workspace-preview-thread")
