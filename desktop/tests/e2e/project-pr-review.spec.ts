@@ -1,4 +1,5 @@
-import { expect, type Locator, test } from "@playwright/test";
+import type { Locator } from "@playwright/test";
+import { expect, test, bootstrapE2ePage } from "../helpers/test";
 
 import { waitForAnimations } from "../helpers/animations";
 import { installMockBridge, TEST_IDENTITIES } from "../helpers/bridge";
@@ -34,7 +35,7 @@ async function enableProjectsFeature(page: import("@playwright/test").Page) {
 }
 
 async function openBuzzProject(page: import("@playwright/test").Page) {
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
   await page.getByTestId("projects-section-projects").click();
   const projectEntry = page
@@ -851,7 +852,7 @@ test("project pull requests preserve partial results from batched queries", asyn
     window.__BUZZ_E2E_REJECT_PROJECT_QUERY_KINDS__ = [1619];
   });
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
   await page.getByRole("button", { name: "Reviews", exact: true }).click();
 
@@ -904,7 +905,7 @@ test("project pull request author rollover stays identity-only", async ({
 }) => {
   await enableProjectsFeature(page);
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
   await page.getByRole("button", { name: "Reviews", exact: true }).click();
   await page.getByRole("button", { name: "List layout" }).click();
@@ -937,7 +938,7 @@ test("project issue author rollover matches pull requests", async ({
 }) => {
   await enableProjectsFeature(page);
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
   await page.getByRole("button", { name: "Tasks", exact: true }).click();
   await page.getByRole("button", { name: "List layout" }).click();
@@ -973,7 +974,7 @@ test("project pull requests report aggregate root query failures", async ({
     window.__BUZZ_E2E_REJECT_PROJECT_QUERY_KINDS__ = [1618];
   });
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
   await page.getByRole("button", { name: "Reviews", exact: true }).click();
 
@@ -999,7 +1000,7 @@ test("project issues preserve partial results from aggregate queries", async ({
     window.__BUZZ_E2E_REJECT_PROJECT_QUERY_KINDS__ = [1];
   });
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
   await page.getByRole("button", { name: "Tasks", exact: true }).click();
 
@@ -1031,7 +1032,7 @@ test("project overview reports aggregate work-item failures", async ({
     window.__BUZZ_E2E_REJECT_PROJECT_QUERY_KINDS__ = [1618];
   });
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
 
   await expect(
@@ -1053,7 +1054,7 @@ test("projects breadcrumb is centered in the window chrome", async ({
 }) => {
   await enableProjectsFeature(page);
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
 
   const breadcrumbMetrics = await page
@@ -1078,7 +1079,7 @@ test("sidebar distinguishes the Projects overview from an open project", async (
 }) => {
   await enableProjectsFeature(page);
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
 
   const projectsOverview = page.getByTestId("open-projects-view");
   await projectsOverview.click();
@@ -1108,7 +1109,7 @@ test("collapsed sidebar leaves a balanced Projects surface gutter", async ({
 }) => {
   await enableProjectsFeature(page);
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
 
   const layout = page.getByTestId("projects-overview-layout");
@@ -1122,7 +1123,7 @@ test("collapsed sidebar leaves a balanced Projects surface gutter", async ({
 test("project channels are grouped by project", async ({ page }) => {
   await enableProjectsFeature(page);
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
   await expect(page.getByTestId("projects-section-all")).toBeVisible();
   expect(
@@ -1235,7 +1236,7 @@ test("overview tasks and reviews are grouped and selectable by project", async (
 }) => {
   await enableProjectsFeature(page);
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
 
   for (const section of [
@@ -1311,7 +1312,7 @@ test("project section icons follow their titles", async ({ page }) => {
 
   await enableProjectsFeature(page);
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
   await page.getByTestId("projects-section-issues").click();
   await expectIconAfterTitle("projects-page-header");
@@ -1326,7 +1327,7 @@ test("project overview presents collapsible context beside grouped activity", as
 }) => {
   await enableProjectsFeature(page);
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
 
   await expect(page.getByTestId("projects-overview-panel")).toHaveCSS(
@@ -1596,7 +1597,7 @@ test("project overview presents collapsible context beside grouped activity", as
 test("project overview content header toggles agent chat", async ({ page }) => {
   await enableProjectsFeature(page);
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
   await page.getByTestId("projects-section-prs").click();
   await page.getByRole("button", { name: "List layout" }).click();
@@ -1681,7 +1682,7 @@ test("project overview info control animates the context rail", async ({
 }) => {
   await enableProjectsFeature(page);
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
 
   const toggle = page.getByTestId("projects-overview-context-toggle");
@@ -1737,7 +1738,7 @@ test("selecting overview list rows switches the context pod to the cluster", asy
 }) => {
   await enableProjectsFeature(page);
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
   await page.getByRole("button", { name: "Tasks", exact: true }).click();
   await page.getByRole("button", { name: "List layout" }).click();
@@ -1824,7 +1825,7 @@ test("repository changes discard captured selection context before agent sends",
 }) => {
   await enableProjectsFeature(page);
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await addProjectToSidebar(page, "buzz");
   await page.getByTestId("sidebar-project-repository-buzz").click();
   await page.getByRole("tab", { name: "Tasks", exact: true }).click();
@@ -1895,7 +1896,7 @@ test("overview lists position identifying and generic icons consistently", async
 }) => {
   await enableProjectsFeature(page);
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
 
   await page.getByTestId("projects-section-projects").click();
@@ -2079,7 +2080,7 @@ test("selecting repository workspace rows switches the context pod to the cluste
 }) => {
   await enableProjectsFeature(page);
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
   await page.getByTestId("projects-section-projects").click();
   await page
@@ -2257,7 +2258,7 @@ test("project detail chat resize tracks the pointer without easing", async ({
 test("repository rows identify their git host", async ({ page }) => {
   await enableProjectsFeature(page);
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
   await page.getByRole("button", { name: "Repositories", exact: true }).click();
   await page.getByRole("button", { name: "List layout" }).click();
@@ -2281,7 +2282,7 @@ test("project subsections do not paint backgrounds behind list or grid items", a
 }) => {
   await enableProjectsFeature(page);
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
 
   for (const section of ["Repositories", "Reviews", "Tasks"] as const) {
@@ -2325,7 +2326,7 @@ test("project subsections do not paint backgrounds behind list or grid items", a
 test("all project grid cards cap body copy at two lines", async ({ page }) => {
   await enableProjectsFeature(page);
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
 
   for (const section of [
@@ -2669,7 +2670,7 @@ test("external repositories stay on local source after a branch round trip", asy
     };
   });
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await addProjectToSidebar(page, "buzz");
   await page.getByTestId("sidebar-project-repository-relay-tools").click();
 
@@ -2763,7 +2764,7 @@ test("repository files beyond the eager preview limit load on demand", async ({
     };
   });
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await addProjectToSidebar(page, "buzz");
   await page.getByTestId("sidebar-project-repository-relay-tools").click();
 
@@ -2900,7 +2901,7 @@ test("narrow layouts keep section context reachable through a sheet", async ({
   await page.setViewportSize({ height: 720, width: 900 });
   await enableProjectsFeature(page);
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
 
   // Below the detached breakpoint the retained docked rail stays collapsed,

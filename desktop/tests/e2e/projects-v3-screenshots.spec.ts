@@ -1,4 +1,5 @@
-import { expect, type Locator, test } from "@playwright/test";
+import type { Locator } from "@playwright/test";
+import { expect, test, bootstrapE2ePage } from "../helpers/test";
 
 import { waitForAnimations } from "../helpers/animations";
 import { installMockBridge, TEST_IDENTITIES } from "../helpers/bridge";
@@ -20,7 +21,7 @@ async function expectSinglePrimaryTextColumn(row: Locator) {
 }
 
 async function openBuzzProject(page: import("@playwright/test").Page) {
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
   await page.getByTestId("projects-section-projects").click();
   const projectEntry = page
@@ -37,7 +38,7 @@ test("projects activity overview screenshot", async ({ page }) => {
     window.localStorage.setItem("buzz-theme", "light");
   });
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
   await expect(page.getByTestId("projects-page-tabs")).toBeVisible();
   await expect(page.getByTestId("projects-page-header")).toBeVisible();
@@ -60,7 +61,7 @@ test("projects activity overview screenshot", async ({ page }) => {
 
 test("sidebar project add flow browses before creating", async ({ page }) => {
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await expect(page.getByTestId("sidebar-project-buzz")).toHaveCount(0);
   await page.getByTestId("sidebar-projects-section-label").hover();
   await page.getByTestId("sidebar-projects-create").click();
@@ -1094,7 +1095,7 @@ test("projects v3 work-item list metadata", async ({ page }) => {
     window.localStorage.setItem("buzz.projects.viewMode", "list");
   });
   await installMockBridge(page);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await bootstrapE2ePage(page, "/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
 
   await page.getByTestId("projects-section-all").click();
