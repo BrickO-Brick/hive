@@ -225,9 +225,12 @@ async fn resolve_members(
 
 /// Match member handles against an index of published personas.
 ///
-/// Tried in order: exact d-tag, slugified d-tag, then unique display name
-/// (case-insensitive). An ambiguous display name is an error rather than a
-/// guess, since picking the wrong persona seats the wrong agent.
+/// Tried in order: exact d-tag, unique display name (case-insensitive), then
+/// slugified d-tag. Display name outranks the slugified form because a Desktop
+/// snapshot names members only by display name — slugifying "Herring" onto an
+/// unrelated `herring` d-tag would silently seat the wrong persona. An
+/// ambiguous display name is an error rather than a guess, for the same
+/// reason.
 fn match_members(
     requested: &[String],
     d_tags: &BTreeSet<&str>,
@@ -240,13 +243,11 @@ fn match_members(
             resolved.push((*hit).to_owned());
             continue;
         }
-        let slug = normalize_d_tag(handle);
-        if let Some(hit) = d_tags.get(slug.as_str()) {
-            resolved.push((*hit).to_owned());
-            continue;
-        }
         match by_display.get(&handle.to_lowercase()).map(Vec::as_slice) {
-            Some([only]) => resolved.push((*only).to_owned()),
+            Some([only]) => {
+                resolved.push((*only).to_owned());
+                continue;
+            }
             Some(many) => {
                 return Err(CliError::Usage(format!(
                     "'{handle}' matches {} published personas ({}); \
@@ -255,8 +256,14 @@ fn match_members(
                     many.join(", ")
                 )));
             }
-            _ => missing.push(handle.as_str()),
+            _ => {}
         }
+        let slug = normalize_d_tag(handle);
+        if let Some(hit) = d_tags.get(slug.as_str()) {
+            resolved.push((*hit).to_owned());
+            continue;
+        }
+        missing.push(handle.as_str());
     }
     if !missing.is_empty() {
         return Err(CliError::NotFound(format!(
@@ -843,6 +850,41 @@ mod tests {
         assert!(
             err.to_string().contains("matches 2 published personas"),
             "{err}"
+        );
+    }
+
+    /// A Desktop snapshot names members by display name, so a unique display
+    /// name must outrank a slugified d-tag collision: binding "Herring" to an
+    /// unrelated `herring` slug seats the wrong persona and reports success.
+    #[test]
+    fn unique_display_name_wins_over_a_slugified_collision() {
+        let (d, n) = index(&[("herring", "Old Herring"), ("uuid-h", "Herring")]);
+        assert_eq!(
+            match_members(&["Herring".into()], &d, &n).unwrap(),
+            vec!["uuid-h".to_string()]
+        );
+    }
+
+    /// When the display name is ambiguous, the slugified collision must not
+    /// short-circuit the ambiguity error into a silent wrong seat.
+    #[test]
+    fn ambiguity_beats_a_slugified_collision() {
+        let (d, n) = index(&[("herring", "Herring"), ("uuid-h", "Herring")]);
+        let err = match_members(&["Herring".into()], &d, &n).unwrap_err();
+        assert!(
+            err.to_string().contains("matches 2 published personas"),
+            "{err}"
+        );
+    }
+
+    /// The slugified form still resolves when no display name matches — the
+    /// CLI-only path where the handle is a prettied form of the slug.
+    #[test]
+    fn slugified_d_tag_resolves_when_display_name_misses() {
+        let (d, n) = index(&[("code-reviewer", "The Reviewer")]);
+        assert_eq!(
+            match_members(&["Code Reviewer".into()], &d, &n).unwrap(),
+            vec!["code-reviewer".to_string()]
         );
     }
 
