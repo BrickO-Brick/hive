@@ -2248,7 +2248,7 @@ async fn ingest_event_inner(
                         }
                     }
                 }
-                None => None, // no e-tag — caught by single-target enforcement
+                None => None, // no e-tag — will be caught by single-target enforcement (step 12)
             }
         }
     } else {
@@ -2523,6 +2523,17 @@ async fn ingest_event_inner(
                 "invalid: deletion events must reference exactly one target via e or a tag (got e={e_count}, a={a_count})"
             )));
         }
+    }
+
+    // Workflow deletions are command-like mutations even though NIP-09 uses
+    // kind 5. Store the signed request, delete the workflow row, and write the
+    // relay tombstone in one transaction instead of relying on post-storage
+    // side effects.
+    if let Some(workflow) = workflow_delete_target {
+        return super::command_executor::handle_workflow_delete(
+            tenant, state, &event, &auth, workflow,
+        )
+        .await;
     }
 
     if kind_u32 == KIND_STREAM_MESSAGE_EDIT {

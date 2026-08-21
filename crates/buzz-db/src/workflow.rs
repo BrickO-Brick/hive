@@ -913,6 +913,31 @@ pub async fn delete_workflow_for_owner(
     expected_revision: Option<&[u8]>,
     deletion_created_at_secs: i64,
 ) -> Result<Option<Uuid>> {
+    let mut tx = pool.begin().await?;
+    let channel_id = delete_workflow_for_owner_in_tx(
+        &mut tx,
+        community_id,
+        id,
+        owner_pubkey,
+        expected_revision,
+        deletion_created_at_secs,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(channel_id)
+}
+
+/// Delete a workflow with ownership and revision fencing inside the caller's
+/// transaction. This lets the relay commit the signed deletion request, domain
+/// mutation, and relay-authored tombstone as one unit.
+pub async fn delete_workflow_for_owner_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    community_id: CommunityId,
+    id: Uuid,
+    owner_pubkey: &[u8],
+    expected_revision: Option<&[u8]>,
+    deletion_created_at_secs: i64,
+) -> Result<Option<Uuid>> {
     if expected_revision.is_some_and(|revision| revision.len() != 32) {
         return Err(DbError::InvalidData(
             "workflow revisions must be 32-byte event ids".to_string(),
@@ -945,7 +970,7 @@ pub async fn delete_workflow_for_owner(
     .bind(owner_pubkey)
     .bind(expected_revision)
     .bind(deletion_created_at_secs)
-    .fetch_optional(pool)
+    .fetch_optional(tx.as_mut())
     .await?;
 
     match row {
@@ -956,7 +981,7 @@ pub async fn delete_workflow_for_owner(
             )
             .bind(community_id.as_uuid())
             .bind(id)
-            .fetch_optional(pool)
+            .fetch_optional(tx.as_mut())
             .await?;
             match existing_owner {
                 Some(owner) if owner == owner_pubkey => Err(DbError::WorkflowRevisionConflict(id)),
@@ -2244,6 +2269,57 @@ mod tests {
             .await
             .expect("matching revision deletes"),
             Some(channel_id)
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn workflow_delete_rolls_back_with_enclosing_transaction() {
+        let pool = setup_pool().await;
+        let community = make_community(&pool).await;
+        let owner = vec![0xb7; 32];
+        ensure_user(&pool, community, &owner)
+            .await
+            .expect("ensure owner");
+        let channel_id = make_channel(&pool, community, &owner).await;
+        let workflow_id = Uuid::new_v4();
+        let revision = vec![0xc7; 32];
+        let mut create_tx = pool.begin().await.expect("begin create");
+        upsert_workflow_with_revision(
+            &mut create_tx,
+            community,
+            workflow_id,
+            Some(channel_id),
+            &owner,
+            "rollback",
+            r#"{"name":"rollback"}"#,
+            &[0xd7; 32],
+            None,
+            &revision,
+        )
+        .await
+        .expect("create workflow");
+        create_tx.commit().await.expect("commit create");
+
+        let mut delete_tx = pool.begin().await.expect("begin delete");
+        delete_workflow_for_owner_in_tx(
+            &mut delete_tx,
+            community,
+            workflow_id,
+            &owner,
+            Some(&revision),
+            chrono::Utc::now().timestamp(),
+        )
+        .await
+        .expect("delete inside transaction");
+        delete_tx.rollback().await.expect("rollback delete");
+
+        assert_eq!(
+            get_workflow(&pool, community, workflow_id)
+                .await
+                .expect("rollback preserves workflow")
+                .revision_event_id,
+            Some(revision)
         );
     }
 

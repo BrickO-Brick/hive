@@ -1392,6 +1392,140 @@ async fn handle_workflow_trigger(
     })
 }
 
+/// Transactionally apply a workflow kind-5 request. Ingest resolves the target
+/// and performs the standard NIP-09 envelope checks before entering here.
+pub(crate) async fn handle_workflow_delete(
+    tenant: &TenantContext,
+    state: &Arc<AppState>,
+    event: &Event,
+    auth: &IngestAuth,
+    workflow: buzz_db::workflow::WorkflowRecord,
+) -> Result<IngestResult, IngestError> {
+    let actor = auth.pubkey().to_bytes().to_vec();
+    if !can_manage_workflow(
+        &state.db,
+        tenant.community(),
+        &workflow.owner_pubkey,
+        &actor,
+    )
+    .await?
+    {
+        return Err(IngestError::Rejected(
+            "forbidden: only the workflow owner or its verified human owner may delete it".into(),
+        ));
+    }
+    let channel_id = workflow
+        .channel_id
+        .ok_or_else(|| IngestError::Rejected("forbidden: workflow has no channel scope".into()))?;
+    let is_member = state
+        .is_member_cached(tenant.community(), channel_id, &actor)
+        .await
+        .map_err(|e| IngestError::Internal(format!("error: membership check: {e}")))?;
+    if !is_member {
+        return Err(IngestError::Rejected(
+            "forbidden: not a member of this channel".into(),
+        ));
+    }
+
+    let revisions: Vec<&str> = event
+        .tags
+        .iter()
+        .filter_map(|tag| {
+            let parts = tag.as_slice();
+            (parts.first().map(String::as_str) == Some("expected-revision"))
+                .then(|| parts.get(1).map(String::as_str))
+                .flatten()
+        })
+        .collect();
+    let expected_revision = match revisions.as_slice() {
+        [] => None,
+        [revision] => {
+            let bytes = hex::decode(revision).map_err(|_| {
+                IngestError::Rejected("invalid: bad expected workflow revision".into())
+            })?;
+            if bytes.len() != 32 {
+                return Err(IngestError::Rejected(
+                    "invalid: bad expected workflow revision".into(),
+                ));
+            }
+            Some(bytes)
+        }
+        _ => {
+            return Err(IngestError::Rejected(
+                "invalid: workflow deletion permits at most one expected-revision tag".into(),
+            ));
+        }
+    };
+
+    let state_event = build_workflow_state(
+        &state.relay_keypair,
+        workflow.id,
+        channel_id,
+        &workflow.owner_pubkey,
+        &actor,
+        event.id,
+        "",
+        WorkflowStateStatus::Deleted,
+    )
+    .map_err(|e| IngestError::Internal(format!("error: build workflow tombstone: {e}")))?;
+
+    let mut tx = match persist_command_event(&state.db, tenant, event, Some(channel_id)).await? {
+        PersistResult::Duplicate => {
+            return Ok(IngestResult {
+                event_id: event.id.to_hex(),
+                accepted: true,
+                message: "duplicate: already processed".into(),
+            });
+        }
+        PersistResult::Inserted(tx) => tx,
+    };
+    buzz_db::workflow::delete_workflow_for_owner_in_tx(
+        &mut tx,
+        tenant.community(),
+        workflow.id,
+        &workflow.owner_pubkey,
+        expected_revision.as_deref(),
+        event.created_at.as_secs() as i64,
+    )
+    .await
+    .map_err(|error| match error {
+        DbError::WorkflowRevisionConflict(_) => IngestError::Rejected(
+            "conflict: workflow changed since it was loaded; refresh and try again".into(),
+        ),
+        DbError::AccessDenied(_) => {
+            IngestError::Rejected("forbidden: workflow belongs to a different owner".into())
+        }
+        DbError::NotFound(_) => IngestError::Rejected("not found: workflow".into()),
+        other => IngestError::Internal(format!("error: delete workflow: {other}")),
+    })?;
+    let stored_state = store_workflow_state(&mut tx, tenant.community(), &state_event, channel_id)
+        .await
+        .map_err(|e| IngestError::Internal(format!("error: store workflow tombstone: {e}")))?;
+    tx.commit()
+        .await
+        .map_err(|e| IngestError::Internal(format!("error: commit workflow deletion: {e}")))?;
+
+    state
+        .workflow_engine
+        .invalidate_channel_workflows(tenant.community(), channel_id);
+    let relay_pubkey = state.relay_keypair.public_key().to_hex();
+    dispatch_persistent_event(
+        tenant,
+        state,
+        &stored_state,
+        KIND_WORKFLOW_STATE,
+        &relay_pubkey,
+        None,
+    )
+    .await;
+
+    Ok(IngestResult {
+        event_id: event.id.to_hex(),
+        accepted: true,
+        message: "{}".into(),
+    })
+}
+
 /// Return whether `actor` may manage a workflow owned by `workflow_owner`.
 ///
 /// Direct ownership remains the fast path. The only delegated path is the
