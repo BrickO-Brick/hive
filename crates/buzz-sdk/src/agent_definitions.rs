@@ -15,11 +15,9 @@
 use nostr::{EventBuilder, Kind, Tag};
 use serde::{Deserialize, Serialize};
 
+use crate::builders::build_delete_addressable;
 use crate::SdkError;
 use buzz_core::kind::{KIND_PERSONA, KIND_TEAM};
-
-/// NIP-09 deletion kind.
-const KIND_DELETE: u16 = 5;
 
 /// Maximum d-tag length in the NIP-AP slug grammar.
 pub const MAX_D_TAG_LEN: usize = 64;
@@ -132,8 +130,9 @@ pub struct TeamEventContent {
 /// `CodeReviewer` or `_ops` is signed locally but REJECTED — pending forever.
 /// The builders here deliberately do NOT call this: a d-tag is a coordinate,
 /// and rewriting it under a caller would silently move an existing definition
-/// to a new address. Callers route both the outbound publish and the inbound
-/// match key through this fn so the two cannot drift.
+/// to a new address. [`build_persona_event`] instead rejects a d-tag that is
+/// not already normalized. Callers route both the outbound publish and the
+/// inbound match key through this fn so the two cannot drift.
 ///
 /// - ASCII-lowercase every char.
 /// - Map any char outside `[a-z0-9_-]` to `-`.
@@ -170,17 +169,20 @@ pub fn normalize_d_tag(raw: &str) -> String {
 
 /// Build a kind:30175 persona event from an already-projected content body.
 ///
-/// `d_tag` is written verbatim, so callers must pass it through
-/// [`normalize_d_tag`] first — the relay enforces the slug grammar on persona
-/// d-tags and rejects anything else. (Team ids are the opposite; see
-/// [`build_team_event`].) `shared` adds the `["shared", "true"]` tag that marks
-/// a persona for catalog discovery. Returns an unsigned builder; the caller
-/// signs and submits.
+/// `d_tag` is written verbatim but must already match the NIP-AP slug grammar
+/// — pass raw input through [`normalize_d_tag`] first. The relay enforces the
+/// grammar on persona d-tags, so accepting anything else would hand back a
+/// signable event that can never publish; the builder rejects rather than
+/// normalizes because rewriting a coordinate would silently move an existing
+/// definition. (Team ids are the opposite; see [`build_team_event`].) `shared`
+/// adds the `["shared", "true"]` tag that marks a persona for catalog
+/// discovery. Returns an unsigned builder; the caller signs and submits.
 pub fn build_persona_event(
     d_tag: &str,
     content: &PersonaEventContent,
     shared: bool,
 ) -> Result<EventBuilder, SdkError> {
+    check_persona_d_tag(d_tag)?;
     let body = serde_json::to_string(content)
         .map_err(|e| SdkError::InvalidInput(format!("failed to serialize persona content: {e}")))?;
     let mut tags = vec![d_tag_of(d_tag)?];
@@ -207,30 +209,23 @@ pub fn build_team_event(d_tag: &str, content: &TeamEventContent) -> Result<Event
 }
 
 /// Build a NIP-09 deletion targeting a persona's kind:30175 coordinate.
+///
+/// Delegates to [`build_delete_addressable`], which validates and
+/// lowercase-normalizes the owner pubkey and rejects an empty d-tag — the
+/// relay hex-decodes the coordinate owner, so a malformed owner builds a
+/// deletion that signs fine but never lands. The single `a`-tag (deliberately
+/// no `e`-tag) removes the parameterized-replaceable coordinate for every
+/// client; an `e`-tag would route to the event-id deletion path and leave the
+/// coordinate live.
 pub fn build_persona_delete(d_tag: &str, owner_pubkey_hex: &str) -> Result<EventBuilder, SdkError> {
-    build_coordinate_delete(KIND_PERSONA, d_tag, owner_pubkey_hex)
+    build_delete_addressable(KIND_PERSONA, owner_pubkey_hex, d_tag)
 }
 
 /// Build a NIP-09 deletion targeting a team's kind:30176 coordinate.
-pub fn build_team_delete(d_tag: &str, owner_pubkey_hex: &str) -> Result<EventBuilder, SdkError> {
-    build_coordinate_delete(KIND_TEAM, d_tag, owner_pubkey_hex)
-}
-
-/// Build a kind:5 deletion carrying a single NIP-33 coordinate `a`-tag.
 ///
-/// Deliberately no `e`-tag: an `e`-tag routes the relay to the event-id
-/// deletion path, which leaves the parameterized-replaceable coordinate live.
-/// The coordinate delete removes the definition for every client and across
-/// reboots.
-fn build_coordinate_delete(
-    kind: u32,
-    d_tag: &str,
-    owner_pubkey_hex: &str,
-) -> Result<EventBuilder, SdkError> {
-    let coord = format!("{kind}:{owner_pubkey_hex}:{d_tag}");
-    let tag = Tag::parse(["a", coord.as_str()])
-        .map_err(|e| SdkError::InvalidTag(format!("invalid a-tag: {e}")))?;
-    Ok(EventBuilder::new(Kind::Custom(KIND_DELETE), "").tags(vec![tag]))
+/// Same validation and tag shape as [`build_persona_delete`].
+pub fn build_team_delete(d_tag: &str, owner_pubkey_hex: &str) -> Result<EventBuilder, SdkError> {
+    build_delete_addressable(KIND_TEAM, owner_pubkey_hex, d_tag)
 }
 
 /// Parse a kind:30175 event's content into its projection.
@@ -265,9 +260,23 @@ fn d_tag_of(d_tag: &str) -> Result<Tag, SdkError> {
     Tag::parse(["d", d_tag]).map_err(|e| SdkError::InvalidTag(format!("invalid d-tag: {e}")))
 }
 
+/// Reject a persona d-tag not already in the NIP-AP slug grammar
+/// `^[a-z0-9][a-z0-9_-]{0,63}$`. Validity is "fixed point of
+/// [`normalize_d_tag`]", so the validator and the normalizer cannot drift.
+fn check_persona_d_tag(d_tag: &str) -> Result<(), SdkError> {
+    if normalize_d_tag(d_tag) != d_tag {
+        return Err(SdkError::InvalidInput(format!(
+            "persona d-tag {d_tag:?} must match ^[a-z0-9][a-z0-9_-]{{0,63}}$; \
+             pass raw input through normalize_d_tag first"
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use buzz_core::kind::KIND_DELETION;
     use nostr::Keys;
 
     const OWNER: &str = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
@@ -308,14 +317,95 @@ mod tests {
         assert_eq!(persona_content_from_event(&event).unwrap(), persona());
     }
 
-    /// A d-tag is a coordinate: normalizing inside the builder would move an
+    /// A d-tag is a coordinate: the builders validate it but never rewrite
+    /// it, since normalizing inside the builder would silently move an
     /// existing definition to a new address behind the caller's back.
     #[test]
     fn builders_use_the_d_tag_verbatim() {
-        let persona_event = sign(build_persona_event("CodeReviewer", &persona(), false).unwrap());
-        assert_eq!(event_d_tag(&persona_event), Some("CodeReviewer"));
+        let persona_event = sign(build_persona_event("code-reviewer", &persona(), false).unwrap());
+        assert_eq!(event_d_tag(&persona_event), Some("code-reviewer"));
+        // Team ids are not slugs: Desktop publishes raw UUIDs and ids like
+        // `builtin-team:welcome`, so mixed case passes through untouched.
         let team_event = sign(build_team_event("Sietch-Tabr", &team()).unwrap());
         assert_eq!(event_d_tag(&team_event), Some("Sietch-Tabr"));
+    }
+
+    /// The relay rejects persona d-tags outside `^[a-z0-9][a-z0-9_-]{0,63}$`,
+    /// so an unvalidated builder hands the caller a signable event that can
+    /// never publish.
+    #[test]
+    fn persona_builder_rejects_d_tags_outside_the_slug_grammar() {
+        let overlong = "z".repeat(MAX_D_TAG_LEN + 1);
+        for bad in [
+            "",
+            "CodeReviewer",
+            "_ops",
+            "-x",
+            "a b",
+            "caf\u{e9}",
+            overlong.as_str(),
+        ] {
+            assert!(
+                matches!(
+                    build_persona_event(bad, &persona(), false),
+                    Err(SdkError::InvalidInput(_))
+                ),
+                "d_tag={bad:?} should be rejected"
+            );
+        }
+    }
+
+    /// The relay hex-decodes the coordinate owner when handling a deletion, so
+    /// a malformed owner builds a deletion that signs fine but never lands.
+    #[test]
+    fn delete_builders_reject_malformed_owners_and_empty_d_tags() {
+        let truncated = &OWNER[..63];
+        for owner in ["", "not-a-pubkey", truncated, "zz"] {
+            assert!(
+                matches!(
+                    build_persona_delete("herring", owner),
+                    Err(SdkError::InvalidInput(_))
+                ),
+                "persona owner={owner:?} should be rejected"
+            );
+            assert!(
+                matches!(
+                    build_team_delete("red-team", owner),
+                    Err(SdkError::InvalidInput(_))
+                ),
+                "team owner={owner:?} should be rejected"
+            );
+        }
+        assert!(build_persona_delete("", OWNER).is_err());
+        assert!(build_team_delete("", OWNER).is_err());
+    }
+
+    /// Coordinate owners are lowercase on the wire; an uppercase caller input
+    /// must normalize rather than produce a coordinate the relay can't match.
+    #[test]
+    fn delete_builders_lowercase_the_owner_pubkey() {
+        let upper = OWNER.to_ascii_uppercase();
+        for (builder, kind, d_tag) in [
+            (
+                build_persona_delete("herring", &upper).unwrap(),
+                KIND_PERSONA,
+                "herring",
+            ),
+            (
+                build_team_delete("red-team", &upper).unwrap(),
+                KIND_TEAM,
+                "red-team",
+            ),
+        ] {
+            let event = sign(builder);
+            let a_tag = event
+                .tags
+                .iter()
+                .map(|t| t.as_slice())
+                .find(|v| v.first().map(String::as_str) == Some("a"))
+                .expect("a-tag");
+            assert_eq!(a_tag[1], format!("{kind}:{OWNER}:{d_tag}"));
+        }
     }
 
     #[test]
@@ -442,7 +532,7 @@ mod tests {
             ),
         ] {
             let event = sign(builder);
-            assert_eq!(event.kind, Kind::Custom(KIND_DELETE));
+            assert_eq!(event.kind, Kind::Custom(KIND_DELETION as u16));
 
             let a_tags: Vec<&[String]> = event
                 .tags
