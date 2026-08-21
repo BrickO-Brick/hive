@@ -121,6 +121,55 @@ async fn resolve_channel_id(client: &BuzzClient, event_id: &str) -> Result<Uuid,
     channel_id_from_event(event_id, &event)
 }
 
+fn normalized_event_pubkey(event: &serde_json::Value) -> Option<String> {
+    event
+        .get("pubkey")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|pubkey| PublicKey::from_hex(pubkey).ok())
+        .map(|pubkey| pubkey.to_hex())
+}
+
+fn effective_target_author(event: &serde_json::Value, relay_self: &str) -> Option<String> {
+    let signer = normalized_event_pubkey(event)?;
+    if signer != relay_self {
+        return Some(signer);
+    }
+
+    for tag_name in ["actor", "p"] {
+        let attributed = event
+            .get("tags")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_array)
+            .find(|tag| tag.first().and_then(serde_json::Value::as_str) == Some(tag_name))
+            .and_then(|tag| tag.get(1))
+            .and_then(serde_json::Value::as_str)
+            .and_then(|pubkey| PublicKey::from_hex(pubkey).ok())
+            .map(|pubkey| pubkey.to_hex());
+        if attributed.is_some() {
+            return attributed;
+        }
+    }
+
+    Some(signer)
+}
+
+async fn relay_self_pubkey(client: &BuzzClient) -> Result<String, CliError> {
+    let raw = client
+        .get_public("/")
+        .await
+        .map_err(|error| CliError::Other(format!("failed to fetch relay info: {error}")))?;
+    let document: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|error| CliError::Other(format!("invalid relay info document: {error}")))?;
+    document
+        .get("self")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|pubkey| PublicKey::from_hex(pubkey).ok())
+        .map(|pubkey| pubkey.to_hex())
+        .ok_or_else(|| CliError::Other("relay info document missing valid 'self' pubkey".into()))
+}
+
 fn resolve_names_to_pubkeys(
     names: &[String],
     name_to_pubkeys: &std::collections::HashMap<String, Vec<String>>,
@@ -831,10 +880,21 @@ pub async fn cmd_delete_message(
     let target_event = fetch_event(client, event_id).await?;
     let channel_uuid = channel_id_from_event(event_id, &target_event)?;
     let target_eid = parse_event_id(event_id)?;
-    let is_self_authored = target_event
-        .get("pubkey")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(|pubkey| pubkey.eq_ignore_ascii_case(&client.keys().public_key().to_hex()));
+    let signer = client.keys().public_key().to_hex();
+    let target_signer = normalized_event_pubkey(&target_event)
+        .ok_or_else(|| CliError::Other("target event missing valid 'pubkey'".into()))?;
+    let target_author = if target_signer == signer {
+        target_signer
+    } else {
+        // If relay identity is unavailable, retain the existing audited
+        // moderation path instead of making deletes depend on NIP-11 uptime.
+        relay_self_pubkey(client)
+            .await
+            .ok()
+            .and_then(|relay_self| effective_target_author(&target_event, &relay_self))
+            .unwrap_or(target_signer)
+    };
+    let is_self_authored = target_author == signer;
 
     let builder = build_cli_delete_message(
         channel_uuid,
@@ -1083,11 +1143,11 @@ pub async fn dispatch(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_cli_delete_message, channel_id_from_event, cmd_get_thread, event_mention_pubkeys,
-        find_root_from_tags, match_profiles_by_name, merge_message_mentions, missing_members,
-        normalize_explicit_mentions, parse_member_pubkeys, resolve_names_to_pubkeys,
-        resolve_thread_target, thread_ref_from_event, thread_ref_from_parent_tags, BuzzClient,
-        CliError, Uuid,
+        build_cli_delete_message, channel_id_from_event, cmd_get_thread, effective_target_author,
+        event_mention_pubkeys, find_root_from_tags, match_profiles_by_name, merge_message_mentions,
+        missing_members, normalize_explicit_mentions, parse_member_pubkeys,
+        resolve_names_to_pubkeys, resolve_thread_target, thread_ref_from_event,
+        thread_ref_from_parent_tags, BuzzClient, CliError, Uuid,
     };
     use buzz_sdk::mentions::{
         extract_at_mentions_with_known, extract_at_names, match_names_to_profiles, MentionProfile,
@@ -1155,6 +1215,27 @@ mod tests {
         let event = builder.sign_with_keys(&Keys::generate()).unwrap();
 
         assert_eq!(event.kind.as_u16(), 9005);
+    }
+
+    #[test]
+    fn relay_signed_target_uses_trusted_effective_author() {
+        let event = json!({
+            "pubkey": PK_VALID_A,
+            "tags": [
+                ["actor", PK_VALID_B],
+                ["p", PK_VALID_C],
+            ],
+        });
+
+        assert_eq!(
+            effective_target_author(&event, PK_VALID_A).as_deref(),
+            Some(PK_VALID_B),
+        );
+        assert_eq!(
+            effective_target_author(&event, PK_VALID_C).as_deref(),
+            Some(PK_VALID_A),
+            "attribution tags on a non-relay signer must be ignored",
+        );
     }
 
     #[tokio::test]
