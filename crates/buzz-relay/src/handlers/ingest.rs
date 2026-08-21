@@ -3036,64 +3036,95 @@ async fn ingest_event_inner(
         });
     }
 
-    let (stored_event, was_inserted) = if buzz_core::kind::is_replaceable(kind_u32) {
-        // NIP-16 replaceable event — atomic replace with stale-write protection.
-        // channel_id is None for global kinds (0, 1, 3) due to step 5b above.
-        state
-            .db
-            .replace_addressable_event(tenant.community(), &event, channel_id)
-            .await
-            .map_err(|e| IngestError::Internal(format!("error: {e}")))?
-    } else if is_parameterized_replaceable(kind_u32) {
-        // NIP-33 parameterized replaceable — keyed by (kind, pubkey, d_tag).
-        let d_tag = buzz_db::event::extract_d_tag(&event).unwrap_or_default();
-        if d_tag.len() > buzz_db::event::D_TAG_MAX_LEN {
-            return Err(IngestError::Rejected(format!(
-                "invalid: d tag too long ({} bytes, max {})",
-                d_tag.len(),
-                buzz_db::event::D_TAG_MAX_LEN,
-            )));
-        }
-        state
-            .db
-            .replace_parameterized_event(tenant.community(), &event, &d_tag, channel_id)
-            .await
-            .map_err(|e| IngestError::Internal(format!("error: {e}")))?
+    let dm_message_sender = if matches!(kind_u32, KIND_STREAM_MESSAGE | KIND_STREAM_MESSAGE_V2)
+        && channel_row
+            .as_ref()
+            .is_some_and(|channel| channel.channel_type == "dm")
+    {
+        Some(effective_message_author(
+            &event,
+            &state.relay_keypair.public_key(),
+        ))
     } else {
-        let thread_params = thread_meta.as_ref().map(|m| m.as_params());
-        match state
-            .db
-            .insert_event_with_thread_metadata(
-                tenant.community(),
-                &event,
-                channel_id,
-                thread_params,
-            )
-            .await
-        {
-            Ok(result) => result,
-            Err(e) => {
-                // Compensate: if we pre-created a channel for kind:9007,
-                // soft-delete it so no orphaned channel row remains.
-                if let Some(ch_id) = pre_created_channel {
-                    if let Err(re) = state
-                        .db
-                        .soft_delete_channel(tenant.community(), ch_id)
-                        .await
-                    {
-                        warn!(event_id = %event_id_hex, "channel compensation failed: {re}");
-                    }
-                    state.invalidate_channel_deleted(tenant);
-                }
-                return Err(match e {
-                    buzz_db::DbError::AuthEventRejected => {
-                        IngestError::Rejected("invalid: AUTH events cannot be stored".into())
-                    }
-                    other => IngestError::Internal(format!("error: database error: {other}")),
-                });
-            }
-        }
+        None
     };
+
+    let (stored_event, was_inserted, resurfaced_viewers) =
+        if buzz_core::kind::is_replaceable(kind_u32) {
+            // NIP-16 replaceable event — atomic replace with stale-write protection.
+            // channel_id is None for global kinds (0, 1, 3) due to step 5b above.
+            let (stored, inserted) = state
+                .db
+                .replace_addressable_event(tenant.community(), &event, channel_id)
+                .await
+                .map_err(|e| IngestError::Internal(format!("error: {e}")))?;
+            (stored, inserted, Vec::new())
+        } else if is_parameterized_replaceable(kind_u32) {
+            // NIP-33 parameterized replaceable — keyed by (kind, pubkey, d_tag).
+            let d_tag = buzz_db::event::extract_d_tag(&event).unwrap_or_default();
+            if d_tag.len() > buzz_db::event::D_TAG_MAX_LEN {
+                return Err(IngestError::Rejected(format!(
+                    "invalid: d tag too long ({} bytes, max {})",
+                    d_tag.len(),
+                    buzz_db::event::D_TAG_MAX_LEN,
+                )));
+            }
+            let (stored, inserted) = state
+                .db
+                .replace_parameterized_event(tenant.community(), &event, &d_tag, channel_id)
+                .await
+                .map_err(|e| IngestError::Internal(format!("error: {e}")))?;
+            (stored, inserted, Vec::new())
+        } else {
+            let thread_params = thread_meta.as_ref().map(|m| m.as_params());
+            let insert_result =
+                if let (Some(ch_id), Some(sender)) = (channel_id, dm_message_sender.as_ref()) {
+                    state
+                        .db
+                        .insert_dm_event_with_thread_metadata(
+                            tenant.community(),
+                            &event,
+                            ch_id,
+                            thread_params,
+                            sender,
+                        )
+                        .await
+                } else {
+                    state
+                        .db
+                        .insert_event_with_thread_metadata(
+                            tenant.community(),
+                            &event,
+                            channel_id,
+                            thread_params,
+                        )
+                        .await
+                        .map(|(stored, inserted)| (stored, inserted, Vec::new()))
+                };
+            match insert_result {
+                Ok(result) => result,
+                Err(e) => {
+                    // Compensate: if we pre-created a channel for kind:9007,
+                    // soft-delete it so no orphaned channel row remains.
+                    if let Some(ch_id) = pre_created_channel {
+                        if let Err(re) = state
+                            .db
+                            .soft_delete_channel(tenant.community(), ch_id)
+                            .await
+                        {
+                            warn!(event_id = %event_id_hex, "channel compensation failed: {re}");
+                        }
+                        state.invalidate_channel_deleted(tenant);
+                    }
+                    return Err(match e {
+                        buzz_db::DbError::AuthEventRejected => {
+                            IngestError::Rejected("invalid: AUTH events cannot be stored".into())
+                        }
+                        other => IngestError::Internal(format!("error: database error: {other}")),
+                    });
+                }
+            }
+        };
 
     if !was_inserted {
         return Ok(IngestResult {
@@ -3103,22 +3134,19 @@ async fn ingest_event_inner(
         });
     }
 
-    if matches!(kind_u32, KIND_STREAM_MESSAGE | KIND_STREAM_MESSAGE_V2) {
-        if let (Some(ch_id), Some(channel)) = (channel_id, channel_row.as_ref()) {
-            if channel.channel_type == "dm" {
-                let sender = effective_message_author(&event, &state.relay_keypair.public_key());
-                if let Err(e) = crate::handlers::side_effects::resurface_dm_for_message_recipients(
-                    tenant, state, ch_id, &sender,
-                )
-                .await
-                {
-                    error!(
-                        event_id = %event_id_hex,
-                        channel_id = %ch_id,
-                        "Failed to resurface DM for message recipients: {e}"
-                    );
-                }
-            }
+    if !resurfaced_viewers.is_empty() {
+        if let Err(e) =
+            crate::handlers::side_effects::publish_dm_visibility_snapshots_for_recipients(
+                tenant,
+                state,
+                &resurfaced_viewers,
+            )
+            .await
+        {
+            error!(
+                event_id = %event_id_hex,
+                "Failed to publish resurfaced DM visibility snapshots: {e}"
+            );
         }
     }
 

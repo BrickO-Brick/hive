@@ -5,7 +5,7 @@
 
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
-use sqlx::{PgPool, Row};
+use sqlx::{PgPool, Postgres, Row, Transaction};
 use uuid::Uuid;
 
 use crate::channel::ChannelRecord;
@@ -506,6 +506,20 @@ pub async fn unhide_dm_recipients(
     channel_id: Uuid,
     sender_pubkey: &[u8],
 ) -> Result<Vec<Vec<u8>>> {
+    let mut tx = pool.begin().await?;
+    let viewers = unhide_dm_recipients_tx(&mut tx, community_id, channel_id, sender_pubkey).await?;
+    tx.commit().await?;
+    Ok(viewers)
+}
+
+/// Transactional form of [`unhide_dm_recipients`] used when accepted-message
+/// persistence and the canonical visibility mutation must commit together.
+pub(crate) async fn unhide_dm_recipients_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    community_id: CommunityId,
+    channel_id: Uuid,
+    sender_pubkey: &[u8],
+) -> Result<Vec<Vec<u8>>> {
     let rows = sqlx::query(
         r#"
         WITH changed AS (
@@ -539,7 +553,7 @@ pub async fn unhide_dm_recipients(
     .bind(community_id.as_uuid())
     .bind(channel_id)
     .bind(sender_pubkey)
-    .fetch_all(pool)
+    .fetch_all(&mut **tx)
     .await?;
 
     rows.into_iter()
@@ -602,17 +616,97 @@ pub async fn claim_dm_visibility_dirty_viewers(
             ORDER BY q.lease_until, q.community_id, q.viewer
             FOR UPDATE OF q SKIP LOCKED
             LIMIT $3
+        ), overflow_fresh AS (
+            SELECT q.community_id, q.viewer
+            FROM dm_visibility_dirty_viewers q
+            JOIN communities c ON c.id = q.community_id
+            WHERE c.archived_at IS NULL
+              AND c.deleted_at IS NULL
+              AND c.deletion_state = 'active'
+              AND community_write_allowed(q.community_id)
+              AND q.state = 'pending'
+              AND q.attempts = 0
+              AND q.next_attempt_at <= NOW()
+              AND NOT EXISTS (
+                  SELECT 1 FROM fresh_candidates reserved
+                  WHERE reserved.community_id = q.community_id
+                    AND reserved.viewer = q.viewer
+              )
+            ORDER BY q.dirty_at, q.community_id, q.viewer
+            FOR UPDATE OF q SKIP LOCKED
+            LIMIT GREATEST(
+                $4 - (SELECT COUNT(*) FROM fresh_candidates)
+                   - (SELECT COUNT(*) FROM retry_candidates)
+                   - (SELECT COUNT(*) FROM recovery_candidates),
+                0
+            )
+        ), overflow_retry AS (
+            SELECT q.community_id, q.viewer
+            FROM dm_visibility_dirty_viewers q
+            JOIN communities c ON c.id = q.community_id
+            WHERE c.archived_at IS NULL
+              AND c.deleted_at IS NULL
+              AND c.deletion_state = 'active'
+              AND community_write_allowed(q.community_id)
+              AND q.state = 'pending'
+              AND q.attempts > 0
+              AND q.next_attempt_at <= NOW()
+              AND NOT EXISTS (
+                  SELECT 1 FROM retry_candidates reserved
+                  WHERE reserved.community_id = q.community_id
+                    AND reserved.viewer = q.viewer
+              )
+            ORDER BY q.next_attempt_at, q.dirty_at, q.community_id, q.viewer
+            FOR UPDATE OF q SKIP LOCKED
+            LIMIT GREATEST(
+                $4 - (SELECT COUNT(*) FROM fresh_candidates)
+                   - (SELECT COUNT(*) FROM retry_candidates)
+                   - (SELECT COUNT(*) FROM recovery_candidates)
+                   - (SELECT COUNT(*) FROM overflow_fresh),
+                0
+            )
+        ), overflow_recovery AS (
+            SELECT q.community_id, q.viewer
+            FROM dm_visibility_dirty_viewers q
+            JOIN communities c ON c.id = q.community_id
+            WHERE c.archived_at IS NULL
+              AND c.deleted_at IS NULL
+              AND c.deletion_state = 'active'
+              AND community_write_allowed(q.community_id)
+              AND q.state = 'publishing'
+              AND q.lease_until <= NOW()
+              AND NOT EXISTS (
+                  SELECT 1 FROM recovery_candidates reserved
+                  WHERE reserved.community_id = q.community_id
+                    AND reserved.viewer = q.viewer
+              )
+            ORDER BY q.lease_until, q.community_id, q.viewer
+            FOR UPDATE OF q SKIP LOCKED
+            LIMIT GREATEST(
+                $4 - (SELECT COUNT(*) FROM fresh_candidates)
+                   - (SELECT COUNT(*) FROM retry_candidates)
+                   - (SELECT COUNT(*) FROM recovery_candidates)
+                   - (SELECT COUNT(*) FROM overflow_fresh)
+                   - (SELECT COUNT(*) FROM overflow_retry),
+                0
+            )
         ), candidates AS (
             SELECT community_id, viewer FROM fresh_candidates
             UNION ALL
             SELECT community_id, viewer FROM retry_candidates
             UNION ALL
             SELECT community_id, viewer FROM recovery_candidates
+            UNION ALL
+            SELECT community_id, viewer FROM overflow_fresh
+            UNION ALL
+            SELECT community_id, viewer FROM overflow_retry
+            UNION ALL
+            SELECT community_id, viewer FROM overflow_recovery
         )
         UPDATE dm_visibility_dirty_viewers q
         SET state = 'publishing',
-            claim_id = $4,
-            lease_until = NOW() + make_interval(secs => $5::int),
+            claim_id = $5,
+            lease_until = NOW() + make_interval(secs => $6::int),
             attempts = q.attempts + 1
         FROM candidates candidate, communities c
         WHERE q.community_id = candidate.community_id
@@ -624,6 +718,7 @@ pub async fn claim_dm_visibility_dirty_viewers(
     .bind(fresh_limit)
     .bind(retry_limit)
     .bind(recovery_limit)
+    .bind(limit)
     .bind(claim_id)
     .bind(lease_seconds.clamp(1, 3_600) as i32)
     .fetch_all(pool)

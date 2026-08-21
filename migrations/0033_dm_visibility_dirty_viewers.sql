@@ -37,7 +37,8 @@ SELECT attach_community_write_fence('dm_visibility_dirty_viewers');
 
 -- Brownfield deployments can already contain canonical hidden-DM state whose
 -- relay-authored snapshot drifted before the durable queue existed. Enqueue
--- each active DM viewer once so the bounded worker repairs that legacy state.
+-- each DM viewer once so the bounded worker repairs that legacy state. Rows
+-- for archived communities remain durable but unclaimable until unarchive.
 INSERT INTO dm_visibility_dirty_viewers (community_id, viewer)
 SELECT cm.community_id, cm.pubkey
 FROM channel_members cm
@@ -48,7 +49,6 @@ JOIN communities community ON community.id = cm.community_id
 WHERE cm.removed_at IS NULL
   AND c.channel_type = 'dm'
   AND c.deleted_at IS NULL
-  AND community.archived_at IS NULL
   AND community.deleted_at IS NULL
   AND community.deletion_state = 'active'
 GROUP BY cm.community_id, cm.pubkey

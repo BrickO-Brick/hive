@@ -3467,22 +3467,16 @@ pub async fn reconcile_dm_visibility_snapshots(state: &Arc<AppState>) -> anyhow:
     Ok(reconciled)
 }
 
-/// Resurface a DM for recipients of a newly accepted message.
+/// Publish fresh NIP-DV snapshots after recipient visibility mutations commit.
 ///
-/// Hidden state is per viewer, so only active members other than the effective
-/// message author are changed. Fresh NIP-DV snapshots make that server-side
-/// change observable immediately to every connected client and across devices.
-pub async fn resurface_dm_for_message_recipients(
+/// The caller supplies only viewers whose canonical hidden state changed in
+/// the accepted-message transaction. Publication remains recoverable through
+/// the durable dirty-viewer queue if any snapshot attempt fails.
+pub async fn publish_dm_visibility_snapshots_for_recipients(
     tenant: &TenantContext,
     state: &Arc<AppState>,
-    channel_id: Uuid,
-    sender_pubkey: &[u8],
+    recipients: &[Vec<u8>],
 ) -> anyhow::Result<()> {
-    let recipients = state
-        .db
-        .unhide_dm_recipients(tenant.community(), channel_id, sender_pubkey)
-        .await?;
-
     let results = futures_util::future::join_all(
         recipients
             .iter()

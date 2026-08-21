@@ -29,7 +29,11 @@ use buzz_core::kind::{event_kind_u32, KIND_STREAM_MESSAGE};
 use buzz_core::tenant::TenantContext;
 
 use super::event::dispatch_persistent_event;
-use super::side_effects::{emit_group_discovery_events, publish_dm_visibility_snapshot};
+#[cfg(test)]
+use super::side_effects::publish_dm_visibility_snapshot;
+use super::side_effects::{
+    emit_group_discovery_events, publish_dm_visibility_snapshots_for_recipients,
+};
 use crate::state::AppState;
 
 /// Tag naming the moderation source row (report/action) a notice was derived
@@ -142,18 +146,6 @@ pub async fn send_moderation_notice(
         .increment(1);
     }
 
-    // Resurface the moderation DM for the recipient. `open_dm` only clears
-    // `hidden_at` for `created_by` (the relay key), so a user who hid the
-    // "{host} Moderation" thread would never see a later ban/resolution notice.
-    // The closed-loop trust requirement needs the notice to reappear.
-    state
-        .db
-        .unhide_dm(tenant.community(), dm_channel_id, recipient_pubkey)
-        .await?;
-    if let Err(e) = publish_dm_visibility_snapshot(tenant, state, recipient_pubkey).await {
-        warn!(error = %e, "moderation DM visibility snapshot failed (continuing)");
-    }
-
     // 2. Ensure the relay's "{host} Moderation" kind:0 profile exists, and 3.
     //    the DM's kind:39000 discovery (with `hidden` / `t=dm` / `p`). Both are
     //    replaceable events, so we emit them on EVERY send rather than gating on
@@ -182,10 +174,25 @@ pub async fn send_moderation_notice(
     .sign_with_keys(&state.relay_keypair)
     .map_err(|e| anyhow::anyhow!("failed to sign moderation notice: {e}"))?;
 
-    let (stored, _inserted) = state
+    // Commit the accepted notice and recipient resurface together. Discovery
+    // runs first, so any failure before this transaction leaves a previously
+    // hidden moderation conversation hidden rather than exposing stale content.
+    let (stored, _inserted, resurfaced_viewers) = state
         .db
-        .insert_event(tenant.community(), &event, Some(dm_channel_id))
+        .insert_dm_event_with_thread_metadata(
+            tenant.community(),
+            &event,
+            dm_channel_id,
+            None,
+            relay_pubkey_bytes.as_slice(),
+        )
         .await?;
+
+    if let Err(e) =
+        publish_dm_visibility_snapshots_for_recipients(tenant, state, &resurfaced_viewers).await
+    {
+        warn!(error = %e, "moderation DM visibility snapshot failed (continuing)");
+    }
 
     let kind_u32 = event_kind_u32(&stored.event);
     dispatch_persistent_event(tenant, state, &stored, kind_u32, &relay_pubkey_hex, None).await;
@@ -489,6 +496,64 @@ mod tests {
             kind: "timeout".into(),
             public_reason: "Cool off.".into(),
         };
+
+        let relay_pubkey_bytes = relay_keys.public_key().to_bytes();
+        let (preexisting_dm, _) = state
+            .db
+            .open_dm(
+                tenant.community(),
+                &[recipient_bytes.as_slice()],
+                relay_pubkey_bytes.as_slice(),
+            )
+            .await
+            .expect("open moderation DM before injected failure");
+        state
+            .db
+            .hide_dm(
+                tenant.community(),
+                preexisting_dm.id,
+                recipient_bytes.as_slice(),
+            )
+            .await
+            .expect("hide moderation DM before injected failure");
+        sqlx::raw_sql(
+            "CREATE FUNCTION fail_moderation_notice_insert() RETURNS trigger \
+             LANGUAGE plpgsql AS $$ BEGIN \
+               IF NEW.kind = 9 THEN RAISE EXCEPTION 'injected notice failure'; END IF; \
+               RETURN NEW; \
+             END $$; \
+             CREATE TRIGGER fail_moderation_notice_insert \
+             BEFORE INSERT ON events FOR EACH ROW \
+             EXECUTE FUNCTION fail_moderation_notice_insert();",
+        )
+        .execute(&pool)
+        .await
+        .expect("install notice failure injection");
+        send_moderation_notice(&tenant, &state, recipient_bytes.as_slice(), notice.clone())
+            .await
+            .expect_err("notice insertion failure must be returned");
+        let hidden_after_failure: bool = sqlx::query_scalar(
+            "SELECT hidden_at IS NOT NULL FROM channel_members \
+             WHERE community_id = $1 AND channel_id = $2 AND pubkey = $3",
+        )
+        .bind(tenant.community().as_uuid())
+        .bind(preexisting_dm.id)
+        .bind(recipient_bytes.as_slice())
+        .fetch_one(&pool)
+        .await
+        .expect("read hidden state after notice failure");
+        assert!(
+            hidden_after_failure,
+            "failed notice insertion must not expose stale moderation content"
+        );
+        sqlx::raw_sql(
+            "DROP TRIGGER fail_moderation_notice_insert ON events; \
+             DROP FUNCTION fail_moderation_notice_insert();",
+        )
+        .execute(&pool)
+        .await
+        .expect("remove notice failure injection");
+
         send_moderation_notice(&tenant, &state, recipient_bytes.as_slice(), notice.clone())
             .await
             .expect("deliver notice");

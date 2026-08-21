@@ -2038,11 +2038,36 @@ mod tests {
         .execute(&pool)
         .await
         .expect("insert hidden legacy viewer");
+        sqlx::query("UPDATE communities SET archived_at = NOW() WHERE id = $1")
+            .bind(community_id)
+            .execute(&pool)
+            .await
+            .expect("archive community before queue migration");
 
         run_migrations(&pool)
             .await
             .expect("apply DM visibility queue migration");
         let db = Db::from_pool(pool.clone());
+        let queued_while_archived: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM dm_visibility_dirty_viewers WHERE community_id = $1",
+        )
+        .bind(community_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count archived brownfield viewer");
+        assert_eq!(queued_while_archived, 1);
+        assert!(
+            db.claim_dm_visibility_dirty_viewers(100, 60)
+                .await
+                .expect("defer archived viewer")
+                .is_empty(),
+            "archived communities must retain repair work without publishing"
+        );
+        sqlx::query("UPDATE communities SET archived_at = NULL WHERE id = $1")
+            .bind(community_id)
+            .execute(&pool)
+            .await
+            .expect("unarchive community after migration");
         let claims = db
             .claim_dm_visibility_dirty_viewers(100, 60)
             .await

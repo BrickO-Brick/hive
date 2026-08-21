@@ -2265,6 +2265,48 @@ impl Db {
         Ok(result)
     }
 
+    /// Atomically inserts a DM message, its optional thread metadata, and the
+    /// recipient visibility mutations that make the accepted message visible.
+    ///
+    /// Duplicate events do not repeat the visibility mutation. The returned
+    /// viewers are the recipients whose canonical hidden state changed and
+    /// whose relay-authored visibility snapshots should be published after
+    /// this transaction commits.
+    #[datastore_span(name = "insert_dm_event_with_thread_metadata", system = "postgresql")]
+    pub async fn insert_dm_event_with_thread_metadata(
+        &self,
+        community_id: CommunityId,
+        event: &nostr::Event,
+        channel_id: Uuid,
+        thread_meta: Option<event::ThreadMetadataParams<'_>>,
+        sender_pubkey: &[u8],
+    ) -> Result<(StoredEvent, bool, Vec<Vec<u8>>)> {
+        let mut tx = self.pool.begin().await?;
+        let (stored_event, was_inserted) = event::insert_event_with_thread_metadata_tx(
+            &mut tx,
+            community_id,
+            event,
+            Some(channel_id),
+            thread_meta,
+        )
+        .await?;
+        let resurfaced_viewers = if was_inserted {
+            dm::unhide_dm_recipients_tx(&mut tx, community_id, channel_id, sender_pubkey).await?
+        } else {
+            Vec::new()
+        };
+        tx.commit().await?;
+
+        if was_inserted {
+            if let Err(e) = insert_mentions(&self.pool, community_id, event, Some(channel_id)).await
+            {
+                tracing::warn!(event_id = %event.id, "Failed to insert mentions: {e}");
+            }
+        }
+
+        Ok((stored_event, was_inserted, resurfaced_viewers))
+    }
+
     /// Atomically insert a kind:7 reaction event and its reaction row.
     #[allow(clippy::too_many_arguments)]
     #[datastore_span(
@@ -7502,6 +7544,156 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires Postgres"]
+    async fn dm_event_insert_and_recipient_resurface_roll_back_together() {
+        use nostr::{EventBuilder, Keys, Kind, Tag};
+
+        let admin = PgPool::connect(&admin_url().await)
+            .await
+            .expect("connect admin");
+        let (pool, scratch_name) = create_scratch_db(&admin, "dm_insert_resurface").await;
+        let db = Db::from_pool(pool.clone());
+        let community_uuid = Uuid::new_v4();
+        let community = CommunityId::from_uuid(community_uuid);
+        let dm_channel = Uuid::new_v4();
+        let unrelated_dm = Uuid::new_v4();
+        let sender = Keys::generate();
+        let recipient = Keys::generate();
+        let sender_bytes = sender.public_key().to_bytes();
+        let recipient_bytes = recipient.public_key().to_bytes();
+
+        sqlx::query("INSERT INTO communities (id, host) VALUES ($1, $2)")
+            .bind(community_uuid)
+            .bind(format!("dm-insert-{}.example", community_uuid.simple()))
+            .execute(&pool)
+            .await
+            .expect("insert community");
+        for channel_id in [dm_channel, unrelated_dm] {
+            sqlx::query(
+                "INSERT INTO channels \
+                 (id, community_id, name, channel_type, visibility, created_by) \
+                 VALUES ($1, $2, 'atomic DM', 'dm', 'private', $3)",
+            )
+            .bind(channel_id)
+            .bind(community_uuid)
+            .bind(sender_bytes.as_slice())
+            .execute(&pool)
+            .await
+            .expect("insert DM");
+        }
+        for (channel_id, pubkey) in [
+            (dm_channel, sender_bytes.as_slice()),
+            (dm_channel, recipient_bytes.as_slice()),
+            (unrelated_dm, recipient_bytes.as_slice()),
+        ] {
+            sqlx::query(
+                "INSERT INTO channel_members \
+                 (community_id, channel_id, pubkey, hidden_at) \
+                 VALUES ($1, $2, $3, NOW())",
+            )
+            .bind(community_uuid)
+            .bind(channel_id)
+            .bind(pubkey)
+            .execute(&pool)
+            .await
+            .expect("insert hidden DM member");
+        }
+
+        sqlx::raw_sql(
+            "CREATE FUNCTION fail_dm_visibility_enqueue() RETURNS trigger \
+             LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected enqueue failure'; END $$; \
+             CREATE TRIGGER fail_dm_visibility_enqueue \
+             BEFORE INSERT OR UPDATE ON dm_visibility_dirty_viewers \
+             FOR EACH ROW EXECUTE FUNCTION fail_dm_visibility_enqueue();",
+        )
+        .execute(&pool)
+        .await
+        .expect("install visibility failure injection");
+
+        let event = EventBuilder::new(Kind::Custom(9), "accepted DM")
+            .tags(vec![
+                Tag::parse(["h", &dm_channel.to_string()]).expect("h tag")
+            ])
+            .sign_with_keys(&sender)
+            .expect("sign DM event");
+        db.insert_dm_event_with_thread_metadata(
+            community,
+            &event,
+            dm_channel,
+            None,
+            sender_bytes.as_slice(),
+        )
+        .await
+        .expect_err("injected enqueue failure must abort accepted-message transaction");
+
+        let persisted_after_failure: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE community_id = $1 AND id = $2")
+                .bind(community_uuid)
+                .bind(event.id.as_bytes().as_slice())
+                .fetch_one(&pool)
+                .await
+                .expect("count rolled-back event");
+        assert_eq!(persisted_after_failure, 0);
+        let hidden_after_failure: bool = sqlx::query_scalar(
+            "SELECT hidden_at IS NOT NULL FROM channel_members \
+             WHERE community_id = $1 AND channel_id = $2 AND pubkey = $3",
+        )
+        .bind(community_uuid)
+        .bind(dm_channel)
+        .bind(recipient_bytes.as_slice())
+        .fetch_one(&pool)
+        .await
+        .expect("read recipient after rollback");
+        assert!(hidden_after_failure);
+
+        sqlx::raw_sql(
+            "DROP TRIGGER fail_dm_visibility_enqueue ON dm_visibility_dirty_viewers; \
+             DROP FUNCTION fail_dm_visibility_enqueue();",
+        )
+        .execute(&pool)
+        .await
+        .expect("remove visibility failure injection");
+        let (_stored, inserted, resurfaced) = db
+            .insert_dm_event_with_thread_metadata(
+                community,
+                &event,
+                dm_channel,
+                None,
+                sender_bytes.as_slice(),
+            )
+            .await
+            .expect("retry accepted DM transaction");
+        assert!(inserted);
+        assert_eq!(resurfaced, vec![recipient_bytes.to_vec()]);
+
+        let hidden_states: Vec<(Uuid, Vec<u8>, bool)> = sqlx::query_as(
+            "SELECT channel_id, pubkey, hidden_at IS NOT NULL \
+             FROM channel_members WHERE community_id = $1 ORDER BY channel_id, pubkey",
+        )
+        .bind(community_uuid)
+        .fetch_all(&pool)
+        .await
+        .expect("read final hidden states");
+        assert!(hidden_states
+            .iter()
+            .any(|(channel, pubkey, hidden)| *channel == dm_channel
+                && pubkey == sender_bytes.as_slice()
+                && *hidden));
+        assert!(hidden_states
+            .iter()
+            .any(|(channel, pubkey, hidden)| *channel == dm_channel
+                && pubkey == recipient_bytes.as_slice()
+                && !*hidden));
+        assert!(hidden_states
+            .iter()
+            .any(|(channel, pubkey, hidden)| *channel == unrelated_dm
+                && pubkey == recipient_bytes.as_slice()
+                && *hidden));
+
+        drop_scratch_db(&admin, pool, &scratch_name).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
     async fn dm_visibility_fresh_claims_are_not_starved_by_poison_retries() {
         let admin = PgPool::connect(&admin_url().await)
             .await
@@ -7547,8 +7739,8 @@ mod tests {
         );
         assert_eq!(
             claims.len(),
-            26,
-            "the batch reserves half for fresh work and a quarter for retries"
+            100,
+            "reserved fairness capacity must not leave the rest of the batch idle"
         );
 
         let retry_claim = claims
@@ -7563,7 +7755,7 @@ mod tests {
         .await
         .expect("release retry claim");
         let retry_delay_seconds: f64 = sqlx::query_scalar(
-            "SELECT EXTRACT(EPOCH FROM (next_attempt_at - NOW())) \
+            "SELECT EXTRACT(EPOCH FROM (next_attempt_at - NOW()))::DOUBLE PRECISION \
              FROM dm_visibility_dirty_viewers \
              WHERE community_id = $1 AND viewer = $2",
         )
