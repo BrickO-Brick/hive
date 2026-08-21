@@ -3036,7 +3036,13 @@ async fn ingest_event_inner(
         });
     }
 
-    let dm_message_sender = if matches!(kind_u32, KIND_STREAM_MESSAGE | KIND_STREAM_MESSAGE_V2)
+    // Resurface a hidden DM for every human-visible message kind, not just
+    // kinds 9/40002. The relay also accepts forum posts/comments (45001/45003)
+    // as channel-scoped writes, and both clients render them as timeline
+    // messages, so a custom or stale client posting one into a hidden DM must
+    // reopen it too. Reactions, edits, and system kinds stay excluded via the
+    // shared predicate.
+    let dm_message_sender = if buzz_core::kind::is_human_visible_message_kind(kind_u32)
         && channel_row
             .as_ref()
             .is_some_and(|channel| channel.channel_type == "dm")

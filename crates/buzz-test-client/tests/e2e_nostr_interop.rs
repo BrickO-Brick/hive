@@ -1331,10 +1331,16 @@ async fn test_nipdv_hide_then_reopen_updates_snapshot() {
 /// the recipient's hidden set. The sender remains hidden if they independently
 /// closed the row: visibility is per viewer and delivery must not rewrite the
 /// author's own preference.
+///
+/// Parameterized over every human-visible message kind the relay accepts as a
+/// channel write (`is_human_visible_message_kind`): kinds 9/40002 plus forum
+/// post/comment 45001/45003. A stale or custom client can post a forum event
+/// into a DM, and both clients render it, so all four must resurface a hidden
+/// DM. Dropping either forum kind from the ingest predicate fails this test.
 #[tokio::test]
 #[ignore]
 async fn test_nipdv_supported_message_kinds_resurface_hidden_dm_for_recipient() {
-    for kind in [9, 40002] {
+    for kind in [9u16, 40002, 45001, 45003] {
         let keys_a = Keys::generate();
         let keys_b = Keys::generate();
         let keys_c = Keys::generate();
