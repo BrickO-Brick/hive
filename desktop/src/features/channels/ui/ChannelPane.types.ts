@@ -80,6 +80,7 @@ export type ChannelPaneProps = {
   onCloseAgentSession: () => void;
   onCloseChannelManagement?: () => void;
   onChannelManagementDeleted?: () => void;
+  onCloseMarkdownDoc?: () => void;
   onCloseProfilePanel: () => void;
   onAddAgent?: (options?: { beforeSend?: () => void }) => void;
   onBrowseChannels?: () => void;
@@ -164,6 +165,10 @@ export type ChannelPaneProps = {
     tab: ProfilePanelTab,
     options?: { replace?: boolean },
   ) => void;
+  /** Imeta filename labeling the markdown document viewer panel. */
+  markdownDocName?: string | null;
+  /** Relay media URL shown in the markdown document viewer panel. */
+  markdownDocUrl?: string | null;
   profilePanelPubkey?: string | null;
   profilePanelTab: ProfilePanelTab;
   profilePanelView: ProfilePanelView;
