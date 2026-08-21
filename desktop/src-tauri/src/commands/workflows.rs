@@ -227,13 +227,7 @@ pub async fn create_workflow(
     // webhook-triggered workflows. Everything else in the save record is built
     // locally from the inputs we already hold — the relay's create response
     // only carries `{ workflow_id, webhook_secret? }`.
-    let webhook_secret = parse_command_response::<Value>(&result.message)
-        .ok()
-        .and_then(|v| {
-            v.get("webhook_secret")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        });
+    let webhook_secret = webhook_secret_from_message(&result.message);
 
     let now = now_secs();
     let workflow = workflow_record(
@@ -305,8 +299,7 @@ pub async fn update_workflow(
 
     Ok(WorkflowSaveWire {
         workflow,
-        // Updates never rotate the webhook secret.
-        webhook_secret: None,
+        webhook_secret: webhook_secret_from_message(&result.message),
     })
 }
 
@@ -451,6 +444,17 @@ fn workflow_record(
         created_at,
         updated_at,
     }
+}
+
+fn webhook_secret_from_message(message: &str) -> Option<String> {
+    parse_command_response::<Value>(message)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("webhook_secret")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
 }
 
 /// Fold relay-authored current state over legacy owner-authored definitions.

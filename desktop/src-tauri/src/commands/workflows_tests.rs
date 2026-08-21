@@ -223,6 +223,20 @@ fn save_wire_serializes_flat_with_optional_secret() {
 }
 
 #[test]
+fn update_response_preserves_new_webhook_secret() {
+    assert_eq!(
+        webhook_secret_from_message(
+            "response:{\"workflow_id\":\"22222222-2222-2222-2222-222222222222\",\"webhook_secret\":\"new-secret\"}",
+        ),
+        Some("new-secret".to_string())
+    );
+    assert_eq!(
+        webhook_secret_from_message("response:{\"workflow_id\":\"workflow\"}"),
+        None
+    );
+}
+
+#[test]
 fn workflow_wire_serializes_with_snake_case_keys() {
     // Guard the wire contract the frontend's RawWorkflow depends on.
     let ev = wf_event(WF, CHAN, YAML);
