@@ -594,6 +594,15 @@ pub async fn start_archive_sync(
         run_sync(&io, reload, events, cancel).await;
         session.set_subscriptions(Vec::new()).await;
     });
+
+    // Startup prune trigger: one opportunistic pass shortly after sync begins,
+    // so a launch that never archives anything (idle agents) still prunes stale
+    // observer frames once its ≥24h gate allows. The pass is archive-global — it
+    // enumerates every stored partition, not the identity/relay this sync is
+    // for — so hooking it here rather than at unconditional startup costs only
+    // latency to the first pass, never coverage. Detached and gated exactly like
+    // the post-commit trigger; a prune failure never affects sync startup.
+    super::prune::trigger_prune(app);
     Ok(())
 }
 

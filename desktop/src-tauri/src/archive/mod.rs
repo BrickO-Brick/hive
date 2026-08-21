@@ -21,6 +21,7 @@ mod agent_usage;
 mod archive_db;
 mod metric_store;
 mod pipeline;
+mod prune;
 pub mod retention;
 pub mod store;
 mod store_migrations;
@@ -186,7 +187,7 @@ pub(crate) async fn archive_candidates(
     };
     let commit_identity_pk = identity_pk.clone();
     let commit_relay_url = relay_url.clone();
-    state
+    let result = state
         .archive_db
         .with_conn(move |conn| {
             commit_archive(
@@ -200,7 +201,19 @@ pub(crate) async fn archive_candidates(
                 conn,
             )
         })
-        .await
+        .await?;
+
+    // Post-commit prune trigger, detached from this write. The prune's own
+    // single-flight flag and ≥24h gate collapse the frequent per-batch triggers
+    // into at most one real prune per day; a prune failure is swallowed inside
+    // the spawned task and never affects this archive result. Requires the app
+    // handle (absent in headless tests that drive `archive_candidates`
+    // directly), so a missing handle simply skips the trigger.
+    if let Some(app) = state.app_handle.lock().ok().and_then(|g| g.clone()) {
+        prune::trigger_prune(app);
+    }
+
+    Ok(result)
 }
 
 /// Validate an ephemeral observer frame (kind 24200) against ALL local rules.
