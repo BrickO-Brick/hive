@@ -36,6 +36,7 @@ use crate::acp::{
 };
 use crate::config::{compose_session_title, DedupMode, PermissionMode};
 use crate::observer;
+use crate::prompt_project::{pick_listed_project_home, PromptProjectInfo};
 use crate::queue::{
     CancelReason, ContextMessage, ConversationContext, FlushBatch, PromptChannelInfo,
     PromptProfile, PromptProfileLookup, ThreadTags,
@@ -543,6 +544,9 @@ pub enum PromptOutcome {
 #[derive(Debug, Clone)]
 pub struct ChannelInfoResolver {
     cache: std::sync::Arc<std::sync::RwLock<std::collections::HashMap<Uuid, PromptChannelInfo>>>,
+    projects: std::sync::Arc<
+        std::sync::RwLock<std::collections::HashMap<Uuid, Option<PromptProjectInfo>>>,
+    >,
     rest_client: RestClient,
 }
 
@@ -560,31 +564,51 @@ impl ChannelInfoResolver {
                         name: info.name,
                         channel_type: info.channel_type,
                         description: info.description,
+                        project: None,
                     },
                 ))
             })
             .collect();
         Self {
             cache: std::sync::Arc::new(std::sync::RwLock::new(cache)),
+            projects: std::sync::Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
             rest_client,
         }
     }
 
     pub async fn resolve(&self, channel_id: Uuid) -> Option<PromptChannelInfo> {
-        if let Some(info) = self
+        let mut info = if let Some(info) = self
             .cache
             .read()
             .ok()
             .and_then(|cache| cache.get(&channel_id).cloned())
         {
-            return Some(info);
-        }
-
-        let info = fetch_channel_info(channel_id, &self.rest_client).await?;
-        if let Ok(mut cache) = self.cache.write() {
-            cache.insert(channel_id, info.clone());
-        }
+            info
+        } else {
+            let info = fetch_channel_info(channel_id, &self.rest_client).await?;
+            if let Ok(mut cache) = self.cache.write() {
+                cache.insert(channel_id, info.clone());
+            }
+            info
+        };
+        info.project = self.lookup_project(channel_id).await;
         Some(info)
+    }
+
+    async fn lookup_project(&self, channel_id: Uuid) -> Option<PromptProjectInfo> {
+        if let Some(cached) = self
+            .projects
+            .read()
+            .ok()
+            .and_then(|cache| cache.get(&channel_id).cloned())
+        {
+            return cached;
+        }
+        let fetched = fetch_project_home_for_channel(channel_id, &self.rest_client).await;
+        if let Ok(mut cache) = self.projects.write() {
+            cache.insert(channel_id, fetched.clone());
+        }
+        fetched
     }
 }
 
@@ -2959,6 +2983,7 @@ pub(crate) async fn fetch_channel_info(
                     name: name.unwrap_or(UNKNOWN_CHANNEL_NAME).to_string(),
                     channel_type,
                     description,
+                    project: None,
                 })
             }
             Ok(Err(e)) => {
@@ -2978,6 +3003,48 @@ pub(crate) async fn fetch_channel_info(
         }
     })
     .await
+}
+
+/// Resolve the listed NIP-MP project whose home channel is `channel_id`.
+///
+/// Empty results are not retried: most channels are not project homes.
+pub(crate) async fn fetch_project_home_for_channel(
+    channel_id: Uuid,
+    rest: &RestClient,
+) -> Option<PromptProjectInfo> {
+    let filter = serde_json::json!({
+        "kinds": [buzz_core::kind::KIND_PROJECT],
+        "#buzz-channel": [channel_id.to_string()],
+        "limit": 20,
+    });
+
+    let json = fetch_with_retry(|| async {
+        match timeout(
+            CONTEXT_FETCH_TIMEOUT,
+            rest.query_raw(std::slice::from_ref(&filter)),
+        )
+        .await
+        {
+            Ok(Ok(json)) => Some(json),
+            Ok(Err(e)) => {
+                tracing::debug!(
+                    channel_id = %channel_id,
+                    "project home fetch failed: {e} — will retry"
+                );
+                None
+            }
+            Err(_) => {
+                tracing::debug!(
+                    channel_id = %channel_id,
+                    "project home fetch timed out — will retry"
+                );
+                None
+            }
+        }
+    })
+    .await?;
+    let events = json.as_array()?;
+    pick_listed_project_home(events)
 }
 
 /// Fetch owner-signed huddle instructions for a new channel session.

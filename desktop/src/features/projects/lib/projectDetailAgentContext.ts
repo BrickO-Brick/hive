@@ -184,6 +184,7 @@ export function buildProjectDetailAgentContext({
     issues: "Tasks",
     overview: "Overview",
     prs: "Reviews",
+    home: "Project home",
   };
   const workItem = pullRequest
     ? {
@@ -231,7 +232,9 @@ export function projectDetailAgentContextBlock(
     "---",
     PROJECT_PAGE_CONTEXT_MARKER,
     `- Project: ${untrustedPromptValue(context.projectName)}`,
-    `- Repository: ${untrustedPromptValue(context.repositoryName)} (address: ${untrustedPromptValue(context.repoAddress, 400)})`,
+    context.view === "Project home"
+      ? `- Project coordinate: ${untrustedPromptValue(context.repoAddress, 400)}`
+      : `- Repository: ${untrustedPromptValue(context.repositoryName)} (address: ${untrustedPromptValue(context.repoAddress, 400)})`,
     `- View: ${context.view}`,
     `- Source: ${context.source}`,
   ];

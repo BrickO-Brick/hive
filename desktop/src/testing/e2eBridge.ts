@@ -5921,6 +5921,8 @@ function buildMockProjectEvents(): RelayEvent[] {
         ["description", "The complete Buzz community platform."],
         ["a", `${KIND_REPO_ANNOUNCEMENT}:${projectOwner}:buzz`],
         ["a", `${KIND_REPO_ANNOUNCEMENT}:${ALICE_PUBKEY}:relay-tools`],
+        ["buzz-channel", STARTER_GENERAL_CHANNEL_ID],
+        ["buzz-related-channel", "9dae0116-799b-5071-a0a8-fdd30a91a35d"],
       ],
       projectOwner,
       now,
@@ -5949,13 +5951,11 @@ function getMockProjectEventStore(): RelayEvent[] {
  * a repo-address `a` tag instead of a channel `h` tag — store them with the
  * seeded project events so refetches see them. */
 function isMockProjectScopedEvent(event: RelayEvent): boolean {
+  if (MOCK_PROJECT_KINDS.has(event.kind)) return true;
   const hasRepoAddressTag = event.tags.some(
     (tag) => tag[0] === "a" && (tag[1] ?? "").startsWith("30617:"),
   );
-  return (
-    (event.kind === KIND_REPO_ANNOUNCEMENT || hasRepoAddressTag) &&
-    (event.kind === 1 || MOCK_PROJECT_KINDS.has(event.kind))
-  );
+  return event.kind === 1 && hasRepoAddressTag;
 }
 
 function filterMockProjectEvents(filter: MockFilter): RelayEvent[] {

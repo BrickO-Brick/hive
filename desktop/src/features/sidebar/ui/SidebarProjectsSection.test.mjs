@@ -4,6 +4,7 @@ import { test } from "node:test";
 import {
   listSidebarProjects,
   readSidebarProjectExpansion,
+  selectedChannelRouteId,
   selectedProjectRouteId,
   writeSidebarProjectExpansion,
 } from "./listSidebarProjects.ts";
@@ -80,6 +81,22 @@ test("selectedProjectRouteId reads the project id from the detail route", () => 
   assert.equal(
     selectedProjectRouteId("/projects/30621%3Aabc%3Asprout"),
     "30621:abc:sprout",
+  );
+});
+
+test("selectedChannelRouteId reads the channel id from the channel route", () => {
+  assert.equal(selectedChannelRouteId("/channels"), undefined);
+  assert.equal(selectedChannelRouteId("/channels/"), undefined);
+  assert.equal(selectedChannelRouteId("/projects/30621:abc:sprout"), undefined);
+  assert.equal(
+    selectedChannelRouteId("/channels/9dae0116-799b-5071-a0a8-fdd30a91a35d"),
+    "9dae0116-799b-5071-a0a8-fdd30a91a35d",
+  );
+  assert.equal(
+    selectedChannelRouteId(
+      "/channels/9dae0116-799b-5071-a0a8-fdd30a91a35d/posts/abc",
+    ),
+    "9dae0116-799b-5071-a0a8-fdd30a91a35d",
   );
 });
 

@@ -767,15 +767,8 @@ export function ProjectsView() {
             isCreating={createProjectMutation.isPending}
             onCreate={async (input) => {
               const result = await createProjectMutation.mutateAsync(input);
-              if (result.compatibilityWarning) {
-                toast.warning("Created as a standalone project", {
-                  description: result.compatibilityWarning,
-                });
-              } else {
-                toast.success(`Project "${result.project.name}" created.`);
-              }
-              handleRepositoryScopeChange("all");
-              handleFilterChange("projects");
+              toast.success(`Project "${result.project.name}" created.`);
+              await goProject(result.project.id);
             }}
             onOpenChange={setCreateProjectOpen}
             open={createProjectOpen}

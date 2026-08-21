@@ -6,6 +6,7 @@ import { cn } from "@/shared/lib/cn";
 type RightAuxiliaryPaneProps = {
   canResetWidth: boolean;
   children: React.ReactNode;
+  className?: string;
   constrainToAvailableSpace?: boolean;
   detached?: boolean;
   onResetWidth: () => void;
@@ -17,6 +18,7 @@ type RightAuxiliaryPaneProps = {
 export function RightAuxiliaryPane({
   canResetWidth,
   children,
+  className,
   constrainToAvailableSpace = true,
   detached = false,
   onResetWidth,
@@ -31,6 +33,7 @@ export function RightAuxiliaryPane({
         detached
           ? "bg-transparent"
           : "before:pointer-events-none before:absolute before:bottom-0 before:left-0 before:top-0 before:z-50 before:w-px before:bg-border/80 before:content-['']",
+        className,
       )}
       data-testid={testId}
       style={{
