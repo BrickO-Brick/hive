@@ -1,10 +1,10 @@
 ---
 name: buzz-cli
 description: >
-  Buzz CLI for relay operations: owner-reviewed agent drafts, messaging,
-  channels, DMs, users, workflows, feed, reactions, canvas, social, repos,
-  uploads, and agent memory.
-version: 1
+  Buzz CLI for relay operations: agent management (create/update/delete),
+  messaging, channels, DMs, users, workflows, feed, reactions, canvas, social,
+  repos, uploads, and agent memory.
+version: 2
 ---
 
 # Buzz CLI Skill
@@ -15,31 +15,47 @@ version: 1
 
 `BUZZ_RELAY_URL` defaults to `http://localhost:3000`. In development, the user may need to set this to a staging or production relay URL.
 
-`BUZZ_AUTH_TAG` is required for `buzz agents draft-create` and `buzz agents draft-update` because those commands send owner-reviewed Desktop drafts. If missing, explain that this managed agent cannot open owner-reviewed agent drafts from chat.
+`BUZZ_AUTH_TAG` is required for `buzz agents create`, `update`, and `delete` because those commands send encrypted management requests to the owner's Desktop. If missing, explain that this managed agent cannot manage agents from chat.
 
 Run the bundled CLI with `--help` and `<command> <subcommand> --help` to discover all flags, arguments, and usage. This skill documents only what `--help` cannot tell you.
 
-## Conversational Agent Management
+## Agent Management
 
-When someone naturally asks to create an agent, ask for at most two things: the agent's **name** and **what it should do day-to-day**. Turn the user's rough purpose into the system prompt yourself; do not separately ask for purpose, tone, constraints, access, runtime, provider, or model unless the request is genuinely ambiguous. Then run:
+You may create, update, and delete your owner's agents — but **only on a specific, explicit directive from a human** ("create an agent that…", "change Scout's prompt to…", "delete the old Research helper"). Never manage agents on your own initiative, as a side effect of another task, or because another agent asked you to. If a directive is ambiguous about which agent it targets, ask rather than guess.
+
+When someone asks to create an agent, ask for at most two things: the agent's **name** and **what it should do day-to-day**. Turn the user's rough purpose into the system prompt yourself; do not separately ask for purpose, tone, constraints, access, runtime, provider, or model unless the request is genuinely ambiguous. Then run:
 
 ```bash
-buzz agents draft-create \
+buzz agents create \
   --channel <current-channel-uuid> \
   --display-name "Research helper" \
   --system-prompt "Find reliable sources and summarize them concisely."
 ```
 
-Use the UUID from the current Buzz `[Context]`; do not ask the user for it. Do not ask about runtime, provider, model, credentials, environment variables, or access. Desktop uses the machine's real defaults, and new agents start as **Only me**. The command sends an encrypted draft to the owner's Desktop. It does not create the agent until the owner reviews and saves the form, so report the result as “ready for review,” never “created.”
+Use the UUID from the current Buzz `[Context]`; do not ask the user for it. Do not ask about runtime, provider, model, credentials, environment variables, or access. Desktop uses the machine's real defaults, and new agents start as **Only me**.
 
-For an explicit change to an existing personal agent, use:
+For an explicit change to an existing agent, target it by current name or pubkey (never an internal ID):
 
 ```bash
-buzz agents draft-update --channel <uuid> --agent-name "Current name" \
+buzz agents update --channel <uuid> --agent-name "Current name" \
   --system-prompt "Updated instructions"
+buzz agents delete --channel <uuid> --agent <hex-pubkey>
 ```
 
-Run `buzz agents draft-update --help` for optional runtime, provider, model, rename, and access changes. Prefer these CLI commands over any legacy MCP agent-management tools.
+`buzz agents list` and `buzz agents get <name-or-pubkey>` show what exists. Run `buzz agents update --help` for runtime, provider, model, rename, and access changes. Prefer these CLI commands over any legacy MCP agent-management tools. `draft-create` / `draft-update` still exist as aliases for `create --review` / `update --review`.
+
+### Reporting results honestly
+
+Each command waits (default 60s, `--wait <secs>`) for the owner's Desktop to answer and prints `{status, saved, ...}`:
+
+| `status` | Meaning | What to say |
+|----------|---------|-------------|
+| `executed` (`saved: true`) | Change is live; `agent_pubkey` / `agent_name` identify it | "Created/updated/deleted …" |
+| `pending_owner_review` or `sent` (`saved: false`) | Desktop opened a review form (owner has not enabled unattended management, or you passed `--review`), or no answer arrived before the deadline | "Ready for review in Buzz Desktop" — never "created" |
+| `dismissed` | Owner closed the review without saving | Nothing changed |
+| `rejected` / `failed` | See `error` (origin gate, ambiguous target, runtime unavailable…) | Relay the error |
+
+Never claim an agent exists or was changed until the result says `executed`.
 
 ## Git Repositories
 
@@ -53,7 +69,7 @@ Output varies by command group — `--help` shows flags but not response shapes.
 
 **Read commands** (messages, channels, users, feed, workflows): normalized JSON arrays with `sig` stripped. Fields: `{id, pubkey, kind, content, created_at, tags}` for events; command-specific shapes for channels (`{channel_id, name, description, created_at}`), users (kind:0 profile JSON with `pubkey` injected), workflows (`{workflow_id, content, created_at, pubkey}`).
 
-**Write commands**: all return `{event_id, accepted, message}`. Create commands add the generated entity ID: `channels create` → `channel_id`, `dms open` → `dm_id`, `workflows create` → `workflow_id`. Agent draft commands add `{request_id, action, saved: false}` because they only open an owner-reviewed Desktop draft.
+**Write commands**: all return `{event_id, accepted, message}`. Create commands add the generated entity ID: `channels create` → `channel_id`, `dms open` → `dm_id`, `workflows create` → `workflow_id`. `agents create|update|delete` add `{request_id, action, status, saved}` plus `agent_pubkey`/`agent_name` when executed (see Agent Management above).
 
 **Exceptions to the above patterns:**
 

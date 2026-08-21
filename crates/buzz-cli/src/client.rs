@@ -569,6 +569,16 @@ impl BuzzClient {
         &self.relay_url
     }
 
+    /// The NIP-OA auth tag this client authenticates with, if any.
+    pub fn auth_tag(&self) -> Option<&Tag> {
+        self.auth_tag.as_ref()
+    }
+
+    /// WebSocket URL for the relay (`https://` → `wss://`).
+    pub fn ws_url(&self) -> String {
+        to_ws_url(&self.relay_url)
+    }
+
     /// Return the owner pubkey carried by the NIP-OA auth tag, if any.
     ///
     /// The auth tag is `["auth", owner_pubkey, conditions, sig]`; the

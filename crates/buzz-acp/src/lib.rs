@@ -4536,13 +4536,24 @@ fn dispatch_heartbeat(
 #[cfg(test)]
 mod agent_draft_prompt_tests {
     #[test]
-    fn shared_base_prompt_teaches_portable_agent_drafts() {
+    fn shared_base_prompt_teaches_portable_agent_management() {
         let prompt = include_str!("base_prompt.md");
-        assert!(prompt.contains("buzz agents draft-create"));
+        assert!(prompt.contains("| `buzz agents` | `list`, `get`, `create`, `update`, `delete` |"));
+        assert!(prompt.contains("buzz agents create --channel <current-channel-uuid>"));
+        assert!(prompt.contains("buzz agents update --channel <uuid> --agent-name"));
+        assert!(prompt.contains("buzz agents delete"));
+        assert!(!prompt.contains("draft-create"));
+        assert!(prompt.contains("only on a specific, explicit directive from a human"));
+        assert!(prompt.contains("Never manage agents on your own initiative"));
         assert!(prompt.contains("ask for at most two things"));
         assert!(prompt.contains("what it should do day-to-day"));
         assert!(prompt.contains("owner saves it"));
+        assert!(prompt.contains("`status: \"executed\"` / `saved: true`"));
+        assert!(prompt.contains("`status: \"pending_owner_review\"`"));
         assert!(prompt.contains("Do not ask about runtime, provider, model, credentials"));
+        assert!(
+            prompt.contains("`buzz agents create`, `update`, and `delete` require `BUZZ_AUTH_TAG`")
+        );
     }
 
     #[test]

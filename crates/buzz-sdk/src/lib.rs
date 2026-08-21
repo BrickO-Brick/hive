@@ -13,6 +13,7 @@
 //! No keys are held here. No network calls are made.
 
 pub mod agent_definitions;
+pub mod agent_management;
 pub mod builders;
 pub mod definition_validation;
 pub mod mentions;

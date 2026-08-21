@@ -1,88 +1,64 @@
-use buzz_core::kind::KIND_IA_ARCHIVED_LIST;
+use std::time::Duration;
+
+use buzz_core::kind::{KIND_IA_ARCHIVED_LIST, KIND_MANAGED_AGENT};
+use buzz_sdk::agent_definitions::{event_d_tag, managed_agent_content_from_event};
+use buzz_sdk::agent_management::{
+    AgentManagementAction, AgentManagementRequest, AgentTarget, CreateAgentRequest,
+    DeleteAgentRequest, UpdateAgentRequest,
+};
 use buzz_sdk::builders::{build_archive_identity_request, build_unarchive_identity_request};
 use nostr::PublicKey;
 use serde_json::json;
 
-use crate::agent_management::{build_create, build_update, CreateAgentDraft, UpdateAgentDraft};
+use crate::agent_management::{publish_and_wait, render, sign_request, Outcome};
 use crate::client::BuzzClient;
 use crate::error::CliError;
 use crate::validate::{read_or_stdin, validate_hex64};
-use crate::{AgentsCmd, RespondToArg};
+use crate::{AgentCreateArgs, AgentUpdateArgs, AgentWaitArgs, AgentsCmd, RespondToArg};
+
+use super::definitions::{list_owned_by, print_event_json};
 
 pub async fn dispatch(command: AgentsCmd, client: &BuzzClient) -> Result<(), CliError> {
     match command {
-        AgentsCmd::DraftCreate {
+        AgentsCmd::List { json } => cmd_list(client, json).await,
+        AgentsCmd::Get { agent, json } => cmd_get(client, &agent, json).await,
+
+        AgentsCmd::Create { args, wait } => {
+            let request = AgentManagementRequest::new(create_action(args)?).map_err(sdk_usage)?;
+            send(client, request, &wait).await
+        }
+        AgentsCmd::Update { args, wait } => {
+            let request = AgentManagementRequest::new(update_action(args)?).map_err(sdk_usage)?;
+            send(client, request, &wait).await
+        }
+        AgentsCmd::Delete {
             channel,
-            display_name,
-            system_prompt,
+            agent,
+            agent_name,
+            wait,
         } => {
-            let owner = require_owner(client)?;
-            let built = build_create(
-                client.keys(),
-                &owner,
-                CreateAgentDraft {
+            let request =
+                AgentManagementRequest::new(AgentManagementAction::Delete(DeleteAgentRequest {
                     channel_id: channel,
-                    display_name,
-                    system_prompt: read_or_stdin(&system_prompt)?,
-                },
-            )?;
-            let response = client.publish_ephemeral_event(built.event).await?;
-            let mut output: serde_json::Value = serde_json::from_str(&response)
-                .map_err(|e| CliError::Other(format!("invalid relay response: {e}")))?;
-            if let Some(obj) = output.as_object_mut() {
-                obj.insert("request_id".into(), built.request_id.into());
-                obj.insert("action".into(), built.action.into());
-                obj.insert("saved".into(), false.into());
-                obj.insert(
-                    "message".into(),
-                    "Draft sent to Buzz Desktop for owner review. Nothing changes until the owner saves it."
-                        .into(),
-                );
-            }
-            println!("{output}");
-            Ok(())
+                    target: target(agent, agent_name),
+                }))
+                .map_err(sdk_usage)?;
+            send(client, request, &wait).await
         }
 
-        AgentsCmd::DraftUpdate {
-            channel,
-            agent_name,
-            display_name,
-            system_prompt,
-            runtime,
-            provider,
-            model,
-            respond_to,
-        } => {
-            let owner = require_owner(client)?;
-            let built = build_update(
-                client.keys(),
-                &owner,
-                UpdateAgentDraft {
-                    channel_id: channel,
-                    agent_name,
-                    display_name,
-                    system_prompt: system_prompt.map(|v| read_or_stdin(&v)).transpose()?,
-                    runtime,
-                    provider,
-                    model,
-                    respond_to: respond_to.map(RespondToArg::to_wire),
-                },
-            )?;
-            let response = client.publish_ephemeral_event(built.event).await?;
-            let mut output: serde_json::Value = serde_json::from_str(&response)
-                .map_err(|e| CliError::Other(format!("invalid relay response: {e}")))?;
-            if let Some(obj) = output.as_object_mut() {
-                obj.insert("request_id".into(), built.request_id.into());
-                obj.insert("action".into(), built.action.into());
-                obj.insert("saved".into(), false.into());
-                obj.insert(
-                    "message".into(),
-                    "Draft sent to Buzz Desktop for owner review. Nothing changes until the owner saves it."
-                        .into(),
-                );
-            }
-            println!("{output}");
-            Ok(())
+        // `draft-*` keep their historical contract: always owner-reviewed,
+        // return as soon as the relay accepts the request.
+        AgentsCmd::DraftCreate { args } => {
+            let request = AgentManagementRequest::new(create_action(args)?)
+                .map_err(sdk_usage)?
+                .with_review();
+            send(client, request, &draft_wait()).await
+        }
+        AgentsCmd::DraftUpdate { args } => {
+            let request = AgentManagementRequest::new(update_action(args)?)
+                .map_err(sdk_usage)?
+                .with_review();
+            send(client, request, &draft_wait()).await
         }
 
         AgentsCmd::Archive {
@@ -167,13 +143,217 @@ pub async fn dispatch(command: AgentsCmd, client: &BuzzClient) -> Result<(), Cli
     }
 }
 
-/// Require `BUZZ_AUTH_TAG` and parse the owner pubkey from it. Used only by
-/// the `draft-create` and `draft-update` paths.
+/// Require `BUZZ_AUTH_TAG` and parse the owner pubkey from it. Used by the
+/// management paths (`create`/`update`/`delete` and the `draft-*` aliases):
+/// an agent cannot write owner-coordinate events itself, so it needs an owner
+/// to ask.
 fn require_owner(client: &BuzzClient) -> Result<PublicKey, CliError> {
     let hex = client
         .auth_tag_owner_hex()
-        .ok_or_else(|| CliError::Auth("agent draft requests require BUZZ_AUTH_TAG".into()))?;
+        .ok_or_else(|| CliError::Auth("agent management requests require BUZZ_AUTH_TAG".into()))?;
     PublicKey::parse(&hex).map_err(|e| CliError::Auth(format!("invalid owner attestation: {e}")))
+}
+
+/// The pubkey whose kind:30177 events `list`/`get` read: the attesting owner
+/// under `BUZZ_AUTH_TAG`, otherwise the signing key itself (an owner running
+/// the CLI directly).
+fn reader_owner(client: &BuzzClient) -> Result<PublicKey, CliError> {
+    match client.auth_tag_owner_hex() {
+        Some(hex) => PublicKey::parse(&hex)
+            .map_err(|e| CliError::Auth(format!("invalid owner attestation: {e}"))),
+        None => Ok(client.keys().public_key()),
+    }
+}
+
+fn sdk_usage(e: buzz_sdk::SdkError) -> CliError {
+    CliError::Usage(e.to_string())
+}
+
+fn draft_wait() -> AgentWaitArgs {
+    AgentWaitArgs {
+        wait: 0,
+        review: true,
+    }
+}
+
+fn target(agent: Option<String>, agent_name: Option<String>) -> AgentTarget {
+    AgentTarget {
+        agent_pubkey: agent.map(|a| a.trim().to_ascii_lowercase()),
+        agent_name,
+    }
+}
+
+fn create_action(args: AgentCreateArgs) -> Result<AgentManagementAction, CliError> {
+    Ok(AgentManagementAction::Create(CreateAgentRequest {
+        channel_id: args.channel,
+        display_name: args.display_name.trim().to_owned(),
+        system_prompt: read_or_stdin(&args.system_prompt)?.trim().to_owned(),
+        runtime: args.runtime,
+        provider: args.provider,
+        model: args.model,
+        respond_to: args.respond_to.map(RespondToArg::to_request),
+        parallelism: args.parallelism,
+        avatar_url: args.avatar_url,
+        start: args.no_start.then_some(false),
+    }))
+}
+
+fn update_action(args: AgentUpdateArgs) -> Result<AgentManagementAction, CliError> {
+    Ok(AgentManagementAction::Update(UpdateAgentRequest {
+        channel_id: args.channel,
+        target: target(args.agent, args.agent_name),
+        display_name: args.display_name,
+        system_prompt: args
+            .system_prompt
+            .map(|v| read_or_stdin(&v).map(|s| s.trim().to_owned()))
+            .transpose()?,
+        runtime: args.runtime,
+        provider: args.provider,
+        model: args.model,
+        respond_to: args.respond_to.map(RespondToArg::to_request),
+    }))
+}
+
+/// Publish a management request and print the outcome.
+async fn send(
+    client: &BuzzClient,
+    request: AgentManagementRequest,
+    wait: &AgentWaitArgs,
+) -> Result<(), CliError> {
+    let owner = require_owner(client)?;
+    let request = if wait.review {
+        request.with_review()
+    } else {
+        request
+    };
+    let event = sign_request(client.keys(), &owner, &request)?;
+    let wait_for = (wait.wait > 0).then(|| Duration::from_secs(wait.wait));
+    let (event_id, outcome) = publish_and_wait(
+        &client.ws_url(),
+        client.keys(),
+        client.auth_tag(),
+        event,
+        &request.request_id,
+        wait_for,
+    )
+    .await?;
+    println!("{}", render(&event_id, &request, &outcome));
+    if let Outcome::Answered(result) = &outcome {
+        use buzz_sdk::agent_management::AgentManagementStatus::*;
+        if matches!(result.status, Rejected | Failed) {
+            return Err(CliError::Other(
+                result
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| format!("request {}", result.status.as_str())),
+            ));
+        }
+    }
+    Ok(())
+}
+
+async fn cmd_list(client: &BuzzClient, json: bool) -> Result<(), CliError> {
+    let owner = reader_owner(client)?;
+    let events = list_owned_by(client, KIND_MANAGED_AGENT, &owner).await?;
+    if json {
+        let items: Vec<serde_json::Value> = events
+            .iter()
+            .map(|e| {
+                json!({
+                    "pubkey": event_d_tag(e),
+                    "event_id": e.id.to_hex(),
+                    "created_at": e.created_at.as_secs(),
+                    "content": managed_agent_content_from_event(e).ok(),
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&items)
+                .map_err(|e| CliError::Other(format!("failed to render JSON: {e}")))?
+        );
+        return Ok(());
+    }
+    if events.is_empty() {
+        eprintln!("no managed agents published by {}", owner.to_hex());
+        return Ok(());
+    }
+    for event in &events {
+        let pubkey = event_d_tag(event).unwrap_or("<no d-tag>");
+        match managed_agent_content_from_event(event) {
+            Ok(c) => println!(
+                "{pubkey}  {:<24} {:<24} {:<10} {}",
+                c.name,
+                c.persona_id.unwrap_or_else(|| "-".into()),
+                c.respond_to.as_str(),
+                c.parallelism
+            ),
+            Err(e) => println!("{pubkey}  <unparseable content: {e}>"),
+        }
+    }
+    Ok(())
+}
+
+async fn cmd_get(client: &BuzzClient, agent: &str, json: bool) -> Result<(), CliError> {
+    let owner = reader_owner(client)?;
+    let events = list_owned_by(client, KIND_MANAGED_AGENT, &owner).await?;
+    let needle = agent.trim();
+    let by_pubkey: Vec<&nostr::Event> = events
+        .iter()
+        .filter(|e| event_d_tag(e).is_some_and(|d| d.eq_ignore_ascii_case(needle)))
+        .collect();
+    let matches = if by_pubkey.is_empty() {
+        events
+            .iter()
+            .filter(|e| {
+                managed_agent_content_from_event(e)
+                    .is_ok_and(|c| c.name.trim().eq_ignore_ascii_case(needle))
+            })
+            .collect()
+    } else {
+        by_pubkey
+    };
+    let event = match matches.as_slice() {
+        [one] => *one,
+        [] => {
+            return Err(CliError::NotFound(format!(
+                "no managed agent '{needle}' published by {}",
+                owner.to_hex()
+            )))
+        }
+        many => {
+            return Err(CliError::Usage(format!(
+                "{} managed agents are named '{needle}'; use the pubkey: {}",
+                many.len(),
+                many.iter()
+                    .filter_map(|e| event_d_tag(e))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )))
+        }
+    };
+    if json {
+        return print_event_json(event);
+    }
+    let c = managed_agent_content_from_event(event).map_err(|e| CliError::Other(e.to_string()))?;
+    println!("pubkey:       {}", event_d_tag(event).unwrap_or("-"));
+    println!("name:         {}", c.name);
+    println!(
+        "persona_id:   {}",
+        c.persona_id.unwrap_or_else(|| "-".into())
+    );
+    println!("respond_to:   {}", c.respond_to.as_str());
+    if !c.respond_to_allowlist.is_empty() {
+        println!("allowlist:    {}", c.respond_to_allowlist.join(", "));
+    }
+    println!("parallelism:  {}", c.parallelism);
+    println!("model:        {}", c.model.unwrap_or_else(|| "-".into()));
+    println!("provider:     {}", c.provider.unwrap_or_else(|| "-".into()));
+    println!("event:        {}", event.id.to_hex());
+    if let Some(prompt) = c.system_prompt {
+        println!("\n{prompt}");
+    }
+    Ok(())
 }
 
 /// Typed reason why NIP-OA owner-auth could not be extracted.

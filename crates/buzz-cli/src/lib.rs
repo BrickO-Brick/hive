@@ -174,7 +174,7 @@ pub enum OutputFormat {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Draft owner-reviewed agent creation and updates
+    /// Create, update, delete, and list managed agents (via the owner's Buzz Desktop)
     #[command(subcommand)]
     Agents(AgentsCmd),
     /// Send, read, search, and manage messages
@@ -245,7 +245,7 @@ enum Cmd {
     Moderation(ModerationCmd),
 }
 
-#[derive(Clone, Copy, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
 pub enum RespondToArg {
     #[value(name = "owner-only")]
     OwnerOnly,
@@ -255,49 +255,176 @@ pub enum RespondToArg {
 
 impl RespondToArg {
     fn to_wire(self) -> String {
-        match self {
-            Self::OwnerOnly => "owner-only",
-            Self::Anyone => "anyone",
-        }
-        .to_string()
+        self.to_request().as_str().to_string()
     }
+
+    /// The SDK request enum for this flag.
+    pub fn to_request(self) -> buzz_sdk::agent_management::RespondToRequest {
+        match self {
+            Self::OwnerOnly => buzz_sdk::agent_management::RespondToRequest::OwnerOnly,
+            Self::Anyone => buzz_sdk::agent_management::RespondToRequest::Anyone,
+        }
+    }
+}
+
+/// Shared flags for `buzz agents create`.
+#[derive(clap::Args, Debug, Clone)]
+pub struct AgentCreateArgs {
+    /// Current channel UUID; the new agent is added here
+    #[arg(long)]
+    pub channel: String,
+    /// Agent name
+    #[arg(long)]
+    pub display_name: String,
+    /// Instructions; use '-' to read from stdin
+    #[arg(long)]
+    pub system_prompt: String,
+    /// Agent harness to run under (e.g. goose, claude); owner default when omitted
+    #[arg(long)]
+    pub runtime: Option<String>,
+    /// Inference provider; owner default when omitted
+    #[arg(long)]
+    pub provider: Option<String>,
+    /// Model identifier, interpreted by the runtime; owner default when omitted
+    #[arg(long)]
+    pub model: Option<String>,
+    /// Who the agent answers (default: owner-only)
+    #[arg(long, value_enum)]
+    pub respond_to: Option<RespondToArg>,
+    /// Concurrent turn limit (1-32)
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..=32))]
+    pub parallelism: Option<u32>,
+    /// Avatar URL
+    #[arg(long)]
+    pub avatar_url: Option<String>,
+    /// Publish the definition only; do not start the agent
+    #[arg(long)]
+    pub no_start: bool,
+}
+
+/// Shared flags for `buzz agents update`.
+#[derive(clap::Args, Debug, Clone)]
+pub struct AgentUpdateArgs {
+    /// Current channel UUID
+    #[arg(long)]
+    pub channel: String,
+    /// Pubkey (hex) of the agent to update
+    #[arg(long, conflicts_with = "agent_name")]
+    pub agent: Option<String>,
+    /// Current name of the agent to update (must be unique)
+    #[arg(long)]
+    pub agent_name: Option<String>,
+    #[arg(long)]
+    pub display_name: Option<String>,
+    /// Replacement instructions; use '-' to read from stdin
+    #[arg(long)]
+    pub system_prompt: Option<String>,
+    #[arg(long)]
+    pub runtime: Option<String>,
+    #[arg(long)]
+    pub provider: Option<String>,
+    #[arg(long)]
+    pub model: Option<String>,
+    #[arg(long, value_enum)]
+    pub respond_to: Option<RespondToArg>,
+}
+
+/// How long `buzz agents create|update|delete` wait for the owner's Desktop.
+#[derive(clap::Args, Debug, Clone)]
+pub struct AgentWaitArgs {
+    /// Seconds to wait for Buzz Desktop's result (0 = return as soon as the
+    /// relay accepts the request)
+    #[arg(long, default_value_t = 60)]
+    pub wait: u64,
+    /// Ask the owner to review the change in Buzz Desktop even if they allow
+    /// unattended agent management
+    #[arg(long)]
+    pub review: bool,
 }
 
 #[derive(Subcommand)]
 pub enum AgentsCmd {
-    /// Open a prefilled create-agent form in the owner's Buzz Desktop
-    DraftCreate {
-        /// Current channel UUID; the new agent is added here after save
+    /// List the managed agents published by this identity (kind:30177)
+    #[command(
+        after_help = "Reads the owner's kind:30177 managed-agent events. Under BUZZ_AUTH_TAG the \
+owner is the attesting pubkey; otherwise the signing key itself.\n\n\
+Examples:\n  buzz agents list\n  buzz agents list --json"
+    )]
+    List {
+        /// Emit JSON instead of a table
         #[arg(long)]
-        channel: String,
-        /// Proposed agent name
-        #[arg(long)]
-        display_name: String,
-        /// Proposed instructions; use '-' to read from stdin
-        #[arg(long)]
-        system_prompt: String,
+        json: bool,
     },
-    /// Open a prefilled edit-agent form in the owner's Buzz Desktop
-    DraftUpdate {
+    /// Show one managed agent by pubkey (hex) or unique name
+    Get {
+        /// Agent pubkey (hex) or current display name
+        agent: String,
+        /// Emit the raw event JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Create an agent through the owner's Buzz Desktop
+    #[command(
+        after_help = "Sends an encrypted request to the owner's Buzz Desktop, which mints the \
+agent's keys, publishes its persona + managed-agent events, and adds it to --channel. If the \
+owner has enabled unattended agent management the agent is created immediately and its pubkey \
+is returned; otherwise Desktop opens a review form and the command reports `saved: false`. \
+Requires BUZZ_AUTH_TAG.\n\n\
+Examples:\n  \
+buzz agents create --channel <UUID> --display-name \"Research helper\" \\\n    \
+--system-prompt \"Find reliable sources and summarize them.\"\n  \
+printf '%s' \"$PROMPT\" | buzz agents create --channel <UUID> --display-name Scout --system-prompt -"
+    )]
+    Create {
+        #[command(flatten)]
+        args: AgentCreateArgs,
+        #[command(flatten)]
+        wait: AgentWaitArgs,
+    },
+    /// Update an existing agent through the owner's Buzz Desktop
+    #[command(
+        after_help = "Target the agent with --agent <hex pubkey> or --agent-name <unique name>. \
+Absent fields are left unchanged. Requires BUZZ_AUTH_TAG.\n\n\
+Examples:\n  \
+buzz agents update --channel <UUID> --agent-name Scout --system-prompt \"New instructions\"\n  \
+buzz agents update --channel <UUID> --agent <PUBKEY> --respond-to anyone"
+    )]
+    Update {
+        #[command(flatten)]
+        args: AgentUpdateArgs,
+        #[command(flatten)]
+        wait: AgentWaitArgs,
+    },
+    /// Delete an agent through the owner's Buzz Desktop
+    #[command(
+        after_help = "Stops the agent, removes its managed-agent record, and tombstones its \
+relay events. Requires BUZZ_AUTH_TAG.\n\n\
+Examples:\n  buzz agents delete --channel <UUID> --agent <PUBKEY>"
+    )]
+    Delete {
         /// Current channel UUID
         #[arg(long)]
         channel: String,
-        /// Current name of the personal agent to update
+        /// Pubkey (hex) of the agent to delete
+        #[arg(long, conflicts_with = "agent_name")]
+        agent: Option<String>,
+        /// Current name of the agent to delete (must be unique)
         #[arg(long)]
-        agent_name: String,
-        #[arg(long)]
-        display_name: Option<String>,
-        /// Replacement instructions; use '-' to read from stdin
-        #[arg(long)]
-        system_prompt: Option<String>,
-        #[arg(long)]
-        runtime: Option<String>,
-        #[arg(long)]
-        provider: Option<String>,
-        #[arg(long)]
-        model: Option<String>,
-        #[arg(long, value_enum)]
-        respond_to: Option<RespondToArg>,
+        agent_name: Option<String>,
+        #[command(flatten)]
+        wait: AgentWaitArgs,
+    },
+    /// Open a prefilled create-agent form in the owner's Buzz Desktop
+    /// (alias for `create --review`)
+    DraftCreate {
+        #[command(flatten)]
+        args: AgentCreateArgs,
+    },
+    /// Open a prefilled edit-agent form in the owner's Buzz Desktop
+    /// (alias for `update --review`)
+    DraftUpdate {
+        #[command(flatten)]
+        args: AgentUpdateArgs,
     },
     /// Submit a NIP-IA archive request for an identity (kind 9035)
     #[command(
@@ -2330,9 +2457,14 @@ mod tests {
             vec![
                 "archive",
                 "archived",
+                "create",
+                "delete",
                 "draft-create",
                 "draft-update",
-                "unarchive"
+                "get",
+                "list",
+                "unarchive",
+                "update"
             ]
         );
         assert_eq!(
@@ -2474,7 +2606,7 @@ mod tests {
     #[test]
     fn subcommand_counts_are_stable() {
         let expected: Vec<(&str, usize)> = vec![
-            ("agents", 5),
+            ("agents", 10),
             ("canvas", 2),
             ("channels", 16),
             ("dms", 4),

@@ -1,4 +1,5 @@
 import { AgentDefaultsSettingsCard } from "./AgentDefaultsSettingsCard";
+import { AgentManagementSettingsCard } from "./AgentManagementSettingsCard";
 import { HarnessesSettingsPanel } from "./HarnessesSettingsPanel";
 import { PreventSleepSettingsCard } from "./PreventSleepSettingsCard";
 import { SettingsOptionGroupList } from "./SettingsOptionGroup";
@@ -14,6 +15,7 @@ export function AgentsSettingsPanel() {
 
       <SettingsOptionGroupList>
         <PreventSleepSettingsCard />
+        <AgentManagementSettingsCard />
         <HarnessesSettingsPanel />
         <AgentDefaultsSettingsCard />
       </SettingsOptionGroupList>

@@ -22,42 +22,18 @@
 //! - any runtime field (`runtime_pid`, `last_*`, `backend_agent_id`, …) — these
 //!   mutate on every start/stop and describe transient process state.
 
-use buzz_core_pkg::kind::KIND_MANAGED_AGENT;
-use nostr::{EventBuilder, Kind, Tag};
-use serde::{Deserialize, Serialize};
+use nostr::EventBuilder;
 
-use super::{ManagedAgentRecord, RespondTo};
+use super::ManagedAgentRecord;
 
 /// The JSON body stored in a managed-agent event's content field.
 ///
-/// Explicit opt-IN allowlist of the agent's public identity + behavioral
-/// config. See the module docs for the exclusion contract — secrets, the
-/// provider backend blob, and all runtime/install fields are deliberately
-/// absent and must stay that way.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ManagedAgentEventContent {
-    pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub persona_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub system_prompt: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider: Option<String>,
-    /// `persona_content_hash` of the persona snapshot pinned at create time.
-    /// Public drift indicator (not a secret) — lets other clients flag a stale
-    /// snapshot without re-reading the source persona.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub persona_source_version: Option<String>,
-    pub parallelism: u32,
-    /// Inbound author gate mode (wire string).
-    pub respond_to: RespondTo,
-    /// Allowlisted author pubkeys when `respond_to == Allowlist`. These are
-    /// public keys, not secrets.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub respond_to_allowlist: Vec<String>,
-}
+/// Owned by the SDK so the CLI publishes the identical body (and field order,
+/// which pins content bytes). Explicit opt-IN allowlist of the agent's public
+/// identity + behavioral config — see the module docs for the exclusion
+/// contract; secrets, the provider backend blob, and all runtime/install
+/// fields are deliberately absent and must stay that way.
+pub use buzz_sdk_pkg::agent_definitions::ManagedAgentEventContent;
 
 /// Project a `ManagedAgentRecord` onto the content fields published in
 /// managed-agent events.
@@ -117,11 +93,11 @@ pub fn build_agent_event(record: &ManagedAgentRecord) -> Result<EventBuilder, St
         record.system_prompt.as_deref(),
     )
     .map_err(|error| format!("Managed agent definition is unsafe to publish: {error}"))?;
-    let content = serde_json::to_string(&agent_event_content(record))
-        .map_err(|e| format!("failed to serialize managed-agent content: {e}"))?;
-    let tags =
-        vec![Tag::parse(["d", record.pubkey.as_str()]).map_err(|e| format!("invalid d-tag: {e}"))?];
-    Ok(EventBuilder::new(Kind::Custom(KIND_MANAGED_AGENT as u16), content).tags(tags))
+    buzz_sdk_pkg::agent_definitions::build_managed_agent_event(
+        &record.pubkey,
+        &agent_event_content(record),
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// Parse a kind:30177 event's content into the projection — the inbound
@@ -140,8 +116,8 @@ pub fn build_agent_event(record: &ManagedAgentRecord) -> Result<EventBuilder, St
 pub fn managed_agent_content_from_event(
     event: &nostr::Event,
 ) -> Result<ManagedAgentEventContent, String> {
-    serde_json::from_str(event.content.as_ref())
-        .map_err(|e| format!("failed to parse managed-agent event content: {e}"))
+    buzz_sdk_pkg::agent_definitions::managed_agent_content_from_event(event)
+        .map_err(|e| e.to_string())
 }
 
 /// Build a NIP-09 deletion (kind:5) targeting an agent's kind:30177 event.
@@ -152,14 +128,16 @@ pub fn managed_agent_content_from_event(
 /// live. The coordinate delete removes the agent for every client and across
 /// reboots.
 pub fn build_agent_delete(d_tag: &str, owner_pubkey_hex: &str) -> Result<EventBuilder, String> {
-    let coord = format!("{KIND_MANAGED_AGENT}:{owner_pubkey_hex}:{d_tag}");
-    let tag = Tag::parse(["a", coord.as_str()]).map_err(|e| format!("invalid a-tag: {e}"))?;
-    Ok(EventBuilder::new(Kind::Custom(5), "").tags(vec![tag]))
+    buzz_sdk_pkg::agent_definitions::build_managed_agent_delete(d_tag, owner_pubkey_hex)
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::managed_agents::RespondTo;
+    use buzz_core_pkg::kind::KIND_MANAGED_AGENT;
+    use nostr::Kind;
     use std::collections::BTreeMap;
 
     fn sample_agent() -> ManagedAgentRecord {

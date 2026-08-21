@@ -1,4 +1,5 @@
-//! Persona (kind:30175) and team (kind:30176) definition wire shapes.
+//! Persona (kind:30175), team (kind:30176), and managed-agent (kind:30177)
+//! definition wire shapes.
 //!
 //! NIP-AP parameterized-replaceable events keyed by `(pubkey, kind, d_tag)`.
 //! This module owns the published content projections and the pure
@@ -10,14 +11,16 @@
 //! loss: [`PersonaEventContent`]'s field order, which pins content bytes and
 //! therefore event ids, and [`TeamEventContent`]'s `Option` nesting, which
 //! distinguishes "unknown, preserve local" from "explicitly emptied". Read
-//! their doc comments before changing either.
+//! their doc comments before changing either. [`ManagedAgentEventContent`] is
+//! a world-readable opt-IN projection: adding a field to it is a publication
+//! decision, never a convenience.
 
 use nostr::{EventBuilder, Kind, Tag};
 use serde::{Deserialize, Serialize};
 
 use crate::builders::build_delete_addressable;
 use crate::SdkError;
-use buzz_core::kind::{KIND_PERSONA, KIND_TEAM};
+use buzz_core::kind::{KIND_MANAGED_AGENT, KIND_PERSONA, KIND_TEAM};
 
 /// Maximum d-tag length in the NIP-AP slug grammar.
 pub const MAX_D_TAG_LEN: usize = 64;
@@ -123,6 +126,121 @@ pub struct TeamEventContent {
     pub persona_ids: Option<Vec<String>>,
 }
 
+/// Who a managed agent answers (NIP-AP `respond_to` wire string).
+///
+/// Wire format is kebab-case (`owner-only`, `allowlist`, `anyone`), matching
+/// `buzz-acp --respond-to`. The harness also knows `nobody` (heartbeat-only);
+/// it is deliberately not representable here because no client exposes it.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum RespondTo {
+    /// Answer only the owner (harness default).
+    #[default]
+    OwnerOnly,
+    /// Answer the pubkeys in `respond_to_allowlist`.
+    Allowlist,
+    /// Answer anyone.
+    Anyone,
+}
+
+impl RespondTo {
+    /// CLI/env wire string (matches `buzz-acp`'s `--respond-to`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::OwnerOnly => "owner-only",
+            Self::Allowlist => "allowlist",
+            Self::Anyone => "anyone",
+        }
+    }
+
+    /// Parse the NIP-AP wire string. Definitions carry `respond_to` as opaque
+    /// data everywhere else; this is the single parse boundary, and an
+    /// unrecognized mode fails LOUDLY rather than silently defaulting — a
+    /// typo'd definition must not mint an agent with a different audience than
+    /// its author intended.
+    pub fn parse_wire(value: &str) -> Result<Self, String> {
+        match value {
+            "owner-only" => Ok(Self::OwnerOnly),
+            "allowlist" => Ok(Self::Allowlist),
+            "anyone" => Ok(Self::Anyone),
+            other => Err(format!(
+                "definition respond_to '{other}' is not a recognized mode (expected 'owner-only', 'allowlist', or 'anyone')"
+            )),
+        }
+    }
+}
+
+/// Validate and normalize a respond-to allowlist.
+///
+/// Rules mirror `buzz-acp/src/config.rs::validate_allowlist`:
+/// - Each entry is exactly 64 hex chars (any case in, lowercase out).
+/// - Duplicates removed, insertion order preserved.
+///
+/// Empty input is allowed here — the boundary check (allowlist mode requires
+/// at least one entry) is the caller's job, because an update request may
+/// want to validate a list without yet knowing the final mode.
+pub fn validate_respond_to_allowlist(input: &[String]) -> Result<Vec<String>, String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::with_capacity(input.len());
+    for entry in input {
+        let trimmed = entry.trim();
+        if trimmed.len() != 64 || !trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(format!(
+                "invalid pubkey in respond-to allowlist: '{trimmed}' (must be 64 hex chars)"
+            ));
+        }
+        let lower = trimmed.to_ascii_lowercase();
+        if seen.insert(lower.clone()) {
+            out.push(lower);
+        }
+    }
+    Ok(out)
+}
+
+/// The JSON body stored in a managed-agent (kind:30177) event's content field.
+///
+/// The d-tag is the agent's pubkey. This is an explicit opt-IN allowlist of
+/// the agent's public identity + behavioral config, and the events are
+/// world-readable on the relay, so it MUST NEVER carry: the agent's secret
+/// key, the NIP-OA auth tag, env vars (credentials), the backend/provider
+/// blob, or any runtime field (pid, last_*, …). The return type of
+/// [`managed_agent_content_from_event`] being this struct — not a client
+/// record — is what keeps an inbound event from smuggling those fields in.
+///
+/// Field order is load-bearing: serde emits in declaration order, and the
+/// desktop's retention store compares serialized bytes to suppress
+/// re-publishes, so a reorder changes every event id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManagedAgentEventContent {
+    /// Display name of the instance.
+    pub name: String,
+    /// Slug of the kind:30175 definition this instance was created from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persona_id: Option<String>,
+    /// Instructions — present only for definition-less instances; a linked
+    /// instance resolves its prompt through the definition.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
+    /// Model — definition-less instances only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Provider — definition-less instances only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// Content hash of the persona snapshot pinned at create time. Public
+    /// drift indicator — lets readers flag a stale snapshot without
+    /// re-reading the source persona.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persona_source_version: Option<String>,
+    /// Concurrent turn limit.
+    pub parallelism: u32,
+    /// Inbound author gate mode.
+    pub respond_to: RespondTo,
+    /// Allowlisted author pubkeys when `respond_to == Allowlist`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub respond_to_allowlist: Vec<String>,
+}
+
 /// Normalize a raw slug to the NIP-AP grammar `^[a-z0-9][a-z0-9_-]{0,63}$`
 /// (`docs/nips/NIP-AP.md:27`).
 ///
@@ -208,6 +326,22 @@ pub fn build_team_event(d_tag: &str, content: &TeamEventContent) -> Result<Event
     Ok(EventBuilder::new(Kind::Custom(KIND_TEAM as u16), body).tags(vec![d_tag_of(d_tag)?]))
 }
 
+/// Build a kind:30177 managed-agent event from an already-projected content
+/// body. `agent_pubkey_hex` is the d-tag. Returns an unsigned builder; the
+/// owner signs and submits.
+pub fn build_managed_agent_event(
+    agent_pubkey_hex: &str,
+    content: &ManagedAgentEventContent,
+) -> Result<EventBuilder, SdkError> {
+    let body = serde_json::to_string(content).map_err(|e| {
+        SdkError::InvalidInput(format!("failed to serialize managed-agent content: {e}"))
+    })?;
+    Ok(
+        EventBuilder::new(Kind::Custom(KIND_MANAGED_AGENT as u16), body)
+            .tags(vec![d_tag_of(agent_pubkey_hex)?]),
+    )
+}
+
 /// Build a NIP-09 deletion targeting a persona's kind:30175 coordinate.
 ///
 /// Delegates to [`build_delete_addressable`], which validates and
@@ -228,6 +362,17 @@ pub fn build_team_delete(d_tag: &str, owner_pubkey_hex: &str) -> Result<EventBui
     build_delete_addressable(KIND_TEAM, owner_pubkey_hex, d_tag)
 }
 
+/// Build a NIP-09 deletion targeting a managed agent's kind:30177 coordinate.
+///
+/// Same validation and tag shape as [`build_persona_delete`]; the d-tag is
+/// the agent's pubkey.
+pub fn build_managed_agent_delete(
+    agent_pubkey_hex: &str,
+    owner_pubkey_hex: &str,
+) -> Result<EventBuilder, SdkError> {
+    build_delete_addressable(KIND_MANAGED_AGENT, owner_pubkey_hex, agent_pubkey_hex)
+}
+
 /// Parse a kind:30175 event's content into its projection.
 pub fn persona_content_from_event(event: &nostr::Event) -> Result<PersonaEventContent, SdkError> {
     serde_json::from_str(event.content.as_ref())
@@ -243,6 +388,19 @@ pub fn persona_content_from_event(event: &nostr::Event) -> Result<PersonaEventCo
 pub fn team_content_from_event(event: &nostr::Event) -> Result<TeamEventContent, SdkError> {
     serde_json::from_str(event.content.as_ref())
         .map_err(|e| SdkError::InvalidInput(format!("failed to parse team event content: {e}")))
+}
+
+/// Parse a kind:30177 event's content into its projection.
+///
+/// Returns [`ManagedAgentEventContent`], never a client record: secrets and
+/// runtime fields cannot be represented, so they are dropped at
+/// deserialization rather than filtered afterward.
+pub fn managed_agent_content_from_event(
+    event: &nostr::Event,
+) -> Result<ManagedAgentEventContent, SdkError> {
+    serde_json::from_str(event.content.as_ref()).map_err(|e| {
+        SdkError::InvalidInput(format!("failed to parse managed-agent event content: {e}"))
+    })
 }
 
 /// Read an event's `d` tag value.
@@ -307,6 +465,43 @@ mod tests {
 
     fn sign(builder: EventBuilder) -> nostr::Event {
         builder.sign_with_keys(&Keys::generate()).unwrap()
+    }
+
+    #[test]
+    fn managed_agent_event_round_trips_and_pins_field_order() {
+        let agent = "a".repeat(64);
+        let content = ManagedAgentEventContent {
+            name: "Scout".into(),
+            persona_id: Some("scout".into()),
+            system_prompt: None,
+            model: None,
+            provider: None,
+            persona_source_version: None,
+            parallelism: 4,
+            respond_to: RespondTo::Anyone,
+            respond_to_allowlist: Vec::new(),
+        };
+        let event = sign(build_managed_agent_event(&agent, &content).unwrap());
+        assert_eq!(event.kind.as_u16() as u32, KIND_MANAGED_AGENT);
+        assert_eq!(event_d_tag(&event), Some(agent.as_str()));
+        assert_eq!(
+            event.content,
+            r#"{"name":"Scout","persona_id":"scout","parallelism":4,"respond_to":"anyone"}"#
+        );
+        assert_eq!(managed_agent_content_from_event(&event).unwrap(), content);
+
+        let delete = sign(build_managed_agent_delete(&agent, OWNER).unwrap());
+        assert_eq!(delete.kind.as_u16() as u32, KIND_DELETION);
+        let coord = format!("{KIND_MANAGED_AGENT}:{OWNER}:{agent}");
+        assert!(delete
+            .tags
+            .iter()
+            .any(|t| t.as_slice() == [String::from("a"), coord.clone()]));
+        assert!(RespondTo::parse_wire("nobody").is_err());
+        assert_eq!(
+            RespondTo::parse_wire("owner-only").unwrap(),
+            RespondTo::OwnerOnly
+        );
     }
 
     #[test]

@@ -60,9 +60,19 @@ fn parse_events(json: &str) -> Result<(Vec<nostr::Event>, usize), CliError> {
 /// also make `teams create` report a published persona as missing, so a hit on
 /// the cap warns rather than silently truncating.
 pub async fn list_owned(client: &BuzzClient, kind: u32) -> Result<Vec<nostr::Event>, CliError> {
+    list_owned_by(client, kind, &client.keys().public_key()).await
+}
+
+/// [`list_owned`] for an arbitrary author — used when the CLI identity is an
+/// agent reading its owner's coordinate space.
+pub async fn list_owned_by(
+    client: &BuzzClient,
+    kind: u32,
+    author: &nostr::PublicKey,
+) -> Result<Vec<nostr::Event>, CliError> {
     let filter = serde_json::json!({
         "kinds": [kind],
-        "authors": [client.keys().public_key().to_hex()],
+        "authors": [author.to_hex()],
         "limit": LIST_LIMIT,
     });
     let (events, returned) = parse_events(&client.query(&filter).await?)?;

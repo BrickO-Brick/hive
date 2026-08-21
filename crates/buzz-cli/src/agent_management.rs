@@ -1,277 +1,276 @@
-//! Owner-reviewed agent draft requests published through Buzz observer frames.
+//! `buzz agents create|update|delete` transport: publish an agent-management
+//! request to the owner's Buzz Desktop and, optionally, wait for its result.
+//!
+//! The wire contract lives in [`buzz_sdk::agent_management`]; this module only
+//! adds the CLI's relay plumbing — one authenticated WebSocket that publishes
+//! the telemetry frame and then listens for the matching control frame.
 
-use buzz_core::observer::{encrypt_observer_payload, OBSERVER_FRAME_TELEMETRY};
-use nostr::{Event, Keys, PublicKey};
-use serde::Serialize;
+use std::time::Duration;
+
+use buzz_core::kind::KIND_AGENT_OBSERVER_FRAME;
+use buzz_core::observer::decrypt_observer_payload;
+use buzz_sdk::agent_management::{
+    build_agent_management_request_frame, parse_agent_management_result, AgentManagementRequest,
+    AgentManagementResult, AgentManagementStatus,
+};
+use buzz_ws_client::{NostrWsConnection, RelayMessage};
+use nostr::{Event, Keys, PublicKey, Tag};
 
 use crate::error::CliError;
 
-const REQUEST_KIND: &str = "agent_management_request";
-const MAX_NAME_CHARS: usize = 120;
-const MAX_PROMPT_CHARS: usize = 20_000;
+/// Default seconds to wait for the owner's Desktop to answer a request.
+pub const DEFAULT_WAIT_SECS: u64 = 60;
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateAgentDraft {
-    pub channel_id: String,
-    pub display_name: String,
-    pub system_prompt: String,
+/// Sign a management request frame addressed to `owner`.
+pub fn sign_request(
+    keys: &Keys,
+    owner: &PublicKey,
+    request: &AgentManagementRequest,
+) -> Result<Event, CliError> {
+    build_agent_management_request_frame(keys, owner, request)
+        .map_err(|e| CliError::Usage(format!("invalid agent management request: {e}")))?
+        .sign_with_keys(keys)
+        .map_err(|e| CliError::Other(format!("could not sign agent management request: {e}")))
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateAgentDraft {
-    pub channel_id: String,
-    pub agent_name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub display_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub system_prompt: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub runtime: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub respond_to: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ManagementRequest<T> {
-    #[serde(rename = "type")]
-    request_type: &'static str,
-    action: &'static str,
-    request_id: String,
-    request: T,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ObserverEvent<T> {
-    seq: u64,
-    timestamp: String,
-    kind: &'static str,
-    agent_index: Option<usize>,
-    channel_id: Option<String>,
-    session_id: Option<String>,
-    turn_id: Option<String>,
-    payload: ManagementRequest<T>,
-}
-
+/// How a published request ended from the CLI's point of view.
 #[derive(Debug)]
-pub struct BuiltDraftRequest {
-    pub event: Event,
-    pub request_id: String,
-    pub action: &'static str,
+pub enum Outcome {
+    /// The owner's client answered.
+    Answered(AgentManagementResult),
+    /// No answer arrived before the deadline; the request may still be pending
+    /// (e.g. a review dialog is open on the owner's Desktop).
+    TimedOut,
 }
 
-fn required(value: String, label: &str, max: usize) -> Result<String, CliError> {
-    let value = value.trim();
-    if value.is_empty() {
-        return Err(CliError::Usage(format!("{label} is required")));
-    }
-    if value.chars().count() > max {
-        return Err(CliError::Usage(format!(
-            "{label} is too long (max {max} characters)"
-        )));
-    }
-    Ok(value.to_owned())
-}
-
-fn optional(value: Option<String>, label: &str) -> Result<Option<String>, CliError> {
-    value.map(|value| required(value, label, 300)).transpose()
-}
-
-fn build<T: Serialize>(
+/// Publish `event` and, when `wait` is set, keep the connection open until a
+/// control frame carrying a result for `request_id` arrives or `wait` elapses.
+///
+/// The subscription is opened *before* the publish so a fast Desktop cannot
+/// answer in the gap. Results are matched on `request_id`; unrelated control
+/// frames (cancel_turn, switch_model…) are ignored.
+pub async fn publish_and_wait(
+    ws_url: &str,
     keys: &Keys,
-    owner: &PublicKey,
-    channel_id: String,
-    action: &'static str,
-    request: T,
-) -> Result<BuiltDraftRequest, CliError> {
-    let request_id = uuid::Uuid::new_v4().to_string();
-    let payload = ObserverEvent {
-        seq: 0,
-        timestamp: chrono::Utc::now().to_rfc3339(),
-        kind: REQUEST_KIND,
-        agent_index: None,
-        channel_id: Some(channel_id),
-        session_id: None,
-        turn_id: None,
-        payload: ManagementRequest {
-            request_type: REQUEST_KIND,
-            action,
-            request_id: request_id.clone(),
-            request,
-        },
-    };
-    let encrypted = encrypt_observer_payload(keys, owner, &payload)
-        .map_err(|error| CliError::Other(format!("could not encrypt draft request: {error}")))?;
-    let event = buzz_sdk::build_agent_observer_frame(
-        &owner.to_hex(),
-        &keys.public_key().to_hex(),
-        OBSERVER_FRAME_TELEMETRY,
-        &encrypted,
-    )
-    .map_err(|error| CliError::Other(format!("could not build draft request: {error}")))?
-    .sign_with_keys(keys)
-    .map_err(|error| CliError::Other(format!("could not sign draft request: {error}")))?;
-    Ok(BuiltDraftRequest {
-        event,
-        request_id,
-        action,
+    auth_tag: Option<&Tag>,
+    event: Event,
+    request_id: &str,
+    wait: Option<Duration>,
+) -> Result<(String, Outcome), CliError> {
+    let connect_budget = Duration::from_secs(75);
+    let mut conn = tokio::time::timeout(connect_budget, async {
+        let mut conn = NostrWsConnection::connect(ws_url).await?;
+        conn.authenticate(keys, auth_tag).await?;
+        Ok::<_, buzz_ws_client::WsClientError>(conn)
     })
+    .await
+    .map_err(|_| CliError::Other("timed out connecting to the relay".into()))?
+    .map_err(|e| CliError::Other(e.to_string()))?;
+
+    let sub_id = format!("agent-mgmt-{}", &request_id[..request_id.len().min(8)]);
+    let agent_hex = keys.public_key().to_hex();
+    if wait.is_some() {
+        let filter = serde_json::json!({
+            "kinds": [KIND_AGENT_OBSERVER_FRAME],
+            "#p": [agent_hex],
+            "limit": 0,
+        });
+        conn.send_raw(&serde_json::json!(["REQ", sub_id, filter]))
+            .await
+            .map_err(|e| CliError::Other(format!("could not subscribe for the result: {e}")))?;
+    }
+
+    let ok = conn
+        .send_event(event)
+        .await
+        .map_err(|e| CliError::Other(e.to_string()))?;
+    if !ok.accepted {
+        return Err(CliError::Relay {
+            status: 400,
+            body: ok.message,
+        });
+    }
+
+    let Some(wait) = wait else {
+        let _ = conn.disconnect().await;
+        return Ok((ok.event_id, Outcome::TimedOut));
+    };
+
+    let deadline = tokio::time::Instant::now() + wait;
+    let outcome = loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break Outcome::TimedOut;
+        }
+        match conn.next_event(remaining).await {
+            Ok(RelayMessage::Event { event, .. }) => {
+                if let Some(result) = result_for(keys, &event, request_id) {
+                    break Outcome::Answered(result);
+                }
+            }
+            Ok(RelayMessage::Closed { message, .. }) => {
+                return Err(CliError::Other(format!(
+                    "relay closed the result subscription: {message}"
+                )));
+            }
+            Ok(_) => {}
+            Err(buzz_ws_client::WsClientError::Timeout) => break Outcome::TimedOut,
+            Err(e) => return Err(CliError::Other(e.to_string())),
+        }
+    };
+    let _ = conn.send_raw(&serde_json::json!(["CLOSE", sub_id])).await;
+    let _ = conn.disconnect().await;
+    Ok((ok.event_id, outcome))
 }
 
-pub fn build_create(
-    keys: &Keys,
-    owner: &PublicKey,
-    draft: CreateAgentDraft,
-) -> Result<BuiltDraftRequest, CliError> {
-    let channel_id = required(draft.channel_id, "channel", 128)?;
-    uuid::Uuid::parse_str(&channel_id)
-        .map_err(|_| CliError::Usage(format!("invalid channel UUID: {channel_id}")))?;
-    let request = CreateAgentDraft {
-        channel_id: channel_id.clone(),
-        display_name: required(draft.display_name, "display name", MAX_NAME_CHARS)?,
-        system_prompt: required(draft.system_prompt, "system prompt", MAX_PROMPT_CHARS)?,
-    };
-    build(keys, owner, channel_id, "create", request)
+/// Decrypt a control frame and return its result if it answers `request_id`.
+fn result_for(keys: &Keys, event: &Event, request_id: &str) -> Option<AgentManagementResult> {
+    if event.kind.as_u16() as u32 != KIND_AGENT_OBSERVER_FRAME {
+        return None;
+    }
+    let payload: serde_json::Value = decrypt_observer_payload(keys, event).ok()?;
+    let result = parse_agent_management_result(&payload)?;
+    (result.request_id == request_id).then_some(result)
 }
 
-pub fn build_update(
-    keys: &Keys,
-    owner: &PublicKey,
-    draft: UpdateAgentDraft,
-) -> Result<BuiltDraftRequest, CliError> {
-    let channel_id = required(draft.channel_id, "channel", 128)?;
-    uuid::Uuid::parse_str(&channel_id)
-        .map_err(|_| CliError::Usage(format!("invalid channel UUID: {channel_id}")))?;
-    let respond_to = optional(draft.respond_to, "respond-to")?;
-    if respond_to
-        .as_deref()
-        .is_some_and(|value| value != "owner-only" && value != "anyone")
-    {
-        return Err(CliError::Usage(
-            "respond-to must be owner-only or anyone".into(),
-        ));
+/// Render the CLI's JSON output for a request.
+pub fn render(
+    event_id: &str,
+    request: &AgentManagementRequest,
+    outcome: &Outcome,
+) -> serde_json::Value {
+    let mut out = serde_json::json!({
+        "event_id": event_id,
+        "accepted": true,
+        "request_id": request.request_id,
+        "action": request.action.name(),
+    });
+    let obj = out.as_object_mut().expect("object");
+    match outcome {
+        Outcome::Answered(result) => {
+            obj.insert("status".into(), serde_json::json!(result.status));
+            obj.insert(
+                "saved".into(),
+                (result.status == AgentManagementStatus::Executed).into(),
+            );
+            if let Some(v) = &result.agent_pubkey {
+                obj.insert("agent_pubkey".into(), v.clone().into());
+            }
+            if let Some(v) = &result.agent_name {
+                obj.insert("agent_name".into(), v.clone().into());
+            }
+            if let Some(v) = &result.persona_id {
+                obj.insert("persona_id".into(), v.clone().into());
+            }
+            if let Some(v) = &result.error {
+                obj.insert("error".into(), v.clone().into());
+            }
+            obj.insert("message".into(), status_message(result).into());
+        }
+        Outcome::TimedOut => {
+            obj.insert("status".into(), "sent".into());
+            obj.insert("saved".into(), false.into());
+            obj.insert(
+                "message".into(),
+                if request.wants_review() {
+                    "Draft sent to Buzz Desktop for owner review. Nothing changes until the owner saves it."
+                } else {
+                    "Request sent to the owner's Buzz Desktop; no result arrived yet. If the owner has not enabled unattended agent management it is waiting for their review."
+                }
+                .into(),
+            );
+        }
     }
-    let request = UpdateAgentDraft {
-        channel_id: channel_id.clone(),
-        agent_name: required(draft.agent_name, "agent name", MAX_NAME_CHARS)?,
-        display_name: optional(draft.display_name, "display name")?,
-        system_prompt: draft
-            .system_prompt
-            .map(|value| required(value, "system prompt", MAX_PROMPT_CHARS))
-            .transpose()?,
-        runtime: optional(draft.runtime, "runtime")?,
-        provider: optional(draft.provider, "provider")?,
-        model: optional(draft.model, "model")?,
-        respond_to,
-    };
-    if request.display_name.is_none()
-        && request.system_prompt.is_none()
-        && request.runtime.is_none()
-        && request.provider.is_none()
-        && request.model.is_none()
-        && request.respond_to.is_none()
-    {
-        return Err(CliError::Usage(
-            "include at least one field to update".into(),
-        ));
+    out
+}
+
+fn status_message(result: &AgentManagementResult) -> String {
+    match result.status {
+        AgentManagementStatus::Executed => match result.action.as_str() {
+            "create" => "Agent created by the owner's Buzz Desktop.".into(),
+            "update" => "Agent updated by the owner's Buzz Desktop.".into(),
+            "delete" => "Agent deleted by the owner's Buzz Desktop.".into(),
+            _ => "Request executed by the owner's Buzz Desktop.".into(),
+        },
+        AgentManagementStatus::PendingOwnerReview => {
+            "Buzz Desktop opened a review dialog; nothing changes until the owner saves it.".into()
+        }
+        AgentManagementStatus::Dismissed => "The owner dismissed the request.".into(),
+        AgentManagementStatus::Rejected => format!(
+            "Buzz Desktop rejected the request: {}",
+            result.error.as_deref().unwrap_or("no reason given")
+        ),
+        AgentManagementStatus::Failed => format!(
+            "Buzz Desktop could not apply the request: {}",
+            result.error.as_deref().unwrap_or("unknown error")
+        ),
     }
-    build(keys, owner, channel_id, "update", request)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use buzz_core::observer::{decrypt_observer_payload, OBSERVER_AGENT_TAG, OBSERVER_FRAME_TAG};
+    use buzz_sdk::agent_management::{
+        build_agent_management_result_frame, AgentManagementAction, CreateAgentRequest,
+    };
 
     const CHANNEL: &str = "7c07e659-3610-42f4-9a5e-1e9973c09da9";
 
+    fn create_request() -> AgentManagementRequest {
+        AgentManagementRequest::new(AgentManagementAction::Create(CreateAgentRequest {
+            channel_id: CHANNEL.into(),
+            display_name: "Scout".into(),
+            system_prompt: "Help".into(),
+            runtime: None,
+            provider: None,
+            model: None,
+            respond_to: None,
+            parallelism: None,
+            avatar_url: None,
+            start: None,
+        }))
+        .unwrap()
+    }
+
     #[test]
-    fn create_is_owner_encrypted_and_matches_desktop_contract() {
+    fn result_matching_is_keyed_by_request_id() {
         let agent = Keys::generate();
         let owner = Keys::generate();
-        let built = build_create(
-            &agent,
-            &owner.public_key(),
-            CreateAgentDraft {
-                channel_id: CHANNEL.into(),
-                display_name: "Research helper".into(),
-                system_prompt: "Find sources.".into(),
-            },
-        )
-        .unwrap();
-
-        assert_eq!(built.event.kind.as_u16(), 24_200);
-        let tags: Vec<Vec<String>> = built
-            .event
-            .tags
-            .iter()
-            .map(|tag| tag.as_slice().to_vec())
-            .collect();
-        assert!(tags
-            .iter()
-            .any(|tag| tag == &["p", &owner.public_key().to_hex()]));
-        assert!(tags
-            .iter()
-            .any(|tag| tag == &[OBSERVER_AGENT_TAG, &agent.public_key().to_hex()]));
-        assert!(tags
-            .iter()
-            .any(|tag| tag == &[OBSERVER_FRAME_TAG, OBSERVER_FRAME_TELEMETRY]));
-        assert!(!tags
-            .iter()
-            .any(|tag| tag.first().map(String::as_str) == Some("h")));
-
-        let payload: serde_json::Value = decrypt_observer_payload(&owner, &built.event).unwrap();
-        assert_eq!(payload["kind"], REQUEST_KIND);
-        assert_eq!(payload["channelId"], CHANNEL);
-        assert_eq!(payload["payload"]["type"], REQUEST_KIND);
-        assert_eq!(payload["payload"]["action"], "create");
-        assert_eq!(
-            payload["payload"]["request"]["displayName"],
-            "Research helper"
+        let request = create_request();
+        let mut result = AgentManagementResult::new(
+            &request.request_id,
+            "create",
+            AgentManagementStatus::Executed,
         );
-        assert!(payload["payload"]["request"].get("runtime").is_none());
-        assert!(payload["payload"]["request"].get("respondTo").is_none());
+        result.agent_pubkey = Some("c".repeat(64));
+        let frame = build_agent_management_result_frame(&owner, &agent.public_key(), &result)
+            .unwrap()
+            .sign_with_keys(&owner)
+            .unwrap();
+
+        assert_eq!(
+            result_for(&agent, &frame, &request.request_id).unwrap(),
+            result
+        );
+        assert!(result_for(&agent, &frame, "other-request").is_none());
+        // A frame for another agent does not decrypt.
+        assert!(result_for(&Keys::generate(), &frame, &request.request_id).is_none());
+
+        let rendered = render("ev", &request, &Outcome::Answered(result));
+        assert_eq!(rendered["status"], "executed");
+        assert_eq!(rendered["saved"], true);
+        assert_eq!(rendered["agent_pubkey"], "c".repeat(64));
     }
 
     #[test]
-    fn update_requires_a_change() {
-        let error = build_update(
-            &Keys::generate(),
-            &Keys::generate().public_key(),
-            UpdateAgentDraft {
-                channel_id: CHANNEL.into(),
-                agent_name: "Scout".into(),
-                display_name: None,
-                system_prompt: None,
-                runtime: None,
-                provider: None,
-                model: None,
-                respond_to: None,
-            },
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("at least one field"));
-    }
+    fn timed_out_render_distinguishes_review_drafts() {
+        let request = create_request();
+        let plain = render("ev", &request, &Outcome::TimedOut);
+        assert_eq!(plain["status"], "sent");
+        assert_eq!(plain["saved"], false);
+        assert!(plain["message"].as_str().unwrap().contains("unattended"));
 
-    #[test]
-    fn create_rejects_invalid_channel() {
-        let error = build_create(
-            &Keys::generate(),
-            &Keys::generate().public_key(),
-            CreateAgentDraft {
-                channel_id: "general".into(),
-                display_name: "Scout".into(),
-                system_prompt: "Help".into(),
-            },
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("invalid channel UUID"));
+        let draft = render("ev", &request.with_review(), &Outcome::TimedOut);
+        assert!(draft["message"].as_str().unwrap().contains("owner review"));
     }
 }
