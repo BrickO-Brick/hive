@@ -475,23 +475,21 @@ fn install_git_identity(
     )
     .map_err(|e| Error::new(ErrorKind::InvalidInput, e))?;
 
-    // `user` mode: install NO identity machinery — no wrapper on PATH, no
+    // `user` mode: install NO attribution machinery — no wrapper on PATH, no
     // manifest, no keyfile, no injected identity/signing config. This is the
     // existing, review-hardened unconfigured-session path: the child's git is
     // vanilla git resolving the operator's own repo/global identity and
-    // signing. The nostr credential helper (relay git-over-HTTP auth) is
-    // installed independently by the desktop and dev-mcp's shim — auth ≠
-    // attribution — so it is unaffected here.
-    if mode == buzz_git_identity::GitIdentityMode::User {
-        return Ok(None);
-    }
+    // signing. But it must still stage the canonical key below so the shim's
+    // credential-helper-only branch can authenticate to relay git — auth ≠
+    // attribution holds on every launch path, not just desktop, and an operator
+    // who set `user` on a configured session has not unconfigured their auth.
 
     // Canonical agent key. `BUZZ_PRIVATE_KEY` (the documented secret) always
     // outranks `NOSTR_PRIVATE_KEY`, at BOTH layers, so a stale or conflicting
     // child-staged `NOSTR_PRIVATE_KEY` can never split identity away from the
     // canonical `BUZZ_PRIVATE_KEY`. Within a var name, an explicitly cmd-staged
     // value (a persona) wins over the ambient process env. Absent entirely →
-    // unconfigured session, spawn without identity (Ok(None)).
+    // unconfigured session, spawn without identity (Ok(None)) in either mode.
     let Some(raw_key) = child_env(cmd, "BUZZ_PRIVATE_KEY")
         .or_else(|| std::env::var_os("BUZZ_PRIVATE_KEY"))
         .or_else(|| child_env(cmd, "NOSTR_PRIVATE_KEY"))
@@ -507,8 +505,18 @@ fn install_git_identity(
     // — overwriting any pre-staged value — so dev-mcp's shim (which reads that
     // var) installs the SAME identity for its own subtree. Staging only when
     // absent would let a conflicting child `NOSTR_PRIVATE_KEY` drive the shim to
-    // a different identity than the one enforced here.
+    // a different identity than the one enforced here. Staged in BOTH modes:
+    // `agent` needs it for the shim's full identity install, `user` needs it for
+    // the shim's credential-helper-only branch (relay git auth).
     cmd.env("NOSTR_PRIVATE_KEY", &raw_key);
+
+    // `user` mode stops here: the key is staged for the shim's credential
+    // helper, but no attribution machinery is installed — vanilla git resolves
+    // the operator's own identity. `Ok(None)` = no wrapper, manifest, or keyfile
+    // on the harness side.
+    if mode == buzz_git_identity::GitIdentityMode::User {
+        return Ok(None);
+    }
 
     let self_exe = std::env::current_exe()?;
 
@@ -5279,13 +5287,16 @@ mod tests {
         );
     }
 
-    /// `BUZZ_GIT_IDENTITY=user` (staged per-agent on the command) takes the
-    /// unconfigured path: no identity installed even with a valid key present,
-    /// so the child's git resolves the operator's own identity. The staged
-    /// value outranks the harness process env, proving per-agent control.
+    /// `BUZZ_GIT_IDENTITY=user` (staged per-agent on the command) installs no
+    /// attribution machinery even with a valid key present, so the child's git
+    /// resolves the operator's own identity — but the canonical key is still
+    /// staged as the child's `NOSTR_PRIVATE_KEY` so the shim's credential helper
+    /// can authenticate to relay git (auth ≠ attribution on every launch path).
+    /// The staged mode value outranks the harness process env, proving
+    /// per-agent control.
     #[cfg(unix)]
     #[test]
-    fn install_git_identity_user_mode_installs_nothing() {
+    fn install_git_identity_user_mode_installs_nothing_but_stages_key() {
         use nostr::ToBech32;
 
         let nsec = nostr::Keys::generate().secret_key().to_bech32().unwrap();
@@ -5302,6 +5313,14 @@ mod tests {
         assert!(
             child_env(&cmd, "GIT_CONFIG_COUNT").is_none(),
             "user mode must not inject GIT_CONFIG_* identity/signing config"
+        );
+        // The canonical key IS staged so the shim's credential helper works.
+        let staged = child_env(&cmd, "NOSTR_PRIVATE_KEY")
+            .and_then(|v| v.into_string().ok())
+            .expect("user mode must stage NOSTR_PRIVATE_KEY for the credential helper");
+        assert_eq!(
+            staged, nsec,
+            "user mode must stage the canonical key so relay git auth still works"
         );
     }
 
