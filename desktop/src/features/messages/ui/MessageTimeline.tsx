@@ -23,7 +23,6 @@ import { TimelineSkeleton, useTimelineSkeletonRows } from "./TimelineSkeleton";
 import { TimelineMessageList } from "./TimelineMessageList";
 import type { TimelineVirtualizerApi } from "./TimelineMessageList";
 import { useAnchoredScroll } from "./useAnchoredScroll";
-import { useLoadOlderOnScroll } from "./useLoadOlderOnScroll";
 import { useBufferedTimelineMessages } from "./useBufferedTimelineMessages";
 import {
   DirectMessageIntroAvatarStack,
@@ -599,14 +598,6 @@ const MessageTimelineBase = React.forwardRef<
     searchActiveMessageId,
     showTimelineSkeleton,
   ]);
-
-  useLoadOlderOnScroll({
-    fetchOlder: useTimelineVirtualizer ? undefined : fetchOlder,
-    hasOlderMessages,
-    isLoading: showTimelineSkeleton,
-    scrollContainerRef: activeScrollContainerRef,
-    sentinelRef: topSentinelRef,
-  });
 
   const timelineSkeletonRows = useTimelineSkeletonRows({
     channelId,

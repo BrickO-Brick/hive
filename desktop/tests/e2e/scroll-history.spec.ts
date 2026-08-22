@@ -1995,13 +1995,32 @@ test("one scroll-up gesture pages older history once, not to the channel top", a
   const pagesFetched = await fetchCount();
   const deepest = await oldestRenderedIndex();
 
-  // One gesture, one page. `pageOlderMessagesUntilRowFloor` fetches exactly
-  // one server-defined window per call (#1500), and the trigger refuses to
-  // re-fire while a landed page is still unpainted, so anything above one is a
-  // cascade off the resolve→commit gap.
-  expect(pagesFetched).toBeLessThanOrEqual(1);
-  // And it must NOT have reached the oldest seeded root on its own.
+  // One gesture commits one page and starts exactly one successor fetch for the
+  // staged slot. The successor remains outside projection, so a second request
+  // is expected but a third would still be a resolve→commit cascade.
+  expect(pagesFetched).toBeLessThanOrEqual(2);
+  // The staged successor must NOT have rendered on its own.
   expect(deepest ?? Number.POSITIVE_INFINITY).toBeGreaterThan(50);
+
+  // Once staging is complete, the next gesture consumes that page locally.
+  // Make any accidental network request visibly too slow, then require the next
+  // page to paint within 500ms without incrementing the request counter.
+  await expect.poll(fetchCount).toBe(2);
+  await page.evaluate(() => {
+    window.__BUZZ_E2E__ = {
+      ...window.__BUZZ_E2E__,
+      mock: { ...window.__BUZZ_E2E__?.mock, channelWindowDelayMs: 2_000 },
+    };
+  });
+  await page.mouse.wheel(0, 1_000);
+  await page.waitForTimeout(50);
+  await page.mouse.wheel(0, -4_000);
+  await expect
+    .poll(oldestRenderedIndex, { timeout: 500 })
+    .toBeLessThan(deepest ?? Number.POSITIVE_INFINITY);
+  // The only new request is the background successor stage; rendering did not
+  // wait for its 2s delay.
+  expect(await fetchCount()).toBe(3);
 });
 
 // Regression for Wes's "after a page loads I'm yanked to the oldest of the new
