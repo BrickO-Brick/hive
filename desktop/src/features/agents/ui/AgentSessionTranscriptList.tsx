@@ -1,6 +1,6 @@
 import * as React from "react";
 import { motion, useReducedMotion } from "motion/react";
-import { CheckCheck, Clock, Radio } from "lucide-react";
+import { CheckCheck, CircleHelp, Clock, Radio } from "lucide-react";
 
 import {
   useActiveAgentTurns,
@@ -36,8 +36,6 @@ import { useTranscriptAnimationEnabled } from "./transcriptAnimationPreference";
 import { useTranscriptTimestampsEnabled } from "./transcriptTimestampPreference";
 import { TranscriptActivityItem } from "./activityRenderClasses/TranscriptActivityItem";
 import {
-  ActivityRow,
-  ActivityRowContent,
   ActivityRowLabel,
   type ActivityRowStats,
   splitActivityRowCountedObject,
@@ -53,8 +51,11 @@ import {
   turnSetupDetail,
   turnSetupTimestamp,
   type TranscriptDisplayBlock,
+  type TranscriptToolRunChildSegment,
   type TranscriptTurnSegment,
 } from "./agentSessionTranscriptGrouping";
+import { TranscriptToolRunGroup } from "./TranscriptToolRunGroup";
+import { TranscriptRowTimestamp } from "./TranscriptRowTimestamp";
 import { buildCompactToolSummary } from "./agentSessionToolSummary";
 import { shouldShowTranscriptRowTimestamp } from "./agentSessionTranscriptPresentation";
 import { formatTranscriptTimestampTitle } from "./agentSessionUtils";
@@ -90,7 +91,12 @@ function useHasCompletedInitialRender() {
  */
 const SHOW_TRANSCRIPT_ACP_SOURCE = shouldShowTranscriptAcpSource();
 
-export type AgentSessionTranscriptEmptyState = "idle" | "loading";
+/**
+ * `"unknown"` means history may exist but could not be read (no `owner_p` save
+ * subscription, or archive hydration incomplete). It is deliberately distinct
+ * from `"idle"`: only `"idle"` may state that there was no activity.
+ */
+export type AgentSessionTranscriptEmptyState = "idle" | "loading" | "unknown";
 
 function shouldShowTranscriptAcpSource() {
   const envValue = import.meta.env.VITE_SHOW_TRANSCRIPT_ACP_SOURCE;
@@ -203,6 +209,9 @@ export function AgentSessionTranscriptList({
 
   if (!hasRenderableContent) {
     const isLoading = emptyState === "loading" || isTurnLive;
+    // Uncertain history must never be presented as "no activity" — see
+    // AgentSessionTranscriptEmptyState.
+    const uncertain = !isLoading && emptyState === "unknown";
 
     return (
       <div className={scrollContainerClassNames}>
@@ -214,6 +223,17 @@ export function AgentSessionTranscriptList({
               fuzz={false}
               loop
             />
+          ) : uncertain ? (
+            <>
+              <CircleHelp className="mx-auto h-4 w-4 text-muted-foreground" />
+              <p className="mt-3 text-sm font-medium">
+                Earlier activity may not be shown
+              </p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Archived history isn't available for this view, so activity from
+                before now may be missing.
+              </p>
+            </>
           ) : (
             <>
               <Radio className="mx-auto h-4 w-4 text-muted-foreground" />
@@ -503,84 +523,49 @@ function SameKindSummaryItem({
     [summary.items, summary.renderClass, summary.variant],
   );
   const groupedFileEditStats = summarizeFileEditDiffs(groupedFileEditDiffs);
-  const expandsToToolItems = summary.items.every(
-    (item) => item.type === "tool",
-  );
   const variant = useAgentSessionTranscriptVariant();
   const timestampsEnabled = useTranscriptTimestampsEnabled();
   const showTimestamp = timestampsEnabled && variant !== "compactPreview";
+
   // Mixed bursts expand to their child segments in original order: raw tool
   // rows plus nested same-kind summaries that joined the burst (which stay
-  // expandable to their own child rows).
-  const childSegments = summary.segments ?? null;
+  // expandable to their own child rows). Rendering is passed as a callback so
+  // the group card never has to import this module back. Not memoized: the
+  // group card calls it during render and never uses its identity as a
+  // dependency, and memoizing would need this component as its own dep.
+  const renderChild = (child: TranscriptToolRunChildSegment) =>
+    child.kind === "summary" ? (
+      <SameKindSummaryItem
+        agentAvatarUrl={agentAvatarUrl}
+        agentName={agentName}
+        agentPubkey={agentPubkey}
+        key={child.summary.id}
+        profiles={profiles}
+        summary={child.summary}
+      />
+    ) : (
+      <TranscriptItemView
+        agentAvatarUrl={agentAvatarUrl}
+        agentName={agentName}
+        agentPubkey={agentPubkey}
+        item={child.item}
+        key={child.item.id}
+        profiles={profiles}
+      />
+    );
 
   return (
-    <>
-      <ActivityRow
-        className="flex flex-col gap-0.5"
-        openToneScope="summary"
-        testId="transcript-same-kind-summary"
-        title={formatTranscriptTimestampTitle(summary.timestamp)}
-      >
+    <TranscriptToolRunGroup
+      label={
         <ToolRunSummaryLabel
           label={summary.label}
           stats={groupedFileEditStats}
         />
-        <ActivityRowContent
-          className={cn(
-            "flex flex-col",
-            expandsToToolItems || childSegments ? "gap-0.5" : "gap-1 pl-5",
-          )}
-        >
-          {childSegments
-            ? childSegments.map((child) =>
-                child.kind === "summary" ? (
-                  <SameKindSummaryItem
-                    agentAvatarUrl={agentAvatarUrl}
-                    agentName={agentName}
-                    agentPubkey={agentPubkey}
-                    key={child.summary.id}
-                    profiles={profiles}
-                    summary={child.summary}
-                  />
-                ) : (
-                  <TranscriptItemView
-                    agentAvatarUrl={agentAvatarUrl}
-                    agentName={agentName}
-                    agentPubkey={agentPubkey}
-                    item={child.item}
-                    key={child.item.id}
-                    profiles={profiles}
-                  />
-                ),
-              )
-            : expandsToToolItems
-              ? summary.items.map((item) => (
-                  <TranscriptItemView
-                    agentAvatarUrl={agentAvatarUrl}
-                    agentName={agentName}
-                    agentPubkey={agentPubkey}
-                    item={item}
-                    key={item.id}
-                    profiles={profiles}
-                  />
-                ))
-              : summary.items.map((item) => (
-                  <p
-                    className="truncate text-xs text-muted-foreground"
-                    key={item.id}
-                  >
-                    {item.type === "tool"
-                      ? item.descriptor.preview || item.descriptor.label
-                      : item.title}
-                  </p>
-                ))}
-        </ActivityRowContent>
-      </ActivityRow>
-      {showTimestamp ? (
-        <TranscriptRowTimestamp timestamp={summary.timestamp} />
-      ) : null}
-    </>
+      }
+      renderChild={renderChild}
+      showTimestamp={showTimestamp}
+      summary={summary}
+    />
   );
 }
 
@@ -886,25 +871,9 @@ function TranscriptItemRow({
 }
 
 /**
- * Opt-in per-row timestamp, anchored bottom-left under the row content and
- * styled to match the chat/transcript timestamps.
+ * Opt-in per-row timestamp lives in `./TranscriptRowTimestamp` so the tool-run
+ * group card can render it without importing this module.
  */
-function TranscriptRowTimestamp({
-  messageLink = null,
-  timestamp,
-}: {
-  messageLink?: { channelId: string; messageId: string } | null;
-  timestamp: string;
-}) {
-  return (
-    <div
-      className="mt-0.5 flex justify-start"
-      data-testid="transcript-row-timestamp"
-    >
-      <TranscriptTimestamp messageLink={messageLink} timestamp={timestamp} />
-    </div>
-  );
-}
 
 function TurnSetupStatus({
   items,

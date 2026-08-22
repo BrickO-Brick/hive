@@ -22,6 +22,15 @@ type ActivityRowProps = {
   openToneScope?: Exclude<ActivityRowToneScope, "none">;
   testId?: string;
   title?: string;
+  /**
+   * Controlled disclosure. When provided, the row's open state is owned by the
+   * caller — needed for tool-run groups, whose expansion must survive the
+   * remount that re-grouping causes and must be reverted by automatic policy
+   * when work completes. Omit both to keep the default uncontrolled `<details>`
+   * behavior every other row uses.
+   */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 };
 
 type ActivityRowContentProps = {
@@ -38,6 +47,8 @@ type ActivityRowContentComponent = React.FC<ActivityRowContentProps> & {
 export function ActivityRow({
   children,
   className,
+  onOpenChange,
+  open,
   openToneScope = "tool",
   testId,
   title,
@@ -68,6 +79,12 @@ export function ActivityRow({
         className,
       )}
       data-testid={testId}
+      onToggle={
+        onOpenChange
+          ? (event) => onOpenChange(event.currentTarget.open)
+          : undefined
+      }
+      open={open}
       title={title}
     >
       <summary
