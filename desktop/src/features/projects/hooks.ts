@@ -173,8 +173,7 @@ export async function fetchProjects(
 ): Promise<Project[]> {
   // Delegates to `buildProjectsFromFetcher` in `projectEnumeration.ts`, which
   // is the pure, Tauri-free core of this operation. That helper's javadoc
-  // explains the fail-closed tombstone contract and the NIP-OA owner-deletion
-  // relay-side-suppression decision.
+  // explains fail-closed tombstones and NIP-OA owner-deletion suppression.
   const viewerPubkey = await getIdentity()
     .then((identity) => identity.pubkey)
     .catch(() => undefined);
