@@ -3,10 +3,21 @@ import type { ThreadViewMode } from "@/features/channels/lib/threadViewModePrefe
 /**
  * The one auxiliary surface a channel shows beside (or over) its timeline.
  *
- * Exactly one at a time, in this priority order. The open handlers in
- * `useChannelAgentSessions` / `useChannelProfilePanel` already clear the other
- * panels' state so last-opened wins; this resolution is what guarantees that a
- * lingering search param or a race can still only ever produce one surface.
+ * Exactly one at a time, in the fixed priority order below.
+ *
+ * This priority is a **safety net, not the product rule.** Last-opened-wins is
+ * implemented by the open handlers, which clear the competing state as they open
+ * (`useChannelAgentSessions`: `openAgentSession` clears the thread head, and
+ * `openThreadAndCloseAgentSession` clears the agent session). By the time this
+ * resolver runs, at most one candidate should normally be live.
+ *
+ * The ordering only decides cases the handlers cannot: two candidates present at
+ * once with no ordering information between them — a restored/hand-edited URL
+ * carrying both `agentSession` and a thread param, or a stale param that has not
+ * been reconciled yet. Then it picks deterministically instead of rendering two
+ * surfaces. Do not read priority as "thread beats agent" in the UX; a thread
+ * opened while activity is up wins because the handler cleared the agent
+ * session, and activity opened over a thread wins for the same reason.
  */
 export type ChannelAuxiliarySurface =
   | "agent-session"
