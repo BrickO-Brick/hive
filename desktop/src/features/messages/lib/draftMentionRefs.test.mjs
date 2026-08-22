@@ -85,8 +85,19 @@ test("edit target records semantic thread ownership", () => {
     () => false,
   );
 
+  const broadcastReply = buildMessageComposerEditTarget(
+    message("Broadcast reply", [
+      ["h", "channel-id"],
+      ["e", "root-id", "", "reply"],
+      ["broadcast", "1"],
+    ]),
+    undefined,
+    () => false,
+  );
+
   assert.equal(root.isThreadReply, false);
   assert.equal(reply.isThreadReply, true);
+  assert.equal(broadcastReply.isThreadReply, false);
 });
 
 test("edit target separates resolved refs from identities missing profiles", () => {

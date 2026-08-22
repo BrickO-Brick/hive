@@ -1,4 +1,5 @@
 import * as React from "react";
+import { toast } from "sonner";
 
 import type {
   useDeleteMessageMutation,
@@ -118,6 +119,10 @@ export function useChannelPaneHandlers({
   }, [setThreadReplyTargetId]);
 
   const handleCloseThread = React.useCallback(() => {
+    if (editTargetIdRef.current) {
+      toast.info("Finish or cancel your edit before closing the thread.");
+      return;
+    }
     deferPanelState(() => {
       onOptimisticOpenThreadHeadIdChange(null);
       setOpenThreadHeadId(null);

@@ -23,6 +23,7 @@ import {
   hasOtherDmParticipant,
 } from "@/features/channels/lib/dmHuddleMembers";
 import { buildVideoReviewPresentationByMessageId } from "@/features/messages/lib/videoReviewContext";
+import { isThreadReply } from "@/features/messages/lib/threading";
 import { useComposerHeightPadding } from "@/features/messages/ui/useComposerHeightPadding";
 import { UserProfilePanel } from "@/features/profile/ui/UserProfilePanel";
 import { AgentSessionThreadPanel } from "@/features/channels/ui/AgentSessionThreadPanel";
@@ -220,7 +221,7 @@ export const ChannelPane = React.memo(function ChannelPane({
     isActiveWelcomeChannel,
     currentPubkey ?? null,
   );
-  const isEditInThread = editTarget?.isThreadReply ?? false;
+  const isEditInThread = editTarget?.isThreadReply === true;
   const mainEditTarget = editTarget && !isEditInThread ? editTarget : null;
   const threadEditTarget = editTarget && isEditInThread ? editTarget : null;
   const findLastOwnEditable = React.useCallback(
@@ -457,6 +458,27 @@ export const ChannelPane = React.memo(function ChannelPane({
     useFocusThreadDrawer,
     onCloseThread,
   );
+  const pendingMainEditRef = React.useRef<TimelineMessage | null>(null);
+  const handleRoutedEdit = React.useCallback(
+    (message: TimelineMessage) => {
+      if (
+        !isThreadReply(message.tags ?? []) &&
+        (isSinglePanelView || useFocusThreadDrawer)
+      ) {
+        pendingMainEditRef.current = message;
+        onCloseThread();
+        return;
+      }
+      onEdit?.(message);
+    },
+    [isSinglePanelView, onCloseThread, onEdit, useFocusThreadDrawer],
+  );
+  React.useEffect(() => {
+    const pendingMainEdit = pendingMainEditRef.current;
+    if (!pendingMainEdit || isSinglePanelView || channelIsCovered) return;
+    pendingMainEditRef.current = null;
+    onEdit?.(pendingMainEdit);
+  }, [channelIsCovered, isSinglePanelView, onEdit]);
   const { changeThreadViewMode, layoutScrollTargetId, resolveScrollTarget } =
     useThreadViewModeSwitch({
       activeThreadHeadId: threadHeadMessage?.id ?? null,
@@ -612,7 +634,7 @@ export const ChannelPane = React.memo(function ChannelPane({
               firstUnreadMessageId={firstUnreadMessageId}
               unreadCount={unreadCount}
               onDelete={onDelete}
-              onEdit={onEdit}
+              onEdit={handleRoutedEdit}
               onMarkUnread={onMarkUnread}
               onMarkRead={onMarkRead}
               onReply={timelineReplyHandler}
@@ -804,7 +826,7 @@ export const ChannelPane = React.memo(function ChannelPane({
                 onCancelReply={onCancelThreadReply}
                 onClose={onCloseThread}
                 onDelete={onDelete}
-                onEdit={onEdit}
+                onEdit={handleRoutedEdit}
                 onEditLastOwnMessage={handleEditLastOwnThreadMessage}
                 onEditSave={onEditSave}
                 onFollowThread={onFollowThread}
