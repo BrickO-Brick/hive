@@ -1,6 +1,5 @@
 import type * as React from "react";
 
-import { getThreadViewMode } from "@/features/channels/lib/threadViewModePreference";
 import { CoverDrawer } from "@/features/channels/ui/CoverDrawer";
 
 type FocusThreadDrawerProps = {
@@ -10,19 +9,13 @@ type FocusThreadDrawerProps = {
 };
 
 /**
- * A real dismissal keeps focus mode selected; a presentation switch has already
- * selected split mode and owns focus inside the new panel.
- */
-function shouldRestoreFocusOnClose() {
-  return getThreadViewMode() === "focus";
-}
-
-/**
  * The focus-mode thread presentation: a {@link CoverDrawer} holding the thread.
  *
- * Everything about the surface itself — motion, scrim, Escape, focus capture —
- * lives in `CoverDrawer`. What is thread-specific is the focus-restore rule
- * above, which has to yield to the view-mode toggle.
+ * Everything about the surface itself — motion, scrim, Escape, focus
+ * capture/restore — lives in `CoverDrawer`. Switching this thread to the split
+ * pane is not a dismissal and must not restore focus to whatever opened the
+ * thread; that case is handled where the switch happens, by releasing the
+ * drawer's focus slot before this unmounts. See `useThreadViewModeSwitch`.
  */
 export function FocusThreadDrawer({
   channelName,
@@ -34,7 +27,6 @@ export function FocusThreadDrawer({
       ariaLabel="Thread"
       onClose={onClose}
       scrimLabel={`Back to #${channelName}`}
-      shouldRestoreFocusOnClose={shouldRestoreFocusOnClose}
       testId="focus-thread-drawer"
     >
       {children}

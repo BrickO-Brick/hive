@@ -2,6 +2,10 @@ import { motion, useReducedMotion } from "motion/react";
 import * as React from "react";
 
 import {
+  claimCoverDrawerFocus,
+  hasCoverDrawerFocusClaim,
+} from "@/features/channels/lib/coverDrawerFocusSlot";
+import {
   COVER_DRAWER_SLIVER_WIDTH_PX,
   COVER_DRAWER_TRAVEL_PX,
 } from "@/features/channels/lib/coverDrawerLayout";
@@ -23,13 +27,6 @@ type CoverDrawerProps = {
   ownsEscape?: boolean;
   /** Accessible name for the scrim, which is the click target back to the channel. */
   scrimLabel: string;
-  /**
-   * Whether unmounting should hand focus back to wherever it was before the
-   * drawer opened. Evaluated at unmount, so a caller can distinguish a real
-   * dismissal from a presentation switch that has already claimed focus
-   * elsewhere. Defaults to restoring.
-   */
-  shouldRestoreFocusOnClose?: () => boolean;
   /**
    * Test id of the drawer surface. The overlay and scrim derive theirs from it
    * (`-overlay`, `-scrim`) so one id names the whole presentation.
@@ -168,17 +165,12 @@ export function CoverDrawer({
   onClose,
   ownsEscape = true,
   scrimLabel,
-  shouldRestoreFocusOnClose,
   testId,
 }: CoverDrawerProps) {
   const prefersReducedMotion = useReducedMotion();
   const travelPx = prefersReducedMotion ? 0 : COVER_DRAWER_TRAVEL_PX;
   const drawerRef = React.useRef<HTMLDivElement>(null);
   const previousFocusRef = React.useRef<HTMLElement | null>(null);
-  // Read at unmount, so the drawer never re-registers its focus effect (and
-  // never re-steals focus) just because the predicate identity changed.
-  const shouldRestoreFocusRef = React.useRef(shouldRestoreFocusOnClose);
-  shouldRestoreFocusRef.current = shouldRestoreFocusOnClose;
 
   React.useEffect(() => {
     if (!ownsEscape) return;
@@ -201,13 +193,17 @@ export function CoverDrawer({
       document.activeElement instanceof HTMLElement
         ? document.activeElement
         : null;
+    const focusClaim = claimCoverDrawerFocus();
     drawerRef.current?.focus({ preventScroll: true });
 
     return () => {
       const previousFocus = previousFocusRef.current;
-      const shouldRestoreFocus = shouldRestoreFocusRef.current;
       requestAnimationFrame(() => {
-        if (shouldRestoreFocus && !shouldRestoreFocus()) return;
+        // Deferred by a frame so the exit animation can start, which is exactly
+        // long enough for a replacing drawer to mount and take focus. Restore
+        // only while this drawer still holds the slot; otherwise the successor
+        // owns focus and restoring would drop it into the inert channel.
+        if (!hasCoverDrawerFocusClaim(focusClaim)) return;
         previousFocus?.focus({ preventScroll: true });
       });
     };
