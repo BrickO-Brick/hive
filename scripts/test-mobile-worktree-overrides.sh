@@ -207,7 +207,7 @@ for config in "$debug_xcconfig" "$release_xcconfig"; do
     '^BUZZ_CODE_SIGN_ENTITLEMENTS = Runner/Runner.entitlements$' \
     "$(basename "$config") uses the push-free Runner entitlements"
   assert_xcconfig_value "$config" \
-    '^EXCLUDED_SOURCE_FILE_NAMES = NotificationService\.appex PushNativeState\.swift PushEndpointGrantStore\.swift$' \
+    '^EXCLUDED_SOURCE_FILE_NAMES = NotificationService\.appex PushNativeState\.swift PushEndpointGrantStore\.swift PushPresentationCacheBridge\.swift$' \
     "$(basename "$config") excludes native push sources and extension product"
 done
 
