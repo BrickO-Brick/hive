@@ -114,8 +114,24 @@ pub fn decrypt_ncryptsec(input: &str, password: &str) -> Result<Keys, String> {
 
 /// Recover identity keys from either an encrypted NIP-49 backup or the raw
 /// nsec/hex formats accepted before encrypted imports were added.
+#[allow(dead_code)] // Compatibility wrapper retained for NIP-49-focused tests and callers.
 pub fn recover_keys_from_input(input: &str, password: Option<&str>) -> Result<Keys, String> {
+    recover_keys_from_input_with_recovery(input, password, None)
+}
+
+/// Recover identity keys from a 2SKD backup, NIP-49 backup, or raw key.
+pub fn recover_keys_from_input_with_recovery(
+    input: &str,
+    password: Option<&str>,
+    recovery_secret: Option<&str>,
+) -> Result<Keys, String> {
     let trimmed = input.trim();
+    if crate::two_skd::is_two_skd_backup(trimmed) {
+        let password = password.ok_or_else(|| "key backup requires a password".to_string())?;
+        let recovery_secret = recovery_secret
+            .ok_or_else(|| "2SKD key backup requires a recovery code".to_string())?;
+        return crate::two_skd::decrypt_backup(trimmed, password, recovery_secret);
+    }
     let is_ncryptsec = trimmed
         .get(..NCRYPTSEC_HRP.len())
         .is_some_and(|prefix| prefix.eq_ignore_ascii_case(NCRYPTSEC_HRP));

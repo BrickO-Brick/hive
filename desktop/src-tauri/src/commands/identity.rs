@@ -253,6 +253,32 @@ pub async fn create_ncryptsec_backup(
     .map_err(|e| format!("spawn_blocking failed: {e}"))?
 }
 
+/// Create a two-secret identity backup entirely in native code.
+///
+/// The returned encrypted backup and recovery code must be stored separately.
+/// The identity key itself never crosses the Tauri command boundary.
+#[tauri::command]
+pub async fn create_2skd_backup(
+    password: String,
+    app_handle: tauri::AppHandle,
+) -> Result<crate::two_skd::CreatedBackup, String> {
+    if password.chars().count() < crate::key_backup::MIN_PASSPHRASE_LEN {
+        return Err(format!(
+            "passphrase must be at least {} characters",
+            crate::key_backup::MIN_PASSPHRASE_LEN
+        ));
+    }
+    tokio::task::spawn_blocking(move || {
+        let password = zeroize::Zeroizing::new(password);
+        let state = app_handle.state::<AppState>();
+        let _mutation_guard = state.identity_mutation.lock().map_err(|e| e.to_string())?;
+        let keys = state.signing_keys()?;
+        crate::two_skd::create_backup(&keys, &password)
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking failed: {e}"))?
+}
+
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackupVerification {
@@ -289,6 +315,33 @@ pub async fn verify_ncryptsec_backup(
         let password = zeroize::Zeroizing::new(password);
         let state = app_handle.state::<AppState>();
         verify_ncryptsec_backup_inner(&state, &ncryptsec, &password)
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking failed: {e}"))?
+}
+
+/// Decrypt and validate a 2SKD backup without exposing its secret key.
+#[tauri::command]
+pub async fn verify_2skd_backup(
+    backup: String,
+    password: String,
+    recovery_secret: String,
+    app_handle: tauri::AppHandle,
+) -> Result<BackupVerification, String> {
+    tokio::task::spawn_blocking(move || {
+        let password = zeroize::Zeroizing::new(password);
+        let recovery_secret = zeroize::Zeroizing::new(recovery_secret);
+        let keys = crate::two_skd::decrypt_backup(&backup, &password, &recovery_secret)?;
+        let pubkey = keys.public_key();
+        let state = app_handle.state::<AppState>();
+        let current = state.signing_keys()?.public_key();
+        Ok(BackupVerification {
+            pubkey: pubkey.to_hex(),
+            npub: pubkey
+                .to_bech32()
+                .map_err(|e| format!("encode backup identity: {e}"))?,
+            matches_current_identity: pubkey == current,
+        })
     })
     .await
     .map_err(|e| format!("spawn_blocking failed: {e}"))?
@@ -333,19 +386,50 @@ pub async fn save_ncryptsec_copy(
     Ok(Some(dest.display().to_string()))
 }
 
+/// Save the encrypted half of a 2SKD recovery kit to a user-selected path.
+#[tauri::command]
+pub async fn save_2skd_backup_copy(
+    backup: String,
+    app_handle: tauri::AppHandle,
+) -> Result<Option<String>, String> {
+    crate::two_skd::validate_backup(&backup)?;
+    let normalized = backup.trim().to_string();
+    let dest = match crate::commands::export_util::pick_save_path(
+        &app_handle,
+        crate::two_skd::BACKUP_FILE_NAME,
+        "Encrypted Buzz recovery backup",
+        &["buzzbackup"],
+    )
+    .await?
+    {
+        Some(path) => path,
+        None => return Ok(None),
+    };
+    let dest_for_write = dest.clone();
+    tokio::task::spawn_blocking(move || {
+        crate::key_backup::write_portable_backup_file(&dest_for_write, &normalized)
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking failed: {e}"))??;
+    Ok(Some(dest.display().to_string()))
+}
+
 #[tauri::command]
 pub async fn import_identity(
     nsec: String,
     password: Option<String>,
+    recovery_secret: Option<String>,
     app_handle: tauri::AppHandle,
 ) -> Result<IdentityInfo, String> {
     tokio::task::spawn_blocking(move || {
         // NIP-49 backups require a passphrase and decrypt entirely in Rust.
         // Raw nsec/hex input follows the existing parser path unchanged.
         let password = password.map(zeroize::Zeroizing::new);
-        let keys = crate::key_backup::recover_keys_from_input(
+        let recovery_secret = recovery_secret.map(zeroize::Zeroizing::new);
+        let keys = crate::key_backup::recover_keys_from_input_with_recovery(
             &nsec,
             password.as_ref().map(|value| value.as_str()),
+            recovery_secret.as_ref().map(|value| value.as_str()),
         )?;
 
         // Serialize against persist_current_identity: hold this guard for the

@@ -126,6 +126,42 @@ fn recover_keys_raw_nsec_path_unchanged() {
     assert!(recover_keys_from_input("garbage", None).is_err());
 }
 
+#[test]
+fn recover_keys_two_skd_requires_password_and_recovery_code() {
+    let keys = Keys::generate();
+    let created = crate::two_skd::create_backup_with_cost(
+        &keys,
+        "correct horse battery",
+        crate::two_skd::Argon2Cost {
+            memory_kib: 8 * 1024,
+            iterations: 1,
+            parallelism: 1,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        recover_keys_from_input_with_recovery(&created.backup, None, None).unwrap_err(),
+        "key backup requires a password"
+    );
+    assert_eq!(
+        recover_keys_from_input_with_recovery(
+            &created.backup,
+            Some("correct horse battery"),
+            None,
+        )
+        .unwrap_err(),
+        "2SKD key backup requires a recovery code"
+    );
+    let recovered = recover_keys_from_input_with_recovery(
+        &created.backup,
+        Some("correct horse battery"),
+        Some(&created.recovery_secret),
+    )
+    .unwrap();
+    assert_eq!(recovered.public_key(), keys.public_key());
+}
+
 // ── File lifecycle ────────────────────────────────────────────────────────────
 
 #[test]

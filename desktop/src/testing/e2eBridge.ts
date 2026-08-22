@@ -8171,6 +8171,9 @@ let backupSaveCallCount = 0;
 
 const MOCK_NCRYPTSEC =
   "ncryptsec1qgg9947rlpvqu76pj5ecreduf9jxhselq2nae2kghhvd5g7dgjtcxfqtd67p9m0w57lspw8gsq6yphnm8623nsl8xn9j4jdzz84zm3frztj3z7s35vpzmqf6ksu8r89qk5z2zxfmu5gv8th8wclt0h4p";
+const MOCK_TWO_SKD_BACKUP = `buzz2skd1:${"A".repeat(80)}`;
+const MOCK_RECOVERY_SECRET =
+  "buzz-recovery-v1-00112233445566778899aabbccddeeff";
 const MOCK_BACKUP_PASSPHRASE = "mock horse battery staple lake orbit";
 const MOCK_PASSPHRASE_WORDS = [
   "mock",
@@ -11740,9 +11743,27 @@ export function maybeInstallE2eTauriMocks() {
         }
         return MOCK_NCRYPTSEC;
       }
+      case "create_2skd_backup": {
+        const delayMs = activeConfig?.mock?.backupEncryptionDelayMs ?? 0;
+        if (delayMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+        }
+        return {
+          backup: MOCK_TWO_SKD_BACKUP,
+          recoverySecret: MOCK_RECOVERY_SECRET,
+        };
+      }
       case "save_ncryptsec_copy": {
         const paths = activeConfig?.mock?.backupSavePaths ?? [
           "/tmp/buzz-identity.ncryptsec",
+        ];
+        const index = Math.min(backupSaveCallCount, paths.length - 1);
+        backupSaveCallCount += 1;
+        return paths[index];
+      }
+      case "save_2skd_backup_copy": {
+        const paths = activeConfig?.mock?.backupSavePaths ?? [
+          "/tmp/identity.buzzbackup",
         ];
         const index = Math.min(backupSaveCallCount, paths.length - 1);
         backupSaveCallCount += 1;
@@ -11775,6 +11796,26 @@ export function maybeInstallE2eTauriMocks() {
           npub: npubEncode(pubkey),
           matchesCurrentIdentity:
             pubkey === (identity?.pubkey ?? DEFAULT_MOCK_IDENTITY.pubkey),
+        };
+      }
+      case "verify_2skd_backup": {
+        const request = payload as {
+          password?: string;
+          recoverySecret?: string;
+        } | null;
+        if (
+          request?.password !== MOCK_BACKUP_PASSPHRASE ||
+          request?.recoverySecret !== MOCK_RECOVERY_SECRET
+        ) {
+          throw new Error(
+            "wrong backup password, recovery code, or damaged backup",
+          );
+        }
+        const pubkey = identity?.pubkey ?? DEFAULT_MOCK_IDENTITY.pubkey;
+        return {
+          pubkey,
+          npub: npubEncode(pubkey),
+          matchesCurrentIdentity: true,
         };
       }
       case "get_nsec": {
@@ -11816,8 +11857,28 @@ export function maybeInstallE2eTauriMocks() {
             window.setTimeout(resolve, importDelayMs),
           );
         }
-        const request = payload as { nsec?: string; password?: string } | null;
+        const request = payload as {
+          nsec?: string;
+          password?: string;
+          recoverySecret?: string;
+        } | null;
         const input = request?.nsec ?? "";
+        if (input.trim().startsWith("buzz2skd1:")) {
+          if (
+            input.trim() !== MOCK_TWO_SKD_BACKUP ||
+            request?.password !== MOCK_BACKUP_PASSPHRASE ||
+            request?.recoverySecret !== MOCK_RECOVERY_SECRET
+          ) {
+            throw new Error(
+              "wrong backup password, recovery code, or damaged backup",
+            );
+          }
+          mockIdentityLostCleared = true;
+          mockIdentityLockedCleared = true;
+          return importMockIdentity(
+            nsecEncode(hexToBytes(DEFAULT_REAL_IDENTITY.privateKey)),
+          );
+        }
         if (input.trim().startsWith("ncryptsec1")) {
           if (
             input.trim() !== MOCK_NCRYPTSEC ||
