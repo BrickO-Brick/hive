@@ -69,6 +69,26 @@ test("edit target preserves tagged identities while profiles are unavailable", (
   assert.deepEqual(target.unresolvedMentionPubkeys, [ALICE, BOB]);
 });
 
+test("edit target records semantic thread ownership", () => {
+  const root = buildMessageComposerEditTarget(
+    message("Root", [["h", "channel-id"]]),
+    undefined,
+    () => false,
+  );
+  const reply = buildMessageComposerEditTarget(
+    message("Reply", [
+      ["h", "channel-id"],
+      ["e", "root-id", "", "root"],
+      ["e", "root-id", "", "reply"],
+    ]),
+    undefined,
+    () => false,
+  );
+
+  assert.equal(root.isThreadReply, false);
+  assert.equal(reply.isThreadReply, true);
+});
+
 test("edit target separates resolved refs from identities missing profiles", () => {
   const target = buildMessageComposerEditTarget(
     message("Please review this, @Alice and @Bob.", [

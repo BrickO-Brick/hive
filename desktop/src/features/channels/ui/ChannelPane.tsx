@@ -220,11 +220,7 @@ export const ChannelPane = React.memo(function ChannelPane({
     isActiveWelcomeChannel,
     currentPubkey ?? null,
   );
-  const isEditInThread =
-    editTarget != null &&
-    threadHeadMessage != null &&
-    (editTarget.id === threadHeadMessage.id ||
-      threadMessages.some((entry) => entry.message.id === editTarget.id));
+  const isEditInThread = editTarget?.isThreadReply ?? false;
   const mainEditTarget = editTarget && !isEditInThread ? editTarget : null;
   const threadEditTarget = editTarget && isEditInThread ? editTarget : null;
   const findLastOwnEditable = React.useCallback(

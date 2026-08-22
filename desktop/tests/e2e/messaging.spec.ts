@@ -2970,6 +2970,82 @@ test("thread composer keeps focus after sending a thread reply", async ({
   await expect(threadInput).toBeFocused();
 });
 
+test("editing the thread root uses and focuses the main composer", async ({
+  page,
+}) => {
+  const root = `Root edit routing ${Date.now()}`;
+
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+  await expect(page.getByTestId("chat-title")).toHaveText("general");
+
+  const mainInput = page
+    .getByTestId("channel-composer-overlay")
+    .getByTestId("message-input");
+  await mainInput.fill(root);
+  await mainInput.press("Enter");
+
+  const timeline = page.getByTestId("message-timeline");
+  const timelineRoot = timeline.getByTestId("message-row").last();
+  await expect(timelineRoot).toContainText(root);
+  await timelineRoot.hover();
+  await timelineRoot.getByRole("button", { name: "Reply" }).click();
+
+  const threadPanel = page.getByTestId("message-thread-panel");
+  await expect(threadPanel).toBeVisible();
+  const threadRoot = threadPanel.getByTestId("message-row").first();
+  await threadRoot.hover();
+  await threadRoot.getByRole("button", { name: "More actions" }).click();
+  await page.getByRole("menuitem", { name: "Edit message" }).click();
+
+  await expect(page.getByTestId("edit-target")).toHaveCount(1);
+  await expect(threadPanel.getByTestId("edit-target")).toHaveCount(0);
+  await expect(mainInput).toHaveText(root);
+  await expect(mainInput).toBeFocused();
+});
+
+test("editing a thread reply uses and focuses the thread composer", async ({
+  page,
+}) => {
+  const root = `Reply edit routing root ${Date.now()}`;
+  const reply = `Reply edit routing ${Date.now()}`;
+
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+  await expect(page.getByTestId("chat-title")).toHaveText("general");
+
+  const mainInput = page
+    .getByTestId("channel-composer-overlay")
+    .getByTestId("message-input");
+  await mainInput.fill(root);
+  await mainInput.press("Enter");
+
+  const timelineRoot = page
+    .getByTestId("message-timeline")
+    .getByTestId("message-row")
+    .last();
+  await timelineRoot.scrollIntoViewIfNeeded();
+  await timelineRoot.hover();
+  await timelineRoot.getByRole("button", { name: "Reply" }).click({
+    force: true,
+  });
+
+  const threadPanel = page.getByTestId("message-thread-panel");
+  const threadInput = threadPanel.getByTestId("message-input");
+  await threadInput.fill(reply);
+  await threadInput.press("Enter");
+  await expect(threadPanel).toContainText(reply);
+
+  const threadReply = threadPanel.getByTestId("message-row").last();
+  await threadReply.hover();
+  await threadReply.getByRole("button", { name: "More actions" }).click();
+  await page.getByRole("menuitem", { name: "Edit message" }).click();
+
+  await expect(threadPanel.getByTestId("edit-target")).toBeVisible();
+  await expect(threadInput).toHaveText(reply);
+  await expect(threadInput).toBeFocused();
+});
+
 test("ArrowUp in an empty composer edits your last message right after sending", async ({
   page,
 }) => {
