@@ -932,6 +932,7 @@ export function AppShell() {
                           hasCommunityRail={hasCommunityRail}
                           isHuddleRoom={isHuddleRoom}
                           isHuddleRoomStarting={isHuddleRoomStarting}
+                          unframed={isCompanionWindow}
                           mainInsetRef={mainInsetRef}
                           terminal={
                             <TerminalBootstrap {...effectiveTerminalContext} />

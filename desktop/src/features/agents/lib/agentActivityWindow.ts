@@ -15,3 +15,26 @@ export function isAgentActivityWindow(): boolean {
     return false;
   }
 }
+
+/** Build the concise native title for a channel-scoped activity window. */
+export function agentActivityWindowTitle(
+  agentName: string,
+  channelName: string,
+): string {
+  const normalizedAgentName = agentName.trim() || "Agent";
+  const normalizedChannelName = channelName.trim().replace(/^#+/, "");
+  return `${normalizedAgentName} · #${normalizedChannelName}`;
+}
+
+/** Keep a companion window's native title aligned with its resolved scope. */
+export async function setAgentActivityWindowTitle(
+  agentName: string,
+  channelName: string,
+): Promise<boolean> {
+  if (!isAgentActivityWindow() || !channelName.trim()) return false;
+
+  await getCurrentWindow().setTitle(
+    agentActivityWindowTitle(agentName, channelName),
+  );
+  return true;
+}

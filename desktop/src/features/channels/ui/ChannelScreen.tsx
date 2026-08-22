@@ -98,6 +98,7 @@ export function ChannelScreen({
   targetMessageEvents,
   targetMessageId,
 }: ChannelScreenProps) {
+  const isDedicatedActivityWindow = isAgentActivityWindow();
   const { goHome } = useAppNavigation();
   const { activeCommunity } = useCommunities();
   const {
@@ -713,10 +714,13 @@ export function ChannelScreen({
   const isNarrowPanelViewport =
     channelContentWidthPx > 0 &&
     channelContentWidthPx < AUXILIARY_PANEL_SINGLE_COLUMN_BREAKPOINT_PX;
+  // A dedicated activity window is the panel itself, not a responsive channel
+  // view. Keep the channel timeline out of that window at every width.
   const isSinglePanelView =
-    isNarrowPanelViewport &&
-    activeChannel?.channelType !== "forum" &&
-    hasAuxiliaryPanel;
+    isDedicatedActivityWindow ||
+    (isNarrowPanelViewport &&
+      activeChannel?.channelType !== "forum" &&
+      hasAuxiliaryPanel);
   const shouldCompactHeaderActions =
     hasAuxiliaryPanel &&
     channelContentWidthPx > 0 &&
@@ -853,6 +857,7 @@ export function ChannelScreen({
               <React.Suspense
                 fallback={
                   <ChannelScreenLoadingFallback
+                    includeHeader={!isDedicatedActivityWindow}
                     isHuddleTranscript={isHuddleTranscript}
                   />
                 }

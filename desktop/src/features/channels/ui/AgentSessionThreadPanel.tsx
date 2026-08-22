@@ -9,6 +9,10 @@ import {
 import { toast } from "sonner";
 
 import { useAgentWorking } from "@/features/agents/agentWorkingSignal";
+import {
+  isAgentActivityWindow,
+  setAgentActivityWindowTitle,
+} from "@/features/agents/lib/agentActivityWindow";
 import { isManagedAgentActive } from "@/features/agents/lib/managedAgentControlActions";
 import {
   mergeObserverEventWindows,
@@ -96,6 +100,7 @@ export function AgentSessionThreadPanel({
   widthPx,
   transparentChrome = false,
 }: AgentSessionThreadPanelProps) {
+  const isDedicatedActivityWindow = isAgentActivityWindow();
   const isLive = isManagedAgentActive(agent);
   const isOverlay = useIsThreadPanelOverlay();
   const sessionChannelId = channelId ?? channel?.id ?? null;
@@ -106,7 +111,10 @@ export function AgentSessionThreadPanel({
     sessionChannelId,
   );
   const canStopCurrentTurn = isWorking && canInterruptTurn;
-  useEscapeKey(onClose, isOverlay || isSinglePanelView);
+  useEscapeKey(
+    onClose,
+    (isOverlay || isSinglePanelView) && !isDedicatedActivityWindow,
+  );
 
   const scrollRef = React.useRef<HTMLDivElement>(null);
   const contentRef = React.useRef<HTMLDivElement>(null);
@@ -236,6 +244,15 @@ export function AgentSessionThreadPanel({
     profiles,
     preferResolvedSelfLabel: true,
   });
+  React.useEffect(() => {
+    if (!scopeChannelName) return;
+
+    void setAgentActivityWindowTitle(agentLabel, scopeChannelName).catch(
+      (error) => {
+        console.error("Failed to update agent activity window title:", error);
+      },
+    );
+  }, [agentLabel, scopeChannelName]);
   const viewLabel = showRawFeed ? "Raw ACP activity" : "Activity";
   const headerScopeLabel = `${viewLabel} · ${scopeLabel}`;
   const animateActivity = useTranscriptAnimationEnabled();
@@ -469,6 +486,7 @@ export function AgentSessionThreadPanel({
           backdrop={layout !== "split" && !isOverlay}
           backdropSurface="soft"
           inset={layout !== "split" ? "wide" : "default"}
+          showCloseAction={!isDedicatedActivityWindow}
         >
           {agentHeaderContent}
         </AuxiliaryPanelHeader>
