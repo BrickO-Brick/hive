@@ -90,7 +90,11 @@ function PullRequestGridCard({
           className="mt-auto flex items-center gap-1.5 text-xs font-medium text-muted-foreground"
           data-testid="projects-grid-card-indicator"
         >
-          <ProjectEventTypeIcon className="h-3.5 w-3.5" kind="pull-request" />
+          <ProjectEventTypeIcon
+            className="h-3.5 w-3.5"
+            kind="pull-request"
+            muted
+          />
           <span>{pullRequest.status}</span>
         </div>
       </div>
@@ -118,6 +122,7 @@ function PullRequestListRow({
   pullRequest,
   rangeItems,
   repository,
+  showRepositoryName,
   onOpen,
 }: {
   project: Project;
@@ -125,6 +130,7 @@ function PullRequestListRow({
   pullRequest: ProjectPullRequest;
   rangeItems: ReturnType<typeof reviewSelectionItem>[];
   repository: Repository;
+  showRepositoryName: boolean;
   onOpen: (project: Project, pullRequest: ProjectPullRequest) => void;
 }) {
   const authorLabel = resolveUserLabel({
@@ -134,7 +140,8 @@ function PullRequestListRow({
 
   return (
     <ProjectEntityListRow
-      affiliation={repository.name}
+      affiliation={showRepositoryName ? repository.name : undefined}
+      affiliationTestId="projects-row-repository"
       count={pullRequest.comments.length}
       dateSeconds={pullRequest.updatedAt}
       dateTestId="projects-row-date"
@@ -157,7 +164,11 @@ function PullRequestListRow({
       title={pullRequest.title}
       titleAttr={`Open review ${pullRequest.title}`}
       titleIcon={
-        <ProjectEventTypeIcon className="h-3.5 w-3.5" kind="pull-request" />
+        <ProjectEventTypeIcon
+          className="h-3.5 w-3.5"
+          kind="pull-request"
+          muted
+        />
       }
       trailing={
         <ProjectListRowMenu label={`More options for ${pullRequest.title}`}>
@@ -252,6 +263,8 @@ export function ProjectsPullRequestsList({
           const groupSelectionItems = group.rows.map((row) =>
             reviewSelectionItem(row.project, row.repository, row.pullRequest),
           );
+          const showRepositoryName =
+            new Set(group.rows.map((row) => row.repository.id)).size > 1;
           return (
             <ProjectSelectableGroup
               count={group.rows.length}
@@ -277,6 +290,7 @@ export function ProjectsPullRequestsList({
                       pullRequest={pullRequest}
                       rangeItems={groupSelectionItems}
                       repository={repository}
+                      showRepositoryName={showRepositoryName}
                     />
                   </li>
                 ))}

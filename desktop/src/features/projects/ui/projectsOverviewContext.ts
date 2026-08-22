@@ -23,7 +23,6 @@ export type ProjectsOverviewSection =
   | "issues";
 
 export type OverviewContextStatIcon =
-  | "projects"
   | "repositories"
   | "channels"
   | "tasks"
@@ -265,12 +264,6 @@ export function projectsOverviewContext(
           section: "channels",
         },
         {
-          count: projects.length,
-          icon: "projects",
-          label: "Projects",
-          section: "projects",
-        },
-        {
           count: repositories,
           icon: "repositories",
           label: "Repositories",
@@ -354,12 +347,6 @@ export function projectsOverviewContext(
       people,
       stats: [
         {
-          count: projects.length,
-          icon: "projects",
-          label: "Projects",
-          section: "projects",
-        },
-        {
           count: repositories,
           icon: "repositories",
           label: "Repositories",
@@ -393,12 +380,6 @@ export function projectsOverviewContext(
     detailsTitle: "Details",
     people,
     stats: [
-      {
-        count: projects.length,
-        icon: "projects",
-        label: "Projects",
-        section: "projects",
-      },
       {
         count: repositories,
         icon: "repositories",

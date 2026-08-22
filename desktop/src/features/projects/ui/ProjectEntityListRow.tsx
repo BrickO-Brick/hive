@@ -14,7 +14,7 @@ import { UserAvatar } from "@/shared/ui/UserAvatar";
 
 /** One-line list row: title, optional description column, then trailing metadata. */
 export const PROJECT_ENTITY_LIST_ROW_CLASS =
-  "mx-2 flex min-h-9 min-w-0 items-center gap-3 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-muted/30";
+  "flex min-h-9 min-w-0 items-center gap-3 rounded-md px-4 py-1.5 text-left transition-colors hover:bg-muted/30";
 
 export function ProjectEntityFacepile({
   interactive = false,
@@ -144,6 +144,8 @@ export function ProjectEntityListRow({
   description,
   descriptionTestId,
   icon,
+  location,
+  locationTestId,
   onClick,
   people,
   peopleSlot,
@@ -172,6 +174,8 @@ export function ProjectEntityListRow({
   description?: string;
   descriptionTestId?: string;
   icon: React.ReactNode;
+  location?: React.ReactNode;
+  locationTestId?: string;
   onClick?: () => void;
   people?: string[];
   peopleSlot?: React.ReactNode;
@@ -290,6 +294,15 @@ export function ProjectEntityListRow({
           title={description}
         >
           {description}
+        </span>
+      ) : null}
+      {location ? (
+        <span
+          className="hidden w-16 shrink-0 items-center justify-start text-left text-xs md:flex"
+          data-projects-text-priority="secondary"
+          data-testid={locationTestId}
+        >
+          {location}
         </span>
       ) : null}
       {affiliation ? (

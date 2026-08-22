@@ -17,7 +17,10 @@ import {
 } from "@/features/projects/hooks";
 import { useRepositoryActivitySummariesQuery } from "@/features/projects/repositoryActivityHooks";
 import { useCreateProjectMutation } from "@/features/projects/useCreateProject";
-import { selectProjectRepository } from "@/features/projects/projectModels";
+import {
+  isExplicitProject,
+  selectProjectRepository,
+} from "@/features/projects/projectModels";
 import { useProjectsRepoSnapshotsQuery } from "@/features/projects/useProjectsRepoSnapshots";
 import { buildProjectSelectionAgentContext } from "@/features/projects/lib/projectDetailAgentContext";
 import type { ProjectSelectionItem } from "@/features/projects/lib/projectSelection";
@@ -25,10 +28,7 @@ import {
   useMemberChannelIds,
   useRepositoryUnavailableReasonFor,
 } from "@/features/projects/useRepositoryAccess";
-import {
-  projectRepoHostForProject,
-  projectRepoHostForRepository,
-} from "@/features/projects/lib/projectRepoHost";
+import { projectRepoHostForProject } from "@/features/projects/lib/projectRepoHost";
 import { ProjectsActivityFeed } from "@/features/projects/ui/ProjectsActivityFeed";
 import { ProjectsChannelsList } from "@/features/projects/ui/ProjectsChannelsList";
 import {
@@ -65,33 +65,24 @@ import { ProjectSectionHeader } from "@/features/projects/ui/ProjectSectionHeade
 import { PROJECT_COLUMN_HEADER_BACKDROP_CLASS } from "@/features/projects/ui/projectPanelStyles";
 import { ProjectsToolbar } from "@/features/projects/ui/ProjectsToolbar";
 import { ProjectSelectionProvider } from "@/features/projects/lib/useProjectSelection";
-import {
-  hasLocalCheckout,
-  hasLocalRepositoryCheckout,
-} from "@/features/projects/lib/projectLocalRepos";
+import { hasLocalRepositoryCheckout } from "@/features/projects/lib/projectLocalRepos";
 import {
   getProjectUpdatedAt,
-  isProjectAccessibleToViewer,
-  isProjectMine,
-  isRepositoryAccessibleToViewer,
   projectHasAgent,
   projectOwnerIsUser,
   projectPeople,
   type ProjectsFilter,
-  type ProjectsRepositoryScope,
   type ProjectsSort,
   type ProjectsViewMode,
   type ProjectsWorkItemScope,
   readStoredFilter,
   readStoredIssueScope,
   readStoredPullRequestScope,
-  readStoredRepositoryScope,
   readStoredSort,
   readStoredViewMode,
   writeStoredFilter,
   writeStoredIssueScope,
   writeStoredPullRequestScope,
-  writeStoredRepositoryScope,
   writeStoredSort,
   writeStoredViewMode,
 } from "@/features/projects/lib/projectsViewHelpers";
@@ -125,7 +116,11 @@ export function ProjectsView() {
     useProjectsScrollIndicator();
   const projectsQuery = useProjectsQuery();
   const identityQuery = useIdentityQuery();
-  const projects = projectsQuery.data ?? [];
+  const projectReadModels = projectsQuery.data ?? [];
+  const projects = React.useMemo(
+    () => projectReadModels.filter(isExplicitProject),
+    [projectReadModels],
+  );
   const localRepositoriesQuery = useProjectLocalRepositoriesQuery(
     activeCommunity?.reposDir,
   );
@@ -145,16 +140,8 @@ export function ProjectsView() {
     useProjectPanelWidths("chat");
   const activitySummariesQuery = useProjectActivitySummariesQuery(projects);
   const repositoryActivitySummariesQuery = useRepositoryActivitySummariesQuery(
-    filter === "repositories" ? projects : [],
+    filter === "repositories" ? projectReadModels : [],
   );
-  const [repositoryScope, setRepositoryScope] =
-    React.useState<ProjectsRepositoryScope>(() => {
-      const storedScope = readStoredRepositoryScope();
-      return filter === "projects" &&
-        (storedScope === "buzz" || storedScope === "linked")
-        ? "all"
-        : storedScope;
-    });
   const [pullRequestScope, setPullRequestScope] =
     React.useState<ProjectsWorkItemScope>(() => readStoredPullRequestScope());
   const [issueScope, setIssueScope] = React.useState<ProjectsWorkItemScope>(
@@ -237,14 +224,6 @@ export function ProjectsView() {
     [],
   );
 
-  const handleRepositoryScopeChange = React.useCallback(
-    (scope: ProjectsRepositoryScope) => {
-      setRepositoryScope(scope);
-      writeStoredRepositoryScope(scope);
-    },
-    [],
-  );
-
   const handlePullRequestScopeChange = React.useCallback(
     (scope: ProjectsWorkItemScope) => {
       setPullRequestScope(scope);
@@ -276,16 +255,6 @@ export function ProjectsView() {
     [localRepositoriesQuery.data],
   );
 
-  const repositoryAccessInput = React.useMemo(
-    () => ({
-      currentPubkey,
-      localRepoNames,
-      memberChannelIds,
-      relayOrigin,
-    }),
-    [currentPubkey, localRepoNames, memberChannelIds, relayOrigin],
-  );
-
   const visibleProjects = React.useMemo(() => {
     if (filter !== "projects" && filter !== "agents" && filter !== "users") {
       return [];
@@ -295,20 +264,6 @@ export function ProjectsView() {
       .filter((project) => {
         const summary = activitySummariesQuery.data?.[project.id];
         const people = projectPeople(project, summary);
-        if (repositoryScope === "accessible")
-          return isProjectAccessibleToViewer(project, repositoryAccessInput);
-        if (repositoryScope === "mine")
-          return isProjectMine(project, currentPubkey);
-        if (repositoryScope === "local")
-          return hasLocalCheckout(project, localRepoNames);
-        if (repositoryScope === "buzz")
-          return (
-            projectRepoHostForProject(project, relayOrigin).kind === "buzz"
-          );
-        if (repositoryScope === "linked")
-          return (
-            projectRepoHostForProject(project, relayOrigin).kind === "external"
-          );
         if (filter === "agents") {
           return projectHasAgent(project, people, profiles);
         }
@@ -331,24 +286,13 @@ export function ProjectsView() {
       });
 
     return sortedProjects;
-  }, [
-    activitySummariesQuery.data,
-    currentPubkey,
-    filter,
-    localRepoNames,
-    profiles,
-    projects,
-    relayOrigin,
-    repositoryAccessInput,
-    repositoryScope,
-    sort,
-  ]);
+  }, [activitySummariesQuery.data, filter, profiles, projects, sort]);
 
   const visibleRepositories = React.useMemo(() => {
     if (filter !== "repositories") return [];
     const repositories = [
       ...new Map(
-        projects
+        projectReadModels
           .flatMap((project) =>
             project.repositories.map((repository) => ({
               project,
@@ -358,67 +302,22 @@ export function ProjectsView() {
           .map((item) => [item.repository.repoAddress, item]),
       ).values(),
     ];
-    return repositories
-      .filter(({ repository }) => {
-        if (repositoryScope === "accessible") {
-          return isRepositoryAccessibleToViewer(
-            repository,
-            repositoryAccessInput,
-          );
-        }
-        if (repositoryScope === "mine") {
-          if (!currentPubkey) return false;
-          const normalizedCurrentPubkey = normalizePubkey(currentPubkey);
-          return (
-            normalizePubkey(repository.owner) === normalizedCurrentPubkey ||
-            repository.contributors.some(
-              (pubkey) => normalizePubkey(pubkey) === normalizedCurrentPubkey,
-            )
-          );
-        }
-        if (repositoryScope === "local") {
-          return hasLocalRepositoryCheckout(repository, localRepoNames);
-        }
-        if (repositoryScope === "buzz") {
-          return (
-            projectRepoHostForRepository(repository, relayOrigin).kind ===
-            "buzz"
-          );
-        }
-        if (repositoryScope === "linked") {
-          return (
-            projectRepoHostForRepository(repository, relayOrigin).kind ===
-            "external"
-          );
-        }
-        return true;
-      })
-      .sort((left, right) => {
-        if (sort === "name") {
-          return left.repository.name.localeCompare(right.repository.name);
-        }
-        if (sort === "created") {
-          return right.repository.createdAt - left.repository.createdAt;
-        }
-        const leftUpdatedAt =
-          repositoryActivitySummariesQuery.data?.[left.repository.repoAddress]
-            ?.updatedAt ?? left.repository.createdAt;
-        const rightUpdatedAt =
-          repositoryActivitySummariesQuery.data?.[right.repository.repoAddress]
-            ?.updatedAt ?? right.repository.createdAt;
-        return rightUpdatedAt - leftUpdatedAt;
-      });
-  }, [
-    currentPubkey,
-    filter,
-    localRepoNames,
-    projects,
-    relayOrigin,
-    repositoryAccessInput,
-    repositoryActivitySummariesQuery.data,
-    repositoryScope,
-    sort,
-  ]);
+    return repositories.sort((left, right) => {
+      if (sort === "name") {
+        return left.repository.name.localeCompare(right.repository.name);
+      }
+      if (sort === "created") {
+        return right.repository.createdAt - left.repository.createdAt;
+      }
+      const leftUpdatedAt =
+        repositoryActivitySummariesQuery.data?.[left.repository.repoAddress]
+          ?.updatedAt ?? left.repository.createdAt;
+      const rightUpdatedAt =
+        repositoryActivitySummariesQuery.data?.[right.repository.repoAddress]
+          ?.updatedAt ?? right.repository.createdAt;
+      return rightUpdatedAt - leftUpdatedAt;
+    });
+  }, [filter, projectReadModels, repositoryActivitySummariesQuery.data, sort]);
 
   const visiblePullRequests = React.useMemo(() => {
     const pullRequests = projectsWorkItemsQuery.data?.pullRequests.items ?? [];
@@ -481,18 +380,11 @@ export function ProjectsView() {
   });
   const handleFilterChange = React.useCallback(
     (nextFilter: ProjectsFilter) => {
-      if (
-        nextFilter === "projects" &&
-        (repositoryScope === "buzz" || repositoryScope === "linked")
-      ) {
-        setRepositoryScope("all");
-        writeStoredRepositoryScope("all");
-      }
       setSelectionAgentContext(null);
       setFilter(nextFilter);
       writeStoredFilter(nextFilter);
     },
-    [repositoryScope, setSelectionAgentContext],
+    [setSelectionAgentContext],
   );
 
   // Route by the canonical `owner:dtag` project ID — a bare dtag is
@@ -625,6 +517,7 @@ export function ProjectsView() {
 
   const repositoryItems = (
     <ProjectsOverviewRepositoryItems
+      currentPubkey={currentPubkey}
       localRepoNames={localRepoNames}
       onOpen={handleOpenRepository}
       onOpenTerminal={handleOpenRepositoryTerminal}
@@ -641,11 +534,9 @@ export function ProjectsView() {
       issueScope={issueScope}
       onIssueScopeChange={handleIssueScopeChange}
       onPullRequestScopeChange={handlePullRequestScopeChange}
-      onRepositoryScopeChange={handleRepositoryScopeChange}
       onSortChange={handleSortChange}
       onViewModeChange={handleViewModeChange}
       pullRequestScope={pullRequestScope}
-      repositoryScope={repositoryScope}
       sort={sort}
       viewMode={viewMode}
     />
@@ -694,7 +585,6 @@ export function ProjectsView() {
     onCreateIssue: () => setCreateIssueOpen(true),
     onCreateProject: () => setCreateProjectOpen(true),
     onCreatePullRequest: () => setCreatePullRequestOpen(true),
-    profiles,
     projects,
     pullRequests:
       projectsWorkItemsQuery.data?.pullRequests.items.map(
@@ -857,7 +747,7 @@ export function ProjectsView() {
                       ) : (
                         <>
                           <ProjectSectionHeader
-                            className="mb-2 rounded-xl bg-muted/40"
+                            className="mb-2 rounded-md bg-muted/40"
                             icon={projectsSectionIcon(filter)}
                             testId="projects-page-header"
                             title={projectsSectionTitle(filter)}
@@ -949,11 +839,12 @@ export function ProjectsView() {
         <ProjectContextRail
           open={overviewContextOpen}
           panelWidthPx={PROJECT_CONTEXT_PANEL_DEFAULT_WIDTH_PX}
+          rounded={false}
           testId="projects-overview-context-rail"
         >
           <aside
             aria-label="Project context"
-            className="relative z-30 flex h-full flex-col overflow-hidden bg-transparent"
+            className="relative z-30 flex h-full flex-col overflow-hidden bg-sidebar text-sidebar-foreground"
           >
             <div className="min-h-0 flex-1 overflow-y-auto">
               <ProjectsOverviewContextPanel

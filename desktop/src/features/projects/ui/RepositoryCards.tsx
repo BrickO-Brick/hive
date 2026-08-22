@@ -32,6 +32,7 @@ import {
 import { ProjectEntityListRow } from "./ProjectEntityListRow";
 import {
   ProjectActivityBar,
+  ProjectLocationPill,
   ProjectPeopleStack,
   ProjectStatsRow,
 } from "./ProjectCards";
@@ -118,11 +119,15 @@ function RepositoryOpenButton({
 }
 
 function RepositoryIdentity({
+  hasLocal,
   inlineBranch = false,
   profiles,
   project,
   repository,
-}: Pick<RepositoryItemProps, "profiles" | "project" | "repository"> & {
+}: Pick<
+  RepositoryItemProps,
+  "hasLocal" | "profiles" | "project" | "repository"
+> & {
   inlineBranch?: boolean;
 }) {
   // Where the git data lives beats repeating the (often identical) project
@@ -141,6 +146,7 @@ function RepositoryIdentity({
           <span className={PROJECT_LIST_ROW_TITLE_CLASS}>
             {repository.name}
           </span>
+          <ProjectLocationPill local={hasLocal} />
         </div>
         <p className={PROJECT_LIST_ROW_PREVIEW_CLASS}>
           {displayPath ?? project.name}
@@ -214,6 +220,7 @@ export function RepositoryGridCard(props: RepositoryItemProps) {
       <div className="pointer-events-none relative z-10 flex min-h-0 flex-1 flex-col p-4">
         <div className="flex min-w-0 items-start gap-2.5">
           <RepositoryIdentity
+            hasLocal={hasLocal}
             inlineBranch
             profiles={profiles}
             project={project}
@@ -283,6 +290,8 @@ export function RepositoryListRow(props: RepositoryItemProps) {
       dateSeconds={updatedAt}
       dateTestId="repositories-row-date"
       icon={<RepositoryHostIcon compact repository={repository} />}
+      location={<ProjectLocationPill local={hasLocal} />}
+      locationTestId="repositories-row-location"
       onClick={() => onOpen(project, repository)}
       people={repositoryPeople(repository, summary)}
       peopleTestId="repositories-row-people"

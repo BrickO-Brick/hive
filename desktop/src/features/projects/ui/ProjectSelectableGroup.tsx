@@ -92,7 +92,7 @@ export function ProjectSelectableGroup({
           type="button"
         >
           <span
-            className="min-w-0 truncate font-medium text-foreground/80"
+            className="min-w-0 truncate font-medium text-muted-foreground"
             data-testid={labelTestId}
           >
             {label}

@@ -5,6 +5,7 @@ import {
   channelsQueryKey,
   upsertCachedChannel,
 } from "@/features/channels/hooks";
+import { useApplyTemplate } from "@/features/channel-templates/useApplyTemplate";
 import { type Project, projectsQueryKey } from "@/features/projects/hooks";
 import {
   createProject,
@@ -21,6 +22,7 @@ export type { CreateProjectInput, CreateProjectResult };
 /** Mutation that creates a project home and inserts it into the caches. */
 export function useCreateProjectMutation() {
   const queryClient = useQueryClient();
+  const { applyAgents, applyCanvas } = useApplyTemplate();
   const resumeRef = React.useRef<CreateProjectResumeState>({
     channels: new Map(),
     projectIds: new Set(),
@@ -29,7 +31,7 @@ export function useCreateProjectMutation() {
   return useMutation({
     mutationFn: (input: CreateProjectInput) =>
       createProject(input, resumeRef.current),
-    onSuccess: ({ channel, project }) => {
+    onSuccess: async ({ channel, project }, input) => {
       addProjectToSidebar(
         project.projectAddress,
         getCachedRelayOrigin(),
@@ -57,6 +59,10 @@ export function useCreateProjectMutation() {
           queryKey: channelsQueryKey,
           refetchType: "none",
         });
+        await Promise.all([
+          applyCanvas(input.templateId, channel.id, channel.name),
+          applyAgents(input.templateId, channel.id),
+        ]);
       }
       void queryClient.invalidateQueries({ queryKey: projectsQueryKey });
     },

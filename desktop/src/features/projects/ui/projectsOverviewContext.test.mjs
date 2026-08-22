@@ -78,7 +78,6 @@ test("activity pod shows workspace details and a create-project action", () => {
   assert.deepEqual(
     context.stats.map((stat) => [stat.label, stat.count]),
     [
-      ["Projects", 2],
       ["Repositories", 2],
       ["Channels", 2],
       ["Tasks", 5],
@@ -87,7 +86,7 @@ test("activity pod shows workspace details and a create-project action", () => {
   );
 });
 
-test("projects pod keeps create-project and drops task/review totals", () => {
+test("projects pod keeps create-project without a redundant project count", () => {
   const context = projectsOverviewContext({
     filter: "projects",
     issues: [],
@@ -99,7 +98,7 @@ test("projects pod keeps create-project and drops task/review totals", () => {
   assert.equal(context.action?.kind, "project");
   assert.deepEqual(
     context.stats.map((stat) => stat.label),
-    ["Projects", "Repositories", "Channels"],
+    ["Repositories", "Channels"],
   );
 });
 
@@ -137,7 +136,7 @@ test("channels pod titles itself and omits a primary create action", () => {
   assert.equal(context.action, null);
   assert.deepEqual(
     context.stats.map((stat) => stat.label),
-    ["Channels", "Projects", "Repositories"],
+    ["Channels", "Repositories"],
   );
 });
 

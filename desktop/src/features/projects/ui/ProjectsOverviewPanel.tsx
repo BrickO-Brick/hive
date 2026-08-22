@@ -2,7 +2,6 @@ import {
   CheckCircle2,
   CircleDot,
   FolderGit2,
-  Folders,
   GitMerge,
   GitPullRequest,
   Hash,
@@ -22,7 +21,7 @@ import {
 } from "@/features/projects/lib/projectSelection";
 import type { ProjectsFilter } from "@/features/projects/lib/projectsViewHelpers";
 import { useProjectSelection } from "@/features/projects/lib/useProjectSelection";
-import type { UserProfileLookup } from "@/features/profile/lib/identity";
+import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
 import { ProjectsCreateMenu } from "./ProjectsCreateMenu";
 import { ProjectsSelectionCountMenu } from "./ProjectsSelectionCountMenu";
@@ -33,7 +32,6 @@ import {
   type ProjectsOverviewSection,
   projectsOverviewContext,
 } from "./projectsOverviewContext";
-import { ProjectsOverviewPeople } from "./ProjectsOverviewRail";
 
 export type { ProjectsOverviewSection };
 
@@ -44,7 +42,6 @@ const STAT_ICONS: Record<
   channels: Hash,
   completed: CheckCircle2,
   merged: GitMerge,
-  projects: Folders,
   repositories: FolderGit2,
   reviews: GitPullRequest,
   tasks: CircleDot,
@@ -62,7 +59,6 @@ type ProjectsOverviewContextPanelProps = {
   onCreateProject: () => void;
   onCreatePullRequest: () => void;
   onSelectSection: (section: ProjectsOverviewSection) => void;
-  profiles?: UserProfileLookup;
   projects: Project[];
   pullRequests: ProjectPullRequest[];
   summaries?: Record<string, ProjectActivitySummary>;
@@ -79,7 +75,7 @@ function OverviewActionButton({
 }) {
   return (
     <Button
-      className="-mx-2 h-7 w-[calc(100%+1rem)] justify-start gap-3 rounded-md px-2 text-left text-sm font-normal hover:bg-muted/70 [&_svg]:h-4 [&_svg]:w-4 [&_svg]:shrink-0 [&_svg]:text-muted-foreground"
+      className="-mx-2 h-7 w-[calc(100%+1rem)] justify-start gap-3 rounded-md px-2 text-left text-sm font-normal text-muted-foreground hover:bg-muted/70 hover:text-foreground [&_svg]:h-4 [&_svg]:w-4 [&_svg]:shrink-0 [&_svg]:text-muted-foreground"
       data-testid={testId}
       onClick={onClick}
       size="sm"
@@ -113,7 +109,9 @@ function OverviewStatRow({
         <Icon className="h-3.5 w-3.5 shrink-0" />
         {label}
       </span>
-      <span className="font-medium tabular-nums text-foreground">{count}</span>
+      <span className="font-medium tabular-nums text-muted-foreground/65">
+        {count}
+      </span>
     </button>
   );
 }
@@ -178,7 +176,6 @@ export function ProjectsOverviewContextPanel({
   onCreateProject,
   onCreatePullRequest,
   onSelectSection,
-  profiles,
   projects,
   pullRequests,
   summaries,
@@ -203,7 +200,10 @@ export function ProjectsOverviewContextPanel({
 
   return (
     <div
-      className="min-w-0 overflow-hidden rounded-2xl bg-background"
+      className={cn(
+        "min-w-0 overflow-hidden",
+        selectionPresentation && "rounded-2xl bg-background",
+      )}
       data-testid="projects-overview-context-panel"
     >
       <div className="px-4 pb-3 pt-3">
@@ -231,41 +231,31 @@ export function ProjectsOverviewContextPanel({
           </div>
         )}
         {selectionPresentation ? null : (
-          <>
-            <div className="space-y-0.5 pt-2">
-              {context.action ? (
-                <OverviewActionButton
-                  onClick={actionHandler}
-                  testId={context.action.testId}
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                  {context.action.label}
-                </OverviewActionButton>
-              ) : null}
-              <section
-                className="space-y-0.5 text-sm"
-                data-testid="projects-overview-stats-pod"
+          <div className="space-y-2.5 pt-2">
+            {context.action ? (
+              <OverviewActionButton
+                onClick={actionHandler}
+                testId={context.action.testId}
               >
-                {context.stats.map((stat) => (
-                  <OverviewStatRow
-                    count={stat.count}
-                    icon={STAT_ICONS[stat.icon]}
-                    key={`${stat.section}:${stat.label}`}
-                    label={stat.label}
-                    onClick={() => onSelectSection(stat.section)}
-                  />
-                ))}
-              </section>
-            </div>
-            {context.people.length > 0 ? (
-              <div className="mt-3 space-y-3 py-3">
-                <ProjectsOverviewPeople
-                  people={context.people}
-                  profiles={profiles}
-                />
-              </div>
+                <Plus className="h-3.5 w-3.5" />
+                {context.action.label}
+              </OverviewActionButton>
             ) : null}
-          </>
+            <section
+              className="space-y-2.5 text-sm"
+              data-testid="projects-overview-stats-pod"
+            >
+              {context.stats.map((stat) => (
+                <OverviewStatRow
+                  count={stat.count}
+                  icon={STAT_ICONS[stat.icon]}
+                  key={`${stat.section}:${stat.label}`}
+                  label={stat.label}
+                  onClick={() => onSelectSection(stat.section)}
+                />
+              ))}
+            </section>
+          </div>
         )}
       </div>
     </div>

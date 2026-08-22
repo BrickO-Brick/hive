@@ -2,6 +2,7 @@ import { Check, Folders, Plus, Search } from "lucide-react";
 import * as React from "react";
 
 import type { Project } from "@/features/projects/hooks";
+import { isExplicitProject } from "@/features/projects/projectModels";
 import type { CreateProjectInput } from "@/features/projects/useCreateProject";
 import { Button } from "@/shared/ui/button";
 import { ChooserDialogContent } from "@/shared/ui/chooser-dialog-content";
@@ -59,9 +60,11 @@ export function ProjectBrowserDialog({
   }, [open]);
 
   const visibleProjects = React.useMemo(() => {
-    const sorted = [...projects].sort((left, right) =>
-      left.name.localeCompare(right.name, undefined, { sensitivity: "base" }),
-    );
+    const sorted = projects
+      .filter(isExplicitProject)
+      .sort((left, right) =>
+        left.name.localeCompare(right.name, undefined, { sensitivity: "base" }),
+      );
     if (!deferredQuery) return sorted;
     return sorted.filter((project) =>
       projectSearchText(project).includes(deferredQuery),

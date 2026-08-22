@@ -1,6 +1,5 @@
 import type {
   ProjectsFilter,
-  ProjectsRepositoryScope,
   ProjectsSort,
   ProjectsViewMode,
   ProjectsWorkItemScope,
@@ -8,26 +7,6 @@ import type {
 import { ProjectsListScopeDropdown } from "@/features/projects/ui/ProjectsListScopeDropdown";
 import { ProjectsViewModeToggle } from "@/features/projects/ui/ProjectsToolbar";
 
-const PROJECT_SCOPE_OPTIONS: Array<{
-  label: string;
-  value: ProjectsRepositoryScope;
-}> = [
-  { label: "All", value: "all" },
-  { label: "Accessible", value: "accessible" },
-  { label: "My Projects", value: "mine" },
-  { label: "Local", value: "local" },
-];
-const REPOSITORY_SCOPE_OPTIONS: Array<{
-  label: string;
-  value: ProjectsRepositoryScope;
-}> = [
-  { label: "All", value: "all" },
-  { label: "Accessible", value: "accessible" },
-  { label: "My Repositories", value: "mine" },
-  { label: "Local", value: "local" },
-  { label: "Buzz-hosted", value: "buzz" },
-  { label: "Linked", value: "linked" },
-];
 const PULL_REQUEST_SCOPE_OPTIONS: Array<{
   label: string;
   value: ProjectsWorkItemScope;
@@ -49,11 +28,9 @@ type ProjectsListHeaderBarProps = {
   issueScope: ProjectsWorkItemScope;
   onIssueScopeChange: (scope: ProjectsWorkItemScope) => void;
   onPullRequestScopeChange: (scope: ProjectsWorkItemScope) => void;
-  onRepositoryScopeChange: (scope: ProjectsRepositoryScope) => void;
   onSortChange: (sort: ProjectsSort) => void;
   onViewModeChange: (viewMode: ProjectsViewMode) => void;
   pullRequestScope: ProjectsWorkItemScope;
-  repositoryScope: ProjectsRepositoryScope;
   sort: ProjectsSort;
   viewMode: ProjectsViewMode;
 };
@@ -66,11 +43,9 @@ export function ProjectsListHeaderBar({
   issueScope,
   onIssueScopeChange,
   onPullRequestScopeChange,
-  onRepositoryScopeChange,
   onSortChange,
   onViewModeChange,
   pullRequestScope,
-  repositoryScope,
   sort,
   viewMode,
 }: ProjectsListHeaderBarProps) {
@@ -89,21 +64,7 @@ export function ProjectsListHeaderBar({
         options={ISSUE_SCOPE_OPTIONS}
         value={issueScope}
       />
-    ) : filter === "projects" ? (
-      <ProjectsListScopeDropdown
-        label="Filter projects"
-        onChange={onRepositoryScopeChange}
-        options={PROJECT_SCOPE_OPTIONS}
-        value={repositoryScope}
-      />
-    ) : (
-      <ProjectsListScopeDropdown
-        label="Filter repositories"
-        onChange={onRepositoryScopeChange}
-        options={REPOSITORY_SCOPE_OPTIONS}
-        value={repositoryScope}
-      />
-    );
+    ) : null;
 
   return (
     <div

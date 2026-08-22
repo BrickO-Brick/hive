@@ -242,6 +242,17 @@ function StatusPill({ status }: { status: string }) {
   );
 }
 
+export function ProjectLocationPill({ local }: { local: boolean }) {
+  return (
+    <span
+      className="inline-flex w-14 shrink-0 justify-start text-2xs font-medium text-muted-foreground/55"
+      data-testid="project-location"
+    >
+      {local ? "Local" : "Remote"}
+    </span>
+  );
+}
+
 function RepositoryUnavailableIndicator({
   reason,
 }: {
@@ -498,6 +509,7 @@ export function ProjectGridCard({
                     ? "repository"
                     : "repositories"}
                 </span>
+                <ProjectLocationPill local={hasLocal} />
                 <StatusPill status={project.status} />
                 <RepositoryUnavailableIndicator
                   reason={repositoryUnavailableReason}
@@ -573,7 +585,7 @@ export function ProjectListRow({
           <span>{repositoryCount}</span>
         </span>
       }
-      affiliationClassName="w-auto"
+      affiliationClassName="w-12"
       affiliationTestId="projects-row-context"
       affiliationTitle={`${repositoryCount} ${
         repositoryCount === 1 ? "repository" : "repositories"
@@ -581,6 +593,8 @@ export function ProjectListRow({
       dateSeconds={getProjectUpdatedAt(project, summary)}
       dateTestId="projects-row-date"
       icon={<Folders className="h-3.5 w-3.5 text-muted-foreground/70" />}
+      location={<ProjectLocationPill local={hasLocal} />}
+      locationTestId="projects-row-location"
       onClick={() => onOpen(project)}
       people={people}
       peopleTestId="projects-row-people"

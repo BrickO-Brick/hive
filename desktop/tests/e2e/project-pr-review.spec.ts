@@ -1736,7 +1736,7 @@ test("project overview presents collapsible context beside grouped activity", as
     page
       .getByTestId("projects-overview-context-panel")
       .getByTestId("projects-overview-people"),
-  ).toBeVisible();
+  ).toHaveCount(0);
   await expect(
     page
       .getByTestId("projects-overview-stats-pod")
@@ -1879,7 +1879,7 @@ test("project overview presents collapsible context beside grouped activity", as
   await expect(
     page.getByTestId("projects-overview-create-project"),
   ).toBeVisible();
-  await expect(page.getByTestId("projects-overview-people")).toBeVisible();
+  await expect(page.getByTestId("projects-overview-people")).toHaveCount(0);
   await expect(page.getByTestId("projects-overview-activity")).toHaveCount(0);
   await page.getByTestId("projects-section-repositories").click();
   await expect(page.getByTestId("projects-overview-context-title")).toHaveText(
@@ -1905,7 +1905,7 @@ test("project overview presents collapsible context beside grouped activity", as
   await expect(
     page.getByTestId("projects-overview-create-pull-request"),
   ).toContainText("Create review");
-  await expect(page.getByTestId("projects-overview-people")).toBeVisible();
+  await expect(page.getByTestId("projects-overview-people")).toHaveCount(0);
   await expect(page.getByTestId("projects-overview-activity")).toHaveCount(0);
   await page.getByTestId("projects-section-all").click();
   await expect(
@@ -2591,8 +2591,8 @@ test("selecting repository workspace rows switches the context pod to the cluste
   expect(
     Math.abs(reviewRowOrder.checkbox - reviewRowOrder.status),
   ).toBeLessThanOrEqual(1);
-  expect(reviewRowOrder.status).toBeLessThan(reviewRowOrder.title);
-  expect(reviewRowOrder.title).toBeLessThan(reviewRowOrder.identifier);
+  expect(reviewRowOrder.status).toBeLessThan(reviewRowOrder.identifier);
+  expect(reviewRowOrder.identifier).toBeLessThan(reviewRowOrder.title);
   await reviewRows.first().getByTestId("projects-row-select").click();
   await expect(
     reviewRows.first().getByTestId("project-work-item-status-icon"),

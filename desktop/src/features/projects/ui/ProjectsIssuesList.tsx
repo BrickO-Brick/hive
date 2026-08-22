@@ -91,7 +91,7 @@ function IssueGridCard({
           className="mt-auto flex items-center gap-1.5 text-xs font-medium text-muted-foreground"
           data-testid="projects-grid-card-indicator"
         >
-          <ProjectEventTypeIcon className="h-3.5 w-3.5" kind="issue" />
+          <ProjectEventTypeIcon className="h-3.5 w-3.5" kind="issue" muted />
           <span>{issue.status}</span>
         </div>
       </div>
@@ -120,6 +120,7 @@ function IssueListRow({
   project,
   rangeItems,
   repository,
+  showRepositoryName,
 }: {
   issue: ProjectIssue;
   onOpen: (project: Project, issue: ProjectIssue) => void;
@@ -127,12 +128,14 @@ function IssueListRow({
   project: Project;
   rangeItems: ReturnType<typeof issueSelectionItem>[];
   repository: Repository;
+  showRepositoryName: boolean;
 }) {
   const authorLabel = resolveUserLabel({ profiles, pubkey: issue.author });
 
   return (
     <ProjectEntityListRow
-      affiliation={repository.name}
+      affiliation={showRepositoryName ? repository.name : undefined}
+      affiliationTestId="projects-row-repository"
       count={issue.comments.length}
       dateSeconds={issue.updatedAt}
       dateTestId="projects-row-date"
@@ -154,7 +157,9 @@ function IssueListRow({
       testId={`projects-issue-row-${issue.id}`}
       title={issue.title}
       titleAttr={`Open task ${issue.title}`}
-      titleIcon={<ProjectEventTypeIcon className="h-3.5 w-3.5" kind="issue" />}
+      titleIcon={
+        <ProjectEventTypeIcon className="h-3.5 w-3.5" kind="issue" muted />
+      }
       trailing={
         <ProjectListRowMenu label={`More options for ${issue.title}`}>
           <DropdownMenuItem onSelect={() => onOpen(project, issue)}>
@@ -249,6 +254,8 @@ export function ProjectsIssuesList({
           const groupSelectionItems = group.rows.map((row) =>
             issueSelectionItem(row.project, row.repository, row.issue),
           );
+          const showRepositoryName =
+            new Set(group.rows.map((row) => row.repository.id)).size > 1;
           return (
             <ProjectSelectableGroup
               count={group.rows.length}
@@ -274,6 +281,7 @@ export function ProjectsIssuesList({
                       project={project}
                       rangeItems={groupSelectionItems}
                       repository={repository}
+                      showRepositoryName={showRepositoryName}
                     />
                   </li>
                 ))}

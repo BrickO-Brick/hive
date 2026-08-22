@@ -157,6 +157,8 @@ test("sidebar project add flow browses before creating", async ({ page }) => {
     page.getByTestId("create-project-channel-permissions"),
   ).toBeVisible();
   await expect(page.getByTestId("create-project-listing")).toHaveText("Listed");
+  await expect(page.getByTestId("create-project-template")).toHaveText("None");
+  await expect(page.getByTestId("create-project-team")).toHaveText("None");
   await expect(page.getByTestId("create-project-agent")).toHaveText("None");
   await page.getByRole("button", { name: "Back to projects" }).click();
   await expect(browser).toBeVisible();
@@ -1011,12 +1013,12 @@ test("projects v3 workspace screenshot states", async ({ page }) => {
   ).toBe(4);
   expect(
     Math.round((firstIssueBounds?.x ?? 0) - (issueHeaderBounds?.x ?? 0)),
-  ).toBe(8);
+  ).toBe(0);
   expect(
     Math.round(
       (issueHeaderBounds?.width ?? 0) - (firstIssueBounds?.width ?? 0),
     ),
-  ).toBe(16);
+  ).toBe(0);
   expect(
     (secondIssueBounds?.y ?? 0) -
       ((firstIssueBounds?.y ?? 0) + (firstIssueBounds?.height ?? 0)),
@@ -1128,12 +1130,12 @@ test("projects v3 workspace screenshot states", async ({ page }) => {
   ).toBe(4);
   expect(
     Math.round((firstReviewBounds?.x ?? 0) - (reviewHeaderBounds?.x ?? 0)),
-  ).toBe(8);
+  ).toBe(0);
   expect(
     Math.round(
       (reviewHeaderBounds?.width ?? 0) - (firstReviewBounds?.width ?? 0),
     ),
-  ).toBe(16);
+  ).toBe(0);
   expect(
     (secondReviewBounds?.y ?? 0) -
       ((firstReviewBounds?.y ?? 0) + (firstReviewBounds?.height ?? 0)),

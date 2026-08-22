@@ -119,7 +119,7 @@ export function ProjectsChannelsList({ projects }: { projects: Project[] }) {
   }
 
   return (
-    <div className="space-y-2" data-testid="projects-channels-list">
+    <div className="space-y-0" data-testid="projects-channels-list">
       {groups.map((group) => (
         <ProjectSelectableGroup
           count={group.rows.length}

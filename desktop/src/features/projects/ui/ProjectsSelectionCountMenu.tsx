@@ -73,7 +73,7 @@ export function ProjectsSelectionCountMenu({
       >
         {presentation.title}
       </h2>
-      <div className="space-y-0.5 pt-2">
+      <div className="space-y-2.5 pt-2">
         {presentation.actions
           .filter(
             (action) =>

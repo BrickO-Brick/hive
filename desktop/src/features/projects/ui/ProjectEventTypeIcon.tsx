@@ -92,9 +92,11 @@ export const PROJECT_EVENT_VISUALS: Record<
 export function ProjectEventTypeIcon({
   className,
   kind,
+  muted = false,
 }: {
   className?: string;
   kind: ProjectEventKind;
+  muted?: boolean;
 }) {
   const visual = PROJECT_EVENT_VISUALS[kind];
   const Icon = visual.icon;
@@ -104,11 +106,16 @@ export function ProjectEventTypeIcon({
       aria-hidden="true"
       className={cn(
         "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full ring-1 ring-border/60",
-        visual.badgeClassName,
+        muted ? "bg-muted/25 text-muted-foreground/55" : visual.badgeClassName,
         className,
       )}
     >
-      <Icon className={cn("h-3 w-3", visual.iconClassName)} />
+      <Icon
+        className={cn(
+          "h-3 w-3",
+          muted ? "text-muted-foreground/55" : visual.iconClassName,
+        )}
+      />
     </span>
   );
 }

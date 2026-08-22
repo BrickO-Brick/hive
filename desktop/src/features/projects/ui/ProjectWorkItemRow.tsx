@@ -42,7 +42,7 @@ export function ProjectWorkItemRow({
   return (
     <article
       className={cn(
-        "group/work-item mx-2 flex min-h-10 min-w-0 items-center gap-3 rounded-md px-2 py-2 transition-colors hover:bg-muted/30",
+        "group/work-item flex min-h-10 min-w-0 items-center gap-3 rounded-md px-4 py-2 transition-colors hover:bg-muted/30",
         selected && "bg-muted/40",
       )}
       data-project-event-id={eventId}
@@ -86,24 +86,6 @@ export function ProjectWorkItemRow({
       </span>
       {onOpen ? (
         <button
-          className="min-w-0 flex-1 truncate rounded-sm text-left text-sm font-normal text-foreground transition-colors hover:text-primary focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
-          data-projects-text-priority="primary"
-          onClick={onOpen}
-          title={title}
-          type="button"
-        >
-          {title}
-        </button>
-      ) : (
-        <span
-          className="min-w-0 flex-1 truncate text-sm font-normal text-foreground"
-          data-projects-text-priority="primary"
-        >
-          {title}
-        </span>
-      )}
-      {onOpen ? (
-        <button
           className={cn(
             "w-[4.75rem] shrink-0 truncate rounded-sm text-left text-xs font-medium tabular-nums text-muted-foreground/55 transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
             identifierClassName,
@@ -126,6 +108,24 @@ export function ProjectWorkItemRow({
           data-testid="project-work-item-identifier"
         >
           {identifier}
+        </span>
+      )}
+      {onOpen ? (
+        <button
+          className="min-w-0 flex-1 truncate rounded-sm text-left text-sm font-normal text-foreground transition-colors hover:text-primary focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+          data-projects-text-priority="primary"
+          onClick={onOpen}
+          title={title}
+          type="button"
+        >
+          {title}
+        </button>
+      ) : (
+        <span
+          className="min-w-0 flex-1 truncate text-sm font-normal text-foreground"
+          data-projects-text-priority="primary"
+        >
+          {title}
         </span>
       )}
       {metadata ? (
