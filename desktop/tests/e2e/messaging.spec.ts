@@ -3383,6 +3383,99 @@ test("closing a thread while editing a reply preserves the typed edit", async ({
   ).toBeVisible();
 });
 
+test("main ArrowUp ignores closed-thread replies and edits the visible timeline message", async ({
+  page,
+}) => {
+  const root = `Main ArrowUp root ${Date.now()}`;
+  const reply = `Main ArrowUp hidden reply ${Date.now()}`;
+
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+  const mainInput = page
+    .getByTestId("channel-composer-overlay")
+    .getByTestId("message-input");
+  await mainInput.fill(root);
+  await mainInput.press("Enter");
+  const timelineRoot = page
+    .getByTestId("message-timeline")
+    .getByTestId("message-row")
+    .last();
+  await timelineRoot.hover();
+  await timelineRoot
+    .getByRole("button", { name: "Reply" })
+    .click({ force: true });
+
+  const threadPanel = page.getByTestId("message-thread-panel");
+  const threadInput = threadPanel.getByTestId("message-input");
+  await threadInput.fill(reply);
+  await threadInput.press("Enter");
+  await expect(threadPanel).toContainText(reply);
+  await threadPanel.getByTestId("auxiliary-panel-close").click();
+  await expect(threadPanel).toBeHidden();
+
+  await mainInput.click();
+  await page.keyboard.press("ArrowUp");
+  await expect(page.getByTestId("edit-target")).toBeVisible();
+  await expect(mainInput).toHaveText(root);
+
+  // No hidden reply edit may block reopening its thread.
+  await mainInput.press("Escape");
+  await timelineRoot.hover();
+  await timelineRoot
+    .getByRole("button", { name: "Reply" })
+    .click({ force: true });
+  await expect(threadPanel).toBeVisible();
+});
+
+test("main ArrowUp refuses to replace a dirty thread edit", async ({
+  page,
+}) => {
+  const root = `Main ArrowUp refusal root ${Date.now()}`;
+  const reply = `Main ArrowUp refusal reply ${Date.now()}`;
+  const unsaved = `${reply} with unsaved text`;
+
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+  const mainInput = page
+    .getByTestId("channel-composer-overlay")
+    .getByTestId("message-input");
+  await mainInput.fill(root);
+  await mainInput.press("Enter");
+  const timelineRoot = page
+    .getByTestId("message-timeline")
+    .getByTestId("message-row")
+    .last();
+  await timelineRoot.hover();
+  await timelineRoot
+    .getByRole("button", { name: "Reply" })
+    .click({ force: true });
+
+  const threadPanel = page.getByTestId("message-thread-panel");
+  const threadInput = threadPanel.getByTestId("message-input");
+  await threadInput.fill(reply);
+  await threadInput.press("Enter");
+  const threadReply = threadPanel.getByTestId("message-row").last();
+  await expect(threadReply).toContainText(reply);
+  await threadReply.hover();
+  await threadReply.getByRole("button", { name: "More actions" }).click();
+  await page.getByRole("menuitem", { name: "Edit message" }).click();
+  await threadInput.fill(unsaved);
+
+  await mainInput.click();
+  await page.keyboard.press("ArrowUp");
+  await expect(
+    page.getByText("Finish or cancel your edit first."),
+  ).toBeVisible();
+  await expect(threadPanel.getByTestId("edit-target")).toBeVisible();
+  await expect(threadInput).toHaveText(unsaved);
+  await expect(mainInput).toHaveText("");
+
+  // Refusal must not arm a deferred edit that appears after cancellation.
+  await threadInput.press("Escape");
+  await expect(threadPanel.getByTestId("edit-target")).toHaveCount(0);
+  await expect(mainInput).toHaveText("");
+});
+
 test("ArrowUp in an empty composer edits your last message right after sending", async ({
   page,
 }) => {

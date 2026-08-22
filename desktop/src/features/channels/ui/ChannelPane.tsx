@@ -245,12 +245,6 @@ export const ChannelPane = React.memo(function ChannelPane({
     },
     [onEdit, currentPubkey],
   );
-  const handleEditLastOwnMainMessage = React.useCallback((): boolean => {
-    const target = findLastOwnEditable(messages);
-    if (!target || !onEdit) return false;
-    onEdit(target);
-    return true;
-  }, [findLastOwnEditable, messages, onEdit]);
 
   const timeoutState = useTimeoutState();
   // A moderation DM (1:1 with the relay identity) is read-only for the member;
@@ -496,6 +490,12 @@ export const ChannelPane = React.memo(function ChannelPane({
     },
     [isSinglePanelView, onCloseThread, onEdit, useFocusThreadDrawer],
   );
+  const handleEditLastOwnMainMessage = React.useCallback((): boolean => {
+    const target = findLastOwnEditable(
+      mainTimelineEntries.map((entry) => entry.message),
+    );
+    return target ? handleRoutedEdit(target) : false;
+  }, [findLastOwnEditable, handleRoutedEdit, mainTimelineEntries]);
   const handleEditLastOwnThreadMessage = React.useCallback((): boolean => {
     const scope: TimelineMessage[] = [];
     if (threadHeadMessage) scope.push(threadHeadMessage);
@@ -561,6 +561,7 @@ export const ChannelPane = React.memo(function ChannelPane({
     useFocusThreadDrawer ? (
       <FocusThreadDrawer
         channelName={activeChannel?.name ?? "channel"}
+        hasActiveEdit={threadEditTarget !== null}
         key={THREAD_SURFACE_KEY}
         onClose={onCloseThread}
       >
