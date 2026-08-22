@@ -241,34 +241,43 @@ pub(crate) fn render_recovery_sheet(
     );
 
     draw_qr(&mut ops, recovery_secret)?;
-    fill_rect(&mut ops, 18.0, 45.0, 179.9, 36.0, cream());
-    fill_rect(&mut ops, 18.0, 45.0, 3.0, 36.0, buzz_yellow());
+    fill_rect(&mut ops, 18.0, 39.0, 179.9, 47.0, cream());
+    fill_rect(&mut ops, 18.0, 39.0, 3.0, 47.0, buzz_yellow());
     text(
         &mut ops,
         25.0,
-        70.0,
+        76.0,
         10.0,
         BuiltinFont::Helvetica,
         charcoal(),
-        "On the computer where you want to use Buzz, choose \"Restore from a backup file.\"",
+        "Keep identity.buzzbackup somewhere you can reach if this computer is lost,",
     );
     text(
         &mut ops,
         25.0,
-        60.0,
+        66.0,
         10.0,
         BuiltinFont::Helvetica,
         charcoal(),
-        "Copy identity.buzzbackup from wherever you saved it to this computer, then select it.",
+        "such as a USB drive or cloud storage.",
     );
     text(
         &mut ops,
         25.0,
-        50.0,
+        53.0,
         10.0,
         BuiltinFont::Helvetica,
         charcoal(),
-        "Enter your password, then scan or type the recovery code above.",
+        "On a new computer, install Buzz and choose \"Restore from a backup file.\"",
+    );
+    text(
+        &mut ops,
+        25.0,
+        43.0,
+        10.0,
+        BuiltinFont::Helvetica,
+        charcoal(),
+        "Select identity.buzzbackup, enter your password, then use the code above.",
     );
 
     text(
@@ -320,9 +329,11 @@ mod tests {
         assert_eq!(parsed.pages.len(), 1);
         assert!(text.contains(RECOVERY_CODE));
         assert!(text.contains("Your Buzz recovery code."));
+        assert!(text.contains("if this computer is lost"));
+        assert!(text.contains("USB drive or cloud storage"));
+        assert!(text.contains("On a new computer"));
         assert!(text.contains("Restore from a backup file."));
-        assert!(text.contains("Copy identity.buzzbackup"));
-        assert!(text.contains("Enter your password"));
+        assert!(text.contains("Select identity.buzzbackup"));
         assert!(text.contains(NPUB));
         assert!(!text.contains("buzz2skd1:"));
         assert!(!text.contains("password="));
