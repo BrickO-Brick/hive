@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  countToolRunGroupFailures,
   getToolRunGroupStatus,
   isToolRunGroupActive,
 } from "./agentSessionToolRunStatus.ts";
@@ -104,14 +103,4 @@ test("only executing and pending count as active", () => {
   assert.equal(isToolRunGroupActive("pending"), true);
   assert.equal(isToolRunGroupActive("failed"), false);
   assert.equal(isToolRunGroupActive("completed"), false);
-});
-
-test("failure count covers both failed status and isError", () => {
-  const items = [
-    tool("a", "failed"),
-    tool("b", "completed", { isError: true }),
-    tool("c", "completed"),
-  ];
-  assert.equal(countToolRunGroupFailures(items), 2);
-  assert.equal(countToolRunGroupFailures([tool("a", "completed")]), 0);
 });

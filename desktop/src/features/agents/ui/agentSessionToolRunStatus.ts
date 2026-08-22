@@ -8,6 +8,15 @@ import type { TranscriptItem } from "./agentSessionTypes";
  * or is still running. Reading the aggregate is the whole point of collapsing,
  * so the aggregate is the one place we refuse to round in the optimistic
  * direction.
+ *
+ * `"failed"` is currently a SAFETY NET, not a state real frames reach. Grouping
+ * ejects failures (`isGroupingEligible` in `agentSessionTranscriptGrouping`
+ * rejects `isError`, and every failed item is error-flagged — `tool_call`
+ * frames pass `isError: false` and `tool_call_update` derives it from
+ * `status === "failed"`), so a failed call always breaks out as its own row.
+ * That ejection, not this aggregate, is what keeps failures conspicuous today.
+ * The fold still handles failure so that widening eligibility later cannot
+ * silently hide a failure behind a collapsed summary.
  */
 export type ToolRunGroupStatus =
   | "failed"
@@ -59,15 +68,4 @@ export function getToolRunGroupStatus(
 /** True while a group still has work outstanding. */
 export function isToolRunGroupActive(status: ToolRunGroupStatus): boolean {
   return status === "executing" || status === "pending";
-}
-
-/** Number of failing children in a group (used for conspicuous failure copy). */
-export function countToolRunGroupFailures(
-  items: readonly TranscriptItem[],
-): number {
-  let failures = 0;
-  for (const item of items) {
-    if (statusForItem(item) === "failed") failures += 1;
-  }
-  return failures;
 }

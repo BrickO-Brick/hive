@@ -1,6 +1,6 @@
 import * as React from "react";
 import { motion, useReducedMotion } from "motion/react";
-import { CheckCheck, CircleHelp, Clock, Radio } from "lucide-react";
+import { CheckCheck, Clock, Radio } from "lucide-react";
 
 import {
   useActiveAgentTurns,
@@ -23,8 +23,11 @@ import {
 } from "@/shared/ui/dialog";
 import { Toggle } from "@/shared/ui/toggle";
 import { AnimatedCount } from "@/shared/ui/AnimatedCount";
-import { FuzzyLogo } from "@/shared/ui/buzz-logo/FuzzyLogo";
 import type { PromptSection, TranscriptItem } from "./agentSessionTypes";
+import {
+  AgentSessionTranscriptEmptyBody,
+  type AgentSessionTranscriptEmptyState,
+} from "./AgentSessionTranscriptEmptyState";
 import { TurnLivenessIndicator } from "./TurnLivenessIndicator";
 import { PromptSectionList as PromptContextSections } from "./PromptSectionAccordion";
 import {
@@ -55,6 +58,10 @@ import {
   type TranscriptTurnSegment,
 } from "./agentSessionTranscriptGrouping";
 import { TranscriptToolRunGroup } from "./TranscriptToolRunGroup";
+import {
+  TranscriptToolRunGroupKeyProvider,
+  useResolvedToolRunGroupKeys,
+} from "./useTranscriptToolRunGroupKeys";
 import { TranscriptRowTimestamp } from "./TranscriptRowTimestamp";
 import { buildCompactToolSummary } from "./agentSessionToolSummary";
 import { shouldShowTranscriptRowTimestamp } from "./agentSessionTranscriptPresentation";
@@ -91,12 +98,7 @@ function useHasCompletedInitialRender() {
  */
 const SHOW_TRANSCRIPT_ACP_SOURCE = shouldShowTranscriptAcpSource();
 
-/**
- * `"unknown"` means history may exist but could not be read (no `owner_p` save
- * subscription, or archive hydration incomplete). It is deliberately distinct
- * from `"idle"`: only `"idle"` may state that there was no activity.
- */
-export type AgentSessionTranscriptEmptyState = "idle" | "loading" | "unknown";
+export type { AgentSessionTranscriptEmptyState };
 
 function shouldShowTranscriptAcpSource() {
   const envValue = import.meta.env.VITE_SHOW_TRANSCRIPT_ACP_SOURCE;
@@ -162,6 +164,15 @@ export function AgentSessionTranscriptList({
     () => buildTranscriptDisplayBlocks(items, latestLiveSessionId),
     [items, latestLiveSessionId],
   );
+  // Durable per-group identities for this pass, resolved once for the whole
+  // transcript so a reader's expansion choice survives leaves leaving a group
+  // (a failed call is ejected from it). Scoped by the transcript instance, not
+  // globally: the compact preview and the channel pane render the same work and
+  // must not overwrite each other's recognition table.
+  const toolRunGroupKeys = useResolvedToolRunGroupKeys(
+    `${agentPubkey}:${channelId ?? "all"}:${variant}`,
+    displayBlocks,
+  );
   // Derive the same block keys the DOM renders as `data-message-id` so
   // useAnchoredScroll anchors on real DOM rows. Value-stabilized so the
   // hook's restoration effect only fires when the ordered block sequence
@@ -208,41 +219,14 @@ export function AgentSessionTranscriptList({
   );
 
   if (!hasRenderableContent) {
-    const isLoading = emptyState === "loading" || isTurnLive;
-    // Uncertain history must never be presented as "no activity" — see
-    // AgentSessionTranscriptEmptyState.
-    const uncertain = !isLoading && emptyState === "unknown";
-
     return (
       <div className={scrollContainerClassNames}>
         <div className="flex h-full min-h-40 flex-col items-center justify-center px-6 py-10 text-center">
-          {isLoading ? (
-            <FuzzyLogo
-              ariaLabel="Waiting for ACP activity"
-              className="mx-auto text-muted-foreground"
-              fuzz={false}
-              loop
-            />
-          ) : uncertain ? (
-            <>
-              <CircleHelp className="mx-auto h-4 w-4 text-muted-foreground" />
-              <p className="mt-3 text-sm font-medium">
-                Earlier activity may not be shown
-              </p>
-              <p className="mt-1 text-sm text-muted-foreground">
-                Archived history isn't available for this view, so activity from
-                before now may be missing.
-              </p>
-            </>
-          ) : (
-            <>
-              <Radio className="mx-auto h-4 w-4 text-muted-foreground" />
-              <p className="mt-3 text-sm font-medium">No ACP activity yet</p>
-              <p className="mt-1 text-sm text-muted-foreground">
-                {emptyDescription}
-              </p>
-            </>
-          )}
+          <AgentSessionTranscriptEmptyBody
+            emptyDescription={emptyDescription}
+            isLoading={emptyState === "loading" || isTurnLive}
+            state={emptyState}
+          />
         </div>
       </div>
     );
@@ -268,36 +252,38 @@ export function AgentSessionTranscriptList({
         role="log"
       >
         <AgentSessionTranscriptVariantProvider value={variant}>
-          {displayBlocks.map((block) => {
-            const blockKey = getDisplayBlockKey(block);
-            return (
-              <motion.div
-                animate={ROW_ENTER_TO}
-                data-message-id={blockKey}
-                initial={
-                  animationsDisabled || !hasCompletedInitialRenderRef.current
-                    ? false
-                    : ROW_ENTER_FROM
-                }
-                key={blockKey}
-                layout={layoutAnimationsEnabled ? "position" : false}
-                transition={ROW_ENTER_SPRING}
-              >
-                {/* content-visibility stays on a non-animated child: motion
+          <TranscriptToolRunGroupKeyProvider value={toolRunGroupKeys}>
+            {displayBlocks.map((block) => {
+              const blockKey = getDisplayBlockKey(block);
+              return (
+                <motion.div
+                  animate={ROW_ENTER_TO}
+                  data-message-id={blockKey}
+                  initial={
+                    animationsDisabled || !hasCompletedInitialRenderRef.current
+                      ? false
+                      : ROW_ENTER_FROM
+                  }
+                  key={blockKey}
+                  layout={layoutAnimationsEnabled ? "position" : false}
+                  transition={ROW_ENTER_SPRING}
+                >
+                  {/* content-visibility stays on a non-animated child: motion
                     measures the outer wrapper for layout animations, which
                     would otherwise force skipped offscreen rows to render. */}
-                <div className="content-visibility-auto">
-                  <TranscriptDisplayBlockView
-                    agentAvatarUrl={agentAvatarUrl}
-                    agentName={agentName}
-                    agentPubkey={agentPubkey}
-                    block={block}
-                    profiles={profiles}
-                  />
-                </div>
-              </motion.div>
-            );
-          })}
+                  <div className="content-visibility-auto">
+                    <TranscriptDisplayBlockView
+                      agentAvatarUrl={agentAvatarUrl}
+                      agentName={agentName}
+                      agentPubkey={agentPubkey}
+                      block={block}
+                      profiles={profiles}
+                    />
+                  </div>
+                </motion.div>
+              );
+            })}
+          </TranscriptToolRunGroupKeyProvider>
           {isTurnLive && !isCompactPreview ? <TurnLivenessIndicator /> : null}
         </AgentSessionTranscriptVariantProvider>
       </div>

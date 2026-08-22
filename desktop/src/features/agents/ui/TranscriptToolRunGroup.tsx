@@ -12,7 +12,6 @@ import type {
 } from "./agentSessionTranscriptGrouping";
 import { getToolRunGroupKey } from "./agentSessionToolRunGroupKey";
 import {
-  countToolRunGroupFailures,
   getToolRunGroupStatus,
   isToolRunGroupActive,
 } from "./agentSessionToolRunStatus";
@@ -26,6 +25,7 @@ import {
   setToolRunGroupItemExpanded,
 } from "./agentSessionToolRunViewState";
 import { useToolRunGroupViewState } from "./useToolRunGroupViewState";
+import { useToolRunGroupKey } from "./useTranscriptToolRunGroupKeys";
 import { formatTranscriptTimestampTitle } from "./agentSessionUtils";
 import { TranscriptRowTimestamp } from "./TranscriptRowTimestamp";
 
@@ -34,14 +34,19 @@ import { TranscriptRowTimestamp } from "./TranscriptRowTimestamp";
  *
  * Only non-clean outcomes render. A completed group says nothing — "done" is
  * the expected case and a badge on every finished group would train the reader
- * to ignore the badge that matters. Failures and in-flight work are exactly the
- * states worth interrupting for, which is why the aggregate leans that way.
+ * to ignore the badge that matters. In-flight work is exactly the state worth
+ * interrupting for.
+ *
+ * The `failed` branch is a safety net that mirrors the failure-leaning fold in
+ * `getToolRunGroupStatus`; no observer frame reaches it today because grouping
+ * ejects failed calls into standalone rows (see that module's note). It is kept
+ * deliberately plain — one word, no count — because an aggregate that cannot be
+ * produced should not carry presentation detail nobody can verify. If grouping
+ * ever admits failures, this says the true thing rather than nothing.
  */
 function ToolRunGroupStatusBadge({
-  failureCount,
   status,
 }: {
-  failureCount: number;
   status: ReturnType<typeof getToolRunGroupStatus>;
 }) {
   if (status === "completed") return null;
@@ -53,7 +58,7 @@ function ToolRunGroupStatusBadge({
         data-testid="tool-run-group-status-failed"
       >
         <CircleAlert aria-hidden="true" className="h-3.5 w-3.5" />
-        {failureCount > 1 ? `${failureCount} failed` : "failed"}
+        failed
       </span>
     );
   }
@@ -150,13 +155,10 @@ export function TranscriptToolRunGroup({
   summary,
 }: TranscriptToolRunGroupProps) {
   const status = getToolRunGroupStatus(summary.items);
-  const groupKey = getToolRunGroupKey(summary);
+  const anchorKey = getToolRunGroupKey(summary);
+  const groupKey = useToolRunGroupKey(summary.id, anchorKey);
   const { state, update } = useToolRunGroupViewState(groupKey, status);
 
-  const failureCount = React.useMemo(
-    () => countToolRunGroupFailures(summary.items),
-    [summary.items],
-  );
   const artifacts = React.useMemo(
     () => collectToolRunArtifacts(summary.items),
     [summary.items],
@@ -205,7 +207,7 @@ export function TranscriptToolRunGroup({
         title={formatTranscriptTimestampTitle(summary.timestamp)}
       >
         {label}
-        <ToolRunGroupStatusBadge failureCount={failureCount} status={status} />
+        <ToolRunGroupStatusBadge status={status} />
         <ActivityRowContent className="flex flex-col gap-0.5">
           {visibleChildren.map((child) =>
             renderChild(

@@ -71,6 +71,8 @@ export function ActivityRow({
     );
   }
 
+  const isControlled = onOpenChange !== undefined;
+
   return (
     <details
       className={cn(
@@ -79,14 +81,10 @@ export function ActivityRow({
         className,
       )}
       data-testid={testId}
-      onToggle={
-        onOpenChange
-          ? (event) => onOpenChange(event.currentTarget.open)
-          : undefined
-      }
       open={open}
       title={title}
     >
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: <summary> is natively an interactive disclosure control, not a static element */}
       <summary
         className={cn(
           "group/row flex min-h-6 w-full max-w-full cursor-pointer list-none items-center gap-1.5 text-muted-foreground",
@@ -94,6 +92,24 @@ export function ActivityRow({
             ? "group-open/summary:text-foreground"
             : "group-open:text-foreground",
         )}
+        // A controlled row drives disclosure from the reader's click rather
+        // than from the element's `toggle` event. `toggle` is dispatched
+        // asynchronously and also fires when React sets `open` on mount, so it
+        // cannot distinguish "the reader clicked" from "React rendered the
+        // state we already hold" — and React re-asserts the declared `open`
+        // before the event is delivered, which loses the click entirely.
+        // Preventing the default keeps the DOM in step with our state, so the
+        // caller's value stays the single source of truth. `onClick` also
+        // covers keyboard activation, which browsers deliver as a click on the
+        // summary, so no extra key handling is needed.
+        onClick={
+          isControlled
+            ? (event) => {
+                event.preventDefault();
+                onOpenChange(!open);
+              }
+            : undefined
+        }
       >
         {summaryChildren}
         <ChevronDown

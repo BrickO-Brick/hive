@@ -3,13 +3,18 @@ import test from "node:test";
 
 import { buildTranscript } from "./agentSessionTranscript.ts";
 import { buildTranscriptDisplayBlocks } from "./agentSessionTranscriptGrouping.ts";
-import { getToolRunGroupKey } from "./agentSessionToolRunGroupKey.ts";
+import {
+  getToolRunGroupKey,
+  resolveTranscriptToolRunGroupKeys,
+} from "./agentSessionToolRunGroupKey.ts";
 import { collectToolRunArtifacts } from "./agentSessionToolRunPartition.ts";
 import { getToolRunGroupStatus } from "./agentSessionToolRunStatus.ts";
 import { initialToolRunGroupViewState } from "./agentSessionToolRunViewState.ts";
 import {
+  readToolRunGroupIdentityTable,
   readToolRunGroupViewState,
   resetAgentSessionToolRunViewState,
+  writeToolRunGroupIdentityTable,
   writeToolRunGroupViewState,
 } from "./agentSessionToolRunViewStore.ts";
 
@@ -287,6 +292,23 @@ function summaryKeys(events) {
   return summaries(events).map((summary) => getToolRunGroupKey(summary));
 }
 
+/**
+ * Durable group identities for one transcript pass, resolved exactly the way the
+ * list does: against the recognition table left by the previous pass in the
+ * module-scoped store. Calling this twice models two renders.
+ */
+function resolvedSummaryKeys(events) {
+  const blocks = buildTranscriptDisplayBlocks(buildTranscript(events));
+  const { keysBySummaryId, table } = resolveTranscriptToolRunGroupKeys(
+    blocks,
+    readToolRunGroupIdentityTable(IDENTITY_SCOPE),
+  );
+  writeToolRunGroupIdentityTable(IDENTITY_SCOPE, table);
+  return summaries(events).map((summary) => keysBySummaryId.get(summary.id));
+}
+
+const IDENTITY_SCOPE = "test-scope";
+
 test("the group key survives a group growing by appended live calls", () => {
   // The stated reason for keying on the first leaf rather than the summary id:
   // a burst that absorbs more calls must not churn. Driven through the real
@@ -323,19 +345,16 @@ test("the group key survives the same-kind to mixed transition", () => {
   );
 });
 
-test("KNOWN GAP: ejecting a group's FIRST leaf churns the key and drops reader state", () => {
-  // The first leaf is only stable while it stays in the group. When the first
-  // call is the one that fails, `isGroupingEligible` ejects it, the next leaf
-  // becomes first, and `group:<turn>:<first leaf>` changes — so
-  // `useToolRunGroupViewState` finds nothing in the store under the new key and
-  // remounts at mount-policy default, discarding the reader's choice.
+test("a group keeps its identity when its FIRST leaf is ejected after failing", () => {
+  // The case that used to churn: the first call is the one that fails,
+  // `isGroupingEligible` ejects it, the next leaf becomes first, and a key
+  // derived from "first leaf" changes — so the store found nothing under the
+  // new key and the group remounted at mount policy, discarding the reader's
+  // deliberate collapse.
   //
-  // This pins observed behavior, not desired behavior: the commit message
-  // claims expansion "must survive the remount that re-grouping causes", and
-  // for a first-leaf ejection it does not. If the key is later made durable
-  // against this case (e.g. keyed on the group's min leaf id, or state migrated
-  // on eject), this test SHOULD fail and be replaced with the durable
-  // assertion.
+  // Identity is now resolved against the leaves that stayed
+  // (`resolveTranscriptToolRunGroupKeys`), so the surviving run answers to the
+  // identity the reader's state is filed under.
   const running = [
     shell(1, "cmd-a", "pnpm lint", { status: "executing", rawOutput: "" }),
     shell(2, "cmd-b", "pnpm test", { status: "executing", rawOutput: "" }),
@@ -351,22 +370,15 @@ test("KNOWN GAP: ejecting a group's FIRST leaf churns the key and drops reader s
     }),
   ];
 
-  const [keyBefore] = summaryKeys(running);
-  const keysAfter = summaryKeys(firstLeafFailed);
-  assert.equal(
-    keyBefore,
-    "group:turn-1:tool:11111111-1111-1111-1111-111111111111:cmd-a",
-  );
-  assert.equal(keysAfter.length, 1, "the surviving calls still group together");
-  assert.notEqual(
-    keysAfter[0],
-    keyBefore,
-    "documented gap: the key is expected to churn here today",
-  );
-
-  // And the churn is what actually costs the reader their choice.
   resetAgentSessionToolRunViewState();
   try {
+    const [keyBefore] = resolvedSummaryKeys(running);
+    assert.equal(
+      keyBefore,
+      "group:turn-1:tool:11111111-1111-1111-1111-111111111111:cmd-a",
+    );
+
+    // The reader collapses the running group.
     const readerClosedIt = {
       ...initialToolRunGroupViewState("executing"),
       expanded: false,
@@ -374,28 +386,88 @@ test("KNOWN GAP: ejecting a group's FIRST leaf churns the key and drops reader s
     };
     writeToolRunGroupViewState(keyBefore, readerClosedIt);
 
-    // Positive control: the store does remember state under the key it was
-    // written to, so the assertion below is about key churn and not about a
-    // no-op write.
-    assert.deepEqual(readToolRunGroupViewState(keyBefore), readerClosedIt);
-
+    // The leading call then fails and is ejected.
+    const keysAfter = resolvedSummaryKeys(firstLeafFailed);
     assert.equal(
-      readToolRunGroupViewState(keysAfter[0]),
-      undefined,
-      "no remembered state is found under the churned key",
+      keysAfter.length,
+      1,
+      "the surviving calls still group together",
     );
-    // So the group re-mounts at policy default (open, untouched) instead of the
-    // collapsed-by-the-reader state stored a moment earlier.
+    assert.equal(
+      keysAfter[0],
+      keyBefore,
+      "the surviving run must keep the identity the reader's choice is under",
+    );
     assert.deepEqual(
-      readToolRunGroupViewState(keysAfter[0]) ??
-        initialToolRunGroupViewState("executing"),
-      {
-        expanded: true,
-        userInteracted: false,
-        showInternalSteps: false,
-        expandedItemIds: [],
-      },
+      readToolRunGroupViewState(keysAfter[0]),
+      readerClosedIt,
+      "the reader's collapse must survive the ejection",
     );
+
+    // And the ejected failure is still its own conspicuous row.
+    const described = describeSegments(firstLeafFailed);
+    assert.ok(
+      described.some(
+        (entry) => entry.startsWith("item:") && entry.includes("cmd-a"),
+      ),
+      `the failed call must surface as its own row: ${described}`,
+    );
+  } finally {
+    resetAgentSessionToolRunViewState();
+  }
+});
+
+test("a failure splitting a run in two gives only one half the reader's state", () => {
+  // Both halves descend from one group, so both recognise leaves from it. Only
+  // the half holding the earlier leaves may inherit the reader's state —
+  // otherwise two independent cards would share (and fight over) one entry.
+  const running = [
+    shell(1, "cmd-a", "pnpm lint", { status: "executing", rawOutput: "" }),
+    shell(2, "cmd-b", "pnpm test", { status: "executing", rawOutput: "" }),
+    shell(3, "cmd-c", "pnpm build", { status: "executing", rawOutput: "" }),
+    shell(4, "cmd-d", "pnpm check", { status: "executing", rawOutput: "" }),
+    shell(5, "cmd-e", "pnpm docs", { status: "executing", rawOutput: "" }),
+    shell(6, "cmd-f", "pnpm size", { status: "executing", rawOutput: "" }),
+  ];
+  const middleFailed = [
+    ...running,
+    frame(7, {
+      sessionUpdate: "tool_call_update",
+      toolCallId: "cmd-d",
+      status: "failed",
+      rawOutput: "boom",
+    }),
+  ];
+
+  resetAgentSessionToolRunViewState();
+  try {
+    const [keyBefore] = resolvedSummaryKeys(running);
+    const keysAfter = resolvedSummaryKeys(middleFailed);
+    assert.equal(keysAfter.length, 2, `expected a split: ${keysAfter}`);
+    assert.equal(keysAfter[0], keyBefore, "the leading half inherits");
+    assert.notEqual(
+      keysAfter[1],
+      keyBefore,
+      "the trailing half must not share the same reader state",
+    );
+  } finally {
+    resetAgentSessionToolRunViewState();
+  }
+});
+
+test("group identity is stable when nothing about the run changed", () => {
+  // Guards against churn from re-derivation alone: the transcript is rebuilt
+  // from scratch on every pass, and a pass that produces the same groups must
+  // produce the same identities.
+  const events = [
+    shell(1, "cmd-a", "pnpm lint", { status: "executing", rawOutput: "" }),
+    shell(2, "cmd-b", "pnpm test", { status: "executing", rawOutput: "" }),
+    shell(3, "cmd-c", "pnpm build", { status: "executing", rawOutput: "" }),
+  ];
+
+  resetAgentSessionToolRunViewState();
+  try {
+    assert.deepEqual(resolvedSummaryKeys(events), resolvedSummaryKeys(events));
   } finally {
     resetAgentSessionToolRunViewState();
   }

@@ -10,8 +10,19 @@
  * conclude an agent did nothing when its history was simply unavailable.
  *
  * So the distinction is preserved here rather than collapsed at the call site.
+ * The uncertain variants name WHICH check came up short, because that is what
+ * the reader needs in order to know whether to wait, look elsewhere, or trust
+ * what they see.
  */
-export type TranscriptHistoryCertainty = "known-empty" | "unknown";
+export type TranscriptHistoryCertainty =
+  | "known-empty"
+  | UncertainHistoryCertainty;
+
+/** Specific reason the history could not be established as complete. */
+export type UncertainHistoryCertainty =
+  | "unknown-subscription-unresolved"
+  | "unknown-not-indexed"
+  | "unknown-archive-loading";
 
 export type TranscriptHistoryInputs = {
   /**
@@ -37,10 +48,20 @@ export function getTranscriptHistoryCertainty({
   channelId,
   archiveHydrated,
 }: TranscriptHistoryInputs): TranscriptHistoryCertainty {
-  if (hasSubscription !== true) return "unknown";
-  if (!channelId) return "unknown";
-  if (!archiveHydrated) return "unknown";
+  if (hasSubscription === null) return "unknown-subscription-unresolved";
+  if (hasSubscription === false) return "unknown-not-indexed";
+  // A subscription exists but no channel was consulted: nothing was read from
+  // the archive, which is indistinguishable from an unfinished read.
+  if (!channelId) return "unknown-archive-loading";
+  if (!archiveHydrated) return "unknown-archive-loading";
   return "known-empty";
+}
+
+/** True when an empty transcript must not be presented as "no activity". */
+export function isUncertainHistory(
+  certainty: TranscriptHistoryCertainty,
+): certainty is UncertainHistoryCertainty {
+  return certainty !== "known-empty";
 }
 
 export type TranscriptEmptyCopy = {
@@ -53,19 +74,22 @@ export type TranscriptEmptyCopy = {
  *
  * Phrased as a statement about what this view can see rather than about what
  * the agent did, and it never uses "no activity" — the whole point is that we
- * do not know. `reason` names the specific gap so the message stays actionable
- * instead of vaguely ominous.
+ * do not know. Each variant names the specific gap so the message stays
+ * actionable instead of vaguely ominous.
+ *
+ * This is the only place uncertain-history wording lives. Rendering code must
+ * call it rather than inlining its own, so the two cannot drift apart.
  */
 export function getUncertainHistoryCopy(
-  inputs: TranscriptHistoryInputs,
+  certainty: UncertainHistoryCertainty,
 ): TranscriptEmptyCopy {
-  if (inputs.hasSubscription === null) {
+  if (certainty === "unknown-subscription-unresolved") {
     return {
       title: "Checking for earlier activity",
       description: "Looking up whether archived history is available here.",
     };
   }
-  if (inputs.hasSubscription === false) {
+  if (certainty === "unknown-not-indexed") {
     return {
       title: "Earlier activity may not be shown",
       description:
