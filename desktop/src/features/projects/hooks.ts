@@ -175,12 +175,9 @@ export async function fetchProjects(
   // is the pure, Tauri-free core of this operation. That helper's javadoc
   // explains the fail-closed tombstone contract and the NIP-OA owner-deletion
   // relay-side-suppression decision.
-  let viewerPubkey: string | undefined;
-  try {
-    viewerPubkey = (await getIdentity()).pubkey;
-  } catch {
-    viewerPubkey = undefined;
-  }
+  const viewerPubkey = await getIdentity()
+    .then((identity) => identity.pubkey)
+    .catch(() => undefined);
   const fetcher: FetchProjectEventsExhaustively =
     fetchExhaustively ??
     ((kinds, extraFilter) =>
