@@ -16,6 +16,8 @@ import {
   scopeByChannel,
 } from "@/features/agents/ui/agentSessionPanelLayout";
 import { deriveTranscriptBlockIds } from "@/features/agents/ui/agentSessionTranscriptGrouping";
+import type { AgentSessionTranscriptVariant } from "@/features/agents/ui/agentSessionTranscriptContext";
+import { resolveAgentSessionTranscriptVariant } from "@/features/agents/ui/agentSessionTranscriptVariantChoice";
 import type { ObserverEvent } from "@/features/agents/ui/agentSessionTypes";
 import { ManagedAgentSessionPanel } from "@/features/agents/ui/ManagedAgentSessionPanel";
 import {
@@ -81,6 +83,11 @@ type AgentSessionThreadPanelProps = {
   onClose: () => void;
   widthPx: number;
   transparentChrome?: boolean;
+  /**
+   * Overrides the transcript presentation. Omit to let the panel pick from its
+   * own layout — see `resolveAgentSessionTranscriptVariant`.
+   */
+  transcriptVariant?: AgentSessionTranscriptVariant;
 };
 
 export function AgentSessionThreadPanel({
@@ -95,9 +102,16 @@ export function AgentSessionThreadPanel({
   onClose,
   widthPx,
   transparentChrome = false,
+  transcriptVariant,
 }: AgentSessionThreadPanelProps) {
   const isLive = isManagedAgentActive(agent);
   const isOverlay = useIsThreadPanelOverlay();
+  // Wide/standalone reading layouts get the conversation transcript; narrow and
+  // single-panel layouts keep the dense activity feed. An explicit prop always
+  // wins so callers can pin a presentation.
+  const resolvedTranscriptVariant =
+    transcriptVariant ??
+    resolveAgentSessionTranscriptVariant({ isSinglePanelView, widthPx });
   const sessionChannelId = channelId ?? channel?.id ?? null;
   // Unified working signal, scoped to this panel's channel (or all channels
   // when the panel is unscoped) — observer turns primary, typing fallback.
@@ -495,6 +509,7 @@ export function AgentSessionThreadPanel({
             rawLayout="exclusive"
             showHeader={false}
             showRaw={showRawFeed}
+            transcriptVariant={resolvedTranscriptVariant}
           />
         </div>
       </AuxiliaryPanelBody>
