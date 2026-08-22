@@ -1572,6 +1572,50 @@ async fn history_growth_mid_turn_does_not_trigger_handoff() {
     h.shutdown().await;
 }
 
+/// The end-of-turn gate compares the final request's MEASURED input usage
+/// against the threshold — nothing else. The old round-start gate added a
+/// 1-byte/token estimate of history appended since the measurement; at end of
+/// turn the only such history is the final assistant reply, so keeping that
+/// term would compact an under-threshold turn merely because its answer was
+/// long. Here usage is 8500 < 9000 and the reply is ~2 KB: no handoff.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn large_final_reply_does_not_trigger_end_of_turn_handoff() {
+    let long_reply = "a".repeat(2048);
+    let llm = spawn_capturing_llm(vec![
+        openai_text_with_usage(&long_reply, 8500),
+        openai_text("summary that must never be requested"),
+    ])
+    .await;
+    let mut h = Harness::spawn_with_env(
+        &llm.url,
+        &[
+            ("BUZZ_AGENT_MAX_CONTEXT_TOKENS", "10000"),
+            ("BUZZ_AGENT_MAX_OUTPUT_TOKENS", "1000"),
+            ("BUZZ_AGENT_MAX_HANDOFFS", "3"),
+            (
+                "BUZZ_AGENT_MAX_HISTORY_BYTES",
+                &(16 * 1024 * 1024).to_string(),
+            ),
+        ],
+    )
+    .await;
+    let sid = init_session(&mut h, json!([])).await;
+    let p = h
+        .send(
+            "session/prompt",
+            json!({"sessionId": sid, "prompt": [{"type":"text","text":"go"}]}),
+        )
+        .await;
+    let _ = h.recv_until(|v| v["id"] == json!(p)).await;
+    assert_eq!(
+        llm.captured.lock().await.len(),
+        1,
+        "gate must read measured usage (8500 < 9000) and ignore the reply's byte size"
+    );
+    assert!(!h.stderr_text().contains("handoff #"));
+    h.shutdown().await;
+}
+
 /// A cancelled turn must not compact. `run()` reports cancellation as
 /// `Ok(StopReason::Cancelled)`, so a gate on `result.is_ok()` would spend a
 /// summarize round trip the user just asked us to stop — and wipe history the
@@ -3361,10 +3405,10 @@ async fn recovery_shrinks_further_on_each_rung() {
 
 /// Gate 5, and the DIRECTION the clearing protects: not a spurious handoff, a
 /// MISSED one. After a reactive reset the stale `last_request_input_tokens`
-/// describes history that no longer exists, and its paired byte baseline
-/// describes the pre-reset (larger) history — so `grown` stays near zero and the
-/// projection collapses to the stale sub-threshold token count. The gate goes
-/// BLIND until history exceeds its pre-reset size.
+/// describes history that no longer exists; it is sub-threshold by
+/// construction (the request that overflowed reported no usage), so as long as
+/// it survives the end-of-turn gate reads "under budget" and goes BLIND to an
+/// oversized history that only the byte fallback would see.
 ///
 /// Constructing the divergence takes three turns, and two of the constraints are
 /// load-bearing — a first attempt with a simpler fixture produced traces
@@ -3374,17 +3418,16 @@ async fn recovery_shrinks_further_on_each_rung() {
 ///     usage is ever recorded, both variants sit at `None`, and the test measures
 ///     nothing.
 ///   * The post-recovery retry must report NO usage. A usage-bearing response
-///     overwrites both fields with coherent values on the spot, which makes the
-///     clear genuinely redundant and the mutant equivalent. The reachable window
-///     is exactly when the retry omits usage and the stale pair survives.
-/// Turn 3 then carries a large prompt: a cleared baseline falls through to the
-/// byte signal and hands off, while the stale pair projects
-/// `10 + (190KB - 100KB)` = ~90k tokens, under the 180k threshold, and does not.
+///     overwrites the reading on the spot, which makes the clear genuinely
+///     redundant and the mutant equivalent. The reachable window is exactly when
+///     the retry omits usage and the stale reading survives.
+/// Turn 3 then carries a large prompt: a cleared reading falls through to the
+/// byte signal and hands off, while the stale `Some(10)` stays under the 180k
+/// threshold and does not.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reactive_reset_clears_usage_baseline_so_the_gate_is_not_blind() {
     // ~100 KB: under the 180 KB byte-fallback threshold, so turn 1 does NOT
-    // trip the proactive gate, but large enough to be the stale `measured_bytes`
-    // that suppresses `grown` later.
+    // trip the proactive gate and a usage reading gets recorded.
     let mut medium = String::with_capacity(100 * 1024);
     medium.push_str("turn-one-medium ");
     while medium.len() < 100 * 1024 {
@@ -3398,14 +3441,14 @@ async fn reactive_reset_clears_usage_baseline_so_the_gate_is_not_blind() {
     }
 
     let llm = spawn_capturing_llm_with_status(vec![
-        // Turn 1: succeeds, reporting a SMALL usage reading against a ~100 KB
-        // history. This is the pair that goes stale.
+        // Turn 1: succeeds, reporting a SMALL usage reading. This is the
+        // reading that goes stale.
         (200, openai_text_with_usage("ack-medium", 10)),
         // Turn 2: the overflow.
         (400, openai_context_length_error()),
         // Turn 2: the forced handoff's summarize.
         (200, openai_text("forced summary")),
-        // Turn 2: the retry — NO usage block, so the baseline is not refreshed.
+        // Turn 2: the retry — NO usage block, so the reading is not refreshed.
         (200, openai_text("recovered, no usage reported")),
         // Turn 3: with a cleared baseline a gated summarize comes first; with a
         // stale one this slot is the completion instead. Spares so an exhausted
@@ -3433,7 +3476,7 @@ async fn reactive_reset_clears_usage_baseline_so_the_gate_is_not_blind() {
     .await;
     let sid = init_session(&mut h, json!([])).await;
 
-    // Turn 1: under threshold, records the usage pair.
+    // Turn 1: under threshold, records the usage reading.
     let p0 = h
         .send(
             "session/prompt",
@@ -3449,7 +3492,7 @@ async fn reactive_reset_clears_usage_baseline_so_the_gate_is_not_blind() {
     assert!(r0.get("error").is_none(), "turn 1 should succeed: {r0}");
     assert!(
         !h.stderr_text().contains("handoff #"),
-        "precondition: turn 1 must NOT hand off, or no usage pair is recorded and this test \
+        "precondition: turn 1 must NOT hand off, or no usage reading is recorded and this test \
          measures nothing. stderr={}",
         h.stderr_text()
     );
@@ -3476,8 +3519,8 @@ async fn reactive_reset_clears_usage_baseline_so_the_gate_is_not_blind() {
     );
     let handoffs_after_turn2 = h.stderr_text().matches("handoff #").count();
 
-    // Turn 3: large prompt. A cleared baseline sees it via the byte signal and
-    // hands off; a stale pair under-projects and stays blind.
+    // Turn 3: large prompt. A cleared reading sees it via the byte signal and
+    // hands off; a stale reading stays blind.
     let p2 = h
         .send(
             "session/prompt",
@@ -3496,8 +3539,8 @@ async fn reactive_reset_clears_usage_baseline_so_the_gate_is_not_blind() {
     assert!(
         handoffs_after_turn3 > handoffs_after_turn2,
         "turn 3 must produce a GATED handoff ({handoffs_after_turn2} before, \
-         {handoffs_after_turn3} after): the reactive reset must clear the usage baseline, or the \
-         proactive gate under-projects and stays blind to an oversized history. stderr={stderr}"
+         {handoffs_after_turn3} after): the reactive reset must clear the usage reading, or the \
+         end-of-turn gate stays blind to an oversized history. stderr={stderr}"
     );
     h.shutdown().await;
 }

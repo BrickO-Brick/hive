@@ -87,9 +87,6 @@ struct Session {
     /// resets the context). Drives the end-of-turn handoff gate; see
     /// [`RunCtx::end_of_turn_handoff`].
     last_request_input_tokens: Option<u64>,
-    /// History byte size when `last_request_input_tokens` was measured, paired
-    /// with it so the gate can account for history appended since.
-    last_request_history_bytes: Option<usize>,
     effective_system_prompt: Arc<str>,
     /// Per-session model override set by `session/set_model`. When `Some`,
     /// overrides `App::cfg.model` for all LLM calls on this session. Persists
@@ -490,7 +487,6 @@ async fn session_new(app: &Arc<App>, id: Value, params: Value, wire_tx: &WireSen
             original_task: None,
             handoff_count: 0,
             last_request_input_tokens: None,
-            last_request_history_bytes: None,
             effective_system_prompt,
             effective_model: None,
             accumulated_input_tokens: crate::types::TurnIOState::Unseen,
@@ -679,7 +675,6 @@ async fn run_prompt(app: Arc<App>, id: Value, params: Value, wire_tx: WireSender
         mut original_task,
         mut handoff_count,
         mut last_request_input_tokens,
-        mut last_request_history_bytes,
         mut cancel_rx,
         effective_system_prompt,
         effective_model_override,
@@ -743,7 +738,6 @@ async fn run_prompt(app: Arc<App>, id: Value, params: Value, wire_tx: WireSender
         handoff_count: &mut handoff_count,
         run_id,
         last_request_input_tokens: &mut last_request_input_tokens,
-        last_request_history_bytes: &mut last_request_history_bytes,
         turn_input_tokens: &mut turn_input_tokens,
         turn_output_tokens: &mut turn_output_tokens,
         turn_cached_input_tokens: &mut turn_cached_input_tokens,
@@ -769,7 +763,6 @@ async fn run_prompt(app: Arc<App>, id: Value, params: Value, wire_tx: WireSender
         s.original_task = original_task;
         s.handoff_count = handoff_count;
         s.last_request_input_tokens = last_request_input_tokens;
-        s.last_request_history_bytes = last_request_history_bytes;
     }
     // Update session-cumulative token counters and emit the usage notification
     // BEFORE sending the session/prompt response. buzz-acp's UsageTracker
@@ -873,7 +866,6 @@ async fn acquire_session(
         Option<String>,
         usize,
         Option<u64>,
-        Option<usize>,
         watch::Receiver<bool>,
         Arc<str>,
         Option<String>,
@@ -916,7 +908,6 @@ async fn acquire_session(
         s.original_task.take(),
         s.handoff_count,
         s.last_request_input_tokens,
-        s.last_request_history_bytes,
         rx,
         Arc::clone(&s.effective_system_prompt),
         effective_model,
