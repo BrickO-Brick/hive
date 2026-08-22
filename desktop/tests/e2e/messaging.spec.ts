@@ -3004,39 +3004,47 @@ test("editing the thread root uses and focuses the main composer", async ({
   await expect(mainInput).toBeFocused();
 });
 
-test("editing a thread reply uses and focuses the thread composer", async ({
+test("editing a pre-seeded thread reply uses and focuses the thread composer", async ({
   page,
 }) => {
   const root = `Reply edit routing root ${Date.now()}`;
   const reply = `Reply edit routing ${Date.now()}`;
 
   await page.goto("/");
+  await page.waitForFunction(
+    () => typeof window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__ === "function",
+  );
+  const { replyId, rootId } = await page.evaluate(
+    ({ replyContent, rootContent }) => {
+      const emit = window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__;
+      if (!emit) throw new Error("Mock message emitter is unavailable.");
+      const rootEvent = emit({
+        channelName: "general",
+        content: rootContent,
+      });
+      const replyEvent = emit({
+        channelName: "general",
+        content: replyContent,
+        parentEventId: rootEvent.id,
+      });
+      return { replyId: replyEvent.id, rootId: rootEvent.id };
+    },
+    { replyContent: reply, rootContent: root },
+  );
+
   await page.getByTestId("channel-general").click();
   await expect(page.getByTestId("chat-title")).toHaveText("general");
-
-  const mainInput = page
-    .getByTestId("channel-composer-overlay")
-    .getByTestId("message-input");
-  await mainInput.fill(root);
-  await mainInput.press("Enter");
-
   const timelineRoot = page
     .getByTestId("message-timeline")
-    .getByTestId("message-row")
-    .last();
-  await timelineRoot.scrollIntoViewIfNeeded();
+    .locator(`[data-message-id="${rootId}"]`);
+  await expect(timelineRoot).toContainText(root);
   await timelineRoot.hover();
-  await timelineRoot.getByRole("button", { name: "Reply" }).click({
-    force: true,
-  });
+  await timelineRoot.getByRole("button", { name: "Reply" }).click();
 
   const threadPanel = page.getByTestId("message-thread-panel");
   const threadInput = threadPanel.getByTestId("message-input");
-  await threadInput.fill(reply);
-  await threadInput.press("Enter");
-  await expect(threadPanel).toContainText(reply);
-
-  const threadReply = threadPanel.getByTestId("message-row").last();
+  const threadReply = threadPanel.locator(`[data-message-id="${replyId}"]`);
+  await expect(threadReply).toContainText(reply);
   await threadReply.hover();
   await threadReply.getByRole("button", { name: "More actions" }).click();
   await page.getByRole("menuitem", { name: "Edit message" }).click();
