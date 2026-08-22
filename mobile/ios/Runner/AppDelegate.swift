@@ -133,6 +133,15 @@ import UIKit
       )
     }
 
+    if let navigationGlassRegistrar = engineBridge.pluginRegistry.registrar(
+      forPlugin: "BuzzNavigationGlassButton"
+    ) {
+      navigationGlassRegistrar.register(
+        NavigationGlassButtonFactory(messenger: messenger),
+        withId: "buzz/navigation_glass"
+      )
+    }
+
     if let stickyDateGlassRegistrar = engineBridge.pluginRegistry.registrar(
       forPlugin: "BuzzStickyDateGlassHeader"
     ) {
