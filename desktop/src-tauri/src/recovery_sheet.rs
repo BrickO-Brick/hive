@@ -241,54 +241,35 @@ pub(crate) fn render_recovery_sheet(
     );
 
     draw_qr(&mut ops, recovery_secret)?;
+    fill_rect(&mut ops, 18.0, 45.0, 179.9, 36.0, cream());
+    fill_rect(&mut ops, 18.0, 45.0, 3.0, 36.0, buzz_yellow());
     text(
         &mut ops,
-        18.0,
-        80.0,
-        11.0,
+        25.0,
+        70.0,
+        10.0,
         BuiltinFont::Helvetica,
         charcoal(),
-        "You'll need all three:",
+        "If you need to get back into Buzz, choose \"Restore from a backup file.\"",
     );
-    let requirements = [
-        ("01", "Backup file", "identity.buzzbackup"),
-        ("02", "Password", "The password you chose"),
-        ("03", "Recovery code", "Printed on this page"),
-    ];
-    for (index, (number, title, detail)) in requirements.iter().enumerate() {
-        let x = 18.0 + index as f32 * 61.0;
-        if index > 0 {
-            fill_rect(&mut ops, x - 3.0, 46.0, 0.35, 29.0, light_rule());
-        }
-        text(
-            &mut ops,
-            x,
-            68.0,
-            18.0,
-            BuiltinFont::HelveticaBold,
-            charcoal(),
-            *number,
-        );
-        fill_rect(&mut ops, x, 62.0, 13.0, 1.5, buzz_yellow());
-        text(
-            &mut ops,
-            x,
-            54.0,
-            10.0,
-            BuiltinFont::HelveticaBold,
-            charcoal(),
-            *title,
-        );
-        text(
-            &mut ops,
-            x,
-            47.5,
-            7.0,
-            BuiltinFont::Helvetica,
-            muted(),
-            *detail,
-        );
-    }
+    text(
+        &mut ops,
+        25.0,
+        60.0,
+        10.0,
+        BuiltinFont::Helvetica,
+        charcoal(),
+        "Select identity.buzzbackup. Buzz saved it when you made this page.",
+    );
+    text(
+        &mut ops,
+        25.0,
+        50.0,
+        10.0,
+        BuiltinFont::Helvetica,
+        charcoal(),
+        "Enter your password, then scan or type the recovery code above.",
+    );
 
     text(
         &mut ops,
@@ -339,6 +320,9 @@ mod tests {
         assert_eq!(parsed.pages.len(), 1);
         assert!(text.contains(RECOVERY_CODE));
         assert!(text.contains("Your Buzz recovery code."));
+        assert!(text.contains("Restore from a backup file."));
+        assert!(text.contains("identity.buzzbackup"));
+        assert!(text.contains("Enter your password"));
         assert!(text.contains(NPUB));
         assert!(!text.contains("buzz2skd1:"));
         assert!(!text.contains("password="));
