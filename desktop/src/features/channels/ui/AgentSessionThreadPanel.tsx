@@ -17,7 +17,6 @@ import {
 } from "@/features/agents/ui/agentSessionPanelLayout";
 import { deriveTranscriptBlockIds } from "@/features/agents/ui/agentSessionTranscriptGrouping";
 import type { AgentSessionTranscriptVariant } from "@/features/agents/ui/agentSessionTranscriptContext";
-import { resolveAgentSessionTranscriptVariant } from "@/features/agents/ui/agentSessionTranscriptVariantChoice";
 import type { ObserverEvent } from "@/features/agents/ui/agentSessionTypes";
 import { ManagedAgentSessionPanel } from "@/features/agents/ui/ManagedAgentSessionPanel";
 import {
@@ -84,8 +83,12 @@ type AgentSessionThreadPanelProps = {
   widthPx: number;
   transparentChrome?: boolean;
   /**
-   * Overrides the transcript presentation. Omit to let the panel pick from its
-   * own layout — see `resolveAgentSessionTranscriptVariant`.
+   * Transcript presentation. Caller-pinned only: the panel keeps the dense
+   * activity feed unless a host explicitly asks for `conversation` (the
+   * full-cover focus view does). There is deliberately no width or layout
+   * heuristic here — an automatic wide-pane mode would be a separate product
+   * decision, and swapping the whole presentation as a reader drags a resize
+   * handle across a threshold is not one we want to make implicitly.
    */
   transcriptVariant?: AgentSessionTranscriptVariant;
 };
@@ -102,16 +105,10 @@ export function AgentSessionThreadPanel({
   onClose,
   widthPx,
   transparentChrome = false,
-  transcriptVariant,
+  transcriptVariant = "default",
 }: AgentSessionThreadPanelProps) {
   const isLive = isManagedAgentActive(agent);
   const isOverlay = useIsThreadPanelOverlay();
-  // Wide/standalone reading layouts get the conversation transcript; narrow and
-  // single-panel layouts keep the dense activity feed. An explicit prop always
-  // wins so callers can pin a presentation.
-  const resolvedTranscriptVariant =
-    transcriptVariant ??
-    resolveAgentSessionTranscriptVariant({ isSinglePanelView, widthPx });
   const sessionChannelId = channelId ?? channel?.id ?? null;
   // Unified working signal, scoped to this panel's channel (or all channels
   // when the panel is unscoped) — observer turns primary, typing fallback.
@@ -509,7 +506,7 @@ export function AgentSessionThreadPanel({
             rawLayout="exclusive"
             showHeader={false}
             showRaw={showRawFeed}
-            transcriptVariant={resolvedTranscriptVariant}
+            transcriptVariant={transcriptVariant}
           />
         </div>
       </AuxiliaryPanelBody>
