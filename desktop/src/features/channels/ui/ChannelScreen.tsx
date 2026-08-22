@@ -68,6 +68,7 @@ import {
   useIsHuddleTranscript,
 } from "@/features/channels/ui/useHuddleChannelMessages";
 import { useHuddleReadMarker } from "@/features/channels/ui/useHuddleReadMarker";
+import { useHuddleThreadIsolation } from "@/features/channels/ui/useHuddleThreadIsolation";
 import { AgentSessionProvider } from "@/shared/context/AgentSessionContext";
 import { ProfilePanelProvider } from "@/shared/context/ProfilePanelContext";
 import { useMainInsetRef } from "@/shared/layout/MainInsetContext";
@@ -170,8 +171,16 @@ export function ChannelScreen({
   const activeChannelId = activeChannel?.id ?? null;
   const isHuddleTranscript = useIsHuddleTranscript(activeChannelId);
   const relaySelfPubkey = useRelaySelfQuery(activeChannel !== null).data;
-  const effectiveOpenThreadHeadId =
-    optimisticOpenThreadHeadId ?? openThreadHeadId;
+  const requireThreadEditResolutionRef = React.useRef<() => boolean>(
+    () => true,
+  );
+  const effectiveOpenThreadHeadId = useHuddleThreadIsolation({
+    closeThread: setOpenThreadHeadId,
+    isHuddleTranscript,
+    openThreadHeadId,
+    optimisticOpenThreadHeadId,
+    requireThreadEditResolutionRef,
+  });
   const isNotifiedForEffectiveThread =
     effectiveOpenThreadHeadId != null
       ? isNotifiedForThread(effectiveOpenThreadHeadId)
@@ -505,16 +514,7 @@ export function ChannelScreen({
     threadReplyTargetId,
     toggleReactionMutation,
   });
-  React.useEffect(() => {
-    if (!isHuddleTranscript || openThreadHeadId === null) return;
-    if (!requireThreadEditResolution()) return;
-    setOpenThreadHeadId(null);
-  }, [
-    isHuddleTranscript,
-    openThreadHeadId,
-    requireThreadEditResolution,
-    setOpenThreadHeadId,
-  ]);
+  requireThreadEditResolutionRef.current = requireThreadEditResolution;
   const effectiveToggleReaction = React.useMemo(
     () =>
       activeChannel && !activeChannel.archivedAt && activeChannel.isMember

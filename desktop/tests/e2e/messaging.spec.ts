@@ -3476,6 +3476,123 @@ test("main ArrowUp refuses to replace a dirty thread edit", async ({
   await expect(mainInput).toHaveText("");
 });
 
+test("main composer switches directly between visible message edits", async ({
+  page,
+}) => {
+  const first = `Main edit switch first ${Date.now()}`;
+  const second = `Main edit switch second ${Date.now()}`;
+
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+  const mainInput = page
+    .getByTestId("channel-composer-overlay")
+    .getByTestId("message-input");
+  await mainInput.fill(first);
+  await mainInput.press("Enter");
+  await expect(
+    page
+      .getByTestId("message-timeline")
+      .getByTestId("message-row")
+      .filter({ hasText: first }),
+  ).toBeVisible();
+  await page.waitForTimeout(1_100);
+  await mainInput.fill(second);
+  await mainInput.press("Enter");
+  await expect(
+    page
+      .getByTestId("message-timeline")
+      .getByTestId("message-row")
+      .filter({ hasText: second }),
+  ).toBeVisible();
+
+  await mainInput.click();
+  await page.keyboard.press("ArrowUp");
+  await expect(mainInput).toHaveText(second);
+
+  const firstMessage = page
+    .getByTestId("message-timeline")
+    .getByTestId("message-row")
+    .filter({ hasText: first })
+    .last();
+  await firstMessage.hover();
+  await firstMessage.getByRole("button", { name: "More actions" }).click();
+  await page.getByRole("menuitem", { name: "Edit message" }).click();
+
+  await expect(mainInput).toHaveText(first);
+  await expect(mainInput).toBeFocused();
+  await expect(page.getByText("Finish or cancel your edit first.")).toHaveCount(
+    0,
+  );
+});
+
+test("a refused message deep link retries after the thread edit is canceled", async ({
+  page,
+}) => {
+  const sourceRoot = `Deep link retry source ${Date.now()}`;
+  const reply = `Deep link retry reply ${Date.now()}`;
+  const destinationRoot = `Deep link retry destination ${Date.now()}`;
+
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+  const mainInput = page
+    .getByTestId("channel-composer-overlay")
+    .getByTestId("message-input");
+  await mainInput.fill(destinationRoot);
+  await mainInput.press("Enter");
+  const destination = page
+    .getByTestId("message-timeline")
+    .getByTestId("message-row")
+    .filter({ hasText: destinationRoot })
+    .last();
+  const destinationId = await destination.getAttribute("data-message-id");
+  expect(destinationId).not.toBeNull();
+  await mainInput.fill(
+    `Retry link buzz://message?channel=9a1657ac-f7aa-5db0-b632-d8bbeb6dfb50&id=${destinationId}`,
+  );
+  await mainInput.press("Enter");
+  const destinationLink = page
+    .getByTestId("message-row")
+    .filter({ hasText: "Retry link" })
+    .last()
+    .getByRole("button", { name: "Open message in channel general" });
+  await expect(destinationLink).toBeVisible();
+
+  await mainInput.fill(sourceRoot);
+  await mainInput.press("Enter");
+  const source = page
+    .getByTestId("message-timeline")
+    .getByTestId("message-row")
+    .filter({ hasText: sourceRoot })
+    .last();
+  await source.hover();
+  await source.getByRole("button", { name: "Reply" }).click({ force: true });
+  const threadPanel = page.getByTestId("message-thread-panel");
+  const threadInput = threadPanel.getByTestId("message-input");
+  await threadInput.fill(reply);
+  await threadInput.press("Enter");
+  const threadReply = threadPanel
+    .getByTestId("message-row")
+    .filter({ hasText: reply })
+    .last();
+  await threadReply.hover();
+  await threadReply.getByRole("button", { name: "More actions" }).click();
+  await page.getByRole("menuitem", { name: "Edit message" }).click();
+  await threadInput.fill(`${reply} unsaved`);
+
+  await destinationLink.click();
+  await expect(
+    page.getByText("Finish or cancel your edit before leaving the thread."),
+  ).toBeVisible();
+  await page.keyboard.press("Escape");
+  await destinationLink.click();
+  const routedDestination = page
+    .getByTestId("message-timeline")
+    .locator(`[data-message-id="${destinationId}"]`);
+  await expect(threadPanel).toBeHidden();
+  await expect(routedDestination).toBeVisible();
+  await expect(routedDestination).toHaveClass(/route-target-highlight-fade/);
+});
+
 test("ArrowUp in an empty composer edits your last message right after sending", async ({
   page,
 }) => {

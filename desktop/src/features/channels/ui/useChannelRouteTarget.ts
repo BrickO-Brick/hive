@@ -118,7 +118,6 @@ export function useChannelRouteTarget({
 
     if (!targetMessage.parentId) {
       if (!requireThreadEditResolution()) {
-        handledThreadRouteTargetRef.current = targetKey;
         return;
       }
       closeAgentSession();
@@ -148,7 +147,6 @@ export function useChannelRouteTarget({
       return;
     }
     if (!requireThreadEditResolution()) {
-      handledThreadRouteTargetRef.current = targetKey;
       return;
     }
 

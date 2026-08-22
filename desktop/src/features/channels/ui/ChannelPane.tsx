@@ -467,7 +467,10 @@ export const ChannelPane = React.memo(function ChannelPane({
   const handleRoutedEdit = React.useCallback(
     (message: TimelineMessage): boolean => {
       const currentEditTarget = editTargetRef.current;
-      if (currentEditTarget && currentEditTarget.id !== message.id) {
+      if (
+        currentEditTarget?.isThreadReply === true &&
+        currentEditTarget.id !== message.id
+      ) {
         pendingMainEditRef.current = null;
         toast.info("Finish or cancel your edit first.");
         return false;
