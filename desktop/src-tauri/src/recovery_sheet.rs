@@ -250,7 +250,7 @@ pub(crate) fn render_recovery_sheet(
         10.0,
         BuiltinFont::Helvetica,
         charcoal(),
-        "If you need to get back into Buzz, choose \"Restore from a backup file.\"",
+        "On the computer where you want to use Buzz, choose \"Restore from a backup file.\"",
     );
     text(
         &mut ops,
@@ -259,7 +259,7 @@ pub(crate) fn render_recovery_sheet(
         10.0,
         BuiltinFont::Helvetica,
         charcoal(),
-        "Select identity.buzzbackup. Buzz saved it when you made this page.",
+        "Copy identity.buzzbackup from wherever you saved it to this computer, then select it.",
     );
     text(
         &mut ops,
@@ -321,7 +321,7 @@ mod tests {
         assert!(text.contains(RECOVERY_CODE));
         assert!(text.contains("Your Buzz recovery code."));
         assert!(text.contains("Restore from a backup file."));
-        assert!(text.contains("identity.buzzbackup"));
+        assert!(text.contains("Copy identity.buzzbackup"));
         assert!(text.contains("Enter your password"));
         assert!(text.contains(NPUB));
         assert!(!text.contains("buzz2skd1:"));
