@@ -479,6 +479,11 @@ impl ExecutionLog for SqliteExecutionLog {
 }
 
 /// Read one execution row, if it exists.
+///
+/// Test-only: the pipeline never reads a record outside [`claim`], which returns
+/// what it found in the same transaction that decided whether to claim. A
+/// separate read would be a second, racier way to ask the same question.
+#[cfg(test)]
 pub fn get(conn: &Connection, key: &ExecutionKey) -> Result<Option<ExecutionRecord>, String> {
     conn.query_row(
         "SELECT state, request_digest, capability_version, result_json

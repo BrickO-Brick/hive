@@ -35,6 +35,8 @@ use sha2::{Digest, Sha256};
 pub mod agents_policy;
 pub mod desktop_agents;
 pub mod handlers;
+pub mod host;
+pub mod ingress;
 pub mod pipeline;
 pub mod store;
 

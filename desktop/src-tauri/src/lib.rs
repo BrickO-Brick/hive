@@ -611,6 +611,7 @@ pub fn run() {
             sign_out,
             decrypt_observer_event,
             build_observer_control_event,
+            broker::host::broker_handle_observer_frame,
             create_auth_event,
             nip44_encrypt_to_self,
             nip44_decrypt_from_self,

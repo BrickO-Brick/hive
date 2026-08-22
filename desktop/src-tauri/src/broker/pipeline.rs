@@ -63,6 +63,22 @@ pub struct VerifiedRequest {
     pub payload: Vec<u8>,
 }
 
+/// Redacts the payload.
+///
+/// `payload` is decrypted request content — a system prompt, for instance. It is
+/// not a credential, but it is not log material either, and a derived `Debug`
+/// would put it into any error message or test failure that formats a request.
+impl std::fmt::Debug for VerifiedRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VerifiedRequest")
+            .field("owner_pubkey", &self.owner_pubkey)
+            .field("requester_pubkey", &self.requester_pubkey)
+            .field("relay_scope", &self.relay_scope)
+            .field("payload_bytes", &self.payload.len())
+            .finish()
+    }
+}
+
 /// The durable execution log, as the pipeline needs it.
 ///
 /// A trait rather than a `&mut Connection` because the pipeline is async and
