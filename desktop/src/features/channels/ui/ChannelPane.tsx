@@ -1,4 +1,5 @@
 import * as React from "react";
+import { toast } from "sonner";
 import { Hash, LogIn } from "lucide-react";
 import { AnimatePresence } from "motion/react";
 import { useAppNavigation } from "@/app/navigation/useAppNavigation";
@@ -251,16 +252,6 @@ export const ChannelPane = React.memo(function ChannelPane({
     return true;
   }, [findLastOwnEditable, messages, onEdit]);
 
-  const handleEditLastOwnThreadMessage = React.useCallback((): boolean => {
-    if (!onEdit) return false;
-    const scope: TimelineMessage[] = [];
-    if (threadHeadMessage) scope.push(threadHeadMessage);
-    for (const entry of threadMessages) scope.push(entry.message);
-    const target = findLastOwnEditable(scope);
-    if (!target) return false;
-    onEdit(target);
-    return true;
-  }, [findLastOwnEditable, onEdit, threadHeadMessage, threadMessages]);
   const timeoutState = useTimeoutState();
   // A moderation DM (1:1 with the relay identity) is read-only for the member;
   // only DMs pay for the NIP-11 `self` lookup. Fails open: no `relaySelf` →
@@ -459,20 +450,64 @@ export const ChannelPane = React.memo(function ChannelPane({
     onCloseThread,
   );
   const pendingMainEditRef = React.useRef<TimelineMessage | null>(null);
+  const editTargetRef = React.useRef(editTarget);
+  editTargetRef.current = editTarget;
+  const pendingMainEditContextRef = React.useRef({
+    channelId: activeChannel?.id ?? null,
+    threadId: threadHeadMessage?.id ?? null,
+  });
+  const pendingMainEditContext = {
+    channelId: activeChannel?.id ?? null,
+    threadId: threadHeadMessage?.id ?? null,
+  };
+  const previousPendingContext = pendingMainEditContextRef.current;
+  if (
+    previousPendingContext.channelId !== pendingMainEditContext.channelId ||
+    (previousPendingContext.threadId !== null &&
+      pendingMainEditContext.threadId !== null &&
+      previousPendingContext.threadId !== pendingMainEditContext.threadId)
+  ) {
+    pendingMainEditRef.current = null;
+  }
+  pendingMainEditContextRef.current = pendingMainEditContext;
   const handleRoutedEdit = React.useCallback(
-    (message: TimelineMessage) => {
+    (message: TimelineMessage): boolean => {
+      const currentEditTarget = editTargetRef.current;
+      if (currentEditTarget && currentEditTarget.id !== message.id) {
+        pendingMainEditRef.current = null;
+        toast.info("Finish or cancel your edit first.");
+        return false;
+      }
+      if (currentEditTarget?.id === message.id) {
+        pendingMainEditRef.current = null;
+        onEdit?.(message);
+        return true;
+      }
       if (
         !isThreadReply(message.tags ?? []) &&
         (isSinglePanelView || useFocusThreadDrawer)
       ) {
         pendingMainEditRef.current = message;
         onCloseThread();
-        return;
+        return true;
       }
       onEdit?.(message);
+      return Boolean(onEdit);
     },
     [isSinglePanelView, onCloseThread, onEdit, useFocusThreadDrawer],
   );
+  const handleEditLastOwnThreadMessage = React.useCallback((): boolean => {
+    const scope: TimelineMessage[] = [];
+    if (threadHeadMessage) scope.push(threadHeadMessage);
+    for (const entry of threadMessages) scope.push(entry.message);
+    const target = findLastOwnEditable(scope);
+    return target ? handleRoutedEdit(target) : false;
+  }, [
+    findLastOwnEditable,
+    handleRoutedEdit,
+    threadHeadMessage,
+    threadMessages,
+  ]);
   React.useEffect(() => {
     const pendingMainEdit = pendingMainEditRef.current;
     if (!pendingMainEdit || isSinglePanelView || channelIsCovered) return;

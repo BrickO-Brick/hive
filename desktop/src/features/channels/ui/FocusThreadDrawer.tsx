@@ -149,6 +149,14 @@ export function FocusThreadDrawer({
   React.useEffect(() => {
     function handleEscape(event: KeyboardEvent) {
       if (event.key !== "Escape") return;
+      const target = event.target;
+      if (
+        target instanceof Node &&
+        drawerRef.current?.contains(target) &&
+        drawerRef.current.querySelector('[data-testid="edit-target"]')
+      ) {
+        return;
+      }
       event.preventDefault();
       event.stopImmediatePropagation();
       onClose();

@@ -3206,6 +3206,139 @@ test("editing a thread root in focus mode dismisses the drawer before focusing t
   await expect(mainInput).toBeFocused();
 });
 
+test("focus mode preserves an active reply edit, then Escape makes root editing available", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("buzz.channels.threadViewMode", "focus");
+  });
+  const root = `Focus guarded root ${Date.now()}`;
+  const reply = `Focus guarded reply ${Date.now()}`;
+  const unsaved = `${reply} unsaved`;
+
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+  const mainInput = page
+    .getByTestId("channel-composer-overlay")
+    .getByTestId("message-input");
+  await mainInput.fill(root);
+  await mainInput.press("Enter");
+  const timelineRoot = page
+    .getByTestId("message-timeline")
+    .getByTestId("message-row")
+    .last();
+  await timelineRoot.hover();
+  await timelineRoot
+    .getByRole("button", { name: "Reply" })
+    .click({ force: true });
+
+  const drawer = page.getByTestId("focus-thread-drawer");
+  const threadInput = drawer.getByTestId("message-input");
+  await threadInput.fill(reply);
+  await threadInput.press("Enter");
+  const threadReply = drawer
+    .getByTestId("message-row")
+    .filter({ hasText: reply })
+    .last();
+  await expect(threadReply).toContainText(reply);
+  const threadReplyId = await threadReply.getAttribute("data-message-id");
+  expect(threadReplyId).not.toBeNull();
+  await threadReply.hover();
+  await threadReply.getByRole("button", { name: "More actions" }).click();
+  await page
+    .locator('[role="menu"]:visible')
+    .getByTestId(`edit-message-${threadReplyId}`)
+    .click();
+  await expect(page.locator('[role="menu"]:visible')).toHaveCount(0);
+  await threadInput.fill(unsaved);
+
+  const threadRoot = drawer
+    .getByTestId("message-thread-head")
+    .getByTestId("message-row");
+  const rootMessageId = await threadRoot.getAttribute("data-message-id");
+  expect(rootMessageId).not.toBeNull();
+  expect(rootMessageId).not.toBe(threadReplyId);
+  await threadRoot.hover();
+  await threadRoot.getByRole("button", { name: "More actions" }).click();
+  await page
+    .locator('[role="menu"]:visible')
+    .getByTestId(`edit-message-${rootMessageId}`)
+    .click();
+  await expect(page.locator('[role="menu"]:visible')).toHaveCount(0);
+  await expect(drawer).toBeVisible();
+  await expect(threadInput).toHaveText(unsaved);
+  await expect(
+    page.getByText("Finish or cancel your edit first."),
+  ).toBeVisible();
+
+  // A refused cross-message edit must not remain deferred and appear later.
+  await page.getByTestId("focus-thread-drawer-scrim").click({
+    force: true,
+    position: { x: 10, y: 360 },
+  });
+  await expect(drawer).toBeVisible();
+  await expect(threadInput).toHaveText(unsaved);
+
+  // Selecting Edit for the active message keeps the existing toggle-to-cancel behavior.
+  await threadReply.hover();
+  await threadReply.getByRole("button", { name: "More actions" }).click();
+  await page
+    .locator('[role="menu"]:visible')
+    .getByTestId(`edit-message-${threadReplyId}`)
+    .click();
+  await expect(drawer.getByTestId("edit-target")).toHaveCount(0);
+  await expect(threadInput).toHaveText("");
+
+  // Focus-mode Escape reaches the composer before the drawer close handler.
+  await threadInput.click();
+  await page.keyboard.press("ArrowUp");
+  await expect(drawer.getByTestId("edit-target")).toBeVisible();
+  await threadInput.fill(unsaved);
+  await page.keyboard.press("Escape");
+  await expect(drawer.getByTestId("edit-target")).toHaveCount(0);
+  await expect(drawer).toBeVisible();
+
+  await threadRoot.hover();
+  await threadRoot.getByRole("button", { name: "More actions" }).click();
+  await page
+    .locator('[role="menu"]:visible')
+    .getByTestId(`edit-message-${rootMessageId}`)
+    .click();
+  await expect(drawer).toBeHidden();
+  await expect(mainInput).toHaveText(root);
+});
+
+test("ArrowUp routes a narrow thread root without consuming into a hidden composer", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 860, height: 720 });
+  const root = `Narrow ArrowUp root ${Date.now()}`;
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+  const input = page.getByTestId("message-input");
+  await input.fill(root);
+  await input.press("Enter");
+  const timelineRoot = page
+    .getByTestId("message-timeline")
+    .getByTestId("message-row")
+    .last();
+  await timelineRoot.hover();
+  await timelineRoot
+    .getByRole("button", { name: "Reply" })
+    .click({ force: true });
+  const threadInput = page
+    .getByTestId("message-thread-panel")
+    .getByTestId("message-input");
+  await expect(threadInput).toBeFocused();
+  await page.keyboard.press("ArrowUp");
+  await expect(page.getByTestId("message-thread-panel")).toBeHidden();
+  const mainInput = page
+    .getByTestId("channel-composer-overlay")
+    .getByTestId("message-input");
+  await expect(mainInput).toHaveText(root);
+  await expect(mainInput).toBeFocused();
+});
+
 test("closing a thread while editing a reply preserves the typed edit", async ({
   page,
 }) => {
@@ -3246,7 +3379,7 @@ test("closing a thread while editing a reply preserves the typed edit", async ({
   await expect(threadPanel.getByTestId("edit-target")).toBeVisible();
   await expect(threadInput).toHaveText(edited);
   await expect(
-    page.getByText("Finish or cancel your edit before closing the thread."),
+    page.getByText("Finish or cancel your edit before leaving the thread."),
   ).toBeVisible();
 });
 
