@@ -244,11 +244,11 @@ pub(crate) fn render_recovery_sheet(
     text(
         &mut ops,
         18.0,
-        82.0,
-        8.0,
-        BuiltinFont::HelveticaBold,
-        muted(),
-        "TO RECOVER YOUR IDENTITY",
+        80.0,
+        11.0,
+        BuiltinFont::Helvetica,
+        charcoal(),
+        "You'll need all three:",
     );
     let requirements = [
         ("01", "Backup file", "identity.buzzbackup"),
