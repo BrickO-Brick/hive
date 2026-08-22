@@ -25,15 +25,18 @@
 
 use buzz_sdk_pkg::broker::{BrokerError, BrokerRequest, Capability};
 
-use super::pipeline::{Authorizer, VerifiedRequest};
+use super::pipeline::{Authorizer, BoxFuture, VerifiedRequest};
 
 /// The set of agents an owner controls, as far as authorization is concerned.
 ///
 /// A trait so policy can be tested without a Tauri app handle or a real agent
 /// store, and so a non-Desktop host can supply its own roster.
-pub trait AgentRoster {
+pub trait AgentRoster: Send + Sync {
     /// Pubkeys of every agent this owner manages.
-    fn agent_pubkeys(&self, owner_pubkey: &str) -> Result<Vec<String>, String>;
+    fn agent_pubkeys<'a>(
+        &'a self,
+        owner_pubkey: &'a str,
+    ) -> BoxFuture<'a, Result<Vec<String>, String>>;
 }
 
 /// `agents.*` authorization backed by an [`AgentRoster`].
@@ -49,47 +52,51 @@ impl<R: AgentRoster> AgentsAuthorizer<R> {
 }
 
 impl<R: AgentRoster> Authorizer for AgentsAuthorizer<R> {
-    fn authorize(
-        &self,
-        request: &VerifiedRequest,
+    fn authorize<'a>(
+        &'a self,
+        request: &'a VerifiedRequest,
         capability: Capability,
-        _parsed: &BrokerRequest,
-    ) -> Result<(), BrokerError> {
-        match capability {
-            Capability::AgentsCreate | Capability::AgentsUpdate | Capability::AgentsDelete => {}
-        }
+        _parsed: &'a BrokerRequest,
+    ) -> BoxFuture<'a, Result<(), BrokerError>> {
+        Box::pin(async move {
+            match capability {
+                Capability::AgentsCreate | Capability::AgentsUpdate | Capability::AgentsDelete => {}
+            }
 
-        // The requester must never be able to act as the owner directly: that
-        // would mean a frame signed by the owner key was treated as a delegated
-        // request, collapsing the distinction the broker exists to maintain.
-        if request
-            .requester_pubkey
-            .eq_ignore_ascii_case(&request.owner_pubkey)
-        {
-            return Err(BrokerError::unauthorized(
-                "the owner key is not a broker requester",
-            ));
-        }
+            // The requester must never be able to act as the owner directly:
+            // that would mean a frame signed by the owner key was treated as a
+            // delegated request, collapsing the distinction the broker exists
+            // to maintain.
+            if request
+                .requester_pubkey
+                .eq_ignore_ascii_case(&request.owner_pubkey)
+            {
+                return Err(BrokerError::unauthorized(
+                    "the owner key is not a broker requester",
+                ));
+            }
 
-        let agents = self
-            .roster
-            .agent_pubkeys(&request.owner_pubkey)
-            .map_err(|error| {
-                // A roster we cannot read is a closed door, not an open one.
-                BrokerError::unauthorized(format!("could not verify agent ownership: {error}"))
-            })?;
+            let agents = self
+                .roster
+                .agent_pubkeys(&request.owner_pubkey)
+                .await
+                .map_err(|error| {
+                    // A roster we cannot read is a closed door, not an open one.
+                    BrokerError::unauthorized(format!("could not verify agent ownership: {error}"))
+                })?;
 
-        let bound = agents
-            .iter()
-            .any(|pubkey| pubkey.eq_ignore_ascii_case(&request.requester_pubkey));
+            let bound = agents
+                .iter()
+                .any(|pubkey| pubkey.eq_ignore_ascii_case(&request.requester_pubkey));
 
-        if bound {
-            Ok(())
-        } else {
-            Err(BrokerError::unauthorized(
-                "requester is not an agent managed by this owner",
-            ))
-        }
+            if bound {
+                Ok(())
+            } else {
+                Err(BrokerError::unauthorized(
+                    "requester is not an agent managed by this owner",
+                ))
+            }
+        })
     }
 }
 
@@ -106,8 +113,12 @@ mod tests {
 
     struct Roster(Result<Vec<String>, String>);
     impl AgentRoster for Roster {
-        fn agent_pubkeys(&self, _owner_pubkey: &str) -> Result<Vec<String>, String> {
-            self.0.clone()
+        fn agent_pubkeys<'a>(
+            &'a self,
+            _owner_pubkey: &'a str,
+        ) -> BoxFuture<'a, Result<Vec<String>, String>> {
+            let result = self.0.clone();
+            Box::pin(async move { result })
         }
     }
 
@@ -136,29 +147,35 @@ mod tests {
         .unwrap()
     }
 
-    fn authorize(
+    async fn authorize(
         roster: Result<Vec<String>, String>,
         requester: &str,
         capability: Capability,
     ) -> Result<(), BrokerError> {
-        AgentsAuthorizer::new(Roster(roster)).authorize(&request(requester), capability, &parsed())
+        let authorizer = AgentsAuthorizer::new(Roster(roster));
+        let request = request(requester);
+        let parsed = parsed();
+        authorizer.authorize(&request, capability, &parsed).await
     }
 
-    #[test]
-    fn an_owners_own_agent_may_manage_agents() {
+    #[tokio::test]
+    async fn an_owners_own_agent_may_manage_agents() {
         for capability in [
             Capability::AgentsCreate,
             Capability::AgentsUpdate,
             Capability::AgentsDelete,
         ] {
-            assert!(authorize(Ok(vec![AGENT.into()]), AGENT, capability).is_ok());
+            assert!(authorize(Ok(vec![AGENT.into()]), AGENT, capability)
+                .await
+                .is_ok());
         }
     }
 
-    #[test]
-    fn a_signer_who_is_not_this_owners_agent_is_refused() {
-        let error =
-            authorize(Ok(vec![AGENT.into()]), STRANGER, Capability::AgentsDelete).unwrap_err();
+    #[tokio::test]
+    async fn a_signer_who_is_not_this_owners_agent_is_refused() {
+        let error = authorize(Ok(vec![AGENT.into()]), STRANGER, Capability::AgentsDelete)
+            .await
+            .unwrap_err();
         assert!(
             error.message.contains("not an agent managed by this owner"),
             "unexpected: {}",
@@ -166,16 +183,20 @@ mod tests {
         );
     }
 
-    #[test]
-    fn an_empty_roster_refuses_everyone() {
-        assert!(authorize(Ok(Vec::new()), AGENT, Capability::AgentsCreate).is_err());
+    #[tokio::test]
+    async fn an_empty_roster_refuses_everyone() {
+        assert!(authorize(Ok(Vec::new()), AGENT, Capability::AgentsCreate)
+            .await
+            .is_err());
     }
 
     /// The owner key signing its own broker request would erase the delegation
     /// boundary the broker exists to enforce.
-    #[test]
-    fn the_owner_key_is_not_a_requester() {
-        let error = authorize(Ok(vec![OWNER.into()]), OWNER, Capability::AgentsCreate).unwrap_err();
+    #[tokio::test]
+    async fn the_owner_key_is_not_a_requester() {
+        let error = authorize(Ok(vec![OWNER.into()]), OWNER, Capability::AgentsCreate)
+            .await
+            .unwrap_err();
         assert!(
             error
                 .message
@@ -186,13 +207,14 @@ mod tests {
     }
 
     /// A roster that cannot be read must fail closed.
-    #[test]
-    fn an_unreadable_roster_fails_closed() {
+    #[tokio::test]
+    async fn an_unreadable_roster_fails_closed() {
         let error = authorize(
             Err("keyring locked".into()),
             AGENT,
             Capability::AgentsUpdate,
         )
+        .await
         .unwrap_err();
         assert!(
             error.message.contains("could not verify agent ownership"),
@@ -201,13 +223,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn pubkey_comparison_ignores_hex_case() {
+    #[tokio::test]
+    async fn pubkey_comparison_ignores_hex_case() {
         assert!(authorize(
             Ok(vec![AGENT.to_ascii_uppercase()]),
             AGENT,
             Capability::AgentsCreate
         )
+        .await
         .is_ok());
     }
 }

@@ -12,6 +12,20 @@
 //! already run", and a crash between two coordinated steps is a side effect
 //! nobody recorded.
 //!
+//! # Why the seams are async
+//!
+//! The capability this ships first mutates through `create_managed_agent` /
+//! `update_managed_agent` / `delete_managed_agent`, which are `async` and
+//! publish to the relay. So [`CapabilityHandler`], [`Authorizer`], and
+//! [`ExecutionLog`] are all async — modelled on [`crate::archive::sync`]'s
+//! `ArchiveSyncIo`, the repo's existing injected-async-IO seam.
+//!
+//! `rusqlite::Connection` is `!Sync` and must not be held across an `.await`,
+//! so the pipeline never touches one: it talks to [`ExecutionLog`], whose
+//! production implementation confines each connection to a single blocking
+//! task. That is why the durable log is a trait here rather than a borrowed
+//! connection.
+//!
 //! # What this module does not decide
 //!
 //! It does not verify signatures or decrypt frames — that already happened, and
@@ -19,12 +33,18 @@
 //! transport-derived identity. It does not implement capabilities either;
 //! those are [`CapabilityHandler`]s.
 
+use std::future::Future;
+use std::pin::Pin;
+
 use buzz_sdk_pkg::broker::{
     BrokerError, BrokerErrorCode, BrokerRequest, BrokerResponse, BrokerResult, Capability,
     CapabilityOutcome,
 };
 
 use super::store::{self, ClaimOutcome, ExecutionKey, ExecutionState};
+
+/// Boxed future alias, matching [`crate::archive::sync`]'s injected-IO seams.
+pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// A request whose frame has already been verified and decrypted.
 ///
@@ -43,6 +63,34 @@ pub struct VerifiedRequest {
     pub payload: Vec<u8>,
 }
 
+/// The durable execution log, as the pipeline needs it.
+///
+/// A trait rather than a `&mut Connection` because the pipeline is async and
+/// `rusqlite::Connection` is `!Sync`: an implementation must keep each
+/// connection inside one blocking task, which only it can arrange.
+pub trait ExecutionLog: Send + Sync {
+    /// Claim `key` for execution, or report why it cannot be claimed.
+    ///
+    /// Must insert `executing` before returning [`ClaimOutcome::Claimed`], and
+    /// must never return `Claimed` twice for one key.
+    fn claim(
+        &self,
+        key: ExecutionKey,
+        request_digest: String,
+        capability_version: u16,
+        now: i64,
+    ) -> BoxFuture<'_, Result<ClaimOutcome, String>>;
+
+    /// Record the terminal `state` and `result_json` for a claimed key.
+    fn complete(
+        &self,
+        key: ExecutionKey,
+        state: ExecutionState,
+        result_json: String,
+        now: i64,
+    ) -> BoxFuture<'_, Result<(), String>>;
+}
+
 /// Whether a requester may invoke a capability.
 ///
 /// Base authentication (a verified signer, a real owner binding) is the
@@ -50,14 +98,14 @@ pub struct VerifiedRequest {
 /// *capability scope* decision, which is domain policy: channel membership, for
 /// instance, is an `agents.*` rule rather than something the broker asserts
 /// about every capability it might ever host.
-pub trait Authorizer {
+pub trait Authorizer: Send + Sync {
     /// Authorize `request` for `capability`, or explain the refusal.
-    fn authorize(
-        &self,
-        request: &VerifiedRequest,
+    fn authorize<'a>(
+        &'a self,
+        request: &'a VerifiedRequest,
         capability: Capability,
-        parsed: &BrokerRequest,
-    ) -> Result<(), BrokerError>;
+        parsed: &'a BrokerRequest,
+    ) -> BoxFuture<'a, Result<(), BrokerError>>;
 }
 
 /// The outcome of running one capability.
@@ -75,17 +123,21 @@ pub enum HandlerOutcome {
 }
 
 /// One broker capability implementation.
-pub trait CapabilityHandler {
+pub trait CapabilityHandler: Send + Sync {
     /// Execute the capability.
     ///
     /// Called at most once per idempotency key. A handler that mutates in
     /// several phases and cannot report which completed must return
     /// [`HandlerOutcome::Indeterminate`] rather than guess.
-    fn execute(&self, request: &VerifiedRequest, parsed: &BrokerRequest) -> HandlerOutcome;
+    fn execute<'a>(
+        &'a self,
+        request: &'a VerifiedRequest,
+        parsed: &'a BrokerRequest,
+    ) -> BoxFuture<'a, HandlerOutcome>;
 }
 
 /// Resolves a capability name to its handler.
-pub trait CapabilityRegistry {
+pub trait CapabilityRegistry: Send + Sync {
     /// The handler for `capability`, or `None` when this host does not offer it.
     fn handler(&self, capability: Capability) -> Option<&dyn CapabilityHandler>;
 }
@@ -97,7 +149,7 @@ pub struct BrokerContext<'a> {
     /// Capability implementations.
     pub registry: &'a dyn CapabilityRegistry,
     /// Durable execution log.
-    pub conn: &'a mut rusqlite::Connection,
+    pub log: &'a dyn ExecutionLog,
     /// Current unix time, injected so tests are not clock-dependent.
     pub now: i64,
 }
@@ -108,7 +160,7 @@ pub struct BrokerContext<'a> {
 /// (a database that cannot be reached, say). Every refusal a requester should
 /// hear about — invalid, unauthorized, conflicting, interrupted — comes back as
 /// an `Ok` response describing it.
-pub fn execute(
+pub async fn execute(
     request: &VerifiedRequest,
     ctx: BrokerContext<'_>,
 ) -> Result<BrokerResponse, String> {
@@ -152,7 +204,7 @@ pub fn execute(
 
     // Authorize before claiming: a refused request must leave no trace that
     // could later be replayed as though it had been accepted.
-    if let Err(error) = ctx.authorizer.authorize(request, capability, &parsed) {
+    if let Err(error) = ctx.authorizer.authorize(request, capability, &parsed).await {
         return Ok(BrokerResponse::new(
             &request_id,
             BrokerResult::failed(error),
@@ -177,7 +229,11 @@ pub fn execute(
         request_id: request_id.clone(),
     };
 
-    match store::claim(ctx.conn, &key, &digest, parsed.capability_version, ctx.now)? {
+    let claim = ctx
+        .log
+        .claim(key.clone(), digest, parsed.capability_version, ctx.now)
+        .await?;
+    match claim {
         ClaimOutcome::Claimed => {}
         ClaimOutcome::Replay(record) => {
             return Ok(replay_response(&request_id, record.result_json.as_deref()))
@@ -208,7 +264,7 @@ pub fn execute(
 
     // The row is now `executing`. Everything after this point must reach
     // `complete`, or the next attempt correctly reports `indeterminate`.
-    let result = match handler.execute(request, &parsed) {
+    let result = match handler.execute(request, &parsed).await {
         HandlerOutcome::Succeeded(outcome) => BrokerResult::succeeded(outcome),
         HandlerOutcome::Failed(error) => BrokerResult::failed(error),
         HandlerOutcome::Indeterminate(error) => BrokerResult::indeterminate(error),
@@ -221,7 +277,7 @@ pub fn execute(
     };
     let result_json = serde_json::to_string(&result)
         .map_err(|error| format!("failed to encode broker result: {error}"))?;
-    store::complete(ctx.conn, &key, state, &result_json, ctx.now)?;
+    ctx.log.complete(key, state, result_json, ctx.now).await?;
 
     Ok(BrokerResponse::new(&request_id, result))
 }

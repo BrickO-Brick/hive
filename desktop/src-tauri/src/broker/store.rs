@@ -23,6 +23,8 @@ use std::time::{Duration, Instant};
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 
+use super::pipeline::{BoxFuture, ExecutionLog};
+
 /// Terminal or in-flight state of a broker request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionState {
@@ -362,6 +364,118 @@ pub fn open_in_memory() -> Connection {
     let conn = Connection::open_in_memory().expect("in-memory sqlite");
     conn.execute_batch(SCHEMA).expect("broker schema");
     conn
+}
+
+/// In-memory [`ExecutionLog`] running the real [`claim`] / [`complete`] logic.
+///
+/// Tests get the production idempotency behavior without touching the
+/// filesystem. `Connection` is `Send` but not `Sync`, so the mutex is what makes
+/// it shareable behind the `Send + Sync` trait — and holding the lock for the
+/// whole call serializes claims the same way the file-backed `IMMEDIATE`
+/// transaction does.
+#[cfg(test)]
+pub struct MemoryExecutionLog(std::sync::Mutex<Connection>);
+
+#[cfg(test)]
+impl MemoryExecutionLog {
+    /// A fresh, empty log.
+    pub fn new() -> Self {
+        Self(std::sync::Mutex::new(open_in_memory()))
+    }
+
+    /// Run `body` against the underlying connection.
+    ///
+    /// Lets a test plant a row directly — simulating a process that claimed a
+    /// key and died — without exposing the connection itself.
+    pub fn with_conn<T>(&self, body: impl FnOnce(&mut Connection) -> T) -> T {
+        body(&mut self.0.lock().expect("broker test log poisoned"))
+    }
+}
+
+#[cfg(test)]
+impl ExecutionLog for MemoryExecutionLog {
+    fn claim(
+        &self,
+        key: ExecutionKey,
+        request_digest: String,
+        capability_version: u16,
+        now: i64,
+    ) -> BoxFuture<'_, Result<ClaimOutcome, String>> {
+        Box::pin(async move {
+            self.with_conn(|conn| claim(conn, &key, &request_digest, capability_version, now))
+        })
+    }
+
+    fn complete(
+        &self,
+        key: ExecutionKey,
+        state: ExecutionState,
+        result_json: String,
+        now: i64,
+    ) -> BoxFuture<'_, Result<(), String>> {
+        Box::pin(
+            async move { self.with_conn(|conn| complete(conn, &key, state, &result_json, now)) },
+        )
+    }
+}
+
+/// File-backed [`ExecutionLog`] that keeps every `!Sync` connection inside one
+/// blocking task.
+///
+/// The pipeline is async, so it can never hold a `rusqlite::Connection` across
+/// an `.await`. This adapter is where that constraint is discharged: each call
+/// opens its own connection on the blocking pool, finishes its transaction, and
+/// drops it before the future resolves. Cross-call exclusion is SQLite's, not
+/// this type's — [`claim`] does its read and insert inside one `IMMEDIATE`
+/// transaction, which is what makes two concurrent claims safe even though they
+/// use different connections.
+pub struct SqliteExecutionLog {
+    path: PathBuf,
+}
+
+impl SqliteExecutionLog {
+    /// Log stored at `path`. The file and its parent are created on first use.
+    pub fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+}
+
+impl ExecutionLog for SqliteExecutionLog {
+    fn claim(
+        &self,
+        key: ExecutionKey,
+        request_digest: String,
+        capability_version: u16,
+        now: i64,
+    ) -> BoxFuture<'_, Result<ClaimOutcome, String>> {
+        let path = self.path.clone();
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || {
+                let mut conn = open_broker_db(&path)?;
+                claim(&mut conn, &key, &request_digest, capability_version, now)
+            })
+            .await
+            .map_err(|error| format!("broker claim task failed: {error}"))?
+        })
+    }
+
+    fn complete(
+        &self,
+        key: ExecutionKey,
+        state: ExecutionState,
+        result_json: String,
+        now: i64,
+    ) -> BoxFuture<'_, Result<(), String>> {
+        let path = self.path.clone();
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || {
+                let conn = open_broker_db(&path)?;
+                complete(&conn, &key, state, &result_json, now)
+            })
+            .await
+            .map_err(|error| format!("broker complete task failed: {error}"))?
+        })
+    }
 }
 
 /// Read one execution row, if it exists.

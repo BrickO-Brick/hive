@@ -1,12 +1,14 @@
 //! Pipeline tests: authority, idempotency, and crash behavior.
 
-use std::cell::RefCell;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 use buzz_sdk_pkg::broker::{
     AgentTarget, AgentsCreateArgs, AgentsCreateOutcome, AgentsDeleteArgs, AgentsDeleteOutcome,
     CapabilityArgs,
 };
 
+use super::super::store::MemoryExecutionLog;
 use super::*;
 
 const CHANNEL: &str = "b2c38ca8-9ec3-411e-bab5-f9deab34d52e";
@@ -14,8 +16,8 @@ const OWNER: &str = "11111111111111111111111111111111111111111111111111111111111
 const REQUESTER: &str = "2222222222222222222222222222222222222222222222222222222222222222";
 const AGENT: &str = "3333333333333333333333333333333333333333333333333333333333333333";
 
-fn db() -> rusqlite::Connection {
-    super::super::store::open_in_memory()
+fn db() -> MemoryExecutionLog {
+    MemoryExecutionLog::new()
 }
 
 fn create_request(request_id: &str) -> Vec<u8> {
@@ -46,47 +48,57 @@ fn verified(payload: Vec<u8>) -> VerifiedRequest {
 
 struct AllowAll;
 impl Authorizer for AllowAll {
-    fn authorize(
-        &self,
-        _request: &VerifiedRequest,
+    fn authorize<'a>(
+        &'a self,
+        _request: &'a VerifiedRequest,
         _capability: Capability,
-        _parsed: &BrokerRequest,
-    ) -> Result<(), BrokerError> {
-        Ok(())
+        _parsed: &'a BrokerRequest,
+    ) -> BoxFuture<'a, Result<(), BrokerError>> {
+        Box::pin(async { Ok(()) })
     }
 }
 
 struct DenyAll;
 impl Authorizer for DenyAll {
-    fn authorize(
-        &self,
-        _request: &VerifiedRequest,
+    fn authorize<'a>(
+        &'a self,
+        _request: &'a VerifiedRequest,
         _capability: Capability,
-        _parsed: &BrokerRequest,
-    ) -> Result<(), BrokerError> {
-        Err(BrokerError::unauthorized("not a member of that channel"))
+        _parsed: &'a BrokerRequest,
+    ) -> BoxFuture<'a, Result<(), BrokerError>> {
+        Box::pin(async { Err(BrokerError::unauthorized("not a member of that channel")) })
     }
 }
 
 /// Counts executions so a test can prove a handler ran at most once.
 struct CountingHandler {
-    calls: RefCell<usize>,
+    calls: AtomicUsize,
     outcome: fn() -> HandlerOutcome,
 }
 
 impl CountingHandler {
     fn new(outcome: fn() -> HandlerOutcome) -> Self {
         Self {
-            calls: RefCell::new(0),
+            calls: AtomicUsize::new(0),
             outcome,
         }
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
     }
 }
 
 impl CapabilityHandler for CountingHandler {
-    fn execute(&self, _request: &VerifiedRequest, _parsed: &BrokerRequest) -> HandlerOutcome {
-        *self.calls.borrow_mut() += 1;
-        (self.outcome)()
+    fn execute<'a>(
+        &'a self,
+        _request: &'a VerifiedRequest,
+        _parsed: &'a BrokerRequest,
+    ) -> BoxFuture<'a, HandlerOutcome> {
+        Box::pin(async move {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            (self.outcome)()
+        })
     }
 }
 
@@ -116,27 +128,28 @@ fn success() -> HandlerOutcome {
     }))
 }
 
-fn run<'a>(
+async fn run(
     request: &VerifiedRequest,
-    authorizer: &'a dyn Authorizer,
-    registry: &'a dyn CapabilityRegistry,
-    conn: &'a mut rusqlite::Connection,
+    authorizer: &dyn Authorizer,
+    registry: &dyn CapabilityRegistry,
+    log: &dyn ExecutionLog,
 ) -> BrokerResponse {
     execute(
         request,
         BrokerContext {
             authorizer,
             registry,
-            conn,
+            log,
             now: 1000,
         },
     )
+    .await
     .unwrap()
 }
 
-#[test]
-fn a_valid_authorized_request_executes_once_and_returns_its_outcome() {
-    let mut conn = db();
+#[tokio::test]
+async fn a_valid_authorized_request_executes_once_and_returns_its_outcome() {
+    let log = db();
     let handler = CountingHandler::new(success);
     let registry = OneHandler {
         capability: Capability::AgentsCreate,
@@ -144,18 +157,18 @@ fn a_valid_authorized_request_executes_once_and_returns_its_outcome() {
     };
     let request = verified(create_request("req-1"));
 
-    let response = run(&request, &AllowAll, &registry, &mut conn);
+    let response = run(&request, &AllowAll, &registry, &log).await;
     assert_eq!(response.request_id, "req-1");
     assert!(response.result.is_succeeded());
     assert!(!response.replayed);
-    assert_eq!(*handler.calls.borrow(), 1);
+    assert_eq!(handler.calls(), 1);
 }
 
 /// The central idempotency property: replaying the identical request returns
 /// the recorded outcome and does not run the handler a second time.
-#[test]
-fn replaying_an_identical_request_returns_the_record_without_re_executing() {
-    let mut conn = db();
+#[tokio::test]
+async fn replaying_an_identical_request_returns_the_record_without_re_executing() {
+    let log = db();
     let handler = CountingHandler::new(success);
     let registry = OneHandler {
         capability: Capability::AgentsCreate,
@@ -163,19 +176,19 @@ fn replaying_an_identical_request_returns_the_record_without_re_executing() {
     };
     let request = verified(create_request("req-1"));
 
-    let first = run(&request, &AllowAll, &registry, &mut conn);
-    let second = run(&request, &AllowAll, &registry, &mut conn);
+    let first = run(&request, &AllowAll, &registry, &log).await;
+    let second = run(&request, &AllowAll, &registry, &log).await;
 
-    assert_eq!(*handler.calls.borrow(), 1, "handler must not run twice");
+    assert_eq!(handler.calls(), 1, "handler must not run twice");
     assert!(second.replayed);
     assert_eq!(first.result, second.result, "replay must be identical");
 }
 
 /// Same request id, different content: the caller must be told, not handed
 /// someone else's outcome.
-#[test]
-fn a_different_payload_under_the_same_request_id_is_refused() {
-    let mut conn = db();
+#[tokio::test]
+async fn a_different_payload_under_the_same_request_id_is_refused() {
+    let log = db();
     let handler = CountingHandler::new(success);
     let registry = OneHandler {
         capability: Capability::AgentsCreate,
@@ -186,8 +199,9 @@ fn a_different_payload_under_the_same_request_id_is_refused() {
         &verified(create_request("req-1")),
         &AllowAll,
         &registry,
-        &mut conn,
-    );
+        &log,
+    )
+    .await;
 
     let mut different = BrokerRequest::new(
         "req-1",
@@ -207,21 +221,22 @@ fn a_different_payload_under_the_same_request_id_is_refused() {
         &verified(serde_json::to_vec(&different).unwrap()),
         &AllowAll,
         &registry,
-        &mut conn,
-    );
+        &log,
+    )
+    .await;
 
     assert_eq!(
         response.result.error().unwrap().code,
         BrokerErrorCode::RequestIdConflict
     );
-    assert_eq!(*handler.calls.borrow(), 1, "the conflict must not execute");
+    assert_eq!(handler.calls(), 1, "the conflict must not execute");
 }
 
 /// An unauthorized request must not leave a claim behind: otherwise a later
 /// authorized retry would be answered from a refusal.
-#[test]
-fn an_unauthorized_request_does_not_execute_or_leave_a_claim() {
-    let mut conn = db();
+#[tokio::test]
+async fn an_unauthorized_request_does_not_execute_or_leave_a_claim() {
+    let log = db();
     let handler = CountingHandler::new(success);
     let registry = OneHandler {
         capability: Capability::AgentsCreate,
@@ -229,25 +244,25 @@ fn an_unauthorized_request_does_not_execute_or_leave_a_claim() {
     };
     let request = verified(create_request("req-1"));
 
-    let denied = run(&request, &DenyAll, &registry, &mut conn);
+    let denied = run(&request, &DenyAll, &registry, &log).await;
     assert_eq!(
         denied.result.error().unwrap().code,
         BrokerErrorCode::Unauthorized
     );
-    assert_eq!(*handler.calls.borrow(), 0);
+    assert_eq!(handler.calls(), 0);
 
     // The same request, now authorized, still runs normally.
-    let allowed = run(&request, &AllowAll, &registry, &mut conn);
+    let allowed = run(&request, &AllowAll, &registry, &log).await;
     assert!(allowed.result.is_succeeded());
     assert!(!allowed.replayed);
-    assert_eq!(*handler.calls.borrow(), 1);
+    assert_eq!(handler.calls(), 1);
 }
 
 /// A crash between the mutation and its record must surface as indeterminate,
 /// never as a silent re-run.
-#[test]
-fn an_interrupted_execution_reports_indeterminate_and_never_re_executes() {
-    let mut conn = db();
+#[tokio::test]
+async fn an_interrupted_execution_reports_indeterminate_and_never_re_executes() {
+    let log = db();
     let handler = CountingHandler::new(success);
     let registry = OneHandler {
         capability: Capability::AgentsCreate,
@@ -264,29 +279,30 @@ fn an_interrupted_execution_reports_indeterminate_and_never_re_executes() {
         request_id: "req-1".into(),
     };
     let digest = super::super::request_digest(&request.payload).unwrap();
-    store::claim(&mut conn, &key, &digest, 1, 500).unwrap();
+    log.with_conn(|conn| store::claim(conn, &key, &digest, 1, 500))
+        .unwrap();
 
-    let response = run(&request, &AllowAll, &registry, &mut conn);
+    let response = run(&request, &AllowAll, &registry, &log).await;
     assert_eq!(
         response.result.error().unwrap().code,
         BrokerErrorCode::OutcomeUnknown
     );
     assert_eq!(
-        *handler.calls.borrow(),
+        handler.calls(),
         0,
         "an interrupted request must not be re-executed"
     );
 }
 
-#[test]
-fn a_failed_handler_is_recorded_and_replayed_as_failed() {
+#[tokio::test]
+async fn a_failed_handler_is_recorded_and_replayed_as_failed() {
     fn failure() -> HandlerOutcome {
         HandlerOutcome::Failed(BrokerError::new(
             BrokerErrorCode::CapabilityFailed,
             "runtime not installed",
         ))
     }
-    let mut conn = db();
+    let log = db();
     let handler = CountingHandler::new(failure);
     let registry = OneHandler {
         capability: Capability::AgentsCreate,
@@ -294,28 +310,28 @@ fn a_failed_handler_is_recorded_and_replayed_as_failed() {
     };
     let request = verified(create_request("req-1"));
 
-    let first = run(&request, &AllowAll, &registry, &mut conn);
+    let first = run(&request, &AllowAll, &registry, &log).await;
     assert_eq!(
         first.result.error().unwrap().code,
         BrokerErrorCode::CapabilityFailed
     );
 
     // A failure is terminal: retrying replays it rather than re-running.
-    let second = run(&request, &AllowAll, &registry, &mut conn);
+    let second = run(&request, &AllowAll, &registry, &log).await;
     assert!(second.replayed);
     assert_eq!(first.result, second.result);
-    assert_eq!(*handler.calls.borrow(), 1);
+    assert_eq!(handler.calls(), 1);
 }
 
-#[test]
-fn an_indeterminate_handler_outcome_is_recorded_as_indeterminate() {
+#[tokio::test]
+async fn an_indeterminate_handler_outcome_is_recorded_as_indeterminate() {
     fn unknown() -> HandlerOutcome {
         HandlerOutcome::Indeterminate(BrokerError::new(
             BrokerErrorCode::OutcomeUnknown,
             "published but could not confirm",
         ))
     }
-    let mut conn = db();
+    let log = db();
     let handler = CountingHandler::new(unknown);
     let registry = OneHandler {
         capability: Capability::AgentsCreate,
@@ -323,53 +339,56 @@ fn an_indeterminate_handler_outcome_is_recorded_as_indeterminate() {
     };
     let request = verified(create_request("req-1"));
 
-    let response = run(&request, &AllowAll, &registry, &mut conn);
+    let response = run(&request, &AllowAll, &registry, &log).await;
     assert!(matches!(
         response.result,
         BrokerResult::Indeterminate { .. }
     ));
-    assert_eq!(*handler.calls.borrow(), 1);
+    assert_eq!(handler.calls(), 1);
 }
 
-#[test]
-fn a_malformed_payload_is_refused_without_a_claim() {
-    let mut conn = db();
+#[tokio::test]
+async fn a_malformed_payload_is_refused_without_a_claim() {
+    let log = db();
     let response = run(
         &verified(b"not json".to_vec()),
         &AllowAll,
         &NoHandlers,
-        &mut conn,
-    );
+        &log,
+    )
+    .await;
     assert_eq!(
         response.result.error().unwrap().code,
         BrokerErrorCode::InvalidRequest
     );
 }
 
-#[test]
-fn an_oversized_payload_is_refused() {
-    let mut conn = db();
+#[tokio::test]
+async fn an_oversized_payload_is_refused() {
+    let log = db();
     let response = run(
         &verified(vec![b'x'; super::super::MAX_REQUEST_BYTES + 1]),
         &AllowAll,
         &NoHandlers,
-        &mut conn,
-    );
+        &log,
+    )
+    .await;
     assert_eq!(
         response.result.error().unwrap().code,
         BrokerErrorCode::InvalidRequest
     );
 }
 
-#[test]
-fn a_capability_this_host_does_not_offer_is_refused() {
-    let mut conn = db();
+#[tokio::test]
+async fn a_capability_this_host_does_not_offer_is_refused() {
+    let log = db();
     let response = run(
         &verified(create_request("req-1")),
         &AllowAll,
         &NoHandlers,
-        &mut conn,
-    );
+        &log,
+    )
+    .await;
     assert_eq!(
         response.result.error().unwrap().code,
         BrokerErrorCode::UnknownCapability
@@ -378,9 +397,9 @@ fn a_capability_this_host_does_not_offer_is_refused() {
 
 /// Two requesters using the same request id are separate executions: the key
 /// includes the verified requester, so one cannot read the other's outcome.
-#[test]
-fn the_same_request_id_from_two_requesters_are_separate_executions() {
-    let mut conn = db();
+#[tokio::test]
+async fn the_same_request_id_from_two_requesters_are_separate_executions() {
+    let log = db();
     let handler = CountingHandler::new(success);
     let registry = OneHandler {
         capability: Capability::AgentsCreate,
@@ -394,19 +413,19 @@ fn the_same_request_id_from_two_requesters_are_separate_executions() {
         ..verified(payload)
     };
 
-    assert!(!run(&first, &AllowAll, &registry, &mut conn).replayed);
+    assert!(!run(&first, &AllowAll, &registry, &log).await.replayed);
     assert!(
-        !run(&second, &AllowAll, &registry, &mut conn).replayed,
+        !run(&second, &AllowAll, &registry, &log).await.replayed,
         "a different requester must not replay another's record"
     );
-    assert_eq!(*handler.calls.borrow(), 2);
+    assert_eq!(handler.calls(), 2);
 }
 
 /// The pipeline must take identity from the verified transport, never from the
 /// payload. A body claiming another owner cannot even deserialize.
-#[test]
-fn identity_in_the_payload_cannot_override_transport_identity() {
-    let mut conn = db();
+#[tokio::test]
+async fn identity_in_the_payload_cannot_override_transport_identity() {
+    let log = db();
     let handler = CountingHandler::new(success);
     let registry = OneHandler {
         capability: Capability::AgentsCreate,
@@ -422,53 +441,57 @@ fn identity_in_the_payload_cannot_override_transport_identity() {
         &verified(serde_json::to_vec(&json).unwrap()),
         &AllowAll,
         &registry,
-        &mut conn,
-    );
+        &log,
+    )
+    .await;
     assert_eq!(
         response.result.error().unwrap().code,
         BrokerErrorCode::InvalidRequest
     );
-    assert_eq!(*handler.calls.borrow(), 0);
+    assert_eq!(handler.calls(), 0);
 }
 
 /// The authorizer sees the transport-derived identity, so policy is written
 /// against who actually signed.
-#[test]
-fn the_authorizer_receives_transport_derived_identity() {
-    struct Recording(RefCell<Vec<(String, String, String)>>);
+#[tokio::test]
+async fn the_authorizer_receives_transport_derived_identity() {
+    struct Recording(Mutex<Vec<(String, String, String)>>);
     impl Authorizer for Recording {
-        fn authorize(
-            &self,
-            request: &VerifiedRequest,
+        fn authorize<'a>(
+            &'a self,
+            request: &'a VerifiedRequest,
             capability: Capability,
-            _parsed: &BrokerRequest,
-        ) -> Result<(), BrokerError> {
-            self.0.borrow_mut().push((
-                request.owner_pubkey.clone(),
-                request.requester_pubkey.clone(),
-                capability.as_str().to_string(),
-            ));
-            Ok(())
+            _parsed: &'a BrokerRequest,
+        ) -> BoxFuture<'a, Result<(), BrokerError>> {
+            Box::pin(async move {
+                self.0.lock().unwrap().push((
+                    request.owner_pubkey.clone(),
+                    request.requester_pubkey.clone(),
+                    capability.as_str().to_string(),
+                ));
+                Ok(())
+            })
         }
     }
 
-    let mut conn = db();
+    let log = db();
     let handler = CountingHandler::new(success);
     let registry = OneHandler {
         capability: Capability::AgentsCreate,
         handler: &handler,
     };
-    let authorizer = Recording(RefCell::new(Vec::new()));
+    let authorizer = Recording(Mutex::new(Vec::new()));
 
     run(
         &verified(create_request("req-1")),
         &authorizer,
         &registry,
-        &mut conn,
-    );
+        &log,
+    )
+    .await;
 
     assert_eq!(
-        authorizer.0.borrow().as_slice(),
+        authorizer.0.lock().unwrap().as_slice(),
         &[(
             OWNER.to_string(),
             REQUESTER.to_string(),
@@ -477,15 +500,15 @@ fn the_authorizer_receives_transport_derived_identity() {
     );
 }
 
-#[test]
-fn delete_requests_route_to_the_delete_capability() {
+#[tokio::test]
+async fn delete_requests_route_to_the_delete_capability() {
     fn deleted() -> HandlerOutcome {
         HandlerOutcome::Succeeded(CapabilityOutcome::AgentsDelete(AgentsDeleteOutcome {
             agent_pubkey: AGENT.into(),
             display_name: "Gone".into(),
         }))
     }
-    let mut conn = db();
+    let log = db();
     let handler = CountingHandler::new(deleted);
     let registry = OneHandler {
         capability: Capability::AgentsDelete,
@@ -503,9 +526,10 @@ fn delete_requests_route_to_the_delete_capability() {
         &verified(serde_json::to_vec(&request).unwrap()),
         &AllowAll,
         &registry,
-        &mut conn,
-    );
+        &log,
+    )
+    .await;
 
     assert!(response.result.is_succeeded());
-    assert_eq!(*handler.calls.borrow(), 1);
+    assert_eq!(handler.calls(), 1);
 }

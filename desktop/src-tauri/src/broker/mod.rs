@@ -33,6 +33,7 @@
 use sha2::{Digest, Sha256};
 
 pub mod agents_policy;
+pub mod handlers;
 pub mod pipeline;
 pub mod store;
 
