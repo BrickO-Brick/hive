@@ -130,6 +130,7 @@ test("2SKD recovery kit keeps the recovery code separate from the saved backup",
 }) => {
   await openBackupSettings(page, {
     backupSavePaths: ["/Users/test/Downloads/identity.buzzbackup"],
+    recoverySheetSavePaths: ["/Users/test/Documents/buzz-recovery-sheet.pdf"],
   });
   const dialog = await openCreateRecoveryKit(page);
   const password = dialog.getByLabel("Recovery password");
@@ -147,11 +148,16 @@ test("2SKD recovery kit keeps the recovery code separate from the saved backup",
   await expect(dialog).toContainText(
     "/Users/test/Downloads/identity.buzzbackup",
   );
+  await dialog.getByTestId("two-skd-save-recovery-sheet").click();
+  await expect(dialog.getByTestId("two-skd-recovery-sheet-path")).toContainText(
+    "/Users/test/Documents/buzz-recovery-sheet.pdf",
+  );
   const commands = await page.evaluate(
     () => window.__BUZZ_E2E_COMMANDS__ ?? [],
   );
   expect(commands).toContain("create_2skd_backup");
   expect(commands).toContain("save_2skd_backup_copy");
+  expect(commands).toContain("save_2skd_recovery_sheet");
 });
 
 test("2SKD recovery kit verification requires the code and password", async ({

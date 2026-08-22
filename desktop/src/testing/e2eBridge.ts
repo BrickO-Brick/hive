@@ -568,6 +568,8 @@ type E2eConfig = {
     backupEncryptionDelayMs?: number;
     /** Native paths returned by successive backup saves. */
     backupSavePaths?: Array<string | null>;
+    /** Native paths returned by successive recovery-sheet PDF saves. */
+    recoverySheetSavePaths?: Array<string | null>;
     /**
      * When set, `get_nsec` throws with this message instead of returning the
      * mock nsec string. Use `nsecErrors` for sequenced failure/success.
@@ -8168,6 +8170,7 @@ let mockGlobalAgentConfig: {
 let nsecCallCount = 0;
 let backupVerificationCallCount = 0;
 let backupSaveCallCount = 0;
+let recoverySheetSaveCallCount = 0;
 
 const MOCK_NCRYPTSEC =
   "ncryptsec1qgg9947rlpvqu76pj5ecreduf9jxhselq2nae2kghhvd5g7dgjtcxfqtd67p9m0w57lspw8gsq6yphnm8623nsl8xn9j4jdzz84zm3frztj3z7s35vpzmqf6ksu8r89qk5z2zxfmu5gv8th8wclt0h4p";
@@ -11767,6 +11770,24 @@ export function maybeInstallE2eTauriMocks() {
         ];
         const index = Math.min(backupSaveCallCount, paths.length - 1);
         backupSaveCallCount += 1;
+        return paths[index];
+      }
+      case "save_2skd_recovery_sheet": {
+        const request = payload as {
+          backup?: string;
+          recoverySecret?: string;
+        } | null;
+        if (
+          request?.backup !== MOCK_TWO_SKD_BACKUP ||
+          request?.recoverySecret !== MOCK_RECOVERY_SECRET
+        ) {
+          throw new Error("invalid recovery sheet material");
+        }
+        const paths = activeConfig?.mock?.recoverySheetSavePaths ?? [
+          "/tmp/buzz-recovery-sheet.pdf",
+        ];
+        const index = Math.min(recoverySheetSaveCallCount, paths.length - 1);
+        recoverySheetSaveCallCount += 1;
         return paths[index];
       }
       case "verify_ncryptsec_backup": {

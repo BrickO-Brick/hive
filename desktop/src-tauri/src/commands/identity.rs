@@ -414,6 +414,65 @@ pub async fn save_2skd_backup_copy(
     Ok(Some(dest.display().to_string()))
 }
 
+/// Render and save the secret half of a recovery kit as a printable PDF.
+#[tauri::command]
+pub async fn save_2skd_recovery_sheet(
+    backup: String,
+    recovery_secret: String,
+    app_handle: tauri::AppHandle,
+) -> Result<Option<String>, String> {
+    use chrono::Datelike;
+
+    let recovery_secret = zeroize::Zeroizing::new(recovery_secret);
+    crate::two_skd::validate_recovery_secret(&recovery_secret)?;
+    let npub = crate::two_skd::backup_public_key(&backup)?
+        .to_bech32()
+        .map_err(|error| format!("encode recovery-sheet identity: {error}"))?;
+
+    let date = chrono::Local::now().date_naive();
+    let month = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ][date.month0() as usize];
+    let created_date = format!("{month} {}, {}", date.day(), date.year());
+
+    let dest = match crate::commands::export_util::pick_save_path(
+        &app_handle,
+        crate::recovery_sheet::RECOVERY_SHEET_FILE_NAME,
+        "Buzz recovery sheet",
+        &["pdf"],
+    )
+    .await?
+    {
+        Some(path) => path,
+        None => return Ok(None),
+    };
+
+    let dest_for_write = dest.clone();
+    tokio::task::spawn_blocking(move || {
+        let pdf = zeroize::Zeroizing::new(crate::recovery_sheet::render_recovery_sheet(
+            &recovery_secret,
+            &npub,
+            &created_date,
+        )?);
+        crate::key_backup::write_portable_secret_file(&dest_for_write, &pdf)
+    })
+    .await
+    .map_err(|error| format!("spawn_blocking failed: {error}"))??;
+
+    Ok(Some(dest.display().to_string()))
+}
+
 #[tauri::command]
 pub async fn import_identity(
     nsec: String,

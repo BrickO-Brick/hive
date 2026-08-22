@@ -35,6 +35,7 @@ mod observed_unread;
 mod persona_catalog;
 mod prevent_sleep;
 mod ptt_shortcut;
+mod recovery_sheet;
 mod relay;
 mod relay_admission;
 mod reset;
@@ -562,6 +563,7 @@ pub fn run() {
             verify_2skd_backup,
             save_ncryptsec_copy,
             save_2skd_backup_copy,
+            save_2skd_recovery_sheet,
             import_identity,
             persist_current_identity,
             get_profile,

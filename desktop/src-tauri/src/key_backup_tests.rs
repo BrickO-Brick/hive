@@ -221,6 +221,23 @@ fn write_portable_backup_file_persists_0600_without_a_sibling() {
 }
 
 #[test]
+fn write_portable_secret_file_persists_binary_bytes_owner_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("recovery-sheet.pdf");
+    let contents = b"%PDF-1.7\0binary recovery sheet";
+
+    write_portable_secret_file(&path, contents).unwrap();
+
+    assert_eq!(std::fs::read(&path).unwrap(), contents);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "recovery sheet must be owner-only");
+    }
+}
+
+#[test]
 fn write_portable_backup_file_preserves_an_existing_backup() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("portable.ncryptsec");

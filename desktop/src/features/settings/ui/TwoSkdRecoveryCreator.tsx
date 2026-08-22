@@ -1,10 +1,11 @@
-import { Check, Copy, Eye, EyeOff, ShieldCheck } from "lucide-react";
+import { Check, Copy, Eye, EyeOff, FileDown, ShieldCheck } from "lucide-react";
 import * as React from "react";
 
 import {
   createTwoSkdBackup,
   type CreatedTwoSkdBackup,
   saveTwoSkdBackupCopy,
+  saveTwoSkdRecoverySheet,
 } from "@/shared/api/tauriIdentity";
 import { writeTextToClipboard } from "@/shared/lib/clipboard";
 import { Button } from "@/shared/ui/button";
@@ -35,6 +36,9 @@ export function TwoSkdRecoveryCreator({
     null,
   );
   const [savedPath, setSavedPath] = React.useState<string | null>(null);
+  const [recoverySheetPath, setRecoverySheetPath] = React.useState<
+    string | null
+  >(null);
   const [pending, setPending] = React.useState(false);
   const [copied, setCopied] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -47,6 +51,7 @@ export function TwoSkdRecoveryCreator({
     setRevealed(false);
     setCreated(null);
     setSavedPath(null);
+    setRecoverySheetPath(null);
     setPending(false);
     setCopied(false);
     setError(null);
@@ -117,6 +122,30 @@ export function TwoSkdRecoveryCreator({
       );
     }
   }, [created]);
+
+  const saveRecoverySheet = React.useCallback(async () => {
+    if (!created || pending) return;
+    const requestId = ++requestRef.current;
+    setPending(true);
+    setError(null);
+    try {
+      const path = await saveTwoSkdRecoverySheet(
+        created.backup,
+        created.recoverySecret,
+      );
+      if (requestId !== requestRef.current) return;
+      if (path) setRecoverySheetPath(path);
+    } catch (cause) {
+      if (requestId !== requestRef.current) return;
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "Could not save the recovery sheet.",
+      );
+    } finally {
+      if (requestId === requestRef.current) setPending(false);
+    }
+  }, [created, pending]);
 
   const retrySave = React.useCallback(async () => {
     if (!created || pending) return;
@@ -227,10 +256,19 @@ export function TwoSkdRecoveryCreator({
             </div>
             <p className="text-xs leading-5 text-muted-foreground">
               The encrypted backup was saved to {savedPath}. Put this code in a
-              different place, such as your password manager or a printed QR.
-              Buzz cannot recover it later.
+              different place. The printable PDF includes a QR code and recovery
+              instructions, but never your password or encrypted backup. Buzz
+              cannot recreate it later.
             </p>
-            <div className="flex justify-end gap-2">
+            {recoverySheetPath ? (
+              <p
+                className="rounded-lg bg-muted px-3 py-2 text-xs text-muted-foreground"
+                data-testid="two-skd-recovery-sheet-path"
+              >
+                Recovery sheet saved to {recoverySheetPath}
+              </p>
+            ) : null}
+            <div className="flex flex-wrap justify-end gap-2">
               <Button
                 data-testid="two-skd-copy-code"
                 onClick={() => void copyRecoveryCode()}
@@ -244,7 +282,26 @@ export function TwoSkdRecoveryCreator({
                 )}
                 {copied ? "Copied" : "Copy code"}
               </Button>
-              <Button onClick={() => handleOpenChange(false)} type="button">
+              <Button
+                data-testid="two-skd-save-recovery-sheet"
+                disabled={pending}
+                onClick={() => void saveRecoverySheet()}
+                type="button"
+              >
+                {pending ? (
+                  <Spinner className="size-4 border-2" />
+                ) : recoverySheetPath ? (
+                  <Check aria-hidden="true" className="size-4" />
+                ) : (
+                  <FileDown aria-hidden="true" className="size-4" />
+                )}
+                {recoverySheetPath ? "Save another PDF" : "Save printable PDF"}
+              </Button>
+              <Button
+                onClick={() => handleOpenChange(false)}
+                type="button"
+                variant="ghost"
+              >
                 Done
               </Button>
             </div>

@@ -12,7 +12,7 @@ use base64::Engine;
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, Nonce};
 use hkdf::Hkdf;
-use nostr::{Keys, SecretKey};
+use nostr::{Keys, PublicKey, SecretKey};
 use serde::{Deserialize, Serialize};
 use sha2_legacy::Sha256;
 use unicode_normalization::UnicodeNormalization;
@@ -240,6 +240,11 @@ pub(crate) fn validate_backup(input: &str) -> Result<(), String> {
     parse_backup(input).map(|_| ())
 }
 
+pub(crate) fn backup_public_key(input: &str) -> Result<PublicKey, String> {
+    let payload = parse_backup(input)?;
+    PublicKey::parse(&payload.pubkey).map_err(|_| "invalid backup public key".to_string())
+}
+
 fn validate_payload_shape(payload: &BackupPayload) -> Result<(), String> {
     validate_cost(payload.cost())?;
     decode_array::<SALT_BYTES>(&payload.salt, "backup salt")?;
@@ -262,6 +267,10 @@ fn parse_recovery_secret(input: &str) -> Result<Zeroizing<[u8; RECOVERY_SECRET_B
         .try_into()
         .map_err(|_| "invalid recovery code".to_string())?;
     Ok(Zeroizing::new(secret))
+}
+
+pub(crate) fn validate_recovery_secret(input: &str) -> Result<(), String> {
+    parse_recovery_secret(input).map(|_| ())
 }
 
 fn decode_array<const N: usize>(encoded: &str, label: &str) -> Result<[u8; N], String> {

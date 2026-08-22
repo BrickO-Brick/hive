@@ -104,6 +104,19 @@ export async function saveTwoSkdBackupCopy(
   );
 }
 
+/** Save the recovery code and public identity as a printable PDF. */
+export async function saveTwoSkdRecoverySheet(
+  backup: string,
+  recoverySecret: string,
+): Promise<string | null> {
+  return (
+    (await invokeTauri<string | null>("save_2skd_recovery_sheet", {
+      backup,
+      recoverySecret,
+    })) ?? null
+  );
+}
+
 /** Save a portable backup copy. Returns null when the native dialog is cancelled. */
 export async function saveNcryptsecCopy(
   ncryptsec: string,
