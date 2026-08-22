@@ -22,6 +22,7 @@ import type { RelayEvent } from "@/shared/api/types";
 import { KIND_HUDDLE_REACTION } from "@/shared/constants/kinds";
 import { cn } from "@/shared/lib/cn";
 import { rewriteRelayUrl } from "@/shared/lib/mediaUrl";
+import { getStorageItem, setStorageItem } from "@/shared/lib/safeStorage";
 import { useDocumentVisible } from "@/shared/lib/useDocumentVisible";
 import { Button } from "@/shared/ui/button";
 import { useEmojiBurst } from "@/shared/ui/EmojiBurstProvider";
@@ -71,9 +72,14 @@ const HUDDLE_STATE_FALLBACK_INTERVAL_MS = 30_000;
 const HUDDLE_MODEL_STATUS_INTERVAL_MS = 10_000;
 const HUDDLE_REACTION_NAME_MAX = 48;
 const HEADPHONES_HINT_SEEN_STORAGE_KEY = "buzz.huddle.headphones-hint-seen";
+const PTT_HINT_SEEN_STORAGE_KEY = "buzz.huddle.ptt-hint-seen";
 
 function hasSeenHeadphonesHint() {
-  return window.localStorage.getItem(HEADPHONES_HINT_SEEN_STORAGE_KEY) === "1";
+  return getStorageItem(HEADPHONES_HINT_SEEN_STORAGE_KEY) === "1";
+}
+
+function hasSeenPttHint() {
+  return getStorageItem(PTT_HINT_SEEN_STORAGE_KEY) === "1";
 }
 
 function isVisibleHuddleState(state: HuddleState | null) {
@@ -188,6 +194,8 @@ export function HuddleBar({
   const [headphonesHintDismissed, setHeadphonesHintDismissed] = React.useState(
     hasSeenHeadphonesHint,
   );
+  const [pttHintDismissed, setPttHintDismissed] =
+    React.useState(hasSeenPttHint);
   const [isLeaving, setIsLeaving] = React.useState(false);
   const [showAddAgent, setShowAddAgent] = React.useState(false);
   const [agentAddError, setAgentAddError] = React.useState<string | null>(null);
@@ -330,8 +338,12 @@ export function HuddleBar({
   const mainHadActiveHuddleRef = React.useRef(false);
 
   const dismissHeadphonesHint = React.useCallback(() => {
-    window.localStorage.setItem(HEADPHONES_HINT_SEEN_STORAGE_KEY, "1");
+    setStorageItem(HEADPHONES_HINT_SEEN_STORAGE_KEY, "1");
     setHeadphonesHintDismissed(true);
+  }, []);
+  const dismissPttHint = React.useCallback(() => {
+    setStorageItem(PTT_HINT_SEEN_STORAGE_KEY, "1");
+    setPttHintDismissed(true);
   }, []);
 
   React.useEffect(() => {
@@ -660,6 +672,14 @@ export function HuddleBar({
 
         <div className="flex shrink-0 items-center gap-2">
           <MicControls
+            showPttHint={
+              mode === "main" &&
+              isPttMode &&
+              isMuted &&
+              !pttHintDismissed &&
+              !isDrawerClosing
+            }
+            onPttHintDismiss={dismissPttHint}
             isMuted={isMuted}
             onToggleMute={toggleMute}
             isPttMode={isPttMode}

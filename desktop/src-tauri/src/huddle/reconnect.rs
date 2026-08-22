@@ -31,9 +31,21 @@ pub async fn reconnect_huddle_audio(state: State<'_, AppState>) -> Result<(), St
         )
     };
 
-    let (cancel, pcm_tx) =
-        relay_api::connect_audio_relay(&ephemeral_channel_id, parent_channel_id.as_deref(), &state)
-            .await?;
+    let (cancel, pcm_tx) = match relay_api::connect_audio_relay(
+        &ephemeral_channel_id,
+        parent_channel_id.as_deref(),
+        &state,
+    )
+    .await
+    {
+        Ok(connection) => connection,
+        Err(error) => {
+            if error.code() == Some("huddle_relay_draining") {
+                eprintln!("buzz-desktop: huddle reconnect deferred while relay is draining");
+            }
+            return Err(error.to_string());
+        }
+    };
 
     let mut hs = state.huddle()?;
     let still_current = !matches!(hs.phase, HuddlePhase::Idle | HuddlePhase::Leaving)
