@@ -9,7 +9,7 @@ use crate::builtin;
 use crate::config::{
     pricing_authority, Config, MAX_PROMPT_BYTES, MAX_TOOL_CALLS_PER_TURN, MAX_TOOL_RESULT_BYTES,
 };
-use crate::handoff::{ContextRecovery, HandoffOutcome};
+use crate::handoff::ContextRecovery;
 use crate::hints::SkillEntry;
 use crate::llm::Llm;
 use crate::mcp::McpRegistry;
@@ -319,14 +319,6 @@ impl RunCtx<'_> {
         *self.turn_cache_write_tokens = CacheTotalState::Unseen;
         *self.turn_pricing_identity = None;
         *self.turn_total_state = TurnTotalState::Unseen;
-        // Per-turn handoff-attempt counter. Scoped here (not persisted in the
-        // session) so `BUZZ_AGENT_MAX_HANDOFFS` bounds compactions per
-        // `session/prompt` turn rather than per session lifetime. A
-        // long-lived session legitimately needs unbounded handoffs across
-        // prompts; the cap only exists to stop runaway within a single turn.
-        // The session-cumulative `handoff_count` (used in log lines) is not
-        // reset: it reflects total compactions since session start.
-        let mut handoff_attempts: usize = 0;
 
         let mut round = 0u32;
         // Per-prompt `_Stop` objection count. Bounded per prompt (not per
@@ -361,21 +353,12 @@ impl RunCtx<'_> {
             // its next request — the turn continues, it is not restarted. Drain
             // non-blocking; an empty queue is the common case.
             self.drain_steers();
-            match self.maybe_handoff(&mut handoff_attempts).await {
-                HandoffOutcome::Cancelled => return Ok(StopReason::Cancelled),
-                // Context was just reset — the prior request's token count no
-                // longer describes the (now much smaller) history. Clear both
-                // the token count and its byte baseline so a stale over-
-                // threshold reading can't immediately re-fire the handoff
-                // before the next response reports fresh usage.
-                HandoffOutcome::Performed => {
-                    *self.last_request_input_tokens = None;
-                    *self.last_request_history_bytes = None;
-                }
-                HandoffOutcome::Skipped => {
-                    truncate_history(self.history, self.cfg.max_history_bytes)
-                }
-            }
+            // No proactive compaction mid-turn: the working set is what the
+            // model is using right now, and summarizing it away forces a
+            // re-read storm. Proactive compaction runs once at the end of the
+            // turn (`end_of_turn_handoff`, called by `run_prompt`); mid-turn
+            // overflow is caught reactively by the context-400 arm below.
+            truncate_history(self.history, self.cfg.max_history_bytes);
 
             let mut tools = self.mcp.tools();
             // Inject the built-in load_skill tool when skills are available.
@@ -461,11 +444,9 @@ impl RunCtx<'_> {
                             // many rounds can ever be refunded in one turn. An
                             // ordinary round is never refunded.
                             round = round.saturating_sub(1);
-                            // Same reset as the proactive path (see
-                            // `HandoffOutcome::Performed` above): the frozen
-                            // token reading describes history that no longer
-                            // exists. Clearing it is what lets the gate work
-                            // again on later rounds.
+                            // The frozen token reading describes history that
+                            // no longer exists; clearing it is what lets the
+                            // end-of-turn gate read fresh usage.
                             *self.last_request_input_tokens = None;
                             *self.last_request_history_bytes = None;
                             continue;

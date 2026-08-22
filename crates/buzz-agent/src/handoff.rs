@@ -52,43 +52,52 @@ static HANDOFF_SYSTEM_PROMPT: std::sync::LazyLock<String> = std::sync::LazyLock:
     )
 });
 
+/// Whether [`RunCtx::handoff`] re-appends the live user prompt after the reset.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Reseat {
+    /// Mid-turn: the prompt is still being answered, so the fresh context must
+    /// end with it or the model has nothing to respond to.
+    LivePrompt,
+    /// End of turn: the prompt was already answered. Re-seating it would hand
+    /// the next turn a dangling user message that reads as a repeated request.
+    None,
+}
+
 impl RunCtx<'_> {
-    pub(crate) async fn maybe_handoff(&mut self, handoff_attempts: &mut usize) -> HandoffOutcome {
-        if !self.should_handoff() {
+    /// Proactive compaction, run once after a turn completes. Gates on the
+    /// provider's measured input usage for the turn's final request — no
+    /// growth estimate is needed because nothing is appended after it — and
+    /// compacts so the NEXT turn starts on a fresh context.
+    ///
+    /// Deliberately not run mid-turn: a turn's working set (file reads, tool
+    /// results) is exactly what the model is still using, and compacting it
+    /// forces a re-read storm that refills the window. Mid-turn overflow is
+    /// handled reactively by [`Self::recover_from_context_overflow`]. A turn
+    /// boundary is the cheapest place to lose the working set.
+    pub(crate) async fn end_of_turn_handoff(&mut self) -> HandoffOutcome {
+        if self.cfg.max_handoffs == 0 || !self.should_handoff() {
             return HandoffOutcome::Skipped;
         }
-        if *handoff_attempts >= self.cfg.max_handoffs {
-            let projected = self.projected_handoff_input_tokens();
-            let threshold = token_threshold(self.cfg.max_context_tokens);
-            tracing::warn!(
-                session_id = self.session_id,
-                reason = "preflight",
-                handoff_attempts = *handoff_attempts,
-                max_handoffs = self.cfg.max_handoffs,
-                projected_tokens = projected,
-                threshold_tokens = threshold,
-                "handoff cap reached; using truncation",
-            );
-            return HandoffOutcome::Skipped;
+        let outcome = self.handoff(None, Reseat::None).await;
+        if matches!(outcome, HandoffOutcome::Performed) {
+            // The measured usage describes history that no longer exists; a
+            // stale over-threshold reading must not re-fire the gate.
+            *self.last_request_input_tokens = None;
+            *self.last_request_history_bytes = None;
         }
-        // Consume one attempt slot before calling handoff(). This ensures
-        // that empty-summary, summarize-error, and cancellation outcomes all
-        // burn budget — not just successful compactions — so the cap cannot
-        // be bypassed by a flaky summarizer.
-        *handoff_attempts += 1;
-        self.handoff(None).await
+        outcome
     }
 
-    /// Handoff forced by a provider context-window rejection, bypassing both
-    /// gates in [`Self::maybe_handoff`].
+    /// Handoff forced by a provider context-window rejection, bypassing the
+    /// gate in [`Self::end_of_turn_handoff`].
     ///
-    /// The gates exist to *predict* overflow; a 400 naming a context-length
-    /// overflow is overflow already observed, so neither prediction applies.
-    /// `should_handoff()` reads a token count frozen at the last SUCCESSFUL
-    /// request (a failed request reports no usage), so it is under threshold by
-    /// construction — that frozen reading is the permanent stick. And
-    /// `max_handoffs` is a cost cap whose only alternative here is a request
-    /// that cannot succeed.
+    /// The gate exists to *predict* overflow; a 400 naming a context-length
+    /// overflow is overflow already observed, so the prediction does not
+    /// apply. `should_handoff()` reads a token count frozen at the last
+    /// SUCCESSFUL request (a failed request reports no usage), so it is under
+    /// threshold by construction — that frozen reading is the permanent stick.
+    /// And `max_handoffs` is a cost cap whose only alternative here is a
+    /// request that cannot succeed.
     ///
     /// `history_budget_bytes` is explicit rather than derived from
     /// `cfg.max_context_tokens`: that window is the quantity the provider just
@@ -97,7 +106,8 @@ impl RunCtx<'_> {
         tracing::warn!(
             "provider reported context overflow; forcing handoff (history budget {history_budget_bytes} bytes)"
         );
-        self.handoff(Some(history_budget_bytes)).await
+        self.handoff(Some(history_budget_bytes), Reseat::LivePrompt)
+            .await
     }
 
     /// The reactive context-recovery ladder, run after the provider rejected a
@@ -171,9 +181,14 @@ impl RunCtx<'_> {
         }
     }
 
-    /// The handoff mechanism itself: summarize, reset, re-seat the live prompt.
-    /// Holds no gate — callers decide whether a handoff is warranted.
-    async fn handoff(&mut self, history_budget_bytes: Option<usize>) -> HandoffOutcome {
+    /// The handoff mechanism itself: summarize, reset, and (per `reseat`)
+    /// re-seat the live prompt. Holds no gate — callers decide whether a
+    /// handoff is warranted.
+    async fn handoff(
+        &mut self,
+        history_budget_bytes: Option<usize>,
+        reseat: Reseat,
+    ) -> HandoffOutcome {
         let prompt = self.build_handoff_prompt(history_budget_bytes);
         let tokens_before = self.projected_handoff_input_tokens();
         let summary = tokio::select! {
@@ -197,10 +212,13 @@ impl RunCtx<'_> {
                 }
             },
         };
-        let current_prompt = self.history.iter().rev().find_map(|item| match item {
-            HistoryItem::User(s) => Some(s.clone()),
-            _ => None,
-        });
+        let current_prompt = match reseat {
+            Reseat::LivePrompt => self.history.iter().rev().find_map(|item| match item {
+                HistoryItem::User(s) => Some(s.clone()),
+                _ => None,
+            }),
+            Reseat::None => None,
+        };
         let prior = self.history.len();
         // Reset history first; the _PostCompact hook is meant to inject
         // state into the FRESH context, not the old one we're discarding.

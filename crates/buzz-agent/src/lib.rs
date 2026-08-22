@@ -43,7 +43,7 @@ use crate::config::{Config, MAX_SYSTEM_PROMPT_BYTES, PROTOCOL_VERSION};
 use crate::hints::SkillEntry;
 use crate::llm::Llm;
 use crate::mcp::McpRegistry;
-use crate::types::{ContentBlock, HistoryItem};
+use crate::types::{ContentBlock, HistoryItem, StopReason};
 use crate::wire::{
     classify, goose_session_update, Inbound, InitializeParams, SessionCancelParams,
     SessionNewParams, SessionPromptParams, SessionSetModelParams, SessionSteerParams, WireMsg,
@@ -84,8 +84,8 @@ struct Session {
     handoff_count: usize,
     /// Cache-summed input tokens the provider reported for this session's most
     /// recent request, or `None` before the first response (or after a handoff
-    /// resets the context). Drives the token-based handoff gate; see
-    /// [`RunCtx::should_handoff`].
+    /// resets the context). Drives the end-of-turn handoff gate; see
+    /// [`RunCtx::end_of_turn_handoff`].
     last_request_input_tokens: Option<u64>,
     /// History byte size when `last_request_input_tokens` was measured, paired
     /// with it so the gate can account for history appended since.
@@ -753,6 +753,13 @@ async fn run_prompt(app: Arc<App>, id: Value, params: Value, wire_tx: WireSender
         usage_baseline,
     };
     let result = ctx.run(p.prompt).await;
+    // Proactive compaction lives at the turn boundary, not mid-turn. Gate on
+    // the stop reason, not `is_ok()`: `run()` reports cancellation as
+    // `Ok(StopReason::Cancelled)`, and a cancelled turn must not spend a
+    // summarize round trip the user just asked us to stop.
+    if matches!(result, Ok(reason) if reason != StopReason::Cancelled) {
+        ctx.end_of_turn_handoff().await;
+    }
     if let Some(s) = app.sessions.lock().await.get_mut(&sid) {
         s.busy = false;
         // Clear run state so a late steer can't queue into a finished turn.
