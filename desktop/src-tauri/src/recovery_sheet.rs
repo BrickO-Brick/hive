@@ -181,7 +181,7 @@ pub(crate) fn render_recovery_sheet(
         8.0,
         BuiltinFont::HelveticaBold,
         charcoal(),
-        "RECOVERY SHEET / KEEP OFFLINE",
+        "BUZZ RECOVERY CODE",
     );
     text(
         &mut ops,
@@ -190,7 +190,7 @@ pub(crate) fn render_recovery_sheet(
         27.0,
         BuiltinFont::HelveticaBold,
         charcoal(),
-        "Keep this separate.",
+        "Your Buzz recovery code.",
     );
     text(
         &mut ops,
@@ -199,7 +199,16 @@ pub(crate) fn render_recovery_sheet(
         11.0,
         BuiltinFont::Helvetica,
         charcoal(),
-        "This paper is one of three things required to recover your identity.",
+        "Use this code with your backup file and password",
+    );
+    text(
+        &mut ops,
+        18.0,
+        195.5,
+        11.0,
+        BuiltinFont::Helvetica,
+        charcoal(),
+        "to recover your Buzz identity.",
     );
     fill_rect(&mut ops, 18.0, 188.0, 24.0, 2.0, buzz_yellow());
 
@@ -211,7 +220,7 @@ pub(crate) fn render_recovery_sheet(
         8.0,
         BuiltinFont::HelveticaBold,
         muted(),
-        "YOUR RECOVERY CODE",
+        "RECOVERY CODE",
     );
     text(
         &mut ops,
@@ -220,16 +229,16 @@ pub(crate) fn render_recovery_sheet(
         19.0,
         BuiltinFont::HelveticaBold,
         charcoal(),
-        "One code.",
+        "Recovery code",
     );
     text(
         &mut ops,
         28.0,
         142.5,
-        19.0,
-        BuiltinFont::HelveticaBold,
+        11.0,
+        BuiltinFont::Helvetica,
         charcoal(),
-        "Store it offline.",
+        "Scan the QR code or type the code below.",
     );
     fill_stroke_rect(&mut ops, 28.0, 122.0, 96.0, 11.0, cream(), muted());
     fill_rect(&mut ops, 28.0, 122.0, 2.0, 11.0, buzz_yellow());
@@ -289,7 +298,7 @@ pub(crate) fn render_recovery_sheet(
         7.0,
         BuiltinFont::Helvetica,
         muted(),
-        "QR CONTAINS THE RECOVERY CODE",
+        "SCAN TO COPY THE RECOVERY CODE",
     );
 
     text(
@@ -299,12 +308,12 @@ pub(crate) fn render_recovery_sheet(
         8.0,
         BuiltinFont::HelveticaBold,
         muted(),
-        "RECOVERY NEEDS ALL THREE",
+        "TO RECOVER YOUR IDENTITY, YOU NEED",
     );
     let requirements = [
-        ("1", "Encrypted backup", "identity.buzzbackup"),
-        ("2", "Your password", "Known only to you"),
-        ("3", "This sheet", "Stored separately"),
+        ("1", "Backup file", "identity.buzzbackup"),
+        ("2", "Password", "The password you chose"),
+        ("3", "Recovery code", "Printed on this page"),
     ];
     for (index, (number, title, detail)) in requirements.iter().enumerate() {
         let x = 18.0 + index as f32 * 61.0;
@@ -348,7 +357,7 @@ pub(crate) fn render_recovery_sheet(
         9.0,
         BuiltinFont::HelveticaBold,
         charcoal(),
-        "DO NOT STORE THIS SHEET WITH YOUR ENCRYPTED BACKUP.",
+        "KEEP THIS PAGE SEPARATE FROM YOUR BACKUP FILE.",
     );
     text(
         &mut ops,
@@ -357,7 +366,7 @@ pub(crate) fn render_recovery_sheet(
         8.0,
         BuiltinFont::Helvetica,
         muted(),
-        "Buzz cannot recreate this code or reset your recovery password.",
+        "Buzz cannot replace this recovery code if you lose it.",
     );
     text(
         &mut ops,
@@ -407,7 +416,7 @@ mod tests {
 
         assert_eq!(parsed.pages.len(), 1);
         assert!(text.contains(RECOVERY_CODE));
-        assert!(text.contains("Keep this separate."));
+        assert!(text.contains("Your Buzz recovery code."));
         assert!(text.contains(NPUB));
         assert!(!text.contains("buzz2skd1:"));
         assert!(!text.contains("password="));
