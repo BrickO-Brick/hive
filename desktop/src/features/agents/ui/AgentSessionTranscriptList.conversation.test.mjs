@@ -20,6 +20,15 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { after, afterEach, before, test } from "node:test";
 
+// The captured markup embeds locally-formatted timestamps ("… at 7:00:01 PM"),
+// because `formatTranscriptTimestampTitle` formats in the ambient zone. Pin the
+// zone so the fixture is reproducible on any developer machine and in CI (which
+// runs UTC) — otherwise the byte-for-byte comparison fails purely on the
+// capturer's offset. Must be set before the transcript modules are imported:
+// their `Intl.DateTimeFormat` instances are module-level constants that resolve
+// the zone once, at construction.
+process.env.TZ = "UTC";
+
 import { JSDOM } from "jsdom";
 
 const BASELINE_MARKUP = JSON.parse(
@@ -731,6 +740,14 @@ test("default and compactPreview markup is unchanged by the conversation variant
 });
 
 test("the byte-for-byte baseline actually exercises every renderable item kind", async () => {
+  // The fixture embeds formatted timestamps, so a zone other than the one it was
+  // captured in fails the comparison above for a reason that has nothing to do
+  // with markup. Fail loudly and specifically instead.
+  assert.equal(
+    new Intl.DateTimeFormat().resolvedOptions().timeZone,
+    "UTC",
+    "the baseline fixture is captured in UTC — see the TZ pin at the top of this file",
+  );
   // Guards the fixture itself: a baseline that silently stopped covering a kind
   // would keep passing the comparison above while protecting nothing. Asserted
   // against `default`, which renders every kind.
