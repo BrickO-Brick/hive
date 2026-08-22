@@ -8,6 +8,8 @@ public struct BuzzCommunicationNotificationDescriptor: Equatable, Sendable {
   public let messageBody: String
   public let conversationIdentifier: String
   public let conversationDisplayName: String?
+  /// Verified recipients represented by the incoming message, excluding its sender.
+  public let recipientCount: Int
 
   public init(
     senderDisplayName: String,
@@ -15,7 +17,8 @@ public struct BuzzCommunicationNotificationDescriptor: Equatable, Sendable {
     senderAvatarPNG: Data?,
     messageBody: String,
     conversationIdentifier: String,
-    conversationDisplayName: String?
+    conversationDisplayName: String?,
+    recipientCount: Int
   ) {
     self.senderDisplayName = senderDisplayName
     self.senderIdentifier = senderIdentifier
@@ -23,6 +26,7 @@ public struct BuzzCommunicationNotificationDescriptor: Equatable, Sendable {
     self.messageBody = messageBody
     self.conversationIdentifier = conversationIdentifier
     self.conversationDisplayName = conversationDisplayName
+    self.recipientCount = recipientCount
   }
 
   public init?(resolution: BuzzPushResolution) {
@@ -30,7 +34,9 @@ public struct BuzzCommunicationNotificationDescriptor: Equatable, Sendable {
       let senderPubkey = resolution.senderPubkey,
       !senderPubkey.isEmpty,
       let conversationIdentifier = resolution.conversationIdentifier,
-      !conversationIdentifier.isEmpty
+      !conversationIdentifier.isEmpty,
+      let recipientCount = resolution.conversationRecipientCount,
+      recipientCount > 0
     else { return nil }
     self.init(
       senderDisplayName: resolution.title,
@@ -41,7 +47,8 @@ public struct BuzzCommunicationNotificationDescriptor: Equatable, Sendable {
       senderAvatarPNG: resolution.senderAvatarPNG,
       messageBody: resolution.body,
       conversationIdentifier: conversationIdentifier,
-      conversationDisplayName: resolution.conversationDisplayName
+      conversationDisplayName: resolution.conversationDisplayName,
+      recipientCount: recipientCount
     )
   }
 }
@@ -116,7 +123,7 @@ public struct BuzzCommunicationNotificationDescriptor: Equatable, Sendable {
         isMe: false,
         suggestionType: .none
       )
-      return INSendMessageIntent(
+      let intent = INSendMessageIntent(
         recipients: nil,
         outgoingMessageType: .outgoingMessageText,
         content: descriptor.messageBody,
@@ -128,6 +135,12 @@ public struct BuzzCommunicationNotificationDescriptor: Equatable, Sendable {
         sender: sender,
         attachments: nil
       )
+      if descriptor.conversationDisplayName != nil {
+        let donationMetadata = INSendMessageIntentDonationMetadata()
+        donationMetadata.recipientCount = descriptor.recipientCount
+        intent.donationMetadata = donationMetadata
+      }
+      return intent
     }
   }
 #endif

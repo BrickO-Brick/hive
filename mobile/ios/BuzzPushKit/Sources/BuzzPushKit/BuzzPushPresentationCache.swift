@@ -43,6 +43,18 @@ public struct BuzzPushCachedChannel: Codable, Equatable, Sendable {
   public let channelID: String
   public let relayMetadataPubkey: String
   public let displayName: String?
+  /// Relay-verified Buzz channel type, when recognized.
+  public let channelType: String?
+  /// Exact unique-member count when bounded, or a value above the bound when oversized.
+  public let memberCount: Int?
+  /// Complete community-and-channel-scoped member digests, when within bounds.
+  public let memberDigests: [String]?
+  /// Event ID that established the cached membership snapshot.
+  public let membershipEventID: String?
+  /// Creation time of the cached membership replacement event.
+  public let membershipEventCreatedAt: Int?
+  /// Device time when the membership snapshot was cached.
+  public let membershipCachedAt: Int?
   public let eventID: String
   public let eventCreatedAt: Int
   public let cachedAt: Int
@@ -53,6 +65,12 @@ public struct BuzzPushCachedChannel: Codable, Equatable, Sendable {
     channelID: String,
     relayMetadataPubkey: String,
     displayName: String?,
+    channelType: String? = nil,
+    memberCount: Int? = nil,
+    memberDigests: [String]? = nil,
+    membershipEventID: String? = nil,
+    membershipEventCreatedAt: Int? = nil,
+    membershipCachedAt: Int? = nil,
     eventID: String,
     eventCreatedAt: Int,
     cachedAt: Int
@@ -62,6 +80,12 @@ public struct BuzzPushCachedChannel: Codable, Equatable, Sendable {
     self.channelID = channelID
     self.relayMetadataPubkey = relayMetadataPubkey
     self.displayName = displayName
+    self.channelType = channelType
+    self.memberCount = memberCount
+    self.memberDigests = memberDigests
+    self.membershipEventID = membershipEventID
+    self.membershipEventCreatedAt = membershipEventCreatedAt
+    self.membershipCachedAt = membershipCachedAt
     self.eventID = eventID
     self.eventCreatedAt = eventCreatedAt
     self.cachedAt = cachedAt
@@ -135,6 +159,8 @@ public final class BuzzPushPresentationCacheStore: @unchecked Sendable {
   public static let freshnessLifetime: TimeInterval = 24 * 60 * 60
   public static let maximumProfiles = 256
   public static let maximumChannels = 512
+  public static let maximumMembersPerChannel = 512
+  public static let maximumTotalMemberDigests = 8_192
   public static let maximumAvatarBytes = 64 * 1024
   public static let maximumTotalAvatarBytes = 4 * 1024 * 1024
   public static let maximumSnapshotBytes = 8 * 1024 * 1024
@@ -156,7 +182,8 @@ public final class BuzzPushPresentationCacheStore: @unchecked Sendable {
     updates: [BuzzPushProfileCacheUpdate]
   ) throws -> Set<String> {
     guard Self.isBoundedOpaqueID(communityID),
-      let canonicalRelayOrigin = Self.canonicalRelayOrigin(relayOrigin)
+      let canonicalRelayOrigin = Self.canonicalRelayOrigin(relayOrigin),
+      updates.count <= Self.maximumProfiles
     else { return [] }
     lock.lock()
     defer { lock.unlock() }
@@ -218,17 +245,20 @@ public final class BuzzPushPresentationCacheStore: @unchecked Sendable {
     })
   }
 
-  /// Saves signature-verified kind-39000 events for the selected community.
+  /// Saves bounded relay-authorized kind-39000 metadata and kind-39002 membership snapshots.
   public func updateChannels(
     communityID: String,
     relayOrigin: String,
     relayMetadataPubkey: String,
-    events: [VerifiedNostrEvent]
+    metadataEvents: [VerifiedNostrEvent],
+    membershipEvents: [VerifiedNostrEvent]
   ) throws {
     let normalizedRelayPubkey = relayMetadataPubkey.lowercased()
     guard Self.isBoundedOpaqueID(communityID),
       let canonicalRelayOrigin = Self.canonicalRelayOrigin(relayOrigin),
-      Self.isHexPubkey(normalizedRelayPubkey)
+      Self.isHexPubkey(normalizedRelayPubkey),
+      metadataEvents.count <= Self.maximumChannels,
+      membershipEvents.count <= Self.maximumChannels
     else {
       return
     }
@@ -237,7 +267,7 @@ public final class BuzzPushPresentationCacheStore: @unchecked Sendable {
 
     var snapshot = loadLocked()
     let cachedAt = Int(now().timeIntervalSince1970)
-    for event in events {
+    for event in metadataEvents {
       guard event.kind == 39_000, event.hasValidIDAndSignature(),
         event.pubkey.lowercased() == normalizedRelayPubkey,
         let channelID = Self.tagValue("d", in: event),
@@ -248,7 +278,8 @@ public final class BuzzPushPresentationCacheStore: @unchecked Sendable {
           && $0.channelID == channelID
       }
       let existing = index.map { snapshot.channels[$0] }
-      guard Self.shouldReplace(
+      let hasCurrentAuthority = existing?.relayMetadataPubkey == normalizedRelayPubkey
+      guard !hasCurrentAuthority || Self.shouldReplace(
         existingCreatedAt: existing?.eventCreatedAt,
         existingID: existing?.eventID,
         candidateCreatedAt: event.createdAt,
@@ -261,6 +292,13 @@ public final class BuzzPushPresentationCacheStore: @unchecked Sendable {
         channelID: channelID,
         relayMetadataPubkey: normalizedRelayPubkey,
         displayName: Self.normalizedDisplayName(Self.tagValue("name", in: event)),
+        channelType: Self.normalizedChannelType(Self.tagValue("t", in: event)),
+        memberCount: hasCurrentAuthority ? existing?.memberCount : nil,
+        memberDigests: hasCurrentAuthority ? existing?.memberDigests : nil,
+        membershipEventID: hasCurrentAuthority ? existing?.membershipEventID : nil,
+        membershipEventCreatedAt: hasCurrentAuthority
+          ? existing?.membershipEventCreatedAt : nil,
+        membershipCachedAt: hasCurrentAuthority ? existing?.membershipCachedAt : nil,
         eventID: event.id,
         eventCreatedAt: event.createdAt,
         cachedAt: cachedAt
@@ -270,6 +308,50 @@ public final class BuzzPushPresentationCacheStore: @unchecked Sendable {
       } else {
         snapshot.channels.append(entry)
       }
+    }
+    Self.enforceChannelCountBound(&snapshot)
+
+    for event in membershipEvents {
+      guard event.kind == 39_002, event.hasValidIDAndSignature(),
+        event.pubkey.lowercased() == normalizedRelayPubkey,
+        let channelID = Self.tagValue("d", in: event),
+        Self.isBoundedOpaqueID(channelID),
+        let membership = Self.normalizedChannelMembership(
+          event,
+          communityID: communityID,
+          channelID: channelID
+        ),
+        let index = snapshot.channels.firstIndex(where: {
+          $0.communityID == communityID && $0.relayOrigin == canonicalRelayOrigin
+            && $0.channelID == channelID
+            && $0.relayMetadataPubkey == normalizedRelayPubkey
+        })
+      else { continue }
+      let existing = snapshot.channels[index]
+      guard Self.shouldReplace(
+        existingCreatedAt: existing.membershipEventCreatedAt,
+        existingID: existing.membershipEventID,
+        candidateCreatedAt: event.createdAt,
+        candidateID: event.id
+      ) else { continue }
+
+      snapshot.channels[index] = BuzzPushCachedChannel(
+        communityID: existing.communityID,
+        relayOrigin: existing.relayOrigin,
+        channelID: existing.channelID,
+        relayMetadataPubkey: existing.relayMetadataPubkey,
+        displayName: existing.displayName,
+        channelType: existing.channelType,
+        memberCount: membership.count,
+        memberDigests: membership.digests,
+        membershipEventID: event.id,
+        membershipEventCreatedAt: event.createdAt,
+        membershipCachedAt: cachedAt,
+        eventID: existing.eventID,
+        eventCreatedAt: existing.eventCreatedAt,
+        cachedAt: existing.cachedAt
+      )
+      Self.enforceMemberDigestBound(&snapshot)
     }
 
     Self.enforceBounds(&snapshot)
@@ -372,6 +454,15 @@ public final class BuzzPushPresentationCacheStore: @unchecked Sendable {
       data = try encoder.encode(bounded)
     }
 
+    if data.count > Self.maximumSnapshotBytes {
+      for index in bounded.channels.indices.reversed() {
+        guard bounded.channels[index].memberDigests != nil else { continue }
+        bounded.channels[index] = Self.removingMemberDigests(from: bounded.channels[index])
+        data = try encoder.encode(bounded)
+        if data.count <= Self.maximumSnapshotBytes { break }
+      }
+    }
+
     while data.count > Self.maximumSnapshotBytes,
       !bounded.profiles.isEmpty || !bounded.channels.isEmpty
     {
@@ -411,6 +502,40 @@ public final class BuzzPushPresentationCacheStore: @unchecked Sendable {
       bounded.removeLast()
     }
     return bounded.isEmpty ? nil : bounded
+  }
+
+  static func normalizedChannelType(_ value: String?) -> String? {
+    guard let value, ["stream", "forum", "dm"].contains(value) else { return nil }
+    return value
+  }
+
+  static func normalizedChannelMembership(
+    _ event: VerifiedNostrEvent,
+    communityID: String,
+    channelID: String
+  ) -> (count: Int, digests: [String]?)? {
+    var pubkeys = Set<String>()
+    var exceededMemberBound = false
+    for tag in event.tags where tag.first == "p" {
+      guard tag.count >= 2 else { return nil }
+      let pubkey = tag[1].lowercased()
+      guard isHexPubkey(pubkey) else { return nil }
+      if !exceededMemberBound {
+        pubkeys.insert(pubkey)
+        exceededMemberBound = pubkeys.count > maximumMembersPerChannel
+      }
+    }
+    let digests = exceededMemberBound ? nil : pubkeys.map {
+      BuzzPushPresentationIdentity.channelMember(
+        communityID: communityID,
+        channelID: channelID,
+        pubkey: $0
+      )
+    }.sorted()
+    return (
+      exceededMemberBound ? maximumMembersPerChannel + 1 : pubkeys.count,
+      digests
+    )
   }
 
   static func normalizedAvatarURL(_ value: String?) -> String? {
@@ -480,9 +605,8 @@ public final class BuzzPushPresentationCacheStore: @unchecked Sendable {
     snapshot.profiles = Array(
       snapshot.profiles.sorted(by: profileNewestFirst).prefix(maximumProfiles)
     )
-    snapshot.channels = Array(
-      snapshot.channels.sorted(by: channelNewestFirst).prefix(maximumChannels)
-    )
+    enforceChannelCountBound(&snapshot)
+    enforceMemberDigestBound(&snapshot)
 
     var avatarBytes = snapshot.profiles.reduce(0) { $0 + ($1.avatarPNG?.count ?? 0) }
     guard avatarBytes > maximumTotalAvatarBytes else { return }
@@ -492,6 +616,30 @@ public final class BuzzPushPresentationCacheStore: @unchecked Sendable {
       let profile = snapshot.profiles[index]
       snapshot.profiles[index] = removingAvatar(from: profile)
       if avatarBytes <= maximumTotalAvatarBytes { break }
+    }
+  }
+
+  private static func enforceChannelCountBound(
+    _ snapshot: inout BuzzPushPresentationCacheSnapshot
+  ) {
+    snapshot.channels = Array(
+      snapshot.channels.sorted(by: channelNewestFirst).prefix(maximumChannels)
+    )
+  }
+
+  private static func enforceMemberDigestBound(
+    _ snapshot: inout BuzzPushPresentationCacheSnapshot
+  ) {
+    snapshot.channels.sort(by: channelNewestFirst)
+    var memberDigestCount = snapshot.channels.reduce(0) {
+      $0 + ($1.memberDigests?.count ?? 0)
+    }
+    guard memberDigestCount > maximumTotalMemberDigests else { return }
+    for index in snapshot.channels.indices.reversed() {
+      guard let memberDigests = snapshot.channels[index].memberDigests else { continue }
+      memberDigestCount -= memberDigests.count
+      snapshot.channels[index] = removingMemberDigests(from: snapshot.channels[index])
+      if memberDigestCount <= maximumTotalMemberDigests { break }
     }
   }
 
@@ -511,6 +659,27 @@ public final class BuzzPushPresentationCacheStore: @unchecked Sendable {
     )
   }
 
+  private static func removingMemberDigests(
+    from channel: BuzzPushCachedChannel
+  ) -> BuzzPushCachedChannel {
+    BuzzPushCachedChannel(
+      communityID: channel.communityID,
+      relayOrigin: channel.relayOrigin,
+      channelID: channel.channelID,
+      relayMetadataPubkey: channel.relayMetadataPubkey,
+      displayName: channel.displayName,
+      channelType: channel.channelType,
+      memberCount: channel.memberCount,
+      memberDigests: nil,
+      membershipEventID: channel.membershipEventID,
+      membershipEventCreatedAt: channel.membershipEventCreatedAt,
+      membershipCachedAt: channel.membershipCachedAt,
+      eventID: channel.eventID,
+      eventCreatedAt: channel.eventCreatedAt,
+      cachedAt: channel.cachedAt
+    )
+  }
+
   private static func removeOldestEntries(
     _ count: Int,
     from snapshot: inout BuzzPushPresentationCacheSnapshot
@@ -521,8 +690,9 @@ public final class BuzzPushPresentationCacheStore: @unchecked Sendable {
       case (.some, nil): snapshot.profiles.removeLast()
       case (nil, .some): snapshot.channels.removeLast()
       case (let profile?, let channel?):
-        if profile.cachedAt < channel.cachedAt
-          || (profile.cachedAt == channel.cachedAt && profile.eventID <= channel.eventID)
+        let channelCachedAt = channelLastCachedAt(channel)
+        if profile.cachedAt < channelCachedAt
+          || (profile.cachedAt == channelCachedAt && profile.eventID <= channel.eventID)
         {
           snapshot.profiles.removeLast()
         } else {
@@ -543,7 +713,13 @@ public final class BuzzPushPresentationCacheStore: @unchecked Sendable {
     _ lhs: BuzzPushCachedChannel,
     _ rhs: BuzzPushCachedChannel
   ) -> Bool {
-    lhs.cachedAt == rhs.cachedAt ? lhs.eventID > rhs.eventID : lhs.cachedAt > rhs.cachedAt
+    let lhsCachedAt = channelLastCachedAt(lhs)
+    let rhsCachedAt = channelLastCachedAt(rhs)
+    return lhsCachedAt == rhsCachedAt ? lhs.eventID > rhs.eventID : lhsCachedAt > rhsCachedAt
+  }
+
+  private static func channelLastCachedAt(_ channel: BuzzPushCachedChannel) -> Int {
+    max(channel.cachedAt, channel.membershipCachedAt ?? 0)
   }
 }
 
@@ -555,6 +731,18 @@ public enum BuzzPushPresentationIdentity {
 
   public static func sender(communityID: String, pubkey: String) -> String {
     scoped(namespace: "sender", values: [communityID, pubkey.lowercased()])
+  }
+
+  /// Returns a stable, channel-scoped digest used for exact local membership checks.
+  public static func channelMember(
+    communityID: String,
+    channelID: String,
+    pubkey: String
+  ) -> String {
+    scoped(
+      namespace: "channel-member",
+      values: [communityID, channelID, pubkey.lowercased()]
+    )
   }
 
   private static func scoped(namespace: String, values: [String]) -> String {

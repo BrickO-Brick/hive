@@ -46,7 +46,8 @@ final class BuzzPushPresentationCacheBridge {
   private func cacheProfiles(_ rawArguments: Any?, result: @escaping FlutterResult) {
     guard let arguments = rawArguments as? [String: Any],
       let communityID = arguments["communityId"] as? String,
-      let rawEvents = arguments["events"] as? [[String: Any]]
+      let rawEvents = arguments["events"] as? [[String: Any]],
+      rawEvents.count <= BuzzPushPresentationCacheStore.maximumProfiles
     else {
       result(
         FlutterError(
@@ -86,12 +87,15 @@ final class BuzzPushPresentationCacheBridge {
   private func cacheChannels(_ rawArguments: Any?, result: @escaping FlutterResult) {
     guard let arguments = rawArguments as? [String: Any],
       let communityID = arguments["communityId"] as? String,
-      let rawEvents = arguments["events"] as? [[String: Any]]
+      let rawMetadataEvents = arguments["metadataEvents"] as? [[String: Any]],
+      let rawMembershipEvents = arguments["membershipEvents"] as? [[String: Any]],
+      rawMetadataEvents.count <= BuzzPushPresentationCacheStore.maximumChannels,
+      rawMembershipEvents.count <= BuzzPushPresentationCacheStore.maximumChannels
     else {
       result(
         FlutterError(
           code: "invalid_arguments",
-          message: "Expected communityId and channel events.",
+          message: "Expected communityId, channel metadata, and membership events.",
           details: nil
         )
       )
@@ -109,7 +113,8 @@ final class BuzzPushPresentationCacheBridge {
           communityID: communityID,
           relayOrigin: community.relayUrl,
           relayMetadataPubkey: relayMetadataPubkey,
-          events: try decodeEvents(rawEvents)
+          metadataEvents: try decodeEvents(rawMetadataEvents),
+          membershipEvents: try decodeEvents(rawMembershipEvents)
         )
         Self.complete(result, value: nil)
       } catch {

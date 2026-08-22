@@ -261,18 +261,33 @@ import UIKit
       didReceive response: UNNotificationResponse,
       withCompletionHandler completionHandler: @escaping () -> Void
     ) {
-      if response.actionIdentifier == UNNotificationDefaultActionIdentifier,
-        let target = BuzzPushNavigationTarget.decodeIfPresent(
-          from: response.notification.request.content.userInfo
-        )
-      {
-        pushNavigationBuffer.record(target)
-        deliverPushNavigationTarget(target)
-      }
+      BuzzPushNotificationResponseCoordinator.handle(
+        actionIdentifier: response.actionIdentifier,
+        userInfo: response.notification.request.content.userInfo,
+        onTarget: { target in
+          pushNavigationBuffer.record(target)
+          deliverPushNavigationTarget(target)
+        },
+        forwardToFlutter: { pluginCompletion in
+          self.forwardPushNotificationResponseToFlutter(
+            center,
+            response: response,
+            completion: pluginCompletion
+          )
+        },
+        completion: completionHandler
+      )
+    }
+
+    private func forwardPushNotificationResponseToFlutter(
+      _ center: UNUserNotificationCenter,
+      response: UNNotificationResponse,
+      completion: @escaping () -> Void
+    ) {
       super.userNotificationCenter(
         center,
         didReceive: response,
-        withCompletionHandler: completionHandler
+        withCompletionHandler: completion
       )
     }
 

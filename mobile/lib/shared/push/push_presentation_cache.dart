@@ -9,6 +9,9 @@ import '../relay/nostr_models.dart';
 import 'push_capability.dart';
 
 const _pushPresentationChannel = MethodChannel('buzz/push');
+// Keep these bridge payload bounds aligned with BuzzPushPresentationCacheStore.
+const _maximumPresentationProfiles = 256;
+const _maximumPresentationChannels = 512;
 const _maximumAvatarSourceBytes = 512 * 1024;
 const _maximumAvatarPNGBytes = 64 * 1024;
 Future<void> _avatarEncodeTail = Future.value();
@@ -44,11 +47,12 @@ Future<void> cacheBuzzPushProfileEvents(
       communityID.isEmpty) {
     return;
   }
-  final verified = events
-      .where(
-        (event) => event.kind == 0 && isVerifiedPushPresentationEvent(event),
-      )
-      .toList();
+  final verified = _boundedNewestEvents(
+    events,
+    kind: 0,
+    maximum: _maximumPresentationProfiles,
+    scope: (event) => event.pubkey.toLowerCase(),
+  ).values.toList();
   if (verified.isEmpty) return;
   await _invokeBestEffort('cachePresentationProfiles', {
     'communityId': communityID,
@@ -56,28 +60,108 @@ Future<void> cacheBuzzPushProfileEvents(
   });
 }
 
-/// Exports raw verified kind-39000 events for relay-authority validation and storage.
+/// Exports verified channel metadata and membership for native authority checks.
 Future<void> cacheBuzzPushChannelEvents(
   String communityID,
-  Iterable<NostrEvent> events,
+  Iterable<NostrEvent> metadataEvents,
+  Iterable<NostrEvent> membershipEvents,
 ) async {
   if (!buzzPushCapabilityEnabled ||
       defaultTargetPlatform != TargetPlatform.iOS ||
       communityID.isEmpty) {
     return;
   }
-  final verified = events
-      .where(
-        (event) =>
-            event.kind == 39000 && isVerifiedPushPresentationEvent(event),
-      )
-      .toList();
-  if (verified.isEmpty) return;
+  final batch = selectBoundedPushChannelEvents(
+    metadataEvents,
+    membershipEvents,
+  );
+  final verifiedMetadata = batch.metadata;
+  final verifiedMembership = batch.membership;
+  if (verifiedMetadata.isEmpty && verifiedMembership.isEmpty) return;
   await _invokeBestEffort('cachePresentationChannels', {
     'communityId': communityID,
-    'events': [for (final event in verified) event.toJson()],
+    'metadataEvents': [for (final event in verifiedMetadata) event.toJson()],
+    'membershipEvents': [
+      for (final event in verifiedMembership) event.toJson(),
+    ],
   });
 }
+
+/// Selects a bounded, paired set of verified channel metadata and membership events.
+@visibleForTesting
+({List<NostrEvent> metadata, List<NostrEvent> membership})
+selectBoundedPushChannelEvents(
+  Iterable<NostrEvent> metadataEvents,
+  Iterable<NostrEvent> membershipEvents, {
+  @visibleForTesting int maximumChannels = _maximumPresentationChannels,
+}) {
+  final verifiedMembershipByChannel = _boundedNewestEvents(
+    membershipEvents,
+    kind: 39002,
+    maximum: maximumChannels,
+    scope: (event) => event.getTagValue('d'),
+  );
+  final selectedChannelIDs = verifiedMembershipByChannel.keys.toSet();
+  final verifiedMetadataByChannel = _boundedNewestEvents(
+    metadataEvents,
+    kind: 39000,
+    maximum: maximumChannels,
+    scope: (event) => event.getTagValue('d'),
+    allowedScopes: selectedChannelIDs.isEmpty ? null : selectedChannelIDs,
+  );
+  if (selectedChannelIDs.isEmpty) {
+    selectedChannelIDs.addAll(verifiedMetadataByChannel.keys);
+  }
+  final verifiedMetadata = [
+    for (final entry in verifiedMetadataByChannel.entries)
+      if (selectedChannelIDs.contains(entry.key)) entry.value,
+  ];
+  final verifiedMembership = [
+    for (final entry in verifiedMembershipByChannel.entries)
+      if (selectedChannelIDs.contains(entry.key)) entry.value,
+  ];
+  return (metadata: verifiedMetadata, membership: verifiedMembership);
+}
+
+Map<String, NostrEvent> _boundedNewestEvents(
+  Iterable<NostrEvent> events, {
+  required int kind,
+  required int maximum,
+  required String? Function(NostrEvent event) scope,
+  Set<String>? allowedScopes,
+}) {
+  final selected = <String, NostrEvent>{};
+  if (maximum <= 0) return selected;
+  for (final event in events) {
+    if (event.kind != kind || !isVerifiedPushPresentationEvent(event)) continue;
+    final key = scope(event);
+    if (key == null || key.isEmpty) continue;
+    if (allowedScopes != null && !allowedScopes.contains(key)) continue;
+    final existing = selected[key];
+    if (existing != null) {
+      if (_isNewerEvent(event, existing)) selected[key] = event;
+      continue;
+    }
+    if (selected.length < maximum) {
+      selected[key] = event;
+      continue;
+    }
+    final oldest = selected.entries.reduce(
+      (left, right) => _isNewerEvent(left.value, right.value) ? right : left,
+    );
+    if (_isNewerEvent(event, oldest.value)) {
+      selected
+        ..remove(oldest.key)
+        ..[key] = event;
+    }
+  }
+  return selected;
+}
+
+bool _isNewerEvent(NostrEvent candidate, NostrEvent existing) =>
+    candidate.createdAt > existing.createdAt ||
+    (candidate.createdAt == existing.createdAt &&
+        candidate.id.compareTo(existing.id) < 0);
 
 /// Reuses bytes already fetched for a visible foreground avatar.
 ///

@@ -174,7 +174,7 @@ struct BuzzPushPresentationCacheTests {
       privateKey: relayKey,
       createdAt: 100,
       kind: 39_000,
-      tags: [["d", opaqueChannelID], ["name", "  General  Chat "]]
+      tags: [["d", opaqueChannelID], ["name", "  General  Chat "], ["t", "stream"]]
     )
     let wrongSigner = try signedEvent(
       privateKey: otherRelayKey,
@@ -187,7 +187,8 @@ struct BuzzPushPresentationCacheTests {
       communityID: "community-a",
       relayOrigin: "wss://relay.example",
       relayMetadataPubkey: relayPubkey,
-      events: [wrongSigner, verified]
+      metadataEvents: [wrongSigner, verified],
+      membershipEvents: []
     )
 
     let cached = try #require(
@@ -199,7 +200,275 @@ struct BuzzPushPresentationCacheTests {
     )
     #expect(cached.eventID == verified.id)
     #expect(cached.displayName == "General Chat")
+    #expect(cached.channelType == "stream")
     #expect(cached.relayMetadataPubkey == relayPubkey)
+  }
+
+  @Test("Channel membership requires the same relay authority and keeps exact scoped digests")
+  func channelMembershipAuthorityAndOrdering() throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = BuzzPushPresentationCacheStore(containerURL: directory)
+    let relayPubkey = try pubkey(for: relayKey)
+    let firstMember = try pubkey(for: profileKey)
+    let secondMember = try pubkey(for: otherRelayKey)
+    let metadata = try signedEvent(
+      privateKey: relayKey,
+      createdAt: 100,
+      kind: 39_000,
+      tags: [["d", "opaque-channel"], ["name", "General"], ["t", "stream"]]
+    )
+    let newestMembership = try signedEvent(
+      privateKey: relayKey,
+      createdAt: 102,
+      kind: 39_002,
+      tags: [
+        ["d", "opaque-channel"],
+        ["p", firstMember],
+        ["p", secondMember],
+        ["p", secondMember],
+      ]
+    )
+    let olderMembership = try signedEvent(
+      privateKey: relayKey,
+      createdAt: 101,
+      kind: 39_002,
+      tags: [["d", "opaque-channel"], ["p", firstMember]]
+    )
+    let wrongSigner = try signedEvent(
+      privateKey: otherRelayKey,
+      createdAt: 103,
+      kind: 39_002,
+      tags: [["d", "opaque-channel"], ["p", firstMember]]
+    )
+    let malformed = try signedEvent(
+      privateKey: relayKey,
+      createdAt: 104,
+      kind: 39_002,
+      tags: [["d", "opaque-channel"], ["p", "not-a-pubkey"]]
+    )
+
+    try store.updateChannels(
+      communityID: "community-a",
+      relayOrigin: "https://relay.example",
+      relayMetadataPubkey: relayPubkey,
+      metadataEvents: [metadata],
+      membershipEvents: [wrongSigner, malformed, newestMembership, olderMembership]
+    )
+
+    let cached = try #require(
+      try loadSnapshot(directory).channel(
+        communityID: "community-a",
+        relayOrigin: "https://relay.example",
+        channelID: "opaque-channel"
+      )
+    )
+    #expect(cached.memberCount == 2)
+    #expect(cached.membershipEventID == newestMembership.id)
+    #expect(
+      cached.memberDigests == [firstMember, secondMember].map {
+        BuzzPushPresentationIdentity.channelMember(
+          communityID: "community-a",
+          channelID: "opaque-channel",
+          pubkey: $0
+        )
+      }.sorted()
+    )
+  }
+
+  @Test("Channel authority rotation clears membership signed by the old authority")
+  func channelAuthorityRotationClearsMembership() throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = BuzzPushPresentationCacheStore(containerURL: directory)
+    let relayPubkey = try pubkey(for: relayKey)
+    let rotatedRelayPubkey = try pubkey(for: otherRelayKey)
+    let member = try pubkey(for: profileKey)
+    let metadata = try signedEvent(
+      privateKey: relayKey,
+      createdAt: 100,
+      kind: 39_000,
+      tags: [["d", "opaque-channel"], ["name", "General"], ["t", "stream"]]
+    )
+    let membership = try signedEvent(
+      privateKey: relayKey,
+      createdAt: 101,
+      kind: 39_002,
+      tags: [["d", "opaque-channel"], ["p", member]]
+    )
+    try store.updateChannels(
+      communityID: "community-a",
+      relayOrigin: "https://relay.example",
+      relayMetadataPubkey: relayPubkey,
+      metadataEvents: [metadata],
+      membershipEvents: [membership]
+    )
+
+    let rotatedMetadata = try signedEvent(
+      privateKey: otherRelayKey,
+      createdAt: 50,
+      kind: 39_000,
+      tags: [["d", "opaque-channel"], ["name", "General"], ["t", "stream"]]
+    )
+    try store.updateChannels(
+      communityID: "community-a",
+      relayOrigin: "https://relay.example",
+      relayMetadataPubkey: rotatedRelayPubkey,
+      metadataEvents: [rotatedMetadata],
+      membershipEvents: []
+    )
+
+    let cached = try #require(
+      try loadSnapshot(directory).channel(
+        communityID: "community-a",
+        relayOrigin: "https://relay.example",
+        channelID: "opaque-channel"
+      )
+    )
+    #expect(cached.relayMetadataPubkey == rotatedRelayPubkey)
+    #expect(cached.eventID == rotatedMetadata.id)
+    #expect(cached.memberCount == nil)
+    #expect(cached.memberDigests == nil)
+    #expect(cached.membershipEventID == nil)
+  }
+
+  @Test("Oversized channel batches are ignored before cache mutation")
+  func oversizedChannelBatchIsIgnored() throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = BuzzPushPresentationCacheStore(containerURL: directory)
+    let relayPubkey = try pubkey(for: relayKey)
+    let initial = try signedEvent(
+      privateKey: relayKey,
+      createdAt: 100,
+      kind: 39_000,
+      tags: [["d", "opaque-channel"], ["name", "Initial"], ["t", "stream"]]
+    )
+    try store.updateChannels(
+      communityID: "community-a",
+      relayOrigin: "https://relay.example",
+      relayMetadataPubkey: relayPubkey,
+      metadataEvents: [initial],
+      membershipEvents: []
+    )
+    let replacement = try signedEvent(
+      privateKey: relayKey,
+      createdAt: 101,
+      kind: 39_000,
+      tags: [["d", "opaque-channel"], ["name", "Replacement"], ["t", "stream"]]
+    )
+
+    try store.updateChannels(
+      communityID: "community-a",
+      relayOrigin: "https://relay.example",
+      relayMetadataPubkey: relayPubkey,
+      metadataEvents: Array(
+        repeating: replacement,
+        count: BuzzPushPresentationCacheStore.maximumChannels + 1
+      ),
+      membershipEvents: []
+    )
+
+    let cached = try #require(
+      try loadSnapshot(directory).channel(
+        communityID: "community-a",
+        relayOrigin: "https://relay.example",
+        channelID: "opaque-channel"
+      )
+    )
+    #expect(cached.eventID == initial.id)
+    #expect(cached.displayName == "Initial")
+  }
+
+  @Test("Global member-digest bound drops oldest complete rosters first")
+  func globalMembershipDigestBound() throws {
+    let membersPerChannel = BuzzPushPresentationCacheStore.maximumMembersPerChannel
+    let channelCount =
+      BuzzPushPresentationCacheStore.maximumTotalMemberDigests / membersPerChannel + 1
+    let digests = (0..<membersPerChannel).map { String(format: "%064x", $0 + 1) }
+    let snapshot = BuzzPushPresentationCacheSnapshot(
+      channels: (0..<channelCount).map { index in
+        BuzzPushCachedChannel(
+          communityID: "community-a",
+          relayOrigin: "https://relay.example",
+          channelID: "channel-\(index)",
+          relayMetadataPubkey: String(repeating: "a", count: 64),
+          displayName: "Channel \(index)",
+          channelType: "stream",
+          memberCount: membersPerChannel,
+          memberDigests: digests,
+          membershipEventID: "membership-\(index)",
+          membershipEventCreatedAt: index,
+          membershipCachedAt: 1_000 + index,
+          eventID: "metadata-\(index)",
+          eventCreatedAt: index,
+          cachedAt: 1_000 + index
+        )
+      }
+    )
+
+    let encoded = try BuzzPushPresentationCacheStore.encodedBoundedSnapshot(snapshot)
+    let decoded = try JSONDecoder().decode(BuzzPushPresentationCacheSnapshot.self, from: encoded)
+    let totalDigests = decoded.channels.reduce(0) { $0 + ($1.memberDigests?.count ?? 0) }
+
+    #expect(totalDigests == BuzzPushPresentationCacheStore.maximumTotalMemberDigests)
+    #expect(decoded.channels.first { $0.channelID == "channel-0" }?.memberDigests == nil)
+    #expect(decoded.channels.first { $0.channelID == "channel-\(channelCount - 1)" }?.memberDigests != nil)
+  }
+
+  @Test("Oversized membership keeps provenance but omits an incomplete digest set")
+  func oversizedMembershipFallback() throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = BuzzPushPresentationCacheStore(containerURL: directory)
+    let relayPubkey = try pubkey(for: relayKey)
+    let metadata = try signedEvent(
+      privateKey: relayKey,
+      kind: 39_000,
+      tags: [["d", "large-channel"], ["name", "Large"], ["t", "stream"]]
+    )
+    let memberCount = BuzzPushPresentationCacheStore.maximumMembersPerChannel + 25
+    let membership = try signedEvent(
+      privateKey: relayKey,
+      kind: 39_002,
+      tags: [["d", "large-channel"]] + (0..<memberCount).map {
+        ["p", String(format: "%064x", $0 + 1)]
+      }
+    )
+
+    try store.updateChannels(
+      communityID: "community-a",
+      relayOrigin: "https://relay.example",
+      relayMetadataPubkey: relayPubkey,
+      metadataEvents: [metadata],
+      membershipEvents: [membership]
+    )
+
+    let cached = try #require(
+      try loadSnapshot(directory).channel(
+        communityID: "community-a",
+        relayOrigin: "https://relay.example",
+        channelID: "large-channel"
+      )
+    )
+    #expect(
+      cached.memberCount == BuzzPushPresentationCacheStore.maximumMembersPerChannel + 1
+    )
+    #expect(cached.memberDigests == nil)
+    #expect(cached.membershipEventID == membership.id)
+  }
+
+  @Test("Legacy cache decodes with channel membership unavailable")
+  func legacyCacheCompatibility() throws {
+    let legacy = try #require(
+      #"{"version":1,"profiles":[],"channels":[{"communityID":"community-a","relayOrigin":"https://relay.example","channelID":"opaque","relayMetadataPubkey":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","displayName":"General","eventID":"event","eventCreatedAt":1,"cachedAt":2}]}"#.data(using: .utf8)
+    )
+
+    let channel = try #require(BuzzPushPresentationCacheSnapshot.decode(legacy).channels.first)
+
+    #expect(channel.displayName == "General")
+    #expect(channel.memberCount == nil)
+    #expect(channel.memberDigests == nil)
   }
 
   @Test("Missing or malformed channel metadata never fabricates a name")
@@ -225,7 +494,8 @@ struct BuzzPushPresentationCacheTests {
       communityID: "community-a",
       relayOrigin: "https://relay.example",
       relayMetadataPubkey: relayPubkey,
-      events: [blankName, missingChannelID]
+      metadataEvents: [blankName, missingChannelID],
+      membershipEvents: []
     )
 
     let snapshot = try loadSnapshot(directory)
@@ -260,7 +530,8 @@ struct BuzzPushPresentationCacheTests {
       communityID: "removed",
       relayOrigin: "https://relay.example",
       relayMetadataPubkey: try pubkey(for: relayKey),
-      events: [channel]
+      metadataEvents: [channel],
+      membershipEvents: []
     )
 
     try store.retainCommunities(["retained"])

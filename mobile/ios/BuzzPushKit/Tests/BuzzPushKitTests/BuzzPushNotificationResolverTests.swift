@@ -10,14 +10,14 @@ import XCTest
 #endif
 
 final class BuzzPushNotificationResolverTests: XCTestCase {
-  private static let privateKey = String(repeating: "0", count: 63) + "1"
-  private static let ownPubkey =
+  static let privateKey = String(repeating: "0", count: 63) + "1"
+  static let ownPubkey =
     "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
-  private static let now = Int(Date().timeIntervalSince1970)
-  private static let profilePrivateKey = String(repeating: "0", count: 63) + "2"
-  private static let relayPrivateKey = String(repeating: "0", count: 63) + "3"
-  private static let gatewayBody = "Reconnect to your relay now"
-  private static let channelID = "123e4567-e89b-42d3-a456-426614174000"
+  static let now = Int(Date().timeIntervalSince1970)
+  static let profilePrivateKey = String(repeating: "0", count: 63) + "2"
+  static let relayPrivateKey = String(repeating: "0", count: 63) + "3"
+  static let gatewayBody = "Reconnect to your relay now"
+  static let channelID = "123e4567-e89b-42d3-a456-426614174000"
 
   override func setUp() {
     super.setUp()
@@ -198,6 +198,12 @@ final class BuzzPushNotificationResolverTests: XCTestCase {
           channelID: Self.channelID,
           relayMetadataPubkey: relayPubkey,
           displayName: "General",
+          channelType: "stream",
+          memberCount: 2,
+          memberDigests: Self.memberDigests([Self.ownPubkey, message.pubkey]),
+          membershipEventID: "membership-event",
+          membershipEventCreatedAt: Self.now,
+          membershipCachedAt: Self.now,
           eventID: "channel-event",
           eventCreatedAt: Self.now,
           cachedAt: Self.now
@@ -221,6 +227,7 @@ final class BuzzPushNotificationResolverTests: XCTestCase {
     XCTAssertEqual(result.title, "Alice")
     XCTAssertEqual(result.senderAvatarPNG, avatar)
     XCTAssertEqual(result.conversationDisplayName, "General")
+    XCTAssertEqual(result.conversationRecipientCount, 1)
     XCTAssertEqual(URLProtocolStub.requests.count, 1)
   }
 
@@ -255,6 +262,12 @@ final class BuzzPushNotificationResolverTests: XCTestCase {
           channelID: Self.channelID,
           relayMetadataPubkey: relayPubkey,
           displayName: "Stale General",
+          channelType: "stream",
+          memberCount: 2,
+          memberDigests: Self.memberDigests([Self.ownPubkey, message.pubkey]),
+          membershipEventID: "membership-event",
+          membershipEventCreatedAt: staleAt,
+          membershipCachedAt: staleAt,
           eventID: "channel-event",
           eventCreatedAt: staleAt,
           cachedAt: staleAt
@@ -281,6 +294,7 @@ final class BuzzPushNotificationResolverTests: XCTestCase {
 
     XCTAssertEqual(result.title, "Stale Alice")
     XCTAssertEqual(result.conversationDisplayName, "Stale General")
+    XCTAssertEqual(result.conversationRecipientCount, 1)
     XCTAssertEqual(URLProtocolStub.requests.count, 2)
   }
 
@@ -326,6 +340,12 @@ final class BuzzPushNotificationResolverTests: XCTestCase {
           channelID: Self.channelID,
           relayMetadataPubkey: olderChannel.pubkey,
           displayName: "Newer Cached General",
+          channelType: "stream",
+          memberCount: 2,
+          memberDigests: Self.memberDigests([Self.ownPubkey, message.pubkey]),
+          membershipEventID: "cached-membership",
+          membershipEventCreatedAt: Self.now - 10,
+          membershipCachedAt: staleAt,
           eventID: String(repeating: "f", count: 64),
           eventCreatedAt: Self.now - 10,
           cachedAt: staleAt
@@ -396,6 +416,12 @@ final class BuzzPushNotificationResolverTests: XCTestCase {
           channelID: Self.channelID,
           relayMetadataPubkey: relayMetadataPubkey,
           displayName: "Stale General",
+          channelType: "stream",
+          memberCount: 2,
+          memberDigests: Self.memberDigests([Self.ownPubkey, message.pubkey]),
+          membershipEventID: "cached-membership",
+          membershipEventCreatedAt: Self.now,
+          membershipCachedAt: Self.now,
           eventID: "cached-channel",
           eventCreatedAt: Self.now,
           cachedAt: staleAt
@@ -447,7 +473,17 @@ final class BuzzPushNotificationResolverTests: XCTestCase {
       privateKey: Self.relayPrivateKey,
       createdAt: Self.now,
       kind: 39_000,
-      tags: [["d", Self.channelID], ["name", "Fresh General"]]
+      tags: [["d", Self.channelID], ["name", "Fresh General"], ["t", "stream"]]
+    )
+    let membership = try Self.signedEvent(
+      privateKey: Self.relayPrivateKey,
+      createdAt: Self.now,
+      kind: 39_002,
+      tags: [
+        ["d", Self.channelID],
+        ["p", Self.ownPubkey],
+        ["p", message.pubkey],
+      ]
     )
     URLProtocolStub.handler = { request in
       if URLProtocolStub.requests.count == 1 {
@@ -456,7 +492,7 @@ final class BuzzPushNotificationResolverTests: XCTestCase {
       return Self.response(
         request,
         status: 200,
-        data: try JSONEncoder().encode([profile, channel])
+        data: try JSONEncoder().encode([profile, channel, membership])
       )
     }
 
@@ -473,6 +509,7 @@ final class BuzzPushNotificationResolverTests: XCTestCase {
 
     XCTAssertEqual(result.title, "Fresh Alice")
     XCTAssertEqual(result.conversationDisplayName, "Fresh General")
+    XCTAssertEqual(result.conversationRecipientCount, 1)
     XCTAssertNil(result.senderAvatarPNG)
     XCTAssertEqual(URLProtocolStub.requests.count, 2)
   }
@@ -586,7 +623,7 @@ final class BuzzPushNotificationResolverTests: XCTestCase {
     XCTAssertEqual(URLProtocolStub.requests.count, 1)
   }
 
-  private func makeResolver(
+  func makeResolver(
     communitiesData: Data?,
     privateKeys: [String: String] = ["community-id": privateKey],
     presentationCacheData: Data? = nil,
@@ -603,7 +640,7 @@ final class BuzzPushNotificationResolverTests: XCTestCase {
     )
   }
 
-  private func resolve(_ resolver: BuzzPushNotificationResolver) -> BuzzPushResolution? {
+  func resolve(_ resolver: BuzzPushNotificationResolver) -> BuzzPushResolution? {
     let completed = expectation(description: "resolver completed")
     var result: BuzzPushResolution?
     resolver.resolve {
@@ -614,7 +651,7 @@ final class BuzzPushNotificationResolverTests: XCTestCase {
     return result
   }
 
-  private func community(
+  func community(
     id: String = "community-id",
     name: String = "Community",
     relayUrl: String = "https://relay.example",
@@ -643,7 +680,7 @@ final class BuzzPushNotificationResolverTests: XCTestCase {
     )
   }
 
-  private func snapshotData(_ communities: [PushLeaseCommunity]) throws -> Data {
+  func snapshotData(_ communities: [PushLeaseCommunity]) throws -> Data {
     try JSONEncoder().encode(PushLeaseSnapshot(communities: communities))
   }
 
@@ -670,7 +707,7 @@ final class BuzzPushNotificationResolverTests: XCTestCase {
     {"kind":9,"created_at":1785551670,"tags":[["h","123e4567-e89b-42d3-a456-426614174000"]],"content":"  Hello   [Buzz](https://buzz.block.xyz)  ","pubkey":"c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5","id":"233ccf24ec7c94808f9ef08b0c986b6df1bc3843ff72a9f8d016e2a77c77429b","sig":"d39dcd413839b872ed75a979b2c1542247fde636709966905c9e424e227a43897dc67b71ec84178a3faad0634f9bcdf0b48a56ebac84a2ac6e58124b8b6476e6"}
     """#
 
-  private static func response(
+  static func response(
     _ request: URLRequest,
     status: Int,
     data: Data
@@ -684,13 +721,23 @@ final class BuzzPushNotificationResolverTests: XCTestCase {
     return (response, data)
   }
 
-  private static func pubkey(for privateKey: String) throws -> String {
+  static func pubkey(for privateKey: String) throws -> String {
     let bytes = try XCTUnwrap(VerifiedNostrEvent.hexBytes(privateKey))
     let key = try P256K.Schnorr.PrivateKey(dataRepresentation: bytes)
     return VerifiedNostrEvent.hex(key.xonly.bytes)
   }
 
-  private static func signedEvent(
+  static func memberDigests(_ pubkeys: [String]) -> [String] {
+    pubkeys.map {
+      BuzzPushPresentationIdentity.channelMember(
+        communityID: "community-id",
+        channelID: channelID,
+        pubkey: $0
+      )
+    }.sorted()
+  }
+
+  static func signedEvent(
     privateKey: String,
     createdAt: Int,
     kind: Int,
@@ -721,37 +768,37 @@ final class BuzzPushNotificationResolverTests: XCTestCase {
       sig: VerifiedNostrEvent.hex(signature.dataRepresentation)
     )
   }
-}
 
-private final class URLProtocolStub: URLProtocol, @unchecked Sendable {
-  static let lock = NSLock()
-  static var handler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
-  static var requests: [URLRequest] = []
+  final class URLProtocolStub: URLProtocol, @unchecked Sendable {
+    static let lock = NSLock()
+    static var handler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
+    static var requests: [URLRequest] = []
 
-  override class func canInit(with request: URLRequest) -> Bool { true }
-  override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
-  override func startLoading() {
-    Self.lock.lock()
-    Self.requests.append(request)
-    let handler = Self.handler
-    Self.lock.unlock()
-    do {
-      let (response, data) = try handler?(request) ?? { throw URLError(.unsupportedURL) }()
-      client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-      client?.urlProtocol(self, didLoad: data)
-      client?.urlProtocolDidFinishLoading(self)
-    } catch {
-      client?.urlProtocol(self, didFailWithError: error)
+    override func startLoading() {
+      Self.lock.lock()
+      Self.requests.append(request)
+      let handler = Self.handler
+      Self.lock.unlock()
+      do {
+        let (response, data) = try handler?(request) ?? { throw URLError(.unsupportedURL) }()
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data)
+        client?.urlProtocolDidFinishLoading(self)
+      } catch {
+        client?.urlProtocol(self, didFailWithError: error)
+      }
     }
-  }
 
-  override func stopLoading() {}
+    override func stopLoading() {}
 
-  static func reset() {
-    lock.lock()
-    handler = nil
-    requests = []
-    lock.unlock()
+    static func reset() {
+      lock.lock()
+      handler = nil
+      requests = []
+      lock.unlock()
+    }
   }
 }

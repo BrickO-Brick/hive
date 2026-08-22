@@ -39,6 +39,74 @@ void main() {
     );
   });
 
+  test('accepts a valid signed channel membership snapshot', () {
+    final signed = nostr.Event.from(
+      kind: 39002,
+      content: '',
+      tags: const [
+        ['d', 'channel/general:v5'],
+        [
+          'p',
+          '79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798',
+          'member',
+        ],
+      ],
+      secretKey: secretKey,
+      createdAt: 1700000000,
+    );
+
+    expect(
+      isVerifiedPushPresentationEvent(NostrEvent.fromJson(signed.toMap())),
+      isTrue,
+    );
+  });
+
+  test(
+    'bounded channel selection keeps metadata paired with selected rosters',
+    () {
+      NostrEvent signedChannelEvent(int kind, String channelID, int createdAt) {
+        final signed = nostr.Event.from(
+          kind: kind,
+          content: '',
+          tags: [
+            ['d', channelID],
+            if (kind == 39002)
+              [
+                'p',
+                '79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798',
+              ],
+          ],
+          secretKey: secretKey,
+          createdAt: createdAt,
+        );
+        return NostrEvent.fromJson(signed.toMap());
+      }
+
+      final batch = selectBoundedPushChannelEvents(
+        [
+          signedChannelEvent(39000, 'channel-0', 100),
+          signedChannelEvent(39000, 'channel-1', 300),
+          signedChannelEvent(39000, 'channel-2', 200),
+        ],
+        [
+          signedChannelEvent(39002, 'channel-0', 300),
+          signedChannelEvent(39002, 'channel-1', 200),
+          signedChannelEvent(39002, 'channel-2', 100),
+        ],
+        maximumChannels: 2,
+      );
+
+      expect(batch.metadata.map((event) => event.getTagValue('d')).toSet(), {
+        'channel-0',
+        'channel-1',
+      });
+      expect(batch.membership.map((event) => event.getTagValue('d')).toSet(), {
+        'channel-0',
+        'channel-1',
+      });
+    },
+  );
+
   test('rejects changed content and malformed signatures', () {
     final signed = nostr.Event.from(
       kind: 0,

@@ -1,6 +1,45 @@
 #if BUZZ_PUSH_ENABLED
+  import BuzzPushKit
   import Foundation
   import Security
+  import UserNotifications
+
+final class BuzzOneShotCompletion {
+  private let lock = NSLock()
+  private var completion: (() -> Void)?
+
+  init(_ completion: @escaping () -> Void) {
+    self.completion = completion
+  }
+
+  func call() {
+    lock.lock()
+    let completion = completion
+    self.completion = nil
+    lock.unlock()
+    completion?()
+  }
+}
+
+enum BuzzPushNotificationResponseCoordinator {
+  static func handle(
+    actionIdentifier: String,
+    userInfo: [AnyHashable: Any],
+    onTarget: (BuzzPushNavigationTarget) -> Void,
+    forwardToFlutter: (@escaping () -> Void) -> Void,
+    completion: @escaping () -> Void
+  ) {
+    let completionGate = BuzzOneShotCompletion(completion)
+    defer { completionGate.call() }
+
+    if actionIdentifier == UNNotificationDefaultActionIdentifier,
+      let target = BuzzPushNavigationTarget.decodeIfPresent(from: userInfo)
+    {
+      onTarget(target)
+    }
+    forwardToFlutter { completionGate.call() }
+  }
+}
 
 enum BuzzPushKeychain {
   static let service = "buzz.push.nse.signing"

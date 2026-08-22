@@ -25,6 +25,37 @@ final class BuzzCommunicationNotificationTests: XCTestCase {
     XCTAssertEqual(intent.speakableGroupName?.spokenPhrase, "General")
     XCTAssertEqual(intent.conversationIdentifier, resolution.conversationIdentifier)
     XCTAssertNil(intent.recipients)
+    XCTAssertEqual(descriptor.recipientCount, 1)
+    XCTAssertEqual(
+      (intent.donationMetadata as? INSendMessageIntentDonationMetadata)?.recipientCount,
+      1
+    )
+  }
+
+  func testDirectMessageRetainsSenderAvatarWithoutGroupMetadata() throws {
+    let resolution = communicationResolution(
+      displayName: "Alice",
+      groupName: nil,
+      avatarPNG: Data([0x89, 0x50, 0x4E, 0x47])
+    )
+    let descriptor = try XCTUnwrap(
+      BuzzCommunicationNotificationDescriptor(resolution: resolution)
+    )
+
+    let intent = BuzzCommunicationNotificationPresenter.makeIntent(descriptor)
+
+    XCTAssertEqual(intent.sender?.displayName, "Alice")
+    XCTAssertNotNil(intent.sender?.image)
+    XCTAssertNil(intent.speakableGroupName)
+    XCTAssertNil(intent.donationMetadata)
+  }
+
+  func testMissingVerifiedRecipientCountUsesOrdinaryPresentation() {
+    XCTAssertNil(
+      BuzzCommunicationNotificationDescriptor(
+        resolution: communicationResolution(recipientCount: nil)
+      )
+    )
   }
 
   func testPresentationFallsBackWhenDonationFails() {
@@ -111,7 +142,8 @@ final class BuzzCommunicationNotificationTests: XCTestCase {
   private func communicationResolution(
     displayName: String = "Alice",
     groupName: String? = "General",
-    avatarPNG: Data? = nil
+    avatarPNG: Data? = nil,
+    recipientCount: Int? = 1
   ) -> BuzzPushResolution {
     let communityID = "community-id"
     let channelID = "channel/general:v5"
@@ -134,7 +166,8 @@ final class BuzzCommunicationNotificationTests: XCTestCase {
         communityID: communityID,
         channelID: channelID
       ),
-      conversationDisplayName: groupName
+      conversationDisplayName: groupName,
+      conversationRecipientCount: recipientCount
     )
   }
 }
@@ -178,5 +211,70 @@ final class BuzzPushSnapshotEnrichmentTests: XCTestCase {
       generation: generation,
       expiresAt: 1_900_000_000
     )
+  }
+}
+
+final class BuzzPushNotificationResponseTests: XCTestCase {
+  func testValidDefaultActionRoutesAndCompletesExactlyOnce() {
+    let target = BuzzPushNavigationTarget(
+      eventID: "message-id",
+      communityID: "community-id",
+      channelID: "opaque-channel-id"
+    )
+    var routedTargets: [BuzzPushNavigationTarget] = []
+    var forwarded = 0
+    var completions = 0
+
+    BuzzPushNotificationResponseCoordinator.handle(
+      actionIdentifier: UNNotificationDefaultActionIdentifier,
+      userInfo: [BuzzPushNavigationTarget.userInfoKey: target.userInfoValue],
+      onTarget: { routedTargets.append($0) },
+      forwardToFlutter: { pluginCompletion in
+        forwarded += 1
+        pluginCompletion()
+        pluginCompletion()
+      },
+      completion: { completions += 1 }
+    )
+
+    XCTAssertEqual(routedTargets, [target])
+    XCTAssertEqual(forwarded, 1)
+    XCTAssertEqual(completions, 1)
+  }
+
+  func testMalformedTargetFallsBackToOneCompletion() {
+    var routedTargets: [BuzzPushNavigationTarget] = []
+    var completions = 0
+
+    BuzzPushNotificationResponseCoordinator.handle(
+      actionIdentifier: UNNotificationDefaultActionIdentifier,
+      userInfo: [BuzzPushNavigationTarget.userInfoKey: ["event_id": ""]],
+      onTarget: { routedTargets.append($0) },
+      forwardToFlutter: { _ in },
+      completion: { completions += 1 }
+    )
+
+    XCTAssertTrue(routedTargets.isEmpty)
+    XCTAssertEqual(completions, 1)
+  }
+
+  func testNonDefaultActionIgnoresLateDuplicatePluginCompletion() throws {
+    var routedTargets: [BuzzPushNavigationTarget] = []
+    var pluginCompletion: (() -> Void)?
+    var completions = 0
+
+    BuzzPushNotificationResponseCoordinator.handle(
+      actionIdentifier: "buzz.reply",
+      userInfo: [:],
+      onTarget: { routedTargets.append($0) },
+      forwardToFlutter: { pluginCompletion = $0 },
+      completion: { completions += 1 }
+    )
+    let capturedCompletion = try XCTUnwrap(pluginCompletion)
+    capturedCompletion()
+    capturedCompletion()
+
+    XCTAssertTrue(routedTargets.isEmpty)
+    XCTAssertEqual(completions, 1)
   }
 }
