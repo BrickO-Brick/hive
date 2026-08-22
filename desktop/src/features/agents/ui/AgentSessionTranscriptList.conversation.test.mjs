@@ -20,14 +20,53 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { after, afterEach, before, test } from "node:test";
 
-// The captured markup embeds locally-formatted timestamps ("… at 7:00:01 PM"),
-// because `formatTranscriptTimestampTitle` formats in the ambient zone. Pin the
-// zone so the fixture is reproducible on any developer machine and in CI (which
-// runs UTC) — otherwise the byte-for-byte comparison fails purely on the
-// capturer's offset. Must be set before the transcript modules are imported:
-// their `Intl.DateTimeFormat` instances are module-level constants that resolve
-// the zone once, at construction.
+// The captured markup embeds formatted dates and times, so the fixture is only
+// reproducible if every ambient formatting input is pinned. Two of them bite:
+//
+//  - **Zone.** `formatTranscriptTimestampTitle` formats in the ambient zone
+//    ("… at 7:00:01 PM"), so a capture at UTC-7 fails against CI's UTC.
+//  - **Locale.** The session-boundary divider uses a bare `toLocaleString()`
+//    (`AgentSessionTranscriptChrome.tsx`), which is locale-sensitive as well as
+//    zone-sensitive: "6/14/2026, 7:05:00 PM" becomes "14.6.2026, 19:05:00"
+//    under de-DE. Node derives its default locale from LANG/LC_ALL, so this
+//    varies by machine independently of the zone.
+//
+// `TZ` can be set here because `Date` reads it lazily. The locale CANNOT: node
+// resolves its default locale once at startup, so assigning `process.env.LANG`
+// at runtime has no effect (verified — it silently keeps the startup locale).
+// Pinning it therefore means overriding the two formatting surfaces the render
+// path can reach: `Intl.DateTimeFormat` when constructed with no explicit
+// locale, and `Date.prototype.toLocale*`, which does NOT route through
+// `Intl.DateTimeFormat` and so needs its own patch.
+//
+// All of this must happen before the transcript modules are imported: their
+// `Intl.DateTimeFormat` instances are module-level constants that resolve zone
+// and locale once, at construction.
 process.env.TZ = "UTC";
+
+const FIXTURE_LOCALE = "en-US";
+const OriginalDateTimeFormat = Intl.DateTimeFormat;
+// A plain function, not an arrow: the render path calls
+// `new Intl.DateTimeFormat(...)`, and an arrow function is not a constructor.
+// Returning a genuine instance keeps `new`, plain calls, and `instanceof` all
+// working.
+function LocalePinnedDateTimeFormat(locales, options) {
+  return new OriginalDateTimeFormat(locales ?? FIXTURE_LOCALE, options);
+}
+LocalePinnedDateTimeFormat.prototype = OriginalDateTimeFormat.prototype;
+LocalePinnedDateTimeFormat.supportedLocalesOf =
+  OriginalDateTimeFormat.supportedLocalesOf.bind(OriginalDateTimeFormat);
+Intl.DateTimeFormat = LocalePinnedDateTimeFormat;
+for (const method of [
+  "toLocaleString",
+  "toLocaleDateString",
+  "toLocaleTimeString",
+]) {
+  const original = Date.prototype[method];
+  Date.prototype[method] = function (locales, options) {
+    return original.call(this, locales ?? FIXTURE_LOCALE, options);
+  };
+}
 
 import { JSDOM } from "jsdom";
 
@@ -740,13 +779,23 @@ test("default and compactPreview markup is unchanged by the conversation variant
 });
 
 test("the byte-for-byte baseline actually exercises every renderable item kind", async () => {
-  // The fixture embeds formatted timestamps, so a zone other than the one it was
-  // captured in fails the comparison above for a reason that has nothing to do
-  // with markup. Fail loudly and specifically instead.
+  // The fixture embeds formatted dates and times, so a zone or locale other than
+  // the one it was captured in fails the comparison above for a reason that has
+  // nothing to do with markup. Fail loudly and specifically instead.
   assert.equal(
     new Intl.DateTimeFormat().resolvedOptions().timeZone,
     "UTC",
     "the baseline fixture is captured in UTC — see the TZ pin at the top of this file",
+  );
+  assert.equal(
+    new Intl.DateTimeFormat().resolvedOptions().locale,
+    FIXTURE_LOCALE,
+    `the baseline fixture is captured in ${FIXTURE_LOCALE} — see the locale pin at the top of this file`,
+  );
+  assert.equal(
+    new Date("2026-06-14T19:05:00.000Z").toLocaleString(),
+    "6/14/2026, 7:05:00 PM",
+    "Date.prototype.toLocaleString must be locale-pinned too — the session-boundary divider uses it",
   );
   // Guards the fixture itself: a baseline that silently stopped covering a kind
   // would keep passing the comparison above while protecting nothing. Asserted
