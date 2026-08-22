@@ -570,12 +570,17 @@ const MessageTimelineBase = React.forwardRef<
     // Indexed find navigation can legitimately land near the current history
     // boundary. Do not mistake that programmatic jump for scrollback intent and
     // prepend underneath the active match.
-    // A settle-gate hold means the reader is still parked at the OLD
-    // boundary — don't stack more page fetches behind the held commit.
+    // A landed page that has not painted yet — deferred snapshot still behind
+    // the live cache, or held by the settle gate — means the reader is still
+    // parked at the OLD boundary. The scroll events WebKit keeps emitting
+    // there would otherwise start the next page in the gap between
+    // `isFetchingOlder` clearing and the prepend committing, cascading one
+    // gesture into several pages. Same predicate the spinner uses below.
     if (
       searchActiveMessageId ||
       !fetchOlder ||
       isFetchingOlder ||
+      isRenderedTimelineBehindHistoryPrepend(deferredMessages, messages) ||
       isHoldingPrepend ||
       showTimelineSkeleton ||
       !hasOlderMessages
@@ -585,10 +590,12 @@ const MessageTimelineBase = React.forwardRef<
     void fetchOlder();
     return true;
   }, [
+    deferredMessages,
     fetchOlder,
     hasOlderMessages,
     isFetchingOlder,
     isHoldingPrepend,
+    messages,
     searchActiveMessageId,
     showTimelineSkeleton,
   ]);

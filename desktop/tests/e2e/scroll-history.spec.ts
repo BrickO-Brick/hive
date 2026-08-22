@@ -1976,16 +1976,30 @@ test("one scroll-up gesture pages older history once, not to the channel top", a
   // Let any cascade run unimpeded for a generous window. With the bug, the
   // observer re-arms after each page and digs through all ~1200 older roots in
   // this window; with the fix it pages once and waits for the next gesture.
-  await page.waitForTimeout(2_500);
+  //
+  // WKWebView keeps emitting `scroll` events while the reader rubber-bands at
+  // the boundary; each one re-enters the load-older trigger. Chromium emits
+  // none at rest, which hid the resolve→commit re-fire gap from this test.
+  // Emulate WebKit: nudge the offset 0↔1 every frame while parked in the
+  // trigger band, until the prepend commit carries the reader out of it.
+  await timeline.evaluate(async (element) => {
+    const deadline = performance.now() + 2_500;
+    while (performance.now() < deadline) {
+      if (element.scrollTop <= 200) {
+        element.scrollTop = element.scrollTop === 0 ? 1 : 0;
+      }
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    }
+  });
 
   const pagesFetched = await fetchCount();
   const deepest = await oldestRenderedIndex();
 
-  // One gesture should yield a small, bounded number of pages — not dozens.
-  // pageOlderMessagesUntilRowFloor may fetch up to MAX_BATCHES_PER_FETCH (3)
-  // relay pages to satisfy one visible row floor, so allow that ceiling plus a
-  // little slack; a cascade blows far past it.
-  expect(pagesFetched).toBeLessThanOrEqual(4);
+  // One gesture, one page. `pageOlderMessagesUntilRowFloor` fetches exactly
+  // one server-defined window per call (#1500), and the trigger refuses to
+  // re-fire while a landed page is still unpainted, so anything above one is a
+  // cascade off the resolve→commit gap.
+  expect(pagesFetched).toBeLessThanOrEqual(1);
   // And it must NOT have reached the oldest seeded root on its own.
   expect(deepest ?? Number.POSITIVE_INFINITY).toBeGreaterThan(50);
 });
