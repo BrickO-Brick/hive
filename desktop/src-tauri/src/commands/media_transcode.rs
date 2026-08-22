@@ -478,7 +478,10 @@ fn prepare_avconvert_source(
     ));
     if std::fs::hard_link(source, &staged).is_err() {
         std::fs::copy(source, &staged)
-            .map_err(|error| format!("failed to stage video for conversion: {error}"))?;
+            .map_err(|error| format!("failed to stage video for conversion: {error}"))
+            .inspect_err(|_| {
+                let _ = std::fs::remove_file(&staged);
+            })?;
     }
     Ok((staged, true))
 }
@@ -495,6 +498,12 @@ fn transcode_with_avconvert(
 ) -> Result<Vec<u8>, String> {
     let output = std::env::temp_dir().join(format!("buzz-avconvert-{}.mp4", uuid::Uuid::new_v4()));
     let (prepared_source, remove_prepared_source) = prepare_avconvert_source(source)?;
+    if cancellation.is_some_and(CancellationToken::is_cancelled) {
+        if remove_prepared_source {
+            let _ = std::fs::remove_file(&prepared_source);
+        }
+        return Err("upload cancelled".to_string());
+    }
 
     let result = (|| {
         let mut command = std::process::Command::new("/usr/bin/avconvert");
