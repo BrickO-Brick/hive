@@ -1,4 +1,3 @@
-import { Search } from "lucide-react";
 import * as React from "react";
 import { toast } from "sonner";
 
@@ -23,6 +22,8 @@ import {
 } from "@/features/projects/projectModels";
 import { useProjectsRepoSnapshotsQuery } from "@/features/projects/useProjectsRepoSnapshots";
 import { buildProjectSelectionAgentContext } from "@/features/projects/lib/projectDetailAgentContext";
+import { buildProjectsActivityDigest } from "@/features/projects/lib/projectsActivityDigest";
+import { matchesProjectsSearch } from "@/features/projects/lib/projectsSearch";
 import type { ProjectSelectionItem } from "@/features/projects/lib/projectSelection";
 import {
   useMemberChannelIds,
@@ -43,7 +44,6 @@ import {
 import { ProjectsOverviewChromeActions } from "@/features/projects/ui/ProjectsOverviewChromeActions";
 import { ProjectContextRail } from "@/features/projects/ui/ProjectContextRail";
 import {
-  openAppSearch,
   projectsSectionIcon,
   projectsSectionTitle,
 } from "@/features/projects/ui/projectsSectionMeta";
@@ -61,9 +61,9 @@ import { ProjectsWorkspaceChrome } from "@/features/projects/ui/ProjectDetailChr
 import { ProjectsPullRequestsList } from "@/features/projects/ui/ProjectsPullRequestsList";
 import { ProjectsWorkItemsLoadNotice } from "@/features/projects/ui/ProjectsWorkItemsLoadNotice";
 import { ProjectsListHeaderBar } from "@/features/projects/ui/ProjectsListHeaderBar";
+import { ProjectsSectionSearch } from "@/features/projects/ui/ProjectsSectionSearch";
 import { ProjectSectionHeader } from "@/features/projects/ui/ProjectSectionHeader";
 import { PROJECT_COLUMN_HEADER_BACKDROP_CLASS } from "@/features/projects/ui/projectPanelStyles";
-import { ProjectsToolbar } from "@/features/projects/ui/ProjectsToolbar";
 import { ProjectSelectionProvider } from "@/features/projects/lib/useProjectSelection";
 import { hasLocalRepositoryCheckout } from "@/features/projects/lib/projectLocalRepos";
 import {
@@ -74,15 +74,10 @@ import {
   type ProjectsFilter,
   type ProjectsSort,
   type ProjectsViewMode,
-  type ProjectsWorkItemScope,
   readStoredFilter,
-  readStoredIssueScope,
-  readStoredPullRequestScope,
   readStoredSort,
   readStoredViewMode,
   writeStoredFilter,
-  writeStoredIssueScope,
-  writeStoredPullRequestScope,
   writeStoredSort,
   writeStoredViewMode,
 } from "@/features/projects/lib/projectsViewHelpers";
@@ -130,9 +125,14 @@ export function ProjectsView() {
       ? "repositories"
       : storedFilter;
   });
+  const [searchQuery, setSearchQuery] = React.useState("");
   const [overviewPanelOpen, setOverviewPanelOpen] = React.useState(true);
   const [narrowContextOpen, setNarrowContextOpen] = React.useState(false);
   const contextToggleRef = React.useRef<HTMLButtonElement | null>(null);
+  const selectionDrawerStateRef = React.useRef<{
+    narrow: boolean;
+    open: boolean;
+  } | null>(null);
   const isNarrowProjectsLayout = useMediaBreakpoint(
     PROJECTS_CONTEXT_POD_MIN_VIEWPORT_PX,
   );
@@ -141,11 +141,6 @@ export function ProjectsView() {
   const activitySummariesQuery = useProjectActivitySummariesQuery(projects);
   const repositoryActivitySummariesQuery = useRepositoryActivitySummariesQuery(
     filter === "repositories" ? projectReadModels : [],
-  );
-  const [pullRequestScope, setPullRequestScope] =
-    React.useState<ProjectsWorkItemScope>(() => readStoredPullRequestScope());
-  const [issueScope, setIssueScope] = React.useState<ProjectsWorkItemScope>(
-    () => readStoredIssueScope(),
   );
   const projectsWorkItemsQuery = useProjectsWorkItemsQuery(projects);
   // One blobless clone per primary Buzz repository, only while the overview
@@ -213,6 +208,23 @@ export function ProjectsView() {
     enabled: projectPubkeys.length > 0,
   });
   const profiles = profilesQuery.data?.profiles;
+  const activityDigest = React.useMemo(
+    () =>
+      buildProjectsActivityDigest({
+        issues: projectsWorkItemsQuery.data?.issues.items ?? [],
+        nowSeconds: Math.floor(Date.now() / 1_000),
+        projects,
+        pullRequests: projectsWorkItemsQuery.data?.pullRequests.items ?? [],
+        snapshots: repoSnapshotsQuery.data?.snapshots,
+        summaries: activitySummariesQuery.data,
+      }),
+    [
+      activitySummariesQuery.data,
+      projects,
+      projectsWorkItemsQuery.data,
+      repoSnapshotsQuery.data?.snapshots,
+    ],
+  );
   const deleteProjectMutation = useDeleteProjectMutation();
   const currentPubkey = identityQuery.data?.pubkey;
 
@@ -220,22 +232,6 @@ export function ProjectsView() {
     (nextViewMode: ProjectsViewMode) => {
       setStoredViewMode(nextViewMode);
       writeStoredViewMode(nextViewMode);
-    },
-    [],
-  );
-
-  const handlePullRequestScopeChange = React.useCallback(
-    (scope: ProjectsWorkItemScope) => {
-      setPullRequestScope(scope);
-      writeStoredPullRequestScope(scope);
-    },
-    [],
-  );
-
-  const handleIssueScopeChange = React.useCallback(
-    (scope: ProjectsWorkItemScope) => {
-      setIssueScope(scope);
-      writeStoredIssueScope(scope);
     },
     [],
   );
@@ -262,6 +258,18 @@ export function ProjectsView() {
 
     const sortedProjects = projects
       .filter((project) => {
+        if (
+          !matchesProjectsSearch(searchQuery, [
+            project.name,
+            project.description,
+            ...project.repositories.flatMap((repository) => [
+              repository.name,
+              repository.description,
+            ]),
+          ])
+        ) {
+          return false;
+        }
         const summary = activitySummariesQuery.data?.[project.id];
         const people = projectPeople(project, summary);
         if (filter === "agents") {
@@ -286,7 +294,14 @@ export function ProjectsView() {
       });
 
     return sortedProjects;
-  }, [activitySummariesQuery.data, filter, profiles, projects, sort]);
+  }, [
+    activitySummariesQuery.data,
+    filter,
+    profiles,
+    projects,
+    searchQuery,
+    sort,
+  ]);
 
   const visibleRepositories = React.useMemo(() => {
     if (filter !== "repositories") return [];
@@ -302,67 +317,82 @@ export function ProjectsView() {
           .map((item) => [item.repository.repoAddress, item]),
       ).values(),
     ];
-    return repositories.sort((left, right) => {
-      if (sort === "name") {
-        return left.repository.name.localeCompare(right.repository.name);
-      }
-      if (sort === "created") {
-        return right.repository.createdAt - left.repository.createdAt;
-      }
-      const leftUpdatedAt =
-        repositoryActivitySummariesQuery.data?.[left.repository.repoAddress]
-          ?.updatedAt ?? left.repository.createdAt;
-      const rightUpdatedAt =
-        repositoryActivitySummariesQuery.data?.[right.repository.repoAddress]
-          ?.updatedAt ?? right.repository.createdAt;
-      return rightUpdatedAt - leftUpdatedAt;
-    });
-  }, [filter, projectReadModels, repositoryActivitySummariesQuery.data, sort]);
+    return repositories
+      .filter(({ project, repository }) =>
+        matchesProjectsSearch(searchQuery, [
+          repository.name,
+          repository.description,
+          project.name,
+        ]),
+      )
+      .sort((left, right) => {
+        if (sort === "name") {
+          return left.repository.name.localeCompare(right.repository.name);
+        }
+        if (sort === "created") {
+          return right.repository.createdAt - left.repository.createdAt;
+        }
+        const leftUpdatedAt =
+          repositoryActivitySummariesQuery.data?.[left.repository.repoAddress]
+            ?.updatedAt ?? left.repository.createdAt;
+        const rightUpdatedAt =
+          repositoryActivitySummariesQuery.data?.[right.repository.repoAddress]
+            ?.updatedAt ?? right.repository.createdAt;
+        return rightUpdatedAt - leftUpdatedAt;
+      });
+  }, [
+    filter,
+    projectReadModels,
+    repositoryActivitySummariesQuery.data,
+    searchQuery,
+    sort,
+  ]);
 
   const visiblePullRequests = React.useMemo(() => {
     const pullRequests = projectsWorkItemsQuery.data?.pullRequests.items ?? [];
-    const scopedPullRequests =
-      pullRequestScope === "mine" && currentPubkey
-        ? pullRequests.filter(
-            ({ pullRequest }) =>
-              normalizePubkey(pullRequest.author) ===
-              normalizePubkey(currentPubkey),
-          )
-        : pullRequests;
-    return [...scopedPullRequests].sort((left, right) => {
-      if (sort === "name") {
-        return left.pullRequest.title.localeCompare(right.pullRequest.title);
-      }
-      if (sort === "created") {
-        return right.pullRequest.createdAt - left.pullRequest.createdAt;
-      }
-      return right.pullRequest.updatedAt - left.pullRequest.updatedAt;
-    });
-  }, [currentPubkey, projectsWorkItemsQuery.data, pullRequestScope, sort]);
+    return pullRequests
+      .filter(({ project, pullRequest, repository }) =>
+        matchesProjectsSearch(searchQuery, [
+          pullRequest.title,
+          pullRequest.content,
+          pullRequest.status,
+          project.name,
+          repository.name,
+        ]),
+      )
+      .sort((left, right) => {
+        if (sort === "name") {
+          return left.pullRequest.title.localeCompare(right.pullRequest.title);
+        }
+        if (sort === "created") {
+          return right.pullRequest.createdAt - left.pullRequest.createdAt;
+        }
+        return right.pullRequest.updatedAt - left.pullRequest.updatedAt;
+      });
+  }, [projectsWorkItemsQuery.data, searchQuery, sort]);
 
   const visibleIssues = React.useMemo(() => {
     const issues = projectsWorkItemsQuery.data?.issues.items ?? [];
-    const viewer = currentPubkey ? normalizePubkey(currentPubkey) : null;
-    const scopedIssues =
-      issueScope === "mine" && viewer
-        ? issues.filter(({ issue }) => normalizePubkey(issue.author) === viewer)
-        : issueScope === "assigned" && viewer
-          ? issues.filter(({ issue }) =>
-              issue.assignees.some(
-                (assignee) => normalizePubkey(assignee) === viewer,
-              ),
-            )
-          : issues;
-    return [...scopedIssues].sort((left, right) => {
-      if (sort === "name") {
-        return left.issue.title.localeCompare(right.issue.title);
-      }
-      if (sort === "created") {
-        return right.issue.createdAt - left.issue.createdAt;
-      }
-      return right.issue.updatedAt - left.issue.updatedAt;
-    });
-  }, [currentPubkey, issueScope, projectsWorkItemsQuery.data, sort]);
+    return issues
+      .filter(({ issue, project, repository }) =>
+        matchesProjectsSearch(searchQuery, [
+          issue.title,
+          issue.content,
+          issue.status,
+          project.name,
+          repository.name,
+        ]),
+      )
+      .sort((left, right) => {
+        if (sort === "name") {
+          return left.issue.title.localeCompare(right.issue.title);
+        }
+        if (sort === "created") {
+          return right.issue.createdAt - left.issue.createdAt;
+        }
+        return right.issue.updatedAt - left.issue.updatedAt;
+      });
+  }, [projectsWorkItemsQuery.data, searchQuery, sort]);
   const {
     agentContext: selectionAgentContext,
     overviewContext: overviewAgentContext,
@@ -530,14 +560,7 @@ export function ProjectsView() {
 
   const listHeaderBar = (
     <ProjectsListHeaderBar
-      filter={filter}
-      issueScope={issueScope}
-      onIssueScopeChange={handleIssueScopeChange}
-      onPullRequestScopeChange={handlePullRequestScopeChange}
-      onSortChange={handleSortChange}
       onViewModeChange={handleViewModeChange}
-      pullRequestScope={pullRequestScope}
-      sort={sort}
       viewMode={viewMode}
     />
   );
@@ -571,6 +594,7 @@ export function ProjectsView() {
         profiles={profiles}
         projects={projects}
         pullRequests={projectsWorkItemsQuery.data?.pullRequests.items ?? []}
+        searchQuery={searchQuery}
         snapshots={repoSnapshotsQuery.data?.snapshots}
       />
     </>
@@ -621,8 +645,27 @@ export function ProjectsView() {
 
   return (
     <ProjectSelectionProvider
+      onClear={() => {
+        const previous = selectionDrawerStateRef.current;
+        selectionDrawerStateRef.current = null;
+        if (!previous) return;
+        if (previous.narrow) {
+          setNarrowContextOpen(previous.open);
+        } else {
+          setOverviewPanelOpen(previous.open);
+        }
+      }}
       onSelect={() => {
-        if (!isNarrowProjectsLayout) setOverviewPanelOpen(true);
+        if (selectionDrawerStateRef.current) return;
+        selectionDrawerStateRef.current = {
+          narrow: isNarrowProjectsLayout,
+          open: isNarrowProjectsLayout ? narrowContextOpen : overviewPanelOpen,
+        };
+        if (isNarrowProjectsLayout) {
+          setNarrowContextOpen(true);
+        } else {
+          setOverviewPanelOpen(true);
+        }
       }}
       resetKey={filter}
     >
@@ -713,33 +756,22 @@ export function ProjectsView() {
                       )}
                       data-testid="projects-page-tabs"
                     >
-                      <Button
-                        aria-label="Search everything"
-                        className="h-7 w-7 shrink-0 rounded-full border border-border/55 bg-transparent text-muted-foreground shadow-none hover:border-border hover:bg-muted/25 hover:text-foreground focus-visible:border-border"
-                        data-testid="projects-activity-search"
-                        onClick={openAppSearch}
-                        size="icon"
-                        title="Search everything"
-                        type="button"
-                        variant="ghost"
-                      >
-                        <Search className="h-4 w-4" />
-                      </Button>
-                      <div className="min-w-0 flex-1">
-                        <ProjectsToolbar
-                          filter={filter}
-                          onFilterChange={handleFilterChange}
-                        />
-                      </div>
+                      <ProjectsSectionSearch
+                        filter={filter}
+                        onFilterChange={handleFilterChange}
+                        onQueryChange={setSearchQuery}
+                        onSortChange={handleSortChange}
+                        sort={sort}
+                      />
                     </div>
                     <div
                       className={
-                        filter === "all" ? "mx-auto w-full max-w-2xl" : "w-full"
+                        filter === "all" ? "mx-auto w-full max-w-6xl" : "w-full"
                       }
                     >
                       {filter === "all" ? (
                         <ProjectsOverviewPanel>
-                          <ProjectsActivityIntro />
+                          <ProjectsActivityIntro digest={activityDigest} />
                           <section className="space-y-3">
                             {activityFeed}
                           </section>
@@ -760,6 +792,11 @@ export function ProjectsView() {
                               {filter === "prs" ? (
                                 <ProjectsPullRequestsList
                                   embedded={viewMode === "list"}
+                                  emptyMessage={
+                                    searchQuery.trim()
+                                      ? "No matching reviews"
+                                      : undefined
+                                  }
                                   error={projectsWorkItemsQuery.error}
                                   failedSections={
                                     projectsWorkItemsQuery.data?.pullRequests
@@ -781,6 +818,11 @@ export function ProjectsView() {
                               ) : filter === "issues" ? (
                                 <ProjectsIssuesList
                                   embedded={viewMode === "list"}
+                                  emptyMessage={
+                                    searchQuery.trim()
+                                      ? "No matching tasks"
+                                      : undefined
+                                  }
                                   error={projectsWorkItemsQuery.error}
                                   failedSections={
                                     projectsWorkItemsQuery.data?.issues
@@ -800,7 +842,10 @@ export function ProjectsView() {
                                   viewMode={viewMode}
                                 />
                               ) : filter === "channels" ? (
-                                <ProjectsChannelsList projects={projects} />
+                                <ProjectsChannelsList
+                                  projects={projects}
+                                  searchQuery={searchQuery}
+                                />
                               ) : filter === "projects" ? (
                                 projectItems
                               ) : (

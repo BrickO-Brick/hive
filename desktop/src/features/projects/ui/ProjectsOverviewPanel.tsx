@@ -20,13 +20,12 @@ import {
   projectSelectionPresentation,
 } from "@/features/projects/lib/projectSelection";
 import type { ProjectsFilter } from "@/features/projects/lib/projectsViewHelpers";
+import type { ProjectsActivityDigest } from "@/features/projects/lib/projectsActivityDigest";
 import { useProjectSelection } from "@/features/projects/lib/useProjectSelection";
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
 import { ProjectsCreateMenu } from "./ProjectsCreateMenu";
 import { ProjectsSelectionCountMenu } from "./ProjectsSelectionCountMenu";
-import { useCommunities } from "@/features/communities/useCommunities";
-import { useActiveCommunityIcon } from "@/features/communities/useCommunityIcons";
 import {
   type OverviewContextStatIcon,
   type ProjectsOverviewSection,
@@ -126,43 +125,40 @@ export function ProjectsOverviewPanel({
   );
 }
 
-export function ProjectsActivityIntro() {
-  const { activeCommunity } = useCommunities();
-  const communityIconQuery = useActiveCommunityIcon(activeCommunity?.relayUrl);
-  const communityIcon = communityIconQuery.data ?? null;
-
+export function ProjectsActivityIntro({
+  digest,
+}: {
+  digest: ProjectsActivityDigest;
+}) {
   return (
     <section
-      className="pb-8 pt-16 text-center"
+      className="pb-6 pt-8 text-left"
       data-testid="projects-activity-intro"
     >
-      <div
-        aria-label={`${activeCommunity?.name ?? "Current"} relay`}
-        className="mx-auto mb-3 flex h-10 w-10 items-center justify-center overflow-hidden rounded-xl text-4xl"
-        data-testid="projects-activity-relay-icon"
-        role="img"
-      >
-        {communityIcon ? (
-          <img
-            alt=""
-            className="h-full w-full object-cover"
-            draggable={false}
-            src={communityIcon}
-          />
-        ) : (
-          <span aria-hidden="true" className="-translate-y-px leading-none">
-            🐝
-          </span>
-        )}
-      </div>
       <h2
         className="text-xl font-semibold tracking-tight text-foreground"
         data-testid="projects-page-header"
       >
         Projects Activity
       </h2>
-      <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">
-        Keeping up with the community has never been easier—or mattered more.
+      <p
+        className="mt-2 max-w-2xl text-sm text-muted-foreground"
+        data-testid="projects-activity-summary"
+      >
+        {digest.prefix}{" "}
+        {digest.highlights.map((highlight, index) => (
+          <span key={highlight}>
+            {index > 0
+              ? index === digest.highlights.length - 1
+                ? ", and "
+                : ", "
+              : null}
+            <strong className="font-medium text-foreground/90">
+              {highlight}
+            </strong>
+          </span>
+        ))}
+        {digest.suffix}
       </p>
     </section>
   );
@@ -202,7 +198,7 @@ export function ProjectsOverviewContextPanel({
     <div
       className={cn(
         "min-w-0 overflow-hidden",
-        selectionPresentation && "rounded-2xl bg-background",
+        selectionPresentation && "rounded-xl bg-background/90",
       )}
       data-testid="projects-overview-context-panel"
     >

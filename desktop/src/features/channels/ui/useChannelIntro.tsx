@@ -131,6 +131,7 @@ export function useChannelIntro({
       channelKindLabel: getChannelIntroKind(activeChannel, projectHome),
       channelName: activeChannel.name,
       description: getChannelIntroDescription(activeChannel),
+      hideBeginning: projectHome,
       icon: projectHome ? (
         <ProjectChannelIcon className="h-7 w-7" />
       ) : undefined,

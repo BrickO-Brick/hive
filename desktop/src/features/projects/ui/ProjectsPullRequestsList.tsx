@@ -15,6 +15,7 @@ import {
   type UserProfileLookup,
 } from "@/features/profile/lib/identity";
 import { BuzzLoadingState } from "@/shared/ui/BuzzLoadingState";
+import { Button } from "@/shared/ui/button";
 import { Card } from "@/shared/ui/card";
 import { DropdownMenuItem } from "@/shared/ui/dropdown-menu";
 import { CopyShareLinkMenuItem } from "./CopyShareLinkMenuItem";
@@ -24,12 +25,14 @@ import { ProjectEventTypeIcon } from "./ProjectEventTypeIcon";
 import { PROJECT_GRID_CARD_BODY_CLASS } from "./projectGridCardStyles";
 import { ProjectListRowMenu } from "./ProjectListRowMenu";
 import { ProjectSelectableGroup } from "./ProjectSelectableGroup";
+import { ProjectPanelState } from "./ProjectPanelState";
 import { ProjectsWorkItemsLoadNotice } from "./ProjectsWorkItemsLoadNotice";
 import { groupProjectWorkItemsByProject } from "./projectWorkItemGroups";
 
 type ProjectsPullRequestsListProps = {
   /** Render without container chrome — a parent table container provides border and rounding. */
   embedded?: boolean;
+  emptyMessage?: string;
   error: unknown;
   failedSections: ProjectWorkItemSection[];
   isLoading: boolean;
@@ -189,6 +192,7 @@ function PullRequestListRow({
 
 export function ProjectsPullRequestsList({
   embedded,
+  emptyMessage = "No reviews yet",
   error,
   failedSections,
   isLoading,
@@ -214,21 +218,37 @@ export function ProjectsPullRequestsList({
   );
 
   if (error && pullRequests.length === 0) {
-    return loadNotice;
+    return (
+      <ProjectPanelState
+        action={
+          <Button
+            disabled={isRetrying}
+            onClick={onRetry}
+            size="sm"
+            variant="outline"
+          >
+            {isRetrying ? "Retrying..." : "Retry"}
+          </Button>
+        }
+        description={
+          error instanceof Error ? error.message : "The relay request failed."
+        }
+        error
+        panel={false}
+        title="Could not load reviews"
+      />
+    );
   }
 
   if (pullRequests.length === 0) {
     return (
       <div className="space-y-3">
         {loadNotice}
-        <div
-          className={cn(
-            "px-4 py-12 text-center text-sm text-muted-foreground",
-            !embedded && "border border-dashed border-border/60",
-          )}
-        >
-          No reviews yet.
-        </div>
+        <ProjectPanelState
+          className={cn(!embedded && "border border-dashed border-border/60")}
+          panel={false}
+          title={emptyMessage}
+        />
       </div>
     );
   }
