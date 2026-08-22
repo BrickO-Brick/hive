@@ -31,6 +31,10 @@ fn muted() -> Color {
     Color::Rgb(Rgb::new(100.0 / 255.0, 94.0 / 255.0, 83.0 / 255.0, None))
 }
 
+fn light_rule() -> Color {
+    Color::Rgb(Rgb::new(211.0 / 255.0, 209.0 / 255.0, 198.0 / 255.0, None))
+}
+
 fn white() -> Color {
     Color::Rgb(Rgb::new(1.0, 1.0, 1.0, None))
 }
@@ -50,23 +54,6 @@ fn fill_rect(ops: &mut Vec<Op>, x: f32, y: f32, width: f32, height: f32, color: 
     ops.push(Op::SetFillColor { col: color });
     ops.push(Op::DrawRectangle {
         rectangle: rect(x, y, width, height, PaintMode::Fill),
-    });
-}
-
-fn fill_stroke_rect(
-    ops: &mut Vec<Op>,
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
-    fill: Color,
-    stroke: Color,
-) {
-    ops.push(Op::SetFillColor { col: fill });
-    ops.push(Op::SetOutlineColor { col: stroke });
-    ops.push(Op::SetOutlineThickness { pt: Pt(0.8) });
-    ops.push(Op::DrawRectangle {
-        rectangle: rect(x, y, width, height, PaintMode::FillStroke),
     });
 }
 
@@ -97,14 +84,13 @@ fn text(
 }
 
 fn draw_dot_grid(ops: &mut Vec<Op>) {
-    let dot = Color::Rgb(Rgb::new(211.0 / 255.0, 209.0 / 255.0, 198.0 / 255.0, None));
-    let mut y = 215.0;
+    let mut y = 219.0;
     let mut row = 0usize;
     while y < 274.0 {
         let offset = if row.is_multiple_of(2) { 0.0 } else { 3.5 };
-        let mut x = 136.0 + offset;
+        let mut x = 143.0 + offset;
         while x < 211.0 {
-            fill_rect(ops, x, y, 0.4, 0.4, dot.clone());
+            fill_rect(ops, x, y, 0.4, 0.4, light_rule());
             x += 7.0;
         }
         y += 7.0;
@@ -119,9 +105,17 @@ fn draw_qr(ops: &mut Vec<Op>, recovery_secret: &str) -> Result<(), String> {
     let total_modules = code.width() + quiet_modules * 2;
     let qr_size_mm = 56.0f32;
     let module_mm = qr_size_mm / total_modules as f32;
-    let qr_x = 136.0f32;
-    let qr_y = 105.0f32;
+    let qr_x = 140.0f32;
+    let qr_y = 116.0f32;
 
+    fill_rect(
+        ops,
+        qr_x + 3.0,
+        qr_y - 3.0,
+        qr_size_mm,
+        qr_size_mm,
+        buzz_yellow(),
+    );
     fill_rect(ops, qr_x, qr_y, qr_size_mm, qr_size_mm, white());
     for y in 0..code.width() {
         for x in 0..code.width() {
@@ -155,7 +149,7 @@ pub(crate) fn render_recovery_sheet(
     let mut ops = Vec::new();
 
     fill_rect(&mut ops, 0.0, 0.0, PAGE_WIDTH_MM, PAGE_HEIGHT_MM, white());
-    fill_rect(&mut ops, 0.0, 276.4, PAGE_WIDTH_MM, 3.0, buzz_yellow());
+    fill_rect(&mut ops, 0.0, 278.2, PAGE_WIDTH_MM, 1.2, buzz_yellow());
     draw_dot_grid(&mut ops);
 
     let mut warnings = Vec::new();
@@ -166,9 +160,9 @@ pub(crate) fn render_recovery_sheet(
         id: wordmark_id,
         transform: XObjectTransform {
             translate_x: Some(Mm(18.0).into()),
-            translate_y: Some(Mm(242.0).into()),
-            scale_x: Some(0.82),
-            scale_y: Some(0.82),
+            translate_y: Some(Mm(245.0).into()),
+            scale_x: Some(0.72),
+            scale_y: Some(0.72),
             dpi: Some(300.0),
             ..Default::default()
         },
@@ -177,31 +171,32 @@ pub(crate) fn render_recovery_sheet(
     text(
         &mut ops,
         18.0,
-        224.0,
-        27.0,
+        220.0,
+        30.0,
         BuiltinFont::HelveticaBold,
         charcoal(),
         "Your Buzz recovery code.",
     );
-    fill_rect(&mut ops, 18.0, 204.0, 24.0, 2.0, buzz_yellow());
+    fill_rect(&mut ops, 18.0, 204.0, 34.0, 1.5, buzz_yellow());
 
-    fill_stroke_rect(&mut ops, 18.0, 78.0, 179.9, 104.0, white(), charcoal());
+    fill_rect(&mut ops, 18.0, 184.0, 179.9, 0.45, charcoal());
+    fill_rect(&mut ops, 18.0, 96.0, 179.9, 0.45, light_rule());
     text(
         &mut ops,
-        28.0,
-        151.0,
-        12.0,
-        BuiltinFont::Helvetica,
+        18.0,
+        172.0,
+        13.0,
+        BuiltinFont::HelveticaBold,
         charcoal(),
-        "Scan the QR code or type the code below.",
+        "Scan or type the code.",
     );
-    fill_stroke_rect(&mut ops, 28.0, 132.0, 96.0, 11.0, cream(), muted());
-    fill_rect(&mut ops, 28.0, 132.0, 2.0, 11.0, buzz_yellow());
+    fill_rect(&mut ops, 18.0, 149.0, 110.0, 16.0, cream());
+    fill_rect(&mut ops, 18.0, 149.0, 3.0, 16.0, buzz_yellow());
     text(
         &mut ops,
-        32.0,
-        136.0,
-        8.0,
+        23.0,
+        155.0,
+        8.5,
         BuiltinFont::CourierBold,
         charcoal(),
         recovery_secret,
@@ -209,8 +204,8 @@ pub(crate) fn render_recovery_sheet(
 
     text(
         &mut ops,
-        28.0,
-        116.0,
+        18.0,
+        136.0,
         7.0,
         BuiltinFont::HelveticaBold,
         muted(),
@@ -219,8 +214,8 @@ pub(crate) fn render_recovery_sheet(
     let (npub_first, npub_second) = split_npub(npub);
     text(
         &mut ops,
-        28.0,
-        109.5,
+        18.0,
+        129.5,
         7.5,
         BuiltinFont::Courier,
         charcoal(),
@@ -228,8 +223,8 @@ pub(crate) fn render_recovery_sheet(
     );
     text(
         &mut ops,
-        28.0,
-        104.5,
+        18.0,
+        124.5,
         7.5,
         BuiltinFont::Courier,
         charcoal(),
@@ -237,8 +232,8 @@ pub(crate) fn render_recovery_sheet(
     );
     text(
         &mut ops,
-        28.0,
-        89.0,
+        18.0,
+        106.0,
         7.0,
         BuiltinFont::HelveticaBold,
         muted(),
@@ -249,43 +244,45 @@ pub(crate) fn render_recovery_sheet(
     text(
         &mut ops,
         18.0,
-        67.5,
+        82.0,
         8.0,
         BuiltinFont::HelveticaBold,
         muted(),
-        "TO RECOVER YOUR IDENTITY, YOU NEED",
+        "TO RECOVER YOUR IDENTITY",
     );
     let requirements = [
-        ("1", "Backup file", "identity.buzzbackup"),
-        ("2", "Password", "The password you chose"),
-        ("3", "Recovery code", "Printed on this page"),
+        ("01", "Backup file", "identity.buzzbackup"),
+        ("02", "Password", "The password you chose"),
+        ("03", "Recovery code", "Printed on this page"),
     ];
     for (index, (number, title, detail)) in requirements.iter().enumerate() {
         let x = 18.0 + index as f32 * 61.0;
-        fill_stroke_rect(&mut ops, x, 39.0, 57.9, 23.0, white(), charcoal());
-        fill_rect(&mut ops, x, 54.0, 8.0, 8.0, buzz_yellow());
+        if index > 0 {
+            fill_rect(&mut ops, x - 3.0, 46.0, 0.35, 29.0, light_rule());
+        }
         text(
             &mut ops,
-            x + 2.55,
-            56.2,
-            8.0,
+            x,
+            68.0,
+            18.0,
             BuiltinFont::HelveticaBold,
             charcoal(),
             *number,
         );
+        fill_rect(&mut ops, x, 62.0, 13.0, 1.5, buzz_yellow());
         text(
             &mut ops,
-            x + 4.0,
-            48.0,
-            9.0,
+            x,
+            54.0,
+            10.0,
             BuiltinFont::HelveticaBold,
             charcoal(),
             *title,
         );
         text(
             &mut ops,
-            x + 4.0,
-            42.5,
+            x,
+            47.5,
             7.0,
             BuiltinFont::Helvetica,
             muted(),
@@ -296,11 +293,11 @@ pub(crate) fn render_recovery_sheet(
     text(
         &mut ops,
         18.0,
-        6.0,
+        15.0,
         7.0,
         BuiltinFont::HelveticaBold,
         muted(),
-        "buzz.xyz / recovery sheet v1",
+        "buzz.xyz",
     );
 
     let page = PdfPage::new(Mm(PAGE_WIDTH_MM), Mm(PAGE_HEIGHT_MM), ops);
