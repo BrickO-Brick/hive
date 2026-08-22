@@ -5,6 +5,7 @@ import { getSentFromThreadReference } from "@/features/messages/lib/sentFromThre
 import { useChannelNavigation } from "@/shared/context/ChannelNavigationContext";
 import type { ParsedMessageLink } from "@/features/messages/lib/messageLink";
 import { MessageLinkPill } from "@/shared/ui/markdown/MessageLinkPill";
+import { useMessageLinkNavigationGuard } from "@/shared/ui/markdown/messageLinkNavigationGuardContext";
 import { MESSAGE_MARKDOWN_CLASS } from "@/shared/ui/mentionChip";
 
 export function SentFromThreadLine({
@@ -16,15 +17,17 @@ export function SentFromThreadLine({
 }) {
   const { channels } = useChannelNavigation();
   const { goChannel } = useAppNavigation();
+  const allowMessageLinkNavigation = useMessageLinkNavigationGuard();
   const reference = getSentFromThreadReference(tags);
   const onOpenMessageLink = React.useCallback(
     (target: ParsedMessageLink) => {
+      if (!allowMessageLinkNavigation(target)) return;
       void goChannel(target.channelId, {
         messageId: target.messageId,
         threadRootId: target.threadRootId,
       });
     },
-    [goChannel],
+    [allowMessageLinkNavigation, goChannel],
   );
 
   if (!channelId || !reference) return null;

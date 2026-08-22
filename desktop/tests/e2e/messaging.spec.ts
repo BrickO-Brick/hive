@@ -3054,6 +3054,72 @@ test("editing a pre-seeded thread reply uses and focuses the thread composer", a
   await expect(threadInput).toBeFocused();
 });
 
+test("thread composer switches directly between visible reply edits", async ({
+  page,
+}) => {
+  const root = `Thread edit switch root ${Date.now()}`;
+  const first = `Thread edit switch first ${Date.now()}`;
+  const second = `Thread edit switch second ${Date.now()}`;
+
+  await page.goto("/");
+  await page.waitForFunction(
+    () => typeof window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__ === "function",
+  );
+  const { firstId, rootId, secondId } = await page.evaluate(
+    ({ firstContent, rootContent, secondContent }) => {
+      const emit = window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__;
+      if (!emit) throw new Error("Mock message emitter is unavailable.");
+      const rootEvent = emit({
+        channelName: "general",
+        content: rootContent,
+      });
+      const firstEvent = emit({
+        channelName: "general",
+        content: firstContent,
+        parentEventId: rootEvent.id,
+      });
+      const secondEvent = emit({
+        channelName: "general",
+        content: secondContent,
+        parentEventId: rootEvent.id,
+      });
+      return {
+        firstId: firstEvent.id,
+        rootId: rootEvent.id,
+        secondId: secondEvent.id,
+      };
+    },
+    { firstContent: first, rootContent: root, secondContent: second },
+  );
+
+  await page.getByTestId("channel-general").click();
+  const timelineRoot = page
+    .getByTestId("message-timeline")
+    .locator(`[data-message-id="${rootId}"]`);
+  await timelineRoot.hover();
+  await timelineRoot.getByRole("button", { name: "Reply" }).click();
+
+  const threadPanel = page.getByTestId("message-thread-panel");
+  const threadInput = threadPanel.getByTestId("message-input");
+  const secondReply = threadPanel.locator(`[data-message-id="${secondId}"]`);
+  await secondReply.hover();
+  await secondReply.getByRole("button", { name: "More actions" }).click();
+  await page.getByTestId(`edit-message-${secondId}`).click();
+  await expect(threadInput).toHaveText(second);
+
+  const firstReply = threadPanel.locator(`[data-message-id="${firstId}"]`);
+  await firstReply.hover();
+  await firstReply.getByRole("button", { name: "More actions" }).click();
+  await page.getByTestId(`edit-message-${firstId}`).click();
+
+  await expect(threadInput).toHaveText(first);
+  await expect(threadInput).toBeFocused();
+  await expect(page.getByRole("menu")).toHaveCount(0);
+  await expect(page.getByText("Finish or cancel your edit first.")).toHaveCount(
+    0,
+  );
+});
+
 test("editing a broadcast reply from a thread returns to the main composer", async ({
   page,
 }) => {
@@ -3579,18 +3645,115 @@ test("a refused message deep link retries after the thread edit is canceled", as
   await page.getByRole("menuitem", { name: "Edit message" }).click();
   await threadInput.fill(`${reply} unsaved`);
 
+  const threadUrl = page.url();
+  expect(threadUrl).toContain(
+    `thread=${await source.getAttribute("data-message-id")}`,
+  );
   await destinationLink.click();
   await expect(
     page.getByText("Finish or cancel your edit before leaving the thread."),
   ).toBeVisible();
-  await page.keyboard.press("Escape");
+  await expect(threadPanel).toBeVisible();
+  await expect(threadPanel.getByTestId("edit-target")).toBeVisible();
+  await expect(threadInput).toHaveText(`${reply} unsaved`);
+  await expect(page).toHaveURL(threadUrl);
+
+  // The preserved edit remains rendered and cancelable rather than becoming a
+  // hidden target that soft-locks the route.
+  await threadInput.press("Escape");
+  await expect(threadPanel.getByTestId("edit-target")).toHaveCount(0);
+  await expect(threadInput).toHaveText("");
   await destinationLink.click();
+  await expect(page).not.toHaveURL(threadUrl);
   const routedDestination = page
     .getByTestId("message-timeline")
     .locator(`[data-message-id="${destinationId}"]`);
-  await expect(threadPanel).toBeHidden();
+  await expect(threadPanel).toBeVisible();
+  await expect(threadPanel.getByTestId("message-thread-head")).toContainText(
+    destinationRoot,
+  );
   await expect(routedDestination).toBeVisible();
   await expect(routedDestination).toHaveClass(/route-target-highlight-fade/);
+});
+
+test("a refused sent-from-thread link preserves the edit and retries after cancel", async ({
+  page,
+}) => {
+  const sourceRoot = `Sent-from-thread guard source ${Date.now()}`;
+  const sourceReply = `Sent-from-thread guard reply ${Date.now()}`;
+  const destinationRoot = `Sent-from-thread guard destination ${Date.now()}`;
+  const sharedMessage = `Sent-from-thread guard shared ${Date.now()}`;
+  const dirtyReply = `${sourceReply} unsaved`;
+
+  await page.goto("/");
+  await page.waitForFunction(
+    () => typeof window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__ === "function",
+  );
+  const { destinationRootId, sourceRootId } = await page.evaluate(
+    ({ destinationRoot, sharedMessage, sourceReply, sourceRoot }) => {
+      const emit = window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__;
+      if (!emit) throw new Error("Mock message emitter is unavailable.");
+      const destination = emit({
+        channelName: "general",
+        content: destinationRoot,
+      });
+      const source = emit({ channelName: "general", content: sourceRoot });
+      emit({
+        channelName: "general",
+        content: sourceReply,
+        parentEventId: source.id,
+      });
+      emit({
+        channelName: "general",
+        content: sharedMessage,
+        extraTags: [["buzz:sent-from-thread", destination.id, destinationRoot]],
+      });
+      return { destinationRootId: destination.id, sourceRootId: source.id };
+    },
+    { destinationRoot, sharedMessage, sourceReply, sourceRoot },
+  );
+
+  await page.getByTestId("channel-general").click();
+  const timeline = page.getByTestId("message-timeline");
+  const source = timeline.locator(`[data-message-id="${sourceRootId}"]`);
+  await source.hover();
+  await source.getByRole("button", { name: "Reply" }).click({ force: true });
+  const threadPanel = page.getByTestId("message-thread-panel");
+  const threadInput = threadPanel.getByTestId("message-input");
+  const reply = threadPanel
+    .getByTestId("message-row")
+    .filter({ hasText: sourceReply })
+    .last();
+  await reply.hover();
+  await reply.getByRole("button", { name: "More actions" }).click();
+  await page.getByRole("menuitem", { name: "Edit message" }).click();
+  await threadInput.fill(dirtyReply);
+
+  const threadUrl = page.url();
+  expect(threadUrl).toContain(`thread=${sourceRootId}`);
+  const sentFromThreadLink = timeline
+    .getByTestId("message-row")
+    .filter({ hasText: sharedMessage })
+    .getByTestId("sent-from-thread")
+    .locator("[data-message-link]");
+  await sentFromThreadLink.click();
+  await expect(
+    page.getByText("Finish or cancel your edit before leaving the thread."),
+  ).toBeVisible();
+  await expect(threadPanel).toBeVisible();
+  await expect(threadPanel.getByTestId("edit-target")).toBeVisible();
+  await expect(threadInput).toHaveText(dirtyReply);
+  await expect(page).toHaveURL(threadUrl);
+
+  await threadInput.press("Escape");
+  await expect(threadPanel.getByTestId("edit-target")).toHaveCount(0);
+  await sentFromThreadLink.click();
+  await expect(page).not.toHaveURL(threadUrl);
+  await expect(threadPanel).toBeVisible();
+  await expect(threadPanel.getByTestId("message-thread-head")).toContainText(
+    destinationRoot,
+  );
+  await expect(page).toHaveURL(new RegExp(`thread=${destinationRootId}`));
 });
 
 test("ArrowUp in an empty composer edits your last message right after sending", async ({

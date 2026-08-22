@@ -118,6 +118,7 @@ import { ProgressiveImage } from "./markdown/ProgressiveImage";
 import { MessageLinkPill } from "./markdown/MessageLinkPill";
 import { renderCachedMarkdown } from "./markdown/nodeCache";
 import { useMessageLinkPreviews } from "./markdown/useMessageLinkPreviews";
+import { useMessageLinkNavigationGuard } from "./markdown/messageLinkNavigationGuardContext";
 import {
   MarkdownRuntimeContext,
   useMarkdownRuntime,
@@ -1743,6 +1744,7 @@ function MarkdownInner({
   const { channels: rawChannels } = useChannelNavigation();
   const channels = useStableArray(rawChannels);
   const { goChannel, goAgents } = useAppNavigation();
+  const allowMessageLinkNavigation = useMessageLinkNavigationGuard();
   const onOpenChannel = React.useCallback(
     (channelId: string) => {
       void goChannel(channelId);
@@ -1752,19 +1754,16 @@ function MarkdownInner({
   const onOpenEntityLink = useOpenEntityLink();
   const onOpenMessageLink = React.useCallback(
     (link: ParsedMessageLink) => {
+      if (!allowMessageLinkNavigation(link)) return; // Guard before URL mutation.
       // Always route through `goChannel` with `messageId` set: the channel
       // route already handles scroll-into-view + highlight via
       // `useAnchoredScroll` + `getEventById` backfill, and works for
-      // both stream-message replies and forum threads. Detecting "the thread
-      // root is a forum post" up front would require an event lookup we don't
-      // currently have synchronously; the brief explicitly allows skipping
-      // that detection and falling through.
       void goChannel(link.channelId, {
         messageId: link.messageId,
         threadRootId: link.threadRootId,
       });
     },
-    [goChannel],
+    [allowMessageLinkNavigation, goChannel],
   );
   const relayOrigin = useRelayOrigin();
   const resolvedLinkPreviews = useMessageLinkPreviews({

@@ -121,12 +121,10 @@ export function useChannelRouteTarget({
         return;
       }
       closeAgentSession();
-      // Root message links should open the reply panel for that root. The
-      // timeline scroll/highlight target alone is not enough: root links have
-      // no parent/thread metadata, so the reply-only branch below cannot infer
-      // a thread head.
       setProfilePanelPubkey(null, { replace: true });
       setEditTargetId(null);
+      // Root message links open the reply panel. Navigation is refused before
+      // this route target is accepted when another composer owns a dirty edit.
       setOpenThreadHeadId(targetMessage.id, { replace: true });
       setThreadReplyTargetId(targetMessage.id);
       setThreadScrollTargetId(null);

@@ -468,8 +468,9 @@ export const ChannelPane = React.memo(function ChannelPane({
     (message: TimelineMessage): boolean => {
       const currentEditTarget = editTargetRef.current;
       if (
-        currentEditTarget?.isThreadReply === true &&
-        currentEditTarget.id !== message.id
+        currentEditTarget &&
+        currentEditTarget.id !== message.id &&
+        currentEditTarget.isThreadReply !== isThreadReply(message.tags ?? [])
       ) {
         pendingMainEditRef.current = null;
         toast.info("Finish or cancel your edit first.");
@@ -599,7 +600,6 @@ export const ChannelPane = React.memo(function ChannelPane({
           data-testid="channel-shared-header-backdrop"
         />
       ) : null}
-
       {!isSinglePanelView ? (
         <section
           aria-label="Channel messages and composer"
@@ -815,7 +815,6 @@ export const ChannelPane = React.memo(function ChannelPane({
           </div>
         </section>
       ) : null}
-
       {/*
        * `AnimatePresence` keeps the focus thread drawer mounted through its exit
        * animation — without it the drawer's own existence condition

@@ -17,7 +17,6 @@ import {
 } from "@/features/channels/readState/readStateFormat";
 import { ChannelScreenEmptyState } from "@/features/channels/ui/ChannelScreenEmptyState";
 import { ChannelScreenHeader } from "@/features/channels/ui/ChannelScreenHeader";
-import { ChannelPane } from "@/features/channels/ui/ChannelScreenLazyViews";
 import { WelcomeAgentCreateDialog } from "@/features/channels/ui/WelcomeAgentCreateDialog";
 import { ForumChannelContent } from "@/features/channels/ui/ForumChannelContent";
 import { MembersSidebar } from "@/features/channels/ui/MembersSidebar";
@@ -87,6 +86,8 @@ import { useChannelRouteTarget } from "./useChannelRouteTarget";
 import { useChannelOpenReadState } from "./useChannelOpenReadState";
 import { useChannelUnreadState } from "./useChannelUnreadState";
 import type { ChannelScreenProps } from "./ChannelScreen.types";
+import { GuardedChannelPane } from "./GuardedChannelPane";
+import { useMessageLinkNavigationGuard } from "./useMessageLinkNavigationGuard";
 const EMPTY_RELAY_EVENTS: RelayEvent[] = [];
 export function ChannelScreen({
   activeChannel,
@@ -645,24 +646,24 @@ export function ChannelScreen({
       timelineMessages,
       isTimelineLoading,
     );
-  const resetComposerTargets = React.useCallback(
-    (_channelId: string | null) => {
-      setExpandedThreadReplyIds(new Set());
-      setThreadScrollTargetId(null);
-      setThreadReplyTargetId(null);
-      setEditTargetId(null);
-    },
-    [],
-  );
   const handleThreadScrollTargetResolved = React.useCallback(() => {
     setThreadScrollTargetId(null);
   }, []);
-  const handleTargetReached = React.useCallback(() => {
-    clearMessageRouteTarget({ replace: true });
-  }, [clearMessageRouteTarget]);
+  const handleTargetReached = React.useCallback(
+    () => clearMessageRouteTarget({ replace: true }),
+    [clearMessageRouteTarget],
+  );
   React.useEffect(() => {
-    resetComposerTargets(activeChannelId);
-  }, [activeChannelId, resetComposerTargets]);
+    // The channel identity is intentionally the reset trigger.
+    void activeChannelId;
+    setExpandedThreadReplyIds(new Set());
+    setThreadScrollTargetId(null);
+    setThreadReplyTargetId(null);
+    setEditTargetId(null);
+  }, [activeChannelId]);
+  const allowMessageLinkNavigation = useMessageLinkNavigationGuard(
+    requireThreadEditResolution,
+  );
   const mainTimelineTargetMessageId = useChannelRouteTarget({
     activeChannel,
     activeChannelId,
@@ -857,7 +858,8 @@ export function ChannelScreen({
                   />
                 }
               >
-                <ChannelPane
+                <GuardedChannelPane
+                  messageLinkNavigationGuard={allowMessageLinkNavigation}
                   activeChannel={activeChannel}
                   activityAgents={channelAgentSessionAgents}
                   agentPubkeys={agentPubkeys}

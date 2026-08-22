@@ -150,6 +150,8 @@ export function useChannelPaneHandlers({
   ]);
 
   const handleCancelEdit = React.useCallback(() => {
+    editTargetIdRef.current = null;
+    editTargetIsThreadReplyRef.current = false;
     setEditTargetId(null);
   }, [setEditTargetId]);
 
