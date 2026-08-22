@@ -88,6 +88,111 @@ async function openActivityFromComposer(page: Page) {
 }
 
 /**
+ * There is one covered slot, so at most one drawer overlay may be in the DOM.
+ * Asserts on overlays rather than the drawer surfaces because the overlay is
+ * what makes the channel unreachable — two of them stacked is the failure the
+ * user would actually feel.
+ */
+async function expectExactlyOneCoverDrawer(
+  page: Page,
+  expected: "agent-activity-drawer" | "focus-thread-drawer",
+) {
+  const others = ["agent-activity-drawer", "focus-thread-drawer"].filter(
+    (testId) => testId !== expected,
+  );
+  await expect(page.getByTestId(`${expected}-overlay`)).toHaveCount(1);
+  for (const testId of others) {
+    await expect(page.getByTestId(`${testId}-overlay`)).toHaveCount(0);
+  }
+  await expect(page.getByTestId("channel-drop-zone")).toHaveAttribute(
+    "inert",
+    "",
+  );
+}
+
+/**
+ * Focus must end inside the drawer that won the slot.
+ *
+ * This is a positive check, not the regression guard: the covered channel is
+ * `inert`, so a wrongly-restored focus into it is silently refused by the
+ * browser and lands on `<body>` instead of visibly stealing focus. The
+ * discriminating assertions for the handoff live in
+ * `CoverDrawerFocusHandoff.test.mjs`, which drives the primitive directly.
+ * Polls because both the successor's capture and the loser's deferred restore
+ * land asynchronously.
+ */
+async function expectFocusInside(page: Page, testId: string) {
+  await expect
+    .poll(() =>
+      page.evaluate(
+        (currentTestId) =>
+          document
+            .querySelector(`[data-testid="${currentTestId}"]`)
+            ?.contains(document.activeElement) ?? false,
+        testId,
+      ),
+    )
+    .toBe(true);
+}
+
+/**
+ * Opens a thread while activity covers the channel.
+ *
+ * The covered channel is inert, so its thread summaries cannot be clicked. A
+ * `messageId` deep link reaches the same place: `useChannelRouteTarget` closes
+ * the agent session and opens the thread in one navigation, which is exactly the
+ * open-over-open transition under test — no closed intermediate state.
+ *
+ * The router uses hash history, so the param has to be written into the hash
+ * fragment (see the same technique in `scroll-history.spec.ts`); rewriting
+ * `location.search` would leave the router none the wiser.
+ */
+async function openThreadByMessageLink(page: Page, threadHeadId: string) {
+  await page.evaluate((targetId) => {
+    const hash = window.location.hash.replace(/^#/, "") || "/";
+    const [path, query = ""] = hash.split("?");
+    const params = new URLSearchParams(query);
+    params.set("messageId", targetId);
+    window.history.pushState(
+      {},
+      "",
+      `${window.location.pathname}#${path}?${params.toString()}`,
+    );
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  }, threadHeadId);
+}
+
+/**
+ * Opens activity while a thread covers the channel, from the thread composer's
+ * own activity bar — the one ingress that is reachable while the channel behind
+ * is inert, so the thread never closes first.
+ */
+async function openActivityFromThreadComposer(
+  page: Page,
+  threadHeadId: string,
+) {
+  await page.evaluate(
+    ({ currentThreadHeadId, pubkey }) => {
+      window.__BUZZ_E2E_EMIT_MOCK_TYPING__?.({
+        channelName: "agents",
+        pubkey,
+        threadHeadId: currentThreadHeadId,
+      });
+    },
+    { currentThreadHeadId: threadHeadId, pubkey: AGENT_PUBKEY },
+  );
+
+  const drawer = page.getByTestId("focus-thread-drawer");
+  const trigger = drawer.getByTestId("bot-activity-composer-trigger");
+  await expect(trigger).toBeVisible();
+  await trigger.click();
+  const item = page.getByTestId(`bot-activity-composer-item-${AGENT_PUBKEY}`);
+  await expect(item).toBeVisible();
+  await item.click({ force: true });
+}
+
+/**
  * The default mock bridge already seeds alice as an agent in `#agents`, which
  * is what makes her eligible for the composer activity bar once she types.
  * Re-seeding her through `managedAgents` instead *replaces* that relay-agent
@@ -170,7 +275,9 @@ test("agent activity covers the channel at wide viewports", async ({
   await expect(channel).not.toHaveAttribute("inert", "");
 });
 
-test("only one cover drawer is ever open", async ({ page }) => {
+test("cover drawers replace each other in both directions without stacking", async ({
+  page,
+}) => {
   await page.setViewportSize(WIDE_VIEWPORT);
   await page.addInitScript(() => {
     localStorage.setItem("buzz.channels.threadViewMode", "focus");
@@ -182,35 +289,31 @@ test("only one cover drawer is ever open", async ({ page }) => {
   const agentDrawer = page.getByTestId("agent-activity-drawer");
   const threadDrawer = page.getByTestId("focus-thread-drawer");
   await expect(agentDrawer).toBeVisible();
+  await expectExactlyOneCoverDrawer(page, "agent-activity-drawer");
 
-  // Opening a thread from the covered channel is not possible while it is
-  // inert, so drive the same handler the timeline uses: leave activity, then
-  // open the thread. The thread drawer takes the covered slot alone.
-  await page.getByTestId("auxiliary-panel-close").click();
-  await expect(agentDrawer).toHaveCount(0);
-
-  const summary = page.locator(
-    `[data-testid="message-thread-summary"][data-thread-head-id="${rootId}"]`,
-  );
-  await expect(summary).toBeVisible();
-  await summary.click();
+  // Direction 1: thread opens over activity, with no closed intermediate. The
+  // covered channel is inert so its thread summaries can't be clicked, but a
+  // message link resolves through the same route-target handler, which clears
+  // the agent session and opens the thread in one navigation.
+  await openThreadByMessageLink(page, rootId);
   await expect(threadDrawer).toBeVisible();
   await expect(agentDrawer).toHaveCount(0);
+  await expectExactlyOneCoverDrawer(page, "focus-thread-drawer");
+  // The replaced surface's param is gone, not merely outranked.
+  await expect(page).not.toHaveURL(/agentSession=/);
+  await expect(page).toHaveURL(new RegExp(`thread=${rootId}`));
+  await expectFocusInside(page, "focus-thread-drawer");
 
-  // Now open activity with the thread still in the URL: the agent surface wins
-  // nothing — the thread owns the slot — and crucially there is never more
-  // than one drawer overlay in the DOM.
-  await expect(page.getByTestId("focus-thread-drawer-overlay")).toHaveCount(1);
-  await expect(page.getByTestId("agent-activity-drawer-overlay")).toHaveCount(
-    0,
-  );
-
-  // Escape returns the channel, then activity may cover again.
-  await page.keyboard.press("Escape");
-  await expect(threadDrawer).toHaveCount(0);
-  await openActivityFromComposer(page);
+  // Direction 2: activity opens over the thread, again with no closed
+  // intermediate — the thread drawer's own composer activity bar is live while
+  // it covers, and its trigger calls the same open handler.
+  await openActivityFromThreadComposer(page, rootId);
   await expect(agentDrawer).toBeVisible();
-  await expect(page.getByTestId("focus-thread-drawer-overlay")).toHaveCount(0);
+  await expect(threadDrawer).toHaveCount(0);
+  await expectExactlyOneCoverDrawer(page, "agent-activity-drawer");
+  await expect(page).not.toHaveURL(new RegExp(`thread=${rootId}`));
+  await expect(page).toHaveURL(/agentSession=/);
+  await expectFocusInside(page, "agent-activity-drawer");
 });
 
 test("narrow viewports keep the existing activity presentation", async ({
