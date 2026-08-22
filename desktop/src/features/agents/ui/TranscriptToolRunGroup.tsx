@@ -23,6 +23,7 @@ import {
 import {
   setToolRunGroupExpanded,
   setToolRunGroupInternalStepsShown,
+  setToolRunGroupItemExpanded,
 } from "./agentSessionToolRunViewState";
 import { useToolRunGroupViewState } from "./useToolRunGroupViewState";
 import { formatTranscriptTimestampTitle } from "./agentSessionUtils";
@@ -121,7 +122,13 @@ export type TranscriptToolRunGroupProps = {
   label: React.ReactNode;
   showTimestamp: boolean;
   /** Renders one child segment. Passed in to avoid a list↔group import cycle. */
-  renderChild: (child: TranscriptToolRunChildSegment) => React.ReactNode;
+  renderChild: (
+    child: TranscriptToolRunChildSegment,
+    expansion?: {
+      expanded: boolean;
+      onExpansionChange: (expanded: boolean) => void;
+    },
+  ) => React.ReactNode;
 };
 
 /**
@@ -200,7 +207,24 @@ export function TranscriptToolRunGroup({
         {label}
         <ToolRunGroupStatusBadge failureCount={failureCount} status={status} />
         <ActivityRowContent className="flex flex-col gap-0.5">
-          {visibleChildren.map((child) => renderChild(child))}
+          {visibleChildren.map((child) =>
+            renderChild(
+              child,
+              child.kind === "item" && child.item.type === "tool"
+                ? {
+                    expanded: state.expandedItemIds.includes(child.item.id),
+                    onExpansionChange: (expanded) =>
+                      update((previous) =>
+                        setToolRunGroupItemExpanded(
+                          previous,
+                          child.item.id,
+                          expanded,
+                        ),
+                      ),
+                  }
+                : undefined,
+            ),
+          )}
           {hiddenItems.length > 0 ? (
             <button
               className="mt-0.5 self-start text-xs text-muted-foreground underline decoration-dotted hover:text-foreground"

@@ -533,7 +533,13 @@ function SameKindSummaryItem({
   // the group card never has to import this module back. Not memoized: the
   // group card calls it during render and never uses its identity as a
   // dependency, and memoizing would need this component as its own dep.
-  const renderChild = (child: TranscriptToolRunChildSegment) =>
+  const renderChild = (
+    child: TranscriptToolRunChildSegment,
+    expansion?: {
+      expanded: boolean;
+      onExpansionChange: (expanded: boolean) => void;
+    },
+  ) =>
     child.kind === "summary" ? (
       <SameKindSummaryItem
         agentAvatarUrl={agentAvatarUrl}
@@ -550,7 +556,9 @@ function SameKindSummaryItem({
         agentPubkey={agentPubkey}
         item={child.item}
         key={child.item.id}
+        onExpansionChange={expansion?.onExpansionChange}
         profiles={profiles}
+        expanded={expansion?.expanded}
       />
     );
 
@@ -948,17 +956,23 @@ const TranscriptItemView = React.memo(function TranscriptItemView({
   agentName,
   agentPubkey,
   item,
+  onExpansionChange,
   profiles,
+  expanded,
 }: AgentTranscriptIdentityProps & {
   item: TranscriptItem;
   profiles?: UserProfileLookup;
+  expanded?: boolean;
+  onExpansionChange?: (expanded: boolean) => void;
 }) {
   return (
     <TranscriptActivityItem
       agentAvatarUrl={agentAvatarUrl}
       agentName={agentName}
       agentPubkey={agentPubkey}
+      expanded={expanded}
       item={item}
+      onExpansionChange={onExpansionChange}
       profiles={profiles}
     />
   );
