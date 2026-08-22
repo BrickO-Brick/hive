@@ -177,75 +177,30 @@ pub(crate) fn render_recovery_sheet(
     text(
         &mut ops,
         18.0,
-        231.0,
-        8.0,
-        BuiltinFont::HelveticaBold,
-        charcoal(),
-        "BUZZ RECOVERY CODE",
-    );
-    text(
-        &mut ops,
-        18.0,
-        211.0,
+        224.0,
         27.0,
         BuiltinFont::HelveticaBold,
         charcoal(),
         "Your Buzz recovery code.",
     );
-    text(
-        &mut ops,
-        18.0,
-        200.5,
-        11.0,
-        BuiltinFont::Helvetica,
-        charcoal(),
-        "Use this code with your backup file and password",
-    );
-    text(
-        &mut ops,
-        18.0,
-        195.5,
-        11.0,
-        BuiltinFont::Helvetica,
-        charcoal(),
-        "to recover your Buzz identity.",
-    );
-    fill_rect(&mut ops, 18.0, 188.0, 24.0, 2.0, buzz_yellow());
+    fill_rect(&mut ops, 18.0, 204.0, 24.0, 2.0, buzz_yellow());
 
     fill_stroke_rect(&mut ops, 18.0, 78.0, 179.9, 104.0, white(), charcoal());
     text(
         &mut ops,
         28.0,
-        165.0,
-        8.0,
-        BuiltinFont::HelveticaBold,
-        muted(),
-        "RECOVERY CODE",
-    );
-    text(
-        &mut ops,
-        28.0,
         151.0,
-        19.0,
-        BuiltinFont::HelveticaBold,
-        charcoal(),
-        "Recovery code",
-    );
-    text(
-        &mut ops,
-        28.0,
-        142.5,
-        11.0,
+        12.0,
         BuiltinFont::Helvetica,
         charcoal(),
         "Scan the QR code or type the code below.",
     );
-    fill_stroke_rect(&mut ops, 28.0, 122.0, 96.0, 11.0, cream(), muted());
-    fill_rect(&mut ops, 28.0, 122.0, 2.0, 11.0, buzz_yellow());
+    fill_stroke_rect(&mut ops, 28.0, 132.0, 96.0, 11.0, cream(), muted());
+    fill_rect(&mut ops, 28.0, 132.0, 2.0, 11.0, buzz_yellow());
     text(
         &mut ops,
         32.0,
-        126.0,
+        136.0,
         8.0,
         BuiltinFont::CourierBold,
         charcoal(),
@@ -255,7 +210,7 @@ pub(crate) fn render_recovery_sheet(
     text(
         &mut ops,
         28.0,
-        111.0,
+        116.0,
         7.0,
         BuiltinFont::HelveticaBold,
         muted(),
@@ -265,7 +220,7 @@ pub(crate) fn render_recovery_sheet(
     text(
         &mut ops,
         28.0,
-        104.5,
+        109.5,
         7.5,
         BuiltinFont::Courier,
         charcoal(),
@@ -274,7 +229,7 @@ pub(crate) fn render_recovery_sheet(
     text(
         &mut ops,
         28.0,
-        99.5,
+        104.5,
         7.5,
         BuiltinFont::Courier,
         charcoal(),
@@ -291,16 +246,6 @@ pub(crate) fn render_recovery_sheet(
     );
 
     draw_qr(&mut ops, recovery_secret)?;
-    text(
-        &mut ops,
-        143.0,
-        96.0,
-        7.0,
-        BuiltinFont::Helvetica,
-        muted(),
-        "SCAN TO COPY THE RECOVERY CODE",
-    );
-
     text(
         &mut ops,
         18.0,
@@ -348,26 +293,6 @@ pub(crate) fn render_recovery_sheet(
         );
     }
 
-    fill_stroke_rect(&mut ops, 18.0, 14.0, 179.9, 17.0, white(), charcoal());
-    fill_rect(&mut ops, 18.0, 14.0, 3.0, 17.0, buzz_yellow());
-    text(
-        &mut ops,
-        24.0,
-        24.0,
-        9.0,
-        BuiltinFont::HelveticaBold,
-        charcoal(),
-        "KEEP THIS PAGE SEPARATE FROM YOUR BACKUP FILE.",
-    );
-    text(
-        &mut ops,
-        24.0,
-        18.5,
-        8.0,
-        BuiltinFont::Helvetica,
-        muted(),
-        "Buzz cannot replace this recovery code if you lose it.",
-    );
     text(
         &mut ops,
         18.0,
