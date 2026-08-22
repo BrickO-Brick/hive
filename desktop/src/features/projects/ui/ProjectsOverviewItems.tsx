@@ -20,7 +20,6 @@ import {
   isProjectOwnedByCurrentUser,
   isProjectMine,
   projectPeople,
-  type ProjectsFilter,
   type ProjectsViewMode,
 } from "@/features/projects/lib/projectsViewHelpers";
 import {
@@ -39,8 +38,10 @@ import {
   RepositoryListRow,
 } from "@/features/projects/ui/RepositoryCards";
 import { useIncrementalMount } from "@/shared/hooks/useIncrementalMount";
-import { cn } from "@/shared/lib/cn";
 import { normalizePubkey } from "@/shared/lib/pubkey";
+
+const RESPONSIVE_CARD_GRID_CLASS =
+  "grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(min(100%,16rem),1fr))]";
 
 function CollectionGroup({
   children,
@@ -63,6 +64,7 @@ function CollectionGroup({
       icon={icon}
       items={items}
       label={title}
+      labelClassName="text-sm font-normal text-foreground/80"
       labelTestId="projects-collection-group-label"
       testId="projects-collection-group"
     >
@@ -115,7 +117,6 @@ const EMPTY_PEOPLE: string[] = [];
 export function ProjectsOverviewProjectItems({
   currentPubkey,
   deleteDisabled,
-  filter,
   localRepoNames,
   onDelete,
   onOpen,
@@ -128,7 +129,6 @@ export function ProjectsOverviewProjectItems({
 }: {
   currentPubkey: string | undefined;
   deleteDisabled: boolean;
-  filter: ProjectsFilter;
   localRepoNames: Set<string>;
   onDelete: (project: Project) => void;
   onOpen: (project: Project) => void;
@@ -217,12 +217,7 @@ export function ProjectsOverviewProjectItems({
             key={group.title}
             title={group.title}
           >
-            <div
-              className={cn(
-                "grid gap-3 md:grid-cols-2",
-                filter !== "all" && "xl:grid-cols-3",
-              )}
-            >
+            <div className={RESPONSIVE_CARD_GRID_CLASS}>
               {group.items
                 .filter((project) => mountedProjectIds.has(project.id))
                 .map((project) => {
@@ -385,7 +380,7 @@ export function ProjectsOverviewRepositoryItems({
             key={group.title}
             title={group.title}
           >
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            <div className={RESPONSIVE_CARD_GRID_CLASS}>
               {group.items
                 .filter(({ repository }) =>
                   mountedRepositoryAddresses.has(repository.repoAddress),

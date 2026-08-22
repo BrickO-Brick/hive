@@ -13,6 +13,10 @@ import {
   resolveTeamPersonas,
 } from "@/features/agents/lib/teamPersonas";
 import { useChannelTemplatesQuery } from "@/features/channel-templates/hooks";
+import {
+  PROJECT_HOME_CHANNEL_TEMPLATE,
+  PROJECT_HOME_TEMPLATE_ID,
+} from "@/features/projects/lib/projectHomeTemplate";
 import type { ProjectListingVisibility } from "@/features/projects/projectCreation";
 import type { ChannelTemplate, ChannelVisibility } from "@/shared/api/types";
 
@@ -30,7 +34,7 @@ export function useCreateProjectFormSettings(
     React.useState<ProjectListingVisibility>("listed");
   const [agentPersonaId, setAgentPersonaId] = React.useState("");
   const [teamId, setTeamId] = React.useState("");
-  const [templateId, setTemplateId] = React.useState("");
+  const [templateId, setTemplateId] = React.useState(PROJECT_HOME_TEMPLATE_ID);
 
   const personas = React.useMemo(
     () => getActivePersonas(personasQuery.data ?? []),
@@ -40,7 +44,15 @@ export function useCreateProjectFormSettings(
     () => getUsableTeams(teamsQuery.data ?? [], personas),
     [personas, teamsQuery.data],
   );
-  const templates = templatesQuery.data ?? [];
+  const templates = React.useMemo(
+    () => [
+      PROJECT_HOME_CHANNEL_TEMPLATE,
+      ...(templatesQuery.data ?? []).filter(
+        (template) => template.id !== PROJECT_HOME_TEMPLATE_ID,
+      ),
+    ],
+    [templatesQuery.data],
+  );
 
   React.useEffect(() => {
     if (!active) return;
@@ -48,7 +60,7 @@ export function useCreateProjectFormSettings(
     setProjectVisibility("listed");
     setAgentPersonaId("");
     setTeamId("");
-    setTemplateId("");
+    setTemplateId(PROJECT_HOME_TEMPLATE_ID);
   }, [active]);
 
   React.useEffect(() => {
@@ -129,7 +141,9 @@ export function useCreateProjectFormSettings(
     (template: ChannelTemplate) => {
       setTemplateId(template.id);
       setChannelVisibility(template.visibility);
-      onTemplateDescriptionChange?.(template.description ?? "");
+      if (template.id !== PROJECT_HOME_TEMPLATE_ID) {
+        onTemplateDescriptionChange?.(template.description ?? "");
+      }
     },
     [onTemplateDescriptionChange],
   );

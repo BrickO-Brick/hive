@@ -63,7 +63,7 @@ export function CreateProjectFormContent({
         channelVisibility: settings.channelVisibility,
         projectVisibility: settings.projectVisibility,
         agents: settings.buildAgents(),
-        templateId: settings.templateId || undefined,
+        templateId: settings.templateId,
       });
       onCreated();
     } catch (error) {

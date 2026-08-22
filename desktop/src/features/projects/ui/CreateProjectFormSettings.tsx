@@ -67,7 +67,7 @@ export function CreateProjectFormSettings({
         <span className="text-sm font-medium text-foreground">
           Template
           <span className="ml-1 text-xs font-normal text-muted-foreground/50">
-            Optional
+            Project home by default
           </span>
         </span>
         <DropdownMenu modal={false}>

@@ -1,5 +1,6 @@
 import * as React from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 
 import {
   channelsQueryKey,
@@ -14,6 +15,10 @@ import {
   type CreateProjectResumeState,
 } from "@/features/projects/createProject";
 import { addProjectToSidebar } from "@/features/projects/lib/projectSidebarMembership";
+import {
+  applyProjectHomeCanvas,
+  PROJECT_HOME_TEMPLATE_ID,
+} from "@/features/projects/lib/projectHomeTemplate";
 import type { Channel } from "@/shared/api/types";
 import { getCachedRelayOrigin } from "@/shared/lib/mediaUrl";
 
@@ -59,10 +64,25 @@ export function useCreateProjectMutation() {
           queryKey: channelsQueryKey,
           refetchType: "none",
         });
-        await Promise.all([
-          applyCanvas(input.templateId, channel.id, channel.name),
-          applyAgents(input.templateId, channel.id),
-        ]);
+        const useProjectHomeTemplate =
+          input.templateId === undefined ||
+          input.templateId === PROJECT_HOME_TEMPLATE_ID;
+        if (useProjectHomeTemplate) {
+          const applied = await applyProjectHomeCanvas({
+            channelId: channel.id,
+            project,
+          });
+          if (!applied) {
+            toast.warning(
+              "Project created, but its project-home canvas could not be added.",
+            );
+          }
+        } else if (input.templateId) {
+          await Promise.all([
+            applyCanvas(input.templateId, channel.id, channel.name),
+            applyAgents(input.templateId, channel.id),
+          ]);
+        }
       }
       void queryClient.invalidateQueries({ queryKey: projectsQueryKey });
     },
