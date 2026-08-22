@@ -262,6 +262,75 @@ type WsReceiver = futures_util::stream::SplitStream<WsStream>;
 
 const TTS_BROADCAST_QUEUE_DEPTH: usize = 8;
 const TTS_BROADCAST_MAX_FRAMES: usize = 1_500; // 30 seconds at 20 ms/frame.
+const AUDIO_SEND_QUEUE_DEPTH: usize = 4;
+
+#[derive(Default)]
+struct AudioSendQueueState {
+    frames: std::collections::VecDeque<Vec<u8>>,
+    closed: bool,
+}
+
+#[derive(Default)]
+struct AudioSendQueue {
+    state: std::sync::Mutex<AudioSendQueueState>,
+    ready: tokio::sync::Notify,
+}
+
+impl AudioSendQueue {
+    fn push_latest(&self, frame: Vec<u8>) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        if state.closed {
+            return;
+        }
+        if state.frames.len() == AUDIO_SEND_QUEUE_DEPTH {
+            state.frames.pop_front();
+        }
+        state.frames.push_back(frame);
+        drop(state);
+        self.ready.notify_one();
+    }
+
+    fn close(&self) {
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .closed = true;
+        self.ready.notify_waiters();
+    }
+
+    async fn pop(&self) -> Option<Vec<u8>> {
+        loop {
+            let notified = self.ready.notified();
+            {
+                let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+                if let Some(frame) = state.frames.pop_front() {
+                    return Some(frame);
+                }
+                if state.closed {
+                    return None;
+                }
+            }
+            notified.await;
+        }
+    }
+}
+
+async fn wire_send_loop<S>(
+    queue: std::sync::Arc<AudioSendQueue>,
+    sink: std::sync::Arc<tokio::sync::Mutex<S>>,
+) -> Result<(), String>
+where
+    S: futures_util::Sink<WsMsg> + Unpin,
+    S::Error: std::fmt::Display,
+{
+    while let Some(frame) = queue.pop().await {
+        let mut sink = sink.lock().await;
+        sink.send(WsMsg::Binary(frame.into()))
+            .await
+            .map_err(|error| format!("audio send: {error}"))?;
+    }
+    Ok(())
+}
 
 struct QueuedTtsFrame {
     epoch: u64,
@@ -481,7 +550,7 @@ async fn audio_relay_pipeline(args: AudioRelayPipelineArgs) -> Result<(), String
     let mut encoder = opus::Encoder::new(48000, opus::Channels::Mono, opus::Application::Voip)
         .map_err(|e| format!("opus encoder: {e}"))?;
     encoder
-        .set_bitrate(opus::Bitrate::Bits(32000))
+        .set_bitrate(opus::Bitrate::Bits(32_000))
         .map_err(|e| format!("opus bitrate: {e}"))?;
     encoder
         .set_dtx(true)
@@ -493,8 +562,13 @@ async fn audio_relay_pipeline(args: AudioRelayPipelineArgs) -> Result<(), String
     let ws_tx = StdArc::new(tokio::sync::Mutex::new(ws_tx));
     let ws_tx_send = StdArc::clone(&ws_tx);
     let cancel_send = cancel.clone();
+    let send_queue = StdArc::new(AudioSendQueue::default());
+    let wire_queue = StdArc::clone(&send_queue);
 
-    let send_task = tokio::spawn(async move {
+    let mut wire_send_task = tokio::spawn(wire_send_loop(wire_queue, ws_tx_send));
+
+    let encode_queue = StdArc::clone(&send_queue);
+    let mut encode_task = tokio::spawn(async move {
         use super::wire::{audio_level_dbov, FrameHeader, V2_HEADER_LEN};
         let mut encoder = encoder; // Move encoder into task.
         const FRAME_SAMPLES: usize = 960;
@@ -525,7 +599,6 @@ async fn audio_relay_pipeline(args: AudioRelayPipelineArgs) -> Result<(), String
                 .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
                 .collect();
 
-            let mut tx = ws_tx_send.lock().await;
             for chunk in samples.chunks(FRAME_SAMPLES) {
                 // dBov is computed from the pre-encode PCM. Opus DTX may
                 // produce a 1-2 byte comfort packet; computing level from
@@ -562,20 +635,17 @@ async fn audio_relay_pipeline(args: AudioRelayPipelineArgs) -> Result<(), String
                     let mut frame = Vec::with_capacity(V2_HEADER_LEN + n);
                     frame.extend_from_slice(&header);
                     frame.extend_from_slice(&out_buf[..n]);
-                    if tx.send(WsMsg::Binary(frame.into())).await.is_err() {
-                        return; // WS closed.
-                    }
+                    encode_queue.push_latest(frame);
 
                     seq = seq.wrapping_add(1);
                     ts_48k = ts_48k.wrapping_add(super::jitter::FRAME_TIMESTAMP_DELTA);
                 }
             }
         }
-        let mut tx = ws_tx_send.lock().await;
-        let _ = tx.send(WsMsg::Close(None)).await;
+        encode_queue.close();
     });
 
-    let recv_task = tokio::spawn(super::playout::run_playout_recv_loop(
+    let mut recv_task = tokio::spawn(super::playout::run_playout_recv_loop(
         ws_rx,
         ws_tx,
         sink_handle,
@@ -590,14 +660,23 @@ async fn audio_relay_pipeline(args: AudioRelayPipelineArgs) -> Result<(), String
         human_floor,
     ));
 
-    // Wait for either task to finish, then abort the survivor.
-    use futures_util::future::Either;
-    match futures_util::future::select(std::pin::pin!(send_task), std::pin::pin!(recv_task)).await {
-        Either::Left((_, recv_handle)) => recv_handle.abort(),
-        Either::Right((_, send_handle)) => send_handle.abort(),
-    }
+    // Any pipeline task ending tears down the other two. The encoder never
+    // waits on socket flow control; the bounded queue keeps only fresh audio.
+    let pipeline_result = tokio::select! {
+        result = &mut encode_task => result
+            .map_err(|error| format!("audio encode task: {error}")),
+        result = &mut wire_send_task => result
+            .map_err(|error| format!("audio send task: {error}"))?,
+        result = &mut recv_task => result
+            .map_err(|error| format!("audio receive task: {error}")),
+    };
 
-    Ok(())
+    send_queue.close();
+    encode_task.abort();
+    wire_send_task.abort();
+    recv_task.abort();
+
+    pipeline_result
 }
 
 /// Fetch channel members with roles from the relay. Returns (pubkey, role) tuples.
@@ -670,6 +749,88 @@ pub(crate) async fn count_human_members(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audio_send_queue_drops_oldest_frame_when_full() {
+        let queue = AudioSendQueue::default();
+        for value in 0..=AUDIO_SEND_QUEUE_DEPTH as u8 {
+            queue.push_latest(vec![value]);
+        }
+        let frames = queue
+            .state
+            .lock()
+            .expect("queue")
+            .frames
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(frames, vec![vec![1], vec![2], vec![3], vec![4]]);
+    }
+
+    #[tokio::test]
+    async fn audio_send_queue_close_wakes_waiter_and_rejects_new_frames() {
+        let queue = std::sync::Arc::new(AudioSendQueue::default());
+        let waiting_queue = std::sync::Arc::clone(&queue);
+        let waiter = tokio::spawn(async move { waiting_queue.pop().await });
+        tokio::task::yield_now().await;
+
+        queue.close();
+        assert_eq!(waiter.await.expect("waiter"), None);
+        queue.push_latest(vec![1]);
+        assert_eq!(queue.pop().await, None);
+    }
+
+    #[tokio::test]
+    async fn audio_send_queue_drains_before_reporting_closed() {
+        let queue = AudioSendQueue::default();
+        queue.push_latest(vec![1]);
+        queue.close();
+
+        assert_eq!(queue.pop().await, Some(vec![1]));
+        assert_eq!(queue.pop().await, None);
+    }
+
+    #[tokio::test]
+    async fn wire_send_failure_is_preserved_for_pipeline_owner() {
+        struct FailingSink;
+        impl futures_util::Sink<WsMsg> for FailingSink {
+            type Error = &'static str;
+
+            fn poll_ready(
+                self: std::pin::Pin<&mut Self>,
+                _cx: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<Result<(), Self::Error>> {
+                std::task::Poll::Ready(Err("socket closed"))
+            }
+            fn start_send(self: std::pin::Pin<&mut Self>, _item: WsMsg) -> Result<(), Self::Error> {
+                Err("socket closed")
+            }
+            fn poll_flush(
+                self: std::pin::Pin<&mut Self>,
+                _cx: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<Result<(), Self::Error>> {
+                std::task::Poll::Ready(Ok(()))
+            }
+            fn poll_close(
+                self: std::pin::Pin<&mut Self>,
+                _cx: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<Result<(), Self::Error>> {
+                std::task::Poll::Ready(Ok(()))
+            }
+        }
+
+        let queue = std::sync::Arc::new(AudioSendQueue::default());
+        queue.push_latest(vec![1]);
+        let result = wire_send_loop(
+            queue,
+            std::sync::Arc::new(tokio::sync::Mutex::new(FailingSink)),
+        )
+        .await;
+        assert!(
+            result.is_err_and(|error| error == "audio send: socket closed"),
+            "the reconnect owner must receive the socket send failure"
+        );
+    }
 
     #[test]
     fn tts_upsampling_doubles_rate_with_linear_midpoints() {
