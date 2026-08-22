@@ -122,6 +122,17 @@ impl PlaybackCoordinator {
         }
     }
 
+    pub(super) fn replace_output_mixer(&self, mixer: &Mixer) {
+        *self.mixer.lock().unwrap_or_else(PoisonError::into_inner) = Some(mixer.clone());
+        let old_player = {
+            let mut state = self.lock();
+            state.first_append = true;
+            state.output_lease.begin_hangover(Instant::now());
+            state.player.replace(Player::connect_new(mixer))
+        };
+        drop(old_player);
+    }
+
     fn lock(&self) -> MutexGuard<'_, PlaybackState> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -420,6 +431,44 @@ mod tests {
             NonZero::new(24_000).expect("nonzero rate"),
             vec![0.25; 24_000],
         )
+    }
+
+    #[test]
+    fn pending_output_watch_change_replaces_live_playback_before_next_append() {
+        let (playback, _old_source) = coordinator();
+        append_second(&playback);
+        assert!(!playback.empty());
+
+        let (output_tx, mut output_rx) = tokio::sync::watch::channel(None);
+        output_tx.send_replace(Some("new route".to_string()));
+        let channels = NonZero::new(1).expect("nonzero channels");
+        let rate = NonZero::new(24_000).expect("nonzero rate");
+        let (next_mixer, _next_source) = rodio::mixer::mixer(channels, rate);
+        crate::huddle::tts::apply_pending_output_device_change(&mut output_rx, |selected| {
+            assert_eq!(selected, Some("new route"));
+            playback.replace_output_mixer(&next_mixer);
+            Ok(())
+        });
+
+        assert!(playback.empty(), "the old-route queue must be dropped");
+        append_second(&playback);
+        assert!(!playback.empty(), "subsequent audio must use the new mixer");
+    }
+
+    #[test]
+    fn replacing_output_mixer_drops_old_route_and_accepts_new_audio() {
+        let (playback, _old_source) = coordinator();
+        append_second(&playback);
+        assert!(!playback.empty());
+
+        let channels = NonZero::new(1).expect("nonzero channels");
+        let rate = NonZero::new(24_000).expect("nonzero rate");
+        let (next_mixer, _next_source) = rodio::mixer::mixer(channels, rate);
+        playback.replace_output_mixer(&next_mixer);
+
+        assert!(playback.empty());
+        append_second(&playback);
+        assert!(!playback.empty());
     }
 
     #[test]

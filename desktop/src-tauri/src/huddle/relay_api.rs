@@ -69,13 +69,67 @@ fn build_audio_auth_event(
         .map_err(|e| format!("sign: {e}"))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AudioRelayConnectError {
+    code: Option<String>,
+    message: String,
+}
+
+impl AudioRelayConnectError {
+    pub(crate) fn code(&self) -> Option<&str> {
+        self.code.as_deref()
+    }
+
+    fn from_relay_payload(value: &serde_json::Value) -> Self {
+        Self {
+            code: value["code"].as_str().map(str::to_string),
+            message: value["message"]
+                .as_str()
+                .unwrap_or("unknown relay error")
+                .to_string(),
+        }
+    }
+}
+
+impl From<String> for AudioRelayConnectError {
+    fn from(message: String) -> Self {
+        Self {
+            code: None,
+            message,
+        }
+    }
+}
+
+impl From<&str> for AudioRelayConnectError {
+    fn from(message: &str) -> Self {
+        message.to_string().into()
+    }
+}
+
+impl std::fmt::Display for AudioRelayConnectError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.code.as_deref() {
+            Some(code) => write!(
+                formatter,
+                "audio relay auth error [{code}]: {}",
+                self.message
+            ),
+            None => formatter.write_str(&self.message),
+        }
+    }
+}
+
+fn format_audio_relay_error(value: &serde_json::Value) -> AudioRelayConnectError {
+    AudioRelayConnectError::from_relay_payload(value)
+}
+
 async fn connect_authenticated_audio_socket(
     channel_id: &str,
     parent_channel_id: Option<&str>,
     relay_url: &str,
     keys: &nostr::Keys,
     auth_tag_json: Option<&str>,
-) -> Result<(WsSink, WsReceiver, u8, Vec<(u8, String, u8)>), String> {
+) -> Result<(WsSink, WsReceiver, u8, Vec<(u8, String, u8)>), AudioRelayConnectError> {
     use nostr::JsonUtil;
 
     let ws_url = format!("{relay_url}/huddle/{channel_id}/audio");
@@ -153,7 +207,7 @@ async fn connect_authenticated_audio_socket(
                             break Ok((peer_index, peers));
                         }
                         Some("error") => {
-                            break Err(format!("audio relay auth error: {}", value["message"]));
+                            break Err(format_audio_relay_error(&value));
                         }
                         _ => continue,
                     }
@@ -179,7 +233,7 @@ pub(crate) async fn connect_audio_relay(
     channel_id: &str,
     parent_channel_id: Option<&str>,
     state: &AppState,
-) -> Result<(CancellationToken, tokio::sync::mpsc::Sender<Vec<u8>>), String> {
+) -> Result<(CancellationToken, tokio::sync::mpsc::Sender<Vec<u8>>), AudioRelayConnectError> {
     let relay_url = crate::relay::relay_ws_url_with_override(state);
     let keys = state.keys.lock().map_err(|e| e.to_string())?.clone();
 
@@ -212,12 +266,8 @@ pub(crate) async fn connect_audio_relay(
     let cancel = CancellationToken::new();
     let cancel_clone = cancel.clone();
     let (pcm_tx, pcm_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(50);
-    let output_device_name = state
-        .huddle_audio
-        .output_device
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone();
+    let output_device_changes = state.huddle_audio.output_device_changes.subscribe();
+    let output_device_name = output_device_changes.borrow().clone();
 
     tokio::spawn(async move {
         if let Err(e) = audio_relay_pipeline(AudioRelayPipelineArgs {
@@ -234,6 +284,7 @@ pub(crate) async fn connect_audio_relay(
             agent_pubkeys,
             human_floor,
             output_device_name,
+            output_device_changes,
         })
         .await
         {
@@ -395,7 +446,8 @@ pub(crate) async fn connect_tts_audio_publisher(
         keys,
         auth_tag_json,
     )
-    .await?;
+    .await
+    .map_err(|error| error.to_string())?;
 
     let cancel = CancellationToken::new();
     let publisher_cancel = cancel.clone();
@@ -528,6 +580,7 @@ struct AudioRelayPipelineArgs {
     agent_pubkeys: Arc<std::sync::Mutex<Vec<String>>>,
     human_floor: super::human_floor::HumanFloor,
     output_device_name: Option<String>,
+    output_device_changes: tokio::sync::watch::Receiver<Option<String>>,
 }
 
 async fn audio_relay_pipeline(args: AudioRelayPipelineArgs) -> Result<(), String> {
@@ -545,6 +598,7 @@ async fn audio_relay_pipeline(args: AudioRelayPipelineArgs) -> Result<(), String
         agent_pubkeys,
         human_floor,
         output_device_name,
+        output_device_changes,
     } = args;
 
     let mut encoder = opus::Encoder::new(48000, opus::Channels::Mono, opus::Application::Voip)
@@ -658,6 +712,7 @@ async fn audio_relay_pipeline(args: AudioRelayPipelineArgs) -> Result<(), String
         remote_stt_pipeline,
         agent_pubkeys,
         human_floor,
+        output_device_changes,
     ));
 
     // Any pipeline task ending tears down the other two. The encoder never
@@ -749,6 +804,33 @@ pub(crate) async fn count_human_members(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relay_auth_errors_preserve_stable_codes_for_ui_mapping() {
+        for (code, message) in [
+            ("room_full", "room participant capacity reached"),
+            ("room_ended", "huddle has ended"),
+            ("huddle_relay_draining", "relay is draining; reconnect"),
+            (
+                "huddle_owner_unreachable",
+                "could not reach the huddle owner",
+            ),
+            ("unsupported_version", "unsupported audio protocol version"),
+            ("upgrade_required", "audio protocol upgrade required"),
+        ] {
+            let payload = serde_json::json!({
+                "type": "error",
+                "code": code,
+                "message": message,
+            });
+            let error = format_audio_relay_error(&payload);
+            assert_eq!(error.code(), Some(code));
+            assert_eq!(
+                error.to_string(),
+                format!("audio relay auth error [{code}]: {message}")
+            );
+        }
+    }
 
     #[test]
     fn audio_send_queue_drops_oldest_frame_when_full() {
