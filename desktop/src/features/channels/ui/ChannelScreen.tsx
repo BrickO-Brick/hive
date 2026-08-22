@@ -94,6 +94,7 @@ export function ChannelScreen({
   targetForumReplyId,
   targetMessageEvents,
   targetMessageId,
+  targetThreadRootId,
 }: ChannelScreenProps) {
   const { goHome } = useAppNavigation();
   const { activeCommunity } = useCommunities();
@@ -651,6 +652,7 @@ export function ChannelScreen({
     setThreadReplyTargetId,
     setThreadScrollTargetId,
     targetMessageId,
+    targetThreadRootId,
     timelineMessages,
   });
   useThreadTargetSync({

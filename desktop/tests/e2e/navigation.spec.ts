@@ -445,7 +445,7 @@ test("mixed Buzz permalinks render as chips in the composer", async ({
   await expect(composerInput).not.toContainText("buzz://");
 });
 
-test("message links to visible root messages open the thread panel", async ({
+test("message links to visible root messages highlight them in the main timeline", async ({
   page,
 }) => {
   await page.goto("/");
@@ -639,12 +639,17 @@ test("message links to visible root messages open the thread panel", async ({
   await rootThreadLink.click({ button: "right" });
   await linkMenu.getByRole("button", { name: "Open link" }).click();
 
+  // Root-message links resolve in the main timeline: scroll + highlight the
+  // root, never force-open its (possibly empty) reply panel (block/buzz —
+  // "inbox deep links open an empty thread for top-level messages").
   const threadPanel = page.getByTestId("message-thread-panel");
-  await expect(threadPanel).toBeVisible();
-  await expect(page).toHaveURL(/thread=mock-general-welcome/);
-  await expect(threadPanel.getByTestId("message-thread-head")).toContainText(
-    "Welcome to general",
-  );
+  await expect(threadPanel).not.toBeVisible();
+  await expect(page).not.toHaveURL(/thread=/);
+  const welcomeRow = page
+    .getByTestId("message-timeline")
+    .locator('[data-message-id="mock-general-welcome"]');
+  await expect(welcomeRow).toBeVisible();
+  await expect(welcomeRow).toHaveClass(/route-target-highlight-fade/);
 });
 
 test("direct-message tooltip metadata stays on one physical line", async ({
@@ -742,7 +747,7 @@ test("message links explain when preview metadata is unavailable", async ({
   await expect(unavailableTooltip).toHaveCount(0);
 });
 
-test("message links reopen a closed thread when the same messageId is already in the URL", async ({
+test("root message links re-target the main timeline when the same messageId was already in the URL", async ({
   page,
 }) => {
   await page.goto(
@@ -750,14 +755,20 @@ test("message links reopen a closed thread when the same messageId is already in
   );
   await expect(page.getByTestId("chat-title")).toHaveText("general");
 
+  // A top-level deep link never opens the reply panel — the message is shown
+  // highlighted in its own context instead.
   const threadPanel = page.getByTestId("message-thread-panel");
-  await expect(threadPanel).toBeVisible();
-  await expect(threadPanel.getByTestId("message-thread-head")).toContainText(
-    "Welcome to general",
-  );
-
-  await threadPanel.getByRole("button", { name: "Close panel" }).click();
   await expect(threadPanel).not.toBeVisible();
+  const welcomeRow = page
+    .getByTestId("message-timeline")
+    .locator('[data-message-id="mock-general-welcome"]');
+  await expect(welcomeRow).toBeVisible();
+  await expect(welcomeRow).toHaveClass(/route-target-highlight-fade/);
+
+  // Once the target is reached the messageId param clears; re-activating a
+  // link to the same root must route again instead of being swallowed
+  // (regression guard from the original reopen-a-closed-thread test).
+  await expect(page).not.toHaveURL(/messageId=/);
 
   const link =
     "buzz://message?channel=9a1657ac-f7aa-5db0-b632-d8bbeb6dfb50&id=mock-general-welcome";
@@ -777,24 +788,30 @@ test("message links reopen a closed thread when the same messageId is already in
   await expect(rootThreadLink).toHaveText("general");
   await rootThreadLink.click();
 
-  await expect(threadPanel).toBeVisible();
-  await expect(threadPanel.getByTestId("message-thread-head")).toContainText(
-    "Welcome to general",
-  );
+  await expect(threadPanel).not.toBeVisible();
+  await expect(welcomeRow).toHaveClass(/route-target-highlight-fade/);
 });
 
 test("message deep links survive reload", async ({ page }) => {
-  await page.goto(
-    `/#/channels/${ENGINEERING_CHANNEL_ID}?messageId=mock-engineering-shipped`,
-  );
+  const deepLinkUrl = `/#/channels/${ENGINEERING_CHANNEL_ID}?messageId=mock-engineering-shipped`;
+  await page.goto(deepLinkUrl);
 
   await expect(page.getByTestId("chat-title")).toHaveText("engineering");
   await expect(page.getByTestId("message-timeline")).toContainText(
     "Engineering shipped the desktop build.",
   );
 
+  // Once the target is centered the messageId param is consumed (cleared via
+  // onTargetReached so re-activating the same link is never swallowed), and a
+  // top-level target no longer pins a `thread` param either — so a bare
+  // reload lands on the plain channel.
+  await expect(page).not.toHaveURL(/messageId=/);
   await page.reload();
+  await expect(page.getByTestId("chat-title")).toHaveText("engineering");
 
+  // The deep-link URL itself stays valid: loading it again cold re-resolves
+  // and re-splices the target message.
+  await page.goto(deepLinkUrl);
   await expect(page.getByTestId("chat-title")).toHaveText("engineering");
   await expect(page.getByTestId("message-timeline")).toContainText(
     "Engineering shipped the desktop build.",

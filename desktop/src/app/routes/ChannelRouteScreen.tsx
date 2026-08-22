@@ -234,6 +234,7 @@ export function ChannelRouteScreen({
       targetForumReplyId={targetReplyId}
       targetMessageEvents={targetMessageEvents}
       targetMessageId={targetMessageId}
+      targetThreadRootId={targetThreadRootId}
     />
   );
 }

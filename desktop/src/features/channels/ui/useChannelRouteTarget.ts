@@ -37,6 +37,71 @@ function getThreadRouteTarget(
   return { expandedReplyIds, threadHeadId };
 }
 
+export type RouteTargetPanelAction =
+  | { kind: "none" }
+  | { kind: "main-timeline-only" }
+  | {
+      kind: "open-thread";
+      expandedReplyIds: Set<string>;
+      replyTargetId: string;
+      scrollTargetId: string | null;
+      threadHeadId: string;
+    };
+
+/**
+ * Decides what a message route target does to the thread panel.
+ *
+ * - Top-level target without an explicit `threadRootId` (inbox message rows,
+ *   desktop notifications, search hits, `buzz://` root links): the
+ *   main-timeline scroll + highlight is the entire navigation. Opening the
+ *   reply panel here would show an empty "no replies" pane instead of the
+ *   message in its own context — the exact defect this guards against.
+ * - Top-level target with an explicit `threadRootId` (inbox "Open full
+ *   thread", thread-draft auto-send, channel-activity rows): the surface
+ *   asked for the thread, so the panel opens at that root.
+ * - Reply target: the panel opens at the thread head, scrolled to the reply.
+ * - `none`: not actionable yet (broadcast reply, or the thread head is not
+ *   loaded) — the caller retries when more messages arrive.
+ *
+ * Exported as a pure function so the routing contract is unit-testable
+ * without mounting the hook.
+ */
+export function getRouteTargetPanelAction(
+  targetMessage: TimelineMessage,
+  targetThreadRootId: string | null,
+  messageById: ReadonlyMap<string, TimelineMessage>,
+): RouteTargetPanelAction {
+  if (!targetMessage.parentId) {
+    if (!targetThreadRootId) {
+      return { kind: "main-timeline-only" };
+    }
+    return {
+      kind: "open-thread",
+      expandedReplyIds: new Set(),
+      replyTargetId: targetMessage.id,
+      scrollTargetId: null,
+      threadHeadId: targetMessage.id,
+    };
+  }
+
+  if (isBroadcastReply(targetMessage.tags ?? [])) {
+    return { kind: "none" };
+  }
+
+  const routeTarget = getThreadRouteTarget(targetMessage, messageById);
+  if (!routeTarget) {
+    return { kind: "none" };
+  }
+
+  return {
+    kind: "open-thread",
+    expandedReplyIds: routeTarget.expandedReplyIds,
+    replyTargetId: routeTarget.threadHeadId,
+    scrollTargetId: targetMessage.id,
+    threadHeadId: routeTarget.threadHeadId,
+  };
+}
+
 function getRouteMainTimelineTargetId(
   targetMessageId: string | null,
   targetMessage: TimelineMessage | null,
@@ -63,6 +128,7 @@ export function useChannelRouteTarget({
   setThreadReplyTargetId,
   setThreadScrollTargetId,
   targetMessageId,
+  targetThreadRootId,
   timelineMessages,
 }: {
   activeChannel: Channel | null;
@@ -75,6 +141,7 @@ export function useChannelRouteTarget({
   setThreadReplyTargetId: React.Dispatch<React.SetStateAction<string | null>>;
   setThreadScrollTargetId: React.Dispatch<React.SetStateAction<string | null>>;
   targetMessageId: string | null;
+  targetThreadRootId: string | null;
   timelineMessages: TimelineMessage[];
 }) {
   const timelineMessageById = React.useMemo(
@@ -114,31 +181,21 @@ export function useChannelRouteTarget({
       return;
     }
 
-    if (!targetMessage.parentId) {
-      closeAgentSession();
-      // Root message links should open the reply panel for that root. The
-      // timeline scroll/highlight target alone is not enough: root links have
-      // no parent/thread metadata, so the reply-only branch below cannot infer
-      // a thread head.
-      setProfilePanelPubkey(null, { replace: true });
-      setEditTargetId(null);
-      setOpenThreadHeadId(targetMessage.id, { replace: true });
-      setThreadReplyTargetId(targetMessage.id);
-      setThreadScrollTargetId(null);
-      setExpandedThreadReplyIds(new Set());
-      handledThreadRouteTargetRef.current = targetKey;
-      return;
-    }
-
-    if (isBroadcastReply(targetMessage.tags ?? [])) {
-      return;
-    }
-
-    const routeTarget = getThreadRouteTarget(
+    const action = getRouteTargetPanelAction(
       targetMessage,
+      targetThreadRootId,
       timelineMessageById,
     );
-    if (!routeTarget) {
+    if (action.kind === "none") {
+      return;
+    }
+
+    if (action.kind === "main-timeline-only") {
+      // Top-level target with no requested thread: the main-timeline
+      // scroll/highlight (mainTimelineTargetMessageId) is the whole
+      // navigation. Mark handled so a later timeline update cannot
+      // re-process this target.
+      handledThreadRouteTargetRef.current = targetKey;
       return;
     }
 
@@ -147,10 +204,10 @@ export function useChannelRouteTarget({
     // back should leave the deep link, not strip the panel from it.
     setProfilePanelPubkey(null, { replace: true });
     setEditTargetId(null);
-    setOpenThreadHeadId(routeTarget.threadHeadId, { replace: true });
-    setThreadReplyTargetId(routeTarget.threadHeadId);
-    setThreadScrollTargetId(targetMessageId);
-    setExpandedThreadReplyIds(routeTarget.expandedReplyIds);
+    setOpenThreadHeadId(action.threadHeadId, { replace: true });
+    setThreadReplyTargetId(action.replyTargetId);
+    setThreadScrollTargetId(action.scrollTargetId);
+    setExpandedThreadReplyIds(action.expandedReplyIds);
     handledThreadRouteTargetRef.current = targetKey;
   }, [
     activeChannel,
@@ -163,6 +220,7 @@ export function useChannelRouteTarget({
     setThreadReplyTargetId,
     setThreadScrollTargetId,
     targetMessageId,
+    targetThreadRootId,
     timelineMessageById,
   ]);
 
