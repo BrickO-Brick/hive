@@ -554,7 +554,10 @@ export const ChannelPane = React.memo(function ChannelPane({
   // `threadViewMode`, so choosing a layout here chooses it for threads too.
   const agentSessionLayoutProps = getThreadPanelLayout({
     headerLeading: useSplitAuxiliaryPane ? (
-      <ThreadViewModeToggle onChange={changeAgentViewMode} />
+      <ThreadViewModeToggle
+        onChange={changeAgentViewMode}
+        surfaceLabel="activity"
+      />
     ) : undefined,
     isFocusDrawer: useFocusAgentDrawer,
     isSinglePanelView,

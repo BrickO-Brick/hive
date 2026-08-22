@@ -171,6 +171,7 @@ test("the agent work viewer shares the thread's focus drawer and dismissal", asy
   await openAgentsChannel(page);
 
   const panel = await openAgentViewer(page);
+  await expect(page).toHaveURL(new RegExp(`agentSession=${AGENT_PUBKEY}`));
 
   // The viewer is the drawer's occupant, named for itself rather than "Thread".
   const channel = page.getByTestId("channel-drop-zone");
@@ -187,11 +188,32 @@ test("the agent work viewer shares the thread's focus drawer and dismissal", asy
   await expect(panel.getByTestId("message-input")).toHaveCount(0);
 
   const body = page.getByTestId("agent-session-transcript-body");
+  const readingColumn = body.locator(":scope > div").nth(1);
+  await expect
+    .poll(async () => {
+      const [drawerBox, columnBox] = await Promise.all([
+        drawer.boundingBox(),
+        readingColumn.boundingBox(),
+      ]);
+      if (!drawerBox || !columnBox) return null;
+      return {
+        centered:
+          Math.abs(
+            columnBox.x +
+              columnBox.width / 2 -
+              (drawerBox.x + drawerBox.width / 2),
+          ) <= 1,
+        withinReadingMeasure: columnBox.width <= 880,
+      };
+    })
+    .toEqual({ centered: true, withinReadingMeasure: true });
   await scrollAwayFromBottom(body);
 
-  // focus → split, driven by the shared toggle in the viewer's header.
+  // focus → split, driven by the shared toggle in the viewer's header. Its
+  // accessible name describes the viewer, not the thread that shares the
+  // preference.
   await page
-    .getByRole("button", { name: "Show thread beside channel" })
+    .getByRole("button", { name: "Show activity beside channel" })
     .click();
   await expect(drawer).toHaveCount(0);
   await expect(channel).not.toHaveAttribute("inert", "");
@@ -200,7 +222,7 @@ test("the agent work viewer shares the thread's focus drawer and dismissal", asy
 
   // split → focus: the transcript re-pins to latest on the return trip too.
   await scrollAwayFromBottom(body);
-  await page.getByRole("button", { name: "Expand thread" }).click();
+  await page.getByRole("button", { name: "Expand activity" }).click();
   await expect(drawer).toBeVisible();
   await expect(channel).toHaveAttribute("inert", "");
   await expectSnappedToLatest(page, body);
@@ -209,6 +231,19 @@ test("the agent work viewer shares the thread's focus drawer and dismissal", asy
   // would stay up with the viewer still inside it.
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("focus-thread-drawer-overlay")).toHaveCount(0);
+  await expect(page.getByTestId("agent-session-thread-panel")).toHaveCount(0);
+  await expect(page).not.toHaveURL(/agentSession=/);
+  await expect(channel).not.toHaveAttribute("inert", "");
+
+  // Browser history restores the channel-scoped viewer and its persisted focus
+  // presentation; closing it again must remove only the viewer URL state.
+  await page.goBack();
+  await expect(page.getByTestId("agent-session-thread-panel")).toBeVisible();
+  await expect(drawer).toBeVisible();
+  await expect(page.getByTestId("agent-session-scope-label")).toHaveText(
+    "Activity · #agents",
+  );
+  await page.goForward();
   await expect(page.getByTestId("agent-session-thread-panel")).toHaveCount(0);
   await expect(channel).not.toHaveAttribute("inert", "");
 
