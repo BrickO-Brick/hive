@@ -1,7 +1,10 @@
 import * as React from "react";
 
 import type { TranscriptDisplayBlock } from "./agentSessionTranscriptGrouping";
-import { resolveTranscriptToolRunGroupKeys } from "./agentSessionToolRunGroupKey";
+import {
+  resolveTranscriptToolRunGroupKeys,
+  scopeToolRunGroupKey,
+} from "./agentSessionToolRunGroupKey";
 import {
   readToolRunGroupIdentityTable,
   writeToolRunGroupIdentityTable,
@@ -37,7 +40,12 @@ export function useResolvedToolRunGroupKeys(
       readToolRunGroupIdentityTable(scope),
     );
     writeToolRunGroupIdentityTable(scope, table);
-    return keysBySummaryId;
+    return new Map(
+      [...keysBySummaryId].map(([summaryId, groupKey]) => [
+        summaryId,
+        scopeToolRunGroupKey(scope, groupKey),
+      ]),
+    );
   }, [blocks, scope]);
 }
 

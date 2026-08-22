@@ -174,6 +174,18 @@ export type TranscriptToolRunGroupKeyResolution = {
 };
 
 /**
+ * Scope reader state to one rendered transcript.
+ *
+ * Tool-call ids are agent-supplied and can repeat across agents, while a channel
+ * can render the full viewer and compact preview together. A length-prefixed
+ * scope keeps those surfaces independent without making position part of the
+ * group's identity.
+ */
+export function scopeToolRunGroupKey(scope: string, groupKey: string): string {
+  return `transcript:${scope.length}:${scope}:${groupKey}`;
+}
+
+/**
  * Resolve durable identities for a whole transcript pass.
  *
  * One pass over all groups (rather than per-card resolution) is what lets a

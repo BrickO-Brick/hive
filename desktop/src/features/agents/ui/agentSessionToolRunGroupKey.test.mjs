@@ -5,6 +5,7 @@ import {
   getToolRunGroupKey,
   getToolRunGroupMemberKeys,
   resolveToolRunGroupIdentities,
+  scopeToolRunGroupKey,
 } from "./agentSessionToolRunGroupKey.ts";
 
 const timestamp = "2026-06-14T22:20:23.000Z";
@@ -117,6 +118,24 @@ test("member keys cover every leaf, not just the first", () => {
       items: [tool("tool:ch1:call-1"), tool("tool:ch1:call-2")],
     }),
     ["group:turn-1:tool:ch1:call-1", "group:turn-1:tool:ch1:call-2"],
+  );
+});
+
+test("reader state keys are isolated per transcript scope", () => {
+  const groupKey = "group:turn-1:tool:channel:call-1";
+  const fullViewer = scopeToolRunGroupKey("agent:channel:default", groupKey);
+  const compactPreview = scopeToolRunGroupKey(
+    "agent:channel:compactPreview",
+    groupKey,
+  );
+  assert.notEqual(fullViewer, compactPreview);
+  assert.match(fullViewer, /group:turn-1:tool:channel:call-1$/);
+});
+
+test("scope boundaries cannot collide", () => {
+  assert.notEqual(
+    scopeToolRunGroupKey("a:b", "c"),
+    scopeToolRunGroupKey("a", "b:c"),
   );
 });
 
