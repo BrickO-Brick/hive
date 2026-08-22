@@ -12,6 +12,7 @@ import { UpdaterProvider } from "@/features/settings/hooks/UpdaterProvider";
 import { migrateLegacyCommunityStorageBeforeRender } from "@/features/communities/legacyCommunityStorage";
 import { CommunitiesProvider } from "@/features/communities/useCommunities";
 import { huddleWindowChannelId } from "@/features/huddle/lib/huddleWindow";
+import { isAgentActivityWindow } from "@/features/agents/lib/agentActivityWindow";
 import { CommunityOnboardingProvider } from "@/features/onboarding/communityOnboarding";
 import { ThemeProvider } from "@/shared/theme/ThemeProvider";
 import { EmojiBurstProvider } from "@/shared/ui/EmojiBurstProvider";
@@ -86,7 +87,9 @@ function renderApp() {
       <RootErrorBoundary>
         <CommunitiesProvider>
           <CommunityOnboardingProvider
-            enabled={huddleWindowChannelId() === null}
+            enabled={
+              huddleWindowChannelId() === null && !isAgentActivityWindow()
+            }
           >
             <ThemeProvider defaultTheme="buzz">
               <TooltipProvider>

@@ -1,4 +1,5 @@
 import * as React from "react";
+import { toast } from "sonner";
 import { useAppShell } from "@/app/AppShellContext";
 import { useAppNavigation } from "@/app/navigation/useAppNavigation";
 import { useActiveChannelHeader } from "@/features/channels/useActiveChannelHeader";
@@ -57,6 +58,8 @@ import type { TimelineMessage } from "@/features/messages/types";
 import { useUsersBatchQuery } from "@/features/profile/hooks";
 import { useRelaySelfQuery } from "@/features/moderation/hooks";
 import type { RelayEvent, RespondToMode } from "@/shared/api/types";
+import { openAgentActivityWindow } from "@/shared/api/agentActivityWindow";
+import { isAgentActivityWindow } from "@/features/agents/lib/agentActivityWindow";
 import { ChannelScreenLoadingFallback } from "@/features/channels/ui/ChannelScreenLoadingFallback";
 import {
   useHuddleChannelMessages,
@@ -583,6 +586,29 @@ export function ChannelScreen({
     setThreadReplyTargetId,
     setThreadScrollTargetId,
   });
+  const handleOpenAgentActivity = React.useCallback(
+    (pubkey: string, channelId?: string | null) => {
+      const destinationChannelId = channelId ?? activeChannelId;
+      if (!destinationChannelId) return;
+
+      if (isAgentActivityWindow()) {
+        handleOpenAgentSession(pubkey, destinationChannelId);
+        return;
+      }
+
+      void openAgentActivityWindow(destinationChannelId, pubkey)
+        .then((openedNativeWindow) => {
+          if (!openedNativeWindow) {
+            handleOpenAgentSession(pubkey, destinationChannelId);
+          }
+        })
+        .catch((error) => {
+          console.error("Failed to open agent activity window:", error);
+          toast.error("Couldn't open the agent activity window.");
+        });
+    },
+    [activeChannelId, handleOpenAgentSession],
+  );
   const { handleOpenProfilePanel, handleCloseProfilePanel, handleOpenDm } =
     useChannelProfilePanel({
       closeAgentSession: handleCloseAgentSession,
@@ -772,7 +798,7 @@ export function ChannelScreen({
     ],
   );
   return (
-    <AgentSessionProvider onOpenAgentSession={handleOpenAgentSession}>
+    <AgentSessionProvider onOpenAgentSession={handleOpenAgentActivity}>
       <ProfilePanelProvider onOpenProfilePanel={handleOpenProfilePanel}>
         <WelcomeAgentCreateDialog
           guideName={welcomeGuideAgent?.name ?? "your welcome guide"}
@@ -911,7 +937,7 @@ export function ChannelScreen({
                   onMarkUnread={handleMessageMarkUnread}
                   onMarkRead={handleMessageMarkRead}
                   onExpandThreadReplies={handleExpandThreadReplies}
-                  onOpenAgentSession={handleOpenAgentSession}
+                  onOpenAgentSession={handleOpenAgentActivity}
                   onOpenDm={handleOpenDm}
                   onOpenProfilePanel={handleOpenProfilePanel}
                   onResetThreadPanelWidth={handleThreadPanelWidthReset}
@@ -969,7 +995,7 @@ export function ChannelScreen({
           currentPubkey={currentPubkey}
           open={isMembersSidebarOpen}
           onOpenChange={setIsMembersSidebarOpen}
-          onViewActivity={handleOpenAgentSession}
+          onViewActivity={handleOpenAgentActivity}
           relayUrl={activeCommunity?.relayUrl}
         />
       </ProfilePanelProvider>

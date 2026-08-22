@@ -5,6 +5,7 @@ import { useAppNavigation } from "@/app/navigation/useAppNavigation";
 import { useChannelReferences } from "@/features/channels/openChannelDirectory";
 import { useAgentSession } from "@/shared/context/AgentSessionContext";
 import type { Channel } from "@/shared/api/types";
+import { openAgentActivityWindow } from "@/shared/api/agentActivityWindow";
 import { normalizePubkey } from "@/shared/lib/pubkey";
 import { getAgentWorkingState } from "./agentWorkingSignal";
 import { useRelayAgentsQuery } from "./hooks";
@@ -54,23 +55,11 @@ export function resolveOpenableActivityChannelId({
 }
 
 /**
- * Universal ingress for opening an agent's activity pane.
+ * Universal ingress for opening an agent's activity feed.
  *
- * Inside a channel screen the AgentSessionContext handler opens the pane in
- * place. Everywhere else (agents page, home profile panel, popovers reached
- * from non-channel routes) there is no provider, so we navigate to a channel
- * with the `agentSession` search param instead — preferring a channel the
- * agent is currently working in (unified working signal), then falling back
- * to the first channel the agent is a member of.
- *
- * Navigation only ever targets channels the viewer can actually open
- * (joined, or open visibility). Owner-global ingestion means the working
- * signal can report activity in rooms the viewer can't access; deep-linking
- * there would land on a screen they can't read. In that case we surface a
- * safe warning instead of navigating — no channel content, no trap-door.
- *
- * This replaces the old behavior where "View activity log" silently
- * disappeared on routes without an AgentSessionProvider.
+ * The selected channel is still resolved and authorized in the current
+ * webview, but Tauri presents the existing channel-scoped feed in a dedicated
+ * companion window. Browser builds keep the previous in-app route fallback.
  */
 export function useOpenAgentActivity() {
   const { onOpenAgentSession } = useAgentSession();
@@ -149,6 +138,22 @@ export function useOpenAgentActivity() {
     [areChannelsReady, onOpenAgentSession, resolveChannelId],
   );
 
+  const openActivityDestination = React.useCallback(
+    (pubkey: string, channelId: string): void => {
+      void openAgentActivityWindow(channelId, pubkey)
+        .then((openedNativeWindow) => {
+          if (!openedNativeWindow) {
+            void goChannel(channelId, { agentSession: pubkey });
+          }
+        })
+        .catch((error) => {
+          console.error("Failed to open agent activity window:", error);
+          toast.error("Couldn't open the agent activity window.");
+        });
+    },
+    [goChannel],
+  );
+
   const openAgentActivity = React.useCallback(
     (pubkey: string, options?: { channelId?: string | null }): boolean => {
       // An explicit channel target (e.g. clicking a "Working in #channel"
@@ -162,22 +167,18 @@ export function useOpenAgentActivity() {
             toast.warning(INACCESSIBLE_ACTIVITY_MESSAGE);
             return false;
           }
-          void goChannel(options.channelId, { agentSession: pubkey });
+          openActivityDestination(pubkey, options.channelId);
           return true;
         }
         // A channel-scoped AgentSessionProvider belongs to the channel view
         // already authorized by its route. Do not reject its own current
         // channel while the member/reference query is still settling.
-        onOpenAgentSession(pubkey, options.channelId);
-        return true;
-      }
-      if (onOpenAgentSession) {
-        onOpenAgentSession(pubkey);
+        openActivityDestination(pubkey, options.channelId);
         return true;
       }
       const channelId = resolveChannelId(pubkey);
       if (channelId) {
-        void goChannel(channelId, { agentSession: pubkey });
+        openActivityDestination(pubkey, channelId);
         return true;
       }
       // The agent may be working somewhere, just nowhere the viewer can open.
@@ -188,7 +189,12 @@ export function useOpenAgentActivity() {
       }
       return false;
     },
-    [findOpenableChannel, goChannel, onOpenAgentSession, resolveChannelId],
+    [
+      findOpenableChannel,
+      onOpenAgentSession,
+      openActivityDestination,
+      resolveChannelId,
+    ],
   );
 
   return { canOpenAgentActivity, openAgentActivity };

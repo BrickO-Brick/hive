@@ -44,6 +44,7 @@ import {
 } from "@/features/notifications/hooks";
 import { PreventSleepProvider } from "@/features/agents/usePreventSleep";
 import { requestOpenCreateAgent } from "@/features/agents/openCreateAgentEvent";
+import { isAgentActivityWindow } from "@/features/agents/lib/agentActivityWindow";
 import { useAgentsDataRefresh } from "@/features/agents/lib/useAgentsDataRefresh";
 import { useManagedAgentRuntimeReconciliation } from "@/features/agents/useManagedAgentRuntimeReconciliation";
 import { useAutoRestartPolicy } from "@/features/agents/lib/useAutoRestartPolicy";
@@ -125,7 +126,10 @@ export function AppShell() {
     showHuddleInMainApp,
     viewHuddleChannel,
   } = useHuddlePresentation();
-  const hasCommunityRail = communitiesHook.communities.length > 1;
+  const isActivityWindow = isAgentActivityWindow();
+  const isCompanionWindow = isHuddleRoom || isActivityWindow;
+  const hasCommunityRail =
+    communitiesHook.communities.length > 1 && !isCompanionWindow;
   const addCommunityDialog = useAddCommunityDialogState();
   const [isChannelManagementOpen, setIsChannelManagementOpen] =
     React.useState(false);
@@ -691,7 +695,7 @@ export function AppShell() {
   });
   return (
     <PreventSleepProvider>
-      {!isHuddleRoom ? (
+      {!isCompanionWindow ? (
         <AppShellTrayMenu
           channels={channels}
           goChannel={goChannel}
@@ -743,6 +747,7 @@ export function AppShell() {
             isCompanionOpen={isHuddleCompanionOpen}
             isDrawerOpen={isHuddleDrawerOpen}
             isRoom={isHuddleRoom}
+            isPassiveWindow={isActivityWindow}
             onCompanionOpen={handleHuddleCompanionOpen}
             onHuddleStartPendingChange={handleHuddleStartPendingChange}
             onHuddleStarted={handleHuddleStarted}
@@ -750,7 +755,7 @@ export function AppShell() {
             onViewHuddleChannel={viewHuddleChannel}
             onVisibilityChange={handleHuddleVisibilityChange}
           >
-            {hasCommunityRail && !isHuddleRoom ? (
+            {hasCommunityRail ? (
               <CommunityRail
                 activeCommunityId={communitiesHook.activeCommunity?.id ?? null}
                 onAddCommunity={addCommunityDialog.openDialog}
@@ -766,7 +771,7 @@ export function AppShell() {
             >
               <AppProfilePanelProvider>
                 <AppWorkflowEditorOverlayProvider>
-                  {!settingsOpen && !isHuddleRoom ? (
+                  {!settingsOpen && !isCompanionWindow ? (
                     <AppTopChrome
                       canGoBack={canGoBack}
                       canGoForward={canGoForward}
@@ -817,7 +822,7 @@ export function AppShell() {
                     </div>
                   ) : (
                     <div className="relative flex min-h-0 flex-1 overflow-visible">
-                      {!isHuddleRoom ? (
+                      {!isCompanionWindow ? (
                         <AppSidebar
                           activeCommunity={communitiesHook.activeCommunity}
                           channels={sidebarChannels}
@@ -935,7 +940,7 @@ export function AppShell() {
                           <Outlet />
                         </AppShellChannelSurface>
                       </TerminalContextOverrideProvider>
-                      {!isHuddleRoom ? (
+                      {!isCompanionWindow ? (
                         <RelayConnectionOverlay
                           card={relayConnectionCard}
                           errorMessage={channelsErrorMessage}
