@@ -13,7 +13,10 @@ import Foundation
 /// The opaque gateway capability and binding metadata needed by a later lease publisher.
 public struct BuzzPushEndpointGrantRecord: Codable, Equatable, Sendable {
   public let relayOrigin: String
+  /// NIP-PL delegation key selected from the relay push descriptor.
   public let relayPubkey: String
+  /// Optional NIP-11 `self` key that verifies relay-authored NIP-29 metadata.
+  public let relayMetadataPubkey: String?
   /// Gateway installation authority. This is distinct from [installationId],
   /// which is the unlinkable per-relay-origin NIP-PL lease address.
   public let gatewayInstallationHandle: String?
@@ -28,6 +31,7 @@ public struct BuzzPushEndpointGrantRecord: Codable, Equatable, Sendable {
   public init(
     relayOrigin: String,
     relayPubkey: String,
+    relayMetadataPubkey: String? = nil,
     gatewayInstallationHandle: String? = nil,
     installationId: String,
     endpointGrant: String,
@@ -40,6 +44,7 @@ public struct BuzzPushEndpointGrantRecord: Codable, Equatable, Sendable {
     precondition(generation > 0, "Endpoint grant generation must be positive")
     self.relayOrigin = relayOrigin
     self.relayPubkey = relayPubkey
+    self.relayMetadataPubkey = relayMetadataPubkey
     self.gatewayInstallationHandle = gatewayInstallationHandle
     self.installationId = installationId
     self.endpointGrant = endpointGrant
@@ -422,7 +427,8 @@ public final class BuzzDevPushEnrollmentDriver {
   ) async throws -> BuzzPushEndpointGrantRecord {
     precondition(!deviceToken.isEmpty, "The APNs device token must not be empty")
     let relayOrigin = try Self.relayOrigin(relayURL)
-    let relayPubkey = try await fetchCurrentRelayPushPubkey(from: relayOrigin.url)
+    let relayKeys = try await fetchCurrentRelayKeys(from: relayOrigin.url)
+    let relayPubkey = relayKeys.pushPubkey
     let endpoint = Self.lowercaseHex(deviceToken)
     let endpointHash = Self.lowercaseHex(Data(SHA256.hash(data: deviceToken)))
     let nowSeconds = Int64(now().timeIntervalSince1970)
@@ -437,7 +443,24 @@ public final class BuzzDevPushEnrollmentDriver {
       current.endpointEpoch == Self.endpointEpoch,
       current.expiresAt > nowSeconds + 300
     {
-      return current
+      guard current.relayMetadataPubkey != relayKeys.metadataPubkey else {
+        return current
+      }
+      let refreshed = BuzzPushEndpointGrantRecord(
+        relayOrigin: current.relayOrigin,
+        relayPubkey: current.relayPubkey,
+        relayMetadataPubkey: relayKeys.metadataPubkey,
+        gatewayInstallationHandle: current.gatewayInstallationHandle,
+        installationId: current.installationId,
+        endpointGrant: current.endpointGrant,
+        endpointHash: current.endpointHash,
+        appProfile: current.appProfile,
+        endpointEpoch: current.endpointEpoch,
+        generation: current.generation,
+        expiresAt: current.expiresAt
+      )
+      try store.save(refreshed)
+      return refreshed
     }
 
     // One gateway delegation is scoped to an installation and relay key, not
@@ -453,6 +476,7 @@ public final class BuzzDevPushEnrollmentDriver {
       let record = BuzzPushEndpointGrantRecord(
         relayOrigin: relayOrigin.text,
         relayPubkey: relayPubkey,
+        relayMetadataPubkey: relayKeys.metadataPubkey,
         gatewayInstallationHandle: sharedGrant.gatewayInstallationHandle,
         installationId: try makeInstallationId(),
         endpointGrant: sharedGrant.endpointGrant,
@@ -565,6 +589,7 @@ public final class BuzzDevPushEnrollmentDriver {
     let record = BuzzPushEndpointGrantRecord(
       relayOrigin: relayOrigin.text,
       relayPubkey: relayPubkey,
+      relayMetadataPubkey: relayKeys.metadataPubkey,
       gatewayInstallationHandle: installationHandle,
       installationId: try storedForOrigin?.installationId ?? makeInstallationId(),
       endpointGrant: endpointGrant,
@@ -666,7 +691,7 @@ public final class BuzzDevPushEnrollmentDriver {
     return response.endpointGrant
   }
 
-  private func fetchCurrentRelayPushPubkey(from relayOrigin: URL) async throws -> String {
+  private func fetchCurrentRelayKeys(from relayOrigin: URL) async throws -> RelayKeys {
     var request = URLRequest(url: relayOrigin)
     request.httpMethod = "GET"
     request.setValue("application/nostr+json", forHTTPHeaderField: "Accept")
@@ -679,10 +704,18 @@ public final class BuzzDevPushEnrollmentDriver {
       throw BuzzDevPushEnrollmentError.invalidRelayDescriptor
     }
     let current = document.push.keys.filter(\.current)
-    guard current.count == 1, Self.isLowercaseHexPubkey(current[0].pubkey) else {
+    guard current.count == 1,
+      Self.isLowercaseHexPubkey(current[0].pubkey)
+    else {
       throw BuzzDevPushEnrollmentError.invalidRelayDescriptor
     }
-    return current[0].pubkey
+    let metadataPubkey = document.relaySelf.flatMap {
+      Self.isLowercaseHexPubkey($0) ? $0 : nil
+    }
+    return RelayKeys(
+      pushPubkey: current[0].pubkey,
+      metadataPubkey: metadataPubkey
+    )
   }
 
   private func post<Request: Encodable, Response: Decodable>(
@@ -869,5 +902,22 @@ private struct RelayInformation: Decodable {
     }
     let keys: [Key]
   }
+  let relaySelf: String?
   let push: Push
+
+  enum CodingKeys: String, CodingKey {
+    case relaySelf = "self"
+    case push
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    push = try container.decode(Push.self, forKey: .push)
+    relaySelf = try? container.decode(String.self, forKey: .relaySelf)
+  }
+}
+
+private struct RelayKeys {
+  let pushPubkey: String
+  let metadataPubkey: String?
 }

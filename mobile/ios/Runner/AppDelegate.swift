@@ -22,6 +22,9 @@ import UIKit
     private var appGroupIdentifier: String? {
       Bundle.main.object(forInfoDictionaryKey: "BuzzAppGroupIdentifier") as? String
     }
+    private lazy var pushPresentationCacheBridge = BuzzPushPresentationCacheBridge(
+      appGroupIdentifier: appGroupIdentifier
+    )
   #endif
   private var qrScannerChannel: FlutterMethodChannel?
   private var inlinePhotoPickerSupportChannel: FlutterMethodChannel?
@@ -278,6 +281,9 @@ import UIKit
       _ call: FlutterMethodCall,
       result: @escaping FlutterResult
     ) {
+      if pushPresentationCacheBridge.handle(call, result: result) {
+        return
+      }
       switch call.method {
       case "requestAuthorization":
         requestPushAuthorization(result: result)
@@ -461,10 +467,42 @@ import UIKit
           domain: "BuzzPush", code: 2,
           userInfo: [NSLocalizedDescriptionKey: "Missing App Group container"])
       }
+      // Channel-name enrichment is optional presentation state. A damaged or
+      // unavailable grant cache must not block the core NSE snapshot/key update.
+      let grants = (try? endpointGrantStore.records()) ?? []
+      let enriched = communities.map { community -> [String: Any] in
+        var community = community
+        guard let relayURL = community["relayUrl"] as? String,
+          let relayMetadataPubkey = Self.pushRelayMetadataPubkey(
+            relayURL: relayURL,
+            grants: grants
+          )
+        else { return community }
+        community["relayMetadataPubkey"] = relayMetadataPubkey
+        return community
+      }
       let data = try JSONSerialization.data(
-        withJSONObject: ["communities": communities], options: [.sortedKeys])
+        withJSONObject: ["communities": enriched], options: [.sortedKeys])
       let destination = container.appendingPathComponent("push-communities.json")
       try data.write(to: destination, options: [.atomic])
+      pushPresentationCacheBridge.retainCommunities(
+        Set(enriched.compactMap { $0["id"] as? String })
+      )
+    }
+
+    static func pushRelayMetadataPubkey(
+      relayURL: String,
+      grants: [BuzzPushEndpointGrantRecord]
+    ) -> String? {
+      guard let origin = BuzzPushPresentationCacheStore.canonicalRelayOrigin(relayURL) else {
+        return nil
+      }
+      return grants.filter {
+        $0.appProfile == BuzzDevPushEnrollmentDriver.appProfile
+          && BuzzPushPresentationCacheStore.canonicalRelayOrigin($0.relayOrigin) == origin
+      }.max {
+        $0.generation < $1.generation
+      }?.relayMetadataPubkey
     }
   #endif
 

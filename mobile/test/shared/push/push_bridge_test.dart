@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:buzz/shared/community/community.dart';
 import 'package:buzz/shared/deeplink/deep_link.dart';
 import 'package:buzz/shared/push/push_bridge.dart';
 import 'package:buzz/shared/relay/relay_provider.dart';
@@ -18,6 +19,7 @@ void main() {
     pushAuthorizationGranted.value = null;
     pushEndpointGrants.value = const [];
     pushEndpointGrantError.value = null;
+    pushCommunitySnapshotError.value = null;
     pendingPushNotificationLink.value = null;
     installBuzzPushMethodHandler();
   });
@@ -85,6 +87,7 @@ void main() {
       debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
       final methods = <String>[];
       final enrollmentArguments = <Object?>[];
+      final snapshotArguments = <Object?>[];
       final messenger =
           TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
       messenger.setMockMethodCallHandler(_channel, (call) async {
@@ -96,6 +99,10 @@ void main() {
         if (call.method == 'endpointGrants') {
           return [_grantMap('new-grant')];
         }
+        if (call.method == 'saveCommunitySnapshot') {
+          snapshotArguments.add(call.arguments);
+          return null;
+        }
         fail('Unexpected method ${call.method}');
       });
 
@@ -106,6 +113,15 @@ void main() {
       final secondGrant = await enrollBuzzPush(
         'wss://relay.example/',
         'https://gateway-two.example/',
+        communitiesForSnapshotRefresh: [
+          Community(
+            id: 'community-id',
+            name: 'Community',
+            relayUrl: 'wss://relay.example/',
+            pubkey: 'd' * 64,
+            addedAt: DateTime.fromMillisecondsSinceEpoch(0),
+          ),
+        ],
       );
 
       expect(firstGrant.endpointGrant, 'new-grant');
@@ -125,6 +141,24 @@ void main() {
         'endpointGrants',
         'enrollPush',
         'endpointGrants',
+        'saveCommunitySnapshot',
+      ]);
+      expect(snapshotArguments, [
+        {
+          'communities': [
+            {
+              'id': 'community-id',
+              'name': 'Community',
+              'relayUrl': 'wss://relay.example/',
+              'pubkey': 'd' * 64,
+              'pushSubscriptionState': {
+                'authority': 'desired',
+                'desired': <Object?>[],
+              },
+            },
+          ],
+          'signingKeys': <String, String>{},
+        },
       ]);
       expect(pushEndpointGrants.value.single.endpointGrant, 'new-grant');
     },

@@ -15,8 +15,9 @@ BUZZ_DEVELOPMENT_TEAM = JMTDPW9CG3
 // dogfood builds opt in by including PushEnabled.xcconfig from the ignored
 // AppOverrides.xcconfig file.
 BUZZ_PUSH_ENABLED = NO
+BUZZ_INFO_PLIST = Runner/Info.plist
 BUZZ_CODE_SIGN_ENTITLEMENTS = Runner/Runner.entitlements
-EXCLUDED_SOURCE_FILE_NAMES = NotificationService.appex PushNativeState.swift PushEndpointGrantStore.swift
+EXCLUDED_SOURCE_FILE_NAMES = NotificationService.appex PushNativeState.swift PushEndpointGrantStore.swift PushPresentationCacheBridge.swift
 
 // Worktree-aware debug identity (gitignored, written by
 // scripts/mobile-worktree-overrides.sh): a per-worktree bundle identifier

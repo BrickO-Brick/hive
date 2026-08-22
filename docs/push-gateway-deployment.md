@@ -150,6 +150,11 @@ profiles for both `xyz.block.buzz.dogfood.mobile` and
 `xyz.block.buzz.dogfood.mobile.NotificationService`; an app-only profile does
 not provision the extension. The App Store builder must continue omitting the
 overlay and extension profile until that rollout is separately approved.
+Before enabling rich message presentation, enable Apple's Communication
+Notifications capability on the parent dogfood App ID and regenerate its app
+provisioning profile. The extension profile does not need that capability.
+Apply the same parent-App-ID prerequisite to the eventual App Store rollout;
+updating Block Apple portal records is a separately authorized release step.
 
 For each evaluation cohort, measure relay receipt-to-match, wake queue, relay-to-
 gateway, and gateway-to-APNs latencies from the histograms above. Track the

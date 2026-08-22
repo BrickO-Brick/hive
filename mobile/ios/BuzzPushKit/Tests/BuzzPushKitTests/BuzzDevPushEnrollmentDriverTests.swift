@@ -49,6 +49,7 @@ final class BuzzDevPushEnrollmentDriverTests: XCTestCase {
           request,
           status: 200,
           json: [
+            "self": Self.relayPubkey,
             "push": [
               "keys": [
                 ["id": "current", "pubkey": Self.relayPubkey, "current": true]
@@ -143,6 +144,7 @@ final class BuzzDevPushEnrollmentDriverTests: XCTestCase {
       BuzzPushEndpointGrantRecord(
         relayOrigin: "wss://relay.example",
         relayPubkey: Self.relayPubkey,
+        relayMetadataPubkey: Self.relayPubkey,
         gatewayInstallationHandle: Self.installationHandle,
         installationId: Self.installationId,
         endpointGrant: "opaque-grant",
@@ -167,7 +169,10 @@ final class BuzzDevPushEnrollmentDriverTests: XCTestCase {
         return Self.response(
           request,
           status: 200,
-          json: ["push": ["keys": [["pubkey": Self.relayPubkey, "current": true]]]]
+          json: [
+            "self": Self.relayPubkey,
+            "push": ["keys": [["pubkey": Self.relayPubkey, "current": true]]],
+          ]
         )
       case ("POST", "http://push.example/v1/installations/challenges"):
         challengeCount += 1
@@ -211,7 +216,7 @@ final class BuzzDevPushEnrollmentDriverTests: XCTestCase {
   }
 
   #if DEBUG
-    func testDevelopmentAttestationMatchesGatewayBypassShape() async throws {
+  func testDevelopmentAttestationMatchesGatewayBypassShape() async throws {
       let entropy = Data(repeating: 0xAB, count: 32)
       let provider = BuzzDevAppAttestProvider(randomBytes: { entropy })
       let prepared = try await provider.prepareAttestation()
@@ -228,6 +233,17 @@ final class BuzzDevPushEnrollmentDriverTests: XCTestCase {
       XCTAssertEqual(assertion, Self.assertion)
     }
   #endif
+
+  func testLegacyGrantDecodesWithoutMetadataAuthority() throws {
+    let data = Data(
+      #"{"relayOrigin":"wss://relay.example","relayPubkey":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","installationId":"000102030405060708090a0b0c0d0e0f","endpointGrant":"opaque","endpointHash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","appProfile":"buzz-ios-dogfood","endpointEpoch":1,"generation":1,"expiresAt":1752624000}"#.utf8
+    )
+
+    let record = try JSONDecoder().decode(BuzzPushEndpointGrantRecord.self, from: data)
+
+    XCTAssertEqual(record.relayPubkey, Self.relayPubkey)
+    XCTAssertNil(record.relayMetadataPubkey)
+  }
 
   func testRealAppAttestFailsLoudlyWhenUnsupported() async throws {
     let service = RecordingDCAppAttestService(isSupported: false)
@@ -464,6 +480,7 @@ final class BuzzDevPushEnrollmentDriverTests: XCTestCase {
     let existing = BuzzPushEndpointGrantRecord(
       relayOrigin: "wss://relay.example",
       relayPubkey: Self.relayPubkey,
+      relayMetadataPubkey: Self.relayPubkey,
       installationId: Self.installationId,
       endpointGrant: "existing-grant",
       endpointHash: Self.hex(SHA256.hash(data: Data((1...32).map(UInt8.init)))),
@@ -482,7 +499,10 @@ final class BuzzDevPushEnrollmentDriverTests: XCTestCase {
       return Self.response(
         request,
         status: 200,
-        json: ["push": ["keys": [["pubkey": Self.relayPubkey, "current": true]]]]
+        json: [
+          "self": Self.relayPubkey,
+          "push": ["keys": [["pubkey": Self.relayPubkey, "current": true]]],
+        ]
       )
     }
 
@@ -500,6 +520,7 @@ final class BuzzDevPushEnrollmentDriverTests: XCTestCase {
     let existing = BuzzPushEndpointGrantRecord(
       relayOrigin: "wss://first.example",
       relayPubkey: Self.relayPubkey,
+      relayMetadataPubkey: Self.relayPubkey,
       gatewayInstallationHandle: Self.installationHandle,
       installationId: String(repeating: "f", count: 32),
       endpointGrant: "existing-grant",
@@ -517,7 +538,10 @@ final class BuzzDevPushEnrollmentDriverTests: XCTestCase {
       return Self.response(
         request,
         status: 200,
-        json: ["push": ["keys": [["pubkey": Self.relayPubkey, "current": true]]]]
+        json: [
+          "self": Self.relayPubkey,
+          "push": ["keys": [["pubkey": Self.relayPubkey, "current": true]]],
+        ]
       )
     }
 
@@ -541,6 +565,7 @@ final class BuzzDevPushEnrollmentDriverTests: XCTestCase {
     let existing = BuzzPushEndpointGrantRecord(
       relayOrigin: "wss://first.example",
       relayPubkey: Self.relayPubkey,
+      relayMetadataPubkey: Self.relayPubkey,
       gatewayInstallationHandle: Self.installationHandle,
       installationId: String(repeating: "f", count: 32),
       endpointGrant: "first-relay-grant",
@@ -559,7 +584,10 @@ final class BuzzDevPushEnrollmentDriverTests: XCTestCase {
         return Self.response(
           request,
           status: 200,
-          json: ["push": ["keys": [["pubkey": secondRelayPubkey, "current": true]]]]
+          json: [
+            "self": secondRelayPubkey,
+            "push": ["keys": [["pubkey": secondRelayPubkey, "current": true]]],
+          ]
         )
       case ("POST", "http://push.example/v1/installations/challenges"):
         return Self.response(
@@ -607,6 +635,7 @@ final class BuzzDevPushEnrollmentDriverTests: XCTestCase {
     let existing = BuzzPushEndpointGrantRecord(
       relayOrigin: "wss://relay.example",
       relayPubkey: Self.relayPubkey,
+      relayMetadataPubkey: Self.relayPubkey,
       installationId: Self.installationId,
       endpointGrant: "existing-grant",
       endpointHash: Self.hex(SHA256.hash(data: Data((1...32).map(UInt8.init)))),
@@ -631,7 +660,10 @@ final class BuzzDevPushEnrollmentDriverTests: XCTestCase {
         return Self.response(
           request,
           status: 200,
-          json: ["push": ["keys": [["pubkey": Self.relayPubkey, "current": true]]]]
+          json: [
+            "self": Self.relayPubkey,
+            "push": ["keys": [["pubkey": Self.relayPubkey, "current": true]]],
+          ]
         )
       case ("POST", "http://push.example/v1/installations/challenges"):
         challengeCount += 1
@@ -685,6 +717,7 @@ final class BuzzDevPushEnrollmentDriverTests: XCTestCase {
         request,
         status: 200,
         json: [
+          "self": Self.relayPubkey,
           "push": [
             "keys": [
               ["pubkey": Self.relayPubkey, "current": true],
@@ -704,6 +737,124 @@ final class BuzzDevPushEnrollmentDriverTests: XCTestCase {
     XCTAssertEqual(URLProtocolStub.requests.count, 1)
   }
 
+  func testTracksRelayMetadataAuthoritySeparatelyFromPushDelegationKey() async throws {
+    let pushPubkey = String(repeating: "b", count: 64)
+    let oldMetadataPubkey = String(repeating: "c", count: 64)
+    let deviceToken = Data((1...32).map(UInt8.init))
+    let existing = BuzzPushEndpointGrantRecord(
+      relayOrigin: "wss://relay.example",
+      relayPubkey: pushPubkey,
+      relayMetadataPubkey: oldMetadataPubkey,
+      installationId: Self.installationId,
+      endpointGrant: "existing-grant",
+      endpointHash: Self.hex(SHA256.hash(data: deviceToken)),
+      appProfile: "buzz-ios-dogfood",
+      endpointEpoch: 1,
+      generation: 1,
+      expiresAt: Self.expiresAt
+    )
+    let store = MemoryGrantStore(records: [existing])
+    let driver = try makeDriver(store: store, appAttest: RecordingAppAttest())
+    URLProtocolStub.handler = { request in
+      Self.response(
+        request,
+        status: 200,
+        json: [
+          "self": Self.relayPubkey,
+          "push": [
+            "keys": [
+              ["pubkey": pushPubkey, "current": true]
+            ]
+          ],
+        ]
+      )
+    }
+
+    let record = try await driver.enroll(deviceToken: deviceToken, relayURL: Self.relayURL)
+
+    XCTAssertEqual(record.relayPubkey, pushPubkey)
+    XCTAssertEqual(record.relayMetadataPubkey, Self.relayPubkey)
+    XCTAssertNotEqual(record.relayMetadataPubkey, oldMetadataPubkey)
+    XCTAssertEqual(record.endpointGrant, existing.endpointGrant)
+    XCTAssertEqual(store.saved, [record])
+    XCTAssertEqual(URLProtocolStub.requests.count, 1)
+  }
+
+  func testMissingRelayMetadataAuthorityDoesNotBlockExistingPushGrant() async throws {
+    let deviceToken = Data((1...32).map(UInt8.init))
+    let existing = BuzzPushEndpointGrantRecord(
+      relayOrigin: "wss://relay.example",
+      relayPubkey: Self.relayPubkey,
+      relayMetadataPubkey: Self.relayPubkey,
+      installationId: Self.installationId,
+      endpointGrant: "existing-grant",
+      endpointHash: Self.hex(SHA256.hash(data: deviceToken)),
+      appProfile: "buzz-ios-dogfood",
+      endpointEpoch: 1,
+      generation: 1,
+      expiresAt: Self.expiresAt
+    )
+    let store = MemoryGrantStore(records: [existing])
+    let driver = try makeDriver(store: store, appAttest: RecordingAppAttest())
+    URLProtocolStub.handler = { request in
+      Self.response(
+        request,
+        status: 200,
+        json: [
+          "push": [
+            "keys": [["pubkey": Self.relayPubkey, "current": true]]
+          ]
+        ]
+      )
+    }
+
+    let record = try await driver.enroll(deviceToken: deviceToken, relayURL: Self.relayURL)
+
+    XCTAssertEqual(record.relayPubkey, Self.relayPubkey)
+    XCTAssertNil(record.relayMetadataPubkey)
+    XCTAssertEqual(record.endpointGrant, existing.endpointGrant)
+    XCTAssertEqual(store.saved, [record])
+    XCTAssertEqual(URLProtocolStub.requests.count, 1)
+  }
+
+  func testMalformedRelayMetadataAuthorityDoesNotBlockExistingPushGrant() async throws {
+    let deviceToken = Data((1...32).map(UInt8.init))
+    let existing = BuzzPushEndpointGrantRecord(
+      relayOrigin: "wss://relay.example",
+      relayPubkey: Self.relayPubkey,
+      relayMetadataPubkey: Self.relayPubkey,
+      installationId: Self.installationId,
+      endpointGrant: "existing-grant",
+      endpointHash: Self.hex(SHA256.hash(data: deviceToken)),
+      appProfile: "buzz-ios-dogfood",
+      endpointEpoch: 1,
+      generation: 1,
+      expiresAt: Self.expiresAt
+    )
+    let store = MemoryGrantStore(records: [existing])
+    let driver = try makeDriver(store: store, appAttest: RecordingAppAttest())
+    URLProtocolStub.handler = { request in
+      Self.response(
+        request,
+        status: 200,
+        json: [
+          "self": 42,
+          "push": [
+            "keys": [["pubkey": Self.relayPubkey, "current": true]]
+          ],
+        ]
+      )
+    }
+
+    let record = try await driver.enroll(deviceToken: deviceToken, relayURL: Self.relayURL)
+
+    XCTAssertEqual(record.relayPubkey, Self.relayPubkey)
+    XCTAssertNil(record.relayMetadataPubkey)
+    XCTAssertEqual(record.endpointGrant, existing.endpointGrant)
+    XCTAssertEqual(store.saved, [record])
+    XCTAssertEqual(URLProtocolStub.requests.count, 1)
+  }
+
   func testFailsLoudlyOnUnexpectedGatewayStatus() async throws {
     let driver = try makeDriver(store: MemoryGrantStore(), appAttest: RecordingAppAttest())
     URLProtocolStub.handler = { request in
@@ -711,7 +862,10 @@ final class BuzzDevPushEnrollmentDriverTests: XCTestCase {
         return Self.response(
           request,
           status: 200,
-          json: ["push": ["keys": [["pubkey": Self.relayPubkey, "current": true]]]]
+          json: [
+            "self": Self.relayPubkey,
+            "push": ["keys": [["pubkey": Self.relayPubkey, "current": true]]],
+          ]
         )
       }
       return Self.response(request, status: 400, json: ["error": "invalid_request"])

@@ -6,6 +6,7 @@ import UserNotifications
 final class NotificationService: UNNotificationServiceExtension {
   private var contentHandler: ((UNNotificationContent) -> Void)?
   private var bestAttemptContent: UNMutableNotificationContent?
+  private let communicationPresenter = BuzzCommunicationNotificationPresenter()
   private lazy var resolver: BuzzPushNotificationResolving = {
     let appGroupIdentifier =
       Bundle.main.object(
@@ -24,6 +25,13 @@ final class NotificationService: UNNotificationServiceExtension {
         Self.loadPrivateKey(
           communityID: communityID,
           keychainAccessGroup: keychainAccessGroup
+        )
+      },
+      loadPresentationCacheData: {
+        Self.loadAppGroupData(
+          fileName: BuzzPushPresentationCacheStore.fileName,
+          appGroupIdentifier: appGroupIdentifier,
+          maximumBytes: BuzzPushPresentationCacheStore.maximumSnapshotBytes
         )
       }
     )
@@ -59,6 +67,14 @@ final class NotificationService: UNNotificationServiceExtension {
           userInfo[BuzzPushNavigationTarget.userInfoKey] = navigationTarget.userInfoValue
           content.userInfo = userInfo
         }
+        self.bestAttemptContent = content
+        self.communicationPresenter.present(
+          ordinaryContent: content,
+          resolution: resolution
+        ) { [weak self] specializedContent in
+          self?.finish(specializedContent)
+        }
+        return
       }
       self.finish(content)
     }
@@ -98,11 +114,29 @@ final class NotificationService: UNNotificationServiceExtension {
   }
 
   private static func loadCommunitiesData(appGroupIdentifier: String?) -> Data? {
+    loadAppGroupData(
+      fileName: "push-communities.json",
+      appGroupIdentifier: appGroupIdentifier
+    )
+  }
+
+  private static func loadAppGroupData(
+    fileName: String,
+    appGroupIdentifier: String?,
+    maximumBytes: Int? = nil
+  ) -> Data? {
     guard let appGroupIdentifier,
       let container = FileManager.default.containerURL(
         forSecurityApplicationGroupIdentifier: appGroupIdentifier
       )
     else { return nil }
-    return try? Data(contentsOf: container.appendingPathComponent("push-communities.json"))
+    let fileURL = container.appendingPathComponent(fileName)
+    if let maximumBytes {
+      guard let values = try? fileURL.resourceValues(forKeys: [.fileSizeKey]),
+        let fileSize = values.fileSize,
+        fileSize <= maximumBytes
+      else { return nil }
+    }
+    return try? Data(contentsOf: fileURL)
   }
 }

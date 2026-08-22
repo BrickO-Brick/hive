@@ -1,4 +1,6 @@
+import CryptoKit
 import Foundation
+import P256K
 import XCTest
 
 @testable import BuzzPushKit
@@ -12,6 +14,8 @@ final class BuzzPushNotificationResolverTests: XCTestCase {
   private static let ownPubkey =
     "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
   private static let now = Int(Date().timeIntervalSince1970)
+  private static let profilePrivateKey = String(repeating: "0", count: 63) + "2"
+  private static let relayPrivateKey = String(repeating: "0", count: 63) + "3"
   private static let gatewayBody = "Reconnect to your relay now"
   private static let channelID = "123e4567-e89b-42d3-a456-426614174000"
 
@@ -145,7 +149,14 @@ final class BuzzPushNotificationResolverTests: XCTestCase {
     XCTAssertEqual(result.title, String(event.pubkey.prefix(8)) + "…")
     XCTAssertEqual(result.body, "Hello Buzz")
     XCTAssertEqual(result.subtitle, "Community")
-    XCTAssertEqual(result.threadIdentifier, Self.channelID)
+    XCTAssertEqual(
+      result.threadIdentifier,
+      BuzzPushPresentationIdentity.conversation(
+        communityID: "community-id",
+        channelID: Self.channelID
+      )
+    )
+    XCTAssertEqual(result.senderPubkey, event.pubkey)
     XCTAssertEqual(
       result.navigationTarget,
       BuzzPushNavigationTarget(
@@ -154,6 +165,410 @@ final class BuzzPushNotificationResolverTests: XCTestCase {
         channelID: Self.channelID
       )
     )
+  }
+
+  func testFreshVerifiedCacheResolvesSenderAvatarAndChannelWithoutRefresh() throws {
+    let message = try Self.signedEvent(
+      privateKey: Self.profilePrivateKey,
+      createdAt: Self.now,
+      kind: 9,
+      tags: [["h", Self.channelID]],
+      content: "Hello from Alice"
+    )
+    let relayPubkey = try Self.pubkey(for: Self.relayPrivateKey)
+    let avatar = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+    let snapshot = BuzzPushPresentationCacheSnapshot(
+      profiles: [
+        BuzzPushCachedProfile(
+          communityID: "community-id",
+          relayOrigin: "https://relay.example",
+          pubkey: message.pubkey,
+          displayName: "Alice",
+          pictureHash: "picture-hash",
+          avatarPNG: avatar,
+          eventID: "profile-event",
+          eventCreatedAt: Self.now,
+          cachedAt: Self.now
+        )
+      ],
+      channels: [
+        BuzzPushCachedChannel(
+          communityID: "community-id",
+          relayOrigin: "https://relay.example",
+          channelID: Self.channelID,
+          relayMetadataPubkey: relayPubkey,
+          displayName: "General",
+          eventID: "channel-event",
+          eventCreatedAt: Self.now,
+          cachedAt: Self.now
+        )
+      ]
+    )
+    URLProtocolStub.handler = { request in
+      Self.response(request, status: 200, data: try JSONEncoder().encode([message]))
+    }
+
+    let result = try XCTUnwrap(
+      resolve(
+        makeResolver(
+          communitiesData: try snapshotData([community(relayMetadataPubkey: relayPubkey)]),
+          presentationCacheData: try JSONEncoder().encode(snapshot),
+          now: Date(timeIntervalSince1970: TimeInterval(Self.now))
+        )
+      )
+    )
+
+    XCTAssertEqual(result.title, "Alice")
+    XCTAssertEqual(result.senderAvatarPNG, avatar)
+    XCTAssertEqual(result.conversationDisplayName, "General")
+    XCTAssertEqual(URLProtocolStub.requests.count, 1)
+  }
+
+  func testStaleVerifiedCacheIsUsedWhileOneBoundedRefreshFails() throws {
+    let message = try Self.signedEvent(
+      privateKey: Self.profilePrivateKey,
+      createdAt: Self.now,
+      kind: 9,
+      tags: [["h", Self.channelID]],
+      content: "Stale cache still presents"
+    )
+    let relayPubkey = try Self.pubkey(for: Self.relayPrivateKey)
+    let staleAt = Self.now - Int(BuzzPushPresentationCacheStore.freshnessLifetime) - 1
+    let snapshot = BuzzPushPresentationCacheSnapshot(
+      profiles: [
+        BuzzPushCachedProfile(
+          communityID: "community-id",
+          relayOrigin: "https://relay.example",
+          pubkey: message.pubkey,
+          displayName: "Stale Alice",
+          pictureHash: nil,
+          avatarPNG: nil,
+          eventID: "profile-event",
+          eventCreatedAt: staleAt,
+          cachedAt: staleAt
+        )
+      ],
+      channels: [
+        BuzzPushCachedChannel(
+          communityID: "community-id",
+          relayOrigin: "https://relay.example",
+          channelID: Self.channelID,
+          relayMetadataPubkey: relayPubkey,
+          displayName: "Stale General",
+          eventID: "channel-event",
+          eventCreatedAt: staleAt,
+          cachedAt: staleAt
+        )
+      ]
+    )
+    URLProtocolStub.handler = { request in
+      if URLProtocolStub.requests.count == 1 {
+        return Self.response(request, status: 200, data: try JSONEncoder().encode([message]))
+      }
+      XCTAssertEqual(request.timeoutInterval, 1)
+      return Self.response(request, status: 503, data: Data())
+    }
+
+    let result = try XCTUnwrap(
+      resolve(
+        makeResolver(
+          communitiesData: try snapshotData([community(relayMetadataPubkey: relayPubkey)]),
+          presentationCacheData: try JSONEncoder().encode(snapshot),
+          now: Date(timeIntervalSince1970: TimeInterval(Self.now))
+        )
+      )
+    )
+
+    XCTAssertEqual(result.title, "Stale Alice")
+    XCTAssertEqual(result.conversationDisplayName, "Stale General")
+    XCTAssertEqual(URLProtocolStub.requests.count, 2)
+  }
+
+  func testOlderVerifiedRefreshCannotReplaceNewerStaleCache() throws {
+    let message = try Self.signedEvent(
+      privateKey: Self.profilePrivateKey,
+      createdAt: Self.now,
+      kind: 9,
+      tags: [["h", Self.channelID]],
+      content: "Keep newer cached metadata"
+    )
+    let olderProfile = try Self.signedEvent(
+      privateKey: Self.profilePrivateKey,
+      createdAt: Self.now - 20,
+      kind: 0,
+      content: #"{"display_name":"Older Alice"}"#
+    )
+    let olderChannel = try Self.signedEvent(
+      privateKey: Self.relayPrivateKey,
+      createdAt: Self.now - 20,
+      kind: 39_000,
+      tags: [["d", Self.channelID], ["name", "Older General"]]
+    )
+    let staleAt = Self.now - Int(BuzzPushPresentationCacheStore.freshnessLifetime) - 1
+    let snapshot = BuzzPushPresentationCacheSnapshot(
+      profiles: [
+        BuzzPushCachedProfile(
+          communityID: "community-id",
+          relayOrigin: "https://relay.example",
+          pubkey: message.pubkey,
+          displayName: "Newer Cached Alice",
+          pictureHash: nil,
+          avatarPNG: nil,
+          eventID: String(repeating: "f", count: 64),
+          eventCreatedAt: Self.now - 10,
+          cachedAt: staleAt
+        )
+      ],
+      channels: [
+        BuzzPushCachedChannel(
+          communityID: "community-id",
+          relayOrigin: "https://relay.example",
+          channelID: Self.channelID,
+          relayMetadataPubkey: olderChannel.pubkey,
+          displayName: "Newer Cached General",
+          eventID: String(repeating: "f", count: 64),
+          eventCreatedAt: Self.now - 10,
+          cachedAt: staleAt
+        )
+      ]
+    )
+    URLProtocolStub.handler = { request in
+      if URLProtocolStub.requests.count == 1 {
+        return Self.response(request, status: 200, data: try JSONEncoder().encode([message]))
+      }
+      return Self.response(
+        request,
+        status: 200,
+        data: try JSONEncoder().encode([olderProfile, olderChannel])
+      )
+    }
+
+    let result = try XCTUnwrap(
+      resolve(
+        makeResolver(
+          communitiesData: try snapshotData([
+            community(relayMetadataPubkey: olderChannel.pubkey)
+          ]),
+          presentationCacheData: try JSONEncoder().encode(snapshot),
+          now: Date(timeIntervalSince1970: TimeInterval(Self.now))
+        )
+      )
+    )
+
+    XCTAssertEqual(result.title, "Newer Cached Alice")
+    XCTAssertEqual(result.conversationDisplayName, "Newer Cached General")
+  }
+
+  func testChannelOnlyRefreshIgnoresUnrequestedProfileEvent() throws {
+    let message = try Self.signedEvent(
+      privateKey: Self.profilePrivateKey,
+      createdAt: Self.now,
+      kind: 9,
+      tags: [["h", Self.channelID]],
+      content: "Ignore unrelated enrichment"
+    )
+    let unexpectedProfile = try Self.signedEvent(
+      privateKey: Self.profilePrivateKey,
+      createdAt: Self.now + 1,
+      kind: 0,
+      content: #"{"display_name":"Unexpected Alice"}"#
+    )
+    let relayMetadataPubkey = try Self.pubkey(for: Self.relayPrivateKey)
+    let staleAt = Self.now - Int(BuzzPushPresentationCacheStore.freshnessLifetime) - 1
+    let snapshot = BuzzPushPresentationCacheSnapshot(
+      profiles: [
+        BuzzPushCachedProfile(
+          communityID: "community-id",
+          relayOrigin: "https://relay.example",
+          pubkey: message.pubkey,
+          displayName: "Cached Alice",
+          pictureHash: nil,
+          avatarPNG: nil,
+          eventID: "cached-profile",
+          eventCreatedAt: Self.now,
+          cachedAt: Self.now
+        )
+      ],
+      channels: [
+        BuzzPushCachedChannel(
+          communityID: "community-id",
+          relayOrigin: "https://relay.example",
+          channelID: Self.channelID,
+          relayMetadataPubkey: relayMetadataPubkey,
+          displayName: "Stale General",
+          eventID: "cached-channel",
+          eventCreatedAt: Self.now,
+          cachedAt: staleAt
+        )
+      ]
+    )
+    URLProtocolStub.handler = { request in
+      if URLProtocolStub.requests.count == 1 {
+        return Self.response(request, status: 200, data: try JSONEncoder().encode([message]))
+      }
+      return Self.response(
+        request,
+        status: 200,
+        data: try JSONEncoder().encode([unexpectedProfile])
+      )
+    }
+
+    let result = try XCTUnwrap(
+      resolve(
+        makeResolver(
+          communitiesData: try snapshotData([
+            community(relayMetadataPubkey: relayMetadataPubkey)
+          ]),
+          presentationCacheData: try JSONEncoder().encode(snapshot),
+          now: Date(timeIntervalSince1970: TimeInterval(Self.now))
+        )
+      )
+    )
+
+    XCTAssertEqual(result.title, "Cached Alice")
+    XCTAssertEqual(result.conversationDisplayName, "Stale General")
+  }
+
+  func testMissingCacheRefreshesVerifiedProfileAndChannelTogether() throws {
+    let message = try Self.signedEvent(
+      privateKey: Self.profilePrivateKey,
+      createdAt: Self.now,
+      kind: 9,
+      tags: [["h", Self.channelID]],
+      content: "Fresh metadata"
+    )
+    let profile = try Self.signedEvent(
+      privateKey: Self.profilePrivateKey,
+      createdAt: Self.now,
+      kind: 0,
+      content: #"{"display_name":"Fresh Alice"}"#
+    )
+    let channel = try Self.signedEvent(
+      privateKey: Self.relayPrivateKey,
+      createdAt: Self.now,
+      kind: 39_000,
+      tags: [["d", Self.channelID], ["name", "Fresh General"]]
+    )
+    URLProtocolStub.handler = { request in
+      if URLProtocolStub.requests.count == 1 {
+        return Self.response(request, status: 200, data: try JSONEncoder().encode([message]))
+      }
+      return Self.response(
+        request,
+        status: 200,
+        data: try JSONEncoder().encode([profile, channel])
+      )
+    }
+
+    let result = try XCTUnwrap(
+      resolve(
+        makeResolver(
+          communitiesData: try snapshotData([
+            community(relayMetadataPubkey: channel.pubkey)
+          ]),
+          now: Date(timeIntervalSince1970: TimeInterval(Self.now))
+        )
+      )
+    )
+
+    XCTAssertEqual(result.title, "Fresh Alice")
+    XCTAssertEqual(result.conversationDisplayName, "Fresh General")
+    XCTAssertNil(result.senderAvatarPNG)
+    XCTAssertEqual(URLProtocolStub.requests.count, 2)
+  }
+
+  func testMalformedAndUnverifiedRefreshFallsBackWithoutBlockingMessage() throws {
+    let message = try Self.signedEvent(
+      privateKey: Self.profilePrivateKey,
+      createdAt: Self.now,
+      kind: 9,
+      tags: [["h", Self.channelID]],
+      content: "Fallback content"
+    )
+    let validProfile = try Self.signedEvent(
+      privateKey: Self.profilePrivateKey,
+      createdAt: Self.now,
+      kind: 0,
+      content: #"{"display_name":"Tampered"}"#
+    )
+    let tamperedProfile = VerifiedNostrEvent(
+      id: validProfile.id,
+      pubkey: validProfile.pubkey,
+      createdAt: validProfile.createdAt,
+      kind: validProfile.kind,
+      tags: validProfile.tags,
+      content: #"{"display_name":"Mallory"}"#,
+      sig: validProfile.sig
+    )
+    URLProtocolStub.handler = { request in
+      if URLProtocolStub.requests.count == 1 {
+        return Self.response(request, status: 200, data: try JSONEncoder().encode([message]))
+      }
+      return Self.response(
+        request,
+        status: 200,
+        data: try JSONEncoder().encode([tamperedProfile])
+      )
+    }
+
+    let result = try XCTUnwrap(
+      resolve(
+        makeResolver(
+          communitiesData: try snapshotData([
+            community(relayMetadataPubkey: try Self.pubkey(for: Self.relayPrivateKey))
+          ]),
+          now: Date(timeIntervalSince1970: TimeInterval(Self.now))
+        )
+      )
+    )
+
+    XCTAssertEqual(result.title, String(message.pubkey.prefix(8)) + "…")
+    XCTAssertNil(result.conversationDisplayName)
+    XCTAssertEqual(result.subtitle, "Community")
+    XCTAssertEqual(result.body, "Fallback content")
+  }
+
+  func testOversizedPresentationRefreshFallsBackWithoutBlockingMessage() throws {
+    let message = try Self.signedEvent(
+      privateKey: Self.profilePrivateKey,
+      createdAt: Self.now,
+      kind: 9,
+      tags: [["h", Self.channelID]],
+      content: "Bounded fallback"
+    )
+    let profile = try Self.signedEvent(
+      privateKey: Self.profilePrivateKey,
+      createdAt: Self.now,
+      kind: 0,
+      content: #"{"display_name":"Must Not Be Used"}"#
+    )
+    URLProtocolStub.handler = { request in
+      if URLProtocolStub.requests.count == 1 {
+        return Self.response(request, status: 200, data: try JSONEncoder().encode([message]))
+      }
+      var oversized = Data(
+        repeating: 0x20,
+        count: BuzzPushNotificationResolver.maximumPresentationResponseBytes
+      )
+      oversized.append(try JSONEncoder().encode([profile]))
+      return Self.response(request, status: 200, data: oversized)
+    }
+
+    let result = try XCTUnwrap(
+      resolve(
+        makeResolver(
+          communitiesData: try snapshotData([
+            community(relayMetadataPubkey: try Self.pubkey(for: Self.relayPrivateKey))
+          ]),
+          now: Date(timeIntervalSince1970: TimeInterval(Self.now))
+        )
+      )
+    )
+
+    XCTAssertEqual(result.title, String(message.pubkey.prefix(8)) + "…")
+    XCTAssertNil(result.conversationDisplayName)
+    XCTAssertEqual(result.body, "Bounded fallback")
+    XCTAssertEqual(URLProtocolStub.requests.count, 2)
   }
 
   func testResolveCanonicalizesWebSocketRelayOriginForQuery() throws {
@@ -173,14 +588,18 @@ final class BuzzPushNotificationResolverTests: XCTestCase {
 
   private func makeResolver(
     communitiesData: Data?,
-    privateKeys: [String: String] = ["community-id": privateKey]
+    privateKeys: [String: String] = ["community-id": privateKey],
+    presentationCacheData: Data? = nil,
+    now: Date = Date()
   ) -> BuzzPushNotificationResolver {
     let configuration = URLSessionConfiguration.ephemeral
     configuration.protocolClasses = [URLProtocolStub.self]
     return BuzzPushNotificationResolver(
       session: URLSession(configuration: configuration),
       loadCommunitiesData: { communitiesData },
-      loadPrivateKey: { privateKeys[$0] }
+      loadPrivateKey: { privateKeys[$0] },
+      loadPresentationCacheData: { presentationCacheData },
+      now: { now }
     )
   }
 
@@ -199,12 +618,14 @@ final class BuzzPushNotificationResolverTests: XCTestCase {
     id: String = "community-id",
     name: String = "Community",
     relayUrl: String = "https://relay.example",
+    relayMetadataPubkey: String? = nil,
     pubkey: String? = ownPubkey
   ) -> PushLeaseCommunity {
     PushLeaseCommunity(
       id: id,
       name: name,
       relayUrl: relayUrl,
+      relayMetadataPubkey: relayMetadataPubkey,
       pubkey: pubkey,
       pushSubscriptionState: PushLeaseSubscriptionState(
         authority: "accepted",
@@ -261,6 +682,44 @@ final class BuzzPushNotificationResolverTests: XCTestCase {
       headerFields: ["Content-Type": "application/json"]
     )!
     return (response, data)
+  }
+
+  private static func pubkey(for privateKey: String) throws -> String {
+    let bytes = try XCTUnwrap(VerifiedNostrEvent.hexBytes(privateKey))
+    let key = try P256K.Schnorr.PrivateKey(dataRepresentation: bytes)
+    return VerifiedNostrEvent.hex(key.xonly.bytes)
+  }
+
+  private static func signedEvent(
+    privateKey: String,
+    createdAt: Int,
+    kind: Int,
+    tags: [[String]] = [],
+    content: String = ""
+  ) throws -> VerifiedNostrEvent {
+    let privateKeyBytes = try XCTUnwrap(VerifiedNostrEvent.hexBytes(privateKey))
+    let key = try P256K.Schnorr.PrivateKey(dataRepresentation: privateKeyBytes)
+    let pubkey = VerifiedNostrEvent.hex(key.xonly.bytes)
+    let serialization = try VerifiedNostrEvent.canonicalSerialization(
+      pubkey: pubkey,
+      createdAt: createdAt,
+      kind: kind,
+      tags: tags,
+      content: content
+    )
+    let digest = Array(SHA256.hash(data: serialization))
+    var message = digest
+    var randomness = [UInt8](repeating: UInt8(truncatingIfNeeded: createdAt), count: 32)
+    let signature = try key.signature(message: &message, auxiliaryRand: &randomness)
+    return VerifiedNostrEvent(
+      id: VerifiedNostrEvent.hex(digest),
+      pubkey: pubkey,
+      createdAt: createdAt,
+      kind: kind,
+      tags: tags,
+      content: content,
+      sig: VerifiedNostrEvent.hex(signature.dataRepresentation)
+    )
   }
 }
 

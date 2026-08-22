@@ -128,10 +128,15 @@ Future<List<BuzzPushEndpointGrant>> readBuzzPushEndpointGrants() async {
   }
 }
 
+/// Enrolls the endpoint and optionally rewrites the NSE snapshot afterward.
+///
+/// The rewrite propagates NIP-11 `self` rotations even when the opaque grant
+/// and accepted relay lease remain reusable and their generations do not move.
 Future<BuzzPushEndpointGrant> enrollBuzzPush(
   String relayUrl,
-  String gatewayUrl,
-) async {
+  String gatewayUrl, {
+  List<Community>? communitiesForSnapshotRefresh,
+}) async {
   final raw = await _channel.invokeMapMethod<dynamic, dynamic>('enrollPush', {
     'relayUrl': relayUrl,
     'gatewayUrl': gatewayUrl,
@@ -141,6 +146,14 @@ Future<BuzzPushEndpointGrant> enrollBuzzPush(
   }
   final grant = BuzzPushEndpointGrant.fromMap(raw);
   await readBuzzPushEndpointGrants();
+  if (communitiesForSnapshotRefresh != null) {
+    try {
+      await registerBuzzPushCommunitySnapshot(communitiesForSnapshotRefresh);
+      pushCommunitySnapshotError.value = null;
+    } catch (error, stackTrace) {
+      reportPushCommunitySnapshotError(error, stackTrace);
+    }
+  }
   return grant;
 }
 

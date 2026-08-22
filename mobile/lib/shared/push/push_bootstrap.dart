@@ -137,7 +137,12 @@ class BuzzPushBootstrap extends HookConsumerWidget {
         ? null
         : buzzPushSubscriptionsFingerprint(state.accepted!);
     final descriptor = await fetchBuzzPushLeaseDescriptor(config.baseUrl);
-    final grant = await enrollBuzzPush(config.wsUrl, Env.pushGatewayUrl);
+    final grant = await enrollBuzzPush(
+      config.wsUrl,
+      Env.pushGatewayUrl,
+      communitiesForSnapshotRefresh:
+          ref.read(communityListProvider).value ?? [community],
+    );
     if (state.authority == BuzzPushLeaseSubscriptionAuthority.accepted &&
         acceptedFingerprint == desiredFingerprint &&
         state.acceptedGrantGeneration == grant.generation &&

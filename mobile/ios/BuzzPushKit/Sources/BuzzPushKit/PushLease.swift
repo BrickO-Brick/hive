@@ -18,6 +18,8 @@ public struct PushLeaseCommunity: Codable, Equatable, Sendable {
   public let id: String
   public let name: String
   public let relayUrl: String
+  /// Relay NIP-11 `self` key used to verify NIP-29 channel metadata.
+  public let relayMetadataPubkey: String?
   public let pubkey: String?
   public let pushSubscriptionState: PushLeaseSubscriptionState
 
@@ -25,12 +27,14 @@ public struct PushLeaseCommunity: Codable, Equatable, Sendable {
     id: String,
     name: String,
     relayUrl: String,
+    relayMetadataPubkey: String? = nil,
     pubkey: String?,
     pushSubscriptionState: PushLeaseSubscriptionState
   ) {
     self.id = id
     self.name = name
     self.relayUrl = relayUrl
+    self.relayMetadataPubkey = relayMetadataPubkey
     self.pubkey = pubkey
     self.pushSubscriptionState = pushSubscriptionState
   }

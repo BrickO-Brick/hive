@@ -112,6 +112,22 @@ artifact or enable the App Store profile in production. Validate dogfood APNs
 end to end by cutting an internal release, waiting for it to reach Mobile
 Releases/Comp Portal, and installing that signed artifact on a physical device.
 
+Push-enabled parent app identifiers also require Apple's Communication
+Notifications capability and a regenerated app provisioning profile. The
+Notification Service Extension profile does not require that capability.
+Enable it on the personal development App ID for local rich-presentation
+validation. Enabling it on the Block dogfood and eventual App Store App IDs is
+a release follow-up and is not performed by this repository change. Without a
+matching parent profile, source and unit validation still work, but the
+push-enabled app cannot be signed for a physical device.
+
+APNs and the gateway continue to carry only the constant opaque wake-up. The
+extension fetches the message from the scoped relay, verifies message, sender
+profile, and channel-metadata signatures, and uses a bounded App Group cache
+for names and app-rendered avatar thumbnails. It never fetches an avatar URL;
+missing, stale, or invalid enrichment falls back to the verified message with a
+short sender pubkey, community subtitle, and no image.
+
 ## Checks
 
 ```bash
