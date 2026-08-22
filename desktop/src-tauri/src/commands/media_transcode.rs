@@ -486,6 +486,35 @@ fn prepare_avconvert_source(
     Ok((staged, true))
 }
 
+/// Reject output that the relay cannot ingest before spending bandwidth.
+///
+/// `avconvert` can preserve metadata tracks from some source containers, while
+/// the relay deliberately accepts exactly one H.264 video track and at most
+/// one AAC audio track. Validate locally so those inputs fail with a useful
+/// conversion error instead of a later generic upload rejection.
+#[cfg(target_os = "macos")]
+fn validate_avconvert_output(path: &std::path::Path) -> Result<(), String> {
+    let config = buzz_media_pkg::MediaConfig {
+        s3_endpoint: String::new(),
+        s3_access_key: String::new(),
+        s3_secret_key: String::new(),
+        s3_bucket: String::new(),
+        s3_region: "us-east-1".to_string(),
+        s3_addressing_style: buzz_media_pkg::S3AddressingStyle::Path,
+        max_image_bytes: 50 * 1024 * 1024,
+        max_gif_bytes: 10 * 1024 * 1024,
+        max_video_bytes: 500 * 1024 * 1024,
+        max_file_bytes: 100 * 1024 * 1024,
+        public_base_url: String::new(),
+        upload_records_enabled: false,
+        upload_ip_header: None,
+        upload_port_header: None,
+    };
+    buzz_media_pkg::validation::validate_video_file(path, &config)
+        .map(|_| ())
+        .map_err(|error| format!("Video conversion produced an unsupported file: {error}"))
+}
+
 /// Transcode a video with macOS's built-in AVFoundation converter.
 ///
 /// Release builds do not bundle ffmpeg, and a stock macOS installation does
@@ -536,6 +565,7 @@ fn transcode_with_avconvert(
             return Err("upload cancelled".to_string());
         }
 
+        validate_avconvert_output(&output)?;
         std::fs::read(&output).map_err(|error| format!("failed to read converted video: {error}"))
     })();
 
@@ -626,43 +656,22 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn test_avconvert_normalizes_configured_quicktime_fixture() {
-        let Some(source) = std::env::var_os("BUZZ_TEST_QUICKTIME_PATH") else {
-            eprintln!("skipping avconvert round-trip: BUZZ_TEST_QUICKTIME_PATH is unset");
-            return;
-        };
-        let staged_source = std::env::temp_dir().join(format!(
-            "buzz-avconvert-configured-test-{}",
-            uuid::Uuid::new_v4()
-        ));
-        std::fs::copy(&source, &staged_source).expect("stage extensionless QuickTime fixture");
+    fn test_avconvert_normalizes_extensionless_quicktime_fixture() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/quicktime-screen-recording.mov");
+        let staged_source =
+            std::env::temp_dir().join(format!("buzz-avconvert-fixture-{}", uuid::Uuid::new_v4()));
+        std::fs::copy(fixture, &staged_source).expect("stage extensionless QuickTime fixture");
 
         let video =
             transcode_with_avconvert(&staged_source, None).expect("convert QuickTime fixture");
         let _ = std::fs::remove_file(staged_source);
         let converted = std::env::temp_dir().join(format!(
-            "buzz-avconvert-configured-output-{}.mp4",
+            "buzz-avconvert-fixture-output-{}.mp4",
             uuid::Uuid::new_v4()
         ));
         std::fs::write(&converted, &video).expect("write converted fixture");
-        let relay_config = buzz_media_pkg::MediaConfig {
-            s3_endpoint: String::new(),
-            s3_access_key: String::new(),
-            s3_secret_key: String::new(),
-            s3_bucket: String::new(),
-            s3_region: "us-east-1".to_string(),
-            s3_addressing_style: buzz_media_pkg::S3AddressingStyle::Path,
-            max_image_bytes: 50 * 1024 * 1024,
-            max_gif_bytes: 10 * 1024 * 1024,
-            max_video_bytes: 500 * 1024 * 1024,
-            max_file_bytes: 100 * 1024 * 1024,
-            public_base_url: String::new(),
-            upload_records_enabled: false,
-            upload_ip_header: None,
-            upload_port_header: None,
-        };
-        buzz_media_pkg::validation::validate_video_file(&converted, &relay_config)
-            .expect("relay rejected avconvert output");
+        validate_avconvert_output(&converted).expect("relay rejected avconvert output");
         let _ = std::fs::remove_file(converted);
     }
 
