@@ -5,12 +5,14 @@
  * (variant context + derived turn meta) is exercised end to end rather than
  * asserting against re-implemented render classes.
  *
- * The last test is the important one: `conversation` is purely additive, so the
- * `default` and `compactPreview` markup for the same transcript must be
- * byte-identical to the markup captured before the variant existed. That
- * snapshot lives in AgentSessionTranscriptList.conversation.baseline.json and
- * was produced by mounting this same transcript on the pre-change commit
- * (f79421673) — regenerate it only when a deliberate change to the other
+ * The byte-for-byte tests at the bottom are the important ones: `conversation`
+ * is purely additive, so the `default` and `compactPreview` markup for the same
+ * transcript must be byte-identical to the markup captured before the variant
+ * existed. That snapshot lives in
+ * AgentSessionTranscriptList.conversation.baseline.json and was produced by
+ * mounting `baselineItems()` — a transcript containing every renderable item
+ * kind across two sessions — on pre-change main (074561233) in a clean
+ * throwaway worktree. Regenerate it only when a deliberate change to the other
  * variants is being made.
  */
 
@@ -41,10 +43,13 @@ class NoopObserver {
 }
 
 Object.assign(globalThis, {
+  Element: dom.window.Element,
+  Event: dom.window.Event,
   HTMLElement: dom.window.HTMLElement,
   IS_REACT_ACT_ENVIRONMENT: true,
   IntersectionObserver: NoopObserver,
   MutationObserver: dom.window.MutationObserver,
+  Node: dom.window.Node,
   ResizeObserver: NoopObserver,
   document: dom.window.document,
   getComputedStyle: (...args) => dom.window.getComputedStyle(...args),
@@ -67,9 +72,11 @@ dom.window.cancelAnimationFrame = (id) => clearTimeout(id);
 globalThis.requestAnimationFrame = dom.window.requestAnimationFrame;
 globalThis.cancelAnimationFrame = dom.window.cancelAnimationFrame;
 
+let act;
 let cleanup;
 let render;
 let createElement;
+let useState;
 let createMemoryHistory;
 let createRootRoute;
 let createRouter;
@@ -131,6 +138,163 @@ function items() {
   ];
 }
 
+/**
+ * Everything the legacy variants can render, in one transcript.
+ *
+ * The byte-for-byte contract covers `default`/`compactPreview` for EVERY item
+ * kind, so the baseline input has to contain every kind rather than the happy
+ * path: prompt (with prompt context and setup lifecycle so the ingress chrome
+ * renders), assistant message, thought, plan, a tool item, ordinary lifecycle
+ * status, error, permission — across two sessions so a session-boundary divider
+ * is forced too. Where `compactPreview` deliberately suppresses a kind, that
+ * absence is captured in the fixture and is therefore also protected.
+ *
+ * Single tool item on purpose: a run of three would collapse into a grouped
+ * summary and the leaf tool row would never be captured.
+ */
+function baselineItems() {
+  const first = { channelId: "chan-1", sessionId: "sess-1", turnId: "turn-1" };
+  const second = { channelId: "chan-1", sessionId: "sess-2", turnId: "turn-2" };
+  return [
+    {
+      ...first,
+      id: "life:setup",
+      type: "lifecycle",
+      renderClass: "status",
+      title: "Turn started",
+      text: "1 trigger",
+      timestamp: "2026-06-14T19:00:00.000Z",
+      acpSource: "turn_started",
+    },
+    {
+      ...first,
+      id: "meta:context",
+      type: "metadata",
+      renderClass: "raw-rail",
+      title: "Prompt context",
+      sections: [{ title: "Channel", body: "engineering" }],
+      timestamp: "2026-06-14T19:00:00.500Z",
+      acpSource: "session/prompt:context",
+    },
+    {
+      ...first,
+      id: "msg:user",
+      type: "message",
+      renderClass: "message",
+      role: "user",
+      title: "Ada",
+      text: "please summarize the plan",
+      timestamp: "2026-06-14T19:00:01.000Z",
+      messageId: "event-1",
+      authorPubkey: AUTHOR,
+      acpSource: "session/prompt:user",
+    },
+    {
+      ...first,
+      id: "thought:1",
+      type: "thought",
+      renderClass: "thought",
+      title: "Thinking",
+      text: "weighing the options",
+      timestamp: "2026-06-14T19:00:02.000Z",
+    },
+    {
+      ...first,
+      id: "plan:1",
+      type: "plan",
+      renderClass: "plan",
+      title: "Plan",
+      text: "- [x] read the transcript\n- [ ] write the summary (in progress)\n- [ ] ship it",
+      timestamp: "2026-06-14T19:00:03.000Z",
+    },
+    {
+      ...first,
+      id: "tool:1",
+      type: "tool",
+      renderClass: "shell",
+      descriptor: {
+        renderClass: "shell",
+        label: "Ran a command",
+        preview: "cargo test",
+        tone: "neutral",
+        source: "shell",
+      },
+      title: "Ran a command",
+      toolName: "shell",
+      buzzToolName: null,
+      status: "completed",
+      args: { command: "cargo test" },
+      result: "ok",
+      isError: false,
+      timestamp: "2026-06-14T19:00:04.000Z",
+      startedAt: "2026-06-14T19:00:04.000Z",
+      completedAt: "2026-06-14T19:00:05.000Z",
+    },
+    {
+      ...first,
+      id: "life:permission",
+      type: "lifecycle",
+      renderClass: "permission",
+      title: "Permission requested",
+      text: "write src/main.rs\nOptions: Allow, Deny",
+      outcome: "Approved (once)",
+      timestamp: "2026-06-14T19:00:06.000Z",
+    },
+    {
+      ...first,
+      id: "life:status",
+      type: "lifecycle",
+      renderClass: "status",
+      title: "Context compacted",
+      text: "",
+      timestamp: "2026-06-14T19:00:07.000Z",
+    },
+    {
+      ...first,
+      id: "msg:assistant",
+      type: "message",
+      renderClass: "message",
+      role: "assistant",
+      title: "Test Agent",
+      text: "Here is the summary with `code`.",
+      timestamp: "2026-06-14T19:00:08.000Z",
+    },
+    {
+      ...first,
+      id: "life:error",
+      type: "lifecycle",
+      renderClass: "error",
+      title: "Turn failed",
+      text: "the harness exited",
+      timestamp: "2026-06-14T19:00:09.000Z",
+    },
+    // Second session run: forces a session-boundary divider between the runs.
+    {
+      ...second,
+      id: "msg:user2",
+      type: "message",
+      renderClass: "message",
+      role: "user",
+      title: "Ada",
+      text: "next task",
+      timestamp: "2026-06-14T19:05:00.000Z",
+      messageId: "event-2",
+      authorPubkey: AUTHOR,
+      acpSource: "session/prompt:user",
+    },
+    {
+      ...second,
+      id: "msg:assistant2",
+      type: "message",
+      renderClass: "message",
+      role: "assistant",
+      title: "Test Agent",
+      text: "on it",
+      timestamp: "2026-06-14T19:05:01.000Z",
+    },
+  ];
+}
+
 async function renderTranscript(variant, overrides = {}) {
   const rootRoute = createRootRoute({
     component: () =>
@@ -150,9 +314,44 @@ async function renderTranscript(variant, overrides = {}) {
   return render(createElement(RouterProvider, { router }));
 }
 
+/**
+ * Same mount, but the caller can swap the list props afterwards. Needed for the
+ * contracts that are only visible across a rerender: a streaming thought
+ * folding once the turn moves on, and a plan mutating in place.
+ */
+async function renderRerenderableTranscript(variant, initialOverrides = {}) {
+  let applyProps;
+  const Harness = () => {
+    const [overrides, setOverrides] = useState(initialOverrides);
+    applyProps = setOverrides;
+    return createElement(AgentSessionTranscriptList, {
+      ...AGENT,
+      emptyDescription: "nothing yet",
+      items: items(),
+      variant,
+      ...overrides,
+    });
+  };
+  const rootRoute = createRootRoute({ component: Harness });
+  const router = createRouter({
+    history: createMemoryHistory({ initialEntries: ["/"] }),
+    routeTree: rootRoute,
+  });
+  await router.load();
+  const utils = render(createElement(RouterProvider, { router }));
+  return {
+    ...utils,
+    async setOverrides(next) {
+      await act(async () => {
+        applyProps(next);
+      });
+    },
+  };
+}
+
 before(async () => {
-  ({ cleanup, render } = await import("@testing-library/react"));
-  ({ createElement } = await import("react"));
+  ({ act, cleanup, render } = await import("@testing-library/react"));
+  ({ createElement, useState } = await import("react"));
   ({ createMemoryHistory, createRootRoute, createRouter, RouterProvider } =
     await import("@tanstack/react-router"));
   ({ AgentSessionTranscriptList } = await import(
@@ -258,6 +457,109 @@ test("conversation auto-opens the thought disclosure while it is streaming", asy
   assert.doesNotMatch(summary.textContent, /Thought for/);
 });
 
+test("conversation folds the thought when the turn moves on, even after the browser echoes the auto-open toggle", async () => {
+  // Regression guard for the programmatic-toggle echo trap: a real browser fires
+  // `toggle` when React flips `open`, so the auto-open for a streaming thought
+  // arrives back at the component as if the reader had clicked. JSDOM does not
+  // fire that event itself, so the test injects it. If the handler records it as
+  // a reader choice, the disclosure stays pinned open forever and reasoning
+  // never recedes once the agent acts.
+  syncAgentTurnsFromEvents(AGENT.agentPubkey, [
+    {
+      seq: 1,
+      timestamp: "2026-06-14T19:00:02.000Z",
+      kind: "turn_started",
+      agentIndex: 0,
+      channelId: "chan-1",
+      sessionId: "sess-1",
+      turnId: "turn-1",
+      payload: null,
+    },
+  ]);
+  const streaming = { channelId: "chan-1", items: items().slice(0, 2) };
+  const { container, setOverrides } = await renderRerenderableTranscript(
+    "conversation",
+    streaming,
+  );
+
+  const disclosure = container.querySelector(
+    '[data-testid="transcript-thought-item"]',
+  );
+  assert.equal(disclosure.open, true, "streaming thought should auto-open");
+
+  // The browser echo: `open` already agrees with what React rendered, and the
+  // event follows rather than causes that state.
+  await act(async () => {
+    disclosure.open = true;
+    disclosure.dispatchEvent(new dom.window.Event("toggle"));
+  });
+  assert.equal(
+    disclosure.open,
+    true,
+    "the echo must not disturb the open tail",
+  );
+
+  // The turn produces its next item, so the thought is no longer the streaming
+  // tail and should recede.
+  await setOverrides({ ...streaming, items: items().slice(0, 3) });
+
+  const settled = container.querySelector(
+    '[data-testid="transcript-thought-item"]',
+  );
+  assert.equal(
+    settled.open,
+    false,
+    "a thought the agent has acted on should fold again",
+  );
+  assert.match(
+    settled
+      .querySelector('[data-testid="transcript-thought-disclosure"]')
+      .textContent.trim(),
+    /^Thought for 5s/,
+  );
+});
+
+test("conversation keeps a reader-opened thought open after the turn moves on", async () => {
+  // The other half of the guard: a toggle that DISAGREES with the rendered state
+  // is a genuine reader choice and must win over the stream transition.
+  syncAgentTurnsFromEvents(AGENT.agentPubkey, [
+    {
+      seq: 1,
+      timestamp: "2026-06-14T19:00:02.000Z",
+      kind: "turn_started",
+      agentIndex: 0,
+      channelId: "chan-1",
+      sessionId: "sess-1",
+      turnId: "turn-1",
+      payload: null,
+    },
+  ]);
+  // Three items so the thought is not the streaming tail: it renders collapsed.
+  const settledItems = { channelId: "chan-1", items: items().slice(0, 3) };
+  const { container, setOverrides } = await renderRerenderableTranscript(
+    "conversation",
+    settledItems,
+  );
+
+  const disclosure = container.querySelector(
+    '[data-testid="transcript-thought-item"]',
+  );
+  assert.equal(disclosure.open, false, "a settled thought starts collapsed");
+
+  await act(async () => {
+    disclosure.open = true;
+    disclosure.dispatchEvent(new dom.window.Event("toggle"));
+  });
+
+  await setOverrides({ ...settledItems, items: items() });
+
+  assert.equal(
+    container.querySelector('[data-testid="transcript-thought-item"]').open,
+    true,
+    "the reader's choice should survive later transcript items",
+  );
+});
+
 test("conversation renders the plan as a checklist card with in-place progress", async () => {
   const { container } = await renderTranscript("conversation");
   const card = container.querySelector('[data-testid="transcript-plan-item"]');
@@ -271,6 +573,46 @@ test("conversation renders the plan as a checklist card with in-place progress",
     (entry) => entry.getAttribute("data-plan-entry-status"),
   );
   assert.deepEqual(statuses, ["completed", "in_progress", "pending"]);
+});
+
+test("conversation updates the same plan card in place as entries advance", async () => {
+  // The transcript reducer mutates the plan item in place (same item id), so the
+  // card must be re-rendered rather than replaced: progress copy changes while
+  // the same DOM node is retained. A new node here would mean the reader's
+  // scroll position and any card-level state get thrown away on every update.
+  const { container, setOverrides } =
+    await renderRerenderableTranscript("conversation");
+  const before = container.querySelector(
+    '[data-testid="transcript-plan-item"]',
+  );
+  assert.equal(
+    before.querySelector('[data-testid="transcript-plan-progress"]')
+      .textContent,
+    "1/3 complete",
+  );
+
+  const advanced = items().map((item) =>
+    item.id === "plan:1"
+      ? {
+          ...item,
+          text: "- [x] read the transcript\n- [x] write the summary\n- [ ] ship it (in progress)",
+        }
+      : item,
+  );
+  await setOverrides({ items: advanced });
+
+  const after = container.querySelector('[data-testid="transcript-plan-item"]');
+  assert.equal(after, before, "the same plan card node should be reused");
+  assert.equal(
+    after.querySelector('[data-testid="transcript-plan-progress"]').textContent,
+    "2/3 complete",
+  );
+  assert.deepEqual(
+    [...after.querySelectorAll("[data-plan-entry-status]")].map((entry) =>
+      entry.getAttribute("data-plan-entry-status"),
+    ),
+    ["completed", "completed", "in_progress"],
+  );
 });
 
 test("conversation quiets session boundaries and status rows into centered dividers", async () => {
@@ -376,7 +718,9 @@ test("conversation keeps errors and permission gates loud", async () => {
 
 test("default and compactPreview markup is unchanged by the conversation variant", async () => {
   for (const variant of ["default", "compactPreview"]) {
-    const { container } = await renderTranscript(variant);
+    const { container } = await renderTranscript(variant, {
+      items: baselineItems(),
+    });
     assert.equal(
       container.innerHTML,
       BASELINE_MARKUP[variant],
@@ -384,4 +728,35 @@ test("default and compactPreview markup is unchanged by the conversation variant
     );
     cleanup();
   }
+});
+
+test("the byte-for-byte baseline actually exercises every renderable item kind", async () => {
+  // Guards the fixture itself: a baseline that silently stopped covering a kind
+  // would keep passing the comparison above while protecting nothing. Asserted
+  // against `default`, which renders every kind.
+  const { container } = await renderTranscript("default", {
+    items: baselineItems(),
+  });
+  const present = (selector) => container.querySelector(selector) !== null;
+  for (const [kind, selector] of [
+    ["prompt", '[data-testid="transcript-user-message"]'],
+    ["prompt setup", '[data-testid="transcript-turn-setup"]'],
+    ["assistant message", '[data-testid="transcript-assistant-message"]'],
+    ["thought", '[data-testid="transcript-thought-item"]'],
+    ["plan", '[data-testid="transcript-plan-item"]'],
+    ["tool", '[data-testid="transcript-tool-item"]'],
+    ["permission", '[data-testid="transcript-permission-item"]'],
+    ["lifecycle status/error", '[data-testid="transcript-lifecycle-item"]'],
+    ["session boundary", '[data-testid="session-boundary-divider"]'],
+  ]) {
+    assert.ok(present(selector), `baseline must cover ${kind}`);
+  }
+  // Status and error share the lifecycle testid, so check both are really there.
+  const lifecycleText = [
+    ...container.querySelectorAll('[data-testid="transcript-lifecycle-item"]'),
+  ]
+    .map((node) => node.textContent)
+    .join("\n");
+  assert.match(lifecycleText, /Context compacted/);
+  assert.match(lifecycleText, /Turn failed/);
 });

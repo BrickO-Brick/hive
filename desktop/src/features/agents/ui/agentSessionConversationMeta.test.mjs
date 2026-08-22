@@ -10,7 +10,6 @@ import {
   formatPlanChecklistProgress,
   parsePlanChecklist,
 } from "./agentSessionPlanChecklist.ts";
-import { resolveAgentSessionTranscriptVariant } from "./agentSessionTranscriptVariantChoice.ts";
 
 function item(overrides) {
   return {
@@ -161,6 +160,64 @@ test("buildConversationTurnMeta counts a prompt as an item and skips setup segme
 
 // ---- formatThoughtDisclosureLabel ----
 
+/**
+ * Product ruling (ss-core-02, Slice B review): reasoning folds as soon as the
+ * agent ACTS on it — the next leaf item of any kind — not only when the next
+ * assistant message arrives. A thought pinned open across a long tool run is
+ * exactly the noise the focus view removes. This test exists so the rule is
+ * explicit rather than an accident of `items[index + 1]`.
+ */
+test("buildConversationTurnMeta ends a thought at the next tool call, not the next message", () => {
+  const meta = buildConversationTurnMeta(
+    [
+      turnBlock([
+        {
+          kind: "item",
+          item: item({
+            id: "thought:1",
+            type: "thought",
+            renderClass: "thought",
+            title: "Thinking",
+            text: "…",
+            timestamp: "2026-06-14T19:00:02.000Z",
+          }),
+        },
+        {
+          kind: "item",
+          item: item({
+            id: "tool:1",
+            type: "tool",
+            renderClass: "shell",
+            title: "Ran a command",
+            text: "",
+            descriptor: { label: "Ran a command", preview: "cargo test" },
+            timestamp: "2026-06-14T19:00:06.000Z",
+          }),
+        },
+        {
+          kind: "item",
+          item: item({
+            id: "msg:1",
+            type: "message",
+            renderClass: "message",
+            role: "assistant",
+            title: "Agent",
+            text: "tests pass",
+            timestamp: "2026-06-14T19:01:30.000Z",
+          }),
+        },
+      ]),
+    ],
+    { isTurnLive: true, variant: "conversation" },
+  );
+
+  // 4s to the tool call, NOT 88s to the assistant message: the thought is done
+  // the moment the agent acts, so it folds instead of staying open for the run.
+  assert.deepEqual(meta.thoughtDurationSecondsById, { "thought:1": 4 });
+  // The trailing message is the streaming tail, so the thought is not streaming.
+  assert.equal(meta.streamingItemId, "msg:1");
+});
+
 test("formatThoughtDisclosureLabel says Thinking while streaming", () => {
   assert.equal(
     formatThoughtDisclosureLabel({ durationSeconds: 4, isStreaming: true }),
@@ -207,33 +264,4 @@ test("parsePlanChecklist yields nothing for free-form plan text", () => {
   const checklist = parsePlanChecklist("We will read, then write, then ship.");
   assert.deepEqual(checklist.entries, []);
   assert.equal(formatPlanChecklistProgress(checklist), null);
-});
-
-// ---- resolveAgentSessionTranscriptVariant ----
-
-test("resolveAgentSessionTranscriptVariant opts a wide panel into conversation", () => {
-  assert.equal(
-    resolveAgentSessionTranscriptVariant({
-      isSinglePanelView: false,
-      widthPx: 720,
-    }),
-    "conversation",
-  );
-});
-
-test("resolveAgentSessionTranscriptVariant keeps narrow and single-panel layouts on default", () => {
-  assert.equal(
-    resolveAgentSessionTranscriptVariant({
-      isSinglePanelView: false,
-      widthPx: 380,
-    }),
-    "default",
-  );
-  assert.equal(
-    resolveAgentSessionTranscriptVariant({
-      isSinglePanelView: true,
-      widthPx: 1200,
-    }),
-    "default",
-  );
 });

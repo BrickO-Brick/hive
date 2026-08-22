@@ -77,13 +77,34 @@ function ConversationThought({
     isStreaming,
   });
 
+  // `<details>` fires `toggle` for programmatic `open` changes as well as
+  // clicks. Without this guard the auto-open for a streaming thought would be
+  // recorded as a reader choice and would then pin the disclosure open forever,
+  // so reasoning would never fold once the agent acted on it. Only a toggle
+  // that DISAGREES with the state we last rendered can have come from the
+  // reader.
+  //
+  // Same trap, same guard as the tool-run card's disclosure in the tool-chain
+  // slice; once that lands and extracts a shared controlled-details hook this
+  // should consume it rather than keeping a second copy.
+  const renderedOpenRef = React.useRef(isOpen);
+  React.useLayoutEffect(() => {
+    renderedOpenRef.current = isOpen;
+  }, [isOpen]);
+  const handleToggle = React.useCallback(
+    (event: React.SyntheticEvent<HTMLDetailsElement>) => {
+      const open = event.currentTarget.open;
+      if (open === renderedOpenRef.current) return;
+      setUserOpen(open);
+    },
+    [],
+  );
+
   return (
     <details
       className="not-prose group w-full"
       data-testid="transcript-thought-item"
-      onToggle={(event) => {
-        setUserOpen(event.currentTarget.open);
-      }}
+      onToggle={handleToggle}
       open={isOpen}
       title={formatTranscriptTimestampTitle(item.timestamp)}
     >

@@ -40,8 +40,13 @@ function elapsedSeconds(from: string, to: string): number | null {
  *    can be mid-stream, and only when the agent's turn is actually live. The
  *    thought disclosure auto-opens for exactly that item, so the reader watches
  *    reasoning arrive rather than clicking to find it.
- *  - **How long a thought ran.** A thought is finished once the turn produces a
- *    later item; the gap between the thought's timestamp and that next item's
+ *  - **How long a thought ran.** A thought is finished once the turn produces
+ *    ANY later leaf item — a tool call or plan update, not just the next
+ *    assistant message. This is deliberate: reasoning recedes as soon as the
+ *    agent *acts* on it, which is the moment the reader's attention should move
+ *    to the action. Folding only on the next message would pin reasoning open
+ *    across a long tool run, which is exactly the noise the focus view exists
+ *    to remove. The gap between the thought's timestamp and that next item's
  *    timestamp is the "Thought for Ns" duration. Thoughts with no following
  *    item are still open, so they get no duration.
  *
