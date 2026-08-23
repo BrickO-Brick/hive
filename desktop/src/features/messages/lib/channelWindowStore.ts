@@ -46,7 +46,7 @@ export const emptyChannelWindowStore = (): ChannelWindowStore => ({
   liveSummaries: {},
 });
 
-function cursorsEqual(
+export function cursorsEqual(
   left: ChannelWindowCursor | null,
   right: ChannelWindowCursor | null,
 ) {

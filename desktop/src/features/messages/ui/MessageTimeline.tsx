@@ -214,7 +214,6 @@ const MessageTimelineBase = React.forwardRef<
   const internalScrollRef = React.useRef<HTMLDivElement>(null);
   const scrollContainerRef = externalScrollRef ?? internalScrollRef;
   const contentRef = React.useRef<HTMLDivElement>(null);
-  const topSentinelRef = React.useRef<HTMLDivElement>(null);
   const [virtualizerScrollParent, setVirtualizerScrollParent] =
     React.useState<HTMLDivElement | null>(null);
   const [virtualizerRenderVersion, bumpVirtualizerRenderVersion] =
@@ -768,9 +767,7 @@ const MessageTimelineBase = React.forwardRef<
               )}
               ref={contentRef}
             >
-              {omitHistoryLeadIn ? null : (
-                <div ref={topSentinelRef} aria-hidden className="h-px" />
-              )}
+              {omitHistoryLeadIn ? null : <div aria-hidden className="h-px" />}
 
               {/* Fixed-height history slot keeps the virtual spacer's offset
                   stable across load-older fetches. The intro-only state has no

@@ -5,6 +5,7 @@ import {
   type ChannelWindowCursor,
   type ChannelWindowPage,
   type ChannelWindowStore,
+  cursorsEqual,
   stageOlderChannelWindow,
 } from "@/features/messages/lib/channelWindowStore";
 import { projectChannelWindowMessages } from "@/features/messages/lib/projectChannelWindow";
@@ -15,6 +16,12 @@ import { getChannelWindowEvents } from "@/shared/api/channelWindow";
 const CHANNEL_WINDOW_PAGE_SIZE = 50;
 export type PageOlderResult = { hasOlderMessages: boolean };
 const inFlightPasses = new Map<string, Promise<PageOlderResult>>();
+type StagedFetch = {
+  cursor: ChannelWindowCursor;
+  fromPage: ChannelWindowPage;
+  page: Promise<ChannelWindowPage>;
+};
+const inFlightStagedPages = new Map<string, StagedFetch>();
 type FetchPage = (
   channelId: string,
   requestCursor: ChannelWindowCursor,
@@ -53,8 +60,15 @@ async function fetchPage(
   return parseChannelWindowResponse(events, channelId, requestCursor);
 }
 
-function cursorsEqual(left: ChannelWindowCursor, right: ChannelWindowCursor) {
-  return left.createdAt === right.createdAt && left.eventId === right.eventId;
+function retainedTailIs(
+  queryClient: QueryClient,
+  channelId: string,
+  page: ChannelWindowPage,
+) {
+  const store = queryClient.getQueryData<ChannelWindowStore>(
+    channelWindowKey(channelId),
+  );
+  return store?.pages[store.pages.length - 1] === page;
 }
 
 async function runPage(
@@ -73,11 +87,20 @@ async function runPage(
 
   const requestCursor = tail.nextCursor;
   const matchingStagedPage = store.stagedPage;
+  const staging = inFlightStagedPages.get(channelId);
+  const matchingStaging =
+    staging &&
+    retainedTailIs(queryClient, channelId, staging.fromPage) &&
+    cursorsEqual(staging.cursor, requestCursor)
+      ? staging
+      : null;
   const page =
     matchingStagedPage?.startCursor &&
     cursorsEqual(matchingStagedPage.startCursor, requestCursor)
       ? matchingStagedPage
-      : await fetchPageFn(channelId, requestCursor);
+      : matchingStaging
+        ? await matchingStaging.page
+        : await fetchPageFn(channelId, requestCursor);
   if (!shouldContinue()) return { hasOlderMessages: true };
   const retained = queryClient.getQueryData<ChannelWindowStore>(
     channelWindowKey(channelId),
@@ -90,7 +113,13 @@ async function runPage(
   if (!page.hasMore || !page.nextCursor || !shouldContinue()) {
     return { hasOlderMessages: false };
   }
-  void fetchPageFn(channelId, page.nextCursor)
+  const stagedFetch = fetchPageFn(channelId, page.nextCursor);
+  inFlightStagedPages.set(channelId, {
+    cursor: page.nextCursor,
+    fromPage: page,
+    page: stagedFetch,
+  });
+  void stagedFetch
     .then((staged) => {
       if (!shouldContinue()) return;
       queryClient.setQueryData<ChannelWindowStore>(
@@ -101,6 +130,11 @@ async function runPage(
     })
     .catch((error) => {
       console.error("Failed to stage older messages", channelId, error);
+    })
+    .finally(() => {
+      if (inFlightStagedPages.get(channelId)?.page === stagedFetch) {
+        inFlightStagedPages.delete(channelId);
+      }
     });
   return { hasOlderMessages: true };
 }

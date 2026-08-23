@@ -75,6 +75,116 @@ test("commits one page and stages exactly one successor outside projection", asy
   );
 });
 
+test("trigger during successor staging awaits the same request", async () => {
+  const channelId = "await-in-flight-stage";
+  const { queryClient, head } = harness(channelId);
+  const older = page(head.nextCursor, [event("older", 200)]);
+  const successor = page(older.nextCursor, [event("successor", 100)], false);
+  let releaseSuccessor;
+  const successorPending = new Promise((resolve) => {
+    releaseSuccessor = () => resolve(successor);
+  });
+  const calls = [];
+  const fetchPage = async (_channelId, requestCursor) => {
+    calls.push(requestCursor);
+    return calls.length === 1 ? older : successorPending;
+  };
+
+  await pageOlderMessagesUntilRowFloor(
+    queryClient,
+    channelId,
+    () => true,
+    fetchPage,
+  );
+  const secondPass = pageOlderMessagesUntilRowFloor(
+    queryClient,
+    channelId,
+    () => true,
+    fetchPage,
+  );
+  await flush();
+
+  assert.deepEqual(calls, [head.nextCursor, older.nextCursor]);
+  releaseSuccessor();
+  await secondPass;
+  assert.equal(
+    queryClient.getQueryData(channelWindowKey(channelId)).pages.length,
+    3,
+  );
+});
+
+test("replaced tail does not reuse its stale in-flight stage", async () => {
+  const channelId = "reject-stale-in-flight-stage";
+  const { queryClient, head } = harness(channelId);
+  const older = page(head.nextCursor, [event("older", 200)]);
+  const staleSuccessor = page(
+    older.nextCursor,
+    [event("stale-successor", 100)],
+    false,
+  );
+  const freshSuccessor = page(
+    older.nextCursor,
+    [event("fresh-successor", 90)],
+    false,
+  );
+  let releaseStaleSuccessor;
+  const staleSuccessorPending = new Promise((resolve) => {
+    releaseStaleSuccessor = () => resolve(staleSuccessor);
+  });
+  const calls = [];
+  const fetchPage = async (_channelId, requestCursor) => {
+    calls.push(requestCursor);
+    if (calls.length === 1) return older;
+    if (calls.length === 2) return staleSuccessorPending;
+    return freshSuccessor;
+  };
+
+  await pageOlderMessagesUntilRowFloor(
+    queryClient,
+    channelId,
+    () => true,
+    fetchPage,
+  );
+  const replacementHead = page(null, [older.rows[0].event]);
+  queryClient.setQueryData(
+    channelWindowKey(channelId),
+    replaceNewestChannelWindow(
+      queryClient.getQueryData(channelWindowKey(channelId)),
+      replacementHead,
+    ),
+  );
+
+  const replacementPass = pageOlderMessagesUntilRowFloor(
+    queryClient,
+    channelId,
+    () => true,
+    fetchPage,
+  );
+  try {
+    await flush();
+    assert.deepEqual(calls, [
+      head.nextCursor,
+      older.nextCursor,
+      replacementHead.nextCursor,
+    ]);
+  } finally {
+    releaseStaleSuccessor();
+  }
+  await replacementPass;
+  assert.deepEqual(
+    queryClient
+      .getQueryData(channelMessagesKey(channelId))
+      .map((item) => item.content),
+    ["fresh-successor", "older"],
+  );
+
+  await flush();
+  assert.equal(
+    queryClient.getQueryData(channelWindowKey(channelId)).stagedPage,
+    null,
+  );
+});
+
 test("next paging pass consumes the staged page without network wait", async () => {
   const channelId = "consume-staged";
   const { queryClient, head } = harness(channelId);

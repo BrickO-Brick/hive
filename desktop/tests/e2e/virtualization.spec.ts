@@ -251,9 +251,9 @@ test.describe("list virtualization", () => {
     // reproduce Chromium/WebKit's native wheel → scroll callback ordering. The
     // old boundary rollback moved the viewport back down before the fetch
     // committed; keep that pre-prepend reversal below the same 5px frame bar.
-    // A 300ms relay delay leaves the input boundary and prepend commit as two
-    // distinct phases so this assertion cannot accidentally measure only the
-    // later anchor correction.
+    // Start outside the history lookahead and let native wheel input cross it.
+    // This preserves the pre-prepend rollback measurement whether the page is
+    // already staged locally or still incurs the configured relay delay.
     await installMockBridge(page, {
       deepHistoryMessageCount: 1_800,
       channelWindowDelayMs: 300,
@@ -284,6 +284,7 @@ test.describe("list virtualization", () => {
               id: row.dataset.messageId ?? "",
               top: row.getBoundingClientRect().top - scrollerTop,
               scrollHeight: s.scrollHeight,
+              clientHeight: s.clientHeight,
               bottomDistance: s.scrollHeight - s.clientHeight - s.scrollTop,
             };
           }
@@ -306,7 +307,7 @@ test.describe("list virtualization", () => {
       });
       await page.waitForTimeout(300);
       await timeline.evaluate((element) => {
-        element.scrollTop = 180;
+        element.scrollTop = element.clientHeight * 2;
       });
       await page.waitForTimeout(150);
       const before = await sampleVisibleAnchor();
@@ -353,12 +354,14 @@ test.describe("list virtualization", () => {
       const box = await timeline.boundingBox();
       if (!box) throw new Error("timeline has no bounding box");
       await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-      for (const deltaY of [-60, -30, -20, -15]) {
+      for (const deltaY of [-before.clientHeight * 0.75]) {
         await page.mouse.wheel(0, deltaY);
         await page.waitForTimeout(12);
       }
       const wheelTrace = await wheelTracePromise;
-      expect(wheelTrace.minScrollTop).toBeLessThanOrEqual(350);
+      expect(wheelTrace.minScrollTop).toBeLessThanOrEqual(
+        before.clientHeight * 1.5,
+      );
       expect(wheelTrace.maxBoundaryRollback).toBeLessThan(5);
       // Linux Chromium delivers CDP wheel input with more latency than macOS,
       // so the burst's final delta can land AFTER the anchor baseline sample

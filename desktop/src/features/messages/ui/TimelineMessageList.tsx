@@ -720,6 +720,8 @@ function VirtualizedTimelineRows({
       updatePinnedDayLabel(offset);
       if (offset <= list.viewportSize * 1.5) {
         // Begin loading before momentum reaches the retained history boundary.
+        // Arming here also prevents layout-only near-top scrolls from poisoning
+        // the reader's next upward wheel input.
         armUpwardMomentum(onStartReached?.() ?? false);
       }
     },
