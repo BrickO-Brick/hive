@@ -38,10 +38,10 @@ import {
 } from "@/shared/api/relayClosedRecovery";
 import { getChannelReconnectRepairEvents } from "@/shared/api/channelReconnectRepair";
 import { replayLiveSubscriptions } from "@/shared/api/relayReconnectReplay";
+import { handlePublishOk } from "@/shared/api/relayPublishRecovery";
 import {
   activateRateLimit,
   parseRateLimitHint,
-  rateLimitRemainingMs,
   waitForRateLimit,
 } from "@/shared/api/relayRateLimitGate";
 import {
@@ -834,47 +834,8 @@ export class RelayClient {
       // Relay back-pressure — arm the gate until the window expires.
       if (notice.startsWith("rate-limited:")) {
         activateRateLimit(parseRateLimitHint(notice));
-        // Older relays answer an over-quota EVENT with this uncorrelated
-        // NOTICE instead of `OK false`; the publish would otherwise sit until
-        // PUBLISH_TIMEOUT_MS. Give every in-flight publish its one retry.
-        for (const pendingEvent of this.pendingEvents.values()) {
-          this.retryPublishAfterRateLimit(pendingEvent);
-        }
       }
     }
-  }
-
-  /**
-   * The relay refused an EVENT for back-pressure. Re-send it once the gate
-   * clears instead of failing the user's send — the burst that tripped the
-   * limit is typically our own post-(re)connect REQ fan-out, and the relay
-   * dedups by id so a resend can never double-post. One retry only; a second
-   * refusal is reported. Returns `false` when no retry is available.
-   */
-  private retryPublishAfterRateLimit(pendingEvent: PendingEvent): boolean {
-    if (
-      pendingEvent.retriedAfterRateLimit ||
-      rateLimitRemainingMs() >= PUBLISH_TIMEOUT_MS
-    ) {
-      return false;
-    }
-    pendingEvent.retriedAfterRateLimit = true;
-    const { event } = pendingEvent;
-    void waitForRateLimit().then(async () => {
-      // Settled meanwhile (timeout, reset, community switch) — nothing to do.
-      if (this.pendingEvents.get(event.id) !== pendingEvent) return;
-      try {
-        await this.sendRaw(["EVENT", event]);
-      } catch (error) {
-        if (this.pendingEvents.get(event.id) !== pendingEvent) return;
-        window.clearTimeout(pendingEvent.timeout);
-        this.pendingEvents.delete(event.id);
-        pendingEvent.reject(
-          this.normalizeRelayError(error, "Failed to re-send event to relay."),
-        );
-      }
-    });
-    return true;
   }
 
   private async handleAuthChallenge(challenge: string, generation: number) {
@@ -951,24 +912,13 @@ export class RelayClient {
       return;
     }
 
-    const pendingEvent = this.pendingEvents.get(eventId);
-    if (!pendingEvent) {
-      return;
-    }
-
-    if (!success && message.startsWith("rate-limited:")) {
-      activateRateLimit(parseRateLimitHint(message));
-      if (this.retryPublishAfterRateLimit(pendingEvent)) return;
-    }
-
-    window.clearTimeout(pendingEvent.timeout);
-    this.pendingEvents.delete(eventId);
-
-    if (success) {
-      pendingEvent.resolve(pendingEvent.event);
-    } else {
-      pendingEvent.reject(new Error(message || "Relay rejected the event."));
-    }
+    handlePublishOk({
+      pendingEvents: this.pendingEvents,
+      eventId,
+      success,
+      message,
+      sendEvent: (event) => this.sendRaw(["EVENT", event]),
+    });
   }
 
   private hasLiveSubscriptions() {

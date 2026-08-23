@@ -34,6 +34,14 @@ Date.now = () => fakeNow;
 globalThis.window = {
   setTimeout: fakeSetTimeout,
   clearTimeout: fakeClearTimeout,
+  // resetConnection() closes the socket through the Tauri bridge; answer it
+  // so the test stays quiet and a real warning cannot hide in the noise.
+  __TAURI_INTERNALS__: {
+    invoke: async (command) => {
+      if (command === "plugin:websocket|disconnect") return;
+      throw new Error(`Unexpected Tauri command: ${command}`);
+    },
+  },
 };
 
 // Import after the window shim is installed.
@@ -130,22 +138,20 @@ test("a non-rate-limit OK=false still rejects immediately", async () => {
   assert.equal(publish.error?.message, "restricted: not a channel member");
 });
 
-test("legacy NOTICE rate-limited gives pending publishes the same single retry", async () => {
+test("an uncorrelated NOTICE rate-limited arms the gate but never re-sends", async () => {
   const { client, sent } = makeClient();
   const publish = watch(client.publishEvent(event, "timeout", "send failed"));
   await tickTo(0);
 
+  // The NOTICE may have been triggered by a REQ or COUNT, and an ephemeral
+  // event the relay already fanned out would be delivered twice on resend.
   await deliver(client, ["NOTICE", RATE_LIMITED]);
   await tickTo(0);
-  assert.equal(publish.settled, false);
-  assert.equal(sent.length, 1);
+  assert.equal(isRateLimited(), true, "gate armed from the NOTICE");
+  assert.equal(publish.settled, false, "NOTICE cannot be attributed; no fail");
 
-  // A second uncorrelated NOTICE cannot be attributed to this publish; it must
-  // neither fail it nor grant a second retry.
-  await deliver(client, ["NOTICE", RATE_LIMITED]);
   await tickTo(3_000);
-  assert.equal(publish.settled, false);
-  assert.equal(sent.length, 2, "exactly one resend");
+  assert.equal(sent.length, 1, "no resend from an uncorrelated NOTICE");
 
   await deliver(client, ["OK", "e1", true, ""]);
   await tickTo(3_000);
