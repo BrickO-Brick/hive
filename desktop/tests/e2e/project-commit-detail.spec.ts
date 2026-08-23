@@ -260,9 +260,6 @@ test("creating a project publishes its initial repository grouping", async ({
   await page
     .getByTestId("create-project-description")
     .fill("A grouped project created through the desktop app.");
-  await page
-    .getByTestId("create-project-clone-url")
-    .fill("https://relay.example.com/git/owner/multi-repo-demo.git");
   await page.getByTestId("create-project-submit").click();
 
   await expect(page.getByTestId("create-project-dialog")).toBeHidden();
@@ -314,7 +311,7 @@ test("creating a project publishes its initial repository grouping", async ({
     .toBe(2);
 });
 
-test("unsupported relays keep the initial repository accessible", async ({
+test("unsupported relays cannot create a channel-first project", async ({
   page,
 }) => {
   await enableProjectsFeature(page);
@@ -329,26 +326,10 @@ test("unsupported relays keep the initial repository accessible", async ({
   await page.getByTestId("create-project-name").fill("legacy-fallback");
   await page.getByTestId("create-project-submit").click();
 
-  await expect(page.getByTestId("create-project-dialog")).toBeHidden();
-  await expect(page.getByText("Created as a standalone project")).toBeVisible();
-  await waitForAnimations(page);
-  const projectEntry = page
-    .locator(
-      '[data-testid="project-card-legacy-fallback"], [data-testid="project-row-legacy-fallback"]',
-    )
-    .first();
-  await expect(projectEntry).toBeVisible();
-  await projectEntry
-    .getByRole("button", { name: "View legacy-fallback" })
-    .click();
-  const repositoryRow = page.getByTestId(
-    "sidebar-project-repository-legacy-fallback",
-  );
-  await expect(repositoryRow).toBeVisible();
-  await waitForAnimations(page);
-  await page.screenshot({
-    path: `${SHOTS}/06-single-repository-add.png`,
-  });
+  await expect(page.getByTestId("create-project-dialog")).toBeVisible();
+  await expect(
+    page.getByText("This relay does not support projects yet"),
+  ).toBeVisible();
 
   const acceptedKinds = await page.evaluate(
     () =>
@@ -360,7 +341,7 @@ test("unsupported relays keep the initial repository accessible", async ({
         )
         .map((event) => event.kind) ?? [],
   );
-  expect(acceptedKinds).toEqual([30617]);
+  expect(acceptedKinds).toEqual([]);
 });
 
 test("project creation can retry after its repository publication fails", async ({
