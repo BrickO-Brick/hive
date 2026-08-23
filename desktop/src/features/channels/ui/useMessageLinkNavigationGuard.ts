@@ -1,12 +1,12 @@
 import * as React from "react";
 
-import type { ParsedMessageLink } from "@/features/messages/lib/messageLink";
+import { registerMessageTargetNavigationGuard } from "@/app/navigation/messageTargetNavigationGuard";
 
 export function useMessageLinkNavigationGuard(
   requireThreadEditResolution: () => boolean,
 ) {
-  return React.useCallback(
-    (_link: ParsedMessageLink) => requireThreadEditResolution(),
+  React.useLayoutEffect(
+    () => registerMessageTargetNavigationGuard(requireThreadEditResolution),
     [requireThreadEditResolution],
   );
 }

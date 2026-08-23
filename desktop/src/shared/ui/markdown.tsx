@@ -118,7 +118,6 @@ import { ProgressiveImage } from "./markdown/ProgressiveImage";
 import { MessageLinkPill } from "./markdown/MessageLinkPill";
 import { renderCachedMarkdown } from "./markdown/nodeCache";
 import { useMessageLinkPreviews } from "./markdown/useMessageLinkPreviews";
-import { useMessageLinkNavigationGuard } from "./markdown/messageLinkNavigationGuardContext";
 import {
   MarkdownRuntimeContext,
   useMarkdownRuntime,
@@ -1744,7 +1743,6 @@ function MarkdownInner({
   const { channels: rawChannels } = useChannelNavigation();
   const channels = useStableArray(rawChannels);
   const { goChannel, goAgents } = useAppNavigation();
-  const allowMessageLinkNavigation = useMessageLinkNavigationGuard();
   const onOpenChannel = React.useCallback(
     (channelId: string) => {
       void goChannel(channelId);
@@ -1754,16 +1752,15 @@ function MarkdownInner({
   const onOpenEntityLink = useOpenEntityLink();
   const onOpenMessageLink = React.useCallback(
     (link: ParsedMessageLink) => {
-      if (!allowMessageLinkNavigation(link)) return; // Guard before URL mutation.
-      // Always route through `goChannel` with `messageId` set: the channel
-      // route already handles scroll-into-view + highlight via
+      // Always route through `goChannel` with `messageId` set: the navigation
+      // boundary guards every message-targeting caller before URL mutation.
       // `useAnchoredScroll` + `getEventById` backfill, and works for
       void goChannel(link.channelId, {
         messageId: link.messageId,
         threadRootId: link.threadRootId,
       });
     },
-    [allowMessageLinkNavigation, goChannel],
+    [goChannel],
   );
   const relayOrigin = useRelayOrigin();
   const resolvedLinkPreviews = useMessageLinkPreviews({

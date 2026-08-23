@@ -7,6 +7,7 @@ import {
 } from "@tanstack/react-router";
 
 import { openSearchHitWithNavigation } from "@/app/navigation/searchHitNavigation";
+import { allowMessageTargetNavigation } from "@/app/navigation/messageTargetNavigationGuard";
 import type { SearchHit } from "@/shared/api/types";
 
 type NavigationBehavior = {
@@ -256,8 +257,11 @@ export function useAppNavigation() {
         thread?: string;
         threadRootId?: string | null;
       },
-    ) =>
-      commitNavigation(
+    ) => {
+      if (options?.messageId && !allowMessageTargetNavigation()) {
+        return Promise.resolve(false);
+      }
+      return commitNavigation(
         {
           to: "/channels/$channelId",
           params: {
@@ -282,7 +286,8 @@ export function useAppNavigation() {
           replace: options?.replace,
           resetScroll: options?.messageId ? true : undefined,
         },
-      ),
+      );
+    },
     [commitNavigation],
   );
 

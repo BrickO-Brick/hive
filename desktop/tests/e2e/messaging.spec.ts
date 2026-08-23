@@ -3756,6 +3756,84 @@ test("a refused sent-from-thread link preserves the edit and retries after cance
   await expect(page).toHaveURL(new RegExp(`thread=${destinationRootId}`));
 });
 
+test("a refused search result preserves the edit and retries after cancel", async ({
+  page,
+}) => {
+  const sourceRoot = `Search guard source ${Date.now()}`;
+  const sourceReply = `Search guard reply ${Date.now()}`;
+  const destinationRoot = `Search guard destination ${Date.now()}`;
+  const dirtyReply = `${sourceReply} unsaved byte-for-byte`;
+
+  await page.goto("/");
+  await page.waitForFunction(
+    () => typeof window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__ === "function",
+  );
+  const { destinationRootId, sourceRootId } = await page.evaluate(
+    ({ destinationRoot, sourceReply, sourceRoot }) => {
+      const emit = window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__;
+      if (!emit) throw new Error("Mock message emitter is unavailable.");
+      const destination = emit({
+        channelName: "general",
+        content: destinationRoot,
+      });
+      const source = emit({ channelName: "general", content: sourceRoot });
+      emit({
+        channelName: "general",
+        content: sourceReply,
+        parentEventId: source.id,
+      });
+      return { destinationRootId: destination.id, sourceRootId: source.id };
+    },
+    { destinationRoot, sourceReply, sourceRoot },
+  );
+
+  await page.getByTestId("channel-general").click();
+  const timeline = page.getByTestId("message-timeline");
+  const source = timeline.locator(`[data-message-id="${sourceRootId}"]`);
+  await source.hover();
+  await source.getByRole("button", { name: "Reply" }).click({ force: true });
+  const threadPanel = page.getByTestId("message-thread-panel");
+  const threadInput = threadPanel.getByTestId("message-input");
+  const reply = threadPanel
+    .getByTestId("message-row")
+    .filter({ hasText: sourceReply })
+    .last();
+  await reply.hover();
+  await reply.getByRole("button", { name: "More actions" }).click();
+  await page.getByRole("menuitem", { name: "Edit message" }).click();
+  await threadInput.fill(dirtyReply);
+
+  const threadUrl = page.url();
+  expect(threadUrl).toContain(`thread=${sourceRootId}`);
+  await page.getByTestId("open-search").click();
+  await page.getByTestId("search-dialog-input").fill(destinationRoot);
+  const destinationResult = page.getByTestId(
+    `search-result-${destinationRootId}`,
+  );
+  await expect(destinationResult).toBeVisible();
+  await destinationResult.click();
+
+  const refusal = page.getByText(
+    "Finish or cancel your edit before leaving the thread.",
+  );
+  await expect(refusal).toHaveCount(1);
+  await expect(threadPanel).toBeVisible();
+  await expect(threadPanel.getByTestId("edit-target")).toBeVisible();
+  await expect(threadInput).toHaveText(dirtyReply);
+  await expect(page).toHaveURL(threadUrl);
+
+  await threadInput.press("Escape");
+  await expect(threadPanel.getByTestId("edit-target")).toHaveCount(0);
+  await page.getByTestId("open-search").click();
+  await page.getByTestId("search-dialog-input").fill(destinationRoot);
+  await destinationResult.click();
+  await expect(page).not.toHaveURL(threadUrl);
+  await expect(threadPanel.getByTestId("message-thread-head")).toContainText(
+    destinationRoot,
+  );
+  await expect(page).toHaveURL(new RegExp(`thread=${destinationRootId}`));
+});
+
 test("ArrowUp in an empty composer edits your last message right after sending", async ({
   page,
 }) => {
