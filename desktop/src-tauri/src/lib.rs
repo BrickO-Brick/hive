@@ -717,6 +717,7 @@ pub fn run() {
             mesh_serving_usage,
             mesh_installed_models,
             mesh_model_catalog,
+            commands::mesh_buddy_window::open_mesh_buddy_window,
             update_managed_agent,
             discover_backend_providers,
             probe_backend_provider,

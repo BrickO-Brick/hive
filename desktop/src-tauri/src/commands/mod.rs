@@ -35,6 +35,7 @@ mod media_raw;
 mod media_snapshot_png;
 mod media_transcode;
 mod media_upload_progress;
+pub(crate) mod mesh_buddy_window;
 #[cfg(feature = "mesh-llm")]
 pub(crate) mod mesh_llm;
 #[cfg(feature = "mesh-llm")]

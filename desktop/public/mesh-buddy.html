@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Mesh Buddy</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #101014;
+        color: #f5f5f7;
+        font-family: -apple-system, "Inter", sans-serif;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        user-select: none;
+        cursor: default;
+      }
+      .wrap { text-align: center; }
+      .face { font-size: 96px; line-height: 1; }
+      .count {
+        margin-top: 18px;
+        font-size: 40px;
+        font-weight: 700;
+        font-variant-numeric: tabular-nums;
+      }
+      .label {
+        margin-top: 6px;
+        font-size: 12px;
+        color: #9a9aa2;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="face" id="face">🙂</div>
+      <div class="count" id="count">0</div>
+      <div class="label">tokens helped compute</div>
+    </div>
+    <script>
+      const invoke =
+        window.__TAURI__?.core?.invoke || window.__TAURI_INTERNALS__?.invoke;
+      async function tick() {
+        if (!invoke) return;
+        try {
+          const usage = await invoke("mesh_serving_usage");
+          const tokens = usage?.tokensServed || 0;
+          const inflight = usage?.inflight || 0;
+          document.getElementById("count").textContent = tokens.toLocaleString();
+          document.getElementById("face").textContent =
+            inflight > 0 ? "😄" : tokens > 0 ? "😊" : "🙂";
+        } catch {
+          // Mesh not running — keep whatever is shown.
+        }
+      }
+      tick();
+      setInterval(tick, 2000);
+    </script>
+  </body>
+</html>

@@ -399,6 +399,7 @@ pub(crate) async fn restore_mesh_sharing(app: &AppHandle, state: &AppState) -> C
         );
     }
     mesh_llm::publish_current_status_once(app, "restore").await;
+    open_mesh_buddy_on_main_thread(app);
     Ok(())
 }
 
@@ -528,7 +529,22 @@ pub async fn mesh_start_node(
         }
     }
     mesh_llm::publish_current_status_once(&app, "start").await;
+    if sharing_config.is_some() {
+        open_mesh_buddy_on_main_thread(&app);
+    }
     Ok(status)
+}
+
+/// Pop the Mesh Buddy companion when this machine starts serving. Window
+/// creation must not run on an async worker on macOS, so hop to main.
+fn open_mesh_buddy_on_main_thread(app: &AppHandle) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Err(error) = crate::commands::mesh_buddy_window::open_mesh_buddy_window_impl(&handle)
+        {
+            eprintln!("buzz-mesh: failed to open mesh buddy window: {error}");
+        }
+    });
 }
 
 pub(crate) async fn ensure_client_node_for_model(
