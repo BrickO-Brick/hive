@@ -1,5 +1,5 @@
 import * as React from "react";
-import { LogIn } from "lucide-react";
+import { Hash, LogIn } from "lucide-react";
 import { AnimatePresence } from "motion/react";
 import { useAppNavigation } from "@/app/navigation/useAppNavigation";
 import { useMediaUpload } from "@/features/messages/lib/useMediaUpload";
@@ -27,7 +27,6 @@ import { useComposerHeightPadding } from "@/features/messages/ui/useComposerHeig
 import { UserProfilePanel } from "@/features/profile/ui/UserProfilePanel";
 import { AgentSessionThreadPanel } from "@/features/channels/ui/AgentSessionThreadPanel";
 import { ChannelManagementAuxiliaryPanel } from "@/features/channels/ui/ChannelManagementAuxiliaryPanel";
-import { IdleAuxiliaryPanel } from "@/features/channels/ui/IdleAuxiliaryPanel";
 import { RightAuxiliaryPane } from "@/features/channels/ui/RightAuxiliaryPane";
 import { ThreadViewModeToggle } from "@/features/channels/ui/ThreadViewModeToggle";
 import { FocusThreadDrawer } from "@/features/channels/ui/FocusThreadDrawer";
@@ -47,7 +46,6 @@ import {
 import { useWelcomeComposerBanner } from "@/features/channels/ui/useWelcomeComposerBanner";
 import { mentionsKnownAgent } from "@/features/channels/ui/ChannelPane.helpers";
 import { HuddleStartingView, HuddleTranscriptIntro } from "@/features/huddle";
-import { ChannelGlyph } from "@/features/channels/ui/ChannelGlyph";
 import { useChannelIntro } from "@/features/channels/ui/useChannelIntro";
 import type { ChannelPaneProps } from "@/features/channels/ui/ChannelPane.types";
 import * as agentSessionSelection from "@/features/channels/ui/agentSessionSelection";
@@ -79,8 +77,6 @@ export const ChannelPane = React.memo(function ChannelPane({
   editTarget = null,
   fetchOlder,
   header,
-  idleAuxiliaryPanel = null,
-  idleAuxiliaryTitle = "",
   hasOlderMessages,
   historyExhausted,
   isFetchingOlder,
@@ -108,10 +104,8 @@ export const ChannelPane = React.memo(function ChannelPane({
   onCloseAgentSession,
   onCloseChannelManagement,
   onChannelManagementDeleted,
-  onCloseIdleAuxiliaryPanel,
   onCloseProfilePanel,
   onAddAgent,
-  onAddFiles,
   onBrowseChannels,
   onCreateChannel,
   onCloseThread,
@@ -402,7 +396,6 @@ export const ChannelPane = React.memo(function ChannelPane({
   const standardChannelIntro = useChannelIntro({
     activeChannel,
     onAddAgent,
-    onAddFiles,
     onBrowseChannels,
     onCreateChannel,
     onOpenMembers,
@@ -464,15 +457,9 @@ export const ChannelPane = React.memo(function ChannelPane({
     threadViewMode === "focus" &&
     useSplitAuxiliaryPane &&
     (Boolean(threadHeadMessage) || shouldShowThreadSkeleton);
-  const useFocusIdleDrawer =
-    useSplitAuxiliaryPane &&
-    Boolean(idleAuxiliaryPanel) &&
-    Boolean(onCloseIdleAuxiliaryPanel);
   const { channelIsCovered, markExitComplete } = useFocusDrawerPresence(
-    useFocusThreadDrawer || useFocusIdleDrawer,
-    useFocusThreadDrawer
-      ? onCloseThread
-      : (onCloseIdleAuxiliaryPanel ?? onCloseThread),
+    useFocusThreadDrawer,
+    onCloseThread,
   );
   const { changeThreadViewMode, layoutScrollTargetId, resolveScrollTarget } =
     useThreadViewModeSwitch({
@@ -528,19 +515,6 @@ export const ChannelPane = React.memo(function ChannelPane({
       </FocusThreadDrawer>
     ) : (
       wrapAux(panel, "message-thread-panel", { key: THREAD_SURFACE_KEY })
-    );
-  const wrapIdlePanel = (panel: React.ReactNode) =>
-    useFocusIdleDrawer && onCloseIdleAuxiliaryPanel ? (
-      <FocusThreadDrawer
-        channelName={activeChannel?.name ?? "channel"}
-        key="idle-auxiliary-surface"
-        label={idleAuxiliaryTitle || "Panel"}
-        onClose={onCloseIdleAuxiliaryPanel}
-      >
-        {panel}
-      </FocusThreadDrawer>
-    ) : (
-      wrapAux(panel, "idle-auxiliary-panel")
     );
   const threadHeaderLeading = useSplitAuxiliaryPane ? (
     <ThreadViewModeToggle onChange={changeThreadViewMode} />
@@ -669,12 +643,7 @@ export const ChannelPane = React.memo(function ChannelPane({
                 className="flex items-center gap-3 border-t border-border/80 bg-card/50 px-5 py-3"
               >
                 <div className="flex min-w-0 flex-1 items-center gap-2 text-sm text-muted-foreground">
-                  {activeChannel ? (
-                    <ChannelGlyph
-                      channel={activeChannel}
-                      className="h-4 w-4 shrink-0"
-                    />
-                  ) : null}
+                  <Hash className="h-4 w-4 shrink-0" />
                   <span className="truncate">
                     Viewing{" "}
                     <span className="font-medium text-foreground">
@@ -966,22 +935,6 @@ export const ChannelPane = React.memo(function ChannelPane({
             );
             return wrapAux(panel, "user-profile-panel");
           })()
-        ) : idleAuxiliaryPanel && onCloseIdleAuxiliaryPanel ? (
-          wrapIdlePanel(
-            <IdleAuxiliaryPanel
-              canResetWidth={canResetThreadPanelWidth}
-              isFocusDrawer={useFocusIdleDrawer}
-              isSinglePanelView={isSinglePanelView}
-              onClose={onCloseIdleAuxiliaryPanel}
-              onResetWidth={onResetThreadPanelWidth}
-              onResizeStart={onThreadPanelResizeStart}
-              title={idleAuxiliaryTitle}
-              useSplitAuxiliaryPane={useSplitAuxiliaryPane}
-              widthPx={threadPanelWidthPx}
-            >
-              {idleAuxiliaryPanel}
-            </IdleAuxiliaryPanel>,
-          )
         ) : null}
       </AnimatePresence>
     </div>

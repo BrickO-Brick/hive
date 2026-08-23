@@ -24,7 +24,10 @@ import {
 import { compareMembersByRole } from "@/features/channels/lib/memberUtils";
 import { useAppNavigation } from "@/app/navigation/useAppNavigation";
 import { useChannelWorkflowsQuery } from "@/features/workflows/hooks";
-import { DEFAULT_EPHEMERAL_TTL_SECONDS } from "@/features/channels/lib/ephemeralChannel";
+import {
+  DEFAULT_EPHEMERAL_TTL_SECONDS,
+  formatTtlDuration,
+} from "@/features/channels/lib/ephemeralChannel";
 import type { Channel, ChannelMember, Workflow } from "@/shared/api/types";
 import { useWorkflowEditorOverlay } from "@/shared/context/WorkflowEditorOverlayContext";
 import { useFeatureEnabled } from "@/shared/features";
@@ -62,10 +65,7 @@ import {
   CHANNEL_FORM_FIELD_CONTROL_CLASS,
   CHANNEL_FORM_FIELD_SHELL_CLASS,
 } from "./channelFormStyles";
-import {
-  ChannelTypeDetailRow,
-  ChannelTypeSettings,
-} from "./ChannelTypeSettings";
+import { ChannelTypeSettings } from "./ChannelTypeSettings";
 import { ChannelPermissionsSettings } from "./ChannelPermissionsSettings";
 import {
   ActionFieldRow,
@@ -555,7 +555,6 @@ export function ChannelManagementSheet({
                     data-testid="channel-management-lifecycle"
                   >
                     <ChannelTypeSettings
-                      channelId={resolvedChannel.id}
                       disabled={isSavingChannelEdits}
                       onTemporaryChange={(temporary) => {
                         setIsEphemeralDraft(temporary);
@@ -779,10 +778,16 @@ function ChannelManagementPanelContent({
             <FieldGroup testId="channel-management-details" title="Details">
               {resolvedChannel.channelType !== "dm" ? (
                 <>
-                  <ChannelTypeDetailRow
-                    canEdit={canEditChannel}
-                    channel={resolvedChannel}
-                    onEdit={onOpenEdit}
+                  <EditableInfoFieldRow
+                    editTestId="channel-management-edit-channel-type"
+                    label="Channel type"
+                    onEdit={canEditChannel ? onOpenEdit : undefined}
+                    testId="channel-management-type"
+                    value={
+                      resolvedChannel.ttlSeconds === null
+                        ? "Ongoing"
+                        : `Temporary · ${formatTtlDuration(resolvedChannel.ttlSeconds)}`
+                    }
                   />
                   <EditableInfoFieldRow
                     editTestId="channel-management-edit-visibility"

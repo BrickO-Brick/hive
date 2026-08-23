@@ -46,13 +46,6 @@ export type ChannelPaneProps = {
   } | null;
   fetchOlder?: () => Promise<void>;
   header?: React.ReactNode;
-  /**
-   * Idle-state body for the right auxiliary pane (project extras, etc.).
-   * Shown only when no thread, profile, agent session, or channel-management
-   * panel is open — the same slot as those panels.
-   */
-  idleAuxiliaryPanel?: React.ReactNode;
-  idleAuxiliaryTitle?: string;
   hasOlderMessages?: boolean;
   /** True when the loaded window provably starts at the channel's beginning. */
   historyExhausted?: boolean;
@@ -86,10 +79,8 @@ export type ChannelPaneProps = {
   onCloseAgentSession: () => void;
   onCloseChannelManagement?: () => void;
   onChannelManagementDeleted?: () => void;
-  onCloseIdleAuxiliaryPanel?: () => void;
   onCloseProfilePanel: () => void;
   onAddAgent?: (options?: { beforeSend?: () => void }) => void;
-  onAddFiles?: () => void;
   onBrowseChannels?: () => void;
   onCreateChannel?: () => void;
   onCloseThread: () => void;

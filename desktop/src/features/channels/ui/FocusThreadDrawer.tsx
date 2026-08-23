@@ -11,8 +11,6 @@ import { cn } from "@/shared/lib/cn";
 type FocusThreadDrawerProps = {
   channelName: string;
   children: React.ReactNode;
-  /** Accessible name for the drawer. Channel threads leave the default. */
-  label?: string;
   onClose: () => void;
 };
 
@@ -141,7 +139,6 @@ const REDUCED_MOTION_TRANSITION = { duration: 0.12, ease: "linear" } as const;
 export function FocusThreadDrawer({
   channelName,
   children,
-  label = "Thread",
   onClose,
 }: FocusThreadDrawerProps) {
   const prefersReducedMotion = useReducedMotion();
@@ -223,7 +220,7 @@ export function FocusThreadDrawer({
           // see the token for why a `border-l` cannot.
           "absolute inset-y-0 right-0 flex flex-col overflow-hidden rounded-l-2xl bg-background shadow-panel-left",
         )}
-        aria-label={label}
+        aria-label="Thread"
         data-testid="focus-thread-drawer"
         ref={drawerRef}
         role="complementary"

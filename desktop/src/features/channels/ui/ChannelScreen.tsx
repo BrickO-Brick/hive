@@ -88,11 +88,6 @@ export function ChannelScreen({
   autoSendDraftKey,
   currentIdentity,
   currentProfile,
-  headerEndActions,
-  idleAuxiliaryPanel,
-  idleAuxiliaryTitle,
-  onAddFiles,
-  onCloseIdleAuxiliaryPanel,
   onCloseForumPost,
   onSelectForumPost,
   selectedForumPostId,
@@ -747,7 +742,6 @@ export function ChannelScreen({
         activeDmPresenceStatus={activeDmPresenceStatus}
         chromeWrapperRef={channelHeaderChromeRef}
         currentPubkey={currentPubkey}
-        headerEndActions={headerEndActions}
         isAddBotOpen={isAddBotOpen}
         isJoining={joinChannelMutation.isPending}
         onAddBotOpenChange={setIsAddBotOpen}
@@ -768,7 +762,6 @@ export function ChannelScreen({
       activeDmPresenceStatus,
       channelHeaderChromeRef,
       currentPubkey,
-      headerEndActions,
       isAddBotOpen,
       joinChannelMutation.isPending,
       joinChannelMutation.mutateAsync,
@@ -852,12 +845,9 @@ export function ChannelScreen({
                   canResetThreadPanelWidth={canResetThreadPanelWidth}
                   fetchOlder={fetchOlder}
                   header={channelHeader}
-                  idleAuxiliaryPanel={idleAuxiliaryPanel}
-                  idleAuxiliaryTitle={idleAuxiliaryTitle}
                   hasOlderMessages={hasOlderMessages}
                   historyExhausted={historyExhausted}
                   onAddAgent={handleOpenAddBot}
-                  onAddFiles={onAddFiles}
                   onBrowseChannels={openBrowseChannels}
                   onCreateChannel={openCreateChannel}
                   onOpenMembers={handleOpenMembersSidebar}
@@ -910,7 +900,6 @@ export function ChannelScreen({
                       : undefined
                   }
                   onCloseChannelManagement={handleCloseChannelManagement}
-                  onCloseIdleAuxiliaryPanel={onCloseIdleAuxiliaryPanel}
                   onCloseThread={handleCloseThread}
                   onDelete={
                     activeChannel?.archivedAt ? undefined : handleDelete
