@@ -83,6 +83,7 @@ export const ChannelPane = React.memo(function ChannelPane({
   fetchOlder,
   header,
   idleAuxiliaryPanel = null,
+  idleAuxiliaryHeaderActions,
   idleAuxiliaryTitle = "",
   hasOlderMessages,
   historyExhausted,
@@ -978,6 +979,7 @@ export const ChannelPane = React.memo(function ChannelPane({
           wrapIdlePanel(
             <IdleAuxiliaryPanel
               canResetWidth={canResetThreadPanelWidth}
+              headerControls={idleAuxiliaryHeaderActions}
               isFocusDrawer={useFocusIdleDrawer}
               isSinglePanelView={isSinglePanelView}
               onClose={onCloseIdleAuxiliaryPanel}
