@@ -36,7 +36,7 @@ use crate::acp::{
 };
 use crate::config::{compose_session_title, DedupMode, PermissionMode};
 use crate::observer;
-use crate::prompt_project::{pick_listed_project_home, PromptProjectInfo};
+use crate::prompt_project::{pick_authoritative_project_home, PromptProjectInfo};
 use crate::queue::{
     CancelReason, ContextMessage, ConversationContext, FlushBatch, PromptChannelInfo,
     PromptProfile, PromptProfileLookup, ThreadTags,
@@ -2990,18 +2990,20 @@ pub(crate) async fn fetch_project_home_for_channel(
     channel_id: Uuid,
     rest: &RestClient,
 ) -> Option<PromptProjectInfo> {
-    let filter = serde_json::json!({
-        "kinds": [buzz_core::kind::KIND_PROJECT],
-        "limit": 1000,
-    });
+    let filters = [
+        serde_json::json!({
+            "kinds": [buzz_core::kind::KIND_PROJECT],
+            "limit": 1000,
+        }),
+        serde_json::json!({
+            "kinds": [buzz_core::kind::KIND_GIT_REPO_ANNOUNCEMENT],
+            "#buzz-channel": [channel_id.to_string()],
+            "limit": 1000,
+        }),
+    ];
 
     let json = fetch_with_retry(|| async {
-        match timeout(
-            CONTEXT_FETCH_TIMEOUT,
-            rest.query_raw(std::slice::from_ref(&filter)),
-        )
-        .await
-        {
+        match timeout(CONTEXT_FETCH_TIMEOUT, rest.query_raw(&filters)).await {
             Ok(Ok(json)) => Some(json),
             Ok(Err(e)) => {
                 tracing::debug!(
@@ -3021,7 +3023,11 @@ pub(crate) async fn fetch_project_home_for_channel(
     })
     .await?;
     let events = json.as_array()?;
-    pick_listed_project_home(events, &channel_id.to_string())
+    let (projects, repos): (Vec<_>, Vec<_>) = events.iter().cloned().partition(|event| {
+        event.get("kind").and_then(serde_json::Value::as_u64)
+            == Some(buzz_core::kind::KIND_PROJECT as u64)
+    });
+    pick_authoritative_project_home(&projects, &repos, &channel_id.to_string())
 }
 
 /// Fetch owner-signed huddle instructions for a new channel session.
