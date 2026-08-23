@@ -336,7 +336,7 @@ export function AgentSessionThreadPanel({
                 }}
               >
                 <SquareArrowOutUpRight className="text-muted-foreground" />
-                <span>Open in external window</span>
+                <span>Pop-out window</span>
               </DropdownMenuItem>
               <DropdownMenuSeparator />
             </>

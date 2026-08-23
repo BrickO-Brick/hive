@@ -2083,7 +2083,7 @@ test("shows and clears activity indicators for active channel agents", async ({
   await page.getByTestId("agent-session-settings-menu-trigger").click();
   await expect(
     page.getByTestId("agent-session-open-external-window"),
-  ).toContainText("Open in external window");
+  ).toContainText("Pop-out window");
   await expect(page.getByTestId("agent-session-stop-turn")).toBeVisible();
   await expect(page.getByTestId("agent-session-stop-turn")).toBeDisabled();
   await page.keyboard.press("Escape");
@@ -2099,7 +2099,7 @@ test("shows and clears activity indicators for active channel agents", async ({
     page.getByTestId(
       `bot-activity-open-external-${TEST_IDENTITIES.alice.pubkey}`,
     ),
-  ).toContainText("Open in external window");
+  ).toContainText("Pop-out window");
   await page.keyboard.press("Escape");
 
   await page.evaluate((pubkey) => {

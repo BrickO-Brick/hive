@@ -303,7 +303,7 @@ export function BotActivityComposerAction({
           >
             <ExternalLink />
             <span className="min-w-0 flex-1">
-              <span className="block">Open in external window</span>
+              <span className="block">Pop-out window</span>
               {workingAgents.length > 1 ? (
                 <span className="block truncate text-xs text-muted-foreground">
                   {agent.name}
