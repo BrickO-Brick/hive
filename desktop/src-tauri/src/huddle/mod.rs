@@ -499,8 +499,8 @@ fn teardown_huddle(state: &AppState) -> Result<(), String> {
         let cancel = hs.audio_ws_cancel.take();
         // Cancel the relay token BEFORE dropping the sender. If we drop
         // pcm_tx first, the send task sees None from recv() and can exit
-        // the pipeline before is_cancelled() is true — causing a spurious
-        // huddle-audio-disconnected event on intentional teardown.
+        // the pipeline before is_cancelled() is true — and would start a
+        // spurious audio reconnect on intentional teardown.
         if let Some(ref c) = cancel {
             c.cancel();
         }

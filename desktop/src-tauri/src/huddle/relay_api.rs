@@ -86,7 +86,7 @@ impl AudioRelayConnectError {
         self.code() == Some("duplicate_identity")
     }
 
-    fn from_relay_payload(value: &serde_json::Value) -> Self {
+    pub(crate) fn from_relay_payload(value: &serde_json::Value) -> Self {
         Self {
             code: value["code"].as_str().map(str::to_string),
             message: value["message"]
@@ -299,13 +299,15 @@ pub(crate) async fn connect_audio_relay(
             eprintln!("buzz-desktop: audio relay pipeline exited: {e}");
         }
 
-        // Only emit the disconnect event for UNEXPECTED exits.
-        // Skip if already cancelled (teardown_huddle in progress).
+        // Only UNEXPECTED exits reconnect. An already-cancelled token means
+        // teardown_huddle is in progress and the huddle is going away.
+        // Cancelling before the reconnect call is load-bearing: if this
+        // pipeline dies before a running reconnect loop has installed its
+        // handles, the loop reads the cancelled token as a failed dial.
         if !cancel_clone.is_cancelled() {
             cancel_clone.cancel();
-            if let Some(ref app) = app_handle {
-                use tauri::Emitter;
-                let _ = app.emit("huddle-audio-disconnected", ());
+            if let Some(app) = app_handle {
+                super::reconnect::after_unexpected_disconnect(app).await;
             }
         }
     });

@@ -30,13 +30,14 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/shared/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 import { useHuddle, useHuddleLevels } from "../HuddleContext";
 import { useHuddleParticipantRoster } from "../hooks/useHuddleParticipantRoster";
+import { audioLinkNotice, type HuddleAudioLink } from "../lib/audioLink";
 import { AddAgentDialog, type AgentAddResult } from "./AddAgentDialog";
 import type { HuddleAgentVoiceSettings } from "./AgentVoiceMenu";
 import { MicControls, SpeakerControls } from "./MicControls";
 import { HuddleParticipantsControl } from "./ParticipantList";
 import { truncatePubkey } from "@/shared/lib/pubkey";
 
-// Mirrors HuddleState in src-tauri/src/huddle/mod.rs.
+// Mirrors HuddleState in src-tauri/src/huddle/state.rs.
 type HuddleState = {
   phase:
     | "idle"
@@ -45,6 +46,7 @@ type HuddleState = {
     | "connected"
     | "active"
     | "leaving";
+  audio_link: HuddleAudioLink;
   parent_channel_id: string | null;
   ephemeral_channel_id: string | null;
   huddle_thread_event_id: string | null;
@@ -514,6 +516,7 @@ export function HuddleBar({
   const hasAvailableMic = micConnected;
   const ttsEnabled = barState.tts_enabled;
   const transcriptionEnabled = barState.transcription_enabled;
+  const audioLinkBanner = audioLinkNotice(barState.audio_link);
   // Self-removing detection: remote-peer audio plays through native rodio
   // today (outside the WebView render graph), so the browser's AEC has no
   // far-end reference. The AEC follow-up PR flips this constant in the
@@ -594,6 +597,28 @@ export function HuddleBar({
       )}
     >
       <div className="flex min-w-0 items-center gap-3 overflow-hidden">
+        {/* Audio link banner — Rust is redialing, or gave up. */}
+        {audioLinkBanner && (
+          <output
+            role={audioLinkBanner.tone === "error" ? "alert" : "status"}
+            className={cn(
+              "flex min-w-0 items-center gap-1.5 rounded px-2 py-1 text-xs",
+              audioLinkBanner.tone === "error"
+                ? "bg-destructive/10 text-destructive"
+                : "text-muted-foreground",
+            )}
+          >
+            <span
+              className={cn(
+                "max-w-[220px] truncate",
+                audioLinkBanner.tone === "info" && "animate-pulse",
+              )}
+            >
+              {audioLinkBanner.message}
+            </span>
+          </output>
+        )}
+
         {/* Error banner */}
         {huddleError && (
           <div

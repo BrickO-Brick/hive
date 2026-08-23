@@ -18,6 +18,7 @@ import type { UnreadCatchUpChannelResult } from "@/shared/api/tauriUnreadCatchUp
 import { relayClient } from "@/shared/api/relayClient";
 import { activateRateLimit } from "@/shared/api/relayRateLimitGate";
 import { resolveAgentParallelism } from "@/features/agents/lib/agentParallelism";
+import type { HuddleAudioLink } from "@/features/huddle/lib/audioLink";
 import type { ConnectionState } from "@/shared/api/relayClientShared";
 import type { ChannelTemplate, RelayEvent } from "@/shared/api/types";
 import { getMarkdownParseCount } from "@/shared/ui/markdown/nodeCache";
@@ -3432,6 +3433,7 @@ type MockHuddleState = {
   transcription_enabled: boolean;
   is_creator: boolean;
   voice_input_mode: "push_to_talk" | "voice_activity";
+  audio_link: HuddleAudioLink;
 };
 
 type PersistedMockHuddle = {
@@ -3547,6 +3549,7 @@ function initializeMockHuddle(
         transcription_enabled: seed.transcriptionEnabled ?? false,
         is_creator: seed.isCreator ?? true,
         voice_input_mode: "push_to_talk",
+        audio_link: { status: "live" },
       },
     };
   }
@@ -11176,6 +11179,7 @@ export function maybeInstallE2eTauriMocks() {
             transcription_enabled: false,
             is_creator: true,
             voice_input_mode: "push_to_talk",
+            audio_link: { status: "live" },
           },
         };
         refreshMockHuddleMembership(activeConfig);
@@ -11270,6 +11274,7 @@ export function maybeInstallE2eTauriMocks() {
           transcription_enabled: false,
           is_creator: false,
           voice_input_mode: "push_to_talk",
+          audio_link: { status: "live" },
         });
         return null;
       case "set_huddle_transcription_enabled":

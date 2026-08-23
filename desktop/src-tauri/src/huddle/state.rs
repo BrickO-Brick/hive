@@ -43,9 +43,28 @@ pub enum HuddlePhase {
     Leaving,
 }
 
+/// Health of the audio relay socket, independent of `phase`.
+///
+/// `phase` stays `Active` while the socket is rebuilt so STT/TTS/agent voice
+/// (which gate on `Connected | Active`) keep running through a blip. Only the
+/// audio transport is being recovered; see `reconnect.rs`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum AudioLink {
+    #[default]
+    Live,
+    /// Rust is redialing the audio relay. `attempt` counts failed dials so far;
+    /// `draining` is true when the last refusal was `huddle_relay_draining`.
+    Reconnecting { attempt: u32, draining: bool },
+    /// The retry window elapsed without a successful dial. The huddle is still
+    /// joined but carries no audio; the user must leave or rejoin.
+    Lost,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct HuddleState {
     pub phase: HuddlePhase,
+    pub audio_link: AudioLink,
     pub parent_channel_id: Option<String>,
     pub ephemeral_channel_id: Option<String>,
     /// Root event for the huddle's visible parent-channel thread. Transcript
@@ -195,6 +214,7 @@ impl Clone for HuddleState {
             .clone();
         Self {
             phase: self.phase.clone(),
+            audio_link: self.audio_link.clone(),
             parent_channel_id: self.parent_channel_id.clone(),
             ephemeral_channel_id: self.ephemeral_channel_id.clone(),
             huddle_thread_event_id: self.huddle_thread_event_id.clone(),
@@ -233,6 +253,7 @@ impl Default for HuddleState {
         let human_floor = HumanFloor::new();
         Self {
             phase: HuddlePhase::Idle,
+            audio_link: AudioLink::Live,
             parent_channel_id: None,
             ephemeral_channel_id: None,
             huddle_thread_event_id: None,
