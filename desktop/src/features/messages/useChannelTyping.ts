@@ -19,13 +19,18 @@ export type TypingIndicatorEntry = {
 };
 
 type TypingEntry = {
+  createdAt: number;
   expiresAt: number;
   firstSeenAt: number;
   pubkey: string;
   threadHeadId: string | null;
 };
 type TypingState = Record<string, TypingEntry>;
-type TypingCompletionWatermarks = Record<string, number>;
+type TypingCompletionWatermark = {
+  createdAt: number;
+  observedAt: number;
+};
+type TypingCompletionWatermarks = Record<string, TypingCompletionWatermark>;
 type TypingSuppressionDeadlines = Record<string, number>;
 
 const TYPING_INDICATOR_TTL_MS = 8_000;
@@ -33,27 +38,33 @@ const TYPING_PRUNE_INTERVAL_MS = 1_000;
 const TYPING_POST_MESSAGE_SUPPRESS_MS = 2_000;
 
 /**
- * Advance one author + thread completion watermark when it can still affect
- * an acceptable typing indicator. Returns whether matching typing state should
- * be cleared. Exported so replay and out-of-order behavior stays unit-tested.
+ * Advance one author + thread completion watermark and start a desktop-local
+ * suppression window. Event timestamps are used only for ordering within the
+ * agent's clock domain; retention and suppression use the observing desktop's
+ * clock so host skew cannot disable or stretch typing cleanup.
+ *
+ * Returns whether matching typing state should be cleared. Exported so replay,
+ * out-of-order, and clock-skew behavior stays unit-tested.
  */
 export function recordTypingCompletion({
   createdAt,
   latestMessageCreatedAtByPubkey,
   now = Date.now(),
   suppressUntilByPubkey,
+  typingCreatedAt,
   typingKey,
 }: {
   createdAt: number;
   latestMessageCreatedAtByPubkey: TypingCompletionWatermarks;
   now?: number;
   suppressUntilByPubkey: TypingSuppressionDeadlines;
+  typingCreatedAt?: number;
   typingKey: string;
 }) {
   for (const [key, watermark] of Object.entries(
     latestMessageCreatedAtByPubkey,
   )) {
-    if (watermark * 1_000 + TYPING_INDICATOR_TTL_MS <= now) {
+    if (watermark.observedAt + TYPING_INDICATOR_TTL_MS <= now) {
       delete latestMessageCreatedAtByPubkey[key];
     }
   }
@@ -63,22 +74,16 @@ export function recordTypingCompletion({
     }
   }
 
-  if (createdAt * 1_000 + TYPING_INDICATOR_TTL_MS <= now) {
-    return false;
-  }
-
-  const latestMessageCreatedAt = latestMessageCreatedAtByPubkey[typingKey] ?? 0;
+  const latestMessageCreatedAt =
+    latestMessageCreatedAtByPubkey[typingKey]?.createdAt ?? 0;
   if (createdAt <= latestMessageCreatedAt) {
     return false;
   }
-  latestMessageCreatedAtByPubkey[typingKey] = createdAt;
-
-  const suppressUntil = createdAt * 1_000 + TYPING_POST_MESSAGE_SUPPRESS_MS;
-  if (suppressUntil > now) {
-    suppressUntilByPubkey[typingKey] = suppressUntil;
-  } else {
-    delete suppressUntilByPubkey[typingKey];
+  latestMessageCreatedAtByPubkey[typingKey] = { createdAt, observedAt: now };
+  if (typingCreatedAt === undefined || createdAt < typingCreatedAt) {
+    return false;
   }
+  suppressUntilByPubkey[typingKey] = now + TYPING_POST_MESSAGE_SUPPRESS_MS;
   return true;
 }
 
@@ -129,7 +134,9 @@ export function useChannelTyping(
   const [typingByPubkey, setTypingByPubkey] = useState<TypingState>({});
   const normalizedCurrentPubkey = currentPubkey?.toLowerCase();
   const typingSuppressUntilByPubkeyRef = useRef<Record<string, number>>({});
-  const latestMessageCreatedAtByPubkeyRef = useRef<Record<string, number>>({});
+  const latestMessageCreatedAtByPubkeyRef = useRef<TypingCompletionWatermarks>(
+    {},
+  );
 
   const registerTyping = useEffectEvent((event: RelayEvent) => {
     if (!channelId || event.kind !== KIND_TYPING_INDICATOR) {
@@ -162,8 +169,15 @@ export function useChannelTyping(
       delete typingSuppressUntilByPubkeyRef.current[typingKey];
     }
 
+    const watermark = latestMessageCreatedAtByPubkeyRef.current[typingKey];
+    if (
+      watermark?.observedAt &&
+      watermark.observedAt + TYPING_INDICATOR_TTL_MS <= now
+    ) {
+      delete latestMessageCreatedAtByPubkeyRef.current[typingKey];
+    }
     const latestMessageCreatedAt =
-      latestMessageCreatedAtByPubkeyRef.current[typingKey] ?? 0;
+      latestMessageCreatedAtByPubkeyRef.current[typingKey]?.createdAt ?? 0;
     if (event.created_at <= latestMessageCreatedAt) {
       return;
     }
@@ -174,6 +188,7 @@ export function useChannelTyping(
       return {
         ...pruned,
         [typingKey]: {
+          createdAt: event.created_at,
           expiresAt: Math.min(now + TYPING_INDICATOR_TTL_MS, eventExpiresAt),
           firstSeenAt: existing?.firstSeenAt ?? now,
           pubkey: typingPubkey,
@@ -211,6 +226,7 @@ export function useChannelTyping(
       createdAt: event.created_at,
       latestMessageCreatedAtByPubkey: latestMessageCreatedAtByPubkeyRef.current,
       suppressUntilByPubkey: typingSuppressUntilByPubkeyRef.current,
+      typingCreatedAt: typingByPubkey[typingKey]?.createdAt,
       typingKey,
     });
     if (!shouldClearTyping) {
