@@ -16,7 +16,12 @@ const NOW = Date.parse("2026-07-23T00:01:00.000Z");
 const NOW_ISO = new Date(NOW).toISOString();
 
 /** Thought item: spine, headlined by its title. */
-const thought = (title, timestamp, channelId = CHANNEL) => ({
+const thought = (
+  title,
+  timestamp,
+  channelId = CHANNEL,
+  turnId = undefined,
+) => ({
   id: `thought-${title}-${timestamp}`,
   type: "thought",
   renderClass: "thought",
@@ -24,6 +29,7 @@ const thought = (title, timestamp, channelId = CHANNEL) => ({
   text: "",
   timestamp,
   channelId,
+  turnId,
 });
 
 /** Metadata item: meaningful but NOT spine — recedes when real work exists. */
@@ -196,6 +202,35 @@ test("deriveActivityPillLabel keeps a stable id while a message streams", () => 
   assert.equal(first.id, "msg-1");
   assert.equal(extended.id, "msg-1");
   assert.equal(extended.label, "Pass 1: reading the composer wiring");
+});
+
+test("deriveActivityPillLabel scopes observer headlines to every live turn", () => {
+  const turnTwo = thought(
+    "Current turn work",
+    secondsBeforeNow(1),
+    CHANNEL,
+    "turn-2",
+  );
+  const headline = deriveActivityPillLabel({
+    activeTurnIds: new Set(["turn-2", "turn-3"]),
+    channelId: CHANNEL,
+    transcript: [
+      thought("Previous turn work", secondsBeforeNow(2), CHANNEL, "turn-1"),
+      turnTwo,
+    ],
+  });
+  assert.deepEqual(headline, { id: turnTwo.id, label: "Current turn work" });
+
+  assert.equal(
+    deriveActivityPillLabel({
+      activeTurnIds: new Set(["turn-3"]),
+      channelId: CHANNEL,
+      transcript: [
+        thought("Previous turn work", secondsBeforeNow(2), CHANNEL, "turn-1"),
+      ],
+    }),
+    null,
+  );
 });
 
 test("deriveActivityPillPresentation keeps observer activity authoritative over typing", () => {

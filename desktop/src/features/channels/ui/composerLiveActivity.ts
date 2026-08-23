@@ -89,15 +89,22 @@ export function deriveActivityPillPresentation({
  * pill then falls back to its generic "<name> is working…" label.
  */
 export function deriveActivityPillLabel({
+  activeTurnIds,
   channelId,
   transcript,
 }: {
+  activeTurnIds?: ReadonlySet<string>;
   channelId: string | null;
   transcript: readonly TranscriptItem[];
 }): ActivityPillHeadline | null {
-  const scoped = channelId
-    ? transcript.filter((item) => item.channelId === channelId)
-    : transcript;
+  const scoped = transcript.filter(
+    (item) =>
+      (!channelId || item.channelId === channelId) &&
+      (!activeTurnIds ||
+        (item.turnId !== null &&
+          item.turnId !== undefined &&
+          activeTurnIds.has(item.turnId))),
+  );
   const passFilter = scoped.some(isSpineItem) ? isSpineItem : isMeaningfulItem;
 
   for (let index = scoped.length - 1; index >= 0; index -= 1) {

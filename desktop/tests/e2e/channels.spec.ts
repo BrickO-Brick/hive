@@ -2163,7 +2163,8 @@ test("shows and clears activity indicators for active channel agents", async ({
     0,
   );
 
-  // A fresh turn re-mounts the pill — the cleared state is not sticky.
+  // A fresh turn re-mounts the pill without presenting the prior turn's last
+  // action as current work.
   await page.evaluate(
     ({ channelId, pubkey }) => {
       window.__BUZZ_E2E_SEED_ACTIVE_TURNS__?.({
@@ -2174,7 +2175,9 @@ test("shows and clears activity indicators for active channel agents", async ({
     },
     { channelId: AGENTS_CHANNEL_ID, pubkey: TEST_IDENTITIES.alice.pubkey },
   );
-  await expect(page.getByTestId("bot-activity-composer-trigger")).toBeVisible();
+  await expect(page.getByTestId("bot-activity-composer-trigger")).toContainText(
+    "alice is working",
+  );
 });
 
 test("thread agent typing promotes only when activity exists", async ({

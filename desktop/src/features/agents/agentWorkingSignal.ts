@@ -35,6 +35,8 @@ export type AgentWorkingChannel = {
   /** Desktop-clock anchor for elapsed displays (turn start / first typing). */
   anchorAt: number;
   source: Exclude<AgentWorkingSource, "none">;
+  /** Live observer turn ids; empty for typing-backed fallback channels. */
+  turnIds: string[];
 };
 
 export type AgentWorkingState = {
@@ -162,6 +164,7 @@ function computeAgentWorkingState(
     channelId: turn.channelId,
     anchorAt: turn.anchorAt,
     source: "observer" as const,
+    turnIds: turn.turnIds,
   }));
   const observerChannelIds = new Set(turns.map((turn) => turn.channelId));
 
@@ -175,6 +178,7 @@ function computeAgentWorkingState(
         channelId: typingChannelId,
         anchorAt: since,
         source: "typing",
+        turnIds: [],
       });
     }
   }

@@ -264,13 +264,22 @@ function BotActivityAgentPill({
   const shouldReduceMotion = useReducedMotion();
   const avatarMorphLayoutId = useComposerStripAvatarLayoutId(agent.pubkey);
   const transcript = useAgentTranscript(true, agent.pubkey);
-  const headline = React.useMemo(
-    () => deriveActivityPillLabel({ channelId, transcript }),
-    [channelId, transcript],
-  );
   const workingState = React.useSyncExternalStore(
     subscribeAgentWorkingSignal,
     () => getAgentWorkingState(agent.pubkey, channelId),
+  );
+  const activeTurnIds = React.useMemo(() => {
+    if (workingState.source !== "observer") return undefined;
+    const scoped = workingState.channels.find(
+      (workingChannel) =>
+        workingChannel.source === "observer" &&
+        workingChannel.channelId === channelId,
+    );
+    return new Set(scoped?.turnIds ?? []);
+  }, [channelId, workingState]);
+  const headline = React.useMemo(
+    () => deriveActivityPillLabel({ activeTurnIds, channelId, transcript }),
+    [activeTurnIds, channelId, transcript],
   );
   // Raw typing remains available even when getAgentWorkingState folds it under
   // observer precedence. It supplies the fallback before observer telemetry
