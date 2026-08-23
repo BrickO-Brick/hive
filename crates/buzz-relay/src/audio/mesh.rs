@@ -10,8 +10,8 @@
 //! ## Owner-authoritative model
 //!
 //! One pod owns a huddle: the holder of the Redis fenced CAS lease for
-//! `session_id == channel_id` (the session directory, Perci's lane, exposed to
-//! us through [`HuddleOwnerDirectory`]). That pod hosts the single
+//! `session_id == channel_id` (the session directory, resolved on the join path
+//! through [`super::join::HuddleDirectory`]). That pod hosts the single
 //! [`Room`](super::room::Room) —
 //! the sole allocator of the 0..=254 `peer_index` space, so indices can never
 //! collide across pods. Non-owner pods are thin: they register their local
@@ -58,29 +58,6 @@ use uuid::Uuid;
 use buzz_relay_mesh::{FencedHeader, MeshDatagram, RelayPeerTransport, RuntimeId};
 
 use super::room::AudioRoomManager;
-
-/// The slice of the session directory that huddle audio needs.
-///
-/// Implemented by the session-directory lane (Perci) over the Redis fenced CAS
-/// lease. Kept narrow on purpose: audio only asks "who owns this huddle, and at
-/// what generation?" — it never acquires, renews, or releases leases (that is
-/// the owning pod's session layer). Returning [`None`] means "no live owner"
-/// (the caller may then acquire, on the owner path).
-pub trait HuddleOwnerDirectory: Send + Sync + 'static {
-    /// Current `{owner_runtime_id, generation}` for a huddle session, or `None`
-    /// if no live lease exists. Cheap/cached; called on the join path, not per
-    /// frame.
-    fn owner_of(&self, session_id: Uuid) -> Option<Ownership>;
-}
-
-/// A resolved huddle ownership snapshot.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Ownership {
-    /// Boot-unique mesh endpoint key of the pod currently holding the lease.
-    pub owner_runtime_id: RuntimeId,
-    /// Fenced generation of this ownership epoch; monotonic per session.
-    pub generation: u64,
-}
 
 /// Tracks the highest generation this pod has observed per session, so stale
 /// frames are rejected at every hop (fencing law). Monotonic-only: a frame is

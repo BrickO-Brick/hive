@@ -53,7 +53,7 @@ use uuid::Uuid;
 use super::mesh::spawn_remote_peer_sink;
 use super::room::{
     AdmissionError, AudioPeerRole, AudioRoomManager, Room, RosterDelta as RoomRosterDelta,
-    RosterPeer,
+    RosterPeer, RosterSnapshot,
 };
 use crate::tunnel::directory::{ReleaseResult, RenewResult, SessionDirectory, SessionLease};
 
@@ -608,6 +608,7 @@ struct HuddleOwnerEntry {
 /// Owner-side signals for one huddle epoch. Returned atomically from attach so
 /// the CAS winner cannot miss a concurrent drain between installing the owner
 /// entry and looking the drain token back up.
+#[derive(Clone)]
 pub struct HuddleOwnerSignals {
     /// Fenced-loss signal.
     pub lost: CancellationToken,
@@ -640,6 +641,15 @@ impl HuddleOwnerRegistry {
     /// to close local owner WS peers and emit `Goodbye(Draining)` to remote pods.
     pub fn drain_for(&self, session_id: Uuid) -> Option<CancellationToken> {
         self.entries.get(&session_id).map(|e| e.draining.clone())
+    }
+
+    /// Both owner signals for a room this pod already owns (the steady-state
+    /// joiner's reuse path), or `None` when there is no live owner entry.
+    pub fn signals_for(&self, session_id: Uuid) -> Option<HuddleOwnerSignals> {
+        self.entries.get(&session_id).map(|e| HuddleOwnerSignals {
+            lost: e.lost.clone(),
+            draining: e.draining.clone(),
+        })
     }
 
     /// Install the single per-room renewer for a freshly-acquired lease and
@@ -825,7 +835,7 @@ pub enum HuddleControlMsg {
         /// room is pinned to one version and rejects mismatches.
         protocol_version: u8,
         /// Relay-derived media role; ingress cannot upgrade client authority.
-        role: AudioPeerRoleWire,
+        role: AudioPeerRole,
     },
     /// Owner → non-owner: the client is registered; here is its assigned index.
     PeerRegistered {
@@ -837,7 +847,7 @@ pub enum HuddleControlMsg {
         /// Owner-assigned occupancy epoch for `peer_index`. The non-owner pod
         /// stamps this on protocol v3 media datagrams so the frame carries the
         /// same `[peer_index][epoch]` identity a same-pod speaker's frame would
-        /// (see [`RosterEntry::epoch`]).
+        /// (see [`RosterPeer::epoch`]).
         epoch: u8,
         /// Complete authoritative roster after this admission. This is in the
         /// registration reply so no media/client identity can precede it.
@@ -848,7 +858,7 @@ pub enum HuddleControlMsg {
         /// Owner-monotonic roster revision.
         revision: u64,
         /// Complete authoritative participants.
-        peers: Vec<RosterEntry>,
+        peers: Vec<RosterPeer>,
     },
     /// Owner → non-owner: one ordered roster mutation. A revision gap is
     /// recovered by `RosterResync`, never applied speculatively.
@@ -856,9 +866,9 @@ pub enum HuddleControlMsg {
         /// Owner-monotonic roster revision.
         revision: u64,
         /// Newly admitted peer, when this is a join.
-        joined: Option<RosterEntry>,
+        joined: Option<RosterPeer>,
         /// Removed peer, when this is a leave.
-        left: Option<RosterEntry>,
+        left: Option<RosterPeer>,
     },
     /// Non-owner → owner: request a complete snapshot after detecting a gap.
     RosterResync,
@@ -879,68 +889,6 @@ pub enum HuddleControlMsg {
         /// Pubkey of the departing client.
         pubkey: String,
     },
-}
-
-/// Relay-derived media role carried over the trusted pod-to-pod control stream.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum AudioPeerRoleWire {
-    /// Ordinary audio participant.
-    #[default]
-    Participant,
-    /// NIP-OA-authenticated managed agent with bot membership.
-    AgentTtsPublisher,
-}
-
-impl From<AudioPeerRole> for AudioPeerRoleWire {
-    fn from(role: AudioPeerRole) -> Self {
-        match role {
-            AudioPeerRole::Participant => Self::Participant,
-            AudioPeerRole::AgentTtsPublisher => Self::AgentTtsPublisher,
-        }
-    }
-}
-
-impl From<AudioPeerRoleWire> for AudioPeerRole {
-    fn from(role: AudioPeerRoleWire) -> Self {
-        match role {
-            AudioPeerRoleWire::Participant => Self::Participant,
-            AudioPeerRoleWire::AgentTtsPublisher => Self::AgentTtsPublisher,
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// One participant in the authoritative owner roster.
-pub struct RosterEntry {
-    /// Nostr pubkey hex.
-    pub pubkey: String,
-    /// Relay-authoritative media role.
-    pub role: AudioPeerRoleWire,
-    /// Owner-assigned media routing index.
-    pub peer_index: u8,
-    /// Occupancy epoch for `peer_index`, bumped each time the index is reused
-    /// by a new pubkey so stale in-flight media frames can be fenced.
-    pub epoch: u8,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Complete authoritative roster at one owner revision.
-pub struct RosterSnapshot {
-    /// Owner-monotonic roster revision.
-    pub revision: u64,
-    /// Complete participants at this revision.
-    pub peers: Vec<RosterEntry>,
-}
-
-impl From<RosterPeer> for RosterEntry {
-    fn from(peer: RosterPeer) -> Self {
-        Self {
-            pubkey: peer.pubkey,
-            role: peer.role.into(),
-            peer_index: peer.peer_index,
-            epoch: peer.epoch,
-        }
-    }
 }
 
 /// Why an owner refused a remote-peer registration. Mirrors the single-pod
@@ -1405,11 +1353,11 @@ impl<D: HuddleDirectory + ?Sized> HuddleControlAcceptor<D> {
         fenced: FencedHeader,
         from: RuntimeId,
         pubkey: &str,
-        registration: (u8, AudioPeerRoleWire),
+        registration: (u8, AudioPeerRole),
         registered: &mut std::collections::HashMap<String, Uuid>,
     ) -> HuddleControlMsg {
         let (protocol_version, role) = registration;
-        match room.add_peer_with_role(pubkey.to_string(), protocol_version, role.into()) {
+        match room.add_peer_with_role(pubkey.to_string(), protocol_version, role) {
             Ok((peer_id, peer_index, epoch, audio_rx, _peer_ctrl_rx, roster_revision)) => {
                 registered.insert(pubkey.to_string(), peer_id);
                 // The owner's Room fans out to this remote peer's `audio_tx`;
@@ -1431,7 +1379,7 @@ impl<D: HuddleDirectory + ?Sized> HuddleControlAcceptor<D> {
                     pubkey: pubkey.to_string(),
                     peer_index,
                     epoch,
-                    roster: roster_snapshot(&room),
+                    roster: room.roster_snapshot(),
                 }
             }
             Err(reason) => HuddleControlMsg::RegisterRejected {
@@ -1463,7 +1411,7 @@ fn peer_left_control(delta: RoomRosterDelta, session_id: Uuid) -> Option<String>
             "type": "left",
             "revision": delta.revision,
             "pubkey": left.pubkey,
-            "role": AudioPeerRoleWire::from(left.role),
+            "role": left.role,
             "peer_index": left.peer_index,
             "epoch": left.epoch,
         })
@@ -1471,27 +1419,16 @@ fn peer_left_control(delta: RoomRosterDelta, session_id: Uuid) -> Option<String>
     )
 }
 
-fn roster_snapshot(room: &Room) -> RosterSnapshot {
-    let snapshot = room.roster_snapshot();
-    RosterSnapshot {
-        revision: snapshot.revision,
-        peers: snapshot.peers.into_iter().map(Into::into).collect(),
-    }
-}
-
 fn roster_snapshot_msg(room: &Room) -> HuddleControlMsg {
-    let snapshot = roster_snapshot(room);
-    HuddleControlMsg::RosterSnapshot {
-        revision: snapshot.revision,
-        peers: snapshot.peers,
-    }
+    let RosterSnapshot { revision, peers } = room.roster_snapshot();
+    HuddleControlMsg::RosterSnapshot { revision, peers }
 }
 
 fn roster_delta_msg(delta: RoomRosterDelta) -> HuddleControlMsg {
     HuddleControlMsg::RosterDelta {
         revision: delta.revision,
-        joined: delta.joined.map(Into::into),
-        left: delta.left.map(Into::into),
+        joined: delta.joined,
+        left: delta.left,
     }
 }
 
@@ -1740,7 +1677,7 @@ pub struct RemotePeerRegistration {
     /// Negotiated Huddle audio protocol version.
     pub protocol_version: u8,
     /// Relay-derived media role from the authenticated ingress.
-    pub role: AudioPeerRoleWire,
+    pub role: AudioPeerRole,
 }
 
 /// Open a `HuddleControl` stream to the owner and register the local client.
@@ -2164,7 +2101,7 @@ mod tests {
                 community_id: *community().as_uuid(),
                 pubkey: "abc123".into(),
                 protocol_version: 2,
-                role: AudioPeerRoleWire::Participant,
+                role: AudioPeerRole::Participant,
             },
             HuddleControlMsg::PeerRegistered {
                 pubkey: "abc123".into(),
@@ -2172,9 +2109,9 @@ mod tests {
                 epoch: 0,
                 roster: RosterSnapshot {
                     revision: 1,
-                    peers: vec![RosterEntry {
+                    peers: vec![RosterPeer {
                         pubkey: "abc123".into(),
-                        role: AudioPeerRoleWire::Participant,
+                        role: AudioPeerRole::Participant,
                         peer_index: 42,
                         epoch: 0,
                     }],
@@ -2183,9 +2120,9 @@ mod tests {
             HuddleControlMsg::RosterDelta {
                 revision: 2,
                 joined: None,
-                left: Some(RosterEntry {
+                left: Some(RosterPeer {
                     pubkey: "abc123".into(),
-                    role: AudioPeerRoleWire::Participant,
+                    role: AudioPeerRole::Participant,
                     peer_index: 42,
                     epoch: 0,
                 }),
@@ -2261,9 +2198,9 @@ mod tests {
         let (ctrl_tx, mut ctrl_rx) = tokio::sync::mpsc::channel(4);
         let reader =
             tokio::spawn(async move { read_owner_control(&mut client, fenced, 1, &ctrl_tx).await });
-        let publisher = RosterEntry {
+        let publisher = RosterPeer {
             pubkey: "agent".into(),
-            role: AudioPeerRoleWire::AgentTtsPublisher,
+            role: AudioPeerRole::AgentTtsPublisher,
             peer_index: 7,
             epoch: 2,
         };
@@ -2325,9 +2262,9 @@ mod tests {
                 fenced,
                 payload: encode_control(&HuddleControlMsg::RosterDelta {
                     revision: 3,
-                    joined: Some(RosterEntry {
+                    joined: Some(RosterPeer {
                         pubkey: "bob".into(),
-                        role: AudioPeerRoleWire::Participant,
+                        role: AudioPeerRole::Participant,
                         peer_index: 7,
                         epoch: 0,
                     }),
@@ -2356,9 +2293,9 @@ mod tests {
                 fenced,
                 payload: encode_control(&HuddleControlMsg::RosterSnapshot {
                     revision: 3,
-                    peers: vec![RosterEntry {
+                    peers: vec![RosterPeer {
                         pubkey: "bob".into(),
-                        role: AudioPeerRoleWire::Participant,
+                        role: AudioPeerRole::Participant,
                         peer_index: 7,
                         epoch: 0,
                     }],
@@ -2447,7 +2384,7 @@ mod tests {
                     community_id: *community().as_uuid(),
                     pubkey: "client-a".into(),
                     protocol_version: 2,
-                    role: AudioPeerRoleWire::Participant,
+                    role: AudioPeerRole::Participant,
                 })
                 .unwrap(),
             })
@@ -2501,7 +2438,7 @@ mod tests {
                     community_id: *community().as_uuid(),
                     pubkey: "remote".into(),
                     protocol_version: 2,
-                    role: AudioPeerRoleWire::Participant,
+                    role: AudioPeerRole::Participant,
                 })
                 .unwrap(),
             })
@@ -2565,7 +2502,7 @@ mod tests {
                     community_id: *community().as_uuid(),
                     pubkey: "client-a".into(),
                     protocol_version: 2,
-                    role: AudioPeerRoleWire::Participant,
+                    role: AudioPeerRole::Participant,
                 })
                 .unwrap(),
             })

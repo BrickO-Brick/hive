@@ -13,6 +13,7 @@
 use buzz_core::CommunityId;
 use bytes::Bytes;
 use dashmap::DashMap;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
@@ -62,8 +63,10 @@ const CTRL_CHANNEL_CAPACITY: usize = 32;
 /// is reasonable. Routing identities rotate through a larger 255-value pool.
 const MAX_PEERS_PER_ROOM: usize = 25;
 
-/// Relay-authoritative media role for one socket.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// Relay-authoritative media role for one socket. Serialized by name on the
+/// client-facing `joined`/`left` JSON and by variant order on the trusted
+/// pod-to-pod control stream.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AudioPeerRole {
     /// Ordinary human audio participant.
     #[default]
@@ -73,7 +76,7 @@ pub enum AudioPeerRole {
 }
 
 /// One authoritative owner-roster entry.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RosterPeer {
     /// Nostr pubkey hex.
     pub pubkey: String,
@@ -88,7 +91,7 @@ pub struct RosterPeer {
 }
 
 /// A complete owner-roster snapshot at one monotonic revision.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RosterSnapshot {
     /// Owner-monotonic roster revision.
     pub revision: u64,
