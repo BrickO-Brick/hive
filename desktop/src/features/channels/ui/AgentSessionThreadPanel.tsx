@@ -4,6 +4,7 @@ import {
   Octagon,
   Settings,
   Sparkles,
+  SquareArrowOutUpRight,
   TerminalSquare,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -29,6 +30,7 @@ import {
 import { useAnchoredScroll } from "@/features/messages/ui/useAnchoredScroll";
 import { useStableArrayShallow } from "@/shared/hooks/useStableReference";
 import { cancelManagedAgentTurn } from "@/shared/api/agentControl";
+import { openAgentActivityWindow } from "@/shared/api/agentActivityWindow";
 import type { Channel } from "@/shared/api/types";
 import { useEscapeKey } from "@/shared/hooks/useEscapeKey";
 import { useIsThreadPanelOverlay } from "@/shared/hooks/use-mobile";
@@ -257,6 +259,27 @@ export function AgentSessionThreadPanel({
   const headerScopeLabel = `${viewLabel} · ${scopeLabel}`;
   const animateActivity = useTranscriptAnimationEnabled();
   const showTimestamps = useTranscriptTimestampsEnabled();
+  async function handleOpenExternalWindow() {
+    if (!sessionChannelId || isDedicatedActivityWindow) {
+      return;
+    }
+
+    try {
+      const openedNativeWindow = await openAgentActivityWindow(
+        sessionChannelId,
+        agent.pubkey,
+      );
+      if (!openedNativeWindow) {
+        toast.error(
+          "External activity windows are only available in the desktop app.",
+        );
+      }
+    } catch (error) {
+      console.error("Failed to open agent activity window:", error);
+      toast.error("Couldn't open the agent activity window.");
+    }
+  }
+
   async function handleInterruptTurn() {
     if (!channel) {
       return;
@@ -278,152 +301,164 @@ export function AgentSessionThreadPanel({
 
   const agentHeaderActions = (
     <AuxiliaryPanelHeaderActions>
-      {isLive ? (
-        <DropdownMenu modal={false}>
-          <DropdownMenuTrigger asChild>
-            <Button
-              aria-label="Open activity settings"
-              className="relative"
-              data-testid="agent-session-settings-menu-trigger"
-              size="icon"
-              title="Activity settings"
-              type="button"
-              variant="ghost"
-            >
-              <Settings />
-              {canStopCurrentTurn ? (
-                <span
-                  aria-hidden="true"
-                  className="absolute right-1 bottom-1 h-2 w-2 rounded-full bg-primary ring-2 ring-background"
-                  data-testid="agent-session-settings-live-badge"
-                />
-              ) : null}
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent
-            align="end"
-            className="min-w-56"
-            onCloseAutoFocus={(event) => event.preventDefault()}
+      <DropdownMenu modal={false}>
+        <DropdownMenuTrigger asChild>
+          <Button
+            aria-label="Open activity settings"
+            className="relative"
+            data-testid="agent-session-settings-menu-trigger"
+            size="icon"
+            title="Activity settings"
+            type="button"
+            variant="ghost"
           >
-            <DropdownMenuItem
-              className="items-start gap-3"
-              data-testid="agent-session-toggle-raw-feed"
-              onSelect={(event) => {
-                event.preventDefault();
-                handleRawFeedChange(!showRawFeed);
-              }}
-              title={
-                showRawFeed
-                  ? "Hide raw JSON-RPC payloads."
-                  : channel
-                    ? "Show raw JSON-RPC payloads for this channel."
-                    : "Show raw JSON-RPC payloads for this agent."
-              }
-            >
-              <span className="min-w-0 flex-1">
-                <span className="flex items-center gap-2 text-sm font-medium">
-                  <TerminalSquare className="h-4 w-4 text-muted-foreground" />
-                  Raw
-                </span>
+            <Settings />
+            {canStopCurrentTurn ? (
+              <span
+                aria-hidden="true"
+                className="absolute right-1 bottom-1 h-2 w-2 rounded-full bg-primary ring-2 ring-background"
+                data-testid="agent-session-settings-live-badge"
+              />
+            ) : null}
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent
+          align="end"
+          className="min-w-56"
+          onCloseAutoFocus={(event) => event.preventDefault()}
+        >
+          {!isDedicatedActivityWindow && sessionChannelId ? (
+            <>
+              <DropdownMenuItem
+                data-testid="agent-session-open-external-window"
+                onSelect={() => {
+                  void handleOpenExternalWindow();
+                }}
+              >
+                <SquareArrowOutUpRight className="text-muted-foreground" />
+                <span>Open in external window</span>
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+            </>
+          ) : null}
+          <DropdownMenuItem
+            className="items-start gap-3"
+            data-testid="agent-session-toggle-raw-feed"
+            onSelect={(event) => {
+              event.preventDefault();
+              handleRawFeedChange(!showRawFeed);
+            }}
+            title={
+              showRawFeed
+                ? "Hide raw JSON-RPC payloads."
+                : channel
+                  ? "Show raw JSON-RPC payloads for this channel."
+                  : "Show raw JSON-RPC payloads for this agent."
+            }
+          >
+            <span className="min-w-0 flex-1">
+              <span className="flex items-center gap-2 text-sm font-medium">
+                <TerminalSquare className="h-4 w-4 text-muted-foreground" />
+                Raw
+              </span>
+              <span className="mt-0.5 block text-xs text-muted-foreground">
+                Show raw JSON-RPC activity.
+              </span>
+            </span>
+            <Switch
+              aria-hidden="true"
+              checked={showRawFeed}
+              className="pointer-events-none mt-0.5"
+              tabIndex={-1}
+            />
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            className="items-start gap-3"
+            data-testid="agent-session-toggle-animate-activity"
+            disabled={showRawFeed}
+            onSelect={(event) => {
+              event.preventDefault();
+              setTranscriptAnimationEnabled(!animateActivity);
+            }}
+            title={
+              showRawFeed
+                ? "Raw activity rows don't animate in."
+                : animateActivity
+                  ? "Stop animating new activity rows."
+                  : "Animate new activity rows as they arrive."
+            }
+          >
+            <span className="min-w-0 flex-1">
+              <span className="flex items-center gap-2 text-sm font-medium">
+                <Sparkles className="h-4 w-4 text-muted-foreground" />
+                Show Animations
+              </span>
+            </span>
+            <Switch
+              aria-hidden="true"
+              checked={animateActivity && !showRawFeed}
+              className="pointer-events-none mt-0.5"
+              tabIndex={-1}
+            />
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            className="items-start gap-3"
+            data-testid="agent-session-toggle-show-timestamps"
+            onSelect={(event) => {
+              event.preventDefault();
+              setTranscriptTimestampsEnabled(!showTimestamps);
+            }}
+            title={
+              showTimestamps
+                ? "Hide per-row activity timestamps."
+                : "Show a timestamp under each activity row."
+            }
+          >
+            <span className="min-w-0 flex-1">
+              <span className="flex items-center gap-2 text-sm font-medium">
+                <Clock3 className="h-4 w-4 text-muted-foreground" />
+                Show Timestamps
+              </span>
+            </span>
+            <Switch
+              aria-hidden="true"
+              checked={showTimestamps}
+              className="pointer-events-none mt-0.5"
+              tabIndex={-1}
+            />
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            className="items-start gap-3"
+            data-testid="agent-session-stop-turn"
+            disabled={!canStopCurrentTurn}
+            onSelect={() => {
+              void handleInterruptTurn();
+            }}
+            title={
+              canStopCurrentTurn
+                ? "Interrupt the current ACP turn without stopping the agent process."
+                : isWorking
+                  ? "Only locally managed agents can be interrupted from this community."
+                  : "Available while the agent is working."
+            }
+          >
+            <Octagon className="mt-0.5 h-4 w-4 text-muted-foreground" />
+            <span className="min-w-0 flex-1">
+              <span className="block text-sm font-medium">
+                Stop current turn
+              </span>
+              {!canStopCurrentTurn ? (
                 <span className="mt-0.5 block text-xs text-muted-foreground">
-                  Show raw JSON-RPC activity.
+                  {isWorking
+                    ? "Only available for locally managed agents."
+                    : "Available while the agent is working."}
                 </span>
-              </span>
-              <Switch
-                aria-hidden="true"
-                checked={showRawFeed}
-                className="pointer-events-none mt-0.5"
-                tabIndex={-1}
-              />
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              className="items-start gap-3"
-              data-testid="agent-session-toggle-animate-activity"
-              disabled={showRawFeed}
-              onSelect={(event) => {
-                event.preventDefault();
-                setTranscriptAnimationEnabled(!animateActivity);
-              }}
-              title={
-                showRawFeed
-                  ? "Raw activity rows don't animate in."
-                  : animateActivity
-                    ? "Stop animating new activity rows."
-                    : "Animate new activity rows as they arrive."
-              }
-            >
-              <span className="min-w-0 flex-1">
-                <span className="flex items-center gap-2 text-sm font-medium">
-                  <Sparkles className="h-4 w-4 text-muted-foreground" />
-                  Show Animations
-                </span>
-              </span>
-              <Switch
-                aria-hidden="true"
-                checked={animateActivity && !showRawFeed}
-                className="pointer-events-none mt-0.5"
-                tabIndex={-1}
-              />
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              className="items-start gap-3"
-              data-testid="agent-session-toggle-show-timestamps"
-              onSelect={(event) => {
-                event.preventDefault();
-                setTranscriptTimestampsEnabled(!showTimestamps);
-              }}
-              title={
-                showTimestamps
-                  ? "Hide per-row activity timestamps."
-                  : "Show a timestamp under each activity row."
-              }
-            >
-              <span className="min-w-0 flex-1">
-                <span className="flex items-center gap-2 text-sm font-medium">
-                  <Clock3 className="h-4 w-4 text-muted-foreground" />
-                  Show Timestamps
-                </span>
-              </span>
-              <Switch
-                aria-hidden="true"
-                checked={showTimestamps}
-                className="pointer-events-none mt-0.5"
-                tabIndex={-1}
-              />
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem
-              className="items-start gap-3"
-              data-testid="agent-session-stop-turn"
-              disabled={!canStopCurrentTurn}
-              onSelect={() => {
-                void handleInterruptTurn();
-              }}
-              title={
-                canStopCurrentTurn
-                  ? "Interrupt the current ACP turn without stopping the agent process."
-                  : isWorking
-                    ? "Only locally managed agents can be interrupted from this community."
-                    : "Available while the agent is working."
-              }
-            >
-              <Octagon className="mt-0.5 h-4 w-4 text-muted-foreground" />
-              <span className="min-w-0 flex-1">
-                <span className="block text-sm font-medium">
-                  Stop current turn
-                </span>
-                {!canStopCurrentTurn ? (
-                  <span className="mt-0.5 block text-xs text-muted-foreground">
-                    {isWorking
-                      ? "Only available for locally managed agents."
-                      : "Available while the agent is working."}
-                  </span>
-                ) : null}
-              </span>
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      ) : null}
+              ) : null}
+            </span>
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
     </AuxiliaryPanelHeaderActions>
   );
 

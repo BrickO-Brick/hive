@@ -587,7 +587,7 @@ export function ChannelScreen({
     setThreadReplyTargetId,
     setThreadScrollTargetId,
   });
-  const handleOpenAgentActivity = React.useCallback(
+  const handleOpenAgentActivityExternal = React.useCallback(
     (pubkey: string, channelId?: string | null) => {
       const destinationChannelId = channelId ?? activeChannelId;
       if (!destinationChannelId) return;
@@ -607,6 +607,12 @@ export function ChannelScreen({
           console.error("Failed to open agent activity window:", error);
           toast.error("Couldn't open the agent activity window.");
         });
+    },
+    [activeChannelId, handleOpenAgentSession],
+  );
+  const handleOpenAgentActivity = React.useCallback(
+    (pubkey: string, channelId?: string | null) => {
+      handleOpenAgentSession(pubkey, channelId ?? activeChannelId);
     },
     [activeChannelId, handleOpenAgentSession],
   );
@@ -943,6 +949,7 @@ export function ChannelScreen({
                   onMarkRead={handleMessageMarkRead}
                   onExpandThreadReplies={handleExpandThreadReplies}
                   onOpenAgentSession={handleOpenAgentActivity}
+                  onOpenAgentSessionExternal={handleOpenAgentActivityExternal}
                   onOpenDm={handleOpenDm}
                   onOpenProfilePanel={handleOpenProfilePanel}
                   onResetThreadPanelWidth={handleThreadPanelWidthReset}
