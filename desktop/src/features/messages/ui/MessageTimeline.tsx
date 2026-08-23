@@ -115,6 +115,7 @@ type MessageTimelineProps = {
   /** The current find-in-channel query string. */
   searchQuery?: string;
   targetMessageId?: string | null;
+  onAtBottomChange?: (atBottom: boolean) => void;
   onTargetReached?: (messageId: string) => void;
   splitThreadPanelOpen?: boolean;
   /** Event id of the oldest unread top-level message at channel open, or null. */
@@ -204,6 +205,7 @@ const MessageTimelineBase = React.forwardRef<
     searchMatchingMessageIds,
     searchQuery,
     targetMessageId = null,
+    onAtBottomChange,
     onTargetReached,
     splitThreadPanelOpen = false,
     firstUnreadMessageId = null,
@@ -369,6 +371,9 @@ const MessageTimelineBase = React.forwardRef<
     virtualizerRenderVersion,
   });
 
+  React.useEffect(() => {
+    onAtBottomChange?.(isAtBottom);
+  }, [isAtBottom, onAtBottomChange]);
   const hasConfirmedVirtualizerBottomRef = React.useRef(false);
   const bottomConfirmationChannelRef = React.useRef(channelId);
   if (bottomConfirmationChannelRef.current !== channelId) {

@@ -61,6 +61,7 @@ type MessageThreadPanelProps = ThreadPanelLayoutProps & {
   isHuddleTranscript?: boolean;
   editTarget?: MessageComposerEditTarget | null;
   isSending: boolean;
+  onAtBottomChange?: (atBottom: boolean) => void;
   onCancelEdit?: () => void;
   onCancelReply: () => void;
   onClose: () => void;
@@ -204,6 +205,7 @@ export function MessageThreadPanel({
   isSinglePanelView = false,
   isFollowingThread,
   isMessageUnreadById,
+  onAtBottomChange,
   onCancelEdit,
   onCancelReply,
   onClose,
@@ -530,6 +532,9 @@ export function MessageThreadPanel({
     "padding",
     settleAtBottomAfterLayout,
   );
+  React.useEffect(() => {
+    onAtBottomChange?.(isAtBottom);
+  }, [isAtBottom, onAtBottomChange]);
   const stableSendToChannel = useStableSendToChannel(
     channelId,
     threadHead,

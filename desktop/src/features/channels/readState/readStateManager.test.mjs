@@ -909,3 +909,38 @@ test("rememberPublishedId_evictsOldestBeyondCap", () => {
 
   mgr.destroy();
 });
+
+test("confirmed thread frontier survives restart and keeps later replies unread", () => {
+  const storage = makeLocalStorage();
+  globalThis.window.localStorage = storage;
+  const { timers, restore } = withFakeTimers();
+  const pubkey = "7".repeat(64);
+  const confirmedAt = Math.floor(Date.now() / 1_000);
+  const first = new ReadStateManager(pubkey, makeFakeRelay());
+
+  try {
+    first.markContextRead(threadKey, confirmedAt);
+    timers.runAll();
+    first.destroy();
+
+    const restarted = new ReadStateManager(pubkey, makeFakeRelay());
+    restarted.setContextParentResolver(channelResolver);
+    try {
+      restarted.hydrateFromLocalStorage();
+      assert.equal(restarted.getEffectiveTimestamp(threadKey), confirmedAt);
+      assert.equal(
+        confirmedAt > restarted.getEffectiveTimestamp(threadKey),
+        false,
+      );
+      assert.equal(
+        confirmedAt + 1 > restarted.getEffectiveTimestamp(threadKey),
+        true,
+      );
+    } finally {
+      restarted.destroy();
+    }
+  } finally {
+    first.destroy();
+    restore();
+  }
+});

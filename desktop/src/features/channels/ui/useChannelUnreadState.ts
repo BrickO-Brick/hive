@@ -26,6 +26,7 @@ import type { TimelineMessage } from "@/features/messages/types";
 import { isConversationalUnreadKind } from "@/shared/constants/kinds";
 
 import { useWelcomeInitialUnreadSuppression } from "./useWelcomeInitialUnreadSuppression";
+import { useVisibleThreadReadState } from "./useVisibleThreadReadState";
 
 type UseChannelUnreadStateOptions = {
   activeChannelId: string | null;
@@ -35,6 +36,7 @@ type UseChannelUnreadStateOptions = {
   threadReplyTargetId: string | null;
   expandedThreadReplyIds: ReadonlySet<string>;
   openThreadMessages?: MainTimelineEntry[];
+  openThreadIsAtBottom: boolean;
   getChannelReadAt: (channelId: string) => number | null;
   getMessageReadAt: (messageId: string) => number | null;
   clearChannelUnreadSource: (
@@ -67,6 +69,7 @@ export function useChannelUnreadState({
   threadReplyTargetId,
   expandedThreadReplyIds,
   openThreadMessages,
+  openThreadIsAtBottom,
   getChannelReadAt,
   getMessageReadAt,
   clearChannelUnreadSource,
@@ -272,13 +275,13 @@ export function useChannelUnreadState({
   // deliberate reversal of #1118's whole-subtree-on-open). Each revealed reply
   // gets its own msg:<id> marker advanced to its createdAt; a NEWER reply
   // re-raises the badge because the predicate is strictly createdAt > read.
-  React.useEffect(() => {
-    if (!openThreadHeadId) return;
-    if (isThreadMuted(openThreadHeadId)) return;
-    for (const entry of threadMessages) {
-      markMessageRead(entry.message.id, entry.message.createdAt);
-    }
-  }, [openThreadHeadId, threadMessages, markMessageRead, isThreadMuted]);
+  useVisibleThreadReadState({
+    isAtBottom: openThreadIsAtBottom,
+    isMuted: openThreadHeadId ? isThreadMuted(openThreadHeadId) : false,
+    markMessageRead,
+    messages: threadMessages,
+    threadRootId: openThreadHeadId,
+  });
   // In-thread "New" divider position. Reads the open-time snapshot (frozen
   // before the mark-read effect above), so the divider does not collapse the
   // instant open marks the revealed replies read. A reply absent from the

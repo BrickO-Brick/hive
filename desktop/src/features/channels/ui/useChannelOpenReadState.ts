@@ -4,6 +4,8 @@ import { useAppShell } from "@/app/AppShellContext";
 import { isThreadReply } from "@/features/messages/lib/threading";
 import type { FeedItem } from "@/shared/api/types";
 
+import { useVisibleChannelReadState } from "./useVisibleChannelReadState";
+
 /**
  * Inbox overrides for top-level rows are consumed by opening the channel.
  * Thread-reply overrides intentionally remain until their thread is read.
@@ -21,25 +23,37 @@ export function useChannelOpenReadState(
   activeChannelId: string | null,
   isChannelMember: boolean | undefined,
   activeReadAt: string | null,
+  isAtBottom: boolean,
 ) {
   const { feedItemState, locallyUnreadFeedItems, markChannelRead } =
     useAppShell();
 
+  const markVisibleChannelRead = React.useCallback(
+    (channelId: string, readAt: string | null) =>
+      markChannelRead(channelId, readAt, { topLevelOnly: true }),
+    [markChannelRead],
+  );
+  useVisibleChannelReadState({
+    channelId: activeChannelId,
+    isAtBottom,
+    isMember: isChannelMember,
+    markChannelRead: markVisibleChannelRead,
+    readAt: activeReadAt,
+  });
+
   React.useEffect(() => {
-    if (!activeChannelId || isChannelMember === false) return;
+    if (!activeChannelId || isChannelMember === false || !isAtBottom) return;
     for (const itemId of getTopLevelInboxUnreadOverrideIds(
       locallyUnreadFeedItems,
       activeChannelId,
     )) {
       feedItemState.undoUnread(itemId);
     }
-    markChannelRead(activeChannelId, activeReadAt, { topLevelOnly: true });
   }, [
     activeChannelId,
-    activeReadAt,
     feedItemState.undoUnread,
+    isAtBottom,
     isChannelMember,
     locallyUnreadFeedItems,
-    markChannelRead,
   ]);
 }

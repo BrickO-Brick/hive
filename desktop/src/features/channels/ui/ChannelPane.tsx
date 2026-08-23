@@ -128,9 +128,11 @@ export const ChannelPane = React.memo(function ChannelPane({
   onSendToChannel,
   onSendVideoReviewComment,
   onSendThreadReply,
+  onThreadAtBottomChange,
   onThreadScrollTargetResolved,
   onThreadPanelResizeStart,
   onTargetReached,
+  onTimelineAtBottomChange,
   onToggleReaction,
   onUnfollowThread,
   unfollowThreadById,
@@ -627,6 +629,7 @@ export const ChannelPane = React.memo(function ChannelPane({
               onSendVideoReviewComment={
                 activeChannel?.archivedAt ? undefined : onSendVideoReviewComment
               }
+              onAtBottomChange={onTimelineAtBottomChange}
               onTargetReached={onTargetReached}
               onToggleReaction={onToggleReaction}
               targetMessageId={targetMessageId}
@@ -821,6 +824,7 @@ export const ChannelPane = React.memo(function ChannelPane({
                   isComposerDisabled ? undefined : onSendToChannel
                 }
                 onScrollTargetResolved={() => resolveScrollTarget()}
+                onAtBottomChange={onThreadAtBottomChange}
                 onScrollTargetSettled={resolveScrollTarget}
                 onToggleReaction={onToggleReaction}
                 onUnfollowThread={onUnfollowThread}

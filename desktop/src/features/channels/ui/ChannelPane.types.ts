@@ -139,11 +139,13 @@ export type ChannelPaneProps = {
     } | null,
   ) => Promise<void>;
   onTargetReached?: (messageId: string) => void;
+  onTimelineAtBottomChange?: (atBottom: boolean) => void;
   onToggleReaction?: (
     message: TimelineMessage,
     emoji: string,
     remove: boolean,
   ) => Promise<void>;
+  onThreadAtBottomChange?: (atBottom: boolean) => void;
   onThreadScrollTargetResolved: () => void;
   onThreadPanelResizeStart: (
     event: React.PointerEvent<HTMLButtonElement>,

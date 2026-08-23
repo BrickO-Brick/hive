@@ -77,6 +77,7 @@ import { useChannelActivityTyping } from "./useChannelActivityTyping";
 import { useChannelAgentSessions } from "./useChannelAgentSessions";
 import { useMessageProfiles } from "./useMessageProfiles";
 import { useChannelPanelHistoryState } from "./useChannelPanelHistoryState";
+import { useScopedAtBottom } from "./useScopedAtBottom";
 import { useChannelProfilePanel } from "./useChannelProfilePanel";
 import { useChannelRouteTarget } from "./useChannelRouteTarget";
 import { useChannelOpenReadState } from "./useChannelOpenReadState";
@@ -101,6 +102,7 @@ export function ChannelScreen({
     clearChannelUnreadSource,
     markChannelRead,
     markChannelUnread,
+    markThreadRead,
     getChannelReadAt,
     getMessageReadAt,
     markMessageRead,
@@ -163,6 +165,8 @@ export function ChannelScreen({
   const mainInsetRef = useMainInsetRef();
   const currentPubkey = currentIdentity?.pubkey;
   const activeChannelId = activeChannel?.id ?? null;
+  const [timelineIsAtBottom, handleTimelineAtBottomChange] =
+    useScopedAtBottom(activeChannelId);
   const isHuddleTranscript = useIsHuddleTranscript(activeChannelId);
   const relaySelfPubkey = useRelaySelfQuery(activeChannel !== null).data;
   const effectiveOpenThreadHeadId = useHuddleThreadIsolation({
@@ -171,6 +175,9 @@ export function ChannelScreen({
     openThreadHeadId,
     optimisticOpenThreadHeadId,
   });
+  const [threadIsAtBottom, handleThreadAtBottomChange] = useScopedAtBottom(
+    effectiveOpenThreadHeadId,
+  );
   const isNotifiedForEffectiveThread =
     effectiveOpenThreadHeadId != null
       ? isNotifiedForThread(effectiveOpenThreadHeadId)
@@ -214,6 +221,7 @@ export function ChannelScreen({
     activeChannelId,
     activeChannel?.isMember,
     activeReadAt,
+    timelineIsAtBottom,
   );
   React.useEffect(() => {
     if (!activeChannelId) {
@@ -449,6 +457,7 @@ export function ChannelScreen({
     threadReplyTargetId,
     expandedThreadReplyIds,
     openThreadMessages: threadPanelData.visibleReplies,
+    openThreadIsAtBottom: threadIsAtBottom,
     clearChannelUnreadSource,
     getChannelReadAt,
     getMessageReadAt,
@@ -485,6 +494,7 @@ export function ChannelScreen({
     getFirstReplyIdForMessage,
     getReplyDescendantIdsForMessage,
     markRevealedRepliesRead,
+    markThreadRead,
     profiles: messageProfiles,
     recordThreadInteraction,
     openThreadHeadId: effectiveOpenThreadHeadId,
@@ -922,11 +932,13 @@ export function ChannelScreen({
                   onSendToChannel={handleSendToChannel}
                   onSendVideoReviewComment={effectiveSendVideoReviewComment}
                   onSendThreadReply={handleSendThreadReply}
+                  onThreadAtBottomChange={handleThreadAtBottomChange}
                   onThreadScrollTargetResolved={
                     handleThreadScrollTargetResolved
                   }
                   onThreadPanelResizeStart={handleThreadPanelResizeStart}
                   onTargetReached={handleTargetReached}
+                  onTimelineAtBottomChange={handleTimelineAtBottomChange}
                   onToggleReaction={effectiveToggleReaction}
                   openAgentSessionChannelId={openAgentSessionChannelId}
                   openAgentSessionPubkey={openAgentSessionPubkey}

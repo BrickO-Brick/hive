@@ -9,6 +9,7 @@ import type {
 import { resolveThreadReplyTarget } from "@/features/messages/hooks";
 import { getSendToChannelSemantics } from "@/features/messages/lib/sendToChannelSemantics";
 import { summarizeThreadRoot } from "@/features/messages/lib/sentFromThread";
+import { sendThreadReplyWithReadBackstop } from "@/features/messages/lib/threadReadTransitions";
 import type { TimelineMessage } from "@/features/messages/types";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
 
@@ -28,6 +29,7 @@ export function useChannelPaneHandlers({
   getFirstReplyIdForMessage,
   getReplyDescendantIdsForMessage,
   markRevealedRepliesRead,
+  markThreadRead,
   profiles,
   recordThreadInteraction,
   onOptimisticOpenThreadHeadIdChange,
@@ -49,6 +51,7 @@ export function useChannelPaneHandlers({
   getFirstReplyIdForMessage: (messageId: string) => string | null;
   getReplyDescendantIdsForMessage: (messageId: string) => string[];
   markRevealedRepliesRead: (messageId: string) => void;
+  markThreadRead: (rootId: string, timestamp: number) => void;
   profiles: UserProfileLookup | undefined;
   recordThreadInteraction: (rootId: string) => void;
   onOptimisticOpenThreadHeadIdChange: React.Dispatch<
@@ -360,14 +363,18 @@ export function useChannelPaneHandlers({
         });
       }
 
-      const sentMessage = await sendMutateRef.current({
-        content,
-        mentionPubkeys,
-        parentEventId,
-        mediaTags,
-        channelId: channelId ?? undefined,
-        forceRest,
-      });
+      const sentMessage = await sendThreadReplyWithReadBackstop(
+        sendMutateRef.current({
+          content,
+          mentionPubkeys,
+          parentEventId,
+          mediaTags,
+          channelId: channelId ?? undefined,
+          forceRest,
+        }),
+        () => activeThreadHeadId,
+        markThreadRead,
+      );
 
       // Only update thread UI state if the user is still viewing the same
       // thread. If they navigated away during the async send, don't disrupt
@@ -380,6 +387,7 @@ export function useChannelPaneHandlers({
       }
     },
     [
+      markThreadRead,
       setExpandedThreadReplyIds,
       setThreadReplyTargetId,
       setThreadScrollTargetId,

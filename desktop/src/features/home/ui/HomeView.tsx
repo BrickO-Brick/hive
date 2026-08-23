@@ -62,6 +62,7 @@ import { resolveUserLabel } from "@/features/profile/lib/identity";
 import { useRemindLater } from "@/features/reminders/ui/RemindMeLaterProvider";
 import { deleteMessage, sendChannelMessage } from "@/shared/api/tauri";
 import type { Channel, HomeFeedResponse } from "@/shared/api/types";
+import { markConfirmedInboxReplyRead } from "@/features/messages/lib/threadReadTransitions";
 import { KIND_REACTION } from "@/shared/constants/kinds";
 import { topChromeInset } from "@/shared/layout/chromeLayout";
 import { cn } from "@/shared/lib/cn";
@@ -73,7 +74,6 @@ import { useHistorySearchState } from "@/shared/hooks/useHistorySearchState";
 import { ProfilePanelProvider } from "@/shared/context/ProfilePanelContext";
 import { Button } from "@/shared/ui/button";
 import { HomeMembersSidebarOverlay } from "./HomeMembersSidebarOverlay";
-
 const INBOX_SEARCH_KEYS = [
   "item",
   "profile",
@@ -263,7 +263,6 @@ export function HomeView({
       selectedEventId,
       availableChannelIds,
     });
-
   const threadContextFeedItem = activeLatchedItem;
   // Derive the default composer parent from the active anchor's own tags so
   // that InboxDetailPane can recover the original reply target even when the
@@ -859,6 +858,7 @@ export function HomeView({
                     emojiTags,
                     mentionTags,
                   );
+                  markConfirmedInboxReplyRead(result, markThreadRead);
                   const authorPubkey = currentPubkey ?? itemToReply.item.pubkey;
                   const reply: InboxReply = {
                     authorLabel: currentPubkey
