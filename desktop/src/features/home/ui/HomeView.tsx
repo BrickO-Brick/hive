@@ -68,6 +68,7 @@ import { cn } from "@/shared/lib/cn";
 import { normalizePubkey } from "@/shared/lib/pubkey";
 import { useElementWidth } from "@/shared/hooks/use-mobile";
 import { useThreadPanelWidth } from "@/shared/hooks/useThreadPanelWidth";
+import { cacheRouteTargetEvent } from "@/app/navigation/searchHitEventCache";
 import { AUXILIARY_PANEL_SINGLE_COLUMN_BREAKPOINT_PX } from "@/shared/layout/AuxiliaryPanel";
 import { useHistorySearchState } from "@/shared/hooks/useHistorySearchState";
 import { ProfilePanelProvider } from "@/shared/context/ProfilePanelContext";
@@ -705,6 +706,15 @@ export function HomeView({
                 if (!channelId) {
                   return;
                 }
+                cacheRouteTargetEvent({
+                  id: item.item.id,
+                  pubkey: item.item.pubkey,
+                  created_at: item.item.createdAt,
+                  kind: item.item.kind,
+                  tags: item.item.tags,
+                  content: item.item.content,
+                  sig: "",
+                });
                 onOpenContext(
                   channelId,
                   item.id,

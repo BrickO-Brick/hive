@@ -31,11 +31,14 @@ export function buildSearchHitEvent(hit: SearchHit): RelayEvent {
   };
 }
 
-export function cacheSearchHitEvent(hit: SearchHit): RelayEvent {
-  const event = buildSearchHitEvent(hit);
+export function cacheRouteTargetEvent(event: RelayEvent): RelayEvent {
   searchHitEventCache.set(event.id, event);
   trimCache();
   return event;
+}
+
+export function cacheSearchHitEvent(hit: SearchHit): RelayEvent {
+  return cacheRouteTargetEvent(buildSearchHitEvent(hit));
 }
 
 export function clearSearchHitEventCache(): void {

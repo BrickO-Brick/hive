@@ -295,6 +295,11 @@ test("opens a mocked channel from the inbox feed", async ({ page }) => {
     /#\/channels\/9a1657ac-f7aa-5db0-b632-d8bbeb6dfb50\?messageId=mock-feed-mention$/,
   );
   await expect(page.getByTestId("chat-title")).toHaveText("general");
+  const targetRow = page
+    .getByTestId("message-timeline")
+    .locator('[data-message-id="mock-feed-mention"]');
+  await expect(targetRow).toBeVisible();
+  await expect(targetRow).toHaveClass(/route-target-highlight-fade/);
 });
 
 test("Inbox excludes generic channel and unowned agent traffic", async ({
