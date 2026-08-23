@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Bot, Plus, Sparkles, UserPlus } from "lucide-react";
+import { Bot, FolderPlus, Plus, Sparkles, UserPlus } from "lucide-react";
 
 import {
   getChannelIntroDescription,
@@ -29,6 +29,7 @@ type ChannelIntroAction = {
 export function useChannelIntro({
   activeChannel,
   onAddAgent,
+  onAddFiles,
   onBrowseChannels,
   onCreateChannel,
   onOpenMembers,
@@ -36,6 +37,7 @@ export function useChannelIntro({
 }: {
   activeChannel: Channel | null;
   onAddAgent?: (options?: { beforeSend?: () => void }) => void;
+  onAddFiles?: () => void;
   onBrowseChannels?: () => void;
   onCreateChannel?: () => void;
   onOpenMembers?: () => void;
@@ -89,6 +91,16 @@ export function useChannelIntro({
     }
 
     if (!activeChannel.archivedAt && activeChannel.isMember) {
+      if (onAddFiles) {
+        actions.push({
+          description: "Add a repo.",
+          icon: <FolderPlus aria-hidden className="h-5 w-5" />,
+          label: "Add files",
+          onClick: onAddFiles,
+          testId: "channel-intro-action-add-files",
+        });
+      }
+
       if (onAddAgent) {
         actions.push({
           description: "Bring them in.",
@@ -119,6 +131,7 @@ export function useChannelIntro({
   }, [
     activeChannel,
     onAddAgent,
+    onAddFiles,
     onBrowseChannels,
     onCreateChannel,
     onOpenMembers,
