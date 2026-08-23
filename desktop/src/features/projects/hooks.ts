@@ -172,9 +172,11 @@ export async function fetchProjects(
   signal?: AbortSignal,
 ): Promise<Project[]> {
   // Delegates to `buildProjectsFromFetcher` in `projectEnumeration.ts`, which
-  // is the pure, Tauri-free core of this operation. That helper's javadoc
-  // explains the fail-closed tombstone contract and the NIP-OA owner-deletion
-  // relay-side-suppression decision.
+  // is the pure, Tauri-free core of this operation. Its javadoc explains
+  // fail-closed tombstones and NIP-OA owner-deletion suppression.
+  const viewerPubkey = await getIdentity()
+    .then((identity) => identity.pubkey)
+    .catch(() => undefined);
   const fetcher: FetchProjectEventsExhaustively =
     fetchExhaustively ??
     ((kinds, extraFilter) =>
@@ -182,6 +184,7 @@ export async function fetchProjects(
   return buildProjectsFromFetcher(fetcher, {
     relayOrigin: getCachedRelayOrigin(),
     hiddenAddresses: new Set(readHiddenProjectCards()),
+    viewerPubkey,
   });
 }
 
