@@ -3914,6 +3914,105 @@ test("a refused forum search result preserves the edit and retries after cancel"
   ).toContainText("Release checklist: async feedback thread.");
 });
 
+for (const targetKind of ["reply", "root"] as const) {
+  test(`a refused same-thread ${targetKind} target preserves the edit and retries after cancel`, async ({
+    page,
+  }) => {
+    const sourceRoot = `Same-thread ${targetKind} guard root ${Date.now()}`;
+    const sourceReply = `Same-thread ${targetKind} guard reply ${Date.now()}`;
+    const dirtyReply = `${sourceReply}  unsaved byte-for-byte 🧵`;
+
+    await page.goto("/");
+    await page.waitForFunction(
+      () => typeof window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__ === "function",
+    );
+    const { sourceReplyId, sourceRootId } = await page.evaluate(
+      ({ sourceReply, sourceRoot, targetKind }) => {
+        const emit = window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__;
+        if (!emit) throw new Error("Mock message emitter is unavailable.");
+        const root = emit({ channelName: "general", content: sourceRoot });
+        const reply = emit({
+          channelName: "general",
+          content: sourceReply,
+          parentEventId: root.id,
+        });
+        const targetId = targetKind === "reply" ? reply.id : root.id;
+        emit({
+          channelName: "general",
+          content: `Same-thread ${targetKind} target buzz://message?channel=9a1657ac-f7aa-5db0-b632-d8bbeb6dfb50&id=${targetId}&thread=${root.id}`,
+        });
+        return { sourceReplyId: reply.id, sourceRootId: root.id };
+      },
+      { sourceReply, sourceRoot, targetKind },
+    );
+
+    await page.getByTestId("channel-general").click();
+    const timeline = page.getByTestId("message-timeline");
+    const source = timeline.locator(`[data-message-id="${sourceRootId}"]`);
+    await source.hover();
+    await source.getByRole("button", { name: "Reply" }).click({ force: true });
+
+    const threadPanel = page.getByTestId("message-thread-panel");
+    const threadInput = threadPanel.getByTestId("message-input");
+    const reply = threadPanel.locator(`[data-message-id="${sourceReplyId}"]`);
+    await reply.hover();
+    await reply.getByRole("button", { name: "More actions" }).click();
+    await page.getByRole("menuitem", { name: "Edit message" }).click();
+    await threadInput.fill(dirtyReply);
+
+    const targetLink = timeline
+      .getByTestId("message-row")
+      .filter({ hasText: `Same-thread ${targetKind} target` })
+      .getByRole("button", { name: "Open message in channel general" });
+    const navigationBefore = await page.evaluate(() => ({
+      historyLength: history.length,
+      url: location.href,
+    }));
+    const sendsBefore = await page.evaluate(
+      () =>
+        (window.__BUZZ_E2E_COMMAND_LOG__ ?? []).filter(
+          (entry) => entry.command === "send_channel_message",
+        ).length,
+    );
+
+    await targetLink.click();
+
+    const refusal = page.getByText(
+      "Finish or cancel your edit before leaving the thread.",
+    );
+    await expect(refusal).toHaveCount(1);
+    await expect(threadPanel).toBeVisible();
+    await expect(threadPanel.getByTestId("edit-target")).toBeVisible();
+    await expect(threadInput).toHaveText(dirtyReply);
+    expect(await threadInput.textContent()).toBe(dirtyReply);
+    await expect(page).toHaveURL(navigationBefore.url);
+    expect(await page.evaluate(() => history.length)).toBe(
+      navigationBefore.historyLength,
+    );
+    expect(
+      await page.evaluate(
+        () =>
+          (window.__BUZZ_E2E_COMMAND_LOG__ ?? []).filter(
+            (entry) => entry.command === "send_channel_message",
+          ).length,
+      ),
+    ).toBe(sendsBefore);
+
+    await threadInput.press("Escape");
+    await expect(threadPanel.getByTestId("edit-target")).toHaveCount(0);
+    await targetLink.click();
+    await expect
+      .poll(() => page.evaluate(() => history.length))
+      .toBeGreaterThan(navigationBefore.historyLength);
+    await expect(threadPanel).toBeVisible();
+    await expect(
+      threadPanel.locator(
+        `[data-message-id="${targetKind === "reply" ? sourceReplyId : sourceRootId}"]`,
+      ),
+    ).toBeVisible();
+  });
+}
+
 test("ArrowUp in an empty composer edits your last message right after sending", async ({
   page,
 }) => {

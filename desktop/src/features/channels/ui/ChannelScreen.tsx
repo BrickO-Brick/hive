@@ -661,11 +661,7 @@ export function ChannelScreen({
     setThreadReplyTargetId(null);
     setEditTargetId(null);
   }, [activeChannelId]);
-  useMessageLinkNavigationGuard(
-    requireThreadEditResolution,
-    activeChannelId,
-    effectiveOpenThreadHeadId,
-  );
+  useMessageLinkNavigationGuard(requireThreadEditResolution);
   const mainTimelineTargetMessageId = useChannelRouteTarget({
     activeChannel,
     activeChannelId,
