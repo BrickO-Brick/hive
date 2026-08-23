@@ -134,34 +134,34 @@ export function ChannelComposerActivityRow({
 
   return (
     <div className="flex min-w-0 flex-1 items-center overflow-visible">
-        {/* One strip hosts both groups: working pills plus the typing group
+      {/* One strip hosts both groups: working pills plus the typing group
             as the strip's trailing slot sibling, so they share the scroller,
             edge fades, and layout/enter/exit animations. When the row gets
             tight the strip scrolls horizontally (edge fades signal clipped
             items) rather than compressing. */}
-        {pillBotPubkeys.length > 0 || combinedTypingPubkeys.length > 0 ? (
-          <BotActivityComposerAction
-            agents={agents}
-            channelId={channelId}
-            onOpenAgentSession={onOpenAgentSession}
-            profiles={profiles}
-            typingIndicator={
-              combinedTypingPubkeys.length > 0 ? (
-                <TypingIndicatorRow
-                  channel={channel}
-                  // The strip's slot owns spacing and the typing-only inset;
-                  // zero the base paddings and let the row shrink so the
-                  // lone-item slot can ellipsize the label.
-                  className="min-w-0 shrink px-0 py-0 sm:px-0"
-                  currentPubkey={currentPubkey}
-                  profiles={typingProfiles}
-                  typingPubkeys={combinedTypingPubkeys}
-                />
-              ) : null
-            }
-            workingBotPubkeys={pillBotPubkeys}
-          />
-        ) : null}
+      {pillBotPubkeys.length > 0 || combinedTypingPubkeys.length > 0 ? (
+        <BotActivityComposerAction
+          agents={agents}
+          channelId={channelId}
+          onOpenAgentSession={onOpenAgentSession}
+          profiles={profiles}
+          typingIndicator={
+            combinedTypingPubkeys.length > 0 ? (
+              <TypingIndicatorRow
+                channel={channel}
+                // The strip's slot owns spacing and the typing-only inset;
+                // zero the base paddings and let the row shrink so the
+                // lone-item slot can ellipsize the label.
+                className="min-w-0 shrink px-0 py-0 sm:px-0"
+                currentPubkey={currentPubkey}
+                profiles={typingProfiles}
+                typingPubkeys={combinedTypingPubkeys}
+              />
+            ) : null
+          }
+          workingBotPubkeys={pillBotPubkeys}
+        />
+      ) : null}
     </div>
   );
 }

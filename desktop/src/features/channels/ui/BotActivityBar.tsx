@@ -174,7 +174,7 @@ function useStripHoverPopover(): StripHoverPopover {
       cancelPending();
       timerRef.current = setTimeout(() => {
         setActive(pubkey);
-      }, HOVER_OPEN_DELAY_MS);
+      }, DEFAULT_POPOVER_HOVER_OPEN_DELAY_MS);
     },
     [cancelPending, setActive],
   );
