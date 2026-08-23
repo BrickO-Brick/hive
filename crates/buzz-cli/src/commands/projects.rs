@@ -65,17 +65,6 @@ fn parse_events(json: &str) -> Result<Vec<Event>, CliError> {
         .map_err(|e| CliError::Other(format!("failed to parse relay response: {e}")))
 }
 
-/// Fetch every listed kind:30621 head for `slug`, any owner.
-async fn fetch_projects_by_dtag(client: &BuzzClient, slug: &str) -> Result<Vec<Event>, CliError> {
-    let filter = serde_json::json!({
-        "kinds": [KIND_PROJECT],
-        "#d": [slug],
-        "limit": 20,
-    });
-    let raw = client.query(&filter).await?;
-    parse_events(&raw)
-}
-
 /// Fetch listed kind:30621 heads whose `buzz-channel` is `channel`.
 fn project_tags_match_channel<'a>(tags: impl IntoIterator<Item = &'a Tag>, channel: &str) -> bool {
     tags.into_iter()
@@ -110,12 +99,6 @@ fn project_slug(event: &Event) -> Option<String> {
     event.tags.iter().find_map(|tag| match tag.as_slice() {
         [name, value, ..] if name == "d" && !value.is_empty() => Some(value.clone()),
         _ => None,
-    })
-}
-
-fn other_listed_project<'a>(events: &'a [Event], caller_pubkey: &str) -> Option<&'a Event> {
-    events.iter().find(|event| {
-        !event.pubkey.to_hex().eq_ignore_ascii_case(caller_pubkey) && !project_is_unlisted(event)
     })
 }
 
@@ -370,24 +353,18 @@ pub async fn cmd_create(
             "project {slug:?} already exists; use 'buzz projects update' to modify it"
         )));
     }
-    if let Some(existing) =
-        other_listed_project(&fetch_projects_by_dtag(client, slug).await?, &caller_pubkey)
-    {
-        let owner = existing.pubkey.to_hex();
-        return Err(CliError::Conflict(format!(
-            "project {slug:?} already exists (owner {owner}); do not create another. Add a repository to that project instead."
-        )));
-    }
     if let Some(channel) = channel {
         if let Some(existing) = fetch_projects_for_channel(client, channel)
             .await?
             .into_iter()
-            .find(|event| !project_is_unlisted(event))
+            .find(|event| {
+                event.pubkey.to_hex().eq_ignore_ascii_case(&caller_pubkey)
+                    && !project_is_unlisted(event)
+            })
         {
             let existing_slug = project_slug(&existing).unwrap_or_else(|| slug.to_string());
-            let owner = existing.pubkey.to_hex();
             return Err(CliError::Conflict(format!(
-                "channel {channel} is already the home of project {existing_slug:?} (owner {owner}); do not create another project. Use `buzz repos create --channel {channel}` and `buzz projects add-repo {existing_slug}`."
+                "you already own project {existing_slug:?} for channel {channel}; update that project instead"
             )));
         }
     }
