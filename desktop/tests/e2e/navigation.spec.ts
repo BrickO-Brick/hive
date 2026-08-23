@@ -652,6 +652,67 @@ test("message links to visible root messages highlight them in the main timeline
   await expect(welcomeRow).toHaveClass(/route-target-highlight-fade/);
 });
 
+// Cold deep links arrive from outside the channel (Home inbox "Open in
+// channel", search, notifications): the timeline mounts *with* the target
+// already in the route. `#deep-history` is long enough that the virtualizer
+// only renders the newest rows on first commit, so the target row is in the
+// loaded window but not yet in the DOM — the state the in-channel link tests
+// above never reach.
+const DEEP_HISTORY_CHANNEL_ID = "feedf00d-0000-4000-8000-000000000007";
+
+async function expectColdDeepLinkLandsOnTarget(
+  page: import("@playwright/test").Page,
+  messageId: string,
+) {
+  await page.goto("/");
+  await expect(page.getByTestId("home-inbox-list")).toBeVisible();
+
+  // Same-document hash navigation — the route the Home inbox / search hand
+  // off to, without reloading the app shell.
+  await page.goto(
+    `/#/channels/${DEEP_HISTORY_CHANNEL_ID}?messageId=${messageId}`,
+  );
+  await expect(page.getByTestId("chat-title")).toHaveText("deep-history");
+
+  const timeline = page.getByTestId("message-timeline");
+  const targetRow = timeline.locator(`[data-message-id="${messageId}"]`);
+  // The highlight is applied only once the hook has seen the row settled in
+  // the viewport, so it is the strongest signal that the jump completed. It
+  // fades after 2s — assert it before anything that can wait on layout.
+  await expect(targetRow).toHaveClass(/route-target-highlight-fade/);
+  await expect(targetRow).toBeInViewport();
+  // Top-level targets resolve in the main timeline only.
+  await expect(page.getByTestId("message-thread-panel")).not.toBeVisible();
+  // Reaching the target consumes the route param so a later channel visit
+  // doesn't re-scroll to stale history.
+  await expect(page).toHaveURL(
+    new RegExp(`#/channels/${DEEP_HISTORY_CHANNEL_ID}$`),
+  );
+  // The target must still be in view once the route param is cleared — the
+  // list's first-commit bottom settle and the mount-time resize pass must not
+  // win over the target jump.
+  await page.waitForTimeout(500);
+  await expect(targetRow).toBeInViewport();
+  return targetRow;
+}
+
+test("cold deep link to a message in virtualized history scrolls to and highlights it", async ({
+  page,
+}) => {
+  // Index 450 is inside the cold-load window but ~150 rows above the bottom,
+  // so it is not in view when the timeline mounts — the jump must win over
+  // the list's own first-commit bottom settle and the mount-time resize pass.
+  await expectColdDeepLinkLandsOnTarget(page, "mock-deep-history-450");
+});
+
+test("cold deep link to the newest message highlights it at the bottom", async ({
+  page,
+}) => {
+  // The DM case: the target is the last message. It must still highlight,
+  // and the view stays at the floor.
+  await expectColdDeepLinkLandsOnTarget(page, "mock-deep-history-599");
+});
+
 test("direct-message tooltip metadata stays on one physical line", async ({
   page,
 }) => {

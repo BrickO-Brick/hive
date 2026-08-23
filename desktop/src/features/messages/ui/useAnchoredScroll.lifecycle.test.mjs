@@ -281,7 +281,10 @@ function VirtualTargetHarness({ refs }) {
     scrollContainerRef: refs.scroller,
     virtualCancelBottomIntent: bottomApi.cancel,
     virtualizerOwnsPrependAnchoring: true,
-    virtualScrollToMessage: () => true,
+    virtualScrollToMessage: (messageId) => {
+      refs.targetJumps.current.push(messageId);
+      return true;
+    },
   });
   React.useLayoutEffect(() => {
     if (didRun.current) return;
@@ -522,7 +525,7 @@ test("user interaction releases and retires a pending pinned target", async () =
   await act(async () => root.unmount());
 });
 
-test("mounted virtual target retires bottom intent before direct centering", async () => {
+test("mounted virtual target retires bottom intent and delegates the jump to the virtualizer", async () => {
   const resizeObservers = [];
   globalThis.ResizeObserver = class {
     constructor(callback) {
@@ -555,7 +558,9 @@ test("mounted virtual target retires bottom intent before direct centering", asy
   };
   scroller.querySelector = () => row;
   scroller.querySelectorAll = () => [];
+  const directScrollWrites = [];
   scroller.scrollTo = ({ top }) => {
+    directScrollWrites.push(top);
     scroller.scrollTop = top;
   };
 
@@ -571,6 +576,7 @@ test("mounted virtual target retires bottom intent before direct centering", asy
       },
     },
     scroller: { current: scroller },
+    targetJumps: { current: [] },
     targetResult: { current: null },
   };
   const root = createRoot(document.createElement("div"));
@@ -579,8 +585,12 @@ test("mounted virtual target retires bottom intent before direct centering", asy
   });
 
   assert.deepEqual(bottomWrites, [{ index: 4, options: { align: "end" } }]);
-  assert.equal(refs.targetResult.current, true);
-  assert.equal(row.getBoundingClientRect().top, 180);
+  // The virtualizer is the only scroll writer: the hook hands it the jump and
+  // never races it with a direct `scrollTo` that its in-flight correction
+  // would overwrite. The row is already settled in view, so it is handled.
+  assert.deepEqual(refs.targetJumps.current, ["selected"]);
+  assert.deepEqual(directScrollWrites, []);
+  assert.equal(refs.targetResult.current, "centered");
   const bottomGeometryObserver = resizeObservers.find(
     (observer) =>
       observer.targets.includes(content) && observer.targets.includes(scroller),
@@ -589,11 +599,6 @@ test("mounted virtual target retires bottom intent before direct centering", asy
   bottomGeometryObserver.callback();
   await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
 
-  assert.equal(
-    row.getBoundingClientRect().top,
-    180,
-    "target remains centered after later virtual geometry activity",
-  );
   assert.equal(bottomWrites.length, 1, "geometry cannot re-pin to bottom");
   await act(async () => root.unmount());
 });

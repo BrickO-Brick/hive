@@ -23,6 +23,21 @@ type AnchorState =
   | { kind: "message"; messageId: string; topOffset: number }
   | { kind: "pinned-center"; messageId: string; contentTop: number };
 
+/**
+ * Outcome of an imperative scroll-to-message.
+ *
+ * - `centered` — the row is in the DOM and was centered (and highlighted when
+ *   asked). The target is handled.
+ * - `pending` — the row is in the list but not rendered yet; the virtualizer
+ *   accepted the jump and the row will commit in a later render. The caller
+ *   must neither treat the target as handled nor move the viewport elsewhere
+ *   (a bottom pin here would override the jump) — retry when the rendered
+ *   range changes.
+ * - `missing` — the row is not in the list at all (not loaded, or not yet
+ *   spliced in by the route screen). Retry when `messages` changes.
+ */
+export type ScrollToMessageResult = "centered" | "pending" | "missing";
+
 type UseAnchoredScrollOptions = {
   /** Scroll container. Owned by the parent so external refs still compose. */
   scrollContainerRef: React.RefObject<HTMLDivElement | null>;
@@ -80,11 +95,11 @@ type UseAnchoredScrollResult = {
    *  (used by the composer's send flow). */
   scrollToBottomOnNextUpdate: () => void;
   /** Imperative: scroll a specific message into view; optionally pulse it.
-   *  Returns true if the row was found and scrolled, false otherwise. */
+   *  See {@link ScrollToMessageResult} for what each outcome means. */
   scrollToMessage: (
     messageId: string,
     options?: { highlight?: boolean; behavior?: ScrollBehavior },
-  ) => boolean;
+  ) => ScrollToMessageResult;
   /** Syncs the hook's bottom affordances from a virtualizer-owned scroller. */
   onVirtualizerAtBottomStateChange: (atBottom: boolean) => void;
 };
@@ -99,6 +114,24 @@ function isAtBottomNow(
     container.scrollHeight - container.clientHeight - container.scrollTop <=
     AT_BOTTOM_THRESHOLD_PX
   );
+}
+
+/**
+ * Whether a rendered row is as visible as it can be: fully inside the
+ * viewport, or — for a row taller than the viewport — covering it. One pixel
+ * of slack absorbs sub-pixel layout rounding. A zero-height row is a
+ * virtualized placeholder that has not been measured yet, never a settled one.
+ */
+function isRowSettledInViewport(row: Element, container: Element) {
+  const rowRect = row.getBoundingClientRect();
+  const containerRect = container.getBoundingClientRect();
+  const rowHeight = rowRect.bottom - rowRect.top;
+  if (rowHeight <= 0) return false;
+  const visible =
+    Math.min(rowRect.bottom, containerRect.bottom) -
+    Math.max(rowRect.top, containerRect.top);
+  const viewportHeight = containerRect.bottom - containerRect.top;
+  return visible >= Math.min(rowHeight, viewportHeight) - 1;
 }
 
 /**
@@ -432,55 +465,50 @@ export function useAnchoredScroll({
     (
       messageId: string,
       options: { highlight?: boolean; behavior?: ScrollBehavior } = {},
-    ): boolean => {
+    ): ScrollToMessageResult => {
       const container = scrollContainerRef.current;
-      if (!container) return false;
+      if (!container) return "missing";
       const el = container.querySelector<HTMLElement>(
         `[data-message-id="${messageId}"]`,
       );
       if (virtualizerOwnsPrependAnchoring && virtualScrollToMessage) {
-        // Target navigation owns the viewport before any movement strategy is
-        // chosen. The already-mounted fast path centers the DOM node directly
-        // and would otherwise leave durable bottom intent armed.
+        // The virtualizer is the only scroll writer here. Its imperative jump
+        // keeps correcting `scrollTop` for several frames while unmeasured
+        // rows commit, so a direct `container.scrollTo` would be overwritten —
+        // the list's own first-commit bottom settle is exactly such a jump. A
+        // new jump cancels the pending one, which is how target navigation
+        // takes the viewport away from that settle; disarming the durable
+        // bottom intent stops the ResizeObserver from re-pinning later.
         virtualCancelBottomIntent?.();
-        if (el) {
-          const rect = el.getBoundingClientRect();
-          const containerRect = container.getBoundingClientRect();
-          const isInViewport =
-            rect.top >= containerRect.top &&
-            rect.bottom <= containerRect.bottom;
-          if (!isInViewport) {
-            if (!virtualScrollToMessage(messageId, { behavior: "auto" })) {
-              return false;
-            }
-            anchorRef.current = { kind: "message", messageId, topOffset: 0 };
-            setIsAtBottom(false);
-            return false;
-          }
-          const centeredTop = (container.clientHeight - rect.height) / 2;
-          container.scrollTo({
-            top: Math.max(
-              0,
-              container.scrollTop +
-                (rect.top - containerRect.top) -
-                centeredTop,
-            ),
-            behavior: options.behavior ?? "auto",
-          });
-        } else if (
+        if (
           !virtualScrollToMessage(messageId, {
             behavior: options.behavior ?? "auto",
           })
         ) {
-          return false;
+          return "missing";
         }
         anchorRef.current = { kind: "message", messageId, topOffset: 0 };
-        setIsAtBottom(false);
-        if (el && options.highlight) highlightMessage(messageId);
-        return el !== null;
+        // The channel reset seeds `virtualizerAtBottomRef` to true as a
+        // default, and both the viewport-resize and append settles trust it.
+        // A ResizeObserver fires once on observe, so leaving that default in
+        // place lets the first resize callback after this jump pull the view
+        // straight back to the floor. Record what the jump knows instead; the
+        // virtualizer's next real bottom report refines it.
+        // Handled only once the row is rendered and actually in view. Until
+        // then the jump is in flight; the caller retries on range change.
+        if (!el || !isRowSettledInViewport(el, container)) {
+          virtualizerAtBottomRef.current = false;
+          setIsAtBottom(false);
+          return "pending";
+        }
+        const atBottom = isAtBottomNow(container);
+        virtualizerAtBottomRef.current = atBottom;
+        setIsAtBottom(atBottom);
+        if (options.highlight) highlightMessage(messageId);
+        return "centered";
       }
 
-      if (!el) return false;
+      if (!el) return "missing";
 
       const rect = el.getBoundingClientRect();
       const containerRect = container.getBoundingClientRect();
@@ -532,7 +560,7 @@ export function useAnchoredScroll({
       }
 
       if (options.highlight) highlightMessage(messageId);
-      return true;
+      return "centered";
     },
     [
       highlightMessage,
@@ -630,19 +658,21 @@ export function useAnchoredScroll({
         });
       };
       if (targetMessageId) {
-        // A cold deep-link target may not be in the DOM on this first
-        // commit — the route screen fetches it by id and splices it in a
-        // render or two later. If centering fails now, leave the timeline at
-        // its default position and let the post-mount target effect (keyed on
-        // `messages`) retry once the row lands, rather than marking it handled.
-        if (
-          scrollToMessageImperative(targetMessageId, {
-            highlight: highlightTargetMessage,
-          })
-        ) {
+        // A cold deep-link target is rarely in the DOM on this first commit:
+        // a virtualized list renders only a window, and a target outside the
+        // loaded history is fetched by id and spliced in a render or two
+        // later. Either way the post-mount target effect (keyed on `messages`
+        // and the rendered range) finishes the job — it is not handled yet.
+        // Only fall back to the bottom pin when the row is genuinely absent;
+        // pinning while the virtualizer is mid-jump re-arms durable bottom
+        // intent and strands the view at the floor with no highlight.
+        const result = scrollToMessageImperative(targetMessageId, {
+          highlight: highlightTargetMessage,
+        });
+        if (result === "centered") {
           handledTargetIdRef.current = targetMessageId;
           onTargetReached?.(targetMessageId);
-        } else {
+        } else if (result === "missing") {
           pinToBottomOnMount();
         }
       } else {
@@ -876,7 +906,7 @@ export function useAnchoredScroll({
   // *without* marking the target handled until its row actually exists — each
   // subsequent message commit re-runs the effect and retries the centering.
   // ---------------------------------------------------------------------------
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `messages` and `virtualizerRenderVersion` are intentional retry triggers, not values read by the effect body — the effect reads the DOM (querySelector), and we need it to re-run each time the message list or virtualized rendered range changes so a target spliced into older history gets centered once its row commits.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `messages` and `virtualizerRenderVersion` are intentional retry triggers, not values read by the effect body — `scrollToMessageImperative` reads the DOM, and we need the effect to re-run each time the message list or virtualized rendered range changes so a target spliced into older history (or windowed out of the DOM) gets centered once its row commits.
   React.useEffect(() => {
     if (!targetMessageId) {
       handledTargetIdRef.current = null;
@@ -893,43 +923,25 @@ export function useAnchoredScroll({
     if (!hasInitializedRef.current) return; // initial-mount path will handle.
 
     void virtualizerRenderVersion;
-    const container = scrollContainerRef.current;
-    if (!container) return;
-    const el = container.querySelector<HTMLElement>(
-      `[data-message-id="${targetMessageId}"]`,
-    );
-    if (!el && virtualizerOwnsPrependAnchoring) {
-      if (
-        scrollToMessageImperative(targetMessageId, {
-          highlight: highlightTargetMessage,
-        })
-      ) {
-        handledTargetIdRef.current = targetMessageId;
-        onTargetReached?.(targetMessageId);
-      }
-      return;
+    // `pending` (virtualizer mid-jump) and `missing` (row not spliced in yet)
+    // both leave the target unhandled; the next `messages` or rendered-range
+    // commit re-runs this effect and retries until the row is centered.
+    if (
+      scrollToMessageImperative(targetMessageId, {
+        highlight: highlightTargetMessage,
+      }) === "centered"
+    ) {
+      handledTargetIdRef.current = targetMessageId;
+      onTargetReached?.(targetMessageId);
     }
-    if (!el) {
-      // Row not in the DOM yet. A cold deep-link target is fetched by id and
-      // spliced into `messages` a render or two later; this effect re-runs on
-      // each `messages` commit and retries until the row exists.
-      return;
-    }
-    handledTargetIdRef.current = targetMessageId;
-    scrollToMessageImperative(targetMessageId, {
-      highlight: highlightTargetMessage,
-    });
-    onTargetReached?.(targetMessageId);
   }, [
     highlightTargetMessage,
     isLoading,
     messages,
     onTargetReached,
     releasePinnedCenter,
-    scrollContainerRef,
     scrollToMessageImperative,
     targetMessageId,
-    virtualizerOwnsPrependAnchoring,
     virtualizerRenderVersion,
   ]);
 
