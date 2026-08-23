@@ -258,7 +258,15 @@ export function useAppNavigation() {
         threadRootId?: string | null;
       },
     ) => {
-      if (options?.messageId && !allowMessageTargetNavigation()) {
+      if (
+        options?.messageId &&
+        !allowMessageTargetNavigation({
+          kind: "channel-message",
+          channelId,
+          messageId: options.messageId,
+          threadRootId: options.threadRootId ?? null,
+        })
+      ) {
         return Promise.resolve(false);
       }
       return commitNavigation(
@@ -312,8 +320,18 @@ export function useAppNavigation() {
         replace?: boolean;
         replyId?: string;
       },
-    ) =>
-      commitNavigation(
+    ) => {
+      if (
+        !allowMessageTargetNavigation({
+          kind: "forum-post",
+          channelId,
+          postId,
+          replyId: options?.replyId ?? null,
+        })
+      ) {
+        return Promise.resolve(false);
+      }
+      return commitNavigation(
         {
           to: "/channels/$channelId/posts/$postId",
           params: {
@@ -327,7 +345,8 @@ export function useAppNavigation() {
           replace: options?.replace,
           resetScroll: false,
         },
-      ),
+      );
+    },
     [commitNavigation],
   );
 

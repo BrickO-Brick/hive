@@ -1,16 +1,40 @@
-type MessageTargetNavigationGuard = () => boolean;
+export type MessageTargetNavigation =
+  | {
+      kind: "channel-message";
+      channelId: string;
+      messageId: string;
+      threadRootId: string | null;
+    }
+  | {
+      kind: "forum-post";
+      channelId: string;
+      postId: string;
+      replyId: string | null;
+    };
 
-let activeGuard: MessageTargetNavigationGuard | null = null;
+type MessageTargetNavigationGuard = (
+  target: MessageTargetNavigation,
+) => boolean;
 
-export function allowMessageTargetNavigation(): boolean {
-  return activeGuard?.() ?? true;
+type GuardRegistration = {
+  guard: MessageTargetNavigationGuard;
+};
+
+const activeGuards: GuardRegistration[] = [];
+
+export function allowMessageTargetNavigation(
+  target: MessageTargetNavigation,
+): boolean {
+  return activeGuards.at(-1)?.guard(target) ?? true;
 }
 
 export function registerMessageTargetNavigationGuard(
   guard: MessageTargetNavigationGuard,
 ): () => void {
-  activeGuard = guard;
+  const registration = { guard };
+  activeGuards.push(registration);
   return () => {
-    if (activeGuard === guard) activeGuard = null;
+    const index = activeGuards.lastIndexOf(registration);
+    if (index >= 0) activeGuards.splice(index, 1);
   };
 }
