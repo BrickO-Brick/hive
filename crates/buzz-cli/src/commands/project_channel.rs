@@ -86,8 +86,10 @@ fn repo_authorizes_project(repo: &Event, project: &Event) -> bool {
     let signer = project.pubkey.to_hex();
     repo.pubkey.to_hex().eq_ignore_ascii_case(&signer)
         || repo.tags.iter().any(|tag| {
-            matches!(tag.as_slice(), [name, value, ..]
-                if name == "maintainers" && value.eq_ignore_ascii_case(&signer))
+            tag.as_slice().first().map(String::as_str) == Some("maintainers")
+                && tag.as_slice()[1..]
+                    .iter()
+                    .any(|value| value.eq_ignore_ascii_case(&signer))
         })
 }
 
@@ -166,6 +168,20 @@ async fn fetch_channel_repos(client: &BuzzClient, channel: &str) -> Result<Vec<E
         .map_err(|error| CliError::Other(format!("failed to parse relay response: {error}")))
 }
 
+fn require_repo_channel_binding(event: &Event, channel: &str) -> Result<(), CliError> {
+    match first_tag_value(event, "buzz-channel") {
+        Some(bound) if bound == channel => Ok(()),
+        Some(bound) => Err(CliError::Conflict(format!(
+            "repository {:?} is already bound to channel {bound}; pass --repo-owner and --repo-id",
+            first_tag_value(event, "d").unwrap_or("<unknown>")
+        ))),
+        None => Err(CliError::Conflict(format!(
+            "repository {:?} has no channel binding; bind it to {channel} or pass --repo-owner and --repo-id",
+            first_tag_value(event, "d").unwrap_or("<unknown>")
+        ))),
+    }
+}
+
 async fn ensure_default_repo(
     client: &BuzzClient,
     channel: &str,
@@ -181,6 +197,7 @@ async fn ensure_default_repo(
     if let Some(existing) =
         crate::commands::repos::fetch_own_repo_announcement(client, &repo_id).await?
     {
+        require_repo_channel_binding(&existing, channel)?;
         let _ = try_add_own_repo_to_channel_project(client, channel, &repo_id).await;
         return Ok(ChannelProjectRepo {
             repo_owner: existing.pubkey.to_hex(),
@@ -348,6 +365,61 @@ mod tests {
             pick_authoritative_project(&projects, &[repo], channel),
             Err(CliError::Conflict(_))
         ));
+    }
+
+    #[test]
+    fn existing_repo_must_bind_requested_channel() {
+        let owner = nostr::Keys::generate();
+        let requested = "11111111-1111-4111-8111-111111111111";
+        let other = "22222222-2222-4222-8222-222222222222";
+        let matching = signed_event(
+            &owner,
+            30617,
+            vec![tag(&["d", "game"]), tag(&["buzz-channel", requested])],
+        );
+        assert!(require_repo_channel_binding(&matching, requested).is_ok());
+
+        let foreign = signed_event(
+            &owner,
+            30617,
+            vec![tag(&["d", "game"]), tag(&["buzz-channel", other])],
+        );
+        assert!(matches!(
+            require_repo_channel_binding(&foreign, requested),
+            Err(CliError::Conflict(_))
+        ));
+    }
+
+    #[test]
+    fn later_maintainer_value_authorizes_project() {
+        let owner = nostr::Keys::generate();
+        let maintainer = nostr::Keys::generate();
+        let unrelated = nostr::Keys::generate().public_key().to_hex();
+        let channel = "11111111-1111-4111-8111-111111111111";
+        let owner_hex = owner.public_key().to_hex();
+        let maintainer_hex = maintainer.public_key().to_hex();
+        let repo_coord = format!("30617:{owner_hex}:game");
+        let repo = signed_event(
+            &owner,
+            30617,
+            vec![
+                tag(&["d", "game"]),
+                tag(&["buzz-channel", channel]),
+                tag(&["maintainers", &unrelated, &maintainer_hex]),
+            ],
+        );
+        let project = signed_event(
+            &maintainer,
+            30621,
+            vec![
+                tag(&["d", "suite"]),
+                tag(&["buzz-channel", channel]),
+                tag(&["a", &repo_coord]),
+            ],
+        );
+        assert!(pick_authoritative_project(&[project], &[repo], channel)
+            .unwrap()
+            .is_some());
     }
 
     #[test]

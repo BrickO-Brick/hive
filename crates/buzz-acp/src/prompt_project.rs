@@ -78,7 +78,7 @@ fn authoritative_channel_repos(
             if id.is_empty() {
                 return None;
             }
-            let maintainers = tag_values(event, "maintainers")
+            let maintainers = multi_tag_values(event, "maintainers")
                 .map(str::to_ascii_lowercase)
                 .collect();
             Some(((owner, id.to_string()), maintainers))
@@ -99,6 +99,17 @@ fn tag_values<'a>(event: &'a Value, name: &'static str) -> impl Iterator<Item = 
         .filter_map(Value::as_array)
         .filter(move |tag| tag.first().and_then(Value::as_str) == Some(name))
         .filter_map(|tag| tag.get(1).and_then(Value::as_str))
+}
+
+fn multi_tag_values<'a>(event: &'a Value, name: &'static str) -> impl Iterator<Item = &'a str> {
+    event
+        .get("tags")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_array)
+        .filter(move |tag| tag.first().and_then(Value::as_str) == Some(name))
+        .flat_map(|tag| tag.iter().skip(1).filter_map(Value::as_str))
 }
 
 fn event_has_tag_value(event: &Value, name: &'static str, value: &str) -> bool {
@@ -210,7 +221,7 @@ mod tests {
                 &owner,
                 "game",
                 CHANNEL_ID,
-                vec![json!(["maintainers", maintainer])],
+                vec![json!(["maintainers", "c".repeat(64), maintainer])],
             )],
             CHANNEL_ID,
         )
