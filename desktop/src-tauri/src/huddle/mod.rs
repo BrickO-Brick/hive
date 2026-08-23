@@ -94,7 +94,7 @@ use crate::{app_state::AppState, events, relay::submit_event};
 
 use agent_tts_routing::{
     classify_agent_tts_runtime, enqueue_agent_tts_text, normalize_agent_tts_text,
-    AgentTtsRuntimeGate,
+    remote_agent_publisher_is_live, AgentTtsRuntimeGate,
 };
 pub use pipeline::check_pipeline_hotstart;
 use pipeline::{
@@ -900,16 +900,52 @@ pub async fn speak_agent_message(
         );
         return Err("Agent text to speech is enabled but its audio pipeline is unavailable".into());
     };
-    match agent_tts_publisher::ensure(&app, &state, &pipeline, &speaker_pubkey).await {
-        Ok(true) => eprintln!(
-            "buzz-desktop: tts broadcast status=ready route_id={route_id}"
-        ),
-        Ok(false) => eprintln!(
-            "buzz-desktop: tts broadcast status=unavailable reason=agent_identity_not_local route_id={route_id}"
-        ),
-        Err(error) => eprintln!(
-            "buzz-desktop: tts broadcast status=unavailable reason=publisher_setup_failed route_id={route_id} error={error}"
-        ),
+    let owns_agent_publisher = match agent_tts_publisher::ensure(
+        &app,
+        &state,
+        &pipeline,
+        &speaker_pubkey,
+    )
+    .await
+    {
+        Ok(agent_tts_publisher::EnsureOutcome::Ready) => {
+            eprintln!("buzz-desktop: tts broadcast status=ready route_id={route_id}");
+            true
+        }
+        Ok(agent_tts_publisher::EnsureOutcome::NotLocal) => {
+            eprintln!(
+                "buzz-desktop: tts broadcast status=unavailable reason=agent_identity_not_local route_id={route_id}"
+            );
+            false
+        }
+        Ok(agent_tts_publisher::EnsureOutcome::LostElection) => {
+            eprintln!(
+                "buzz-desktop: tts stage=queue status=dropped reason=publisher_election_lost route_id={route_id}"
+            );
+            return Ok(());
+        }
+        Err(error) => {
+            eprintln!(
+                "buzz-desktop: tts broadcast status=unavailable reason=publisher_setup_failed route_id={route_id} error={error}"
+            );
+            false
+        }
+    };
+    if !owns_agent_publisher {
+        let remote_publisher_is_live = {
+            let hs = state.huddle()?;
+            let peers = hs
+                .audio_peer_pubkeys
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            remote_agent_publisher_is_live(&speaker_pubkey, peers.values().map(String::as_str))
+        };
+        if remote_publisher_is_live {
+            eprintln!(
+                "buzz-desktop: tts stage=queue status=dropped reason=remote_agent_publisher_live route_id={route_id}"
+            );
+            return Ok(());
+        }
     }
     let sender = pipeline.text_sender();
     let speaker_generation = sender.speaker_generation(&speaker_pubkey);

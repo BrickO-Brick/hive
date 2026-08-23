@@ -5,14 +5,21 @@ use std::sync::Arc;
 use super::{relay_api, tts};
 use crate::app_state::AppState;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum EnsureOutcome {
+    Ready,
+    NotLocal,
+    LostElection,
+}
+
 pub(super) async fn ensure(
     app: &tauri::AppHandle,
     state: &AppState,
     pipeline: &tts::TtsPipeline,
     speaker_pubkey: &str,
-) -> Result<bool, String> {
+) -> Result<EnsureOutcome, String> {
     if pipeline.has_audio_publisher(speaker_pubkey) {
-        return Ok(true);
+        return Ok(EnsureOutcome::Ready);
     }
 
     let app_for_load = app.clone();
@@ -28,7 +35,7 @@ pub(super) async fn ensure(
     .await
     .map_err(|error| format!("managed-agent identity task failed: {error}"))??;
     let Some(record) = record else {
-        return Ok(false);
+        return Ok(EnsureOutcome::NotLocal);
     };
 
     let keys = nostr::Keys::parse(record.private_key_nsec.trim())
@@ -61,7 +68,7 @@ pub(super) async fn ensure(
     if !has_bot_membership {
         return Err("agent is not an active bot member of the Huddle".to_string());
     }
-    let publisher = relay_api::connect_tts_audio_publisher(
+    let publisher = match relay_api::connect_tts_audio_publisher(
         &ephemeral_channel_id,
         parent_channel_id.as_deref(),
         state,
@@ -69,7 +76,12 @@ pub(super) async fn ensure(
         record.auth_tag.as_deref(),
         local_tts_publishers,
     )
-    .await?;
+    .await
+    {
+        Ok(publisher) => publisher,
+        Err(error) if error.is_lost_election() => return Ok(EnsureOutcome::LostElection),
+        Err(error) => return Err(error.to_string()),
+    };
     pipeline.register_audio_publisher(speaker_pubkey, publisher);
-    Ok(true)
+    Ok(EnsureOutcome::Ready)
 }

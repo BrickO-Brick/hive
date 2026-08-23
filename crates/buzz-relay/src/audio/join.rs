@@ -52,7 +52,8 @@ use uuid::Uuid;
 
 use super::mesh::spawn_remote_peer_sink;
 use super::room::{
-    AdmissionError, AudioRoomManager, Room, RosterDelta as RoomRosterDelta, RosterPeer,
+    AdmissionError, AudioPeerRole, AudioRoomManager, Room, RosterDelta as RoomRosterDelta,
+    RosterPeer,
 };
 use crate::tunnel::directory::{ReleaseResult, RenewResult, SessionDirectory, SessionLease};
 
@@ -823,6 +824,8 @@ pub enum HuddleControlMsg {
         /// Huddle audio protocol version the client negotiated; the owner's
         /// room is pinned to one version and rejects mismatches.
         protocol_version: u8,
+        /// Relay-derived media role; ingress cannot upgrade client authority.
+        role: AudioPeerRoleWire,
     },
     /// Owner → non-owner: the client is registered; here is its assigned index.
     PeerRegistered {
@@ -878,11 +881,41 @@ pub enum HuddleControlMsg {
     },
 }
 
+/// Relay-derived media role carried over the trusted pod-to-pod control stream.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AudioPeerRoleWire {
+    /// Ordinary audio participant.
+    #[default]
+    Participant,
+    /// NIP-OA-authenticated managed agent with bot membership.
+    AgentTtsPublisher,
+}
+
+impl From<AudioPeerRole> for AudioPeerRoleWire {
+    fn from(role: AudioPeerRole) -> Self {
+        match role {
+            AudioPeerRole::Participant => Self::Participant,
+            AudioPeerRole::AgentTtsPublisher => Self::AgentTtsPublisher,
+        }
+    }
+}
+
+impl From<AudioPeerRoleWire> for AudioPeerRole {
+    fn from(role: AudioPeerRoleWire) -> Self {
+        match role {
+            AudioPeerRoleWire::Participant => Self::Participant,
+            AudioPeerRoleWire::AgentTtsPublisher => Self::AgentTtsPublisher,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// One participant in the authoritative owner roster.
 pub struct RosterEntry {
     /// Nostr pubkey hex.
     pub pubkey: String,
+    /// Relay-authoritative media role.
+    pub role: AudioPeerRoleWire,
     /// Owner-assigned media routing index.
     pub peer_index: u8,
     /// Occupancy epoch for `peer_index`, bumped each time the index is reused
@@ -903,6 +936,7 @@ impl From<RosterPeer> for RosterEntry {
     fn from(peer: RosterPeer) -> Self {
         Self {
             pubkey: peer.pubkey,
+            role: peer.role.into(),
             peer_index: peer.peer_index,
             epoch: peer.epoch,
         }
@@ -918,6 +952,8 @@ pub enum RegisterRejection {
     RoomFull,
     /// Owner's room has ended (auto-ended or archived).
     RoomEnded,
+    /// The identity already has a live publisher in the owner's room.
+    DuplicateIdentity,
     /// Owner's room is pinned to a different protocol version.
     VersionMismatch {
         /// Version the owner's room is pinned to.
@@ -1233,6 +1269,7 @@ impl<D: HuddleDirectory + ?Sized> HuddleControlAcceptor<D> {
                     community_id,
                     pubkey,
                     protocol_version,
+                    role,
                 } => {
                     // Latch the community on first receipt; reject any later
                     // frame that names a different one (tenant-boundary guard).
@@ -1271,7 +1308,7 @@ impl<D: HuddleDirectory + ?Sized> HuddleControlAcceptor<D> {
                             fenced,
                             from,
                             &pubkey,
-                            protocol_version,
+                            (protocol_version, role),
                             &mut registered,
                         ),
                         Err(e) => match FenceRejection::from_mesh_error(&e) {
@@ -1368,10 +1405,11 @@ impl<D: HuddleDirectory + ?Sized> HuddleControlAcceptor<D> {
         fenced: FencedHeader,
         from: RuntimeId,
         pubkey: &str,
-        protocol_version: u8,
+        registration: (u8, AudioPeerRoleWire),
         registered: &mut std::collections::HashMap<String, Uuid>,
     ) -> HuddleControlMsg {
-        match room.add_peer(pubkey.to_string(), protocol_version) {
+        let (protocol_version, role) = registration;
+        match room.add_peer_with_role(pubkey.to_string(), protocol_version, role.into()) {
             Ok((peer_id, peer_index, epoch, audio_rx, _peer_ctrl_rx, roster_revision)) => {
                 registered.insert(pubkey.to_string(), peer_id);
                 // The owner's Room fans out to this remote peer's `audio_tx`;
@@ -1384,7 +1422,8 @@ impl<D: HuddleDirectory + ?Sized> HuddleControlAcceptor<D> {
                     "pubkey": pubkey,
                     "peer_index": peer_index,
                     "epoch": epoch,
-                    "peers": [{"pubkey": pubkey, "peer_index": peer_index, "epoch": epoch}],
+                    "role": role,
+                    "peers": [{"pubkey": pubkey, "peer_index": peer_index, "epoch": epoch, "role": role}],
                 })
                 .to_string();
                 room.broadcast_control(joined);
@@ -1424,6 +1463,7 @@ fn peer_left_control(delta: RoomRosterDelta, session_id: Uuid) -> Option<String>
             "type": "left",
             "revision": delta.revision,
             "pubkey": left.pubkey,
+            "role": AudioPeerRoleWire::from(left.role),
             "peer_index": left.peer_index,
             "epoch": left.epoch,
         })
@@ -1462,6 +1502,7 @@ fn admission_to_rejection(err: AdmissionError) -> RegisterRejection {
     match err {
         AdmissionError::Full => RegisterRejection::RoomFull,
         AdmissionError::Ended => RegisterRejection::RoomEnded,
+        AdmissionError::DuplicateIdentity => RegisterRejection::DuplicateIdentity,
         AdmissionError::VersionMismatch { pinned, requested } => {
             RegisterRejection::VersionMismatch { pinned, requested }
         }
@@ -1574,6 +1615,7 @@ pub async fn read_owner_control(
                         "type": "roster", "revision": revision,
                         "peers": peers.into_iter().map(|p| serde_json::json!({
                             "pubkey": p.pubkey, "peer_index": p.peer_index, "epoch": p.epoch,
+                            "role": p.role,
                         })).collect::<Vec<_>>()
                     })
                     .to_string();
@@ -1595,12 +1637,17 @@ pub async fn read_owner_control(
                         serde_json::json!({
                             "type": "joined", "revision": revision,
                             "pubkey": peer.pubkey, "peer_index": peer.peer_index, "epoch": peer.epoch,
-                            "peers": [{"pubkey": peer.pubkey, "peer_index": peer.peer_index, "epoch": peer.epoch}],
+                            "role": peer.role,
+                            "peers": [{
+                                "pubkey": peer.pubkey, "peer_index": peer.peer_index, "epoch": peer.epoch,
+                                "role": peer.role,
+                            }],
                         })
                     } else if let Some(peer) = left {
                         serde_json::json!({
                             "type": "left", "revision": revision,
                             "pubkey": peer.pubkey, "peer_index": peer.peer_index, "epoch": peer.epoch,
+                            "role": peer.role,
                         })
                     } else {
                         continue;
@@ -1686,6 +1733,16 @@ impl From<MeshError> for DialError {
     }
 }
 
+/// Identity and admission policy carried from the external socket to the room owner.
+pub struct RemotePeerRegistration {
+    /// Authenticated Nostr pubkey.
+    pub pubkey: String,
+    /// Negotiated Huddle audio protocol version.
+    pub protocol_version: u8,
+    /// Relay-derived media role from the authenticated ingress.
+    pub role: AudioPeerRoleWire,
+}
+
 /// Open a `HuddleControl` stream to the owner and register the local client.
 ///
 /// On success the owner has admitted the client as a remote peer and returned
@@ -1698,8 +1755,7 @@ pub async fn dial_remote_owner(
     owner: RuntimeId,
     fenced: FencedHeader,
     community_id: CommunityId,
-    pubkey: String,
-    protocol_version: u8,
+    registration: RemotePeerRegistration,
 ) -> Result<(RemoteHuddleSession, MeshStream), DialError> {
     let hello = StreamHello {
         sender: local_runtime_id,
@@ -1716,8 +1772,9 @@ pub async fn dial_remote_owner(
             fenced,
             payload: encode_control(&HuddleControlMsg::RegisterPeer {
                 community_id: *community_id.as_uuid(),
-                pubkey: pubkey.clone(),
-                protocol_version,
+                pubkey: registration.pubkey.clone(),
+                protocol_version: registration.protocol_version,
+                role: registration.role,
             })?,
         })
         .await?;
@@ -1733,11 +1790,11 @@ pub async fn dial_remote_owner(
                 RemoteHuddleSession {
                     peer_index,
                     epoch,
-                    protocol_version,
+                    protocol_version: registration.protocol_version,
                     roster,
                     fenced,
                     owner,
-                    pubkey,
+                    pubkey: registration.pubkey,
                     transport,
                     seq: 0,
                 },
@@ -2107,6 +2164,7 @@ mod tests {
                 community_id: *community().as_uuid(),
                 pubkey: "abc123".into(),
                 protocol_version: 2,
+                role: AudioPeerRoleWire::Participant,
             },
             HuddleControlMsg::PeerRegistered {
                 pubkey: "abc123".into(),
@@ -2116,6 +2174,7 @@ mod tests {
                     revision: 1,
                     peers: vec![RosterEntry {
                         pubkey: "abc123".into(),
+                        role: AudioPeerRoleWire::Participant,
                         peer_index: 42,
                         epoch: 0,
                     }],
@@ -2126,6 +2185,7 @@ mod tests {
                 joined: None,
                 left: Some(RosterEntry {
                     pubkey: "abc123".into(),
+                    role: AudioPeerRoleWire::Participant,
                     peer_index: 42,
                     epoch: 0,
                 }),
@@ -2194,6 +2254,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ordered_roster_delta_preserves_agent_publisher_role() {
+        let session_id = Uuid::new_v4();
+        let fenced = fenced_owned_by(rt(1), session_id);
+        let (mut owner, mut client) = stream_pair();
+        let (ctrl_tx, mut ctrl_rx) = tokio::sync::mpsc::channel(4);
+        let reader =
+            tokio::spawn(async move { read_owner_control(&mut client, fenced, 1, &ctrl_tx).await });
+        let publisher = RosterEntry {
+            pubkey: "agent".into(),
+            role: AudioPeerRoleWire::AgentTtsPublisher,
+            peer_index: 7,
+            epoch: 2,
+        };
+
+        owner
+            .send_frame(MeshStreamFrame::Data {
+                fenced,
+                payload: encode_control(&HuddleControlMsg::RosterDelta {
+                    revision: 2,
+                    joined: Some(publisher.clone()),
+                    left: None,
+                })
+                .unwrap(),
+            })
+            .await
+            .unwrap();
+        let joined = ctrl_rx.recv().await.expect("joined delta forwarded");
+        let axum::extract::ws::Message::Text(joined) = joined else {
+            panic!("expected joined JSON");
+        };
+        let joined: serde_json::Value = serde_json::from_str(&joined).unwrap();
+        assert_eq!(joined["role"], "AgentTtsPublisher");
+        assert_eq!(joined["peers"][0]["role"], "AgentTtsPublisher");
+
+        owner
+            .send_frame(MeshStreamFrame::Data {
+                fenced,
+                payload: encode_control(&HuddleControlMsg::RosterDelta {
+                    revision: 3,
+                    joined: None,
+                    left: Some(publisher),
+                })
+                .unwrap(),
+            })
+            .await
+            .unwrap();
+        let left = ctrl_rx.recv().await.expect("left delta forwarded");
+        let axum::extract::ws::Message::Text(left) = left else {
+            panic!("expected left JSON");
+        };
+        let left: serde_json::Value = serde_json::from_str(&left).unwrap();
+        assert_eq!(left["role"], "AgentTtsPublisher");
+
+        drop(owner);
+        assert_eq!(reader.await.unwrap(), HuddleTeardownCause::StreamClosed);
+    }
+
+    #[tokio::test]
     async fn roster_revision_gap_requests_resync_before_forwarding_new_state() {
         let session_id = Uuid::new_v4();
         let fenced = fenced_owned_by(rt(1), session_id);
@@ -2209,6 +2327,7 @@ mod tests {
                     revision: 3,
                     joined: Some(RosterEntry {
                         pubkey: "bob".into(),
+                        role: AudioPeerRoleWire::Participant,
                         peer_index: 7,
                         epoch: 0,
                     }),
@@ -2239,6 +2358,7 @@ mod tests {
                     revision: 3,
                     peers: vec![RosterEntry {
                         pubkey: "bob".into(),
+                        role: AudioPeerRoleWire::Participant,
                         peer_index: 7,
                         epoch: 0,
                     }],
@@ -2327,6 +2447,7 @@ mod tests {
                     community_id: *community().as_uuid(),
                     pubkey: "client-a".into(),
                     protocol_version: 2,
+                    role: AudioPeerRoleWire::Participant,
                 })
                 .unwrap(),
             })
@@ -2380,6 +2501,7 @@ mod tests {
                     community_id: *community().as_uuid(),
                     pubkey: "remote".into(),
                     protocol_version: 2,
+                    role: AudioPeerRoleWire::Participant,
                 })
                 .unwrap(),
             })
@@ -2443,6 +2565,7 @@ mod tests {
                     community_id: *community().as_uuid(),
                     pubkey: "client-a".into(),
                     protocol_version: 2,
+                    role: AudioPeerRoleWire::Participant,
                 })
                 .unwrap(),
             })
@@ -2978,6 +3101,10 @@ mod tests {
         assert_eq!(
             admission_to_rejection(AdmissionError::Ended),
             RegisterRejection::RoomEnded
+        );
+        assert_eq!(
+            admission_to_rejection(AdmissionError::DuplicateIdentity),
+            RegisterRejection::DuplicateIdentity
         );
         assert_eq!(
             admission_to_rejection(AdmissionError::VersionMismatch {

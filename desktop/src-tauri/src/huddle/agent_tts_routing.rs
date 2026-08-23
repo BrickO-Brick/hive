@@ -29,6 +29,15 @@ pub(super) fn classify_agent_tts_runtime(
 /// normal long-form huddle replies to play in full.
 pub(super) const MAX_TTS_TEXT_LEN: usize = 8_096;
 
+pub(super) fn remote_agent_publisher_is_live<'a>(
+    speaker_pubkey: &str,
+    peer_pubkeys: impl IntoIterator<Item = &'a str>,
+) -> bool {
+    peer_pubkeys
+        .into_iter()
+        .any(|pubkey| pubkey.eq_ignore_ascii_case(speaker_pubkey))
+}
+
 pub(super) fn normalize_agent_tts_text(text: String) -> String {
     if text.chars().count() > MAX_TTS_TEXT_LEN {
         let mut truncated: String = text.chars().take(MAX_TTS_TEXT_LEN).collect();

@@ -295,6 +295,19 @@ async fn handle_active_audio_connection(
         }
     };
 
+    // The relay, never the client, derives publisher authority. A managed-agent
+    // socket must present a valid NIP-OA owner attestation and hold bot-role
+    // membership in this exact huddle channel; every other socket remains an
+    // ordinary participant, including reconnecting humans.
+    let peer_role = derive_audio_peer_role(
+        &state,
+        tenant.community(),
+        channel_id,
+        &pubkey,
+        auth_tag_json.as_deref(),
+    )
+    .await;
+
     // Huddle cross-pod routing (mesh) OR single-pod guardrail.
     //
     // When the mesh is live (`state.mesh()` is `Some`), a huddle can span pods:
@@ -472,8 +485,11 @@ async fn handle_active_audio_connection(
             owner_runtime_id,
             fenced,
             tenant.community(),
-            pubkey_hex.clone(),
-            requested_version,
+            crate::audio::join::RemotePeerRegistration {
+                pubkey: pubkey_hex.clone(),
+                protocol_version: requested_version,
+                role: peer_role.into(),
+            },
         )
         .await
         {
@@ -515,22 +531,27 @@ async fn handle_active_audio_connection(
     }
 
     let admission = if let Some(session) = remote_session.as_ref() {
-        room.add_peer_at_index(pubkey_hex.clone(), requested_version, session.peer_index())
-            .map(|(id, _mirror_epoch, audio, ctrl, revision)| {
-                // Report the owner-assigned epoch, not the local mirror's:
-                // the mirror never fans out via `broadcast_frame`, so its epoch
-                // is inert. The client's self-entry must match the owner roster.
-                (
-                    id,
-                    session.peer_index(),
-                    session.epoch(),
-                    audio,
-                    ctrl,
-                    revision,
-                )
-            })
+        room.add_peer_at_index_with_role(
+            pubkey_hex.clone(),
+            requested_version,
+            session.peer_index(),
+            peer_role,
+        )
+        .map(|(id, _mirror_epoch, audio, ctrl, revision)| {
+            // Report the owner-assigned epoch, not the local mirror's:
+            // the mirror never fans out via `broadcast_frame`, so its epoch
+            // is inert. The client's self-entry must match the owner roster.
+            (
+                id,
+                session.peer_index(),
+                session.epoch(),
+                audio,
+                ctrl,
+                revision,
+            )
+        })
     } else {
-        room.add_peer(pubkey_hex.clone(), requested_version)
+        room.add_peer_with_role(pubkey_hex.clone(), requested_version, peer_role)
     };
     let (peer_id, peer_index, peer_epoch, audio_rx, peer_ctrl_rx, admission_revision) =
         match admission {
@@ -538,6 +559,21 @@ async fn handle_active_audio_connection(
             Err(crate::audio::room::AdmissionError::Full) => {
                 warn!(channel_id = %channel_id, "audio room participant capacity reached");
                 let _ = ws_send.send(WsMessage::Text(serde_json::json!({"type":"error","code":"room_full","message":"room participant capacity reached"}).to_string().into())).await;
+                if let (Some(session), Some(stream)) =
+                    (remote_session.as_ref(), remote_stream.as_mut())
+                {
+                    crate::audio::join::send_clean_close(
+                        stream,
+                        session.fenced(),
+                        session.pubkey(),
+                    )
+                    .await;
+                }
+                return;
+            }
+            Err(crate::audio::room::AdmissionError::DuplicateIdentity) => {
+                info!(channel_id = %channel_id, pubkey = %pubkey_hex, "audio identity already has a live publisher");
+                let _ = ws_send.send(WsMessage::Text(serde_json::json!({"type":"error","code":"duplicate_identity","message":"this identity is already connected to the huddle"}).to_string().into())).await;
                 if let (Some(session), Some(stream)) =
                     (remote_session.as_ref(), remote_stream.as_mut())
                 {
@@ -650,7 +686,7 @@ async fn handle_active_audio_connection(
                     .peers
                     .iter()
                     .map(|peer| {
-                        serde_json::json!({"pubkey": peer.pubkey, "peer_index": peer.peer_index, "epoch": peer.epoch})
+                        serde_json::json!({"pubkey": peer.pubkey, "peer_index": peer.peer_index, "epoch": peer.epoch, "role": peer.role})
                     })
                     .collect(),
                 session.roster().revision,
@@ -662,7 +698,7 @@ async fn handle_active_audio_connection(
                     .peers
                     .into_iter()
                     .map(|peer| {
-                        serde_json::json!({"pubkey": peer.pubkey, "peer_index": peer.peer_index, "epoch": peer.epoch})
+                        serde_json::json!({"pubkey": peer.pubkey, "peer_index": peer.peer_index, "epoch": peer.epoch, "role": crate::audio::join::AudioPeerRoleWire::from(peer.role)})
                     })
                     .collect(),
                 snapshot.revision,
@@ -676,6 +712,7 @@ async fn handle_active_audio_connection(
         "pubkey": pubkey_hex,
         "peer_index": peer_index,
         "epoch": peer_epoch,
+        "role": crate::audio::join::AudioPeerRoleWire::from(peer_role),
         "peers": peers_snapshot,
     })
     .to_string();
@@ -897,6 +934,7 @@ async fn handle_active_audio_connection(
                     "type": "left",
                     "revision": delta.revision,
                     "pubkey": left.pubkey,
+                    "role": crate::audio::join::AudioPeerRoleWire::from(left.role),
                     "peer_index": left.peer_index,
                     "epoch": left.epoch,
                 })
@@ -1155,6 +1193,10 @@ fn remote_rejection_ws_error(reason: &crate::audio::join::RegisterRejection) -> 
         RegisterRejection::RoomEnded => serde_json::json!({
             "type": "error", "code": "room_ended", "message": "huddle has ended"
         }),
+        RegisterRejection::DuplicateIdentity => serde_json::json!({
+            "type": "error", "code": "duplicate_identity",
+            "message": "this identity is already connected to the huddle"
+        }),
         RegisterRejection::VersionMismatch { pinned, requested } => serde_json::json!({
             "type": "error", "code": "upgrade_required",
             "message": format!(
@@ -1399,6 +1441,40 @@ async fn heartbeat_loop(
     }
 }
 
+async fn derive_audio_peer_role(
+    state: &AppState,
+    community: buzz_core::CommunityId,
+    channel_id: Uuid,
+    pubkey: &nostr::PublicKey,
+    auth_tag_json: Option<&str>,
+) -> crate::audio::room::AudioPeerRole {
+    let has_valid_owner_attestation =
+        crate::api::relay_members::extract_nip_oa_owner(pubkey.as_bytes(), auth_tag_json).is_some();
+    let membership_role = match state
+        .db
+        .get_member_role(community, channel_id, pubkey.as_bytes())
+        .await
+    {
+        Ok(role) => role,
+        Err(error) => {
+            warn!(%channel_id, error = %error, "audio publisher role lookup failed closed");
+            None
+        }
+    };
+    classify_audio_peer_role(has_valid_owner_attestation, membership_role.as_deref())
+}
+
+fn classify_audio_peer_role(
+    has_valid_owner_attestation: bool,
+    membership_role: Option<&str>,
+) -> crate::audio::room::AudioPeerRole {
+    if has_valid_owner_attestation && membership_role == Some("bot") {
+        crate::audio::room::AudioPeerRole::AgentTtsPublisher
+    } else {
+        crate::audio::room::AudioPeerRole::Participant
+    }
+}
+
 async fn ensure_membership(
     state: &AppState,
     tenant: &TenantContext,
@@ -1624,6 +1700,30 @@ mod tests {
     use tokio_tungstenite::{connect_async, tungstenite::Message};
 
     use super::*;
+
+    #[test]
+    fn publisher_role_requires_both_nip_oa_and_bot_membership() {
+        use crate::audio::room::AudioPeerRole;
+
+        assert_eq!(
+            classify_audio_peer_role(true, Some("bot")),
+            AudioPeerRole::AgentTtsPublisher
+        );
+        assert_eq!(
+            classify_audio_peer_role(false, Some("bot")),
+            AudioPeerRole::Participant,
+            "a bot role alone cannot claim publisher authority"
+        );
+        assert_eq!(
+            classify_audio_peer_role(true, Some("member")),
+            AudioPeerRole::Participant,
+            "a human with an auth-tag-shaped request remains an ordinary participant"
+        );
+        assert_eq!(
+            classify_audio_peer_role(true, None),
+            AudioPeerRole::Participant
+        );
+    }
 
     #[test]
     fn audio_connection_permits_share_the_global_websocket_budget() {

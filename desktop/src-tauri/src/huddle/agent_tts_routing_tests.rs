@@ -1,6 +1,6 @@
 use super::{
     classify_agent_tts_runtime, enqueue_agent_tts_text, normalize_agent_tts_text,
-    AgentTtsRuntimeGate, MAX_TTS_TEXT_LEN,
+    remote_agent_publisher_is_live, AgentTtsRuntimeGate, MAX_TTS_TEXT_LEN,
 };
 use crate::huddle::HuddlePhase;
 
@@ -43,6 +43,17 @@ fn disabled_is_the_only_intentional_runtime_no_op() {
         classify_agent_tts_runtime(true, &HuddlePhase::Connected, true),
         AgentTtsRuntimeGate::Ready
     );
+}
+
+#[test]
+fn live_remote_agent_publisher_suppresses_only_that_agents_local_fallback() {
+    let peers = ["human", "AGENT-A", "agent-b"];
+    assert!(remote_agent_publisher_is_live("agent-a", peers));
+    assert!(!remote_agent_publisher_is_live("agent-c", peers));
+    assert!(!remote_agent_publisher_is_live(
+        "agent-a",
+        std::iter::empty::<&str>(),
+    ));
 }
 
 #[test]

@@ -35,6 +35,8 @@ pub struct AudioPeer {
     /// same index. Prefixed onto protocol-v3 relayed frames alongside
     /// `peer_index`.
     pub epoch: u8,
+    /// Relay-authoritative media role for this socket.
+    pub role: AudioPeerRole,
     /// Pinned wire version used to shape outbound relay prefixes without
     /// taking the admission mutex on the per-frame audio hot path.
     pub protocol_version: u8,
@@ -60,11 +62,23 @@ const CTRL_CHANNEL_CAPACITY: usize = 32;
 /// is reasonable. Routing identities rotate through a larger 255-value pool.
 const MAX_PEERS_PER_ROOM: usize = 25;
 
+/// Relay-authoritative media role for one socket.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AudioPeerRole {
+    /// Ordinary human audio participant.
+    #[default]
+    Participant,
+    /// Managed-agent speech publisher, proven by NIP-OA plus bot membership.
+    AgentTtsPublisher,
+}
+
 /// One authoritative owner-roster entry.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RosterPeer {
     /// Nostr pubkey hex.
     pub pubkey: String,
+    /// Relay-authoritative media role for this socket.
+    pub role: AudioPeerRole,
     /// Owner-assigned media routing index.
     pub peer_index: u8,
     /// Per-index reuse generation for `peer_index` (see [`AudioPeer::epoch`]).
@@ -133,6 +147,9 @@ pub enum AdmissionError {
     /// The room has hit its participant cap or the requested routing identity
     /// is already active.
     Full,
+    /// Publisher sockets elect a single live writer for one managed-agent
+    /// identity. Ordinary participant sockets preserve the existing behavior.
+    DuplicateIdentity,
     /// The room is pinned to a different protocol version than the requested one.
     /// The caller should reply to the WS client with an `upgrade_required` error
     /// and the room's actual `pinned` version, then close the socket.
@@ -311,6 +328,16 @@ impl Room {
         pubkey: String,
         requested_version: u8,
     ) -> Result<PeerAdmission, AdmissionError> {
+        self.add_peer_with_role(pubkey, requested_version, AudioPeerRole::Participant)
+    }
+
+    /// Add a peer with a relay-derived media role.
+    pub fn add_peer_with_role(
+        &self,
+        pubkey: String,
+        requested_version: u8,
+        role: AudioPeerRole,
+    ) -> Result<PeerAdmission, AdmissionError> {
         let mut g = self.guard.lock().map_err(
             |_| AdmissionError::Ended, /* poisoned ≈ shutting down */
         )?;
@@ -319,6 +346,14 @@ impl Room {
         }
         if self.peers.len() >= MAX_PEERS_PER_ROOM {
             return Err(AdmissionError::Full);
+        }
+        if role == AudioPeerRole::AgentTtsPublisher
+            && self.peers.iter().any(|peer| {
+                peer.role == AudioPeerRole::AgentTtsPublisher
+                    && peer.pubkey.eq_ignore_ascii_case(&pubkey)
+            })
+        {
+            return Err(AdmissionError::DuplicateIdentity);
         }
         if let Some(pinned) = g.pinned_version {
             if pinned != requested_version {
@@ -345,6 +380,7 @@ impl Room {
                 peer_index,
                 epoch,
                 protocol_version: requested_version,
+                role,
             },
         );
         g.admissions += 1;
@@ -355,6 +391,7 @@ impl Room {
             revision,
             joined: Some(RosterPeer {
                 pubkey,
+                role,
                 peer_index,
                 epoch,
             }),
@@ -374,12 +411,36 @@ impl Room {
         requested_version: u8,
         peer_index: u8,
     ) -> Result<IndexedPeerAdmission, AdmissionError> {
+        self.add_peer_at_index_with_role(
+            pubkey,
+            requested_version,
+            peer_index,
+            AudioPeerRole::Participant,
+        )
+    }
+
+    /// Add an owner-assigned ingress peer with its relay-derived media role.
+    pub fn add_peer_at_index_with_role(
+        &self,
+        pubkey: String,
+        requested_version: u8,
+        peer_index: u8,
+        role: AudioPeerRole,
+    ) -> Result<IndexedPeerAdmission, AdmissionError> {
         let mut g = self.guard.lock().map_err(|_| AdmissionError::Ended)?;
         if g.ended {
             return Err(AdmissionError::Ended);
         }
         if self.peers.len() >= MAX_PEERS_PER_ROOM || g.active_indices.contains(&peer_index) {
             return Err(AdmissionError::Full);
+        }
+        if role == AudioPeerRole::AgentTtsPublisher
+            && self.peers.iter().any(|peer| {
+                peer.role == AudioPeerRole::AgentTtsPublisher
+                    && peer.pubkey.eq_ignore_ascii_case(&pubkey)
+            })
+        {
+            return Err(AdmissionError::DuplicateIdentity);
         }
         if let Some(pinned) = g.pinned_version {
             if pinned != requested_version {
@@ -408,6 +469,7 @@ impl Room {
                 peer_index,
                 epoch,
                 protocol_version: requested_version,
+                role,
             },
         );
         g.admissions += 1;
@@ -418,6 +480,7 @@ impl Room {
             revision,
             joined: Some(RosterPeer {
                 pubkey,
+                role,
                 peer_index,
                 epoch,
             }),
@@ -442,6 +505,7 @@ impl Room {
             joined: None,
             left: Some(RosterPeer {
                 pubkey: peer.pubkey,
+                role: peer.role,
                 peer_index: peer.peer_index,
                 epoch: peer.epoch,
             }),
@@ -471,6 +535,7 @@ impl Room {
             joined: None,
             left: Some(RosterPeer {
                 pubkey: peer.pubkey,
+                role: peer.role,
                 peer_index,
                 epoch: peer.epoch,
             }),
@@ -617,6 +682,7 @@ impl Room {
             .iter()
             .map(|e| RosterPeer {
                 pubkey: e.pubkey.clone(),
+                role: e.role,
                 peer_index: e.peer_index,
                 epoch: e.epoch,
             })
@@ -740,6 +806,63 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_identity_is_rejected_until_the_live_socket_leaves() {
+        let room = fresh_room();
+        let (first, first_index, ..) = room
+            .add_peer_with_role("agent".into(), 2, AudioPeerRole::AgentTtsPublisher)
+            .expect("first renderer wins election");
+
+        assert!(matches!(
+            room.add_peer_with_role("AGENT".into(), 2, AudioPeerRole::AgentTtsPublisher),
+            Err(AdmissionError::DuplicateIdentity)
+        ));
+        assert_eq!(room.peer_pubkeys(), vec![("agent".into(), first_index)]);
+
+        room.remove_peer(first).expect("winning renderer leaves");
+        room.add_peer_with_role("agent".into(), 2, AudioPeerRole::AgentTtsPublisher)
+            .expect("a replacement renderer can claim the identity");
+    }
+
+    #[test]
+    fn ordinary_socket_cannot_claim_or_block_an_agent_publisher_seat() {
+        let room = fresh_room();
+        room.add_peer("agent".into(), 2)
+            .expect("ordinary socket admits as a participant");
+        room.add_peer_with_role("agent".into(), 2, AudioPeerRole::AgentTtsPublisher)
+            .expect("participant presence does not impersonate or block the publisher");
+        assert!(matches!(
+            room.add_peer_with_role("agent".into(), 2, AudioPeerRole::AgentTtsPublisher,),
+            Err(AdmissionError::DuplicateIdentity)
+        ));
+    }
+
+    #[test]
+    fn ordinary_participant_reconnect_is_not_blocked_by_identity_election() {
+        let room = fresh_room();
+        room.add_peer("human".into(), 2)
+            .expect("first human socket admits");
+        room.add_peer("HUMAN".into(), 2)
+            .expect("overlapping human reconnect remains supported");
+    }
+
+    #[test]
+    fn duplicate_identity_is_rejected_for_owner_assigned_ingress() {
+        let room = fresh_room();
+        room.add_peer_with_role("agent".into(), 2, AudioPeerRole::AgentTtsPublisher)
+            .expect("owner-local renderer admits");
+
+        assert!(matches!(
+            room.add_peer_at_index_with_role(
+                "agent".into(),
+                2,
+                7,
+                AudioPeerRole::AgentTtsPublisher
+            ),
+            Err(AdmissionError::DuplicateIdentity)
+        ));
+    }
+
+    #[test]
     fn active_owner_assigned_index_cannot_be_readmitted() {
         let room = fresh_room();
         let (_remote_id, _epoch, _audio, _ctrl, _revision) = room
@@ -790,6 +913,7 @@ mod tests {
             snapshot.peers,
             vec![RosterPeer {
                 pubkey: "bob".into(),
+                role: AudioPeerRole::Participant,
                 peer_index: bob_index,
                 epoch: 0,
             }]

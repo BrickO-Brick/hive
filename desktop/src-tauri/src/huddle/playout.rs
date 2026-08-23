@@ -262,6 +262,23 @@ impl PeerSlot {
 /// `ws_tx_for_pongs` is shared with the encode-side task and only used here to
 /// reply to Pings; it is locked briefly per Ping and never held across the
 /// audio fast path.
+fn roster_peer_is_agent_tts_publisher(peer: &serde_json::Value) -> bool {
+    peer["role"].as_str() == Some("AgentTtsPublisher")
+}
+
+fn update_publisher_roster(
+    publishers: &mut std::collections::HashMap<u8, String>,
+    peer_index: u8,
+    pubkey: &str,
+    is_publisher: bool,
+) {
+    if is_publisher {
+        publishers.insert(peer_index, pubkey.to_string());
+    } else {
+        publishers.remove(&peer_index);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_playout_recv_loop(
     mut ws_rx: futures_util::stream::SplitStream<WsStream>,
@@ -269,10 +286,11 @@ pub(crate) async fn run_playout_recv_loop(
     mut sink_handle: rodio::MixerDeviceSink,
     cancel: CancellationToken,
     app_handle: Option<tauri::AppHandle>,
-    initial_peers: Vec<(u8, String, u8)>,
+    initial_peers: Vec<(u8, String, u8, bool)>,
     tts_active: Arc<AtomicBool>,
     tts_cancel: Arc<AtomicBool>,
     local_tts_publishers: super::tts::LocalTtsPublishers,
+    audio_peer_pubkeys: Arc<std::sync::Mutex<std::collections::HashMap<u8, String>>>,
     remote_stt_pipeline: Arc<std::sync::Mutex<Option<std::sync::Weak<super::stt::SttPipeline>>>>,
     agent_pubkeys: Arc<std::sync::Mutex<Vec<String>>>,
     human_floor: HumanFloor,
@@ -292,10 +310,21 @@ pub(crate) async fn run_playout_recv_loop(
     // departed occupant that arrives after its index is reassigned carries the
     // old epoch and is fenced rather than mis-attributed to the new occupant.
     let mut index_to_epoch: std::collections::HashMap<u8, u8> = std::collections::HashMap::new();
-    for (idx, pubkey, epoch) in initial_peers {
+    let mut publisher_indices = std::collections::HashSet::new();
+    for (idx, pubkey, epoch, is_agent_tts_publisher) in initial_peers {
         index_to_pubkey.insert(idx, pubkey);
         index_to_epoch.insert(idx, epoch);
+        if is_agent_tts_publisher {
+            publisher_indices.insert(idx);
+        }
     }
+    *audio_peer_pubkeys
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = index_to_pubkey
+        .iter()
+        .filter(|(idx, _)| publisher_indices.contains(idx))
+        .map(|(idx, pubkey)| (*idx, pubkey.clone()))
+        .collect();
     let mut active_indices: std::collections::HashSet<u8> = std::collections::HashSet::new();
     let mut speaker_levels: std::collections::HashMap<u8, f32> = std::collections::HashMap::new();
     let mut remote_release_deadlines: std::collections::HashMap<u8, tokio::time::Instant> =
@@ -593,6 +622,21 @@ pub(crate) async fn run_playout_recv_loop(
                                                 }
                                                 index_to_pubkey.insert(key, pk.to_string());
                                                 index_to_epoch.insert(key, epoch);
+                                                let is_publisher =
+                                                    roster_peer_is_agent_tts_publisher(p);
+                                                if is_publisher {
+                                                    publisher_indices.insert(key);
+                                                } else {
+                                                    publisher_indices.remove(&key);
+                                                }
+                                                update_publisher_roster(
+                                                    &mut audio_peer_pubkeys
+                                                        .lock()
+                                                        .unwrap_or_else(|error| error.into_inner()),
+                                                    key,
+                                                    pk,
+                                                    is_publisher,
+                                                );
                                             }
                                         }
                                     }
@@ -602,6 +646,8 @@ pub(crate) async fn run_playout_recv_loop(
                                         let mut replacement = std::collections::HashMap::new();
                                         let mut replacement_epochs =
                                             std::collections::HashMap::new();
+                                        let mut replacement_publishers =
+                                            std::collections::HashSet::new();
                                         for p in peer_list {
                                             if let (Some(pk), Some(idx)) = (
                                                 p["pubkey"].as_str(),
@@ -612,6 +658,9 @@ pub(crate) async fn run_playout_recv_loop(
                                                     p["epoch"].as_u64().unwrap_or(0) as u8;
                                                 replacement.insert(key, pk.to_string());
                                                 replacement_epochs.insert(key, epoch);
+                                                if roster_peer_is_agent_tts_publisher(p) {
+                                                    replacement_publishers.insert(key);
+                                                }
                                             }
                                         }
                                         let identity_unchanged = |idx: &u8| {
@@ -643,6 +692,15 @@ pub(crate) async fn run_playout_recv_loop(
                                         speaker_levels.retain(|idx, _| identity_unchanged(idx));
                                         index_to_pubkey = replacement;
                                         index_to_epoch = replacement_epochs;
+                                        publisher_indices = replacement_publishers;
+                                        *audio_peer_pubkeys
+                                            .lock()
+                                            .unwrap_or_else(|error| error.into_inner()) =
+                                            index_to_pubkey
+                                                .iter()
+                                                .filter(|(idx, _)| publisher_indices.contains(idx))
+                                                .map(|(idx, pubkey)| (*idx, pubkey.clone()))
+                                                .collect();
                                     }
                                 }
                                 Some("left") => {
@@ -650,6 +708,11 @@ pub(crate) async fn run_playout_recv_loop(
                                         let key = idx as u8;
                                         index_to_pubkey.remove(&key);
                                         index_to_epoch.remove(&key);
+                                        publisher_indices.remove(&key);
+                                        audio_peer_pubkeys
+                                            .lock()
+                                            .unwrap_or_else(|error| error.into_inner())
+                                            .remove(&key);
                                         frame_counts.remove(&key);
                                         remote_release_deadlines.remove(&key);
                                         remote_floor_owners.remove(&key);
@@ -678,6 +741,10 @@ pub(crate) async fn run_playout_recv_loop(
     }
 
     human_floor.clear_remote();
+    audio_peer_pubkeys
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clear();
     if let Some(ref app) = app_handle {
         use tauri::Emitter;
         let _ = app.emit(
@@ -690,6 +757,37 @@ pub(crate) async fn run_playout_recv_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn publisher_roster_uses_only_authoritative_role_and_tracks_transitions() {
+        let participant = serde_json::json!({
+            "pubkey": "agent",
+            "peer_index": 4,
+            "role": "Participant",
+        });
+        let publisher = serde_json::json!({
+            "pubkey": "agent",
+            "peer_index": 4,
+            "role": "AgentTtsPublisher",
+        });
+        let legacy_peer = serde_json::json!({"pubkey": "agent", "peer_index": 4});
+
+        assert!(!roster_peer_is_agent_tts_publisher(&participant));
+        assert!(roster_peer_is_agent_tts_publisher(&publisher));
+        assert!(
+            !roster_peer_is_agent_tts_publisher(&legacy_peer),
+            "pubkey presence without an authoritative role must not suppress local TTS"
+        );
+
+        let mut publishers = std::collections::HashMap::new();
+        update_publisher_roster(&mut publishers, 4, "agent", true);
+        assert_eq!(publishers.get(&4).map(String::as_str), Some("agent"));
+        update_publisher_roster(&mut publishers, 4, "human", false);
+        assert!(
+            publishers.is_empty(),
+            "participant replacement clears the seat"
+        );
+    }
 
     #[test]
     fn continuous_dtx_does_not_extend_remote_floor_deadline() {
