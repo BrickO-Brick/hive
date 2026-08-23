@@ -1,3 +1,5 @@
+import type { ReactNode } from "react";
+
 import type {
   Channel,
   Identity,
@@ -16,6 +18,11 @@ export type ChannelScreenProps = {
   autoSendDraftKey: string | null;
   currentIdentity?: Identity;
   currentProfile?: Profile;
+  idleAuxiliaryPanel?: ReactNode;
+  idleAuxiliaryTitle?: string;
+  headerEndActions?: ReactNode;
+  onAddFiles?: () => void;
+  onCloseIdleAuxiliaryPanel?: () => void;
   onCloseForumPost: () => void;
   onSelectForumPost: (postId: string) => void;
   selectedForumPostId: string | null;
