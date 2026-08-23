@@ -135,10 +135,9 @@ export function reportChannelBotTyping(
  * null when the agent is not typing there.
  *
  * Raw registry read: unlike `getAgentWorkingState`, this does NOT fold
- * typing under observer precedence — an observer-backed surface (the
- * composer activity pill) uses it to relabel IN PLACE to "is typing…" while
- * a turn is in flight, instead of the agent spawning a second, separate
- * typing-group item.
+ * typing under observer precedence. The composer activity pill uses it as a
+ * fallback before observer telemetry arrives and after an observer turn ends,
+ * without spawning a second, separate typing-group item.
  */
 export function getAgentChannelTypingSince(
   agentPubkey: string | null | undefined,

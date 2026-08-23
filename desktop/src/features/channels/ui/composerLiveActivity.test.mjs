@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   deriveActivityPillLabel,
+  deriveActivityPillPresentation,
   deriveAgentWorkingOrder,
   deriveLastLiveAt,
   partitionComposerWorkingAgents,
@@ -195,6 +196,55 @@ test("deriveActivityPillLabel keeps a stable id while a message streams", () => 
   assert.equal(first.id, "msg-1");
   assert.equal(extended.id, "msg-1");
   assert.equal(extended.label, "Pass 1: reading the composer wiring");
+});
+
+test("deriveActivityPillPresentation keeps observer activity authoritative over typing", () => {
+  const headline = { id: "action-1", label: "Inspect composer state" };
+  const presentation = deriveActivityPillPresentation({
+    agentName: "Alice",
+    headline,
+    isTyping: true,
+    workingSource: "observer",
+  });
+
+  assert.deepEqual(presentation, headline);
+});
+
+test("deriveActivityPillPresentation uses working copy before the first observer action", () => {
+  const presentation = deriveActivityPillPresentation({
+    agentName: "Alice",
+    headline: null,
+    isTyping: true,
+    workingSource: "observer",
+  });
+
+  assert.deepEqual(presentation, {
+    id: "generic-working",
+    label: "Alice is working…",
+  });
+});
+
+test("deriveActivityPillPresentation uses typing before observer startup and after completion", () => {
+  const headline = { id: "action-1", label: "Inspect composer state" };
+
+  assert.deepEqual(
+    deriveActivityPillPresentation({
+      agentName: "Alice",
+      headline: null,
+      isTyping: true,
+      workingSource: "none",
+    }),
+    { id: "typing-override", label: "Alice is typing…" },
+  );
+  assert.deepEqual(
+    deriveActivityPillPresentation({
+      agentName: "Alice",
+      headline,
+      isTyping: true,
+      workingSource: "typing",
+    }),
+    { id: "typing-override", label: "Alice is typing…" },
+  );
 });
 
 /** Lifecycle noise item ("Turn started") — meaningful:false, never headlines. */

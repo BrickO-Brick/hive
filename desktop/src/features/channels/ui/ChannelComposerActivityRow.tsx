@@ -32,7 +32,8 @@ import type { Channel } from "@/shared/api/types";
  * into ONE combined typing indicator group ("X and Y are typing…") with an
  * overlapping avatar set. An agent whose turn just ended but who is still
  * typing therefore keeps its pill (relabeled "is typing…") instead of
- * demoting to the group.
+ * demoting to the group. While an observer turn is active, its latest action
+ * remains the pill label even if the harness continues refreshing typing.
  *
  * The row has a FIXED height (not min-h): it must not grow when the inline
  * bot-activity button (h-7) mounts, or the bottom-anchored composer above it

@@ -2093,12 +2093,22 @@ test("shows and clears activity indicators for active channel agents", async ({
     atMs: Date.now(),
     seq: Date.now(),
     text: "Alice: indexing the channel history",
+    turnId: "indicator-turn",
   });
 
   const activityPill = page.getByTestId("bot-activity-composer-trigger");
   await expect(activityPill).toBeVisible();
-  await expect(activityPill).not.toContainText("View activity");
+  await expect(activityPill).toContainText("indexing the channel history");
   await expect(page.getByTestId("message-typing-indicator")).toHaveCount(0);
+  // The harness refreshes typing throughout the turn. Observer activity must
+  // remain authoritative instead of regressing the pill to "is typing…".
+  await page.evaluate((pubkey) => {
+    window.__BUZZ_E2E_EMIT_MOCK_TYPING__?.({
+      channelName: "agents",
+      pubkey,
+    });
+  }, TEST_IDENTITIES.alice.pubkey);
+  await expect(activityPill).toContainText("indexing the channel history");
   // Hovering the pill opens the live-activity preview.
   await activityPill.hover();
   await expect(page.getByTestId("composer-live-activity-feed")).toBeVisible();
@@ -2122,8 +2132,8 @@ test("shows and clears activity indicators for active channel agents", async ({
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("message-typing-indicator")).toHaveCount(0);
 
-  // Completing the turn clears the pill; the agent's finished message lands
-  // in the timeline as usual.
+  // Completion makes raw typing the fallback again until the final message
+  // clears it.
   await page.evaluate(
     ({ channelId, pubkey }) => {
       window.__BUZZ_E2E_SEED_ACTIVE_TURNS__?.({
@@ -2132,13 +2142,20 @@ test("shows and clears activity indicators for active channel agents", async ({
         turnId: "indicator-turn",
         kind: "turn_completed",
       });
+    },
+    { channelId: AGENTS_CHANNEL_ID, pubkey: TEST_IDENTITIES.alice.pubkey },
+  );
+  await expect(activityPill).toContainText("alice is typing");
+
+  await page.evaluate(
+    ({ pubkey }) => {
       window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
         channelName: "agents",
         content: "Done.",
         pubkey,
       });
     },
-    { channelId: AGENTS_CHANNEL_ID, pubkey: TEST_IDENTITIES.alice.pubkey },
+    { pubkey: TEST_IDENTITIES.alice.pubkey },
   );
 
   await expect(page.getByTestId("message-timeline")).toContainText("Done.");
@@ -2171,7 +2188,8 @@ test("thread agent typing promotes only when activity exists", async ({
   await page.waitForFunction(
     () =>
       typeof window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__ === "function" &&
-      typeof window.__BUZZ_E2E_SEED_OBSERVER_EVENTS__ === "function",
+      typeof window.__BUZZ_E2E_SEED_OBSERVER_EVENTS__ === "function" &&
+      typeof window.__BUZZ_E2E_SEED_ACTIVE_TURNS__ === "function",
   );
 
   const threadHeadId = await page.evaluate(() => {
@@ -2216,9 +2234,18 @@ test("thread agent typing promotes only when activity exists", async ({
   ).toHaveCount(0);
 
   // Once channel-scoped observer activity exists, the same thread typer earns
-  // a pill and leaves the combined typing group. The explicit thread typing
-  // set keeps the promoted pill truthfully labeled "is typing…" even though
-  // thread typing is intentionally absent from the channel-wide registry.
+  // a pill and leaves the combined typing group. Active observer work remains
+  // authoritative over the concurrent thread typing signal.
+  await page.evaluate(
+    ({ channelId, pubkey }) => {
+      window.__BUZZ_E2E_SEED_ACTIVE_TURNS__?.({
+        agentPubkey: pubkey,
+        channelId,
+        turnId: "thread-indicator-turn",
+      });
+    },
+    { channelId: AGENTS_CHANNEL_ID, pubkey: TEST_IDENTITIES.alice.pubkey },
+  );
   await seedPillActivityMessage(page, {
     agentPubkey: TEST_IDENTITIES.alice.pubkey,
     atMs: Date.now(),
@@ -2228,10 +2255,51 @@ test("thread agent typing promotes only when activity exists", async ({
   });
   const pill = threadPanel.getByTestId("bot-activity-composer-trigger");
   await expect(pill).toBeVisible();
-  await expect(pill).toContainText("alice is typing");
+  await expect(pill).toContainText("inspecting the thread context");
   await expect(threadPanel.getByTestId("message-typing-indicator")).toHaveCount(
     0,
   );
+  // A later typing refresh still cannot mask the live action.
+  await page.evaluate(
+    ({ pubkey, threadHeadId }) => {
+      window.__BUZZ_E2E_EMIT_MOCK_TYPING__?.({
+        channelName: "agents",
+        pubkey,
+        threadHeadId,
+      });
+    },
+    { pubkey: TEST_IDENTITIES.alice.pubkey, threadHeadId },
+  );
+  await expect(pill).toContainText("inspecting the thread context");
+
+  // Once the observer turn completes, thread typing becomes the fallback and
+  // the eventual reply clears the pill in the same scope.
+  await page.evaluate(
+    ({ channelId, pubkey }) => {
+      window.__BUZZ_E2E_SEED_ACTIVE_TURNS__?.({
+        agentPubkey: pubkey,
+        channelId,
+        turnId: "thread-indicator-turn",
+        kind: "turn_completed",
+      });
+    },
+    { channelId: AGENTS_CHANNEL_ID, pubkey: TEST_IDENTITIES.alice.pubkey },
+  );
+  await expect(pill).toContainText("alice is typing");
+  await page.evaluate(
+    ({ pubkey, threadHeadId }) => {
+      window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
+        channelName: "agents",
+        content: "Thread done.",
+        parentEventId: threadHeadId,
+        pubkey,
+      });
+    },
+    { pubkey: TEST_IDENTITIES.alice.pubkey, threadHeadId },
+  );
+  await expect(
+    threadPanel.getByTestId("bot-activity-composer-trigger"),
+  ).toHaveCount(0);
 });
 
 test("composer does not shift when the activity row mounts and clears", async ({

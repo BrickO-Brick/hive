@@ -26,6 +26,7 @@ import {
 } from "./composerStripAvatarLayout";
 import {
   deriveActivityPillLabel,
+  deriveActivityPillPresentation,
   deriveAgentWorkingOrder,
 } from "./composerLiveActivity";
 
@@ -39,8 +40,8 @@ type BotActivityBarProps = {
   /**
    * Agent pubkeys known to be typing in this strip's scope. Thread-only
    * typing is intentionally absent from the channel-wide working registry,
-   * so callers pass it here to relabel an already pill-worthy agent without
-   * leaking thread activity into channel-level surfaces.
+   * so callers pass it here to retain the typing fallback without leaking
+   * thread activity into channel-level surfaces.
    */
   typingBotPubkeys?: string[];
   /** Combined human + typing-fallback agent indicator. */
@@ -49,10 +50,6 @@ type BotActivityBarProps = {
 };
 
 const HOVER_CLOSE_DELAY_MS = 180;
-/** Ticker key for the generic label shown before the first action lands. */
-const GENERIC_LABEL_ID = "generic-working";
-/** Ticker key for the typing override label (see BotActivityAgentPill). */
-const TYPING_LABEL_ID = "typing-override";
 /**
  * Perceptual duration shared by the pill reorder spring and the opacity dip
  * keyframes so the fade lands together with the layout switch.
@@ -230,9 +227,9 @@ function useStripHoverPopover(): StripHoverPopover {
  * partitionComposerWorkingAgents): typing agents with nothing to hover or
  * open are diverted into the combined typing indicator group by
  * ChannelComposerActivityRow before the strip renders. An agent that is
- * typing — mid-turn or across the turn-end gap — keeps its pill, with the
- * label relabeled in place to "is typing…" for the duration (see the
- * typing override below).
+ * typing across the turn-end gap keeps its pill and relabels in place to
+ * "is typing…"; during an active observer turn, the current action remains
+ * authoritative despite concurrent typing refreshes.
  */
 function BotActivityAgentPill({
   agent,
@@ -271,27 +268,28 @@ function BotActivityAgentPill({
     () => deriveActivityPillLabel({ channelId, transcript }),
     [channelId, transcript],
   );
-  // Typing overrides the action headline IN PLACE: when this observer-backed
-  // agent's typing signal is also on for the channel (it starts composing its
-  // reply mid-turn), the pill's ticker swaps to "is typing…" — same slot,
-  // avatar, and hover feed — instead of the stale last action persisting or a
-  // second typing-group item appearing. Raw registry read, because
-  // getAgentWorkingState folds typing away under observer precedence.
+  const workingState = React.useSyncExternalStore(
+    subscribeAgentWorkingSignal,
+    () => getAgentWorkingState(agent.pubkey, channelId),
+  );
+  // Raw typing remains available even when getAgentWorkingState folds it under
+  // observer precedence. It supplies the fallback before observer telemetry
+  // arrives and after the observer turn completes; it must not hide live
+  // observer activity while that turn is active.
   const typingSince = React.useSyncExternalStore(
     subscribeAgentWorkingSignal,
     () => getAgentChannelTypingSince(agent.pubkey, channelId),
   );
   const isTyping =
     typingBotPubkeys?.has(pillKey) === true || typingSince !== null;
-  const activeId = isTyping
-    ? TYPING_LABEL_ID
-    : (headline?.id ?? GENERIC_LABEL_ID);
-  // No action headline yet (see deriveActivityPillLabel) — show the
-  // agent-named generic working label until the first action lands. When
-  // typing ends, the ticker swaps back to the last action headline.
-  const activeLabel = isTyping
-    ? `${agent.name} is typing…`
-    : (headline?.label ?? `${agent.name} is working…`);
+  const presentation = deriveActivityPillPresentation({
+    agentName: agent.name,
+    headline,
+    isTyping,
+    workingSource: workingState.source,
+  });
+  const activeId = presentation.id;
+  const activeLabel = presentation.label;
   // The rendered label lags the derived one while the pill is moving: the
   // push-up ticker plays after the slot settles (or immediately when idle).
   // Keyed by transcript item id, not label text — a NEW action swaps, while

@@ -25,6 +25,54 @@ export type ActivityPillHeadline = {
   label: string;
 };
 
+export type ActivityPillPresentation = {
+  id: string;
+  label: string;
+};
+
+/**
+ * Choose the label shown by an agent's composer pill.
+ *
+ * Observer activity is authoritative while a turn is active, even though the
+ * ACP harness continues refreshing its public typing signal throughout that
+ * turn. Raw typing remains a fallback before observer telemetry arrives and
+ * after the observer turn completes.
+ */
+export function deriveActivityPillPresentation({
+  agentName,
+  headline,
+  isTyping,
+  workingSource,
+}: {
+  agentName: string;
+  headline: ActivityPillHeadline | null;
+  isTyping: boolean;
+  workingSource: "observer" | "typing" | "none";
+}): ActivityPillPresentation {
+  if (workingSource === "observer") {
+    return (
+      headline ?? {
+        id: "generic-working",
+        label: `${agentName} is working…`,
+      }
+    );
+  }
+
+  if (isTyping) {
+    return {
+      id: "typing-override",
+      label: `${agentName} is typing…`,
+    };
+  }
+
+  return (
+    headline ?? {
+      id: "generic-working",
+      label: `${agentName} is working…`,
+    }
+  );
+}
+
 /**
  * Latest action headline for a working agent's composer pill.
  *
