@@ -2895,21 +2895,24 @@ test("narrow strip scrolls horizontally with edge fades instead of compressing p
     0,
   );
 
-  // The fade sits at the CONTAINER's visual edge, not at the row's padded
-  // content box: the full-bleed viewport cancels the row's px-5 gutter, so
-  // pills scroll all the way under a gradient pinned to the row's border
-  // box instead of getting cut mid-row with a dead gutter after the fade.
+  // The fade sits at the STRIP's visual edge, not at its padded content box:
+  // the full-bleed viewport cancels the strip's px-5 gutter, so pills scroll
+  // under the gradient instead of getting cut mid-strip with a dead gutter.
+  // Main's shared channel accessory intentionally adds a separate pl-2 host
+  // inset, so the strip's leading edge is not the outer row's leading edge.
   const rowBox = await page
     .getByTestId("channel-composer-activity-row")
     .boundingBox();
+  const stripBox = await page.getByTestId("bot-activity-strip").boundingBox();
   const fadeEndBox = await page
     .getByTestId("bot-activity-strip-fade-end")
     .boundingBox();
   expect(fadeEndBox).not.toBeNull();
   expect(rowBox).not.toBeNull();
-  if (fadeEndBox && rowBox) {
+  expect(stripBox).not.toBeNull();
+  if (fadeEndBox && stripBox) {
     expect(
-      Math.abs(fadeEndBox.x + fadeEndBox.width - (rowBox.x + rowBox.width)),
+      Math.abs(fadeEndBox.x + fadeEndBox.width - (stripBox.x + stripBox.width)),
     ).toBeLessThanOrEqual(1);
   }
 
@@ -2920,13 +2923,13 @@ test("narrow strip scrolls horizontally with edge fades instead of compressing p
   await expect(page.getByTestId("bot-activity-strip-fade-start")).toBeVisible();
   await expect(page.getByTestId("bot-activity-strip-fade-end")).toHaveCount(0);
 
-  // Same pinning on the leading edge once scrolled.
+  // Same pinning on the strip's leading edge once scrolled.
   const fadeStartBox = await page
     .getByTestId("bot-activity-strip-fade-start")
     .boundingBox();
   expect(fadeStartBox).not.toBeNull();
-  if (fadeStartBox && rowBox) {
-    expect(Math.abs(fadeStartBox.x - rowBox.x)).toBeLessThanOrEqual(1);
+  if (fadeStartBox && stripBox) {
+    expect(Math.abs(fadeStartBox.x - stripBox.x)).toBeLessThanOrEqual(1);
   }
 });
 

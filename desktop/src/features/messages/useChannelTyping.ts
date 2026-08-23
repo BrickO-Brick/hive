@@ -70,6 +70,7 @@ export function useChannelTyping(
   currentPubkey?: string,
   latestMessageEvent?: RelayEvent | null,
   relaySelfPubkey?: string | null,
+  threadReplyEvents: readonly RelayEvent[] = [],
 ) {
   const channelId = channel?.id ?? null;
   const channelType = channel?.channelType ?? null;
@@ -77,6 +78,7 @@ export function useChannelTyping(
   const normalizedCurrentPubkey = currentPubkey?.toLowerCase();
   const typingSuppressUntilByPubkeyRef = useRef<Record<string, number>>({});
   const latestMessageCreatedAtByPubkeyRef = useRef<Record<string, number>>({});
+  const processedCompletionEventIdsRef = useRef<Set<string>>(new Set());
 
   const registerTyping = useEffectEvent((event: RelayEvent) => {
     if (!channelId || event.kind !== KIND_TYPING_INDICATOR) {
@@ -135,32 +137,34 @@ export function useChannelTyping(
     setTypingByPubkey({});
     typingSuppressUntilByPubkeyRef.current = {};
     latestMessageCreatedAtByPubkeyRef.current = {};
+    processedCompletionEventIdsRef.current = new Set();
   }, [channelId]);
 
-  useEffect(() => {
-    if (
-      !channelId ||
-      !latestMessageEvent ||
-      !isTypingCompletionEvent(latestMessageEvent)
-    ) {
+  const clearTypingForMessage = useEffectEvent((event: RelayEvent) => {
+    if (!channelId || !isTypingCompletionEvent(event)) {
       return;
     }
 
-    if (getChannelIdFromTags(latestMessageEvent.tags) !== channelId) {
+    if (getChannelIdFromTags(event.tags) !== channelId) {
       return;
     }
+
+    if (processedCompletionEventIdsRef.current.has(event.id)) {
+      return;
+    }
+    processedCompletionEventIdsRef.current.add(event.id);
 
     const authorPubkey = resolveEventAuthorPubkey({
-      event: latestMessageEvent,
+      event,
       preferActorTag: true,
       relaySelfPubkey,
       requireChannelTagForPTags: true,
     }).toLowerCase();
-    const threadHeadId = getTypingScopeId(latestMessageEvent);
+    const threadHeadId = getTypingScopeId(event);
     const typingKey = getTypingStateKey(authorPubkey, threadHeadId);
     latestMessageCreatedAtByPubkeyRef.current[typingKey] = Math.max(
       latestMessageCreatedAtByPubkeyRef.current[typingKey] ?? 0,
-      latestMessageEvent.created_at,
+      event.created_at,
     );
     typingSuppressUntilByPubkeyRef.current[typingKey] =
       Date.now() + TYPING_POST_MESSAGE_SUPPRESS_MS;
@@ -174,7 +178,19 @@ export function useChannelTyping(
       delete updated[typingKey];
       return updated;
     });
-  }, [channelId, latestMessageEvent, relaySelfPubkey]);
+  });
+
+  useEffect(() => {
+    if (latestMessageEvent) {
+      clearTypingForMessage(latestMessageEvent);
+    }
+  }, [latestMessageEvent]);
+
+  useEffect(() => {
+    for (const event of threadReplyEvents) {
+      clearTypingForMessage(event);
+    }
+  }, [threadReplyEvents]);
 
   useEffect(() => {
     if (!channelId || channelType === "forum") {
