@@ -815,6 +815,11 @@ class RelaySessionNotifier extends Notifier<SessionState> {
         );
       }
     } else {
+      // The relay refused the EVENT for back-pressure: arm the gate so
+      // concurrent subscribes/publishes back off instead of piling on.
+      if (classifyRelayClosed(message) == RelayClosedClass.rateLimited) {
+        _rateLimitGate.activate(parseRateLimitRetrySeconds(message));
+      }
       if (!pending.completer.isCompleted) {
         pending.completer.completeError(
           Exception(message.isNotEmpty ? message : 'Event rejected'),
