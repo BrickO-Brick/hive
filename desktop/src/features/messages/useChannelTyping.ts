@@ -43,22 +43,20 @@ const TYPING_POST_MESSAGE_SUPPRESS_MS = 2_000;
  * agent's clock domain; retention and suppression use the observing desktop's
  * clock so host skew cannot disable or stretch typing cleanup.
  *
- * Returns whether matching typing state should be cleared. Exported so replay,
- * out-of-order, and clock-skew behavior stays unit-tested.
+ * Returns whether this completion newly advanced the scope watermark. Exported so
+ * replay, out-of-order, and clock-skew behavior stays unit-tested.
  */
 export function recordTypingCompletion({
   createdAt,
   latestMessageCreatedAtByPubkey,
   now = Date.now(),
   suppressUntilByPubkey,
-  typingCreatedAt,
   typingKey,
 }: {
   createdAt: number;
   latestMessageCreatedAtByPubkey: TypingCompletionWatermarks;
   now?: number;
   suppressUntilByPubkey: TypingSuppressionDeadlines;
-  typingCreatedAt?: number;
   typingKey: string;
 }) {
   for (const [key, watermark] of Object.entries(
@@ -80,9 +78,8 @@ export function recordTypingCompletion({
     return false;
   }
   latestMessageCreatedAtByPubkey[typingKey] = { createdAt, observedAt: now };
-  if (typingCreatedAt === undefined || createdAt < typingCreatedAt) {
-    return false;
-  }
+  // Arm even without visible typing: the harness can publish a trailing tick
+  // after its reply, and that tick must not resurrect a completed-turn pill.
   suppressUntilByPubkey[typingKey] = now + TYPING_POST_MESSAGE_SUPPRESS_MS;
   return true;
 }
@@ -101,6 +98,23 @@ function pruneTypingState(state: TypingState, now = Date.now()) {
   }
 
   return changed ? next : state;
+}
+
+export function clearTypingStateForCompletion(
+  state: TypingState,
+  typingKey: string,
+  completionCreatedAt: number,
+  now = Date.now(),
+) {
+  const next = pruneTypingState(state, now);
+  const typingEntry = next[typingKey];
+  if (!typingEntry || completionCreatedAt < typingEntry.createdAt) {
+    return next;
+  }
+
+  const updated = { ...next };
+  delete updated[typingKey];
+  return updated;
 }
 
 function isTypingCompletionEvent(event: RelayEvent | null | undefined) {
@@ -222,27 +236,19 @@ export function useChannelTyping(
     }).toLowerCase();
     const threadHeadId = getTypingScopeId(event);
     const typingKey = getTypingStateKey(authorPubkey, threadHeadId);
-    const shouldClearTyping = recordTypingCompletion({
+    const isNewCompletion = recordTypingCompletion({
       createdAt: event.created_at,
       latestMessageCreatedAtByPubkey: latestMessageCreatedAtByPubkeyRef.current,
       suppressUntilByPubkey: typingSuppressUntilByPubkeyRef.current,
-      typingCreatedAt: typingByPubkey[typingKey]?.createdAt,
       typingKey,
     });
-    if (!shouldClearTyping) {
+    if (!isNewCompletion) {
       return;
     }
 
-    setTypingByPubkey((current) => {
-      const next = pruneTypingState(current);
-      if (!(typingKey in next)) {
-        return next;
-      }
-
-      const updated = { ...next };
-      delete updated[typingKey];
-      return updated;
-    });
+    setTypingByPubkey((current) =>
+      clearTypingStateForCompletion(current, typingKey, event.created_at),
+    );
   });
 
   useEffect(() => {

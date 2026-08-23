@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { recordTypingCompletion } from "./useChannelTyping.ts";
+import {
+  clearTypingStateForCompletion,
+  recordTypingCompletion,
+} from "./useChannelTyping.ts";
 
 const TYPING_KEY = "agent:thread";
 const NOW = 2_000_000_000_000;
@@ -14,17 +17,12 @@ function makeState() {
   };
 }
 
-function record(
-  state,
-  createdAt,
-  { hasActiveTyping = true, now = NOW, typingCreatedAt = createdAt } = {},
-) {
+function record(state, createdAt, { now = NOW } = {}) {
   return recordTypingCompletion({
     createdAt,
     latestMessageCreatedAtByPubkey: state.latestMessageCreatedAtByPubkey,
     now,
     suppressUntilByPubkey: state.suppressUntilByPubkey,
-    typingCreatedAt: hasActiveTyping ? typingCreatedAt : undefined,
     typingKey: TYPING_KEY,
   });
 }
@@ -33,7 +31,7 @@ test("duplicate full-array replay does not reprocess completion events", () => {
   const state = makeState();
 
   assert.equal(record(state, NOW_SECONDS), true);
-  assert.equal(record(state, NOW_SECONDS), false);
+  assert.equal(record(state, NOW_SECONDS, { now: NOW + 1_000 }), false);
   assert.deepEqual(state.latestMessageCreatedAtByPubkey, {
     [TYPING_KEY]: { createdAt: NOW_SECONDS, observedAt: NOW },
   });
@@ -66,17 +64,18 @@ test("older-then-newer completion arrival advances the watermark", () => {
   assert.equal(state.suppressUntilByPubkey[TYPING_KEY], NOW + 2_000);
 });
 
-test("historical thread load records ordering but creates no fresh suppression", () => {
+test("historical first observation arms one bounded suppression for trailing ticks", () => {
   const state = makeState();
+  const historicalCreatedAt = NOW_SECONDS - 60;
 
-  assert.equal(
-    record(state, NOW_SECONDS - 60, { hasActiveTyping: false }),
-    false,
-  );
+  assert.equal(record(state, historicalCreatedAt), true);
+  assert.equal(record(state, historicalCreatedAt, { now: NOW + 1_000 }), false);
   assert.deepEqual(state.latestMessageCreatedAtByPubkey, {
-    [TYPING_KEY]: { createdAt: NOW_SECONDS - 60, observedAt: NOW },
+    [TYPING_KEY]: { createdAt: historicalCreatedAt, observedAt: NOW },
   });
-  assert.deepEqual(state.suppressUntilByPubkey, {});
+  assert.deepEqual(state.suppressUntilByPubkey, {
+    [TYPING_KEY]: NOW + 2_000,
+  });
 });
 
 test("lagging agent completion clears typing for a matching agent-clock event", () => {
@@ -99,14 +98,43 @@ test("ahead agent completion keeps suppression desktop-local", () => {
   });
 });
 
-test("message older than active typing advances ordering without clearing", () => {
-  const state = makeState();
+test("queued newer typing survives an older completion clear", () => {
+  const typingStateAfterQueuedTick = {
+    [TYPING_KEY]: {
+      createdAt: NOW_SECONDS + 1,
+      expiresAt: NOW + 8_000,
+      firstSeenAt: NOW,
+      pubkey: "agent",
+      threadHeadId: "thread",
+    },
+  };
 
   assert.equal(
-    record(state, NOW_SECONDS - 60, { typingCreatedAt: NOW_SECONDS }),
-    false,
+    clearTypingStateForCompletion(
+      typingStateAfterQueuedTick,
+      TYPING_KEY,
+      NOW_SECONDS,
+      NOW,
+    ),
+    typingStateAfterQueuedTick,
   );
-  assert.deepEqual(state.suppressUntilByPubkey, {});
+});
+
+test("completion clears matching or older typing state", () => {
+  const typingState = {
+    [TYPING_KEY]: {
+      createdAt: NOW_SECONDS,
+      expiresAt: NOW + 8_000,
+      firstSeenAt: NOW,
+      pubkey: "agent",
+      threadHeadId: "thread",
+    },
+  };
+
+  assert.deepEqual(
+    clearTypingStateForCompletion(typingState, TYPING_KEY, NOW_SECONDS, NOW),
+    {},
+  );
 });
 
 test("watermarks expire by desktop observation time, not agent clock", () => {
