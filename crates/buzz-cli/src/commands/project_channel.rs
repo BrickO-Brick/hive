@@ -6,7 +6,7 @@
 //! asking the caller to invent a second project.
 
 use buzz_core::kind::KIND_GIT_REPO_ANNOUNCEMENT;
-use nostr::{Event, Tag};
+use nostr::Event;
 
 use crate::client::BuzzClient;
 use crate::commands::projects::{fetch_projects_for_channel, try_add_own_repo_to_channel_project};
@@ -25,22 +25,28 @@ pub async fn resolve_or_ensure_repo_for_channel(
 ) -> Result<ChannelProjectRepo, CliError> {
     validate_uuid(channel)?;
     let projects = fetch_projects_for_channel(client, channel).await?;
-    let project = pick_oldest_listed(&projects);
-    if let Some(event) = project {
-        if let Some(member) = first_member_repo(event) {
-            return Ok(member);
-        }
-    }
-
-    if let Some(repo) = pick_channel_repo(client, channel).await? {
-        let caller = client.keys().public_key().to_hex();
-        if repo.repo_owner.eq_ignore_ascii_case(&caller) {
-            let _ = try_add_own_repo_to_channel_project(client, channel, &repo.repo_id).await;
-        }
+    let repos = fetch_channel_repos(client, channel).await?;
+    let project = pick_authoritative_project(&projects, &repos, channel)?;
+    if let Some((_, repo)) = project {
         return Ok(repo);
     }
 
-    let Some(event) = project else {
+    let caller = client.keys().public_key().to_hex();
+    if let Some(repo) = repos.iter().find_map(|event| {
+        event
+            .pubkey
+            .to_hex()
+            .eq_ignore_ascii_case(&caller)
+            .then(|| repo_from_announcement(event, channel))
+            .flatten()
+    }) {
+        let _ = try_add_own_repo_to_channel_project(client, channel, &repo.repo_id).await;
+        return Ok(repo);
+    }
+
+    let Some(event) = projects.iter().find(|event| {
+        event.pubkey.to_hex().eq_ignore_ascii_case(&caller) && !project_is_unlisted(event)
+    }) else {
         return Err(CliError::Usage(
             "this channel is not a project home; pass --repo-owner and --repo-id".into(),
         ));
@@ -48,41 +54,82 @@ pub async fn resolve_or_ensure_repo_for_channel(
     ensure_default_repo(client, channel, event).await
 }
 
-fn pick_oldest_listed(events: &[Event]) -> Option<&Event> {
-    events
-        .iter()
-        .filter(|event| !project_is_unlisted(event))
-        .min_by_key(|event| event.created_at)
-}
-
 fn project_is_unlisted(event: &Event) -> bool {
     event.tags.iter().any(|tag| {
-        matches!(
-            tag.as_slice(),
-            [name, value, ..] if name == "buzz-visibility" && value == "unlisted"
-        )
+        matches!(tag.as_slice(), [name, value, ..] if name == "buzz-visibility" && value == "unlisted")
     })
 }
 
 fn project_dtag(event: &Event) -> Option<String> {
-    event.tags.iter().find_map(|tag| match tag.as_slice() {
-        [name, value, ..] if name == "d" && !value.is_empty() => Some(value.clone()),
-        _ => None,
-    })
+    first_tag_value(event, "d").map(String::from)
 }
 
 fn project_name(event: &Event) -> Option<String> {
+    first_tag_value(event, "name").map(String::from)
+}
+
+fn first_tag_value<'a>(event: &'a Event, name: &str) -> Option<&'a str> {
     event.tags.iter().find_map(|tag| match tag.as_slice() {
-        [name, value, ..] if name == "name" && !value.is_empty() => Some(value.clone()),
+        [tag_name, value, ..] if tag_name == name && !value.is_empty() => Some(value.as_str()),
         _ => None,
     })
 }
 
-fn first_member_repo(event: &Event) -> Option<ChannelProjectRepo> {
-    event.tags.iter().find_map(|tag| match tag.as_slice() {
+fn project_member_repos(event: &Event) -> impl Iterator<Item = ChannelProjectRepo> + '_ {
+    event.tags.iter().filter_map(|tag| match tag.as_slice() {
         [name, value, ..] if name == "a" => parse_repo_a_tag(value),
         _ => None,
     })
+}
+
+fn repo_authorizes_project(repo: &Event, project: &Event) -> bool {
+    let signer = project.pubkey.to_hex();
+    repo.pubkey.to_hex().eq_ignore_ascii_case(&signer)
+        || repo.tags.iter().any(|tag| {
+            matches!(tag.as_slice(), [name, value, ..]
+                if name == "maintainers" && value.eq_ignore_ascii_case(&signer))
+        })
+}
+
+fn repo_from_announcement(event: &Event, channel: &str) -> Option<ChannelProjectRepo> {
+    if event.kind.as_u16() != KIND_GIT_REPO_ANNOUNCEMENT as u16
+        || repo_is_unlisted(event)
+        || first_tag_value(event, "buzz-channel") != Some(channel)
+    {
+        return None;
+    }
+    Some(ChannelProjectRepo {
+        repo_owner: event.pubkey.to_hex(),
+        repo_id: first_tag_value(event, "d")?.to_string(),
+    })
+}
+
+fn pick_authoritative_project<'a>(
+    projects: &'a [Event],
+    repos: &'a [Event],
+    channel: &str,
+) -> Result<Option<(&'a Event, ChannelProjectRepo)>, CliError> {
+    let mut matches = projects.iter().filter_map(|project| {
+        if project_is_unlisted(project) {
+            return None;
+        }
+        project_member_repos(project).find_map(|member| {
+            repos.iter().find_map(|repo| {
+                let bound = repo_from_announcement(repo, channel)?;
+                (bound.repo_owner.eq_ignore_ascii_case(&member.repo_owner)
+                    && bound.repo_id == member.repo_id
+                    && repo_authorizes_project(repo, project))
+                .then_some((project, bound))
+            })
+        })
+    });
+    let selected = matches.next();
+    if matches.next().is_some() {
+        return Err(CliError::Conflict(format!(
+            "channel {channel} has multiple authoritative projects; pass --repo-owner and --repo-id"
+        )));
+    }
+    Ok(selected)
 }
 
 pub(crate) fn parse_repo_a_tag(value: &str) -> Option<ChannelProjectRepo> {
@@ -108,39 +155,15 @@ fn repo_is_unlisted(event: &Event) -> bool {
     })
 }
 
-fn repo_dtag(event: &Event) -> Option<String> {
-    event.tags.iter().find_map(|tag| match tag.as_slice() {
-        [name, value, ..] if name == "d" && !value.is_empty() => Some(value.clone()),
-        _ => None,
-    })
-}
-
-async fn pick_channel_repo(
-    client: &BuzzClient,
-    channel: &str,
-) -> Result<Option<ChannelProjectRepo>, CliError> {
+async fn fetch_channel_repos(client: &BuzzClient, channel: &str) -> Result<Vec<Event>, CliError> {
     let filter = serde_json::json!({
         "kinds": [KIND_GIT_REPO_ANNOUNCEMENT],
         "#buzz-channel": [channel],
-        "limit": 20,
+        "limit": 1000,
     });
     let raw = client.query(&filter).await?;
-    let events: Vec<Event> = serde_json::from_str(&raw)
-        .map_err(|error| CliError::Other(format!("failed to parse relay response: {error}")))?;
-    let Some(event) = events
-        .iter()
-        .filter(|event| !repo_is_unlisted(event))
-        .min_by_key(|event| event.created_at)
-    else {
-        return Ok(None);
-    };
-    let Some(repo_id) = repo_dtag(event) else {
-        return Ok(None);
-    };
-    Ok(Some(ChannelProjectRepo {
-        repo_owner: event.pubkey.to_hex(),
-        repo_id,
-    }))
+    serde_json::from_str(&raw)
+        .map_err(|error| CliError::Other(format!("failed to parse relay response: {error}")))
 }
 
 async fn ensure_default_repo(
@@ -154,7 +177,6 @@ async fn ensure_default_repo(
     let name = project_name(project).unwrap_or_else(|| slug.clone());
     let name = truncate_repo_name(&name);
     let caller = client.keys().public_key().to_hex();
-    let project_owner = project.pubkey.to_hex();
 
     if let Some(existing) =
         crate::commands::repos::fetch_own_repo_announcement(client, &repo_id).await?
@@ -166,7 +188,7 @@ async fn ensure_default_repo(
         });
     }
 
-    let mut builder = crate::commands::repos::build_create_announcement(
+    let builder = crate::commands::repos::build_create_announcement(
         &repo_id,
         Some(&name),
         None,
@@ -175,15 +197,6 @@ async fn ensure_default_repo(
         &[],
         Some(channel),
     )?;
-    if !project_owner.eq_ignore_ascii_case(&caller) {
-        builder = builder.tag(Tag::parse(["maintainers", project_owner.as_str()]).map_err(
-            |error| {
-                CliError::Other(format!(
-                    "failed to tag project owner as maintainer: {error}"
-                ))
-            },
-        )?);
-    }
     let event = client.sign_event(builder)?;
     client.submit_event(event).await?;
     let _ = try_add_own_repo_to_channel_project(client, channel, &repo_id).await;
@@ -243,6 +256,98 @@ mod tests {
             repo_id_from_project_slug("Space Invaders 3D!").unwrap(),
             "Space-Invaders-3D"
         );
+    }
+
+    fn signed_event(keys: &nostr::Keys, kind: u16, tags: Vec<nostr::Tag>) -> Event {
+        nostr::EventBuilder::new(nostr::Kind::Custom(kind), "")
+            .tags(tags)
+            .sign_with_keys(keys)
+            .unwrap()
+    }
+
+    fn tag(parts: &[&str]) -> nostr::Tag {
+        nostr::Tag::parse(parts.iter().copied()).unwrap()
+    }
+
+    #[test]
+    fn authoritative_project_requires_repo_owner_consent() {
+        let owner = nostr::Keys::generate();
+        let attacker = nostr::Keys::generate();
+        let channel = "11111111-1111-4111-8111-111111111111";
+        let owner_hex = owner.public_key().to_hex();
+        let repo_coord = format!("30617:{owner_hex}:game");
+        let repo = signed_event(
+            &owner,
+            30617,
+            vec![tag(&["d", "game"]), tag(&["buzz-channel", channel])],
+        );
+        let hostile = signed_event(
+            &attacker,
+            30621,
+            vec![
+                tag(&["d", "spoof"]),
+                tag(&["buzz-channel", channel]),
+                tag(&["a", &repo_coord]),
+            ],
+        );
+        assert!(pick_authoritative_project(&[hostile], &[repo], channel)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn authorized_project_selects_channel_bound_member() {
+        let owner = nostr::Keys::generate();
+        let channel = "11111111-1111-4111-8111-111111111111";
+        let owner_hex = owner.public_key().to_hex();
+        let repo_coord = format!("30617:{owner_hex}:game");
+        let repo = signed_event(
+            &owner,
+            30617,
+            vec![tag(&["d", "game"]), tag(&["buzz-channel", channel])],
+        );
+        let project = signed_event(
+            &owner,
+            30621,
+            vec![
+                tag(&["d", "game"]),
+                tag(&["buzz-channel", channel]),
+                tag(&["a", &repo_coord]),
+            ],
+        );
+        let (_, selected) = pick_authoritative_project(&[project], &[repo], channel)
+            .unwrap()
+            .unwrap();
+        assert_eq!(selected.repo_owner, owner_hex);
+        assert_eq!(selected.repo_id, "game");
+    }
+
+    #[test]
+    fn ambiguous_authoritative_projects_fail_closed() {
+        let owner = nostr::Keys::generate();
+        let channel = "11111111-1111-4111-8111-111111111111";
+        let owner_hex = owner.public_key().to_hex();
+        let repo_coord = format!("30617:{owner_hex}:game");
+        let repo = signed_event(
+            &owner,
+            30617,
+            vec![tag(&["d", "game"]), tag(&["buzz-channel", channel])],
+        );
+        let projects = ["one", "two"].map(|slug| {
+            signed_event(
+                &owner,
+                30621,
+                vec![
+                    tag(&["d", slug]),
+                    tag(&["buzz-channel", channel]),
+                    tag(&["a", &repo_coord]),
+                ],
+            )
+        });
+        assert!(matches!(
+            pick_authoritative_project(&projects, &[repo], channel),
+            Err(CliError::Conflict(_))
+        ));
     }
 
     #[test]
