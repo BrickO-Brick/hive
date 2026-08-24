@@ -248,11 +248,17 @@ pub(crate) fn repo_id_from_project_slug(slug: &str) -> Result<String, CliError> 
     Ok(out)
 }
 
-fn truncate_repo_name(name: &str) -> String {
+pub(crate) fn truncate_repo_name(name: &str) -> String {
     if name.len() <= 128 {
         return name.to_string();
     }
-    name.chars().take(128).collect()
+    let end = name
+        .char_indices()
+        .map(|(index, _)| index)
+        .take_while(|index| *index <= 128)
+        .last()
+        .unwrap_or(0);
+    name[..end].to_string()
 }
 
 #[cfg(test)]
@@ -284,6 +290,15 @@ mod tests {
 
     fn tag(parts: &[&str]) -> nostr::Tag {
         nostr::Tag::parse(parts.iter().copied()).unwrap()
+    }
+
+    #[test]
+    fn truncate_repo_name_respects_utf8_byte_limit() {
+        let name = "界".repeat(100);
+        let truncated = truncate_repo_name(&name);
+        assert_eq!(truncated, "界".repeat(42));
+        assert_eq!(truncated.len(), 126);
+        assert!(truncated.len() <= 128);
     }
 
     #[test]

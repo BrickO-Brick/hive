@@ -25,7 +25,7 @@ use nostr::{Event, EventBuilder, Tag, Timestamp};
 
 use crate::client::BuzzClient;
 use crate::commands::parse_write_response;
-use crate::commands::project_channel::repo_id_from_project_slug;
+use crate::commands::project_channel::{repo_id_from_project_slug, truncate_repo_name};
 use crate::commands::repos::{build_create_announcement, fetch_own_repo_announcement};
 use crate::error::CliError;
 
@@ -670,7 +670,7 @@ async fn ensure_default_create_repo(
         return Ok(repo_id);
     }
     let raw_name = name.unwrap_or(slug);
-    let display_name: String = raw_name.chars().take(128).collect();
+    let display_name = truncate_repo_name(raw_name);
     let builder = build_create_announcement(
         &repo_id,
         Some(&display_name),

@@ -155,7 +155,10 @@ export function ProjectAgentChatPanel({
         // `submitProjectAgentMessage` binds every relay side effect to the
         // scope captured here (fail closed), and threads follow-ups onto the
         // opener so a same-second follow-up cannot be hidden by id ordering.
-        if (homeChannel) {
+        if (
+          homeChannel &&
+          (!conversation || conversation.channel.id === homeChannel.id)
+        ) {
           const alreadyMember = homeChannel.memberPubkeys.some(
             (pubkey) =>
               normalizePubkey(pubkey) === normalizePubkey(selectedAgent.pubkey),

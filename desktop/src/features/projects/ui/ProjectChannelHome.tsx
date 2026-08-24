@@ -175,20 +175,32 @@ export function ProjectChannelHome({
     },
     [goProject, project.id, workspaceRepository],
   );
-  const workspaceSheet =
-    workspaceSheetOpen && workspaceSheetTab && workspaceRepository ? (
-      <ProjectHomeWorkspaceSheet
-        key={`${workspaceSheetTab}:${workspaceRepository.id}`}
-        identityPubkey={identityQuery.data?.pubkey}
-        onOpenCommit={handleOpenCommit}
-        onRepositoryAdded={handleFilesAdded}
-        onSelectRepository={setWorkspaceRepositoryId}
-        project={project}
-        projects={projects}
-        repository={workspaceRepository}
-        tab={workspaceSheetTab}
-      />
-    ) : null;
+  const workspaceSheet = React.useMemo(
+    () =>
+      workspaceSheetOpen && workspaceSheetTab && workspaceRepository ? (
+        <ProjectHomeWorkspaceSheet
+          key={`${workspaceSheetTab}:${workspaceRepository.id}`}
+          identityPubkey={identityQuery.data?.pubkey}
+          onOpenCommit={handleOpenCommit}
+          onRepositoryAdded={handleFilesAdded}
+          onSelectRepository={setWorkspaceRepositoryId}
+          project={project}
+          projects={projects}
+          repository={workspaceRepository}
+          tab={workspaceSheetTab}
+        />
+      ) : null,
+    [
+      handleFilesAdded,
+      handleOpenCommit,
+      identityQuery.data?.pubkey,
+      project,
+      projects,
+      workspaceRepository,
+      workspaceSheetOpen,
+      workspaceSheetTab,
+    ],
+  );
 
   return (
     <div
