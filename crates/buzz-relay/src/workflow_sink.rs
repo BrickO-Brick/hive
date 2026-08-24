@@ -760,6 +760,17 @@ mod integration_tests {
     use buzz_db::CreateCommunityWithOwnerResult;
     use std::sync::Arc;
 
+    fn message_context() -> WorkflowMessageContext {
+        WorkflowMessageContext {
+            workflow_id: Uuid::new_v4(),
+            run_id: Uuid::new_v4(),
+            definition_event_id: nostr::EventId::all_zeros().to_hex(),
+            step_id: "message".to_string(),
+            execution_trace: serde_json::json!({}),
+            trigger_context: None,
+        }
+    }
+
     /// Real-PG state mirroring `handlers::event::tests::test_state_with_redis_url`.
     async fn test_state() -> Arc<AppState> {
         let mut config = crate::config::Config::from_env().expect("default config loads");
@@ -865,6 +876,7 @@ mod integration_tests {
                 &channel.id.to_string(),
                 "heads up @Robby — please take a look",
                 &author_hex,
+                &message_context(),
                 None,
             )
             .await
@@ -941,6 +953,7 @@ mod integration_tests {
                 &channel.id.to_string(),
                 "root message",
                 &author_hex,
+                &message_context(),
                 None,
             )
             .await
@@ -953,6 +966,7 @@ mod integration_tests {
                 &channel.id.to_string(),
                 "threaded reply",
                 &author_hex,
+                &message_context(),
                 Some(&root_hex),
             )
             .await
@@ -1095,6 +1109,7 @@ mod integration_tests {
                 &channel_hex,
                 "workflow reply",
                 &author_hex,
+                &message_context(),
                 Some(&parent_hex),
             )
             .await
@@ -1176,6 +1191,7 @@ mod integration_tests {
                 &channel_hex,
                 "workflow reply to root-only parent",
                 &author_hex,
+                &message_context(),
                 Some(&root_only_parent_hex),
             )
             .await
@@ -1238,6 +1254,7 @@ mod integration_tests {
                 &channel.id.to_string(),
                 "orphan reply",
                 &author_hex,
+                &message_context(),
                 Some(&unknown),
             )
             .await
