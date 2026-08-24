@@ -208,6 +208,8 @@ fn validate_transport(transport: &TransportAddr, mode: &IrohRelayMode) -> anyhow
 const MESH_LLM_DEFAULT_RELAYS: &[&str] = &[
     "https://usw1-2.relay.michaelneale.mesh-llm.iroh.link./",
     "https://aps1-1.relay.michaelneale.mesh-llm.iroh.link./",
+    "https://euc1-1.relay.michaelneale.mesh-llm.iroh.link./",
+    "https://use1-1.relay.michaelneale.mesh-llm.iroh.link./",
 ];
 
 /// Whether `relay` is one of mesh-llm's baked-in default public relays.
