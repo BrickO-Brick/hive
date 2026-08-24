@@ -518,6 +518,42 @@ pub async fn persist_workflow_definition_in_transaction(
     .await
 }
 
+/// Minimal workflow coordinate returned only to its immutable human owner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowOwnerTarget {
+    /// Agent author of the workflow definition.
+    pub agent_pubkey: Vec<u8>,
+    /// Exact current kind:30620 event id.
+    pub expected_revision: Vec<u8>,
+}
+
+/// Resolve an owner-management target without granting channel-content access.
+pub async fn get_workflow_owner_target(
+    pool: &PgPool,
+    community_id: CommunityId,
+    workflow_id: Uuid,
+    owner_pubkey: &[u8],
+) -> Result<WorkflowOwnerTarget> {
+    let row = sqlx::query(
+        r#"SELECT w.owner_pubkey AS agent_pubkey, w.definition_event_id AS expected_revision
+           FROM workflows w
+           JOIN users u ON u.community_id = w.community_id AND u.pubkey = w.owner_pubkey
+           WHERE w.community_id = $1 AND w.id = $2
+             AND u.agent_owner_pubkey = $3
+             AND w.definition_event_id IS NOT NULL"#,
+    )
+    .bind(community_id.as_uuid())
+    .bind(workflow_id)
+    .bind(owner_pubkey)
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| DbError::NotFound(format!("workflow {workflow_id}")))?;
+    Ok(WorkflowOwnerTarget {
+        agent_pubkey: row.try_get("agent_pubkey")?,
+        expected_revision: row.try_get("expected_revision")?,
+    })
+}
+
 /// Fetch a single workflow by ID, scoped to its community.
 ///
 /// `workflows` is keyed `(community_id, id)`; the same workflow UUID can exist
@@ -2976,6 +3012,16 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
+
+        let owner_target = get_workflow_owner_target(&pool, community, workflow, &owner)
+            .await
+            .unwrap();
+        assert_eq!(owner_target.agent_pubkey, agent);
+        assert_eq!(owner_target.expected_revision, revision);
+        assert!(matches!(
+            get_workflow_owner_target(&pool, community, workflow, &stranger).await,
+            Err(DbError::NotFound(_))
+        ));
 
         struct TestCommand<'a> {
             actor: &'a [u8],

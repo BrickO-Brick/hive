@@ -178,24 +178,19 @@ pub async fn cmd_manage_workflow(
     let wf_uuid = parse_uuid(workflow_id)?;
     let operation = validate_manage_args(operation, yaml)?;
     let yaml_definition = yaml.map(read_or_stdin).transpose()?;
-    let filter = serde_json::json!({
-        "kinds": [30620],
-        "#d": [workflow_id],
-        "limit": 1
-    });
-    let resp = client.query(&filter).await?;
-    let events: Vec<serde_json::Value> = serde_json::from_str(&resp).unwrap_or_default();
-    let definition = events
-        .first()
-        .ok_or_else(|| CliError::NotFound(format!("workflow {workflow_id} not found")))?;
-    let agent_pubkey = definition
-        .get("pubkey")
+    let target = client
+        .get_authed(&format!("/workflows/{workflow_id}/owner-target"))
+        .await?;
+    let target: serde_json::Value = serde_json::from_str(&target)
+        .map_err(|error| CliError::Other(format!("invalid workflow owner target: {error}")))?;
+    let agent_pubkey = target
+        .get("agent_pubkey")
         .and_then(|value| value.as_str())
-        .ok_or_else(|| CliError::Other("workflow definition is missing its author".into()))?;
-    let expected_revision = definition
-        .get("id")
+        .ok_or_else(|| CliError::Other("workflow owner target is missing its agent".into()))?;
+    let expected_revision = target
+        .get("expected_revision")
         .and_then(|value| value.as_str())
-        .ok_or_else(|| CliError::Other("workflow definition is missing its revision".into()))?;
+        .ok_or_else(|| CliError::Other("workflow owner target is missing its revision".into()))?;
     let builder = buzz_sdk::build_workflow_owner_command(
         uuid::Uuid::new_v4(),
         agent_pubkey,

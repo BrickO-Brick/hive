@@ -93,6 +93,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             post(api::workflows::finish_agent_delivery),
         )
         .route(
+            "/workflows/{workflow_id}/owner-target",
+            get(api::workflows::workflow_owner_target),
+        )
+        .route(
             "/workflows/{workflow_id}/runs",
             get(api::workflows::workflow_runs),
         )

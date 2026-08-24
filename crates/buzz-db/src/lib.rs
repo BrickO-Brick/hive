@@ -4066,6 +4066,18 @@ impl Db {
         .await
     }
 
+    /// Resolve the minimal owner-management coordinate for an immutable owner.
+    #[datastore_span(name = "get_workflow_owner_target", system = "postgresql")]
+    pub async fn get_workflow_owner_target(
+        &self,
+        community_id: CommunityId,
+        workflow_id: Uuid,
+        owner_pubkey: &[u8],
+    ) -> Result<workflow::WorkflowOwnerTarget> {
+        workflow::get_workflow_owner_target(&self.pool, community_id, workflow_id, owner_pubkey)
+            .await
+    }
+
     /// Update a workflow's status.
     #[datastore_span(name = "update_workflow_status", system = "postgresql")]
     pub async fn update_workflow_status(

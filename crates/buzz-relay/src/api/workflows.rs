@@ -112,6 +112,51 @@ async fn authorize_workflow_read(
     Ok(tenant)
 }
 
+/// `GET /workflows/{workflow_id}/owner-target` — minimal owner-management coordinate.
+pub async fn workflow_owner_target(
+    State(state): State<Arc<AppState>>,
+    Path(workflow_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let path = format!("/workflows/{workflow_id}/owner-target");
+    let raw_host = headers
+        .get(axum::http::header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    let tenant = crate::tenant::bind_community(&state.db, raw_host)
+        .await
+        .map_err(|_| api_error(StatusCode::NOT_FOUND, "workflow not found"))?;
+    let url = bridge::nip98_expected_url(&state.config.relay_url, &tenant, &path);
+    let (owner, event_id) =
+        bridge::verify_bridge_auth(&headers, "GET", &url, None, state.config.require_auth_token)?;
+    bridge::enforce_http_admission(&state, &tenant, &owner).await?;
+    bridge::check_nip98_replay(&state, &tenant, event_id).await?;
+    let auth_tag = headers
+        .get("x-auth-tag")
+        .and_then(|value| value.to_str().ok());
+    super::relay_members::enforce_relay_membership(
+        &state,
+        tenant.community(),
+        &owner.to_bytes(),
+        auth_tag,
+    )
+    .await?;
+    let target = state
+        .db
+        .get_workflow_owner_target(tenant.community(), workflow_id, owner.as_bytes())
+        .await
+        .map_err(|error| match error {
+            buzz_db::error::DbError::NotFound(_) => {
+                api_error(StatusCode::NOT_FOUND, "workflow not found")
+            }
+            other => internal_error(&format!("resolve workflow owner target: {other}")),
+        })?;
+    Ok(Json(serde_json::json!({
+        "agent_pubkey": hex::encode(target.agent_pubkey),
+        "expected_revision": hex::encode(target.expected_revision),
+    })))
+}
+
 /// `GET /workflows/{workflow_id}/runs` — one authorized, keyset-paginated page.
 pub async fn workflow_runs(
     State(state): State<Arc<AppState>>,
