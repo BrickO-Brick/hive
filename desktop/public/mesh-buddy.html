@@ -40,9 +40,45 @@
       }
       #tokens { left: 10px; }
       #nodes { right: 10px; }
+      /* Sleeping: cute little z's drifting up from the right eye. */
+      .zzz {
+        fill: hsl(var(--muted-foreground));
+        font-family: ui-monospace, "SF Mono", Menlo, monospace;
+        font-weight: 700;
+        opacity: 0;
+      }
+      body.mood-sleeping .zzz { animation: zzz-rise 3s linear infinite; }
+      #zzz1 { font-size: 10px; }
+      #zzz2 { font-size: 13px; animation-delay: 1s !important; }
+      #zzz3 { font-size: 16px; animation-delay: 2s !important; }
+      @keyframes zzz-rise {
+        0% { opacity: 0; transform: translate(0, 0); }
+        20% { opacity: 0.9; }
+        80% { opacity: 0.9; }
+        100% { opacity: 0; transform: translate(10px, -22px); }
+      }
+      /* Score: the eyes flip into dollar signs. */
+      .dollar {
+        fill: hsl(var(--foreground));
+        font-family: ui-monospace, "SF Mono", Menlo, monospace;
+        font-size: 52px;
+        font-weight: 800;
+        text-anchor: middle;
+        opacity: 0;
+        transform-box: fill-box;
+        transform-origin: center;
+      }
+      body.mood-score .dollar { animation: cha-ching 0.5s ease-out forwards; }
+      #dollarR { animation-delay: 0.08s !important; }
+      @keyframes cha-ching {
+        0% { opacity: 0; transform: scale(0.2) rotate(-14deg); }
+        60% { opacity: 1; transform: scale(1.25) rotate(6deg); }
+        100% { opacity: 1; transform: scale(1) rotate(0deg); }
+      }
+      body.mood-score #rig { opacity: 0; }
     </style>
   </head>
-  <body>
+  <body class="mood-sleeping">
     <div class="face">
       <svg viewBox="0 0 160 110" aria-label="mesh buddy face" role="img">
         <g id="rig">
@@ -60,6 +96,17 @@
           <!-- Lower lids slide up for the happy squint crescent. -->
           <ellipse class="lid" id="lidL" rx="30" ry="24" />
           <ellipse class="lid" id="lidR" rx="30" ry="24" />
+        </g>
+        <!-- Sleeping z's, drifting up-right from the right eye. -->
+        <g id="zzz" aria-hidden="true">
+          <text class="zzz" id="zzz1" x="126" y="38">z</text>
+          <text class="zzz" id="zzz2" x="134" y="30">z</text>
+          <text class="zzz" id="zzz3" x="143" y="22">z</text>
+        </g>
+        <!-- Score: dollar-sign eyes (cha-ching). -->
+        <g id="dollars" aria-hidden="true">
+          <text class="dollar" id="dollarL" x="46" y="70">$</text>
+          <text class="dollar" id="dollarR" x="114" y="70">$</text>
         </g>
       </svg>
     </div>
@@ -96,8 +143,11 @@
       const EXPRESSIONS = {
         sleeping: { w: 36, h: 3, curve: 0, y: 14, brow: 0, pupil: 0 },
         waking: { w: 34, h: 20, curve: 0, y: 5, brow: 0, pupil: 0.6 },
+        startup: { w: 26, h: 26, curve: 0, y: 0, brow: 0, pupil: 0.5 },
         neutral: { w: 34, h: 38, curve: 0, y: 0, brow: 0, pupil: 1 },
+        working: { w: 32, h: 28, curve: 6, y: 1, brow: 0, pupil: 0.85 },
         happy: { w: 34, h: 36, curve: 14, y: -2, brow: 0, pupil: 1 },
+        score: { w: 34, h: 36, curve: 14, y: -2, brow: 0, pupil: 1 },
         tired: { w: 34, h: 24, curve: 0, y: 7, brow: -0.7, pupil: 0.85 },
         angry: { w: 34, h: 30, curve: 0, y: 2, brow: 0.8, pupil: 0.9 },
       };
@@ -202,15 +252,25 @@
           rig.target.gy = 0;
           return;
         }
-        if (
+        if (rig.mood === "startup") {
+          // Boot scan: pupils sweep side to side like a progress cursor.
+          rig.driftGaze.x = Math.sin(now / 260) * 8;
+          rig.driftGaze.y = 0;
+        } else if (rig.mood === "working") {
+          // Busy saccades: quick darting glances, like reading.
+          if (now - lastDriftShift > 450 + Math.random() * 650) {
+            lastDriftShift = now;
+            rig.driftGaze.x = (Math.random() - 0.5) * 15;
+            rig.driftGaze.y = (Math.random() - 0.5) * 8;
+          }
+        } else if (
           rig.mood === "neutral" &&
           now - lastDriftShift > 2800 + Math.random() * 1500
         ) {
           lastDriftShift = now;
           rig.driftGaze.x = (Math.random() - 0.5) * 8;
           rig.driftGaze.y = (Math.random() - 0.5) * 4;
-        }
-        if (rig.mood !== "neutral") {
+        } else if (rig.mood !== "neutral" && rig.mood !== "working") {
           rig.driftGaze.x = 0;
           rig.driftGaze.y = 0;
         }
@@ -263,11 +323,14 @@
       function setMood(mood) {
         if (rig.mood === mood) return;
         rig.mood = mood;
+        document.body.className = "mood-" + mood;
         rig.target = { ...EXPRESSIONS[mood], gx: rig.target.gx, gy: rig.target.gy };
         // Punctuate mood entries: happy giggles, failure gets a rattled shake.
-        if (mood === "happy")
+        if (mood === "happy" || mood === "score")
           rig.anim = { kind: "laugh", start: performance.now() };
         if (mood === "angry")
+          rig.anim = { kind: "confused", start: performance.now() };
+        if (mood === "waking")
           rig.anim = { kind: "confused", start: performance.now() };
       }
 
@@ -305,6 +368,14 @@
       setInterval(pollGaze, 500);
 
       // ---- State from the mesh runtime ------------------------------------
+      // Live mapping: starting → startup scan; a request arriving flips
+      // waking → working; tokens served ticking up fires the $-eyes score
+      // flash. Number keys 1-5 force a state for demos; 0/Esc back to live.
+      let manualMood = null; // demo override via shortcut keys
+      let lastTokens = null;
+      let lastInflight = 0;
+      let wakeUntil = 0;
+      let scoreUntil = 0;
       async function tick() {
         if (!invoke) return;
         try {
@@ -318,18 +389,59 @@
             "tok " + tokens.toLocaleString();
           const nodes = (usage?.peers || 0) + 1;
           document.getElementById("nodes").textContent = nodes + " node" + (nodes === 1 ? "" : "s");
+
+          const now = performance.now();
+          // A request just landed: perk up before settling into work.
+          if (inflight > 0 && lastInflight === 0) wakeUntil = now + 1200;
+          lastInflight = inflight;
+          // We served tokens: cha-ching once the burst lands.
+          if (lastTokens !== null && tokens > lastTokens)
+            scoreUntil = now + 2500;
+          lastTokens = tokens;
+
+          if (manualMood) return; // demo override wins
           const state = status?.state;
-          if (state === "running") setMood(inflight > 0 ? "happy" : "neutral");
-          else if (state === "starting") setMood("waking");
+          if (state === "running") {
+            if (inflight > 0) setMood(now < wakeUntil ? "waking" : "working");
+            else if (now < scoreUntil) setMood("score");
+            else setMood("neutral");
+          } else if (state === "starting") setMood("startup");
           else if (state === "stopping") setMood("tired");
           else if (state === "failed") setMood("angry");
           else setMood("sleeping");
         } catch {
-          setMood("sleeping");
+          if (!manualMood) setMood("sleeping");
         }
       }
       tick();
       setInterval(tick, 2000);
+
+      // ---- Demo shortcuts --------------------------------------------------
+      // 1 asleep · 2 waking · 3 working · 4 starting up · 5 score ($ eyes)
+      // 6 happy · 7 tired · 8 angry · 9 neutral · 0/Esc back to live state.
+      const KEY_MOODS = {
+        1: "sleeping",
+        2: "waking",
+        3: "working",
+        4: "startup",
+        5: "score",
+        6: "happy",
+        7: "tired",
+        8: "angry",
+        9: "neutral",
+      };
+      window.addEventListener("keydown", (e) => {
+        if (e.key === "0" || e.key === "Escape") {
+          manualMood = null;
+          tick();
+          return;
+        }
+        const mood = KEY_MOODS[e.key];
+        if (mood) {
+          manualMood = mood;
+          setMood(mood);
+        }
+      });
     </script>
   </body>
 </html>
