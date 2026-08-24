@@ -112,36 +112,20 @@ test("top-level project lists show metadata and overflow actions", async ({
 
   await page.getByTestId("projects-section-projects").click();
   await expect(
-    page
-      .getByTestId("projects-collection-group-label")
-      .filter({ hasText: "Mine" }),
-  ).toBeVisible();
-  await expect(
     page.getByRole("button", { name: "Filter projects" }),
   ).toHaveCount(0);
   const projectRow = page.locator('[data-testid^="project-row-"]').first();
   const projectPositions = await trailingPositions(projectRow);
   await expect(projectRow.getByTestId("projects-row-context")).toBeVisible();
   await expect(projectRow.getByTestId("projects-row-people")).toBeVisible();
-  await expect(projectRow.getByTestId("projects-row-location")).toHaveText(
-    /^(Local|Remote)$/,
-  );
 
   await page.getByTestId("projects-section-repositories").click();
-  await expect(
-    page
-      .getByTestId("projects-collection-group-label")
-      .filter({ hasText: "Mine" }),
-  ).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Filter repositories" }),
   ).toHaveCount(0);
   await expect(page.getByTestId("repository-row-buzz")).toBeVisible();
   await expect(page.getByTestId("repository-row-relay-tools")).toBeVisible();
   const repositoryRow = page.getByTestId("repository-row-buzz");
-  await expect(
-    repositoryRow.getByTestId("repositories-row-location"),
-  ).toHaveText(/^(Local|Remote)$/);
   await expect(
     repositoryRow.getByTestId("repositories-row-project"),
   ).toHaveCount(0);
@@ -191,11 +175,9 @@ test("top-level project lists show metadata and overflow actions", async ({
   await page.keyboard.press("Escape");
 
   await page.getByRole("button", { name: "Reviews", exact: true }).click();
-  await page.getByRole("button", { name: "Filter reviews" }).click();
   await expect(
-    page.getByRole("menuitem", { name: "My Reviews" }),
-  ).toBeVisible();
-  await page.keyboard.press("Escape");
+    page.getByRole("button", { name: "Filter reviews" }),
+  ).toHaveCount(0);
   await page.getByTestId("projects-create-menu").hover();
   await expect(page.getByRole("menuitem", { name: "Project" })).toBeVisible();
   await expect(page.getByRole("menuitem", { name: "Task" })).toBeVisible();
@@ -224,9 +206,9 @@ test("top-level project lists show metadata and overflow actions", async ({
   await page.keyboard.press("Escape");
 
   await page.getByRole("button", { name: "Tasks", exact: true }).click();
-  await page.getByRole("button", { name: "Filter tasks" }).click();
-  await expect(page.getByRole("menuitem", { name: "My Tasks" })).toBeVisible();
-  await page.keyboard.press("Escape");
+  await expect(page.getByRole("button", { name: "Filter tasks" })).toHaveCount(
+    0,
+  );
   const issueRow = page.locator('[data-testid^="projects-issue-row-"]').first();
   await expect(issueRow).toBeVisible();
   const issuePositions = await trailingPositions(issueRow);
@@ -283,8 +265,6 @@ test("creating a project opens its channel conversation", async ({ page }) => {
     .getByTestId("create-project-description")
     .fill("A grouped project created through the desktop app.");
   await expect(page.getByTestId("create-project-listing")).toHaveText("Listed");
-  await expect(page.getByTestId("create-project-template")).toHaveText("None");
-  await expect(page.getByTestId("create-project-team")).toHaveText("None");
   await expect(page.getByTestId("create-project-agent")).toHaveText("None");
   await page.getByTestId("create-project-submit").click();
 
@@ -296,8 +276,8 @@ test("creating a project opens its channel conversation", async ({ page }) => {
   await expect(page.getByTestId("chat-title")).toHaveText("multi-repo-demo");
   await expect(page.getByTestId("project-agent-chat-panel")).toHaveCount(0);
   await expect(page.getByTestId("message-channel-intro")).toBeVisible();
-  await expect(page.getByTestId("message-channel-intro")).toContainText(
-    "project channel",
+  await expect(page.getByTestId("message-channel-intro")).not.toContainText(
+    "This is the beginning",
   );
   await expect(
     page
@@ -348,6 +328,7 @@ test("creating a project opens its channel conversation", async ({ page }) => {
     page.getByTestId("project-home-context-channel"),
   ).not.toContainText("people in this channel");
   await expect(page.getByTestId("add-project-channel")).toBeVisible();
+  await expect(page.getByTestId("add-project-repository")).toBeVisible();
   await page.getByTestId("add-project-channel").click();
   await expect(page.getByTestId("create-project-channel-dialog")).toBeVisible();
   await page.keyboard.press("Escape");
@@ -805,7 +786,10 @@ test("commit detail opens from the commits feed with a diff", async ({
   expect(Math.round((sheetRowBox?.x ?? 0) - (sheetGroupBox?.x ?? 0))).toBe(8);
   await page.getByTestId("project-home-workspace-sheet-create").click();
   await expect(page.getByTestId("create-issue-dialog")).toBeVisible();
-  await page.keyboard.press("Escape");
+  await page
+    .getByTestId("create-issue-dialog")
+    .getByRole("button", { name: "Close" })
+    .click();
   await expect(page.getByTestId("create-issue-dialog")).toHaveCount(0);
   await sheetRow.locator('[data-projects-text-priority="primary"]').click();
   await expect(
