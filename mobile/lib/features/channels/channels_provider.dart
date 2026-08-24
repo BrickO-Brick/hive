@@ -29,14 +29,10 @@ const _authoredRootIdsPrefix = 'buzz-thread-authored.v1';
 
 /// Loads the user's channel list from the relay over WebSocket.
 ///
-/// Membership loading resolves kind:39002 events tagged `#p:<my-pubkey>`,
-/// then fetches kind:39000 metadata for those channel ids.
-///
-/// The paginated kind:39000 directory is fetched separately when Browse
-/// channels opens, so discovery never delays the main Conversations screen.
-/// Live updates are layered on top via per-channel subscriptions on the
-/// `#h` tag for any of the visible channel event kinds — incoming events
-/// bump `lastMessageAt` for that channel.
+/// Membership loading resolves kind:39002 events tagged `#p:<my-pubkey>`, then
+/// fetches kind:39000 metadata for those ids. The paginated kind:39000 directory
+/// is fetched separately when Browse channels opens, so discovery never delays
+/// Conversations; live updates layer on via per-channel `#h`-tag subscriptions.
 class ChannelsNotifier extends AsyncNotifier<List<Channel>>
     with _DmVisibilitySubscription {
   static const _backstopInterval = Duration(seconds: 60);
@@ -910,8 +906,9 @@ class ChannelsNotifier extends AsyncNotifier<List<Channel>>
     }
   }
 
+  /// Refreshes memberships and, when [fetchDirectory], the open directory.
   @override
-  Future<void> refresh() async {
+  Future<void> refresh({bool fetchDirectory = false}) async {
     final sessionState = ref.read(relaySessionProvider);
     // Don't attempt to fetch when the session isn't connected — fetchHistory
     // would send REQs over an unauthenticated socket that either time out
@@ -920,7 +917,10 @@ class ChannelsNotifier extends AsyncNotifier<List<Channel>>
     // when the session transitions to connected.
     if (sessionState.status != SessionStatus.connected) return;
     try {
-      final channels = await _fetch(subscribeLive: true);
+      final channels = await _fetch(
+        subscribeLive: true,
+        fetchDirectory: fetchDirectory,
+      );
       state = AsyncData(channels);
     } on _StaleChannelRefresh {
       return;
