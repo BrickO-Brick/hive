@@ -24,7 +24,7 @@ Future<void> runBuzzApp(Widget app) async {
         savedPrefsProvider.overrideWithValue(prefs),
         inviteJoinRecoveryProvider.overrideWith(
           (ref) =>
-          (scope) => buildMobileInviteJoinRecovery(ref, scope),
+              (scope) => buildMobileInviteJoinRecovery(ref, scope),
         ),
       ],
       child: BuzzPushBootstrap(child: app),

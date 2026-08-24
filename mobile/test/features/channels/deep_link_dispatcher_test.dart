@@ -731,6 +731,7 @@ class _FailedStarterRecoveryInviteJoinNotifier extends InviteJoinNotifier {
     );
   }
 }
+
 class _CountingCommunityStorage extends CommunityStorage {
   int loadCalls = 0;
 
