@@ -11,6 +11,7 @@ const COMMUNITY_ID = "e2e-default-community";
 test("keeps dedicated activity windows pinned to their original channel", async ({
   page,
 }) => {
+  await page.setViewportSize({ width: 560, height: 760 });
   await installMockBridge(page, {
     windowLabel: `agent-activity-${AGENT_PUBKEY}-${AGENTS_CHANNEL_ID}`,
     managedAgents: [
@@ -51,7 +52,7 @@ test("keeps dedicated activity windows pinned to their original channel", async 
                   sessionUpdate: "agent_message_chunk",
                   content: {
                     type: "text",
-                    text: `Continue in #general or open <buzz://repo?owner=${repositoryOwnerPubkey}&d=relay-tools>`,
+                    text: `Continue in #general or open <buzz://repo?owner=${repositoryOwnerPubkey}&d=relay-tools>\n\n\`\`\`text\nverification-${"x".repeat(120)}-END\n\`\`\``,
                   },
                 },
               },
@@ -163,6 +164,24 @@ test("keeps dedicated activity windows pinned to their original channel", async 
   await expect(
     panel.getByRole("button", { name: "Open channel general" }),
   ).toHaveCount(0);
+  const codeBlock = panel
+    .getByTestId("transcript-assistant-message")
+    .locator("pre");
+  await expect(codeBlock).toHaveCount(1);
+  await expect(codeBlock).toContainText("-END");
+  const codeOverflow = await codeBlock.evaluate((element) => ({
+    clientWidth: element.clientWidth,
+    overflowX: getComputedStyle(element).overflowX,
+    scrollWidth: element.scrollWidth,
+  }));
+  expect(codeOverflow.overflowX).toBe("auto");
+  expect(codeOverflow.scrollWidth).toBeGreaterThan(codeOverflow.clientWidth);
+  await codeBlock.evaluate((element) => {
+    element.scrollLeft = element.scrollWidth;
+  });
+  await expect
+    .poll(() => codeBlock.evaluate((element) => element.scrollLeft))
+    .toBeGreaterThan(0);
   const activityWindowUrl = page.url();
 
   await expect(

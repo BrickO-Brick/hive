@@ -164,6 +164,7 @@ export function CompactMessageSummary({
             {...bubbleLinkProps}
           >
             <Markdown
+              blockCode
               className={isCompactPreview ? "text-xs leading-4" : "leading-5"}
               content={resolvedContent || "Message content unavailable."}
               interactive={activityWindowMarkdownInteractive()}

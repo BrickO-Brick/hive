@@ -64,6 +64,7 @@ function MessageItem({
           title={formatTranscriptTimestampTitle(item.timestamp)}
         >
           <Markdown
+            blockCode
             className={isCompactPreview ? "text-xs leading-4" : "leading-5"}
             content={text || " "}
             interactive={activityWindowMarkdownInteractive()}

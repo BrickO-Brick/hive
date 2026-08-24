@@ -25,6 +25,7 @@ export function ThoughtActivity(props: ActivityRenderClassItemProps) {
       <ActivityRowLabel openToneScope="tool" verb={props.item.title} />
       <ActivityRowContent className="pt-1 pb-1.5 text-sm leading-5 text-muted-foreground">
         <Markdown
+          blockCode
           className="leading-5"
           content={props.item.text.trim() || " "}
           interactive={activityWindowMarkdownInteractive()}

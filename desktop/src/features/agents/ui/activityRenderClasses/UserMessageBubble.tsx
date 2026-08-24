@@ -156,6 +156,7 @@ export function UserMessageBubble({
           <Markdown
             className={isCompactPreview ? "text-xs leading-4" : "leading-5"}
             content={text || " "}
+            blockCode
             interactive={activityWindowMarkdownInteractive()}
             mediaInset
           />
