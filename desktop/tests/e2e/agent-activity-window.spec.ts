@@ -70,6 +70,7 @@ test("keeps dedicated activity windows pinned to their original channel", async 
               params: {
                 update: {
                   sessionUpdate: "user_message_chunk",
+                  messageId: "b".repeat(64),
                   authorPubkey: repositoryOwnerPubkey,
                   content: { type: "text", text: "Please inspect the feed" },
                 },
@@ -189,9 +190,20 @@ test("keeps dedicated activity windows pinned to their original channel", async 
   await expect(sentMessage.locator("[data-channel-link]")).toContainText(
     "general",
   );
+  const userMessage = panel.getByTestId("transcript-user-message");
+  const userTimestamp = userMessage.locator("span[title]").last();
+  await expect(userTimestamp).toBeVisible();
+  await expect(userTimestamp).toHaveCSS("cursor", "default");
   await expect(panel.getByTestId("transcript-open-message-link")).toHaveCount(
     0,
   );
+  const openedPage = page
+    .context()
+    .waitForEvent("page", { timeout: 500 })
+    .then(() => true)
+    .catch(() => false);
+  await userTimestamp.click({ button: "middle" });
+  expect(await openedPage).toBe(false);
   await sentMessage.click();
   await expect(panel).toBeVisible();
   await expect(page.getByTestId("message-thread-panel")).toHaveCount(0);
