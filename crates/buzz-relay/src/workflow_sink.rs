@@ -151,6 +151,17 @@ fn resolve_mention_pubkeys(text: &str, members: &[(String, String)]) -> Vec<Stri
     out
 }
 
+/// Producer-side rollout gate for the durable delivery protocol.
+fn ensure_workflow_agent_delivery_enabled(enabled: bool) -> Result<(), ActionSinkError> {
+    if enabled {
+        Ok(())
+    } else {
+        Err(ActionSinkError::InvalidInput(
+            "workflow agent delivery is disabled until ACP harnesses support durable wakes".into(),
+        ))
+    }
+}
+
 /// Relay-side action sink — executes workflow side-effects directly.
 ///
 /// Holds a **weak** reference to `AppState` to avoid an `Arc` reference cycle:
@@ -198,6 +209,13 @@ impl ActionSink for RelayActionSink {
                 .state
                 .upgrade()
                 .ok_or_else(|| ActionSinkError::Database("relay is shutting down".into()))?;
+
+            // This producer-side rollout fence is intentionally before all
+            // workflow-message side effects. Legacy ACPs cannot recognize the
+            // durable protocol marker and `respond-to=anyone` would execute a
+            // visible relay-authored kind:9 without claiming its delivery row.
+            // Operators enable the protocol only after upgrading ACP harnesses.
+            ensure_workflow_agent_delivery_enabled(state.config.workflow_agent_delivery_enabled)?;
 
             // The run carries its owning community (`community_id`); the
             // relay-signed kind:9 message belongs to *that* community, never the
@@ -751,6 +769,17 @@ mod tests {
     // Adversarial rows from Quinn's re-review (the two `ẞ→ss`-premised ones were
     // dropped as vacuous — `ẞ` lowercases to `ß`, one char, so it never inverts
     // original-vs-folded length; only `İ` does).
+
+    #[test]
+    fn producer_gate_blocks_legacy_anyone_mixed_version_rollout() {
+        let error = ensure_workflow_agent_delivery_enabled(false)
+            .expect_err("disabled producer must not emit a visible kind:9");
+        assert!(matches!(error, ActionSinkError::InvalidInput(_)));
+        assert!(
+            ensure_workflow_agent_delivery_enabled(true).is_ok(),
+            "operator may enable delivery after ACP harnesses are upgraded"
+        );
+    }
 
     #[test]
     fn combining_mark_in_name_matches() {

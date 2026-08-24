@@ -16,6 +16,7 @@ async fn test_state_with_database_url(database_url: Option<String>) -> Arc<AppSt
         config.database_url = database_url;
     }
     config.require_relay_membership = false;
+    config.workflow_agent_delivery_enabled = true;
     let pool = sqlx::PgPool::connect_lazy(&config.database_url).expect("lazy pg pool");
     let db = buzz_db::Db::from_pool(pool.clone());
     let redis_pool = deadpool_redis::Config::from_url(&config.redis_url)
