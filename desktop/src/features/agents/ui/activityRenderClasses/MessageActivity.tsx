@@ -1,4 +1,8 @@
-import type { UserProfileLookup } from "@/features/profile/lib/identity";
+import {
+  resolveUserLabel,
+  type UserProfileLookup,
+} from "@/features/profile/lib/identity";
+import { normalizePubkey } from "@/shared/lib/pubkey";
 import { Markdown } from "@/shared/ui/markdown";
 import { UserAvatar } from "@/shared/ui/UserAvatar";
 import { useAgentSessionTranscriptVariant } from "../agentSessionTranscriptContext";
@@ -21,6 +25,7 @@ export function MessageActivity(props: ActivityRenderClassItemProps) {
     <MessageItem
       agentAvatarUrl={props.agentAvatarUrl}
       agentName={props.agentName}
+      agentPubkey={props.agentPubkey}
       item={props.item}
       profiles={props.profiles}
     />
@@ -30,11 +35,13 @@ export function MessageActivity(props: ActivityRenderClassItemProps) {
 function MessageItem({
   agentAvatarUrl,
   agentName,
+  agentPubkey,
   item,
   profiles,
 }: {
   agentAvatarUrl: string | null;
   agentName: string;
+  agentPubkey: string;
   item: Extract<TranscriptItem, { type: "message" }>;
   profiles?: UserProfileLookup;
 }) {
@@ -44,6 +51,25 @@ function MessageItem({
   const isAssistant = item.role === "assistant";
   const text = item.text.trim();
   const messageLink = getTranscriptMessageLink(item);
+  // The identity row must resolve the agent through the profiles lookup first,
+  // exactly as `ToolItem` (ToolItem.tsx:45-52) and the panel header
+  // (AgentSessionThreadPanel.tsx:243-249) already do for the same agent on the
+  // same surface. The `agentAvatarUrl`/`agentName` props only carry what the
+  // *caller's* agent record holds, and the primary channel flow's record
+  // (`ChannelAgentSessionAgent`) has no avatar field at all — so relying on the
+  // prop alone showed initials for every channel-opened session while the
+  // managed-agent panel showed the real avatar. Resolving here keeps the row
+  // agreeing with the header directly above it; the props stay as the fallback
+  // for callers that have an avatar the lookup does not (a locally managed
+  // agent whose avatar was never published to a relay profile).
+  const agentProfile = profiles?.[normalizePubkey(agentPubkey)] ?? null;
+  const resolvedAgentAvatarUrl = agentProfile?.avatarUrl ?? agentAvatarUrl;
+  const resolvedAgentName = resolveUserLabel({
+    pubkey: agentPubkey,
+    fallbackName: agentName,
+    profiles,
+    preferResolvedSelfLabel: true,
+  });
 
   if (!isAssistant) {
     return (
@@ -80,13 +106,13 @@ function MessageItem({
           >
             {/* `size="xs"` is already 20px (`h-5 w-5`) in UserAvatar. */}
             <UserAvatar
-              avatarUrl={agentAvatarUrl}
+              avatarUrl={resolvedAgentAvatarUrl}
               className="shrink-0"
-              displayName={agentName}
+              displayName={resolvedAgentName}
               size="xs"
             />
             <span className="min-w-0 truncate font-normal text-foreground">
-              {agentName}
+              {resolvedAgentName}
             </span>
           </div>
         ) : null}

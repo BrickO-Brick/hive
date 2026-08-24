@@ -120,6 +120,36 @@ dom.window.cancelAnimationFrame = (id) => clearTimeout(id);
 globalThis.requestAnimationFrame = dom.window.requestAnimationFrame;
 globalThis.cancelAnimationFrame = dom.window.cancelAnimationFrame;
 
+/**
+ * Radix's `AvatarImage` renders nothing until its own preloader reports
+ * `loaded` (`react-avatar/dist/index.mjs` `useImageLoadingStatus`), and jsdom
+ * never fetches, so a real avatar URL would otherwise stay in `loading` forever
+ * and every avatar assertion would see only the initials fallback — the exact
+ * bug under test, passing vacuously. This stub reports a decoded image as soon
+ * as `src` is assigned. It only affects avatars that HAVE a url: with
+ * `avatarUrl: null` radix resolves to `error` and skips the preloader entirely,
+ * so the byte-for-byte baseline (whose agent and author carry no avatar) is
+ * untouched.
+ */
+class LoadedImageStub {
+  constructor() {
+    this._src = "";
+    this.complete = false;
+    this.naturalWidth = 0;
+  }
+  addEventListener() {}
+  removeEventListener() {}
+  get src() {
+    return this._src;
+  }
+  set src(value) {
+    this._src = value;
+    this.complete = true;
+    this.naturalWidth = 1;
+  }
+}
+dom.window.Image = LoadedImageStub;
+
 let act;
 let cleanup;
 let render;
@@ -154,6 +184,20 @@ const AUTHOR_PROFILES = {
   [AUTHOR]: {
     displayName: "Ada Lovelace",
     avatarUrl: null,
+    nip05Handle: null,
+    ownerPubkey: null,
+  },
+};
+/**
+ * A relay-resolved profile for the *agent*. Deliberately not a `/media/<hex>`
+ * relay URL: `UserAvatar` routes those through the localhost media proxy
+ * (`rewriteRelayUrl`), which would make the rendered `src` a moving target.
+ */
+const AGENT_AVATAR_URL = "https://cdn.example.test/agent-profile.png";
+const AGENT_PROFILES = {
+  [AGENT.agentPubkey]: {
+    displayName: "Test Agent",
+    avatarUrl: AGENT_AVATAR_URL,
     nip05Handle: null,
     ownerPubkey: null,
   },
@@ -590,6 +634,76 @@ test("conversation labels the agent turn with a berd-style identity row", async 
     '[data-testid="transcript-assistant-message"]',
   );
   assert.doesNotMatch(message.innerHTML, /rounded-2xl/);
+});
+
+test("the conversation identity row resolves the agent avatar from the profiles lookup", async () => {
+  // Regression guard for the primary channel flow. `ChannelAgentSessionAgent`
+  // (useChannelAgentSessions.ts:21-29) has no avatar field at all, so when the
+  // focus conversation is opened from a channel the panel passes
+  // `agentAvatarUrl: null` — which is exactly this mount. The row must still
+  // show the configured avatar by resolving it out of the `profiles` lookup the
+  // panel already hands down, the same way the ToolItem row
+  // (ToolItem.tsx:45-52) and the panel header above it already do. Before the
+  // fix, every channel-opened session fell back to initials.
+  const { container } = await renderTranscript("conversation", {
+    agentAvatarUrl: null,
+    profiles: AGENT_PROFILES,
+  });
+  const identity = container.querySelector(
+    '[data-testid="transcript-assistant-identity"]',
+  );
+  assert.ok(identity, "the identity row should render");
+  const image = identity.querySelector("img");
+  assert.ok(
+    image,
+    "the profile avatar must win over the caller's null agent record avatar",
+  );
+  assert.equal(image.getAttribute("src"), AGENT_AVATAR_URL);
+});
+
+test("the conversation identity row resolves the agent name the same way the header does", async () => {
+  // The row sits directly under the panel header, which labels the same agent
+  // through `resolveUserLabel` (AgentSessionThreadPanel.tsx:244-249). Reading
+  // the raw `agentName` prop instead let the two disagree whenever the relay
+  // profile's display name differed from the caller's agent record.
+  const { container } = await renderTranscript("conversation", {
+    agentName: "stale-record-name",
+    profiles: {
+      [AGENT.agentPubkey]: {
+        displayName: "Profile Display Name",
+        avatarUrl: null,
+        nip05Handle: null,
+        ownerPubkey: null,
+      },
+    },
+  });
+  const identity = container.querySelector(
+    '[data-testid="transcript-assistant-identity"]',
+  );
+  assert.equal(identity.textContent, "Profile Display Name");
+});
+
+test("the conversation identity row keeps the caller's avatar when the lookup has none", async () => {
+  // The managed-agent path is the other direction: a locally managed agent can
+  // carry an avatar its relay profile never published. The prop stays the
+  // fallback, so resolving profile-first must not drop it.
+  const localAvatar = "https://cdn.example.test/local-managed.png";
+  const { container } = await renderTranscript("conversation", {
+    agentAvatarUrl: localAvatar,
+    profiles: {
+      [AGENT.agentPubkey]: {
+        displayName: "Test Agent",
+        avatarUrl: null,
+        nip05Handle: null,
+        ownerPubkey: null,
+      },
+    },
+  });
+  const image = container
+    .querySelector('[data-testid="transcript-assistant-identity"]')
+    .querySelector("img");
+  assert.ok(image, "the caller-supplied avatar should still render");
+  assert.equal(image.getAttribute("src"), localAvatar);
 });
 
 test("conversation frames fenced code with berd's header row", async () => {
