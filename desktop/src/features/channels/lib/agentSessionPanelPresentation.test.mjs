@@ -14,6 +14,7 @@ test("the cover drawer owns motion and gets standalone, opaque chrome", () => {
       enterMotion: false,
       isSinglePanelView: true,
       layout: "standalone",
+      transcriptVariant: "conversation",
       transparentChrome: false,
     },
   );
@@ -30,6 +31,7 @@ test("the split pane keeps docked chrome and its own enter motion", () => {
       enterMotion: true,
       isSinglePanelView: false,
       layout: "split",
+      transcriptVariant: undefined,
       transparentChrome: true,
     },
   );
@@ -47,6 +49,7 @@ test("narrow viewports keep today's overlay and single-panel presentations", () 
         enterMotion: true,
         isSinglePanelView,
         layout: "standalone",
+        transcriptVariant: undefined,
         transparentChrome: false,
       },
     );
