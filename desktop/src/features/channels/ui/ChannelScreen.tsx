@@ -82,6 +82,7 @@ import { useChannelAgentSessions } from "./useChannelAgentSessions";
 import { useMessageProfiles } from "./useMessageProfiles";
 import { useChannelPanelHistoryState } from "./useChannelPanelHistoryState";
 import { useChannelProfilePanel } from "./useChannelProfilePanel";
+import { useChannelTargetReset } from "./useChannelTargetReset";
 import { useChannelRouteTarget } from "./useChannelRouteTarget";
 import { useChannelOpenReadState } from "./useChannelOpenReadState";
 import { useChannelUnreadState } from "./useChannelUnreadState";
@@ -646,21 +647,13 @@ export function ChannelScreen({
       timelineMessages,
       isTimelineLoading,
     );
-  const handleThreadScrollTargetResolved = React.useCallback(() => {
-    setThreadScrollTargetId(null);
-  }, []);
-  const handleTargetReached = React.useCallback(
-    () => clearMessageRouteTarget({ replace: true }),
-    [clearMessageRouteTarget],
-  );
-  React.useEffect(() => {
-    // The channel identity is intentionally the reset trigger.
-    void activeChannelId;
-    setExpandedThreadReplyIds(new Set());
-    setThreadScrollTargetId(null);
-    setThreadReplyTargetId(null);
-    setEditTargetId(null);
-  }, [activeChannelId]);
+  useChannelTargetReset({
+    activeChannelId,
+    setEditTargetId,
+    setExpandedThreadReplyIds,
+    setThreadReplyTargetId,
+    setThreadScrollTargetId,
+  });
   useNavigationGuard(requireThreadEditResolution);
   const mainTimelineTargetMessageId = useChannelRouteTarget({
     activeChannel,
@@ -947,11 +940,13 @@ export function ChannelScreen({
                   onSendToChannel={handleSendToChannel}
                   onSendVideoReviewComment={effectiveSendVideoReviewComment}
                   onSendThreadReply={handleSendThreadReply}
-                  onThreadScrollTargetResolved={
-                    handleThreadScrollTargetResolved
+                  onThreadScrollTargetResolved={() =>
+                    setThreadScrollTargetId(null)
                   }
                   onThreadPanelResizeStart={handleThreadPanelResizeStart}
-                  onTargetReached={handleTargetReached}
+                  onTargetReached={() =>
+                    clearMessageRouteTarget({ replace: true })
+                  }
                   onToggleReaction={effectiveToggleReaction}
                   openAgentSessionChannelId={openAgentSessionChannelId}
                   openAgentSessionPubkey={openAgentSessionPubkey}
