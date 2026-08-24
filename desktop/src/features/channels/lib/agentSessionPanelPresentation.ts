@@ -1,3 +1,5 @@
+import type { AgentSessionTranscriptVariant } from "@/features/agents/ui/agentSessionTranscriptContext";
+
 /**
  * `AnimatePresence` key shared by every agent activity presentation.
  *
@@ -11,6 +13,7 @@ export type AgentSessionPanelPresentation = {
   enterMotion: boolean;
   isSinglePanelView: boolean;
   layout: "standalone" | "split";
+  transcriptVariant: AgentSessionTranscriptVariant | undefined;
   transparentChrome: boolean;
 };
 
@@ -24,11 +27,11 @@ type AgentSessionPanelPresentationOptions = {
 /**
  * Maps channel presentation into the agent session panel's layout props.
  *
- * TODO(#6538): once the `conversation` transcript variant lands on main, this
- * should also return `transcriptVariant: "conversation"` for the cover drawer
- * and `undefined` otherwise, so the reading view is pinned by presentation
- * rather than inferred from panel width. The variant does not exist on main
- * yet, so the prop is deliberately not set here.
+ * The transcript variant is pinned here rather than inferred from panel width.
+ * The cover drawer is the reading surface, so it gets `conversation`; every
+ * other host keeps the dense activity feed. Width is a proxy that breaks — the
+ * split pane can be dragged wide and a narrow overlay can be tall — so the
+ * presentation that decided to cover is what decides the reading view too.
  */
 export function getAgentSessionPanelPresentation({
   isCoverDrawer,
@@ -44,6 +47,7 @@ export function getAgentSessionPanelPresentation({
       // it has no resizable neighbour to draw a resize border against.
       isSinglePanelView: true,
       layout: "standalone",
+      transcriptVariant: "conversation",
       transparentChrome: false,
     };
   }
@@ -52,6 +56,10 @@ export function getAgentSessionPanelPresentation({
     enterMotion: true,
     isSinglePanelView: useSplitAuxiliaryPane ? false : isSinglePanelView,
     layout: useSplitAuxiliaryPane ? "split" : "standalone",
+    // Undefined, not `"default"`: the panel already defaults, and naming it
+    // here would claim this function decides the non-cover variant when the
+    // profile panel's `compactPreview` is chosen at its own call site.
+    transcriptVariant: undefined,
     transparentChrome: useSplitAuxiliaryPane,
   };
 }
