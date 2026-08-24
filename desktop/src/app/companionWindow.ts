@@ -24,6 +24,13 @@ export function currentCompanionWindowKind(): CompanionWindowKind | null {
   }
 }
 
+/** Whether this realm owns the native pending deep-link queue. */
+export function acceptsNativeDeepLinks(
+  companionKind: CompanionWindowKind | null,
+): boolean {
+  return companionKind === null;
+}
+
 /** Whether this webview is a focused companion rather than the primary app. */
 export function isCompanionWindow(): boolean {
   return currentCompanionWindowKind() !== null;
