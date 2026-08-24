@@ -5675,8 +5675,8 @@ mod author_gate_tests {
         assert!(is_dm_channel(id, &resolver).await);
         assert_eq!(
             requests.load(Ordering::SeqCst),
-            2,
-            "channel metadata and project context each resolve once, then cache"
+            3,
+            "channel metadata and both project event classes each resolve once, then cache"
         );
         server.abort();
     }

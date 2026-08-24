@@ -25,7 +25,9 @@ use nostr::{Event, EventBuilder, Tag, Timestamp};
 
 use crate::client::BuzzClient;
 use crate::commands::parse_write_response;
-use crate::commands::project_channel::{repo_id_from_project_slug, truncate_repo_name};
+use crate::commands::project_channel::{
+    repo_id_from_project_slug, require_repo_channel_binding, truncate_repo_name,
+};
 use crate::commands::repos::{build_create_announcement, fetch_own_repo_announcement};
 use crate::error::CliError;
 
@@ -71,16 +73,25 @@ fn project_tags_match_channel<'a>(tags: impl IntoIterator<Item = &'a Tag>, chann
         .any(|tag| tag_name(tag) == Some("buzz-channel") && tag_value(tag) == Some(channel))
 }
 
+pub(crate) const PROJECT_QUERY_EVENT_BOUND: u32 = 10_000;
+
 pub(crate) async fn fetch_projects_for_channel(
     client: &BuzzClient,
     channel: &str,
 ) -> Result<Vec<Event>, CliError> {
     let filter = serde_json::json!({
         "kinds": [KIND_PROJECT],
-        "limit": 1000,
     });
-    let raw = client.query(&filter).await?;
-    Ok(parse_events(&raw)?
+    let events: Vec<Event> = client
+        .query_all_bounded(filter, PROJECT_QUERY_EVENT_BOUND)
+        .await?
+        .into_iter()
+        .map(|event| {
+            serde_json::from_value(event)
+                .map_err(|e| CliError::Other(format!("failed to parse relay response: {e}")))
+        })
+        .collect::<Result<_, _>>()?;
+    Ok(events
         .into_iter()
         .filter(|event| project_tags_match_channel(event.tags.iter(), channel))
         .collect())
@@ -663,10 +674,8 @@ async fn ensure_default_create_repo(
     channel: &str,
 ) -> Result<String, CliError> {
     let repo_id = repo_id_from_project_slug(slug)?;
-    if fetch_own_repo_announcement(client, &repo_id)
-        .await?
-        .is_some()
-    {
+    if let Some(existing) = fetch_own_repo_announcement(client, &repo_id).await? {
+        require_repo_channel_binding(&existing, channel)?;
         return Ok(repo_id);
     }
     let raw_name = name.unwrap_or(slug);

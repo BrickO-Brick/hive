@@ -9,7 +9,9 @@ use buzz_core::kind::KIND_GIT_REPO_ANNOUNCEMENT;
 use nostr::Event;
 
 use crate::client::BuzzClient;
-use crate::commands::projects::{fetch_projects_for_channel, try_add_own_repo_to_channel_project};
+use crate::commands::projects::{
+    fetch_projects_for_channel, try_add_own_repo_to_channel_project, PROJECT_QUERY_EVENT_BOUND,
+};
 use crate::error::CliError;
 use crate::validate::{validate_repo_id, validate_uuid};
 
@@ -161,14 +163,20 @@ async fn fetch_channel_repos(client: &BuzzClient, channel: &str) -> Result<Vec<E
     let filter = serde_json::json!({
         "kinds": [KIND_GIT_REPO_ANNOUNCEMENT],
         "#buzz-channel": [channel],
-        "limit": 1000,
     });
-    let raw = client.query(&filter).await?;
-    serde_json::from_str(&raw)
-        .map_err(|error| CliError::Other(format!("failed to parse relay response: {error}")))
+    client
+        .query_all_bounded(filter, PROJECT_QUERY_EVENT_BOUND)
+        .await?
+        .into_iter()
+        .map(|event| {
+            serde_json::from_value(event).map_err(|error| {
+                CliError::Other(format!("failed to parse relay response: {error}"))
+            })
+        })
+        .collect()
 }
 
-fn require_repo_channel_binding(event: &Event, channel: &str) -> Result<(), CliError> {
+pub(crate) fn require_repo_channel_binding(event: &Event, channel: &str) -> Result<(), CliError> {
     match first_tag_value(event, "buzz-channel") {
         Some(bound) if bound == channel => Ok(()),
         Some(bound) => Err(CliError::Conflict(format!(
@@ -401,6 +409,12 @@ mod tests {
         );
         assert!(matches!(
             require_repo_channel_binding(&foreign, requested),
+            Err(CliError::Conflict(_))
+        ));
+
+        let unbound = signed_event(&owner, 30617, vec![tag(&["d", "game"])]);
+        assert!(matches!(
+            require_repo_channel_binding(&unbound, requested),
             Err(CliError::Conflict(_))
         ));
     }
