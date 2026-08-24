@@ -73,7 +73,10 @@ test("keeps dedicated activity windows pinned to their original channel", async 
                   sessionUpdate: "user_message_chunk",
                   messageId: "b".repeat(64),
                   authorPubkey: repositoryOwnerPubkey,
-                  content: { type: "text", text: "Please inspect the feed" },
+                  content: {
+                    type: "text",
+                    text: `${Array.from({ length: 11 }, (_, index) => `Prompt line ${index + 1}: inspect every detail in the dedicated activity feed.`).join("\n\n")}\n\nPrompt line 12: FINAL-PROMPT-LINE`,
+                  },
                 },
               },
             },
@@ -210,6 +213,42 @@ test("keeps dedicated activity windows pinned to their original channel", async 
     "general",
   );
   const userMessage = panel.getByTestId("transcript-user-message");
+  const userBubble = userMessage.locator(":scope > div > div").first();
+  await expect(userBubble).toContainText("FINAL-PROMPT-LINE");
+  const promptTailGeometry = await userBubble.evaluate((bubble) => {
+    const walker = document.createTreeWalker(bubble, NodeFilter.SHOW_TEXT);
+    let tailNode: Text | null = null;
+    while (walker.nextNode()) {
+      const node = walker.currentNode as Text;
+      if (node.data.includes("FINAL-PROMPT-LINE")) {
+        tailNode = node;
+        break;
+      }
+    }
+    if (!tailNode)
+      throw new Error("Final prompt line text node was not found.");
+
+    const tailStart = tailNode.data.indexOf("FINAL-PROMPT-LINE");
+    const range = document.createRange();
+    range.setStart(tailNode, tailStart);
+    range.setEnd(tailNode, tailStart + "FINAL-PROMPT-LINE".length);
+    const bubbleRect = bubble.getBoundingClientRect();
+    const tailRect = range.getBoundingClientRect();
+    return {
+      bubbleBottom: bubbleRect.bottom,
+      bubbleTop: bubbleRect.top,
+      overflowY: getComputedStyle(bubble).overflowY,
+      tailBottom: tailRect.bottom,
+      tailTop: tailRect.top,
+    };
+  });
+  expect(promptTailGeometry.overflowY).toBe("visible");
+  expect(promptTailGeometry.tailTop).toBeGreaterThanOrEqual(
+    promptTailGeometry.bubbleTop,
+  );
+  expect(promptTailGeometry.tailBottom).toBeLessThanOrEqual(
+    promptTailGeometry.bubbleBottom + 1,
+  );
   const userTimestamp = userMessage.locator("span[title]").last();
   await expect(userTimestamp).toBeVisible();
   await expect(userTimestamp).toHaveCSS("cursor", "default");

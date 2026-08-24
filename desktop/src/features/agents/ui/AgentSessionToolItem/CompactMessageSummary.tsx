@@ -55,7 +55,7 @@ export function CompactMessageSummary({
   const { openProfilePanel } = useProfilePanel();
   const isCompactPreview = variant === "compactPreview";
   const isDedicatedActivityWindow = isAgentActivityWindow();
-  const shouldClampBubble = !isCompactPreview;
+  const shouldClampBubble = !isCompactPreview && !isDedicatedActivityWindow;
   const effectiveMessageLink = isDedicatedActivityWindow ? null : messageLink;
   const [bubbleRef, hasBubbleOverflow] =
     useTranscriptBubbleOverflow(shouldClampBubble);

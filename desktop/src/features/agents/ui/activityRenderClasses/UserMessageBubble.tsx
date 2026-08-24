@@ -36,7 +36,7 @@ export function UserMessageBubble({
   const { openProfilePanel } = useProfilePanel();
   const isCompactPreview = variant === "compactPreview";
   const isDedicatedActivityWindow = isAgentActivityWindow();
-  const shouldClampBubble = !isCompactPreview;
+  const shouldClampBubble = !isCompactPreview && !isDedicatedActivityWindow;
   const [bubbleRef, hasBubbleOverflow] =
     useTranscriptBubbleOverflow(shouldClampBubble);
   const text = item.text.trim();
