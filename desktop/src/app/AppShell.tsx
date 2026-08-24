@@ -1,7 +1,11 @@
 import * as React from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Outlet, useLocation } from "@tanstack/react-router";
-import { deriveShellRoute, markAllReadSources } from "@/app/AppShell.helpers";
+import {
+  deriveShellRoute,
+  mainOwnedEffects,
+  markAllReadSources,
+} from "@/app/AppShell.helpers";
 import { useTerminalContext } from "@/app/useTerminalContext";
 import { AppShellProvider } from "@/app/AppShellContext";
 import { AppShellOverlays, TerminalBootstrap } from "@/app/AppShellOverlays";
@@ -129,6 +133,7 @@ export function AppShell() {
   const companionWindowKind = currentCompanionWindowKind();
   const isActivityWindow = companionWindowKind === "agent-activity";
   const isCompanionWindow = companionWindowKind !== null;
+  const ownedEffects = mainOwnedEffects(isCompanionWindow);
   const hasCommunityRail =
     communitiesHook.communities.length > 1 && !isCompanionWindow;
   const addCommunityDialog = useAddCommunityDialogState();
@@ -145,7 +150,10 @@ export function AppShell() {
   const mainInsetRef = React.useRef<HTMLElement>(null);
   const location = useLocation();
   const queryClient = useQueryClient();
-  useManagedAgentRuntimeReconciliation(communitiesHook.communities); // sync storage snapshot
+  useManagedAgentRuntimeReconciliation(
+    communitiesHook.communities,
+    ownedEffects.agentRuntimeReconciliation,
+  );
   const {
     goAgents,
     goChannel,
@@ -197,30 +205,13 @@ export function AppShell() {
     communitiesHook.activeCommunity?.relayUrl,
   );
   useAgentsDataRefresh();
-  // Chunk F: auto-restart drifted idle agents (per-agent opt-out, default ON).
-  useAutoRestartPolicy();
-  // Owner-global observer ingestion: receives + decrypts agent observer
-  // frames and keeps derived active-turn liveness in sync app-wide, so no
-  // individual screen/panel has to mount its own bridge for ingestion.
-  // Intentionally mounted without a `startupReady`/identity guard: before
-  // `currentPubkey` resolves the hook ingests managed agents only, and
-  // relay-owned agents join automatically once identity arrives. Adding a
-  // guard here would drop managed-agent coverage during startup.
+  useAutoRestartPolicy(ownedEffects.autoRestart);
   useAgentObserverIngestion();
-  // Kind 24200 is relay-ephemeral, so reconciliation runs eagerly (not
-  // deferred): seeds kind 24200 for fresh identities, no-ops for explicit
-  // opt-outs. Frames before the listener opens are permanently lost.
   const observerReconciled = useObserverArchiveReconciliation(
     identityQuery.data?.pubkey,
   );
-  // useArchiveSync must wait for reconciliation, or listeners could open
-  // before kind 24200 is guaranteed present in the subscription.
   useArchiveSync(observerReconciled);
-  // The archive batch now persists in Rust, so the agent-metrics invalidation
-  // signal arrives as a Tauri event rather than an in-process call.
   useArchiveAgentMetricsBridge();
-  // Kind 44200 is relay-persisted (durable) and stays deferred: missed
-  // startup frames can be replayed, so there's no ordering constraint.
   const deferredPubkey = startupReady ? identityQuery.data?.pubkey : undefined;
   useAgentMetricArchiveSeed(deferredPubkey);
   const profileQuery = useProfileQuery();
@@ -228,8 +219,13 @@ export function AppShell() {
   usePresenceSubscription();
   useUserStatusSubscription();
   useCommunityEmojiLiveUpdates();
-  useMembershipNotifications(identityQuery.data?.pubkey);
-  const presenceSession = usePresenceSession(deferredPubkey);
+  const mainOwnedPubkey = ownedEffects.membershipNotifications
+    ? identityQuery.data?.pubkey
+    : undefined;
+  useMembershipNotifications(mainOwnedPubkey);
+  const presenceSession = usePresenceSession(
+    startupReady && ownedEffects.presenceSession ? mainOwnedPubkey : undefined,
+  );
   const selfStatusQuery = useUserStatusQuery(
     deferredPubkey ? [deferredPubkey] : [],
   );
@@ -240,7 +236,7 @@ export function AppShell() {
   const channelsQuery = useChannelsQuery();
   const channels = channelsQuery.data ?? [];
   useReminderNotifications(
-    identityQuery.data?.pubkey,
+    ownedEffects.reminderNotifications ? mainOwnedPubkey : undefined,
     notificationSettings.settings,
     channels,
   );
@@ -688,7 +684,9 @@ export function AppShell() {
     open: isCompanionWindow ? undefined : settingsOpen,
   });
   useMarkAsReadShortcuts({
-    activeChannelId: activeChannel?.id ?? null,
+    activeChannelId: ownedEffects.markAsReadShortcuts
+      ? (activeChannel?.id ?? null)
+      : null,
     activeChannelLastMessageAt: activeChannel?.lastMessageAt,
     markAllChannelsRead,
     markChannelRead,
