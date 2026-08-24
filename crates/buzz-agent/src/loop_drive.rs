@@ -618,6 +618,7 @@ fn classify_provider_error(error: goose_provider_types::errors::ProviderError) -
         | ProviderError::ServerError(_)
         | ProviderError::NetworkError(_)
         | ProviderError::RequestFailed(_)
+        | ProviderError::InvalidValue(_)
         | ProviderError::ExecutionError(_)
         | ProviderError::UsageError(_)
         | ProviderError::NotImplemented(_)
@@ -725,10 +726,10 @@ mod tests {
 
     /// Compaction replaces the conversation rather than appending to it, and
     /// must clear the running token total -- that number described a
-    /// conversation that no longer exists, and carrying it forward would make
-    /// goose think the window is still nearly full and compact again.
+    /// conversation that no longer exists. The next round records its own
+    /// occupancy instead of carrying or adding the pre-compaction total.
     #[test]
-    fn compaction_replaces_the_conversation_and_resets_the_token_total() {
+    fn compaction_resets_occupancy_before_the_next_round() {
         let mut state = turn_state();
         state.push(Message::user().with_text("one"));
         state.push(Message::assistant().with_text("two"));
@@ -749,6 +750,15 @@ mod tests {
             state.session().usage.total_tokens,
             None,
             "a stale total would re-trigger compaction immediately"
+        );
+
+        // Model the following inference round: its provider-reported total is
+        // current occupancy, not a delta to add to the discarded conversation.
+        state.set_total_tokens(Some(12_000));
+        assert_eq!(
+            state.session().usage.total_tokens,
+            Some(12_000),
+            "the post-compaction round must not accumulate the old 190k total"
         );
     }
 
