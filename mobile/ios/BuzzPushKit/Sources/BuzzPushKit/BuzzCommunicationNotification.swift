@@ -113,11 +113,12 @@ public struct BuzzCommunicationNotificationDescriptor: Equatable, Sendable {
     public static func makeIntent(
       _ descriptor: BuzzCommunicationNotificationDescriptor
     ) -> INSendMessageIntent {
+      let senderAvatar = descriptor.senderAvatarPNG.map(INImage.init(imageData:))
       let sender = INPerson(
         personHandle: INPersonHandle(value: descriptor.senderIdentifier, type: .unknown),
         nameComponents: nil,
         displayName: descriptor.senderDisplayName,
-        image: descriptor.senderAvatarPNG.map(INImage.init(imageData:)),
+        image: senderAvatar,
         contactIdentifier: nil,
         customIdentifier: descriptor.senderIdentifier,
         isMe: false,
@@ -139,6 +140,13 @@ public struct BuzzCommunicationNotificationDescriptor: Equatable, Sendable {
         let donationMetadata = INSendMessageIntentDonationMetadata()
         donationMetadata.recipientCount = descriptor.recipientCount
         intent.donationMetadata = donationMetadata
+        if let senderAvatar {
+          // Communication Notifications render a group conversation's image
+          // from the speakable-group parameter rather than INPerson.image.
+          // Buzz channels do not have a separate avatar, so use the verified
+          // sender thumbnail for the visible incoming-message avatar.
+          intent.setImage(senderAvatar, forParameterNamed: \.speakableGroupName)
+        }
       }
       return intent
     }

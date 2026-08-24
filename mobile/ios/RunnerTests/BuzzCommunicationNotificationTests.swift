@@ -21,6 +21,7 @@ final class BuzzCommunicationNotificationTests: XCTestCase {
     XCTAssertEqual(intent.sender?.displayName, "Alice")
     XCTAssertEqual(intent.sender?.customIdentifier, descriptor.senderIdentifier)
     XCTAssertNotNil(intent.sender?.image)
+    XCTAssertNotNil(intent.image(forParameterNamed: \.speakableGroupName))
     XCTAssertEqual(intent.content, "Hello Buzz")
     XCTAssertEqual(intent.speakableGroupName?.spokenPhrase, "General")
     XCTAssertEqual(intent.conversationIdentifier, resolution.conversationIdentifier)
@@ -46,6 +47,7 @@ final class BuzzCommunicationNotificationTests: XCTestCase {
 
     XCTAssertEqual(intent.sender?.displayName, "Alice")
     XCTAssertNotNil(intent.sender?.image)
+    XCTAssertNil(intent.image(forParameterNamed: \.speakableGroupName))
     XCTAssertNil(intent.speakableGroupName)
     XCTAssertNil(intent.donationMetadata)
   }

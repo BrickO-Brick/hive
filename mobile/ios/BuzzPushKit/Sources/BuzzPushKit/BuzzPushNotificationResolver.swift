@@ -548,7 +548,7 @@ public final class BuzzPushNotificationResolver: BuzzPushNotificationResolving {
       ["stream", "forum"].contains(channelType),
       let displayName = channel.displayName
     else { return nil }
-    return (displayName, recipientCount)
+    return (displayName.hasPrefix("#") ? displayName : "#\(displayName)", recipientCount)
   }
 
   private static func newest(_ events: [VerifiedNostrEvent]) -> VerifiedNostrEvent? {

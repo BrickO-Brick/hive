@@ -226,7 +226,7 @@ final class BuzzPushNotificationResolverTests: XCTestCase {
 
     XCTAssertEqual(result.title, "Alice")
     XCTAssertEqual(result.senderAvatarPNG, avatar)
-    XCTAssertEqual(result.conversationDisplayName, "General")
+    XCTAssertEqual(result.conversationDisplayName, "#General")
     XCTAssertEqual(result.conversationRecipientCount, 1)
     XCTAssertEqual(URLProtocolStub.requests.count, 1)
   }
@@ -293,7 +293,7 @@ final class BuzzPushNotificationResolverTests: XCTestCase {
     )
 
     XCTAssertEqual(result.title, "Stale Alice")
-    XCTAssertEqual(result.conversationDisplayName, "Stale General")
+    XCTAssertEqual(result.conversationDisplayName, "#Stale General")
     XCTAssertEqual(result.conversationRecipientCount, 1)
     XCTAssertEqual(URLProtocolStub.requests.count, 2)
   }
@@ -376,7 +376,7 @@ final class BuzzPushNotificationResolverTests: XCTestCase {
     )
 
     XCTAssertEqual(result.title, "Newer Cached Alice")
-    XCTAssertEqual(result.conversationDisplayName, "Newer Cached General")
+    XCTAssertEqual(result.conversationDisplayName, "#Newer Cached General")
   }
 
   func testChannelOnlyRefreshIgnoresUnrequestedProfileEvent() throws {
@@ -452,7 +452,7 @@ final class BuzzPushNotificationResolverTests: XCTestCase {
     )
 
     XCTAssertEqual(result.title, "Cached Alice")
-    XCTAssertEqual(result.conversationDisplayName, "Stale General")
+    XCTAssertEqual(result.conversationDisplayName, "#Stale General")
   }
 
   func testMissingCacheRefreshesVerifiedProfileAndChannelTogether() throws {
@@ -508,7 +508,7 @@ final class BuzzPushNotificationResolverTests: XCTestCase {
     )
 
     XCTAssertEqual(result.title, "Fresh Alice")
-    XCTAssertEqual(result.conversationDisplayName, "Fresh General")
+    XCTAssertEqual(result.conversationDisplayName, "#Fresh General")
     XCTAssertEqual(result.conversationRecipientCount, 1)
     XCTAssertNil(result.senderAvatarPNG)
     XCTAssertEqual(URLProtocolStub.requests.count, 2)

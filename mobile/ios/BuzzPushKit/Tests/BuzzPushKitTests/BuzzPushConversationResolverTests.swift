@@ -47,7 +47,7 @@ extension BuzzPushNotificationResolverTests {
       )
     )
 
-    XCTAssertEqual(result.conversationDisplayName, "General")
+    XCTAssertEqual(result.conversationDisplayName, "#General")
     XCTAssertEqual(result.conversationRecipientCount, 2)
   }
 
@@ -160,7 +160,7 @@ extension BuzzPushNotificationResolverTests {
       )
     )
 
-    XCTAssertEqual(result.conversationDisplayName, "General")
+    XCTAssertEqual(result.conversationDisplayName, "#General")
     XCTAssertEqual(result.conversationRecipientCount, 1)
     XCTAssertEqual(URLProtocolStub.requests.count, 2)
   }
