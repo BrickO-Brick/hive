@@ -31,12 +31,27 @@ export function companionCommunityIdForHash(hash: string): string | null {
   return new URLSearchParams(hash.slice(query + 1)).get("community");
 }
 
-/** Immutable community selected by a native companion's bootstrap URL. */
-export function companionCommunityId(
-  hash: string = typeof window === "undefined" ? "" : window.location.hash,
-): string | null | undefined {
-  if (currentCompanionWindowKind() === null) return undefined;
-  return companionCommunityIdForHash(hash);
+export type CompanionCommunityBootstrap = {
+  initialActiveCommunityId: string | undefined;
+  missingRequiredCommunity: boolean;
+};
+
+/** Agent activity windows pin their origin community; huddles use normal selection. */
+export function companionCommunityBootstrap(
+  companionKind: CompanionWindowKind | null,
+  hash: string,
+): CompanionCommunityBootstrap {
+  if (companionKind !== "agent-activity") {
+    return {
+      initialActiveCommunityId: undefined,
+      missingRequiredCommunity: false,
+    };
+  }
+  const communityId = companionCommunityIdForHash(hash);
+  return {
+    initialActiveCommunityId: communityId ?? undefined,
+    missingRequiredCommunity: communityId === null,
+  };
 }
 
 /** Whether this realm owns the native pending deep-link queue. */

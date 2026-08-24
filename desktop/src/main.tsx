@@ -13,7 +13,11 @@ import { UpdaterProvider } from "@/features/settings/hooks/UpdaterProvider";
 import { migrateLegacyCommunityStorageBeforeRender } from "@/features/communities/legacyCommunityStorage";
 import { loadCommunities } from "@/features/communities/communityStorage";
 import { CommunitiesProvider } from "@/features/communities/useCommunities";
-import { companionCommunityId, isCompanionWindow } from "@/app/companionWindow";
+import {
+  companionCommunityBootstrap,
+  currentCompanionWindowKind,
+  isCompanionWindow,
+} from "@/app/companionWindow";
 import { CommunityOnboardingProvider } from "@/features/onboarding/communityOnboarding";
 import { ThemeProvider } from "@/shared/theme/ThemeProvider";
 import { EmojiBurstProvider } from "@/shared/ui/EmojiBurstProvider";
@@ -99,17 +103,22 @@ function renderCompanionBootstrapError(message: string) {
 }
 
 function renderApp() {
-  const companion = isCompanionWindow();
-  const companionCommunity = companionCommunityId();
-  if (companion && !companionCommunity) {
+  const companionKind = currentCompanionWindowKind();
+  const companionCommunity = companionCommunityBootstrap(
+    companionKind,
+    window.location.hash,
+  );
+  if (companionCommunity.missingRequiredCommunity) {
     renderCompanionBootstrapError(
       "This window is missing its community context. Close it and try again.",
     );
     return;
   }
   if (
-    companionCommunity &&
-    !loadCommunities().some(({ id }) => id === companionCommunity)
+    companionCommunity.initialActiveCommunityId &&
+    !loadCommunities().some(
+      ({ id }) => id === companionCommunity.initialActiveCommunityId,
+    )
   ) {
     renderCompanionBootstrapError(
       "This community is no longer available. Close this window and open activity again from Buzz.",
@@ -122,7 +131,9 @@ function renderApp() {
       {/* block/buzz#5078 — catch any uncaught render error so a WebKit
           SecurityError from localStorage can't blank the whole window. */}
       <RootErrorBoundary>
-        <CommunitiesProvider initialActiveCommunityId={companionCommunity}>
+        <CommunitiesProvider
+          initialActiveCommunityId={companionCommunity.initialActiveCommunityId}
+        >
           <CommunityOnboardingProvider enabled={!isCompanionWindow()}>
             <ThemeProvider defaultTheme="buzz">
               <TooltipProvider>

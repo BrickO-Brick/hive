@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 
 import {
   acceptsNativeDeepLinks,
+  companionCommunityBootstrap,
   companionCommunityIdForHash,
   companionWindowKindForLabel,
 } from "./companionWindow.ts";
@@ -27,6 +28,35 @@ describe("acceptsNativeDeepLinks", () => {
     assert.equal(acceptsNativeDeepLinks(null), true);
     assert.equal(acceptsNativeDeepLinks("huddle"), false);
     assert.equal(acceptsNativeDeepLinks("agent-activity"), false);
+  });
+});
+
+describe("companionCommunityBootstrap", () => {
+  it("lets huddle companions boot through normal community selection", () => {
+    assert.deepEqual(companionCommunityBootstrap("huddle", ""), {
+      initialActiveCommunityId: undefined,
+      missingRequiredCommunity: false,
+    });
+  });
+
+  it("rejects agent activity companions without community context", () => {
+    assert.deepEqual(companionCommunityBootstrap("agent-activity", ""), {
+      initialActiveCommunityId: undefined,
+      missingRequiredCommunity: true,
+    });
+  });
+
+  it("pins agent activity companions to their encoded community", () => {
+    assert.deepEqual(
+      companionCommunityBootstrap(
+        "agent-activity",
+        "#/channels/channel?community=community-one",
+      ),
+      {
+        initialActiveCommunityId: "community-one",
+        missingRequiredCommunity: false,
+      },
+    );
   });
 });
 
