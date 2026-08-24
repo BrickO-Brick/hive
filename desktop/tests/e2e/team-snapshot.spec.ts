@@ -49,6 +49,22 @@ const ANALYST_PERSONA_ID = "test-analyst";
 const ANALYST_PUBKEY =
   "953d3363262e86b770419834c53d2446409db6d918a57f8f339d495d54ab001f";
 
+// The share tests use this team. The team has one member.
+//
+// You cannot share a team that has no members. A team snapshot must have one
+// member or more, and the Share item is disabled for a team that has no
+// members. The default mock team "Engineering" has no members. Therefore each
+// share test seeds this team, and the team holds the seeded Analyst persona.
+// The name must be different from "Engineering". If the names are the same, a
+// locator finds two teams and the test stops.
+const SHARE_TEAM_NAME = "Delivery Crew";
+const SHARE_TEAM_SEED = {
+  id: "team-share-001",
+  name: SHARE_TEAM_NAME,
+  description: "Team for the share tests",
+  personaIds: [ANALYST_PERSONA_ID],
+};
+
 // ── (a) Confirm-fail + retry ────────────────────────────────────────────────
 
 test("team_snapshot_import_confirm_fail_renders_error_and_retry_succeeds", async ({
@@ -251,16 +267,17 @@ test("team sharing uses the people picker and gates memory before sending", asyn
         displayName: "Charlie",
       },
     ],
+    teams: [SHARE_TEAM_SEED],
     uploadDescriptors: [MOCK_UPLOAD_DESCRIPTOR],
   });
   await gotoAgentsPage(page);
 
-  await page.getByLabel("Engineering team actions").click();
+  await page.getByLabel(`${SHARE_TEAM_NAME} team actions`).click();
   await page.getByRole("menuitem", { name: "Share" }).click();
   const shareDialog = page.getByTestId("team-share-dialog");
   await expect(shareDialog).toBeVisible();
   await expect(
-    shareDialog.getByRole("heading", { name: "Share Engineering" }),
+    shareDialog.getByRole("heading", { name: `Share ${SHARE_TEAM_NAME}` }),
   ).toBeVisible();
 
   const search = shareDialog.getByTestId("team-share-recipient-search");
@@ -289,9 +306,11 @@ test("team sharing uses the people picker and gates memory before sending", asyn
   expect(encodeLevelsBeforeConfirmation).toEqual([]);
 
   await memoryConfirmation.getByTestId("team-share-memory-confirm").click();
-  await expect(page.getByText("Sent a copy of Engineering")).toBeVisible({
-    timeout: 8_000,
-  });
+  await expect(page.getByText(`Sent a copy of ${SHARE_TEAM_NAME}`)).toBeVisible(
+    {
+      timeout: 8_000,
+    },
+  );
 
   const log = await readCommandLog(page);
   expect(
@@ -307,7 +326,7 @@ test("team sharing uses the people picker and gates memory before sending", asyn
   );
   expect(sendEntry).toBeTruthy();
   const sendPayload = sendEntry?.payload as { content?: string } | undefined;
-  expect(sendPayload?.content).toContain("[Engineering](");
+  expect(sendPayload?.content).toContain(`[${SHARE_TEAM_NAME}](`);
   expect(sendPayload?.content).not.toContain("![image](");
 });
 
@@ -332,11 +351,12 @@ test("team share level carries memories onto the link path too", async ({
       },
     ],
     agentMemory: createMockAgentMemoryListing(),
+    teams: [SHARE_TEAM_SEED],
     uploadDescriptors: [MOCK_UPLOAD_DESCRIPTOR],
   });
   await gotoAgentsPage(page);
 
-  await page.getByLabel("Engineering team actions").click();
+  await page.getByLabel(`${SHARE_TEAM_NAME} team actions`).click();
   await page.getByRole("menuitem", { name: "Share" }).click();
   const shareDialog = page.getByTestId("team-share-dialog");
   await expect(shareDialog).toBeVisible();
@@ -397,12 +417,13 @@ test("team sharing keeps link copy and export in the shared surface", async ({
         personaId: ANALYST_PERSONA_ID,
       },
     ],
+    teams: [SHARE_TEAM_SEED],
     uploadDescriptors: [MOCK_UPLOAD_DESCRIPTOR],
     uploadDelayMs: 800,
   });
   await gotoAgentsPage(page);
 
-  await page.getByLabel("Engineering team actions").click();
+  await page.getByLabel(`${SHARE_TEAM_NAME} team actions`).click();
   const menu = page.getByRole("menu");
   await expect(
     menu.getByRole("menuitem", { name: "Export snapshot" }),
@@ -508,24 +529,24 @@ test("team sharing keeps link copy and export in the shared surface", async ({
 
   const composerTeamCard = page.getByTestId("composer-team-snapshot-card");
   await expect(composerTeamCard).toBeVisible();
-  await expect(composerTeamCard).toContainText("Engineering");
+  await expect(composerTeamCard).toContainText(SHARE_TEAM_NAME);
   await expect(composerTeamCard.locator("img")).toHaveCount(0);
   await page.getByTestId("send-message").click();
 
   const sentTeamCard = page.getByTestId("agent-snapshot-card").last();
   await expect(sentTeamCard).toBeVisible();
-  await expect(sentTeamCard).toContainText("Engineering");
+  await expect(sentTeamCard).toContainText(SHARE_TEAM_NAME);
   await expect(sentTeamCard).toContainText("Add team");
   await expect(sentTeamCard.locator("img")).toHaveCount(0);
 
   await page.getByTestId("open-agents-view").click();
-  await page.getByLabel("Engineering team actions").click();
+  await page.getByLabel(`${SHARE_TEAM_NAME} team actions`).click();
   await page.getByRole("menuitem", { name: "Share" }).click();
   await page.getByTestId("team-share-export").click();
   const exportDialog = page.getByTestId("team-snapshot-export-dialog");
   await expect(exportDialog).toBeVisible();
   await expect(
-    exportDialog.getByRole("heading", { name: "Export Engineering" }),
+    exportDialog.getByRole("heading", { name: `Export ${SHARE_TEAM_NAME}` }),
   ).toBeVisible();
   await expect(
     exportDialog.getByTestId("team-snapshot-memory-trigger"),

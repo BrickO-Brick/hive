@@ -31,7 +31,7 @@ export function TeamDeleteDialog({
           <AlertDialogTitle>Delete team?</AlertDialogTitle>
           <AlertDialogDescription>
             {team
-              ? `Delete "${team.name}". This removes the team template only — deployed agents are left in place, but deletion is blocked while any of them still reference this team.`
+              ? `Delete "${team.name}". This deletes the team template only. Deployed agents stay in place. You cannot delete the team while an agent is still a member of it.`
               : "Delete this team."}
           </AlertDialogDescription>
         </AlertDialogHeader>

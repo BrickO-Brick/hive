@@ -9,19 +9,23 @@ export function copySelectedPersonaIds(personaIds: string[]): string[] {
 }
 
 /**
- * Whether the team dialog's submit button should be enabled.
+ * Tells you if the submit button in the team dialog is enabled.
  *
- * A team name is required; an **empty roster is deliberately allowed**. Emptying
- * a team is the only way out of the delete deadlock — `delete_team` refuses
- * while agents still reference the team, and agent deletion refuses because the
- * agent belongs to a team. "Remove every member, then delete the team" is the
- * escape hatch, so the editor must be able to save a zero-member team. The Rust
- * side already supports it (`update_team` has no minimum-member check and
- * `apply_team_membership_delta` detaches the removed members' instances); the
- * min-1 rule that remains applies to snapshot *import* only.
+ * The team must have a name. The team does not need a member. An empty roster
+ * is correct.
  *
- * Extracted as a pure function so the "empty roster is submittable" contract is
- * covered by a test rather than living in a JSX `disabled` expression.
+ * An empty roster is necessary. It is the only way to delete a team. The
+ * `delete_team` command stops if an agent points to the team. The agent delete
+ * command stops if the agent is in a team. Thus you must first remove all the
+ * members from the team. Then you can delete the team.
+ *
+ * The Rust code permits a team that has no members. The `update_team` command
+ * does not count the members. The `apply_team_membership_delta` function clears
+ * the `team_id` field of each member that you remove. Only the import of a
+ * snapshot needs one member or more.
+ *
+ * This is a separate function because a test can then read the rule. Before,
+ * the rule was in a JSX `disabled` expression, where a test cannot read it.
  */
 export function canSubmitTeamDialog({
   name,

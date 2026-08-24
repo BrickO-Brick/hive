@@ -94,13 +94,18 @@ export function TeamsSection({
             const missingPersonaCount = resolution.missingPersonaCount;
             const hasMissingPersonas = resolution.hasMissingPersonas;
             const isEmptyTeam = team.personaIds.length === 0;
-            // Deploy/Duplicate/Share need a roster that fully resolves to real
-            // agents. `isUsable` covers both failure modes: a member that is no
-            // longer in My Agents, and a deliberately emptied team. Sharing an
-            // empty team would mint a snapshot that its own importer rejects
-            // ("Team snapshot must have at least one member"), so gate it here.
-            // Edit and Delete stay enabled — emptying a team then deleting it is
-            // the intended way out of the team/agent delete deadlock.
+            // The Deploy, Duplicate and Share items need a roster that has
+            // members, and each member must be a known agent. The `isUsable`
+            // flag shows both conditions. It is false if a member is not in My
+            // Agents. It is also false if the team has no members.
+            //
+            // You must not share a team that has no members. The snapshot then
+            // has no members, and the import of that snapshot fails with the
+            // message "Team snapshot must have at least one member".
+            //
+            // The Edit and Delete items stay enabled. You use these two items
+            // to delete a team: first remove all the members, then delete the
+            // team.
             const canUseRoster = resolution.isUsable;
 
             return (

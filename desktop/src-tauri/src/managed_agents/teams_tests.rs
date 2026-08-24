@@ -263,14 +263,18 @@ fn agents_referencing_team_empty_when_no_matches() {
     assert!(agents_referencing_team(&agents, &t).is_empty());
 }
 
-/// The escape hatch from the team/agent delete deadlock, asserted end to end at
-/// this layer: `delete_team_with_cascade` refuses while any agent references the
-/// team, and `validate_persona_deletion` refuses to delete a team's agent — so
-/// the only non-circular sequence is "empty the team's roster, then delete the
-/// team". Emptying the roster clears `team_id` on the members' instances (see
-/// `apply_team_membership_delta` in `commands::teams`), and once it is cleared
-/// this guard must report zero referencing agents. If it still matched, the team
-/// would stay permanently undeletable and the deadlock would be back.
+/// A detached agent must not prevent the deletion of a team.
+///
+/// You cannot delete a team and its agents in one step. The
+/// `delete_team_with_cascade` function stops if an agent points to the team.
+/// The `validate_persona_deletion` function stops if the agent is in a team.
+/// Thus only one sequence is possible: first remove all the members from the
+/// team, then delete the team.
+///
+/// When you remove a member, the `apply_team_membership_delta` function in
+/// `commands::teams` clears the `team_id` field of that member. This test makes
+/// sure that the guard then finds no agents. If the guard still found the
+/// agent, you could not delete the team.
 #[test]
 fn detached_agents_no_longer_reference_the_team() {
     let t = team("json-team-3", "Emptied Team");

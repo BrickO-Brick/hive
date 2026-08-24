@@ -2709,12 +2709,12 @@ test("duplicate instances move from the agents gallery into the agent profile", 
   ).toHaveCount(0);
 });
 
-// Regression for the team-deletion deadlock: `delete_team` refuses while agents
-// still reference the team, and deleting a team's agent refuses because it
-// belongs to a team. The only non-circular way out is to empty the roster and
-// then delete the team — which the editor used to forbid, because the submit
-// button also required at least one selected member. This walks the full user
-// sequence: edit → deselect every member → save → delete.
+// This test shows the correction of a defect. You could not delete a team. The
+// `delete_team` command stops if an agent points to the team. The agent delete
+// command stops if the agent is in a team. Thus you must first remove all the
+// members from the team, then delete the team. But the editor did not permit
+// this, because the submit button needed one member or more. This test does the
+// full sequence: edit the team, remove each member, save, then delete.
 test("a team can be emptied and then deleted", async ({ page }) => {
   await installMockBridge(page, {
     personas: [
@@ -2751,15 +2751,16 @@ test("a team can be emptied and then deleted", async ({ page }) => {
   await roster.getByRole("option", { name: /Deadlock A/ }).click();
   await roster.getByRole("option", { name: /Deadlock B/ }).click();
 
-  // The regression: with no members selected, save must still be enabled.
+  // This is the corrected behavior. No member is selected, and the save
+  // button must be enabled.
   const save = page.getByRole("button", { name: "Save changes" });
   await expect(save).toBeEnabled();
   await save.click();
 
-  // Removing members prompts about the underlying agents; keep them.
+  // The app asks what to do with the agents of the removed members. Keep them.
   await page.getByRole("button", { name: "Keep agents" }).click();
 
-  // The team survives with an empty roster and says so.
+  // The team is still present, it has no members, and the card shows this.
   await expect(teamCard).toContainText("This team has no agents");
   const teams = await invokeTauri<Array<{ id: string; persona_ids: string[] }>>(
     page,
@@ -2769,7 +2770,7 @@ test("a team can be emptied and then deleted", async ({ page }) => {
     teams.find((team) => team.id === "team-deadlock")?.persona_ids,
   ).toEqual([]);
 
-  // With nothing referencing it, the team is now deletable — the deadlock is gone.
+  // No agent points to the team now. Thus you can delete the team.
   await page.getByLabel("Deadlock Team team actions").click();
   await page.getByRole("menuitem", { name: "Delete" }).click();
   await page
