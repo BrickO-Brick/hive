@@ -152,6 +152,8 @@ test("every script root governs .mjs alongside .ts and .tsx", () => {
 // Runs the real desktop rule table against a throwaway repository in a child
 // process. A child keeps `process.exitCode` and `console.error` out of this
 // test's own process, where a leaked exit code would mark the whole file failed.
+const COMPLETION_SENTINEL = "__file_size_gate_completed__";
+
 function runDesktopGate({ fixtureRoot, baseRef }) {
   const result = spawnSync(
     process.execPath,
@@ -166,6 +168,9 @@ function runDesktopGate({ fixtureRoot, baseRef }) {
         rules,
         label: "Desktop",
       });
+      // Printed only if the awaited call returned normally. On stdout so it
+      // cannot be confused with any part of the violation report.
+      process.stdout.write(${JSON.stringify(COMPLETION_SENTINEL)});
       `,
     ],
     {
@@ -181,15 +186,20 @@ function runDesktopGate({ fixtureRoot, baseRef }) {
     },
   );
   // Node exits 1 for an uncaught exception too, so status alone cannot tell a
-  // ratchet violation from a crash. The runner's only output is its violation
-  // report, so a failing status must carry that report to count as a real
-  // violation; anything else is the harness breaking, not the gate deciding.
+  // ratchet violation from a crash. Split the two questions: the sentinel proves
+  // the gate ran to completion, and only then does the exit status mean a policy
+  // decision. Asserting on the report heading alone would accept a child that
+  // started printing violations and then crashed part-way through.
+  assert.ok(
+    result.stdout.includes(COMPLETION_SENTINEL),
+    `the ratchet child did not run to completion (exit ${result.status}, signal ${result.signal}), so it crashed rather than gated:\n${result.stderr}`,
+  );
   const failed = result.status === 1;
   if (failed) {
     assert.match(
       result.stderr,
       /file size ratchet failed \(base /,
-      `the ratchet child exited 1 without reporting a violation, so it crashed rather than gated:\n${result.stderr}`,
+      `the ratchet child exited 1 without reporting a violation:\n${result.stderr}`,
     );
   } else {
     assert.equal(
