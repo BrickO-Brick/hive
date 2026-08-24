@@ -104,13 +104,28 @@ function MessageItem({
             className="mb-0.5 flex items-center gap-1 text-xs"
             data-testid="transcript-assistant-identity"
           >
-            {/* `size="xs"` is already 20px (`h-5 w-5`) in UserAvatar. */}
-            <UserAvatar
-              avatarUrl={resolvedAgentAvatarUrl}
-              className="shrink-0"
-              displayName={resolvedAgentName}
-              size="xs"
-            />
+            {/*
+             * The avatar is decorative here: `UserAvatar` exposes either an
+             * image named `${displayName} avatar` or its fallback initials, and
+             * the agent's name already follows as visible text, so an
+             * unhidden avatar makes a screen reader announce the same identity
+             * twice for every agent turn. The visible name is the row's single
+             * accessible identity. Hidden at this call site rather than by
+             * teaching the shared `UserAvatar` a decorative mode: other rows
+             * that pair an avatar with adjacent name text (for example
+             * `ForumPostCard.tsx:91-99`) have the same shape and would want the
+             * same treatment, but changing the shared component's accessible
+             * name affects all 45 of its call sites and is not this PR's scope.
+             *
+             * `size="xs"` is already 20px (`h-5 w-5`) in UserAvatar.
+             */}
+            <span aria-hidden="true" className="flex shrink-0">
+              <UserAvatar
+                avatarUrl={resolvedAgentAvatarUrl}
+                displayName={resolvedAgentName}
+                size="xs"
+              />
+            </span>
             <span className="min-w-0 truncate font-normal text-foreground">
               {resolvedAgentName}
             </span>
