@@ -811,7 +811,7 @@ mod integration_tests {
 
     #[tokio::test]
     #[ignore = "requires Postgres"]
-    async fn workflow_send_message_p_tags_mentioned_member() {
+    async fn workflow_send_message_persists_and_claims_managed_agent_delivery() {
         let state = test_state().await;
 
         let author = nostr::Keys::generate();
@@ -869,6 +869,57 @@ mod integration_tests {
             .await
             .expect("add agent member");
 
+        let database_url = std::env::var("BUZZ_TEST_DATABASE_URL")
+            .or_else(|_| std::env::var("DATABASE_URL"))
+            .expect("Postgres test URL");
+        let pool = sqlx::PgPool::connect(&database_url)
+            .await
+            .expect("connect to test DB");
+        sqlx::query(
+            "UPDATE users SET agent_type = 'managed' WHERE community_id = $1 AND pubkey = $2",
+        )
+        .bind(community.as_uuid())
+        .bind(&agent_bytes)
+        .execute(&pool)
+        .await
+        .expect("mark user as managed agent");
+        state
+            .db
+            .ensure_user(community, &author.public_key().to_bytes())
+            .await
+            .expect("ensure workflow owner user row");
+        state
+            .db
+            .set_agent_owner(community, &agent_bytes, &author.public_key().to_bytes())
+            .await
+            .expect("set managed-agent owner");
+        let definition_event_id = [0x42; 32];
+        let workflow_id = state
+            .db
+            .create_workflow(
+                community,
+                Some(channel.id),
+                &author.public_key().to_bytes(),
+                "delivery-test",
+                r#"{"trigger":{"on":"manual"},"steps":[]}"#,
+                &definition_event_id,
+            )
+            .await
+            .expect("create workflow");
+        let run_id = state
+            .db
+            .create_workflow_run(community, workflow_id, None, None)
+            .await
+            .expect("create workflow run");
+        let context = WorkflowMessageContext {
+            workflow_id,
+            run_id,
+            definition_event_id: hex::encode(definition_event_id),
+            step_id: "notify".to_string(),
+            execution_trace: serde_json::json!([{"step":"notify"}]),
+            trigger_context: Some(serde_json::json!({"source":"manual"})),
+        };
+
         let sink = RelayActionSink::new(&state);
         let event_id_hex = sink
             .send_message(
@@ -876,7 +927,7 @@ mod integration_tests {
                 &channel.id.to_string(),
                 "heads up @Robby — please take a look",
                 &author_hex,
-                &message_context(),
+                &context,
                 None,
             )
             .await
@@ -908,6 +959,47 @@ mod integration_tests {
         assert!(
             p_tag_targets.contains(&agent_hex.as_str()),
             "mentioned member {agent_hex} must be p-tagged so it wakes; got {p_tag_targets:?}"
+        );
+
+        let delivery = state
+            .db
+            .claim_workflow_agent_delivery(
+                community,
+                &agent_bytes,
+                None,
+                Some(&buzz_db::workflow::WorkflowAgentDeliveryBinding {
+                    run_id,
+                    step_id: "notify".to_string(),
+                    definition_event_id: definition_event_id.to_vec(),
+                    message_event_id: id_bytes.clone(),
+                    channel_id: channel.id,
+                }),
+            )
+            .await
+            .expect("claim delivery")
+            .expect("managed-agent delivery persisted");
+        assert_eq!(delivery.workflow_id, workflow_id);
+        assert_eq!(delivery.run_id, run_id);
+        assert_eq!(delivery.definition_event_id, definition_event_id);
+        assert_eq!(delivery.message_event_id, id_bytes);
+        assert_eq!(delivery.target_pubkey, agent_bytes);
+        assert_eq!(delivery.execution_trace, context.execution_trace);
+        assert_eq!(delivery.trigger_context, context.trigger_context);
+        assert!(delivery.claim_token.is_some());
+
+        assert!(
+            state
+                .db
+                .claim_workflow_agent_delivery(
+                    community,
+                    &delivery.target_pubkey,
+                    Some(delivery.id),
+                    None
+                )
+                .await
+                .expect("repeat claim")
+                .is_none(),
+            "one durable delivery can only be claimed once"
         );
     }
 
