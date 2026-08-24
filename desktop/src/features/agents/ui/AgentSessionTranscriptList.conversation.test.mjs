@@ -130,6 +130,8 @@ let createRootRoute;
 let createRouter;
 let RouterProvider;
 let AgentSessionTranscriptList;
+let ThemeProvider;
+let TooltipProvider;
 let resetActiveAgentTurnsStore;
 let syncAgentTurnsFromEvents;
 
@@ -380,6 +382,60 @@ async function renderTranscript(variant, overrides = {}) {
 }
 
 /**
+ * Same mount, wrapped in the providers a fenced code block needs.
+ *
+ * `MarkdownCodeBlock` reaches for the theme (shiki highlighting) and a Radix
+ * tooltip provider for its copy action, so a transcript containing a fenced
+ * block throws without them. Kept as a separate helper rather than folded into
+ * `renderTranscript` so the byte-for-byte fixture keeps rendering through the
+ * exact tree it was captured with.
+ */
+async function renderTranscriptWithCodeChrome(variant, overrides = {}) {
+  const rootRoute = createRootRoute({
+    component: () =>
+      createElement(
+        ThemeProvider,
+        null,
+        createElement(
+          TooltipProvider,
+          null,
+          createElement(AgentSessionTranscriptList, {
+            ...AGENT,
+            emptyDescription: "nothing yet",
+            items: items(),
+            variant,
+            ...overrides,
+          }),
+        ),
+      ),
+  });
+  const router = createRouter({
+    history: createMemoryHistory({ initialEntries: ["/"] }),
+    routeTree: rootRoute,
+  });
+  await router.load();
+  return render(createElement(RouterProvider, { router }));
+}
+
+/** One assistant turn whose body is a fenced code block. */
+function fencedCodeItems() {
+  return [
+    {
+      channelId: "chan-1",
+      sessionId: "sess-1",
+      turnId: "turn-1",
+      id: "msg:assistant",
+      type: "message",
+      renderClass: "message",
+      role: "assistant",
+      title: "Test Agent",
+      text: "before\n\n```ts\nconst a = 1;\nconst b = 2;\n```\n",
+      timestamp: "2026-06-14T19:00:09.000Z",
+    },
+  ];
+}
+
+/**
  * Same mount, but the caller can swap the list props afterwards. Needed for the
  * contracts that are only visible across a rerender: a streaming thought
  * folding once the turn moves on, and a plan mutating in place.
@@ -425,6 +481,8 @@ before(async () => {
   ({ resetActiveAgentTurnsStore, syncAgentTurnsFromEvents } = await import(
     "../activeAgentTurnsStore.ts"
   ));
+  ({ ThemeProvider } = await import("@/shared/theme/ThemeProvider.tsx"));
+  ({ TooltipProvider } = await import("@/shared/ui/tooltip.tsx"));
 });
 
 afterEach(() => {
@@ -456,10 +514,151 @@ test("conversation renders the prompt as a filled right-aligned bubble with an a
     '[data-testid="transcript-user-message"]',
   );
   assert.match(row.className, /justify-end/);
-  const bubble = row.querySelector(".rounded-2xl");
+  // berd's user-turn recipe: soft tint, no border, `px-4 py-2`, and a 12px
+  // radius (berd's `rounded-sm` on its own scale = Buzz's `rounded-xl`).
+  const bubble = row.querySelector(".rounded-xl");
+  assert.ok(bubble, "the prompt bubble should take berd's 12px radius");
   assert.match(bubble.className, /bg-muted\/60/);
+  assert.match(bubble.className, /px-4/);
+  assert.match(bubble.className, /py-2(?!\.)/);
+  assert.match(
+    bubble.className,
+    /border-0/,
+    "berd never draws a border on the user turn",
+  );
+  assert.doesNotMatch(
+    bubble.className,
+    /rounded-2xl/,
+    "the old 16px pill radius should be gone",
+  );
   // Focus mode shows the whole prompt rather than clamping it.
   assert.doesNotMatch(bubble.className, /max-h-36/);
+});
+
+test("conversation caps the prompt bubble at a fixed measure, not a percentage", async () => {
+  // berd caps the user turn with `--chat-user-message-max-width: 640px`. A
+  // percentage cap re-wraps the prompt every time the cover view is resized;
+  // a fixed measure holds one stable line length, which is the point of the
+  // recipe. Guards against a silent revert to `max-w-[85%]`.
+  const { container } = await renderTranscript("conversation");
+  const column = container.querySelector(
+    '[data-testid="transcript-user-message-author"]',
+  ).parentElement;
+  assert.match(column.className, /max-w-prompt-bubble/);
+  assert.doesNotMatch(column.className, /max-w-\[\d+%\]/);
+});
+
+test("conversation labels the agent turn with a berd-style identity row", async () => {
+  // The single biggest divergence from berd was that agent prose carried no
+  // attribution at all. berd puts a 20px round avatar + the agent name at
+  // `text-xs` above every reply (MessageBubble.tsx:961-981).
+  const { container } = await renderTranscript("conversation");
+  const identity = container.querySelector(
+    '[data-testid="transcript-assistant-identity"]',
+  );
+  assert.ok(identity, "conversation should label the agent turn");
+  assert.match(identity.textContent, /Test Agent/);
+  assert.match(identity.className, /text-xs/);
+  assert.match(identity.className, /gap-1(?!\d)/);
+  // 20px avatar, berd's size (UserAvatar `size="xs"` → `h-5 w-5`).
+  assert.ok(
+    identity.querySelector(".h-5.w-5"),
+    "identity row should carry a 20px avatar",
+  );
+  // The prose itself stays unboxed and full-width.
+  const message = container.querySelector(
+    '[data-testid="transcript-assistant-message"]',
+  );
+  assert.doesNotMatch(message.innerHTML, /rounded-2xl/);
+});
+
+test("conversation frames fenced code with berd's header row", async () => {
+  // berd puts the language in a real header row above the frame, with the copy
+  // action opposite it (`code-block.tsx` CodeBlockHeader:388-402), and the code
+  // itself in a 10px-radius, page-background, borderless-shadow frame
+  // (:528-529). Buzz's `rounded-lg` (`--radius: 0.625rem`) is exactly berd's
+  // `rounded-[0.625rem]`.
+  const { container } = await renderTranscriptWithCodeChrome("conversation", {
+    items: fencedCodeItems(),
+  });
+  const header = container.querySelector(
+    '[data-testid="markdown-code-block-header"]',
+  );
+  assert.ok(header, "focus mode should render a code-block header row");
+  // Language sits in the header, not inside the frame.
+  assert.match(header.textContent, /^ts/);
+  assert.match(header.className, /justify-between/);
+  assert.match(header.className, /items-end/);
+  assert.match(header.className, /min-h-7/);
+  assert.ok(
+    header.querySelector('[aria-label="Copy code block"]'),
+    "the copy action is a flow sibling of the language label",
+  );
+
+  const frame = container.querySelector("pre");
+  assert.ok(frame, "the code frame should render");
+  assert.match(frame.className, /rounded-lg/);
+  assert.match(frame.className, /bg-background/);
+  assert.match(frame.className, /border-border\/80/);
+  assert.doesNotMatch(
+    frame.className,
+    /shadow/,
+    "berd's code frame carries no shadow",
+  );
+  // Guards against the default recipe leaking in: it uses a 16px radius, a
+  // muted fill, `pr-12` to clear an absolutely-positioned copy button, and an
+  // inline `borderRadius` style.
+  assert.doesNotMatch(frame.className, /rounded-2xl/);
+  assert.doesNotMatch(frame.className, /bg-muted/);
+  assert.doesNotMatch(frame.className, /pr-12/);
+  assert.equal(frame.style.borderRadius, "");
+  // Line numbers come from `.code-block-lines [data-line]` in markdown.css, so
+  // the frame only has to keep emitting per-line elements under that class.
+  const code = frame.querySelector("code.code-block-lines");
+  assert.ok(code, "the code element keeps the line-number class");
+  assert.equal(code.querySelectorAll("[data-line]").length, 2);
+});
+
+test("channel-message code blocks are untouched by the focus recipe", async () => {
+  // The markdown renderer is shared with channel messages, so `focusProse` is
+  // opt-in per surface. Rendering the same fenced block through `default` must
+  // still produce the original chrome: no header row, 16px radius, muted fill,
+  // and the absolutely-positioned copy button.
+  const { container } = await renderTranscriptWithCodeChrome("default", {
+    items: fencedCodeItems(),
+  });
+  // `assert.ok(x === null)` rather than `assert.equal(x, null)`: on failure the
+  // latter serializes the whole matched jsdom element (and its ancestors) to
+  // build a diff, which exhausts memory instead of printing the message.
+  assert.ok(
+    container.querySelector('[data-testid="markdown-code-block-header"]') ===
+      null,
+    "the default recipe has no header row",
+  );
+  const frame = container.querySelector("pre");
+  assert.match(frame.className, /rounded-2xl/);
+  assert.match(frame.className, /bg-muted\/60/);
+  assert.match(frame.className, /pr-12/);
+  assert.match(frame.className, /shadow-xs/);
+  const copy = container.querySelector('[aria-label="Copy code block"]');
+  assert.ok(copy, "the default copy button still renders");
+  assert.match(copy.className, /absolute/);
+});
+
+test("the identity row is conversation-only", async () => {
+  // `default`/`compactPreview` markup is pinned byte-for-byte, so the identity
+  // row must not leak into them. The fixture comparison would catch this too;
+  // this asserts it directly so the failure names the cause.
+  for (const variant of ["default", "compactPreview"]) {
+    const { container } = await renderTranscript(variant);
+    assert.ok(
+      container.querySelector(
+        '[data-testid="transcript-assistant-identity"]',
+      ) === null,
+      `${variant} must not render the identity row`,
+    );
+    cleanup();
+  }
 });
 
 test("conversation never shows the trigger title as the prompt author when the sender is unresolved", async () => {

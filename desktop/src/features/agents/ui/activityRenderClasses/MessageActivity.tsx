@@ -1,5 +1,7 @@
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import { Markdown } from "@/shared/ui/markdown";
+import { CodeBlockVariantContext } from "@/shared/ui/markdown/CodeBlock";
+import { UserAvatar } from "@/shared/ui/UserAvatar";
 import { useAgentSessionTranscriptVariant } from "../agentSessionTranscriptContext";
 import { formatTranscriptTimestampTitle } from "../agentSessionUtils";
 import type { TranscriptItem } from "../agentSessionTypes";
@@ -16,13 +18,24 @@ export function MessageActivity(props: ActivityRenderClassItemProps) {
     return null;
   }
 
-  return <MessageItem item={props.item} profiles={props.profiles} />;
+  return (
+    <MessageItem
+      agentAvatarUrl={props.agentAvatarUrl}
+      agentName={props.agentName}
+      item={props.item}
+      profiles={props.profiles}
+    />
+  );
 }
 
 function MessageItem({
+  agentAvatarUrl,
+  agentName,
   item,
   profiles,
 }: {
+  agentAvatarUrl: string | null;
+  agentName: string;
   item: Extract<TranscriptItem, { type: "message" }>;
   profiles?: UserProfileLookup;
 }) {
@@ -55,6 +68,29 @@ function MessageItem({
       data-testid="transcript-assistant-message"
     >
       <div className="group relative flex w-full min-w-0 flex-col items-start gap-1">
+        {isConversation ? (
+          // berd labels every agent turn with a small identity row above the
+          // prose — 20px round avatar + name at `text-xs`, `mb-0.5`, `gap-1`
+          // (MessageBubble.tsx:961-981). Without it the reply reads as
+          // unattributed body text in a full-cover view, which was the largest
+          // single divergence from berd. Only the conversation variant gets it:
+          // the other variants' markup is pinned by the byte-for-byte fixture.
+          <div
+            className="mb-0.5 flex items-center gap-1 text-xs"
+            data-testid="transcript-assistant-identity"
+          >
+            {/* `size="xs"` is already 20px (`h-5 w-5`) in UserAvatar. */}
+            <UserAvatar
+              avatarUrl={agentAvatarUrl}
+              className="shrink-0"
+              displayName={agentName}
+              size="xs"
+            />
+            <span className="min-w-0 truncate font-normal text-foreground">
+              {agentName}
+            </span>
+          </div>
+        ) : null}
         <div
           className={
             isCompactPreview
@@ -63,19 +99,25 @@ function MessageItem({
           }
           title={formatTranscriptTimestampTitle(item.timestamp)}
         >
-          <Markdown
-            className={
-              isCompactPreview
-                ? "text-xs leading-4"
-                : isConversation
-                  ? // Focus mode reads as prose: no box, comfortable line
-                    // height, and full-fidelity markdown/code from the shared
-                    // renderer.
-                    "leading-relaxed"
-                  : "leading-5"
-            }
-            content={text || " "}
-          />
+          {/* A context provider renders no DOM, so wrapping unconditionally
+              keeps `default`/`compactPreview` markup byte-identical. */}
+          <CodeBlockVariantContext.Provider
+            value={isConversation ? "focusProse" : "default"}
+          >
+            <Markdown
+              className={
+                isCompactPreview
+                  ? "text-xs leading-4"
+                  : isConversation
+                    ? // Focus mode reads as prose: no box, comfortable line
+                      // height, and full-fidelity markdown/code from the shared
+                      // renderer.
+                      "leading-relaxed"
+                    : "leading-5"
+              }
+              content={text || " "}
+            />
+          </CodeBlockVariantContext.Provider>
         </div>
       </div>
     </div>

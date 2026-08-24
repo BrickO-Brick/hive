@@ -154,10 +154,12 @@ export function UserMessageBubble({
         className={cn(
           "group relative flex min-w-0 flex-1 flex-col items-end gap-1",
           isCompactPreview && "items-start",
-          // Focus mode caps the prompt to a chat-bubble measure rather than the
-          // full reading column, so the right-aligned turn opener reads as an
-          // utterance against the agent's full-width prose.
-          isConversation && "max-w-[85%] flex-initial",
+          // berd caps the user turn at a fixed measure, not a percentage of the
+          // column (`--chat-user-message-max-width: 640px`,
+          // MessageBubble.tsx:956): a percentage keeps re-wrapping the prompt as
+          // the cover width changes, while a fixed measure holds one stable
+          // reading line length. `max-w-prompt-bubble` carries the 640px token.
+          isConversation && "max-w-prompt-bubble flex-initial",
           className,
         )}
       >
@@ -176,16 +178,28 @@ export function UserMessageBubble({
             messageLink &&
               "group/bubble cursor-pointer transition-colors hover:border-border hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
             isCompactPreview && "p-2 text-xs leading-4",
-            // A filled surface (not just a hairline) is what makes the prompt
-            // read as the human's turn at a glance in focus mode.
-            isConversation && "border-transparent bg-muted/60 px-4 py-2.5",
+            // berd's user-turn recipe (MessageBubble.tsx:990): a soft tint, no
+            // border at all, `px-4 py-2`, and a tighter radius than a chat
+            // "pill". berd's `rounded-sm` is 12px on its own scale
+            // (globals.css `--radius-sm: 12px`), NOT Tailwind's stock 2px —
+            // Buzz's `rounded-xl` is the exact 12px equivalent here.
+            // `leading-normal` overrides the `leading-relaxed` base, as berd
+            // does, so the prompt sits tighter than the agent's prose.
+            isConversation &&
+              "rounded-xl border-0 bg-muted/60 px-4 py-2 leading-normal",
             bubbleClassName,
           )}
           ref={bubbleRef}
           {...bubbleLinkProps}
         >
           <Markdown
-            className={isCompactPreview ? "text-xs leading-4" : "leading-5"}
+            className={cn(
+              isCompactPreview
+                ? "text-xs leading-4"
+                : isConversation
+                  ? "leading-normal"
+                  : "leading-5",
+            )}
             content={text || " "}
             mediaInset
           />
