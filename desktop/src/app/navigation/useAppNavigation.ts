@@ -7,7 +7,7 @@ import {
 } from "@tanstack/react-router";
 
 import { openSearchHitWithNavigation } from "@/app/navigation/searchHitNavigation";
-import { currentCompanionWindowKind } from "@/app/companionWindow";
+import { currentAgentActivityCompanionCoordinates } from "@/app/companionWindow";
 import type { SearchHit } from "@/shared/api/types";
 
 type NavigationBehavior = {
@@ -21,18 +21,9 @@ export function useAppNavigation() {
   const navigate = useNavigate();
   const location = useLocation();
   const canGoBack = useCanGoBack();
-  const companionSearch = location.search as Record<string, unknown>;
-  const companionCoordinates =
-    currentCompanionWindowKind() === "agent-activity" &&
-    typeof companionSearch.community === "string" &&
-    typeof companionSearch.agentSession === "string" &&
-    typeof companionSearch.agentSessionChannel === "string"
-      ? {
-          community: companionSearch.community,
-          agentSession: companionSearch.agentSession,
-          agentSessionChannel: companionSearch.agentSessionChannel,
-        }
-      : undefined;
+  const companionCoordinates = currentAgentActivityCompanionCoordinates(
+    location.search as Record<string, unknown>,
+  );
 
   const commitNavigation = React.useCallback(
     async (

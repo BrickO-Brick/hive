@@ -1,4 +1,5 @@
 import { Markdown } from "@/shared/ui/markdown";
+import { activityWindowMarkdownInteractive } from "./activityWindowPresentation";
 import {
   ActivityRow,
   ActivityRowContent,
@@ -26,6 +27,7 @@ export function ThoughtActivity(props: ActivityRenderClassItemProps) {
         <Markdown
           className="leading-5"
           content={props.item.text.trim() || " "}
+          interactive={activityWindowMarkdownInteractive()}
         />
       </ActivityRowContent>
     </ActivityRow>

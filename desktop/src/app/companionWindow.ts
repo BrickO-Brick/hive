@@ -24,6 +24,42 @@ export function currentCompanionWindowKind(): CompanionWindowKind | null {
   }
 }
 
+export type AgentActivityCompanionCoordinates = {
+  community: string;
+  agentSession: string;
+  agentSessionChannel: string;
+};
+
+export function agentActivityCompanionCoordinates(
+  companionKind: CompanionWindowKind | null,
+  search: Record<string, unknown>,
+): AgentActivityCompanionCoordinates | undefined {
+  if (
+    companionKind !== "agent-activity" ||
+    typeof search.community !== "string" ||
+    typeof search.agentSession !== "string" ||
+    typeof search.agentSessionChannel !== "string"
+  ) {
+    return undefined;
+  }
+
+  return {
+    community: search.community,
+    agentSession: search.agentSession,
+    agentSessionChannel: search.agentSessionChannel,
+  };
+}
+
+/** Return the immutable route coordinates owned by this activity companion. */
+export function currentAgentActivityCompanionCoordinates(
+  search: Record<string, unknown>,
+): AgentActivityCompanionCoordinates | undefined {
+  return agentActivityCompanionCoordinates(
+    currentCompanionWindowKind(),
+    search,
+  );
+}
+
 /** Community encoded into a companion bootstrap hash. */
 export function companionCommunityIdForHash(hash: string): string | null {
   const query = hash.indexOf("?");

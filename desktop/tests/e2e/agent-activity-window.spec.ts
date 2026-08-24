@@ -60,6 +60,25 @@ test("keeps dedicated activity windows pinned to their original channel", async 
           {
             seq: 2,
             timestamp: new Date().toISOString(),
+            kind: "acp_read",
+            agentIndex: 0,
+            channelId,
+            sessionId: "session-user-message",
+            turnId: "turn-user-message",
+            payload: {
+              method: "session/update",
+              params: {
+                update: {
+                  sessionUpdate: "user_message_chunk",
+                  authorPubkey: repositoryOwnerPubkey,
+                  content: { type: "text", text: "Please inspect the feed" },
+                },
+              },
+            },
+          },
+          {
+            seq: 3,
+            timestamp: new Date().toISOString(),
             kind: "turn_started",
             agentIndex: 0,
             channelId,
@@ -68,7 +87,7 @@ test("keeps dedicated activity windows pinned to their original channel", async 
             payload: { source: "channel", triggeringEventIds: [] },
           },
           {
-            seq: 3,
+            seq: 4,
             timestamp: new Date().toISOString(),
             kind: "acp_read",
             agentIndex: 0,
@@ -104,27 +123,25 @@ test("keeps dedicated activity windows pinned to their original channel", async 
     "Other channel activity must stay hidden",
   );
 
-  const channelReference = panel.getByRole("button", {
-    name: "Open channel general",
-  });
-  await expect(channelReference).toBeVisible();
+  const channelReference = panel.locator("[data-channel-link]");
+  await expect(channelReference).toContainText("general");
+  await expect(
+    panel.getByRole("button", { name: "Open channel general" }),
+  ).toHaveCount(0);
   const activityWindowUrl = page.url();
-  await channelReference.click();
 
-  await expect(page).toHaveURL(activityWindowUrl);
+  await expect(
+    panel.getByRole("button", { name: "Open alice profile" }),
+  ).toHaveCount(0);
   await expect(panel).toBeVisible();
-  await expect(panel).toContainText("Activity · #agents");
-  await expect(panel).not.toContainText(
-    "Other channel activity must stay hidden",
-  );
+  await expect(page).toHaveURL(/agentSession=/);
+  await expect(page).toHaveURL(/agentSessionChannel=/);
 
-  const repositoryChip = panel.getByRole("button", {
-    name: "Open repository relay-tools",
-  });
-  await expect(repositoryChip).toBeVisible();
-  await repositoryChip.click();
+  await expect(panel).toContainText("relay-tools");
+  await expect(
+    panel.getByRole("button", { name: "Open repository relay-tools" }),
+  ).toHaveCount(0);
   await expect(page).toHaveURL(activityWindowUrl);
-  await expect(panel).toBeVisible();
 
   await page.getByTestId("agent-session-settings-menu-trigger").click();
   const rawFeedToggle = page.getByTestId("agent-session-toggle-raw-feed");

@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 
 import {
   acceptsNativeDeepLinks,
+  agentActivityCompanionCoordinates,
   companionCommunityBootstrap,
   companionCommunityIdForHash,
   companionWindowKindForLabel,
@@ -20,6 +21,35 @@ describe("companionWindowKindForLabel", () => {
   it("leaves primary and unrelated windows unclassified", () => {
     assert.equal(companionWindowKindForLabel("main"), null);
     assert.equal(companionWindowKindForLabel("reader-document"), null);
+  });
+});
+
+describe("agentActivityCompanionCoordinates", () => {
+  const coordinates = {
+    community: "community-one",
+    agentSession: "agent-one",
+    agentSessionChannel: "channel-one",
+  };
+
+  it("returns every immutable activity companion coordinate", () => {
+    assert.deepEqual(
+      agentActivityCompanionCoordinates("agent-activity", coordinates),
+      coordinates,
+    );
+  });
+
+  it("rejects non-activity windows and incomplete coordinates", () => {
+    assert.equal(
+      agentActivityCompanionCoordinates("huddle", coordinates),
+      undefined,
+    );
+    assert.equal(
+      agentActivityCompanionCoordinates("agent-activity", {
+        community: coordinates.community,
+        agentSession: coordinates.agentSession,
+      }),
+      undefined,
+    );
   });
 });
 

@@ -1,3 +1,4 @@
+import { currentAgentActivityCompanionCoordinates } from "@/app/companionWindow";
 import * as React from "react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 
@@ -85,7 +86,10 @@ export function useHistorySearchState<K extends string>(keys: readonly K[]) {
                 nextSearch[key] = value;
               }
             }
-            return nextSearch;
+            return {
+              ...nextSearch,
+              ...currentAgentActivityCompanionCoordinates(previousSearch),
+            };
           },
           replace: flush.replace,
           resetScroll: false,
