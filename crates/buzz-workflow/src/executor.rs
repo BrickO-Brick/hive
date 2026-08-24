@@ -18,6 +18,7 @@ use serde_json::Value as JsonValue;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
+use crate::action_sink::WorkflowMessageContext;
 use crate::error::WorkflowError;
 use crate::schema::{ActionDef, Step, WorkflowDef};
 use crate::WorkflowEngine;
@@ -625,6 +626,17 @@ pub async fn dispatch_action(
                         "SendMessage → {channel_id}: {text}"
                     );
 
+                    if trigger_ctx.definition_event_id.is_empty() {
+                        return Err(WorkflowError::InvalidDefinition(
+                            "SendMessage: workflow definition provenance is unavailable".into(),
+                        ));
+                    }
+                    let context = WorkflowMessageContext {
+                        workflow_id: workflow.id,
+                        run_id,
+                        definition_event_id: trigger_ctx.definition_event_id.clone(),
+                        step_id: step_id.to_owned(),
+                    };
                     let event_id = engine
                         .action_sink()?
                         .send_message(
@@ -632,6 +644,7 @@ pub async fn dispatch_action(
                             &channel_id,
                             text,
                             &owner_pubkey_hex,
+                            &context,
                             reply_to,
                         )
                         .await

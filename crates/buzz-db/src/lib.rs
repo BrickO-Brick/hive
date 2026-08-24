@@ -4164,6 +4164,86 @@ impl Db {
         .await
     }
 
+    /// Serialize one workflow message identity until its event and inbox rows commit.
+    pub async fn lock_workflow_agent_delivery_identity(
+        &self,
+        community_id: CommunityId,
+        run_id: Uuid,
+        step_id: &str,
+    ) -> Result<(
+        sqlx::Transaction<'static, sqlx::Postgres>,
+        Option<(Vec<u8>, chrono::DateTime<chrono::Utc>)>,
+    )> {
+        workflow::lock_workflow_agent_delivery_identity(&self.pool, community_id, run_id, step_id)
+            .await
+    }
+
+    /// Atomically commit one visible workflow message and its durable targets.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn commit_workflow_agent_deliveries(
+        &self,
+        transaction: sqlx::Transaction<'static, sqlx::Postgres>,
+        community_id: CommunityId,
+        event: Option<&nostr::Event>,
+        message_event_id: &[u8],
+        message_event_created_at: chrono::DateTime<chrono::Utc>,
+        thread_meta: Option<event::ThreadMetadataParams<'_>>,
+        workflow_id: Uuid,
+        run_id: Uuid,
+        step_id: &str,
+        definition_event_id: &[u8],
+        channel_id: Uuid,
+        targets: &[workflow::WorkflowAgentDeliveryTarget],
+        execution_trace: &serde_json::Value,
+        trigger_context: Option<&serde_json::Value>,
+    ) -> Result<(Option<StoredEvent>, Vec<Uuid>)> {
+        let result = workflow::commit_workflow_agent_deliveries(
+            transaction,
+            community_id,
+            event,
+            message_event_id,
+            message_event_created_at,
+            thread_meta,
+            workflow_id,
+            run_id,
+            step_id,
+            definition_event_id,
+            channel_id,
+            targets,
+            execution_trace,
+            trigger_context,
+        )
+        .await?;
+        if result.0.is_some() {
+            if let Some(event) = event {
+                if let Err(error) =
+                    insert_mentions(&self.pool, community_id, event, Some(channel_id)).await
+                {
+                    tracing::warn!(event_id = %event.id, %error, "failed to insert workflow message mentions");
+                }
+            }
+        }
+        Ok(result)
+    }
+
+    /// Claim one durable workflow delivery for the authenticated target.
+    pub async fn claim_workflow_agent_delivery(
+        &self,
+        community_id: CommunityId,
+        target_pubkey: &[u8],
+        delivery_id: Option<Uuid>,
+        expected: Option<&workflow::WorkflowAgentDeliveryBinding>,
+    ) -> Result<Option<workflow::WorkflowAgentDeliveryRecord>> {
+        workflow::claim_workflow_agent_delivery(
+            &self.pool,
+            community_id,
+            target_pubkey,
+            delivery_id,
+            expected,
+        )
+        .await
+    }
+
     /// Update a workflow run's status.
     #[datastore_span(name = "update_workflow_run", system = "postgresql")]
     pub async fn update_workflow_run(

@@ -11,13 +11,15 @@ use std::fmt;
 use std::str::FromStr;
 
 use chrono::{DateTime, Utc};
+use nostr::Event;
 use sha2::{Digest, Sha256};
-use sqlx::{PgPool, Row};
+use sqlx::{PgPool, Postgres, Row, Transaction};
 use uuid::Uuid;
 
-use buzz_core::CommunityId;
+use buzz_core::{CommunityId, StoredEvent};
 
 use crate::error::{DbError, Result};
+use crate::event::ThreadMetadataParams;
 
 // -- Token hashing ------------------------------------------------------------
 
@@ -224,6 +226,59 @@ pub struct WorkflowRunRecord {
     /// Kept separate from `error_message` so callers never parse diagnostics.
     pub error_code: Option<String>,
     /// When the run record was created.
+    pub created_at: DateTime<Utc>,
+}
+
+/// One immutable target of a workflow-generated visible message.
+#[derive(Debug, Clone)]
+pub struct WorkflowAgentDeliveryTarget {
+    /// Stable identifier carried by the wake hint and claim request.
+    pub id: Uuid,
+    /// Managed-agent pubkey.
+    pub pubkey: Vec<u8>,
+}
+
+/// Immutable binding optionally supplied from an authenticated wake.
+#[derive(Debug, Clone)]
+pub struct WorkflowAgentDeliveryBinding {
+    /// Durable workflow run.
+    pub run_id: Uuid,
+    /// Stable workflow step.
+    pub step_id: String,
+    /// Exact owner-signed definition revision.
+    pub definition_event_id: Vec<u8>,
+    /// Relay-signed visible message.
+    pub message_event_id: Vec<u8>,
+    /// Destination channel.
+    pub channel_id: Uuid,
+}
+
+/// Durable inbox item returned only to its authenticated target.
+#[derive(Debug, Clone)]
+pub struct WorkflowAgentDeliveryRecord {
+    /// Delivery identifier.
+    pub id: Uuid,
+    /// Owning workflow.
+    pub workflow_id: Uuid,
+    /// Durable run.
+    pub run_id: Uuid,
+    /// Stable step identifier.
+    pub step_id: String,
+    /// Exact signed definition revision.
+    pub definition_event_id: Vec<u8>,
+    /// Relay-signed visible message.
+    pub message_event_id: Vec<u8>,
+    /// Destination channel.
+    pub channel_id: Uuid,
+    /// Managed-agent recipient.
+    pub target_pubkey: Vec<u8>,
+    /// One-shot claim token reserved for the completion child node.
+    pub claim_token: Option<Uuid>,
+    /// Private execution trace used by ACP verification.
+    pub execution_trace: serde_json::Value,
+    /// Private trigger snapshot used by ACP verification.
+    pub trigger_context: Option<serde_json::Value>,
+    /// Creation time for ordered polling.
     pub created_at: DateTime<Utc>,
 }
 
@@ -1023,6 +1078,173 @@ pub async fn update_workflow_run(
         return Err(DbError::NotFound(format!("workflow_run {id}")));
     }
     Ok(())
+}
+
+/// Serialize one `(community, run, step)` delivery identity.
+///
+/// The returned transaction holds the advisory lock until the visible message
+/// and every target row commit together, preventing retry races from signing
+/// two canonical messages for the same step.
+pub async fn lock_workflow_agent_delivery_identity(
+    pool: &PgPool,
+    community_id: CommunityId,
+    run_id: Uuid,
+    step_id: &str,
+) -> Result<(
+    Transaction<'static, Postgres>,
+    Option<(Vec<u8>, DateTime<Utc>)>,
+)> {
+    let mut transaction = pool.begin().await?;
+    let identity = format!("{}:{run_id}:{step_id}", community_id.as_uuid());
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(identity)
+        .execute(&mut *transaction)
+        .await?;
+    let existing = sqlx::query_as::<_, (Vec<u8>, DateTime<Utc>)>(
+        "SELECT message_event_id, message_event_created_at \
+         FROM workflow_agent_deliveries \
+         WHERE community_id = $1 AND run_id = $2 AND step_id = $3 \
+         ORDER BY created_at, id LIMIT 1",
+    )
+    .bind(community_id.as_uuid())
+    .bind(run_id)
+    .bind(step_id)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    Ok((transaction, existing))
+}
+
+/// Atomically persist the canonical visible event and all managed-agent targets.
+#[allow(clippy::too_many_arguments)]
+pub async fn commit_workflow_agent_deliveries(
+    mut transaction: Transaction<'static, Postgres>,
+    community_id: CommunityId,
+    event: Option<&Event>,
+    message_event_id: &[u8],
+    message_event_created_at: DateTime<Utc>,
+    thread_meta: Option<ThreadMetadataParams<'_>>,
+    workflow_id: Uuid,
+    run_id: Uuid,
+    step_id: &str,
+    definition_event_id: &[u8],
+    channel_id: Uuid,
+    targets: &[WorkflowAgentDeliveryTarget],
+    execution_trace: &serde_json::Value,
+    trigger_context: Option<&serde_json::Value>,
+) -> Result<(Option<StoredEvent>, Vec<Uuid>)> {
+    let stored_event = if let Some(event) = event {
+        let (stored, _) = crate::event::insert_event_with_thread_metadata_tx(
+            &mut transaction,
+            community_id,
+            event,
+            Some(channel_id),
+            thread_meta,
+        )
+        .await?;
+        Some(stored)
+    } else {
+        None
+    };
+
+    let mut created = Vec::new();
+    for target in targets {
+        let affected = sqlx::query(
+            "INSERT INTO workflow_agent_deliveries \
+             (community_id, id, workflow_id, run_id, step_id, definition_event_id, \
+              message_event_id, message_event_created_at, channel_id, target_pubkey, \
+              execution_trace, trigger_context) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) \
+             ON CONFLICT (community_id, run_id, step_id, target_pubkey) DO NOTHING",
+        )
+        .bind(community_id.as_uuid())
+        .bind(target.id)
+        .bind(workflow_id)
+        .bind(run_id)
+        .bind(step_id)
+        .bind(definition_event_id)
+        .bind(message_event_id)
+        .bind(message_event_created_at)
+        .bind(channel_id)
+        .bind(&target.pubkey)
+        .bind(execution_trace)
+        .bind(trigger_context)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
+        if affected == 1 {
+            created.push(target.id);
+        }
+    }
+    transaction.commit().await?;
+    Ok((stored_event, created))
+}
+
+/// Atomically claim one specific delivery, or the oldest pending delivery.
+///
+/// Both selection and update are scoped to the authenticated target and
+/// community. Optional wake bindings make a forged or stale hint a miss rather
+/// than an alternate authority path.
+pub async fn claim_workflow_agent_delivery(
+    pool: &PgPool,
+    community_id: CommunityId,
+    target_pubkey: &[u8],
+    delivery_id: Option<Uuid>,
+    expected: Option<&WorkflowAgentDeliveryBinding>,
+) -> Result<Option<WorkflowAgentDeliveryRecord>> {
+    let row = sqlx::query(
+        r#"
+        WITH candidate AS (
+            SELECT community_id, id
+            FROM workflow_agent_deliveries
+            WHERE community_id = $1 AND target_pubkey = $2
+              AND ($3::uuid IS NULL OR id = $3)
+              AND ($4::uuid IS NULL OR run_id = $4)
+              AND ($5::text IS NULL OR step_id = $5)
+              AND ($6::bytea IS NULL OR definition_event_id = $6)
+              AND ($7::bytea IS NULL OR message_event_id = $7)
+              AND ($8::uuid IS NULL OR channel_id = $8)
+              AND status = 'pending'
+            ORDER BY created_at, id
+            FOR UPDATE SKIP LOCKED
+            LIMIT 1
+        )
+        UPDATE workflow_agent_deliveries delivery
+        SET status = 'claimed', claim_token = gen_random_uuid(),
+            claimed_at = NOW()
+        FROM candidate
+        WHERE delivery.community_id = candidate.community_id
+          AND delivery.id = candidate.id
+        RETURNING delivery.*
+        "#,
+    )
+    .bind(community_id.as_uuid())
+    .bind(target_pubkey)
+    .bind(delivery_id)
+    .bind(expected.map(|binding| binding.run_id))
+    .bind(expected.map(|binding| binding.step_id.as_str()))
+    .bind(expected.map(|binding| binding.definition_event_id.as_slice()))
+    .bind(expected.map(|binding| binding.message_event_id.as_slice()))
+    .bind(expected.map(|binding| binding.channel_id))
+    .fetch_optional(pool)
+    .await?;
+
+    row.map(|row| {
+        Ok(WorkflowAgentDeliveryRecord {
+            id: row.try_get("id")?,
+            workflow_id: row.try_get("workflow_id")?,
+            run_id: row.try_get("run_id")?,
+            step_id: row.try_get("step_id")?,
+            definition_event_id: row.try_get("definition_event_id")?,
+            message_event_id: row.try_get("message_event_id")?,
+            channel_id: row.try_get("channel_id")?,
+            target_pubkey: row.try_get("target_pubkey")?,
+            claim_token: row.try_get("claim_token")?,
+            execution_trace: row.try_get("execution_trace")?,
+            trigger_context: row.try_get("trigger_context")?,
+            created_at: row.try_get("created_at")?,
+        })
+    })
+    .transpose()
 }
 
 // -- Approval CRUD ------------------------------------------------------------
