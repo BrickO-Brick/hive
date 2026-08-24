@@ -7,6 +7,7 @@ import {
   companionCommunityBootstrap,
   companionCommunityIdForHash,
   companionWindowKindForLabel,
+  pinAgentActivityCompanionSearch,
 } from "./companionWindow.ts";
 
 describe("companionWindowKindForLabel", () => {
@@ -49,6 +50,37 @@ describe("agentActivityCompanionCoordinates", () => {
         agentSession: coordinates.agentSession,
       }),
       undefined,
+    );
+  });
+});
+
+describe("pinAgentActivityCompanionSearch", () => {
+  const coordinates = {
+    community: "community-one",
+    agentSession: "agent-one",
+    agentSessionChannel: "channel-one",
+  };
+
+  it("preserves coordinates while stripping panel-swapping state", () => {
+    assert.deepEqual(
+      pinAgentActivityCompanionSearch("agent-activity", coordinates, {
+        community: "community-two",
+        agentSession: "agent-two",
+        agentSessionChannel: "channel-two",
+        messageId: "message-one",
+        profile: "profile-one",
+        thread: "thread-one",
+        unrelated: "kept",
+      }),
+      { ...coordinates, unrelated: "kept" },
+    );
+  });
+
+  it("leaves ordinary windows unchanged", () => {
+    const nextSearch = { messageId: "message-one" };
+    assert.equal(
+      pinAgentActivityCompanionSearch(null, coordinates, nextSearch),
+      nextSearch,
     );
   });
 });

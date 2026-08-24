@@ -79,6 +79,38 @@ test("keeps dedicated activity windows pinned to their original channel", async 
           {
             seq: 3,
             timestamp: new Date().toISOString(),
+            kind: "acp_read",
+            agentIndex: 0,
+            channelId,
+            sessionId: "session-sent-message",
+            turnId: "turn-sent-message",
+            payload: {
+              method: "session/update",
+              params: {
+                update: {
+                  sessionUpdate: "tool_call_update",
+                  toolCallId: "sent-message-activity-window",
+                  status: "completed",
+                  title: "send_message",
+                  toolName: "send_message",
+                  rawInput: {
+                    channel_id: channelId,
+                    content: "Sent update for #general",
+                  },
+                  content: {
+                    type: "text",
+                    text: JSON.stringify({
+                      accepted: true,
+                      event_id: "mock-agents-charlie",
+                    }),
+                  },
+                },
+              },
+            },
+          },
+          {
+            seq: 4,
+            timestamp: new Date().toISOString(),
             kind: "turn_started",
             agentIndex: 0,
             channelId,
@@ -87,7 +119,7 @@ test("keeps dedicated activity windows pinned to their original channel", async 
             payload: { source: "channel", triggeringEventIds: [] },
           },
           {
-            seq: 4,
+            seq: 5,
             timestamp: new Date().toISOString(),
             kind: "acp_read",
             agentIndex: 0,
@@ -123,7 +155,9 @@ test("keeps dedicated activity windows pinned to their original channel", async 
     "Other channel activity must stay hidden",
   );
 
-  const channelReference = panel.locator("[data-channel-link]");
+  const channelReference = panel
+    .getByTestId("transcript-assistant-message")
+    .locator("[data-channel-link]");
   await expect(channelReference).toContainText("general");
   await expect(
     panel.getByRole("button", { name: "Open channel general" }),
@@ -141,6 +175,26 @@ test("keeps dedicated activity windows pinned to their original channel", async 
   await expect(
     panel.getByRole("button", { name: "Open repository relay-tools" }),
   ).toHaveCount(0);
+  await expect(page).toHaveURL(activityWindowUrl);
+
+  const sentMessage = panel.getByTestId("transcript-tool-message-preview");
+  await expect(sentMessage).toContainText("Sent update for");
+  await expect(sentMessage).not.toHaveAttribute("role", "link");
+  await expect(
+    panel.getByRole("button", { name: "Open Observer Agent profile" }),
+  ).toHaveCount(0);
+  await expect(
+    sentMessage.getByRole("button", { name: "Open channel general" }),
+  ).toHaveCount(0);
+  await expect(sentMessage.locator("[data-channel-link]")).toContainText(
+    "general",
+  );
+  await expect(panel.getByTestId("transcript-open-message-link")).toHaveCount(
+    0,
+  );
+  await sentMessage.click();
+  await expect(panel).toBeVisible();
+  await expect(page.getByTestId("message-thread-panel")).toHaveCount(0);
   await expect(page).toHaveURL(activityWindowUrl);
 
   await page.getByTestId("agent-session-settings-menu-trigger").click();

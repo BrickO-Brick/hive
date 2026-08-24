@@ -60,6 +60,49 @@ export function currentAgentActivityCompanionCoordinates(
   );
 }
 
+/** Search keys that replace the dedicated feed with another channel panel. */
+const AGENT_ACTIVITY_COMPANION_PANEL_KEYS = [
+  "autoSend",
+  "channelManagement",
+  "messageId",
+  "profile",
+  "profileTab",
+  "profileView",
+  "thread",
+  "threadRootId",
+] as const;
+
+/** Keep a dedicated feed on its immutable coordinates and activity panel. */
+export function pinAgentActivityCompanionSearch(
+  companionKind: CompanionWindowKind | null,
+  currentSearch: Record<string, unknown>,
+  nextSearch: Record<string, unknown>,
+): Record<string, unknown> {
+  const coordinates = agentActivityCompanionCoordinates(
+    companionKind,
+    currentSearch,
+  );
+  if (!coordinates) return nextSearch;
+
+  const pinnedSearch = { ...nextSearch };
+  for (const key of AGENT_ACTIVITY_COMPANION_PANEL_KEYS) {
+    delete pinnedSearch[key];
+  }
+  return { ...pinnedSearch, ...coordinates };
+}
+
+/** Apply the dedicated-feed search invariant for this native window. */
+export function pinCurrentAgentActivityCompanionSearch(
+  currentSearch: Record<string, unknown>,
+  nextSearch: Record<string, unknown>,
+): Record<string, unknown> {
+  return pinAgentActivityCompanionSearch(
+    currentCompanionWindowKind(),
+    currentSearch,
+    nextSearch,
+  );
+}
+
 /** Community encoded into a companion bootstrap hash. */
 export function companionCommunityIdForHash(hash: string): string | null {
   const query = hash.indexOf("?");

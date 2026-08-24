@@ -7,7 +7,10 @@ import {
 } from "@tanstack/react-router";
 
 import { openSearchHitWithNavigation } from "@/app/navigation/searchHitNavigation";
-import { currentAgentActivityCompanionCoordinates } from "@/app/companionWindow";
+import {
+  currentAgentActivityCompanionCoordinates,
+  pinCurrentAgentActivityCompanionSearch,
+} from "@/app/companionWindow";
 import type { SearchHit } from "@/shared/api/types";
 
 type NavigationBehavior = {
@@ -38,7 +41,10 @@ export function useAppNavigation() {
       const destination = companionCoordinates
         ? {
             ...next,
-            search: { ...next.search, ...companionCoordinates },
+            search: pinCurrentAgentActivityCompanionSearch(
+              location.search as Record<string, unknown>,
+              next.search ?? {},
+            ),
           }
         : next;
 
@@ -64,7 +70,7 @@ export function useAppNavigation() {
       } as never);
       return true;
     },
-    [companionCoordinates, location.href, navigate, router],
+    [companionCoordinates, location.href, location.search, navigate, router],
   );
 
   const goHome = React.useCallback(
