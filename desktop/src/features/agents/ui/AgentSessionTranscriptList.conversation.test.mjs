@@ -139,6 +139,23 @@ const AGENT = {
   agentPubkey: "f".repeat(64),
 };
 const AUTHOR = "a".repeat(64);
+const AUTHOR_TRUNCATED = `${AUTHOR.slice(0, 8)}…${AUTHOR.slice(-4)}`;
+/**
+ * What the transcript builder actually puts in a prompt item's `title`: a
+ * description of the trigger that started the turn, not an identity. Real values
+ * are "Prompt", "Buzz event", and title-cased event kinds like "@Mention"
+ * (`agentSessionTranscriptHelpers.ts` `parsePromptText`). The author row must
+ * never display this as a name.
+ */
+const TRIGGER_TITLE = "@Mention";
+const AUTHOR_PROFILES = {
+  [AUTHOR]: {
+    displayName: "Ada Lovelace",
+    avatarUrl: null,
+    nip05Handle: null,
+    ownerPubkey: null,
+  },
+};
 
 function items() {
   const shared = { channelId: "chan-1", sessionId: "sess-1", turnId: "turn-1" };
@@ -149,7 +166,7 @@ function items() {
       type: "message",
       renderClass: "message",
       role: "user",
-      title: "Ada",
+      title: TRIGGER_TITLE,
       text: "please summarize the plan",
       timestamp: "2026-06-14T19:00:00.000Z",
       messageId: "event-1",
@@ -426,12 +443,14 @@ test("conversation marks the transcript container and centers a reading column",
 });
 
 test("conversation renders the prompt as a filled right-aligned bubble with an author label", async () => {
-  const { container } = await renderTranscript("conversation");
+  const { container } = await renderTranscript("conversation", {
+    profiles: AUTHOR_PROFILES,
+  });
   const author = container.querySelector(
     '[data-testid="transcript-user-message-author"]',
   );
   assert.ok(author, "conversation should label the prompt author");
-  assert.equal(author.textContent, "Ada");
+  assert.equal(author.textContent, "Ada Lovelace");
 
   const row = container.querySelector(
     '[data-testid="transcript-user-message"]',
@@ -441,6 +460,48 @@ test("conversation renders the prompt as a filled right-aligned bubble with an a
   assert.match(bubble.className, /bg-muted\/60/);
   // Focus mode shows the whole prompt rather than clamping it.
   assert.doesNotMatch(bubble.className, /max-h-36/);
+});
+
+test("conversation never shows the trigger title as the prompt author when the sender is unresolved", async () => {
+  // Regression guard. The label chain's last fallback used to be the prompt
+  // item's `title`, which is a description of the trigger ("@Mention",
+  // "Prompt", "Buzz event") rather than an identity. On the other variants that
+  // string only seeds avatar initials, so it was harmless; the conversation
+  // author row displays it, so an unresolved sender was rendered as "@Mention"
+  // — a trigger presented as a person's name. With no profile for the author,
+  // the row must fall back to the truncated pubkey instead.
+  const { container } = await renderTranscript("conversation");
+  const author = container.querySelector(
+    '[data-testid="transcript-user-message-author"]',
+  );
+  assert.ok(author, "the author row should still render without a profile");
+  assert.equal(author.textContent, AUTHOR_TRUNCATED);
+  assert.doesNotMatch(
+    author.textContent,
+    /@Mention|Prompt|Buzz event/,
+    "the trigger title must never be displayed as an author name",
+  );
+});
+
+test("conversation prefers the resolved profile over both the trigger title and the pubkey", async () => {
+  // The truncated-pubkey fallback must not shadow a real identity: with a
+  // profile present the row shows the display name, and with only a NIP-05
+  // handle it shows that.
+  const { container } = await renderTranscript("conversation", {
+    profiles: {
+      [AUTHOR]: {
+        displayName: null,
+        avatarUrl: null,
+        nip05Handle: "ada@example.com",
+        ownerPubkey: null,
+      },
+    },
+  });
+  assert.equal(
+    container.querySelector('[data-testid="transcript-user-message-author"]')
+      .textContent,
+    "ada@example.com",
+  );
 });
 
 test("conversation renders agent messages as unboxed prose at full fidelity", async () => {

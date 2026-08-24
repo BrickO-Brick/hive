@@ -50,13 +50,31 @@ export function UserMessageBubble({
   const authorProfile = item.authorPubkey
     ? profiles?.[item.authorPubkey.toLowerCase()]
     : null;
-  const authorLabel = item.authorPubkey
+  // The other variants seed the avatar from `resolveUserLabel(…, fallbackName:
+  // item.title)`, whose last resort is the prompt item's title. That title
+  // describes the *trigger* that started the turn ("@Mention", "Prompt", "Buzz
+  // event"), never a person — harmless when it only picks avatar initials, so
+  // this chain is left exactly as it was for `default`/`compactPreview`.
+  const triggerSeededLabel = item.authorPubkey
     ? resolveUserLabel({
         pubkey: item.authorPubkey,
         fallbackName: item.title,
         profiles,
       })
     : item.title || "User";
+  // Focus mode promotes the author to displayed text, where a trigger title
+  // would read as a false identity — an unresolved sender showing up as
+  // "@Mention". Identity resolution here therefore stops at the profile
+  // (display name, then NIP-05 handle, then the truncated pubkey): a truncated
+  // pubkey is a real, if terse, identity, and it keeps the utterance attributed
+  // in a full-cover view. `item.title` stays available as trigger chrome in the
+  // footer; it is never a name. Only when the item carries no author at all does
+  // the row fall back to a generic placeholder.
+  const authorLabel = isConversation
+    ? item.authorPubkey
+      ? resolveUserLabel({ pubkey: item.authorPubkey, profiles })
+      : "User"
+    : triggerSeededLabel;
   const handleBubbleClick = React.useCallback(
     (event: React.MouseEvent<HTMLDivElement>) => {
       if (!messageLink || isNestedInteractiveTarget(event)) return;
