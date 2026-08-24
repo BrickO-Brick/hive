@@ -17,56 +17,46 @@
         height: 100%;
         background: hsl(var(--background));
         color: hsl(var(--foreground));
-        font-family: -apple-system, "Inter", sans-serif;
         display: flex;
         align-items: center;
         justify-content: center;
         user-select: none;
         cursor: default;
+        overflow: hidden;
       }
-      .wrap { text-align: center; }
-      .face { width: 160px; height: 110px; margin: 0 auto; }
+      .face { width: 220px; height: 150px; }
       .face svg { width: 100%; height: 100%; }
       .eye { fill: hsl(var(--foreground)); }
       .lid { fill: hsl(var(--background)); }
-      .count {
-        margin-top: 10px;
-        font-size: 40px;
-        font-weight: 700;
+      .stat {
+        position: fixed;
+        bottom: 7px;
+        font-family: ui-monospace, "SF Mono", Menlo, monospace;
+        font-size: 9px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: hsl(var(--muted-foreground));
         font-variant-numeric: tabular-nums;
       }
-      .label {
-        margin-top: 6px;
-        font-size: 12px;
-        color: hsl(var(--muted-foreground));
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
-      }
-      .nodes {
-        margin-top: 14px;
-        font-size: 13px;
-        color: hsl(var(--muted-foreground));
-      }
+      #tokens { left: 10px; }
+      #nodes { right: 10px; }
     </style>
   </head>
   <body>
-    <div class="wrap">
-      <div class="face">
-        <svg viewBox="0 0 160 110" aria-label="mesh buddy face" role="img">
-          <g id="rig">
-            <path class="eye" id="eyeL" d="" />
-            <path class="eye" id="eyeR" d="" />
-            <!-- Lower lids: background-colored masks that slide up for the
-                 happy squint, carving a smooth crescent out of each eye. -->
-            <ellipse class="lid" id="lidL" rx="34" ry="26" />
-            <ellipse class="lid" id="lidR" rx="34" ry="26" />
-          </g>
-        </svg>
-      </div>
-      <div class="count" id="count">0</div>
-      <div class="label">tokens helped compute</div>
-      <div class="nodes" id="nodes">&nbsp;</div>
+    <div class="face">
+      <svg viewBox="0 0 160 110" aria-label="mesh buddy face" role="img">
+        <g id="rig">
+          <ellipse class="eye" id="eyeL" />
+          <ellipse class="eye" id="eyeR" />
+          <!-- Lower lids: background-colored masks that slide up for the
+               happy squint, carving a smooth crescent out of each eye. -->
+          <ellipse class="lid" id="lidL" rx="30" ry="24" />
+          <ellipse class="lid" id="lidR" rx="30" ry="24" />
+        </g>
+      </svg>
     </div>
+    <div class="stat" id="tokens">tok 0</div>
+    <div class="stat" id="nodes">&nbsp;</div>
     <script>
       // Follow the app theme: the main window caches its resolved CSS vars in
       // localStorage (same origin), so apply them and re-check on focus and on
@@ -87,68 +77,52 @@
       window.addEventListener("storage", applyTheme);
       window.addEventListener("focus", applyTheme);
 
-      // ---- Procedural eyes (Cozmo/Vector style) --------------------------
-      // Each eye is a rounded rectangle with a bendable bottom edge. Instead
-      // of canned frames, the rig holds one parameter set and eases it toward
-      // the current expression every frame, so any state change (and blinks)
-      // becomes a smooth morph. Inspired by procedural expression polygons:
-      // https://github.com/ggldnl/Procedural-Expression-Library
+      // ---- Procedural round eyes (Cozmo/Vector style) --------------------
+      // One parameter set eased toward the active expression every frame, so
+      // mood changes, blinks, gaze shifts, and screen-position tracking are
+      // all smooth morphs of the same two ellipses. Inspired by procedural
+      // expression polygons: github.com/ggldnl/Procedural-Expression-Library
       //
-      // Params: w/h size, r corner radius, curve (+ bows the bottom edge up:
-      // a happy squint), y vertical offset, gaze x drift.
+      // Params: rx/ry radii, curve (lower-lid rise: happy squint), y offset.
       const EXPRESSIONS = {
-        sleeping: { w: 44, h: 5, r: 2.5, curve: 0, y: 16 },
-        waking: { w: 40, h: 22, r: 9, curve: 0, y: 6 },
-        neutral: { w: 38, h: 44, r: 12, curve: 0, y: 0 },
-        happy: { w: 42, h: 38, r: 13, curve: 16, y: -2 },
-        tired: { w: 40, h: 14, r: 6, curve: 0, y: 10 },
+        sleeping: { rx: 20, ry: 2.5, curve: 0, y: 14 },
+        waking: { rx: 17, ry: 10, curve: 0, y: 5 },
+        neutral: { rx: 17, ry: 20, curve: 0, y: 0 },
+        happy: { rx: 19, ry: 18, curve: 15, y: -2 },
+        tired: { rx: 18, ry: 6, curve: 0, y: 9 },
       };
       const CENTERS = [46, 114]; // eye x-centers in the 160x110 viewBox
-      const MID_Y = 48;
+      const MID_Y = 52;
 
       const rig = {
-        current: { ...EXPRESSIONS.sleeping, gaze: 0 },
-        target: { ...EXPRESSIONS.sleeping, gaze: 0 },
+        current: { ...EXPRESSIONS.sleeping, gx: 0, gy: 0 },
+        target: { ...EXPRESSIONS.sleeping, gx: 0, gy: 0 },
         mood: "sleeping",
+        // Where the eyes point: screen-center tracking + idle drift.
+        screenGaze: { x: 0, y: 0 },
+        driftGaze: { x: 0, y: 0 },
         blink: 1, // height multiplier; dips toward 0 during a blink
         blinkPhase: "open",
         nextBlinkAt: performance.now() + 2500,
       };
-
-      function eyePath(cx, p, blink) {
-        const h = Math.max(3, p.h * blink);
-        const r = Math.min(p.r, h / 2, p.w / 2);
-        const top = MID_Y + p.y - h / 2;
-        const bottom = top + h;
-        const left = cx + p.gaze - p.w / 2;
-        const right = left + p.w;
-        return [
-          `M ${left + r} ${top}`,
-          `H ${right - r}`,
-          `Q ${right} ${top} ${right} ${top + r}`,
-          `V ${bottom - r}`,
-          `Q ${right} ${bottom} ${right - r} ${bottom}`,
-          `H ${left + r}`,
-          `Q ${left} ${bottom} ${left} ${bottom - r}`,
-          `V ${top + r}`,
-          `Q ${left} ${top} ${left + r} ${top}`,
-          "Z",
-        ].join(" ");
-      }
 
       const eyeL = document.getElementById("eyeL");
       const eyeR = document.getElementById("eyeR");
       const lidL = document.getElementById("lidL");
       const lidR = document.getElementById("lidR");
 
-      // Lower-lid mask: an ellipse whose top edge rises `curve` px into the
-      // eye from its bottom, turning the eye into a smooth happy crescent.
-      function placeLid(lid, cx, p, blink) {
-        const h = Math.max(3, p.h * blink);
-        const bottom = MID_Y + p.y + h / 2;
+      function placeEye(eye, lid, cx, p, blink) {
+        const ry = Math.max(1.5, p.ry * blink);
+        const x = cx + p.gx;
+        const y = MID_Y + p.y + p.gy;
+        eye.setAttribute("cx", x);
+        eye.setAttribute("cy", y);
+        eye.setAttribute("rx", p.rx);
+        eye.setAttribute("ry", ry);
+        // Lower-lid mask: top edge rises `curve` px into the eye from below.
         const rise = Math.max(0, p.curve) * blink;
-        lid.setAttribute("cx", cx + p.gaze);
-        lid.setAttribute("cy", bottom - rise + 26);
+        lid.setAttribute("cx", x);
+        lid.setAttribute("cy", y + ry - rise + 24);
       }
 
       function stepBlink(now) {
@@ -172,16 +146,27 @@
         }
       }
 
-      let lastGazeShift = 0;
+      let lastDriftShift = 0;
       function stepGaze(now) {
-        if (rig.mood !== "neutral") {
-          rig.target.gaze = 0;
+        if (rig.mood === "sleeping") {
+          rig.target.gx = 0;
+          rig.target.gy = 0;
           return;
         }
-        if (now - lastGazeShift > 2800 + Math.random() * 1500) {
-          lastGazeShift = now;
-          rig.target.gaze = (Math.random() - 0.5) * 14;
+        if (
+          rig.mood === "neutral" &&
+          now - lastDriftShift > 2800 + Math.random() * 1500
+        ) {
+          lastDriftShift = now;
+          rig.driftGaze.x = (Math.random() - 0.5) * 8;
+          rig.driftGaze.y = (Math.random() - 0.5) * 4;
         }
+        if (rig.mood !== "neutral") {
+          rig.driftGaze.x = 0;
+          rig.driftGaze.y = 0;
+        }
+        rig.target.gx = rig.screenGaze.x + rig.driftGaze.x;
+        rig.target.gy = rig.screenGaze.y + rig.driftGaze.y;
       }
 
       function frame(now) {
@@ -189,17 +174,14 @@
         stepGaze(now);
         const c = rig.current;
         const t = rig.target;
-        for (const key of ["w", "h", "r", "curve", "y", "gaze"]) {
+        for (const key of ["rx", "ry", "curve", "y", "gx", "gy"]) {
           c[key] += (t[key] - c[key]) * 0.12;
         }
         // Sleeping breathes: a slow, gentle bob.
-        const breath =
-          rig.mood === "sleeping" ? Math.sin(now / 900) * 1.6 : 0;
+        const breath = rig.mood === "sleeping" ? Math.sin(now / 900) * 1.6 : 0;
         const p = { ...c, y: c.y + breath };
-        eyeL.setAttribute("d", eyePath(CENTERS[0], p, rig.blink));
-        eyeR.setAttribute("d", eyePath(CENTERS[1], p, rig.blink));
-        placeLid(lidL, CENTERS[0], p, rig.blink);
-        placeLid(lidR, CENTERS[1], p, rig.blink);
+        placeEye(eyeL, lidL, CENTERS[0], p, rig.blink);
+        placeEye(eyeR, lidR, CENTERS[1], p, rig.blink);
         requestAnimationFrame(frame);
       }
       requestAnimationFrame(frame);
@@ -207,12 +189,43 @@
       function setMood(mood) {
         if (rig.mood === mood) return;
         rig.mood = mood;
-        rig.target = { ...EXPRESSIONS[mood], gaze: 0 };
+        rig.target = { ...EXPRESSIONS[mood], gx: rig.target.gx, gy: rig.target.gy };
       }
 
-      // ---- State from the mesh runtime ----------------------------------
+      // ---- Look toward the center of the screen --------------------------
+      // Poll the window's position on its monitor; the eyes aim from the
+      // window's center toward the monitor's center. Top-right corner means
+      // look left and down. Falls back to straight ahead if the window
+      // permissions are unavailable.
       const invoke =
         window.__TAURI__?.core?.invoke || window.__TAURI_INTERNALS__?.invoke;
+      const LABEL = "mesh-buddy";
+      async function pollGaze() {
+        if (!invoke) return;
+        try {
+          const [pos, size, monitor] = await Promise.all([
+            invoke("plugin:window|outer_position", { label: LABEL }),
+            invoke("plugin:window|outer_size", { label: LABEL }),
+            invoke("plugin:window|current_monitor", { label: LABEL }),
+          ]);
+          if (!pos || !size || !monitor) return;
+          const winCx = pos.x + size.width / 2;
+          const winCy = pos.y + size.height / 2;
+          const monCx = monitor.position.x + monitor.size.width / 2;
+          const monCy = monitor.position.y + monitor.size.height / 2;
+          const nx = (monCx - winCx) / (monitor.size.width / 2);
+          const ny = (monCy - winCy) / (monitor.size.height / 2);
+          rig.screenGaze.x = Math.max(-1, Math.min(1, nx)) * 9;
+          rig.screenGaze.y = Math.max(-1, Math.min(1, ny)) * 6;
+        } catch {
+          rig.screenGaze.x = 0;
+          rig.screenGaze.y = 0;
+        }
+      }
+      pollGaze();
+      setInterval(pollGaze, 500);
+
+      // ---- State from the mesh runtime ------------------------------------
       async function tick() {
         if (!invoke) return;
         try {
@@ -222,10 +235,10 @@
           ]);
           const tokens = usage?.tokensServed || 0;
           const inflight = usage?.inflight || 0;
-          document.getElementById("count").textContent = tokens.toLocaleString();
+          document.getElementById("tokens").textContent =
+            "tok " + tokens.toLocaleString();
           const nodes = (usage?.peers || 0) + 1;
-          document.getElementById("nodes").textContent =
-            nodes + (nodes === 1 ? " active node in mesh" : " active nodes in mesh");
+          document.getElementById("nodes").textContent = nodes + " node" + (nodes === 1 ? "" : "s");
           const state = status?.state;
           if (state === "running") setMood(inflight > 0 ? "happy" : "neutral");
           else if (state === "starting") setMood("waking");
