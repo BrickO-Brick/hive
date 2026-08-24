@@ -42,6 +42,18 @@ export function settleProgrammaticBottomPin(
   );
 }
 
+export function resolveTimelineReadPresence({
+  isPhysicallyAtBottom: _isPhysicallyAtBottom,
+  isSemanticallyAtBottom,
+}: {
+  isPhysicallyAtBottom: boolean;
+  isSemanticallyAtBottom: boolean;
+}): boolean {
+  // A buffered timeline can shorten the rendered model enough that the
+  // virtualizer reports its physical floor while newer messages remain hidden.
+  return isSemanticallyAtBottom;
+}
+
 export function shouldSettleForSplitPanel({
   isAtBottom,
   splitPanelOpen,

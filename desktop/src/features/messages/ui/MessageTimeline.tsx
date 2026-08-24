@@ -23,6 +23,7 @@ import { TimelineSkeleton, useTimelineSkeletonRows } from "./TimelineSkeleton";
 import { TimelineMessageList } from "./TimelineMessageList";
 import type { TimelineVirtualizerApi } from "./TimelineMessageList";
 import { useAnchoredScroll } from "./useAnchoredScroll";
+import { resolveTimelineReadPresence } from "./anchoredScrollPolicy";
 import { useLoadOlderOnScroll } from "./useLoadOlderOnScroll";
 import { useBufferedTimelineMessages } from "./useBufferedTimelineMessages";
 import {
@@ -372,8 +373,17 @@ const MessageTimelineBase = React.forwardRef<
   });
 
   React.useEffect(() => {
-    onAtBottomChange?.(isAtBottom);
-  }, [isAtBottom, onAtBottomChange]);
+    // Read presence follows the semantic tail, not the physical virtualizer
+    // floor. While live arrivals are buffered, freezing the rendered tail can
+    // make the shortened DOM report physically at-bottom even though the
+    // reader is still scrolled away from the new messages.
+    onAtBottomChange?.(
+      resolveTimelineReadPresence({
+        isPhysicallyAtBottom: isAtBottom,
+        isSemanticallyAtBottom,
+      }),
+    );
+  }, [isAtBottom, isSemanticallyAtBottom, onAtBottomChange]);
   const hasConfirmedVirtualizerBottomRef = React.useRef(false);
   const bottomConfirmationChannelRef = React.useRef(channelId);
   if (bottomConfirmationChannelRef.current !== channelId) {

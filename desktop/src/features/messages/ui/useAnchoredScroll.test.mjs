@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   getPinnedCenterDrift,
+  resolveTimelineReadPresence,
   settleProgrammaticBottomPin,
   shouldIgnorePinnedCenterScroll,
   shouldSettleForSplitPanel,
@@ -22,6 +23,23 @@ function fakeContainer({ clientHeight, scrollHeight, scrollTop }) {
     },
   };
 }
+
+test("buffered arrivals do not become read when the shortened timeline reports its physical floor", () => {
+  assert.equal(
+    resolveTimelineReadPresence({
+      isPhysicallyAtBottom: true,
+      isSemanticallyAtBottom: false,
+    }),
+    false,
+  );
+  assert.equal(
+    resolveTimelineReadPresence({
+      isPhysicallyAtBottom: true,
+      isSemanticallyAtBottom: true,
+    }),
+    true,
+  );
+});
 
 test("split panel settles only an already-bottomed timeline", () => {
   assert.equal(
