@@ -63,6 +63,14 @@ export function getChannelIntroDescription(channel: Channel): string | null {
   );
 }
 
+/** Whether a caller-owned auxiliary sheet should render ahead of a thread. */
+export function shouldPrioritizeIdleAuxiliary(
+  overrideThread: boolean,
+  hasIdleAuxiliary: boolean,
+) {
+  return overrideThread && hasIdleAuxiliary;
+}
+
 export function isWelcomeSetupSystemMessage(message: TimelineMessage) {
   if (message.kind !== KIND_SYSTEM_MESSAGE) {
     return false;

@@ -47,6 +47,7 @@ import {
 import { useWelcomeComposerBanner } from "@/features/channels/ui/useWelcomeComposerBanner";
 import {
   mentionsKnownAgent,
+  shouldPrioritizeIdleAuxiliary,
   shouldUseFocusIdleDrawer,
 } from "@/features/channels/ui/ChannelPane.helpers";
 import { HuddleStartingView, HuddleTranscriptIntro } from "@/features/huddle";
@@ -479,6 +480,8 @@ export const ChannelPane = React.memo(function ChannelPane({
       }),
     [agentSessionAgents, openAgentSessionPubkey, profilePanelPubkey, profiles],
   );
+  const hasIdleAuxiliary =
+    Boolean(idleAuxiliaryPanel) && Boolean(onCloseIdleAuxiliaryPanel);
   const useFocusIdleDrawer = shouldUseFocusIdleDrawer({
     channelManagementOpen,
     hasAgentSession: Boolean(activeChannel && selectedAgent),
@@ -488,8 +491,10 @@ export const ChannelPane = React.memo(function ChannelPane({
     hasThreadSurface: Boolean(threadHeadMessage) || shouldShowThreadSkeleton,
     useSplitAuxiliaryPane,
   });
-  const priorityIdleAuxiliary =
-    idleAuxiliaryOverridesThread && useFocusIdleDrawer;
+  const priorityIdleAuxiliary = shouldPrioritizeIdleAuxiliary(
+    idleAuxiliaryOverridesThread,
+    hasIdleAuxiliary,
+  );
   const { channelIsCovered, markExitComplete } = useFocusDrawerPresence(
     useFocusThreadDrawer || useFocusIdleDrawer,
     priorityIdleAuxiliary
