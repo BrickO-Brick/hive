@@ -306,6 +306,10 @@ export function ChannelScreen({
     welcomeGuideAgent,
   });
   const relayAgentsQuery = useRelayAgentsQuery();
+  const agentsLoading =
+    channelMembersQuery.isLoading ||
+    managedAgentsQuery.isLoading ||
+    relayAgentsQuery.isLoading;
   const relayAgents = relayAgentsQuery.data ?? [];
   const knownAgentPubkeys = React.useMemo(
     () =>
@@ -568,16 +572,14 @@ export function ChannelScreen({
   } = useChannelAgentSessions({
     activeChannel,
     activeChannelId,
-    agentsLoaded:
-      !channelMembersQuery.isLoading &&
-      !managedAgentsQuery.isLoading &&
-      !relayAgentsQuery.isLoading,
+    agentsLoaded: !agentsLoading,
     channelMembers,
     handleOpenThread,
     managedAgents: agentSessionCandidates,
     openAgentSessionPubkey,
     openThreadHeadId: effectiveOpenThreadHeadId,
     profilePanelPubkey,
+    preserveUnresolvedSession: isDedicatedActivityWindow,
     setChannelManagementOpen,
     setExpandedThreadReplyIds,
     setOpenAgentSessionChannelId,
@@ -890,6 +892,7 @@ export function ChannelScreen({
                   isMessageUnreadById={isMessageUnread}
                   isFollowingThread={isNotifiedForEffectiveThread}
                   isSending={sendMessageMutation.isPending}
+                  isAgentSessionLoading={agentsLoading}
                   isSinglePanelView={isSinglePanelView}
                   isTimelineLoading={isTimelineLoading}
                   messages={timelineMessages}

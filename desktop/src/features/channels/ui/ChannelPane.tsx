@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Hash, LogIn } from "lucide-react";
+import { Hash, LoaderCircle, LogIn } from "lucide-react";
 import { AnimatePresence } from "motion/react";
 import { useAppNavigation } from "@/app/navigation/useAppNavigation";
 import { useMediaUpload } from "@/features/messages/lib/useMediaUpload";
@@ -87,6 +87,7 @@ export const ChannelPane = React.memo(function ChannelPane({
   isMessageUnreadById,
   isJoining = false,
   isSinglePanelView = false,
+  isAgentSessionLoading = false,
   isSending,
   isTimelineLoading,
   entranceMessageId = null,
@@ -914,6 +915,30 @@ export const ChannelPane = React.memo(function ChannelPane({
             );
             return wrapAux(panel, "agent-session-thread-panel");
           })()
+        ) : isSinglePanelView && openAgentSessionPubkey ? (
+          <div
+            className="flex min-h-0 flex-1 items-center justify-center p-8 text-center"
+            data-testid="agent-session-unavailable"
+          >
+            <div className="max-w-sm space-y-2">
+              {isAgentSessionLoading ? (
+                <LoaderCircle
+                  aria-hidden="true"
+                  className="mx-auto h-5 w-5 animate-spin text-muted-foreground"
+                />
+              ) : null}
+              <h1 className="text-lg font-semibold">
+                {isAgentSessionLoading
+                  ? "Loading agent activity…"
+                  : "Agent activity unavailable"}
+              </h1>
+              <p className="text-sm text-muted-foreground">
+                {isAgentSessionLoading
+                  ? "Buzz is finding this agent."
+                  : "This agent is no longer available in this community. You can close this window and open another activity feed from Buzz."}
+              </p>
+            </div>
+          </div>
         ) : profilePanelPubkey ? (
           (() => {
             const panel = (

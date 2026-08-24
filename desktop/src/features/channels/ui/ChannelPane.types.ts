@@ -54,6 +54,7 @@ export type ChannelPaneProps = {
   isHuddleTranscript?: boolean;
   isJoining?: boolean;
   isSinglePanelView?: boolean;
+  isAgentSessionLoading?: boolean;
   isSending: boolean;
   isTimelineLoading: boolean;
   /** Newly-created message that should receive the one-shot conversation arrival motion. */
