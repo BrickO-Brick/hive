@@ -435,6 +435,26 @@ function fencedCodeItems() {
   ];
 }
 
+/** One *human prompt* whose body is a fenced code block. */
+function fencedCodePromptItems() {
+  return [
+    {
+      channelId: "chan-1",
+      sessionId: "sess-1",
+      turnId: "turn-1",
+      id: "msg:user",
+      type: "message",
+      renderClass: "message",
+      role: "user",
+      title: TRIGGER_TITLE,
+      text: "fix this\n\n```ts\nconst a = 1;\nconst b = 2;\n```\n",
+      timestamp: "2026-06-14T19:00:00.000Z",
+      messageId: "event-1",
+      authorPubkey: AUTHOR,
+    },
+  ];
+}
+
 /**
  * Same mount, but the caller can swap the list props afterwards. Needed for the
  * contracts that are only visible across a rerender: a streaming thought
@@ -619,11 +639,42 @@ test("conversation frames fenced code with berd's header row", async () => {
   assert.equal(code.querySelectorAll("[data-line]").length, 2);
 });
 
-test("channel-message code blocks are untouched by the focus recipe", async () => {
+test("conversation applies the code recipe to a fenced human prompt too", async () => {
+  // Regression guard for a real bug quality caught. The provider was first
+  // mounted inside `MessageActivity`, which only handles assistant items — the
+  // user bubble returns before it, so a fence inside a prompt kept the legacy
+  // 16px muted frame nested inside the new 12px bubble. The recipe is a
+  // property of the *surface*, not of a role, so the provider now sits at the
+  // transcript boundary and both roles inherit it.
+  const { container } = await renderTranscriptWithCodeChrome("conversation", {
+    items: fencedCodePromptItems(),
+  });
+  const bubble = container.querySelector(
+    '[data-testid="transcript-user-message"]',
+  );
+  assert.ok(bubble, "the prompt should render");
+  assert.ok(
+    bubble.querySelector('[data-testid="markdown-code-block-header"]'),
+    "a fence inside the prompt gets berd's header row",
+  );
+  const frame = bubble.querySelector("pre");
+  assert.match(frame.className, /rounded-lg/);
+  assert.doesNotMatch(
+    frame.className,
+    /rounded-2xl/,
+    "the legacy 16px frame must not nest inside the 12px bubble",
+  );
+  assert.doesNotMatch(frame.className, /pr-12/);
+});
+
+test("the default transcript variant keeps the legacy code chrome", async () => {
   // The markdown renderer is shared with channel messages, so `focusProse` is
-  // opt-in per surface. Rendering the same fenced block through `default` must
-  // still produce the original chrome: no header row, 16px radius, muted fill,
-  // and the absolutely-positioned copy button.
+  // opt-in per surface. Rendering the same fenced block through the `default`
+  // transcript variant must still produce the original chrome: no header row,
+  // 16px radius, muted fill, and the absolutely-positioned copy button.
+  //
+  // This proves the *variant gate*, not the channel-message row itself — those
+  // rows are covered by the markdown tests in `shared/ui/markdown`.
   const { container } = await renderTranscriptWithCodeChrome("default", {
     items: fencedCodeItems(),
   });

@@ -1,6 +1,5 @@
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import { Markdown } from "@/shared/ui/markdown";
-import { CodeBlockVariantContext } from "@/shared/ui/markdown/CodeBlock";
 import { UserAvatar } from "@/shared/ui/UserAvatar";
 import { useAgentSessionTranscriptVariant } from "../agentSessionTranscriptContext";
 import { formatTranscriptTimestampTitle } from "../agentSessionUtils";
@@ -99,25 +98,19 @@ function MessageItem({
           }
           title={formatTranscriptTimestampTitle(item.timestamp)}
         >
-          {/* A context provider renders no DOM, so wrapping unconditionally
-              keeps `default`/`compactPreview` markup byte-identical. */}
-          <CodeBlockVariantContext.Provider
-            value={isConversation ? "focusProse" : "default"}
-          >
-            <Markdown
-              className={
-                isCompactPreview
-                  ? "text-xs leading-4"
-                  : isConversation
-                    ? // Focus mode reads as prose: no box, comfortable line
-                      // height, and full-fidelity markdown/code from the shared
-                      // renderer.
-                      "leading-relaxed"
-                    : "leading-5"
-              }
-              content={text || " "}
-            />
-          </CodeBlockVariantContext.Provider>
+          <Markdown
+            className={
+              isCompactPreview
+                ? "text-xs leading-4"
+                : isConversation
+                  ? // Focus mode reads as prose: no box, comfortable line
+                    // height, and full-fidelity markdown/code from the shared
+                    // renderer.
+                    "leading-relaxed"
+                  : "leading-5"
+            }
+            content={text || " "}
+          />
         </div>
       </div>
     </div>

@@ -28,7 +28,10 @@ import { getReactNodeText } from "./utils";
  * border, and no shadow.
  *
  * It is opt-in because this renderer is shared with channel messages —
- * restyling the default would change every code block in the app.
+ * restyling the default would change every code block in the app. The variant
+ * is a property of the *surface*, not of a role: `AgentSessionTranscriptList`
+ * provides it once at the transcript boundary, so a fence in a human prompt
+ * gets the same chrome as one in an agent reply.
  *
  * Delivered through context rather than a `MarkdownCodeBlock` prop for the same
  * reason as `VideoReviewMarkdownContext`: the component map handed to
