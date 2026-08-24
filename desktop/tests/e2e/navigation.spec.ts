@@ -791,7 +791,7 @@ test("message links to visible root messages highlight them in the main timeline
   await expect(randomChannelLink).toHaveCSS("display", "inline");
   await expect(
     randomChannelLink.locator(".inline-chip-leading-fragment"),
-  ).toHaveText("r");
+  ).toHaveText("rando");
   await expect(randomChannelLink).not.toHaveAttribute("title");
   await randomChannelLink.hover();
   const channelTooltip = page.getByRole("tooltip");
