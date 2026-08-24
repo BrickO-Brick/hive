@@ -10,6 +10,7 @@ import { useCommunities } from "@/features/communities/useCommunities";
 import type { ProjectDetailAgentContext } from "@/features/projects/lib/projectDetailAgentContext";
 import { projectDetailAgentContextBlock } from "@/features/projects/lib/projectDetailAgentContext";
 import {
+  projectAgentMembershipInput,
   restoreProjectsAgentConversation,
   submitProjectAgentMessage,
 } from "@/features/projects/lib/projectAgentConversation";
@@ -164,11 +165,14 @@ export function ProjectAgentChatPanel({
               normalizePubkey(pubkey) === normalizePubkey(selectedAgent.pubkey),
           );
           if (!alreadyMember) {
-            await addChannelMembers({
-              channelId: homeChannel.id,
-              pubkeys: [selectedAgent.pubkey],
-              role: "bot",
-            });
+            await addChannelMembers(
+              projectAgentMembershipInput({
+                channelId: homeChannel.id,
+                agentPubkey: selectedAgent.pubkey,
+                relayScope,
+                signerScope,
+              }),
+            );
           }
         }
         const { channel, sent } = await submitProjectAgentMessage({
@@ -239,6 +243,7 @@ export function ProjectAgentChatPanel({
       openDmMutation,
       relayScope,
       selectedAgent,
+      signerScope,
       startAgentMutation,
       storageScope,
     ],

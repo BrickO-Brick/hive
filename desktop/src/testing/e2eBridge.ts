@@ -7411,6 +7411,8 @@ async function handleAddChannelMembers(
     channelId: string;
     pubkeys: string[];
     role?: RawChannelMember["role"];
+    expectedRelayUrl?: string | null;
+    expectedSignerPubkey?: string | null;
   },
   config: E2eConfig | undefined,
 ): Promise<RawAddChannelMembersResponse> {
@@ -7420,6 +7422,8 @@ async function handleAddChannelMembers(
       window.setTimeout(resolve, addChannelMembersDelayMs),
     );
   }
+  assertExpectedRelayScope(args.expectedRelayUrl, config);
+  assertExpectedSigner(args.expectedSignerPubkey, config);
   const configuredErrors = config?.mock?.addChannelMembersErrors;
   if (configuredErrors && configuredErrors.length > 0) {
     const index = Math.min(
