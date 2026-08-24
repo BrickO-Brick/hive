@@ -420,6 +420,12 @@ type E2eConfig = {
      *  (e.g. `["link-preview-image"]` fails only the thumbnail, favicon survives). */
     linkPreviewUploadErrorFilenames?: string[];
     searchProfiles?: MockSearchProfileSeed[];
+    /** Deterministic NIP-23 note heads returned by the Notes viewer commands. */
+    longFormNotes?: RawLongFormNote[];
+    /** Delay Notes reads so loading states can be captured. */
+    longFormNotesDelayMs?: number;
+    /** Reject Notes reads with this message. */
+    longFormNotesError?: string;
     updateAvailable?: boolean;
     updateChannelDelayMs?: number;
     updateDownloadDelayMs?: number;
@@ -836,6 +842,20 @@ type RawForumThreadResponse = {
   replies: RawForumReply[];
   total_replies: number;
   next_cursor: string | null;
+};
+
+type RawLongFormNote = {
+  coordinate: string;
+  id: string;
+  pubkey: string;
+  slug: string;
+  title: string;
+  summary: string | null;
+  topics: string[];
+  published_at: number | null;
+  updated_at: number | null;
+  created_at: number;
+  content: string;
 };
 
 type RawUserNote = {
@@ -5583,6 +5603,52 @@ async function handleGetChannelWindow(
     probe.__CHANNEL_WINDOW_INFLIGHT__ =
       (probe.__CHANNEL_WINDOW_INFLIGHT__ ?? 1) - 1;
   }
+}
+
+async function handleLongFormNotesDelay(config: E2eConfig | undefined) {
+  const delayMs = config?.mock?.longFormNotesDelayMs ?? 0;
+  if (delayMs > 0) {
+    await new Promise<void>((resolve) => window.setTimeout(resolve, delayMs));
+  }
+  if (config?.mock?.longFormNotesError) {
+    throw new Error(config.mock.longFormNotesError);
+  }
+}
+
+async function handleListLongFormNotes(
+  args: {
+    author?: string | null;
+    tag?: string | null;
+    limit?: number | null;
+    until?: number | null;
+  } | null,
+  config: E2eConfig | undefined,
+): Promise<RawLongFormNote[]> {
+  await handleLongFormNotesDelay(config);
+  return [...(config?.mock?.longFormNotes ?? [])]
+    .filter(
+      (note) => !args?.author || note.pubkey === args.author.toLowerCase(),
+    )
+    .filter((note) => !args?.tag || note.topics.includes(args.tag))
+    .filter((note) => args?.until == null || note.created_at <= args.until)
+    .sort(
+      (left, right) =>
+        right.created_at - left.created_at || left.id.localeCompare(right.id),
+    )
+    .slice(0, args?.limit ?? 50);
+}
+
+async function handleGetLongFormNote(
+  args: { pubkeyHex?: string; slug?: string },
+  config: E2eConfig | undefined,
+): Promise<RawLongFormNote | null> {
+  await handleLongFormNotesDelay(config);
+  const pubkey = args.pubkeyHex?.toLowerCase();
+  return (
+    config?.mock?.longFormNotes?.find(
+      (note) => note.pubkey === pubkey && note.slug === args.slug,
+    ) ?? null
+  );
 }
 
 function getMockUserNotes(pubkey: string): RawUserNote[] {
@@ -11960,6 +12026,16 @@ export function maybeInstallE2eTauriMocks() {
       case "get_users_batch":
         return handleGetUsersBatch(
           payload as Parameters<typeof handleGetUsersBatch>[0],
+          activeConfig,
+        );
+      case "list_long_form_notes":
+        return handleListLongFormNotes(
+          payload as Parameters<typeof handleListLongFormNotes>[0],
+          activeConfig,
+        );
+      case "get_long_form_note":
+        return handleGetLongFormNote(
+          payload as Parameters<typeof handleGetLongFormNote>[0],
           activeConfig,
         );
       case "get_user_notes":

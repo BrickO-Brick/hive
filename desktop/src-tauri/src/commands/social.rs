@@ -7,7 +7,8 @@ use crate::{
     app_state::AppState,
     events,
     models::{
-        ContactEntry, ContactListResponse, NoteReactionSummary, UserNoteInfo, UserNotesResponse,
+        ContactEntry, ContactListResponse, LongFormNoteInfo, NoteReactionSummary, UserNoteInfo,
+        UserNotesResponse,
     },
     nostr_convert,
     relay::{query_relay, submit_event, SubmitEventResponse},
@@ -48,6 +49,182 @@ fn reaction_emoji(event: &Event) -> String {
     } else {
         event.content.clone()
     }
+}
+
+const LONG_FORM_NOTE_KIND: u16 = 30_023;
+const MAX_LONG_FORM_NOTES: u32 = 200;
+
+fn first_tag_value(event: &Event, name: &str) -> Option<String> {
+    event.tags.iter().find_map(|tag| {
+        let values = tag.as_slice();
+        match (values.first().map(String::as_str), values.get(1)) {
+            (Some(tag_name), Some(value)) if tag_name == name => {
+                let trimmed = value.trim();
+                (!trimmed.is_empty()).then(|| trimmed.to_string())
+            }
+            _ => None,
+        }
+    })
+}
+
+fn all_tag_values(event: &Event, name: &str) -> Vec<String> {
+    event
+        .tags
+        .iter()
+        .filter_map(|tag| {
+            let values = tag.as_slice();
+            match (values.first().map(String::as_str), values.get(1)) {
+                (Some(tag_name), Some(value)) if tag_name == name => {
+                    let trimmed = value.trim();
+                    (!trimmed.is_empty()).then(|| trimmed.to_string())
+                }
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+fn parse_timestamp_tag(event: &Event, name: &str) -> Option<i64> {
+    first_tag_value(event, name).and_then(|value| value.parse::<i64>().ok())
+}
+
+fn fallback_long_form_title() -> String {
+    "Untitled note".to_string()
+}
+
+fn validate_long_form_author(author: &str) -> Result<String, String> {
+    let author = author.trim().to_lowercase();
+    if author.len() != 64 || !author.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err("invalid note author pubkey".to_string());
+    }
+    Ok(author)
+}
+
+fn validate_long_form_slug(slug: &str) -> Result<String, String> {
+    let slug = slug.trim();
+    if slug.is_empty()
+        || slug.len() > 80
+        || !slug.chars().all(|character| {
+            character.is_ascii_lowercase()
+                || character.is_ascii_digit()
+                || matches!(character, '.' | '_' | '-')
+        })
+    {
+        return Err("invalid note slug".to_string());
+    }
+    Ok(slug.to_string())
+}
+
+fn long_form_note_from_event(event: &Event) -> Option<LongFormNoteInfo> {
+    if event.kind != nostr::Kind::Custom(LONG_FORM_NOTE_KIND) {
+        return None;
+    }
+
+    let slug = validate_long_form_slug(&first_tag_value(event, "d")?).ok()?;
+    let pubkey = event.pubkey.to_hex().to_lowercase();
+    let created_at = event.created_at.as_secs() as i64;
+    let title = first_tag_value(event, "title").unwrap_or_else(fallback_long_form_title);
+    Some(LongFormNoteInfo {
+        coordinate: format!("{LONG_FORM_NOTE_KIND}:{pubkey}:{slug}"),
+        id: event.id.to_hex(),
+        pubkey,
+        slug,
+        title,
+        summary: first_tag_value(event, "summary"),
+        topics: all_tag_values(event, "t"),
+        published_at: parse_timestamp_tag(event, "published_at").filter(|value| *value >= 0),
+        updated_at: Some(created_at),
+        created_at,
+        content: event.content.clone(),
+    })
+}
+
+fn fold_long_form_notes(events: &[Event]) -> Vec<LongFormNoteInfo> {
+    let mut by_coordinate = HashMap::<String, LongFormNoteInfo>::new();
+    for event in events {
+        let Some(note) = long_form_note_from_event(event) else {
+            continue;
+        };
+        let replace = by_coordinate
+            .get(&note.coordinate)
+            .map(|current| {
+                (note.created_at, std::cmp::Reverse(&note.id))
+                    > (current.created_at, std::cmp::Reverse(&current.id))
+            })
+            .unwrap_or(true);
+        if replace {
+            by_coordinate.insert(note.coordinate.clone(), note);
+        }
+    }
+
+    let mut notes: Vec<_> = by_coordinate.into_values().collect();
+    notes.sort_by(|left, right| (right.created_at, &left.id).cmp(&(left.created_at, &right.id)));
+    notes
+}
+
+/// Fetch the first page of current NIP-23 long-form note heads.
+#[tauri::command]
+pub async fn list_long_form_notes(
+    author: Option<String>,
+    tag: Option<String>,
+    limit: Option<u32>,
+    until: Option<i64>,
+    state: State<'_, AppState>,
+) -> Result<Vec<LongFormNoteInfo>, String> {
+    let mut filter = serde_json::Map::new();
+    filter.insert(
+        "kinds".to_string(),
+        serde_json::json!([LONG_FORM_NOTE_KIND]),
+    );
+    filter.insert(
+        "limit".to_string(),
+        serde_json::json!(limit.unwrap_or(50).clamp(1, MAX_LONG_FORM_NOTES)),
+    );
+    if let Some(author) = author.filter(|value| !value.trim().is_empty()) {
+        filter.insert(
+            "authors".to_string(),
+            serde_json::json!([validate_long_form_author(&author)?]),
+        );
+    }
+    if let Some(tag) = tag.filter(|value| !value.trim().is_empty()) {
+        let tag = tag.trim();
+        if tag.len() > 80 {
+            return Err("invalid note topic".to_string());
+        }
+        filter.insert("#t".to_string(), serde_json::json!([tag]));
+    }
+    if let Some(until) = until {
+        if until < 0 {
+            return Err("invalid note cursor".to_string());
+        }
+        filter.insert("until".to_string(), serde_json::json!(until));
+    }
+
+    let events = query_relay(&state, &[serde_json::Value::Object(filter)]).await?;
+    Ok(fold_long_form_notes(&events))
+}
+
+/// Fetch a current NIP-23 long-form note by its author + d-tag coordinate.
+#[tauri::command]
+pub async fn get_long_form_note(
+    pubkey_hex: String,
+    slug: String,
+    state: State<'_, AppState>,
+) -> Result<Option<LongFormNoteInfo>, String> {
+    let pubkey_hex = validate_long_form_author(&pubkey_hex)?;
+    let slug = validate_long_form_slug(&slug)?;
+
+    let events = query_relay(
+        &state,
+        &[serde_json::json!({
+            "kinds": [LONG_FORM_NOTE_KIND],
+            "authors": [pubkey_hex],
+            "#d": [slug],
+            "limit": 1,
+        })],
+    )
+    .await?;
+    Ok(fold_long_form_notes(&events).into_iter().next())
 }
 
 /// Publish a global kind:1 text note (NIP-01).
@@ -420,6 +597,14 @@ mod tests {
             .expect("sign event")
     }
 
+    fn long_form_event(keys: &Keys, tags: Vec<Tag>, content: &str, created_at: u64) -> Event {
+        EventBuilder::new(Kind::Custom(LONG_FORM_NOTE_KIND), content)
+            .tags(tags)
+            .custom_created_at(nostr::Timestamp::from_secs(created_at))
+            .sign_with_keys(keys)
+            .expect("sign long-form event")
+    }
+
     #[test]
     fn e_tag_id_returns_only_event_tag_values() {
         let e = tag(&["e", "a"]);
@@ -472,5 +657,102 @@ mod tests {
         assert!(validate_note_id(&"a".repeat(64)).is_ok());
         assert!(validate_note_id(&"g".repeat(64)).is_err());
         assert!(validate_note_id(&"a".repeat(63)).is_err());
+    }
+
+    #[test]
+    fn long_form_mapper_rejects_missing_empty_or_invalid_coordinates() {
+        let keys = Keys::generate();
+        let missing = long_form_event(&keys, vec![tag(&["title", "Missing"])], "body", 1);
+        let empty = long_form_event(&keys, vec![tag(&["d", "   "])], "body", 2);
+        let invalid = long_form_event(&keys, vec![tag(&["d", "Bad Slug"])], "body", 3);
+        assert_eq!(long_form_note_from_event(&missing), None);
+        assert_eq!(long_form_note_from_event(&empty), None);
+        assert_eq!(long_form_note_from_event(&invalid), None);
+    }
+
+    #[test]
+    fn long_form_coordinate_validation_matches_the_note_contract() {
+        assert_eq!(
+            validate_long_form_author(&"A".repeat(64)),
+            Ok("a".repeat(64))
+        );
+        assert!(validate_long_form_author(&"a".repeat(63)).is_err());
+        assert_eq!(
+            validate_long_form_slug("release-v0.1_56"),
+            Ok("release-v0.1_56".to_string())
+        );
+        assert!(validate_long_form_slug("Bad Slug").is_err());
+        assert!(validate_long_form_slug(&"a".repeat(81)).is_err());
+    }
+
+    #[test]
+    fn long_form_mapper_parses_metadata_and_uses_safe_title_fallback() {
+        let keys = Keys::generate();
+        let ev = long_form_event(
+            &keys,
+            vec![
+                tag(&["d", "release-notes"]),
+                tag(&["summary", "A summary"]),
+                tag(&["t", "buzz"]),
+                tag(&["t", "desktop"]),
+                tag(&["published_at", "100"]),
+                tag(&["updated_at", "not-a-number"]),
+            ],
+            "# Body",
+            200,
+        );
+        let note = long_form_note_from_event(&ev).expect("valid long-form note");
+        assert_eq!(note.title, "Untitled note");
+        assert_eq!(note.summary.as_deref(), Some("A summary"));
+        assert_eq!(note.topics, vec!["buzz", "desktop"]);
+        assert_eq!(note.published_at, Some(100));
+        assert_eq!(note.updated_at, Some(200));
+        assert_eq!(note.content, "# Body");
+        assert_eq!(
+            note.coordinate,
+            format!("30023:{}:release-notes", keys.public_key().to_hex())
+        );
+    }
+
+    #[test]
+    fn long_form_fold_keeps_newest_revision_by_coordinate_and_tuple() {
+        let keys = Keys::generate();
+        let older = long_form_event(
+            &keys,
+            vec![tag(&["d", "same"]), tag(&["title", "Older"])],
+            "old",
+            100,
+        );
+        let newer = long_form_event(
+            &keys,
+            vec![tag(&["d", "same"]), tag(&["title", "Newer"])],
+            "new",
+            101,
+        );
+        let notes = fold_long_form_notes(&[older, newer.clone()]);
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].id, newer.id.to_hex());
+        assert_eq!(notes[0].title, "Newer");
+    }
+
+    #[test]
+    fn long_form_fold_uses_lower_event_id_for_same_second_ties() {
+        let keys = Keys::generate();
+        let first = long_form_event(
+            &keys,
+            vec![tag(&["d", "same"]), tag(&["title", "First"])],
+            "first",
+            100,
+        );
+        let second = long_form_event(
+            &keys,
+            vec![tag(&["d", "same"]), tag(&["title", "Second"])],
+            "second",
+            100,
+        );
+        let expected_id = std::cmp::min(first.id.to_hex(), second.id.to_hex());
+        let notes = fold_long_form_notes(&[first, second]);
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].id, expected_id);
     }
 }

@@ -80,6 +80,29 @@ export function useAppNavigation() {
     [commitNavigation],
   );
 
+  const goNotes = React.useCallback(
+    (behavior?: NavigationBehavior) =>
+      commitNavigation(
+        {
+          to: "/notes",
+        },
+        behavior,
+      ),
+    [commitNavigation],
+  );
+
+  const goLongFormNote = React.useCallback(
+    (author: string, slug: string, behavior?: NavigationBehavior) =>
+      commitNavigation(
+        {
+          to: "/notes/$author/$slug",
+          params: { author: author.toLowerCase(), slug },
+        },
+        behavior,
+      ),
+    [commitNavigation],
+  );
+
   const goProfile = React.useCallback(
     (pubkey: string, behavior?: NavigationBehavior) =>
       commitNavigation(
@@ -399,9 +422,11 @@ export function useAppNavigation() {
     goEditWorkflow,
     goForumPost,
     goHome,
+    goLongFormNote,
     goNewMessage,
     goNewWorkflow,
     goNewWorkflowForChannel,
+    goNotes,
     goProject,
     goProjects,
     goPulse,

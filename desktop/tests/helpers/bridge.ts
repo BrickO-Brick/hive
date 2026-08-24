@@ -346,6 +346,22 @@ type MockBridgeOptions = {
    *  mock.linkPreviewUploadErrorFilenames. */
   linkPreviewUploadErrorFilenames?: string[];
   searchProfiles?: MockSearchProfileSeed[];
+  /** NIP-23 note heads returned by the Notes viewer mock commands. */
+  longFormNotes?: Array<{
+    coordinate: string;
+    id: string;
+    pubkey: string;
+    slug: string;
+    title: string;
+    summary: string | null;
+    topics: string[];
+    published_at: number | null;
+    updated_at: number | null;
+    created_at: number;
+    content: string;
+  }>;
+  longFormNotesDelayMs?: number;
+  longFormNotesError?: string;
   updateAvailable?: boolean;
   updateChannelDelayMs?: number;
   updateDownloadDelayMs?: number;

@@ -4,6 +4,7 @@ import type {
   PublishNoteResult,
   UserNote,
   UserNotesResponse,
+  LongFormNote,
 } from "@/shared/api/socialTypes";
 
 import { invokeTauri } from "./tauri";
@@ -231,4 +232,60 @@ export async function getNotesTimeline(
         }
       : null,
   };
+}
+
+type RawLongFormNote = {
+  coordinate: string;
+  id: string;
+  pubkey: string;
+  slug: string;
+  title: string;
+  summary: string | null;
+  topics: string[];
+  published_at: number | null;
+  updated_at: number | null;
+  created_at: number;
+  content: string;
+};
+
+function fromRawLongFormNote(note: RawLongFormNote): LongFormNote {
+  return {
+    coordinate: note.coordinate,
+    id: note.id,
+    pubkey: note.pubkey,
+    slug: note.slug,
+    title: note.title,
+    summary: note.summary,
+    topics: note.topics,
+    publishedAt: note.published_at,
+    updatedAt: note.updated_at,
+    createdAt: note.created_at,
+    content: note.content,
+  };
+}
+
+export async function listLongFormNotes(options?: {
+  author?: string;
+  tag?: string;
+  limit?: number;
+  until?: number;
+}) {
+  const response = await invokeTauri<RawLongFormNote[]>(
+    "list_long_form_notes",
+    {
+      author: options?.author ?? null,
+      tag: options?.tag ?? null,
+      limit: options?.limit ?? null,
+      until: options?.until ?? null,
+    },
+  );
+  return response.map(fromRawLongFormNote);
+}
+
+export async function getLongFormNote(pubkeyHex: string, slug: string) {
+  const response = await invokeTauri<RawLongFormNote | null>(
+    "get_long_form_note",
+    { pubkeyHex, slug },
+  );
+  return response ? fromRawLongFormNote(response) : null;
 }

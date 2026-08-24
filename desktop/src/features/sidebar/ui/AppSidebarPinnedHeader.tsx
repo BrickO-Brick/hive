@@ -1,4 +1,4 @@
-import { Activity, Bot, Folders, Inbox, Zap } from "lucide-react";
+import { Activity, Bot, Folders, Inbox, NotebookText, Zap } from "lucide-react";
 
 import { TopbarSearch } from "@/features/search/ui/TopbarSearch";
 import { SidebarProjectsSection } from "@/features/sidebar/ui/SidebarProjectsSection";
@@ -18,6 +18,7 @@ type SidebarSelectedView =
   | "channel"
   | "messages"
   | "agents"
+  | "notes"
   | "workflows"
   | "pulse"
   | "projects";
@@ -42,6 +43,7 @@ type AppSidebarPrimaryMenuProps = {
   homeBadgeCount: number;
   onSelectAgents: () => void;
   onSelectHome: () => void;
+  onSelectNotes: () => void;
   onSelectProjects: () => void;
   onSelectPulse: () => void;
   onSelectWorkflows: () => void;
@@ -92,6 +94,7 @@ export function AppSidebarPrimaryMenu({
   homeBadgeCount,
   onSelectAgents,
   onSelectHome,
+  onSelectNotes,
   onSelectProjects,
   onSelectPulse,
   onSelectWorkflows,
@@ -165,6 +168,19 @@ export function AppSidebarPrimaryMenu({
             >
               <Bot className="h-4 w-4" />
               <SidebarMenuLabel>Agents</SidebarMenuLabel>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              className="data-[active=true]:font-normal"
+              data-testid="open-notes-view"
+              isActive={selectedView === "notes"}
+              onClick={onSelectNotes}
+              tooltip="Notes"
+              type="button"
+            >
+              <NotebookText className="h-4 w-4" />
+              <SidebarMenuLabel>Notes</SidebarMenuLabel>
             </SidebarMenuButton>
           </SidebarMenuItem>
           <FeatureGate feature="workflows">

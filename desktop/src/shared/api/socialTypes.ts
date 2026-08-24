@@ -41,3 +41,17 @@ export type ContactListResponse = {
   createdAt: number;
   contacts: ContactEntry[];
 };
+
+export type LongFormNote = {
+  coordinate: string;
+  id: string;
+  pubkey: string;
+  slug: string;
+  title: string;
+  summary: string | null;
+  topics: string[];
+  publishedAt: number | null;
+  updatedAt: number | null;
+  createdAt: number;
+  content: string;
+};

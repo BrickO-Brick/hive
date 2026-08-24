@@ -108,6 +108,22 @@ pub struct UserNotesResponse {
     pub next_cursor: Option<UserNotesCursor>,
 }
 
+/// Read-only representation of a NIP-23 long-form content event (kind 30023).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LongFormNoteInfo {
+    pub coordinate: String,
+    pub id: String,
+    pub pubkey: String,
+    pub slug: String,
+    pub title: String,
+    pub summary: Option<String>,
+    pub topics: Vec<String>,
+    pub published_at: Option<i64>,
+    pub updated_at: Option<i64>,
+    pub created_at: i64,
+    pub content: String,
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct ChannelInfo {
     pub id: String,

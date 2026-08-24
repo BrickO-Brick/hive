@@ -772,6 +772,8 @@ pub fn run() {
             grant_approval,
             deny_approval,
             publish_note,
+            list_long_form_notes,
+            get_long_form_note,
             get_contact_list,
             set_contact_list,
             get_notes_timeline,
