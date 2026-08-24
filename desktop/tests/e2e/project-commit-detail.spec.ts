@@ -801,6 +801,10 @@ test("commit detail opens from the commits feed with a diff", async ({
   await expect(page.getByTestId("focus-thread-drawer")).toBeVisible();
   await page.getByTestId("project-home-context-tasks").click();
   await expect(page.getByTestId("project-home-workspace-sheet")).toBeVisible();
+  await expect(page.getByTestId("focus-thread-drawer")).toHaveCSS(
+    "outline-style",
+    "none",
+  );
   const workspaceSheet = page.getByTestId("project-home-workspace-sheet");
   await expect(workspaceSheet).toHaveAttribute("data-tab", "issues");
   await expect(
