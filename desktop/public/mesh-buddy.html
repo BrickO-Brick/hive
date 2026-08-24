@@ -46,11 +46,11 @@
     <div class="face">
       <svg viewBox="0 0 160 110" aria-label="mesh buddy face" role="img">
         <g id="rig">
-          <!-- RoboEyes-style rounded-square eyes with real pupils.
+          <!-- RoboEyes-style rig on elliptical eyes with real pupils.
                Pupils and lids are background-colored, so the face stays
                strictly two-tone in any theme. -->
-          <rect class="eye" id="eyeL" />
-          <rect class="eye" id="eyeR" />
+          <ellipse class="eye" id="eyeL" />
+          <ellipse class="eye" id="eyeR" />
           <circle class="lid" id="pupilL" />
           <circle class="lid" id="pupilR" />
           <!-- Angled upper lids: angry (inner edge drops) / tired (outer
@@ -90,16 +90,16 @@
       // parameter set every frame. Pupils/lids are background-colored so the
       // face stays strictly monochrome. github.com/FluxGarage/RoboEyes
       //
-      // Params: w/h/r (rect + corner radius), curve (happy squint rise),
+      // Params: w/h (ellipse axes), curve (happy squint rise),
       // y offset, brow (+1 angry inner slant, -1 tired outer slant),
       // pupil (0..1 pupil size).
       const EXPRESSIONS = {
-        sleeping: { w: 36, h: 3, r: 1.5, curve: 0, y: 14, brow: 0, pupil: 0 },
-        waking: { w: 34, h: 20, r: 8, curve: 0, y: 5, brow: 0, pupil: 0.6 },
-        neutral: { w: 34, h: 38, r: 11, curve: 0, y: 0, brow: 0, pupil: 1 },
-        happy: { w: 34, h: 36, r: 11, curve: 14, y: -2, brow: 0, pupil: 1 },
-        tired: { w: 34, h: 24, r: 9, curve: 0, y: 7, brow: -0.7, pupil: 0.85 },
-        angry: { w: 34, h: 30, r: 9, curve: 0, y: 2, brow: 0.8, pupil: 0.9 },
+        sleeping: { w: 36, h: 3, curve: 0, y: 14, brow: 0, pupil: 0 },
+        waking: { w: 34, h: 20, curve: 0, y: 5, brow: 0, pupil: 0.6 },
+        neutral: { w: 34, h: 38, curve: 0, y: 0, brow: 0, pupil: 1 },
+        happy: { w: 34, h: 36, curve: 14, y: -2, brow: 0, pupil: 1 },
+        tired: { w: 34, h: 24, curve: 0, y: 7, brow: -0.7, pupil: 0.85 },
+        angry: { w: 34, h: 30, curve: 0, y: 2, brow: 0.8, pupil: 0.9 },
       };
       const CENTERS = [46, 114]; // eye x-centers in the 160x110 viewBox
       const MID_Y = 52;
@@ -133,11 +133,10 @@
         const w = p.w * (1 + curious * 0.4);
         const x = cx + p.gx + shakeX;
         const y = MID_Y + p.y + p.gy + bounceY;
-        parts.eye.setAttribute("x", x - w / 2);
-        parts.eye.setAttribute("y", y - h / 2);
-        parts.eye.setAttribute("width", w);
-        parts.eye.setAttribute("height", h);
-        parts.eye.setAttribute("rx", Math.min(p.r, h / 2));
+        parts.eye.setAttribute("cx", x);
+        parts.eye.setAttribute("cy", y);
+        parts.eye.setAttribute("rx", w / 2);
+        parts.eye.setAttribute("ry", h / 2);
 
         // Pupil: background-colored, leads the gaze slightly so the eye
         // reads as actually looking. Rides up during the happy squint so it
@@ -249,7 +248,7 @@
         const { shakeX, bounceY } = stepAnim(now);
         const c = rig.current;
         const t = rig.target;
-        for (const key of ["w", "h", "r", "curve", "y", "brow", "pupil", "gx", "gy"]) {
+        for (const key of ["w", "h", "curve", "y", "brow", "pupil", "gx", "gy"]) {
           c[key] += (t[key] - c[key]) * 0.12;
         }
         // Sleeping breathes: a slow, gentle bob.
