@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { rules as desktopRules } from "../desktop/scripts/file-size-policy.mjs";
+import { rules as mobileRules } from "../mobile/scripts/file-size-policy.mjs";
+import { rules as webRules } from "../web/scripts/file-size-policy.mjs";
 import {
   allowedLineCount,
   countLines,
@@ -53,25 +56,63 @@ test("counts empty, LF, and CRLF content with the existing semantics", () => {
   assert.equal(countLines("one\r\ntwo"), 2);
 });
 
-test("surface entrypoints keep the intended ceilings", () => {
-  const repoRoot = path.resolve(import.meta.dirname, "..");
-  const desktop = readFileSync(
-    path.join(repoRoot, "desktop/scripts/check-file-sizes.mjs"),
-    "utf8",
-  );
-  const mobile = readFileSync(
-    path.join(repoRoot, "mobile/scripts/check-file-sizes.mjs"),
-    "utf8",
-  );
-  const web = readFileSync(
-    path.join(repoRoot, "web/scripts/check-file-sizes.mjs"),
-    "utf8",
-  );
+test("surface policies enforce the intended ceilings", () => {
+  const policies = [
+    [
+      "Desktop",
+      desktopRules,
+      new Map([
+        ["src-tauri/src", 1500],
+        ["src-tauri/crates", 1500],
+        ["src/app", 1200],
+        ["src/features", 1200],
+        ["src/shared/api", 1200],
+        ["src/shared/context", 1200],
+        ["src/shared/lib", 1200],
+        ["src/shared/ui", 1200],
+        ["src/shared/styles", 1200],
+      ]),
+    ],
+    ["Mobile", mobileRules, new Map([["lib", 1200]])],
+    [
+      "Web",
+      webRules,
+      new Map([
+        ["src/app", 1000],
+        ["src/features", 1000],
+        ["src/shared/api", 1000],
+      ]),
+    ],
+  ];
 
-  assert.match(desktop, /DESKTOP_FRONTEND_MAX_LINES = 1200/);
-  assert.match(desktop, /DESKTOP_RUST_MAX_LINES = 1500/);
-  assert.match(mobile, /MAX_LINES = 1200/);
-  assert.match(web, /MAX_LINES = 1000/);
+  for (const [surface, rules, expectedCeilings] of policies) {
+    assert.deepEqual(
+      new Map(rules.map((rule) => [rule.root, rule.maxLines])),
+      expectedCeilings,
+      `${surface} rule ceilings`,
+    );
+
+    for (const rule of rules) {
+      assert.equal(
+        evaluateFileSize({
+          baseLines: null,
+          candidateLines: rule.maxLines,
+          maxLines: rule.maxLines,
+        }).violates,
+        false,
+        `${surface} ${rule.root} should allow the ceiling`,
+      );
+      assert.equal(
+        evaluateFileSize({
+          baseLines: null,
+          candidateLines: rule.maxLines + 1,
+          maxLines: rule.maxLines,
+        }).violates,
+        true,
+        `${surface} ${rule.root} should reject ceiling + 1`,
+      );
+    }
+  }
 });
 
 test("new files use the configured ceiling", () => {
