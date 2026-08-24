@@ -12,7 +12,7 @@ use std::str::FromStr;
 
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
-use sqlx::{PgPool, Postgres, Row, Transaction};
+use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 use buzz_core::CommunityId;
@@ -1200,29 +1200,6 @@ pub async fn update_approval_by_stored_hash(
     approver_pubkey: Option<&[u8]>,
     note: Option<&str>,
 ) -> Result<bool> {
-    let mut tx = pool.begin().await?;
-    let updated = update_approval_by_stored_hash_tx(
-        &mut tx,
-        community_id,
-        token_hash,
-        status,
-        approver_pubkey,
-        note,
-    )
-    .await?;
-    tx.commit().await?;
-    Ok(updated)
-}
-
-/// Update an approval by its already-hashed token within an existing transaction.
-pub async fn update_approval_by_stored_hash_tx(
-    tx: &mut Transaction<'_, Postgres>,
-    community_id: CommunityId,
-    token_hash: &[u8],
-    status: ApprovalStatus,
-    approver_pubkey: Option<&[u8]>,
-    note: Option<&str>,
-) -> Result<bool> {
     let status_str = status.to_string();
     let affected = sqlx::query(
         r#"
@@ -1242,7 +1219,7 @@ pub async fn update_approval_by_stored_hash_tx(
     .bind(&status_str) // for denied_at CASE
     .bind(community_id.as_uuid())
     .bind(token_hash)
-    .execute(&mut **tx)
+    .execute(pool)
     .await?
     .rows_affected();
 
@@ -2611,84 +2588,6 @@ mod tests {
             ApprovalStatus::Pending,
             "B's approval must remain pending after A is granted"
         );
-    }
-
-    #[tokio::test]
-    #[ignore = "requires Postgres"]
-    async fn approval_transition_rollback_allows_grant_and_deny_retry() {
-        for status in [ApprovalStatus::Granted, ApprovalStatus::Denied] {
-            let pool = setup_pool().await;
-            let community = make_community(&pool).await;
-            let workflow_id = Uuid::new_v4();
-            insert_workflow_with_ids(
-                &pool,
-                community,
-                workflow_id,
-                Uuid::new_v4(),
-                "approval-transaction",
-            )
-            .await;
-            let run_id = create_workflow_run(&pool, community, workflow_id, None, None)
-                .await
-                .expect("create workflow run");
-            let token = format!("approval-{}-{}", status, Uuid::new_v4());
-            create_approval(
-                &pool,
-                CreateApprovalParams {
-                    community_id: community,
-                    token: &token,
-                    workflow_id,
-                    run_id,
-                    step_id: "gate",
-                    step_index: 0,
-                    approver_spec: "@anyone",
-                    expires_at: Utc::now() + chrono::Duration::hours(1),
-                },
-            )
-            .await
-            .expect("create approval");
-            let token_hash = hash_approval_token(&token);
-
-            let mut tx = pool.begin().await.expect("begin rollback transaction");
-            assert!(update_approval_by_stored_hash_tx(
-                &mut tx,
-                community,
-                &token_hash,
-                status.clone(),
-                None,
-                None,
-            )
-            .await
-            .expect("transition before rollback"));
-            tx.rollback().await.expect("rollback transition");
-            assert_eq!(
-                get_approval(&pool, community, &token)
-                    .await
-                    .expect("read rolled-back approval")
-                    .status,
-                ApprovalStatus::Pending
-            );
-
-            let mut tx = pool.begin().await.expect("begin retry transaction");
-            assert!(update_approval_by_stored_hash_tx(
-                &mut tx,
-                community,
-                &token_hash,
-                status.clone(),
-                None,
-                None,
-            )
-            .await
-            .expect("retry transition"));
-            tx.commit().await.expect("commit retry");
-            assert_eq!(
-                get_approval(&pool, community, &token)
-                    .await
-                    .expect("read committed approval")
-                    .status,
-                status
-            );
-        }
     }
 
     // -- SEC-006: disable-on-membership-loss primitive -------------------------

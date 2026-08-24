@@ -102,10 +102,6 @@ pub struct WorkflowEngine {
     /// `buzz-relay`).
     pub(crate) workflow_cache:
         moka::sync::Cache<(CommunityId, Uuid), Arc<Vec<buzz_db::workflow::WorkflowRecord>>>,
-    /// Per-channel generation fencing cache-miss publication against mutation.
-    pub(crate) workflow_cache_generation: DashMap<(CommunityId, Uuid), u64>,
-    /// Serializes the generation check + publish with invalidation.
-    pub(crate) workflow_cache_publication_lock: std::sync::Mutex<()>,
 }
 
 impl WorkflowEngine {
@@ -123,8 +119,6 @@ impl WorkflowEngine {
                 .max_capacity(10_000)
                 .time_to_live(std::time::Duration::from_secs(10))
                 .build(),
-            workflow_cache_generation: DashMap::new(),
-            workflow_cache_publication_lock: std::sync::Mutex::new(()),
         }
     }
 
@@ -135,40 +129,7 @@ impl WorkflowEngine {
     /// deletion paths) so same-pod trigger matching sees the change
     /// immediately instead of after the cache TTL.
     pub fn invalidate_channel_workflows(&self, community_id: CommunityId, channel_id: Uuid) {
-        let _publication_guard = self
-            .workflow_cache_publication_lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let key = (community_id, channel_id);
-        self.workflow_cache_generation
-            .entry(key)
-            .and_modify(|generation| *generation = generation.wrapping_add(1))
-            .or_insert(1);
-        self.workflow_cache.invalidate(&key);
-    }
-
-    fn workflow_cache_generation(&self, key: &(CommunityId, Uuid)) -> u64 {
-        self.workflow_cache_generation
-            .get(key)
-            .map(|generation| *generation)
-            .unwrap_or_default()
-    }
-
-    fn publish_channel_workflows_if_current(
-        &self,
-        key: (CommunityId, Uuid),
-        generation: u64,
-        workflows: &Arc<Vec<buzz_db::workflow::WorkflowRecord>>,
-    ) -> bool {
-        let _publication_guard = self
-            .workflow_cache_publication_lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !cache_fill_is_current(generation, self.workflow_cache_generation(&key)) {
-            return false;
-        }
-        self.workflow_cache.insert(key, Arc::clone(workflows));
-        true
+        self.workflow_cache.invalidate(&(community_id, channel_id));
     }
 
     /// Fail-closed pre-run authority gate (SEC-006).
@@ -381,14 +342,13 @@ impl WorkflowEngine {
         let workflows = match self.workflow_cache.get(&cache_key) {
             Some(cached) => cached,
             None => {
-                let generation = self.workflow_cache_generation(&cache_key);
                 let fresh = Arc::new(
                     self.db
                         .list_enabled_channel_workflows(community_id, channel_id)
                         .await
                         .map_err(WorkflowError::from)?,
                 );
-                self.publish_channel_workflows_if_current(cache_key, generation, &fresh);
+                self.workflow_cache.insert(cache_key, Arc::clone(&fresh));
                 fresh
             }
         };
@@ -398,6 +358,14 @@ impl WorkflowEngine {
         }
 
         let trigger_ctx = build_trigger_context(event);
+
+        let trigger_ctx_json: serde_json::Value = match serde_json::to_value(&trigger_ctx) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("Failed to serialize trigger context: {e}");
+                return Ok(());
+            }
+        };
 
         for workflow in workflows.iter() {
             let def: WorkflowDef = match serde_json::from_value(workflow.definition.clone()) {
@@ -433,19 +401,6 @@ impl WorkflowEngine {
                 continue;
             }
 
-            let mut workflow_trigger_ctx = trigger_ctx.clone();
-            workflow_trigger_ctx.definition_event_id = workflow
-                .definition_event_id
-                .as_deref()
-                .map(hex::encode)
-                .unwrap_or_default();
-            let trigger_ctx_json = match serde_json::to_value(&workflow_trigger_ctx) {
-                Ok(value) => value,
-                Err(e) => {
-                    tracing::error!(workflow_id = %workflow.id, "Failed to serialize trigger context: {e}");
-                    continue;
-                }
-            };
             let trigger_event_id_bytes = event.event.id.as_bytes().to_vec();
             let run_id = match self
                 .db
@@ -472,7 +427,7 @@ impl WorkflowEngine {
 
             let engine = Arc::clone(self);
             let def_clone = def.clone();
-            let ctx_clone = workflow_trigger_ctx.clone();
+            let ctx_clone = trigger_ctx.clone();
 
             tokio::spawn(async move {
                 let result =
@@ -696,11 +651,6 @@ impl WorkflowEngine {
                 let trigger_ctx = executor::TriggerContext {
                     channel_id: channel_id.to_string(),
                     timestamp: now.timestamp().to_string(),
-                    definition_event_id: workflow
-                        .definition_event_id
-                        .as_deref()
-                        .map(hex::encode)
-                        .unwrap_or_default(),
                     ..Default::default()
                 };
                 let trigger_ctx_json = match serde_json::to_value(&trigger_ctx) {
@@ -797,10 +747,6 @@ impl WorkflowEngine {
             self.last_fired.retain(|key, _| active_ids.contains(key));
         }
     }
-}
-
-fn cache_fill_is_current(started_generation: u64, current_generation: u64) -> bool {
-    started_generation == current_generation
 }
 
 /// Find the cron schedule instant that fired within the `window_secs`-wide
@@ -1104,18 +1050,6 @@ fn trigger_matches_event(trigger: &TriggerDef, kind_u32: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn cache_invalidation_fences_an_in_flight_stale_fill() {
-        let generation_before_query = 7;
-        let generation_after_invalidation = 8;
-
-        assert!(!cache_fill_is_current(
-            generation_before_query,
-            generation_after_invalidation
-        ));
-        assert!(cache_fill_is_current(8, 8));
-    }
 
     #[test]
     fn cron_fire_instant_matches_within_window() {

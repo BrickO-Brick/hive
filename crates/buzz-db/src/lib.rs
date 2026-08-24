@@ -4266,28 +4266,6 @@ impl Db {
         .await
     }
 
-    /// Update an approval by its already-hashed token in the caller's transaction.
-    #[datastore_span(name = "update_approval_by_stored_hash_tx", system = "postgresql")]
-    pub async fn update_approval_by_stored_hash_tx(
-        &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        community_id: CommunityId,
-        token_hash: &[u8],
-        status: workflow::ApprovalStatus,
-        approver_pubkey: Option<&[u8]>,
-        note: Option<&str>,
-    ) -> Result<bool> {
-        workflow::update_approval_by_stored_hash_tx(
-            tx,
-            community_id,
-            token_hash,
-            status,
-            approver_pubkey,
-            note,
-        )
-        .await
-    }
-
     /// Ensures monthly partitions exist for the next N months.
     #[datastore_span(name = "ensure_future_partitions", system = "postgresql")]
     pub async fn ensure_future_partitions(&self, months_ahead: u32) -> Result<()> {
