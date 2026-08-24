@@ -32,6 +32,11 @@
         letter-spacing: 0.04em;
         text-transform: uppercase;
       }
+      .nodes {
+        margin-top: 14px;
+        font-size: 13px;
+        color: #6fcf97;
+      }
     </style>
   </head>
   <body>
@@ -39,6 +44,7 @@
       <div class="face" id="face">🙂</div>
       <div class="count" id="count">0</div>
       <div class="label">tokens helped compute</div>
+      <div class="nodes" id="nodes">&nbsp;</div>
     </div>
     <script>
       const invoke =
@@ -52,6 +58,9 @@
           document.getElementById("count").textContent = tokens.toLocaleString();
           document.getElementById("face").textContent =
             inflight > 0 ? "😄" : tokens > 0 ? "😊" : "🙂";
+          const nodes = (usage?.peers || 0) + 1;
+          document.getElementById("nodes").textContent =
+            nodes + (nodes === 1 ? " active node in mesh" : " active nodes in mesh");
         } catch {
           // Mesh not running — keep whatever is shown.
         }
