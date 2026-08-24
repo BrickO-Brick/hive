@@ -3,11 +3,12 @@ import { expect, test } from "@playwright/test";
 import { installMockBridge, TEST_IDENTITIES } from "../helpers/bridge";
 
 const AGENT_PUBKEY = TEST_IDENTITIES.tyler.pubkey;
+const REPOSITORY_OWNER_PUBKEY = TEST_IDENTITIES.alice.pubkey;
 const AGENTS_CHANNEL_ID = "94a444a4-c0a3-5966-ab05-530c6ddc2301";
 const GENERAL_CHANNEL_ID = "9a1657ac-f7aa-5db0-b632-d8bbeb6dfb50";
 const COMMUNITY_ID = "e2e-default-community";
 
-test("keeps dedicated activity windows connected when opening a channel reference", async ({
+test("keeps dedicated activity windows pinned to their original channel", async ({
   page,
 }) => {
   await installMockBridge(page, {
@@ -31,7 +32,7 @@ test("keeps dedicated activity windows connected when opening a channel referenc
     () => typeof window.__BUZZ_E2E_SEED_OBSERVER_EVENTS__ === "function",
   );
   await page.evaluate(
-    ({ agentPubkey, channelId, generalChannelId }) => {
+    ({ agentPubkey, channelId, generalChannelId, repositoryOwnerPubkey }) => {
       window.__BUZZ_E2E_SEED_OBSERVER_EVENTS__?.({
         agentPubkey,
         events: [
@@ -48,7 +49,10 @@ test("keeps dedicated activity windows connected when opening a channel referenc
               params: {
                 update: {
                   sessionUpdate: "agent_message_chunk",
-                  content: { type: "text", text: "Continue in #general" },
+                  content: {
+                    type: "text",
+                    text: `Continue in #general or open <buzz://repo?owner=${repositoryOwnerPubkey}&d=relay-tools>`,
+                  },
                 },
               },
             },
@@ -91,6 +95,7 @@ test("keeps dedicated activity windows connected when opening a channel referenc
       agentPubkey: AGENT_PUBKEY,
       channelId: AGENTS_CHANNEL_ID,
       generalChannelId: GENERAL_CHANNEL_ID,
+      repositoryOwnerPubkey: REPOSITORY_OWNER_PUBKEY,
     },
   );
 
@@ -103,18 +108,23 @@ test("keeps dedicated activity windows connected when opening a channel referenc
     name: "Open channel general",
   });
   await expect(channelReference).toBeVisible();
+  const activityWindowUrl = page.url();
   await channelReference.click();
 
-  await expect(page).toHaveURL(
-    new RegExp(
-      `#/channels/${GENERAL_CHANNEL_ID}\\?.*community=${COMMUNITY_ID}.*agentSessionChannel=${AGENTS_CHANNEL_ID}`,
-    ),
-  );
+  await expect(page).toHaveURL(activityWindowUrl);
   await expect(panel).toBeVisible();
   await expect(panel).toContainText("Activity · #agents");
   await expect(panel).not.toContainText(
     "Other channel activity must stay hidden",
   );
+
+  const repositoryChip = panel.getByRole("button", {
+    name: "Open repository relay-tools",
+  });
+  await expect(repositoryChip).toBeVisible();
+  await repositoryChip.click();
+  await expect(page).toHaveURL(activityWindowUrl);
+  await expect(panel).toBeVisible();
 
   await page.getByTestId("agent-session-settings-menu-trigger").click();
   const rawFeedToggle = page.getByTestId("agent-session-toggle-raw-feed");

@@ -50,6 +50,16 @@ export function useAppNavigation() {
             search: { ...next.search, ...companionCoordinates },
           }
         : next;
+
+      if (
+        companionCoordinates &&
+        (destination.to !== "/channels/$channelId" ||
+          destination.params?.channelId !==
+            companionCoordinates.agentSessionChannel)
+      ) {
+        return false;
+      }
+
       const nextLocation = router.buildLocation(destination as never);
 
       if (location.href === nextLocation.href && !behavior.force) {
