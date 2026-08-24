@@ -2067,6 +2067,11 @@ pub async fn workflow_webhook(
             .channel_id
             .map(|ch| ch.to_string())
             .unwrap_or_default(),
+        definition_event_id: workflow
+            .definition_event_id
+            .as_deref()
+            .map(hex::encode)
+            .unwrap_or_default(),
         ..Default::default()
     };
     if let Some(Value::Object(ref map)) = body_json {

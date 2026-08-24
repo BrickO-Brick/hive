@@ -4072,6 +4072,17 @@ impl Db {
         workflow::find_by_owner_and_name(&self.pool, community_id, owner_pubkey, name).await
     }
 
+    /// Fetch and share-lock one workflow on an existing transaction.
+    #[datastore_span(name = "get_workflow_for_share_in_transaction", system = "postgresql")]
+    pub async fn get_workflow_for_share_in_transaction(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        community_id: CommunityId,
+        id: Uuid,
+    ) -> Result<workflow::WorkflowRecord> {
+        workflow::get_workflow_for_share_in_transaction(tx, community_id, id).await
+    }
+
     /// Create a new workflow run on an existing transaction.
     #[datastore_span(name = "create_workflow_run_in_transaction", system = "postgresql")]
     pub async fn create_workflow_run_in_transaction(
@@ -4246,6 +4257,28 @@ impl Db {
     ) -> Result<bool> {
         workflow::update_approval_by_stored_hash(
             &self.pool,
+            community_id,
+            token_hash,
+            status,
+            approver_pubkey,
+            note,
+        )
+        .await
+    }
+
+    /// Update an approval by its already-hashed token in the caller's transaction.
+    #[datastore_span(name = "update_approval_by_stored_hash_tx", system = "postgresql")]
+    pub async fn update_approval_by_stored_hash_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        community_id: CommunityId,
+        token_hash: &[u8],
+        status: workflow::ApprovalStatus,
+        approver_pubkey: Option<&[u8]>,
+        note: Option<&str>,
+    ) -> Result<bool> {
+        workflow::update_approval_by_stored_hash_tx(
+            tx,
             community_id,
             token_hash,
             status,
