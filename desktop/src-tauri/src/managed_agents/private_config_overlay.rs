@@ -637,13 +637,16 @@ mod write_site_resolve_guard {
                 include_str!("runtime_commands.rs"),
                 2,
             ),
-            // The post-deploy-lock payload rebuild: the exact bytes the
+            // 2 = the post-deploy-lock payload rebuild (the exact bytes the
             // provider invocation executes after waiting behind another
-            // deployment.
+            // deployment) plus the post-deploy settlement, which writes the
+            // returned `backend_agent_id` onto the relay-resolved record and
+            // retains it as the next head instead of leaving it disk-only
+            // where every resolve site would hide it.
             (
                 "commands/agents/provider_deploy.rs",
                 include_str!("../commands/agents/provider_deploy.rs"),
-                1,
+                2,
             ),
             // Workspace provider-access reconciliation: both the target
             // selection predicate and the redeploy payload read resolved
