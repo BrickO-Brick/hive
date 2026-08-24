@@ -42,6 +42,18 @@ export function settleProgrammaticBottomPin(
   );
 }
 
+export function resolveTimelineVisibleReadAt(
+  messages: readonly { createdAt: number; parentId?: string | null }[],
+): number | null {
+  let latest: number | null = null;
+  for (const message of messages) {
+    if (message.parentId != null) continue;
+    latest =
+      latest === null ? message.createdAt : Math.max(latest, message.createdAt);
+  }
+  return latest;
+}
+
 export function resolveTimelineReadPresence({
   isPhysicallyAtBottom: _isPhysicallyAtBottom,
   isSemanticallyAtBottom,

@@ -44,7 +44,6 @@ import {
 import { buildMessageComposerEditTarget } from "@/features/messages/lib/draftMentionRefs";
 import { formatTimelineMessages } from "@/features/messages/lib/formatTimelineMessages";
 import { DeleteMessageConfirmDialog } from "@/features/messages/ui/DeleteMessageConfirmDialog";
-import { getThreadReference } from "@/features/messages/lib/threading";
 import {
   resolveTimelineLoadingLatch,
   selectTimelineLoadingState,
@@ -78,6 +77,7 @@ import { useChannelAgentSessions } from "./useChannelAgentSessions";
 import { useMessageProfiles } from "./useMessageProfiles";
 import { useChannelPanelHistoryState } from "./useChannelPanelHistoryState";
 import { useScopedAtBottom } from "./useScopedAtBottom";
+import { useScopedTimelineReadPresence } from "./useScopedTimelineReadPresence";
 import { useChannelProfilePanel } from "./useChannelProfilePanel";
 import { useChannelRouteTarget } from "./useChannelRouteTarget";
 import { useChannelOpenReadState } from "./useChannelOpenReadState";
@@ -165,8 +165,8 @@ export function ChannelScreen({
   const mainInsetRef = useMainInsetRef();
   const currentPubkey = currentIdentity?.pubkey;
   const activeChannelId = activeChannel?.id ?? null;
-  const [timelineIsAtBottom, handleTimelineAtBottomChange] =
-    useScopedAtBottom(activeChannelId);
+  const [timelineReadPresence, handleTimelineReadPresenceChange] =
+    useScopedTimelineReadPresence(activeChannelId);
   const isHuddleTranscript = useIsHuddleTranscript(activeChannelId);
   const relaySelfPubkey = useRelaySelfQuery(activeChannel !== null).data;
   const effectiveOpenThreadHeadId = useHuddleThreadIsolation({
@@ -205,23 +205,11 @@ export function ChannelScreen({
   useChannelSubscription(activeChannel);
   const { fetchOlder, hasOlderMessages, historyExhausted, isFetchingOlder } =
     useFetchOlderMessages(activeChannel);
-  const latestActiveMessage = React.useMemo(() => {
-    const messages = messagesQuery.data;
-    if (!messages) return null;
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      if (getThreadReference(messages[index].tags).parentId === null)
-        return messages[index];
-    }
-    return null;
-  }, [messagesQuery.data]);
-  const activeReadAt = latestActiveMessage
-    ? new Date(latestActiveMessage.created_at * 1_000).toISOString()
-    : null;
   useChannelOpenReadState(
     activeChannelId,
     activeChannel?.isMember,
-    activeReadAt,
-    timelineIsAtBottom,
+    timelineReadPresence.readAt,
+    timelineReadPresence.isAtBottom,
   );
   React.useEffect(() => {
     if (!activeChannelId) {
@@ -938,7 +926,9 @@ export function ChannelScreen({
                   }
                   onThreadPanelResizeStart={handleThreadPanelResizeStart}
                   onTargetReached={handleTargetReached}
-                  onTimelineAtBottomChange={handleTimelineAtBottomChange}
+                  onTimelineReadPresenceChange={
+                    handleTimelineReadPresenceChange
+                  }
                   onToggleReaction={effectiveToggleReaction}
                   openAgentSessionChannelId={openAgentSessionChannelId}
                   openAgentSessionPubkey={openAgentSessionPubkey}

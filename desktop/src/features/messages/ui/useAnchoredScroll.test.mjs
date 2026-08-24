@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   getPinnedCenterDrift,
   resolveTimelineReadPresence,
+  resolveTimelineVisibleReadAt,
   settleProgrammaticBottomPin,
   shouldIgnorePinnedCenterScroll,
   shouldSettleForSplitPanel,
@@ -23,6 +24,27 @@ function fakeContainer({ clientHeight, scrollHeight, scrollTop }) {
     },
   };
 }
+
+test("visible read frontier excludes query arrivals buffered outside the rendered timeline", () => {
+  assert.equal(
+    resolveTimelineVisibleReadAt([
+      { createdAt: 100, parentId: null },
+      { createdAt: 110, parentId: "thread-root" },
+    ]),
+    100,
+  );
+
+  const loadedQueryWithBufferedArrival = [
+    { createdAt: 100, parentId: null },
+    { createdAt: 120, parentId: null },
+  ];
+  const renderedTimeline = loadedQueryWithBufferedArrival.slice(0, 1);
+  assert.equal(resolveTimelineVisibleReadAt(renderedTimeline), 100);
+  assert.equal(
+    resolveTimelineVisibleReadAt(loadedQueryWithBufferedArrival),
+    120,
+  );
+});
 
 test("buffered arrivals do not become read when the shortened timeline reports its physical floor", () => {
   assert.equal(

@@ -139,7 +139,10 @@ export type ChannelPaneProps = {
     } | null,
   ) => Promise<void>;
   onTargetReached?: (messageId: string) => void;
-  onTimelineAtBottomChange?: (atBottom: boolean) => void;
+  onTimelineReadPresenceChange?: (presence: {
+    isAtBottom: boolean;
+    readAt: number | null;
+  }) => void;
   onToggleReaction?: (
     message: TimelineMessage,
     emoji: string,

@@ -22,7 +22,7 @@ export function getTopLevelInboxUnreadOverrideIds(
 export function useChannelOpenReadState(
   activeChannelId: string | null,
   isChannelMember: boolean | undefined,
-  activeReadAt: string | null,
+  activeReadAt: number | null,
   isAtBottom: boolean,
 ) {
   const { feedItemState, locallyUnreadFeedItems, markChannelRead } =

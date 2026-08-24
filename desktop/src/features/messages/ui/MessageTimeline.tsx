@@ -23,7 +23,10 @@ import { TimelineSkeleton, useTimelineSkeletonRows } from "./TimelineSkeleton";
 import { TimelineMessageList } from "./TimelineMessageList";
 import type { TimelineVirtualizerApi } from "./TimelineMessageList";
 import { useAnchoredScroll } from "./useAnchoredScroll";
-import { resolveTimelineReadPresence } from "./anchoredScrollPolicy";
+import {
+  resolveTimelineReadPresence,
+  resolveTimelineVisibleReadAt,
+} from "./anchoredScrollPolicy";
 import { useLoadOlderOnScroll } from "./useLoadOlderOnScroll";
 import { useBufferedTimelineMessages } from "./useBufferedTimelineMessages";
 import {
@@ -116,7 +119,10 @@ type MessageTimelineProps = {
   /** The current find-in-channel query string. */
   searchQuery?: string;
   targetMessageId?: string | null;
-  onAtBottomChange?: (atBottom: boolean) => void;
+  onReadPresenceChange?: (presence: {
+    isAtBottom: boolean;
+    readAt: number | null;
+  }) => void;
   onTargetReached?: (messageId: string) => void;
   splitThreadPanelOpen?: boolean;
   /** Event id of the oldest unread top-level message at channel open, or null. */
@@ -206,7 +212,7 @@ const MessageTimelineBase = React.forwardRef<
     searchMatchingMessageIds,
     searchQuery,
     targetMessageId = null,
-    onAtBottomChange,
+    onReadPresenceChange,
     onTargetReached,
     splitThreadPanelOpen = false,
     firstUnreadMessageId = null,
@@ -372,18 +378,22 @@ const MessageTimelineBase = React.forwardRef<
     virtualizerRenderVersion,
   });
 
+  const visibleReadAt = React.useMemo(
+    () => resolveTimelineVisibleReadAt(renderedMessages),
+    [renderedMessages],
+  );
   React.useEffect(() => {
-    // Read presence follows the semantic tail, not the physical virtualizer
-    // floor. While live arrivals are buffered, freezing the rendered tail can
-    // make the shortened DOM report physically at-bottom even though the
-    // reader is still scrolled away from the new messages.
-    onAtBottomChange?.(
-      resolveTimelineReadPresence({
+    // Publish one atomic visibility fact. The loaded query can already contain
+    // buffered arrivals that are absent from renderedMessages, so consumers
+    // must never pair the query's newest timestamp with this timeline's tail.
+    onReadPresenceChange?.({
+      isAtBottom: resolveTimelineReadPresence({
         isPhysicallyAtBottom: isAtBottom,
         isSemanticallyAtBottom,
       }),
-    );
-  }, [isAtBottom, isSemanticallyAtBottom, onAtBottomChange]);
+      readAt: visibleReadAt,
+    });
+  }, [isAtBottom, isSemanticallyAtBottom, onReadPresenceChange, visibleReadAt]);
   const hasConfirmedVirtualizerBottomRef = React.useRef(false);
   const bottomConfirmationChannelRef = React.useRef(channelId);
   if (bottomConfirmationChannelRef.current !== channelId) {

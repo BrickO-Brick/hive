@@ -11,10 +11,13 @@ export function useVisibleChannelReadState({
   isAtBottom: boolean;
   isMember: boolean | undefined;
   markChannelRead: (channelId: string, readAt: string | null) => void;
-  readAt: string | null;
+  readAt: number | null;
 }): void {
   React.useEffect(() => {
     if (!channelId || isMember === false || !isAtBottom) return;
-    markChannelRead(channelId, readAt);
+    markChannelRead(
+      channelId,
+      readAt === null ? null : new Date(readAt * 1_000).toISOString(),
+    );
   }, [channelId, isAtBottom, isMember, markChannelRead, readAt]);
 }

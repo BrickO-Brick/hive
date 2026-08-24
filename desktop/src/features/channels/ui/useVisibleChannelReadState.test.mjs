@@ -41,12 +41,12 @@ test("live channel arrivals advance read state at bottom", async () => {
     isAtBottom: true,
     isMember: true,
     markChannelRead,
-    readAt: "1970-01-01T00:01:40.000Z",
+    readAt: 100,
   };
   const view = await renderReadState(props);
   calls.length = 0;
 
-  view.rerender({ ...props, readAt: "1970-01-01T00:02:00.000Z" });
+  view.rerender({ ...props, readAt: 120 });
 
   assert.deepEqual(calls, [["channel-1", "1970-01-01T00:02:00.000Z"]]);
 });
@@ -59,17 +59,17 @@ test("scrolled-away channel arrivals remain unread until the reader returns to b
     isAtBottom: false,
     isMember: true,
     markChannelRead,
-    readAt: "1970-01-01T00:01:40.000Z",
+    readAt: 100,
   };
   const view = await renderReadState(props);
 
-  view.rerender({ ...props, readAt: "1970-01-01T00:02:00.000Z" });
+  view.rerender({ ...props, readAt: 120 });
   assert.deepEqual(calls, []);
 
   view.rerender({
     ...props,
     isAtBottom: true,
-    readAt: "1970-01-01T00:02:00.000Z",
+    readAt: 120,
   });
   assert.deepEqual(calls, [["channel-1", "1970-01-01T00:02:00.000Z"]]);
 });
