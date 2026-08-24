@@ -8,6 +8,31 @@ export function copySelectedPersonaIds(personaIds: string[]): string[] {
   return [...personaIds];
 }
 
+/**
+ * Whether the team dialog's submit button should be enabled.
+ *
+ * A team name is required; an **empty roster is deliberately allowed**. Emptying
+ * a team is the only way out of the delete deadlock — `delete_team` refuses
+ * while agents still reference the team, and agent deletion refuses because the
+ * agent belongs to a team. "Remove every member, then delete the team" is the
+ * escape hatch, so the editor must be able to save a zero-member team. The Rust
+ * side already supports it (`update_team` has no minimum-member check and
+ * `apply_team_membership_delta` detaches the removed members' instances); the
+ * min-1 rule that remains applies to snapshot *import* only.
+ *
+ * Extracted as a pure function so the "empty roster is submittable" contract is
+ * covered by a test rather than living in a JSX `disabled` expression.
+ */
+export function canSubmitTeamDialog({
+  name,
+  isPending,
+}: {
+  name: string;
+  isPending: boolean;
+}): boolean {
+  return name.trim().length > 0 && !isPending;
+}
+
 export function countMissingPersonaIds(
   personaIds: string[],
   personas: AgentPersona[],

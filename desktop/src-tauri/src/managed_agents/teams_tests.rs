@@ -263,6 +263,37 @@ fn agents_referencing_team_empty_when_no_matches() {
     assert!(agents_referencing_team(&agents, &t).is_empty());
 }
 
+/// The escape hatch from the team/agent delete deadlock, asserted end to end at
+/// this layer: `delete_team_with_cascade` refuses while any agent references the
+/// team, and `validate_persona_deletion` refuses to delete a team's agent — so
+/// the only non-circular sequence is "empty the team's roster, then delete the
+/// team". Emptying the roster clears `team_id` on the members' instances (see
+/// `apply_team_membership_delta` in `commands::teams`), and once it is cleared
+/// this guard must report zero referencing agents. If it still matched, the team
+/// would stay permanently undeletable and the deadlock would be back.
+#[test]
+fn detached_agents_no_longer_reference_the_team() {
+    let t = team("json-team-3", "Emptied Team");
+
+    let mut bound = managed_agent("Bound Agent");
+    bound.team_id = Some("json-team-3".to_string());
+    assert_eq!(
+        agents_referencing_team(std::slice::from_ref(&bound), &t),
+        vec!["Bound Agent"],
+        "a bound agent blocks team deletion"
+    );
+
+    // What emptying the roster does: clear the binding, keep the agent.
+    let detached = ManagedAgentRecord {
+        team_id: None,
+        ..bound
+    };
+    assert!(
+        agents_referencing_team(std::slice::from_ref(&detached), &t).is_empty(),
+        "a detached agent must not block team deletion"
+    );
+}
+
 // Migration pins — exercise the real merge_teams wrapper (with production consts).
 
 #[test]

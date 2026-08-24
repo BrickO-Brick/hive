@@ -93,6 +93,15 @@ export function TeamsSection({
             const resolution = resolveTeamPersonas(team, personas);
             const missingPersonaCount = resolution.missingPersonaCount;
             const hasMissingPersonas = resolution.hasMissingPersonas;
+            const isEmptyTeam = team.personaIds.length === 0;
+            // Deploy/Duplicate/Share need a roster that fully resolves to real
+            // agents. `isUsable` covers both failure modes: a member that is no
+            // longer in My Agents, and a deliberately emptied team. Sharing an
+            // empty team would mint a snapshot that its own importer rejects
+            // ("Team snapshot must have at least one member"), so gate it here.
+            // Edit and Delete stay enabled — emptying a team then deleting it is
+            // the intended way out of the team/agent delete deadlock.
+            const canUseRoster = resolution.isUsable;
 
             return (
               <TeamIdentityCard
@@ -112,7 +121,7 @@ export function TeamsSection({
                       onCloseAutoFocus={(event) => event.preventDefault()}
                     >
                       <DropdownMenuItem
-                        disabled={isPending || hasMissingPersonas}
+                        disabled={isPending || !canUseRoster}
                         onClick={() => onAddToChannel(team)}
                       >
                         <Rocket className="h-4 w-4" />
@@ -127,14 +136,14 @@ export function TeamsSection({
                         Edit
                       </DropdownMenuItem>
                       <DropdownMenuItem
-                        disabled={isPending || hasMissingPersonas}
+                        disabled={isPending || !canUseRoster}
                         onClick={() => onDuplicate(team)}
                       >
                         <CopyPlus className="h-4 w-4" />
                         Duplicate
                       </DropdownMenuItem>
                       <DropdownMenuItem
-                        disabled={isPending || hasMissingPersonas}
+                        disabled={isPending || !canUseRoster}
                         onClick={() => onShare(team)}
                       >
                         <Share2 className="h-4 w-4" />
@@ -169,6 +178,12 @@ export function TeamsSection({
                     {missingPersonaCount === 1 ? "" : "s"} in this team{" "}
                     {missingPersonaCount === 1 ? "is" : "are"} no longer in your
                     agents. Edit the team to fix it before deploying or sharing.
+                  </p>
+                ) : null}
+                {isEmptyTeam ? (
+                  <p className="border-t border-border/60 bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                    This team has no agents. Add one to deploy or share it, or
+                    delete the team.
                   </p>
                 ) : null}
               </TeamIdentityCard>

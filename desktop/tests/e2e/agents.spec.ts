@@ -2708,3 +2708,79 @@ test("duplicate instances move from the agents gallery into the agent profile", 
     page.getByTestId(`user-profile-agent-delete-${additionalPubkey}`),
   ).toHaveCount(0);
 });
+
+// Regression for the team-deletion deadlock: `delete_team` refuses while agents
+// still reference the team, and deleting a team's agent refuses because it
+// belongs to a team. The only non-circular way out is to empty the roster and
+// then delete the team — which the editor used to forbid, because the submit
+// button also required at least one selected member. This walks the full user
+// sequence: edit → deselect every member → save → delete.
+test("a team can be emptied and then deleted", async ({ page }) => {
+  await installMockBridge(page, {
+    personas: [
+      {
+        id: "custom:deadlock-a",
+        displayName: "Deadlock A",
+        systemPrompt: "First member of the team under test.",
+      },
+      {
+        id: "custom:deadlock-b",
+        displayName: "Deadlock B",
+        systemPrompt: "Second member of the team under test.",
+      },
+    ],
+    teams: [
+      {
+        id: "team-deadlock",
+        name: "Deadlock Team",
+        personaIds: ["custom:deadlock-a", "custom:deadlock-b"],
+      },
+    ],
+  });
+  await gotoApp(page);
+  await page.getByTestId("open-agents-view").click();
+
+  const teamCard = page.getByTestId("team-card-team-deadlock");
+  await expect(teamCard).toBeVisible();
+
+  // Empty the roster via the edit dialog.
+  await page.getByLabel("Deadlock Team team actions").click();
+  await page.getByRole("menuitem", { name: "Edit" }).click();
+
+  const roster = page.getByRole("listbox", { name: "Agents" });
+  await roster.getByRole("option", { name: /Deadlock A/ }).click();
+  await roster.getByRole("option", { name: /Deadlock B/ }).click();
+
+  // The regression: with no members selected, save must still be enabled.
+  const save = page.getByRole("button", { name: "Save changes" });
+  await expect(save).toBeEnabled();
+  await save.click();
+
+  // Removing members prompts about the underlying agents; keep them.
+  await page.getByRole("button", { name: "Keep agents" }).click();
+
+  // The team survives with an empty roster and says so.
+  await expect(teamCard).toContainText("This team has no agents");
+  const teams = await invokeTauri<Array<{ id: string; persona_ids: string[] }>>(
+    page,
+    "list_teams",
+  );
+  expect(
+    teams.find((team) => team.id === "team-deadlock")?.persona_ids,
+  ).toEqual([]);
+
+  // With nothing referencing it, the team is now deletable — the deadlock is gone.
+  await page.getByLabel("Deadlock Team team actions").click();
+  await page.getByRole("menuitem", { name: "Delete" }).click();
+  await page
+    .getByRole("button", { name: "Delete", exact: true })
+    .last()
+    .click();
+
+  await expect(teamCard).toHaveCount(0);
+  const remaining = await invokeTauri<Array<{ id: string }>>(
+    page,
+    "list_teams",
+  );
+  expect(remaining.some((team) => team.id === "team-deadlock")).toBe(false);
+});
