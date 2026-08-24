@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  getInitialSearchSelection,
+  getSearchActionMenuIndex,
   getSuggestedChannels,
 } from "./topbarSearchSuggestions.ts";
 
@@ -73,26 +73,29 @@ test("archived and unjoined non-DM conversations are omitted", () => {
   );
 });
 
-test("the first unread row is selected even when a scope action leads the menu", () => {
+test("the scope action follows unread rows while suggestions are visible", () => {
   assert.equal(
-    getInitialSearchSelection({
-      hasLeadingAction: true,
-      hasUnreadChannels: true,
+    getSearchActionMenuIndex({
+      hasScopeAction: true,
+      isShowingSuggestions: true,
+      unreadResultCount: 2,
     }),
-    1,
+    2,
   );
   assert.equal(
-    getInitialSearchSelection({
-      hasLeadingAction: true,
-      hasUnreadChannels: false,
+    getSearchActionMenuIndex({
+      hasScopeAction: true,
+      isShowingSuggestions: true,
+      unreadResultCount: 0,
     }),
     0,
   );
   assert.equal(
-    getInitialSearchSelection({
-      hasLeadingAction: false,
-      hasUnreadChannels: true,
+    getSearchActionMenuIndex({
+      hasScopeAction: false,
+      isShowingSuggestions: true,
+      unreadResultCount: 2,
     }),
-    0,
+    null,
   );
 });

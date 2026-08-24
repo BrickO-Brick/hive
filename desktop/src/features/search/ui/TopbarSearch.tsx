@@ -15,9 +15,11 @@ import {
   getChannelScopeLabel,
   SearchDialogInputRow,
 } from "@/features/search/ui/SearchScopeControls";
+import { SearchResultTrailing } from "@/features/search/ui/SearchResultTrailing";
 import { useSearchMenuKeyboardNavigation } from "@/features/search/ui/useSearchMenuKeyboardNavigation";
 import {
-  getInitialSearchSelection,
+  getChannelActivityTime,
+  getSearchActionMenuIndex,
   getSuggestedSearchResults,
 } from "@/features/search/ui/topbarSearchSuggestions";
 import type { Channel, SearchHit, UserSearchResult } from "@/shared/api/types";
@@ -46,13 +48,15 @@ type TopbarSearchProps = {
   onCreateAgent?: () => void | Promise<void>;
   onCreateChannel?: () => void | Promise<void>;
   suggestionChannels?: Channel[];
+  unreadChannelCounts?: ReadonlyMap<string, number>;
   unreadChannelIds?: ReadonlySet<string>;
   scopeFocusRequest?: number;
   variant?: "bar" | "icon";
 };
 
 const SEARCH_RESULT_LIMIT = 40;
-const EMPTY_UNREAD_CHANNEL_IDS: ReadonlySet<string> = new Set();
+const EMPTY_UNREAD_CHANNEL_COUNTS: ReadonlyMap<string, number> = new Map(),
+  EMPTY_UNREAD_CHANNEL_IDS: ReadonlySet<string> = new Set();
 const SEARCH_SECTION_TITLE_CLASS =
   "px-2.5 pb-1.5 pt-2 text-xs font-medium text-muted-foreground/70";
 const SEARCH_RESULT_SECTION_ORDER = [
@@ -113,15 +117,6 @@ function formatRelativeTime(unixSeconds: number) {
     month: "short",
     day: "numeric",
   }).format(new Date(unixSeconds * 1_000));
-}
-
-function getChannelActivityTime(channel: Channel) {
-  if (!channel.lastMessageAt) {
-    return 0;
-  }
-
-  const timestamp = Date.parse(channel.lastMessageAt);
-  return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
 function getChannelSuggestionMeta(channel: Channel) {
@@ -377,6 +372,7 @@ export function TopbarSearch({
   onCreateChannel,
   scopeFocusRequest = 0,
   suggestionChannels,
+  unreadChannelCounts = EMPTY_UNREAD_CHANNEL_COUNTS,
   unreadChannelIds = EMPTY_UNREAD_CHANNEL_IDS,
   variant = "bar",
 }: TopbarSearchProps) {
@@ -493,6 +489,11 @@ export function TopbarSearch({
       ? []
       : suggestionResults
     : groupedSearchResults;
+  const actionMenuIndex = getSearchActionMenuIndex({
+    hasScopeAction,
+    isShowingSuggestions,
+    unreadResultCount: unreadResults.length,
+  });
   const isSearchLoading =
     isWaitingOnFromResolution ||
     searchQuery.isLoading ||
@@ -502,17 +503,10 @@ export function TopbarSearch({
   const openSearchDialog = React.useCallback(
     (nextScopeChannelId: string | null = null) => {
       setScopeChannelId(nextScopeChannelId);
-      setSelectedMenuIndex(
-        nextScopeChannelId
-          ? 0
-          : getInitialSearchSelection({
-              hasLeadingAction: hasScopeAction,
-              hasUnreadChannels: unreadResults.length > 0,
-            }),
-      );
+      setSelectedMenuIndex(0);
       openNextFrame(() => setIsOpen(true));
     },
-    [hasScopeAction, openNextFrame, unreadResults.length],
+    [openNextFrame],
   );
 
   const handleSearchOpenChange = React.useCallback(
@@ -633,9 +627,9 @@ export function TopbarSearch({
   }, [isOpen]);
 
   const handleDialogInputKeyDown = useSearchMenuKeyboardNavigation({
+    actionMenuIndex,
     activeResults,
-    hasLeadingAction: hasScopeAction,
-    onActivateLeadingAction: activateCurrentChannelScope,
+    onActivateAction: activateCurrentChannelScope,
     onOpenResult: openResult,
     onRemoveScope: removeChannelScope,
     query,
@@ -645,7 +639,8 @@ export function TopbarSearch({
   });
 
   const renderSearchResultRow = (result: SearchResult, index: number) => {
-    const menuIndex = index + (hasScopeAction ? 1 : 0);
+    const menuIndex =
+      actionMenuIndex !== null && index >= actionMenuIndex ? index + 1 : index;
     const channelDisplayName =
       result.kind === "channel"
         ? getChannelDisplayName(result.channel, channelLabels)
@@ -681,6 +676,11 @@ export function TopbarSearch({
           : result.kind === "user"
             ? getUserSecondaryLabel(result.user)
             : truncateResultText(result.hit.content);
+    const unreadCount =
+      result.kind === "channel"
+        ? (unreadChannelCounts.get(result.channel.id) ?? 0)
+        : 0;
+    const isUnreadResult = result.kind === "channel" && unreadCount > 0;
     const trailingLabel =
       result.kind === "channel"
         ? getChannelSuggestionMeta(result.channel)
@@ -771,10 +771,13 @@ export function TopbarSearch({
             </span>
           )}
         </span>
-        {result.kind !== "message" && trailingLabel ? (
-          <span className="shrink-0 text-2xs text-muted-foreground/75">
-            {trailingLabel}
-          </span>
+        {result.kind !== "message" ? (
+          <SearchResultTrailing
+            channelId={isUnreadResult ? result.channel.id : undefined}
+            isSelected={menuIndex === selectedMenuIndex}
+            trailingLabel={trailingLabel}
+            unreadCount={unreadCount}
+          />
         ) : null}
       </button>
     );
@@ -801,9 +804,10 @@ export function TopbarSearch({
           currentPubkey,
         )}
         channelType={currentChannel.channelType}
-        isSelected={selectedMenuIndex === 0}
+        isSelected={selectedMenuIndex === actionMenuIndex}
+        menuIndex={actionMenuIndex ?? 0}
         onActivate={activateCurrentChannelScope}
-        onMouseEnter={() => setSelectedMenuIndex(0)}
+        onMouseEnter={() => setSelectedMenuIndex(actionMenuIndex ?? 0)}
       />
     ) : null;
   const searchResultContent = isShowingSuggestions ? (
@@ -825,7 +829,6 @@ export function TopbarSearch({
         className="max-h-96 overflow-y-auto"
         role="listbox"
       >
-        {currentChannelSearchAction}
         <div className="p-1.5">
           {(() => {
             let resultIndex = 0;
@@ -840,6 +843,7 @@ export function TopbarSearch({
                     )}
                   </div>
                 ) : null}
+                {currentChannelSearchAction}
                 {suggestedResults.length > 0 ? (
                   <div data-search-section="recent-activity">
                     <div className={SEARCH_SECTION_TITLE_CLASS}>

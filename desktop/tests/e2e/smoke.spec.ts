@@ -404,39 +404,52 @@ test("Cmd+K bubbles unread conversations to the top and Enter opens the first", 
   page,
 }) => {
   await page.goto("/");
-  await page.getByTestId("channel-random").click();
-  await waitForMockLiveSubscription(page, "random");
+  await page.getByTestId("channel-alice-tyler").click();
+  await waitForMockLiveSubscription(page, "alice-tyler");
   await page.getByTestId("channel-general").click();
 
   await page.evaluate((pubkey) => {
-    window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
-      channelName: "random",
-      content: "Unread shortcut from Cmd+K",
-      kind: 40002,
-      pubkey,
-    });
+    for (const content of [
+      "First unread DM shortcut from Cmd+K",
+      "Second unread DM shortcut from Cmd+K",
+    ]) {
+      window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
+        channelName: "alice-tyler",
+        content,
+        kind: 40002,
+        pubkey,
+      });
+    }
   }, TEST_IDENTITIES.alice.pubkey);
-  await expect(page.getByTestId("channel-random")).toHaveCSS(
+  await expect(page.getByTestId("channel-alice-tyler")).toHaveCSS(
     "font-weight",
     "700",
   );
 
   await focusSidebarSearchWithShortcut(page);
 
+  const directMessageId = "f48efb06-0c93-5025-aac9-2e646bb6bfa8";
   const unreadSection = page.locator('[data-search-section="unread"]');
   const firstUnread = unreadSection.locator(".search-result-row").first();
   await expect(unreadSection).toContainText("Unread");
   await expect(firstUnread).toHaveAttribute(
     "data-testid",
-    "search-result-channel-9dae0116-799b-5071-a0a8-fdd30a91a35d",
+    `search-result-channel-${directMessageId}`,
   );
   await expect(firstUnread).toHaveAttribute("aria-selected", "true");
+  await expect(
+    page.getByTestId(`search-unread-count-${directMessageId}`),
+  ).toHaveText("2");
+  await expect(firstUnread.getByText("Enter", { exact: true })).toBeVisible();
+  await expect(
+    page.getByTestId("search-current-channel-control"),
+  ).toHaveAttribute("data-search-result-index", "1");
 
   await page.keyboard.press("Enter");
   await expect(page).toHaveURL(
-    /#\/channels\/9dae0116-799b-5071-a0a8-fdd30a91a35d$/,
+    new RegExp(`#\\/channels\\/${directMessageId}$`),
   );
-  await expect(page.getByTestId("chat-title")).toHaveText("random");
+  await expect(page.getByTestId("chat-title")).toHaveText("alice-tyler");
 });
 
 test("global search offers an optional current-channel scope", async ({

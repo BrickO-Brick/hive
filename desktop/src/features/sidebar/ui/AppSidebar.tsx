@@ -477,6 +477,7 @@ export function AppSidebar({
           searchFocusRequest={searchFocusRequests[0]}
           scopeSearchFocusRequest={searchFocusRequests[1]}
           suggestionChannels={channels}
+          unreadChannelCounts={unreadChannelCounts}
           unreadChannelIds={unreadChannelIds}
         />
 

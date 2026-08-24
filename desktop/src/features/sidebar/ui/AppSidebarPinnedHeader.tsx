@@ -36,6 +36,7 @@ type AppSidebarPinnedHeaderProps = {
   searchFocusRequest: number;
   scopeSearchFocusRequest: number;
   suggestionChannels: Channel[];
+  unreadChannelCounts: ReadonlyMap<string, number>;
   unreadChannelIds: ReadonlySet<string>;
 };
 
@@ -64,6 +65,7 @@ export function AppSidebarPinnedHeader({
   searchFocusRequest,
   scopeSearchFocusRequest,
   suggestionChannels,
+  unreadChannelCounts,
   unreadChannelIds,
 }: AppSidebarPinnedHeaderProps) {
   return (
@@ -85,6 +87,7 @@ export function AppSidebarPinnedHeader({
         onCreateChannel={onCreateChannel}
         scopeFocusRequest={scopeSearchFocusRequest}
         suggestionChannels={suggestionChannels}
+        unreadChannelCounts={unreadChannelCounts}
         unreadChannelIds={unreadChannelIds}
       />
     </div>

@@ -3,9 +3,9 @@ import * as React from "react";
 import type { SearchResult } from "@/features/search/ui/SearchResultItem";
 
 export function useSearchMenuKeyboardNavigation({
+  actionMenuIndex,
   activeResults,
-  hasLeadingAction,
-  onActivateLeadingAction,
+  onActivateAction,
   onOpenResult,
   onRemoveScope,
   query,
@@ -13,9 +13,9 @@ export function useSearchMenuKeyboardNavigation({
   selectedMenuIndex,
   setSelectedMenuIndex,
 }: {
+  actionMenuIndex: number | null;
   activeResults: SearchResult[];
-  hasLeadingAction: boolean;
-  onActivateLeadingAction: () => void;
+  onActivateAction: () => void;
   onOpenResult: (result: SearchResult) => void;
   onRemoveScope: () => void;
   query: string;
@@ -23,7 +23,8 @@ export function useSearchMenuKeyboardNavigation({
   selectedMenuIndex: number;
   setSelectedMenuIndex: React.Dispatch<React.SetStateAction<number>>;
 }) {
-  const selectableCount = activeResults.length + (hasLeadingAction ? 1 : 0);
+  const selectableCount =
+    activeResults.length + (actionMenuIndex === null ? 0 : 1);
 
   React.useEffect(() => {
     setSelectedMenuIndex((current) => {
@@ -63,19 +64,22 @@ export function useSearchMenuKeyboardNavigation({
 
       if (event.key === "Enter" && !event.nativeEvent.isComposing) {
         event.preventDefault();
-        if (hasLeadingAction && selectedMenuIndex === 0) {
-          onActivateLeadingAction();
+        if (actionMenuIndex === selectedMenuIndex) {
+          onActivateAction();
           return;
         }
-        const result =
-          activeResults[selectedMenuIndex - (hasLeadingAction ? 1 : 0)];
+        const resultIndex =
+          actionMenuIndex !== null && selectedMenuIndex > actionMenuIndex
+            ? selectedMenuIndex - 1
+            : selectedMenuIndex;
+        const result = activeResults[resultIndex];
         if (result) onOpenResult(result);
       }
     },
     [
+      actionMenuIndex,
       activeResults,
-      hasLeadingAction,
-      onActivateLeadingAction,
+      onActivateAction,
       onOpenResult,
       onRemoveScope,
       query.length,

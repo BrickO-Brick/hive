@@ -2,7 +2,7 @@ import type { Channel } from "@/shared/api/types";
 
 export const MAX_RECENT_SEARCH_SUGGESTIONS = 4;
 
-function getChannelActivityTime(channel: Channel) {
+export function getChannelActivityTime(channel: Channel) {
   if (!channel.lastMessageAt) return 0;
 
   const timestamp = Date.parse(channel.lastMessageAt);
@@ -65,12 +65,15 @@ export function getSuggestedSearchResults(
   };
 }
 
-export function getInitialSearchSelection({
-  hasLeadingAction,
-  hasUnreadChannels,
+export function getSearchActionMenuIndex({
+  hasScopeAction,
+  isShowingSuggestions,
+  unreadResultCount,
 }: {
-  hasLeadingAction: boolean;
-  hasUnreadChannels: boolean;
+  hasScopeAction: boolean;
+  isShowingSuggestions: boolean;
+  unreadResultCount: number;
 }) {
-  return hasUnreadChannels && hasLeadingAction ? 1 : 0;
+  if (!hasScopeAction) return null;
+  return isShowingSuggestions && unreadResultCount > 0 ? unreadResultCount : 0;
 }

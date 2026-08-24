@@ -97,6 +97,7 @@ type CurrentChannelSearchActionProps = {
   channelLabel: string;
   channelType: Channel["channelType"];
   isSelected: boolean;
+  menuIndex: number;
   onActivate: () => void;
   onMouseEnter: () => void;
 };
@@ -105,6 +106,7 @@ export function CurrentChannelSearchAction({
   channelLabel,
   channelType,
   isSelected,
+  menuIndex,
   onActivate,
   onMouseEnter,
 }: CurrentChannelSearchActionProps) {
@@ -117,7 +119,7 @@ export function CurrentChannelSearchAction({
         className={`flex w-full items-center gap-4 rounded-lg border border-border/75 px-3 py-3 text-left transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring ${
           isSelected ? "bg-muted/55" : "bg-muted/30 hover:bg-muted/55"
         }`}
-        data-search-result-index="0"
+        data-search-result-index={menuIndex}
         data-testid="search-current-channel-control"
         onClick={onActivate}
         onMouseEnter={onMouseEnter}
