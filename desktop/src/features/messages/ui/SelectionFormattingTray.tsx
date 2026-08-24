@@ -115,6 +115,7 @@ export function SelectionFormattingTray({
 }: SelectionFormattingTrayProps) {
   const [position, setPosition] = React.useState<TrayPosition | null>(null);
   const rafRef = React.useRef<number | null>(null);
+  const editorViewMountedRef = React.useRef(false);
   const suppressRightClickUpdatesRef = React.useRef(false);
   const trayRef = React.useRef<HTMLDivElement | null>(null);
   const [trayWidth, setTrayWidth] = React.useState(0);
@@ -128,6 +129,7 @@ export function SelectionFormattingTray({
   const updatePosition = React.useCallback(() => {
     if (
       suppressRightClickUpdatesRef.current ||
+      !editorViewMountedRef.current ||
       !editor ||
       disabled ||
       !editor.isEditable ||
@@ -161,8 +163,9 @@ export function SelectionFormattingTray({
       return;
     }
 
-    const editorDom = editor.view.dom;
+    let createMayAttach = true;
     const hide = () => setPosition(null);
+    let editorDom: HTMLElement | null = null;
     const handleContextMenu = () => {
       suppressRightClickUpdatesRef.current = true;
       cancelScheduledUpdate();
@@ -175,27 +178,61 @@ export function SelectionFormattingTray({
     const handlePointerDown = (event: PointerEvent) => {
       if (event.button === 0) clearSuppression();
     };
+    const detachEditorDomListeners = () => {
+      editorDom?.removeEventListener("contextmenu", handleContextMenu);
+      editorDom?.removeEventListener("pointerdown", handlePointerDown);
+      editorDom?.removeEventListener("keydown", clearSuppression);
+      editorDom = null;
+    };
+    const handleEditorUnmount = () => {
+      createMayAttach = false;
+      editorViewMountedRef.current = false;
+      detachEditorDomListeners();
+      cancelScheduledUpdate();
+      hide();
+    };
+    const attachEditorDomListeners = () => {
+      detachEditorDomListeners();
+      editorDom = editor.view.dom;
+      editorViewMountedRef.current = true;
+      editorDom.addEventListener("contextmenu", handleContextMenu);
+      editorDom.addEventListener("pointerdown", handlePointerDown);
+      editorDom.addEventListener("keydown", clearSuppression);
+    };
+    const handleEditorCreate = () => {
+      if (createMayAttach) attachEditorDomListeners();
+    };
+    const handleEditorMount = () => {
+      createMayAttach = true;
+      attachEditorDomListeners();
+    };
+
+    editor.on("create", handleEditorCreate);
+    editor.on("mount", handleEditorMount);
+    editor.on("unmount", handleEditorUnmount);
+    if (editor.isInitialized) {
+      attachEditorDomListeners();
+    }
 
     scheduleUpdate();
     editor.on("selectionUpdate", scheduleUpdate);
     editor.on("transaction", scheduleUpdate);
     editor.on("focus", scheduleUpdate);
     editor.on("blur", hide);
-    editorDom.addEventListener("contextmenu", handleContextMenu);
-    editorDom.addEventListener("pointerdown", handlePointerDown);
-    editorDom.addEventListener("keydown", clearSuppression);
     window.addEventListener("resize", scheduleUpdate);
     window.addEventListener("scroll", scheduleUpdate, true);
 
     return () => {
+      editorViewMountedRef.current = false;
       cancelScheduledUpdate();
+      editor.off("create", handleEditorCreate);
+      editor.off("mount", handleEditorMount);
+      editor.off("unmount", handleEditorUnmount);
       editor.off("selectionUpdate", scheduleUpdate);
       editor.off("transaction", scheduleUpdate);
       editor.off("focus", scheduleUpdate);
       editor.off("blur", hide);
-      editorDom.removeEventListener("contextmenu", handleContextMenu);
-      editorDom.removeEventListener("pointerdown", handlePointerDown);
-      editorDom.removeEventListener("keydown", clearSuppression);
+      detachEditorDomListeners();
       window.removeEventListener("resize", scheduleUpdate);
       window.removeEventListener("scroll", scheduleUpdate, true);
     };
