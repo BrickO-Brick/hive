@@ -16,6 +16,10 @@ import {
   SearchDialogInputRow,
 } from "@/features/search/ui/SearchScopeControls";
 import { useSearchMenuKeyboardNavigation } from "@/features/search/ui/useSearchMenuKeyboardNavigation";
+import {
+  getInitialSearchSelection,
+  getSuggestedSearchResults,
+} from "@/features/search/ui/topbarSearchSuggestions";
 import type { Channel, SearchHit, UserSearchResult } from "@/shared/api/types";
 import { cn } from "@/shared/lib/cn";
 import { normalizePubkey, truncatePubkey } from "@/shared/lib/pubkey";
@@ -42,12 +46,13 @@ type TopbarSearchProps = {
   onCreateAgent?: () => void | Promise<void>;
   onCreateChannel?: () => void | Promise<void>;
   suggestionChannels?: Channel[];
+  unreadChannelIds?: ReadonlySet<string>;
   scopeFocusRequest?: number;
   variant?: "bar" | "icon";
 };
 
-const MAX_SEARCH_SUGGESTIONS = 4;
 const SEARCH_RESULT_LIMIT = 40;
+const EMPTY_UNREAD_CHANNEL_IDS: ReadonlySet<string> = new Set();
 const SEARCH_SECTION_TITLE_CLASS =
   "px-2.5 pb-1.5 pt-2 text-xs font-medium text-muted-foreground/70";
 const SEARCH_RESULT_SECTION_ORDER = [
@@ -301,40 +306,6 @@ function groupSearchResults(results: SearchResult[]): SearchResultSection[] {
   });
 }
 
-function getSuggestedSearchResults(channels: Channel[]) {
-  return channels
-    .filter(
-      (channel) =>
-        !channel.archivedAt &&
-        (channel.isMember || channel.channelType === "dm"),
-    )
-    .sort((a, b) => {
-      const activityDiff =
-        getChannelActivityTime(b) - getChannelActivityTime(a);
-      if (activityDiff !== 0) {
-        return activityDiff;
-      }
-
-      const typeRank = (channel: Channel) =>
-        channel.channelType === "dm"
-          ? 0
-          : channel.channelType === "stream"
-            ? 1
-            : 2;
-      const rankDiff = typeRank(a) - typeRank(b);
-      if (rankDiff !== 0) {
-        return rankDiff;
-      }
-
-      return a.name.localeCompare(b.name);
-    })
-    .slice(0, MAX_SEARCH_SUGGESTIONS)
-    .map((channel) => ({
-      kind: "channel" as const,
-      channel,
-    }));
-}
-
 const searchSkeletonRows = [
   {
     iconShape: "rounded-md",
@@ -406,6 +377,7 @@ export function TopbarSearch({
   onCreateChannel,
   scopeFocusRequest = 0,
   suggestionChannels,
+  unreadChannelIds = EMPTY_UNREAD_CHANNEL_IDS,
   variant = "bar",
 }: TopbarSearchProps) {
   const [isOpen, setIsOpen] = React.useState(false);
@@ -449,9 +421,13 @@ export function TopbarSearch({
   const currentPubkeyNormalized =
     currentPubkey && normalizePubkey(currentPubkey);
   const hasScopeAction = Boolean(currentChannel && !scopeChannel);
-  const suggestedResults = React.useMemo(
-    () => getSuggestedSearchResults(suggestionChannels ?? channels),
-    [channels, suggestionChannels],
+  const { suggestedResults, unreadResults } = React.useMemo(
+    () =>
+      getSuggestedSearchResults(
+        suggestionChannels ?? channels,
+        unreadChannelIds,
+      ),
+    [channels, suggestionChannels, unreadChannelIds],
   );
   const suggestionActionResults = React.useMemo(() => {
     const actions: SearchResult[] = [];
@@ -489,8 +465,8 @@ export function TopbarSearch({
     return actions;
   }, [onBrowseChannels, onCreateAgent, onCreateChannel]);
   const suggestionResults = React.useMemo(
-    () => [...suggestedResults, ...suggestionActionResults],
-    [suggestedResults, suggestionActionResults],
+    () => [...unreadResults, ...suggestedResults, ...suggestionActionResults],
+    [unreadResults, suggestedResults, suggestionActionResults],
   );
   const minimumQueryLength = getMinimumSearchQueryLength(scopeChannelId);
   const isShowingSuggestions =
@@ -526,10 +502,17 @@ export function TopbarSearch({
   const openSearchDialog = React.useCallback(
     (nextScopeChannelId: string | null = null) => {
       setScopeChannelId(nextScopeChannelId);
-      setSelectedMenuIndex(0);
+      setSelectedMenuIndex(
+        nextScopeChannelId
+          ? 0
+          : getInitialSearchSelection({
+              hasLeadingAction: hasScopeAction,
+              hasUnreadChannels: unreadResults.length > 0,
+            }),
+      );
       openNextFrame(() => setIsOpen(true));
     },
-    [openNextFrame],
+    [hasScopeAction, openNextFrame, unreadResults.length],
   );
 
   const handleSearchOpenChange = React.useCallback(
@@ -849,8 +832,16 @@ export function TopbarSearch({
 
             return (
               <>
+                {unreadResults.length > 0 ? (
+                  <div data-search-section="unread">
+                    <div className={SEARCH_SECTION_TITLE_CLASS}>Unread</div>
+                    {unreadResults.map((result) =>
+                      renderSearchResultRow(result, resultIndex++),
+                    )}
+                  </div>
+                ) : null}
                 {suggestedResults.length > 0 ? (
-                  <div>
+                  <div data-search-section="recent-activity">
                     <div className={SEARCH_SECTION_TITLE_CLASS}>
                       Recent activity
                     </div>

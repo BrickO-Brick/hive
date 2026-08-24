@@ -1,6 +1,10 @@
 import { expect, test } from "@playwright/test";
 
-import { installMockBridge, openCreateChannelDialog } from "../helpers/bridge";
+import {
+  installMockBridge,
+  openCreateChannelDialog,
+  TEST_IDENTITIES,
+} from "../helpers/bridge";
 
 async function getTimelineMetrics(page: import("@playwright/test").Page) {
   return page.getByTestId("message-timeline").evaluate((element) => {
@@ -61,6 +65,23 @@ async function focusSidebarSearchWithShortcut(
   });
   await expect(page.getByTestId("search-results")).toBeVisible();
   await expect(page.getByTestId("search-dialog-input")).toBeFocused();
+}
+
+async function waitForMockLiveSubscription(
+  page: import("@playwright/test").Page,
+  channelName: string,
+) {
+  await expect
+    .poll(() =>
+      page.evaluate(
+        (name) =>
+          window.__BUZZ_E2E_HAS_MOCK_LIVE_SUBSCRIPTION__?.({
+            channelName: name,
+          }) ?? false,
+        channelName,
+      ),
+    )
+    .toBe(true);
 }
 
 async function expectHomeView(page: import("@playwright/test").Page) {
@@ -377,6 +398,45 @@ test("opens channel matches from search", async ({ page }) => {
     /#\/channels\/1c7e1c02-87bb-5e88-b2da-5a7a9432d0c9$/,
   );
   await expect(page.getByTestId("chat-title")).toHaveText("engineering");
+});
+
+test("Cmd+K bubbles unread conversations to the top and Enter opens the first", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.getByTestId("channel-random").click();
+  await waitForMockLiveSubscription(page, "random");
+  await page.getByTestId("channel-general").click();
+
+  await page.evaluate((pubkey) => {
+    window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
+      channelName: "random",
+      content: "Unread shortcut from Cmd+K",
+      kind: 40002,
+      pubkey,
+    });
+  }, TEST_IDENTITIES.alice.pubkey);
+  await expect(page.getByTestId("channel-random")).toHaveCSS(
+    "font-weight",
+    "700",
+  );
+
+  await focusSidebarSearchWithShortcut(page);
+
+  const unreadSection = page.locator('[data-search-section="unread"]');
+  const firstUnread = unreadSection.locator(".search-result-row").first();
+  await expect(unreadSection).toContainText("Unread");
+  await expect(firstUnread).toHaveAttribute(
+    "data-testid",
+    "search-result-channel-9dae0116-799b-5071-a0a8-fdd30a91a35d",
+  );
+  await expect(firstUnread).toHaveAttribute("aria-selected", "true");
+
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(
+    /#\/channels\/9dae0116-799b-5071-a0a8-fdd30a91a35d$/,
+  );
+  await expect(page.getByTestId("chat-title")).toHaveText("random");
 });
 
 test("global search offers an optional current-channel scope", async ({
