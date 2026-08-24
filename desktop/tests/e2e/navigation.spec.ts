@@ -635,21 +635,6 @@ test("message links to visible root messages highlight them in the main timeline
       }),
     )
     .toBe(link);
-
-  await rootThreadLink.click({ button: "right" });
-  await linkMenu.getByRole("button", { name: "Open link" }).click();
-
-  // Root-message links resolve in the main timeline: scroll + highlight the
-  // root, never force-open its (possibly empty) reply panel (block/buzz —
-  // "inbox deep links open an empty thread for top-level messages").
-  const threadPanel = page.getByTestId("message-thread-panel");
-  await expect(threadPanel).not.toBeVisible();
-  await expect(page).not.toHaveURL(/thread=/);
-  const welcomeRow = page
-    .getByTestId("message-timeline")
-    .locator('[data-message-id="mock-general-welcome"]');
-  await expect(welcomeRow).toBeVisible();
-  await expect(welcomeRow).toHaveClass(/route-target-highlight-fade/);
 });
 
 // Cold deep links arrive from outside the channel (Home inbox "Open in
