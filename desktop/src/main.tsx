@@ -11,8 +11,7 @@ import "@/shared/styles/globals.css";
 import { UpdaterProvider } from "@/features/settings/hooks/UpdaterProvider";
 import { migrateLegacyCommunityStorageBeforeRender } from "@/features/communities/legacyCommunityStorage";
 import { CommunitiesProvider } from "@/features/communities/useCommunities";
-import { huddleWindowChannelId } from "@/features/huddle/lib/huddleWindow";
-import { isAgentActivityWindow } from "@/features/agents/lib/agentActivityWindow";
+import { isCompanionWindow } from "@/app/companionWindow";
 import { CommunityOnboardingProvider } from "@/features/onboarding/communityOnboarding";
 import { ThemeProvider } from "@/shared/theme/ThemeProvider";
 import { EmojiBurstProvider } from "@/shared/ui/EmojiBurstProvider";
@@ -86,11 +85,7 @@ function renderApp() {
           SecurityError from localStorage can't blank the whole window. */}
       <RootErrorBoundary>
         <CommunitiesProvider>
-          <CommunityOnboardingProvider
-            enabled={
-              huddleWindowChannelId() === null && !isAgentActivityWindow()
-            }
-          >
+          <CommunityOnboardingProvider enabled={!isCompanionWindow()}>
             <ThemeProvider defaultTheme="buzz">
               <TooltipProvider>
                 <EmojiBurstProvider>

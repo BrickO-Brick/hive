@@ -44,7 +44,7 @@ import {
 } from "@/features/notifications/hooks";
 import { PreventSleepProvider } from "@/features/agents/usePreventSleep";
 import { requestOpenCreateAgent } from "@/features/agents/openCreateAgentEvent";
-import { isAgentActivityWindow } from "@/features/agents/lib/agentActivityWindow";
+import { currentCompanionWindowKind } from "@/app/companionWindow";
 import { useAgentsDataRefresh } from "@/features/agents/lib/useAgentsDataRefresh";
 import { useManagedAgentRuntimeReconciliation } from "@/features/agents/useManagedAgentRuntimeReconciliation";
 import { useAutoRestartPolicy } from "@/features/agents/lib/useAutoRestartPolicy";
@@ -126,8 +126,9 @@ export function AppShell() {
     showHuddleInMainApp,
     viewHuddleChannel,
   } = useHuddlePresentation();
-  const isActivityWindow = isAgentActivityWindow();
-  const isCompanionWindow = isHuddleRoom || isActivityWindow;
+  const companionWindowKind = currentCompanionWindowKind();
+  const isActivityWindow = companionWindowKind === "agent-activity";
+  const isCompanionWindow = companionWindowKind !== null;
   const hasCommunityRail =
     communitiesHook.communities.length > 1 && !isCompanionWindow;
   const addCommunityDialog = useAddCommunityDialogState();
@@ -354,7 +355,7 @@ export function AppShell() {
     handleThreadReplyDesktopNotification,
   } = useAppShellDesktopNotifications({
     channels,
-    enabled: !isHuddleRoom,
+    enabled: !isCompanionWindow,
     goChannel,
     goHome,
     notificationSettings: notificationSettings.settings,
@@ -391,8 +392,8 @@ export function AppShell() {
     muteThread,
     unmuteThread,
   } = useUnreadChannels(
-    isHuddleRoom ? EMPTY_CHANNELS : sidebarChannels,
-    isHuddleRoom ? null : activeChannel,
+    isCompanionWindow ? EMPTY_CHANNELS : sidebarChannels,
+    isCompanionWindow ? null : activeChannel,
     {
       pubkey: identityQuery.data?.pubkey,
       relayClient,
@@ -454,7 +455,7 @@ export function AppShell() {
       identityQuery.data?.pubkey,
       notificationSettings.settings,
       notificationSettings.setDesktopEnabled,
-      !isHuddleRoom,
+      !isCompanionWindow,
       selectedView === "home" && !settingsOpen,
       getChannelReadAt,
       readStateVersion,
@@ -658,13 +659,13 @@ export function AppShell() {
     [openSearchHit],
   );
   useAppShellLifecycleEffects({
-    desktopBadgeEnabled: !isHuddleRoom,
+    desktopBadgeEnabled: !isCompanionWindow,
     homeBadgeCountExcludingHighPriority,
     topLevelUnreadChannelIds,
     unreadChannelNotificationCount,
   });
-  // Dispatch `buzz://` deep links only from the main window; the companion is dedicated to its active Huddle route.
-  useAppDeepLinks(!isHuddleRoom);
+  // Dispatch `buzz://` deep links only from the primary window; companions own their focused route.
+  useAppDeepLinks(!isCompanionWindow);
   const handleOpenCreateChannel = React.useCallback(
     () => setIsCreateChannelOpen(true),
     [],
@@ -673,7 +674,7 @@ export function AppShell() {
     activeChannelId: selectedView === "channel" ? selectedChannelId : null,
     canSearchCurrentChannel:
       selectedView === "channel" && Boolean(activeChannel),
-    disabled: settingsOpen || isHuddleRoom,
+    disabled: settingsOpen || isCompanionWindow,
     onBrowseChannels: handleOpenBrowseChannels,
     onCreateChannel: handleOpenCreateChannel,
     onGoHome: goHome,
@@ -684,7 +685,7 @@ export function AppShell() {
   useSettingsShortcuts({
     onClose: handleCloseSettings,
     onOpenSettings: handleOpenSettings,
-    open: isHuddleRoom ? undefined : settingsOpen,
+    open: isCompanionWindow ? undefined : settingsOpen,
   });
   useMarkAsReadShortcuts({
     activeChannelId: activeChannel?.id ?? null,
