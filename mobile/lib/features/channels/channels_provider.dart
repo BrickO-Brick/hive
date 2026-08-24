@@ -22,6 +22,7 @@ import 'unread_badge/observed_unread_event.dart';
 import 'unread_badge/should_notify_for_event.dart';
 
 part 'channel_directory.dart';
+part 'channel_member_snapshots.dart';
 
 const _channelTypeOrder = {'stream': 0, 'forum': 1, 'dm': 2};
 const _unreadCatchUpLimit = 1000;
@@ -281,29 +282,12 @@ class ChannelsNotifier extends AsyncNotifier<List<Channel>> {
     // Use the membership snapshots already fetched above for both Huddle
     // linkage validation and member-count hydration.
     if (memberEvents.isNotEmpty) _cacheMemberSnapshots(memberEvents);
-    final latestMembershipPerId = <String, NostrEvent>{};
-    for (final event in [...memberships, ...memberEvents]) {
-      if (event.kind != 39002) continue;
-      final id = event.getTagValue('d');
-      if (id == null) continue;
-      final existing = latestMembershipPerId[id];
-      if (existing == null ||
-          event.createdAt > existing.createdAt ||
-          (event.createdAt == existing.createdAt &&
-              event.id.compareTo(existing.id) < 0)) {
-        latestMembershipPerId[id] = event;
-      }
-    }
-    final dedupedMemberships = latestMembershipPerId.values.toList();
-    if (communityID != null) {
-      unawaited(
-        cacheBuzzPushChannelEvents(
-          communityID,
-          dedupedMetas,
-          dedupedMemberships,
-        ),
-      );
-    }
+    unawaited(
+      cacheBuzzPushChannelEvents(communityID, dedupedMetas, [
+        ...memberships,
+        ...memberEvents,
+      ]),
+    );
     final memberCounts = _memberCountsByChannelId(memberEvents);
     for (var i = 0; i < channels.length; i++) {
       final count = memberCounts[channels[i].id];
@@ -409,40 +393,6 @@ class ChannelsNotifier extends AsyncNotifier<List<Channel>> {
     // caller assigns whatever this returns, so the last check belongs here.
     fence.ensureCurrent();
     return channels;
-  }
-
-  void _cacheMemberSnapshots(
-    Iterable<NostrEvent> events, {
-    bool replaceAll = false,
-  }) {
-    final latestByChannelId = <String, NostrEvent>{};
-    for (final event in events) {
-      final channelId = event.getTagValue('d');
-      if (channelId == null) continue;
-      final current = latestByChannelId[channelId];
-      if (current == null || event.createdAt > current.createdAt) {
-        latestByChannelId[channelId] = event;
-      }
-    }
-
-    final snapshots = replaceAll
-        ? <String, List<ChannelMember>>{}
-        : Map<String, List<ChannelMember>>.of(_memberSnapshotsByChannelId);
-    snapshots.addAll({
-      for (final entry in latestByChannelId.entries)
-        entry.key: List.unmodifiable([
-          for (final member in membersFromEvent(entry.value))
-            ChannelMember(
-              pubkey: member.pubkey,
-              role: member.role,
-              joinedAt: DateTime.fromMillisecondsSinceEpoch(
-                entry.value.createdAt * 1000,
-                isUtc: true,
-              ),
-            ),
-        ]),
-    });
-    _memberSnapshotsByChannelId = Map.unmodifiable(snapshots);
   }
 
   /// Fetches each channel's independent latest-message window in one HTTP

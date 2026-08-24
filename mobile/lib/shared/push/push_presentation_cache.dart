@@ -59,11 +59,13 @@ Future<void> cacheBuzzPushProfileEvents(
 
 /// Exports verified channel metadata and membership for native authority checks.
 Future<void> cacheBuzzPushChannelEvents(
-  String communityID,
+  String? communityID,
   Iterable<NostrEvent> metadataEvents,
   Iterable<NostrEvent> membershipEvents,
 ) async {
-  if (defaultTargetPlatform != TargetPlatform.iOS || communityID.isEmpty) {
+  if (defaultTargetPlatform != TargetPlatform.iOS ||
+      communityID == null ||
+      communityID.isEmpty) {
     return;
   }
   final batch = selectBoundedPushChannelEvents(
