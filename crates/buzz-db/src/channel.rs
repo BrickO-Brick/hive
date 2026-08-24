@@ -1293,6 +1293,8 @@ pub struct UserRecord {
     pub avatar_url: Option<String>,
     /// Optional NIP-05 identifier (e.g. `user@example.com`).
     pub nip05_handle: Option<String>,
+    /// Whether this community-local identity is a managed agent.
+    pub is_agent: bool,
 }
 
 /// A channel record paired with whether the querying user is an active member.
@@ -1437,7 +1439,8 @@ pub async fn get_users_bulk(
         .collect::<Vec<_>>()
         .join(", ");
     let sql = format!(
-        "SELECT pubkey, display_name, avatar_url, nip05_handle \
+        "SELECT pubkey, display_name, avatar_url, nip05_handle, \
+                agent_owner_pubkey IS NOT NULL AS is_agent \
          FROM users WHERE community_id = $1 AND pubkey IN ({placeholders})"
     );
 
@@ -1455,6 +1458,7 @@ pub async fn get_users_bulk(
             display_name: row.try_get("display_name")?,
             avatar_url: row.try_get("avatar_url")?,
             nip05_handle: row.try_get("nip05_handle")?,
+            is_agent: row.try_get("is_agent")?,
         });
     }
     Ok(out)

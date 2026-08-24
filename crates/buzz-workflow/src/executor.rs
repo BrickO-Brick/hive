@@ -636,6 +636,8 @@ pub async fn dispatch_action(
                         run_id,
                         definition_event_id: trigger_ctx.definition_event_id.clone(),
                         step_id: step_id.to_owned(),
+                        execution_trace: wf_run.execution_trace,
+                        trigger_context: wf_run.trigger_context,
                     };
                     let event_id = engine
                         .action_sink()?

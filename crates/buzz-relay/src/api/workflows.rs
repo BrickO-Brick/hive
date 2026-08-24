@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use axum::{
+    body::Bytes,
     extract::{Path, Query, RawQuery, State},
     http::{HeaderMap, StatusCode},
     response::Json,
@@ -31,6 +32,17 @@ pub struct RunsQuery {
     before: Option<DateTime<Utc>>,
     before_id: Option<Uuid>,
     limit: Option<i64>,
+}
+
+/// Optional durable workflow-delivery claim selector.
+#[derive(Debug, Deserialize, Default)]
+pub struct DeliveryClaim {
+    delivery_id: Option<Uuid>,
+    run_id: Option<Uuid>,
+    step_id: Option<String>,
+    definition_event_id: Option<String>,
+    message_event_id: Option<String>,
+    channel_id: Option<Uuid>,
 }
 
 fn request_path(path: &str, raw_query: Option<&str>) -> String {
@@ -193,6 +205,121 @@ pub async fn run_approvals(
     Ok(Json(serde_json::json!({
         "approvals": approvals.iter().map(approval_json).collect::<Vec<_>>(),
     })))
+}
+
+fn decode_event_id(value: &str, field: &str) -> Result<Vec<u8>, (StatusCode, Json<Value>)> {
+    nostr::EventId::from_hex(value)
+        .map(|id| id.as_bytes().to_vec())
+        .map_err(|_| api_error(StatusCode::BAD_REQUEST, &format!("invalid {field}")))
+}
+
+/// `POST /workflows/deliveries/claim` — atomically claim the authenticated
+/// managed agent's requested delivery, or its oldest pending delivery.
+pub async fn claim_delivery(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let raw_host = headers
+        .get(axum::http::header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    let tenant = crate::tenant::bind_community(&state.db, raw_host)
+        .await
+        .map_err(|_| {
+            api_error(
+                StatusCode::NOT_FOUND,
+                "relay: no community is configured for this host",
+            )
+        })?;
+    let path = "/workflows/deliveries/claim";
+    let url = bridge::nip98_expected_url(&state.config.relay_url, &tenant, path);
+    let (pubkey, event_id_bytes) = bridge::verify_bridge_auth(
+        &headers,
+        "POST",
+        &url,
+        Some(&body),
+        state.config.require_auth_token,
+    )?;
+    bridge::enforce_http_admission(&state, &tenant, &pubkey).await?;
+    bridge::check_nip98_replay(&state, &tenant, event_id_bytes).await?;
+    let pubkey_bytes = pubkey.to_bytes().to_vec();
+    let auth_tag = headers
+        .get("x-auth-tag")
+        .and_then(|value| value.to_str().ok());
+    super::relay_members::enforce_relay_membership(
+        &state,
+        tenant.community(),
+        &pubkey_bytes,
+        auth_tag,
+    )
+    .await?;
+
+    let request: DeliveryClaim = serde_json::from_slice(&body)
+        .map_err(|_| api_error(StatusCode::BAD_REQUEST, "invalid delivery claim JSON"))?;
+    let expected_fields = [
+        request.run_id.is_some(),
+        request.step_id.is_some(),
+        request.definition_event_id.is_some(),
+        request.message_event_id.is_some(),
+        request.channel_id.is_some(),
+    ];
+    if expected_fields.iter().any(|present| *present)
+        && !expected_fields.iter().all(|present| *present)
+    {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "delivery binding fields must be supplied together",
+        ));
+    }
+    let expected = match (
+        request.run_id,
+        request.step_id,
+        request.definition_event_id,
+        request.message_event_id,
+        request.channel_id,
+    ) {
+        (Some(run_id), Some(step_id), Some(definition_id), Some(message_id), Some(channel_id)) => {
+            Some(buzz_db::workflow::WorkflowAgentDeliveryBinding {
+                run_id,
+                step_id,
+                definition_event_id: decode_event_id(&definition_id, "definition_event_id")?,
+                message_event_id: decode_event_id(&message_id, "message_event_id")?,
+                channel_id,
+            })
+        }
+        _ => None,
+    };
+
+    let delivery = state
+        .db
+        .claim_workflow_agent_delivery(
+            tenant.community(),
+            &pubkey_bytes,
+            request.delivery_id,
+            expected.as_ref(),
+        )
+        .await
+        .map_err(|error| internal_error(&format!("claim workflow delivery: {error}")))?;
+    Ok(Json(serde_json::json!({
+        "delivery": delivery.as_ref().map(delivery_json),
+    })))
+}
+
+fn delivery_json(delivery: &buzz_db::workflow::WorkflowAgentDeliveryRecord) -> Value {
+    serde_json::json!({
+        "id": delivery.id,
+        "workflow_id": delivery.workflow_id,
+        "run_id": delivery.run_id,
+        "step_id": delivery.step_id,
+        "definition_event_id": hex::encode(&delivery.definition_event_id),
+        "message_event_id": hex::encode(&delivery.message_event_id),
+        "channel_id": delivery.channel_id,
+        "claim_token": delivery.claim_token,
+        "execution_trace": delivery.execution_trace,
+        "trigger_context": delivery.trigger_context,
+        "created_at": delivery.created_at,
+    })
 }
 
 fn run_json(run: &buzz_db::workflow::WorkflowRunRecord) -> Value {

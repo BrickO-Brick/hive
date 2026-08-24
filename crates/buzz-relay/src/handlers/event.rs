@@ -174,6 +174,29 @@ pub async fn filter_fanout_by_access(
         matches
     };
 
+    // p-gated delivery is recipient-only even for channel-less ephemeral events.
+    // Filter authorization on REQ protects historical reads, but live fan-out
+    // must enforce the same rule at this shared send chokepoint so a kindless
+    // subscription cannot observe another recipient's wake or private event.
+    let matches = if buzz_core::kind::P_GATED_KINDS.contains(&event_kind_u32(&stored_event.event)) {
+        matches
+            .into_iter()
+            .filter(|(conn_id, _)| {
+                state
+                    .conn_manager
+                    .pubkey_for_conn(*conn_id)
+                    .is_some_and(|pubkey| {
+                        buzz_core::filter::reader_authorized_for_event(
+                            &stored_event.event,
+                            &hex::encode(pubkey),
+                        )
+                    })
+            })
+            .collect()
+    } else {
+        matches
+    };
+
     let Some(channel_id) = stored_event.channel_id else {
         return matches;
     };

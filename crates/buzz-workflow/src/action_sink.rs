@@ -20,6 +20,10 @@ pub struct WorkflowMessageContext {
     pub definition_event_id: String,
     /// Stable step identifier within the signed definition.
     pub step_id: String,
+    /// Private execution state captured before this step.
+    pub execution_trace: serde_json::Value,
+    /// Private trigger snapshot used to verify the delivery.
+    pub trigger_context: Option<serde_json::Value>,
 }
 
 /// Errors from action sink operations.

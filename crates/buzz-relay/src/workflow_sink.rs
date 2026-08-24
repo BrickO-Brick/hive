@@ -330,21 +330,79 @@ impl ActionSink for RelayActionSink {
                 .await
                 .map_err(|e| ActionSinkError::Database(e.to_string()))?;
             let named_members: Vec<(String, String)> = users
-                .into_iter()
+                .iter()
                 .filter_map(|u| {
-                    let name = u.display_name?;
+                    let name = u.display_name.clone()?;
                     Some((name, nostr::PublicKey::from_slice(&u.pubkey).ok()?.to_hex()))
                 })
                 .collect();
-            for mentioned in resolve_mention_pubkeys(&text, &named_members) {
-                if mentioned == author_pubkey_hex {
+            let managed_agent_pubkeys: std::collections::HashSet<String> = users
+                .iter()
+                .filter(|u| u.is_agent)
+                .filter_map(|u| {
+                    nostr::PublicKey::from_slice(&u.pubkey)
+                        .ok()
+                        .map(|pk| pk.to_hex())
+                })
+                .collect();
+            let mentioned_pubkeys = resolve_mention_pubkeys(&text, &named_members);
+            for mentioned in &mentioned_pubkeys {
+                if mentioned == &author_pubkey_hex {
                     continue;
                 }
                 tags.push(
-                    Tag::parse(["p", &mentioned])
+                    Tag::parse(["p", mentioned.as_str()])
                         .map_err(|e| ActionSinkError::EventBuild(format!("mention p tag: {e}")))?,
                 );
             }
+
+            let definition_event_id = nostr::EventId::from_hex(&context.definition_event_id)
+                .map_err(|e| {
+                    ActionSinkError::InvalidInput(format!(
+                        "invalid workflow definition event id: {e}"
+                    ))
+                })?;
+            let targets: Vec<buzz_db::workflow::WorkflowAgentDeliveryTarget> = mentioned_pubkeys
+                .iter()
+                .filter(|pubkey| {
+                    pubkey.as_str() != author_pubkey_hex
+                        && managed_agent_pubkeys.contains(pubkey.as_str())
+                })
+                .map(|pubkey| {
+                    nostr::PublicKey::from_hex(pubkey)
+                        .map(|parsed| buzz_db::workflow::WorkflowAgentDeliveryTarget {
+                            id: Uuid::new_v4(),
+                            pubkey: parsed.to_bytes().to_vec(),
+                        })
+                        .map_err(|e| {
+                            ActionSinkError::InvalidInput(format!(
+                                "invalid managed-agent pubkey: {e}"
+                            ))
+                        })
+                })
+                .collect::<Result<_, _>>()?;
+
+            // Serialize the durable identity before signing. A retry returns the
+            // already-committed canonical event rather than minting a second
+            // relay-signed message for the same run step. Messages without a
+            // managed-agent target stay on the ordinary visible-message path.
+            let delivery_transaction = if targets.is_empty() {
+                None
+            } else {
+                let (transaction, existing_message) = state
+                    .db
+                    .lock_workflow_agent_delivery_identity(
+                        tenant.community(),
+                        context.run_id,
+                        &context.step_id,
+                    )
+                    .await
+                    .map_err(|e| ActionSinkError::Database(e.to_string()))?;
+                if let Some((event_id, _)) = existing_message {
+                    return Ok(hex::encode(event_id));
+                }
+                Some(transaction)
+            };
 
             let kind = Kind::from(KIND_STREAM_MESSAGE as u16);
             let event = EventBuilder::new(kind, &text)
@@ -389,20 +447,47 @@ impl ActionSink for RelayActionSink {
                 },
             });
 
-            let (stored_event, was_inserted) = state
-                .db
-                .insert_event_with_thread_metadata(
-                    tenant.community(),
-                    &event,
-                    Some(channel_uuid),
-                    thread_meta,
-                )
-                .await
-                .map_err(|e| ActionSinkError::Database(e.to_string()))?;
+            let (stored_event, created_delivery_ids) =
+                if let Some(transaction) = delivery_transaction {
+                    state
+                        .db
+                        .commit_workflow_agent_deliveries(
+                            transaction,
+                            tenant.community(),
+                            Some(&event),
+                            &event_id_bytes,
+                            event_created_at,
+                            thread_meta,
+                            context.workflow_id,
+                            context.run_id,
+                            &context.step_id,
+                            definition_event_id.as_bytes(),
+                            channel_uuid,
+                            &targets,
+                            &context.execution_trace,
+                            context.trigger_context.as_ref(),
+                        )
+                        .await
+                        .map_err(|e| ActionSinkError::Database(e.to_string()))?
+                } else {
+                    let (stored, was_inserted) = state
+                        .db
+                        .insert_event_with_thread_metadata(
+                            tenant.community(),
+                            &event,
+                            Some(channel_uuid),
+                            thread_meta,
+                        )
+                        .await
+                        .map_err(|e| ActionSinkError::Database(e.to_string()))?;
+                    (was_inserted.then_some(stored), Vec::new())
+                };
 
-            // 5. Post-persist side effects (fan-out, search, audit)
-            //    Only if actually inserted (idempotency guard).
-            if was_inserted {
+            // 5. Post-commit side effects (fan-out, search, audit). The durable
+            // inbox is authoritative; each ephemeral wake carries only its
+            // target and delivery identifier and may be lost or forged without
+            // changing what an authenticated claim can observe.
+            if let Some(stored_event) = stored_event {
                 let _ = dispatch_persistent_event(
                     &tenant,
                     &state,
@@ -426,6 +511,41 @@ impl ActionSink for RelayActionSink {
                         owned.root_event_id.clone(),
                     );
                 }
+            }
+
+            for delivery_id in created_delivery_ids {
+                let Some(target) = targets.iter().find(|target| target.id == delivery_id) else {
+                    continue;
+                };
+                let target_hex = hex::encode(&target.pubkey);
+                let wake = EventBuilder::new(Kind::from(KIND_WORKFLOW_AGENT_WAKE as u16), "")
+                    .tags(vec![
+                        Tag::parse(["p", target_hex.as_str()])
+                            .map_err(|e| ActionSinkError::EventBuild(format!("wake p tag: {e}")))?,
+                        Tag::parse(["delivery", delivery_id.to_string().as_str()]).map_err(
+                            |e| ActionSinkError::EventBuild(format!("wake delivery tag: {e}")),
+                        )?,
+                    ])
+                    .sign_with_keys(&state.relay_keypair)
+                    .map_err(|e| ActionSinkError::EventBuild(format!("wake signing: {e}")))?;
+                state.mark_local_event(tenant.community(), &wake.id);
+                if let Err(error) = state
+                    .pubsub
+                    .publish_event(&tenant, buzz_pubsub::EventTopic::Global, &wake)
+                    .await
+                {
+                    state
+                        .local_event_ids
+                        .invalidate(&(tenant.community(), wake.id.to_bytes()));
+                    tracing::warn!(%delivery_id, %error, "workflow delivery wake publish failed");
+                }
+                let stored_wake = buzz_core::StoredEvent::new(wake, None);
+                crate::handlers::event::fan_out_event_to_local_subscribers(
+                    &state,
+                    tenant.community(),
+                    &stored_wake,
+                )
+                .await;
             }
 
             Ok(event_id_hex)
