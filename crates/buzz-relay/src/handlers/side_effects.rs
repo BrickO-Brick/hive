@@ -3473,15 +3473,27 @@ pub async fn publish_dm_visibility_snapshot(
 ///
 /// Hidden state is per viewer, so only active members other than the effective
 /// author are changed. A fresh snapshot makes the update visible across clients.
+///
+/// `message_received_at` fences the clear so only hides older than the message
+/// are lifted (see [`buzz_db::Database::unhide_dm_recipients`]). Passing the
+/// message's original `received_at` also makes this safe to re-run on the
+/// duplicate/replay path: the operation is idempotent, so a crash between the
+/// accepted message and the resurface self-heals when the message is replayed.
 pub async fn resurface_dm_for_message_recipients(
     tenant: &TenantContext,
     state: &Arc<AppState>,
     channel_id: Uuid,
     sender_pubkey: &[u8],
+    message_received_at: chrono::DateTime<chrono::Utc>,
 ) -> anyhow::Result<()> {
     let recipients = state
         .db
-        .unhide_dm_recipients(tenant.community(), channel_id, sender_pubkey)
+        .unhide_dm_recipients(
+            tenant.community(),
+            channel_id,
+            sender_pubkey,
+            message_received_at,
+        )
         .await?;
 
     let mut failures = Vec::new();

@@ -3189,32 +3189,70 @@ async fn ingest_event_inner(
         }
     };
 
+    // Resurface hidden DMs for the message recipients. This runs on BOTH the
+    // fresh-insert and duplicate/replay paths: coupling recovery to replay makes
+    // the visibility transition self-healing if the relay committed the message
+    // but died before clearing hidden state (Jude review #1, recoverability).
+    //
+    // The fence is the message's *original* received_at. On a fresh insert that
+    // is `stored_event.received_at`; on a replay `stored_event` carries the new
+    // replay time, so we read the persisted receive time back from the DB. This
+    // keeps a recipient who re-hid the DM after the message was first accepted
+    // from having that newer choice cleared by a later replay (Jude review #1,
+    // causal ordering). The clear itself is idempotent, so re-running is safe.
+    if is_human_visible_message_kind(kind_u32) {
+        if let (Some(ch_id), Some(channel)) = (channel_id, channel_row.as_ref()) {
+            if channel.channel_type == "dm" {
+                let message_received_at = if was_inserted {
+                    Some(stored_event.received_at)
+                } else {
+                    match state
+                        .db
+                        .get_event_by_id(tenant.community(), event.id.as_bytes())
+                        .await
+                    {
+                        Ok(Some(original)) => Some(original.received_at),
+                        Ok(None) => None,
+                        Err(error) => {
+                            error!(
+                                event_id = %event_id_hex,
+                                channel_id = %ch_id,
+                                "Failed to load original message for DM resurface replay: {error}"
+                            );
+                            None
+                        }
+                    }
+                };
+                if let Some(message_received_at) = message_received_at {
+                    let sender =
+                        effective_message_author(&event, &state.relay_keypair.public_key());
+                    if let Err(error) =
+                        crate::handlers::side_effects::resurface_dm_for_message_recipients(
+                            tenant,
+                            state,
+                            ch_id,
+                            &sender,
+                            message_received_at,
+                        )
+                        .await
+                    {
+                        error!(
+                            event_id = %event_id_hex,
+                            channel_id = %ch_id,
+                            "Failed to resurface DM for message recipients: {error}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     if !was_inserted {
         return Ok(IngestResult {
             event_id: event_id_hex,
             accepted: true,
             message: "duplicate:".into(),
         });
-    }
-
-    if is_human_visible_message_kind(kind_u32) {
-        if let (Some(ch_id), Some(channel)) = (channel_id, channel_row.as_ref()) {
-            if channel.channel_type == "dm" {
-                let sender = effective_message_author(&event, &state.relay_keypair.public_key());
-                if let Err(error) =
-                    crate::handlers::side_effects::resurface_dm_for_message_recipients(
-                        tenant, state, ch_id, &sender,
-                    )
-                    .await
-                {
-                    error!(
-                        event_id = %event_id_hex,
-                        channel_id = %ch_id,
-                        "Failed to resurface DM for message recipients: {error}"
-                    );
-                }
-            }
-        }
     }
 
     if crate::handlers::side_effects::is_side_effect_kind(kind_u32) {

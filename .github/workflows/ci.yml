@@ -744,6 +744,18 @@ jobs:
             --run-ignored ignored-only
         env:
           DATABASE_URL: postgres://buzz:${{ env.BUZZ_TEST_POSTGRES_PASSWORD }}@localhost:5432/buzz
+      - name: DM resurface causal fence
+        # Verifies unhide_dm_recipients only clears hides causally older than the
+        # triggering message: an older hide resurfaces, a newer re-hide from
+        # another device survives a delayed resurface, and the sender's own hide
+        # is never rewritten. See buzz-db dm::tests.
+        run: |
+          cargo nextest run \
+            --archive-file target/ci/backend-integration-tests.tar.zst \
+            -E 'package(buzz-db) and test(/dm::tests::unhide_recipients_/)' \
+            --run-ignored ignored-only
+        env:
+          DATABASE_URL: postgres://buzz:${{ env.BUZZ_TEST_POSTGRES_PASSWORD }}@localhost:5432/buzz
       - name: Upload relay log
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

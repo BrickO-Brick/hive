@@ -191,6 +191,36 @@ async fn post_signed_event(keys: &Keys, kind: u16, tags: Vec<Tag>) {
     );
 }
 
+/// Submit an already-signed message event via REST and assert acceptance.
+///
+/// Unlike [`send_rest_message_with_kind`], the caller owns the signed event so
+/// it can be submitted verbatim more than once — the second submission lands on
+/// the relay's duplicate/replay branch, which is what the recovery test needs.
+/// The relay reports `accepted: true` for both the fresh insert and the
+/// duplicate (`message: "duplicate:"`), so only `accepted` is asserted.
+async fn post_signed_message_event(keys: &Keys, event: &nostr::Event) {
+    let client = reqwest::Client::new();
+    let pubkey_hex = keys.public_key().to_hex();
+    let resp = client
+        .post(format!("{}/events", relay_http_url()))
+        .header("X-Pubkey", &pubkey_hex)
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(event).unwrap())
+        .send()
+        .await
+        .expect("submit signed message event");
+    assert!(
+        resp.status().is_success(),
+        "signed message submit failed: {}",
+        resp.status()
+    );
+    let body: serde_json::Value = resp.json().await.expect("parse event response");
+    assert!(
+        body["accepted"].as_bool().unwrap_or(false),
+        "signed message not accepted: {body}"
+    );
+}
+
 /// Query the relay for the thread replies recorded under `root_event_id`.
 ///
 /// Uses `POST /query` with the `depth_limit` extension field, which the relay's
@@ -1408,6 +1438,71 @@ async fn test_nipdv_group_message_resurfaces_all_hidden_recipients() {
             .await
             .unwrap_or_else(|error| panic!("disconnect {label}: {error}"));
     }
+}
+
+/// Replaying the exact same accepted DM message must NOT clobber a re-hide the
+/// recipient performed after the message first arrived. This is the recovery
+/// path from Jude review #1: resurface runs on the duplicate branch too (so a
+/// relay that committed the message but died before clearing hidden state
+/// self-heals on replay), but it must fence on the message's *original*
+/// received_at — never the replay time — so a newer user action survives.
+#[tokio::test]
+#[ignore]
+async fn test_nipdv_message_replay_preserves_a_newer_rehide() {
+    let url = relay_url();
+    let keys_a = Keys::generate();
+    let keys_b = Keys::generate();
+    let b_pubkey_hex = keys_b.public_key().to_hex();
+    let channel_id = create_dm(&keys_a, &b_pubkey_hex).await;
+
+    // B hides the DM, then A sends a message. The message resurfaces it for B.
+    post_signed_event(
+        &keys_b,
+        41012,
+        vec![Tag::parse(["h", &channel_id]).unwrap()],
+    )
+    .await;
+
+    // Sign the message once so it can be submitted verbatim twice — the second
+    // POST exercises the relay's duplicate/replay branch.
+    let message = EventBuilder::new(Kind::Custom(9), "inbound activity")
+        .tags(vec![Tag::parse(["h", &channel_id]).unwrap()])
+        .sign_with_keys(&keys_a)
+        .unwrap();
+    post_signed_message_event(&keys_a, &message).await;
+
+    let mut client_b = BuzzTestClient::connect(&url, &keys_b)
+        .await
+        .expect("client B connect");
+    let after_message = read_hidden_dms(&mut client_b, &b_pubkey_hex).await;
+    assert!(
+        !after_message.contains(&channel_id),
+        "the message must resurface the DM for B; B sees: {after_message:?}"
+    );
+    client_b.disconnect().await.expect("disconnect B");
+
+    // B re-hides the DM AFTER the message was accepted. This is the newer user
+    // action that a delayed replay must not undo.
+    post_signed_event(
+        &keys_b,
+        41012,
+        vec![Tag::parse(["h", &channel_id]).unwrap()],
+    )
+    .await;
+
+    // Replay the identical message. The relay dedupes it (duplicate branch), and
+    // the fenced resurface must leave B's newer hide intact.
+    post_signed_message_event(&keys_a, &message).await;
+
+    let mut client_b = BuzzTestClient::connect(&url, &keys_b)
+        .await
+        .expect("client B reconnect");
+    let after_replay = read_hidden_dms(&mut client_b, &b_pubkey_hex).await;
+    assert!(
+        after_replay.contains(&channel_id),
+        "replaying the original message must not clear B's newer re-hide; B sees: {after_replay:?}"
+    );
+    client_b.disconnect().await.expect("disconnect B");
 }
 
 /// NIP-DV monotonicity regression: a hide immediately followed by a re-open

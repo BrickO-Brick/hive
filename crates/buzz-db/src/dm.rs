@@ -453,11 +453,21 @@ pub async fn unhide_dm(
 /// The sender is deliberately excluded so sending from another surface does
 /// not rewrite their sidebar preference. Returns only viewers whose hidden
 /// state changed, allowing the relay to publish targeted visibility snapshots.
+///
+/// `message_received_at` is the relay-assigned receive time of the triggering
+/// message (`events.received_at`). Only hides that are causally *older* than
+/// the message are cleared: a recipient who re-hides the DM on another device
+/// after the message was accepted keeps their newer choice. Both `hidden_at`
+/// and `received_at` are set from the server clock (`NOW()`), so the comparison
+/// is against a single monotonic authority. Because the fence is by receive
+/// time (not identity), the update is idempotent — replaying the same message
+/// clears the same set and never a newer hide.
 pub async fn unhide_dm_recipients(
     pool: &PgPool,
     community_id: CommunityId,
     channel_id: Uuid,
     sender_pubkey: &[u8],
+    message_received_at: DateTime<Utc>,
 ) -> Result<Vec<Vec<u8>>> {
     let rows = sqlx::query(
         r#"
@@ -469,6 +479,7 @@ pub async fn unhide_dm_recipients(
           AND cm.pubkey != $3
           AND cm.removed_at IS NULL
           AND cm.hidden_at IS NOT NULL
+          AND cm.hidden_at < $4
           AND c.community_id = cm.community_id
           AND c.id = cm.channel_id
           AND c.channel_type = 'dm'
@@ -479,6 +490,7 @@ pub async fn unhide_dm_recipients(
     .bind(community_id.as_uuid())
     .bind(channel_id)
     .bind(sender_pubkey)
+    .bind(message_received_at)
     .fetch_all(pool)
     .await?;
 
@@ -592,5 +604,174 @@ mod tests {
         let b = [255u8; 32];
         let h = compute_participant_hash(&[&a, &b]);
         assert_eq!(h.len(), 32);
+    }
+
+    // -- Postgres-backed fence tests ------------------------------------------
+    //
+    // `unhide_dm_recipients` must only clear hides that are causally older than
+    // the triggering message (Jude review #1). These verify the receive-time
+    // fence directly against real timestamps.
+
+    const TEST_DB_URL: &str = "postgres://buzz:buzz_dev@localhost:5432/buzz";
+
+    async fn setup_pool() -> PgPool {
+        let database_url = std::env::var("BUZZ_TEST_DATABASE_URL")
+            .or_else(|_| std::env::var("DATABASE_URL"))
+            .unwrap_or_else(|_| TEST_DB_URL.to_owned());
+
+        PgPool::connect(&database_url)
+            .await
+            .expect("connect to test DB")
+    }
+
+    async fn make_test_community(pool: &PgPool) -> CommunityId {
+        let id = Uuid::new_v4();
+        let host = format!("dm-test-{}.example", id.simple());
+        sqlx::query("INSERT INTO communities (id, host) VALUES ($1, $2)")
+            .bind(id)
+            .bind(host)
+            .execute(pool)
+            .await
+            .expect("insert test community");
+        CommunityId::from_uuid(id)
+    }
+
+    /// Force a recipient's `hidden_at` to an explicit timestamp so the fence can
+    /// be exercised deterministically without racing the wall clock.
+    async fn set_hidden_at(
+        pool: &PgPool,
+        community_id: CommunityId,
+        channel_id: Uuid,
+        pubkey: &[u8],
+        hidden_at: DateTime<Utc>,
+    ) {
+        sqlx::query(
+            "UPDATE channel_members SET hidden_at = $4 \
+             WHERE community_id = $1 AND channel_id = $2 AND pubkey = $3",
+        )
+        .bind(community_id.as_uuid())
+        .bind(channel_id)
+        .bind(pubkey)
+        .bind(hidden_at)
+        .execute(pool)
+        .await
+        .expect("set hidden_at");
+    }
+
+    async fn current_hidden_at(
+        pool: &PgPool,
+        community_id: CommunityId,
+        channel_id: Uuid,
+        pubkey: &[u8],
+    ) -> Option<DateTime<Utc>> {
+        sqlx::query(
+            "SELECT hidden_at FROM channel_members \
+             WHERE community_id = $1 AND channel_id = $2 AND pubkey = $3",
+        )
+        .bind(community_id.as_uuid())
+        .bind(channel_id)
+        .bind(pubkey)
+        .fetch_one(pool)
+        .await
+        .expect("read hidden_at")
+        .try_get::<Option<DateTime<Utc>>, _>("hidden_at")
+        .expect("hidden_at column")
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn unhide_recipients_clears_hides_older_than_the_message() {
+        let pool = setup_pool().await;
+        let community_id = make_test_community(&pool).await;
+        let sender = [1u8; 32];
+        let recipient = [2u8; 32];
+        let dm = create_dm(&pool, community_id, &[&sender, &recipient], &sender)
+            .await
+            .expect("create dm");
+
+        // Recipient hid the DM before the message was received.
+        let hidden_at = Utc::now();
+        set_hidden_at(&pool, community_id, dm.id, &recipient, hidden_at).await;
+        let message_received_at = hidden_at + chrono::Duration::seconds(1);
+
+        let cleared =
+            unhide_dm_recipients(&pool, community_id, dm.id, &sender, message_received_at)
+                .await
+                .expect("unhide");
+
+        assert_eq!(
+            cleared,
+            vec![recipient.to_vec()],
+            "recipient must resurface"
+        );
+        assert!(
+            current_hidden_at(&pool, community_id, dm.id, &recipient)
+                .await
+                .is_none(),
+            "older hide must be cleared"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn unhide_recipients_preserves_a_hide_newer_than_the_message() {
+        let pool = setup_pool().await;
+        let community_id = make_test_community(&pool).await;
+        let sender = [3u8; 32];
+        let recipient = [4u8; 32];
+        let dm = create_dm(&pool, community_id, &[&sender, &recipient], &sender)
+            .await
+            .expect("create dm");
+
+        // Recipient re-hid the DM on another device AFTER the message arrived
+        // (e.g. a delayed replay of that message races the newer user action).
+        let message_received_at = Utc::now();
+        let hidden_at = message_received_at + chrono::Duration::seconds(1);
+        set_hidden_at(&pool, community_id, dm.id, &recipient, hidden_at).await;
+
+        let cleared =
+            unhide_dm_recipients(&pool, community_id, dm.id, &sender, message_received_at)
+                .await
+                .expect("unhide");
+
+        assert!(
+            cleared.is_empty(),
+            "a hide newer than the message must not be reported as changed"
+        );
+        assert_eq!(
+            current_hidden_at(&pool, community_id, dm.id, &recipient).await,
+            Some(hidden_at),
+            "the newer hide must survive the delayed resurface"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn unhide_recipients_never_touches_the_sender() {
+        let pool = setup_pool().await;
+        let community_id = make_test_community(&pool).await;
+        let sender = [5u8; 32];
+        let recipient = [6u8; 32];
+        let dm = create_dm(&pool, community_id, &[&sender, &recipient], &sender)
+            .await
+            .expect("create dm");
+
+        // Both participants have an old hide; only the recipient may be cleared.
+        let hidden_at = Utc::now();
+        set_hidden_at(&pool, community_id, dm.id, &sender, hidden_at).await;
+        set_hidden_at(&pool, community_id, dm.id, &recipient, hidden_at).await;
+        let message_received_at = hidden_at + chrono::Duration::seconds(1);
+
+        let cleared =
+            unhide_dm_recipients(&pool, community_id, dm.id, &sender, message_received_at)
+                .await
+                .expect("unhide");
+
+        assert_eq!(cleared, vec![recipient.to_vec()]);
+        assert_eq!(
+            current_hidden_at(&pool, community_id, dm.id, &sender).await,
+            Some(hidden_at),
+            "the sender's own hide must never be rewritten from another surface"
+        );
     }
 }

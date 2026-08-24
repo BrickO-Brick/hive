@@ -2906,8 +2906,16 @@ impl Db {
         community_id: CommunityId,
         channel_id: Uuid,
         sender_pubkey: &[u8],
+        message_received_at: DateTime<Utc>,
     ) -> Result<Vec<Vec<u8>>> {
-        dm::unhide_dm_recipients(&self.pool, community_id, channel_id, sender_pubkey).await
+        dm::unhide_dm_recipients(
+            &self.pool,
+            community_id,
+            channel_id,
+            sender_pubkey,
+            message_received_at,
+        )
+        .await
     }
 
     /// List the channel IDs of all DMs the given user currently has hidden.
