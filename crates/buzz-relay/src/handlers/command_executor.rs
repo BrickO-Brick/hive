@@ -1059,6 +1059,27 @@ async fn handle_workflow_trigger(
         PersistResult::Inserted(tx) => tx,
     };
 
+    // Re-read the workflow under a row lock on the same transaction that will
+    // commit the trigger event and run. Definition replacement updates this row,
+    // so it cannot commit between this exact-revision check and our commit. A
+    // replacement that won first is observed here and rejected as stale.
+    let workflow = state
+        .db
+        .get_workflow_for_share_in_transaction(&mut tx, community_id, workflow_id)
+        .await
+        .map_err(|_| IngestError::Rejected("invalid: workflow not found".into()))?;
+    if !caller_controls_workflow(state, community_id, &workflow.owner_pubkey, &self_bytes).await? {
+        return Err(IngestError::Rejected(
+            "forbidden: not authorized to trigger this workflow".into(),
+        ));
+    }
+    verify_workflow_revision(state, community_id, &workflow, &requested_revision).await?;
+    if !workflow.enabled || workflow.status != buzz_db::workflow::WorkflowStatus::Active {
+        return Err(IngestError::Rejected(
+            "forbidden: workflow is disabled or inactive".into(),
+        ));
+    }
+
     // 4. Execute: create workflow run
     let mut trigger_ctx = TriggerContext {
         channel_id: workflow
@@ -1234,7 +1255,7 @@ async fn handle_approval_grant(
     check_approver_spec(&approval.approver_spec, &self_hex)?;
 
     // Persist the command event — returns open transaction
-    let tx = match persist_command_event(&state.db, tenant, event, None).await? {
+    let mut tx = match persist_command_event(&state.db, tenant, event, None).await? {
         PersistResult::Duplicate => {
             return Ok(IngestResult {
                 event_id: event.id.to_hex(),
@@ -1254,7 +1275,8 @@ async fn handle_approval_grant(
 
     let updated = state
         .db
-        .update_approval_by_stored_hash(
+        .update_approval_by_stored_hash_tx(
+            &mut tx,
             tenant.community(),
             &token_hash,
             ApprovalStatus::Granted,
@@ -1345,7 +1367,7 @@ async fn handle_approval_deny(
     check_approver_spec(&approval.approver_spec, &self_hex)?;
 
     // Persist the command event — returns open transaction
-    let tx = match persist_command_event(&state.db, tenant, event, None).await? {
+    let mut tx = match persist_command_event(&state.db, tenant, event, None).await? {
         PersistResult::Duplicate => {
             return Ok(IngestResult {
                 event_id: event.id.to_hex(),
@@ -1365,7 +1387,8 @@ async fn handle_approval_deny(
 
     let updated = state
         .db
-        .update_approval_by_stored_hash(
+        .update_approval_by_stored_hash_tx(
+            &mut tx,
             tenant.community(),
             &token_hash,
             ApprovalStatus::Denied,
@@ -1442,6 +1465,36 @@ async fn handle_approval_deny(
     })
 }
 
+async fn load_run_workflow_definition(
+    db: &buzz_db::Db,
+    community_id: CommunityId,
+    workflow_id: Uuid,
+    definition_event_id: &str,
+) -> Result<buzz_workflow::WorkflowDef, String> {
+    let revision_id = hex::decode(definition_event_id)
+        .map_err(|_| "run has no valid bound definition revision".to_owned())?;
+    if revision_id.len() != 32 {
+        return Err("run has no valid bound definition revision".to_owned());
+    }
+    let stored_revision = db
+        .get_event_by_id_including_deleted(community_id, &revision_id)
+        .await
+        .map_err(|e| format!("failed to load bound revision: {e}"))?
+        .ok_or_else(|| "bound definition revision is missing".to_owned())?;
+    let definition_event = &stored_revision.event;
+    let workflow_id_string = workflow_id.to_string();
+    if definition_event.kind.as_u16() as u32 != KIND_WORKFLOW_DEF
+        || exact_tag_value(definition_event, "d") != Some(workflow_id_string.as_str())
+        || !definition_event.verify_id()
+        || !definition_event.verify_signature()
+    {
+        return Err("bound revision does not match run workflow".to_owned());
+    }
+    buzz_workflow::WorkflowEngine::parse_yaml(&definition_event.content)
+        .map(|(definition, _)| definition)
+        .map_err(|e| format!("bound definition is invalid: {e}"))
+}
+
 /// Resume a suspended workflow run after an approval gate has been granted.
 async fn resume_workflow_after_approval(
     engine: Arc<buzz_workflow::WorkflowEngine>,
@@ -1468,39 +1521,6 @@ async fn resume_workflow_after_approval(
         return;
     }
 
-    let workflow = match db.get_workflow(community_id, workflow_id).await {
-        Ok(w) => w,
-        Err(e) => {
-            tracing::error!("resume_workflow: failed to fetch workflow {workflow_id}: {e}");
-            return;
-        }
-    };
-
-    let def: buzz_workflow::WorkflowDef = match serde_json::from_value(workflow.definition.clone())
-    {
-        Ok(d) => d,
-        Err(e) => {
-            tracing::error!("resume_workflow: failed to parse workflow definition: {e}");
-            if let Err(db_err) = db
-                .update_workflow_run(
-                    community_id,
-                    run_id,
-                    RunStatus::Failed,
-                    run.current_step,
-                    &run.execution_trace,
-                    Some(buzz_db::workflow::WorkflowRunFailure {
-                        code: "invalid_definition",
-                        message: &format!("definition parse error: {e}"),
-                    }),
-                )
-                .await
-            {
-                tracing::error!("resume_workflow: failed to mark run as failed: {db_err}");
-            }
-            return;
-        }
-    };
-
     // Reconstruct step_outputs from execution trace for template resolution
     let mut initial_outputs: std::collections::HashMap<String, serde_json::Value> =
         std::collections::HashMap::new();
@@ -1521,6 +1541,20 @@ async fn resume_workflow_after_approval(
         .as_ref()
         .and_then(|v| serde_json::from_value(v.clone()).ok())
         .unwrap_or_default();
+    let def = match load_run_workflow_definition(
+        &db,
+        community_id,
+        workflow_id,
+        &trigger_ctx.definition_event_id,
+    )
+    .await
+    {
+        Ok(definition) => definition,
+        Err(error) => {
+            tracing::error!("resume_workflow: {error} for run {run_id}");
+            return;
+        }
+    };
 
     // Execute remaining steps
     let existing_trace = run.execution_trace.as_array().cloned();
@@ -1582,7 +1616,9 @@ mod tests {
         }
         EventBuilder::new(
             Kind::Custom(KIND_WORKFLOW_DEF as u16),
-            format!("name: {name}\ntrigger:\n  on: message_posted\nsteps: []\n"),
+            format!(
+                "name: {name}\ntrigger:\n  on: message_posted\nsteps:\n  - id: finish\n    run: log\n    with:\n      message: finished\n"
+            ),
         )
         .tags(tags)
         .custom_created_at(Timestamp::from(created_at))
@@ -1742,6 +1778,75 @@ mod tests {
             IngestError::Rejected(ref message)
                 if message == "conflict: workflow update was superseded; refresh and try again"
         ));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn approval_resume_loads_soft_deleted_bound_revision_after_replacement() {
+        let (db, tenant) = persistence_test_context().await;
+        let keys = Keys::generate();
+        let workflow_id = Uuid::new_v4();
+        let revision_a = workflow_event(
+            &keys,
+            workflow_id,
+            Timestamp::now().as_secs(),
+            None,
+            "revision-a",
+        );
+        let revision_a_channel =
+            Uuid::parse_str(exact_tag_value(&revision_a, "h").expect("revision A channel"))
+                .expect("channel UUID");
+        let PersistResult::Inserted(tx) =
+            persist_command_event(&db, &tenant, &revision_a, Some(revision_a_channel))
+                .await
+                .expect("persist revision A")
+        else {
+            panic!("revision A must insert");
+        };
+        let (_, revision_a_json) = buzz_workflow::WorkflowEngine::parse_yaml(&revision_a.content)
+            .expect("parse revision A");
+        let revision_a_hash = Sha256::digest(revision_a_json.as_bytes());
+        let mut tx = tx;
+        db.upsert_workflow(
+            &mut tx,
+            tenant.community(),
+            workflow_id,
+            Some(revision_a_channel),
+            &keys.public_key().to_bytes(),
+            "revision-a",
+            &revision_a_json,
+            &revision_a_hash,
+            revision_a.id.as_bytes(),
+        )
+        .await
+        .expect("materialize revision A");
+        tx.commit().await.expect("commit revision A");
+
+        let revision_b = workflow_event(
+            &keys,
+            workflow_id,
+            revision_a.created_at.as_secs() + 1,
+            Some(&revision_a.id.to_hex()),
+            "revision-b",
+        );
+        let PersistResult::Inserted(tx) =
+            persist_command_event(&db, &tenant, &revision_b, Some(revision_a_channel))
+                .await
+                .expect("persist revision B")
+        else {
+            panic!("revision B must insert");
+        };
+        tx.commit().await.expect("commit revision B event");
+
+        let loaded = load_run_workflow_definition(
+            &db,
+            tenant.community(),
+            workflow_id,
+            &revision_a.id.to_hex(),
+        )
+        .await
+        .expect("resume must load soft-deleted revision A");
+        assert_eq!(loaded.name, "revision-a");
     }
 
     #[test]

@@ -12,7 +12,7 @@ use std::str::FromStr;
 
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
-use sqlx::{PgPool, Row};
+use sqlx::{PgPool, Postgres, Row, Transaction};
 use uuid::Uuid;
 
 use buzz_core::CommunityId;
@@ -384,6 +384,34 @@ pub async fn get_workflow(
     .bind(community_id.as_uuid())
     .bind(id)
     .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| DbError::NotFound(format!("workflow {id}")))?;
+
+    row_to_workflow_record(row)
+}
+
+/// Fetch and lock one workflow on the caller's transaction.
+///
+/// The shared row lock is held through commit. Definition replacement takes an
+/// update lock on the same row, so callers can validate an exact revision and
+/// create dependent rows without a replacement committing between those steps.
+pub async fn get_workflow_for_share_in_transaction(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    community_id: CommunityId,
+    id: Uuid,
+) -> Result<WorkflowRecord> {
+    let row = sqlx::query(
+        r#"
+        SELECT id, community_id, name, owner_pubkey, channel_id, definition, definition_hash, definition_event_id,
+               status::text AS status, enabled, created_at, updated_at
+        FROM workflows
+        WHERE community_id = $1 AND id = $2
+        FOR SHARE
+        "#,
+    )
+    .bind(community_id.as_uuid())
+    .bind(id)
+    .fetch_optional(&mut **tx)
     .await?
     .ok_or_else(|| DbError::NotFound(format!("workflow {id}")))?;
 
@@ -1172,6 +1200,29 @@ pub async fn update_approval_by_stored_hash(
     approver_pubkey: Option<&[u8]>,
     note: Option<&str>,
 ) -> Result<bool> {
+    let mut tx = pool.begin().await?;
+    let updated = update_approval_by_stored_hash_tx(
+        &mut tx,
+        community_id,
+        token_hash,
+        status,
+        approver_pubkey,
+        note,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(updated)
+}
+
+/// Update an approval by its already-hashed token within an existing transaction.
+pub async fn update_approval_by_stored_hash_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    community_id: CommunityId,
+    token_hash: &[u8],
+    status: ApprovalStatus,
+    approver_pubkey: Option<&[u8]>,
+    note: Option<&str>,
+) -> Result<bool> {
     let status_str = status.to_string();
     let affected = sqlx::query(
         r#"
@@ -1191,7 +1242,7 @@ pub async fn update_approval_by_stored_hash(
     .bind(&status_str) // for denied_at CASE
     .bind(community_id.as_uuid())
     .bind(token_hash)
-    .execute(pool)
+    .execute(&mut **tx)
     .await?
     .rows_affected();
 
@@ -2173,6 +2224,66 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires Postgres"]
+    async fn stale_revision_after_replacement_creates_no_run() {
+        let pool = setup_pool().await;
+        let community = make_community(&pool).await;
+        let workflow_id = Uuid::new_v4();
+        insert_workflow_with_ids(
+            &pool,
+            community,
+            workflow_id,
+            Uuid::new_v4(),
+            "revision-race",
+        )
+        .await;
+        let revision_a = vec![0xa1u8; 32];
+        let revision_b = vec![0xb2u8; 32];
+        sqlx::query(
+            "UPDATE workflows SET definition_event_id = $3 \
+             WHERE community_id = $1 AND id = $2",
+        )
+        .bind(community.as_uuid())
+        .bind(workflow_id)
+        .bind(revision_a.as_slice())
+        .execute(&pool)
+        .await
+        .expect("install revision A");
+
+        // B wins before stale trigger A enters its commit transaction.
+        sqlx::query(
+            "UPDATE workflows SET definition_event_id = $3 \
+             WHERE community_id = $1 AND id = $2",
+        )
+        .bind(community.as_uuid())
+        .bind(workflow_id)
+        .bind(revision_b.as_slice())
+        .execute(&pool)
+        .await
+        .expect("replace with revision B");
+
+        let mut trigger = pool.begin().await.expect("begin stale trigger");
+        let current = get_workflow_for_share_in_transaction(&mut trigger, community, workflow_id)
+            .await
+            .expect("lock current workflow");
+        assert_ne!(
+            current.definition_event_id.as_deref(),
+            Some(revision_a.as_slice())
+        );
+        trigger.rollback().await.expect("reject stale trigger");
+
+        let runs: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM workflow_runs WHERE community_id = $1 AND workflow_id = $2",
+        )
+        .bind(community.as_uuid())
+        .bind(workflow_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count runs after stale rejection");
+        assert_eq!(runs, 0, "stale revision must not create a workflow run");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
     async fn workflow_run_transaction_rolls_back_and_retry_creates_exactly_one_run() {
         let pool = setup_pool().await;
         let community = make_community(&pool).await;
@@ -2500,6 +2611,84 @@ mod tests {
             ApprovalStatus::Pending,
             "B's approval must remain pending after A is granted"
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn approval_transition_rollback_allows_grant_and_deny_retry() {
+        for status in [ApprovalStatus::Granted, ApprovalStatus::Denied] {
+            let pool = setup_pool().await;
+            let community = make_community(&pool).await;
+            let workflow_id = Uuid::new_v4();
+            insert_workflow_with_ids(
+                &pool,
+                community,
+                workflow_id,
+                Uuid::new_v4(),
+                "approval-transaction",
+            )
+            .await;
+            let run_id = create_workflow_run(&pool, community, workflow_id, None, None)
+                .await
+                .expect("create workflow run");
+            let token = format!("approval-{}-{}", status, Uuid::new_v4());
+            create_approval(
+                &pool,
+                CreateApprovalParams {
+                    community_id: community,
+                    token: &token,
+                    workflow_id,
+                    run_id,
+                    step_id: "gate",
+                    step_index: 0,
+                    approver_spec: "@anyone",
+                    expires_at: Utc::now() + chrono::Duration::hours(1),
+                },
+            )
+            .await
+            .expect("create approval");
+            let token_hash = hash_approval_token(&token);
+
+            let mut tx = pool.begin().await.expect("begin rollback transaction");
+            assert!(update_approval_by_stored_hash_tx(
+                &mut tx,
+                community,
+                &token_hash,
+                status.clone(),
+                None,
+                None,
+            )
+            .await
+            .expect("transition before rollback"));
+            tx.rollback().await.expect("rollback transition");
+            assert_eq!(
+                get_approval(&pool, community, &token)
+                    .await
+                    .expect("read rolled-back approval")
+                    .status,
+                ApprovalStatus::Pending
+            );
+
+            let mut tx = pool.begin().await.expect("begin retry transaction");
+            assert!(update_approval_by_stored_hash_tx(
+                &mut tx,
+                community,
+                &token_hash,
+                status.clone(),
+                None,
+                None,
+            )
+            .await
+            .expect("retry transition"));
+            tx.commit().await.expect("commit retry");
+            assert_eq!(
+                get_approval(&pool, community, &token)
+                    .await
+                    .expect("read committed approval")
+                    .status,
+                status
+            );
+        }
     }
 
     // -- SEC-006: disable-on-membership-loss primitive -------------------------
