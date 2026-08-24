@@ -429,7 +429,7 @@ impl Db {
 }
 
 #[cfg(test)]
-mod tests {
+mod postgres_tests {
     use super::*;
     use crate::relay_members::is_relay_member;
     use sha2::Digest;

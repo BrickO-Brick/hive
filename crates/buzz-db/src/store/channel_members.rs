@@ -1379,7 +1379,7 @@ impl Db {
 }
 
 #[cfg(test)]
-mod tests {
+mod postgres_tests {
     use super::*;
     use crate::channel::{ChannelType, ChannelVisibility};
     use crate::migration;
@@ -1390,7 +1390,10 @@ mod tests {
     const TEST_DB_URL: &str = "postgres://buzz:buzz_dev@localhost:5432/buzz"; // sadscan:disable np.postgres.1 -- local test-only credentials
 
     async fn setup_pool() -> PgPool {
-        PgPool::connect(TEST_DB_URL)
+        let database_url = std::env::var("BUZZ_TEST_DATABASE_URL")
+            .or_else(|_| std::env::var("DATABASE_URL"))
+            .unwrap_or_else(|_| TEST_DB_URL.to_owned());
+        PgPool::connect(&database_url)
             .await
             .expect("connect to test DB")
     }
@@ -1747,8 +1750,14 @@ mod tests {
                 .collect();
         let other_complete_tags: Vec<serde_json::Value> =
             std::iter::once(serde_json::json!(["d", channel.id.to_string()]))
+                .chain(std::iter::once(serde_json::json!([
+                    "p",
+                    hex::encode(&creator),
+                    "",
+                    "owner"
+                ])))
                 .chain(
-                    (0..=1_500)
+                    (1..=1_500)
                         .map(|n| serde_json::json!(["p", format!("{n:064x}"), "", "member"])),
                 )
                 .collect();
@@ -1809,9 +1818,21 @@ mod tests {
         sqlx::query(
             r#"
             INSERT INTO channel_members (community_id, channel_id, pubkey, role, joined_at)
+            VALUES ($1, $2, $3, 'owner', NOW())
+            "#,
+        )
+        .bind(other_community_id)
+        .bind(channel.id)
+        .bind(&creator)
+        .execute(&pool)
+        .await
+        .expect("insert other-tenant owner");
+        sqlx::query(
+            r#"
+            INSERT INTO channel_members (community_id, channel_id, pubkey, role, joined_at)
             SELECT $1, $2, decode(lpad(to_hex(n), 64, '0'), 'hex'), 'member',
                    NOW() + (n || ' seconds')::interval
-            FROM generate_series(0, 1500) n
+            FROM generate_series(1, 1500) n
             "#,
         )
         .bind(other_community_id)

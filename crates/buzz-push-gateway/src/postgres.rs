@@ -510,7 +510,7 @@ impl AuthorityStore for PostgresAuthorityStore {
 }
 
 #[cfg(test)]
-mod tests {
+mod postgres_tests {
     use super::*;
     use sqlx::{postgres::PgPoolOptions, AssertSqlSafe};
 

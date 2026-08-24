@@ -476,7 +476,7 @@ impl Db {
 }
 
 #[cfg(test)]
-mod tests {
+mod postgres_tests {
     use super::*;
     use buzz_core::CommunityId;
     use nostr::Keys;
@@ -485,8 +485,14 @@ mod tests {
 
     const TEST_DB_URL: &str = "postgres://buzz:buzz_dev@localhost:5432/buzz"; // sadscan:disable np.postgres.1
 
+    fn test_database_url() -> String {
+        std::env::var("BUZZ_TEST_DATABASE_URL")
+            .or_else(|_| std::env::var("DATABASE_URL"))
+            .unwrap_or_else(|_| TEST_DB_URL.to_owned())
+    }
+
     async fn get_pool() -> PgPool {
-        PgPool::connect(TEST_DB_URL)
+        PgPool::connect(&test_database_url())
             .await
             .expect("connect to test DB")
     }
