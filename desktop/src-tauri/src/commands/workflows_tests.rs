@@ -274,6 +274,20 @@ fn channel_workflow_filters_accepts_empty_input() {
 }
 
 #[test]
+fn trigger_command_uses_current_definition_event_id() {
+    let event = wf_event(WF, CHAN, YAML);
+    let revision = event.id.to_hex();
+    assert_eq!(
+        current_workflow_revision(std::slice::from_ref(&event)).as_deref(),
+        Ok(revision.as_str())
+    );
+    assert_eq!(
+        current_workflow_revision(&[]).expect_err("empty result must fail"),
+        "workflow not found"
+    );
+}
+
+#[test]
 fn trigger_response_uses_persisted_run_id_contract() {
     let wire = trigger_wire_from_message(
         WF.to_string(),

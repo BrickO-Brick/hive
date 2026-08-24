@@ -92,12 +92,11 @@ enum PersistResult {
 /// If the event is a duplicate (ON CONFLICT DO NOTHING), the transaction is
 /// rolled back and `PersistResult::Duplicate` is returned — no mutations needed.
 ///
-/// NOTE: Domain mutations (open_dm, upsert_workflow, etc.) execute on the
-/// connection pool, NOT inside this transaction. The pattern is idempotent but
-/// not strictly atomic: if a mutation succeeds but commit fails, the mutation
-/// persists without the event record. On retry, the event INSERT succeeds
-/// (no conflict), and the mutation re-executes — which is safe for idempotent
-/// operations (open_dm, hide_dm, update_approval, upsert_workflow).
+/// NOTE: Most domain mutations still execute on the connection pool rather
+/// than in this transaction. Workflow-definition ingestion is the exception:
+/// its materialized workflow row and exact signed revision are written through
+/// this transaction so the event and revision binding commit atomically.
+/// Other operations remain idempotent but not strictly atomic.
 #[datastore_span(name = "persist_command_event", system = "postgresql")]
 async fn persist_command_event(
     db: &buzz_db::Db,
@@ -809,8 +808,9 @@ async fn handle_workflow_def(
         .map_err(|e| IngestError::Internal(format!("error: json serialize: {e}")))?;
     let hash = compute_definition_hash(&definition_json_final);
 
-    // Persist the command event — returns open transaction
-    let tx = match persist_command_event(&state.db, tenant, event, None).await? {
+    // Persist the command event — returns the transaction that will also own
+    // the materialized workflow revision update.
+    let mut tx = match persist_command_event(&state.db, tenant, event, Some(channel_id)).await? {
         PersistResult::Duplicate => {
             return Ok(IngestResult {
                 event_id: event.id.to_hex(),
@@ -842,6 +842,7 @@ async fn handle_workflow_def(
     state
         .db
         .upsert_workflow(
+            &mut tx,
             community_id,
             workflow_id,
             Some(channel_id),
@@ -849,6 +850,7 @@ async fn handle_workflow_def(
             &workflow_name,
             &definition_json_final,
             &hash,
+            event.id.as_bytes(),
         )
         .await
         .map_err(|e| match e {
@@ -858,16 +860,17 @@ async fn handle_workflow_def(
             other => IngestError::Internal(format!("error: db upsert_workflow: {other}")),
         })?;
 
-    // Drop the trigger-path cache entry so the new/updated definition fires on
-    // the next matching event instead of after the cache TTL.
-    state
-        .workflow_engine
-        .invalidate_channel_workflows(community_id, channel_id);
-
     // Commit the event transaction after the idempotent workflow upsert succeeds.
     tx.commit()
         .await
         .map_err(|e| IngestError::Internal(format!("error: commit transaction: {e}")))?;
+
+    // Invalidate only after commit. Invalidating while the new row is still
+    // invisible lets a concurrent trigger refill the cache with the old
+    // definition and retain it until TTL expiry.
+    state
+        .workflow_engine
+        .invalidate_channel_workflows(community_id, channel_id);
 
     // 5. Return response
     let mut resp = serde_json::json!({
@@ -884,6 +887,92 @@ async fn handle_workflow_def(
     })
 }
 
+async fn caller_controls_workflow(
+    state: &Arc<AppState>,
+    community_id: CommunityId,
+    workflow_owner: &[u8],
+    caller: &[u8],
+) -> Result<bool, IngestError> {
+    if workflow_owner == caller {
+        return Ok(true);
+    }
+
+    state
+        .db
+        .is_agent_owner(community_id, workflow_owner, caller)
+        .await
+        .map_err(|e| IngestError::Internal(format!("error: workflow owner check: {e}")))
+}
+
+fn exact_tag_value<'a>(event: &'a Event, name: &str) -> Option<&'a str> {
+    let mut values = event.tags.iter().filter_map(|tag| {
+        (tag.kind().to_string() == name)
+            .then(|| tag.content())
+            .flatten()
+    });
+    let value = values.next()?;
+    values.next().is_none().then_some(value)
+}
+
+async fn verify_workflow_revision(
+    state: &Arc<AppState>,
+    community_id: CommunityId,
+    workflow: &buzz_db::workflow::WorkflowRecord,
+    requested_revision: &[u8],
+) -> Result<(), IngestError> {
+    let Some(persisted_revision) = workflow.definition_event_id.as_deref() else {
+        return Err(IngestError::Rejected(
+            "invalid: owner-signed workflow revision is unavailable".into(),
+        ));
+    };
+    if persisted_revision != requested_revision {
+        return Err(IngestError::Rejected(
+            "conflict: workflow revision does not match current definition".into(),
+        ));
+    }
+
+    let stored = state
+        .db
+        .get_event_by_id(community_id, persisted_revision)
+        .await
+        .map_err(|e| IngestError::Internal(format!("error: workflow revision lookup: {e}")))?
+        .ok_or_else(|| {
+            IngestError::Rejected("invalid: signed workflow revision not found".into())
+        })?;
+    let definition_event = &stored.event;
+    let workflow_id = workflow.id.to_string();
+    let workflow_channel_id = workflow.channel_id.map(|id| id.to_string());
+    if definition_event.id.as_bytes() != persisted_revision
+        || !definition_event.verify_id()
+        || !definition_event.verify_signature()
+        || definition_event.kind.as_u16() as u32 != KIND_WORKFLOW_DEF
+        || definition_event.pubkey.to_bytes().as_slice() != workflow.owner_pubkey
+        || exact_tag_value(definition_event, "d") != Some(workflow_id.as_str())
+        || workflow_channel_id.is_none()
+        || exact_tag_value(definition_event, "h") != workflow_channel_id.as_deref()
+        || stored.channel_id != workflow.channel_id
+    {
+        return Err(IngestError::Rejected(
+            "invalid: signed workflow revision binding mismatch".into(),
+        ));
+    }
+
+    let (_, signed_json) = buzz_workflow::WorkflowEngine::parse_yaml(&definition_event.content)
+        .map_err(|_| {
+            IngestError::Rejected("invalid: signed workflow revision is malformed".into())
+        })?;
+    let signed_definition: serde_json::Value =
+        serde_json::from_str(&signed_json).map_err(|_| {
+            IngestError::Rejected("invalid: signed workflow revision is malformed".into())
+        })?;
+    if signed_definition != webhook_secret::strip_secret(&workflow.definition) {
+        return Err(IngestError::Rejected(
+            "invalid: signed workflow revision differs from materialized definition".into(),
+        ));
+    }
+    Ok(())
+}
+
 async fn handle_workflow_trigger(
     tenant: &TenantContext,
     state: &Arc<AppState>,
@@ -892,13 +981,21 @@ async fn handle_workflow_trigger(
 ) -> Result<IngestResult, IngestError> {
     let self_bytes = auth.pubkey().to_bytes().to_vec();
 
-    // 1. Extract workflow reference from `d` tag or `e` tag
-    let workflow_id_str = extract_d_tag(event)
-        .or_else(|| extract_e_tag(event))
-        .ok_or_else(|| {
-            IngestError::Rejected("invalid: missing workflow reference (d or e tag)".into())
-        })?;
-    let workflow_id = Uuid::parse_str(&workflow_id_str)
+    // 1. Bind the command to both the workflow UUID and one exact signed revision.
+    let workflow_id_str = exact_tag_value(event, "d").ok_or_else(|| {
+        IngestError::Rejected("invalid: expected exactly one workflow d tag".into())
+    })?;
+    let revision_hex = exact_tag_value(event, "e").ok_or_else(|| {
+        IngestError::Rejected("invalid: expected exactly one workflow revision e tag".into())
+    })?;
+    let requested_revision = hex::decode(revision_hex)
+        .map_err(|_| IngestError::Rejected("invalid: bad workflow revision event id".into()))?;
+    if requested_revision.len() != 32 {
+        return Err(IngestError::Rejected(
+            "invalid: bad workflow revision event id".into(),
+        ));
+    }
+    let workflow_id = Uuid::parse_str(workflow_id_str)
         .map_err(|_| IngestError::Rejected("invalid: bad workflow_id format".into()))?;
 
     // 2. Validate workflow exists — scoped to the caller's community. The same
@@ -912,14 +1009,16 @@ async fn handle_workflow_trigger(
         .await
         .map_err(|_| IngestError::Rejected("invalid: workflow not found".into()))?;
 
-    // 3. Manual triggers execute with the workflow owner's authority, so only
-    // the owner may start them. Channel membership alone is insufficient: a
-    // member could otherwise invoke another user's webhook or message actions.
-    if workflow.owner_pubkey != self_bytes {
+    // 3. Manual triggers execute with the workflow owner's authority. Permit
+    // that principal and, for a managed agent, its immutable human owner.
+    // Channel membership alone remains insufficient.
+    if !caller_controls_workflow(state, community_id, &workflow.owner_pubkey, &self_bytes).await? {
         return Err(IngestError::Rejected(
             "forbidden: not authorized to trigger this workflow".into(),
         ));
     }
+
+    verify_workflow_revision(state, community_id, &workflow, &requested_revision).await?;
 
     // SEC-006: manual triggers must honor the workflow's lifecycle state and
     // recheck the owner's *current* channel authority before creating a run.
@@ -949,7 +1048,7 @@ async fn handle_workflow_trigger(
     // Persist the command event under the workflow channel even though the
     // trigger event itself only carries the workflow UUID. Storing channel
     // triggers as global events leaks workflow IDs to unrelated relay members.
-    let tx = match persist_command_event(&state.db, tenant, event, workflow.channel_id).await? {
+    let mut tx = match persist_command_event(&state.db, tenant, event, workflow.channel_id).await? {
         PersistResult::Duplicate => {
             return Ok(IngestResult {
                 event_id: event.id.to_hex(),
@@ -967,6 +1066,7 @@ async fn handle_workflow_trigger(
             .map(|id| id.to_string())
             .unwrap_or_default(),
         author: hex::encode(&self_bytes),
+        definition_event_id: revision_hex.to_owned(),
         ..Default::default()
     };
     if !event.content.is_empty() {
@@ -985,7 +1085,8 @@ async fn handle_workflow_trigger(
     let event_id_bytes = event.id.as_bytes().to_vec();
     let run_id = state
         .db
-        .create_workflow_run(
+        .create_workflow_run_in_transaction(
+            &mut tx,
             community_id,
             workflow_id,
             Some(&event_id_bytes),
@@ -1566,16 +1667,27 @@ mod tests {
         let workflow_id = Uuid::new_v4();
         let created_at = Timestamp::now().as_secs();
         let create = workflow_event(&keys, workflow_id, created_at, None, "create");
+        let channel_id = Uuid::parse_str(
+            exact_tag_value(&create, "h").expect("workflow definition channel tag"),
+        )
+        .expect("workflow definition channel UUID");
 
-        let PersistResult::Inserted(tx) = persist_command_event(&db, &tenant, &create, None)
-            .await
-            .expect("persist create")
+        let PersistResult::Inserted(tx) =
+            persist_command_event(&db, &tenant, &create, Some(channel_id))
+                .await
+                .expect("persist create")
         else {
             panic!("first create must insert");
         };
         tx.commit().await.expect("commit create");
+        let stored_create = db
+            .get_event_by_id(tenant.community(), create.id.as_bytes())
+            .await
+            .expect("load persisted workflow definition")
+            .expect("persisted workflow definition");
+        assert_eq!(stored_create.channel_id, Some(channel_id));
         assert!(matches!(
-            persist_command_event(&db, &tenant, &create, None)
+            persist_command_event(&db, &tenant, &create, Some(channel_id))
                 .await
                 .expect("replay create"),
             PersistResult::Duplicate

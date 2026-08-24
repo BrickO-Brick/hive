@@ -640,7 +640,7 @@ mod tests {
         let mut migrations: Vec<_> = MIGRATOR.iter().collect();
         migrations.sort_by_key(|migration| migration.version);
 
-        assert_eq!(migrations.len(), 32);
+        assert_eq!(migrations.len(), 33);
         assert_eq!(migrations[0].version, 1);
         assert_eq!(&*migrations[0].description, "initial schema");
         assert!(migrations[0]
@@ -1066,6 +1066,13 @@ mod tests {
         assert!(roster_fence.contains("roster_tag.tag_json->>3"));
         assert!(roster_fence.contains("snapshot_members IS DISTINCT FROM canonical_members"));
         assert!(roster_fence.contains("ERRCODE = '23514'"));
+
+        // Exact workflow-definition revision persistence is additive and keeps
+        // pre-migration rows nullable until their next signed definition write.
+        assert_eq!(migrations[32].version, 33);
+        let workflow_revision = migrations[32].sql.as_str();
+        assert!(workflow_revision.contains("ADD COLUMN definition_event_id BYTEA"));
+        assert!(workflow_revision.contains("octet_length(definition_event_id) = 32"));
 
         // Fresh desired-state bootstrap must install the identical executable
         // fence as migration 0032. CI and isolated relay startup use schema.sql

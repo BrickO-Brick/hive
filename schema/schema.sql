@@ -368,6 +368,11 @@ CREATE TABLE workflows (
     channel_id      UUID,
     definition      JSONB NOT NULL,
     definition_hash BYTEA NOT NULL,
+    -- Exact owner-signed kind:30620 revision that materialized this row.
+    -- Nullable only for pre-0033 rows; revision-bound execution fails closed until re-saved.
+    definition_event_id BYTEA CHECK (
+        definition_event_id IS NULL OR octet_length(definition_event_id) = 32
+    ),
     status          workflow_status NOT NULL DEFAULT 'active',
     enabled         BOOLEAN NOT NULL DEFAULT TRUE,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),

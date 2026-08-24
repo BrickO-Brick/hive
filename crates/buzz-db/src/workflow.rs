@@ -177,6 +177,8 @@ pub struct WorkflowRecord {
     pub definition: serde_json::Value,
     /// SHA-256 hash of the canonical definition JSON.
     pub definition_hash: Vec<u8>,
+    /// Exact owner-signed kind:30620 event that materialized this revision.
+    pub definition_event_id: Option<Vec<u8>>,
     /// Current lifecycle status of the workflow definition.
     pub status: WorkflowStatus,
     /// Whether the workflow will fire on matching events.
@@ -314,7 +316,7 @@ pub async fn create_workflow(
 /// cross-channel overwrite primitive while still making retries idempotent.
 #[allow(clippy::too_many_arguments)]
 pub async fn upsert_workflow(
-    pool: &PgPool,
+    conn: &mut sqlx::PgConnection,
     community_id: CommunityId,
     id: Uuid,
     channel_id: Option<Uuid>,
@@ -322,16 +324,18 @@ pub async fn upsert_workflow(
     name: &str,
     definition_json: &str,
     definition_hash: &[u8],
+    definition_event_id: &[u8],
 ) -> Result<()> {
     let row = sqlx::query(
         r#"
         INSERT INTO workflows
-            (community_id, id, name, owner_pubkey, channel_id, definition, definition_hash, status, enabled)
-        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, 'active', TRUE)
+            (community_id, id, name, owner_pubkey, channel_id, definition, definition_hash, definition_event_id, status, enabled)
+        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, 'active', TRUE)
         ON CONFLICT (community_id, id) DO UPDATE
         SET name = EXCLUDED.name,
             definition = EXCLUDED.definition,
             definition_hash = EXCLUDED.definition_hash,
+            definition_event_id = EXCLUDED.definition_event_id,
             updated_at = NOW()
         WHERE workflows.owner_pubkey = EXCLUDED.owner_pubkey
           AND workflows.channel_id IS NOT DISTINCT FROM EXCLUDED.channel_id
@@ -345,7 +349,8 @@ pub async fn upsert_workflow(
     .bind(channel_id)
     .bind(definition_json)
     .bind(definition_hash)
-    .fetch_optional(pool)
+    .bind(definition_event_id)
+    .fetch_optional(conn)
     .await?;
 
     if row.is_none() {
@@ -370,7 +375,7 @@ pub async fn get_workflow(
 ) -> Result<WorkflowRecord> {
     let row = sqlx::query(
         r#"
-        SELECT id, community_id, name, owner_pubkey, channel_id, definition, definition_hash,
+        SELECT id, community_id, name, owner_pubkey, channel_id, definition, definition_hash, definition_event_id,
                status::text AS status, enabled, created_at, updated_at
         FROM workflows
         WHERE community_id = $1 AND id = $2
@@ -401,7 +406,7 @@ pub async fn list_channel_workflows(
 
     let rows = sqlx::query(
         r#"
-        SELECT id, community_id, name, owner_pubkey, channel_id, definition, definition_hash,
+        SELECT id, community_id, name, owner_pubkey, channel_id, definition, definition_hash, definition_event_id,
                status::text AS status, enabled, created_at, updated_at
         FROM workflows
         WHERE community_id = $1 AND channel_id = $2
@@ -432,7 +437,7 @@ pub async fn list_enabled_channel_workflows(
 ) -> Result<Vec<WorkflowRecord>> {
     let rows = sqlx::query(
         r#"
-        SELECT id, community_id, name, owner_pubkey, channel_id, definition, definition_hash,
+        SELECT id, community_id, name, owner_pubkey, channel_id, definition, definition_hash, definition_event_id,
                status::text AS status, enabled, created_at, updated_at
         FROM workflows
         WHERE community_id = $1
@@ -460,7 +465,7 @@ pub async fn list_enabled_channel_workflows(
 pub async fn list_all_enabled_workflows(pool: &PgPool) -> Result<Vec<WorkflowRecord>> {
     let rows = sqlx::query(
         r#"
-        SELECT w.id, w.community_id, w.name, w.owner_pubkey, w.channel_id, w.definition, w.definition_hash,
+        SELECT w.id, w.community_id, w.name, w.owner_pubkey, w.channel_id, w.definition, w.definition_hash, w.definition_event_id,
                w.status::text AS status, w.enabled, w.created_at, w.updated_at
         FROM workflows w
         JOIN communities c ON c.id = w.community_id
@@ -792,6 +797,37 @@ pub async fn delete_workflow_for_owner(
 }
 
 // -- Workflow Run CRUD --------------------------------------------------------
+
+/// Insert a new workflow run on the caller's transaction.
+///
+/// Command handlers use this with the transaction that persisted the trigger
+/// event so both rows commit or roll back together.
+pub async fn create_workflow_run_in_transaction(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    community_id: CommunityId,
+    workflow_id: Uuid,
+    trigger_event_id: Option<&[u8]>,
+    trigger_context: Option<&serde_json::Value>,
+) -> Result<Uuid> {
+    let id = Uuid::new_v4();
+
+    sqlx::query(
+        r#"
+        INSERT INTO workflow_runs
+            (community_id, id, workflow_id, status, trigger_event_id, current_step, execution_trace, trigger_context)
+        VALUES ($1, $2, $3, 'pending', $4, 0, '[]', $5)
+        "#,
+    )
+    .bind(community_id.as_uuid())
+    .bind(id)
+    .bind(workflow_id)
+    .bind(trigger_event_id)
+    .bind(trigger_context)
+    .execute(&mut **tx)
+    .await?;
+
+    Ok(id)
+}
 
 /// Insert a new workflow run. Returns the new run's UUID.
 ///
@@ -1183,6 +1219,7 @@ fn row_to_workflow_record(row: sqlx::postgres::PgRow) -> Result<WorkflowRecord> 
         channel_id,
         definition: row.try_get("definition")?,
         definition_hash: row.try_get("definition_hash")?,
+        definition_event_id: row.try_get("definition_event_id")?,
         status,
         enabled,
         created_at: row.try_get("created_at")?,
@@ -1247,7 +1284,7 @@ pub async fn find_by_owner_and_name(
 ) -> Result<Option<WorkflowRecord>> {
     let row = sqlx::query(
         r#"
-        SELECT id, community_id, name, owner_pubkey, channel_id, definition, definition_hash,
+        SELECT id, community_id, name, owner_pubkey, channel_id, definition, definition_hash, definition_event_id,
                status::text AS status, enabled, created_at, updated_at
         FROM workflows
         WHERE community_id = $1 AND owner_pubkey = $2 AND name = $3
@@ -1382,6 +1419,7 @@ mod tests {
             channel_id: Some(channel_id),
             definition: def.clone(),
             definition_hash: vec![0x01, 0x02, 0x03, 0x04],
+            definition_event_id: None,
             status: WorkflowStatus::Active,
             enabled: true,
             created_at: now,
@@ -1412,6 +1450,7 @@ mod tests {
             channel_id: None,
             definition: serde_json::json!({}),
             definition_hash: vec![],
+            definition_event_id: None,
             status: WorkflowStatus::Active,
             enabled: true,
             created_at: now,
@@ -1434,6 +1473,7 @@ mod tests {
             channel_id: None,
             definition: serde_json::json!({}),
             definition_hash: vec![0xAA],
+            definition_event_id: None,
             status: WorkflowStatus::Active,
             enabled: true,
             created_at: now,
@@ -1463,6 +1503,7 @@ mod tests {
                 channel_id: None,
                 definition: serde_json::json!({}),
                 definition_hash: vec![],
+                definition_event_id: None,
                 status: status.clone(),
                 enabled: true,
                 created_at: now,
@@ -1483,6 +1524,7 @@ mod tests {
             channel_id: None,
             definition: serde_json::json!({}),
             definition_hash: vec![],
+            definition_event_id: None,
             status: WorkflowStatus::Active,
             enabled: false,
             created_at: now,
@@ -2127,6 +2169,115 @@ mod tests {
         .execute(pool)
         .await
         .expect("insert workflow");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn workflow_run_transaction_rolls_back_and_retry_creates_exactly_one_run() {
+        let pool = setup_pool().await;
+        let community = make_community(&pool).await;
+        let workflow_id = Uuid::new_v4();
+        insert_workflow_with_ids(
+            &pool,
+            community,
+            workflow_id,
+            Uuid::new_v4(),
+            "atomic-trigger",
+        )
+        .await;
+        let trigger_event_id = vec![0x7au8; 32];
+        let trigger_pubkey = vec![0x7bu8; 32];
+        let trigger_sig = vec![0x7cu8; 64];
+
+        let mut aborted = pool.begin().await.expect("begin aborted transaction");
+        sqlx::query(
+            "INSERT INTO events \
+             (community_id, id, pubkey, created_at, kind, tags, content, sig, received_at) \
+             VALUES ($1, $2, $3, NOW(), 46020, '[]'::jsonb, '', $4, NOW())",
+        )
+        .bind(community.as_uuid())
+        .bind(trigger_event_id.as_slice())
+        .bind(trigger_pubkey.as_slice())
+        .bind(trigger_sig.as_slice())
+        .execute(&mut *aborted)
+        .await
+        .expect("insert trigger event before abort");
+        create_workflow_run_in_transaction(
+            &mut aborted,
+            community,
+            workflow_id,
+            Some(&trigger_event_id),
+            None,
+        )
+        .await
+        .expect("insert run before abort");
+        aborted.rollback().await.expect("roll back run");
+
+        let after_abort_event: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE community_id = $1 AND id = $2")
+                .bind(community.as_uuid())
+                .bind(&trigger_event_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count rolled-back trigger events");
+        assert_eq!(
+            after_abort_event, 0,
+            "aborted trigger must leave no event row"
+        );
+        let after_abort: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM workflow_runs WHERE community_id = $1 AND trigger_event_id = $2",
+        )
+        .bind(community.as_uuid())
+        .bind(&trigger_event_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count rolled-back runs");
+        assert_eq!(after_abort, 0, "aborted trigger must leave no run row");
+
+        let mut retry = pool.begin().await.expect("begin retry transaction");
+        sqlx::query(
+            "INSERT INTO events \
+             (community_id, id, pubkey, created_at, kind, tags, content, sig, received_at) \
+             VALUES ($1, $2, $3, NOW(), 46020, '[]'::jsonb, '', $4, NOW())",
+        )
+        .bind(community.as_uuid())
+        .bind(trigger_event_id.as_slice())
+        .bind(trigger_pubkey.as_slice())
+        .bind(trigger_sig.as_slice())
+        .execute(&mut *retry)
+        .await
+        .expect("insert trigger event on retry");
+        create_workflow_run_in_transaction(
+            &mut retry,
+            community,
+            workflow_id,
+            Some(&trigger_event_id),
+            None,
+        )
+        .await
+        .expect("insert retry run");
+        retry.commit().await.expect("commit retry run");
+
+        let after_retry_event: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE community_id = $1 AND id = $2")
+                .bind(community.as_uuid())
+                .bind(&trigger_event_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count committed trigger events");
+        assert_eq!(
+            after_retry_event, 1,
+            "retry must create exactly one event row"
+        );
+        let after_retry: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM workflow_runs WHERE community_id = $1 AND trigger_event_id = $2",
+        )
+        .bind(community.as_uuid())
+        .bind(&trigger_event_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count committed retry runs");
+        assert_eq!(after_retry, 1, "retry must create exactly one run row");
     }
 
     /// Issue 4 (workflow identity): the same workflow UUID and channel UUID can
