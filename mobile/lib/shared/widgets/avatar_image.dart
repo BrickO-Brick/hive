@@ -74,6 +74,7 @@ class AvatarImageContent extends ConsumerStatefulWidget {
 
 class _AvatarImageContentState extends ConsumerState<AvatarImageContent> {
   late _AvatarSource? _source = _AvatarSource.parse(widget.imageUrl);
+  String? _scheduledPushAvatar;
 
   @override
   void didUpdateWidget(AvatarImageContent oldWidget) {
@@ -110,10 +111,11 @@ class _AvatarImageContentState extends ConsumerState<AvatarImageContent> {
         placeholderBuilder: (_) => centeredFallback,
         errorBuilder: (_, _, _) => centeredFallback,
       ),
-      _RasterDataAvatarSource(:final bytes) => Image.memory(
-        bytes,
-        fit: widget.fit,
-        errorBuilder: (_, _, _) => centeredFallback,
+      _RasterDataAvatarSource(:final bytes) => _rasterImage(
+        communityID: communityID,
+        sourceURL: widget.imageUrl,
+        bytes: bytes,
+        fallback: centeredFallback,
       ),
       _NetworkAvatarSource(:final url) => MediaImage(
         url: url,
@@ -127,6 +129,31 @@ class _AvatarImageContentState extends ConsumerState<AvatarImageContent> {
       ),
       null => centeredFallback,
     };
+  }
+
+  Widget _rasterImage({
+    required String? communityID,
+    required String? sourceURL,
+    required Uint8List bytes,
+    required Widget fallback,
+  }) {
+    if (communityID != null && sourceURL != null) {
+      final identity = '$communityID\u0000$sourceURL';
+      if (_scheduledPushAvatar != identity) {
+        _scheduledPushAvatar = identity;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted || _scheduledPushAvatar != identity) return;
+          unawaited(
+            cacheBuzzPushAvatarFromLoadedBytes(communityID, sourceURL, bytes),
+          );
+        });
+      }
+    }
+    return Image.memory(
+      bytes,
+      fit: widget.fit,
+      errorBuilder: (_, _, _) => fallback,
+    );
   }
 }
 

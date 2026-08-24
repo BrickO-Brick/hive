@@ -50,7 +50,10 @@ public protocol BuzzPushNotificationResolving {
 
 /// Reads configured Buzz communities and resolves their newest unread event.
 public final class BuzzPushNotificationResolver: BuzzPushNotificationResolving {
-  static let maximumPresentationResponseBytes = 128 * 1_024
+  // Verified profiles may carry bounded inline raster avatars. Keep the refresh
+  // response capped, but large enough to recover the sender name from those
+  // otherwise valid kind-0 events when the app cache has not been populated.
+  static let maximumPresentationResponseBytes = 256 * 1_024
 
   private let session: URLSession
   private let loadCommunitiesData: () -> Data?
@@ -213,13 +216,13 @@ public final class BuzzPushNotificationResolver: BuzzPushNotificationResolving {
       else { return false }
       return cachedChannel.memberDigests?.count != memberCount
     }()
-    let channelNeedsRefresh = channelID != nil && (
-      Self.isStale(
+    let channelNeedsRefresh =
+      channelID != nil
+      && (Self.isStale(
         cachedAt: cachedChannel?.cachedAt,
         now: timestamp,
         lifetime: presentationCacheLifetime
-      ) || membershipNeedsRefresh
-    )
+      ) || membershipNeedsRefresh)
     let fallback = Self.makeResolution(
       event: event,
       community: community,
@@ -237,50 +240,58 @@ public final class BuzzPushNotificationResolver: BuzzPushNotificationResolving {
       refreshProfile: profileNeedsRefresh,
       refreshChannel: channelNeedsRefresh
     ) { refreshedProfileEvent, refreshedChannelEvent, refreshedMembershipEvent in
-      let profile = refreshedProfileEvent.flatMap {
-        guard BuzzPushPresentationCacheStore.shouldReplace(
-          existingCreatedAt: cachedProfile?.eventCreatedAt,
-          existingID: cachedProfile?.eventID,
-          candidateCreatedAt: $0.createdAt,
-          candidateID: $0.id
-        ) else { return nil }
-        return Self.ephemeralProfile(
-          event: $0,
-          communityID: community.id,
-          relayOrigin: relayOrigin ?? community.relayUrl,
-          cached: cachedProfile,
-          cachedAt: timestamp
-        )
-      } ?? cachedProfile
+      let profile =
+        refreshedProfileEvent.flatMap {
+          guard
+            BuzzPushPresentationCacheStore.shouldReplace(
+              existingCreatedAt: cachedProfile?.eventCreatedAt,
+              existingID: cachedProfile?.eventID,
+              candidateCreatedAt: $0.createdAt,
+              candidateID: $0.id
+            )
+          else { return nil }
+          return Self.ephemeralProfile(
+            event: $0,
+            communityID: community.id,
+            relayOrigin: relayOrigin ?? community.relayUrl,
+            cached: cachedProfile,
+            cachedAt: timestamp
+          )
+        } ?? cachedProfile
       let newerChannelEvent: VerifiedNostrEvent? = refreshedChannelEvent.flatMap { event in
-        guard BuzzPushPresentationCacheStore.shouldReplace(
-          existingCreatedAt: cachedChannel?.eventCreatedAt,
-          existingID: cachedChannel?.eventID,
-          candidateCreatedAt: event.createdAt,
-          candidateID: event.id
-        ) else { return nil }
+        guard
+          BuzzPushPresentationCacheStore.shouldReplace(
+            existingCreatedAt: cachedChannel?.eventCreatedAt,
+            existingID: cachedChannel?.eventID,
+            candidateCreatedAt: event.createdAt,
+            candidateID: event.id
+          )
+        else { return nil }
         return event
       }
       let newerMembershipEvent: VerifiedNostrEvent? = refreshedMembershipEvent.flatMap { event in
-        guard BuzzPushPresentationCacheStore.shouldReplace(
-          existingCreatedAt: cachedChannel?.membershipEventCreatedAt,
-          existingID: cachedChannel?.membershipEventID,
-          candidateCreatedAt: event.createdAt,
-          candidateID: event.id
-        ) else { return nil }
+        guard
+          BuzzPushPresentationCacheStore.shouldReplace(
+            existingCreatedAt: cachedChannel?.membershipEventCreatedAt,
+            existingID: cachedChannel?.membershipEventID,
+            candidateCreatedAt: event.createdAt,
+            candidateID: event.id
+          )
+        else { return nil }
         return event
       }
-      let channel = relayMetadataPubkey.flatMap {
-        Self.ephemeralChannel(
-          metadataEvent: newerChannelEvent,
-          membershipEvent: newerMembershipEvent,
-          cached: cachedChannel,
-          communityID: community.id,
-          relayOrigin: relayOrigin ?? community.relayUrl,
-          relayMetadataPubkey: $0,
-          cachedAt: timestamp
-        )
-      } ?? cachedChannel
+      let channel =
+        relayMetadataPubkey.flatMap {
+          Self.ephemeralChannel(
+            metadataEvent: newerChannelEvent,
+            membershipEvent: newerMembershipEvent,
+            cached: cachedChannel,
+            communityID: community.id,
+            relayOrigin: relayOrigin ?? community.relayUrl,
+            relayMetadataPubkey: $0,
+            cachedAt: timestamp
+          )
+        } ?? cachedChannel
       completion(
         Self.makeResolution(
           event: event,
@@ -297,9 +308,10 @@ public final class BuzzPushNotificationResolver: BuzzPushNotificationResolving {
     community: PushLeaseCommunity,
     refreshProfile: Bool,
     refreshChannel: Bool,
-    completion: @escaping (
-      VerifiedNostrEvent?, VerifiedNostrEvent?, VerifiedNostrEvent?
-    ) -> Void
+    completion:
+      @escaping (
+        VerifiedNostrEvent?, VerifiedNostrEvent?, VerifiedNostrEvent?
+      ) -> Void
   ) {
     guard let privateKey = loadPrivateKey(community.id),
       let relayURL = community.relayURL,
@@ -338,14 +350,19 @@ public final class BuzzPushNotificationResolver: BuzzPushNotificationResolving {
     var request = URLRequest(url: url)
     request.httpMethod = "POST"
     request.httpBody = body
-    request.timeoutInterval = 1
+    // A verified kind-0 profile may include a bounded inline raster avatar.
+    // Railway can take longer than one second to return that larger response,
+    // while three seconds remains a small fraction of the NSE execution budget.
+    request.timeoutInterval = 3
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-    guard let auth = try? NostrHTTPAuth.authorizationHeader(
-      url: url,
-      method: "POST",
-      body: body,
-      privateKeyHex: privateKey
-    ) else {
+    guard
+      let auth = try? NostrHTTPAuth.authorizationHeader(
+        url: url,
+        method: "POST",
+        body: body,
+        privateKeyHex: privateKey
+      )
+    else {
       completion(nil, nil, nil)
       return
     }
@@ -364,23 +381,32 @@ public final class BuzzPushNotificationResolver: BuzzPushNotificationResolving {
         return
       }
       let verified = events.filter { $0.hasValidIDAndSignature() }
-      let profile = refreshProfile ? Self.newest(verified.filter {
-        $0.kind == 0 && $0.pubkey.lowercased() == event.pubkey.lowercased()
-      }) : nil
-      let channel = refreshChannel ? channelID.flatMap { channelID in
-        Self.newest(verified.filter {
-          $0.kind == 39_000
-            && $0.pubkey.lowercased() == relayMetadataPubkey
-            && Self.tagValue("d", in: $0) == channelID
-        })
-      } : nil
-      let membership = refreshChannel ? channelID.flatMap { channelID in
-        Self.newest(verified.filter {
-          $0.kind == 39_002
-            && $0.pubkey.lowercased() == relayMetadataPubkey
-            && Self.tagValue("d", in: $0) == channelID
-        })
-      } : nil
+      let profile =
+        refreshProfile
+        ? Self.newest(
+          verified.filter {
+            $0.kind == 0 && $0.pubkey.lowercased() == event.pubkey.lowercased()
+          }) : nil
+      let channel =
+        refreshChannel
+        ? channelID.flatMap { channelID in
+          Self.newest(
+            verified.filter {
+              $0.kind == 39_000
+                && $0.pubkey.lowercased() == relayMetadataPubkey
+                && Self.tagValue("d", in: $0) == channelID
+            })
+        } : nil
+      let membership =
+        refreshChannel
+        ? channelID.flatMap { channelID in
+          Self.newest(
+            verified.filter {
+              $0.kind == 39_002
+                && $0.pubkey.lowercased() == relayMetadataPubkey
+                && Self.tagValue("d", in: $0) == channelID
+            })
+        } : nil
       completion(profile, channel, membership)
     }.resume()
   }
@@ -390,12 +416,14 @@ public final class BuzzPushNotificationResolver: BuzzPushNotificationResolving {
   ) -> (BuzzPushResolution, VerifiedNostrEvent)? {
     let event = newestMessage(events: events, community: community)
     guard let event else { return nil }
-    guard let resolution = makeResolution(
-      event: event,
-      community: community,
-      profile: nil,
-      channel: nil
-    ) else { return nil }
+    guard
+      let resolution = makeResolution(
+        event: event,
+        community: community,
+        profile: nil,
+        channel: nil
+      )
+    else { return nil }
     return (resolution, event)
   }
 

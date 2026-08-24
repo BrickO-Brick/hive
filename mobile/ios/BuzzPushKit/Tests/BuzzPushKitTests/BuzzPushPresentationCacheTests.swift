@@ -23,7 +23,8 @@ struct BuzzPushPresentationCacheTests {
       privateKey: profileKey,
       createdAt: 1_700_000_000,
       kind: 0,
-      content: #"{"display_name":"  Alice   Example ","name":"alice","picture":"https://images.example/alice.png"}"#
+      content:
+        #"{"display_name":"  Alice   Example ","name":"alice","picture":"https://images.example/alice.png"}"#
     )
 
     let needsAvatar = try store.updateProfiles(
@@ -80,6 +81,55 @@ struct BuzzPushPresentationCacheTests {
         relayOrigin: "https://relay.example",
         pubkey: event.pubkey
       )?.avatarPNG == nil
+    )
+  }
+
+  @Test("Verified inline raster profile retains its name and accepts a local thumbnail")
+  func verifiedInlineRasterProfileAndAvatar() throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = BuzzPushPresentationCacheStore(containerURL: directory)
+    let picture = "data:image/png;base64," + String(repeating: "A", count: 170_000)
+    let content = try #require(
+      String(
+        data: JSONSerialization.data(withJSONObject: [
+          "display_name": "Fizz",
+          "picture": picture,
+        ]),
+        encoding: .utf8
+      )
+    )
+    let event = try signedEvent(privateKey: profileKey, kind: 0, content: content)
+
+    let needsAvatar = try store.updateProfiles(
+      communityID: "community-a",
+      relayOrigin: "https://relay.example",
+      updates: [BuzzPushProfileCacheUpdate(event: event)]
+    )
+    #expect(needsAvatar == Set([event.id]))
+    #expect(
+      try loadSnapshot(directory).profile(
+        communityID: "community-a",
+        relayOrigin: "https://relay.example",
+        pubkey: event.pubkey
+      )?.displayName == "Fizz"
+    )
+
+    let png = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+    #expect(
+      try store.updateAvatar(
+        communityID: "community-a",
+        relayOrigin: "https://relay.example",
+        sourceURL: picture,
+        avatarPNG: png
+      )
+    )
+    #expect(
+      try loadSnapshot(directory).profile(
+        communityID: "community-a",
+        relayOrigin: "https://relay.example",
+        pubkey: event.pubkey
+      )?.avatarPNG == png
     )
   }
 
@@ -266,13 +316,14 @@ struct BuzzPushPresentationCacheTests {
     #expect(cached.memberCount == 2)
     #expect(cached.membershipEventID == newestMembership.id)
     #expect(
-      cached.memberDigests == [firstMember, secondMember].map {
-        BuzzPushPresentationIdentity.channelMember(
-          communityID: "community-a",
-          channelID: "opaque-channel",
-          pubkey: $0
-        )
-      }.sorted()
+      cached.memberDigests
+        == [firstMember, secondMember].map {
+          BuzzPushPresentationIdentity.channelMember(
+            communityID: "community-a",
+            channelID: "opaque-channel",
+            pubkey: $0
+          )
+        }.sorted()
     )
   }
 
@@ -413,7 +464,9 @@ struct BuzzPushPresentationCacheTests {
 
     #expect(totalDigests == BuzzPushPresentationCacheStore.maximumTotalMemberDigests)
     #expect(decoded.channels.first { $0.channelID == "channel-0" }?.memberDigests == nil)
-    #expect(decoded.channels.first { $0.channelID == "channel-\(channelCount - 1)" }?.memberDigests != nil)
+    #expect(
+      decoded.channels.first { $0.channelID == "channel-\(channelCount - 1)" }?.memberDigests != nil
+    )
   }
 
   @Test("Oversized membership keeps provenance but omits an incomplete digest set")
@@ -431,9 +484,10 @@ struct BuzzPushPresentationCacheTests {
     let membership = try signedEvent(
       privateKey: relayKey,
       kind: 39_002,
-      tags: [["d", "large-channel"]] + (0..<memberCount).map {
-        ["p", String(format: "%064x", $0 + 1)]
-      }
+      tags: [["d", "large-channel"]]
+        + (0..<memberCount).map {
+          ["p", String(format: "%064x", $0 + 1)]
+        }
     )
 
     try store.updateChannels(
@@ -461,7 +515,8 @@ struct BuzzPushPresentationCacheTests {
   @Test("Legacy cache decodes with channel membership unavailable")
   func legacyCacheCompatibility() throws {
     let legacy = try #require(
-      #"{"version":1,"profiles":[],"channels":[{"communityID":"community-a","relayOrigin":"https://relay.example","channelID":"opaque","relayMetadataPubkey":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","displayName":"General","eventID":"event","eventCreatedAt":1,"cachedAt":2}]}"#.data(using: .utf8)
+      #"{"version":1,"profiles":[],"channels":[{"communityID":"community-a","relayOrigin":"https://relay.example","channelID":"opaque","relayMetadataPubkey":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","displayName":"General","eventID":"event","eventCreatedAt":1,"cachedAt":2}]}"#
+        .data(using: .utf8)
     )
 
     let channel = try #require(BuzzPushPresentationCacheSnapshot.decode(legacy).channels.first)
@@ -582,7 +637,8 @@ struct BuzzPushPresentationCacheTests {
   @Test("Encoded cache remains bounded with adversarial strings and maximum avatars")
   func encodedCacheByteBound() throws {
     let controlText = String(repeating: "\u{0001}", count: 1_024)
-    let avatar = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+    let avatar =
+      Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
       + Data(
         repeating: 0,
         count: BuzzPushPresentationCacheStore.maximumAvatarBytes - 8

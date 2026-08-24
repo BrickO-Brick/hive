@@ -278,7 +278,7 @@ final class BuzzPushNotificationResolverTests: XCTestCase {
       if URLProtocolStub.requests.count == 1 {
         return Self.response(request, status: 200, data: try JSONEncoder().encode([message]))
       }
-      XCTAssertEqual(request.timeoutInterval, 1)
+      XCTAssertEqual(request.timeoutInterval, 3)
       return Self.response(request, status: 503, data: Data())
     }
 
@@ -605,6 +605,59 @@ final class BuzzPushNotificationResolverTests: XCTestCase {
     XCTAssertEqual(result.title, String(message.pubkey.prefix(8)) + "…")
     XCTAssertNil(result.conversationDisplayName)
     XCTAssertEqual(result.body, "Bounded fallback")
+    XCTAssertEqual(URLProtocolStub.requests.count, 2)
+  }
+
+  func testBoundedInlineAvatarProfileRefreshStillResolvesDisplayName() throws {
+    let message = try Self.signedEvent(
+      privateKey: Self.profilePrivateKey,
+      createdAt: Self.now,
+      kind: 9,
+      tags: [["h", Self.channelID]],
+      content: "Inline avatar profile"
+    )
+    let picture = "data:image/png;base64," + String(repeating: "A", count: 170_000)
+    let profileContent = try XCTUnwrap(
+      String(
+        data: JSONSerialization.data(withJSONObject: [
+          "display_name": "Fizz",
+          "picture": picture,
+        ]),
+        encoding: .utf8
+      )
+    )
+    let profile = try Self.signedEvent(
+      privateKey: Self.profilePrivateKey,
+      createdAt: Self.now,
+      kind: 0,
+      content: profileContent
+    )
+    let presentationData = try JSONEncoder().encode([profile])
+    XCTAssertLessThan(
+      presentationData.count,
+      BuzzPushNotificationResolver.maximumPresentationResponseBytes
+    )
+    URLProtocolStub.handler = { request in
+      Self.response(
+        request,
+        status: 200,
+        data: URLProtocolStub.requests.count == 1
+          ? try JSONEncoder().encode([message]) : presentationData
+      )
+    }
+
+    let result = try XCTUnwrap(
+      resolve(
+        makeResolver(
+          communitiesData: try snapshotData([community()]),
+          now: Date(timeIntervalSince1970: TimeInterval(Self.now))
+        )
+      )
+    )
+
+    XCTAssertEqual(result.title, "Fizz")
+    XCTAssertNil(result.senderAvatarPNG)
+    XCTAssertEqual(result.body, "Inline avatar profile")
     XCTAssertEqual(URLProtocolStub.requests.count, 2)
   }
 

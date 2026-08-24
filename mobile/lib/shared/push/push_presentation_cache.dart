@@ -173,7 +173,7 @@ Future<void> cacheBuzzPushAvatarFromLoadedBytes(
       communityID.isEmpty ||
       sourceBytes.isEmpty ||
       sourceBytes.length > _maximumAvatarSourceBytes ||
-      !_isRemoteImageURL(sourceURL)) {
+      !isCacheablePushAvatarSource(sourceURL)) {
     return;
   }
   final previous = _avatarEncodeTail;
@@ -209,7 +209,19 @@ Future<void> _invokeBestEffort(
   }
 }
 
-bool _isRemoteImageURL(String value) {
+@visibleForTesting
+bool isCacheablePushAvatarSource(String value) {
+  final trimmed = value.trim();
+  if (trimmed.startsWith('data:image/')) {
+    try {
+      final data = UriData.parse(trimmed);
+      return data.mimeType.startsWith('image/') &&
+          data.mimeType != 'image/svg+xml' &&
+          data.contentAsBytes().isNotEmpty;
+    } on FormatException {
+      return false;
+    }
+  }
   final uri = Uri.tryParse(value.trim());
   return uri != null &&
       (uri.scheme == 'http' || uri.scheme == 'https') &&

@@ -164,6 +164,7 @@ public final class BuzzPushPresentationCacheStore: @unchecked Sendable {
   public static let maximumAvatarBytes = 64 * 1024
   public static let maximumTotalAvatarBytes = 4 * 1024 * 1024
   public static let maximumSnapshotBytes = 8 * 1024 * 1024
+  static let maximumProfileMetadataBytes = 256 * 1024
 
   private let fileURL: URL
   private let now: () -> Date
@@ -203,15 +204,18 @@ public final class BuzzPushPresentationCacheStore: @unchecked Sendable {
           && $0.pubkey == pubkey
       }
       let existing = index.map { snapshot.profiles[$0] }
-      guard Self.shouldReplace(
-        existingCreatedAt: existing?.eventCreatedAt,
-        existingID: existing?.eventID,
-        candidateCreatedAt: event.createdAt,
-        candidateID: event.id
-      ) else { continue }
+      guard
+        Self.shouldReplace(
+          existingCreatedAt: existing?.eventCreatedAt,
+          existingID: existing?.eventID,
+          candidateCreatedAt: event.createdAt,
+          candidateID: event.id
+        )
+      else { continue }
 
       let suppliedAvatar = Self.normalizedAvatarPNG(update.avatarPNG)
-      let preservedAvatar = existing?.pictureHash == metadata.pictureHash
+      let preservedAvatar =
+        existing?.pictureHash == metadata.pictureHash
         ? existing?.avatarPNG : nil
       let entry = BuzzPushCachedProfile(
         communityID: communityID,
@@ -234,15 +238,16 @@ public final class BuzzPushPresentationCacheStore: @unchecked Sendable {
 
     Self.enforceBounds(&snapshot)
     try writeLocked(snapshot)
-    return Set(snapshot.profiles.compactMap { profile in
-      guard profile.communityID == communityID,
-        profile.relayOrigin == canonicalRelayOrigin,
-        acceptedEventIDs.contains(profile.eventID),
-        profile.pictureHash != nil,
-        profile.avatarPNG == nil
-      else { return nil }
-      return profile.eventID
-    })
+    return Set(
+      snapshot.profiles.compactMap { profile in
+        guard profile.communityID == communityID,
+          profile.relayOrigin == canonicalRelayOrigin,
+          acceptedEventIDs.contains(profile.eventID),
+          profile.pictureHash != nil,
+          profile.avatarPNG == nil
+        else { return nil }
+        return profile.eventID
+      })
   }
 
   /// Saves bounded relay-authorized kind-39000 metadata and kind-39002 membership snapshots.
@@ -279,12 +284,15 @@ public final class BuzzPushPresentationCacheStore: @unchecked Sendable {
       }
       let existing = index.map { snapshot.channels[$0] }
       let hasCurrentAuthority = existing?.relayMetadataPubkey == normalizedRelayPubkey
-      guard !hasCurrentAuthority || Self.shouldReplace(
-        existingCreatedAt: existing?.eventCreatedAt,
-        existingID: existing?.eventID,
-        candidateCreatedAt: event.createdAt,
-        candidateID: event.id
-      ) else { continue }
+      guard
+        !hasCurrentAuthority
+          || Self.shouldReplace(
+            existingCreatedAt: existing?.eventCreatedAt,
+            existingID: existing?.eventID,
+            candidateCreatedAt: event.createdAt,
+            candidateID: event.id
+          )
+      else { continue }
 
       let entry = BuzzPushCachedChannel(
         communityID: communityID,
@@ -328,12 +336,14 @@ public final class BuzzPushPresentationCacheStore: @unchecked Sendable {
         })
       else { continue }
       let existing = snapshot.channels[index]
-      guard Self.shouldReplace(
-        existingCreatedAt: existing.membershipEventCreatedAt,
-        existingID: existing.membershipEventID,
-        candidateCreatedAt: event.createdAt,
-        candidateID: event.id
-      ) else { continue }
+      guard
+        Self.shouldReplace(
+          existingCreatedAt: existing.membershipEventCreatedAt,
+          existingID: existing.membershipEventID,
+          candidateCreatedAt: event.createdAt,
+          candidateID: event.id
+        )
+      else { continue }
 
       snapshot.channels[index] = BuzzPushCachedChannel(
         communityID: existing.communityID,
@@ -379,11 +389,12 @@ public final class BuzzPushPresentationCacheStore: @unchecked Sendable {
 
     var snapshot = loadLocked()
     var changed = false
-    for index in snapshot.profiles.indices where
+    for index in snapshot.profiles.indices
+    where
       snapshot.profiles[index].communityID == communityID
-        && snapshot.profiles[index].relayOrigin == canonicalRelayOrigin
-        && snapshot.profiles[index].pictureHash == pictureHash
-        && snapshot.profiles[index].avatarPNG != normalizedPNG
+      && snapshot.profiles[index].relayOrigin == canonicalRelayOrigin
+      && snapshot.profiles[index].pictureHash == pictureHash
+      && snapshot.profiles[index].avatarPNG != normalizedPNG
     {
       let profile = snapshot.profiles[index]
       snapshot.profiles[index] = BuzzPushCachedProfile(
@@ -478,11 +489,12 @@ public final class BuzzPushPresentationCacheStore: @unchecked Sendable {
   static func profileMetadata(
     _ event: VerifiedNostrEvent
   ) -> (displayName: String?, pictureHash: String?) {
-    guard event.content.utf8.count <= 32 * 1024,
+    guard event.content.utf8.count <= maximumProfileMetadataBytes,
       let data = event.content.data(using: .utf8),
       let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     else { return (nil, nil) }
-    let displayName = normalizedDisplayName(object["display_name"] as? String)
+    let displayName =
+      normalizedDisplayName(object["display_name"] as? String)
       ?? normalizedDisplayName(object["name"] as? String)
     let pictureHash = normalizedAvatarURL(object["picture"] as? String).map {
       VerifiedNostrEvent.hex(SHA256.hash(data: Data($0.utf8)))
@@ -525,13 +537,16 @@ public final class BuzzPushPresentationCacheStore: @unchecked Sendable {
         exceededMemberBound = pubkeys.count > maximumMembersPerChannel
       }
     }
-    let digests = exceededMemberBound ? nil : pubkeys.map {
-      BuzzPushPresentationIdentity.channelMember(
-        communityID: communityID,
-        channelID: channelID,
-        pubkey: $0
-      )
-    }.sorted()
+    let digests =
+      exceededMemberBound
+      ? nil
+      : pubkeys.map {
+        BuzzPushPresentationIdentity.channelMember(
+          communityID: communityID,
+          channelID: channelID,
+          pubkey: $0
+        )
+      }.sorted()
     return (
       exceededMemberBound ? maximumMembersPerChannel + 1 : pubkeys.count,
       digests
@@ -541,7 +556,20 @@ public final class BuzzPushPresentationCacheStore: @unchecked Sendable {
   static func normalizedAvatarURL(_ value: String?) -> String? {
     guard let value else { return nil }
     let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty, trimmed.utf8.count <= 2_048,
+    guard !trimmed.isEmpty else { return nil }
+    if trimmed.hasPrefix("data:image/") {
+      guard trimmed.utf8.count <= maximumProfileMetadataBytes,
+        let separator = trimmed.firstIndex(of: ","),
+        separator < trimmed.index(before: trimmed.endIndex)
+      else { return nil }
+      let metadata = trimmed[..<separator].lowercased()
+      guard metadata.hasSuffix(";base64"),
+        ["data:image/png;base64", "data:image/jpeg;base64", "data:image/webp;base64"]
+          .contains(String(metadata))
+      else { return nil }
+      return trimmed
+    }
+    guard trimmed.utf8.count <= 2_048,
       let components = URLComponents(string: trimmed),
       components.user == nil, components.password == nil,
       components.host?.isEmpty == false,
