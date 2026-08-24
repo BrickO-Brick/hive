@@ -2103,7 +2103,7 @@ test("project overview chrome toggles a detached resizable agent chat", async ({
   ).toBeVisible();
 });
 
-test("project overview info control animates the context rail", async ({
+test("project overview drawer control animates the context rail", async ({
   page,
 }) => {
   await enableProjectsFeature(page);
@@ -2114,6 +2114,10 @@ test("project overview info control animates the context rail", async ({
   const toggle = page.getByTestId("projects-overview-context-toggle");
   const rail = page.getByTestId("projects-overview-context-rail");
   const railPanel = page.getByTestId("projects-overview-context-rail-panel");
+  const drawerIndicator = page
+    .getByTestId("projects-overview-context-icon")
+    .locator("rect")
+    .nth(1);
   const contentSurface = page.locator("[data-buzz-content-surface]");
   await expect(page.getByTestId("projects-overview-layout")).toHaveAttribute(
     "data-project-context-detached",
@@ -2133,6 +2137,7 @@ test("project overview info control animates the context rail", async ({
   await expect(
     page.getByTestId("projects-overview-context-icon"),
   ).toBeVisible();
+  await expect(drawerIndicator).toHaveAttribute("width", "5px");
   await expect(rail).toHaveCSS("width", "288px");
   await expect(page.getByTestId("projects-overview-layout")).toHaveCSS(
     "padding-right",
@@ -2146,6 +2151,7 @@ test("project overview info control animates the context rail", async ({
   await toggle.click();
   await expect(rail).toHaveCSS("width", "0px");
   await expect(toggle).toHaveAttribute("aria-pressed", "false");
+  await expect(drawerIndicator).toHaveAttribute("width", "2px");
   await expect(railPanel).toHaveCSS("transform", "none");
   expect(await surfaceStyle()).toEqual(expandedSurfaceStyle);
   await toggle.click();
