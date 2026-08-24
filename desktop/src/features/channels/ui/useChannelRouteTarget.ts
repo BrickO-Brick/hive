@@ -121,6 +121,7 @@ export function useChannelRouteTarget({
   activeChannel,
   activeChannelId,
   closeAgentSession,
+  requireThreadEditResolution,
   setEditTargetId,
   setExpandedThreadReplyIds,
   setOpenThreadHeadId,
@@ -134,6 +135,7 @@ export function useChannelRouteTarget({
   activeChannel: Channel | null;
   activeChannelId: string | null;
   closeAgentSession: () => void;
+  requireThreadEditResolution: () => boolean;
   setEditTargetId: React.Dispatch<React.SetStateAction<string | null>>;
   setExpandedThreadReplyIds: React.Dispatch<React.SetStateAction<Set<string>>>;
   setOpenThreadHeadId: PanelValueSetter;
@@ -198,6 +200,9 @@ export function useChannelRouteTarget({
       handledThreadRouteTargetRef.current = targetKey;
       return;
     }
+    if (!requireThreadEditResolution()) {
+      return;
+    }
 
     closeAgentSession();
     // Replace so the deep-link entry itself carries the opened thread —
@@ -213,6 +218,7 @@ export function useChannelRouteTarget({
     activeChannel,
     activeChannelId,
     closeAgentSession,
+    requireThreadEditResolution,
     setEditTargetId,
     setExpandedThreadReplyIds,
     setOpenThreadHeadId,
