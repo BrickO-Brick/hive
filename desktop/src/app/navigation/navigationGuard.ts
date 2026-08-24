@@ -1,4 +1,8 @@
-export type MessageTargetNavigation =
+export type GuardedNavigation =
+  | {
+      kind: "route";
+      href: string;
+    }
   | {
       kind: "channel-message";
       channelId: string;
@@ -12,25 +16,19 @@ export type MessageTargetNavigation =
       replyId: string | null;
     };
 
-type MessageTargetNavigationGuard = (
-  target: MessageTargetNavigation,
-) => boolean;
+type NavigationGuard = (target: GuardedNavigation) => boolean;
 
 type GuardRegistration = {
-  guard: MessageTargetNavigationGuard;
+  guard: NavigationGuard;
 };
 
 const activeGuards: GuardRegistration[] = [];
 
-export function allowMessageTargetNavigation(
-  target: MessageTargetNavigation,
-): boolean {
+export function allowNavigation(target: GuardedNavigation): boolean {
   return activeGuards.at(-1)?.guard(target) ?? true;
 }
 
-export function registerMessageTargetNavigationGuard(
-  guard: MessageTargetNavigationGuard,
-): () => void {
+export function registerNavigationGuard(guard: NavigationGuard): () => void {
   const registration = { guard };
   activeGuards.push(registration);
   return () => {

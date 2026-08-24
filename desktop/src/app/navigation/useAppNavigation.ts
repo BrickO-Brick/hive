@@ -7,7 +7,10 @@ import {
 } from "@tanstack/react-router";
 
 import { openSearchHitWithNavigation } from "@/app/navigation/searchHitNavigation";
-import { allowMessageTargetNavigation } from "@/app/navigation/messageTargetNavigationGuard";
+import {
+  allowNavigation,
+  type GuardedNavigation,
+} from "@/app/navigation/navigationGuard";
 import type { SearchHit } from "@/shared/api/types";
 
 type NavigationBehavior = {
@@ -31,10 +34,19 @@ export function useAppNavigation() {
         state?: Record<string, unknown>;
       },
       behavior: NavigationBehavior = {},
+      guardedTarget?: GuardedNavigation,
     ) => {
       const nextLocation = router.buildLocation(next as never);
 
       if (location.href === nextLocation.href && !behavior.force) {
+        return false;
+      }
+
+      if (
+        !allowNavigation(
+          guardedTarget ?? { kind: "route", href: nextLocation.href },
+        )
+      ) {
         return false;
       }
 
@@ -258,17 +270,6 @@ export function useAppNavigation() {
         threadRootId?: string | null;
       },
     ) => {
-      if (
-        options?.messageId &&
-        !allowMessageTargetNavigation({
-          kind: "channel-message",
-          channelId,
-          messageId: options.messageId,
-          threadRootId: options.threadRootId ?? null,
-        })
-      ) {
-        return Promise.resolve(false);
-      }
       return commitNavigation(
         {
           to: "/channels/$channelId",
@@ -294,6 +295,14 @@ export function useAppNavigation() {
           replace: options?.replace,
           resetScroll: options?.messageId ? true : undefined,
         },
+        options?.messageId
+          ? {
+              kind: "channel-message",
+              channelId,
+              messageId: options.messageId,
+              threadRootId: options.threadRootId ?? null,
+            }
+          : undefined,
       );
     },
     [commitNavigation],
@@ -321,16 +330,6 @@ export function useAppNavigation() {
         replyId?: string;
       },
     ) => {
-      if (
-        !allowMessageTargetNavigation({
-          kind: "forum-post",
-          channelId,
-          postId,
-          replyId: options?.replyId ?? null,
-        })
-      ) {
-        return Promise.resolve(false);
-      }
       return commitNavigation(
         {
           to: "/channels/$channelId/posts/$postId",
@@ -344,6 +343,12 @@ export function useAppNavigation() {
           force: options?.force,
           replace: options?.replace,
           resetScroll: false,
+        },
+        {
+          kind: "forum-post",
+          channelId,
+          postId,
+          replyId: options?.replyId ?? null,
         },
       );
     },

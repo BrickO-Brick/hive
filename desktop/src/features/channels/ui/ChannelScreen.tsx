@@ -87,7 +87,7 @@ import { useChannelOpenReadState } from "./useChannelOpenReadState";
 import { useChannelUnreadState } from "./useChannelUnreadState";
 import type { ChannelScreenProps } from "./ChannelScreen.types";
 import { GuardedChannelPane } from "./GuardedChannelPane";
-import { useMessageLinkNavigationGuard } from "./useMessageLinkNavigationGuard";
+import { useNavigationGuard } from "./useNavigationGuard";
 const EMPTY_RELAY_EVENTS: RelayEvent[] = [];
 export function ChannelScreen({
   activeChannel,
@@ -661,7 +661,7 @@ export function ChannelScreen({
     setThreadReplyTargetId(null);
     setEditTargetId(null);
   }, [activeChannelId]);
-  useMessageLinkNavigationGuard(requireThreadEditResolution);
+  useNavigationGuard(requireThreadEditResolution);
   const mainTimelineTargetMessageId = useChannelRouteTarget({
     activeChannel,
     activeChannelId,
