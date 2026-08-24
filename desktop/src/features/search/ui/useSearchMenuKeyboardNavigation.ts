@@ -4,6 +4,7 @@ import type { SearchResult } from "@/features/search/ui/SearchResultItem";
 
 export function useSearchMenuKeyboardNavigation({
   activeResults,
+  onActivateCurrentScope,
   onOpenResult,
   onRemoveScope,
   query,
@@ -12,6 +13,7 @@ export function useSearchMenuKeyboardNavigation({
   setSelectedMenuIndex,
 }: {
   activeResults: SearchResult[];
+  onActivateCurrentScope?: () => void;
   onOpenResult: (result: SearchResult) => void;
   onRemoveScope: () => void;
   query: string;
@@ -37,6 +39,20 @@ export function useSearchMenuKeyboardNavigation({
 
   const handleDialogInputKeyDown = React.useCallback(
     (event: React.KeyboardEvent<HTMLInputElement>) => {
+      if (
+        event.key === "Tab" &&
+        !event.shiftKey &&
+        !event.altKey &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !scopeActive &&
+        onActivateCurrentScope
+      ) {
+        event.preventDefault();
+        onActivateCurrentScope();
+        return;
+      }
+
       if (event.key === "Backspace" && query.length === 0 && scopeActive) {
         event.preventDefault();
         onRemoveScope();
@@ -65,6 +81,7 @@ export function useSearchMenuKeyboardNavigation({
     },
     [
       activeResults,
+      onActivateCurrentScope,
       onOpenResult,
       onRemoveScope,
       query.length,

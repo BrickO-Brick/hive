@@ -26,7 +26,9 @@ export function getChannelScopeLabel(
 }
 
 type SearchDialogInputRowProps = {
+  currentScopeActionLabel?: string;
   inputRef: React.RefObject<HTMLInputElement | null>;
+  onActivateCurrentScope?: () => void;
   onChange: (query: string) => void;
   onKeyDown: React.KeyboardEventHandler<HTMLInputElement>;
   onRemoveScope: () => void;
@@ -35,7 +37,9 @@ type SearchDialogInputRowProps = {
 };
 
 export function SearchDialogInputRow({
+  currentScopeActionLabel,
   inputRef,
+  onActivateCurrentScope,
   onChange,
   onKeyDown,
   onRemoveScope,
@@ -86,9 +90,20 @@ export function SearchDialogInputRow({
           value={query}
         />
       </div>
-      <kbd className="shrink-0 rounded border border-border/70 bg-muted/70 px-1.5 py-0.5 text-2xs text-muted-foreground">
-        ESC
-      </kbd>
+      {currentScopeActionLabel && onActivateCurrentScope && !scopeLabel ? (
+        <button
+          aria-label={`${currentScopeActionLabel} (Tab)`}
+          className="flex shrink-0 items-center gap-2 rounded-md px-1.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+          data-testid="search-current-channel-control"
+          onClick={onActivateCurrentScope}
+          type="button"
+        >
+          <span>{currentScopeActionLabel}</span>
+          <kbd className="rounded border border-border/70 bg-muted/70 px-1.5 py-0.5 text-2xs text-muted-foreground">
+            TAB
+          </kbd>
+        </button>
+      ) : null}
     </div>
   );
 }

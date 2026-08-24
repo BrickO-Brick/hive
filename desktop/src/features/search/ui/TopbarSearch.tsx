@@ -421,6 +421,14 @@ export function TopbarSearch({
   const scopeChannel = scopeChannelId
     ? (channelLookup.get(scopeChannelId) ?? null)
     : null;
+  const currentChannel = currentChannelId
+    ? (channelLookup.get(currentChannelId) ?? null)
+    : null;
+  const currentScopeActionLabel = currentChannel
+    ? currentChannel.channelType === "dm"
+      ? "Search conversation"
+      : "Search channel"
+    : undefined;
   const scopeLabel = scopeChannel
     ? getChannelScopeLabel(scopeChannel, channelLabels, currentPubkey)
     : null;
@@ -608,6 +616,16 @@ export function TopbarSearch({
     window.requestAnimationFrame(() => dialogInputRef.current?.focus());
   }, []);
 
+  const activateCurrentChannelScope = React.useCallback(() => {
+    if (!currentChannelId) {
+      return;
+    }
+
+    setScopeChannelId(currentChannelId);
+    setSelectedMenuIndex(0);
+    focusDialogInput();
+  }, [currentChannelId, focusDialogInput]);
+
   const removeChannelScope = React.useCallback(() => {
     setScopeChannelId(null);
     setSelectedMenuIndex(0);
@@ -630,6 +648,9 @@ export function TopbarSearch({
 
   const handleDialogInputKeyDown = useSearchMenuKeyboardNavigation({
     activeResults,
+    onActivateCurrentScope: currentChannel
+      ? activateCurrentChannelScope
+      : undefined,
     onOpenResult: openResult,
     onRemoveScope: removeChannelScope,
     query,
@@ -938,7 +959,11 @@ export function TopbarSearch({
             {scopeLabel ? `Search in ${scopeLabel}` : "Search everything"}
           </DialogTitle>
           <SearchDialogInputRow
+            currentScopeActionLabel={currentScopeActionLabel}
             inputRef={dialogInputRef}
+            onActivateCurrentScope={
+              currentChannel ? activateCurrentChannelScope : undefined
+            }
             onChange={(nextQuery) => {
               setQuery(nextQuery);
               setSelectedMenuIndex(0);

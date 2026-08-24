@@ -441,15 +441,23 @@ test("Cmd+K bubbles unread conversations to the top and Enter opens the first", 
     page.getByTestId(`search-unread-count-${directMessageId}`),
   ).toHaveText("2");
   await expect(firstUnread.getByText("Enter", { exact: true })).toBeVisible();
-  await expect(page.getByTestId("search-current-channel-control")).toHaveCount(
-    0,
-  );
+  await expect(
+    page.getByTestId("search-current-channel-control"),
+  ).toContainText("Search channel");
 
   await page.keyboard.press("Enter");
   await expect(page).toHaveURL(
     new RegExp(`#\\/channels\\/${directMessageId}$`),
   );
   await expect(page.getByTestId("chat-title")).toHaveText("alice-tyler");
+
+  await focusSidebarSearchWithShortcut(page);
+  await expect(
+    page.getByTestId("search-current-channel-control"),
+  ).toContainText("Search conversation");
+  await expect(
+    page.getByTestId("search-current-channel-control"),
+  ).toContainText("TAB");
 });
 
 test("global search prioritizes messages from the current channel", async ({
@@ -462,9 +470,9 @@ test("global search prioritizes messages from the current channel", async ({
   await focusSidebarSearchWithShortcut(page);
 
   const input = page.getByTestId("search-dialog-input");
-  await expect(page.getByTestId("search-current-channel-control")).toHaveCount(
-    0,
-  );
+  await expect(
+    page.getByTestId("search-current-channel-control"),
+  ).toContainText("Search channel");
   await input.fill("welcome");
 
   const currentChannelSection = page.locator(
@@ -508,6 +516,58 @@ test("global search prioritizes messages from the current channel", async ({
   await expect(page.getByTestId("search-results")).toContainText(
     "Engineering shipped the desktop build.",
   );
+});
+
+test("Tab and the search scope action activate current-channel search", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+  await focusSidebarSearchWithShortcut(page);
+
+  const input = page.getByTestId("search-dialog-input");
+  const scopeAction = page.getByRole("button", {
+    name: "Search channel (Tab)",
+  });
+  await expect(scopeAction).toContainText("TAB");
+  await scopeAction.click();
+  await expect(page.getByTestId("search-channel-scope-chip")).toHaveText(
+    /#general/,
+  );
+  await expect(input).toBeFocused();
+
+  await page.getByTestId("search-channel-scope-chip").click();
+  await expect(scopeAction).toBeVisible();
+  await input.fill("welcome");
+  await input.press("Tab");
+
+  await expect(page.getByTestId("search-channel-scope-chip")).toHaveText(
+    /#general/,
+  );
+  await expect(input).toBeFocused();
+  await expect(scopeAction).toHaveCount(0);
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const calls =
+          (
+            window as Window & {
+              __BUZZ_E2E_COMMAND_LOG__?: Array<{
+                command: string;
+                payload: { channelId?: string; q?: string };
+              }>;
+            }
+          ).__BUZZ_E2E_COMMAND_LOG__ ?? [];
+
+        return calls.some(
+          (entry) =>
+            entry.command === "search_messages" &&
+            entry.payload.q === "welcome" &&
+            entry.payload.channelId === "9a1657ac-f7aa-5db0-b632-d8bbeb6dfb50",
+        );
+      }),
+    )
+    .toBe(true);
 });
 
 test("channel find shortcut opens unified search with scope selected", async ({
