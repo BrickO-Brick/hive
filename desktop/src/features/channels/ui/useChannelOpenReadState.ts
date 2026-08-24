@@ -39,7 +39,16 @@ export function useChannelOpenReadState(
     useAppShell();
 
   React.useEffect(() => {
-    if (!activeChannelId || !enabled || isChannelMember === false) return;
+    if (
+      !shouldAdvanceChannelReadState({
+        activeChannelId,
+        enabled,
+        isChannelMember,
+      }) ||
+      !activeChannelId
+    ) {
+      return;
+    }
     for (const itemId of getTopLevelInboxUnreadOverrideIds(
       locallyUnreadFeedItems,
       activeChannelId,

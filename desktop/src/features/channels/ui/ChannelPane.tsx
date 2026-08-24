@@ -44,7 +44,10 @@ import {
   WelcomeComposerGuidanceLayer,
 } from "@/features/channels/ui/WelcomeComposerBanner";
 import { useWelcomeComposerBanner } from "@/features/channels/ui/useWelcomeComposerBanner";
-import { mentionsKnownAgent } from "@/features/channels/ui/ChannelPane.helpers";
+import {
+  mentionsKnownAgent,
+  shouldShowAgentSessionUnavailable,
+} from "@/features/channels/ui/ChannelPane.helpers";
 import { HuddleStartingView, HuddleTranscriptIntro } from "@/features/huddle";
 import { useChannelIntro } from "@/features/channels/ui/useChannelIntro";
 import type { ChannelPaneProps } from "@/features/channels/ui/ChannelPane.types";
@@ -81,6 +84,7 @@ export const ChannelPane = React.memo(function ChannelPane({
   historyExhausted,
   isFetchingOlder,
   isHuddleTranscript = false,
+  isDedicatedActivityWindow = false,
   followThreadById,
   isFollowingThread,
   isFollowingThreadById,
@@ -915,7 +919,11 @@ export const ChannelPane = React.memo(function ChannelPane({
             );
             return wrapAux(panel, "agent-session-thread-panel");
           })()
-        ) : isSinglePanelView && openAgentSessionPubkey ? (
+        ) : shouldShowAgentSessionUnavailable({
+            isDedicatedActivityWindow,
+            openAgentSessionPubkey,
+            selectedAgent,
+          }) ? (
           <div
             className="flex min-h-0 flex-1 items-center justify-center p-8 text-center"
             data-testid="agent-session-unavailable"

@@ -684,10 +684,9 @@ export function AppShell() {
     open: isCompanionWindow ? undefined : settingsOpen,
   });
   useMarkAsReadShortcuts({
-    activeChannelId: ownedEffects.markAsReadShortcuts
-      ? (activeChannel?.id ?? null)
-      : null,
+    activeChannelId: activeChannel?.id ?? null,
     activeChannelLastMessageAt: activeChannel?.lastMessageAt,
+    enabled: ownedEffects.markAsReadShortcuts,
     markAllChannelsRead,
     markChannelRead,
     selectedView,

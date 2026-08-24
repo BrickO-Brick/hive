@@ -52,6 +52,7 @@ export type ChannelPaneProps = {
   isFetchingOlder?: boolean;
   /** A companion huddle window presents the channel only as a transcript. */
   isHuddleTranscript?: boolean;
+  isDedicatedActivityWindow?: boolean;
   isJoining?: boolean;
   isSinglePanelView?: boolean;
   isAgentSessionLoading?: boolean;

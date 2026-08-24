@@ -257,6 +257,7 @@ export function ChannelScreen({
     activeChannelId,
     activeChannelIsMember: activeChannel?.isMember,
     isHuddleTranscript,
+    enabled: !isDedicatedActivityWindow,
     markChannelRead,
     messages: messagesQuery.data,
     resolvedMessages,
@@ -701,8 +702,6 @@ export function ChannelScreen({
   const isNarrowPanelViewport =
     channelContentWidthPx > 0 &&
     channelContentWidthPx < AUXILIARY_PANEL_SINGLE_COLUMN_BREAKPOINT_PX;
-  // A dedicated activity window is the panel itself, not a responsive channel
-  // view. Keep the channel timeline out of that window at every width.
   const isSinglePanelView =
     isDedicatedActivityWindow ||
     (isNarrowPanelViewport &&
@@ -871,6 +870,7 @@ export function ChannelScreen({
                   onOpenMembers={handleOpenMembersSidebar}
                   isFetchingOlder={isFetchingOlder}
                   isHuddleTranscript={isHuddleTranscript}
+                  isDedicatedActivityWindow={isDedicatedActivityWindow}
                   entranceMessageId={welcomeEntranceMessageId}
                   onEntranceMessageComplete={handleWelcomeEntranceComplete}
                   welcomeKickoffStage={welcomeKickoffStage}
