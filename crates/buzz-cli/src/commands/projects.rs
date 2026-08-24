@@ -696,7 +696,7 @@ async fn ensure_default_create_repo(
     Ok(repo_id)
 }
 
-fn verify_default_repo_write(
+pub(crate) fn verify_default_repo_write(
     raw: &str,
     winner: Option<&Event>,
     channel: &str,

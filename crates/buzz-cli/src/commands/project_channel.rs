@@ -10,7 +10,8 @@ use nostr::Event;
 
 use crate::client::BuzzClient;
 use crate::commands::projects::{
-    fetch_projects_for_channel, try_add_own_repo_to_channel_project, PROJECT_QUERY_EVENT_BOUND,
+    fetch_projects_for_channel, try_add_own_repo_to_channel_project, verify_default_repo_write,
+    PROJECT_QUERY_EVENT_BOUND,
 };
 use crate::error::CliError;
 use crate::validate::{validate_repo_id, validate_uuid};
@@ -223,7 +224,9 @@ async fn ensure_default_repo(
         Some(channel),
     )?;
     let event = client.sign_event(builder)?;
-    client.submit_event(event).await?;
+    let raw = client.submit_event(event).await?;
+    let winner = crate::commands::repos::fetch_own_repo_announcement(client, &repo_id).await?;
+    verify_default_repo_write(&raw, winner.as_ref(), channel)?;
     let _ = try_add_own_repo_to_channel_project(client, channel, &repo_id).await;
     Ok(ChannelProjectRepo {
         repo_owner: caller,
@@ -417,6 +420,71 @@ mod tests {
             require_repo_channel_binding(&unbound, requested),
             Err(CliError::Conflict(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn ensure_default_repo_rejects_dominated_foreign_winning_head() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let requested = "11111111-1111-4111-8111-111111111111";
+        let foreign = "22222222-2222-4222-8222-222222222222";
+        let keys = nostr::Keys::generate();
+        let project = signed_event(
+            &keys,
+            buzz_core::kind::KIND_PROJECT as u16,
+            vec![tag(&["d", "game"]), tag(&["buzz-channel", requested])],
+        );
+        let winner = crate::commands::repos::build_create_announcement(
+            "game",
+            Some("game"),
+            None,
+            &[],
+            None,
+            &[],
+            Some(foreign),
+        )
+        .unwrap()
+        .sign_with_keys(&keys)
+        .unwrap();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let server_requests = requests.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = vec![0; 65_536];
+                let read = socket.read(&mut buf).await.unwrap_or(0);
+                let request = String::from_utf8_lossy(&buf[..read]);
+                let index = server_requests.fetch_add(1, Ordering::SeqCst);
+                let body = match index {
+                    0 => "[]".to_string(),
+                    1 if request.starts_with("POST /events ") => serde_json::json!({
+                        "accepted": true, "message": "duplicate"
+                    })
+                    .to_string(),
+                    2 => serde_json::json!([winner]).to_string(),
+                    _ => panic!("unexpected request {index}: {request}"),
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let client = crate::client::BuzzClient::new(base_url, keys, None, None).unwrap();
+
+        let result = ensure_default_repo(&client, requested, &project).await;
+
+        assert!(matches!(result, Err(CliError::Conflict(_))));
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            3,
+            "verification must fail before trying to update the project"
+        );
+        server.abort();
     }
 
     #[test]

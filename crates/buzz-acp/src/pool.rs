@@ -8634,7 +8634,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
                 })
             })
             .collect();
-        let responses = vec![
+        let responses = [
             serde_json::Value::Array(first_page),
             json!([{
                 "id": "f".repeat(64), "created_at": 1, "kind": 30621, "pubkey": owner,
