@@ -323,7 +323,20 @@ pub async fn trigger_workflow(
     workflow_id: String,
     state: State<'_, AppState>,
 ) -> Result<WorkflowTriggerWire, String> {
-    let builder = events::build_workflow_trigger(&workflow_id)?;
+    // Resolve the current signed definition at trigger time. The relay binds
+    // authorization and execution to this exact revision and rejects a stale
+    // result if an update races this command.
+    let prior = query_relay(
+        &state,
+        &[serde_json::json!({
+            "kinds": [30620],
+            "#d": [workflow_id.clone()],
+            "limit": 1
+        })],
+    )
+    .await?;
+    let definition_event_id = current_workflow_revision(&prior)?;
+    let builder = events::build_workflow_trigger(&workflow_id, &definition_event_id)?;
     let result = submit_event(builder, &state).await?;
     trigger_wire_from_message(workflow_id, &result.message)
 }
@@ -370,6 +383,13 @@ pub async fn deny_approval(
 }
 
 // ── Helpers (pure, unit-tested in workflows_tests.rs) ─────────────────────────
+
+fn current_workflow_revision(events: &[nostr::Event]) -> Result<String, String> {
+    events
+        .first()
+        .map(|event| event.id.to_hex())
+        .ok_or_else(|| "workflow not found".to_string())
+}
 
 fn trigger_wire_from_message(
     workflow_id: String,

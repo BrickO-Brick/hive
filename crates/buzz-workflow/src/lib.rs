@@ -999,6 +999,7 @@ pub fn build_trigger_context(event: &buzz_core::StoredEvent) -> executor::Trigge
         message_id,
         is_reply: event_is_reply(&event.event),
         webhook_fields: HashMap::new(),
+        definition_event_id: String::new(),
     }
 }
 

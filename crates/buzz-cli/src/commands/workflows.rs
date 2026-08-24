@@ -162,6 +162,25 @@ pub async fn cmd_delete_workflow(client: &BuzzClient, workflow_id: &str) -> Resu
     Ok(())
 }
 
+async fn current_workflow_revision(
+    client: &BuzzClient,
+    workflow_id: &str,
+) -> Result<String, CliError> {
+    let filter = serde_json::json!({
+        "kinds": [30620],
+        "#d": [workflow_id],
+        "limit": 1
+    });
+    let response = client.query(&filter).await?;
+    let events: Vec<serde_json::Value> = serde_json::from_str(&response).unwrap_or_default();
+    events
+        .first()
+        .and_then(|event| event.get("id"))
+        .and_then(|id| id.as_str())
+        .map(str::to_owned)
+        .ok_or_else(|| CliError::NotFound(format!("workflow {workflow_id} not found")))
+}
+
 /// Trigger a workflow — sign and submit a kind:46020 event.
 ///
 /// When `inputs` is provided, it is parsed as a JSON object and used as the
@@ -172,6 +191,7 @@ pub async fn cmd_trigger_workflow(
     inputs: Option<&str>,
 ) -> Result<(), CliError> {
     let wf_uuid = parse_uuid(workflow_id)?;
+    let revision = current_workflow_revision(client, workflow_id).await?;
 
     if let Some(raw) = inputs {
         // Parse and validate it is a JSON object, then build the event manually
@@ -183,8 +203,12 @@ pub async fn cmd_trigger_workflow(
         }
         let content = serde_json::to_string(&parsed).unwrap_or_default();
         use nostr::{EventBuilder, Kind, Tag};
-        let tags = vec![Tag::parse(["d", &wf_uuid.to_string()])
-            .map_err(|e| CliError::Other(format!("tag error: {e}")))?];
+        let tags = vec![
+            Tag::parse(["d", &wf_uuid.to_string()])
+                .map_err(|e| CliError::Other(format!("tag error: {e}")))?,
+            Tag::parse(["e", revision.as_str()])
+                .map_err(|e| CliError::Other(format!("tag error: {e}")))?,
+        ];
         let builder = EventBuilder::new(
             Kind::Custom(buzz_sdk::kind::KIND_WORKFLOW_TRIGGER as u16),
             &content,
@@ -194,7 +218,7 @@ pub async fn cmd_trigger_workflow(
         let resp = client.submit_event(event).await?;
         println!("{}", normalize_write_response(&resp));
     } else {
-        let builder = buzz_sdk::build_workflow_trigger(wf_uuid).map_err(sdk_err)?;
+        let builder = buzz_sdk::build_workflow_trigger(wf_uuid, &revision).map_err(sdk_err)?;
         let event = client.sign_event(builder)?;
         let resp = client.submit_event(event).await?;
         println!("{}", normalize_write_response(&resp));
