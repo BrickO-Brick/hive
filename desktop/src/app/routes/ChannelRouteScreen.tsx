@@ -45,6 +45,17 @@ function getReplyParentId(event: RelayEvent): string | null {
   return getThreadReference(event.tags).parentId;
 }
 
+export function getValidatedRouteThreadRootId(
+  targetEvent: RelayEvent,
+  targetThreadRootId: string | null,
+): string | null {
+  const targetThreadRef = getThreadReference(targetEvent.tags);
+  if (getReplyParentId(targetEvent) === null) {
+    return targetThreadRootId === targetEvent.id ? targetThreadRootId : null;
+  }
+  return targetThreadRootId ?? targetThreadRef.rootId ?? null;
+}
+
 async function fetchRouteTargetEvents(
   eventIds: string[],
   targetMessageId: string | null,
@@ -70,8 +81,10 @@ async function fetchRouteTargetEvents(
     return [...eventsById.values()];
   }
 
-  const targetThreadRef = getThreadReference(targetEvent.tags);
-  const threadRootId = targetThreadRootId ?? targetThreadRef.rootId ?? null;
+  const threadRootId = getValidatedRouteThreadRootId(
+    targetEvent,
+    targetThreadRootId,
+  );
   if (threadRootId && !eventsById.has(threadRootId)) {
     addEvent(await fetchRouteEvent(threadRootId));
   }
@@ -174,12 +187,14 @@ export function ChannelRouteScreen({
       );
     }
 
-    const eventIds = [
-      targetMessageId,
-      targetThreadRootId && targetThreadRootId !== targetMessageId
-        ? targetThreadRootId
-        : null,
-    ].filter((eventId): eventId is string => eventId !== null);
+    // The selected message is authoritative. Load it first so the helper can
+    // validate any supplied thread relationship before fetching another event.
+    // A thread-only route has no selected message to validate against.
+    const eventIds = targetMessageId
+      ? [targetMessageId]
+      : targetThreadRootId
+        ? [targetThreadRootId]
+        : [];
 
     void fetchRouteTargetEvents(
       eventIds,

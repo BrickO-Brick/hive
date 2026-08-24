@@ -43,6 +43,7 @@ export type TimelineVirtualizerApi = {
     messageId: string,
     options?: { behavior?: ScrollBehavior },
   ) => boolean;
+  scrollBy: (offset: number) => void;
 };
 
 type TimelineMessageListProps = {
@@ -680,6 +681,9 @@ function VirtualizedTimelineRows({
           getVirtualMessageScrollOptions(options?.behavior),
         );
         return true;
+      },
+      scrollBy(offset) {
+        listRef.current?.scrollBy(offset);
       },
     };
     onVirtualizerApiChange(api);

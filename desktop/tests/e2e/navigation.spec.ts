@@ -663,6 +663,7 @@ const DEEP_HISTORY_CHANNEL_ID = "feedf00d-0000-4000-8000-000000000007";
 async function expectColdDeepLinkLandsOnTarget(
   page: import("@playwright/test").Page,
   messageId: string,
+  { expectCentered = true }: { expectCentered?: boolean } = {},
 ) {
   await page.goto("/");
   await expect(page.getByTestId("home-inbox-list")).toBeVisible();
@@ -679,6 +680,43 @@ async function expectColdDeepLinkLandsOnTarget(
   // The highlight is applied only once the hook has seen the row settled in
   // the viewport, so it is the strongest signal that the jump completed. It
   // fades after 2s — assert it before anything that can wait on layout.
+  if (expectCentered) {
+    await expect
+      .poll(() =>
+        targetRow.evaluate((row) => {
+          const timeline = row.closest('[data-testid="message-timeline"]');
+          if (!timeline) return Number.POSITIVE_INFINITY;
+          const rowRect = row.getBoundingClientRect();
+          const timelineRect = timeline.getBoundingClientRect();
+          const styles = getComputedStyle(timeline);
+          const rootFontSize = Number.parseFloat(
+            getComputedStyle(document.documentElement).fontSize,
+          );
+          const resolveLength = (value: string) => {
+            const parsed = Number.parseFloat(value);
+            if (!Number.isFinite(parsed)) return 0;
+            return value.trim().endsWith("rem")
+              ? parsed * rootFontSize
+              : parsed;
+          };
+          const topInset = resolveLength(
+            styles.getPropertyValue("--channel-top-chrome-height"),
+          );
+          const bottomInset = resolveLength(
+            styles.getPropertyValue("--composer-overlay-height"),
+          );
+          return Math.abs(
+            (rowRect.top + rowRect.bottom) / 2 -
+              (timelineRect.top +
+                topInset +
+                timelineRect.bottom -
+                bottomInset) /
+                2,
+          );
+        }),
+      )
+      .toBeLessThanOrEqual(2);
+  }
   await expect(targetRow).toHaveClass(/route-target-highlight-fade/);
   await expect(targetRow).toBeInViewport();
   // Top-level targets resolve in the main timeline only.
@@ -699,18 +737,37 @@ async function expectColdDeepLinkLandsOnTarget(
 test("cold deep link to a message in virtualized history scrolls to and highlights it", async ({
   page,
 }) => {
-  // Index 450 is inside the cold-load window but ~150 rows above the bottom,
-  // so it is not in view when the timeline mounts — the jump must win over
-  // the list's own first-commit bottom settle and the mount-time resize pass.
-  await expectColdDeepLinkLandsOnTarget(page, "mock-deep-history-450");
+  // Index 500 is inside the cold-load window and ~100 rows above the bottom,
+  // so it is neither initially rendered nor boundary-clamped. The jump must
+  // win over the list's own first-commit bottom settle and land at midpoint.
+  await expectColdDeepLinkLandsOnTarget(page, "mock-deep-history-500");
+});
+
+test("cold deep link to a top-level DM message stays in the timeline", async ({
+  page,
+}) => {
+  const dmChannelId = "f48efb06-0c93-5025-aac9-2e646bb6bfa8";
+  const messageId = "mock-alice-tyler-40";
+  await page.goto(`/#/channels/${dmChannelId}?messageId=${messageId}`);
+  await expect(page.getByTestId("chat-title")).toHaveText("alice-tyler");
+
+  const targetRow = page
+    .getByTestId("message-timeline")
+    .locator(`[data-message-id="${messageId}"]`);
+  await expect(targetRow).toHaveClass(/route-target-highlight-fade/);
+  await expect(targetRow).toContainText("Alice and Tyler message #40");
+  await expect(page.getByTestId("message-thread-panel")).not.toBeVisible();
+  await expect(page).toHaveURL(new RegExp(`#/channels/${dmChannelId}$`));
 });
 
 test("cold deep link to the newest message highlights it at the bottom", async ({
   page,
 }) => {
-  // The DM case: the target is the last message. It must still highlight,
-  // and the view stays at the floor.
-  await expectColdDeepLinkLandsOnTarget(page, "mock-deep-history-599");
+  // The boundary-clamped case: the target is the last message. It must still
+  // highlight, and the view stays at the floor instead of centering.
+  await expectColdDeepLinkLandsOnTarget(page, "mock-deep-history-599", {
+    expectCentered: false,
+  });
 });
 
 test("direct-message tooltip metadata stays on one physical line", async ({

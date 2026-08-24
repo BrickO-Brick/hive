@@ -29,6 +29,14 @@ test("top-level target without threadRootId stays in the main timeline", () => {
   });
 });
 
+test("top-level target with a mismatched threadRootId stays in the timeline", () => {
+  const root = makeMessage();
+  assert.deepEqual(
+    getRouteTargetPanelAction(root, "unrelated-root", byId(root)),
+    { kind: "main-timeline-only" },
+  );
+});
+
 test("top-level target with an explicit threadRootId opens its thread panel", () => {
   const root = makeMessage();
   assert.deepEqual(getRouteTargetPanelAction(root, root.id, byId(root)), {

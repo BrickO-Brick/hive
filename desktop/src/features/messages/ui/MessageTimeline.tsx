@@ -362,6 +362,7 @@ const MessageTimelineBase = React.forwardRef<
     splitPanelOpen: splitThreadPanelOpen,
     targetMessageId,
     virtualCancelBottomIntent: timelineVirtualizerApi?.cancelBottomIntent,
+    virtualScrollBy: timelineVirtualizerApi?.scrollBy,
     virtualScrollToMessage: timelineVirtualizerApi?.scrollToMessage,
     virtualScrollToBottom: timelineVirtualizerApi?.scrollToBottom,
     virtualSettleAtBottom: timelineVirtualizerApi?.settleAtBottom,

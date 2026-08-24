@@ -148,6 +148,10 @@ function installDOMShim() {
 }
 
 installDOMShim();
+globalThis.getComputedStyle = () => ({
+  fontSize: "16px",
+  getPropertyValue: () => "0px",
+});
 
 import React from "react";
 import { act } from "react";
@@ -275,6 +279,10 @@ function VirtualScrollBehaviorHarness({ refs }) {
     messages: [{ id: "selected" }],
     scrollContainerRef: refs.scroller,
     virtualizerOwnsPrependAnchoring: true,
+    virtualScrollBy: (offset) => {
+      refs.scrollOffsets.push(offset);
+      refs.rowTop -= offset;
+    },
     virtualScrollToMessage: (messageId, options) => {
       refs.targetJumps.push({ messageId, options });
       return true;
@@ -559,9 +567,9 @@ test("virtual search scrolling stays smooth only for an already-rendered target"
     scroller.getBoundingClientRect = () => ({ bottom: 400, top: 0 });
     const row = {
       getBoundingClientRect: () => ({
-        bottom: 290,
+        bottom: refs.rowTop + 40,
         height: 40,
-        top: 250,
+        top: refs.rowTop,
       }),
     };
     scroller.querySelector = () => (rendered ? row : null);
@@ -570,6 +578,8 @@ test("virtual search scrolling stays smooth only for an already-rendered target"
     const refs = {
       content: { current: content },
       scroller: { current: scroller },
+      rowTop: rendered ? 180 : 1_000,
+      scrollOffsets: [],
       targetJumps: [],
       targetResult: null,
     };
@@ -588,6 +598,55 @@ test("virtual search scrolling stays smooth only for an already-rendered target"
     assert.equal(refs.targetResult, rendered ? "centered" : "pending");
     await act(async () => root.unmount());
   }
+});
+
+test("virtual centering corrects rendered geometry on the following frame", async () => {
+  const previousGetComputedStyle = globalThis.getComputedStyle;
+  globalThis.getComputedStyle = (element) => ({
+    fontSize: "16px",
+    getPropertyValue: (name) =>
+      element === document.documentElement
+        ? "0px"
+        : name === "--composer-overlay-height"
+          ? "20px"
+          : "0px",
+  });
+  const content = document.createElement("div");
+  const scroller = document.createElement("div");
+  scroller.clientHeight = 400;
+  scroller.scrollHeight = 1_000;
+  scroller.scrollTop = 0;
+  scroller.getBoundingClientRect = () => ({ bottom: 400, top: 0 });
+  const refs = {
+    content: { current: content },
+    scroller: { current: scroller },
+    rowTop: 180,
+    scrollOffsets: [],
+    targetJumps: [],
+    targetResult: null,
+  };
+  const row = {
+    getBoundingClientRect: () => ({
+      bottom: refs.rowTop + 40,
+      height: 40,
+      top: refs.rowTop,
+    }),
+  };
+  scroller.querySelector = () => row;
+  scroller.querySelectorAll = () => [];
+  scroller.appendChild(content);
+  const root = createRoot(document.createElement("div"));
+
+  await act(async () => {
+    root.render(React.createElement(VirtualScrollBehaviorHarness, { refs }));
+  });
+  assert.equal(refs.targetResult, "pending");
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+  assert.deepEqual(refs.scrollOffsets, [10]);
+  assert.equal(refs.rowTop, 170);
+
+  await act(async () => root.unmount());
+  globalThis.getComputedStyle = previousGetComputedStyle;
 });
 
 test("mounted virtual target retires bottom intent and delegates the jump to the virtualizer", async () => {
@@ -613,7 +672,7 @@ test("mounted virtual target retires bottom intent and delegates the jump to the
   scroller.scrollHeight = 1_000;
   scroller.scrollTop = 0;
   scroller.getBoundingClientRect = () => ({ bottom: 400, top: 0 });
-  const targetContentTop = 250;
+  const targetContentTop = 180;
   const row = {
     getBoundingClientRect: () => ({
       bottom: targetContentTop - scroller.scrollTop + 40,

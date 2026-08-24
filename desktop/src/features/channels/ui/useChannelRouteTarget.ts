@@ -72,7 +72,7 @@ export function getRouteTargetPanelAction(
   messageById: ReadonlyMap<string, TimelineMessage>,
 ): RouteTargetPanelAction {
   if (!targetMessage.parentId) {
-    if (!targetThreadRootId) {
+    if (!targetThreadRootId || targetThreadRootId !== targetMessage.id) {
       return { kind: "main-timeline-only" };
     }
     return {
@@ -165,21 +165,12 @@ export function useChannelRouteTarget({
       return;
     }
 
-    const targetKey = `${activeChannelId ?? "none"}:${targetMessageId}`;
-    if (handledThreadRouteTargetRef.current !== targetKey) {
-      handledThreadRouteTargetRef.current = null;
-    }
-
+    const targetMessage = timelineMessageById.get(targetMessageId) ?? null;
     if (
-      handledThreadRouteTargetRef.current === targetKey ||
+      !targetMessage ||
       !activeChannel ||
       activeChannel.channelType === "forum"
     ) {
-      return;
-    }
-
-    const targetMessage = timelineMessageById.get(targetMessageId) ?? null;
-    if (!targetMessage) {
       return;
     }
 
@@ -191,6 +182,19 @@ export function useChannelRouteTarget({
     if (action.kind === "none") {
       return;
     }
+
+    // Dedupe the complete normalized action, not just the selected row. The
+    // same top-level message can first arrive as a timeline-only target and
+    // later be re-targeted with a validated request to open its full thread.
+    const actionKey =
+      action.kind === "main-timeline-only"
+        ? action.kind
+        : `${action.kind}:${action.threadHeadId}:${action.replyTargetId}:${action.scrollTargetId ?? "none"}`;
+    const targetKey = `${activeChannelId ?? "none"}:${targetMessageId}:${actionKey}`;
+    if (handledThreadRouteTargetRef.current === targetKey) {
+      return;
+    }
+    handledThreadRouteTargetRef.current = null;
 
     if (action.kind === "main-timeline-only") {
       // Top-level target with no requested thread: the main-timeline
