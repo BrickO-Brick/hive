@@ -3,9 +3,7 @@ import * as React from "react";
 import type { SearchResult } from "@/features/search/ui/SearchResultItem";
 
 export function useSearchMenuKeyboardNavigation({
-  actionMenuIndex,
   activeResults,
-  onActivateAction,
   onOpenResult,
   onRemoveScope,
   query,
@@ -13,9 +11,7 @@ export function useSearchMenuKeyboardNavigation({
   selectedMenuIndex,
   setSelectedMenuIndex,
 }: {
-  actionMenuIndex: number | null;
   activeResults: SearchResult[];
-  onActivateAction: () => void;
   onOpenResult: (result: SearchResult) => void;
   onRemoveScope: () => void;
   query: string;
@@ -23,8 +19,7 @@ export function useSearchMenuKeyboardNavigation({
   selectedMenuIndex: number;
   setSelectedMenuIndex: React.Dispatch<React.SetStateAction<number>>;
 }) {
-  const selectableCount =
-    activeResults.length + (actionMenuIndex === null ? 0 : 1);
+  const selectableCount = activeResults.length;
 
   React.useEffect(() => {
     setSelectedMenuIndex((current) => {
@@ -64,22 +59,12 @@ export function useSearchMenuKeyboardNavigation({
 
       if (event.key === "Enter" && !event.nativeEvent.isComposing) {
         event.preventDefault();
-        if (actionMenuIndex === selectedMenuIndex) {
-          onActivateAction();
-          return;
-        }
-        const resultIndex =
-          actionMenuIndex !== null && selectedMenuIndex > actionMenuIndex
-            ? selectedMenuIndex - 1
-            : selectedMenuIndex;
-        const result = activeResults[resultIndex];
+        const result = activeResults[selectedMenuIndex];
         if (result) onOpenResult(result);
       }
     },
     [
-      actionMenuIndex,
       activeResults,
-      onActivateAction,
       onOpenResult,
       onRemoveScope,
       query.length,

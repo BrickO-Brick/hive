@@ -64,16 +64,3 @@ export function getSuggestedSearchResults(
     unreadResults: unreadChannels.map(toResult),
   };
 }
-
-export function getSearchActionMenuIndex({
-  hasScopeAction,
-  isShowingSuggestions,
-  unreadResultCount,
-}: {
-  hasScopeAction: boolean;
-  isShowingSuggestions: boolean;
-  unreadResultCount: number;
-}) {
-  if (!hasScopeAction) return null;
-  return isShowingSuggestions && unreadResultCount > 0 ? unreadResultCount : 0;
-}

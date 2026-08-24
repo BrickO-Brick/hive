@@ -11,7 +11,6 @@ import {
   type SearchResult,
 } from "@/features/search/ui/SearchResultItem";
 import {
-  CurrentChannelSearchAction,
   getChannelScopeLabel,
   SearchDialogInputRow,
 } from "@/features/search/ui/SearchScopeControls";
@@ -19,7 +18,6 @@ import { SearchResultTrailing } from "@/features/search/ui/SearchResultTrailing"
 import { useSearchMenuKeyboardNavigation } from "@/features/search/ui/useSearchMenuKeyboardNavigation";
 import {
   getChannelActivityTime,
-  getSearchActionMenuIndex,
   getSuggestedSearchResults,
 } from "@/features/search/ui/topbarSearchSuggestions";
 import type { Channel, SearchHit, UserSearchResult } from "@/shared/api/types";
@@ -60,6 +58,7 @@ const EMPTY_UNREAD_CHANNEL_COUNTS: ReadonlyMap<string, number> = new Map(),
 const SEARCH_SECTION_TITLE_CLASS =
   "px-2.5 pb-1.5 pt-2 text-xs font-medium text-muted-foreground/70";
 const SEARCH_RESULT_SECTION_ORDER = [
+  "current-channel-messages",
   "channels",
   "direct-messages",
   "people",
@@ -217,7 +216,14 @@ function getSearchHitContextLabel(
   };
 }
 
-function getResultSectionKey(result: SearchResult): SearchResultSectionKey {
+function getResultSectionKey(
+  result: SearchResult,
+  currentChannelId?: string | null,
+): SearchResultSectionKey {
+  if (result.kind === "message" && result.hit.channelId === currentChannelId) {
+    return "current-channel-messages";
+  }
+
   if (result.kind === "channel") {
     return result.channel.channelType === "dm" ? "direct-messages" : "channels";
   }
@@ -235,6 +241,8 @@ function getResultSectionKey(result: SearchResult): SearchResultSectionKey {
 
 function getSectionTitle(sectionKey: SearchResultSectionKey) {
   switch (sectionKey) {
+    case "current-channel-messages":
+      return "In this conversation";
     case "channels":
       return "Channels";
     case "direct-messages":
@@ -274,11 +282,14 @@ function SearchHitContextLine({ label }: { label: SearchHitContextLabel }) {
   );
 }
 
-function groupSearchResults(results: SearchResult[]): SearchResultSection[] {
+function groupSearchResults(
+  results: SearchResult[],
+  currentChannelId?: string | null,
+): SearchResultSection[] {
   const resultsBySection = new Map<SearchResultSectionKey, SearchResult[]>();
 
   for (const result of results) {
-    const sectionKey = getResultSectionKey(result);
+    const sectionKey = getResultSectionKey(result, currentChannelId);
     const sectionResults = resultsBySection.get(sectionKey) ?? [];
     sectionResults.push(result);
     resultsBySection.set(sectionKey, sectionResults);
@@ -390,6 +401,7 @@ export function TopbarSearch({
     debouncedQuery,
     fuzzyUserCandidatesQuery,
     isWaitingOnFromResolution,
+    prioritizedChannelSearchQuery,
     query,
     resultProfiles,
     results,
@@ -401,13 +413,11 @@ export function TopbarSearch({
     channels,
     enabled: isOpen,
     limit: SEARCH_RESULT_LIMIT,
+    prioritizedChannelId: scopeChannelId ? null : currentChannelId,
     scopeChannelId,
   });
   const trimmedQuery = query.trim();
   const isIconVariant = variant === "icon";
-  const currentChannel = currentChannelId
-    ? (channelLookup.get(currentChannelId) ?? null)
-    : null;
   const scopeChannel = scopeChannelId
     ? (channelLookup.get(scopeChannelId) ?? null)
     : null;
@@ -416,7 +426,6 @@ export function TopbarSearch({
     : null;
   const currentPubkeyNormalized =
     currentPubkey && normalizePubkey(currentPubkey);
-  const hasScopeAction = Boolean(currentChannel && !scopeChannel);
   const { suggestedResults, unreadResults } = React.useMemo(
     () =>
       getSuggestedSearchResults(
@@ -477,8 +486,12 @@ export function TopbarSearch({
     [currentPubkeyNormalized, results],
   );
   const searchResultSections = React.useMemo(
-    () => groupSearchResults(searchableResults),
-    [searchableResults],
+    () =>
+      groupSearchResults(
+        searchableResults,
+        scopeChannel ? null : currentChannelId,
+      ),
+    [currentChannelId, scopeChannel, searchableResults],
   );
   const groupedSearchResults = React.useMemo(
     () => searchResultSections.flatMap((section) => section.results),
@@ -489,14 +502,10 @@ export function TopbarSearch({
       ? []
       : suggestionResults
     : groupedSearchResults;
-  const actionMenuIndex = getSearchActionMenuIndex({
-    hasScopeAction,
-    isShowingSuggestions,
-    unreadResultCount: unreadResults.length,
-  });
   const isSearchLoading =
     isWaitingOnFromResolution ||
     searchQuery.isLoading ||
+    prioritizedChannelSearchQuery.isLoading ||
     fuzzyUserCandidatesQuery.isLoading ||
     userSearchQuery.isLoading;
 
@@ -599,13 +608,6 @@ export function TopbarSearch({
     window.requestAnimationFrame(() => dialogInputRef.current?.focus());
   }, []);
 
-  const activateCurrentChannelScope = React.useCallback(() => {
-    if (!currentChannel) return;
-    setScopeChannelId(currentChannel.id);
-    setSelectedMenuIndex(0);
-    focusDialogInput();
-  }, [currentChannel, focusDialogInput]);
-
   const removeChannelScope = React.useCallback(() => {
     setScopeChannelId(null);
     setSelectedMenuIndex(0);
@@ -627,9 +629,7 @@ export function TopbarSearch({
   }, [isOpen]);
 
   const handleDialogInputKeyDown = useSearchMenuKeyboardNavigation({
-    actionMenuIndex,
     activeResults,
-    onActivateAction: activateCurrentChannelScope,
     onOpenResult: openResult,
     onRemoveScope: removeChannelScope,
     query,
@@ -638,9 +638,7 @@ export function TopbarSearch({
     setSelectedMenuIndex,
   });
 
-  const renderSearchResultRow = (result: SearchResult, index: number) => {
-    const menuIndex =
-      actionMenuIndex !== null && index >= actionMenuIndex ? index + 1 : index;
+  const renderSearchResultRow = (result: SearchResult, menuIndex: number) => {
     const channelDisplayName =
       result.kind === "channel"
         ? getChannelDisplayName(result.channel, channelLabels)
@@ -795,31 +793,10 @@ export function TopbarSearch({
       </div>
     ));
   };
-  const currentChannelSearchAction =
-    currentChannel && !scopeChannel ? (
-      <CurrentChannelSearchAction
-        channelLabel={getChannelScopeLabel(
-          currentChannel,
-          channelLabels,
-          currentPubkey,
-        )}
-        channelType={currentChannel.channelType}
-        isSelected={selectedMenuIndex === actionMenuIndex}
-        menuIndex={actionMenuIndex ?? 0}
-        onActivate={activateCurrentChannelScope}
-        onMouseEnter={() => setSelectedMenuIndex(actionMenuIndex ?? 0)}
-      />
-    ) : null;
   const searchResultContent = isShowingSuggestions ? (
     scopeChannel ? null : suggestionResults.length === 0 ? (
       <div className="max-h-96 overflow-y-auto">
-        {currentChannelSearchAction}
-        <div
-          className={cn(
-            "px-4 text-sm text-muted-foreground",
-            currentChannelSearchAction ? "pb-5" : "py-5",
-          )}
-        >
+        <div className="px-4 py-5 text-sm text-muted-foreground">
           <p>No recent activity yet.</p>
         </div>
       </div>
@@ -843,7 +820,6 @@ export function TopbarSearch({
                     )}
                   </div>
                 ) : null}
-                {currentChannelSearchAction}
                 {suggestedResults.length > 0 ? (
                   <div data-search-section="recent-activity">
                     <div className={SEARCH_SECTION_TITLE_CLASS}>
@@ -870,30 +846,17 @@ export function TopbarSearch({
     )
   ) : isSearchLoading && searchableResults.length === 0 ? (
     <div className="max-h-[min(60vh,32rem)] overflow-y-auto">
-      {currentChannelSearchAction}
       <SearchResultsSkeleton />
     </div>
   ) : searchQuery.error instanceof Error && searchableResults.length === 0 ? (
     <div className="max-h-[min(60vh,32rem)] overflow-y-auto">
-      {currentChannelSearchAction}
-      <p
-        className={cn(
-          "px-4 text-sm text-destructive",
-          currentChannelSearchAction ? "pb-5" : "py-5",
-        )}
-      >
+      <p className="px-4 py-5 text-sm text-destructive">
         {searchQuery.error.message}
       </p>
     </div>
   ) : searchableResults.length === 0 ? (
     <div className="max-h-[min(60vh,32rem)] overflow-y-auto">
-      {currentChannelSearchAction}
-      <p
-        className={cn(
-          "px-4 text-sm text-muted-foreground",
-          currentChannelSearchAction ? "pb-5" : "py-5",
-        )}
-      >
+      <p className="px-4 py-5 text-sm text-muted-foreground">
         No {scopeChannel ? "messages" : "matches"} for{" "}
         <span className="font-semibold">{trimmedQuery}</span>
         {scopeLabel ? (
@@ -911,7 +874,6 @@ export function TopbarSearch({
       data-testid="search-results-list"
       role="listbox"
     >
-      {currentChannelSearchAction}
       <div className="p-1.5">
         {renderSearchResultSections(searchResultSections)}
       </div>

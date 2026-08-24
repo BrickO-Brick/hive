@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  getSearchActionMenuIndex,
-  getSuggestedChannels,
-} from "./topbarSearchSuggestions.ts";
+import { getSuggestedChannels } from "./topbarSearchSuggestions.ts";
 
 function channel(id, options = {}) {
   return {
@@ -70,32 +67,5 @@ test("archived and unjoined non-DM conversations are omitted", () => {
   assert.deepEqual(
     result.unreadChannels.map(({ id }) => id),
     ["dm"],
-  );
-});
-
-test("the scope action follows unread rows while suggestions are visible", () => {
-  assert.equal(
-    getSearchActionMenuIndex({
-      hasScopeAction: true,
-      isShowingSuggestions: true,
-      unreadResultCount: 2,
-    }),
-    2,
-  );
-  assert.equal(
-    getSearchActionMenuIndex({
-      hasScopeAction: true,
-      isShowingSuggestions: true,
-      unreadResultCount: 0,
-    }),
-    0,
-  );
-  assert.equal(
-    getSearchActionMenuIndex({
-      hasScopeAction: false,
-      isShowingSuggestions: true,
-      unreadResultCount: 2,
-    }),
-    null,
   );
 });
