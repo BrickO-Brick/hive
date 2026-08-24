@@ -151,12 +151,13 @@ async fn reconcile_buzz_mesh_join(app: &AppHandle) -> Result<(), String> {
 
     let targets =
         crate::commands::mesh_llm::resolve_buzz_mesh_join_targets_at(&state, &relay_url).await?;
-    let Some(target) = targets
+    let targets: Vec<_> = targets
         .into_iter()
-        .find(|target| !target_is_visible(target, &peer_ids))
-    else {
+        .filter(|target| !target_is_visible(target, &peer_ids))
+        .collect();
+    if targets.is_empty() {
         return Ok(());
-    };
+    }
 
     let runtime = state.mesh_llm_runtime.lock().await;
     let Some(runtime) = runtime.as_ref() else {
@@ -166,13 +167,25 @@ async fn reconcile_buzz_mesh_join(app: &AppHandle) -> Result<(), String> {
         .status_report_payload()
         .await
         .map_err(|error| error.to_string())?;
-    if target_is_visible(&target, &visible_peer_ids(&payload)) {
-        return Ok(());
+    let peer_ids = visible_peer_ids(&payload);
+    // Dial every member we cannot see yet, not just the first. A dial is a
+    // background bootstrap hint to MeshLLM (success here does not mean the
+    // connection landed), so stopping after one target can starve every
+    // member that sorts after a permanently unreachable one.
+    let mut failures = Vec::new();
+    for target in targets {
+        if target_is_visible(&target, &peer_ids) {
+            continue;
+        }
+        if let Err(error) = runtime.dial_endpoint_addr(target.endpoint_addr).await {
+            failures.push(format!("mesh join failed: {error:#}"));
+        }
     }
-    runtime
-        .dial_endpoint_addr(target.endpoint_addr)
-        .await
-        .map_err(|error| format!("mesh join failed: {error:#}"))
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
+    }
 }
 
 fn visible_peer_ids(payload: &serde_json::Value) -> Vec<String> {
