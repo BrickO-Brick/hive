@@ -774,6 +774,49 @@ test("latest files commit opens its detail without a divider", async ({
   await expect(page.getByTestId("project-commit-detail")).toBeVisible();
 });
 
+test("project workspace sheet enters at its settled width", async ({
+  page,
+}) => {
+  await enableProjectsFeature(page);
+  await installMockBridge(page);
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByTestId("open-projects-view").click();
+  await openCreateProjectDialog(page);
+  await page.getByTestId("create-project-name").fill("sheet-motion-demo");
+  await page.getByTestId("create-project-submit").click();
+  await expect(page.getByTestId("project-channel-home")).toBeVisible();
+
+  const summaryColumn = page.getByTestId("project-home-summary-column");
+  const resizeHandle = summaryColumn.getByTestId(
+    "right-auxiliary-pane-resize-handle",
+  );
+  await expect(resizeHandle).toBeVisible();
+  await resizeHandle.hover();
+  await expect(
+    resizeHandle.getByTestId("right-auxiliary-pane-resize-indicator"),
+  ).toHaveCount(0);
+  const summaryRail = page.getByTestId("project-home-summary-rail");
+  const openRailWidth = await summaryRail.evaluate(
+    (element) => element.getBoundingClientRect().width,
+  );
+  expect(openRailWidth).toBeGreaterThan(0);
+  await page.getByTestId("project-home-context-tasks").click();
+  await expect(page.getByTestId("project-home-workspace-sheet")).toBeVisible();
+
+  const collapsedRailWidth = await summaryRail.evaluate(
+    (element) => element.getBoundingClientRect().width,
+  );
+  expect(collapsedRailWidth).toBeLessThanOrEqual(1);
+  const focusDrawer = page.getByTestId("focus-thread-drawer");
+  const enteringDrawerWidth = (await focusDrawer.boundingBox())?.width ?? 0;
+  expect(enteringDrawerWidth).toBeGreaterThan(0);
+  await waitForAnimations(page);
+  const settledDrawerWidth = (await focusDrawer.boundingBox())?.width ?? 0;
+  expect(
+    Math.abs(settledDrawerWidth - enteringDrawerWidth),
+  ).toBeLessThanOrEqual(1);
+});
+
 test("commit detail opens from the commits feed with a diff", async ({
   page,
 }) => {
@@ -806,10 +849,9 @@ test("commit detail opens from the commits feed with a diff", async ({
   await expect(page.getByTestId("focus-thread-drawer")).toBeVisible();
   await page.getByTestId("project-home-context-tasks").click();
   await expect(page.getByTestId("project-home-workspace-sheet")).toBeVisible();
-  await expect(page.getByTestId("focus-thread-drawer")).toHaveCSS(
-    "outline-style",
-    "none",
-  );
+  const focusDrawer = page.getByTestId("focus-thread-drawer");
+  await expect(focusDrawer).toHaveCount(1);
+  await expect(focusDrawer).toHaveCSS("outline-style", "none");
   const workspaceSheet = page.getByTestId("project-home-workspace-sheet");
   await expect(workspaceSheet).toHaveAttribute("data-tab", "issues");
   await expect(

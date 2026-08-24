@@ -11,6 +11,7 @@ type RightAuxiliaryPaneProps = {
   detached?: boolean;
   onResetWidth: () => void;
   onResizeStart: (event: React.PointerEvent<HTMLButtonElement>) => void;
+  showResizeIndicator?: boolean;
   testId?: string;
   widthPx: number;
 };
@@ -23,6 +24,7 @@ export function RightAuxiliaryPane({
   detached = false,
   onResetWidth,
   onResizeStart,
+  showResizeIndicator = true,
   testId,
   widthPx,
 }: RightAuxiliaryPaneProps) {
@@ -56,7 +58,12 @@ export function RightAuxiliaryPane({
         }
         type="button"
       >
-        <span className="absolute bottom-0 left-1/2 top-0 w-px -translate-x-1/2 bg-transparent group-hover/right-pane-resize:bg-border/80 group-focus-visible/right-pane-resize:bg-border/80" />
+        {showResizeIndicator ? (
+          <span
+            className="absolute bottom-0 left-1/2 top-0 w-px -translate-x-1/2 bg-transparent group-hover/right-pane-resize:bg-border/80 group-focus-visible/right-pane-resize:bg-border/80"
+            data-testid="right-auxiliary-pane-resize-indicator"
+          />
+        ) : null}
       </button>
       <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
         {children}

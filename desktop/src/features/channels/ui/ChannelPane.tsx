@@ -828,8 +828,8 @@ export const ChannelPane = React.memo(function ChannelPane({
         </section>
       ) : null}
 
-      {/* Keep focus drawers mounted until their exit animation finishes. */}
-      <AnimatePresence onExitComplete={markExitComplete}>
+      {/* Serialize replacements so focus drawers keep one travel direction. */}
+      <AnimatePresence mode="wait" onExitComplete={markExitComplete}>
         {channelManagementOpen && activeChannel ? (
           <ChannelManagementAuxiliaryPanel
             activeChannel={activeChannel}

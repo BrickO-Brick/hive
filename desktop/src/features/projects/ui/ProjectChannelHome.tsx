@@ -134,6 +134,12 @@ export function ProjectChannelHome({
     null;
   const workspaceSheetOpen =
     workspaceSheetTab != null && workspaceRepository != null;
+  const previousWorkspaceSheetOpenRef = React.useRef(workspaceSheetOpen);
+  const workspaceSheetVisibilityChanged =
+    previousWorkspaceSheetOpenRef.current !== workspaceSheetOpen;
+  React.useEffect(() => {
+    previousWorkspaceSheetOpenRef.current = workspaceSheetOpen;
+  }, [workspaceSheetOpen]);
   const summaryVisible = summaryOpen && !workspaceSheetOpen;
 
   const openWorkspaceSheet = React.useCallback(
@@ -390,6 +396,7 @@ export function ProjectChannelHome({
           projects={projects}
         />
         <ProjectContextRail
+          animateWidth={!workspaceSheetVisibilityChanged}
           open={summaryVisible}
           panelWidthPx={summaryWidth.widthPx}
           resizing={summaryWidth.isResizing}

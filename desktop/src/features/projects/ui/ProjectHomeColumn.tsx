@@ -29,6 +29,7 @@ export function ProjectHomeColumn({
       detached
       onResetWidth={onResetWidth}
       onResizeStart={onResizeStart}
+      showResizeIndicator={false}
       testId={testId}
       widthPx={widthPx}
     >
