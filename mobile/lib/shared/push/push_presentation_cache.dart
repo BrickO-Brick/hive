@@ -6,7 +6,6 @@ import 'package:flutter/services.dart';
 import 'package:nostr/nostr.dart' as nostr;
 
 import '../relay/nostr_models.dart';
-import 'push_capability.dart';
 
 const _pushPresentationChannel = MethodChannel('buzz/push');
 // Keep these bridge payload bounds aligned with BuzzPushPresentationCacheStore.
@@ -42,9 +41,7 @@ Future<void> cacheBuzzPushProfileEvents(
   String communityID,
   Iterable<NostrEvent> events,
 ) async {
-  if (!buzzPushCapabilityEnabled ||
-      defaultTargetPlatform != TargetPlatform.iOS ||
-      communityID.isEmpty) {
+  if (defaultTargetPlatform != TargetPlatform.iOS || communityID.isEmpty) {
     return;
   }
   final verified = _boundedNewestEvents(
@@ -66,9 +63,7 @@ Future<void> cacheBuzzPushChannelEvents(
   Iterable<NostrEvent> metadataEvents,
   Iterable<NostrEvent> membershipEvents,
 ) async {
-  if (!buzzPushCapabilityEnabled ||
-      defaultTargetPlatform != TargetPlatform.iOS ||
-      communityID.isEmpty) {
+  if (defaultTargetPlatform != TargetPlatform.iOS || communityID.isEmpty) {
     return;
   }
   final batch = selectBoundedPushChannelEvents(
@@ -172,8 +167,7 @@ Future<void> cacheBuzzPushAvatarFromLoadedBytes(
   String sourceURL,
   Uint8List sourceBytes,
 ) async {
-  if (!buzzPushCapabilityEnabled ||
-      defaultTargetPlatform != TargetPlatform.iOS ||
+  if (defaultTargetPlatform != TargetPlatform.iOS ||
       communityID.isEmpty ||
       sourceBytes.isEmpty ||
       sourceBytes.length > _maximumAvatarSourceBytes ||

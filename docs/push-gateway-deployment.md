@@ -118,17 +118,18 @@ capability—not a raw APNs token—into the encrypted relay lease.
 
 ## Internal dogfood evaluation and rollback
 
-The MVP is ready to enable only when all of these are true: the internal iOS
-artifact was built with `mobile/ios/Flutter/PushEnabled.xcconfig`; the canonical
-gateway has the dogfood profile enabled with its server-owned App Attest app ID,
-APNs topic, production certificate identity, and production APNs environment;
-and only the selected internal relay deployments set `BUZZ_PUSH_ENABLED=true`.
-The App Store profile remains configured but dormant, and ordinary/App Store
-iOS builds continue to omit the push capability and notification extension.
+The MVP is ready to enable only when the canonical gateway has the dogfood
+profile enabled with its server-owned App Attest app ID, APNs topic, production
+certificate identity, and production APNs environment, and only the selected
+internal relay deployments set `BUZZ_PUSH_ENABLED=true`. Every iOS artifact
+contains the native push bridge and Notification Service Extension, but the
+client remains inactive until its current authenticated relay advertises a
+fully valid NIP-11 `nip-pl` descriptor. The App Store gateway profile remains
+configured but dormant.
 
 Local physical-device development may instead use the normal
-`xyz.block.buzz.mobile` development identity with the push overlay and sandbox
-entitlements. Its local gateway must enable only the closed App Store profile,
+`xyz.block.buzz.mobile` development identity with sandbox entitlements. Its
+local gateway must enable only the closed App Store profile,
 configured with that profile's server-owned App Attest application ID, APNs
 topic, sandbox certificate, and sandbox environment. This is a development
 integration proof, not dogfood release validation, and does not authorize
@@ -143,13 +144,12 @@ APNs delivery, fetched and signature-verified notification content, and
 exact-message tap routing against the canonical gateway and a push-enabled
 internal relay before widening the internal evaluation.
 
-Before that first push-enabled candidate, the private dogfood builder must
-include `PushEnabled.xcconfig` from its generated `AppOverrides.xcconfig`. Its
-manual signing and export configuration must also map separate distribution
+Before that first candidate, the private dogfood builder's manual signing and
+export configuration must map separate distribution
 profiles for both `xyz.block.buzz.dogfood.mobile` and
 `xyz.block.buzz.dogfood.mobile.NotificationService`; an app-only profile does
-not provision the extension. The App Store builder must continue omitting the
-overlay and extension profile until that rollout is separately approved.
+not provision the extension. App Store rollout remains off through relay and
+gateway deployment configuration until separately approved.
 Before enabling rich message presentation, enable Apple's Communication
 Notifications capability on the parent dogfood App ID and regenerate its app
 provisioning profile. The extension profile does not need that capability.
@@ -171,10 +171,9 @@ is designed.
 Rollback does not require deleting credentials or mutating existing leases.
 Set `BUZZ_PUSH_ENABLED=false` on the enabled relays to stop advertisement, lease
 acceptance, matching, workers, and new gateway traffic; disable the dogfood
-gateway profile if the gateway itself is unhealthy; and ship the next internal
-build without the push overlay if client behavior must be removed. Existing
-leases and gateway authorities then expire naturally. Do not enable the App
-Store build capability or profile as part of this internal evaluation.
+gateway profile if the gateway itself is unhealthy. Existing leases and gateway
+authorities then expire naturally. Do not enable the App Store gateway profile
+as part of this internal evaluation.
 
 ## Helm production inputs
 

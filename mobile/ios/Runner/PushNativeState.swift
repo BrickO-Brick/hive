@@ -1,8 +1,7 @@
-#if BUZZ_PUSH_ENABLED
-  import BuzzPushKit
-  import Foundation
-  import Security
-  import UserNotifications
+import BuzzPushKit
+import Foundation
+import Security
+import UserNotifications
 
 final class BuzzOneShotCompletion {
   private let lock = NSLock()
@@ -56,7 +55,10 @@ enum BuzzPushKeychain {
         SecItemDelete(baseQuery(accessGroup: accessGroup) as CFDictionary)
         throw NSError(
           domain: NSOSStatusErrorDomain, code: Int(status),
-          userInfo: [NSLocalizedDescriptionKey: SecCopyErrorMessageString(status, nil) ?? "Keychain write failed" as CFString]
+          userInfo: [
+            NSLocalizedDescriptionKey: SecCopyErrorMessageString(status, nil)
+              ?? "Keychain write failed" as CFString
+          ]
         )
       }
       query.removeValue(forKey: kSecValueData as String)
@@ -76,4 +78,3 @@ enum BuzzPushKeychain {
     return query
   }
 }
-#endif

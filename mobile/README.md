@@ -68,36 +68,24 @@ connected Android emulators, run `just mobile-clean` (add `--dry-run` via
 `./scripts/mobile-worktree-clean.sh --dry-run` to preview). Production
 installs are never touched.
 
-### Internal iOS push capability
+### iOS push capability
 
-iOS push is a compile/build capability and defaults off. A normal Debug,
-Profile, Release, or App Store build excludes the native push bridge sources,
-uses push-free Runner entitlements, and neither builds nor embeds the
-Notification Service Extension. Dart also compiles out permission requests,
-APNs registration, gateway enrollment/delegation, and relay lease behavior.
+Every iOS artifact builds and embeds the Notification Service Extension and
+native push bridge. Runtime activation is fail-closed and scoped to the current
+relay: Buzz requests notification permission, registers with APNs, enrolls with
+the gateway, and publishes a lease only after authenticated connectivity and a
+fully valid NIP-11 `nip-pl` push descriptor. An absent, malformed, or
+unreachable descriptor leaves push inactive without partial enrollment.
 
-For an authorized internal dogfood build only, create the gitignored
-`mobile/ios/Flutter/AppOverrides.xcconfig` with this single include:
-
-```xcconfig
-#include "PushEnabled.xcconfig"
-```
-
-The tracked overlay selects `xyz.block.buzz.dogfood.mobile`, production App
-Attest/APNs entitlements, the internal development team, the push-capable
-Runner entitlements, the native bridge, and the extension. CI may equivalently
-inject that same include into its ephemeral `AppOverrides.xcconfig`; it must not
-edit a tracked base configuration. Relay rollout is independent and remains off
-unless its deployment sets `BUZZ_PUSH_ENABLED=true`. See
+Relay rollout remains an explicit deployment opt-in. Only deployments with
+`BUZZ_PUSH_ENABLED=true` advertise the descriptor and process push. See
 `docs/push-gateway-deployment.md` for the canonical gateway profile contract,
 manual physical-device proof, measurements, and rollback procedure.
 
-For local physical-device development, enable the same capability while
-overriding the dogfood identity back to the normal mobile development identity
-and sandbox environments:
+For local physical-device development, override the identity and sandbox
+environments in the gitignored `mobile/ios/Flutter/AppOverrides.xcconfig`:
 
 ```xcconfig
-#include "PushEnabled.xcconfig"
 BUNDLE_IDENTIFIER = xyz.block.buzz.mobile
 BUZZ_DEVELOPMENT_TEAM = EYF346PHUG
 BUZZ_IOS_PUSH_ENVIRONMENT = development
@@ -112,14 +100,14 @@ artifact or enable the App Store profile in production. Validate dogfood APNs
 end to end by cutting an internal release, waiting for it to reach Mobile
 Releases/Comp Portal, and installing that signed artifact on a physical device.
 
-Push-enabled parent app identifiers also require Apple's Communication
+Parent app identifiers require Apple's Communication
 Notifications capability and a regenerated app provisioning profile. The
 Notification Service Extension profile does not require that capability.
 Enable it on the personal development App ID for local rich-presentation
 validation. Enabling it on the Block dogfood and eventual App Store App IDs is
 a release follow-up and is not performed by this repository change. Without a
-matching parent profile, source and unit validation still work, but the
-push-enabled app cannot be signed for a physical device.
+matching parent profile, source and unit validation still work, but the app
+cannot be signed for a physical device.
 
 APNs and the gateway continue to carry only the constant opaque wake-up. The
 extension fetches the message from the scoped relay, verifies message, sender

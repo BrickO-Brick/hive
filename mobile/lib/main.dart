@@ -4,7 +4,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app.dart';
 import 'shared/push/push_bootstrap.dart';
-import 'shared/push/push_capability.dart';
 import 'shared/push/push_bridge.dart';
 import 'shared/theme/theme_provider.dart';
 
@@ -12,10 +11,8 @@ void main() => runBuzzApp(const App());
 
 Future<void> runBuzzApp(Widget app) async {
   WidgetsFlutterBinding.ensureInitialized();
-  if (buzzPushCapabilityEnabled) {
-    installBuzzPushMethodHandler();
-    await syncPendingBuzzPushNotificationResponse();
-  }
+  installBuzzPushMethodHandler();
+  await syncPendingBuzzPushNotificationResponse();
 
   // Pre-load preferences so the first frame uses the saved theme/accent.
   final prefs = await SharedPreferences.getInstance();
@@ -23,7 +20,7 @@ Future<void> runBuzzApp(Widget app) async {
   runApp(
     ProviderScope(
       overrides: [savedPrefsProvider.overrideWithValue(prefs)],
-      child: buzzPushCapabilityEnabled ? BuzzPushBootstrap(child: app) : app,
+      child: BuzzPushBootstrap(child: app),
     ),
   );
 }

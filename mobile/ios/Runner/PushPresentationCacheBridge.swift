@@ -1,7 +1,6 @@
-#if BUZZ_PUSH_ENABLED
-  import BuzzPushKit
-  import Flutter
-  import Foundation
+import BuzzPushKit
+import Flutter
+import Foundation
 
 final class BuzzPushPresentationCacheBridge {
   private let appGroupIdentifier: String?
@@ -152,12 +151,13 @@ final class BuzzPushPresentationCacheBridge {
           Self.complete(result, value: false)
           return
         }
-        let updated = try store?.updateAvatar(
-          communityID: communityID,
-          relayOrigin: community.relayUrl,
-          sourceURL: sourceURL,
-          avatarPNG: avatarData
-        ) ?? false
+        let updated =
+          try store?.updateAvatar(
+            communityID: communityID,
+            relayOrigin: community.relayUrl,
+            sourceURL: sourceURL,
+            avatarPNG: avatarData
+          ) ?? false
         Self.complete(result, value: updated)
       } catch {
         Self.complete(
@@ -196,4 +196,3 @@ final class BuzzPushPresentationCacheBridge {
     }
   }
 }
-#endif

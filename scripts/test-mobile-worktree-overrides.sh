@@ -123,10 +123,8 @@ grep -q '^applicationIdSuffix=\.w_2fast$' "$wt2/mobile/android/worktree.properti
 # ── Tracked build files: overrides are debug-only, release stays production ──
 debug_xcconfig="$repo_root/mobile/ios/Flutter/Debug.xcconfig"
 release_xcconfig="$repo_root/mobile/ios/Flutter/Release.xcconfig"
-push_xcconfig="$repo_root/mobile/ios/Flutter/PushEnabled.xcconfig"
 pbxproj="$repo_root/mobile/ios/Runner.xcodeproj/project.pbxproj"
 runner_entitlements="$repo_root/mobile/ios/Runner/Runner.entitlements"
-runner_push_entitlements="$repo_root/mobile/ios/Runner/RunnerPush.entitlements"
 gradle="$repo_root/mobile/android/app/build.gradle.kts"
 manifest="$repo_root/mobile/android/app/src/main/AndroidManifest.xml"
 plist="$repo_root/mobile/ios/Runner/Info.plist"
@@ -201,44 +199,25 @@ assert_single_xcconfig_declaration() {
 }
 
 for config in "$debug_xcconfig" "$release_xcconfig"; do
-  assert_xcconfig_value "$config" '^BUZZ_PUSH_ENABLED = NO$' \
-    "$(basename "$config") defaults push capability off"
   assert_xcconfig_value "$config" \
-    '^BUZZ_CODE_SIGN_ENTITLEMENTS = Runner/Runner.entitlements$' \
-    "$(basename "$config") uses the push-free Runner entitlements"
+    '^BUZZ_APP_GROUP_IDENTIFIER = group\.\$\(BUNDLE_IDENTIFIER\)$' \
+    "$(basename "$config") derives the push App Group from the bundle"
   assert_xcconfig_value "$config" \
-    '^EXCLUDED_SOURCE_FILE_NAMES = NotificationService\.appex PushNativeState\.swift PushEndpointGrantStore\.swift PushPresentationCacheBridge\.swift$' \
-    "$(basename "$config") excludes native push sources and extension product"
+    '^BUZZ_KEYCHAIN_ACCESS_GROUP = \$\(BUNDLE_IDENTIFIER\)$' \
+    "$(basename "$config") derives the push Keychain group from the bundle"
 done
-
-assert_xcconfig_value "$push_xcconfig" '^BUZZ_PUSH_ENABLED = YES$' \
-  "PushEnabled explicitly enables the capability"
-assert_xcconfig_value "$push_xcconfig" \
-  '^BUNDLE_IDENTIFIER = xyz\.block\.buzz\.dogfood\.mobile$' \
-  "PushEnabled selects the internal dogfood bundle"
-assert_xcconfig_value "$push_xcconfig" \
+assert_xcconfig_value "$debug_xcconfig" \
+  '^BUZZ_IOS_PUSH_ENVIRONMENT = development$' \
+  "Debug uses sandbox APNs"
+assert_xcconfig_value "$debug_xcconfig" \
+  '^BUZZ_APP_ATTEST_ENVIRONMENT = development$' \
+  "Debug uses development App Attest"
+assert_xcconfig_value "$release_xcconfig" \
   '^BUZZ_IOS_PUSH_ENVIRONMENT = production$' \
-  "PushEnabled uses production APNs transport for distribution"
-assert_xcconfig_value "$push_xcconfig" \
+  "Release uses production APNs"
+assert_xcconfig_value "$release_xcconfig" \
   '^BUZZ_APP_ATTEST_ENVIRONMENT = production$' \
-  "PushEnabled uses production App Attest"
-assert_xcconfig_value "$push_xcconfig" \
-  '^BUZZ_APP_GROUP_IDENTIFIER = group\.\$\(BUNDLE_IDENTIFIER\)$' \
-  "PushEnabled derives the App Group from the dogfood bundle"
-assert_xcconfig_value "$push_xcconfig" \
-  '^BUZZ_KEYCHAIN_ACCESS_GROUP = \$\(BUNDLE_IDENTIFIER\)$' \
-  "PushEnabled derives the Keychain access group from the dogfood bundle"
-assert_xcconfig_value "$push_xcconfig" \
-  '^BUZZ_CODE_SIGN_ENTITLEMENTS = Runner/RunnerPush\.entitlements$' \
-  "PushEnabled selects push-capable Runner entitlements"
-assert_xcconfig_value "$push_xcconfig" \
-  '^SWIFT_ACTIVE_COMPILATION_CONDITIONS = \$\(inherited\) BUZZ_PUSH_ENABLED$' \
-  "PushEnabled compiles the native push bridge"
-assert_xcconfig_value "$push_xcconfig" '^EXCLUDED_SOURCE_FILE_NAMES =$' \
-  "PushEnabled restores the extension product and native push sources"
-assert_xcconfig_value "$push_xcconfig" \
-  '^DART_DEFINES = \$\(inherited\),QlVaWl9QVVNIX0VOQUJMRUQ9dHJ1ZQ==$' \
-  "PushEnabled compiles the Dart push bootstrap"
+  "Release uses production App Attest"
 assert_xcconfig_value "$release_xcconfig" \
   '^CODE_SIGN_STYLE = Automatic$' \
   "Release code signing style is declared as automatic"
@@ -246,15 +225,19 @@ assert_xcconfig_value "$release_xcconfig" \
   '^CODE_SIGN_IDENTITY = iPhone Developer$' \
   "Release code signing identity is declared as iPhone Developer"
 
-for key in BUNDLE_IDENTIFIER BUZZ_PUSH_ENABLED BUZZ_CODE_SIGN_ENTITLEMENTS EXCLUDED_SOURCE_FILE_NAMES; do
+for key in BUNDLE_IDENTIFIER; do
   assert_single_xcconfig_declaration "$debug_xcconfig" "$key" "Debug"
   assert_single_xcconfig_declaration "$release_xcconfig" "$key" "Release"
 done
 
 for key in BUZZ_KEYCHAIN_ACCESS_GROUP BUZZ_IOS_PUSH_ENVIRONMENT BUZZ_APP_ATTEST_ENVIRONMENT BUZZ_APP_GROUP_IDENTIFIER; do
+  assert_single_xcconfig_declaration "$debug_xcconfig" "$key" "Debug"
+  assert_single_xcconfig_declaration "$release_xcconfig" "$key" "Release"
+done
+
+for key in BUZZ_PUSH_ENABLED BUZZ_CODE_SIGN_ENTITLEMENTS EXCLUDED_SOURCE_FILE_NAMES DART_DEFINES; do
   assert_xcconfig_declaration_count "$debug_xcconfig" "$key" 0 "Debug"
   assert_xcconfig_declaration_count "$release_xcconfig" "$key" 0 "Release"
-  assert_single_xcconfig_declaration "$push_xcconfig" "$key" "PushEnabled"
 done
 
 for key in CODE_SIGN_STYLE CODE_SIGN_IDENTITY; do
@@ -295,8 +278,8 @@ else
 fi
 
 grep -q '<key>aps-environment</key>' "$runner_entitlements" \
-  && fail "push-free Runner entitlements must not contain aps-environment" \
-  || pass "push-free Runner entitlements omit aps-environment"
+  && pass "Runner entitlements always include APNs support" \
+  || fail "Runner entitlements must include aps-environment"
 
 # Split the retired identifiers so the regression test does not match itself.
 retired_bundle_id='com.buzz.buzz'"Mobile"
@@ -305,14 +288,14 @@ if git -C "$repo_root" grep -q -F "$retired_bundle_id"; then
 else
   pass "tracked files do not retain the retired iOS bundle identifier"
 fi
-grep -q '<key>com.apple.developer.devicecheck.appattest-environment</key>' "$runner_push_entitlements" \
-  && pass "push-enabled Runner uses the App Attest entitlement key accepted by Apple" \
-  || fail "push-enabled Runner must use com.apple.developer.devicecheck.appattest-environment"
+grep -q '<key>com.apple.developer.devicecheck.appattest-environment</key>' "$runner_entitlements" \
+  && pass "Runner uses the App Attest entitlement key accepted by Apple" \
+  || fail "Runner must use com.apple.developer.devicecheck.appattest-environment"
 retired_entitlement_key='com.apple.developer.app-attest.'"environment"
-if grep -q "$retired_entitlement_key" "$runner_push_entitlements"; then
-  fail "push-enabled Runner must not retain the invalid App Attest entitlement key"
+if grep -q "$retired_entitlement_key" "$runner_entitlements"; then
+  fail "Runner must not retain the invalid App Attest entitlement key"
 else
-  pass "push-enabled Runner omits the invalid App Attest entitlement key"
+  pass "Runner omits the invalid App Attest entitlement key"
 fi
 
 duplicate_pbx_object_ids=$(awk '
@@ -507,9 +490,9 @@ expected_signing_map=$(printf '%s\n' \
   'NotificationService Debug Flutter/Debug.xcconfig "$(BUZZ_DEVELOPMENT_TEAM)" NotificationService/NotificationService.entitlements' \
   'NotificationService Profile Flutter/Release.xcconfig "$(BUZZ_DEVELOPMENT_TEAM)" NotificationService/NotificationService.entitlements' \
   'NotificationService Release Flutter/Release.xcconfig "$(BUZZ_DEVELOPMENT_TEAM)" NotificationService/NotificationService.entitlements' \
-  'Runner Debug Flutter/Debug.xcconfig "$(BUZZ_DEVELOPMENT_TEAM)" "$(BUZZ_CODE_SIGN_ENTITLEMENTS)"' \
-  'Runner Profile Flutter/Release.xcconfig "$(BUZZ_DEVELOPMENT_TEAM)" "$(BUZZ_CODE_SIGN_ENTITLEMENTS)"' \
-  'Runner Release Flutter/Release.xcconfig "$(BUZZ_DEVELOPMENT_TEAM)" "$(BUZZ_CODE_SIGN_ENTITLEMENTS)"')
+  'Runner Debug Flutter/Debug.xcconfig "$(BUZZ_DEVELOPMENT_TEAM)" Runner/Runner.entitlements' \
+  'Runner Profile Flutter/Release.xcconfig "$(BUZZ_DEVELOPMENT_TEAM)" Runner/Runner.entitlements' \
+  'Runner Release Flutter/Release.xcconfig "$(BUZZ_DEVELOPMENT_TEAM)" Runner/Runner.entitlements')
 if [[ "$signing_map" == "$expected_signing_map" ]]; then
   pass "Runner and NotificationService signing settings match each build configuration"
 else

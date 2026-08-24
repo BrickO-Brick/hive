@@ -13,9 +13,9 @@ EXPECTED_ROWS = """\
 NotificationService Debug Flutter/Debug.xcconfig $(BUZZ_DEVELOPMENT_TEAM) NotificationService/NotificationService.entitlements $(BUNDLE_IDENTIFIER).NotificationService
 NotificationService Profile Flutter/Release.xcconfig $(BUZZ_DEVELOPMENT_TEAM) NotificationService/NotificationService.entitlements $(BUNDLE_IDENTIFIER).NotificationService
 NotificationService Release Flutter/Release.xcconfig $(BUZZ_DEVELOPMENT_TEAM) NotificationService/NotificationService.entitlements $(BUNDLE_IDENTIFIER).NotificationService
-Runner Debug Flutter/Debug.xcconfig $(BUZZ_DEVELOPMENT_TEAM) $(BUZZ_CODE_SIGN_ENTITLEMENTS) $(BUNDLE_IDENTIFIER)
-Runner Profile Flutter/Release.xcconfig $(BUZZ_DEVELOPMENT_TEAM) $(BUZZ_CODE_SIGN_ENTITLEMENTS) $(BUNDLE_IDENTIFIER)
-Runner Release Flutter/Release.xcconfig $(BUZZ_DEVELOPMENT_TEAM) $(BUZZ_CODE_SIGN_ENTITLEMENTS) $(BUNDLE_IDENTIFIER)
+Runner Debug Flutter/Debug.xcconfig $(BUZZ_DEVELOPMENT_TEAM) Runner/Runner.entitlements $(BUNDLE_IDENTIFIER)
+Runner Profile Flutter/Release.xcconfig $(BUZZ_DEVELOPMENT_TEAM) Runner/Runner.entitlements $(BUNDLE_IDENTIFIER)
+Runner Release Flutter/Release.xcconfig $(BUZZ_DEVELOPMENT_TEAM) Runner/Runner.entitlements $(BUNDLE_IDENTIFIER)
 RunnerTests Debug Target Support Files/Pods-RunnerTests/Pods-RunnerTests.debug.xcconfig - - $(BUNDLE_IDENTIFIER).RunnerTests
 RunnerTests Profile Target Support Files/Pods-RunnerTests/Pods-RunnerTests.profile.xcconfig - - $(BUNDLE_IDENTIFIER).RunnerTests
 RunnerTests Release Target Support Files/Pods-RunnerTests/Pods-RunnerTests.release.xcconfig - - $(BUNDLE_IDENTIFIER).RunnerTests

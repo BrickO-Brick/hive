@@ -1,31 +1,26 @@
 import AVFoundation
+import BuzzPushKit
 import Flutter
 import UIKit
-
-#if BUZZ_PUSH_ENABLED
-  import BuzzPushKit
-  import UserNotifications
-#endif
+import UserNotifications
 
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
   private var mediaUploadChannel: FlutterMethodChannel?
-  #if BUZZ_PUSH_ENABLED
-    private var pushChannel: FlutterMethodChannel?
-    private let apnsRegistrationBuffer = APNsRegistrationBuffer()
-    private let pushNavigationBuffer = BuzzPushNavigationBuffer()
-    private var apnsDeviceToken: Data?
-    private lazy var endpointGrantStore = BuzzPushEndpointGrantKeychainStore(
-      accessGroup: Bundle.main.object(forInfoDictionaryKey: "BuzzKeychainAccessGroup") as? String
-    )
-    private var enrollmentTask: Task<Void, Never>?
-    private var appGroupIdentifier: String? {
-      Bundle.main.object(forInfoDictionaryKey: "BuzzAppGroupIdentifier") as? String
-    }
-    private lazy var pushPresentationCacheBridge = BuzzPushPresentationCacheBridge(
-      appGroupIdentifier: appGroupIdentifier
-    )
-  #endif
+  private var pushChannel: FlutterMethodChannel?
+  private let apnsRegistrationBuffer = APNsRegistrationBuffer()
+  private let pushNavigationBuffer = BuzzPushNavigationBuffer()
+  private var apnsDeviceToken: Data?
+  private lazy var endpointGrantStore = BuzzPushEndpointGrantKeychainStore(
+    accessGroup: Bundle.main.object(forInfoDictionaryKey: "BuzzKeychainAccessGroup") as? String
+  )
+  private var enrollmentTask: Task<Void, Never>?
+  private var appGroupIdentifier: String? {
+    Bundle.main.object(forInfoDictionaryKey: "BuzzAppGroupIdentifier") as? String
+  }
+  private lazy var pushPresentationCacheBridge = BuzzPushPresentationCacheBridge(
+    appGroupIdentifier: appGroupIdentifier
+  )
   private var qrScannerChannel: FlutterMethodChannel?
   private var inlinePhotoPickerSupportChannel: FlutterMethodChannel?
   private var concentricSheetSurfaceChannel: FlutterMethodChannel?
@@ -37,9 +32,7 @@ import UIKit
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
-    #if BUZZ_PUSH_ENABLED
-      UNUserNotificationCenter.current().delegate = self
-    #endif
+    UNUserNotificationCenter.current().delegate = self
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
@@ -53,18 +46,16 @@ import UIKit
     mediaUploadChannel?.setMethodCallHandler { [weak self] call, result in
       self?.handleMediaUploadMethodCall(call, result: result)
     }
-    #if BUZZ_PUSH_ENABLED
-      pushChannel = FlutterMethodChannel(
-        name: "buzz/push",
-        binaryMessenger: messenger
-      )
-      pushChannel?.setMethodCallHandler { [weak self] call, result in
-        self?.handlePushMethodCall(call, result: result)
-      }
-      apnsRegistrationBuffer.attach { [weak self] update in
-        self?.pushChannel?.invokeMethod(update.method, arguments: update.arguments)
-      }
-    #endif
+    pushChannel = FlutterMethodChannel(
+      name: "buzz/push",
+      binaryMessenger: messenger
+    )
+    pushChannel?.setMethodCallHandler { [weak self] call, result in
+      self?.handlePushMethodCall(call, result: result)
+    }
+    apnsRegistrationBuffer.attach { [weak self] update in
+      self?.pushChannel?.invokeMethod(update.method, arguments: update.arguments)
+    }
     qrScannerChannel = FlutterMethodChannel(
       name: "buzz/qr_scanner",
       binaryMessenger: messenger
@@ -169,7 +160,8 @@ import UIKit
     if #available(iOS 16.0, *),
       let nativeMessageActionsRegistrar = engineBridge.pluginRegistry.registrar(
         forPlugin: "BuzzNativeMessageActionSurface"
-      ) {
+      )
+    {
       nativeMessageActionsRegistrar.register(
         NativeMessageActionSurfaceFactory(messenger: messenger),
         withId: "buzz/native_message_action_surface"
@@ -238,297 +230,295 @@ import UIKit
       .safeAreaInsets.top ?? 0
   }
 
-  #if BUZZ_PUSH_ENABLED
-    override func application(
-      _ application: UIApplication,
-      didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
-    ) {
-      super.application(application, didRegisterForRemoteNotificationsWithDeviceToken: deviceToken)
-      apnsDeviceToken = deviceToken
-      apnsRegistrationBuffer.recordToken(deviceToken)
-    }
+  override func application(
+    _ application: UIApplication,
+    didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
+  ) {
+    super.application(application, didRegisterForRemoteNotificationsWithDeviceToken: deviceToken)
+    apnsDeviceToken = deviceToken
+    apnsRegistrationBuffer.recordToken(deviceToken)
+  }
 
-    override func application(
-      _ application: UIApplication,
-      didFailToRegisterForRemoteNotificationsWithError error: Error
-    ) {
-      super.application(application, didFailToRegisterForRemoteNotificationsWithError: error)
-      apnsRegistrationBuffer.recordError(error.localizedDescription)
-    }
+  override func application(
+    _ application: UIApplication,
+    didFailToRegisterForRemoteNotificationsWithError error: Error
+  ) {
+    super.application(application, didFailToRegisterForRemoteNotificationsWithError: error)
+    apnsRegistrationBuffer.recordError(error.localizedDescription)
+  }
 
-    override func userNotificationCenter(
-      _ center: UNUserNotificationCenter,
-      didReceive response: UNNotificationResponse,
-      withCompletionHandler completionHandler: @escaping () -> Void
-    ) {
-      BuzzPushNotificationResponseCoordinator.handle(
-        actionIdentifier: response.actionIdentifier,
-        userInfo: response.notification.request.content.userInfo,
-        onTarget: { target in
-          pushNavigationBuffer.record(target)
-          deliverPushNavigationTarget(target)
-        },
-        forwardToFlutter: { pluginCompletion in
-          self.forwardPushNotificationResponseToFlutter(
-            center,
-            response: response,
-            completion: pluginCompletion
-          )
-        },
-        completion: completionHandler
-      )
-    }
-
-    private func forwardPushNotificationResponseToFlutter(
-      _ center: UNUserNotificationCenter,
-      response: UNNotificationResponse,
-      completion: @escaping () -> Void
-    ) {
-      super.userNotificationCenter(
-        center,
-        didReceive: response,
-        withCompletionHandler: completion
-      )
-    }
-
-    private func deliverPushNavigationTarget(_ target: BuzzPushNavigationTarget) {
-      pushChannel?.invokeMethod(
-        "notificationOpened",
-        arguments: target.flutterArguments
-      ) { [weak self] result in
-        guard result as? String == "handled" else { return }
-        self?.pushNavigationBuffer.remove(ifMatching: target)
-      }
-    }
-
-    private func handlePushMethodCall(
-      _ call: FlutterMethodCall,
-      result: @escaping FlutterResult
-    ) {
-      if pushPresentationCacheBridge.handle(call, result: result) {
-        return
-      }
-      switch call.method {
-      case "requestAuthorization":
-        requestPushAuthorization(result: result)
-      case "takePendingNotificationResponse":
-        result(pushNavigationBuffer.take()?.flutterArguments)
-      case "saveCommunitySnapshot":
-        guard let arguments = call.arguments as? [String: Any],
-          let communities = arguments["communities"] as? [[String: Any]],
-          let signingKeys = arguments["signingKeys"] as? [String: String]
-        else {
-          result(
-            FlutterError(
-              code: "invalid_arguments", message: "Expected communities array.", details: nil))
-          return
-        }
-        do {
-          try savePushCommunitySnapshot(communities)
-          try BuzzPushKeychain.replace(
-            signingKeys: signingKeys,
-            accessGroup: Bundle.main.object(forInfoDictionaryKey: "BuzzKeychainAccessGroup")
-              as? String
-          )
-          result(nil)
-        } catch {
-          result(
-            FlutterError(
-              code: "save_failed", message: "Unable to save push community credentials.",
-              details: error.localizedDescription))
-        }
-      case "endpointGrants":
-        do {
-          result(try endpointGrantStore.records().map(\.flutterArguments))
-        } catch {
-          result(
-            FlutterError(
-              code: "endpoint_grant_read_failed",
-              message: "Unable to read persisted push endpoint grants.",
-              details: error.localizedDescription
-            )
-          )
-        }
-      case "enrollPush":
-        handleDevPushEnrollment(call, result: result)
-      default:
-        result(FlutterMethodNotImplemented)
-      }
-    }
-
-    private func requestPushAuthorization(result: @escaping FlutterResult) {
-      UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) {
-        granted, error in
-        DispatchQueue.main.async {
-          if let error {
-            result(
-              FlutterError(
-                code: "notification_authorization_failed",
-                message: "Unable to request notification authorization.",
-                details: error.localizedDescription
-              )
-            )
-            return
-          }
-          guard granted else {
-            result(false)
-            return
-          }
-          UIApplication.shared.registerForRemoteNotifications()
-          result(true)
-        }
-      }
-    }
-
-    private func handleDevPushEnrollment(
-      _ call: FlutterMethodCall,
-      result: @escaping FlutterResult
-    ) {
-      guard enrollmentTask == nil else {
-        result(
-          FlutterError(
-            code: "enrollment_in_progress",
-            message: "Development push enrollment is already running.",
-            details: nil
-          )
+  override func userNotificationCenter(
+    _ center: UNUserNotificationCenter,
+    didReceive response: UNNotificationResponse,
+    withCompletionHandler completionHandler: @escaping () -> Void
+  ) {
+    BuzzPushNotificationResponseCoordinator.handle(
+      actionIdentifier: response.actionIdentifier,
+      userInfo: response.notification.request.content.userInfo,
+      onTarget: { target in
+        pushNavigationBuffer.record(target)
+        deliverPushNavigationTarget(target)
+      },
+      forwardToFlutter: { pluginCompletion in
+        self.forwardPushNotificationResponseToFlutter(
+          center,
+          response: response,
+          completion: pluginCompletion
         )
-        return
-      }
-      guard let deviceToken = apnsDeviceToken else {
-        result(
-          FlutterError(
-            code: "missing_apns_token",
-            message: "APNs has not supplied a device token.",
-            details: nil
-          )
-        )
-        return
-      }
-      guard !deviceToken.isEmpty else {
-        result(
-          FlutterError(
-            code: "invalid_apns_token",
-            message: "APNs supplied an empty device token.",
-            details: nil
-          )
-        )
-        return
-      }
+      },
+      completion: completionHandler
+    )
+  }
+
+  private func forwardPushNotificationResponseToFlutter(
+    _ center: UNUserNotificationCenter,
+    response: UNNotificationResponse,
+    completion: @escaping () -> Void
+  ) {
+    super.userNotificationCenter(
+      center,
+      didReceive: response,
+      withCompletionHandler: completion
+    )
+  }
+
+  private func deliverPushNavigationTarget(_ target: BuzzPushNavigationTarget) {
+    pushChannel?.invokeMethod(
+      "notificationOpened",
+      arguments: target.flutterArguments
+    ) { [weak self] result in
+      guard result as? String == "handled" else { return }
+      self?.pushNavigationBuffer.remove(ifMatching: target)
+    }
+  }
+
+  private func handlePushMethodCall(
+    _ call: FlutterMethodCall,
+    result: @escaping FlutterResult
+  ) {
+    if pushPresentationCacheBridge.handle(call, result: result) {
+      return
+    }
+    switch call.method {
+    case "requestAuthorization":
+      requestPushAuthorization(result: result)
+    case "takePendingNotificationResponse":
+      result(pushNavigationBuffer.take()?.flutterArguments)
+    case "saveCommunitySnapshot":
       guard let arguments = call.arguments as? [String: Any],
-        let relayText = arguments["relayUrl"] as? String,
-        let relayURL = URL(string: relayText),
-        let gatewayText = arguments["gatewayUrl"] as? String,
-        let gatewayURL = URL(string: gatewayText)
+        let communities = arguments["communities"] as? [[String: Any]],
+        let signingKeys = arguments["signingKeys"] as? [String: String]
       else {
         result(
           FlutterError(
-            code: "invalid_arguments",
-            message: "Development push enrollment requires relayUrl and gatewayUrl.",
-            details: nil
-          )
-        )
+            code: "invalid_arguments", message: "Expected communities array.", details: nil))
         return
       }
-
       do {
-        let driver: BuzzDevPushEnrollmentDriver
-        #if DEBUG
-          driver = try BuzzDevPushEnrollmentDriver(
-            gatewayBaseURL: gatewayURL,
-            store: endpointGrantStore
-          )
-        #else
-          driver = try BuzzDevPushEnrollmentDriver(
-            gatewayBaseURL: gatewayURL,
-            store: endpointGrantStore,
-            appAttestKeychainAccessGroup: Bundle.main.object(
-              forInfoDictionaryKey: "BuzzKeychainAccessGroup"
-            ) as? String
-          )
-        #endif
-        enrollmentTask = Task { [weak self] in
-          defer { self?.enrollmentTask = nil }
-          do {
-            let record = try await driver.enroll(
-              deviceToken: deviceToken,
-              relayURL: relayURL
-            )
-            await MainActor.run { result(record.flutterArguments) }
-          } catch {
-            await MainActor.run {
-              result(
-                FlutterError(
-                  code: "dev_enrollment_failed",
-                  message: "Development push enrollment failed.",
-                  details: error.localizedDescription
-                )
-              )
-            }
-          }
-        }
+        try savePushCommunitySnapshot(communities)
+        try BuzzPushKeychain.replace(
+          signingKeys: signingKeys,
+          accessGroup: Bundle.main.object(forInfoDictionaryKey: "BuzzKeychainAccessGroup")
+            as? String
+        )
+        result(nil)
       } catch {
         result(
           FlutterError(
-            code: "dev_enrollment_configuration_failed",
-            message: "Development push enrollment is not configured.",
+            code: "save_failed", message: "Unable to save push community credentials.",
+            details: error.localizedDescription))
+      }
+    case "endpointGrants":
+      do {
+        result(try endpointGrantStore.records().map(\.flutterArguments))
+      } catch {
+        result(
+          FlutterError(
+            code: "endpoint_grant_read_failed",
+            message: "Unable to read persisted push endpoint grants.",
             details: error.localizedDescription
           )
         )
       }
+    case "enrollPush":
+      handleDevPushEnrollment(call, result: result)
+    default:
+      result(FlutterMethodNotImplemented)
+    }
+  }
+
+  private func requestPushAuthorization(result: @escaping FlutterResult) {
+    UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) {
+      granted, error in
+      DispatchQueue.main.async {
+        if let error {
+          result(
+            FlutterError(
+              code: "notification_authorization_failed",
+              message: "Unable to request notification authorization.",
+              details: error.localizedDescription
+            )
+          )
+          return
+        }
+        guard granted else {
+          result(false)
+          return
+        }
+        UIApplication.shared.registerForRemoteNotifications()
+        result(true)
+      }
+    }
+  }
+
+  private func handleDevPushEnrollment(
+    _ call: FlutterMethodCall,
+    result: @escaping FlutterResult
+  ) {
+    guard enrollmentTask == nil else {
+      result(
+        FlutterError(
+          code: "enrollment_in_progress",
+          message: "Development push enrollment is already running.",
+          details: nil
+        )
+      )
+      return
+    }
+    guard let deviceToken = apnsDeviceToken else {
+      result(
+        FlutterError(
+          code: "missing_apns_token",
+          message: "APNs has not supplied a device token.",
+          details: nil
+        )
+      )
+      return
+    }
+    guard !deviceToken.isEmpty else {
+      result(
+        FlutterError(
+          code: "invalid_apns_token",
+          message: "APNs supplied an empty device token.",
+          details: nil
+        )
+      )
+      return
+    }
+    guard let arguments = call.arguments as? [String: Any],
+      let relayText = arguments["relayUrl"] as? String,
+      let relayURL = URL(string: relayText),
+      let gatewayText = arguments["gatewayUrl"] as? String,
+      let gatewayURL = URL(string: gatewayText)
+    else {
+      result(
+        FlutterError(
+          code: "invalid_arguments",
+          message: "Development push enrollment requires relayUrl and gatewayUrl.",
+          details: nil
+        )
+      )
+      return
     }
 
-    private func savePushCommunitySnapshot(_ communities: [[String: Any]]) throws {
-      guard let appGroupIdentifier else {
-        throw NSError(
-          domain: "BuzzPush", code: 1,
-          userInfo: [NSLocalizedDescriptionKey: "Missing BuzzAppGroupIdentifier"])
-      }
-      guard
-        let container = FileManager.default.containerURL(
-          forSecurityApplicationGroupIdentifier: appGroupIdentifier)
-      else {
-        throw NSError(
-          domain: "BuzzPush", code: 2,
-          userInfo: [NSLocalizedDescriptionKey: "Missing App Group container"])
-      }
-      // Channel-name enrichment is optional presentation state. A damaged or
-      // unavailable grant cache must not block the core NSE snapshot/key update.
-      let grants = (try? endpointGrantStore.records()) ?? []
-      let enriched = communities.map { community -> [String: Any] in
-        var community = community
-        guard let relayURL = community["relayUrl"] as? String,
-          let relayMetadataPubkey = Self.pushRelayMetadataPubkey(
-            relayURL: relayURL,
-            grants: grants
+    do {
+      let driver: BuzzDevPushEnrollmentDriver
+      #if DEBUG
+        driver = try BuzzDevPushEnrollmentDriver(
+          gatewayBaseURL: gatewayURL,
+          store: endpointGrantStore
+        )
+      #else
+        driver = try BuzzDevPushEnrollmentDriver(
+          gatewayBaseURL: gatewayURL,
+          store: endpointGrantStore,
+          appAttestKeychainAccessGroup: Bundle.main.object(
+            forInfoDictionaryKey: "BuzzKeychainAccessGroup"
+          ) as? String
+        )
+      #endif
+      enrollmentTask = Task { [weak self] in
+        defer { self?.enrollmentTask = nil }
+        do {
+          let record = try await driver.enroll(
+            deviceToken: deviceToken,
+            relayURL: relayURL
           )
-        else { return community }
-        community["relayMetadataPubkey"] = relayMetadataPubkey
-        return community
+          await MainActor.run { result(record.flutterArguments) }
+        } catch {
+          await MainActor.run {
+            result(
+              FlutterError(
+                code: "dev_enrollment_failed",
+                message: "Development push enrollment failed.",
+                details: error.localizedDescription
+              )
+            )
+          }
+        }
       }
-      let data = try JSONSerialization.data(
-        withJSONObject: ["communities": enriched], options: [.sortedKeys])
-      let destination = container.appendingPathComponent("push-communities.json")
-      try data.write(to: destination, options: [.atomic])
-      pushPresentationCacheBridge.retainCommunities(
-        Set(enriched.compactMap { $0["id"] as? String })
+    } catch {
+      result(
+        FlutterError(
+          code: "dev_enrollment_configuration_failed",
+          message: "Development push enrollment is not configured.",
+          details: error.localizedDescription
+        )
       )
     }
+  }
 
-    static func pushRelayMetadataPubkey(
-      relayURL: String,
-      grants: [BuzzPushEndpointGrantRecord]
-    ) -> String? {
-      guard let origin = BuzzPushPresentationCacheStore.canonicalRelayOrigin(relayURL) else {
-        return nil
-      }
-      return grants.filter {
-        $0.appProfile == BuzzDevPushEnrollmentDriver.appProfile
-          && BuzzPushPresentationCacheStore.canonicalRelayOrigin($0.relayOrigin) == origin
-      }.max {
-        $0.generation < $1.generation
-      }?.relayMetadataPubkey
+  private func savePushCommunitySnapshot(_ communities: [[String: Any]]) throws {
+    guard let appGroupIdentifier else {
+      throw NSError(
+        domain: "BuzzPush", code: 1,
+        userInfo: [NSLocalizedDescriptionKey: "Missing BuzzAppGroupIdentifier"])
     }
-  #endif
+    guard
+      let container = FileManager.default.containerURL(
+        forSecurityApplicationGroupIdentifier: appGroupIdentifier)
+    else {
+      throw NSError(
+        domain: "BuzzPush", code: 2,
+        userInfo: [NSLocalizedDescriptionKey: "Missing App Group container"])
+    }
+    // Channel-name enrichment is optional presentation state. A damaged or
+    // unavailable grant cache must not block the core NSE snapshot/key update.
+    let grants = (try? endpointGrantStore.records()) ?? []
+    let enriched = communities.map { community -> [String: Any] in
+      var community = community
+      guard let relayURL = community["relayUrl"] as? String,
+        let relayMetadataPubkey = Self.pushRelayMetadataPubkey(
+          relayURL: relayURL,
+          grants: grants
+        )
+      else { return community }
+      community["relayMetadataPubkey"] = relayMetadataPubkey
+      return community
+    }
+    let data = try JSONSerialization.data(
+      withJSONObject: ["communities": enriched], options: [.sortedKeys])
+    let destination = container.appendingPathComponent("push-communities.json")
+    try data.write(to: destination, options: [.atomic])
+    pushPresentationCacheBridge.retainCommunities(
+      Set(enriched.compactMap { $0["id"] as? String })
+    )
+  }
+
+  static func pushRelayMetadataPubkey(
+    relayURL: String,
+    grants: [BuzzPushEndpointGrantRecord]
+  ) -> String? {
+    guard let origin = BuzzPushPresentationCacheStore.canonicalRelayOrigin(relayURL) else {
+      return nil
+    }
+    return grants.filter {
+      $0.appProfile == BuzzDevPushEnrollmentDriver.appProfile
+        && BuzzPushPresentationCacheStore.canonicalRelayOrigin($0.relayOrigin) == origin
+    }.max {
+      $0.generation < $1.generation
+    }?.relayMetadataPubkey
+  }
 
   private func handleMediaUploadMethodCall(
     _ call: FlutterMethodCall,
@@ -969,14 +959,12 @@ import UIKit
   }
 }
 
-#if BUZZ_PUSH_ENABLED
-  extension BuzzPushNavigationTarget {
-    fileprivate var flutterArguments: [String: String] {
-      [
-        "eventId": eventID,
-        "communityId": communityID,
-        "channelId": channelID,
-      ]
-    }
+extension BuzzPushNavigationTarget {
+  fileprivate var flutterArguments: [String: String] {
+    [
+      "eventId": eventID,
+      "communityId": communityID,
+      "channelId": channelID,
+    ]
   }
-#endif
+}

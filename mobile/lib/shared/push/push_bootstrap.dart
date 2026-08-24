@@ -11,6 +11,7 @@ import '../relay/relay_session.dart';
 import '../relay/signed_event_relay.dart';
 import 'dev_push_lease.dart';
 import 'push_bridge.dart';
+import 'push_relay_capability_provider.dart';
 import 'push_subscription.dart';
 
 /// Starts the push lifecycle only after authenticated relay connectivity and a
@@ -30,27 +31,40 @@ class BuzzPushBootstrap extends HookConsumerWidget {
     final config = ref.watch(relayConfigProvider);
     final community = ref.watch(activeCommunityProvider).value;
     final memberPubkey = ref.watch(myPubkeyProvider);
+    final descriptor = ref.watch(currentRelayPushDescriptorProvider).value;
 
-    useEffect(() {
-      if (!_ready(session, config, community, memberPubkey)) return null;
-      final attempt = '${community!.id}|${config.baseUrl}';
-      if (authorizationAttempt.value == attempt) return null;
-      authorizationAttempt.value = attempt;
-      unawaited(
-        _authorize(config.baseUrl).catchError((Object error, StackTrace stack) {
-          authorizationAttempt.value = null;
-          debugPrint('Push authorization bootstrap failed: $error');
-          debugPrintStack(stackTrace: stack);
-        }),
-      );
-      return null;
-    }, [session.status, config.baseUrl, community?.id, memberPubkey]);
+    useEffect(
+      () {
+        if (!_ready(session, config, community, memberPubkey) ||
+            descriptor == null) {
+          return null;
+        }
+        final attempt = '${community!.id}|${config.baseUrl}';
+        if (authorizationAttempt.value == attempt) return null;
+        authorizationAttempt.value = attempt;
+        unawaited(() async {
+          try {
+            await requestBuzzPushAuthorizationIfCapable(
+              descriptor,
+              requestAuthorization: requestBuzzPushAuthorization,
+            );
+          } catch (error, stack) {
+            authorizationAttempt.value = null;
+            debugPrint('Push authorization bootstrap failed: $error');
+            debugPrintStack(stackTrace: stack);
+          }
+        }());
+        return null;
+      },
+      [session.status, config.baseUrl, community?.id, memberPubkey, descriptor],
+    );
 
     final token = apnsDeviceToken.value;
     final authorized = pushAuthorizationGranted.value;
     useEffect(
       () {
         if (!_ready(session, config, community, memberPubkey) ||
+            descriptor == null ||
             authorized != true ||
             token == null) {
           return null;
@@ -97,6 +111,7 @@ class BuzzPushBootstrap extends HookConsumerWidget {
         community?.id,
         community?.pushSubscriptionState,
         memberPubkey,
+        descriptor,
         authorized,
         token,
       ],
@@ -117,11 +132,6 @@ class BuzzPushBootstrap extends HookConsumerWidget {
       config.nsec!.isNotEmpty &&
       memberPubkey != null &&
       memberPubkey.isNotEmpty;
-
-  static Future<void> _authorize(String relayBaseUrl) async {
-    await fetchBuzzPushLeaseDescriptor(relayBaseUrl);
-    await requestBuzzPushAuthorization();
-  }
 
   static Future<void> _publish(
     WidgetRef ref,

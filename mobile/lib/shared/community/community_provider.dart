@@ -4,7 +4,6 @@ import 'package:nostr/nostr.dart' as nostr;
 import '../auth/auth_provider.dart';
 import '../push/dev_push_lease.dart';
 import '../push/push_bridge.dart';
-import '../push/push_capability.dart';
 import '../push/push_subscription.dart';
 import '../relay/signed_event_relay.dart';
 import 'community.dart';
@@ -39,7 +38,6 @@ final communityPushLeaseDeactivatorProvider =
     });
 
 Future<void> _deactivateCommunityPushLease(Community community) async {
-  if (!buzzPushCapabilityEnabled) return;
   final state = community.pushSubscriptionState;
   final acceptedGeneration = state.acceptedGeneration;
   final installationId = state.acceptedInstallationId;
