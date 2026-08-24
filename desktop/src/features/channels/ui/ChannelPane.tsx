@@ -880,15 +880,16 @@ export const ChannelPane = React.memo(function ChannelPane({
           })()
         ) : activeChannel && selectedAgent ? (
           (() => {
-            // When the panel was opened from a different channel than the
-            // currently active one, re-scope it to the active channel so
-            // that both the content/header AND channel-backed actions (e.g.
-            // Stop current turn) operate on the same channel object.
+            // In normal app navigation, re-scope a panel opened from another
+            // channel so its content and channel-backed actions stay aligned.
+            // A dedicated activity companion has an immutable channel scope,
+            // even when one of its links navigates the underlying route.
             const effectiveAgentSessionChannelId =
-              openAgentSessionChannelId &&
-              activeChannel.id !== openAgentSessionChannelId
-                ? activeChannelId
-                : openAgentSessionChannelId;
+              isDedicatedActivityWindow ||
+              !openAgentSessionChannelId ||
+              activeChannel.id === openAgentSessionChannelId
+                ? openAgentSessionChannelId
+                : activeChannelId;
             const panel = (
               <AgentSessionThreadPanel
                 agent={selectedAgent}

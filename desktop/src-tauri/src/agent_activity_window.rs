@@ -34,6 +34,7 @@ fn activity_route(community_id: &str, channel_id: &Uuid, pubkey: &str) -> String
     let query = form_urlencoded::Serializer::new(String::new())
         .append_pair("community", community_id)
         .append_pair("agentSession", pubkey)
+        .append_pair("agentSessionChannel", &channel_id.to_string())
         .finish();
     format!("index.html#/channels/{channel_id}?{query}")
 }
@@ -111,7 +112,7 @@ mod tests {
         assert_eq!(
             activity_route("community & one", &channel_id, &pubkey),
             format!(
-                "index.html#/channels/{channel_id}?community=community+%26+one&agentSession={pubkey}"
+                "index.html#/channels/{channel_id}?community=community+%26+one&agentSession={pubkey}&agentSessionChannel={channel_id}"
             )
         );
     }

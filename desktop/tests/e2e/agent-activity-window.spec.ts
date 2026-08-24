@@ -23,7 +23,7 @@ test("keeps dedicated activity windows connected when opening a channel referenc
   });
 
   await page.goto(
-    `/#/channels/${AGENTS_CHANNEL_ID}?community=${COMMUNITY_ID}&agentSession=${AGENT_PUBKEY}`,
+    `/#/channels/${AGENTS_CHANNEL_ID}?community=${COMMUNITY_ID}&agentSession=${AGENT_PUBKEY}&agentSessionChannel=${AGENTS_CHANNEL_ID}`,
   );
   const panel = page.getByTestId("agent-session-thread-panel");
   await expect(panel).toBeVisible({ timeout: 10_000 });
@@ -31,7 +31,7 @@ test("keeps dedicated activity windows connected when opening a channel referenc
     () => typeof window.__BUZZ_E2E_SEED_OBSERVER_EVENTS__ === "function",
   );
   await page.evaluate(
-    ({ agentPubkey, channelId }) => {
+    ({ agentPubkey, channelId, generalChannelId }) => {
       window.__BUZZ_E2E_SEED_OBSERVER_EVENTS__?.({
         agentPubkey,
         events: [
@@ -53,10 +53,40 @@ test("keeps dedicated activity windows connected when opening a channel referenc
               },
             },
           },
+          {
+            seq: 2,
+            timestamp: new Date().toISOString(),
+            kind: "acp_read",
+            agentIndex: 0,
+            channelId: generalChannelId,
+            sessionId: "session-other-channel",
+            turnId: "turn-other-channel",
+            payload: {
+              method: "session/update",
+              params: {
+                update: {
+                  sessionUpdate: "agent_message_chunk",
+                  content: {
+                    type: "text",
+                    text: "Other channel activity must stay hidden",
+                  },
+                },
+              },
+            },
+          },
         ],
       });
     },
-    { agentPubkey: AGENT_PUBKEY, channelId: AGENTS_CHANNEL_ID },
+    {
+      agentPubkey: AGENT_PUBKEY,
+      channelId: AGENTS_CHANNEL_ID,
+      generalChannelId: GENERAL_CHANNEL_ID,
+    },
+  );
+
+  await expect(panel).toContainText("Activity · #agents");
+  await expect(panel).not.toContainText(
+    "Other channel activity must stay hidden",
   );
 
   const channelReference = panel.getByRole("button", {
@@ -67,9 +97,13 @@ test("keeps dedicated activity windows connected when opening a channel referenc
 
   await expect(page).toHaveURL(
     new RegExp(
-      `#/channels/${GENERAL_CHANNEL_ID}\\?.*community=${COMMUNITY_ID}`,
+      `#/channels/${GENERAL_CHANNEL_ID}\\?.*community=${COMMUNITY_ID}.*agentSessionChannel=${AGENTS_CHANNEL_ID}`,
     ),
   );
   await expect(panel).toBeVisible();
+  await expect(panel).toContainText("Activity · #agents");
+  await expect(panel).not.toContainText(
+    "Other channel activity must stay hidden",
+  );
   await expect(page.locator("body")).not.toBeEmpty();
 });

@@ -25,10 +25,12 @@ export function useAppNavigation() {
   const companionCoordinates =
     currentCompanionWindowKind() === "agent-activity" &&
     typeof companionSearch.community === "string" &&
-    typeof companionSearch.agentSession === "string"
+    typeof companionSearch.agentSession === "string" &&
+    typeof companionSearch.agentSessionChannel === "string"
       ? {
           community: companionSearch.community,
           agentSession: companionSearch.agentSession,
+          agentSessionChannel: companionSearch.agentSessionChannel,
         }
       : undefined;
 

@@ -13,6 +13,8 @@ import { ViewLoadingFallback } from "@/shared/ui/ViewLoadingFallback";
 
 type ChannelRouteSearch = {
   agentSession?: string;
+  /** Immutable channel scope carried by dedicated activity windows. */
+  agentSessionChannel?: string;
   /** Immutable origin community carried by dedicated activity windows. */
   community?: string;
   /**
@@ -38,6 +40,7 @@ function validateChannelSearch(
 ): ChannelRouteSearch {
   return {
     agentSession: nonEmptyString(search.agentSession),
+    agentSessionChannel: nonEmptyString(search.agentSessionChannel),
     community: nonEmptyString(search.community),
     autoSend: nonEmptyString(search.autoSend),
     messageId: nonEmptyString(search.messageId),
