@@ -10,7 +10,6 @@
         --background: 240 6% 7%;
         --foreground: 0 0% 95%;
         --muted-foreground: 240 4% 60%;
-        --status-added: 145 45% 55%;
       }
       html,
       body {
@@ -26,9 +25,12 @@
         cursor: default;
       }
       .wrap { text-align: center; }
-      .face { font-size: 96px; line-height: 1; }
+      .face { width: 160px; height: 110px; margin: 0 auto; }
+      .face svg { width: 100%; height: 100%; }
+      .eye { fill: hsl(var(--foreground)); }
+      .lid { fill: hsl(var(--background)); }
       .count {
-        margin-top: 18px;
+        margin-top: 10px;
         font-size: 40px;
         font-weight: 700;
         font-variant-numeric: tabular-nums;
@@ -43,13 +45,24 @@
       .nodes {
         margin-top: 14px;
         font-size: 13px;
-        color: hsl(var(--status-added));
+        color: hsl(var(--muted-foreground));
       }
     </style>
   </head>
   <body>
     <div class="wrap">
-      <div class="face" id="face">🙂</div>
+      <div class="face">
+        <svg viewBox="0 0 160 110" aria-label="mesh buddy face" role="img">
+          <g id="rig">
+            <path class="eye" id="eyeL" d="" />
+            <path class="eye" id="eyeR" d="" />
+            <!-- Lower lids: background-colored masks that slide up for the
+                 happy squint, carving a smooth crescent out of each eye. -->
+            <ellipse class="lid" id="lidL" rx="34" ry="26" />
+            <ellipse class="lid" id="lidR" rx="34" ry="26" />
+          </g>
+        </svg>
+      </div>
       <div class="count" id="count">0</div>
       <div class="label">tokens helped compute</div>
       <div class="nodes" id="nodes">&nbsp;</div>
@@ -74,22 +87,152 @@
       window.addEventListener("storage", applyTheme);
       window.addEventListener("focus", applyTheme);
 
+      // ---- Procedural eyes (Cozmo/Vector style) --------------------------
+      // Each eye is a rounded rectangle with a bendable bottom edge. Instead
+      // of canned frames, the rig holds one parameter set and eases it toward
+      // the current expression every frame, so any state change (and blinks)
+      // becomes a smooth morph. Inspired by procedural expression polygons:
+      // https://github.com/ggldnl/Procedural-Expression-Library
+      //
+      // Params: w/h size, r corner radius, curve (+ bows the bottom edge up:
+      // a happy squint), y vertical offset, gaze x drift.
+      const EXPRESSIONS = {
+        sleeping: { w: 44, h: 5, r: 2.5, curve: 0, y: 16 },
+        waking: { w: 40, h: 22, r: 9, curve: 0, y: 6 },
+        neutral: { w: 38, h: 44, r: 12, curve: 0, y: 0 },
+        happy: { w: 42, h: 38, r: 13, curve: 16, y: -2 },
+        tired: { w: 40, h: 14, r: 6, curve: 0, y: 10 },
+      };
+      const CENTERS = [46, 114]; // eye x-centers in the 160x110 viewBox
+      const MID_Y = 48;
+
+      const rig = {
+        current: { ...EXPRESSIONS.sleeping, gaze: 0 },
+        target: { ...EXPRESSIONS.sleeping, gaze: 0 },
+        mood: "sleeping",
+        blink: 1, // height multiplier; dips toward 0 during a blink
+        blinkPhase: "open",
+        nextBlinkAt: performance.now() + 2500,
+      };
+
+      function eyePath(cx, p, blink) {
+        const h = Math.max(3, p.h * blink);
+        const r = Math.min(p.r, h / 2, p.w / 2);
+        const top = MID_Y + p.y - h / 2;
+        const bottom = top + h;
+        const left = cx + p.gaze - p.w / 2;
+        const right = left + p.w;
+        return [
+          `M ${left + r} ${top}`,
+          `H ${right - r}`,
+          `Q ${right} ${top} ${right} ${top + r}`,
+          `V ${bottom - r}`,
+          `Q ${right} ${bottom} ${right - r} ${bottom}`,
+          `H ${left + r}`,
+          `Q ${left} ${bottom} ${left} ${bottom - r}`,
+          `V ${top + r}`,
+          `Q ${left} ${top} ${left + r} ${top}`,
+          "Z",
+        ].join(" ");
+      }
+
+      const eyeL = document.getElementById("eyeL");
+      const eyeR = document.getElementById("eyeR");
+      const lidL = document.getElementById("lidL");
+      const lidR = document.getElementById("lidR");
+
+      // Lower-lid mask: an ellipse whose top edge rises `curve` px into the
+      // eye from its bottom, turning the eye into a smooth happy crescent.
+      function placeLid(lid, cx, p, blink) {
+        const h = Math.max(3, p.h * blink);
+        const bottom = MID_Y + p.y + h / 2;
+        const rise = Math.max(0, p.curve) * blink;
+        lid.setAttribute("cx", cx + p.gaze);
+        lid.setAttribute("cy", bottom - rise + 26);
+      }
+
+      function stepBlink(now) {
+        if (rig.mood === "sleeping" || rig.mood === "tired") {
+          rig.blink = 1;
+          rig.blinkPhase = "open";
+          return;
+        }
+        if (rig.blinkPhase === "open" && now >= rig.nextBlinkAt) {
+          rig.blinkPhase = "closing";
+        }
+        if (rig.blinkPhase === "closing") {
+          rig.blink = Math.max(0.08, rig.blink - 0.28);
+          if (rig.blink <= 0.08) rig.blinkPhase = "opening";
+        } else if (rig.blinkPhase === "opening") {
+          rig.blink = Math.min(1, rig.blink + 0.22);
+          if (rig.blink >= 1) {
+            rig.blinkPhase = "open";
+            rig.nextBlinkAt = now + 2200 + Math.random() * 4200;
+          }
+        }
+      }
+
+      let lastGazeShift = 0;
+      function stepGaze(now) {
+        if (rig.mood !== "neutral") {
+          rig.target.gaze = 0;
+          return;
+        }
+        if (now - lastGazeShift > 2800 + Math.random() * 1500) {
+          lastGazeShift = now;
+          rig.target.gaze = (Math.random() - 0.5) * 14;
+        }
+      }
+
+      function frame(now) {
+        stepBlink(now);
+        stepGaze(now);
+        const c = rig.current;
+        const t = rig.target;
+        for (const key of ["w", "h", "r", "curve", "y", "gaze"]) {
+          c[key] += (t[key] - c[key]) * 0.12;
+        }
+        // Sleeping breathes: a slow, gentle bob.
+        const breath =
+          rig.mood === "sleeping" ? Math.sin(now / 900) * 1.6 : 0;
+        const p = { ...c, y: c.y + breath };
+        eyeL.setAttribute("d", eyePath(CENTERS[0], p, rig.blink));
+        eyeR.setAttribute("d", eyePath(CENTERS[1], p, rig.blink));
+        placeLid(lidL, CENTERS[0], p, rig.blink);
+        placeLid(lidR, CENTERS[1], p, rig.blink);
+        requestAnimationFrame(frame);
+      }
+      requestAnimationFrame(frame);
+
+      function setMood(mood) {
+        if (rig.mood === mood) return;
+        rig.mood = mood;
+        rig.target = { ...EXPRESSIONS[mood], gaze: 0 };
+      }
+
+      // ---- State from the mesh runtime ----------------------------------
       const invoke =
         window.__TAURI__?.core?.invoke || window.__TAURI_INTERNALS__?.invoke;
       async function tick() {
         if (!invoke) return;
         try {
-          const usage = await invoke("mesh_serving_usage");
+          const [usage, status] = await Promise.all([
+            invoke("mesh_serving_usage"),
+            invoke("mesh_node_status"),
+          ]);
           const tokens = usage?.tokensServed || 0;
           const inflight = usage?.inflight || 0;
           document.getElementById("count").textContent = tokens.toLocaleString();
-          document.getElementById("face").textContent =
-            inflight > 0 ? "😄" : tokens > 0 ? "😊" : "🙂";
           const nodes = (usage?.peers || 0) + 1;
           document.getElementById("nodes").textContent =
             nodes + (nodes === 1 ? " active node in mesh" : " active nodes in mesh");
+          const state = status?.state;
+          if (state === "running") setMood(inflight > 0 ? "happy" : "neutral");
+          else if (state === "starting") setMood("waking");
+          else if (state === "failed") setMood("tired");
+          else setMood("sleeping");
         } catch {
-          // Mesh not running — keep whatever is shown.
+          setMood("sleeping");
         }
       }
       tick();
