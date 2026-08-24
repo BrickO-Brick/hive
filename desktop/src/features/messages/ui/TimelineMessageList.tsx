@@ -33,6 +33,7 @@ import { UnreadDivider } from "./UnreadDivider";
 import { useTimelineRetention } from "./useTimelineRetention";
 import { useUpwardPaginationWheel } from "./useUpwardPaginationWheel";
 import { useVirtualizedBottomSettle } from "./useVirtualizedBottomSettle";
+import { getVirtualMessageScrollOptions } from "./virtualMessageScroll";
 
 export type TimelineVirtualizerApi = {
   cancelBottomIntent: () => void;
@@ -670,11 +671,14 @@ function VirtualizedTimelineRows({
         settleAtBottom();
       },
       settleAtBottom,
-      scrollToMessage(messageId) {
+      scrollToMessage(messageId, options) {
         cancelBottomSettle();
         const index = messageItemIndexByIdRef.current.get(messageId);
         if (index === undefined) return false;
-        listRef.current?.scrollToIndex(index, { align: "center" });
+        listRef.current?.scrollToIndex(
+          index,
+          getVirtualMessageScrollOptions(options?.behavior),
+        );
         return true;
       },
     };

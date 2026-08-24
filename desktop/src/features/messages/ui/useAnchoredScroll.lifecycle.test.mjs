@@ -266,6 +266,30 @@ function BottomStateHarness({
   return null;
 }
 
+function VirtualScrollBehaviorHarness({ refs }) {
+  const didRun = React.useRef(false);
+  const anchored = useAnchoredScroll({
+    channelId: "conversation",
+    contentRef: refs.content,
+    isLoading: false,
+    messages: [{ id: "selected" }],
+    scrollContainerRef: refs.scroller,
+    virtualizerOwnsPrependAnchoring: true,
+    virtualScrollToMessage: (messageId, options) => {
+      refs.targetJumps.push({ messageId, options });
+      return true;
+    },
+  });
+  React.useLayoutEffect(() => {
+    if (didRun.current) return;
+    didRun.current = true;
+    refs.targetResult = anchored.scrollToMessage("selected", {
+      behavior: "smooth",
+    });
+  }, [anchored.scrollToMessage, refs]);
+  return null;
+}
+
 function VirtualTargetHarness({ refs }) {
   const didRun = React.useRef(false);
   const bottomApi = useVirtualizedBottomSettle(
@@ -523,6 +547,47 @@ test("user interaction releases and retires a pending pinned target", async () =
   assert.deepEqual(settled, ["selected"]);
   assert.deepEqual(nodes.container.scrollWrites, []);
   await act(async () => root.unmount());
+});
+
+test("virtual search scrolling stays smooth only for an already-rendered target", async () => {
+  for (const rendered of [true, false]) {
+    const content = document.createElement("div");
+    const scroller = document.createElement("div");
+    scroller.clientHeight = 400;
+    scroller.scrollHeight = 1_000;
+    scroller.scrollTop = 0;
+    scroller.getBoundingClientRect = () => ({ bottom: 400, top: 0 });
+    const row = {
+      getBoundingClientRect: () => ({
+        bottom: 290,
+        height: 40,
+        top: 250,
+      }),
+    };
+    scroller.querySelector = () => (rendered ? row : null);
+    scroller.querySelectorAll = () => [];
+    scroller.appendChild(content);
+    const refs = {
+      content: { current: content },
+      scroller: { current: scroller },
+      targetJumps: [],
+      targetResult: null,
+    };
+    const root = createRoot(document.createElement("div"));
+
+    await act(async () => {
+      root.render(React.createElement(VirtualScrollBehaviorHarness, { refs }));
+    });
+
+    assert.deepEqual(refs.targetJumps, [
+      {
+        messageId: "selected",
+        options: { behavior: rendered ? "smooth" : "auto" },
+      },
+    ]);
+    assert.equal(refs.targetResult, rendered ? "centered" : "pending");
+    await act(async () => root.unmount());
+  }
 });
 
 test("mounted virtual target retires bottom intent and delegates the jump to the virtualizer", async () => {

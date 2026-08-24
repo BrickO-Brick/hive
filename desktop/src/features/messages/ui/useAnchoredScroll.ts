@@ -480,9 +480,12 @@ export function useAnchoredScroll({
         // takes the viewport away from that settle; disarming the durable
         // bottom intent stops the ResizeObserver from re-pinning later.
         virtualCancelBottomIntent?.();
+        const virtualScrollBehavior = el
+          ? (options.behavior ?? "auto")
+          : "auto";
         if (
           !virtualScrollToMessage(messageId, {
-            behavior: options.behavior ?? "auto",
+            behavior: virtualScrollBehavior,
           })
         ) {
           return "missing";
