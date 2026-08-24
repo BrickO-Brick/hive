@@ -824,7 +824,7 @@ export function TopbarSearch({
     ) : (
       <div
         aria-label="Recent activity"
-        className="max-h-96 overflow-y-auto"
+        className="buzz-search-scrollbar max-h-96 overflow-y-auto"
         role="listbox"
       >
         <div className="p-1.5">
@@ -891,7 +891,7 @@ export function TopbarSearch({
     </div>
   ) : (
     <div
-      className="max-h-[min(60vh,32rem)] overflow-y-auto"
+      className="buzz-search-scrollbar max-h-[min(60vh,32rem)] overflow-y-auto"
       data-testid="search-results-list"
       role="listbox"
     >

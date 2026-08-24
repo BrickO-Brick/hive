@@ -664,14 +664,29 @@ test("global search exposes a larger scrollable result window", async ({
     exact: true,
   });
   await expect(stickySectionTitle).toHaveCSS("position", "sticky");
-  await expect(page.getByTestId("search-current-channel-control")).toHaveCount(
-    0,
-  );
+  await expect(
+    page.getByTestId("search-current-channel-control"),
+  ).toContainText("Search channel");
   const dimensions = await resultList.evaluate((element) => ({
     clientHeight: element.clientHeight,
+    gutterWidth: element.offsetWidth - element.clientWidth,
     scrollHeight: element.scrollHeight,
+    scrollbarGutter: getComputedStyle(element).scrollbarGutter,
   }));
   expect(dimensions.scrollHeight).toBeGreaterThan(dimensions.clientHeight);
+  expect(dimensions.scrollbarGutter).toBe("stable");
+  expect(dimensions.gutterWidth).toBeGreaterThan(0);
+  const headerStopsBeforeScrollbar = await resultList.evaluate((element) => {
+    const header = element.querySelector<HTMLElement>(
+      '[data-search-section="current-channel-messages"] > div',
+    );
+    if (!header) return false;
+
+    const listRect = element.getBoundingClientRect();
+    const headerRect = header.getBoundingClientRect();
+    return headerRect.right <= listRect.left + element.clientWidth;
+  });
+  expect(headerStopsBeforeScrollbar).toBe(true);
   await resultList.evaluate((element) => {
     element.scrollTop = element.scrollHeight;
   });
