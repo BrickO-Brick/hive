@@ -56,57 +56,63 @@ class AuthNotifier extends AsyncNotifier<AuthState> {
   /// Authenticate with a community. Saves it and switches to it.
   /// Writes to storage directly to avoid circular dependency with community
   /// providers.
-  Future<void> authenticateWithCommunity(Community community) async {
-    final storage = ref.read(communityStorageProvider);
-    await storage.save(community);
-    await storage.saveActiveId(community.id);
-    await syncStoredCommunitySnapshot(ref);
+  Future<void> authenticateWithCommunity(Community community) {
+    return ref.read(communityTransitionProvider).runExclusive(() async {
+      await ref.read(communityTransitionProvider).run();
+      final storage = ref.read(communityStorageProvider);
+      await storage.save(community);
+      await storage.saveActiveId(community.id);
+      await syncStoredCommunitySnapshot(ref);
 
-    // Invalidate community providers so other consumers pick up the new data.
-    ref.invalidate(communityListProvider);
-    ref.invalidate(activeCommunityProvider);
+      // Invalidate community providers so other consumers pick up the new data.
+      ref.invalidate(communityListProvider);
+      ref.invalidate(activeCommunityProvider);
 
-    state = AsyncData(
-      AuthState(status: AuthStatus.authenticated, community: community),
-    );
+      state = AsyncData(
+        AuthState(status: AuthStatus.authenticated, community: community),
+      );
+    });
   }
 
-  Future<void> signOut() async {
-    final storage = ref.read(communityStorageProvider);
-    final activeId = await storage.loadActiveId();
-    if (activeId != null) {
-      final communities = await storage.loadAll();
-      final activeIndex = communities.indexWhere(
-        (community) => community.id == activeId,
-      );
-      if (activeIndex >= 0) {
-        await ref.read(communityPushLeaseDeactivatorProvider)(
-          communities[activeIndex],
+  Future<void> signOut() {
+    return ref.read(communityTransitionProvider).runExclusive(() async {
+      await ref.read(communityTransitionProvider).run();
+      final storage = ref.read(communityStorageProvider);
+      final activeId = await storage.loadActiveId();
+      if (activeId != null) {
+        final communities = await storage.loadAll();
+        final activeIndex = communities.indexWhere(
+          (community) => community.id == activeId,
         );
+        if (activeIndex >= 0) {
+          await ref.read(communityPushLeaseDeactivatorProvider)(
+            communities[activeIndex],
+          );
+        }
+        await storage.remove(activeId);
+        await storage.clearActiveId();
       }
-      await storage.remove(activeId);
-      await storage.clearActiveId();
-    }
 
-    // Check if other communities remain — switch to the next one instead of
-    // forcing the user back to the pairing screen. Refreshing the complete
-    // snapshot also removes revoked keys from the extension Keychain.
-    final remaining = await storage.loadAll();
-    await syncCommunitySnapshot(ref, remaining);
+      // Check if other communities remain — switch to the next one instead of
+      // forcing the user back to the pairing screen. Refreshing the complete
+      // snapshot also removes revoked keys from the extension Keychain.
+      final remaining = await storage.loadAll();
+      await syncCommunitySnapshot(ref, remaining);
 
-    // Invalidate community providers so other consumers pick up the change.
-    ref.invalidate(communityListProvider);
-    ref.invalidate(activeCommunityProvider);
+      // Invalidate community providers so other consumers pick up the change.
+      ref.invalidate(communityListProvider);
+      ref.invalidate(activeCommunityProvider);
 
-    if (remaining.isNotEmpty) {
-      final next = remaining.first;
-      await storage.saveActiveId(next.id);
-      // Re-run build() to validate the next community's credentials.
-      ref.invalidateSelf();
-      await future;
-    } else {
-      state = const AsyncData(AuthState(status: AuthStatus.unauthenticated));
-    }
+      if (remaining.isNotEmpty) {
+        final next = remaining.first;
+        await storage.saveActiveId(next.id);
+        // Re-run build() to validate the next community's credentials.
+        ref.invalidateSelf();
+        await future;
+      } else {
+        state = const AsyncData(AuthState(status: AuthStatus.unauthenticated));
+      }
+    });
   }
 }
 

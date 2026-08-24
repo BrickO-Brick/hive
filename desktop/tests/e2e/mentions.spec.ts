@@ -37,6 +37,37 @@ const DM_THREAD_AGENT_MENTION_ERROR_TEXT =
 const DM_THREAD_MEMBERS_LOADING_ERROR_TEXT =
   "Checking conversation members. Try again in a moment.";
 
+async function expectTextContrast(
+  locator: import("@playwright/test").Locator,
+  minimum = 4.5,
+) {
+  const contrastRatio = await locator.evaluate((element) => {
+    const parseRgb = (value: string) =>
+      (value.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number);
+    const luminance = (color: number[]) =>
+      color
+        .map((channel) => {
+          const value = channel / 255;
+          return value <= 0.04045
+            ? value / 12.92
+            : ((value + 0.055) / 1.055) ** 2.4;
+        })
+        .reduce(
+          (sum, channel, index) =>
+            sum + channel * [0.2126, 0.7152, 0.0722][index],
+          0,
+        );
+    const style = getComputedStyle(element);
+    const foreground = luminance(parseRgb(style.color));
+    const background = luminance(parseRgb(style.backgroundColor));
+    return (
+      (Math.max(foreground, background) + 0.05) /
+      (Math.min(foreground, background) + 0.05)
+    );
+  });
+  expect(contrastRatio).toBeGreaterThanOrEqual(minimum);
+}
+
 /** Locator scoped to the mention autocomplete dropdown inside the composer. */
 function autocomplete(page: import("@playwright/test").Page) {
   return page
@@ -408,45 +439,39 @@ test("duplicate owned agents preserve provenance and exact pubkey selection", as
   expect(fullNpubs).toHaveLength(2);
   expect(new Set(fullNpubs).size).toBe(2);
 
-  const initialRows = dropdown.locator("button");
-  const managedIndex = await initialRows.evaluateAll(
-    (buttons, pubkey) =>
-      buttons.findIndex(
-        (button) =>
-          button.getAttribute("data-testid") === `mention-suggestion-${pubkey}`,
-      ),
-    managedPubkey,
-  );
-  expect(managedIndex).toBeGreaterThanOrEqual(0);
-  for (let index = 0; index < managedIndex; index += 1) {
-    await input.press("ArrowDown");
-  }
-  await input.press("Enter");
-  await input.fill("@carl local");
+  await managedRow
+    .getByRole("button", { name: "Automatically mention carl", exact: true })
+    .click();
+  await expect(
+    page.getByTestId(`composer-address-lock-${managedPubkey}`),
+  ).toBeVisible();
+  await expect(
+    page.getByTestId(`composer-address-lock-${relayPubkey}`),
+  ).toHaveCount(0);
+  await input.fill("local");
   await page.getByTestId("send-message").click();
   await expect
-    .poll(() => readOutgoingMentionPubkeys(page, "@carl local"))
+    .poll(() => readOutgoingMentionPubkeys(page, "local"))
     .toEqual([managedPubkey]);
   await expect(input).toBeEmpty();
 
+  await page.getByTestId(`composer-address-lock-${managedPubkey}`).click();
   await input.fill("@carl");
   const reopenedDropdown = autocomplete(page);
   await expect(reopenedDropdown).toBeVisible();
-  const reopenedRows = reopenedDropdown.locator("button");
-  const relayIndex = await reopenedRows.evaluateAll(
-    (buttons, pubkey) =>
-      buttons.findIndex(
-        (button) =>
-          button.getAttribute("data-testid") === `mention-suggestion-${pubkey}`,
-      ),
-    relayPubkey,
+  const reopenedRelayRow = reopenedDropdown.getByTestId(
+    `mention-suggestion-${relayPubkey}`,
   );
-  expect(relayIndex).toBeGreaterThanOrEqual(0);
-  for (let index = 0; index < relayIndex; index += 1) {
-    await input.press("ArrowDown");
-  }
-  await input.press("Enter");
-  await input.fill("@carl remote");
+  await reopenedRelayRow
+    .getByRole("button", { name: "Automatically mention carl", exact: true })
+    .click();
+  await expect(
+    page.getByTestId(`composer-address-lock-${relayPubkey}`),
+  ).toBeVisible();
+  await expect(
+    page.getByTestId(`composer-address-lock-${managedPubkey}`),
+  ).toHaveCount(0);
+  await input.fill("remote");
   await page.getByTestId("send-message").click();
   const sendWithoutInviting = page.getByRole("button", { name: "Do nothing" });
   try {
@@ -456,7 +481,7 @@ test("duplicate owned agents preserve provenance and exact pubkey selection", as
     // In-channel selections send immediately without opening the prompt.
   }
   await expect
-    .poll(() => readOutgoingMentionPubkeys(page, "@carl remote"))
+    .poll(() => readOutgoingMentionPubkeys(page, "remote"))
     .toEqual([relayPubkey]);
 
   await page.getByTestId("channel-members-trigger").click();
@@ -1146,7 +1171,7 @@ test("selecting a persona mention reuses an existing persona agent", async ({
   await expect(mentionChip).toHaveText("Fizz");
 });
 
-test("managed relay-profile agents with member roles use the agent composer style", async ({
+test("managed relay-profile agents with member roles use the agent address tray", async ({
   page,
 }) => {
   await installMockBridge(page, {
@@ -1176,11 +1201,15 @@ test("managed relay-profile agents with member roles use the agent composer styl
   await expect(dropdown.getByText("agent")).toBeVisible();
   await input.press("Enter");
 
-  const agentMentionChip = input.locator(".agent-mention-highlight", {
-    hasText: "charlie",
-  });
-  await expect(agentMentionChip).toBeVisible();
-  await expect(agentMentionChip).toHaveText("charlie");
+  await expect(input).toBeEmpty();
+  await expect(
+    page.getByTestId(`composer-address-lock-${TEST_IDENTITIES.charlie.pubkey}`),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("status").filter({
+      hasText: "Automatically mentioning charlie",
+    }),
+  ).toBeVisible();
 });
 
 test("other-owned agents without a shared channel are hidden from mentions", async ({
@@ -2499,7 +2528,7 @@ test("system member-joined rows render the joined person as a plain profile name
   await expect(joinedPersonName).not.toHaveAttribute("data-mention");
 });
 
-test("selecting a managed non-member agent from a DM inserts @Name into input", async ({
+test("selecting a managed non-member agent from a DM addresses it", async ({
   page,
 }) => {
   await installMockBridge(page, {
@@ -2524,8 +2553,11 @@ test("selecting a managed non-member agent from a DM inserts @Name into input", 
   await expect(input.locator(".mention-chip")).toHaveCount(0);
   await input.press("Enter");
 
-  await expect(input).toHaveText("@charlie ");
-  await expect(input.locator(".mention-chip")).toBeVisible();
+  await expect(input).toBeEmpty();
+  await expect(input.locator(".mention-chip")).toHaveCount(0);
+  await expect(
+    page.getByTestId(`composer-address-lock-${TEST_IDENTITIES.charlie.pubkey}`),
+  ).toBeVisible();
 });
 
 test("global non-member people can be selected from channel mentions", async ({
@@ -2597,6 +2629,9 @@ test("sent non-member person mention uses the normal mention style", async ({
 test("sent managed non-member agent mention uses the agent mention style", async ({
   page,
 }) => {
+  await page.addInitScript(() => {
+    window.localStorage.setItem("buzz-theme", "buzz-dark");
+  });
   await installMockBridge(page, {
     managedAgents: [
       {
@@ -2626,6 +2661,13 @@ test("sent managed non-member agent mention uses the agent mention style", async
   await expect(mentionChip).toBeVisible();
   await expect(mentionChip).toHaveText("charlie");
   await expect(mentionChip).toHaveClass(/agent-mention-highlight/);
+  await expect(mentionChip).toHaveCSS("background-color", "rgb(252, 223, 105)");
+  await expect(mentionChip).toHaveCSS("color", "rgb(26, 26, 26)");
+  await expectTextContrast(mentionChip);
+  await mentionChip.hover();
+  await expect(mentionChip).toHaveCSS("background-color", "rgb(251, 214, 65)");
+  await expect(mentionChip).toHaveCSS("color", "rgb(26, 26, 26)");
+  await expectTextContrast(mentionChip);
 });
 
 test("mention button opens autocomplete and inserts a selected member", async ({
@@ -2731,6 +2773,13 @@ test("mention text is highlighted in sent messages", async ({ page }) => {
   await expect(mentionChip).toBeVisible();
   await expect(mentionChip).toHaveText("bob");
   await expect(mentionChip).toHaveClass(/inline-chip-icon-human/);
+  await expect(mentionChip).toHaveCSS("background-color", "rgb(252, 223, 105)");
+  await expect(mentionChip).toHaveCSS("color", "rgb(26, 26, 26)");
+  await expectTextContrast(mentionChip);
+  await mentionChip.hover();
+  await expect(mentionChip).toHaveCSS("background-color", "rgb(251, 214, 65)");
+  await expect(mentionChip).toHaveCSS("color", "rgb(26, 26, 26)");
+  await expectTextContrast(mentionChip);
 });
 
 test("clicking author name opens user profile panel", async ({ page }) => {
