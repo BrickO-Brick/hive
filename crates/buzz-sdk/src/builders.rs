@@ -1650,7 +1650,7 @@ pub fn build_workflow_owner_command(
     agent_pubkey: &str,
     workflow_id: Uuid,
     expected_revision: &str,
-    operation: buzz_core::workflow_owner_command::WorkflowOwnerOperation,
+    operation: crate::WorkflowOwnerOperation,
     yaml_definition: Option<&str>,
 ) -> Result<EventBuilder, SdkError> {
     let agent = check_pubkey_hex(agent_pubkey, "agent pubkey")?;
