@@ -36,7 +36,10 @@ const OTHER_THREAD_HEAD_ID = "thread-head-2";
  * Last-opened-wins is a property of these two handlers clearing each other's
  * state, so the assertions are on the state writes, not on a rendered surface.
  */
-async function renderAgentSessionHandlers({ openThreadHeadId = null } = {}) {
+async function renderAgentSessionHandlers({
+  openThreadHeadId = null,
+  requireThreadEditResolution = () => true,
+} = {}) {
   const React = await import("react");
   const { act, renderHook } = await import("@testing-library/react");
   const { useChannelAgentSessions } = await import(
@@ -82,6 +85,7 @@ async function renderAgentSessionHandlers({ openThreadHeadId = null } = {}) {
       openAgentSessionPubkey: state.openAgentSessionPubkey,
       openThreadHeadId: state.openThreadHeadId,
       profilePanelPubkey: state.profilePanelPubkey,
+      requireThreadEditResolution,
       setChannelManagementOpen: (open) => write("channelManagementOpen", open),
       setExpandedThreadReplyIds: () => {},
       setOpenAgentSessionChannelId: (value) =>
@@ -174,4 +178,20 @@ test("back never resurrects a thread from an earlier replacement", async () => {
   await run((handlers) => handlers.backFromAgentSession());
 
   assert.equal(state.openThreadHeadId, OTHER_THREAD_HEAD_ID);
+});
+
+test("an unresolved thread edit blocks the replacement entirely", async () => {
+  // Last-opened-wins runs *after* the thread edit guard `#6575` added, so a
+  // refused open must leave both surfaces exactly as they were — the thread
+  // still on screen with its draft, and no half-applied replacement that
+  // cleared the thread before the guard turned the activity open away.
+  const { run, state } = await renderAgentSessionHandlers({
+    openThreadHeadId: THREAD_HEAD_ID,
+    requireThreadEditResolution: () => false,
+  });
+
+  await run((handlers) => handlers.openAgentSession(AGENT_PUBKEY, "channel-1"));
+
+  assert.equal(state.openAgentSessionPubkey, null);
+  assert.equal(state.openThreadHeadId, THREAD_HEAD_ID);
 });
