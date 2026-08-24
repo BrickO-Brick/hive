@@ -293,6 +293,11 @@ test("creating a project opens its channel conversation", async ({ page }) => {
     page.getByTestId("chat-header").getByTestId("project-channel-icon"),
   ).toBeVisible();
   await expect(
+    page
+      .getByTestId("channel-multi-repo-demo")
+      .getByTestId("project-channel-icon"),
+  ).toBeVisible();
+  await expect(
     page.getByTestId("channel-intro-action-add-files"),
   ).toBeVisible();
   await expect(
