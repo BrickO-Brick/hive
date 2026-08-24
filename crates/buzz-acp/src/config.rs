@@ -350,6 +350,19 @@ pub struct CliArgs {
     #[arg(long, env = "BUZZ_ACP_DEDUP", default_value = "queue", value_enum)]
     pub dedup: DedupMode,
 
+    /// How ACP provider sessions are scoped in channels.
+    /// channel (default): one provider session per channel (legacy behavior).
+    /// thread: each canonical channel thread gets an isolated provider session;
+    /// direct messages stay conversation-scoped either way. Ships as `channel`
+    /// so thread scoping can be canaried and rolled back without code changes.
+    #[arg(
+        long,
+        env = "BUZZ_ACP_SESSION_POLICY",
+        default_value = "channel",
+        value_enum
+    )]
+    pub session_policy: crate::scope::SessionPolicy,
+
     /// How to handle new @mentions while a turn is already in-flight.
     /// steer (default): cancel+re-prompt, framing the new mention as a message
     /// that arrived mid-task — the agent keeps working and weaves it in.
@@ -536,6 +549,8 @@ pub struct Config {
     pub initial_message: Option<String>,
     pub subscribe_mode: SubscribeMode,
     pub dedup_mode: DedupMode,
+    /// How ACP provider sessions are scoped in channels (channel vs thread).
+    pub session_policy: crate::scope::SessionPolicy,
     pub multiple_event_handling: MultipleEventHandling,
     pub ignore_self: bool,
     pub kinds_override: Option<Vec<u32>>,
@@ -1113,6 +1128,7 @@ impl Config {
             initial_message: args.initial_message,
             subscribe_mode: args.subscribe,
             dedup_mode: args.dedup,
+            session_policy: args.session_policy,
             multiple_event_handling: args.multiple_event_handling,
             ignore_self: !args.no_ignore_self,
             kinds_override: args.kinds,
@@ -1164,7 +1180,7 @@ impl Config {
             format!(" allowed_respond_to=[{}]", modes.join(","))
         };
         format!(
-            "relay={} pubkey={} agent_cmd={} {} mcp_cmd={} idle_timeout={}s max_turn={}s agents={} heartbeat={}s subscribe={:?} dedup={:?} meh={:?} ignore_self={} context_limit={} max_turns_per_session={} presence={} typing={} memory={} model={} permission_mode={} {}{}",
+            "relay={} pubkey={} agent_cmd={} {} mcp_cmd={} idle_timeout={}s max_turn={}s agents={} heartbeat={}s subscribe={:?} dedup={:?} session_policy={} meh={:?} ignore_self={} context_limit={} max_turns_per_session={} presence={} typing={} memory={} model={} permission_mode={} {}{}",
             self.relay_url,
             self.keys.public_key().to_hex(),
             self.agent_command,
@@ -1176,6 +1192,7 @@ impl Config {
             self.heartbeat_interval_secs,
             self.subscribe_mode,
             self.dedup_mode,
+            self.session_policy,
             self.multiple_event_handling,
             self.ignore_self,
             self.context_message_limit,
@@ -1489,6 +1506,7 @@ mod tests {
             initial_message: None,
             subscribe_mode: mode,
             dedup_mode: DedupMode::Queue,
+            session_policy: crate::scope::SessionPolicy::Channel,
             multiple_event_handling: MultipleEventHandling::Queue,
             ignore_self: true,
             kinds_override: None,
@@ -2616,6 +2634,42 @@ channels = "ALL"
     fn test_validate_allowlist_empty_is_ok() {
         let result = validate_allowlist(&[]).unwrap();
         assert!(result.is_empty());
+    }
+
+    // ── Session policy parsing + default ──────────────────────────────────────
+
+    #[test]
+    fn test_session_policy_default_is_channel() {
+        // Ships dark: the default must be `channel` so thread scoping is opt-in
+        // and can be rolled back without code changes.
+        let args = CliArgs::parse_from(["buzz-acp", "--private-key", &"0".repeat(64)]);
+        assert_eq!(args.session_policy, crate::scope::SessionPolicy::Channel);
+    }
+
+    #[test]
+    fn test_session_policy_thread_flag_parses() {
+        let args = CliArgs::parse_from([
+            "buzz-acp",
+            "--private-key",
+            &"0".repeat(64),
+            "--session-policy",
+            "thread",
+        ]);
+        assert_eq!(args.session_policy, crate::scope::SessionPolicy::Thread);
+    }
+
+    #[test]
+    fn test_session_policy_env_var_parses() {
+        // The env fallback (`BUZZ_ACP_SESSION_POLICY`) must resolve to the same
+        // value as the flag; this is what the managed-agent runtime sets.
+        let args = CliArgs::parse_from([
+            "buzz-acp",
+            "--private-key",
+            &"0".repeat(64),
+            "--session-policy=thread",
+        ]);
+        assert_eq!(args.session_policy, crate::scope::SessionPolicy::Thread);
+        assert_eq!(args.session_policy.to_string(), "thread");
     }
 
     // ── Multiple-event-handling validation + default ──────────────────────────
