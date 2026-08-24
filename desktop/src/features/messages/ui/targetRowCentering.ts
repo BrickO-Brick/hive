@@ -9,34 +9,41 @@ function resolveCssLength(value: string) {
     : parsed;
 }
 
+function getUsableViewportBounds(container: HTMLDivElement) {
+  const containerRect = container.getBoundingClientRect();
+  const styles = getComputedStyle(container);
+  return {
+    bottom:
+      containerRect.bottom -
+      resolveCssLength(styles.getPropertyValue("--composer-overlay-height")),
+    top:
+      containerRect.top +
+      resolveCssLength(styles.getPropertyValue("--channel-top-chrome-height")),
+  };
+}
+
 export function getTargetRowCenterOffset(
   row: Element,
   container: HTMLDivElement,
 ) {
   const rowRect = row.getBoundingClientRect();
-  const containerRect = container.getBoundingClientRect();
-  const styles = getComputedStyle(container);
-  const viewportTop =
-    containerRect.top +
-    resolveCssLength(styles.getPropertyValue("--channel-top-chrome-height"));
-  const viewportBottom =
-    containerRect.bottom -
-    resolveCssLength(styles.getPropertyValue("--composer-overlay-height"));
+  const viewport = getUsableViewportBounds(container);
   return (
-    (rowRect.top + rowRect.bottom) / 2 - (viewportTop + viewportBottom) / 2
+    (rowRect.top + rowRect.bottom) / 2 - (viewport.top + viewport.bottom) / 2
   );
 }
 
 /**
  * A virtualized jump is complete only when the row's midpoint reaches the
  * viewport midpoint. Two pixels absorb fractional layout and Virtua's rounded
- * scroll offsets. The newest row is the one intentional exception: the list
- * clamps it to the physical floor, where exact centering is impossible.
+ * scroll offsets. Boundary rows are the intentional exceptions: the list
+ * clamps the oldest row to the physical ceiling and the newest row to the
+ * physical floor, where exact centering is impossible.
  */
 export function isTargetRowCentered(
   row: Element,
   container: HTMLDivElement,
-  allowBottomClamp: boolean,
+  boundary: "none" | "top" | "bottom",
   isAtBottom: (container: HTMLDivElement) => boolean,
 ) {
   const rowRect = row.getBoundingClientRect();
@@ -47,7 +54,11 @@ export function isTargetRowCentered(
   ) {
     return true;
   }
-  return allowBottomClamp && isAtBottom(container);
+  const viewport = getUsableViewportBounds(container);
+  const rowIsVisible =
+    rowRect.bottom > viewport.top && rowRect.top < viewport.bottom;
+  if (boundary === "top") return rowIsVisible && container.scrollTop <= 0;
+  return boundary === "bottom" && rowIsVisible && isAtBottom(container);
 }
 
 export function targetRowNeedsCenterCorrection(offset: number) {

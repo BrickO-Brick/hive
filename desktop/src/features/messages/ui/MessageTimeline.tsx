@@ -361,6 +361,7 @@ const MessageTimelineBase = React.forwardRef<
     scrollContainerRef: activeScrollContainerRef,
     splitPanelOpen: splitThreadPanelOpen,
     targetMessageId,
+    topBoundaryReached: renderedHistoryExhausted,
     virtualCancelBottomIntent: timelineVirtualizerApi?.cancelBottomIntent,
     virtualScrollBy: timelineVirtualizerApi?.scrollBy,
     virtualScrollToMessage: timelineVirtualizerApi?.scrollToMessage,

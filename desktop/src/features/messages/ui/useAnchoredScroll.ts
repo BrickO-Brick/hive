@@ -98,6 +98,7 @@ export function useAnchoredScroll({
   targetMessageId = null,
   highlightTargetMessage = true,
   pinTargetCentered = false,
+  topBoundaryReached = false,
   onTargetReached,
   onTargetSettled,
   virtualCancelBottomIntent,
@@ -151,7 +152,10 @@ export function useAnchoredScroll({
   const programmaticScrollRafRef = React.useRef<number | null>(null);
   const targetSettleRafRef = React.useRef<number | null>(null);
   const targetRetryRafRef = React.useRef<number | null>(null);
-  const virtualTargetJumpRef = React.useRef<string | null>(null);
+  const virtualTargetJumpRef = React.useRef<{
+    messageId: string;
+    messageCount: number;
+  } | null>(null);
   const virtualTargetCorrectionAppliedRef = React.useRef(false);
   const targetCorrectionRafRef = React.useRef<number | null>(null);
   const [targetRetryVersion, setTargetRetryVersion] = React.useState(0);
@@ -394,14 +398,11 @@ export function useAnchoredScroll({
       const el = container.querySelector<HTMLElement>(
         `[data-message-id="${messageId}"]`,
       );
+      if (virtualizerOwnsPrependAnchoring && !virtualScrollToMessage)
+        return "pending"; // Wait for Virtua's imperative API.
       if (virtualizerOwnsPrependAnchoring && virtualScrollToMessage) {
-        // The virtualizer is the only scroll writer here. Its imperative jump
-        // keeps correcting `scrollTop` for several frames while unmeasured
-        // rows commit, so a direct `container.scrollTo` would be overwritten —
-        // the list's own first-commit bottom settle is exactly such a jump. A
-        // new jump cancels the pending one, which is how target navigation
-        // takes the viewport away from that settle; disarming the durable
-        // bottom intent stops the ResizeObserver from re-pinning later.
+        // Virtua is the sole scroll writer; a new jump cancels its initial
+        // bottom settle and the cancel call prevents later re-pinning.
         virtualCancelBottomIntent?.();
         const virtualScrollBehavior = el
           ? (options.behavior ?? "auto")
@@ -416,7 +417,10 @@ export function useAnchoredScroll({
               );
             })()
           : false;
-        if (virtualTargetJumpRef.current !== messageId || !rowIsVisible) {
+        const jumpMatchesCurrentModel =
+          virtualTargetJumpRef.current?.messageId === messageId &&
+          virtualTargetJumpRef.current.messageCount === messages.length;
+        if (!jumpMatchesCurrentModel) {
           if (
             !virtualScrollToMessage(messageId, {
               behavior: virtualScrollBehavior,
@@ -424,7 +428,10 @@ export function useAnchoredScroll({
           ) {
             return "missing";
           }
-          virtualTargetJumpRef.current = messageId;
+          virtualTargetJumpRef.current = {
+            messageId,
+            messageCount: messages.length,
+          };
           virtualTargetCorrectionAppliedRef.current = false;
         }
         if (
@@ -466,18 +473,19 @@ export function useAnchoredScroll({
           });
         }
         anchorRef.current = { kind: "message", messageId, topOffset: 0 };
-        // The channel reset seeds `virtualizerAtBottomRef` to true as a
-        // default, and both the viewport-resize and append settles trust it.
-        // A ResizeObserver fires once on observe, so leaving that default in
-        // place lets the first resize callback after this jump pull the view
-        // straight back to the floor. Record what the jump knows instead; the
-        // virtualizer's next real bottom report refines it.
-        // Handled only once the row is rendered and actually in view. Until
-        // then the jump is in flight; the caller retries on range change.
-        const isNewestTarget = messages.at(-1)?.id === messageId;
+        // Completion requires midpoint alignment or a confirmed boundary.
+        const targetIndex = messages.findIndex(
+          (message) => message.id === messageId,
+        );
+        const targetBoundary =
+          targetIndex === 0 && topBoundaryReached
+            ? "top"
+            : targetIndex === messages.length - 1
+              ? "bottom"
+              : "none";
         if (
           !el ||
-          !isTargetRowCentered(el, container, isNewestTarget, isAtBottomNow)
+          !isTargetRowCentered(el, container, targetBoundary, isAtBottomNow)
         ) {
           virtualizerAtBottomRef.current = false;
           setIsAtBottom(false);
@@ -550,6 +558,7 @@ export function useAnchoredScroll({
       highlightMessage,
       messages,
       pinTargetCentered,
+      topBoundaryReached,
       scrollContainerRef,
       virtualCancelBottomIntent,
       virtualScrollBy,

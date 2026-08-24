@@ -157,6 +157,7 @@ import React from "react";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 
+import { isTargetRowCentered } from "./targetRowCentering.ts";
 import { useAnchoredScroll } from "./useAnchoredScroll.ts";
 import { useVirtualizedBottomSettle } from "./useVirtualizedBottomSettle.ts";
 
@@ -270,13 +271,16 @@ function BottomStateHarness({
   return null;
 }
 
-function VirtualScrollBehaviorHarness({ refs }) {
-  const didRun = React.useRef(false);
+function VirtualScrollBehaviorHarness({
+  messages = [{ id: "selected" }],
+  refs,
+}) {
+  const lastRunMessageCount = React.useRef(null);
   const anchored = useAnchoredScroll({
     channelId: "conversation",
     contentRef: refs.content,
     isLoading: false,
-    messages: [{ id: "selected" }],
+    messages,
     scrollContainerRef: refs.scroller,
     virtualizerOwnsPrependAnchoring: true,
     virtualScrollBy: (offset) => {
@@ -289,12 +293,12 @@ function VirtualScrollBehaviorHarness({ refs }) {
     },
   });
   React.useLayoutEffect(() => {
-    if (didRun.current) return;
-    didRun.current = true;
+    if (lastRunMessageCount.current === messages.length) return;
+    lastRunMessageCount.current = messages.length;
     refs.targetResult = anchored.scrollToMessage("selected", {
       behavior: "smooth",
     });
-  }, [anchored.scrollToMessage, refs]);
+  }, [anchored.scrollToMessage, messages.length, refs]);
   return null;
 }
 
@@ -557,6 +561,42 @@ test("user interaction releases and retires a pending pinned target", async () =
   await act(async () => root.unmount());
 });
 
+test("boundary-clamped targets settle only at their matching physical edge", () => {
+  const container = document.createElement("div");
+  container.scrollTop = 0;
+  container.getBoundingClientRect = () => ({ bottom: 400, top: 0 });
+  const row = {
+    getBoundingClientRect: () => ({ bottom: 40, height: 40, top: 0 }),
+  };
+  const isAtBottom = () => false;
+
+  assert.equal(isTargetRowCentered(row, container, "top", isAtBottom), true);
+  assert.equal(isTargetRowCentered(row, container, "none", isAtBottom), false);
+  assert.equal(
+    isTargetRowCentered(row, container, "bottom", isAtBottom),
+    false,
+  );
+
+  row.getBoundingClientRect = () => ({
+    bottom: 2_740,
+    height: 40,
+    top: 2_700,
+  });
+  assert.equal(
+    isTargetRowCentered(row, container, "top", isAtBottom),
+    false,
+    "an unrendered indexed jump can report scrollTop zero before the row arrives",
+  );
+
+  row.getBoundingClientRect = () => ({ bottom: 40, height: 40, top: 0 });
+  container.scrollTop = 1;
+  assert.equal(isTargetRowCentered(row, container, "top", isAtBottom), false);
+  assert.equal(
+    isTargetRowCentered(row, container, "bottom", () => true),
+    true,
+  );
+});
+
 test("virtual search scrolling stays smooth only for an already-rendered target", async () => {
   for (const rendered of [true, false]) {
     const content = document.createElement("div");
@@ -598,6 +638,51 @@ test("virtual search scrolling stays smooth only for an already-rendered target"
     assert.equal(refs.targetResult, rendered ? "centered" : "pending");
     await act(async () => root.unmount());
   }
+});
+
+test("a pending virtual jump is retried when the indexed message model grows", async () => {
+  const content = document.createElement("div");
+  const scroller = document.createElement("div");
+  scroller.clientHeight = 400;
+  scroller.scrollHeight = 1_000;
+  scroller.scrollTop = 0;
+  scroller.getBoundingClientRect = () => ({ bottom: 400, top: 0 });
+  scroller.querySelector = () => null;
+  scroller.querySelectorAll = () => [];
+  scroller.appendChild(content);
+  const refs = {
+    content: { current: content },
+    scroller: { current: scroller },
+    rowTop: 1_000,
+    scrollOffsets: [],
+    targetJumps: [],
+    targetResult: null,
+  };
+  const root = createRoot(document.createElement("div"));
+
+  await act(async () => {
+    root.render(
+      React.createElement(VirtualScrollBehaviorHarness, {
+        messages: [{ id: "selected" }],
+        refs,
+      }),
+    );
+  });
+  await act(async () => {
+    root.render(
+      React.createElement(VirtualScrollBehaviorHarness, {
+        messages: [{ id: "selected" }, { id: "later" }],
+        refs,
+      }),
+    );
+  });
+
+  assert.equal(refs.targetJumps.length, 2);
+  assert.deepEqual(
+    refs.targetJumps.map(({ messageId }) => messageId),
+    ["selected", "selected"],
+  );
+  await act(async () => root.unmount());
 });
 
 test("virtual centering corrects rendered geometry on the following frame", async () => {

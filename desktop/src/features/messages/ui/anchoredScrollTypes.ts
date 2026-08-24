@@ -17,6 +17,7 @@ export type UseAnchoredScrollOptions = {
   targetMessageId?: string | null;
   highlightTargetMessage?: boolean;
   pinTargetCentered?: boolean;
+  topBoundaryReached?: boolean;
   onTargetReached?: (messageId: string) => void;
   onTargetSettled?: (messageId: string) => void;
   virtualCancelBottomIntent?: () => void;
