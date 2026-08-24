@@ -569,14 +569,8 @@ export function ChannelScreen({
       welcomeAgentCreate.openAddAgent(() => setIsAddBotOpen(true), options),
     [welcomeAgentCreate],
   );
-  const handleOpenMembersSidebar = React.useCallback(
-    () => setIsMembersSidebarOpen(true),
-    [],
-  );
-  const handleCloseChannelManagement = React.useCallback(
-    () => setChannelManagementOpen(false),
-    [setChannelManagementOpen],
-  );
+  const handleOpenMembersSidebar = () => setIsMembersSidebarOpen(true);
+  const handleCloseChannelManagement = () => setChannelManagementOpen(false);
   const handleChannelManagementDeleted = React.useCallback(() => {
     setChannelManagementOpen(false);
     void goHome({ replace: true });
@@ -637,9 +631,6 @@ export function ChannelScreen({
         isPlaceholderData: messagesQuery.isPlaceholderData,
         dataLength: messagesQuery.data?.length ?? null,
       },
-      // A persisted head only counts as hydrated when it has rows to paint
-      // (channelHeadCache.ts), so this bypass never settles onto an empty
-      // placeholder while the authoritative refresh is still in flight.
       hasSettledThisChannel ||
         (activeChannelId !== null &&
           hasPersistedHydratedChannel(queryClient, activeChannelId)),
@@ -769,8 +760,7 @@ export function ChannelScreen({
         activeDmHeaderParticipants={activeDmHeaderParticipants}
         activeDmPresenceStatus={activeDmPresenceStatus}
         chromeWrapperRef={channelHeaderChromeRef}
-        currentPubkey={currentPubkey}
-        headerEndActions={headerEndActions}
+        {...{ currentPubkey, headerEndActions }}
         isAddBotOpen={isAddBotOpen}
         isJoining={joinChannelMutation.isPending}
         onAddBotOpenChange={setIsAddBotOpen}
@@ -875,12 +865,11 @@ export function ChannelScreen({
                   canResetThreadPanelWidth={canResetThreadPanelWidth}
                   fetchOlder={fetchOlder}
                   header={channelHeader}
-                  idleAuxiliaryPanel={idleAuxiliaryPanel}
-                  idleAuxiliaryTitle={idleAuxiliaryTitle}
+                  {...{ idleAuxiliaryPanel, idleAuxiliaryTitle }}
                   hasOlderMessages={hasOlderMessages}
                   historyExhausted={historyExhausted}
+                  {...{ onAddFiles }}
                   onAddAgent={handleOpenAddBot}
-                  onAddFiles={onAddFiles}
                   onBrowseChannels={openBrowseChannels}
                   onCreateChannel={openCreateChannel}
                   onOpenMembers={handleOpenMembersSidebar}
@@ -934,8 +923,8 @@ export function ChannelScreen({
                       ? handleBackFromAgentSession
                       : undefined
                   }
+                  {...{ onCloseIdleAuxiliaryPanel }}
                   onCloseChannelManagement={handleCloseChannelManagement}
-                  onCloseIdleAuxiliaryPanel={onCloseIdleAuxiliaryPanel}
                   onCloseThread={handleCloseThread}
                   onDelete={
                     activeChannel?.archivedAt ? undefined : handleDelete
