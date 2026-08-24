@@ -217,6 +217,7 @@ export function ChannelScreen({
     activeChannelId,
     activeChannel?.isMember,
     activeReadAt,
+    !isDedicatedActivityWindow,
   );
   React.useEffect(() => {
     if (!activeChannelId) {
