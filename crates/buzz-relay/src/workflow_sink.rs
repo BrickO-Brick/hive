@@ -8,7 +8,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Weak};
 
-use buzz_core::kind::{KIND_STREAM_MESSAGE, KIND_WORKFLOW_AGENT_WAKE, KIND_WORKFLOW_DEF};
+use buzz_core::kind::{KIND_STREAM_MESSAGE, KIND_WORKFLOW_AGENT_WAKE};
 use buzz_core::tenant::CommunityId;
 use buzz_workflow::action_sink::{ActionSink, ActionSinkError, WorkflowMessageContext};
 use chrono::Utc;
