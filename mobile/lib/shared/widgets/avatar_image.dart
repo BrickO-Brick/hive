@@ -8,6 +8,8 @@ import 'package:hooks_riverpod/hooks_riverpod.dart';
 
 import '../animated_avatar.dart';
 import '../community/community_provider.dart';
+import '../emoji/emoji_avatar.dart';
+import '../emoji/native_emoji_glyph.dart';
 import '../push/push_presentation_cache.dart';
 import '../relay/relay.dart';
 
@@ -90,16 +92,16 @@ class _AvatarImageContentState extends ConsumerState<AvatarImageContent> {
       _EmojiAvatarSource(:final emoji, :final color) => ColoredBox(
         color: color,
         child: LayoutBuilder(
-          builder: (_, constraints) => Center(
-            child: Text(
-              emoji,
-              textScaler: TextScaler.noScaling,
-              style: TextStyle(
-                fontSize: constraints.biggest.shortestSide * 258 / 512,
-                height: 1,
+          builder: (_, constraints) {
+            final glyphSize = constraints.biggest.shortestSide * 258 / 512;
+            return Center(
+              child: NativeEmojiGlyph(
+                emoji: emoji,
+                size: glyphSize,
+                opticalBoxSize: glyphSize,
               ),
-            ),
-          ),
+            );
+          },
         ),
       ),
       _SvgAvatarSource(:final svg) => SvgPicture.string(
@@ -141,36 +143,19 @@ sealed class _AvatarSource {
       if (data.mimeType == 'image/svg+xml') {
         final Uint8List bytes = data.contentAsBytes();
         final svg = utf8.decode(bytes);
-        return _parseEmojiAvatar(svg) ?? _SvgAvatarSource(svg);
+        final emojiAvatar = parseEmojiAvatarSvg(svg);
+        return emojiAvatar == null
+            ? _SvgAvatarSource(svg)
+            : _EmojiAvatarSource(
+                emojiAvatar.emoji,
+                Color(emojiAvatar.colorValue),
+              );
       }
       return _RasterDataAvatarSource(data.contentAsBytes());
     } on FormatException {
       return null;
     }
   }
-}
-
-_EmojiAvatarSource? _parseEmojiAvatar(String svg) {
-  final colorValue = RegExp(
-    r'<rect\b[^>]*\sfill="([^"]+)"',
-  ).firstMatch(svg)?[1];
-  final emojiValue = RegExp(r'<text\b[^>]*>(.*?)</text>').firstMatch(svg)?[1];
-  if (colorValue == null || emojiValue == null) return null;
-
-  final color = _parseHexColor(colorValue);
-  if (color == null) return null;
-  final emoji = emojiValue
-      .replaceAll('&gt;', '>')
-      .replaceAll('&lt;', '<')
-      .replaceAll('&amp;', '&');
-  return _EmojiAvatarSource(emoji, color);
-}
-
-Color? _parseHexColor(String value) {
-  final hex = value.startsWith('#') ? value.substring(1) : value;
-  if (!RegExp(r'^[0-9a-fA-F]{6}$').hasMatch(hex)) return null;
-  final rgb = int.tryParse(hex, radix: 16);
-  return rgb == null ? null : Color(0xFF000000 | rgb);
 }
 
 class _EmojiAvatarSource extends _AvatarSource {

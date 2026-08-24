@@ -15,6 +15,9 @@ class Community {
   final String? nsec;
   final SensitiveActionPolicy sensitiveActionPolicy;
   final BuzzPushLeaseSubscriptionState pushSubscriptionState;
+
+  /// Whether invite-created starter channels still need to be recovered.
+  final bool starterSetupIncomplete;
   final DateTime addedAt;
 
   const Community({
@@ -25,6 +28,7 @@ class Community {
     this.nsec,
     this.sensitiveActionPolicy = SensitiveActionPolicy.disabledByUser,
     this.pushSubscriptionState = const BuzzPushLeaseSubscriptionState.desired(),
+    this.starterSetupIncomplete = false,
     required this.addedAt,
   });
 
@@ -35,6 +39,7 @@ class Community {
     String? nsec,
     SensitiveActionPolicy sensitiveActionPolicy =
         SensitiveActionPolicy.disabledByUser,
+    bool starterSetupIncomplete = false,
   }) {
     return Community(
       id: _uuid.v4(),
@@ -43,6 +48,7 @@ class Community {
       pubkey: pubkey,
       nsec: nsec,
       sensitiveActionPolicy: sensitiveActionPolicy,
+      starterSetupIncomplete: starterSetupIncomplete,
       addedAt: DateTime.now(),
     );
   }
@@ -54,6 +60,7 @@ class Community {
     Object? nsec = _sentinel,
     SensitiveActionPolicy? sensitiveActionPolicy,
     BuzzPushLeaseSubscriptionState? pushSubscriptionState,
+    bool? starterSetupIncomplete,
   }) {
     return Community(
       id: id,
@@ -65,6 +72,8 @@ class Community {
           sensitiveActionPolicy ?? this.sensitiveActionPolicy,
       pushSubscriptionState:
           pushSubscriptionState ?? this.pushSubscriptionState,
+      starterSetupIncomplete:
+          starterSetupIncomplete ?? this.starterSetupIncomplete,
       addedAt: addedAt,
     );
   }
@@ -77,6 +86,7 @@ class Community {
     if (nsec != null) 'nsec': nsec,
     'sensitiveActionPolicy': sensitiveActionPolicy.name,
     'pushSubscriptionState': pushSubscriptionState.toJson(),
+    'starterSetupIncomplete': starterSetupIncomplete,
     'addedAt': addedAt.toIso8601String(),
   };
 
@@ -95,6 +105,7 @@ class Community {
         : BuzzPushLeaseSubscriptionState.fromJson(
             Map<String, dynamic>.from(json['pushSubscriptionState'] as Map),
           ),
+    starterSetupIncomplete: json['starterSetupIncomplete'] as bool? ?? false,
     addedAt: DateTime.parse(json['addedAt'] as String),
   );
 

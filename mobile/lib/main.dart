@@ -3,6 +3,7 @@ import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app.dart';
+import 'features/invites/invite_join_provider.dart';
 import 'shared/push/push_bootstrap.dart';
 import 'shared/push/push_bridge.dart';
 import 'shared/theme/theme_provider.dart';
@@ -19,7 +20,13 @@ Future<void> runBuzzApp(Widget app) async {
 
   runApp(
     ProviderScope(
-      overrides: [savedPrefsProvider.overrideWithValue(prefs)],
+      overrides: [
+        savedPrefsProvider.overrideWithValue(prefs),
+        inviteJoinRecoveryProvider.overrideWith(
+          (ref) =>
+          (scope) => buildMobileInviteJoinRecovery(ref, scope),
+        ),
+      ],
       child: BuzzPushBootstrap(child: app),
     ),
   );
