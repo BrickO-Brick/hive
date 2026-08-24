@@ -67,6 +67,7 @@ import { useLoadArchivedObserverEvents } from "@/features/agents/ui/useObserverE
 import { useLoadOlderOnScroll } from "@/features/messages/ui/useLoadOlderOnScroll";
 import type { ChannelAgentSessionAgent } from "./useChannelAgentSessions";
 import { useChannelReference } from "@/features/channels/openChannelDirectory";
+import { useCommunities } from "@/features/communities/useCommunities";
 
 type AgentSessionThreadPanelProps = {
   agent: ChannelAgentSessionAgent;
@@ -102,6 +103,7 @@ export function AgentSessionThreadPanel({
   widthPx,
   transparentChrome = false,
 }: AgentSessionThreadPanelProps) {
+  const { activeCommunity } = useCommunities();
   const isDedicatedActivityWindow = isAgentActivityWindow();
   const isLive = isManagedAgentActive(agent);
   const isOverlay = useIsThreadPanelOverlay();
@@ -260,12 +262,13 @@ export function AgentSessionThreadPanel({
   const animateActivity = useTranscriptAnimationEnabled();
   const showTimestamps = useTranscriptTimestampsEnabled();
   async function handleOpenExternalWindow() {
-    if (!sessionChannelId || isDedicatedActivityWindow) {
+    if (!sessionChannelId || !activeCommunity || isDedicatedActivityWindow) {
       return;
     }
 
     try {
       const openedNativeWindow = await openAgentActivityWindow(
+        activeCommunity.id,
         sessionChannelId,
         agent.pubkey,
       );

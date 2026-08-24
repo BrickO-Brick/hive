@@ -399,6 +399,7 @@ function CommunityApp({
     communityKey,
     sharedIdentity,
     isFindingCommunityAfterLeave,
+    currentCompanionWindowKind() === null,
   );
 
   const transitionCommunity = useCallback(

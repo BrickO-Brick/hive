@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 
 import {
   acceptsNativeDeepLinks,
+  companionCommunityIdForHash,
   companionWindowKindForLabel,
 } from "./companionWindow.ts";
 
@@ -26,5 +27,20 @@ describe("acceptsNativeDeepLinks", () => {
     assert.equal(acceptsNativeDeepLinks(null), true);
     assert.equal(acceptsNativeDeepLinks("huddle"), false);
     assert.equal(acceptsNativeDeepLinks("agent-activity"), false);
+  });
+});
+
+describe("companionCommunityIdForHash", () => {
+  it("reads and decodes immutable community identity from the route", () => {
+    assert.equal(
+      companionCommunityIdForHash(
+        "#/channels/channel?community=community+%26+one&agentSession=agent",
+      ),
+      "community & one",
+    );
+  });
+
+  it("returns null when the bootstrap contract is absent", () => {
+    assert.equal(companionCommunityIdForHash("#/channels/channel"), null);
   });
 });

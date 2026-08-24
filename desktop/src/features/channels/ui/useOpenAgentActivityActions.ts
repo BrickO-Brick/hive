@@ -7,20 +7,25 @@ import { openAgentActivityWindow } from "@/shared/api/agentActivityWindow";
 type OpenAgentSession = (pubkey: string, channelId?: string | null) => void;
 
 export function useOpenAgentActivityActions(
+  activeCommunityId: string | null,
   activeChannelId: string | null,
   openAgentSession: OpenAgentSession,
 ) {
   const openInExternalWindow = React.useCallback(
     (pubkey: string, channelId?: string | null) => {
       const destinationChannelId = channelId ?? activeChannelId;
-      if (!destinationChannelId) return;
+      if (!destinationChannelId || !activeCommunityId) return;
 
       if (isAgentActivityWindow()) {
         openAgentSession(pubkey, destinationChannelId);
         return;
       }
 
-      void openAgentActivityWindow(destinationChannelId, pubkey)
+      void openAgentActivityWindow(
+        activeCommunityId,
+        destinationChannelId,
+        pubkey,
+      )
         .then((openedNativeWindow) => {
           if (!openedNativeWindow) {
             openAgentSession(pubkey, destinationChannelId);
@@ -31,7 +36,7 @@ export function useOpenAgentActivityActions(
           toast.error("Couldn't open the agent activity window.");
         });
     },
-    [activeChannelId, openAgentSession],
+    [activeChannelId, activeCommunityId, openAgentSession],
   );
   const openInApp = React.useCallback(
     (pubkey: string, channelId?: string | null) => {

@@ -589,7 +589,11 @@ export function ChannelScreen({
   const {
     openInApp: handleOpenAgentActivity,
     openInExternalWindow: handleOpenAgentActivityExternal,
-  } = useOpenAgentActivityActions(activeChannelId, handleOpenAgentSession);
+  } = useOpenAgentActivityActions(
+    activeCommunity?.id ?? null,
+    activeChannelId,
+    handleOpenAgentSession,
+  );
   const { handleOpenProfilePanel, handleCloseProfilePanel, handleOpenDm } =
     useChannelProfilePanel({
       closeAgentSession: handleCloseAgentSession,
