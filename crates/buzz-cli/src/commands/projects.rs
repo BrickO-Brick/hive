@@ -690,8 +690,30 @@ async fn ensure_default_create_repo(
         Some(channel),
     )?;
     let event = client.sign_event(builder)?;
-    client.submit_event(event).await?;
+    let raw = client.submit_event(event).await?;
+    let winner = fetch_own_repo_announcement(client, &repo_id).await?;
+    verify_default_repo_write(&raw, winner.as_ref(), channel)?;
     Ok(repo_id)
+}
+
+fn verify_default_repo_write(
+    raw: &str,
+    winner: Option<&Event>,
+    channel: &str,
+) -> Result<(), CliError> {
+    match parse_write_response(
+        raw,
+        "default repository changed concurrently; checking the winning head",
+    ) {
+        Ok(_) | Err(CliError::Conflict(_)) => {}
+        Err(error) => return Err(error),
+    }
+    let winner = winner.ok_or_else(|| {
+        CliError::Conflict(
+            "default repository write was not authoritative; retry project creation".into(),
+        )
+    })?;
+    require_repo_channel_binding(winner, channel)
 }
 
 // ── Validation helpers ────────────────────────────────────────────────────────
@@ -786,6 +808,55 @@ mod tests {
     use nostr::Tag;
 
     use super::*;
+
+    #[test]
+    fn default_repo_write_must_be_accepted_and_authoritative_for_home() {
+        let channel = "11111111-1111-4111-8111-111111111111";
+        let keys = nostr::Keys::generate();
+        let matching =
+            build_create_announcement("app", Some("App"), None, &[], None, &[], Some(channel))
+                .unwrap()
+                .sign_with_keys(&keys)
+                .unwrap();
+        assert!(verify_default_repo_write(
+            r#"{"accepted":true,"message":""}"#,
+            Some(&matching),
+            channel
+        )
+        .is_ok());
+
+        assert!(verify_default_repo_write(
+            r#"{"accepted":true,"message":"duplicate"}"#,
+            Some(&matching),
+            channel,
+        )
+        .is_ok());
+
+        let missing = verify_default_repo_write(r#"{"accepted":true,"message":""}"#, None, channel)
+            .unwrap_err();
+        assert!(matches!(missing, CliError::Conflict(_)));
+
+        let other_channel = "22222222-2222-4222-8222-222222222222";
+        let mismatched = build_create_announcement(
+            "app",
+            Some("App"),
+            None,
+            &[],
+            None,
+            &[],
+            Some(other_channel),
+        )
+        .unwrap()
+        .sign_with_keys(&keys)
+        .unwrap();
+        let err = verify_default_repo_write(
+            r#"{"accepted":true,"message":""}"#,
+            Some(&mismatched),
+            channel,
+        )
+        .unwrap_err();
+        assert!(matches!(err, CliError::Conflict(_)));
+    }
 
     // ── Coordinate expansion ──────────────────────────────────────────────────
 

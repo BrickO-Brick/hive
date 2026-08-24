@@ -547,6 +547,9 @@ struct CachedProjectInfo {
     value: Option<PromptProjectInfo>,
 }
 
+#[derive(Debug)]
+pub(crate) struct ProjectLookupError(String);
+
 const PROJECT_INFO_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
@@ -582,36 +585,67 @@ impl ChannelInfoResolver {
         }
     }
 
-    pub async fn resolve(&self, channel_id: Uuid) -> Option<PromptChannelInfo> {
-        let mut info = if let Some(info) = self
+    pub async fn resolve_channel_metadata(&self, channel_id: Uuid) -> Option<PromptChannelInfo> {
+        if let Some(info) = self
             .cache
             .read()
             .ok()
             .and_then(|cache| cache.get(&channel_id).cloned())
         {
-            info
-        } else {
-            let info = fetch_channel_info(channel_id, &self.rest_client).await?;
-            if let Ok(mut cache) = self.cache.write() {
-                cache.insert(channel_id, info.clone());
-            }
-            info
-        };
-        info.project = self.lookup_project(channel_id).await;
+            return Some(info);
+        }
+        let info = fetch_channel_info(channel_id, &self.rest_client).await?;
+        if let Ok(mut cache) = self.cache.write() {
+            cache.insert(channel_id, info.clone());
+        }
         Some(info)
     }
 
-    async fn lookup_project(&self, channel_id: Uuid) -> Option<PromptProjectInfo> {
-        if let Some(cached) = self
+    pub async fn resolve(&self, channel_id: Uuid) -> Option<PromptChannelInfo> {
+        let mut info = self.resolve_channel_metadata(channel_id).await?;
+        match self.lookup_project(channel_id).await {
+            Ok(project) => info.project = project,
+            Err(error) => {
+                tracing::warn!(
+                    channel_id = %channel_id,
+                    "project context is indeterminate; refusing ordinary-channel context: {}",
+                    error.0
+                );
+                return None;
+            }
+        }
+        Some(info)
+    }
+
+    async fn lookup_project(
+        &self,
+        channel_id: Uuid,
+    ) -> Result<Option<PromptProjectInfo>, ProjectLookupError> {
+        let cached = self
             .projects
             .read()
             .ok()
-            .and_then(|cache| cache.get(&channel_id).cloned())
+            .and_then(|cache| cache.get(&channel_id).cloned());
+        if let Some(fresh) = cached
+            .as_ref()
             .filter(|cached| cached.fetched_at.elapsed() < PROJECT_INFO_CACHE_TTL)
         {
-            return cached.value;
+            return Ok(fresh.value.clone());
         }
-        let fetched = fetch_project_home_for_channel(channel_id, &self.rest_client).await;
+        let fetched = match fetch_project_home_for_channel(channel_id, &self.rest_client).await {
+            Ok(fetched) => fetched,
+            Err(error) => {
+                if let Some(stale) = cached {
+                    tracing::warn!(
+                        channel_id = %channel_id,
+                        "project context refresh failed; retaining stale value: {}",
+                        error.0
+                    );
+                    return Ok(stale.value);
+                }
+                return Err(error);
+            }
+        };
         if let Ok(mut cache) = self.projects.write() {
             cache.insert(
                 channel_id,
@@ -621,7 +655,7 @@ impl ChannelInfoResolver {
                 },
             );
         }
-        fetched
+        Ok(fetched)
     }
 }
 
@@ -3000,14 +3034,16 @@ pub(crate) async fn fetch_channel_info(
 pub(crate) async fn fetch_project_home_for_channel(
     channel_id: Uuid,
     rest: &RestClient,
-) -> Option<PromptProjectInfo> {
+) -> Result<Option<PromptProjectInfo>, ProjectLookupError> {
+    let channel = channel_id.to_string();
     let filters = [
         serde_json::json!({
             "kinds": [buzz_core::kind::KIND_PROJECT],
+            "#buzz-channel": [channel],
         }),
         serde_json::json!({
             "kinds": [buzz_core::kind::KIND_GIT_REPO_ANNOUNCEMENT],
-            "#buzz-channel": [channel_id.to_string()],
+            "#buzz-channel": [channel],
         }),
     ];
 
@@ -3032,14 +3068,19 @@ pub(crate) async fn fetch_project_home_for_channel(
                 }
             }
         })
-        .await?;
+        .await
+        .ok_or_else(|| ProjectLookupError("relay query failed or timed out after retry".into()))?;
         events.append(&mut page_events);
     }
     let (projects, repos): (Vec<_>, Vec<_>) = events.into_iter().partition(|event| {
         event.get("kind").and_then(serde_json::Value::as_u64)
             == Some(buzz_core::kind::KIND_PROJECT as u64)
     });
-    pick_authoritative_project_home(&projects, &repos, &channel_id.to_string())
+    Ok(pick_authoritative_project_home(
+        &projects,
+        &repos,
+        &channel_id.to_string(),
+    ))
 }
 
 /// Fetch owner-signed huddle instructions for a new channel session.
@@ -8514,9 +8555,52 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
         let project = resolver
             .lookup_project(id)
             .await
+            .expect("project lookup succeeds")
             .expect("project refreshes");
         assert_eq!(project.slug, "app");
         assert_eq!(requests.load(Ordering::SeqCst), 2);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn failed_project_lookup_is_indeterminate_and_not_cached_as_absence() {
+        use std::sync::atomic::Ordering;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let id = Uuid::new_v4();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let requests = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let server_requests = requests.clone();
+        let server = tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = vec![0; 8192];
+                let _ = socket.read(&mut buf).await;
+                server_requests.fetch_add(1, Ordering::SeqCst);
+                let body = "not-json";
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(), body
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+            }
+        });
+        let resolver = ChannelInfoResolver::new(
+            std::collections::HashMap::new(),
+            crate::relay::RestClient {
+                http: reqwest::Client::new(),
+                base_url,
+                keys: nostr::Keys::generate(),
+                auth_tag_json: None,
+            },
+        );
+
+        assert!(resolver.lookup_project(id).await.is_err());
+        assert!(
+            !resolver.projects.read().unwrap().contains_key(&id),
+            "an indeterminate lookup must not become cached absence"
+        );
+        assert_eq!(requests.load(Ordering::SeqCst), 2, "one retry is attempted");
         server.abort();
     }
 
