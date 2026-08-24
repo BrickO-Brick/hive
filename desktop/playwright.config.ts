@@ -96,6 +96,7 @@ export default defineConfig({
         "**/threadpane-ultrawide.spec.ts",
         "**/thread-focus-mode.spec.ts",
         "**/agent-activity-cover.spec.ts",
+        "**/agent-activity-cover-screenshots.spec.ts",
         "**/animated-avatar.spec.ts",
         "**/reminders.spec.ts",
         "**/reminder-click-repro.spec.ts",
