@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  buildConversationTurnMeta,
-  formatThoughtDisclosureLabel,
-} from "./agentSessionConversationMeta.ts";
+import { buildConversationTurnMeta } from "./agentSessionConversationMeta.ts";
 import { EMPTY_TRANSCRIPT_TURN_META } from "./agentSessionTranscriptContext.ts";
 import {
   formatPlanChecklistProgress,
@@ -24,6 +21,46 @@ function turnBlock(segments) {
   return { kind: "turn", turnId: "turn-1", segments };
 }
 
+function itemSegment(id, overrides) {
+  return {
+    kind: "item",
+    item: item({
+      id,
+      timestamp: "2026-06-14T19:00:02.000Z",
+      ...overrides,
+    }),
+  };
+}
+
+const thoughtSegment = (id, timestamp) =>
+  itemSegment(id, {
+    type: "thought",
+    renderClass: "thought",
+    title: "Thinking",
+    text: "…",
+    timestamp,
+  });
+
+const messageSegment = (id, timestamp, role = "assistant") =>
+  itemSegment(id, {
+    type: "message",
+    renderClass: "message",
+    role,
+    title: role === "user" ? "Ada" : "Agent",
+    text: "done",
+    timestamp,
+  });
+
+const toolSegment = (id, timestamp) =>
+  itemSegment(id, {
+    type: "tool",
+    renderClass: "shell",
+    title: "Ran a command",
+    text: "",
+    descriptor: { label: "Ran a command", preview: "cargo test" },
+    timestamp,
+  });
+
 // ---- buildConversationTurnMeta ----
 
 test("buildConversationTurnMeta returns the shared empty value for other variants", () => {
@@ -39,77 +76,45 @@ test("buildConversationTurnMeta returns the shared empty value for other variant
   }
 });
 
-test("buildConversationTurnMeta times a thought against the turn's next item", () => {
-  const meta = buildConversationTurnMeta(
-    [
-      turnBlock([
-        {
-          kind: "item",
-          item: item({
-            id: "thought:1",
-            type: "thought",
-            renderClass: "thought",
-            title: "Thinking",
-            text: "…",
-            timestamp: "2026-06-14T19:00:02.000Z",
-          }),
-        },
-        {
-          kind: "item",
-          item: item({
-            id: "msg:1",
-            type: "message",
-            renderClass: "message",
-            role: "assistant",
-            title: "Agent",
-            text: "done",
-            timestamp: "2026-06-14T19:00:14.000Z",
-          }),
-        },
-      ]),
-    ],
-    { isTurnLive: false, variant: "conversation" },
+test("buildConversationTurnMeta reports nothing streaming when the turn is idle", () => {
+  // The hint exists to tell the work block it is still working. A finished turn
+  // has no tail, and reporting one would pin the block open forever.
+  assert.equal(
+    buildConversationTurnMeta(
+      [
+        turnBlock([
+          thoughtSegment("thought:1", "2026-06-14T19:00:02.000Z"),
+          messageSegment("msg:1", "2026-06-14T19:00:14.000Z"),
+        ]),
+      ],
+      { isTurnLive: false, variant: "conversation" },
+    ),
+    EMPTY_TRANSCRIPT_TURN_META,
   );
-
-  assert.deepEqual(meta.thoughtDurationSecondsById, { "thought:1": 12 });
-  assert.equal(meta.streamingItemId, null);
 });
 
-test("buildConversationTurnMeta leaves a trailing thought untimed and marks it streaming when live", () => {
+test("buildConversationTurnMeta names the trailing item of a live turn", () => {
   const blocks = [
-    turnBlock([
-      {
-        kind: "item",
-        item: item({
-          id: "thought:tail",
-          type: "thought",
-          renderClass: "thought",
-          title: "Thinking",
-          text: "…",
-          timestamp: "2026-06-14T19:00:02.000Z",
-        }),
-      },
-    ]),
+    turnBlock([thoughtSegment("thought:tail", "2026-06-14T19:00:02.000Z")]),
   ];
 
-  const live = buildConversationTurnMeta(blocks, {
-    isTurnLive: true,
-    variant: "conversation",
-  });
-  assert.deepEqual(live.thoughtDurationSecondsById, {});
-  assert.equal(live.streamingItemId, "thought:tail");
-
-  const idle = buildConversationTurnMeta(blocks, {
-    isTurnLive: false,
-    variant: "conversation",
-  });
-  assert.equal(idle.streamingItemId, null);
+  assert.equal(
+    buildConversationTurnMeta(blocks, {
+      isTurnLive: true,
+      variant: "conversation",
+    }).streamingItemId,
+    "thought:tail",
+    "a thought carries no status of its own, so the hint is how the block knows it is live",
+  );
 });
 
-test("buildConversationTurnMeta counts a prompt as an item and skips setup segments", () => {
+test("buildConversationTurnMeta skips setup segments when finding the tail", () => {
+  // Setup renders as a quiet divider, not as work, so it must never be reported
+  // as the streaming item — a lifecycle row would hold the block open.
   const meta = buildConversationTurnMeta(
     [
       turnBlock([
+        thoughtSegment("thought:1", "2026-06-14T19:00:01.000Z"),
         {
           kind: "setup",
           items: [
@@ -123,121 +128,77 @@ test("buildConversationTurnMeta counts a prompt as an item and skips setup segme
             }),
           ],
         },
-        {
-          kind: "item",
-          item: item({
-            id: "thought:1",
-            type: "thought",
-            renderClass: "thought",
-            title: "Thinking",
-            text: "…",
-            timestamp: "2026-06-14T19:00:01.000Z",
-          }),
-        },
-        {
-          kind: "prompt",
-          context: null,
-          setup: [],
-          user: item({
-            id: "msg:steer",
-            type: "message",
-            renderClass: "message",
-            role: "user",
-            title: "Ada",
-            text: "actually…",
-            timestamp: "2026-06-14T19:00:04.000Z",
-          }),
-        },
       ]),
     ],
     { isTurnLive: true, variant: "conversation" },
   );
 
-  // Setup contributes nothing, so the thought is timed against the steer prompt.
-  assert.deepEqual(meta.thoughtDurationSecondsById, { "thought:1": 3 });
+  assert.equal(meta.streamingItemId, "thought:1");
+});
+
+test("buildConversationTurnMeta counts a mid-turn steer prompt as the tail", () => {
+  const meta = buildConversationTurnMeta(
+    [
+      turnBlock([
+        thoughtSegment("thought:1", "2026-06-14T19:00:01.000Z"),
+        messageSegment("msg:steer", "2026-06-14T19:00:04.000Z", "user"),
+      ]),
+    ],
+    { isTurnLive: true, variant: "conversation" },
+  );
+
   assert.equal(meta.streamingItemId, "msg:steer");
 });
 
-// ---- formatThoughtDisclosureLabel ----
-
-/**
- * Product ruling (ss-core-02, Slice B review): reasoning folds as soon as the
- * agent ACTS on it — the next leaf item of any kind — not only when the next
- * assistant message arrives. A thought pinned open across a long tool run is
- * exactly the noise the focus view removes. This test exists so the rule is
- * explicit rather than an accident of `items[index + 1]`.
- */
-test("buildConversationTurnMeta ends a thought at the next tool call, not the next message", () => {
+test("buildConversationTurnMeta expands a summary segment to reach its last tool", () => {
+  // A summary segment holds several leaf items; the tail is the last of them,
+  // not the summary itself, which has no item id the work block could match.
   const meta = buildConversationTurnMeta(
     [
       turnBlock([
         {
-          kind: "item",
-          item: item({
-            id: "thought:1",
-            type: "thought",
-            renderClass: "thought",
-            title: "Thinking",
-            text: "…",
-            timestamp: "2026-06-14T19:00:02.000Z",
-          }),
-        },
-        {
-          kind: "item",
-          item: item({
-            id: "tool:1",
-            type: "tool",
+          kind: "summary",
+          summary: {
+            id: "summary:shell:tool:1",
+            label: "Ran 2 commands",
+            count: 2,
+            items: [
+              toolSegment("tool:1", "2026-06-14T19:00:04.000Z").item,
+              toolSegment("tool:2", "2026-06-14T19:00:05.000Z").item,
+            ],
             renderClass: "shell",
-            title: "Ran a command",
-            text: "",
-            descriptor: { label: "Ran a command", preview: "cargo test" },
-            timestamp: "2026-06-14T19:00:06.000Z",
-          }),
-        },
-        {
-          kind: "item",
-          item: item({
-            id: "msg:1",
-            type: "message",
-            renderClass: "message",
-            role: "assistant",
-            title: "Agent",
-            text: "tests pass",
-            timestamp: "2026-06-14T19:01:30.000Z",
-          }),
+            variant: "same-kind",
+            timestamp: "2026-06-14T19:00:04.000Z",
+          },
         },
       ]),
     ],
     { isTurnLive: true, variant: "conversation" },
   );
 
-  // 4s to the tool call, NOT 88s to the assistant message: the thought is done
-  // the moment the agent acts, so it folds instead of staying open for the run.
-  assert.deepEqual(meta.thoughtDurationSecondsById, { "thought:1": 4 });
-  // The trailing message is the streaming tail, so the thought is not streaming.
-  assert.equal(meta.streamingItemId, "msg:1");
+  assert.equal(meta.streamingItemId, "tool:2");
 });
 
-test("formatThoughtDisclosureLabel says Thinking while streaming", () => {
-  assert.equal(
-    formatThoughtDisclosureLabel({ durationSeconds: 4, isStreaming: true }),
-    "Thinking…",
+test("buildConversationTurnMeta reads a trailing single block directly", () => {
+  const meta = buildConversationTurnMeta(
+    [
+      turnBlock([thoughtSegment("thought:1", "2026-06-14T19:00:01.000Z")]),
+      {
+        kind: "single",
+        item: item({
+          id: "life:orphan",
+          type: "lifecycle",
+          renderClass: "status",
+          title: "Context compacted",
+          text: "",
+          timestamp: "2026-06-14T19:00:20.000Z",
+        }),
+      },
+    ],
+    { isTurnLive: true, variant: "conversation" },
   );
-});
 
-test("formatThoughtDisclosureLabel reports a duration once the turn moved on", () => {
-  assert.equal(
-    formatThoughtDisclosureLabel({ durationSeconds: 9, isStreaming: false }),
-    "Thought for 9s",
-  );
-});
-
-test("formatThoughtDisclosureLabel avoids a misleading 0s", () => {
-  assert.equal(
-    formatThoughtDisclosureLabel({ durationSeconds: 0, isStreaming: false }),
-    "Thought for a moment",
-  );
-  assert.equal(formatThoughtDisclosureLabel({ isStreaming: false }), "Thought");
+  assert.equal(meta.streamingItemId, "life:orphan");
 });
 
 // ---- parsePlanChecklist ----

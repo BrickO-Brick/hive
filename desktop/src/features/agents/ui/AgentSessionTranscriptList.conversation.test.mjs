@@ -1,15 +1,18 @@
 /**
  * Rendering contract for the `conversation` transcript variant (focus mode):
- * layout, prompt authorship, thoughts, plans, lifecycle chrome, and the
- * byte-for-byte guarantee for the other variants.
+ * layout, prompt authorship, plans, lifecycle chrome, and the byte-for-byte
+ * guarantee for the other variants.
  *
  * Mounts the shipping AgentSessionTranscriptList so the variant plumbing
  * (variant context + derived turn meta) is exercised end to end rather than
  * asserting against re-implemented render classes.
  *
- * The identity row and code-block chrome live in
- * `AgentSessionTranscriptList.conversationChrome.test.mjs`; shared jsdom setup,
- * ambient-formatting pins, and render helpers live in the harness both import.
+ * Reasoning is no longer a per-thought disclosure on this path — thoughts,
+ * tool steps and interim notes fold into one work block, whose contract lives in
+ * `AgentSessionWorkBlock.test.mjs`. The identity row and code-block chrome live
+ * in `AgentSessionTranscriptList.conversationChrome.test.mjs`; shared jsdom
+ * setup, ambient-formatting pins, and render helpers live in the harness they
+ * all import.
  *
  * The byte-for-byte tests at the bottom are the important ones: `conversation`
  * is purely additive, so `default` and `compactPreview` markup for the same
@@ -21,20 +24,16 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
-  act,
-  AGENT,
   AUTHOR,
   AUTHOR_PROFILES,
   AUTHOR_TRUNCATED,
   BASELINE_MARKUP,
   baselineItems,
   cleanup,
-  domWindow,
   FIXTURE_LOCALE,
   items,
   renderRerenderableTranscript,
   renderTranscript,
-  syncAgentTurnsFromEvents,
 } from "./AgentSessionTranscriptList.conversationHarness.mjs";
 
 test("conversation marks the transcript container and centers a reading column", async () => {
@@ -145,160 +144,6 @@ test("conversation renders agent messages as unboxed prose at full fidelity", as
   assert.doesNotMatch(message.innerHTML, /rounded-2xl/);
   // The shared markdown renderer is reused, so inline code still renders as code.
   assert.ok(message.querySelector("code"), "markdown/code fidelity preserved");
-});
-
-test("conversation collapses a finished thought into a Thought for Ns disclosure", async () => {
-  const { container } = await renderTranscript("conversation");
-  const disclosure = container.querySelector(
-    '[data-testid="transcript-thought-item"]',
-  );
-  assert.ok(disclosure, "thought should render");
-  assert.equal(disclosure.tagName, "DETAILS");
-  assert.equal(disclosure.open, false, "finished thoughts start collapsed");
-  // thought at :02, next turn item (plan) at :07 → 5s.
-  assert.equal(
-    disclosure
-      .querySelector('[data-testid="transcript-thought-disclosure"]')
-      .textContent.trim(),
-    "Thought for 5s",
-  );
-});
-
-test("conversation auto-opens the thought disclosure while it is streaming", async () => {
-  // A live turn on this channel makes the trailing item the streaming one, which
-  // is exactly the condition the disclosure auto-opens for.
-  syncAgentTurnsFromEvents(AGENT.agentPubkey, [
-    {
-      seq: 1,
-      timestamp: "2026-06-14T19:00:02.000Z",
-      kind: "turn_started",
-      agentIndex: 0,
-      channelId: "chan-1",
-      sessionId: "sess-1",
-      turnId: "turn-1",
-      payload: null,
-    },
-  ]);
-  const streamingThought = items().slice(0, 2);
-  const { container } = await renderTranscript("conversation", {
-    channelId: "chan-1",
-    items: streamingThought,
-  });
-
-  const disclosure = container.querySelector(
-    '[data-testid="transcript-thought-item"]',
-  );
-  assert.equal(disclosure.open, true, "streaming thought should be open");
-  const summary = disclosure.querySelector(
-    '[data-testid="transcript-thought-disclosure"]',
-  );
-  // Shimmer paints a visual-only aria-hidden duplicate of the label, so match a
-  // prefix rather than the whole text node.
-  assert.match(summary.textContent, /^Thinking…/);
-  assert.doesNotMatch(summary.textContent, /Thought for/);
-});
-
-test("conversation folds the thought when the turn moves on, even after the browser echoes the auto-open toggle", async () => {
-  // Regression guard for the programmatic-toggle echo trap: a real browser fires
-  // `toggle` when React flips `open`, so the auto-open for a streaming thought
-  // arrives back at the component as if the reader had clicked. JSDOM does not
-  // fire that event itself, so the test injects it. If the handler records it as
-  // a reader choice, the disclosure stays pinned open forever and reasoning
-  // never recedes once the agent acts.
-  syncAgentTurnsFromEvents(AGENT.agentPubkey, [
-    {
-      seq: 1,
-      timestamp: "2026-06-14T19:00:02.000Z",
-      kind: "turn_started",
-      agentIndex: 0,
-      channelId: "chan-1",
-      sessionId: "sess-1",
-      turnId: "turn-1",
-      payload: null,
-    },
-  ]);
-  const streaming = { channelId: "chan-1", items: items().slice(0, 2) };
-  const { container, setOverrides } = await renderRerenderableTranscript(
-    "conversation",
-    streaming,
-  );
-
-  const disclosure = container.querySelector(
-    '[data-testid="transcript-thought-item"]',
-  );
-  assert.equal(disclosure.open, true, "streaming thought should auto-open");
-
-  // The browser echo: `open` already agrees with what React rendered, and the
-  // event follows rather than causes that state.
-  await act(async () => {
-    disclosure.open = true;
-    disclosure.dispatchEvent(new domWindow.Event("toggle"));
-  });
-  assert.equal(
-    disclosure.open,
-    true,
-    "the echo must not disturb the open tail",
-  );
-
-  // The turn produces its next item, so the thought is no longer the streaming
-  // tail and should recede.
-  await setOverrides({ ...streaming, items: items().slice(0, 3) });
-
-  const settled = container.querySelector(
-    '[data-testid="transcript-thought-item"]',
-  );
-  assert.equal(
-    settled.open,
-    false,
-    "a thought the agent has acted on should fold again",
-  );
-  assert.match(
-    settled
-      .querySelector('[data-testid="transcript-thought-disclosure"]')
-      .textContent.trim(),
-    /^Thought for 5s/,
-  );
-});
-
-test("conversation keeps a reader-opened thought open after the turn moves on", async () => {
-  // The other half of the guard: a toggle that DISAGREES with the rendered state
-  // is a genuine reader choice and must win over the stream transition.
-  syncAgentTurnsFromEvents(AGENT.agentPubkey, [
-    {
-      seq: 1,
-      timestamp: "2026-06-14T19:00:02.000Z",
-      kind: "turn_started",
-      agentIndex: 0,
-      channelId: "chan-1",
-      sessionId: "sess-1",
-      turnId: "turn-1",
-      payload: null,
-    },
-  ]);
-  // Three items so the thought is not the streaming tail: it renders collapsed.
-  const settledItems = { channelId: "chan-1", items: items().slice(0, 3) };
-  const { container, setOverrides } = await renderRerenderableTranscript(
-    "conversation",
-    settledItems,
-  );
-
-  const disclosure = container.querySelector(
-    '[data-testid="transcript-thought-item"]',
-  );
-  assert.equal(disclosure.open, false, "a settled thought starts collapsed");
-
-  await act(async () => {
-    disclosure.open = true;
-    disclosure.dispatchEvent(new domWindow.Event("toggle"));
-  });
-
-  await setOverrides({ ...settledItems, items: items() });
-
-  assert.equal(
-    container.querySelector('[data-testid="transcript-thought-item"]').open,
-    true,
-    "the reader's choice should survive later transcript items",
-  );
 });
 
 test("conversation renders the plan as a checklist card with in-place progress", async () => {

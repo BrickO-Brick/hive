@@ -34,6 +34,11 @@ import {
   getTranscriptMessageLink,
 } from "./AgentSessionTranscriptChrome";
 import { buildConversationTurnMeta } from "./agentSessionConversationMeta";
+import { AgentSessionWorkBlockSegment } from "./AgentSessionWorkBlock";
+import {
+  conversationSegmentsForBlock,
+  type TranscriptConversationSegment,
+} from "./agentSessionWorkBlockGrouping";
 import { useTranscriptAnimationEnabled } from "./transcriptAnimationPreference";
 import { useTranscriptTimestampsEnabled } from "./transcriptTimestampPreference";
 import { TranscriptActivityItem } from "./activityRenderClasses/TranscriptActivityItem";
@@ -378,6 +383,15 @@ function TranscriptDisplayBlockView({
     );
   }
 
+  // Variant in, presentation out: the conversation variant folds a turn's
+  // thinking/tools/notes into work blocks, and every other variant renders the
+  // shared segments untouched. Keeping the choice here — rather than inside the
+  // segment components — is what keeps `default`/`compactPreview` byte-identical
+  // to their pre-work-block markup.
+  const segments: TranscriptConversationSegment[] = isConversation
+    ? conversationSegmentsForBlock(block)
+    : block.segments;
+
   return (
     <div
       className={cn(
@@ -387,7 +401,7 @@ function TranscriptDisplayBlockView({
       data-testid="transcript-turn-group"
       data-turn-id={block.turnId}
     >
-      {block.segments.map((segment) => (
+      {segments.map((segment) => (
         <motion.div
           animate={ROW_ENTER_TO}
           initial={
@@ -411,7 +425,13 @@ function TranscriptDisplayBlockView({
   );
 }
 
-function getTurnSegmentKey(turnId: string, segment: TranscriptTurnSegment) {
+function getTurnSegmentKey(
+  turnId: string,
+  segment: TranscriptConversationSegment,
+) {
+  if (segment.kind === "work-block") {
+    return segment.block.id;
+  }
   if (segment.kind === "setup") {
     return `turn:${turnId}:setup`;
   }
@@ -434,8 +454,20 @@ function TranscriptTurnSegmentView({
   segment,
 }: AgentTranscriptIdentityProps & {
   profiles?: UserProfileLookup;
-  segment: TranscriptTurnSegment;
+  segment: TranscriptConversationSegment;
 }) {
+  if (segment.kind === "work-block") {
+    return (
+      <AgentSessionWorkBlockSegment
+        agentAvatarUrl={agentAvatarUrl}
+        agentName={agentName}
+        agentPubkey={agentPubkey}
+        block={segment.block}
+        profiles={profiles}
+      />
+    );
+  }
+
   if (segment.kind === "prompt") {
     return (
       <TurnPromptBlock
