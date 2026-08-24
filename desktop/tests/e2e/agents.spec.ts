@@ -2709,12 +2709,8 @@ test("duplicate instances move from the agents gallery into the agent profile", 
   ).toHaveCount(0);
 });
 
-// This test shows the correction of a defect. You could not delete a team. The
-// `delete_team` command stops if an agent points to the team. The agent delete
-// command stops if the agent is in a team. Thus you must first remove all the
-// members from the team, then delete the team. But the editor did not permit
-// this, because the submit button needed one member or more. This test does the
-// full sequence: edit the team, remove each member, save, then delete.
+// You must be able to empty a team and then delete it. Before, the submit
+// button needed one member or more, so neither step was possible.
 test("a team can be emptied and then deleted", async ({ page }) => {
   await installMockBridge(page, {
     personas: [

@@ -263,18 +263,10 @@ fn agents_referencing_team_empty_when_no_matches() {
     assert!(agents_referencing_team(&agents, &t).is_empty());
 }
 
-/// A detached agent must not prevent the deletion of a team.
+/// A detached agent must not stop the deletion of a team.
 ///
-/// You cannot delete a team and its agents in one step. The
-/// `delete_team_with_cascade` function stops if an agent points to the team.
-/// The `validate_persona_deletion` function stops if the agent is in a team.
-/// Thus only one sequence is possible: first remove all the members from the
-/// team, then delete the team.
-///
-/// When you remove a member, the `apply_team_membership_delta` function in
-/// `commands::teams` clears the `team_id` field of that member. This test makes
-/// sure that the guard then finds no agents. If the guard still found the
-/// agent, you could not delete the team.
+/// To delete a team, you must first remove each member. That clears `team_id`
+/// on the agent. This test pins the result: the guard then finds no agents.
 #[test]
 fn detached_agents_no_longer_reference_the_team() {
     let t = team("json-team-3", "Emptied Team");

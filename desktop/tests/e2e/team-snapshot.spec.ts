@@ -49,14 +49,9 @@ const ANALYST_PERSONA_ID = "test-analyst";
 const ANALYST_PUBKEY =
   "953d3363262e86b770419834c53d2446409db6d918a57f8f339d495d54ab001f";
 
-// The share tests use this team. The team has one member.
-//
-// You cannot share a team that has no members. A team snapshot must have one
-// member or more, and the Share item is disabled for a team that has no
-// members. The default mock team "Engineering" has no members. Therefore each
-// share test seeds this team, and the team holds the seeded Analyst persona.
-// The name must be different from "Engineering". If the names are the same, a
-// locator finds two teams and the test stops.
+// The share tests need a team with a member. The default mock team
+// "Engineering" has none, so Share is disabled for it. Use a different name,
+// or a locator matches both teams.
 const SHARE_TEAM_NAME = "Delivery Crew";
 const SHARE_TEAM_SEED = {
   id: "team-share-001",

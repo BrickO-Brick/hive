@@ -94,19 +94,6 @@ export function TeamsSection({
             const missingPersonaCount = resolution.missingPersonaCount;
             const hasMissingPersonas = resolution.hasMissingPersonas;
             const isEmptyTeam = team.personaIds.length === 0;
-            // The Deploy, Duplicate and Share items need a roster that has
-            // members, and each member must be a known agent. The `isUsable`
-            // flag shows both conditions. It is false if a member is not in My
-            // Agents. It is also false if the team has no members.
-            //
-            // You must not share a team that has no members. The snapshot then
-            // has no members, and the import of that snapshot fails with the
-            // message "Team snapshot must have at least one member".
-            //
-            // The Edit and Delete items stay enabled. You use these two items
-            // to delete a team: first remove all the members, then delete the
-            // team.
-            const canUseRoster = resolution.isUsable;
 
             return (
               <TeamIdentityCard
@@ -121,12 +108,14 @@ export function TeamsSection({
                         <EllipsisVertical className="h-4 w-4" />
                       </button>
                     </DropdownMenuTrigger>
+                    {/* Edit and Delete stay enabled for an unusable team on purpose. You use them
+                        to empty a team and then delete it. */}
                     <DropdownMenuContent
                       align="end"
                       onCloseAutoFocus={(event) => event.preventDefault()}
                     >
                       <DropdownMenuItem
-                        disabled={isPending || !canUseRoster}
+                        disabled={isPending || !resolution.isUsable}
                         onClick={() => onAddToChannel(team)}
                       >
                         <Rocket className="h-4 w-4" />
@@ -141,14 +130,14 @@ export function TeamsSection({
                         Edit
                       </DropdownMenuItem>
                       <DropdownMenuItem
-                        disabled={isPending || !canUseRoster}
+                        disabled={isPending || !resolution.isUsable}
                         onClick={() => onDuplicate(team)}
                       >
                         <CopyPlus className="h-4 w-4" />
                         Duplicate
                       </DropdownMenuItem>
                       <DropdownMenuItem
-                        disabled={isPending || !canUseRoster}
+                        disabled={isPending || !resolution.isUsable}
                         onClick={() => onShare(team)}
                       >
                         <Share2 className="h-4 w-4" />

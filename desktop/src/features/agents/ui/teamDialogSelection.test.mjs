@@ -94,9 +94,8 @@ test("orderPersonasByInitiallySelected keeps initially selected personas at top"
 
 // ── canSubmitTeamDialog ───────────────────────────────────────────────────
 //
-// These tests show the correction of a defect. Before, the submit button also
-// needed `selectedPersonaIds.length > 0`. Thus you could not save a team after
-// you removed all the members, and you could not delete the team.
+// A team with no members must be savable. If it is not, you cannot delete a
+// team, because you must first remove each member.
 
 test("canSubmitTeamDialog allows saving a team with an empty roster", () => {
   assert.equal(canSubmitTeamDialog({ name: "Hive", isPending: false }), true);
