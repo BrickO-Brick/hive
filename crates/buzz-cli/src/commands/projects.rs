@@ -809,53 +809,123 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn default_repo_write_must_be_accepted_and_authoritative_for_home() {
-        let channel = "11111111-1111-4111-8111-111111111111";
+    async fn run_default_repo_create_race(
+        winning_channel: &str,
+    ) -> (Result<(), CliError>, Vec<u16>) {
+        use std::sync::{Arc, Mutex};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let requested_channel = "11111111-1111-4111-8111-111111111111";
         let keys = nostr::Keys::generate();
-        let matching =
-            build_create_announcement("app", Some("App"), None, &[], None, &[], Some(channel))
-                .unwrap()
-                .sign_with_keys(&keys)
-                .unwrap();
-        assert!(verify_default_repo_write(
-            r#"{"accepted":true,"message":""}"#,
-            Some(&matching),
-            channel
-        )
-        .is_ok());
-
-        assert!(verify_default_repo_write(
-            r#"{"accepted":true,"message":"duplicate"}"#,
-            Some(&matching),
-            channel,
-        )
-        .is_ok());
-
-        let missing = verify_default_repo_write(r#"{"accepted":true,"message":""}"#, None, channel)
-            .unwrap_err();
-        assert!(matches!(missing, CliError::Conflict(_)));
-
-        let other_channel = "22222222-2222-4222-8222-222222222222";
-        let mismatched = build_create_announcement(
+        let winner = build_create_announcement(
             "app",
             Some("App"),
             None,
             &[],
             None,
             &[],
-            Some(other_channel),
+            Some(winning_channel),
         )
         .unwrap()
         .sign_with_keys(&keys)
         .unwrap();
-        let err = verify_default_repo_write(
-            r#"{"accepted":true,"message":""}"#,
-            Some(&mismatched),
-            channel,
+        let winner_json = serde_json::to_value(winner).unwrap();
+        let posted_kinds = Arc::new(Mutex::new(Vec::new()));
+        let server_kinds = posted_kinds.clone();
+        let repo_queries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let server_repo_queries = repo_queries.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = vec![0; 65_536];
+                let read = socket.read(&mut buf).await.unwrap_or(0);
+                let request = String::from_utf8_lossy(&buf[..read]);
+                let (status, body) = if request.starts_with("POST /query ") {
+                    let is_repo_query = request.contains("30617");
+                    let repo_query_index = is_repo_query.then(|| {
+                        server_repo_queries.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                    });
+                    if repo_query_index == Some(1) {
+                        ("200 OK", serde_json::json!([winner_json]).to_string())
+                    } else {
+                        ("200 OK", "[]".to_string())
+                    }
+                } else if request.starts_with("POST /events ") {
+                    let json_start = request.find("\r\n\r\n").unwrap() + 4;
+                    let event: serde_json::Value =
+                        serde_json::from_str(&request[json_start..]).unwrap();
+                    let kind = event["kind"].as_u64().unwrap() as u16;
+                    server_kinds.lock().unwrap().push(kind);
+                    if kind == buzz_core::kind::KIND_GIT_REPO_ANNOUNCEMENT as u16 {
+                        (
+                            "200 OK",
+                            serde_json::json!({
+                                "event_id": event["id"], "accepted": true, "message": "duplicate"
+                            })
+                            .to_string(),
+                        )
+                    } else {
+                        (
+                            "200 OK",
+                            serde_json::json!({
+                                "event_id": event["id"], "accepted": true, "message": ""
+                            })
+                            .to_string(),
+                        )
+                    }
+                } else {
+                    ("404 Not Found", "{}".to_string())
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let client = crate::client::BuzzClient::new(base_url, keys, None, None).unwrap();
+        let result = cmd_create(
+            &client,
+            "app",
+            &[],
+            Some("App"),
+            None,
+            Some(requested_channel),
+            None,
         )
-        .unwrap_err();
-        assert!(matches!(err, CliError::Conflict(_)));
+        .await;
+        server.abort();
+        let kinds = posted_kinds.lock().unwrap().clone();
+        (result, kinds)
+    }
+
+    #[tokio::test]
+    async fn create_does_not_publish_project_after_default_repo_loses_to_foreign_home() {
+        let (result, posted_kinds) =
+            run_default_repo_create_race("22222222-2222-4222-8222-222222222222").await;
+
+        assert!(matches!(result, Err(CliError::Conflict(_))));
+        assert_eq!(
+            posted_kinds,
+            vec![buzz_core::kind::KIND_GIT_REPO_ANNOUNCEMENT as u16],
+            "the command must stop before publishing kind:30621"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_is_idempotent_when_dominated_default_repo_winner_matches_home() {
+        let (result, posted_kinds) =
+            run_default_repo_create_race("11111111-1111-4111-8111-111111111111").await;
+
+        result.expect("matching winning repo head permits project publication");
+        assert_eq!(
+            posted_kinds,
+            vec![
+                buzz_core::kind::KIND_GIT_REPO_ANNOUNCEMENT as u16,
+                buzz_core::kind::KIND_PROJECT as u16,
+            ]
+        );
     }
 
     // ── Coordinate expansion ──────────────────────────────────────────────────

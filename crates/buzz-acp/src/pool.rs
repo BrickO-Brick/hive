@@ -8563,7 +8563,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
     }
 
     #[tokio::test]
-    async fn failed_project_lookup_is_indeterminate_and_not_cached_as_absence() {
+    async fn failed_project_lookup_through_resolve_cannot_become_ordinary_context() {
         use std::sync::atomic::Ordering;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -8586,7 +8586,14 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             }
         });
         let resolver = ChannelInfoResolver::new(
-            std::collections::HashMap::new(),
+            std::collections::HashMap::from([(
+                id,
+                crate::relay::ChannelInfo {
+                    name: "ordinary-looking".into(),
+                    channel_type: "stream".into(),
+                    description: None,
+                },
+            )]),
             crate::relay::RestClient {
                 http: reqwest::Client::new(),
                 base_url,
@@ -8595,12 +8602,88 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             },
         );
 
-        assert!(resolver.lookup_project(id).await.is_err());
+        assert!(
+            resolver.resolve(id).await.is_none(),
+            "indeterminate project discovery must suppress ordinary-channel context"
+        );
         assert!(
             !resolver.projects.read().unwrap().contains_key(&id),
             "an indeterminate lookup must not become cached absence"
         );
         assert_eq!(requests.load(Ordering::SeqCst), 2, "one retry is attempted");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn resolve_finds_authoritative_project_beyond_first_bridge_page() {
+        use std::sync::atomic::Ordering;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let id = Uuid::new_v4();
+        let channel = id.to_string();
+        let owner = "a".repeat(64);
+        let coordinate = format!("30617:{owner}:app");
+        let first_page: Vec<_> = (0..500)
+            .map(|index| {
+                json!({
+                    "id": format!("{index:064x}"),
+                    "created_at": 1_000 - index,
+                    "kind": 30621,
+                    "pubkey": "b".repeat(64),
+                    "tags": [["d", format!("decoy-{index}")], ["buzz-channel", channel]]
+                })
+            })
+            .collect();
+        let responses = vec![
+            serde_json::Value::Array(first_page),
+            json!([{
+                "id": "f".repeat(64), "created_at": 1, "kind": 30621, "pubkey": owner,
+                "tags": [["d", "app"], ["buzz-channel", channel], ["a", coordinate]]
+            }]),
+            json!([{
+                "id": "e".repeat(64), "created_at": 1, "kind": 30617, "pubkey": "a".repeat(64),
+                "tags": [["d", "app"], ["buzz-channel", id.to_string()]]
+            }]),
+        ];
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let requests = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let server_requests = requests.clone();
+        let server = tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = vec![0; 65_536];
+                let read = socket.read(&mut buf).await.unwrap_or(0);
+                let request = String::from_utf8_lossy(&buf[..read]);
+                assert!(request.contains("#buzz-channel"));
+                let index = server_requests.fetch_add(1, Ordering::SeqCst);
+                let body = responses[index].to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(), body
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let resolver = ChannelInfoResolver::new(
+            std::collections::HashMap::from([(
+                id,
+                crate::relay::ChannelInfo {
+                    name: "project-home".into(),
+                    channel_type: "stream".into(),
+                    description: None,
+                },
+            )]),
+            crate::relay::RestClient {
+                http: reqwest::Client::new(),
+                base_url,
+                keys: nostr::Keys::generate(),
+                auth_tag_json: None,
+            },
+        );
+
+        let info = resolver.resolve(id).await.expect("context resolves");
+        assert_eq!(info.project.expect("project context").slug, "app");
+        assert_eq!(requests.load(Ordering::SeqCst), 3);
         server.abort();
     }
 
