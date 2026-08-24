@@ -25,6 +25,7 @@ pub fn open_mesh_buddy_window_impl(app: &tauri::AppHandle) -> Result<(), String>
     .title("Mesh Buddy")
     .inner_size(320.0, 320.0)
     .resizable(false)
+    .always_on_top(true)
     .build()
     .map_err(|error| error.to_string())?;
     Ok(())

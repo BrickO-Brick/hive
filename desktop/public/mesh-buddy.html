@@ -4,12 +4,20 @@
     <meta charset="utf-8" />
     <title>Mesh Buddy</title>
     <style>
+      :root {
+        /* Fallbacks match the buzz-dark theme; overwritten from the app's
+           cached theme vars (buzz-theme-cache) at load. */
+        --background: 240 6% 7%;
+        --foreground: 0 0% 95%;
+        --muted-foreground: 240 4% 60%;
+        --status-added: 145 45% 55%;
+      }
       html,
       body {
         margin: 0;
         height: 100%;
-        background: #101014;
-        color: #f5f5f7;
+        background: hsl(var(--background));
+        color: hsl(var(--foreground));
         font-family: -apple-system, "Inter", sans-serif;
         display: flex;
         align-items: center;
@@ -28,14 +36,14 @@
       .label {
         margin-top: 6px;
         font-size: 12px;
-        color: #9a9aa2;
+        color: hsl(var(--muted-foreground));
         letter-spacing: 0.04em;
         text-transform: uppercase;
       }
       .nodes {
         margin-top: 14px;
         font-size: 13px;
-        color: #6fcf97;
+        color: hsl(var(--status-added));
       }
     </style>
   </head>
@@ -47,6 +55,25 @@
       <div class="nodes" id="nodes">&nbsp;</div>
     </div>
     <script>
+      // Follow the app theme: the main window caches its resolved CSS vars in
+      // localStorage (same origin), so apply them and re-check on focus and on
+      // cross-window storage events.
+      function applyTheme() {
+        try {
+          const cached = window.localStorage.getItem("buzz-theme-cache");
+          if (!cached) return;
+          const { vars } = JSON.parse(cached);
+          for (const [key, value] of Object.entries(vars || {})) {
+            document.documentElement.style.setProperty(key, value);
+          }
+        } catch {
+          // Keep fallbacks.
+        }
+      }
+      applyTheme();
+      window.addEventListener("storage", applyTheme);
+      window.addEventListener("focus", applyTheme);
+
       const invoke =
         window.__TAURI__?.core?.invoke || window.__TAURI_INTERNALS__?.invoke;
       async function tick() {
