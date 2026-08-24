@@ -28,9 +28,9 @@ import { buildVideoReviewPresentationByMessageId } from "@/features/messages/lib
 import { isThreadReply } from "@/features/messages/lib/threading";
 import { useComposerHeightPadding } from "@/features/messages/ui/useComposerHeightPadding";
 import { UserProfilePanel } from "@/features/profile/ui/UserProfilePanel";
-import { AgentSessionThreadPanel } from "@/features/channels/ui/AgentSessionThreadPanel";
+import { AgentSessionAuxiliaryPanel } from "@/features/channels/ui/AgentSessionAuxiliaryPanel";
 import { ChannelManagementAuxiliaryPanel } from "@/features/channels/ui/ChannelManagementAuxiliaryPanel";
-import { MarkdownDocPanel } from "@/features/channels/ui/MarkdownDocPanel";
+import { MarkdownDocAuxiliaryPanel } from "@/features/channels/ui/MarkdownDocAuxiliaryPanel";
 import { RightAuxiliaryPane } from "@/features/channels/ui/RightAuxiliaryPane";
 import { ThreadViewModeToggle } from "@/features/channels/ui/ThreadViewModeToggle";
 import { FocusThreadDrawer } from "@/features/channels/ui/FocusThreadDrawer";
@@ -948,42 +948,21 @@ export const ChannelPane = React.memo(function ChannelPane({
             return wrapThreadPanel(panel);
           })()
         ) : activeChannel && selectedAgent ? (
-          (() => {
-            const effectiveAgentSessionChannelId =
-              openAgentSessionChannelId &&
-              activeChannel.id !== openAgentSessionChannelId
-                ? activeChannelId
-                : openAgentSessionChannelId;
-            const panel = (
-              <AgentSessionThreadPanel
-                agent={selectedAgent}
-                canInterruptTurn={selectedAgent.canInterruptTurn}
-                channel={
-                  effectiveAgentSessionChannelId
-                    ? effectiveAgentSessionChannelId === activeChannel.id
-                      ? activeChannel
-                      : null
-                    : agentSessionSelection.isAgentInActivityList({
-                          activityAgents,
-                          selectedAgent,
-                        })
-                      ? activeChannel
-                      : null
-                }
-                channelId={effectiveAgentSessionChannelId}
-                isSinglePanelView={
-                  useSplitAuxiliaryPane ? false : isSinglePanelView
-                }
-                layout={useSplitAuxiliaryPane ? "split" : "standalone"}
-                transparentChrome={useSplitAuxiliaryPane}
-                profiles={profiles}
-                onBack={onBackFromAgentSession}
-                onClose={onCloseAgentSession}
-                widthPx={threadPanelWidthPx}
-              />
-            );
-            return wrapAux(panel, "agent-session-thread-panel");
-          })()
+          wrapAux(
+            <AgentSessionAuxiliaryPanel
+              activeChannel={activeChannel}
+              activityAgents={activityAgents}
+              isSinglePanelView={isSinglePanelView}
+              onBack={onBackFromAgentSession}
+              onClose={onCloseAgentSession}
+              openAgentSessionChannelId={openAgentSessionChannelId}
+              profiles={profiles}
+              selectedAgent={selectedAgent}
+              useSplitAuxiliaryPane={useSplitAuxiliaryPane}
+              widthPx={threadPanelWidthPx}
+            />,
+            "agent-session-thread-panel",
+          )
         ) : profilePanelPubkey ? (
           (() => {
             const panel = (
@@ -1009,29 +988,16 @@ export const ChannelPane = React.memo(function ChannelPane({
             return wrapAux(panel, "user-profile-panel");
           })()
         ) : openMarkdownDoc && onCloseMarkdownDoc ? (
-          (() => {
-            // Lowest-priority pane: a higher-priority pane opened afterwards
-            // (thread, activity, profile) shows immediately, and the document
-            // reappears when it closes. Opening a document clears competitors
-            // in the screen-level handler, so it is never dead on arrival.
-            const panel = (
-              // Keyed by URL so opening a different document resets the
-              // Preview/Code toggle instead of inheriting the previous doc's.
-              <MarkdownDocPanel
-                key={openMarkdownDoc.url}
-                filename={openMarkdownDoc.filename}
-                isSinglePanelView={
-                  useSplitAuxiliaryPane ? false : isSinglePanelView
-                }
-                layout={useSplitAuxiliaryPane ? "split" : "standalone"}
-                onClose={onCloseMarkdownDoc}
-                transparentChrome={useSplitAuxiliaryPane}
-                url={openMarkdownDoc.url}
-                widthPx={threadPanelWidthPx}
-              />
-            );
-            return wrapAux(panel, "markdown-doc-panel");
-          })()
+          wrapAux(
+            <MarkdownDocAuxiliaryPanel
+              doc={openMarkdownDoc}
+              isSinglePanelView={isSinglePanelView}
+              onClose={onCloseMarkdownDoc}
+              useSplitAuxiliaryPane={useSplitAuxiliaryPane}
+              widthPx={threadPanelWidthPx}
+            />,
+            "markdown-doc-panel",
+          )
         ) : null}
       </AnimatePresence>
     </div>
