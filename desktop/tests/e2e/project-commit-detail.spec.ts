@@ -20,7 +20,8 @@ async function enableProjectsFeature(page: import("@playwright/test").Page) {
 
 async function openCreateProjectDialog(page: import("@playwright/test").Page) {
   await page.getByTestId("projects-section-projects").click();
-  await page.getByTestId("projects-overview-create-project").click();
+  await page.getByTestId("projects-add-project").click();
+  await page.getByTestId("project-browser-create").click();
 }
 
 async function addProjectToSidebar(
@@ -562,6 +563,10 @@ test("creating a private unlisted project opens for its owner", async ({
     "private-notes",
   );
   await expect(page.getByTestId("sidebar-project-private-notes")).toBeVisible();
+  await waitForAnimations(page);
+  await page.screenshot({
+    path: `${SHOTS}/06-private-unlisted-project-home.png`,
+  });
 
   await page.getByTestId("open-projects-view").click();
   const projectCard = page.getByTestId("project-card-private-notes");
@@ -570,6 +575,10 @@ test("creating a private unlisted project opens for its owner", async ({
     projectCard.getByTestId("project-unlisted-indicator"),
   ).toBeVisible();
   await expect(projectCard).not.toContainText("Unlisted");
+  await waitForAnimations(page);
+  await page.screenshot({
+    path: `${SHOTS}/07-private-unlisted-project-overview.png`,
+  });
 });
 
 test("project creation can retry after its repository publication fails", async ({

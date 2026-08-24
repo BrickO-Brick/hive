@@ -1909,7 +1909,8 @@ test("project overview presents collapsible context beside grouped activity", as
   );
   await expect(
     page.getByTestId("projects-overview-create-project"),
-  ).toBeVisible();
+  ).toHaveCount(0);
+  await expect(page.getByTestId("projects-add-project")).toBeVisible();
   await expect(page.getByTestId("projects-overview-people")).toBeVisible();
   await expect(page.getByTestId("projects-overview-activity")).toHaveCount(0);
   await page.getByTestId("projects-section-repositories").click();
@@ -1954,7 +1955,8 @@ test("project overview presents collapsible context beside grouped activity", as
   await expect(page.getByTestId("projects-overview-activity")).toHaveCount(0);
 
   await page.getByTestId("projects-section-projects").click();
-  await page.getByTestId("projects-overview-create-project").click();
+  await page.getByTestId("projects-add-project").click();
+  await page.getByTestId("project-browser-create").click();
   await expect(page.getByTestId("create-project-dialog")).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("create-project-dialog")).toBeHidden();

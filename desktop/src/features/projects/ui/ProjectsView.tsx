@@ -59,7 +59,6 @@ import {
   ProjectsOverviewProjectItems,
   ProjectsOverviewRepositoryItems,
 } from "@/features/projects/ui/ProjectsOverviewItems";
-import { CreateProjectDialog } from "@/features/projects/ui/CreateProjectDialog";
 import { CreateProjectIssueDialog } from "@/features/projects/ui/CreateProjectIssueDialog";
 import { CreatePullRequestDialog } from "@/features/projects/ui/CreatePullRequestDialog";
 import { ProjectAgentChatPanel } from "@/features/projects/ui/ProjectAgentChatPanel";
@@ -184,7 +183,6 @@ export function ProjectsView() {
     repoSnapshotsQuery.data?.unavailable,
     memberChannelIds,
   );
-  const [createProjectOpen, setCreateProjectOpen] = React.useState(false);
   const [projectBrowserOpen, setProjectBrowserOpen] = React.useState(false);
   const [createChannelOpen, setCreateChannelOpen] = React.useState(false);
   const [createRepositoryOpen, setCreateRepositoryOpen] = React.useState(false);
@@ -677,7 +675,6 @@ export function ProjectsView() {
     onChatWithAgent: (items: ProjectSelectionItem[]) =>
       setSelectionAgentContext(buildProjectSelectionAgentContext(items)),
     onCreateIssue: () => setCreateIssueOpen(true),
-    onCreateProject: () => setCreateProjectOpen(true),
     onCreatePullRequest: () => setCreatePullRequestOpen(true),
     profiles,
     projectReadModels,
@@ -781,12 +778,6 @@ export function ProjectsView() {
             open={projectBrowserOpen}
             projects={projectReadModels}
             selectedProjectAddresses={addedProjectAddressSet}
-          />
-          <CreateProjectDialog
-            isCreating={createProjectMutation.isPending}
-            onCreate={handleCreateProject}
-            onOpenChange={setCreateProjectOpen}
-            open={createProjectOpen}
           />
           {createPullRequestOpen ? (
             <CreatePullRequestDialog
