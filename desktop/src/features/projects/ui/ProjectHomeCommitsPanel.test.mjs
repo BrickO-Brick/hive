@@ -80,3 +80,50 @@ test("multi-repository commits remain visibly degraded when one repository fails
     cleanup();
   }
 });
+
+test("multi-repository commits are merged in descending timestamp order", async () => {
+  const { cleanup, render } = await import("@testing-library/react");
+  const { ProjectHomeCommitsPanel } = await import(
+    "./ProjectHomeCommitsPanel.tsx"
+  );
+  const React = await import("react");
+  const result = (id, subject, timestamp) => ({
+    error: null,
+    isLoading: false,
+    repository: repository(id, id),
+    snapshot: {
+      contributors: [],
+      commits: [
+        {
+          hash: id.repeat(40),
+          shortHash: id.repeat(7),
+          authorName: id,
+          authorEmail: `${id}@example.com`,
+          timestamp,
+          subject,
+        },
+      ],
+    },
+  });
+
+  try {
+    render(
+      React.createElement(ProjectHomeCommitsPanel, {
+        onSelectCommit: () => {},
+        projectId: "project-1",
+        pullRequests: [],
+        results: [
+          result("a", "Older commit", 1),
+          result("b", "Newer commit", 2),
+        ],
+      }),
+    );
+
+    assert.ok(
+      document.body.textContent.indexOf("Newer commit") <
+        document.body.textContent.indexOf("Older commit"),
+    );
+  } finally {
+    cleanup();
+  }
+});

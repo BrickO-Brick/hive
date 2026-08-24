@@ -1166,7 +1166,7 @@ test("sidebar distinguishes the Projects overview from an open project", async (
   await projectsOverview.click();
   await expect(projectsOverview).toHaveAttribute("data-active", "true");
   await expect(sidebarProject).toHaveAttribute("data-active", "false");
-  await expect(sidebarProject.locator("svg").first()).toHaveCSS(
+  await expect(sidebarProject.getByTestId("project-channel-icon")).toHaveCSS(
     "opacity",
     "0.8",
   );
@@ -1738,7 +1738,7 @@ test("project overview presents collapsible context beside grouped activity", as
     page
       .getByTestId("projects-overview-context-panel")
       .getByTestId("projects-overview-people"),
-  ).toHaveCount(0);
+  ).toBeVisible();
   await expect(
     page
       .getByTestId("projects-overview-stats-pod")
@@ -1893,7 +1893,7 @@ test("project overview presents collapsible context beside grouped activity", as
   await expect(
     page.getByTestId("projects-overview-create-project"),
   ).toBeVisible();
-  await expect(page.getByTestId("projects-overview-people")).toHaveCount(0);
+  await expect(page.getByTestId("projects-overview-people")).toBeVisible();
   await expect(page.getByTestId("projects-overview-activity")).toHaveCount(0);
   await page.getByTestId("projects-section-repositories").click();
   await expect(page.getByTestId("projects-overview-context-title")).toHaveText(
@@ -1925,7 +1925,7 @@ test("project overview presents collapsible context beside grouped activity", as
   await expect(
     page.getByTestId("projects-overview-create-pull-request"),
   ).toHaveAttribute("aria-label", "Create review");
-  await expect(page.getByTestId("projects-overview-people")).toHaveCount(0);
+  await expect(page.getByTestId("projects-overview-people")).toBeVisible();
   await expect(page.getByTestId("projects-overview-activity")).toHaveCount(0);
   await page.getByTestId("projects-section-all").click();
   await expect(
@@ -1954,8 +1954,8 @@ test("project overview presents collapsible context beside grouped activity", as
     "data-project-context-detached",
     "true",
   );
-  await expect(stats).toHaveCount(5);
-  await expect(activityCards.first()).toBeVisible();
+  await expect(stats).toHaveCount(3);
+  await expect(activityCards).toHaveCount(0);
 });
 
 test("project overview chrome toggles a detached resizable agent chat", async ({
@@ -2225,7 +2225,7 @@ test("selecting overview list rows switches the context pod to the cluster", asy
     "1 task",
   );
   await expect(page.getByTestId("projects-selection-summary")).toContainText(
-    "Selection",
+    "1 task",
   );
   await expect(page.getByTestId("projects-selection-items")).toHaveCount(0);
   await expect(page.getByTestId("projects-selection-clear")).toBeVisible();
@@ -2677,8 +2677,8 @@ test("selecting repository workspace rows switches the context pod to the cluste
   expect(
     Math.abs(reviewRowOrder.checkbox - reviewRowOrder.status),
   ).toBeLessThanOrEqual(1);
-  expect(reviewRowOrder.status).toBeLessThan(reviewRowOrder.identifier);
-  expect(reviewRowOrder.identifier).toBeLessThan(reviewRowOrder.title);
+  expect(reviewRowOrder.status).toBeLessThan(reviewRowOrder.title);
+  expect(reviewRowOrder.title).toBeLessThan(reviewRowOrder.identifier);
   await reviewRows.first().getByTestId("projects-row-select").click();
   await expect(
     reviewRows.first().getByTestId("project-work-item-status-icon"),

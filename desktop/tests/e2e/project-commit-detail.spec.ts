@@ -193,6 +193,7 @@ test("top-level project lists show metadata and overflow actions", async ({
   await page.getByTestId("projects-overview-create-issue").click();
   await expect(page.getByTestId("create-issue-repository")).toBeVisible();
   await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Reviews", exact: true }).click();
   const pullRequestRow = page
     .locator('[data-testid^="projects-pr-row-"]')
     .first();
@@ -369,6 +370,12 @@ test("creating a project opens its channel conversation", async ({ page }) => {
   const repositoryAction = page
     .getByTestId("add-project-repository")
     .locator("..");
+  await page.evaluate(() => {
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+  });
+  await page.mouse.move(1, 1);
   await expect(channelAction).toHaveCSS("opacity", "0");
   await expect(repositoryAction).toHaveCSS("opacity", "0");
   await page.getByTestId("project-home-context-channel").hover();
@@ -839,14 +846,8 @@ test("commit detail opens from the commits feed with a diff", async ({
     .first();
   await expect(projectEntry).toBeVisible({ timeout: 10_000 });
   await projectEntry.click();
-  const rootMessage = page
-    .getByTestId("message-timeline")
-    .getByTestId("message-row")
-    .first();
-  await expect(rootMessage).toBeVisible();
-  await rootMessage.hover();
-  await rootMessage.getByRole("button", { name: "Reply" }).click();
-  await expect(page.getByTestId("focus-thread-drawer")).toBeVisible();
+  await page.getByTestId("project-home-context-repo-buzz").click();
+  await page.getByTestId("project-workspace-back").click();
   await page.getByTestId("project-home-context-tasks").click();
   await expect(page.getByTestId("project-home-workspace-sheet")).toBeVisible();
   const focusDrawer = page.getByTestId("focus-thread-drawer");

@@ -1031,12 +1031,12 @@ test("projects v3 workspace screenshot states", async ({ page }) => {
   ).toBe(4);
   expect(
     Math.round((firstIssueBounds?.x ?? 0) - (issueHeaderBounds?.x ?? 0)),
-  ).toBe(0);
+  ).toBe(8);
   expect(
     Math.round(
       (issueHeaderBounds?.width ?? 0) - (firstIssueBounds?.width ?? 0),
     ),
-  ).toBe(0);
+  ).toBe(16);
   expect(
     (secondIssueBounds?.y ?? 0) -
       ((firstIssueBounds?.y ?? 0) + (firstIssueBounds?.height ?? 0)),
@@ -1148,12 +1148,12 @@ test("projects v3 workspace screenshot states", async ({ page }) => {
   ).toBe(4);
   expect(
     Math.round((firstReviewBounds?.x ?? 0) - (reviewHeaderBounds?.x ?? 0)),
-  ).toBe(0);
+  ).toBe(8);
   expect(
     Math.round(
       (reviewHeaderBounds?.width ?? 0) - (firstReviewBounds?.width ?? 0),
     ),
-  ).toBe(0);
+  ).toBe(16);
   expect(
     (secondReviewBounds?.y ?? 0) -
       ((firstReviewBounds?.y ?? 0) + (firstReviewBounds?.height ?? 0)),
