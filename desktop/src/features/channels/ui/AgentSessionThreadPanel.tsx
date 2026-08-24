@@ -284,12 +284,12 @@ export function AgentSessionThreadPanel({
   }
 
   async function handleInterruptTurn() {
-    if (!channel) {
+    if (!sessionChannelId) {
       return;
     }
 
     try {
-      await cancelManagedAgentTurn(agent.pubkey, channel.id);
+      await cancelManagedAgentTurn(agent.pubkey, sessionChannelId);
       toast.success(
         `Stop signal sent to ${agent.name}. It may take a moment to respond.`,
       );
@@ -354,7 +354,7 @@ export function AgentSessionThreadPanel({
             title={
               showRawFeed
                 ? "Hide raw JSON-RPC payloads."
-                : channel
+                : sessionChannelId
                   ? "Show raw JSON-RPC payloads for this channel."
                   : "Show raw JSON-RPC payloads for this agent."
             }

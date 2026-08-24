@@ -56,6 +56,16 @@ test("keeps dedicated activity windows connected when opening a channel referenc
           {
             seq: 2,
             timestamp: new Date().toISOString(),
+            kind: "turn_started",
+            agentIndex: 0,
+            channelId,
+            sessionId: "session-original-channel",
+            turnId: "turn-original-channel",
+            payload: { source: "channel", triggeringEventIds: [] },
+          },
+          {
+            seq: 3,
+            timestamp: new Date().toISOString(),
             kind: "acp_read",
             agentIndex: 0,
             channelId: generalChannelId,
@@ -105,5 +115,40 @@ test("keeps dedicated activity windows connected when opening a channel referenc
   await expect(panel).not.toContainText(
     "Other channel activity must stay hidden",
   );
+
+  await page.getByTestId("agent-session-settings-menu-trigger").click();
+  const rawFeedToggle = page.getByTestId("agent-session-toggle-raw-feed");
+  await expect(rawFeedToggle).toHaveAttribute(
+    "title",
+    "Show raw JSON-RPC payloads for this channel.",
+  );
+  const stopTurn = page.getByTestId("agent-session-stop-turn");
+  await expect(stopTurn).toBeEnabled();
+
+  await page.evaluate(() => {
+    const tauri = window.__TAURI_INTERNALS__;
+    const invoke = tauri?.invoke;
+    if (!tauri || !invoke)
+      throw new Error("Mock invoke bridge is unavailable.");
+    window.__BUZZ_E2E_ACTIVITY_CONTROL_REQUESTS__ = [];
+    tauri.invoke = async (command, payload) => {
+      if (command === "build_observer_control_event") {
+        window.__BUZZ_E2E_ACTIVITY_CONTROL_REQUESTS__?.push(payload);
+        throw new Error("Control request captured by the E2E test.");
+      }
+      return invoke(command, payload);
+    };
+  });
+  await stopTurn.click();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => window.__BUZZ_E2E_ACTIVITY_CONTROL_REQUESTS__?.[0] ?? null,
+      ),
+    )
+    .toMatchObject({
+      agentPubkey: AGENT_PUBKEY,
+      payload: { type: "cancel_turn", channelId: AGENTS_CHANNEL_ID },
+    });
   await expect(page.locator("body")).not.toBeEmpty();
 });
