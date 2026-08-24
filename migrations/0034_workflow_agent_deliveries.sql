@@ -41,3 +41,5 @@ CREATE INDEX idx_workflow_agent_deliveries_pending
     WHERE status IN ('pending', 'claimed');
 CREATE INDEX idx_workflow_agent_deliveries_run
     ON workflow_agent_deliveries (community_id, run_id, step_id);
+
+SELECT attach_community_write_fence('workflow_agent_deliveries');
