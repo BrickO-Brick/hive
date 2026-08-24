@@ -184,6 +184,14 @@ export function CoverDrawer({
   const travelPx = prefersReducedMotion ? 0 : COVER_DRAWER_TRAVEL_PX;
   const drawerRef = React.useRef<HTMLDivElement>(null);
   const previousFocusRef = React.useRef<HTMLElement | null>(null);
+  /**
+   * Whether the opener has been captured for this drawer instance.
+   *
+   * Distinct from `previousFocusRef.current === null`, which is a legitimate
+   * capture (nothing was focused) and must not be retried. See the capture
+   * effect for why one attempt is all this gets.
+   */
+  const hasCapturedPreviousFocusRef = React.useRef(false);
 
   React.useEffect(() => {
     if (!ownsEscape) return;
@@ -214,10 +222,27 @@ export function CoverDrawer({
   }, [escapeYieldsToContent, onClose, ownsEscape]);
 
   React.useLayoutEffect(() => {
-    previousFocusRef.current =
-      document.activeElement instanceof HTMLElement
-        ? document.activeElement
-        : null;
+    // Capture the opener exactly once per drawer instance.
+    //
+    // `React.StrictMode` replays effects in development as setup → cleanup →
+    // setup, and by that second setup this drawer has already focused itself. An
+    // unconditional read of `document.activeElement` would therefore record the
+    // drawer as its own opener, and a real close would focus a node React has
+    // since detached — leaving focus on `<body>`, keyboard-stranded. Refs survive
+    // the replay, so a one-shot flag is enough. The flag is deliberately not
+    // reset in cleanup: the only cleanup it would see before a real close is the
+    // simulated one, which is exactly what it exists to ignore.
+    //
+    // Re-claiming the focus slot on the replayed setup is correct and stays as
+    // is — that new generation is what makes the first cleanup's deferred
+    // restore stand down.
+    if (!hasCapturedPreviousFocusRef.current) {
+      hasCapturedPreviousFocusRef.current = true;
+      previousFocusRef.current =
+        document.activeElement instanceof HTMLElement
+          ? document.activeElement
+          : null;
+    }
     const focusClaim = claimCoverDrawerFocus();
     drawerRef.current?.focus({ preventScroll: true });
 

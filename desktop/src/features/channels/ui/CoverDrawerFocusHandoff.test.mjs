@@ -143,6 +143,26 @@ test("only the last-opened drawer keeps focus across a chain of replacements", a
   third.unmount();
 });
 
+test("a drawer restores focus to the opener even when StrictMode replays its capture", async () => {
+  // The app root is wrapped in `React.StrictMode`, which in development runs
+  // every effect setup → cleanup → setup. By that second setup the drawer has
+  // already focused itself, so a capture that reads `document.activeElement`
+  // unconditionally records the drawer as its own opener; closing then focuses a
+  // node React has detached and focus falls to `<body>`. Capture has to survive
+  // the replay, which is what the other tests here cannot see because they
+  // render without StrictMode.
+  const { act, drawer, opener, render } = await loadHarness();
+  const view = render(drawer("strict-drawer"), { reactStrictMode: true });
+  assert.equal(activeTestId(), "strict-drawer");
+
+  await act(async () => {
+    view.unmount();
+  });
+  await flushDeferredFocusRestore(act);
+
+  assert.equal(dom.window.document.activeElement, opener);
+});
+
 test("a released slot leaves focus where the caller put it", async () => {
   // The thread view-mode switch: nothing replaces the drawer, but the switch has
   // already decided where focus belongs, so the drawer's own restore must not
