@@ -78,11 +78,9 @@ export type {
   ProjectPullRequestCommentAnchor,
   Repository,
 };
-
 export type ProjectPullRequestCommentDecision = "request-changes";
 
 const HIDDEN_PROJECT_CARDS_KEY = "buzz.projects.hidden-cards.v1";
-
 export type RepoState = {
   branches: Array<{ name: string; commit: string }>;
   tags: Array<{ name: string; commit: string }>;
@@ -213,8 +211,10 @@ function eventToRepoState(event: RelayEvent): RepoState {
     updatedAt: event.created_at,
   };
 }
-
-async function fetchRepoState(project: Repository): Promise<RepoState | null> {
+/** Load the trusted relay state used to resolve a repository's live refs. */
+export async function fetchRepoState(
+  project: Repository,
+): Promise<RepoState | null> {
   const relaySelf = await getRelaySelf();
   const trustedAuthors = [
     ...new Set(

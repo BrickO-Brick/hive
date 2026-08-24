@@ -1,4 +1,5 @@
 import type { ProjectPullRequest, Repository } from "@/features/projects/hooks";
+import { AlertTriangle } from "lucide-react";
 import {
   projectRepoUnavailablePresentation,
   projectRepoUnavailableReason,
@@ -72,18 +73,35 @@ export function ProjectHomeCommitsPanel({
   const firstItem = commitItems[0];
   if (!firstItem) return null;
   return (
-    <ActivityPanel
-      commitItems={commitItems}
-      error={null}
-      isLoading={false}
-      onSelectCommit={onSelectCommit}
-      profiles={profiles}
-      project={firstItem.project}
-      projectId={projectId}
-      pullRequests={pullRequests}
-      repoContributors={firstItem.repoContributors}
-      snapshot={null}
-      viewerGitIdentity={viewerGitIdentity}
-    />
+    <div className="space-y-3">
+      {failed.length > 0 ? (
+        <div
+          className="mx-4 flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm"
+          data-testid="project-home-commits-degraded"
+          role="status"
+        >
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+          <p>
+            Showing commits from {loaded.length} of {results.length}{" "}
+            repositories. {failed.length}{" "}
+            {failed.length === 1 ? "repository could" : "repositories could"}{" "}
+            not be loaded.
+          </p>
+        </div>
+      ) : null}
+      <ActivityPanel
+        commitItems={commitItems}
+        error={null}
+        isLoading={false}
+        onSelectCommit={onSelectCommit}
+        profiles={profiles}
+        project={firstItem.project}
+        projectId={projectId}
+        pullRequests={pullRequests}
+        repoContributors={firstItem.repoContributors}
+        snapshot={null}
+        viewerGitIdentity={viewerGitIdentity}
+      />
+    </div>
   );
 }

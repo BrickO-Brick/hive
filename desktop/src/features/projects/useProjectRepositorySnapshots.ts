@@ -4,6 +4,8 @@ import type {
   ProjectRepoSnapshot,
   Repository,
 } from "@/features/projects/hooks";
+import { fetchRepoState } from "@/features/projects/hooks";
+import { resolveProjectDefaultBranch } from "@/features/projects/lib/projectBranches";
 import { getProjectRepoSnapshot } from "@/shared/api/projectGit";
 
 export type ProjectRepositorySnapshotResult = {
@@ -24,10 +26,15 @@ export function useProjectRepositorySnapshots(
       queryFn: async () => {
         const cloneUrl = repository.cloneUrls[0];
         if (!cloneUrl) return null;
+        const repoState = await fetchRepoState(repository);
+        const defaultBranch = resolveProjectDefaultBranch(
+          repository.defaultBranch,
+          repoState,
+        );
         return getProjectRepoSnapshot({
-          baseBranch: repository.defaultBranch,
+          baseBranch: defaultBranch,
           cloneUrl,
-          defaultBranch: repository.defaultBranch,
+          defaultBranch,
         });
       },
       queryKey: [
