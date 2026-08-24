@@ -8,6 +8,17 @@ import {
   shouldSettleForSplitPanel,
   shouldSettleVirtualizedBottom,
 } from "./anchoredScrollPolicy";
+import {
+  getTargetRowCenterOffset,
+  isTargetRowCentered,
+  targetRowNeedsCenterCorrection,
+} from "./targetRowCentering";
+import type {
+  AnchorState,
+  ScrollToMessageResult,
+  UseAnchoredScrollOptions,
+  UseAnchoredScrollResult,
+} from "./anchoredScrollTypes";
 import { useVirtualizedViewportResize } from "./useVirtualizedViewportResize";
 
 /**
@@ -17,93 +28,6 @@ import { useVirtualizedViewportResize } from "./useVirtualizedViewportResize";
  * rounding from the layout engine.
  */
 const AT_BOTTOM_THRESHOLD_PX = 32;
-
-type AnchorState =
-  | { kind: "at-bottom" }
-  | { kind: "message"; messageId: string; topOffset: number }
-  | { kind: "pinned-center"; messageId: string; contentTop: number };
-
-/**
- * Outcome of an imperative scroll-to-message.
- *
- * - `centered` — the row is in the DOM and was centered (and highlighted when
- *   asked). The target is handled.
- * - `pending` — the row is in the list but not rendered yet; the virtualizer
- *   accepted the jump and the row will commit in a later render. The caller
- *   must neither treat the target as handled nor move the viewport elsewhere
- *   (a bottom pin here would override the jump) — retry when the rendered
- *   range changes.
- * - `missing` — the row is not in the list at all (not loaded, or not yet
- *   spliced in by the route screen). Retry when `messages` changes.
- */
-export type ScrollToMessageResult = "centered" | "pending" | "missing";
-
-type UseAnchoredScrollOptions = {
-  /** Scroll container. Owned by the parent so external refs still compose. */
-  scrollContainerRef: React.RefObject<HTMLDivElement | null>;
-  /** Inner content element — must wrap every renderable row, including the
-   *  sentinel and bottom anchor. Used to schedule layout work on resize. */
-  contentRef: React.RefObject<HTMLDivElement | null>;
-  /** Resets when changed; lets us drop anchor + scroll state across channels. */
-  channelId?: string | null;
-  /** Suppresses initial scroll-to-bottom while a skeleton is showing. */
-  isLoading: boolean;
-  /** Source of truth for the rendered list. Used to detect new-at-bottom
-   *  arrivals and to seed/refresh the anchor pre-render. */
-  messages: Array<{ id: string }>;
-  splitPanelOpen?: boolean;
-
-  /** When set, scroll to this message on mount and on change. */
-  targetMessageId?: string | null;
-  /** Whether a targeted message should pulse after scrolling to it. */
-  highlightTargetMessage?: boolean;
-  /** Keeps a targeted message centered until the user deliberately scrolls. */
-  pinTargetCentered?: boolean;
-  onTargetReached?: (messageId: string) => void;
-  /** Reports a pinned target after resize correction and one paint frame. */
-  onTargetSettled?: (messageId: string) => void;
-  virtualCancelBottomIntent?: () => void;
-  virtualScrollToMessage?: (
-    messageId: string,
-    options?: { behavior?: ScrollBehavior },
-  ) => boolean;
-  virtualScrollBy?: (offset: number) => void;
-  /** Imperative virtualizer-owned bottom jump, used only when virtualizer mode is active. */
-  virtualScrollToBottom?: (behavior?: ScrollBehavior) => void;
-  virtualSettleAtBottom?: () => void;
-  /** When active, the virtualizer owns prepend compensation and bottom-state synchronization. */
-  virtualizerOwnsPrependAnchoring?: boolean;
-  /** Bumps when a virtualized range changes, so pending target/search retries can re-check newly mounted DOM. */
-  virtualizerRenderVersion?: number;
-};
-
-type UseAnchoredScrollResult = {
-  /** Pass through to the scroll container's `onScroll`. */
-  onScroll: () => void;
-  /** True when the user is within `AT_BOTTOM_THRESHOLD_PX` of the bottom. */
-  isAtBottom: boolean;
-  /** Number of new messages that have arrived while the user is not at the
-   *  bottom. Cleared when the user returns to the bottom. */
-  newMessageCount: number;
-  /** Message id that should pulse a highlight (target/active-search). */
-  highlightedMessageId: string | null;
-  /** Imperative: scroll to bottom. */
-  scrollToBottom: (behavior?: ScrollBehavior) => void;
-  /** Re-pins after a layout owner changes trailing geometry. Returns true when
-   *  the hook handled the settlement, including a preserved pinned target. */
-  settleAtBottomAfterLayout: () => boolean;
-  /** Arm a one-shot scroll-to-bottom that fires on the next appended message
-   *  (used by the composer's send flow). */
-  scrollToBottomOnNextUpdate: () => void;
-  /** Imperative: scroll a specific message into view; optionally pulse it.
-   *  See {@link ScrollToMessageResult} for what each outcome means. */
-  scrollToMessage: (
-    messageId: string,
-    options?: { highlight?: boolean; behavior?: ScrollBehavior },
-  ) => ScrollToMessageResult;
-  /** Syncs the hook's bottom affordances from a virtualizer-owned scroller. */
-  onVirtualizerAtBottomStateChange: (atBottom: boolean) => void;
-};
 
 function isAtBottomNow(
   container: Pick<
@@ -115,56 +39,6 @@ function isAtBottomNow(
     container.scrollHeight - container.clientHeight - container.scrollTop <=
     AT_BOTTOM_THRESHOLD_PX
   );
-}
-
-const CENTERED_ROW_TOLERANCE_PX = 2;
-
-function resolveCssLength(value: string) {
-  const parsed = Number.parseFloat(value);
-  if (!Number.isFinite(parsed)) return 0;
-  return value.trim().endsWith("rem")
-    ? parsed *
-        Number.parseFloat(getComputedStyle(document.documentElement).fontSize)
-    : parsed;
-}
-
-function getRowCenterOffset(row: Element, container: HTMLDivElement) {
-  const rowRect = row.getBoundingClientRect();
-  const containerRect = container.getBoundingClientRect();
-  const styles = getComputedStyle(container);
-  const viewportTop =
-    containerRect.top +
-    resolveCssLength(styles.getPropertyValue("--channel-top-chrome-height"));
-  const viewportBottom =
-    containerRect.bottom -
-    resolveCssLength(styles.getPropertyValue("--composer-overlay-height"));
-  return (
-    (rowRect.top + rowRect.bottom) / 2 - (viewportTop + viewportBottom) / 2
-  );
-}
-
-/**
- * A virtualized jump is complete only when the row's midpoint reaches the
- * viewport midpoint. Two pixels absorb fractional layout and Virtua's rounded
- * scroll offsets. The newest row is the one intentional exception: the list
- * clamps it to the physical floor, where exact centering is impossible.
- */
-function isRowCenteredInViewport(
-  row: Element,
-  container: HTMLDivElement,
-  allowBottomClamp: boolean,
-) {
-  const rowRect = row.getBoundingClientRect();
-  const rowHeight = rowRect.bottom - rowRect.top;
-  if (rowHeight <= 0) return false;
-
-  if (
-    Math.abs(getRowCenterOffset(row, container)) <= CENTERED_ROW_TOLERANCE_PX
-  ) {
-    return true;
-  }
-
-  return allowBottomClamp && isAtBottomNow(container);
 }
 
 /**
@@ -580,8 +454,11 @@ export function useAnchoredScroll({
               setTargetRetryVersion((version) => version + 1);
               return;
             }
-            const correction = getRowCenterOffset(settledRow, settledContainer);
-            if (Math.abs(correction) > CENTERED_ROW_TOLERANCE_PX) {
+            const correction = getTargetRowCenterOffset(
+              settledRow,
+              settledContainer,
+            );
+            if (targetRowNeedsCenterCorrection(correction)) {
               virtualScrollBy?.(correction);
             }
             virtualTargetCorrectionAppliedRef.current = true;
@@ -598,7 +475,10 @@ export function useAnchoredScroll({
         // Handled only once the row is rendered and actually in view. Until
         // then the jump is in flight; the caller retries on range change.
         const isNewestTarget = messages.at(-1)?.id === messageId;
-        if (!el || !isRowCenteredInViewport(el, container, isNewestTarget)) {
+        if (
+          !el ||
+          !isTargetRowCentered(el, container, isNewestTarget, isAtBottomNow)
+        ) {
           virtualizerAtBottomRef.current = false;
           setIsAtBottom(false);
           return "pending";
