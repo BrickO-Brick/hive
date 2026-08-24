@@ -46,10 +46,18 @@
     <div class="face">
       <svg viewBox="0 0 160 110" aria-label="mesh buddy face" role="img">
         <g id="rig">
-          <ellipse class="eye" id="eyeL" />
-          <ellipse class="eye" id="eyeR" />
-          <!-- Lower lids: background-colored masks that slide up for the
-               happy squint, carving a smooth crescent out of each eye. -->
+          <!-- RoboEyes-style rounded-square eyes with real pupils.
+               Pupils and lids are background-colored, so the face stays
+               strictly two-tone in any theme. -->
+          <rect class="eye" id="eyeL" />
+          <rect class="eye" id="eyeR" />
+          <circle class="lid" id="pupilL" />
+          <circle class="lid" id="pupilR" />
+          <!-- Angled upper lids: angry (inner edge drops) / tired (outer
+               edge drops), a la FluxGarage RoboEyes. -->
+          <polygon class="lid" id="browL" />
+          <polygon class="lid" id="browR" />
+          <!-- Lower lids slide up for the happy squint crescent. -->
           <ellipse class="lid" id="lidL" rx="30" ry="24" />
           <ellipse class="lid" id="lidR" rx="30" ry="24" />
         </g>
@@ -77,19 +85,21 @@
       window.addEventListener("storage", applyTheme);
       window.addEventListener("focus", applyTheme);
 
-      // ---- Procedural round eyes (Cozmo/Vector style) --------------------
-      // One parameter set eased toward the active expression every frame, so
-      // mood changes, blinks, gaze shifts, and screen-position tracking are
-      // all smooth morphs of the same two ellipses. Inspired by procedural
-      // expression polygons: github.com/ggldnl/Procedural-Expression-Library
+      // ---- Procedural eyes (FluxGarage RoboEyes style) --------------------
+      // Rounded-square eyes with a real pupil, all morphed from one eased
+      // parameter set every frame. Pupils/lids are background-colored so the
+      // face stays strictly monochrome. github.com/FluxGarage/RoboEyes
       //
-      // Params: rx/ry radii, curve (lower-lid rise: happy squint), y offset.
+      // Params: w/h/r (rect + corner radius), curve (happy squint rise),
+      // y offset, brow (+1 angry inner slant, -1 tired outer slant),
+      // pupil (0..1 pupil size).
       const EXPRESSIONS = {
-        sleeping: { rx: 20, ry: 2.5, curve: 0, y: 14 },
-        waking: { rx: 17, ry: 10, curve: 0, y: 5 },
-        neutral: { rx: 17, ry: 20, curve: 0, y: 0 },
-        happy: { rx: 19, ry: 18, curve: 15, y: -2 },
-        tired: { rx: 18, ry: 6, curve: 0, y: 9 },
+        sleeping: { w: 36, h: 3, r: 1.5, curve: 0, y: 14, brow: 0, pupil: 0 },
+        waking: { w: 34, h: 20, r: 8, curve: 0, y: 5, brow: 0, pupil: 0.6 },
+        neutral: { w: 34, h: 38, r: 11, curve: 0, y: 0, brow: 0, pupil: 1 },
+        happy: { w: 34, h: 36, r: 11, curve: 14, y: -2, brow: 0, pupil: 1 },
+        tired: { w: 34, h: 24, r: 9, curve: 0, y: 7, brow: -0.7, pupil: 0.85 },
+        angry: { w: 34, h: 30, r: 9, curve: 0, y: 2, brow: 0.8, pupil: 0.9 },
       };
       const CENTERS = [46, 114]; // eye x-centers in the 160x110 viewBox
       const MID_Y = 52;
@@ -104,25 +114,65 @@
         blink: 1, // height multiplier; dips toward 0 during a blink
         blinkPhase: "open",
         nextBlinkAt: performance.now() + 2500,
+        // Micro-animations: transient offsets layered on the rig.
+        anim: null, // { kind: "laugh"|"confused", start }
+        nextAnimAt: performance.now() + 6000,
       };
 
-      const eyeL = document.getElementById("eyeL");
-      const eyeR = document.getElementById("eyeR");
-      const lidL = document.getElementById("lidL");
-      const lidR = document.getElementById("lidR");
+      const el = (id) => document.getElementById(id);
+      const eyes = [
+        { eye: el("eyeL"), pupil: el("pupilL"), brow: el("browL"), lid: el("lidL") },
+        { eye: el("eyeR"), pupil: el("pupilR"), brow: el("browR"), lid: el("lidR") },
+      ];
 
-      function placeEye(eye, lid, cx, p, blink) {
-        const ry = Math.max(1.5, p.ry * blink);
-        const x = cx + p.gx;
-        const y = MID_Y + p.y + p.gy;
-        eye.setAttribute("cx", x);
-        eye.setAttribute("cy", y);
-        eye.setAttribute("rx", p.rx);
-        eye.setAttribute("ry", ry);
+      function placeEye(parts, cx, p, blink, side, shakeX, bounceY) {
+        // Curious side-glance: the eye on the side we look toward grows a
+        // touch, the other shrinks (RoboEyes "curious" mode).
+        const curious = Math.max(-1, Math.min(1, p.gx / 9)) * side * 0.14;
+        const h = Math.max(2, p.h * blink * (1 + curious));
+        const w = p.w * (1 + curious * 0.4);
+        const x = cx + p.gx + shakeX;
+        const y = MID_Y + p.y + p.gy + bounceY;
+        parts.eye.setAttribute("x", x - w / 2);
+        parts.eye.setAttribute("y", y - h / 2);
+        parts.eye.setAttribute("width", w);
+        parts.eye.setAttribute("height", h);
+        parts.eye.setAttribute("rx", Math.min(p.r, h / 2));
+
+        // Pupil: background-colored, leads the gaze slightly so the eye
+        // reads as actually looking. Rides up during the happy squint so it
+        // never lumps the crescent's silhouette; hidden when nearly shut.
+        const rise0 = Math.max(0, p.curve) * blink;
+        const pr = 6.5 * p.pupil * Math.min(1, (h - 8) / 14);
+        if (pr > 0.8) {
+          parts.pupil.setAttribute("cx", x + p.gx * 0.45);
+          parts.pupil.setAttribute("cy", y + p.gy * 0.5 - rise0 * 0.6);
+          parts.pupil.setAttribute("r", pr);
+        } else {
+          parts.pupil.setAttribute("r", 0);
+        }
+
+        // Angled upper lid: angry drops the inner edge, tired the outer.
+        const top = y - h / 2;
+        const drop = Math.abs(p.brow) * h * 0.55;
+        if (drop > 0.5) {
+          const inner = side > 0 ? x - w / 2 - 2 : x + w / 2 + 2;
+          const outer = side > 0 ? x + w / 2 + 2 : x - w / 2 - 2;
+          const dInner = p.brow > 0 ? drop : 0;
+          const dOuter = p.brow > 0 ? 0 : drop;
+          parts.brow.setAttribute(
+            "points",
+            `${outer},${top - 8} ${inner},${top - 8} ` +
+              `${inner},${top + dInner} ${outer},${top + dOuter}`
+          );
+        } else {
+          parts.brow.setAttribute("points", "");
+        }
+
         // Lower-lid mask: top edge rises `curve` px into the eye from below.
         const rise = Math.max(0, p.curve) * blink;
-        lid.setAttribute("cx", x);
-        lid.setAttribute("cy", y + ry - rise + 24);
+        parts.lid.setAttribute("cx", x);
+        parts.lid.setAttribute("cy", y + h / 2 - rise + 24);
       }
 
       function stepBlink(now) {
@@ -169,19 +219,44 @@
         rig.target.gy = rig.screenGaze.y + rig.driftGaze.y;
       }
 
+      // Micro-animations (RoboEyes anim_confused / anim_laugh): confused is
+      // a quick horizontal shake, laugh a vertical bounce. Fired occasionally
+      // while awake, and on entering the matching mood.
+      function stepAnim(now) {
+        if (!rig.anim && rig.mood === "neutral" && now >= rig.nextAnimAt) {
+          rig.anim = {
+            kind: Math.random() < 0.5 ? "confused" : "laugh",
+            start: now,
+          };
+        }
+        if (!rig.anim) return { shakeX: 0, bounceY: 0 };
+        const t = (now - rig.anim.start) / 500;
+        if (t >= 1) {
+          rig.anim = null;
+          rig.nextAnimAt = now + 9000 + Math.random() * 14000;
+          return { shakeX: 0, bounceY: 0 };
+        }
+        const decay = 1 - t;
+        const wobble = Math.sin(t * Math.PI * 6) * 4 * decay;
+        return rig.anim.kind === "confused"
+          ? { shakeX: wobble, bounceY: 0 }
+          : { shakeX: 0, bounceY: wobble };
+      }
+
       function frame(now) {
         stepBlink(now);
         stepGaze(now);
+        const { shakeX, bounceY } = stepAnim(now);
         const c = rig.current;
         const t = rig.target;
-        for (const key of ["rx", "ry", "curve", "y", "gx", "gy"]) {
+        for (const key of ["w", "h", "r", "curve", "y", "brow", "pupil", "gx", "gy"]) {
           c[key] += (t[key] - c[key]) * 0.12;
         }
         // Sleeping breathes: a slow, gentle bob.
         const breath = rig.mood === "sleeping" ? Math.sin(now / 900) * 1.6 : 0;
         const p = { ...c, y: c.y + breath };
-        placeEye(eyeL, lidL, CENTERS[0], p, rig.blink);
-        placeEye(eyeR, lidR, CENTERS[1], p, rig.blink);
+        placeEye(eyes[0], CENTERS[0], p, rig.blink, -1, shakeX, bounceY);
+        placeEye(eyes[1], CENTERS[1], p, rig.blink, 1, shakeX, bounceY);
         requestAnimationFrame(frame);
       }
       requestAnimationFrame(frame);
@@ -190,6 +265,11 @@
         if (rig.mood === mood) return;
         rig.mood = mood;
         rig.target = { ...EXPRESSIONS[mood], gx: rig.target.gx, gy: rig.target.gy };
+        // Punctuate mood entries: happy giggles, failure gets a rattled shake.
+        if (mood === "happy")
+          rig.anim = { kind: "laugh", start: performance.now() };
+        if (mood === "angry")
+          rig.anim = { kind: "confused", start: performance.now() };
       }
 
       // ---- Look toward the center of the screen --------------------------
@@ -242,7 +322,8 @@
           const state = status?.state;
           if (state === "running") setMood(inflight > 0 ? "happy" : "neutral");
           else if (state === "starting") setMood("waking");
-          else if (state === "failed") setMood("tired");
+          else if (state === "stopping") setMood("tired");
+          else if (state === "failed") setMood("angry");
           else setMood("sleeping");
         } catch {
           setMood("sleeping");
