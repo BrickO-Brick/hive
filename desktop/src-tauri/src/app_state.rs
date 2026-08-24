@@ -363,19 +363,13 @@ pub fn resolve_persisted_identity(app: &AppHandle, state: &AppState) -> Result<(
 #[path = "app_state_keyring.rs"]
 mod keyring_config;
 pub(crate) use keyring_config::keyring_service;
+use keyring_config::{migration_marker_path, write_migration_marker};
 
 #[path = "app_state_pending_channels.rs"]
 mod pending_channels;
 
 /// Keyring key name for the human identity nsec.
 const IDENTITY_KEY_NAME: &str = "identity";
-
-/// Filename of the marker written once a successful keyring migration deletes
-/// the legacy `identity.key`. Its presence is the only durable signal that a
-/// key once lived in the keyring — used to tell a genuine first-ever launch
-/// (no key anywhere, generating is correct) from a post-migration boot whose
-/// keyring is merely unreachable (the key IS in the keyring, must NOT generate).
-const MIGRATION_MARKER_NAME: &str = "identity.migrated";
 
 /// The keyring operations the identity resolution flow needs. Abstracted so the
 /// corrupt-keyring recovery decision ([`recover_from_keyring`]) can be
@@ -883,30 +877,6 @@ pub(crate) fn persist_imported_identity(
         return Ok(IdentityStorage::LocalFile);
     }
     Ok(storage)
-}
-
-/// Path of the migration-completed marker within `data_dir`.
-fn migration_marker_path(data_dir: &std::path::Path) -> std::path::PathBuf {
-    data_dir.join(keyring_config::migration_marker_name(
-        keyring_service(),
-        MIGRATION_MARKER_NAME,
-    ))
-}
-
-/// Atomically write (and fsync) the migration-completed marker. The content is
-/// irrelevant — only the file's durable existence is the signal — so a single
-/// byte keeps it minimal. Atomicity + fsync guarantee that once this returns
-/// `Ok`, the marker survives a crash, which is what makes deleting the legacy
-/// file afterward safe.
-fn write_migration_marker(marker_path: &std::path::Path) -> Result<(), String> {
-    use atomic_write_file::AtomicWriteFile;
-
-    let mut file = AtomicWriteFile::open(marker_path)
-        .map_err(|e| format!("open migration marker for atomic write: {e}"))?;
-    file.write_all(b"1")
-        .map_err(|e| format!("write migration marker: {e}"))?;
-    file.commit()
-        .map_err(|e| format!("commit migration marker: {e}"))
 }
 
 /// Generate a fresh identity, persist it through the store, return it.
