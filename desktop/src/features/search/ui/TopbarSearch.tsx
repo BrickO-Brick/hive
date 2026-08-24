@@ -56,7 +56,7 @@ const SEARCH_RESULT_LIMIT = 40;
 const EMPTY_UNREAD_CHANNEL_COUNTS: ReadonlyMap<string, number> = new Map(),
   EMPTY_UNREAD_CHANNEL_IDS: ReadonlySet<string> = new Set();
 const SEARCH_SECTION_TITLE_CLASS =
-  "px-2.5 pb-1.5 pt-2 text-xs font-medium text-muted-foreground/70";
+  "sticky top-0 z-10 bg-background px-2.5 pb-1.5 pt-2 text-xs font-medium text-muted-foreground/70";
 const SEARCH_RESULT_SECTION_ORDER = [
   "current-channel-messages",
   "channels",

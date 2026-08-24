@@ -471,6 +471,9 @@ test("global search prioritizes messages from the current channel", async ({
     '[data-search-section="current-channel-messages"]',
   );
   await expect(currentChannelSection).toContainText("In this conversation");
+  await expect(
+    currentChannelSection.getByText("In this conversation", { exact: true }),
+  ).toHaveCSS("position", "sticky");
   await expect(currentChannelSection).toContainText("Welcome to #general");
   await expect(
     currentChannelSection.locator(".search-result-row").first(),
@@ -597,6 +600,10 @@ test("global search exposes a larger scrollable result window", async ({
   await expect(resultRows).toHaveCount(40);
   const resultList = page.getByTestId("search-results-list");
   await expect(resultList).toBeVisible();
+  const stickySectionTitle = page.getByText("In this conversation", {
+    exact: true,
+  });
+  await expect(stickySectionTitle).toHaveCSS("position", "sticky");
   await expect(page.getByTestId("search-current-channel-control")).toHaveCount(
     0,
   );
@@ -608,6 +615,13 @@ test("global search exposes a larger scrollable result window", async ({
   await resultList.evaluate((element) => {
     element.scrollTop = element.scrollHeight;
   });
+  const [titleTop, listTop] = await Promise.all([
+    stickySectionTitle.evaluate(
+      (element) => element.getBoundingClientRect().top,
+    ),
+    resultList.evaluate((element) => element.getBoundingClientRect().top),
+  ]);
+  expect(Math.abs(titleTop - listTop)).toBeLessThanOrEqual(1);
   await resultList.evaluate((element) => {
     element.scrollTop = 0;
   });
