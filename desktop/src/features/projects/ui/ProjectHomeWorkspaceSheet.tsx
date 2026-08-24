@@ -341,7 +341,7 @@ export function ProjectHomeWorkspaceSheet({
           diffLoading={commitDiffQuery.isLoading}
           originAgentName={selectedCommitPullRequest?.originAgentName}
           originChannelId={selectedCommitPullRequest?.channelId}
-          project={repository}
+          project={selectedCommitRepository}
         />
       ) : (
         <ProjectHomeCommitsPanel
