@@ -790,6 +790,17 @@ pub const fn is_workflow_execution_kind(kind: u32) -> bool {
     kind >= KIND_WORKFLOW_TRIGGERED && kind <= KIND_WORKFLOW_APPROVAL_DENIED
 }
 
+/// Returns `true` for channel events that clients render as new message content.
+///
+/// Reactions, edits, deletions, and system events are deliberately excluded:
+/// they must not resurface a direct message without a new human-visible message.
+pub const fn is_human_visible_message_kind(kind: u32) -> bool {
+    matches!(
+        kind,
+        KIND_STREAM_MESSAGE | KIND_STREAM_MESSAGE_V2 | KIND_FORUM_POST | KIND_FORUM_COMMENT
+    )
+}
+
 /// Returns `true` if `kind` is a NIP-43 relay membership admin command (9030–9032)
 /// or the Buzz workspace-profile admin command (9033).
 pub const fn is_relay_admin_kind(kind: u32) -> bool {
@@ -930,6 +941,22 @@ mod tests {
                 !(is_replaceable(kind) && is_parameterized_replaceable(kind)),
                 "kind {kind} is both replaceable and parameterized replaceable"
             );
+        }
+    }
+
+    #[test]
+    fn human_visible_message_kind_matches_client_message_sets() {
+        for kind in [
+            KIND_STREAM_MESSAGE,
+            KIND_STREAM_MESSAGE_V2,
+            KIND_FORUM_POST,
+            KIND_FORUM_COMMENT,
+        ] {
+            assert!(is_human_visible_message_kind(kind), "kind {kind}");
+        }
+
+        for kind in [KIND_REACTION, KIND_STREAM_MESSAGE_EDIT, KIND_DELETION] {
+            assert!(!is_human_visible_message_kind(kind), "kind {kind}");
         }
     }
 

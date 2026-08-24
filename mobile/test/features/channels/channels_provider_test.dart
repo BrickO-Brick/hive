@@ -2054,6 +2054,55 @@ void main() {
       ),
       isTrue,
     );
+    expect(session.visibilitySubscribeFilters, hasLength(1));
+    expect(session.visibilitySubscribeFilters.single.limit, 1);
+    expect(session.visibilitySubscribeFilters.single.tags['#p'], [myPk]);
+  });
+
+  test('a DM visibility snapshot refreshes the hidden channel list', () async {
+    final hiddenDmEvents = [
+      _hiddenDms([_channelA], pubkey: myPk),
+    ];
+    final session = _FakeRelaySession(
+      memberships: [_membership(_channelA, myPk), _membership(_channelB, myPk)],
+      metadata: [
+        _meta(id: _channelA, name: 'Alice', channelType: 'dm'),
+        _meta(id: _channelB, name: 'Bob', channelType: 'dm'),
+      ],
+      hiddenDmEvents: hiddenDmEvents,
+    );
+    final container = _buildContainer(session: session);
+    addTearDown(container.dispose);
+
+    expect(
+      (await container.read(
+        channelsProvider.future,
+      )).map((channel) => channel.id),
+      [_channelB],
+    );
+
+    hiddenDmEvents
+      ..clear()
+      ..add(_hiddenDms(const [], pubkey: myPk));
+    session.emit(hiddenDmEvents.single);
+
+    await _waitUntil(
+      () =>
+          container
+              .read(channelsProvider)
+              .value
+              ?.map((channel) => channel.id)
+              .toSet()
+              .length ==
+          2,
+    );
+    expect(
+      container
+          .read(channelsProvider)
+          .requireValue
+          .map((channel) => channel.id),
+      unorderedEquals([_channelA, _channelB]),
+    );
   });
 
   test(
@@ -2424,6 +2473,7 @@ class _FakeRelaySession extends RelaySessionNotifier {
   final List<NostrFilter> directoryQueryFilters = [];
   final List<NostrFilter> membershipQueryFilters = [];
   final List<NostrFilter> subscribeFilters = [];
+  final List<NostrFilter> visibilitySubscribeFilters = [];
   final Map<int, (NostrFilter, void Function(NostrEvent))> _subscriptions = {};
   int _nextSubscriptionKey = 0;
   Completer<void>? _pausedSubscribe;
@@ -2449,7 +2499,7 @@ class _FakeRelaySession extends RelaySessionNotifier {
     for (final (filter, _) in _subscriptions.values) ?filter.tags['#h']?.single,
   };
 
-  int get activeSubscriptionCount => _subscriptions.length;
+  int get activeSubscriptionCount => activeChannels.length;
 
   Future<void> get nextSubscribeStarted async {
     final started = _subscribeStarted;
@@ -2815,8 +2865,13 @@ class _FakeRelaySession extends RelaySessionNotifier {
     void Function(NostrEvent) onEvent, {
     void Function(String message)? onClosed,
   }) async {
-    totalSubscribeCount++;
-    subscribeFilters.add(filter);
+    final isChannelSubscription = filter.tags['#h'] != null;
+    if (isChannelSubscription) {
+      totalSubscribeCount++;
+      subscribeFilters.add(filter);
+    } else if (filter.kinds.contains(EventKind.dmVisibility)) {
+      visibilitySubscribeFilters.add(filter);
+    }
     final paused = _pausedSubscribe;
     if (paused != null) {
       _subscribeStarted!.complete();
@@ -2829,8 +2884,12 @@ class _FakeRelaySession extends RelaySessionNotifier {
     return () {
       final subscription = _subscriptions.remove(subscriptionKey);
       if (subscription == null) return;
-      unsubscribeCount++;
-      subscribeFilters.remove(subscription.$1);
+      if (subscription.$1.tags['#h'] != null) {
+        unsubscribeCount++;
+        subscribeFilters.remove(subscription.$1);
+      } else {
+        visibilitySubscribeFilters.remove(subscription.$1);
+      }
     };
   }
 

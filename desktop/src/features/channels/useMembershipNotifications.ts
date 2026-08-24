@@ -6,6 +6,7 @@ import { getChannelIdFromTags } from "@/features/messages/lib/threading";
 import { relayClient } from "@/shared/api/relayClient";
 import type { RelayEvent } from "@/shared/api/types";
 import {
+  KIND_DM_VISIBILITY,
   KIND_MEMBER_ADDED_NOTIFICATION,
   KIND_MEMBER_REMOVED_NOTIFICATION,
 } from "@/shared/constants/kinds";
@@ -22,6 +23,9 @@ export function useMembershipNotifications(currentPubkey?: string) {
       const channelId = getChannelIdFromTags(event.tags);
 
       void queryClient.invalidateQueries({ queryKey: channelsQueryKey });
+      if (event.kind === KIND_DM_VISIBILITY) {
+        return;
+      }
       if (!channelId) {
         return;
       }
@@ -46,31 +50,62 @@ export function useMembershipNotifications(currentPubkey?: string) {
     let dispose: (() => Promise<void>) | undefined;
 
     const subscribe = async (): Promise<boolean> => {
+      const nextDisposes: Array<() => Promise<void>> = [];
       try {
-        const nextDispose = await relayClient.subscribeLive(
-          {
-            kinds: [
-              KIND_MEMBER_ADDED_NOTIFICATION,
-              KIND_MEMBER_REMOVED_NOTIFICATION,
-            ],
-            "#p": [normalizedCurrentPubkey],
-            limit: 50,
-            since: Math.floor(Date.now() / 1_000) - 30,
-          },
-          (event) => {
-            if (!isCancelled) {
-              handleMembershipNotification(event);
-            }
-          },
+        const handleEvent = (event: RelayEvent) => {
+          if (!isCancelled) {
+            handleMembershipNotification(event);
+          }
+        };
+        nextDisposes.push(
+          await relayClient.subscribeLive(
+            {
+              kinds: [
+                KIND_MEMBER_ADDED_NOTIFICATION,
+                KIND_MEMBER_REMOVED_NOTIFICATION,
+              ],
+              "#p": [normalizedCurrentPubkey],
+              limit: 50,
+              since: Math.floor(Date.now() / 1_000) - 30,
+            },
+            handleEvent,
+          ),
         );
+        nextDisposes.push(
+          await relayClient.subscribeLive(
+            {
+              kinds: [KIND_DM_VISIBILITY],
+              "#p": [normalizedCurrentPubkey],
+              // A separate one-event replay closes the history/subscription
+              // gap without sharing membership notifications' replay budget.
+              limit: 1,
+            },
+            handleEvent,
+          ),
+        );
+        const nextDispose = async () => {
+          await Promise.all(
+            nextDisposes.map((unsubscribe) =>
+              unsubscribe().catch(() => undefined),
+            ),
+          );
+        };
         if (isCancelled) {
-          void nextDispose().catch(() => {});
+          void nextDispose();
           return true;
         }
         dispose = nextDispose;
         return true;
       } catch (error) {
-        console.error("Failed to subscribe to membership notifications", error);
+        await Promise.all(
+          nextDisposes.map((unsubscribe) =>
+            unsubscribe().catch(() => undefined),
+          ),
+        );
+        console.error(
+          "Failed to subscribe to channel-list notifications",
+          error,
+        );
         return false;
       }
     };

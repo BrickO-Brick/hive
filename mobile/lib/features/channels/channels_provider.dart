@@ -20,6 +20,7 @@ import 'unread_badge/observed_unread_event.dart';
 import 'unread_badge/should_notify_for_event.dart';
 
 part 'channel_directory.dart';
+part 'channels_provider/dm_visibility.dart';
 
 const _channelTypeOrder = {'stream': 0, 'forum': 1, 'dm': 2};
 const _unreadCatchUpLimit = 1000;
@@ -36,12 +37,14 @@ const _authoredRootIdsPrefix = 'buzz-thread-authored.v1';
 /// Live updates are layered on top via per-channel subscriptions on the
 /// `#h` tag for any of the visible channel event kinds — incoming events
 /// bump `lastMessageAt` for that channel.
-class ChannelsNotifier extends AsyncNotifier<List<Channel>> {
+class ChannelsNotifier extends AsyncNotifier<List<Channel>>
+    with _DmVisibilitySubscription {
   static const _backstopInterval = Duration(seconds: 60);
 
   final Map<String, void Function()> _unsubscribersByChannel = {};
   Future<void> _liveSubscriptionQueue = Future.value();
   Set<String> _desiredLiveChannelIds = const {};
+  @override
   int _subscriptionVersion = 0;
   String? _subscriptionRelayBaseUrl;
   Timer? _backstopTimer;
@@ -590,6 +593,15 @@ class ChannelsNotifier extends AsyncNotifier<List<Channel>> {
     final session = ref.read(relaySessionProvider.notifier);
     final channelIds = _desiredLiveChannelIds;
 
+    final myPk = ref.read(myPubkeyProvider)?.toLowerCase();
+    await _syncDmVisibilitySubscription(
+      relayBaseUrl,
+      subscriptionVersion,
+      fence,
+      session,
+      myPk,
+    );
+
     for (final entry in _unsubscribersByChannel.entries.toList()) {
       if (channelIds.contains(entry.key)) continue;
       _unsubscribersByChannel.remove(entry.key);
@@ -814,14 +826,6 @@ class ChannelsNotifier extends AsyncNotifier<List<Channel>> {
     });
   }
 
-  Set<String> _mutedChannelIds() => {
-    for (final entry in ref.read(channelMutesProvider).store.channels.entries)
-      if (entry.value.muted) entry.key,
-  };
-
-  Set<String> _followedRootIds() =>
-      ref.read(threadFollowsProvider).followedRootIds;
-
   void _loadThreadInterestStores(String pubkey) {
     final normalizedPubkey = pubkey.toLowerCase();
     if (_threadInterestPubkey == normalizedPubkey) return;
@@ -906,6 +910,7 @@ class ChannelsNotifier extends AsyncNotifier<List<Channel>> {
     }
   }
 
+  @override
   Future<void> refresh() async {
     final sessionState = ref.read(relaySessionProvider);
     // Don't attempt to fetch when the session isn't connected — fetchHistory
@@ -983,6 +988,7 @@ class ChannelsNotifier extends AsyncNotifier<List<Channel>> {
     }
     _unsubscribersByChannel.clear();
     _subscriptionRelayBaseUrl = null;
+    _clearDmVisibilitySubscription();
     _backstopTimer?.cancel();
     _backstopTimer = null;
   }

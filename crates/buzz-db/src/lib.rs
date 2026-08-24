@@ -2897,6 +2897,19 @@ impl Db {
         dm::unhide_dm(&self.pool, community_id, channel_id, pubkey).await
     }
 
+    /// Unhide a DM for active recipients other than the message sender.
+    ///
+    /// Returns only viewers whose hidden state changed.
+    #[datastore_span(name = "unhide_dm_recipients", system = "postgresql")]
+    pub async fn unhide_dm_recipients(
+        &self,
+        community_id: CommunityId,
+        channel_id: Uuid,
+        sender_pubkey: &[u8],
+    ) -> Result<Vec<Vec<u8>>> {
+        dm::unhide_dm_recipients(&self.pool, community_id, channel_id, sender_pubkey).await
+    }
+
     /// List the channel IDs of all DMs the given user currently has hidden.
     #[datastore_span(name = "list_hidden_dms", system = "postgresql")]
     pub async fn list_hidden_dms(
