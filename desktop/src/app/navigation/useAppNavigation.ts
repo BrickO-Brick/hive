@@ -6,11 +6,16 @@ import {
   useRouter,
 } from "@tanstack/react-router";
 
-import { cacheSearchHitEvent } from "@/app/navigation/searchHitEventCache";
-import { resolveSearchHitDestination } from "@/app/navigation/resolveSearchHitDestination";
+import { openSearchHitWithNavigation } from "@/app/navigation/searchHitNavigation";
+import {
+  allowNavigation,
+  type GuardedNavigation,
+  traverseHistory,
+} from "@/app/navigation/navigationGuard";
 import type { SearchHit } from "@/shared/api/types";
 
 type NavigationBehavior = {
+  force?: boolean;
   replace?: boolean;
   resetScroll?: boolean;
 };
@@ -27,12 +32,22 @@ export function useAppNavigation() {
         to: string;
         params?: Record<string, string>;
         search?: Record<string, string | undefined>;
+        state?: Record<string, unknown>;
       },
       behavior: NavigationBehavior = {},
+      guardedTarget?: GuardedNavigation,
     ) => {
       const nextLocation = router.buildLocation(next as never);
 
-      if (location.href === nextLocation.href) {
+      if (location.href === nextLocation.href && !behavior.force) {
+        return false;
+      }
+
+      if (
+        !allowNavigation(
+          guardedTarget ?? { kind: "route", href: nextLocation.href },
+        )
+      ) {
         return false;
       }
 
@@ -110,6 +125,11 @@ export function useAppNavigation() {
         pullRequestId?: string;
         issueId?: string;
         repositoryId?: string;
+        /** Workspace tab requested by a share link (link vocabulary). */
+        tab?: string;
+        /** Unique per entity-link activation so repeating the same link can
+         * re-apply an unchanged tab selection. */
+        entityNavigationId?: string;
       },
     ) =>
       commitNavigation(
@@ -129,9 +149,16 @@ export function useAppNavigation() {
             ...(behavior?.repositoryId
               ? { repositoryId: behavior.repositoryId }
               : {}),
+            ...(behavior?.tab ? { tab: behavior.tab } : {}),
           },
+          state: behavior?.entityNavigationId
+            ? { entityNavigationId: behavior.entityNavigationId }
+            : undefined,
         },
-        behavior,
+        {
+          ...behavior,
+          force: Boolean(behavior?.entityNavigationId),
+        },
       ),
     [commitNavigation],
   );
@@ -155,6 +182,66 @@ export function useAppNavigation() {
           params: {
             workflowId,
           },
+          search: { pane: "trigger" },
+          state: { workflowEditorHasOrigin: true },
+        },
+        behavior,
+      ),
+    [commitNavigation],
+  );
+
+  const goNewWorkflow = React.useCallback(
+    (behavior?: NavigationBehavior) =>
+      commitNavigation(
+        {
+          to: "/workflows",
+          search: { pane: "trigger", view: "create" },
+          state: { workflowEditorHasOrigin: true },
+        },
+        behavior,
+      ),
+    [commitNavigation],
+  );
+
+  const goNewWorkflowForChannel = React.useCallback(
+    (channelId: string, behavior?: NavigationBehavior) =>
+      commitNavigation(
+        {
+          to: "/workflows",
+          search: {
+            channel: channelId,
+            pane: "trigger",
+            view: "create",
+          },
+          state: { workflowEditorHasOrigin: true },
+        },
+        behavior,
+      ),
+    [commitNavigation],
+  );
+
+  const goEditWorkflow = React.useCallback(
+    (workflowId: string, behavior?: NavigationBehavior) =>
+      commitNavigation(
+        {
+          to: "/workflows/$workflowId",
+          params: { workflowId },
+          search: { pane: "trigger", view: "edit" },
+          state: { workflowEditorHasOrigin: true },
+        },
+        behavior,
+      ),
+    [commitNavigation],
+  );
+
+  const goDuplicateWorkflow = React.useCallback(
+    (workflowId: string, behavior?: NavigationBehavior) =>
+      commitNavigation(
+        {
+          to: "/workflows/$workflowId",
+          params: { workflowId },
+          search: { pane: "trigger", view: "duplicate" },
+          state: { workflowEditorHasOrigin: true },
         },
         behavior,
       ),
@@ -173,14 +260,18 @@ export function useAppNavigation() {
          * firing. Used by the Drafts panel "Send message" confirm flow.
          */
         autoSend?: string;
+        /** Navigate even when the destination matches the current href.
+         * Used by desktop-notification activation so a click is never
+         * silently swallowed (block/buzz#3509). */
+        force?: boolean;
         messageId?: string;
         replace?: boolean;
         /** Open this thread panel directly without waiting for a timeline row. */
         thread?: string;
         threadRootId?: string | null;
       },
-    ) =>
-      commitNavigation(
+    ) => {
+      return commitNavigation(
         {
           to: "/channels/$channelId",
           params: {
@@ -201,10 +292,20 @@ export function useAppNavigation() {
           },
         },
         {
+          force: options?.force,
           replace: options?.replace,
           resetScroll: options?.messageId ? true : undefined,
         },
-      ),
+        options?.messageId
+          ? {
+              kind: "channel-message",
+              channelId,
+              messageId: options.messageId,
+              threadRootId: options.threadRootId ?? null,
+            }
+          : undefined,
+      );
+    },
     [commitNavigation],
   );
 
@@ -224,11 +325,13 @@ export function useAppNavigation() {
       channelId: string,
       postId: string,
       options?: {
+        /** Navigate even when the destination matches the current href. */
+        force?: boolean;
         replace?: boolean;
         replyId?: string;
       },
-    ) =>
-      commitNavigation(
+    ) => {
+      return commitNavigation(
         {
           to: "/channels/$channelId/posts/$postId",
           params: {
@@ -238,10 +341,18 @@ export function useAppNavigation() {
           search: options?.replyId ? { replyId: options.replyId } : {},
         },
         {
+          force: options?.force,
           replace: options?.replace,
           resetScroll: false,
         },
-      ),
+        {
+          kind: "forum-post",
+          channelId,
+          postId,
+          replyId: options?.replyId ?? null,
+        },
+      );
+    },
     [commitNavigation],
   );
 
@@ -259,7 +370,7 @@ export function useAppNavigation() {
 
   const closeSettings = React.useCallback(() => {
     if (canGoBack) {
-      router.history.back();
+      traverseHistory(router.history, "back");
       return;
     }
 
@@ -268,7 +379,7 @@ export function useAppNavigation() {
 
   const closeWorkflowDetail = React.useCallback(() => {
     if (canGoBack) {
-      router.history.back();
+      traverseHistory(router.history, "back");
       return;
     }
 
@@ -278,7 +389,7 @@ export function useAppNavigation() {
   const closeForumPost = React.useCallback(
     (channelId: string) => {
       if (canGoBack) {
-        router.history.back();
+        traverseHistory(router.history, "back");
         return;
       }
 
@@ -288,25 +399,23 @@ export function useAppNavigation() {
   );
 
   const openSearchHit = React.useCallback(
-    async (hit: SearchHit) => {
-      cacheSearchHitEvent(hit);
-
-      const destination = await resolveSearchHitDestination(hit);
-      if (!destination) {
-        return false;
-      }
-
-      if (destination.kind === "forum-post") {
-        return goForumPost(destination.channelId, destination.postId, {
-          replyId: destination.replyId,
-        });
-      }
-
-      return goChannel(destination.channelId, {
-        messageId: destination.messageId,
-        threadRootId: destination.threadRootId,
-      });
-    },
+    async (
+      hit: SearchHit,
+      behavior?: {
+        /** Navigate even when the destination matches the current href.
+         * Used by desktop-notification activation so a click is never
+         * silently swallowed (block/buzz#3509). */
+        force?: boolean;
+        /** Stop notification-driven routing when its owning lifecycle ends. */
+        signal?: AbortSignal;
+      },
+    ) =>
+      openSearchHitWithNavigation(hit, {
+        force: behavior?.force,
+        goChannel,
+        goForumPost,
+        signal: behavior?.signal,
+      }),
     [goChannel, goForumPost],
   );
 
@@ -316,9 +425,13 @@ export function useAppNavigation() {
     closeWorkflowDetail,
     goAgents,
     goChannel,
+    goDuplicateWorkflow,
+    goEditWorkflow,
     goForumPost,
     goHome,
     goNewMessage,
+    goNewWorkflow,
+    goNewWorkflowForChannel,
     goProject,
     goProjects,
     goPulse,

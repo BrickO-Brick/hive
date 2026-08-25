@@ -28,6 +28,14 @@
     --accent-foreground: 234 16.02% 35.49%;
     --destructive: 347 86.67% 44.12%;
     --destructive-foreground: 220 23.08% 94.9%;
+    /* Notification attention colors are fixed across syntax themes. Unlike
+       destructive, these must stay recognizably red with AA label contrast. */
+    --notification: 348 65% 48%;
+    --notification-foreground: 350 100% 98%;
+    /* Opaque highlighter colors keep near-black mention text readable on every
+       message surface instead of depending on the active theme underneath. */
+    --mention-highlight: 48 96% 70%;
+    --mention-highlight-hover: 48 96% 62%;
     --border: 225 13.56% 76.86%;
     --input: 225 13.56% 76.86%;
     --ring: 234 16.02% 35.49%;
@@ -901,7 +909,9 @@
   background: transparent;
 }
 
-:root[data-glass-background] .buzz-huddle-app-surface-open::after {
+:root[data-glass-background]
+  .buzz-huddle-shell[data-huddle-window="true"]
+  .buzz-huddle-app-surface-open::after {
   background: hsl(var(--buzz-huddle-drawer-surface));
 }
 
@@ -914,8 +924,8 @@
 }
 
 :root[data-buzz-sidebar][data-glass-background]
-  .buzz-huddle-shell[data-huddle-open="true"] {
-  background-color: hsl(var(--buzz-huddle-drawer-surface));
+  .buzz-huddle-shell[data-huddle-window="false"][data-huddle-open="true"] {
+  background-color: transparent;
   background-image: none;
 }
 
@@ -929,4 +939,37 @@
   pointer-events: none;
   position: absolute;
   z-index: 0;
+}
+
+/* In the main glass window, let vibrancy continue around the Huddle controls
+ * and present the tray as an inset four-corner surface. The dedicated Huddle
+ * window keeps the full-width dark control dock above. */
+:root[data-glass-background]
+  .buzz-huddle-shell[data-huddle-window="false"]
+  .buzz-huddle-drawer-backdrop {
+  background: transparent;
+}
+
+:root[data-buzz-sidebar][data-glass-background]
+  .buzz-huddle-shell[data-huddle-window="false"][data-huddle-open="true"]::before {
+  content: none;
+}
+
+:root[data-glass-background]
+  .buzz-huddle-shell[data-huddle-window="false"]
+  .buzz-huddle-drawer-slot {
+  padding: var(--buzz-huddle-drawer-inset);
+}
+
+:root[data-glass-background]
+  .buzz-huddle-shell[data-huddle-window="false"]
+  .buzz-huddle-drawer-slot
+  > .buzz-huddle-drawer {
+  border-radius: calc(
+    var(--buzz-huddle-drawer-radius) -
+    var(--buzz-huddle-drawer-inset)
+  );
+  height: 100%;
+  padding-block: var(--buzz-huddle-drawer-inset);
+  padding-inline: var(--buzz-huddle-drawer-inset);
 }

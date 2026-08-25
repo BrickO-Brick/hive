@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use acp::{AcpClient, EnvVar, McpServer};
-use anyhow::Result;
+use anyhow::{ensure, Context, Result};
 use buzz_core::kind::{
     KIND_MEMBER_ADDED_NOTIFICATION, KIND_MEMBER_REMOVED_NOTIFICATION, KIND_STREAM_MESSAGE,
     KIND_STREAM_REMINDER, KIND_WORKFLOW_APPROVAL_REQUESTED,
@@ -65,6 +65,22 @@ const MODELS_TIMEOUT: Duration = Duration::from_secs(10);
 /// Timeout for `buzz-acp authenticate`. Browser-based vendor auth can require
 /// human interaction, so it must not share the short probe timeout.
 const AUTHENTICATE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
+/// Resolve the process working directory for ACP session metadata and prompts.
+///
+/// `std::env::current_dir()` returns an absolute path on every supported
+/// platform. Keep the explicit invariant check so a future source cannot
+/// silently introduce a relative path, and surface resolution failures instead
+/// of substituting a misleading Unix-specific fallback.
+fn current_working_directory() -> Result<String> {
+    let cwd = std::env::current_dir().context("failed to resolve current working directory")?;
+    ensure!(
+        cwd.is_absolute(),
+        "current working directory is not absolute: {}",
+        cwd.display()
+    );
+    Ok(cwd.to_string_lossy().into_owned())
+}
 
 /// Publish a kind:20001 presence update event via the WebSocket connection.
 ///
@@ -1097,6 +1113,7 @@ fn handle_relay_observer_control_event(
     pool: &mut AgentPool,
     observer: Option<&observer::ObserverHandle>,
     owner_pubkey_hex: &str,
+    event_publisher: RelayEventPublisher,
 ) {
     // Defense-in-depth: verify signature even though the relay already checked.
     if let Err(e) = buzz_core::verify_event(&event) {
@@ -1145,10 +1162,160 @@ fn handle_relay_observer_control_event(
         Some("permission_decision") => {
             handle_permission_decision_control(&payload, pool, observer);
         }
+        Some("publish_project_owner_announcements") => {
+            handle_publish_project_owner_announcements_control(
+                &payload,
+                keys,
+                observer,
+                event_publisher,
+            );
+        }
         _ => {
             tracing::debug!(payload = %payload, "ignoring unknown observer control frame");
         }
     }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectOwnerAnnouncementControl {
+    request_id: String,
+    announcements: Vec<ProjectOwnerAnnouncementTemplate>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectOwnerAnnouncementTemplate {
+    kind: u16,
+    content: String,
+    created_at: Option<u64>,
+    tags: Vec<Vec<String>>,
+}
+
+fn handle_publish_project_owner_announcements_control(
+    payload: &serde_json::Value,
+    keys: &nostr::Keys,
+    observer: Option<&observer::ObserverHandle>,
+    publisher: RelayEventPublisher,
+) {
+    let Ok(control) = serde_json::from_value::<ProjectOwnerAnnouncementControl>(payload.clone())
+    else {
+        tracing::warn!("project announcement control frame has an invalid payload");
+        return;
+    };
+    if Uuid::parse_str(&control.request_id).is_err()
+        || control.announcements.is_empty()
+        || control.announcements.len() > 2
+    {
+        tracing::warn!("project announcement control frame has invalid request metadata");
+        return;
+    }
+
+    let keys = keys.clone();
+    let observer = observer.cloned();
+    tokio::spawn(async move {
+        let events = match build_project_owner_announcement_events(control.announcements, &keys) {
+            Ok(events) => events,
+            Err(error) => {
+                emit_project_owner_control_result(
+                    observer.as_ref(),
+                    &control.request_id,
+                    "error",
+                    &[],
+                    Some(error.to_string()),
+                );
+                return;
+            }
+        };
+        let mut published_events = Vec::with_capacity(events.len());
+        for event in events {
+            if let Err(error) = publisher.publish_event(event.clone()).await {
+                emit_project_owner_control_result(
+                    observer.as_ref(),
+                    &control.request_id,
+                    "error",
+                    &published_events,
+                    Some(format!("publish project announcement: {error}")),
+                );
+                return;
+            }
+            published_events.push(event);
+        }
+        emit_project_owner_control_result(
+            observer.as_ref(),
+            &control.request_id,
+            "ok",
+            &published_events,
+            None,
+        );
+    });
+}
+
+fn build_project_owner_announcement_events(
+    announcements: Vec<ProjectOwnerAnnouncementTemplate>,
+    keys: &nostr::Keys,
+) -> Result<Vec<nostr::Event>> {
+    let now = nostr::Timestamp::now().as_secs();
+    announcements
+        .into_iter()
+        .map(|template| {
+            if !matches!(template.kind, 30_617 | 30_621) {
+                anyhow::bail!("unsupported project announcement kind");
+            }
+            if !template.tags.iter().any(|tag| {
+                tag.first().is_some_and(|value| value == "d")
+                    && tag.get(1).is_some_and(|value| !value.trim().is_empty())
+            }) {
+                anyhow::bail!("project announcement is missing its address");
+            }
+            let tags = template
+                .tags
+                .into_iter()
+                .map(|tag| {
+                    nostr::Tag::parse(tag)
+                        .map_err(|error| anyhow::anyhow!("invalid project tag: {error}"))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let created_at = template.created_at.unwrap_or(now);
+            if created_at > now.saturating_add(300) {
+                anyhow::bail!("project announcement timestamp is too far in the future");
+            }
+            nostr::EventBuilder::new(nostr::Kind::Custom(template.kind), template.content)
+                .tags(tags)
+                .custom_created_at(nostr::Timestamp::from(created_at))
+                .sign_with_keys(keys)
+                .map_err(|error| anyhow::anyhow!("sign project announcement: {error}"))
+        })
+        .collect()
+}
+
+fn emit_project_owner_control_result(
+    observer: Option<&observer::ObserverHandle>,
+    request_id: &str,
+    status: &str,
+    events: &[nostr::Event],
+    error: Option<String>,
+) {
+    let Some(observer) = observer else {
+        return;
+    };
+    observer.emit(
+        "control_result",
+        None,
+        &observer::ObserverContext {
+            channel_id: None,
+            session_id: None,
+            turn_id: None,
+            started_at: None,
+        },
+        serde_json::json!({
+            "type": "publish_project_owner_announcements",
+            "requestId": request_id,
+            "status": status,
+            "events": events,
+            "error": error,
+        }),
+    );
 }
 
 /// Handle a `cancel_turn` control frame: signal the in-flight task to cancel.
@@ -1214,6 +1381,13 @@ fn handle_switch_model_control(
         tracing::warn!("observer switch_model control frame missing modelId");
         return;
     };
+    // Opaque per-pick correlator, echoed on every result frame so the Desktop
+    // can ignore a replayed result for an earlier pick. Optional: absent on
+    // older Desktop clients, in which case the frames simply carry no id.
+    let request_id = payload
+        .get("requestId")
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
 
     // A turn is in flight for this channel iff a task_map entry exists. The
     // agent is moved out of the pool during a turn, so the control oneshot is
@@ -1230,7 +1404,10 @@ fn handle_switch_model_control(
         if signal_in_flight_task(
             pool,
             channel_id,
-            ControlSignal::SwitchModel(model_id.to_string()),
+            ControlSignal::SwitchModel {
+                model_id: model_id.to_string(),
+                request_id: request_id.clone(),
+            },
         ) {
             "sent"
         } else {
@@ -1238,7 +1415,7 @@ fn handle_switch_model_control(
         }
     } else {
         // Idle path: validate against the cached catalog before invalidating.
-        match pool.switch_idle_agent_model(channel_id, model_id) {
+        match pool.switch_idle_agent_model(channel_id, model_id, request_id.clone()) {
             IdleSwitchResult::Switched => "switched",
             IdleSwitchResult::UnsupportedModel => "unsupported_model",
             IdleSwitchResult::NoIdleAgent => "no_active_turn",
@@ -1259,6 +1436,9 @@ fn handle_switch_model_control(
                 "type": "switch_model",
                 "status": status,
                 "modelId": model_id,
+                // Echo the correlator on the immediate ack so a `sent` /
+                // `turn_ending` / idle-path terminal frame matches the pick.
+                "requestId": request_id,
             }),
         );
     }
@@ -2152,6 +2332,7 @@ async fn tokio_main() -> Result<()> {
     }
 
     let base_prompt_content = config.base_prompt_content.take();
+    let cwd = current_working_directory()?;
     let ctx = Arc::new(PromptContext {
         mcp_servers: build_mcp_servers(&config),
         initial_message: config.initial_message.clone(),
@@ -2170,10 +2351,7 @@ async fn tokio_main() -> Result<()> {
             Some(include_str!("base_prompt.md"))
         },
         heartbeat_prompt: config.heartbeat_prompt.clone(),
-        cwd: std::env::current_dir()
-            .unwrap_or_else(|_| std::path::PathBuf::from("/"))
-            .to_string_lossy()
-            .to_string(),
+        cwd,
         rest_client: relay.rest_client(),
         channel_info: pool::ChannelInfoResolver::new(channel_info_map, relay.rest_client()),
         context_message_limit: config.context_message_limit,
@@ -2458,6 +2636,9 @@ async fn tokio_main() -> Result<()> {
                         model_capabilities: None,
                         desired_model: config.model.clone(),
                         model_overridden: false,
+                        desired_model_request_id: None,
+                        desired_model_pending_ack: false,
+                        startup_effort: config.effort_level.clone(),
                         agent_name,
                         goose_system_prompt_supported: None,
                         protocol_version,
@@ -2567,7 +2748,14 @@ async fn tokio_main() -> Result<()> {
                     match control_event {
                         Some(event) => {
                             if let Some(ref owner_hex) = owner_cache.pubkey {
-                                handle_relay_observer_control_event(&config.keys, event, &mut pool, observer.as_ref(), owner_hex);
+                                handle_relay_observer_control_event(
+                                    &config.keys,
+                                    event,
+                                    &mut pool,
+                                    observer.as_ref(),
+                                    owner_hex,
+                                    relay.event_publisher(),
+                                );
                             } else {
                                 tracing::warn!("observer control frame received but no owner resolved — dropping");
                             }
@@ -4436,8 +4624,24 @@ mod agent_draft_prompt_tests {
     }
 
     #[test]
+    fn shared_base_prompt_teaches_repo_context_and_learning_loop() {
+        let prompt = include_str!("base_prompt.md");
+        assert!(prompt.contains("read its root `AGENTS.md`"));
+        assert!(prompt.contains("path-local `AGENTS.md`"));
+        assert!(
+            prompt.contains("product, architecture, and vision documents as design constraints")
+        );
+        assert!(prompt.contains("CI and live workflow evidence answer different questions"));
+        assert!(prompt.contains("record the invariant in the same session"));
+        assert!(prompt.contains("update the team's shared guidance"));
+    }
+
+    #[test]
     fn shared_base_prompt_teaches_single_command_mentions_and_preflight() {
         let prompt = include_str!("base_prompt.md");
+        assert!(prompt.contains("use the person's **exact display name as shown in Buzz**"));
+        assert!(prompt.contains("Do not expand a short display name, infer a surname"));
+        assert!(prompt.contains("Preserve it exactly; do not infer, expand, or look up a surname"));
         assert!(prompt.contains("--mention <hex-or-npub>"));
         assert!(prompt.contains("every presentation-only name that should notify"));
         assert!(
@@ -4567,6 +4771,7 @@ struct PoolStartup {
     extra_env: Vec<(String, String)>,
     has_generated_codex_config: bool,
     model: Option<String>,
+    effort_level: Option<String>,
     observer: Option<observer::ObserverHandle>,
 }
 
@@ -4579,6 +4784,7 @@ impl PoolStartup {
             extra_env: config.persona_env_vars.clone(),
             has_generated_codex_config: config.has_generated_codex_config,
             model: config.model.clone(),
+            effort_level: config.effort_level.clone(),
             observer,
         }
     }
@@ -4646,6 +4852,9 @@ async fn initialize_agent_pool(
                             model_capabilities: None,
                             desired_model: startup.model.clone(),
                             model_overridden: false,
+                            desired_model_request_id: None,
+                            desired_model_pending_ack: false,
+                            startup_effort: startup.effort_level.clone(),
                             agent_name,
                             goose_system_prompt_supported: None,
                             protocol_version,
@@ -4853,10 +5062,7 @@ async fn run_models(args: ModelsArgs) -> Result<()> {
     use acp::{extract_model_config_options, extract_model_state};
 
     let agent_args = config::normalize_agent_args(&args.agent.agent_command, args.agent.agent_args);
-    let cwd = std::env::current_dir()
-        .unwrap_or_else(|_| std::path::PathBuf::from("/"))
-        .to_string_lossy()
-        .to_string();
+    let cwd = current_working_directory()?;
 
     // Spawn outside the timeout so we always own the child for cleanup.
     // `models` subcommand doesn't use persona packs — no extra env, no codex config.
@@ -5207,6 +5413,59 @@ mod owner_control_command_tests {
             channel_id,
             ControlSignal::Rotate
         ));
+    }
+
+    #[test]
+    fn project_owner_control_signs_only_addressable_project_events() {
+        let keys = Keys::generate();
+        let events = build_project_owner_announcement_events(
+            vec![
+                ProjectOwnerAnnouncementTemplate {
+                    kind: 30_621,
+                    content: String::new(),
+                    created_at: Some(1),
+                    tags: vec![vec!["d".to_string(), "project".to_string()]],
+                },
+                ProjectOwnerAnnouncementTemplate {
+                    kind: 30_617,
+                    content: String::new(),
+                    created_at: Some(1),
+                    tags: vec![vec!["d".to_string(), "repository".to_string()]],
+                },
+            ],
+            &keys,
+        )
+        .expect("valid project events");
+
+        assert_eq!(events.len(), 2);
+        assert!(events.iter().all(|event| event.pubkey == keys.public_key()));
+        assert!(events.iter().all(|event| event.verify().is_ok()));
+    }
+
+    #[test]
+    fn project_owner_control_rejects_arbitrary_or_unaddressed_events() {
+        let keys = Keys::generate();
+        let arbitrary = build_project_owner_announcement_events(
+            vec![ProjectOwnerAnnouncementTemplate {
+                kind: 1,
+                content: String::new(),
+                created_at: None,
+                tags: vec![vec!["d".to_string(), "project".to_string()]],
+            }],
+            &keys,
+        );
+        assert!(arbitrary.is_err());
+
+        let unaddressed = build_project_owner_announcement_events(
+            vec![ProjectOwnerAnnouncementTemplate {
+                kind: 30_621,
+                content: String::new(),
+                created_at: None,
+                tags: vec![],
+            }],
+            &keys,
+        );
+        assert!(unaddressed.is_err());
     }
 }
 
@@ -6689,6 +6948,7 @@ mod build_mcp_servers_tests {
             typing_enabled: true,
             memory_enabled: false,
             model: None,
+            effort_level: None,
             session_title: None,
             permission_config: config::ResolvedPermissionConfig::resolve(
                 config::PermissionPolicy::Reject,
@@ -6916,6 +7176,7 @@ mod error_outcome_emission_tests {
             typing_enabled: true,
             memory_enabled: false,
             model: None,
+            effort_level: None,
             session_title: None,
             permission_config: config::ResolvedPermissionConfig::resolve(
                 config::PermissionPolicy::Reject,
@@ -6966,6 +7227,9 @@ mod error_outcome_emission_tests {
             model_capabilities: None,
             desired_model: None,
             model_overridden: false,
+            desired_model_request_id: None,
+            desired_model_pending_ack: false,
+            startup_effort: None,
             agent_name: "unknown".into(),
             goose_system_prompt_supported: None,
             // Error branches under test never read this; 1 is the legacy
@@ -8470,7 +8734,7 @@ mod observer_payload_trim_tests {
         // to 1).
         let sections = [
             "[Base]\nyou are a helpful agent".to_string(),
-            "[System]\npersona text".to_string(),
+            "[Agent Instructions]\npersona text".to_string(),
             "[Agent Memory — core]\nremember this".to_string(),
             "[Context]\nScope: thread".to_string(),
             // The triggering event body, oversized on its own.
@@ -8507,7 +8771,7 @@ mod observer_payload_trim_tests {
         let texts: Vec<&str> = blocks.iter().map(|b| b["text"].as_str().unwrap()).collect();
         for header in [
             "[Base]",
-            "[System]",
+            "[Agent Instructions]",
             "[Agent Memory — core]",
             "[Context]",
             "[Buzz event: @mention]",

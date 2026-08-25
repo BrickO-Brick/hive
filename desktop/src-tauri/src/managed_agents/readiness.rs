@@ -1465,8 +1465,8 @@ mod tests {
 
     #[test]
     fn resolve_effective_agent_env_user_env_wins_over_structured_fields() {
-        // env_vars must win over baked defaults; in OSS builds the baked map is empty,
-        // so this verifies the user-env layer is present.
+        // User env_vars must win over baked defaults; in OSS builds baked map is empty,
+        // so this validates the user-env layer is present in the output.
         let mut env_vars = BTreeMap::new();
         env_vars.insert("BUZZ_AGENT_PROVIDER".to_string(), "anthropic".to_string());
         env_vars.insert(
@@ -1502,6 +1502,7 @@ mod tests {
             runtime_pid: None,
             backend: Default::default(),
             backend_agent_id: None,
+            provider_policy_pending: false,
             provider_binary_path: None,
             team_id: None,
             persona_team_dir: None,
@@ -1531,6 +1532,7 @@ mod tests {
             relay_mesh: None,
             permission_policy: None,
             applied_permission_policy: None,
+            effort_level: None,
         };
 
         let runtime = known_acp_runtime_exact("buzz-agent");
@@ -1546,8 +1548,6 @@ mod tests {
             Some("claude-opus-4-5")
         );
     }
-
-    // ── provider-specific model fallback tests ────────────────────────────
 
     #[test]
     fn buzz_agent_databricks_v2_with_databricks_model_but_no_buzz_agent_model_is_ready() {

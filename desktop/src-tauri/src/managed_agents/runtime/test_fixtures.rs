@@ -63,6 +63,7 @@ pub(super) fn fixture(
         runtime_pid: None,
         backend: Default::default(),
         backend_agent_id: None,
+        provider_policy_pending: false,
         provider_binary_path: None,
         team_id: None,
         persona_team_dir: None,
@@ -92,5 +93,6 @@ pub(super) fn fixture(
         relay_mesh: None,
         permission_policy: None,
         applied_permission_policy: None,
+        effort_level: None,
     }
 }

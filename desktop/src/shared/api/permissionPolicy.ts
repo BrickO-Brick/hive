@@ -37,7 +37,8 @@ export type SwitchManagedAgentModelStatus =
   | "turn_ending"
   | "switched"
   | "unsupported_model"
-  | "no_active_turn";
+  | "no_active_turn"
+  | "failure";
 
 export type ControlResultFrame = {
   type: "cancel_turn" | "switch_model" | "permission_decision";
@@ -45,6 +46,10 @@ export type ControlResultFrame = {
   modelId?: string;
   /** Present on `permission_decision` results — identifies the request card to retire. */
   requestNonce?: string;
+  /** Opaque per-pick id echoed from the request; correlates late frames. */
+  requestId?: string;
+  /** Buzz channel UUID from the observer envelope; disambiguates channels. */
+  channelId?: string | null;
 };
 
 export type BackendProviderCandidate = {
