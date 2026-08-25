@@ -81,6 +81,7 @@ pub(crate) async fn fetch_projects_for_channel(
 ) -> Result<Vec<Event>, CliError> {
     let filter = serde_json::json!({
         "kinds": [KIND_PROJECT],
+        "#buzz-channel": [channel],
     });
     let events: Vec<Event> = client
         .query_all_bounded(filter, PROJECT_QUERY_EVENT_BOUND)
@@ -932,6 +933,42 @@ mod tests {
 
     const OWNER_HEX: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const OWNER_B_HEX: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    #[tokio::test]
+    async fn project_lookup_scopes_the_production_query_before_the_global_bound() {
+        use std::sync::{Arc, Mutex};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let channel = "11111111-1111-4111-8111-111111111111";
+        let request_body = Arc::new(Mutex::new(None));
+        let captured_body = request_body.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0; 65_536];
+            let read = socket.read(&mut buf).await.unwrap();
+            let request = String::from_utf8_lossy(&buf[..read]);
+            let body = request.split("\r\n\r\n").nth(1).unwrap().to_owned();
+            *captured_body.lock().unwrap() = Some(body);
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n[]",
+                )
+                .await
+                .unwrap();
+        });
+        let client =
+            crate::client::BuzzClient::new(base_url, nostr::Keys::generate(), None, None).unwrap();
+
+        let projects = fetch_projects_for_channel(&client, channel).await.unwrap();
+        assert!(projects.is_empty());
+        server.await.unwrap();
+        let body: serde_json::Value =
+            serde_json::from_str(request_body.lock().unwrap().as_deref().unwrap()).unwrap();
+        assert_eq!(body[0]["#buzz-channel"], serde_json::json!([channel]));
+        assert_eq!(body[0]["kinds"], serde_json::json!([KIND_PROJECT]));
+    }
 
     #[test]
     fn project_channel_matching_ignores_unrelated_claims() {

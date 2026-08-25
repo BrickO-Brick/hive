@@ -635,13 +635,13 @@ impl ChannelInfoResolver {
         let fetched = match fetch_project_home_for_channel(channel_id, &self.rest_client).await {
             Ok(fetched) => fetched,
             Err(error) => {
-                if let Some(stale) = cached {
+                if let Some(project) = cached.and_then(|stale| stale.value) {
                     tracing::warn!(
                         channel_id = %channel_id,
-                        "project context refresh failed; retaining stale value: {}",
+                        "project context refresh failed; retaining stale project: {}",
                         error.0
                     );
-                    return Ok(stale.value);
+                    return Ok(Some(project));
                 }
                 return Err(error);
             }
@@ -8563,7 +8563,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
     }
 
     #[tokio::test]
-    async fn failed_project_lookup_through_resolve_cannot_become_ordinary_context() {
+    async fn failed_refresh_rejects_expired_absence_but_retains_expired_project() {
         use std::sync::atomic::Ordering;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -8602,15 +8602,54 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             },
         );
 
+        resolver.projects.write().unwrap().insert(
+            id,
+            CachedProjectInfo {
+                fetched_at: std::time::Instant::now() - PROJECT_INFO_CACHE_TTL,
+                value: None,
+            },
+        );
         assert!(
             resolver.resolve(id).await.is_none(),
-            "indeterminate project discovery must suppress ordinary-channel context"
+            "an expired absence plus failed refresh must suppress ordinary-channel context"
         );
         assert!(
-            !resolver.projects.read().unwrap().contains_key(&id),
-            "an indeterminate lookup must not become cached absence"
+            resolver
+                .projects
+                .read()
+                .unwrap()
+                .get(&id)
+                .unwrap()
+                .value
+                .is_none(),
+            "failed refresh must not renew the expired absence"
         );
-        assert_eq!(requests.load(Ordering::SeqCst), 2, "one retry is attempted");
+
+        let stale_project = PromptProjectInfo {
+            name: "Last known project".into(),
+            slug: "last-known".into(),
+            owner: "a".repeat(64),
+            coordinate: format!("30621:{}:last-known", "a".repeat(64)),
+            default_repo_owner: None,
+            default_repo_id: None,
+        };
+        resolver.projects.write().unwrap().insert(
+            id,
+            CachedProjectInfo {
+                fetched_at: std::time::Instant::now() - PROJECT_INFO_CACHE_TTL,
+                value: Some(stale_project.clone()),
+            },
+        );
+        let resolved = resolver
+            .resolve(id)
+            .await
+            .expect("stale project is retained");
+        assert_eq!(resolved.project, Some(stale_project));
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            4,
+            "each refresh is retried once"
+        );
         server.abort();
     }
 
