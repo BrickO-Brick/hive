@@ -399,6 +399,11 @@ test("the same relay post outside a work block keeps its message bubble", async 
     "outside a block a posted message is a destination the reader can open — the bubble stays",
   );
   assert.match(bubble.className, /relative/);
+  assert.match(
+    bubble.className,
+    /pr-4/,
+    "focus-mode agent sends keep a full 16px inset on the right",
+  );
   assert.doesNotMatch(
     bubble.className,
     /max-h-36/,
