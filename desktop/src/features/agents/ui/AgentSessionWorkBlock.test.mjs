@@ -185,8 +185,16 @@ async function settle(read, expected, { timeout = 2000 } = {}) {
  * via `useAppNavigation` and therefore needs router context — the same reason
  * `AgentSessionTranscriptList.conversation.test.mjs` mounts through a memory
  * router. Without it a thought row throws while a tool row happens not to.
+ *
+ * `liveTurnId` defaults to the fixtures' own turn, i.e. "the agent is working on
+ * this turn right now", because that is the situation nearly every case here is
+ * about. Pass `liveTurnId: null` for reopened history — see the orphaned-step
+ * tests, where the same items must read as finished.
  */
-async function renderBlock(items, { streamingItemId = null } = {}) {
+async function renderBlock(
+  items,
+  { liveTurnId = SHARED.turnId, streamingItemId = null } = {},
+) {
   const { createElement, useState } = await import("react");
   const { render } = await import("@testing-library/react");
   const { QueryClient, QueryClientProvider } = await import(
@@ -201,11 +209,12 @@ async function renderBlock(items, { streamingItemId = null } = {}) {
     "./AgentSessionWorkBlock.tsx"
   );
 
-  const element = (blockItems, streaming) =>
+  const element = (blockItems, streaming, live) =>
     createElement(
       AgentSessionTranscriptTurnMetaProvider,
       {
         value: {
+          liveTurnId: live,
           streamingItemId: streaming,
         },
       },
@@ -223,9 +232,9 @@ async function renderBlock(items, { streamingItemId = null } = {}) {
 
   let applyState;
   const Harness = () => {
-    const [state, setState] = useState({ items, streamingItemId });
+    const [state, setState] = useState({ items, liveTurnId, streamingItemId });
     applyState = setState;
-    return element(state.items, state.streamingItemId);
+    return element(state.items, state.streamingItemId, state.liveTurnId);
   };
   // The bubble presenter reads the posted message through `useQuery`. Provided
   // unconditionally so that if a rail step ever DID reach that presenter, the
@@ -256,9 +265,15 @@ async function renderBlock(items, { streamingItemId = null } = {}) {
   return {
     ...view,
     // Re-render the SAME block id, exactly as the transcript does as work
-    // streams and then finishes.
-    stream: (nextItems, streaming = null) =>
-      applyState({ items: nextItems, streamingItemId: streaming }),
+    // streams and then finishes. `liveTurnId` is carried through so a test can
+    // model the session going away under a still-running step (agent death),
+    // not just the step reaching a terminal status.
+    stream: (nextItems, streaming = null, live = liveTurnId) =>
+      applyState({
+        items: nextItems,
+        liveTurnId: live,
+        streamingItemId: streaming,
+      }),
     summary: () => q('[data-testid="transcript-work-block-summary"]'),
     previousSteps: () =>
       q('[data-testid="transcript-work-block-previous-steps"]'),
@@ -618,6 +633,122 @@ test("a running step pulses and a failed one does not", async () => {
   );
 });
 
+// ── Orphaned work ────────────────────────────────────────────────────────────
+
+/**
+ * Reopened history must not present as work in progress.
+ *
+ * A tool's `executing` status is written when the step starts and never revised
+ * if the agent dies first, so an abandoned step keeps it forever. In this block
+ * that status is not a per-row detail — one `running` entry makes the whole
+ * block active, which suppresses the folded summary line, keeps the rail
+ * expanded and pulses a bullet. Scrolling back to a crashed turn therefore
+ * showed the reader live work indefinitely (Codex P2 on #6536).
+ */
+test("a block whose running step has no live session folds like finished work", async () => {
+  const view = await renderBlock(
+    [step("a"), step("b", { status: "executing", completedAt: null })],
+    { liveTurnId: null, streamingItemId: null },
+  );
+
+  const summary = view.summary();
+  assert.ok(
+    summary,
+    "history gets its folded summary line — the orphaned status must not suppress it",
+  );
+  assert.match(
+    summary.textContent,
+    /2 steps$/,
+    "an abandoned step is not known to have failed, so the count stays neutral",
+  );
+  assert.equal(await view.settleToStepCount(0), 0, "the rail folds away");
+  assert.equal(
+    view.qa(".animate-pulse").length,
+    0,
+    "nothing pulses when nothing is running",
+  );
+});
+
+test("the same items still hold the block open while the turn is live", async () => {
+  // The paired half: this is what makes the gate meaningful rather than a
+  // blanket "never trust executing". Identical items, live turn.
+  const view = await renderBlock(
+    [step("a"), step("b", { status: "executing", completedAt: null })],
+    { liveTurnId: "turn-1", streamingItemId: null },
+  );
+
+  assert.equal(view.summary(), null, "a live block has no folded line");
+  assert.equal(view.stepCount(), 2, "the rail stays open");
+  assert.deepEqual(view.glyphStates(), ["settled", "running"]);
+  assert.equal(view.qa(".animate-pulse").length, 1, "live work pulses");
+});
+
+test("an agent live on a later turn does not resurrect an earlier turn's abandoned step", async () => {
+  // The reason the signal is a turn id and not a boolean: a restarted agent is
+  // live, but not on this turn, and a global flag would keep this step spinning.
+  const view = await renderBlock(
+    [step("a"), step("b", { status: "executing", completedAt: null })],
+    { liveTurnId: "turn-2", streamingItemId: null },
+  );
+
+  assert.ok(
+    view.summary(),
+    "this turn is history even though the agent is busy",
+  );
+  assert.equal(await view.settleToStepCount(0), 0);
+  assert.equal(view.qa(".animate-pulse").length, 0);
+});
+
+test("a block live when the session ends folds instead of spinning forever", async () => {
+  const { act } = await import("@testing-library/react");
+  // The bug as the reader meets it live: the agent dies mid-step, so the item
+  // never reaches a terminal status and the only thing that changes is that no
+  // turn is live any more.
+  const live = [
+    step("a"),
+    step("b", { status: "executing", completedAt: null }),
+  ];
+  const view = await renderBlock(live, {
+    liveTurnId: "turn-1",
+    streamingItemId: "b",
+  });
+  assert.equal(view.stepCount(), 2, "live: the rail is open");
+  assert.equal(view.summary(), null);
+
+  // Session gone. The items are BYTE-IDENTICAL — only liveness changed.
+  await act(async () => {
+    view.stream(live, null, null);
+  });
+
+  assert.ok(view.summary(), "the block settles when its session goes away");
+  assert.match(view.summary().textContent, /2 steps$/);
+  assert.equal(await view.settleToStepCount(0), 0);
+  assert.equal(view.qa(".animate-pulse").length, 0);
+});
+
+test("an orphaned step keeps its own row detail rather than gaining an interrupted marker", async () => {
+  // Deliberate: we do not know what happened to the step, so it renders as the
+  // neutral step it is with whatever it recorded. A visible "interrupted"
+  // treatment would be a design addition, not part of this fix.
+  const view = await renderBlock(
+    [step("a"), step("b", { status: "executing", completedAt: null })],
+    { liveTurnId: null, streamingItemId: null },
+  );
+  await view.expand();
+  await view.settleToStepCount(2);
+
+  assert.deepEqual(
+    view.glyphStates(),
+    ["settled", "settled"],
+    "no third state was invented for an abandoned step",
+  );
+  assert.equal(
+    view.qa('[data-testid="transcript-tool-item"]').length,
+    2,
+    "both steps still render through the normal tool presenter",
+  );
+});
+
 test("the rail bullet masks the spine with the drawer surface colour", async () => {
   // The bullet has to mask the spine passing behind it, and the mask must match
   // the surface the transcript is drawn on. A mask in any other colour shows as
@@ -961,6 +1092,7 @@ async function countStepRenders(initialItems, nextItems) {
         AgentSessionTranscriptTurnMetaProvider,
         {
           value: {
+            liveTurnId: items[items.length - 1].turnId,
             streamingItemId: items[items.length - 1].id,
           },
         },

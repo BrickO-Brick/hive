@@ -201,6 +201,85 @@ test("buildConversationTurnMeta reads a trailing single block directly", () => {
   assert.equal(meta.streamingItemId, "life:orphan");
 });
 
+// ---- buildConversationTurnMeta: liveTurnId ----
+
+/**
+ * The work block cannot tell an abandoned step from a running one on its own: a
+ * tool keeps its `executing` status forever if the agent dies mid-step. Turn
+ * ownership is knowledge only the list has, so it is published here.
+ */
+test("buildConversationTurnMeta names the live turn so the block can gate running steps", () => {
+  const meta = buildConversationTurnMeta(
+    [turnBlock([thoughtSegment("thought:1", "2026-06-14T19:00:01.000Z")])],
+    { isTurnLive: true, variant: "conversation" },
+  );
+
+  assert.equal(meta.liveTurnId, "turn-1");
+});
+
+test("buildConversationTurnMeta reports no live turn when the turn is idle", () => {
+  // This is the case the orphaned-step bug lived in: history reopened, nothing
+  // live, but an item still claiming `executing`.
+  const meta = buildConversationTurnMeta(
+    [turnBlock([thoughtSegment("thought:1", "2026-06-14T19:00:01.000Z")])],
+    { isTurnLive: false, variant: "conversation" },
+  );
+
+  assert.equal(meta.liveTurnId, null);
+  assert.equal(
+    meta,
+    EMPTY_TRANSCRIPT_TURN_META,
+    "an idle turn still allocates nothing",
+  );
+});
+
+test("buildConversationTurnMeta names the live turn even when a lifecycle row trails it", () => {
+  // A compaction notice arrives as a `single` block AFTER the turn it belongs
+  // to, so "the last block" is not always the live turn — but the last turn is.
+  // Reading the last block's kind alone would report no live turn and gate every
+  // running step off, which is the mirror image of the bug being fixed.
+  const meta = buildConversationTurnMeta(
+    [
+      turnBlock([thoughtSegment("thought:1", "2026-06-14T19:00:01.000Z")]),
+      {
+        kind: "single",
+        item: item({
+          id: "life:compact",
+          type: "lifecycle",
+          renderClass: "status",
+          title: "Context compacted",
+          text: "",
+          timestamp: "2026-06-14T19:00:20.000Z",
+        }),
+      },
+    ],
+    { isTurnLive: true, variant: "conversation" },
+  );
+
+  assert.equal(meta.liveTurnId, "turn-1");
+});
+
+test("buildConversationTurnMeta reports no live turn when there is no turn at all", () => {
+  const meta = buildConversationTurnMeta(
+    [
+      {
+        kind: "single",
+        item: item({
+          id: "life:1",
+          type: "lifecycle",
+          renderClass: "status",
+          title: "Session started",
+          text: "",
+          timestamp: "2026-06-14T19:00:00.000Z",
+        }),
+      },
+    ],
+    { isTurnLive: true, variant: "conversation" },
+  );
+
+  assert.equal(meta.liveTurnId, null);
+});
+
 // ---- parsePlanChecklist ----
 
 test("parsePlanChecklist reads the checkbox markdown the transcript builds", () => {

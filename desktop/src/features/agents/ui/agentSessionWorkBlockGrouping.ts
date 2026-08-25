@@ -263,10 +263,30 @@ export type WorkBlockEntry =
  * Order matters: a tool can carry a stale `isError` from a retry while the new
  * attempt executes, and reporting that as failed would fold a live block's
  * count to "N steps · 1 failed" while the work is still in flight.
+ *
+ * `executing`/`pending` only counts as *running* when a session actually owns
+ * the step's turn. That status is written when the step starts and is never
+ * revised if the agent dies first, so on its own it says "this step began", not
+ * "this step is happening" — reopened history full of abandoned steps would
+ * otherwise present as work in progress forever. See `liveTurnId`.
+ *
+ * An abandoned step is reported as `settled`, not as a new state: we do not
+ * know that it failed, so it must not count toward the folded line's
+ * `N failed`, and inventing a third outcome would put a marker on the rail for
+ * something the reader cannot act on. It renders as the neutral step it is,
+ * with whatever detail it managed to record.
  */
-function toolEntryState(item: WorkBlockToolItem): WorkBlockEntryState {
+function toolEntryState(
+  item: WorkBlockToolItem,
+  liveTurnId: string | null,
+): WorkBlockEntryState {
   if (item.status === "executing" || item.status === "pending") {
-    return "running";
+    // Compared rather than tested for truthiness: an item with no turn id
+    // cannot be owned by a live turn, and `null === null` must not read as
+    // ownership.
+    return liveTurnId !== null && item.turnId === liveTurnId
+      ? "running"
+      : "settled";
   }
   if (item.isError || item.status === "failed") return "failed";
   return "settled";
@@ -281,22 +301,32 @@ function toolEntryState(item: WorkBlockToolItem): WorkBlockEntryState {
  * whole point of the closed union — a new item type must fail loudly here
  * instead of falling through to the tool branch and wearing a wrench.
  */
-function projectWorkBlockEntry(item: WorkBlockItem): WorkBlockEntry {
+function projectWorkBlockEntry(
+  item: WorkBlockItem,
+  liveTurnId: string | null,
+): WorkBlockEntry {
   switch (item.type) {
     case "thought":
       return { item, kind: "thought", state: "settled" };
     case "message":
       return { item, kind: "note", state: "settled" };
     case "tool":
-      return { item, kind: "tool", state: toolEntryState(item) };
+      return { item, kind: "tool", state: toolEntryState(item, liveTurnId) };
   }
 }
 
-/** Project a block's items into rail entries, in true arrival order. */
+/**
+ * Project a block's items into rail entries, in true arrival order.
+ *
+ * `liveTurnId` is required rather than optional: whether a step is running is
+ * not a property of the step alone, and a default would let a caller that has
+ * not thought about liveness get the old spins-forever behaviour silently.
+ */
 export function projectWorkBlockEntries(
   items: WorkBlockItem[],
+  options: { liveTurnId: string | null },
 ): WorkBlockEntry[] {
-  return items.map(projectWorkBlockEntry);
+  return items.map((item) => projectWorkBlockEntry(item, options.liveTurnId));
 }
 
 export type WorkBlockStatus = {

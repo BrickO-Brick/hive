@@ -18,6 +18,24 @@ import {
 
 const SHARED = { channelId: "chan-1", sessionId: "sess-1", turnId: "turn-1" };
 
+/**
+ * Project the block's items with the block's own turn live — i.e. the agent is
+ * working on `turn-1` right now, which is the turn every fixture here belongs
+ * to. Most projection cases are about what a step looks like while its own turn
+ * is being worked, so this is the default lens.
+ */
+const projectLive = (items) =>
+  projectWorkBlockEntries(items, { liveTurnId: "turn-1" });
+
+/**
+ * Project with no live turn — reopened history, or a session that has ended.
+ * The distinction matters because a tool item's `executing` status is written
+ * once at the start and never revised if the agent dies, so it is only evidence
+ * of work in flight when a session still owns the turn.
+ */
+const projectHistory = (items) =>
+  projectWorkBlockEntries(items, { liveTurnId: null });
+
 function thought(id, timestamp = "2026-06-14T19:00:02.000Z") {
   return {
     ...SHARED,
@@ -286,7 +304,7 @@ test("every item projects to exactly one rail kind, paired with its own item typ
   // item: <thought> }` does not type-check — but a hand-written swap between the
   // two prose branches is the easy mistake, and TypeScript is stripped at
   // runtime, so the pairing is asserted here as well.
-  const entries = projectWorkBlockEntries([
+  const entries = projectLive([
     thought("thought:1"),
     message("msg:interim", "assistant"),
     tool("tool:1"),
@@ -312,7 +330,7 @@ test("every item projects to exactly one rail kind, paired with its own item typ
 });
 
 test("only a tool step can be running or failed", () => {
-  const stateOf = (item) => projectWorkBlockEntries([item])[0].state;
+  const stateOf = (item) => projectLive([item])[0].state;
 
   assert.equal(stateOf(tool("t", { status: "executing" })), "running");
   assert.equal(stateOf(tool("t", { status: "pending" })), "running");
@@ -339,10 +357,91 @@ test("a step that is both running and errored still reads as running", () => {
   // attempt executes. Reporting it as failed would fold a live block's count to
   // "N steps · 1 failed" while the work is still in flight.
   assert.equal(
-    projectWorkBlockEntries([
-      tool("t", { status: "executing", isError: true }),
-    ])[0].state,
+    projectLive([tool("t", { status: "executing", isError: true })])[0].state,
     "running",
+  );
+});
+
+// ---- liveness ----
+
+/**
+ * An abandoned step is not a running step.
+ *
+ * `executing` is written when a step starts and never revised if the agent dies
+ * first, so reopened history keeps that status forever. In this block `running`
+ * is not just a glyph — one running entry makes `summarizeWorkBlock` report
+ * `isActive`, which suppresses the folded summary line and holds the rail open.
+ * Ungated, a single orphaned step therefore renders finished history as work in
+ * progress, pulsing indefinitely.
+ */
+test("an executing step whose turn is not live reads as settled, not running", () => {
+  const orphan = tool("t", { status: "executing", completedAt: null });
+
+  assert.equal(
+    projectLive([orphan])[0].state,
+    "running",
+    "the same item IS running while a session owns its turn",
+  );
+  assert.equal(
+    projectHistory([orphan])[0].state,
+    "settled",
+    "with no live turn the status only says the step began, not that it is happening",
+  );
+  assert.equal(
+    projectWorkBlockEntries([orphan], { liveTurnId: "turn-2" })[0].state,
+    "settled",
+    "an agent live on a LATER turn does not resurrect an earlier turn's abandoned step",
+  );
+});
+
+test("a pending step whose turn is not live reads as settled too", () => {
+  // Both in-flight statuses go through the same gate; `pending` is the one a
+  // crash between queue and start leaves behind.
+  const queued = tool("t", { status: "pending", completedAt: null });
+  assert.equal(projectLive([queued])[0].state, "running");
+  assert.equal(projectHistory([queued])[0].state, "settled");
+});
+
+test("an abandoned step is settled rather than failed, so it never inflates the failure count", () => {
+  // We do not know an abandoned step failed — only that nobody finished it.
+  // Counting it as a failure would put "1 failed" on the folded line for work
+  // that may well have succeeded without its terminal update being recorded.
+  const status = summarizeWorkBlock(
+    projectHistory([
+      tool("tool:1"),
+      tool("tool:2", { status: "executing", completedAt: null }),
+    ]),
+    { streamingItemId: null },
+  );
+  assert.deepEqual(status, { count: 2, failedCount: 0, isActive: false });
+  assert.equal(
+    formatWorkBlockSummaryLabel(status),
+    "2 steps",
+    "reopened history folds to a neutral count",
+  );
+});
+
+test("a genuinely failed step is still failed when its turn is not live", () => {
+  // The gate is only about the in-flight statuses. A step that recorded a
+  // failure recorded a fact, and history must keep reporting it.
+  const failed = () => tool("t", { isError: true, status: "failed" });
+  assert.equal(projectHistory([failed()])[0].state, "failed");
+  assert.equal(
+    summarizeWorkBlock(projectHistory([failed()]), { streamingItemId: null })
+      .failedCount,
+    1,
+  );
+});
+
+test("a step with no turn id is not owned by a live turn", () => {
+  // `null === null` must not read as ownership: an item that never recorded a
+  // turn cannot be shown to belong to the live one.
+  assert.equal(
+    projectWorkBlockEntries(
+      [tool("t", { status: "executing", completedAt: null, turnId: null })],
+      { liveTurnId: null },
+    )[0].state,
+    "settled",
   );
 });
 
@@ -350,7 +449,7 @@ test("a step that is both running and errored still reads as running", () => {
 
 test("summarizeWorkBlock counts steps and failures", () => {
   const status = summarizeWorkBlock(
-    projectWorkBlockEntries([
+    projectLive([
       tool("tool:1"),
       tool("tool:2", { isError: true, status: "failed" }),
       thought("thought:1"),
@@ -363,9 +462,7 @@ test("summarizeWorkBlock counts steps and failures", () => {
 test("a block is active when a step is running OR when it holds the streaming item", () => {
   assert.equal(
     summarizeWorkBlock(
-      projectWorkBlockEntries([
-        tool("tool:1", { status: "executing", completedAt: null }),
-      ]),
+      projectLive([tool("tool:1", { status: "executing", completedAt: null })]),
       { streamingItemId: null },
     ).isActive,
     true,
@@ -373,7 +470,7 @@ test("a block is active when a step is running OR when it holds the streaming it
   );
 
   // A thought streaming in carries no tool status, so status alone would miss it.
-  const streamingThought = projectWorkBlockEntries([thought("thought:1")]);
+  const streamingThought = projectLive([thought("thought:1")]);
   assert.equal(
     summarizeWorkBlock(streamingThought, { streamingItemId: "thought:1" })
       .isActive,
@@ -419,9 +516,7 @@ test("the previous-steps label is singular for one step", () => {
 const entryIds = (entries) => entries.map((entry) => entry.item.id);
 
 test("a live block shows the last N steps in true order and hides the rest", () => {
-  const entries = projectWorkBlockEntries(
-    ["a", "b", "c", "d", "e"].map((id) => tool(id)),
-  );
+  const entries = projectLive(["a", "b", "c", "d", "e"].map((id) => tool(id)));
   const { hiddenEntries, visibleEntries } = windowWorkBlockEntries(entries, {
     isActive: true,
   });
@@ -436,9 +531,7 @@ test("a live block shows the last N steps in true order and hides the rest", () 
 });
 
 test("a finished block shows every step", () => {
-  const entries = projectWorkBlockEntries(
-    ["a", "b", "c", "d", "e"].map((id) => tool(id)),
-  );
+  const entries = projectLive(["a", "b", "c", "d", "e"].map((id) => tool(id)));
   const { hiddenEntries, visibleEntries } = windowWorkBlockEntries(entries, {
     isActive: false,
   });
@@ -447,9 +540,7 @@ test("a finished block shows every step", () => {
 });
 
 test("a live block at or under the window size hides nothing", () => {
-  const entries = projectWorkBlockEntries(
-    ["a", "b", "c"].map((id) => tool(id)),
-  );
+  const entries = projectLive(["a", "b", "c"].map((id) => tool(id)));
   const { hiddenEntries, visibleEntries } = windowWorkBlockEntries(entries, {
     isActive: true,
   });

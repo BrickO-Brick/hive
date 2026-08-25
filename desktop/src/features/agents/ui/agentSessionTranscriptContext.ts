@@ -34,9 +34,26 @@ export function useAgentSessionTranscriptVariant() {
 export type AgentSessionTranscriptTurnMeta = {
   /** Trailing item of a live turn, or null when nothing is streaming. */
   streamingItemId: string | null;
+  /**
+   * The turn that is actually live, or null when no turn is.
+   *
+   * A tool item's `executing`/`pending` status is not evidence that work is
+   * happening: an agent that dies after emitting a tool start leaves that
+   * status on the item permanently, so reopened history still claims to be
+   * mid-step. Whether a session owns that step is knowledge only the list has,
+   * which is why it is published here rather than re-derived per row.
+   *
+   * A turn id rather than a boolean, because "some turn is live" is not the
+   * question. An agent that crashed during turn 1 and is now working on turn 2
+   * is live, yet turn 1's abandoned step is no more running than before — a
+   * global flag would keep it spinning in exactly the case a restarted agent
+   * makes common.
+   */
+  liveTurnId: string | null;
 };
 
 export const EMPTY_TRANSCRIPT_TURN_META: AgentSessionTranscriptTurnMeta = {
+  liveTurnId: null,
   streamingItemId: null,
 };
 

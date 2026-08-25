@@ -202,8 +202,11 @@ export function AgentSessionWorkBlockSegment({
   // One projection per render, shared by the summary counts and the rail, so
   // "is this step failed?" has exactly one answer in this component.
   const entries = React.useMemo(
-    () => projectWorkBlockEntries(block.items),
-    [block.items],
+    () =>
+      projectWorkBlockEntries(block.items, {
+        liveTurnId: turnMeta.liveTurnId,
+      }),
+    [block.items, turnMeta.liveTurnId],
   );
   const status = React.useMemo(
     () =>
