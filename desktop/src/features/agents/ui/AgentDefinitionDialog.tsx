@@ -1,7 +1,6 @@
 import * as React from "react";
 import { ChevronDown } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-
 import type {
   AcpRuntimeCatalogEntry,
   CreatePersonaInput,
@@ -91,7 +90,6 @@ import {
   runtimeDropdownAction,
   usePendingHarnessSelection,
 } from "./addCustomHarness";
-
 type AgentDefinitionDialogProps = {
   open: boolean;
   embedded?: boolean;
@@ -115,11 +113,9 @@ type AgentDefinitionDialogProps = {
   /** Extra create-mode submit gate (e.g. incomplete provider config). */
   createSubmitBlocked?: boolean;
 };
-
 export type AgentDefinitionSubmitOptions = {
   publishCatalogUpdates: boolean;
 };
-
 export function AgentDefinitionDialog({
   open,
   embedded = false,
@@ -202,7 +198,6 @@ export function AgentDefinitionDialog({
       !hasText(initialValues.runtime) &&
       (hasText(initialValues.model) || hasText(initialValues.provider)),
   );
-
   React.useEffect(() => {
     onDirtyChange?.(hasUserChanges);
   }, [hasUserChanges, onDirtyChange]);

@@ -1,5 +1,4 @@
 use crate::managed_agents::known_acp_runtime;
-
 #[path = "cli_tests.rs"]
 mod cli_tests;
 

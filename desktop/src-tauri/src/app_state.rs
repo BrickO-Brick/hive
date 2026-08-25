@@ -1,3 +1,8 @@
+use crate::huddle::HuddleState;
+pub(crate) use crate::identity_storage::{IdentityStorage, RecoveryState, ResolvedIdentity};
+use crate::managed_agents::config_bridge::SessionConfigCache;
+use crate::managed_agents::{ManagedAgentPairRuntime, ManagedAgentRuntimeKey};
+use nostr::{Keys, ToBech32};
 use std::{
     collections::HashMap,
     io::Write,
@@ -6,16 +11,8 @@ use std::{
         Arc, Mutex,
     },
 };
-
-use nostr::{Keys, ToBech32};
 use tauri::{AppHandle, Manager};
 use tokio::sync::Mutex as AsyncMutex;
-
-use crate::huddle::HuddleState;
-pub(crate) use crate::identity_storage::{IdentityStorage, RecoveryState, ResolvedIdentity};
-use crate::managed_agents::config_bridge::SessionConfigCache;
-use crate::managed_agents::{ManagedAgentPairRuntime, ManagedAgentRuntimeKey};
-
 pub struct AppState {
     pub keys: Mutex<Keys>,
     /// Durable backend holding `keys`. Updated after the key write and before
@@ -135,7 +132,6 @@ pub struct AppState {
     pub pending_owned_channels: Mutex<std::collections::HashSet<(String, String)>>,
     pub archive_db: crate::archive::ArchiveDb,
 }
-
 /// Parse the `BUZZ_PRIVATE_KEY` env var into identity keys. `Some` means the
 /// env var was present and valid and MUST win over any persisted/keyring key
 /// (the dev/CI/harness override). `None` means absent or malformed — callers
@@ -157,7 +153,6 @@ fn identity_from_env() -> Option<Keys> {
         Err(std::env::VarError::NotPresent) => None,
     }
 }
-
 /// Build the no-redirect HTTP client used for authenticated relay media
 /// fetches (download / copy).
 ///

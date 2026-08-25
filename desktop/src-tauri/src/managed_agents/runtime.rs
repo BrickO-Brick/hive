@@ -1,9 +1,6 @@
-use std::collections::HashMap;
-
-use tauri::{AppHandle, Manager};
-
 use super::agent_env::{build_buzz_agent_provider_defaults, idle_pool_sleep_env};
-
+use super::claude_config::{apply_claude_model_env, apply_effort_env};
+use super::shared_instructions::resolve_and_apply_assigned_shared_instructions_env;
 use crate::{
     managed_agents::{
         append_log_marker, known_acp_runtime, login_shell_path, managed_agent_log_path,
@@ -13,28 +10,22 @@ use crate::{
     },
     util::now_iso,
 };
-
-use super::claude_config::{apply_claude_model_env, apply_effort_env};
-use super::shared_instructions::resolve_and_apply_assigned_shared_instructions_env;
+use std::collections::HashMap;
+use tauri::{AppHandle, Manager};
 mod path;
+pub(crate) use super::access_policy::{build_respond_to_env_with_policy, RespondToEnv};
 pub(in crate::managed_agents) use path::build_augmented_path;
 pub(crate) use path::{compose_path_entries, should_skip_claude_executable, should_use_inherited};
-
-pub(crate) use super::access_policy::{build_respond_to_env_with_policy, RespondToEnv};
-
 mod metadata;
 pub(crate) use metadata::{
     apply_agent_display_env, resolve_session_title, runtime_metadata_env_vars,
     DISPLAY_NAME_ENV_VAR, SESSION_TITLE_ENV_VAR,
 };
-
 mod stop;
 pub(crate) use stop::managed_agent_runtime_keys;
 pub use stop::{stop_managed_agent_process, stop_managed_agent_workspace_pair};
-
 mod sweep;
 pub(crate) use sweep::sweep_untracked_bundle_harnesses;
-
 mod process;
 #[cfg(test)]
 use process::{
@@ -45,7 +36,6 @@ pub(crate) use process::{
     current_instance_id, process_belongs_to_us, process_has_buzz_marker, process_is_running,
     terminate_process, terminate_untracked_pair_runtime, valid_agent_runtime_receipt,
 };
-
 mod orphan_sweep;
 #[cfg(target_os = "macos")]
 use orphan_sweep::proc_pidinfo;
@@ -57,7 +47,6 @@ pub(crate) use orphan_sweep::{
 use orphan_sweep::{BSDInfo, PROC_PIDTBSDINFO};
 #[cfg(unix)]
 use process::resolve_pgids_and_kill;
-
 mod instance_reaper;
 pub(crate) use instance_reaper::reap_dead_instance_agents;
 #[cfg(test)]

@@ -40,13 +40,10 @@ import type {
   GitBashPrerequisite,
   RuntimeConfigSurface,
 } from "@/shared/api/types";
-
 export * from "@/shared/api/tauriChannels";
 export { sendChannelMessage } from "@/shared/api/tauriMessages";
 export { getEventById, getEventsByIds } from "@/shared/api/tauriEvents";
-
 type RawPresenceLookup = Record<string, PresenceStatus>;
-
 type RawAddChannelMembersResult = {
   added: string[];
   errors: Array<{
@@ -54,7 +51,6 @@ type RawAddChannelMembersResult = {
     error: string;
   }>;
 };
-
 type RawFeedItem = {
   id: string;
   kind: number;
@@ -67,7 +63,6 @@ type RawFeedItem = {
   tags: string[][];
   category: HomeFeedResponse["feed"]["mentions"][number]["category"];
 };
-
 type RawHomeFeedResponse = {
   feed: {
     mentions: RawFeedItem[];
