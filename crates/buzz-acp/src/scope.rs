@@ -107,20 +107,27 @@ impl SessionScope {
     /// [`buzz_core::nip10`] canonical-root rules — a malformed marker id is
     /// ignored (treated as top-level), and a lone `root` marker with no `reply`
     /// is top-level, matching relay ingest.
+    ///
+    /// The root id is normalized to lowercase before it becomes the scope key.
+    /// The shared NIP-10 parser accepts and preserves uppercase ASCII hex
+    /// (`is_ascii_hexdigit`), but the relay decodes event ids to bytes on
+    /// ingest, so `AB…` and `ab…` name the *same* thread. Without normalization
+    /// those equivalent spellings would hash to different `Thread` keys and
+    /// split one relay thread across two ACP sessions (queue state, provider
+    /// sessions, affinity, delivery ledgers). `nostr::EventId::to_hex()` is
+    /// already lowercase, so the top-level path is unaffected.
     pub fn derive(policy: SessionPolicy, channel_id: Uuid, is_dm: bool, event: &Event) -> Self {
         if is_dm || policy == SessionPolicy::Channel {
             return Self::Conversation { channel_id };
         }
 
-        match parse_thread_tags(event).root_event_id {
-            Some(root_event_id) => Self::Thread {
-                channel_id,
-                root_event_id,
-            },
-            None => Self::Thread {
-                channel_id,
-                root_event_id: event.id.to_hex(),
-            },
+        let root_event_id = match parse_thread_tags(event).root_event_id {
+            Some(root) => root,
+            None => event.id.to_hex(),
+        };
+        Self::Thread {
+            channel_id,
+            root_event_id: root_event_id.to_ascii_lowercase(),
         }
     }
 
@@ -269,6 +276,32 @@ mod tests {
             a, b,
             "two independent top-level mentions must not share a session"
         );
+    }
+
+    #[test]
+    fn mixed_case_root_spellings_share_one_thread_scope() {
+        // The relay decodes event ids to bytes, so `AB…` and `ab…` name the
+        // same thread. Equivalent-case root tags must resolve to the SAME
+        // `SessionScope::Thread` key, or thread state would split in two.
+        let ch = Uuid::new_v4();
+        let root_lower = "a1b2c3d4e5f6".repeat(4) + &"0".repeat(16); // 64 hex
+        assert_eq!(root_lower.len(), 64);
+        let root_upper = root_lower.to_ascii_uppercase();
+
+        let mk = |root: &str| {
+            event_with_tags(vec![
+                vec!["e".into(), root.to_string(), String::new(), "root".into()],
+                vec!["e".into(), "f".repeat(64), String::new(), "reply".into()],
+            ])
+        };
+        let lower = SessionScope::derive(SessionPolicy::Thread, ch, false, &mk(&root_lower));
+        let upper = SessionScope::derive(SessionPolicy::Thread, ch, false, &mk(&root_upper));
+        assert_eq!(
+            lower, upper,
+            "case-equivalent root spellings must share one thread scope"
+        );
+        // And the stored key is normalized to lowercase.
+        assert_eq!(upper.root_event_id(), Some(root_lower.as_str()));
     }
 
     #[test]
