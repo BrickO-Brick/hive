@@ -2711,6 +2711,10 @@ test("duplicate instances move from the agents gallery into the agent profile", 
 
 // You must be able to empty a team and then delete it. Before, the submit
 // button needed one member or more, so neither step was possible.
+//
+// The team here has a bound managed agent, so the test also crosses the native
+// delete guard: the delete must fail while the agent carries the team id, and it
+// must succeed after the save clears the binding.
 test("a team can be emptied and then deleted", async ({ page }) => {
   await installMockBridge(page, {
     personas: [
@@ -2732,12 +2736,27 @@ test("a team can be emptied and then deleted", async ({ page }) => {
         personaIds: ["custom:deadlock-a", "custom:deadlock-b"],
       },
     ],
+    managedAgents: [
+      {
+        pubkey: "de".repeat(32),
+        name: "Deadlock Instance",
+        personaId: "custom:deadlock-a",
+        teamId: "team-deadlock",
+        status: "stopped",
+      },
+    ],
   });
   await gotoApp(page);
   await page.getByTestId("open-agents-view").click();
 
   const teamCard = page.getByTestId("team-card-team-deadlock");
   await expect(teamCard).toBeVisible();
+
+  // The starting state: the agent is bound, so the delete guard refuses.
+  const blocked = await invokeTauriExpectError(page, "delete_team", {
+    id: "team-deadlock",
+  });
+  expect(blocked).toContain("still reference it (Deadlock Instance)");
 
   // Empty the roster via the edit dialog.
   await page.getByLabel("Deadlock Team team actions").click();
@@ -2765,6 +2784,15 @@ test("a team can be emptied and then deleted", async ({ page }) => {
   expect(
     teams.find((team) => team.id === "team-deadlock")?.persona_ids,
   ).toEqual([]);
+
+  // The save also cleared the binding. This is what the delete guard reads, and
+  // it is the state that the save must guarantee before it reports success.
+  const agents = await invokeTauri<
+    Array<{ pubkey: string; team_id: string | null }>
+  >(page, "list_managed_agents");
+  expect(
+    agents.find((agent) => agent.pubkey === "de".repeat(32))?.team_id,
+  ).toBe(null);
 
   // No agent points to the team now. Thus you can delete the team.
   await page.getByLabel("Deadlock Team team actions").click();
