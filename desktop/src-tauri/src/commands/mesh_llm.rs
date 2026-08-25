@@ -176,9 +176,71 @@ fn advance_mesh_status_cursor(
     Ok(cursor)
 }
 
-async fn query_mesh_discovery_events_at(
+/// Resolve whether a relay enforces NIP-43 relay membership, from its NIP-11
+/// document.
+///
+/// The relay advertises NIP-43 only when membership is actually enforced
+/// (`nip11_facts` in `buzz-relay`), so this is the one signal that separates
+/// "no roster because nobody is a direct member here" from "no roster because
+/// this read was incomplete". A probe failure is reported as `Err` and treated
+/// as enforcing by callers: an unreachable relay must never be able to relax
+/// admission.
+async fn probe_relay_mesh_mode(relay_url: &str) -> Result<mesh_llm::MeshRelayMode, String> {
+    let http_url = relay::relay_http_base_url(relay_url);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|error| format!("failed to build NIP-11 client: {error}"))?;
+    let document: serde_json::Value = client
+        .get(&http_url)
+        .header("Accept", "application/nostr+json")
+        .send()
+        .await
+        .map_err(|error| format!("NIP-11 probe failed: {error}"))?
+        .json()
+        .await
+        .map_err(|error| format!("NIP-11 document was not JSON: {error}"))?;
+    mesh_llm::relay_mesh_mode_from_nip11(&document)
+}
+
+/// Probe the relay's membership mode, falling back to the enforcing behaviour.
+///
+/// A failed probe must not open the mesh up: an unreachable or malformed NIP-11
+/// document leaves admission exactly as strict as it is today.
+///
+/// Successful probes are memoized per relay URL: the deployment mode
+/// (`BUZZ_REQUIRE_RELAY_MEMBERSHIP`) does not flap at runtime, and the
+/// discovery/reconcile paths would otherwise re-issue this HTTP GET on every
+/// poll. Failures are NOT cached, so a node that fell back to enforcing on a
+/// transient blip re-probes on the next poll and can recover.
+async fn resolved_relay_mesh_mode(relay_url: &str) -> mesh_llm::MeshRelayMode {
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, mesh_llm::MeshRelayMode>>,
+    > = std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    if let Ok(guard) = cache.lock() {
+        if let Some(mode) = guard.get(relay_url).copied() {
+            return mode;
+        }
+    }
+    match probe_relay_mesh_mode(relay_url).await {
+        Ok(mode) => {
+            if let Ok(mut guard) = cache.lock() {
+                guard.insert(relay_url.to_string(), mode);
+            }
+            mode
+        }
+        Err(error) => {
+            eprintln!("buzz-mesh: NIP-11 probe failed; assuming membership is enforced: {error}");
+            mesh_llm::MeshRelayMode::ClosedMembershipEnforced
+        }
+    }
+}
+
+async fn query_mesh_discovery_events_for_mode(
     state: &AppState,
     relay_url: &str,
+    mode: mesh_llm::MeshRelayMode,
 ) -> Result<Vec<nostr::Event>, String> {
     let api_base_url = relay::relay_http_base_url(relay_url);
     let mut events =
@@ -193,13 +255,27 @@ async fn query_mesh_discovery_events_at(
         // means the query is incomplete: surface it as an error so the
         // reconcile loop keeps the current allowlist instead of flapping the
         // node down to self-only on a successful-but-empty response.
-        if !mesh_llm::has_membership_snapshot(&events) {
-            return Err("relay returned no membership snapshot".to_string());
+        //
+        // A relay that does not enforce membership never populates
+        // `relay_members` from sign-in, so there is no roster to wait for and
+        // no incomplete read to guard against. Fall through and read status
+        // notes unfiltered so the caller can run the mesh unenforced.
+        if !mode.is_open() {
+            if !mesh_llm::has_membership_snapshot(&events) {
+                return Err("relay returned no membership snapshot".to_string());
+            }
+            return Ok(events);
         }
-        return Ok(events);
     }
     let mut status_filter = mesh_llm::mesh_status_filter();
-    status_filter["authors"] = serde_json::json!(member_pubkeys);
+    // On an enforcing relay, scope status reads to current members. On an open
+    // relay the snapshot is not a trust boundary even when one exists (added
+    // out of band) — admission runs unenforced there, so scoping reads to a
+    // stray roster would hide peers the mesh admits. Read every reporter's
+    // note and let freshness + endpoint-binding checks gate routing.
+    if !mode.is_open() && !member_pubkeys.is_empty() {
+        status_filter["authors"] = serde_json::json!(member_pubkeys);
+    }
     let mut previous_cursor: Option<(u64, String)> = None;
 
     loop {
@@ -219,10 +295,6 @@ async fn query_mesh_discovery_events_at(
     }
 }
 
-async fn query_mesh_discovery_events(state: &AppState) -> Result<Vec<nostr::Event>, String> {
-    query_mesh_discovery_events_at(state, &relay::relay_ws_url_with_override(state)).await
-}
-
 /// Resolve the admission roster by intersecting member-signed mesh status
 /// reporters with the current NIP-43 direct-member list.
 ///
@@ -231,29 +303,39 @@ async fn query_mesh_discovery_events(state: &AppState) -> Result<Vec<nostr::Even
 /// never be collapsed into "self-only", or a transient relay blip de-admits
 /// every other member. `reconcile_roster` relies on this to keep the current
 /// allowlist on error instead of restarting the node down to self-only.
-pub(crate) async fn resolve_trusted_owner_ids(state: &AppState) -> Result<Vec<String>, String> {
-    let events = query_mesh_discovery_events(state).await?;
-    Ok(mesh_llm::owner_ids_from_events(&events))
+/// `None` means the relay does not enforce membership: there is no roster to
+/// intersect and the node must run unenforced (`TrustPolicy::Off`), exactly as
+/// stock MeshLLM does. `Some` carries an enforcing relay's roster.
+pub(crate) async fn resolve_trusted_owner_ids(
+    state: &AppState,
+) -> Result<Option<Vec<String>>, String> {
+    resolve_trusted_owner_ids_at(state, &relay::relay_ws_url_with_override(state)).await
 }
 
 pub(crate) async fn resolve_trusted_owner_ids_at(
     state: &AppState,
     relay_url: &str,
-) -> Result<Vec<String>, String> {
-    let events = query_mesh_discovery_events_at(state, relay_url).await?;
-    Ok(mesh_llm::owner_ids_from_events(&events))
+) -> Result<Option<Vec<String>>, String> {
+    let mode = resolved_relay_mesh_mode(relay_url).await;
+    let events = query_mesh_discovery_events_for_mode(state, relay_url, mode).await?;
+    if mode.is_open() {
+        return Ok(None);
+    }
+    Ok(Some(mesh_llm::owner_ids_from_events(&events)))
 }
 
 /// Resolve the roster for an initial node *start*, failing closed to self-only
 /// (an empty roster) when the relay query fails. This is safe only at start:
 /// there is no established allowlist to preserve yet. The periodic
 /// `reconcile_roster` path must NOT use this — it has a live roster to keep.
-pub(crate) async fn resolve_trusted_owner_ids_or_self_only(state: &AppState) -> Vec<String> {
+pub(crate) async fn resolve_trusted_owner_ids_or_self_only(
+    state: &AppState,
+) -> Option<Vec<String>> {
     match resolve_trusted_owner_ids(state).await {
         Ok(owners) => owners,
         Err(error) => {
             eprintln!("buzz-mesh: roster query failed; allowing only this node: {error}");
-            Vec::new()
+            Some(Vec::new())
         }
     }
 }
@@ -291,12 +373,13 @@ pub(crate) async fn resolve_buzz_mesh_join_targets_at(
     state: &AppState,
     relay_url: &str,
 ) -> Result<Vec<mesh_llm::MeshServeTarget>, String> {
-    let events = query_mesh_discovery_events_at(state, relay_url).await?;
+    let mode = resolved_relay_mesh_mode(relay_url).await;
+    let events = query_mesh_discovery_events_for_mode(state, relay_url, mode).await?;
     let self_owner_id = mesh_llm::ensure_owner_identity()
         .map_err(|error| format!("failed to load mesh owner identity: {error}"))?
         .owner_id;
     Ok(buzz_mesh_join_targets(
-        mesh_llm::availability_from_events(events).serve_targets,
+        mesh_llm::availability_from_events_for_mode(events, mode).serve_targets,
         &self_owner_id,
     ))
 }
@@ -308,15 +391,19 @@ pub(crate) async fn resolve_buzz_mesh_join_targets_at(
 async fn resolve_buzz_mesh_startup_at(
     state: &AppState,
     relay_url: &str,
-) -> (Vec<String>, Option<String>) {
-    match query_mesh_discovery_events_at(state, relay_url).await {
+) -> (Option<Vec<String>>, Option<String>) {
+    let mode = resolved_relay_mesh_mode(relay_url).await;
+    match query_mesh_discovery_events_for_mode(state, relay_url, mode).await {
         Ok(events) => {
-            let trusted_owner_ids = mesh_llm::owner_ids_from_events(&events);
+            // An open relay has no roster to enforce: `None` runs the node
+            // unenforced instead of collapsing it to a self-only allowlist.
+            let trusted_owner_ids =
+                (!mode.is_open()).then(|| mesh_llm::owner_ids_from_events(&events));
             let join_token = mesh_llm::ensure_owner_identity()
                 .ok()
                 .and_then(|identity| {
                     buzz_mesh_join_targets(
-                        mesh_llm::availability_from_events(events).serve_targets,
+                        mesh_llm::availability_from_events_for_mode(events, mode).serve_targets,
                         &identity.owner_id,
                     )
                     .into_iter()
@@ -332,7 +419,7 @@ async fn resolve_buzz_mesh_startup_at(
             eprintln!(
                 "buzz-mesh: startup discovery failed; allowing only this node and starting isolated for now: {error}"
             );
-            (Vec::new(), None)
+            (Some(Vec::new()), None)
         }
     }
 }
@@ -373,7 +460,7 @@ pub(crate) async fn restore_mesh_sharing(app: &AppHandle, state: &AppState) -> C
         join_token,
         mesh_name: Some(buzz_mesh_name_for_relay(&relay_url)),
         relay_url: Some(relay_url),
-        trusted_owner_ids: Some(trusted_owner_ids),
+        trusted_owner_ids,
     };
     let started = mesh_llm::DesktopMeshRuntime::start(request)
         .await
@@ -446,10 +533,17 @@ pub async fn mesh_start_node(
 
     // Frontend requests never carry a roster. Resolve it and the bootstrap
     // endpoint from one snapshot so UI startup does not repeat relay probes.
-    if request.trusted_owner_ids.is_none() || request.join_token.is_none() {
+    let roster_unresolved = request.trusted_owner_ids.is_none();
+    if roster_unresolved || request.join_token.is_none() {
         let (trusted_owner_ids, join_token) =
             resolve_buzz_mesh_startup_at(&state, &relay_url).await;
-        request.trusted_owner_ids.get_or_insert(trusted_owner_ids);
+        // Adopt the resolver's decision only when the caller supplied no
+        // roster. `None` from the resolver is meaningful (open relay: run
+        // unenforced), so this cannot use `get_or_insert`, which would treat
+        // it as "nothing resolved" and leave the field untouched.
+        if roster_unresolved {
+            request.trusted_owner_ids = trusted_owner_ids;
+        }
         if request.join_token.is_none() {
             request.join_token = join_token;
         }
@@ -590,7 +684,7 @@ pub(crate) async fn ensure_client_node_for_model(
         join_token: Some(join_token.clone()),
         mesh_name: Some(buzz_mesh_name(state)),
         relay_url: Some(relay::relay_ws_url_with_override(state)),
-        trusted_owner_ids: Some(resolve_trusted_owner_ids_or_self_only(state).await),
+        trusted_owner_ids: resolve_trusted_owner_ids_or_self_only(state).await,
     };
     let mut runtime = state.mesh_llm_runtime.lock().await;
     if let Some(existing) = runtime.as_ref() {
@@ -638,9 +732,11 @@ pub(crate) async fn resolve_mesh_bootstrap_target(
     if model_id.is_empty() {
         return Ok(None);
     }
-    let events = query_mesh_discovery_events(state).await?;
+    let relay_url = relay::relay_ws_url_with_override(state);
+    let mode = resolved_relay_mesh_mode(&relay_url).await;
+    let events = query_mesh_discovery_events_for_mode(state, &relay_url, mode).await?;
     Ok(pick_serve_target_for_model(
-        mesh_llm::availability_from_events(events).serve_targets,
+        mesh_llm::availability_from_events_for_mode(events, mode).serve_targets,
         model_id,
     ))
 }
