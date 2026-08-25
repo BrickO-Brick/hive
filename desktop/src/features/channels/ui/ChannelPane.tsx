@@ -522,6 +522,7 @@ export const ChannelPane = React.memo(function ChannelPane({
     useFocusThreadDrawer ? (
       <FocusThreadDrawer
         channelName={activeChannel?.name ?? "channel"}
+        hasActiveEdit={threadEditTarget !== null}
         key={THREAD_SURFACE_KEY}
         onClose={onCloseThread}
       >
