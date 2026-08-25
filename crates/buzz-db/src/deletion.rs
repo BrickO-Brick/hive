@@ -1212,12 +1212,15 @@ impl DeletionStore {
     /// Already-acquired leases remain renewable, verifiable, and releasable so
     /// admitted remote effects retain their exclusion proof until completion.
     pub async fn begin_quiescing(&self, token: &LeaseToken) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
+        let (mut tx, transaction_timer) = crate::observability::begin_transaction(
+            &self.pool,
+            crate::observability::TransactionOperation::BeginCommunityDeletionQuiescing,
+        )
+        .await?;
+        transaction_timer
+            .observe(async {
         verify_lease(&mut tx, token, DeletionStage::Approved).await?;
-        sqlx::query("SELECT pg_advisory_xact_lock(community_deletion_lock_key($1))")
-            .bind(token.community_id.as_uuid())
-            .execute(&mut *tx)
-            .await?;
+        lock_community_deletion(&mut tx, token.community_id).await?;
         verify_lease(&mut tx, token, DeletionStage::Approved).await?;
         let (generation, archived_at): (i64, Option<DateTime<Utc>>) = sqlx::query_as(
             "SELECT deletion_fence_generation, archived_at FROM communities WHERE id = $1 FOR UPDATE",
@@ -1261,16 +1264,21 @@ impl DeletionStore {
         .await?;
         tx.commit().await?;
         Ok(())
+            })
+            .await
     }
 
     /// Acquire the universal durable fence after all pre-quiesce serving leases drain.
     pub async fn fence(&self, token: &LeaseToken) -> Result<i64> {
-        let mut tx = self.pool.begin().await?;
+        let (mut tx, transaction_timer) = crate::observability::begin_transaction(
+            &self.pool,
+            crate::observability::TransactionOperation::FenceCommunityDeletion,
+        )
+        .await?;
+        transaction_timer
+            .observe(async {
         verify_lease(&mut tx, token, DeletionStage::Approved).await?;
-        sqlx::query("SELECT pg_advisory_xact_lock(community_deletion_lock_key($1))")
-            .bind(token.community_id.as_uuid())
-            .execute(&mut *tx)
-            .await?;
+        lock_community_deletion(&mut tx, token.community_id).await?;
         verify_lease(&mut tx, token, DeletionStage::Approved).await?;
         let active_serving_writes = sqlx::query(
             "SELECT count(*)::BIGINT AS active_count, \
@@ -1333,6 +1341,8 @@ impl DeletionStore {
         .await?;
         tx.commit().await?;
         Ok(generation)
+            })
+            .await
     }
 
     /// Freeze the exact post-fence storage binding manifest.
@@ -1969,10 +1979,7 @@ impl DeletionStore {
         .ok_or_else(|| DbError::NotFound(format!("community deletion {request_id}")))?;
         // Every lifecycle transition takes the community lock before any row lock.
         // Inverting this order lets abort and the executor deadlock each other.
-        sqlx::query("SELECT pg_advisory_xact_lock(community_deletion_lock_key($1))")
-            .bind(community_id.as_uuid())
-            .execute(&mut *tx)
-            .await?;
+        lock_community_deletion(&mut tx, community_id).await?;
         let row = sqlx::query("SELECT * FROM community_deletion_requests WHERE id = $1 FOR UPDATE")
             .bind(request_id)
             .fetch_optional(&mut *tx)
@@ -2256,10 +2263,7 @@ impl DeletionStore {
         tx: &mut Transaction<'_, Postgres>,
         community: CommunityId,
     ) -> Result<()> {
-        sqlx::query("SELECT pg_advisory_xact_lock_shared(community_deletion_lock_key($1))")
-            .bind(community.as_uuid())
-            .execute(&mut **tx)
-            .await?;
+        lock_community_deletion_shared(tx, community).await?;
         let state: Option<String> = sqlx::query_scalar(
             "SELECT deletion_state FROM communities WHERE id = $1 AND deleted_at IS NULL",
         )
@@ -2288,10 +2292,7 @@ impl DeletionStore {
         tx: &mut Transaction<'_, Postgres>,
         lease: &ServingWriteLease,
     ) -> Result<()> {
-        sqlx::query("SELECT pg_advisory_xact_lock_shared(community_deletion_lock_key($1))")
-            .bind(lease.community_id.as_uuid())
-            .execute(&mut **tx)
-            .await?;
+        lock_community_deletion_shared(tx, lease.community_id).await?;
         let valid: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM community_serving_write_leases lease \
              JOIN communities community ON community.id = lease.community_id \
@@ -2409,10 +2410,7 @@ impl DeletionStore {
     ) -> Result<()> {
         let lease_seconds = i64::try_from(lease_duration.as_secs()).unwrap_or(i64::MAX);
         let mut tx = self.pool.begin().await?;
-        sqlx::query("SELECT pg_advisory_xact_lock_shared(community_deletion_lock_key($1))")
-            .bind(lease.community_id.as_uuid())
-            .execute(&mut *tx)
-            .await?;
+        lock_community_deletion_shared(&mut tx, lease.community_id).await?;
         let lease_until: Option<DateTime<Utc>> = sqlx::query_scalar(
             "UPDATE community_serving_write_leases lease \
              SET lease_until = now() + make_interval(secs => $6), heartbeat_at = now() \
@@ -2467,10 +2465,7 @@ impl DeletionStore {
     /// admitted remote effect.
     pub async fn verify_serving_write_lease(&self, lease: &ServingWriteLease) -> Result<()> {
         let mut tx = self.pool.begin().await?;
-        sqlx::query("SELECT pg_advisory_xact_lock_shared(community_deletion_lock_key($1))")
-            .bind(lease.community_id.as_uuid())
-            .execute(&mut *tx)
-            .await?;
+        lock_community_deletion_shared(&mut tx, lease.community_id).await?;
         let valid: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM community_serving_write_leases lease \
              JOIN communities community ON community.id = lease.community_id \
@@ -2574,6 +2569,34 @@ impl DeletionStore {
     }
 }
 
+async fn lock_community_deletion(
+    tx: &mut Transaction<'_, Postgres>,
+    community: CommunityId,
+) -> Result<()> {
+    crate::observability::observe_advisory_lock(
+        crate::observability::LockType::Deletion,
+        sqlx::query("SELECT pg_advisory_xact_lock(community_deletion_lock_key($1))")
+            .bind(community.as_uuid())
+            .execute(&mut **tx),
+    )
+    .await?;
+    Ok(())
+}
+
+async fn lock_community_deletion_shared(
+    tx: &mut Transaction<'_, Postgres>,
+    community: CommunityId,
+) -> Result<()> {
+    crate::observability::observe_advisory_lock(
+        crate::observability::LockType::Deletion,
+        sqlx::query("SELECT pg_advisory_xact_lock_shared(community_deletion_lock_key($1))")
+            .bind(community.as_uuid())
+            .execute(&mut **tx),
+    )
+    .await?;
+    Ok(())
+}
+
 /// Take the shared schema/destruction advisory lock for the current
 /// transaction.
 ///
@@ -2582,10 +2605,13 @@ impl DeletionStore {
 /// whole run (see [`crate::migration::run_migrations`]); shared holders do
 /// not block each other, so concurrent deletion executors are unaffected.
 async fn lock_schema_destruction_shared(conn: &mut PgConnection) -> Result<()> {
-    sqlx::query("SELECT pg_advisory_xact_lock_shared($1)")
-        .bind(SCHEMA_DESTRUCTION_LOCK_KEY)
-        .execute(conn)
-        .await?;
+    crate::observability::observe_advisory_lock(
+        crate::observability::LockType::MigrationSchemaSafety,
+        sqlx::query("SELECT pg_advisory_xact_lock_shared($1)")
+            .bind(SCHEMA_DESTRUCTION_LOCK_KEY)
+            .execute(conn),
+    )
+    .await?;
     Ok(())
 }
 
@@ -3304,7 +3330,7 @@ mod postgres_tests {
     async fn store() -> (Db, DeletionStore) {
         let database_url = std::env::var("BUZZ_TEST_DATABASE_URL")
             .or_else(|_| std::env::var("DATABASE_URL"))
-            .unwrap_or_else(|_| "postgres://buzz:buzz_dev@localhost:5432/buzz".to_string());
+            .unwrap_or_else(|_| "postgres://buzz:buzz_dev@localhost:5432/buzz".to_string()); // sadscan:disable np.postgres.1 -- local test-only credentials
         let db = Db::new(&DbConfig {
             database_url,
             max_connections: 5,

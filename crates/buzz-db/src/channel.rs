@@ -478,14 +478,17 @@ async fn acquire_channel_membership_lock(
     community_id: CommunityId,
     channel_id: Uuid,
 ) -> Result<()> {
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
-        .bind(format!(
-            "{CHANNEL_MEMBERSHIP_LOCK_NAMESPACE}{}:{}",
-            community_id.as_uuid(),
-            channel_id
-        ))
-        .execute(&mut **tx)
-        .await?;
+    crate::observability::observe_advisory_lock(
+        crate::observability::LockType::Membership,
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(format!(
+                "{CHANNEL_MEMBERSHIP_LOCK_NAMESPACE}{}:{}",
+                community_id.as_uuid(),
+                channel_id
+            ))
+            .execute(&mut **tx),
+    )
+    .await?;
     Ok(())
 }
 
@@ -631,10 +634,13 @@ pub async fn lock_member_snapshot(
         relay_pubkey,
         Some(channel_id.as_bytes()),
     );
-    sqlx::query("SELECT pg_advisory_xact_lock($1)")
-        .bind(replacement_lock)
-        .execute(&mut *tx)
-        .await?;
+    crate::observability::observe_advisory_lock(
+        crate::observability::LockType::Replacement,
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(replacement_lock)
+            .execute(&mut *tx),
+    )
+    .await?;
     acquire_channel_membership_lock(&mut tx, community_id, channel_id).await?;
     let rows = sqlx::query(
         r#"
@@ -2440,13 +2446,30 @@ mod tests {
         .await
         .expect("insert large roster");
 
+        // The stale head predates migration 0032's INSERT fence, so its shape
+        // is deliberately the old two-field p tag; it is applied with UPDATE,
+        // which the fence does not police.
         let stale_tags: Vec<serde_json::Value> =
             std::iter::once(serde_json::json!(["d", channel.id.to_string()]))
                 .chain((0..1_000).map(|n| serde_json::json!(["p", format!("{n:064x}")])))
                 .collect();
+        // Rosters that go through INSERT must satisfy the 0032 fence: emitted
+        // four-field p tags that exactly match active canonical membership —
+        // here the creator (owner, from create_test_channel) plus the
+        // 1..=1500 synthetic members.
+        let creator_hex = hex::encode(&creator);
         let complete_tags: Vec<serde_json::Value> =
             std::iter::once(serde_json::json!(["d", channel.id.to_string()]))
-                .chain((0..1_501).map(|n| serde_json::json!(["p", format!("{n:064x}")])))
+                .chain(std::iter::once(serde_json::json!([
+                    "p",
+                    creator_hex,
+                    "",
+                    "owner"
+                ])))
+                .chain(
+                    (1..=extra_members)
+                        .map(|n| serde_json::json!(["p", format!("{n:064x}"), "", "member"])),
+                )
                 .collect();
 
         // Insert canonical-looking history first, then corrupt the newest row
@@ -2515,6 +2538,15 @@ mod tests {
         .execute(&pool)
         .await
         .expect("insert complete other-tenant roster");
+        // This tenant's canonical membership is exactly the synthetic
+        // 0..=1500 members — the creator never joined the cloned channel.
+        let other_complete_tags: Vec<serde_json::Value> =
+            std::iter::once(serde_json::json!(["d", channel.id.to_string()]))
+                .chain(
+                    (0..=extra_members)
+                        .map(|n| serde_json::json!(["p", format!("{n:064x}"), "", "member"])),
+                )
+                .collect();
         sqlx::query(
             r#"
             INSERT INTO events
@@ -2525,7 +2557,7 @@ mod tests {
         .bind(other_community_id)
         .bind(random_pubkey())
         .bind(&relay_pubkey)
-        .bind(serde_json::Value::Array(complete_tags.clone()))
+        .bind(serde_json::Value::Array(other_complete_tags))
         .bind(vec![0u8; 64])
         .bind(channel.id)
         .bind(channel.id.to_string())
@@ -3241,10 +3273,12 @@ mod tests {
         .await
         .expect("capture locked roster");
         assert_eq!(snapshot.members.len(), 1);
+        // Migration 0032's roster fence admits only the emitted four-field p
+        // tag shape that exactly matches active canonical membership.
         let event = nostr::EventBuilder::new(nostr::Kind::Custom(39002), "")
             .tags(vec![
                 nostr::Tag::parse(["d", &channel.id.to_string()]).expect("d tag"),
-                nostr::Tag::parse(["p", &hex::encode(&owner)]).expect("p tag"),
+                nostr::Tag::parse(["p", &hex::encode(&owner), "", "owner"]).expect("p tag"),
             ])
             .sign_with_keys(&relay_keys)
             .expect("sign roster");
