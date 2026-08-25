@@ -4,6 +4,7 @@ import type { Editor } from "@tiptap/react";
 
 import { cn } from "@/shared/lib/cn";
 import { FormattingToolbar } from "./FormattingToolbar";
+import { getMountedEditorDom } from "./selectionFormattingTrayEditorDom";
 
 type SelectionFormattingTrayProps = {
   editor: Editor | null;
@@ -135,7 +136,7 @@ export function SelectionFormattingTray({
     if (
       suppressRightClickUpdatesRef.current ||
       !editor ||
-      editor.isDestroyed ||
+      !getMountedEditorDom(editor) ||
       disabled ||
       !editor.isEditable ||
       !editor.isFocused
@@ -162,20 +163,13 @@ export function SelectionFormattingTray({
   React.useEffect(() => {
     suppressRightClickUpdatesRef.current = false;
 
-    if (!editor || editor.isDestroyed) {
+    if (!editor) {
       cancelScheduledUpdate();
       setPosition(null);
       return;
     }
 
-    let editorDom: HTMLElement;
-    try {
-      editorDom = editor.view.dom;
-    } catch {
-      cancelScheduledUpdate();
-      setPosition(null);
-      return;
-    }
+    let editorDom: HTMLElement | null = null;
     const hide = () => setPosition(null);
     const handleContextMenu = () => {
       suppressRightClickUpdatesRef.current = true;
@@ -190,26 +184,44 @@ export function SelectionFormattingTray({
       if (event.button === 0) clearSuppression();
     };
 
-    scheduleUpdate();
+    const detachEditorDom = () => {
+      if (!editorDom) return;
+      editorDom.removeEventListener("contextmenu", handleContextMenu);
+      editorDom.removeEventListener("pointerdown", handlePointerDown);
+      editorDom.removeEventListener("keydown", clearSuppression);
+      editorDom = null;
+    };
+
+    const attachEditorDom = () => {
+      const nextEditorDom = getMountedEditorDom(editor);
+      if (!nextEditorDom || nextEditorDom === editorDom) return;
+      detachEditorDom();
+      editorDom = nextEditorDom;
+      editorDom.addEventListener("contextmenu", handleContextMenu);
+      editorDom.addEventListener("pointerdown", handlePointerDown);
+      editorDom.addEventListener("keydown", clearSuppression);
+      scheduleUpdate();
+    };
+
+    editor.on("mount", attachEditorDom);
+    editor.on("unmount", detachEditorDom);
     editor.on("selectionUpdate", scheduleUpdate);
     editor.on("transaction", scheduleUpdate);
     editor.on("focus", scheduleUpdate);
     editor.on("blur", hide);
-    editorDom.addEventListener("contextmenu", handleContextMenu);
-    editorDom.addEventListener("pointerdown", handlePointerDown);
-    editorDom.addEventListener("keydown", clearSuppression);
     window.addEventListener("resize", scheduleUpdate);
     window.addEventListener("scroll", scheduleUpdate, true);
+    attachEditorDom();
 
     return () => {
       cancelScheduledUpdate();
+      editor.off("mount", attachEditorDom);
+      editor.off("unmount", detachEditorDom);
       editor.off("selectionUpdate", scheduleUpdate);
       editor.off("transaction", scheduleUpdate);
       editor.off("focus", scheduleUpdate);
       editor.off("blur", hide);
-      editorDom.removeEventListener("contextmenu", handleContextMenu);
-      editorDom.removeEventListener("pointerdown", handlePointerDown);
-      editorDom.removeEventListener("keydown", clearSuppression);
+      detachEditorDom();
       window.removeEventListener("resize", scheduleUpdate);
       window.removeEventListener("scroll", scheduleUpdate, true);
     };
