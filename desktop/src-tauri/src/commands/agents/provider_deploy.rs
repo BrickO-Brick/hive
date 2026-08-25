@@ -364,6 +364,10 @@ mod tests {
     #[test]
     fn failed_deploy_preserves_pending_policy() {
         let mut record = record();
+        // Stamp a confirmed `applied_permission_policy` via a stale (mismatched)
+        // deploy so `provider_policy_pending` stays true going into the failure:
+        // the payload's `owner-only` audience differs from this record's `anyone`.
+        record.respond_to = crate::managed_agents::RespondTo::Anyone;
 
         apply_deploy_result(
             &mut record,
