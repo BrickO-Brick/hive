@@ -52,10 +52,13 @@ export function CompactMessageSummary({
   const { goChannel } = useAppNavigation();
   const { openProfilePanel } = useProfilePanel();
   const isCompactPreview = variant === "compactPreview";
-  const shouldClampBubble = !isCompactPreview;
+  const isConversation = variant === "conversation";
+  // Focus mode is a reading view, so sent messages remain fully visible there.
+  // The default activity surface keeps the compact clamp.
+  const shouldClampBubble = !isCompactPreview && !isConversation;
   const [bubbleRef, hasBubbleOverflow] =
     useTranscriptBubbleOverflow(shouldClampBubble);
-  const canOpenMessage = shouldClampBubble && messageLink !== null;
+  const canOpenMessage = !isCompactPreview && messageLink !== null;
   const mutedTone = compactSummaryTone();
   const avatarClassName = cn(
     "mr-2 mt-1 shrink-0",
@@ -135,7 +138,12 @@ export function CompactMessageSummary({
             testId="transcript-agent-sent-avatar"
           />
         )}
-        <div className="flex min-w-0 flex-1 flex-col items-start gap-1">
+        <div
+          className={cn(
+            "flex min-w-0 flex-1 flex-col items-start gap-1",
+            isConversation && "pr-9",
+          )}
+        >
           <div
             className={cn(
               "w-full min-w-0 rounded-2xl border px-3 py-2",

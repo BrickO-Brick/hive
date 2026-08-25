@@ -65,6 +65,11 @@ test("conversation renders the prompt as a filled right-aligned bubble with an a
   const bubble = row.querySelector(".rounded-2xl");
   assert.ok(bubble, "the prompt should match Buzz's chat-bubble radius");
   assert.match(bubble.className, /bg-muted\/60/);
+  assert.doesNotMatch(
+    bubble.className,
+    /(?<!\/)bg-muted(?!\/)/,
+    "sender prompts use the lighter muted tint rather than the agent-send surface",
+  );
   assert.match(bubble.className, /px-4/);
   assert.match(bubble.className, /py-2(?!\.)/);
   assert.match(

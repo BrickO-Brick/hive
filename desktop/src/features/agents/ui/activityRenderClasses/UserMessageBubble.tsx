@@ -206,7 +206,11 @@ export function UserMessageBubble({
           {hasBubbleOverflow ? (
             <span className="pointer-events-none absolute inset-x-0 bottom-0 h-8 rounded-b-2xl bg-linear-to-b from-transparent to-background" />
           ) : null}
-          {messageLink ? <MessageLinkHoverCue /> : null}
+          {messageLink ? (
+            <MessageLinkHoverCue
+              className={isConversation ? "top-3" : undefined}
+            />
+          ) : null}
         </div>
         {isConversation && footer ? (
           // Timestamp/context row is chrome, not content: focus mode keeps it
