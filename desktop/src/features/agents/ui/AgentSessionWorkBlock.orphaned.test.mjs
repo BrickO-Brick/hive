@@ -398,6 +398,7 @@ test("the same relay post outside a work block keeps its message bubble", async 
     bubble,
     "outside a block a posted message is a destination the reader can open — the bubble stays",
   );
+  assert.match(bubble.className, /relative/);
   assert.doesNotMatch(
     bubble.className,
     /max-h-36/,
