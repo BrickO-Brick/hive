@@ -16,6 +16,11 @@
 //! `200`, because the verdict lives in `status` and a second copy in the status
 //! line could only ever disagree with it.
 //!
+//! Both directions follow one JSON rule worth stating at the binding, since it
+//! constrains how an implementer configures a serializer: an optional member
+//! means absent by being **omitted**, and an explicit `null` is rejected. See
+//! [the contract docs](super#optional-members-omission-is-the-only-spelling-of-absence).
+//!
 //! A client must nonetheless **attempt to parse an envelope regardless of HTTP
 //! status**. A host or intermediary may map dispositions onto conventional
 //! statuses for observability or for middleware that cannot read bodies; if a

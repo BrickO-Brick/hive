@@ -64,19 +64,40 @@
 //! inside each event object — a host cannot ship a `secretKey` beside `sig` and
 //! have it silently trimmed.
 //!
-//! A third hole was subtler and is closed the same way: `deny_unknown_fields`
-//! constrains *which* members may appear, not what they may hold, and
-//! `#[serde(default)] Option<T>` accepts an explicit `null` as `None` —
-//! indistinguishable from absent. An envelope that decides its shape from absence
-//! therefore accepted `{"status":"failed","outcome":null}` as a plain failure. So
-//! **no optional member anywhere in this contract accepts `null`**: nothing here
-//! emits one, absence is spelled by omission, and a `null` is a malformed payload
-//! rather than a second spelling with its own interpretation.
+//! A third hole was subtler and is closed the same way — see
+//! [Optional members](#optional-members-omission-is-the-only-spelling-of-absence).
 //!
 //! Two limits are worth stating. A `String` field can physically hold secret
 //! text, so keeping secrets out of message content and error messages is host
 //! policy this contract cannot enforce. And nothing stops a host from *holding*
 //! keys — that is the point; it stops one from handing them over.
+//!
+//! # Optional members: omission is the only spelling of absence
+//!
+//! **`null` is never a legal value anywhere in this contract.** Every optional
+//! member means "absent" by being **omitted from the object**. A member present
+//! with the value `null` is a malformed payload and is rejected — in a request,
+//! in a response, in `args`, in an outcome, at any depth.
+//!
+//! This matters most to a host or agent implemented in another language. Many
+//! serializers emit `null` for an unset field by default — Go's
+//! `encoding/json` for a nil pointer without `omitempty`, Python's `json.dumps`
+//! of an attribute left at `None`, a hand-built map that assigns the key
+//! unconditionally. Such a payload will be rejected in full, not quietly read as
+//! absent. Configure the serializer to **omit** unset members.
+//!
+//! The reason is that this contract decides meaning from absence, so absence
+//! cannot have two spellings. `#[serde(default)] Option<T>` maps an explicit
+//! `null` to the same value as an omitted member, which made
+//! `{"status":"failed","outcome":null}` parse as a plain failure and skip the
+//! per-status contradiction check. Rejecting `null` is stronger than recording
+//! presence beside the value, because it leaves no layer with the question of
+//! what a present-but-empty member was supposed to mean. Applied uniformly, it
+//! also removes the guess about whether `{"limit": null}` requests the default
+//! page limit or no limit at all: it requests neither, it is a malformed request.
+//!
+//! The rule is uniform, so there is nothing to look up per field: if a member
+//! carries no value, leave it out.
 //!
 //! # Ownership recursion
 //!
