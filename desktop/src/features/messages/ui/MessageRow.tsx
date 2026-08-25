@@ -167,8 +167,7 @@ export const MessageRow = React.memo(
     videoReviewCommentRootId?: string;
     videoReviewContext?: VideoReviewContext;
   }) {
-    // Keep the transient send state with its timestamp rather than collapsing
-    // it into a grouped message row with no header.
+    // Keep transient send state on its own row, never a headerless group row.
     const isDisplayedAsContinuation = isContinuation && !message.pending;
     const [expandedDiffId, setExpandedDiffId] = React.useState<string | null>(
       null,
@@ -247,10 +246,9 @@ export const MessageRow = React.memo(
       () => resolveMentionProps(message.tags, profiles),
       [profiles, message.tags],
     );
-    // "Is this pubkey an agent" = the community-scoped baseline every surface
-    // shares (managed ∪ relay) plus the pubkey's own profile `isAgent` flag from this surface's lookup. Both are per-pubkey
-    // O(1) checks — no per-row rescan of `profiles` (that duplicated parent
-    // work in every mounted row and re-ran on each profile-lookup change).
+    // "Is this pubkey an agent" = the community-scoped baseline (managed ∪
+    // relay) plus the pubkey's own profile `isAgent` flag — both O(1) per
+    // pubkey, no per-row rescan of `profiles`.
     const knownAgentPubkeys = useKnownAgentPubkeys();
     const isKnownAgentPubkey = React.useCallback(
       (pubkey: string) => {
@@ -439,10 +437,9 @@ export const MessageRow = React.memo(
                 emojiOnly &&
                   "text-4xl leading-tight [&_p]:leading-tight [&_img[data-custom-emoji]]:h-[1.45em] [&_img[data-custom-emoji]]:align-middle [&_button:has(img[data-custom-emoji])]:align-middle",
               )}
-              // Only pass the author pubkey for agent-authored messages so
-              // config-nudge cards can authenticate the sender. Uses the
-              // raw event signer (signerPubkey), not a relay-delegated display
-              // author, because the agent itself must have signed the card.
+              // Author pubkey only for agent messages, so config-nudge cards
+              // authenticate the sender. Uses the raw event signer
+              // (signerPubkey), not a relay-delegated author.
               configNudgeAuthorPubkey={getConfigNudgeAuthorPubkey(
                 message,
                 isKnownAgentPubkey,
@@ -474,6 +471,10 @@ export const MessageRow = React.memo(
 
     const showRespondToIndicator =
       message.respondTo === "anyone" || message.respondTo === "allowlist";
+    const respondToIndicatorLabel =
+      message.respondTo === "anyone"
+        ? "Anyone can send instructions to this agent"
+        : "Selected people can send instructions to this agent";
 
     const avatarNode = (
       <div className="relative shrink-0">
@@ -488,20 +489,10 @@ export const MessageRow = React.memo(
         !hideAgentAccessBadge &&
         !isThreadReplyLayout ? (
           <span
-            className={cn(
-              "absolute -bottom-0.5 -right-0.5 flex h-3 w-3 items-center justify-center rounded-full bg-background",
-            )}
+            className="absolute -bottom-0.5 -right-0.5 flex h-3 w-3 items-center justify-center rounded-full bg-background"
             role="img"
-            aria-label={
-              message.respondTo === "anyone"
-                ? "Anyone can send instructions to this agent"
-                : "Selected people can send instructions to this agent"
-            }
-            title={
-              message.respondTo === "anyone"
-                ? "Anyone can send instructions to this agent"
-                : "Selected people can send instructions to this agent"
-            }
+            aria-label={respondToIndicatorLabel}
+            title={respondToIndicatorLabel}
           >
             {message.respondTo === "anyone" ? (
               <AlertTriangle
@@ -940,8 +931,8 @@ export const MessageRow = React.memo(
         </article>
       </div>
     );
-    // Callbacks (onReply, onToggleReaction) intentionally excluded: inline arrows
-    // from parent create new refs every render — including them defeats memo.
+    // Callbacks (onReply, onToggleReaction) excluded: parent inline arrows get
+    // new refs every render, so including them would defeat memo.
   },
   (prev, next) =>
     prev.message.id === next.message.id &&
@@ -953,18 +944,15 @@ export const MessageRow = React.memo(
     prev.message.ownerLabel === next.message.ownerLabel &&
     prev.message.avatarUrl === next.message.avatarUrl &&
     prev.message.accent === next.message.accent &&
-    // The header timestamp and hover gutter both derive from createdAt (the
-    // old `time` prop was the same value pre-formatted; this row reads neither).
+    // Header timestamp and hover gutter both derive from createdAt.
     prev.message.createdAt === next.message.createdAt &&
     prev.message.depth === next.message.depth &&
     prev.message.kind === next.message.kind &&
     prev.message.pending === next.message.pending &&
     prev.message.edited === next.message.edited &&
     prev.message.editSignerPubkey === next.message.editSignerPubkey &&
-    // Value comparisons, not identity: these arrays are rebuilt with fresh
-    // identities on every ingest/refetch even when unchanged — identity
-    // checks made every row re-render on every streamed event in an open
-    // thread (see messageRowEquality.ts).
+    // Value comparisons, not identity: these arrays get fresh identities on
+    // every ingest/refetch even when unchanged (see messageRowEquality.ts).
     reactionsEqual(prev.message.reactions, next.message.reactions) &&
     tagsEqual(prev.message.tags, next.message.tags) &&
     prev.message.role === next.message.role &&

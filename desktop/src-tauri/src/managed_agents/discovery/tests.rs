@@ -1408,8 +1408,7 @@ fn registry_warm_then_try_record_resolves_custom_id() {
 /// NOT silently fall back to buzz-agent.
 ///
 /// This test would fail if save/delete commands do not call
-/// warm_harness_registry_from_dir transactionally, or if try_record_agent_command
-/// silently falls back to default_agent_command() for dangling ids.
+/// warm_harness_registry_from_dir transactionally.
 #[test]
 fn registry_delete_then_try_record_returns_dangling_error() {
     use crate::managed_agents::custom_harnesses::{
@@ -1718,9 +1717,7 @@ fn builtin_catalog_entry_has_empty_definition_env() {
 // These drive `discover_acp_runtimes_from` itself and land a save/delete in
 // the window between its directory scan and its registry publish (via the
 // `pre_publish_test_hook` seam). They red if discovery's final line reverts
-// to publishing its pre-probe `loaded_defs` snapshot — the original bug —
-// unlike the `custom_harnesses` seam tests, which pin only the fresh-read
-// contract of `warm_harness_registry_locked`.
+// to publishing its pre-probe `loaded_defs` snapshot — the original bug.
 
 /// RAII guard: installs the pre-publish hook, clears it on drop (even on
 /// panic) so a failing test cannot poison later ones.

@@ -739,8 +739,7 @@ export type AgentPersona = {
 
 /**
  * A catalog publication's coordinate: the owner who published it and the
- * `d`-tag identifying the persona within that owner's catalog. Mirrors the
- * backend `CatalogSource`.
+ * `d`-tag identifying the persona within that owner's catalog.
  */
 export type CatalogSourceCoordinate = {
   ownerPubkey: string;
@@ -954,8 +953,8 @@ export type ForumThreadResponse = {
  *
  * The event-id tiebreak is load-bearing: thread replies routinely share a
  * `createdAt` second (bursty threads), so a timestamp-only cursor would skip
- * every tied reply past the page limit. The pair `(createdAt, eventId)` orders
- * replies unambiguously and lets paging resume strictly after the last event.
+ * every tied reply past the page limit. `(createdAt, eventId)` orders replies
+ * unambiguously and lets paging resume strictly after the last event.
  */
 export type ThreadCursor = {
   createdAt: number;
@@ -976,8 +975,7 @@ export type ThreadRepliesResponse = {
  * The event-id tiebreak is load-bearing for the dense-second case: the relay
  * orders `created_at DESC, id ASC` and advances past a second denser than one
  * page with `id > eventId`. A bare `createdAt` (`until`) cursor cannot escape
- * such a second — it re-returns the same slice forever, leaving older history
- * unreachable. `(createdAt, eventId)` moves strictly older every page.
+ * such a second. `(createdAt, eventId)` moves strictly older every page.
  */
 export type ChannelPageCursor = {
   createdAt: number;
@@ -997,9 +995,7 @@ export type ChannelMessagesPageResponse = {
  * Global agent configuration defaults applied to ALL agents.
  *
  * Lowest user-settable layer — per-agent and persona values win on any key
- * collision. Mirrors the Rust `GlobalAgentConfig` struct.
- *
- * Precedence: baked floor < global < persona < per-agent.
+ * collision. Precedence: baked floor < global < persona < per-agent.
  */
 export type GlobalAgentConfig = {
   /** Global env vars injected into all agents unconditionally. */
