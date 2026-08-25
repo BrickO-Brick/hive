@@ -27,8 +27,8 @@ fn trim_optional(value: Option<String>) -> Option<String> {
 }
 
 /// Clear `team_id` on every instance that is bound to `team_id` but whose
-/// persona is absent from `current_persona_ids`. Reports whether anything
-/// changed.
+/// persona is absent from `current_persona_ids` or unset. Reports whether
+/// anything changed.
 ///
 /// This reads the current roster, not a delta. That is what makes a failed
 /// detach recoverable: after a failed agent-store write the team is already
@@ -49,10 +49,10 @@ fn detach_agents_outside_roster(
         if record.pubkey.is_empty() || record.team_id.as_deref() != Some(team_id) {
             continue;
         }
-        let Some(persona_id) = record.persona_id.as_deref() else {
-            continue;
-        };
-        if !current_persona_ids.iter().any(|id| id == persona_id) {
+        if !current_persona_ids
+            .iter()
+            .any(|id| record.persona_id.as_deref() == Some(id))
+        {
             record.team_id = None;
             changed = true;
         }

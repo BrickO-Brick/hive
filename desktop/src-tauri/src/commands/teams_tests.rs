@@ -30,6 +30,12 @@ fn instance(seed: char, persona_id: &str, team_id: Option<&str>) -> ManagedAgent
     record
 }
 
+fn instance_without_persona(seed: char, team_id: Option<&str>) -> ManagedAgentRecord {
+    let mut record = instance(seed, "unassigned", team_id);
+    record.persona_id = None;
+    record
+}
+
 fn ids(list: &[&str]) -> Vec<String> {
     list.iter().map(|s| s.to_string()).collect()
 }
@@ -480,14 +486,47 @@ fn update_never_reports_success_while_the_delete_guard_sees_the_agent() {
     );
 }
 
-/// The reconcile is scoped: it clears a binding to *this* team only, and it
-/// leaves an instance whose persona is still on the roster alone.
+/// This test starts with a bound persona-less agent and empties the roster. It
+/// applies `agents_referencing_team` — the predicate `delete_team_with_cascade`
+/// uses — to the agent store that the update saved. The update must clear this
+/// direct-command record because the delete guard does not require a persona.
+#[test]
+fn emptying_a_roster_detaches_a_bound_persona_less_agent() {
+    let mut teams = vec![team("team-a", &["duncan"])];
+    let store = RefCell::new(vec![instance_without_persona('a', Some("team-a"))]);
+
+    commit_team_update(
+        &mut teams,
+        "team-a",
+        "team-a".to_string(),
+        None,
+        None,
+        ids(&[]),
+        "2026-02-02T00:00:00Z".to_string(),
+        |_| Ok(()),
+        || Ok(store.borrow().clone()),
+        |records| {
+            *store.borrow_mut() = records.to_vec();
+            Ok(())
+        },
+    )
+    .expect("the update must detach a bound persona-less agent");
+
+    assert!(
+        crate::managed_agents::agents_referencing_team(&store.borrow(), &teams[0]).is_empty(),
+        "the delete guard must not see the detached agent"
+    );
+}
+
+/// The reconcile is scoped: it clears a binding to *this* team when the
+/// persona is absent or unset, and it leaves a listed persona alone.
 #[test]
 fn detach_outside_roster_is_scoped_to_this_team_and_absent_personas() {
     let mut records = vec![
         instance('a', "duncan", Some("team-a")),
         instance('b', "paul", Some("team-b")),
         instance('c', "ada", Some("team-a")),
+        instance_without_persona('d', Some("team-a")),
     ];
 
     assert!(detach_agents_outside_roster(
@@ -497,6 +536,10 @@ fn detach_outside_roster_is_scoped_to_this_team_and_absent_personas() {
     ));
 
     assert_eq!(records[0].team_id, None, "absent from this team's roster");
+    assert_eq!(
+        records[3].team_id, None,
+        "an unset persona cannot remain bound to this team"
+    );
     assert_eq!(
         records[1].team_id.as_deref(),
         Some("team-b"),
