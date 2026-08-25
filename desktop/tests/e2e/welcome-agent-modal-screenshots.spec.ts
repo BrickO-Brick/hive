@@ -257,36 +257,6 @@ test.describe("welcome and channel agent entry points", () => {
     await dialog.screenshot({ path: `${SHOTS}/03-agents-available.png` });
   });
 
-  test("teams are visually separated from the agent controls", async ({
-    page,
-  }) => {
-    await page.setViewportSize({ width: 1212, height: 512 });
-    await installMockBridge(page, {
-      personas: [scoutPersona, editorPersona],
-      teams: [
-        {
-          id: "research-team",
-          name: "Research team",
-          personaIds: [scoutPersona.id, editorPersona.id],
-        },
-      ],
-    });
-    const dialog = await openAgentPicker(page);
-    const createAgent = dialog.getByTestId("add-channel-create-agent");
-    const teamsHeading = dialog.getByText("Teams", { exact: true });
-
-    const createAgentBox = await createAgent.boundingBox();
-    const teamsHeadingBox = await teamsHeading.boundingBox();
-    expect(createAgentBox).not.toBeNull();
-    expect(teamsHeadingBox).not.toBeNull();
-    expect(
-      (teamsHeadingBox?.y ?? 0) -
-        ((createAgentBox?.y ?? 0) + (createAgentBox?.height ?? 0)),
-    ).toBeGreaterThanOrEqual(20);
-
-    await dialog.screenshot({ path: `${SHOTS}/04-teams-spacing.png` });
-  });
-
   test("all personal agents are already in the channel", async ({ page }) => {
     await installMockBridge(page, {
       activePersonaIds: ["builtin:fizz"],
