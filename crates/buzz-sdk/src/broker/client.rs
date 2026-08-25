@@ -7,27 +7,33 @@
 //! Authorization: Bearer <opaque session credential>
 //! Content-Type: application/json
 //!
-//! <BrokerRequest as JSON>
+//! <PreparedRequest::body(), verbatim>
 //! ```
 //!
 //! The response body is a [`BrokerResponse`] as JSON. Every terminal
-//! disposition — including [`super::BrokerResult::Failed`] — is a well-formed
-//! envelope, so a host that has an answer returns `200` and puts the verdict in
-//! `status`. HTTP status codes carry no information the envelope does not, and a
-//! client must read the envelope rather than the status line.
+//! disposition the *host* reached — including [`super::BrokerResult::Failed`],
+//! and including a rejected credential — is a well-formed envelope returned with
+//! `200`, because the verdict lives in `status` and a second copy in the status
+//! line could only ever disagree with it.
 //!
-//! A non-2xx response is only meaningful when there is *no* envelope: the
-//! credential was rejected before dispatch, the path does not exist, or an
-//! intermediary answered instead of the host. Those surface as
-//! [`BrokerTransportError`], which is not a `Failed` result — it means no answer
-//! arrived, so the caller learned nothing about side effects and may retry with
-//! identical bytes per the [`BrokerRequest`] retry contract.
+//! A client must nonetheless **attempt to parse an envelope regardless of HTTP
+//! status**. A host or intermediary may map dispositions onto conventional
+//! statuses for observability or for middleware that cannot read bodies; if a
+//! valid envelope is present, it is the answer and the status line is
+//! decoration. Only when no envelope can be parsed does the status matter, and
+//! then only as detail for an operator: see [`BrokerTransportError`].
 //!
 //! # The credential
 //!
 //! The credential is **opaque to this contract**. It is a bearer token the agent
 //! received at startup and can only replay; it is not a key, not a signature,
 //! and not derived from anything the agent holds.
+//!
+//! A rejected credential is a host verdict, not a transport failure: it arrives
+//! as `Failed` with [`super::BrokerErrorCode::Unauthenticated`], which carries
+//! the promise every `Failed` carries — the action did not run. Modelling it as
+//! a transport error would have thrown that knowledge away and told the caller
+//! to reconcile something that provably never happened.
 //!
 //! Binding a credential to a specific (agent, conversation) pair — so that a
 //! leaked token cannot act as a different agent or outside the conversation it
@@ -43,7 +49,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use super::{BrokerRequest, BrokerResponse};
+use super::{BrokerResponse, PreparedRequest};
 
 /// Path of the single broker endpoint.
 pub const BROKER_ACTION_PATH: &str = "/v1/action";
@@ -51,20 +57,38 @@ pub const BROKER_ACTION_PATH: &str = "/v1/action";
 /// Header carrying the opaque session credential, as `Bearer <credential>`.
 pub const BROKER_CREDENTIAL_HEADER: &str = "authorization";
 
-/// A transport-level failure: no [`BrokerResponse`] was obtained.
+/// No usable [`BrokerResponse`] was obtained, so the request's fate is unknown.
 ///
-/// Distinct from [`super::BrokerResult::Failed`], which is a host's considered
-/// verdict. These variants all mean the same thing to a caller — the request's
-/// fate is unknown — and differ only in what to tell an operator.
+/// Every variant means the same thing to a caller: nothing can be concluded
+/// about side effects, and the only safe next step is to retry the identical
+/// bytes (which the host will deduplicate) or to reconcile by reading state.
+/// The variants differ only in what to tell an operator.
+///
+/// Host verdicts never appear here — not even a rejected credential, which is
+/// [`super::BrokerErrorCode::Unauthenticated`] inside a `Failed` envelope. This
+/// type is strictly for the absence of an answer.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum BrokerTransportError {
     /// The host could not be reached, or the connection failed mid-request.
     #[error("broker unreachable: {0}")]
     Unreachable(String),
-    /// The credential was rejected before the host produced an envelope.
-    #[error("broker rejected the session credential")]
-    CredentialRejected,
-    /// A response arrived but was not a well-formed [`BrokerResponse`].
+    /// An HTTP response arrived carrying no parseable envelope.
+    ///
+    /// Typically an intermediary answering instead of the host: a proxy `401`,
+    /// a `404` for a missing route, a `502`. The status is recorded for
+    /// operators and carries no contractual meaning — an intermediary's `401`
+    /// does not prove the host never ran the action.
+    #[error("no broker envelope in HTTP {status} response: {detail}")]
+    NoEnvelope {
+        /// The HTTP status observed.
+        status: u16,
+        /// Operator-facing detail about what arrived instead.
+        detail: String,
+    },
+    /// An envelope arrived but did not validate against the request that was
+    /// sent — wrong `requestId`, wrong action, or a malformed outcome.
+    ///
+    /// See [`BrokerResponse::validate_for`].
     #[error("malformed broker response: {0}")]
     MalformedResponse(String),
 }
@@ -83,14 +107,22 @@ pub type BrokerFuture<'a> =
 /// [`super::Action`] inside the request, so adding an action never changes this
 /// trait and an implementation never needs updating to carry one.
 ///
+/// The argument is a [`PreparedRequest`] rather than a typed request so that an
+/// implementation cannot reserialize between attempts; see the
+/// [`super::BrokerRequest`] retry contract.
+///
 /// Implementations must be usable as `dyn BrokerClient`.
 pub trait BrokerClient: Send + Sync {
-    /// Execute `request` and return the host's terminal response.
+    /// Send `request`'s frozen bytes and return the host's terminal response.
+    ///
+    /// Implementations should call [`BrokerResponse::validate_for`] before
+    /// returning `Ok`, so a caller never has to consider a response that does
+    /// not answer its request.
     ///
     /// # Errors
     ///
-    /// Returns [`BrokerTransportError`] when no response could be obtained.
-    /// A host that answered — even to refuse — returns `Ok` with the verdict in
-    /// [`BrokerResponse::result`].
-    fn execute<'a>(&'a self, request: &'a BrokerRequest) -> BrokerFuture<'a>;
+    /// Returns [`BrokerTransportError`] when no usable response could be
+    /// obtained. A host that answered — even to refuse — returns `Ok` with the
+    /// verdict in [`BrokerResponse::result`].
+    fn execute<'a>(&'a self, request: &'a PreparedRequest) -> BrokerFuture<'a>;
 }

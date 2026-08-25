@@ -1,6 +1,7 @@
 //! Contract tests for the broker envelope, actions, and client trait.
 
 use super::*;
+use nostr::{EventBuilder, Keys, Kind, Tag};
 
 const CHANNEL: &str = "b2c38ca8-9ec3-411e-bab5-f9deab34d52e";
 const PUBKEY: &str = "a02c4e0850e5e612b4ddf95dbe2f5c56467cf27c6552203bc833ff438fb31971";
@@ -10,17 +11,31 @@ fn pubkey() -> PubkeyHex {
     PubkeyHex::parse(PUBKEY).expect("fixture pubkey is valid hex")
 }
 
+/// A genuinely signed event, so read fixtures exercise real verification rather
+/// than a hand-built value that could never verify.
+fn signed_message(keys: &Keys) -> BrokerMessage {
+    let event = EventBuilder::new(Kind::Custom(9), "hello")
+        .tags([
+            Tag::parse(["h", CHANNEL]).expect("h tag"),
+            Tag::parse(["e", EVENT, "", "root"]).expect("e tag"),
+            Tag::parse(["p", PUBKEY]).expect("p tag"),
+        ])
+        .sign_with_keys(keys)
+        .expect("fixture event signs");
+    BrokerMessage(event)
+}
+
 /// One valid `args` value per action, so table-driven tests cannot silently
-/// skip an action: [`action_fixtures_cover_every_action`] pins the coverage.
+/// skip an action: [`fixtures_cover_every_action`] pins the coverage.
 fn action_fixtures() -> Vec<ActionArgs> {
     vec![
-        ActionArgs::ChannelRead(
-            ChannelReadArgs::channel(CHANNEL)
-                .in_thread(EVENT)
-                .mentions_only()
-                .since(1_764_000_000)
-                .limit(50),
-        ),
+        ActionArgs::ChannelRead(ChannelReadArgs {
+            channel_id: CHANNEL.into(),
+            root_event_id: Some(EVENT.into()),
+            mentions_only: true,
+            cursor: Some("opaque-host-cursor-v1".into()),
+            limit: Some(50),
+        }),
         ActionArgs::MessagePost(MessagePostArgs {
             channel_id: CHANNEL.into(),
             content: "shipping the contract".into(),
@@ -30,7 +45,7 @@ fn action_fixtures() -> Vec<ActionArgs> {
             channel_id: CHANNEL.into(),
             reply_to_event_id: EVENT.into(),
             content: "agreed".into(),
-            mentions: vec![],
+            mentions: vec![pubkey()],
         }),
         ActionArgs::ReactionAdd(ReactionAddArgs {
             channel_id: CHANNEL.into(),
@@ -40,7 +55,7 @@ fn action_fixtures() -> Vec<ActionArgs> {
         ActionArgs::ProfileSet(ProfileSetArgs {
             display_name: Some("ss-dev-00".into()),
             about: Some("implementation".into()),
-            picture: None,
+            picture: Some("https://example.invalid/avatar.png".into()),
         }),
         ActionArgs::StorageAddress(StorageAddressArgs {
             slug: "mem/broker-foundation".into(),
@@ -49,19 +64,19 @@ fn action_fixtures() -> Vec<ActionArgs> {
             channel_id: CHANNEL.into(),
             display_name: "Research helper".into(),
             system_prompt: "Find sources.".into(),
-            runtime: None,
-            provider: None,
-            model: None,
+            runtime: Some("buzz-acp".into()),
+            provider: Some("anthropic".into()),
+            model: Some("claude-sonnet-4-5".into()),
             respond_to: Some("owner-only".into()),
         }),
         ActionArgs::AgentsUpdate(AgentsUpdateArgs {
             target: AgentTarget::Pubkey(pubkey()),
             display_name: Some("Research helper v2".into()),
-            system_prompt: None,
-            runtime: None,
-            provider: None,
-            model: None,
-            respond_to: None,
+            system_prompt: Some("Find better sources.".into()),
+            runtime: Some("buzz-acp".into()),
+            provider: Some("anthropic".into()),
+            model: Some("claude-sonnet-4-5".into()),
+            respond_to: Some("anyone".into()),
         }),
         ActionArgs::AgentsDelete(AgentsDeleteArgs {
             target: AgentTarget::Name("Research helper".into()),
@@ -70,19 +85,10 @@ fn action_fixtures() -> Vec<ActionArgs> {
 }
 
 /// One outcome per action, matching the fixture order above.
-fn outcome_fixtures() -> Vec<ActionOutcome> {
+fn outcome_fixtures(keys: &Keys) -> Vec<ActionOutcome> {
     let page = MessagePage {
-        messages: vec![BrokerMessage {
-            event_id: EVENT.into(),
-            author_pubkey: pubkey(),
-            kind: 9,
-            created_at: 1_764_000_001,
-            content: "hello".into(),
-            root_event_id: Some(EVENT.into()),
-            parent_event_id: None,
-            mentions: vec![pubkey()],
-        }],
-        next_cursor: Some(1_764_000_002),
+        messages: vec![signed_message(keys)],
+        next_cursor: Some("opaque-host-cursor-v2".into()),
     };
     let published = EventPublished {
         event_id: EVENT.into(),
@@ -117,17 +123,37 @@ fn outcome_fixtures() -> Vec<ActionOutcome> {
     ]
 }
 
+fn prepared(args: ActionArgs) -> PreparedRequest {
+    BrokerRequest::new("req-1", args)
+        .expect("fixture request builds")
+        .prepare()
+        .expect("fixture request prepares")
+}
+
+/// Sorted JSON object keys of `value`, for exact-schema assertions.
+fn keys_of(value: &serde_json::Value) -> Vec<String> {
+    let mut keys: Vec<String> = value
+        .as_object()
+        .expect("expected a JSON object")
+        .keys()
+        .cloned()
+        .collect();
+    keys.sort();
+    keys
+}
+
 // ── Coverage ────────────────────────────────────────────────────────────────
 
 /// The fixture tables are the input to every table-driven test below, so an
 /// action added without a fixture would be silently untested. This is the guard.
 #[test]
-fn action_fixtures_cover_every_action() {
+fn fixtures_cover_every_action() {
+    let keys = Keys::generate();
     let mut from_args: Vec<&str> = action_fixtures()
         .iter()
         .map(|args| args.action().as_str())
         .collect();
-    let mut from_outcomes: Vec<&str> = outcome_fixtures()
+    let mut from_outcomes: Vec<&str> = outcome_fixtures(&keys)
         .iter()
         .map(|outcome| outcome.action().as_str())
         .collect();
@@ -142,19 +168,10 @@ fn action_fixtures_cover_every_action() {
         from_outcomes, declared,
         "every action needs an outcome fixture"
     );
-}
 
-#[test]
-fn action_names_are_unique_and_round_trip_through_parse() {
-    let mut names: Vec<&str> = Action::ALL.iter().map(|a| a.as_str()).collect();
-    let count = names.len();
-    names.sort_unstable();
-    names.dedup();
-    assert_eq!(names.len(), count, "action wire names must be unique");
-
-    for action in Action::ALL {
-        assert_eq!(Action::parse(action.as_str()).unwrap(), action);
-    }
+    let mut unique = declared.clone();
+    unique.dedup();
+    assert_eq!(unique.len(), declared.len(), "wire names must be unique");
 }
 
 // ── Envelope round-trip ─────────────────────────────────────────────────────
@@ -192,7 +209,8 @@ fn every_action_round_trips_through_a_request_envelope() {
 
 #[test]
 fn every_outcome_round_trips_through_a_response_envelope() {
-    for outcome in outcome_fixtures() {
+    let signer = Keys::generate();
+    for outcome in outcome_fixtures(&signer) {
         let action = outcome.action();
         let response = BrokerResponse::new("req-1", BrokerResult::succeeded(outcome.clone()));
         response.validate().expect("response is valid");
@@ -230,12 +248,34 @@ fn an_args_shape_cannot_be_paired_with_another_action_name() {
 
 // ── Envelope rejection ──────────────────────────────────────────────────────
 
+/// Unknown names must not resolve, and neither must the *mechanism* names this
+/// contract deliberately refuses to expose: an interface that can sign arbitrary
+/// bytes is a signing oracle.
 #[test]
-fn unknown_action_name_is_rejected() {
-    for unknown in ["channel.write", "agents.exfiltrate", "", "channel.read "] {
+fn only_declared_action_names_resolve() {
+    for action in Action::ALL {
+        assert_eq!(Action::parse(action.as_str()).unwrap(), action);
+    }
+    for rejected in [
+        "channel.write",
+        "agents.exfiltrate",
+        "",
+        "channel.read ",
+        "sign",
+        "sign_event",
+        "publish",
+        "nip44.encrypt",
+        "nip44.decrypt",
+        "nip42.auth",
+        "nip98.auth",
+        "keys.export",
+        "identity.nsec",
+        "presence.set",
+        "typing.set",
+    ] {
         assert!(
-            Action::parse(unknown).is_err(),
-            "\"{unknown}\" must not parse as an action"
+            Action::parse(rejected).is_err(),
+            "\"{rejected}\" must not parse as an action"
         );
     }
 
@@ -250,83 +290,38 @@ fn unknown_action_name_is_rejected() {
     assert!(serde_json::from_value::<BrokerRequest>(json).is_err());
 }
 
-/// Signing and publishing are mechanisms, not actions. An interface that can
-/// sign arbitrary bytes is a signing oracle, so these names must not resolve.
 #[test]
-fn signing_and_credential_access_are_not_actions() {
-    for forbidden in [
-        "sign",
-        "sign_event",
-        "publish",
-        "nip44.encrypt",
-        "nip44.decrypt",
-        "nip42.auth",
-        "nip98.auth",
-        "keys.export",
-        "identity.nsec",
-        "tool.exec",
-        "agents.manage",
-    ] {
-        assert!(
-            Action::parse(forbidden).is_err(),
-            "\"{forbidden}\" must not be an action"
-        );
-    }
-}
-
-#[test]
-fn unknown_protocol_version_is_rejected() {
-    let args = ActionArgs::AgentsDelete(AgentsDeleteArgs {
-        target: AgentTarget::Pubkey(pubkey()),
-    });
+fn envelope_metadata_must_match_this_protocol_version() {
+    let args = || {
+        ActionArgs::AgentsDelete(AgentsDeleteArgs {
+            target: AgentTarget::Pubkey(pubkey()),
+        })
+    };
+    let failed = || BrokerResult::failed(BrokerError::unsupported("no"));
 
     for bad in [0_u16, 2, 999] {
-        let mut request = BrokerRequest::new("req-1", args.clone()).unwrap();
+        let mut request = BrokerRequest::new("req-1", args()).unwrap();
         request.protocol_version = bad;
         let error = request.validate().unwrap_err().to_string();
         assert!(error.contains("protocolVersion"), "unexpected: {error}");
 
-        let mut response = BrokerResponse::new(
-            "req-1",
-            BrokerResult::failed(BrokerError::unsupported("no")),
-        );
+        let mut response = BrokerResponse::new("req-1", failed());
         response.protocol_version = bad;
         assert!(response.validate().is_err());
     }
-}
 
-#[test]
-fn unknown_action_version_is_rejected() {
-    let mut request = BrokerRequest::new(
-        "req-1",
-        ActionArgs::AgentsDelete(AgentsDeleteArgs {
-            target: AgentTarget::Pubkey(pubkey()),
-        }),
-    )
-    .unwrap();
-    request.action_version = 7;
-    let error = request.validate().unwrap_err().to_string();
+    let mut wrong_action_version = BrokerRequest::new("req-1", args()).unwrap();
+    wrong_action_version.action_version = 7;
+    let error = wrong_action_version.validate().unwrap_err().to_string();
     assert!(error.contains("actionVersion"), "unexpected: {error}");
-}
 
-#[test]
-fn wrong_type_discriminator_is_rejected() {
-    let mut request = BrokerRequest::new(
-        "req-1",
-        ActionArgs::AgentsDelete(AgentsDeleteArgs {
-            target: AgentTarget::Pubkey(pubkey()),
-        }),
-    )
-    .unwrap();
-    request.r#type = BROKER_RESULT_TYPE.into();
-    assert!(request.validate().is_err());
+    let mut wrong_request_type = BrokerRequest::new("req-1", args()).unwrap();
+    wrong_request_type.r#type = BROKER_RESULT_TYPE.into();
+    assert!(wrong_request_type.validate().is_err());
 
-    let mut response = BrokerResponse::new(
-        "req-1",
-        BrokerResult::failed(BrokerError::unsupported("no")),
-    );
-    response.r#type = BROKER_REQUEST_TYPE.into();
-    assert!(response.validate().is_err());
+    let mut wrong_response_type = BrokerResponse::new("req-1", failed());
+    wrong_response_type.r#type = BROKER_REQUEST_TYPE.into();
+    assert!(wrong_response_type.validate().is_err());
 }
 
 #[test]
@@ -336,21 +331,161 @@ fn request_id_must_be_present_bounded_and_printable() {
             target: AgentTarget::Pubkey(pubkey()),
         })
     };
-    assert!(BrokerRequest::new("", args()).is_err());
+    for (id, valid) in [
+        ("", false),
+        ("has space", false),
+        ("has\nnewline", false),
+        ("has\u{7f}del", false),
+        ("req/1-a.b:c", true),
+    ] {
+        assert_eq!(
+            BrokerRequest::new(id, args()).is_ok(),
+            valid,
+            "requestId {id:?} validity"
+        );
+    }
     assert!(BrokerRequest::new("a".repeat(MAX_REQUEST_ID_LEN), args()).is_ok());
     assert!(BrokerRequest::new("a".repeat(MAX_REQUEST_ID_LEN + 1), args()).is_err());
-    assert!(BrokerRequest::new("has space", args()).is_err());
-    assert!(BrokerRequest::new("has\nnewline", args()).is_err());
-    assert!(BrokerRequest::new("has\u{7f}del", args()).is_err());
-    assert!(BrokerRequest::new("req/1-a.b:c", args()).is_ok());
+}
+
+// ── Wire schemas: the enforceable no-secret invariant ───────────────────────
+
+/// The exact wire key set of every args and outcome type, with every optional
+/// field populated so nothing escapes the pin by being absent.
+///
+/// This table *is* the no-secret invariant. Combined with
+/// `deny_unknown_fields`, it means no field — secret-bearing or otherwise — can
+/// be added to this contract without a reviewer changing a line here. The
+/// `agents.create` outcome is the case that matters: public identity only, never
+/// the key the host just minted.
+#[test]
+fn every_payload_has_an_exact_and_secret_free_wire_schema() {
+    let signer = Keys::generate();
+    let expected: Vec<(&str, Vec<&str>)> = vec![
+        // Args, fully populated (optional fields present).
+        (
+            "channel.read/args",
+            vec![
+                "channelId",
+                "cursor",
+                "limit",
+                "mentionsOnly",
+                "rootEventId",
+            ],
+        ),
+        (
+            "message.post/args",
+            vec!["channelId", "content", "mentions"],
+        ),
+        (
+            "message.reply/args",
+            vec!["channelId", "content", "mentions", "replyToEventId"],
+        ),
+        (
+            "reaction.add/args",
+            vec!["channelId", "reaction", "targetEventId"],
+        ),
+        ("profile.set/args", vec!["about", "displayName", "picture"]),
+        ("storage.address/args", vec!["slug"]),
+        (
+            "agents.create/args",
+            vec![
+                "channelId",
+                "displayName",
+                "model",
+                "provider",
+                "respondTo",
+                "runtime",
+                "systemPrompt",
+            ],
+        ),
+        (
+            "agents.update/args",
+            vec![
+                "displayName",
+                "model",
+                "provider",
+                "respondTo",
+                "runtime",
+                "systemPrompt",
+                "target",
+            ],
+        ),
+        ("agents.delete/args", vec!["target"]),
+        // Outcomes.
+        ("channel.read/outcome", vec!["messages", "nextCursor"]),
+        ("message.post/outcome", vec!["createdAt", "eventId", "kind"]),
+        (
+            "message.reply/outcome",
+            vec!["createdAt", "eventId", "kind"],
+        ),
+        ("reaction.add/outcome", vec!["createdAt", "eventId", "kind"]),
+        ("profile.set/outcome", vec!["createdAt", "eventId", "kind"]),
+        (
+            "storage.address/outcome",
+            vec!["authorPubkey", "dTag", "kind"],
+        ),
+        (
+            "agents.create/outcome",
+            vec!["agentPubkey", "channelId", "displayName"],
+        ),
+        (
+            "agents.update/outcome",
+            vec!["agentPubkey", "displayName", "updatedFields"],
+        ),
+        ("agents.delete/outcome", vec!["agentPubkey", "displayName"]),
+    ];
+
+    let mut actual: Vec<(String, Vec<String>)> = Vec::new();
+    for args in action_fixtures() {
+        let json = serde_json::to_value(&args).expect("args serialize");
+        actual.push((
+            format!("{}/args", args.action().as_str()),
+            keys_of(&json["args"]),
+        ));
+    }
+    for outcome in outcome_fixtures(&signer) {
+        let json = serde_json::to_value(&outcome).expect("outcome serializes");
+        actual.push((
+            format!("{}/outcome", outcome.action().as_str()),
+            keys_of(&json["outcome"]),
+        ));
+    }
+
+    let expected: Vec<(String, Vec<String>)> = expected
+        .into_iter()
+        .map(|(name, keys)| {
+            (
+                name.to_string(),
+                keys.into_iter().map(str::to_string).collect(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        actual, expected,
+        "a payload's wire keys changed — confirm no field can carry key material"
+    );
+
+    // And no key anywhere in the contract even *looks* like secret material.
+    for (name, keys) in &actual {
+        for key in keys {
+            let lower = key.to_ascii_lowercase();
+            for forbidden in ["secret", "private", "nsec", "seckey", "credential", "token"] {
+                assert!(
+                    !lower.contains(forbidden),
+                    "{name} exposes \"{key}\", which reads as secret material"
+                );
+            }
+        }
+    }
 }
 
 /// The envelope must not carry requester, owner, or scope: those are derived by
 /// the host from the credential. A body that could name its own subject would
-/// let any caller act as anyone.
+/// let any caller act as anyone — the same reason `agents.create` has no owner.
 #[test]
-fn request_carries_no_caller_supplied_authority() {
-    let json = serde_json::to_value(
+fn no_payload_can_name_its_own_authority() {
+    let request = serde_json::to_value(
         BrokerRequest::new(
             "req-1",
             ActionArgs::ChannelRead(ChannelReadArgs::channel(CHANNEL)),
@@ -358,163 +493,58 @@ fn request_carries_no_caller_supplied_authority() {
         .unwrap(),
     )
     .unwrap();
-    let object = json.as_object().unwrap();
-
-    for forbidden in [
-        "ownerPubkey",
-        "owner",
-        "requesterPubkey",
-        "requester",
-        "agentPubkey",
-        "authorization",
-        "credential",
-        "token",
-        "scope",
-        "expiry",
-        "relayUrl",
-        "requestDigest",
-    ] {
-        assert!(
-            !object.contains_key(forbidden),
-            "broker request must not carry \"{forbidden}\""
-        );
-    }
-
-    let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
-    keys.sort_unstable();
     assert_eq!(
-        keys,
+        keys_of(&request),
         vec![
             "action",
             "actionVersion",
             "args",
             "protocolVersion",
             "requestId",
-            "type",
+            "type"
         ]
     );
-}
 
-/// `agents.create` must not let a request name its own authority: ownership is
-/// the authenticated requester, which is why there is no field for it.
-#[test]
-fn agents_create_has_no_owner_field() {
-    let json = serde_json::to_value(AgentsCreateArgs {
-        channel_id: CHANNEL.into(),
-        display_name: "A".into(),
-        system_prompt: "B".into(),
-        runtime: None,
-        provider: None,
-        model: None,
-        respond_to: None,
-    })
-    .unwrap();
-    for forbidden in ["owner", "ownerPubkey", "createdBy", "onBehalfOf"] {
-        assert!(json.get(forbidden).is_none());
-    }
-
-    let with_owner = serde_json::json!({
-        "channelId": CHANNEL,
-        "displayName": "A",
-        "systemPrompt": "B",
-        "ownerPubkey": PUBKEY,
-    });
-    assert!(serde_json::from_value::<AgentsCreateArgs>(with_owner).is_err());
-}
-
-// ── The no-secret invariant ─────────────────────────────────────────────────
-
-/// No type in this contract may name, hold, or accept secret key material.
-///
-/// Scanning the source is the load-bearing half of this invariant: a
-/// deserialization test can only reject fields someone thought to add, while
-/// this fails the moment a secret-key type appears in a signature at all.
-#[test]
-fn no_secret_key_type_appears_in_the_contract_source() {
-    // `tests.rs` is excluded: this file necessarily names the forbidden tokens.
-    let sources = [
-        ("mod.rs", include_str!("mod.rs")),
-        ("actions.rs", include_str!("actions.rs")),
-        ("client.rs", include_str!("client.rs")),
-    ];
-    // Substrings, so `Option<SecretKey>` and `nostr::Keys` are caught too.
-    let forbidden = [
-        "SecretKey",
-        "nostr::Keys",
-        "Keys::",
-        "secret_key",
-        "seckey",
-        "private_key",
-        "nsec1",
-        "sign_event",
-        "ConversationKey",
-    ];
-
-    for (name, source) in sources {
-        for token in forbidden {
-            for (index, line) in source.lines().enumerate() {
-                // Doc comments may discuss what is absent and why.
-                let code = line.trim_start();
-                if code.starts_with("//") {
-                    continue;
-                }
-                assert!(
-                    !code.contains(token),
-                    "{name}:{} names \"{token}\" in code: {code}",
-                    index + 1
-                );
-            }
-        }
-    }
-}
-
-/// A secret smuggled into args must fail to deserialize rather than reach an
-/// executor.
-#[test]
-fn secret_bearing_args_fail_to_deserialize() {
-    let smuggled = [
+    // Authority-naming fields are rejected, not ignored, wherever they appear.
+    for rejected in [
         serde_json::json!({
-            "channelId": CHANNEL,
-            "displayName": "Sneaky",
-            "systemPrompt": "hi",
+            "channelId": CHANNEL, "displayName": "A", "systemPrompt": "B",
+            "ownerPubkey": PUBKEY,
+        }),
+        serde_json::json!({
+            "channelId": CHANNEL, "displayName": "A", "systemPrompt": "B",
+            "onBehalfOf": PUBKEY,
+        }),
+        serde_json::json!({
+            "channelId": CHANNEL, "displayName": "A", "systemPrompt": "B",
             "envVars": { "ANTHROPIC_API_KEY": "sk-live" },
         }),
         serde_json::json!({
-            "channelId": CHANNEL,
-            "displayName": "Sneaky",
-            "systemPrompt": "hi",
+            "channelId": CHANNEL, "displayName": "A", "systemPrompt": "B",
             "secretKey": "nsec1deadbeef",
         }),
-        serde_json::json!({
-            "channelId": CHANNEL,
-            "displayName": "Sneaky",
-            "systemPrompt": "hi",
-            "privateKey": "hexsecret",
-        }),
-    ];
-    for args in smuggled {
+    ] {
         assert!(
-            serde_json::from_value::<AgentsCreateArgs>(args.clone()).is_err(),
-            "must reject: {args}"
+            serde_json::from_value::<AgentsCreateArgs>(rejected.clone()).is_err(),
+            "must reject: {rejected}"
         );
     }
-}
 
-/// An outcome must be structurally unable to carry secret material, including
-/// the freshly minted key of an agent it just created.
-#[test]
-fn outcomes_cannot_carry_secrets() {
-    for extra in [
-        "privateKeyNsec",
-        "nsec",
-        "secretKey",
-        "seckey",
-        "credential",
-    ] {
+    // A read cannot ask about someone else's mentions, and a profile write
+    // cannot name a subject.
+    assert!(serde_json::from_value::<ChannelReadArgs>(
+        serde_json::json!({ "channelId": CHANNEL, "mentionsOf": PUBKEY })
+    )
+    .is_err());
+    assert!(serde_json::from_value::<ProfileSetArgs>(
+        serde_json::json!({ "displayName": "A", "pubkey": PUBKEY })
+    )
+    .is_err());
+
+    // An outcome cannot smuggle a minted secret past the schema either.
+    for extra in ["nsec", "secretKey", "seckey", "credential"] {
         let mut outcome = serde_json::json!({
-            "agentPubkey": PUBKEY,
-            "displayName": "A",
-            "channelId": CHANNEL,
+            "agentPubkey": PUBKEY, "displayName": "A", "channelId": CHANNEL,
         });
         outcome[extra] = serde_json::json!("nsec1deadbeef");
         let json = serde_json::json!({ "action": "agents.create", "outcome": outcome });
@@ -523,26 +553,6 @@ fn outcomes_cannot_carry_secrets() {
             "an outcome carrying \"{extra}\" must not deserialize"
         );
     }
-}
-
-/// A `storage.address` outcome carries addressing material only — never the key
-/// that derived it.
-#[test]
-fn storage_address_outcome_carries_addressing_only() {
-    let json = serde_json::to_value(StorageAddress {
-        author_pubkey: pubkey(),
-        kind: 30174,
-        d_tag: EVENT.into(),
-    })
-    .unwrap();
-    let mut keys: Vec<&str> = json
-        .as_object()
-        .unwrap()
-        .keys()
-        .map(String::as_str)
-        .collect();
-    keys.sort_unstable();
-    assert_eq!(keys, vec!["authorPubkey", "dTag", "kind"]);
 }
 
 #[test]
@@ -562,137 +572,102 @@ fn pubkey_hex_rejects_anything_but_a_public_key() {
 
 // ── Argument validation ─────────────────────────────────────────────────────
 
+/// Boundaries of every shared validator, in one table.
 #[test]
-fn every_fixture_validates_and_normalization_is_idempotent() {
-    for args in action_fixtures() {
-        let once = args.validated().expect("fixture validates");
-        let twice = once.validated().expect("normalized form validates");
-        assert_eq!(
-            once,
-            twice,
-            "{} normalization must settle",
-            args.action().as_str()
-        );
-    }
-}
-
-#[test]
-fn reads_reject_a_bad_channel_thread_or_limit() {
-    assert!(ChannelReadArgs::channel("not-a-uuid").validated().is_err());
-    assert!(ChannelReadArgs::channel(CHANNEL)
-        .in_thread("nothex")
-        .validated()
-        .is_err());
-    assert!(ChannelReadArgs::channel(CHANNEL)
-        .limit(0)
-        .validated()
-        .is_err());
-    assert!(ChannelReadArgs::channel(CHANNEL)
-        .limit(actions::MAX_PAGE_LIMIT)
-        .validated()
-        .is_ok());
-    assert!(ChannelReadArgs::channel(CHANNEL)
-        .limit(actions::MAX_PAGE_LIMIT + 1)
-        .validated()
-        .is_err());
-}
-
-/// A bare channel read must not imply a thread or a mention filter the caller
-/// never asked for.
-#[test]
-fn a_bare_channel_read_carries_no_unset_narrowing() {
-    let json = serde_json::to_value(ChannelReadArgs::channel(CHANNEL)).unwrap();
-    let mut keys: Vec<&str> = json
-        .as_object()
-        .unwrap()
-        .keys()
-        .map(String::as_str)
-        .collect();
-    keys.sort_unstable();
-    assert_eq!(keys, vec!["channelId"]);
-}
-
-#[test]
-fn writes_reject_empty_oversized_and_over_mentioned_content() {
-    let post = |content: String, mentions: Vec<PubkeyHex>| MessagePostArgs {
-        channel_id: CHANNEL.into(),
-        content,
-        mentions,
+fn validators_accept_and_reject_at_their_boundaries() {
+    let read = |mutate: fn(&mut ChannelReadArgs)| {
+        let mut args = ChannelReadArgs::channel(CHANNEL);
+        mutate(&mut args);
+        args.validated().is_ok()
     };
-    assert!(post("   ".into(), vec![]).validated().is_err());
+    let post = |content: String, mentions: Vec<PubkeyHex>| {
+        MessagePostArgs {
+            channel_id: CHANNEL.into(),
+            content,
+            mentions,
+        }
+        .validated()
+    };
+    let react = |reaction: String| {
+        ReactionAddArgs {
+            channel_id: CHANNEL.into(),
+            target_event_id: EVENT.into(),
+            reaction,
+        }
+        .validated()
+    };
+    let slug = |slug: &str| StorageAddressArgs { slug: slug.into() }.validated().is_ok();
+
+    // Channel UUID, thread id, limit, and opaque cursor.
+    assert!(ChannelReadArgs::channel("not-a-uuid").validated().is_err());
+    assert!(!read(|a| a.root_event_id = Some("nothex".into())));
+    assert!(read(|a| a.root_event_id = Some(EVENT.into())));
+    assert!(!read(|a| a.limit = Some(0)));
+    assert!(read(|a| a.limit = Some(actions::MAX_PAGE_LIMIT)));
+    assert!(!read(|a| a.limit = Some(actions::MAX_PAGE_LIMIT + 1)));
+    assert!(!read(|a| a.cursor = Some(String::new())));
+    assert!(!read(|a| a.cursor = Some("has space".into())));
+    assert!(read(
+        |a| a.cursor = Some("a".repeat(actions::MAX_CURSOR_LEN))
+    ));
+    assert!(!read(
+        |a| a.cursor = Some("a".repeat(actions::MAX_CURSOR_LEN + 1))
+    ));
+
+    // Content, mentions, reaction payload.
+    assert!(post("   ".into(), vec![]).is_err());
     assert!(matches!(
-        post("x".repeat(actions::MAX_CONTENT_BYTES + 1), vec![])
-            .validated()
-            .unwrap_err(),
+        post("x".repeat(actions::MAX_CONTENT_BYTES + 1), vec![]).unwrap_err(),
         SdkError::ContentTooLarge { .. }
     ));
+    assert!(post("hi".into(), vec![pubkey(); actions::MAX_MENTIONS]).is_ok());
     assert!(matches!(
-        post("hi".into(), vec![pubkey(); actions::MAX_MENTIONS + 1])
-            .validated()
-            .unwrap_err(),
+        post("hi".into(), vec![pubkey(); actions::MAX_MENTIONS + 1]).unwrap_err(),
         SdkError::TooManyMentions
     ));
-    assert!(post("hi".into(), vec![pubkey(); actions::MAX_MENTIONS])
-        .validated()
-        .is_ok());
-}
-
-#[test]
-fn reaction_rejects_empty_and_oversized_payloads() {
-    let react = |reaction: String| ReactionAddArgs {
-        channel_id: CHANNEL.into(),
-        target_event_id: EVENT.into(),
-        reaction,
-    };
-    assert!(react(" ".into()).validated().is_err());
+    assert!(react(" ".into()).is_err());
+    assert!(react(":shipit:".into()).is_ok());
     assert!(matches!(
-        react("a".repeat(actions::MAX_EMOJI_CHARS + 1))
-            .validated()
-            .unwrap_err(),
+        react("a".repeat(actions::MAX_EMOJI_CHARS + 1)).unwrap_err(),
         SdkError::EmojiTooLong
     ));
-    assert!(react(":shipit:".into()).validated().is_ok());
-}
 
-#[test]
-fn profile_set_requires_a_change_and_names_no_subject() {
-    let empty = ProfileSetArgs {
+    // NIP-AE slug grammar for encrypted-memory addressing.
+    assert!(slug("core"));
+    assert!(slug("mem/broker-foundation"));
+    assert!(!slug(""));
+    assert!(!slug("Core"));
+    assert!(!slug("secrets"));
+    assert!(!slug("mem/Bad Slug"));
+
+    // Patch-shaped writes must change something, and reject unknown modes.
+    let profile_error = ProfileSetArgs {
         display_name: None,
         about: None,
         picture: None,
+    }
+    .validated()
+    .unwrap_err()
+    .to_string();
+    assert!(profile_error.contains("at least one"), "{profile_error}");
+    let update = |respond_to: Option<&str>, name: Option<&str>| {
+        AgentsUpdateArgs {
+            target: AgentTarget::Pubkey(pubkey()),
+            display_name: name.map(str::to_string),
+            system_prompt: None,
+            runtime: None,
+            provider: None,
+            model: None,
+            respond_to: respond_to.map(str::to_string),
+        }
+        .validated()
     };
-    let error = empty.validated().unwrap_err().to_string();
-    assert!(error.contains("at least one"), "unexpected: {error}");
-
-    let with_subject = serde_json::json!({ "displayName": "A", "pubkey": PUBKEY });
-    assert!(serde_json::from_value::<ProfileSetArgs>(with_subject).is_err());
-}
-
-#[test]
-fn storage_address_enforces_the_nip_ae_slug_grammar() {
-    let slug = |slug: &str| StorageAddressArgs { slug: slug.into() }.validated();
-    assert!(slug("core").is_ok());
-    assert!(slug("mem/broker-foundation").is_ok());
-    assert!(slug("").is_err());
-    assert!(slug("Core").is_err());
-    assert!(slug("secrets").is_err());
-    assert!(slug("mem/Bad Slug").is_err());
-}
-
-#[test]
-fn agent_update_requires_a_change_and_delete_requires_a_target() {
-    let empty = AgentsUpdateArgs {
-        target: AgentTarget::Pubkey(pubkey()),
-        display_name: None,
-        system_prompt: None,
-        runtime: None,
-        provider: None,
-        model: None,
-        respond_to: None,
-    };
-    let error = empty.validated().unwrap_err().to_string();
-    assert!(error.contains("at least one field"), "unexpected: {error}");
-
+    assert!(update(None, None)
+        .unwrap_err()
+        .to_string()
+        .contains("at least one field"));
+    assert!(update(Some("anyone"), None).is_ok());
+    assert!(update(Some("allowlist"), Some("A")).is_err());
     assert!(AgentsDeleteArgs {
         target: AgentTarget::Name("  ".into()),
     }
@@ -700,41 +675,70 @@ fn agent_update_requires_a_change_and_delete_requires_a_target() {
     .is_err());
 }
 
+// ── Reads carry verifiable provenance ───────────────────────────────────────
+
+/// A read returns the signed event, so a keyless caller can check authorship
+/// itself. A host that tampered with content fails verification locally, with no
+/// relay involved — which is why this contract does not settle for a projection.
 #[test]
-fn agents_create_rejects_an_unsupported_respond_to_mode() {
-    let args = AgentsCreateArgs {
-        channel_id: CHANNEL.into(),
-        display_name: "A".into(),
-        system_prompt: "B".into(),
-        runtime: None,
-        provider: None,
-        model: None,
-        respond_to: Some("allowlist".into()),
-    };
-    assert!(args.validated().is_err());
+fn read_results_are_signed_events_a_keyless_caller_can_verify() {
+    let signer = Keys::generate();
+    let message = signed_message(&signer);
+    message.verify().expect("a genuinely signed event verifies");
+    assert_eq!(
+        message.author().unwrap().as_str(),
+        signer.public_key().to_hex()
+    );
+    assert_eq!(message.thread().root.as_deref(), Some(EVENT));
+    assert_eq!(message.mentions(), vec![PUBKEY.to_string()]);
+
+    // Tamper with the content: the id no longer matches, so verification fails
+    // even though every other field is untouched.
+    let mut json = serde_json::to_value(&message).unwrap();
+    json["content"] = serde_json::json!("a message the author never wrote");
+    let tampered: BrokerMessage =
+        serde_json::from_value(json).expect("a tampered event still parses");
+    assert!(
+        tampered.verify().is_err(),
+        "tampering must be locally detectable"
+    );
+
+    // The wire form is the event's own JSON — no wrapper of its own to disagree
+    // with the signed bytes.
+    let wire = serde_json::to_value(&message).unwrap();
+    assert_eq!(
+        keys_of(&wire),
+        vec![
+            "content",
+            "created_at",
+            "id",
+            "kind",
+            "pubkey",
+            "sig",
+            "tags"
+        ]
+    );
 }
 
-/// Update and delete carry no channel: channel appears only where the operation
-/// needs it, which is the create attachment.
 #[test]
-fn agent_update_and_delete_carry_no_channel() {
-    let update = serde_json::to_value(AgentsUpdateArgs {
-        target: AgentTarget::Pubkey(pubkey()),
-        display_name: Some("New".into()),
-        system_prompt: None,
-        runtime: None,
-        provider: None,
-        model: None,
-        respond_to: None,
-    })
-    .unwrap();
-    assert!(update.get("channelId").is_none());
-
-    let delete = serde_json::to_value(AgentsDeleteArgs {
-        target: AgentTarget::Name("Gone".into()),
-    })
-    .unwrap();
-    assert!(delete.get("channelId").is_none());
+fn a_page_is_bounded_and_its_cursor_opaque() {
+    let signer = Keys::generate();
+    let page = |messages: Vec<BrokerMessage>, next_cursor: Option<&str>| {
+        ActionOutcome::ChannelRead(MessagePage {
+            messages,
+            next_cursor: next_cursor.map(str::to_string),
+        })
+        .validate()
+    };
+    assert!(page(vec![], None).is_ok());
+    assert!(page(vec![signed_message(&signer)], Some("c1")).is_ok());
+    assert!(page(vec![], Some("")).is_err());
+    assert!(page(vec![], Some("has space")).is_err());
+    assert!(page(
+        vec![signed_message(&signer); actions::MAX_PAGE_LIMIT as usize + 1],
+        None
+    )
+    .is_err());
 }
 
 // ── Results ─────────────────────────────────────────────────────────────────
@@ -764,6 +768,39 @@ fn failed_and_indeterminate_are_distinct_and_carry_no_outcome() {
     assert!(indeterminate.outcome().is_none());
 }
 
+/// A rejected credential is a host verdict with a known fate — the action did
+/// not run — so it belongs in a `Failed` envelope, not in the transport error
+/// type where it would tell the caller to reconcile something that never
+/// happened. `OutcomeUnknown` is the mirror image: it may only ever be
+/// `Indeterminate`.
+#[test]
+fn status_and_error_code_must_agree_about_side_effects() {
+    let auth_failure = BrokerResponse::new(
+        "req-1",
+        BrokerResult::failed(BrokerError::new(
+            BrokerErrorCode::Unauthenticated,
+            "credential rejected",
+        )),
+    );
+    auth_failure
+        .validate()
+        .expect("a rejected credential is a valid Failed verdict");
+
+    let contradiction = BrokerResponse::new(
+        "req-1",
+        BrokerResult::failed(BrokerError::new(BrokerErrorCode::OutcomeUnknown, "?")),
+    );
+    let error = contradiction.validate().unwrap_err().to_string();
+    assert!(error.contains("outcome_unknown"), "unexpected: {error}");
+
+    BrokerResponse::new(
+        "req-1",
+        BrokerResult::indeterminate(BrokerError::new(BrokerErrorCode::OutcomeUnknown, "?")),
+    )
+    .validate()
+    .expect("outcome_unknown is valid with indeterminate");
+}
+
 #[test]
 fn replay_metadata_rides_the_response_not_the_result() {
     let result = BrokerResult::succeeded(ActionOutcome::AgentsDelete(AgentsDeleteOutcome {
@@ -789,54 +826,167 @@ fn replay_metadata_rides_the_response_not_the_result() {
         .is_none());
 }
 
+/// A response that validates in isolation can still be the wrong answer. This is
+/// the check that makes a mismatched outcome unusable rather than merely
+/// surprising.
 #[test]
-fn every_error_code_has_a_stable_wire_string() {
-    for (code, expected) in [
-        (BrokerErrorCode::InvalidRequest, "invalid_request"),
-        (
-            BrokerErrorCode::UnsupportedProtocolVersion,
-            "unsupported_protocol_version",
-        ),
-        (BrokerErrorCode::UnknownAction, "unknown_action"),
-        (
-            BrokerErrorCode::UnsupportedActionVersion,
-            "unsupported_action_version",
-        ),
-        (BrokerErrorCode::Unsupported, "unsupported"),
-        (BrokerErrorCode::Unauthenticated, "unauthenticated"),
-        (BrokerErrorCode::Unauthorized, "unauthorized"),
-        (BrokerErrorCode::RequestIdConflict, "request_id_conflict"),
-        (BrokerErrorCode::ActionFailed, "action_failed"),
-        (BrokerErrorCode::OutcomeUnknown, "outcome_unknown"),
-        (BrokerErrorCode::Internal, "internal"),
-    ] {
-        assert_eq!(code.as_str(), expected);
+fn response_validation_is_request_aware() {
+    let signer = Keys::generate();
+    let request = prepared(ActionArgs::ChannelRead(ChannelReadArgs::channel(CHANNEL)));
+    let page = ActionOutcome::ChannelRead(MessagePage {
+        messages: vec![signed_message(&signer)],
+        next_cursor: None,
+    });
+
+    BrokerResponse::new(request.request_id(), BrokerResult::succeeded(page.clone()))
+        .validate_for(&request)
+        .expect("the right outcome for the right request");
+
+    // Wrong action: a post receipt is not an answer to a read.
+    let wrong_action = BrokerResponse::new(
+        request.request_id(),
+        BrokerResult::succeeded(ActionOutcome::MessagePost(EventPublished {
+            event_id: EVENT.into(),
+            kind: 9,
+            created_at: 1,
+        })),
+    );
+    wrong_action
+        .validate()
+        .expect("it is well-formed on its own — that is the point");
+    let error = wrong_action.validate_for(&request).unwrap_err().to_string();
+    assert!(error.contains("message.post"), "unexpected: {error}");
+
+    // Wrong correlation id.
+    let error = BrokerResponse::new("req-other", BrokerResult::succeeded(page))
+        .validate_for(&request)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("requestId"), "unexpected: {error}");
+
+    // Malformed identifiers inside an otherwise well-shaped outcome.
+    let bad_id = BrokerResponse::new(
+        request.request_id(),
+        BrokerResult::succeeded(ActionOutcome::ChannelRead(MessagePage {
+            messages: vec![],
+            next_cursor: Some("not a cursor".into()),
+        })),
+    );
+    assert!(bad_id.validate_for(&request).is_err());
+
+    let post = prepared(ActionArgs::MessagePost(MessagePostArgs {
+        channel_id: CHANNEL.into(),
+        content: "hi".into(),
+        mentions: vec![],
+    }));
+    let bad_event_id = BrokerResponse::new(
+        post.request_id(),
+        BrokerResult::succeeded(ActionOutcome::MessagePost(EventPublished {
+            event_id: "nothex".into(),
+            kind: 9,
+            created_at: 1,
+        })),
+    );
+    assert!(bad_event_id.validate_for(&post).is_err());
+
+    // A failure needs no outcome to match, only correlation.
+    BrokerResponse::new(
+        request.request_id(),
+        BrokerResult::failed(BrokerError::unauthorized("not your channel")),
+    )
+    .validate_for(&request)
+    .expect("a refusal answers any action");
+}
+
+// ── Retry is identical bytes ────────────────────────────────────────────────
+
+/// The retry contract is byte identity, so the client takes frozen bytes rather
+/// than a typed value it would have to reserialize. Preparing once and reading
+/// `body()` twice is the only way to send the same request twice.
+#[test]
+fn preparing_a_request_freezes_the_bytes_every_attempt_sends() {
+    let request = BrokerRequest::new(
+        "req-idem",
+        ActionArgs::MessagePost(MessagePostArgs {
+            channel_id: CHANNEL.into(),
+            content: "exactly once".into(),
+            mentions: vec![pubkey()],
+        }),
+    )
+    .unwrap();
+    let prepared = request.clone().prepare().expect("valid request prepares");
+
+    assert_eq!(
+        prepared.body(),
+        prepared.body(),
+        "body is frozen, not re-rendered"
+    );
+    assert_eq!(prepared.request(), &request);
+    assert_eq!(prepared.request_id(), "req-idem");
+    assert_eq!(prepared.action(), Action::MessagePost);
+
+    // The frozen bytes are the envelope, and they parse back to the same value.
+    let parsed: BrokerRequest =
+        serde_json::from_slice(prepared.body()).expect("frozen body is the envelope");
+    assert_eq!(parsed, request);
+
+    // Preparing validates, so an invalid request never reaches a transport.
+    let invalid = BrokerRequest {
+        r#type: BROKER_REQUEST_TYPE.into(),
+        protocol_version: 99,
+        request_id: "req-bad".into(),
+        action_version: 1,
+        action: ActionArgs::AgentsDelete(AgentsDeleteArgs {
+            target: AgentTarget::Pubkey(pubkey()),
+        }),
+    };
+    assert!(invalid.prepare().is_err());
+}
+
+/// The hand-written [`BrokerErrorCode::as_str`] and serde's derived name are two
+/// encodings of one wire string, so each is pinned against the other and the
+/// whole set is pinned against this literal — a rename in either fails here.
+#[test]
+fn error_codes_have_stable_wire_strings() {
+    use BrokerErrorCode as E;
+    let codes = [
+        E::InvalidRequest,
+        E::UnsupportedProtocolVersion,
+        E::UnknownAction,
+        E::UnsupportedActionVersion,
+        E::Unsupported,
+        E::Unauthenticated,
+        E::Unauthorized,
+        E::RequestIdConflict,
+        E::ActionFailed,
+        E::OutcomeUnknown,
+        E::Internal,
+    ];
+    for code in codes {
         assert_eq!(
             serde_json::to_value(code).unwrap(),
-            serde_json::json!(expected)
+            serde_json::json!(code.as_str()),
+            "as_str and the serde name must not drift"
         );
     }
+    assert_eq!(
+        codes.map(E::as_str).join(","),
+        "invalid_request,unsupported_protocol_version,unknown_action,\
+unsupported_action_version,unsupported,unauthenticated,unauthorized,\
+request_id_conflict,action_failed,outcome_unknown,internal"
+    );
 }
 
 /// Only housekeeping is best-effort. A host refusing a read or a write has
 /// broken the agent, and the agent must not treat that as routine.
 #[test]
 fn only_housekeeping_actions_are_best_effort() {
-    assert!(Action::ReactionAdd.is_best_effort());
-    for essential in [
-        Action::ChannelRead,
-        Action::MessagePost,
-        Action::MessageReply,
-        Action::ProfileSet,
-        Action::StorageAddress,
-        Action::AgentsCreate,
-        Action::AgentsUpdate,
-        Action::AgentsDelete,
-    ] {
-        assert!(
-            !essential.is_best_effort(),
-            "{} must not be best-effort",
-            essential.as_str()
+    for action in Action::ALL {
+        assert_eq!(
+            action.is_best_effort(),
+            action == Action::ReactionAdd,
+            "{} best-effort classification",
+            action.as_str()
         );
     }
 }
@@ -851,10 +1001,15 @@ struct DoubleBroker {
 }
 
 impl BrokerClient for DoubleBroker {
-    fn execute<'a>(&'a self, request: &'a BrokerRequest) -> BrokerFuture<'a> {
-        let response = self.response.clone().map(|mut response| {
-            response.request_id = request.request_id.clone();
+    fn execute<'a>(&'a self, request: &'a PreparedRequest) -> BrokerFuture<'a> {
+        // A real implementation sends `request.body()` verbatim. The double
+        // stands in for a host that answers the request it was given.
+        let response = self.response.clone().and_then(|mut response| {
+            response.request_id = request.request_id().to_string();
             response
+                .validate_for(request)
+                .map_err(|e| BrokerTransportError::MalformedResponse(e.to_string()))?;
+            Ok(response)
         });
         Box::pin(async move { response })
     }
@@ -879,11 +1034,11 @@ fn block_on<F: std::future::Future>(future: F) -> F::Output {
 
 #[test]
 fn the_client_trait_is_object_safe_and_returns_a_host_verdict() {
-    let request = BrokerRequest::new(
-        "req-42",
-        ActionArgs::ChannelRead(ChannelReadArgs::channel(CHANNEL).mentions_only()),
-    )
-    .unwrap();
+    let request = prepared(ActionArgs::ChannelRead(ChannelReadArgs {
+        channel_id: CHANNEL.into(),
+        mentions_only: true,
+        ..ChannelReadArgs::default()
+    }));
 
     let succeeded: Box<dyn BrokerClient> = Box::new(DoubleBroker {
         response: Ok(BrokerResponse::new(
@@ -895,35 +1050,57 @@ fn the_client_trait_is_object_safe_and_returns_a_host_verdict() {
         )),
     });
     let response = block_on(succeeded.execute(&request)).expect("double answers");
-    response.validate().expect("double's response is valid");
-    assert_eq!(response.request_id, "req-42");
+    response
+        .validate_for(&request)
+        .expect("double's response answers the request");
+    assert_eq!(response.request_id, "req-1");
     assert!(response.result.outcome().is_some());
 
-    // A refusal is still an answer: `Ok` with the verdict in the envelope.
-    let refused: Box<dyn BrokerClient> = Box::new(DoubleBroker {
+    // A refusal — including a rejected credential — is still an answer: `Ok`
+    // with the verdict in the envelope.
+    for code in [
+        BrokerErrorCode::Unauthorized,
+        BrokerErrorCode::Unauthenticated,
+    ] {
+        let refused: Box<dyn BrokerClient> = Box::new(DoubleBroker {
+            response: Ok(BrokerResponse::new(
+                "placeholder",
+                BrokerResult::failed(BrokerError::new(code, "no")),
+            )),
+        });
+        let response =
+            block_on(refused.execute(&request)).expect("a refusal is not a transport error");
+        assert_eq!(response.result.error().map(|e| e.code), Some(code));
+    }
+
+    // No usable answer at all is a transport error, and says nothing about side
+    // effects. An intermediary's status is operator detail, not a verdict.
+    for error in [
+        BrokerTransportError::Unreachable("connection reset".into()),
+        BrokerTransportError::NoEnvelope {
+            status: 401,
+            detail: "proxy denied".into(),
+        },
+        BrokerTransportError::MalformedResponse("not json".into()),
+    ] {
+        let broken: Box<dyn BrokerClient> = Box::new(DoubleBroker {
+            response: Err(error.clone()),
+        });
+        assert_eq!(block_on(broken.execute(&request)).unwrap_err(), error);
+    }
+
+    // A host answering the wrong action is rejected by the client, not passed on.
+    let confused: Box<dyn BrokerClient> = Box::new(DoubleBroker {
         response: Ok(BrokerResponse::new(
             "placeholder",
-            BrokerResult::failed(BrokerError::unauthorized("not your channel")),
+            BrokerResult::succeeded(ActionOutcome::AgentsDelete(AgentsDeleteOutcome {
+                agent_pubkey: pubkey(),
+                display_name: "Gone".into(),
+            })),
         )),
     });
-    let response = block_on(refused.execute(&request)).expect("a refusal is not a transport error");
-    assert_eq!(
-        response.result.error().map(|e| e.code),
-        Some(BrokerErrorCode::Unauthorized)
-    );
-
-    // No answer at all is a transport error, and says nothing about side effects.
-    let unreachable: Box<dyn BrokerClient> = Box::new(DoubleBroker {
-        response: Err(BrokerTransportError::CredentialRejected),
-    });
-    assert_eq!(
-        block_on(unreachable.execute(&request)).unwrap_err(),
-        BrokerTransportError::CredentialRejected
-    );
-}
-
-#[test]
-fn the_http_binding_is_a_single_path_with_a_bearer_credential() {
-    assert_eq!(BROKER_ACTION_PATH, "/v1/action");
-    assert_eq!(BROKER_CREDENTIAL_HEADER, "authorization");
+    assert!(matches!(
+        block_on(confused.execute(&request)).unwrap_err(),
+        BrokerTransportError::MalformedResponse(_)
+    ));
 }

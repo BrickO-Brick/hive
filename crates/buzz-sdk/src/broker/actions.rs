@@ -1,22 +1,19 @@
 //! Broker actions — the closed set of operations an agent may ask a host to perform.
 //!
-//! An action is the unit of policy. `message.post` and `agents.delete` are
-//! separate names so a host can permit one without permitting the other, and so
-//! a later policy layer has something per-operation to attach to. There is
-//! deliberately no `sign` action and no `publish` action: an interface that can
-//! sign arbitrary bytes is a signing oracle, and a host holding it could not
-//! reason about what it authorized.
+//! An action is the unit of policy; see the [module docs](super) for why this is
+//! an operation enum rather than a signing primitive.
 //!
 //! Two consequences of that choice are visible in the types below. Every args
-//! type is `deny_unknown_fields`, so a credential or environment map smuggled
-//! into a payload fails to deserialize instead of reaching an executor. Every
-//! outcome type can structurally hold only public identifiers — no field of any
-//! outcome can transport key material.
+//! and outcome type is `deny_unknown_fields`, so a credential or environment map
+//! smuggled into a payload fails to deserialize instead of reaching an executor.
+//! And the wire key set of every type is pinned by test, so a secret-bearing
+//! field cannot be added without a test failing.
 
 use serde::{Deserialize, Serialize};
 
 use crate::SdkError;
 use buzz_core::engram::validate_slug;
+use nostr::Event;
 
 /// Maximum characters in a display name or agent name.
 pub const MAX_NAME_CHARS: usize = 120;
@@ -42,6 +39,9 @@ pub const MAX_MENTIONS: usize = 50;
 /// Maximum events a single read may return.
 pub const MAX_PAGE_LIMIT: u32 = 500;
 
+/// Maximum accepted length of a read cursor, in bytes.
+pub const MAX_CURSOR_LEN: usize = 256;
+
 /// Inbound author gate modes a requester may ask for.
 ///
 /// `allowlist` is deliberately absent: it needs a pubkey list this request
@@ -53,8 +53,7 @@ pub const RESPOND_TO_MODES: [&str; 2] = ["owner-only", "anyone"];
 ///
 /// #6467 asks for identity to be separable from signing. This type is that
 /// separation made structural: it holds 64 hex characters of public key and has
-/// no counterpart in this module for the corresponding secret. Nothing here can
-/// name, hold, or ask for one.
+/// no counterpart in this module for the corresponding secret.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct PubkeyHex(String);
@@ -164,11 +163,9 @@ impl Action {
 
     /// Whether a host may refuse this action without harming the agent.
     ///
-    /// #6467 requires non-essential signed housekeeping to be skippable, so
-    /// that an agent can still run where it is unavailable. For a best-effort
-    /// action, [`super::BrokerErrorCode::Unsupported`] is a normal answer and a
-    /// caller must carry on. For every other action, `Unsupported` means the
-    /// agent cannot do its job on this host and should say so out loud.
+    /// #6467 requires non-essential signed housekeeping to be skippable, so an
+    /// agent can still run where it is unavailable. See
+    /// [`super::BrokerErrorCode::Unsupported`] for how a caller reacts.
     #[must_use]
     pub fn is_best_effort(self) -> bool {
         matches!(self, Self::ReactionAdd)
@@ -194,16 +191,10 @@ impl Action {
 /// Reads are actions like any other, because #6467 requires a host with no
 /// relay route of its own to be able to serve them.
 ///
-/// One action covers three scopes, because they differ only by filter and a
-/// separate name per scope would be a separate policy decision for the same
-/// underlying permission — *may this agent see this channel*. `rootEventId`
-/// narrows to one thread; `mentionsOnly` narrows to messages that mention the
-/// requester, which is the wake path.
-///
-/// `since` is an inclusive lower bound in Unix seconds, matching the relay's
-/// filter granularity. A caller must de-duplicate by event id: second-precision
-/// cursors can straddle events, so consecutive pages may overlap.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// One action covers channel, thread, and mention-feed scope, because they
+/// differ only by filter and a name per scope would split one permission —
+/// *may this agent see this channel* — across three policy decisions.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ChannelReadArgs {
     /// Channel to read.
@@ -211,60 +202,36 @@ pub struct ChannelReadArgs {
     /// Narrow to one thread by its root event.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_event_id: Option<String>,
-    /// Narrow to messages mentioning the requester.
+    /// Narrow to messages mentioning the requester — the wake path.
     ///
-    /// The requester is never named. The host answers for the identity it
-    /// authenticated; a body that could ask "what mentions *someone else*"
-    /// would be a body that picks its own subject.
+    /// The requester is never named; see [`super::BrokerRequest`] on why no body
+    /// names its own subject.
     #[serde(default, skip_serializing_if = "is_false")]
     pub mentions_only: bool,
-    /// Inclusive lower bound, Unix seconds. Absent = host's default window.
+    /// Opaque position to resume from, as returned in [`MessagePage::next_cursor`].
+    ///
+    /// Absent on a first read, which starts at the host's default window. A
+    /// cursor is **opaque**: callers must round-trip it verbatim and must not
+    /// parse, compare, or synthesize one. That is deliberate — a timestamp
+    /// cursor cannot page safely when more events than `limit` share one
+    /// second, and it would commit every future host to one relay ordering
+    /// strategy. The host defines ordering and cursor stability, including
+    /// whether a cursor stays valid across restarts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub since: Option<u64>,
+    pub cursor: Option<String>,
     /// Maximum events to return, capped at [`MAX_PAGE_LIMIT`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
 }
 
 impl ChannelReadArgs {
-    /// Read a whole channel.
+    /// Read a whole channel from the host's default window.
     #[must_use]
     pub fn channel(channel_id: impl Into<String>) -> Self {
         Self {
             channel_id: channel_id.into(),
-            root_event_id: None,
-            mentions_only: false,
-            since: None,
-            limit: None,
+            ..Self::default()
         }
-    }
-
-    /// Narrow this read to one thread.
-    #[must_use]
-    pub fn in_thread(mut self, root_event_id: impl Into<String>) -> Self {
-        self.root_event_id = Some(root_event_id.into());
-        self
-    }
-
-    /// Narrow this read to messages mentioning the requester.
-    #[must_use]
-    pub fn mentions_only(mut self) -> Self {
-        self.mentions_only = true;
-        self
-    }
-
-    /// Start this read at `since` (inclusive, Unix seconds).
-    #[must_use]
-    pub fn since(mut self, since: u64) -> Self {
-        self.since = Some(since);
-        self
-    }
-
-    /// Cap this read at `limit` events.
-    #[must_use]
-    pub fn limit(mut self, limit: u32) -> Self {
-        self.limit = Some(limit);
-        self
     }
 
     /// Validate and normalize.
@@ -272,7 +239,8 @@ impl ChannelReadArgs {
     /// # Errors
     ///
     /// Returns [`SdkError::InvalidInput`] for a malformed channel UUID, a
-    /// malformed root event id, or an out-of-range limit.
+    /// malformed root event id, an over-long or non-printable cursor, or an
+    /// out-of-range limit.
     pub fn validated(&self) -> Result<Self, SdkError> {
         Ok(Self {
             channel_id: channel(&self.channel_id)?,
@@ -282,7 +250,7 @@ impl ChannelReadArgs {
                 .map(|id| event_id(id, "rootEventId"))
                 .transpose()?,
             mentions_only: self.mentions_only,
-            since: self.since,
+            cursor: self.cursor.as_deref().map(cursor).transpose()?,
             limit: limit(self.limit)?,
         })
     }
@@ -434,10 +402,9 @@ impl ProfileSetArgs {
 
 /// Arguments for `storage.address`.
 ///
-/// Encrypted-memory records are addressed by a tag derived from a conversation
-/// key, so deriving one needs the secret this contract exists to avoid holding.
-/// #6467 lists that derivation among the operations to route through the
-/// interface, which is why it is an action rather than a local computation.
+/// Deriving a record's address needs the secret this contract exists to avoid
+/// holding, which is why #6467 lists it among the operations to route through
+/// the interface rather than compute locally.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StorageAddressArgs {
@@ -461,10 +428,8 @@ impl StorageAddressArgs {
 
 // ── Agent arguments ─────────────────────────────────────────────────────────
 
-/// Which agent an update or delete targets.
-///
-/// Exactly one selector, because a request naming the target twice is ambiguous
-/// and the host would have to guess which wins.
+/// Which agent an update or delete targets — exactly one selector, so a host
+/// never has to guess which of two names wins.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum AgentTarget {
@@ -490,10 +455,9 @@ impl AgentTarget {
 
 /// Arguments for `agents.create`.
 ///
-/// There is no owner field. The owner of a created agent is whoever the host
-/// authenticated for this request — an agent creating an agent owns it, and the
-/// chain of ownership ends at a human. A request that could name its own
-/// authority would let any caller mint agents under someone else.
+/// There is no owner field: the owner is whoever the host authenticated, so an
+/// agent creating an agent owns it. See the [module docs](super) on ownership
+/// recursion, and [`super::BrokerRequest`] on why no body names its own subject.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentsCreateArgs {
@@ -707,48 +671,88 @@ impl ActionArgs {
 
 // ── Outcomes ────────────────────────────────────────────────────────────────
 
-/// One message returned by a read.
+/// One message returned by a read: the signed Nostr event, verbatim.
 ///
-/// A projection, not a Nostr event: no signature, no tag array. A caller that
-/// needs to verify signatures needs the relay, which is exactly what a
-/// broker-only deployment does not have. Trust here is trust in the host.
+/// The event is authoritative. It is carried whole — signature and tags
+/// included — rather than reduced to a projection, because Schnorr verification
+/// is local and needs no relay: see [`Self::verify`]. A keyless agent therefore
+/// still gets independently verifiable authorship and content, and only has to
+/// trust the host for *completeness* (that no message was withheld) and for
+/// authorization. Reducing to a projection would have widened that trust to
+/// cover authorship too, and dropped the tags later consumers need.
+///
+/// The wire form is the event's own JSON, so this adds no envelope of its own.
+/// Ancestry and mentions are exposed as derived accessors rather than sibling
+/// fields, so there is nothing that can disagree with the signed bytes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct BrokerMessage {
-    /// Event id (hex).
-    pub event_id: String,
-    /// Author's pubkey.
-    pub author_pubkey: PubkeyHex,
-    /// Event kind.
-    pub kind: u32,
-    /// Creation time, Unix seconds.
-    pub created_at: u64,
-    /// Message body.
-    pub content: String,
-    /// Thread root, when this message is threaded.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub root_event_id: Option<String>,
-    /// Immediate parent, when this message is a reply.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_event_id: Option<String>,
-    /// Pubkeys this message mentions.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub mentions: Vec<PubkeyHex>,
+#[serde(transparent)]
+pub struct BrokerMessage(pub Event);
+
+impl BrokerMessage {
+    /// The signed event.
+    #[must_use]
+    pub fn event(&self) -> &Event {
+        &self.0
+    }
+
+    /// Verify the event's id and Schnorr signature.
+    ///
+    /// This is the caller's provenance check and it is entirely local. A host
+    /// that fabricated or altered a message fails here regardless of what it
+    /// claims. It is deliberately *not* called by
+    /// [`super::BrokerResponse::validate_for`]: whether to pay for verification,
+    /// and what to do when it fails, is the caller's policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SdkError::InvalidInput`] when the id does not match the
+    /// content or the signature does not match the author.
+    pub fn verify(&self) -> Result<(), SdkError> {
+        self.0.verify().map_err(|e| {
+            SdkError::InvalidInput(format!("broker returned an unverifiable event: {e}"))
+        })
+    }
+
+    /// The author's pubkey, in this contract's identity type.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SdkError::InvalidInput`] if the event's author is not
+    /// expressible as 64 hex characters.
+    pub fn author(&self) -> Result<PubkeyHex, SdkError> {
+        PubkeyHex::parse(self.0.pubkey.to_hex())
+    }
+
+    /// NIP-10 `root`/`reply` ancestry, parsed from the signed tags.
+    #[must_use]
+    pub fn thread(&self) -> buzz_core::nip10::ThreadMarkers {
+        buzz_core::nip10::parse_thread_markers(&self.0.tags)
+    }
+
+    /// Pubkeys this message mentions, from the signed `p` tags.
+    #[must_use]
+    pub fn mentions(&self) -> Vec<String> {
+        self.0
+            .tags
+            .public_keys()
+            .map(nostr::PublicKey::to_hex)
+            .collect()
+    }
 }
 
 /// Outcome of any read action.
-///
-/// `nextCursor` is the value to pass as `since` on the following call. It is
-/// absent when the host has nothing further, which is how a caller learns to
-/// stop rather than by comparing lengths against a limit it may not have set.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MessagePage {
-    /// Messages in ascending `createdAt` order.
+    /// Messages in the host's declared order.
     pub messages: Vec<BrokerMessage>,
-    /// Cursor for the next page, if more may exist.
+    /// Opaque cursor to pass as [`ChannelReadArgs::cursor`] on the next call.
+    ///
+    /// Absent when the host has nothing further, which is how a caller learns
+    /// to stop rather than by comparing lengths against a limit it may not have
+    /// set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub next_cursor: Option<u64>,
+    pub next_cursor: Option<String>,
 }
 
 /// Outcome of an action that published one event.
@@ -780,9 +784,10 @@ pub struct StorageAddress {
 
 /// Outcome of a successful `agents.create`.
 ///
-/// Carries the new agent's **public** key only. There is no field for the
-/// minted secret: it stays on the host, and this type could not transport it
-/// even if a handler tried.
+/// Carries the new agent's **public** key only: pubkey, name, channel, and
+/// nothing else. There is no field for the minted secret — it stays on the
+/// host — and `deny_unknown_fields` plus a test pinning this exact key set is
+/// what enforces that rather than a comment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentsCreateOutcome {
@@ -865,6 +870,50 @@ impl ActionOutcome {
             Self::AgentsDelete(_) => Action::AgentsDelete,
         }
     }
+
+    /// Validate the identifiers and cursors this outcome asserts.
+    ///
+    /// A well-typed outcome can still carry a malformed id or an unusable
+    /// cursor, and a caller that trusted either would fail later and further
+    /// away. Signature verification is deliberately *not* here — that is
+    /// [`BrokerMessage::verify`], and whether to pay for it is the caller's
+    /// choice.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SdkError::InvalidInput`] for a malformed event id, `d` tag,
+    /// channel UUID, or cursor, an empty name, or an over-long page.
+    pub fn validate(&self) -> Result<(), SdkError> {
+        match self {
+            Self::ChannelRead(page) => {
+                if page.messages.len() > MAX_PAGE_LIMIT as usize {
+                    return Err(SdkError::InvalidInput(format!(
+                        "page holds {} messages, over the {MAX_PAGE_LIMIT} cap",
+                        page.messages.len()
+                    )));
+                }
+                page.next_cursor.as_deref().map(cursor).transpose()?;
+            }
+            Self::MessagePost(published)
+            | Self::MessageReply(published)
+            | Self::ReactionAdd(published)
+            | Self::ProfileSet(published) => {
+                event_id(&published.event_id, "eventId")?;
+            }
+            Self::StorageAddress(address) => {
+                event_id(&address.d_tag, "dTag")?;
+            }
+            Self::AgentsCreate(outcome) => {
+                channel(&outcome.channel_id)?;
+                required(&outcome.display_name, "display name", MAX_NAME_CHARS)?;
+            }
+            Self::AgentsUpdate(AgentsUpdateOutcome { display_name, .. })
+            | Self::AgentsDelete(AgentsDeleteOutcome { display_name, .. }) => {
+                required(display_name, "display name", MAX_NAME_CHARS)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 fn is_false(value: &bool) -> bool {
@@ -939,6 +988,30 @@ fn limit(value: Option<u32>) -> Result<Option<u32>, SdkError> {
         ))),
         Some(limit) => Ok(Some(limit)),
     }
+}
+
+/// Validate an opaque read cursor: printable ASCII, bounded, never parsed.
+///
+/// The bound exists so a host cannot be made to store an unbounded token; the
+/// character set keeps it safe to log. Nothing here interprets the value.
+fn cursor(value: &str) -> Result<String, SdkError> {
+    if value.is_empty() {
+        return Err(SdkError::InvalidInput(
+            "cursor must not be empty (omit it to start from the host's default window)".into(),
+        ));
+    }
+    if value.len() > MAX_CURSOR_LEN {
+        return Err(SdkError::InvalidInput(format!(
+            "cursor exceeds {MAX_CURSOR_LEN} bytes (got {})",
+            value.len()
+        )));
+    }
+    if !value.bytes().all(|b| (0x21..=0x7e).contains(&b)) {
+        return Err(SdkError::InvalidInput(
+            "cursor must be printable ASCII without spaces".into(),
+        ));
+    }
+    Ok(value.to_owned())
 }
 
 fn respond_to(value: Option<&String>) -> Result<Option<String>, SdkError> {

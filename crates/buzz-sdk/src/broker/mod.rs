@@ -38,13 +38,27 @@
 //!
 //! | #6467 requirement | Where |
 //! |---|---|
-//! | Identity separable from signing; pubkey-only identity | [`PubkeyHex`] is the only identity type. No secret-key type exists in this module, and no args or outcome field can hold one. |
-//! | Secret-dependent operations funnelled through the interface | Event signing is subsumed by the write actions (`message.post`, `message.reply`, `reaction.add`, `profile.set`, `agents.*`) — the agent states intent, the host signs. Encrypted-storage address derivation is [`Action::StorageAddress`]. NIP-42 relay auth, NIP-44 encryption, and NIP-98 request auth are **not** actions: they are mechanisms internal to whoever holds the key, and this contract never asks for them by name. |
-//! | Relay auth is a control-flow choice | Nothing here mentions relay authentication. An agent using this contract does not authenticate to a relay, so there is no local auth step to skip. |
+//! | Identity separable from signing; pubkey-only identity | [`PubkeyHex`] is the only identity type; no secret-key type exists in this module. |
+//! | Secret-dependent operations funnelled through the interface | Event signing is subsumed by the write actions (`message.post`, `message.reply`, `reaction.add`, `profile.set`, `agents.*`) — the agent states intent, the host signs. Encrypted-storage address derivation is [`Action::StorageAddress`]. NIP-42 relay auth, NIP-44 encryption, and NIP-98 request auth are **not** actions: they are mechanisms internal to whoever holds the key. |
+//! | Relay auth is a control-flow choice | Nothing here mentions relay authentication, so there is no local auth step to skip. |
 //! | Every relay-touching op, reads included, routable | [`Action::ChannelRead`] covers channel, thread, and mention-feed reads. No action assumes the caller can reach a relay. |
 //! | Non-essential housekeeping skippable | [`Action::is_best_effort`] marks such actions; a host answers [`BrokerErrorCode::Unsupported`] and the agent carries on. |
 //! | No secret leaks to children via env | No args type carries an environment map, and `deny_unknown_fields` means one cannot be smuggled in. Process spawning is a host concern this contract cannot express. |
 //! | Lives in the shared client layer | `buzz-sdk`, which the CLI and the harness already depend on. |
+//!
+//! # The no-secret rule
+//!
+//! No secret key material crosses this boundary in either direction. What
+//! enforces it is the wire schema, not a comment: every args and outcome type is
+//! `deny_unknown_fields`, and tests pin each type's exact key set, so a
+//! secret-bearing field cannot be added without a test failing.
+//! [`AgentsCreateOutcome`] is the case that matters — it returns public identity
+//! only, never the key it just minted.
+//!
+//! Two limits are worth stating. A `String` field can physically hold secret
+//! text, so keeping secrets out of message content and error messages is host
+//! policy this contract cannot enforce. And nothing stops a host from *holding*
+//! keys — that is the point; it stops one from handing them over.
 //!
 //! # Ownership recursion
 //!
@@ -115,23 +129,30 @@ pub const MAX_REQUEST_ID_LEN: usize = 128;
 ///
 /// # What this envelope deliberately omits
 ///
-/// There is no requester, owner, or relay field. Those are derived by the host
-/// from the authenticated session credential. A body that could name its own
-/// subject would let any caller act as anyone.
+/// There is no requester, owner, scope, or relay field. Those are derived by the
+/// host from the authenticated session credential. **A body that could name its
+/// own subject would let any caller act as anyone** — that one rule is why
+/// `channel.read` cannot ask about another identity's mentions, why
+/// `profile.set` has no subject, and why `agents.create` has no owner.
 ///
 /// # Retry contract
 ///
-/// Retrying means **resending the identical serialized request** with the same
-/// `requestId`. The host hashes what it receives and compares that digest
-/// against the digest recorded under the same idempotency key:
+/// Retrying means resending the identical serialized request with the same
+/// `requestId`, which is why a client never sends this type directly: call
+/// [`Self::prepare`] to freeze it into a [`PreparedRequest`] and hand *that* to
+/// [`BrokerClient::execute`]. The host hashes the bytes it receives and compares
+/// that digest against the digest recorded under the same idempotency key:
 ///
 /// - same key, same digest → the recorded outcome is replayed, nothing re-runs
 /// - same key, different digest → rejected as a request-ID conflict
 ///
-/// Callers must therefore not regenerate, re-order, or re-render the payload
-/// between attempts. There is no client-computed digest field: idempotency is
-/// decided host-side, and a caller-supplied digest would be a claim the host
-/// has to recompute anyway.
+/// A typed value cannot carry that guarantee. Two serializations of one value
+/// can differ in bytes across serde versions or implementations, and the
+/// difference would surface as a spurious [`BrokerErrorCode::RequestIdConflict`]
+/// on retry. Serializing once removes the possibility rather than warning about
+/// it. There is no client-computed digest field: idempotency is decided
+/// host-side, and a caller-supplied digest would be a claim the host has to
+/// recompute anyway.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct BrokerRequest {
@@ -172,6 +193,23 @@ impl BrokerRequest {
     #[must_use]
     pub fn action(&self) -> Action {
         self.action.action()
+    }
+
+    /// Validate, then serialize once into the bytes every attempt will send.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SdkError`] when [`Self::validate`] fails, or
+    /// [`SdkError::InvalidInput`] if serialization fails.
+    pub fn prepare(self) -> Result<PreparedRequest, SdkError> {
+        self.validate()?;
+        let body = serde_json::to_vec(&self).map_err(|e| {
+            SdkError::InvalidInput(format!("broker request is not serializable: {e}"))
+        })?;
+        Ok(PreparedRequest {
+            request: self,
+            body,
+        })
     }
 
     /// Validate every field the host must agree on before executing anything.
@@ -242,8 +280,48 @@ pub fn validate_request_id(request_id: &str) -> Result<(), SdkError> {
     Ok(())
 }
 
-/// Machine-readable broker error code.
+/// A validated request together with the exact bytes to send.
 ///
+/// This is what [`BrokerClient::execute`] takes, so the retry contract is
+/// structural rather than documented: the first attempt and every retry send
+/// `body` verbatim, and no implementation gets the chance to reserialize.
+///
+/// Construct one with [`BrokerRequest::prepare`]. The typed [`BrokerRequest`] is
+/// kept alongside so a client can correlate the response without reparsing —
+/// see [`BrokerResponse::validate_for`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedRequest {
+    request: BrokerRequest,
+    body: Vec<u8>,
+}
+
+impl PreparedRequest {
+    /// The frozen JSON body. Every attempt sends exactly these bytes.
+    #[must_use]
+    pub fn body(&self) -> &[u8] {
+        &self.body
+    }
+
+    /// The typed request these bytes encode.
+    #[must_use]
+    pub fn request(&self) -> &BrokerRequest {
+        &self.request
+    }
+
+    /// The idempotency key the host keys replay on.
+    #[must_use]
+    pub fn request_id(&self) -> &str {
+        &self.request.request_id
+    }
+
+    /// The action being invoked.
+    #[must_use]
+    pub fn action(&self) -> Action {
+        self.request.action()
+    }
+}
+
+/// Machine-readable broker error code.
 /// These name failures the *broker* is responsible for. Failures inside an
 /// action arrive as [`BrokerErrorCode::ActionFailed`] with detail in the
 /// message.
@@ -265,6 +343,10 @@ pub enum BrokerErrorCode {
     /// on this host.
     Unsupported,
     /// The session credential was missing, malformed, or rejected.
+    ///
+    /// A host verdict, delivered as [`BrokerResult::Failed`], never as a
+    /// transport error: the request was refused before execution, so the caller
+    /// knows no side effects occurred.
     Unauthenticated,
     /// The requester is authenticated but not permitted this action.
     Unauthorized,
@@ -456,10 +538,16 @@ impl BrokerResponse {
 
     /// Validate discriminator, version, and request id.
     ///
+    /// This checks only what a response asserts about itself. It cannot tell
+    /// whether the response answers the request that was sent — for that, and
+    /// for outcome-field validation, use [`Self::validate_for`]. A client should
+    /// always prefer `validate_for`.
+    ///
     /// # Errors
     ///
     /// Returns [`SdkError::InvalidInput`] on a wrong `type`, an unsupported
-    /// `protocolVersion`, or a malformed `requestId`.
+    /// `protocolVersion`, a malformed `requestId`, an outcome with malformed
+    /// identifiers, or an error code paired with the wrong status.
     pub fn validate(&self) -> Result<(), SdkError> {
         if self.r#type != BROKER_RESULT_TYPE {
             return Err(SdkError::InvalidInput(format!(
@@ -473,7 +561,62 @@ impl BrokerResponse {
                 self.protocol_version
             )));
         }
-        validate_request_id(&self.request_id)
+        validate_request_id(&self.request_id)?;
+        match &self.result {
+            BrokerResult::Succeeded { outcome } => outcome.validate()?,
+            // `OutcomeUnknown` is the one code that describes not knowing
+            // whether side effects landed. Paired with `Failed` — which promises
+            // they did not — it would be self-contradictory, so it is rejected
+            // rather than left for each caller to notice.
+            BrokerResult::Failed { error } if error.code == BrokerErrorCode::OutcomeUnknown => {
+                return Err(SdkError::InvalidInput(
+                    "outcome_unknown is only valid with an indeterminate status".into(),
+                ));
+            }
+            BrokerResult::Failed { .. } | BrokerResult::Indeterminate { .. } => {}
+        }
+        Ok(())
+    }
+
+    /// Validate this response *as the answer to `request`*.
+    ///
+    /// A response that validates in isolation can still be the wrong answer: a
+    /// host (or a confused proxy) could return a `message.post` success to a
+    /// `channel.read`, and a caller matching on the outcome enum would quietly
+    /// take the wrong branch. This is the check that makes such a response
+    /// unusable instead of merely surprising, which is why
+    /// [`BrokerClient::execute`] implementations are expected to run it before
+    /// returning `Ok` and to report a failure as
+    /// [`BrokerTransportError::MalformedResponse`].
+    ///
+    /// Signature verification of read results is deliberately not included; see
+    /// [`BrokerMessage::verify`].
+    ///
+    /// # Errors
+    ///
+    /// Returns everything [`Self::validate`] returns, plus
+    /// [`SdkError::InvalidInput`] when the `requestId` does not correlate or a
+    /// success outcome names a different action than the request.
+    pub fn validate_for(&self, request: &PreparedRequest) -> Result<(), SdkError> {
+        self.validate()?;
+        if self.request_id != request.request_id() {
+            return Err(SdkError::InvalidInput(format!(
+                "response requestId \"{}\" does not match request \"{}\"",
+                self.request_id,
+                request.request_id()
+            )));
+        }
+        if let BrokerResult::Succeeded { outcome } = &self.result {
+            let expected = request.action();
+            if outcome.action() != expected {
+                return Err(SdkError::InvalidInput(format!(
+                    "response carries a {} outcome for a {} request",
+                    outcome.action().as_str(),
+                    expected.as_str()
+                )));
+            }
+        }
+        Ok(())
     }
 }
 
