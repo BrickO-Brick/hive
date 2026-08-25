@@ -35,6 +35,7 @@ CREATE TYPE delivery_method AS ENUM ('webhook', 'websocket');
 CREATE TYPE subscription_status AS ENUM ('active', 'paused', 'deleted');
 CREATE TYPE pause_reason AS ENUM ('user', 'system', 'rate_limit');
 CREATE TYPE channel_add_policy AS ENUM ('anyone', 'owner_only', 'nobody');
+CREATE TYPE workflow_agent_delivery_status AS ENUM ('pending', 'claimed');
 
 -- ── Communities ───────────────────────────────────────────────────────────────
 -- Conformance: row zero (host binding). The host map. `resolve_host(host)`

@@ -443,10 +443,10 @@ pub const KIND_THREAD_SUMMARY: u32 = 39005;
 /// clients must not infer `has_more` from row counts.
 pub const KIND_WINDOW_BOUNDS: u32 = 39006;
 
-/// Workflow definition (parameterized replaceable, d=workflow_uuid).
 /// Ephemeral, relay-authored hint that a durable workflow delivery is ready.
 pub const KIND_WORKFLOW_AGENT_WAKE: u32 = 24620;
 
+/// Workflow definition (parameterized replaceable, d=workflow_uuid).
 pub const KIND_WORKFLOW_DEF: u32 = 30620;
 
 /// NIP-DV: per-viewer DM visibility snapshot (relay-signed, parameterized
