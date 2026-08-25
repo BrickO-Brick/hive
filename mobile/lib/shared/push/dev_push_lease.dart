@@ -367,11 +367,6 @@ Future<BuzzPushLeasePublication> publishBuzzDevPushLease({
       for (final subscription in subscriptions) subscription.toJson(),
     ],
   };
-  validateBuzzPushLeasePlaintext(
-    plaintextMap,
-    maxEndpointLength: descriptor.maxEndpointLength,
-    maxStringLength: descriptor.maxStringLength,
-  );
   final plaintext = jsonEncode(plaintextMap);
   if (utf8.encode(plaintext).length > descriptor.maxPlaintextLength) {
     throw const FormatException('lease plaintext exceeds the advertised limit');
@@ -469,7 +464,6 @@ Future<BuzzPushLeasePublication> publishBuzzPushLeaseTombstone({
     'generation': generation,
     'active': false,
   };
-  validateBuzzPushLeaseTombstonePlaintext(plaintextMap);
   final plaintext = jsonEncode(plaintextMap);
   if (utf8.encode(plaintext).length > descriptor.maxPlaintextLength) {
     throw const FormatException('lease plaintext exceeds the advertised limit');
@@ -520,96 +514,6 @@ Future<BuzzPushLeasePublication> publishBuzzPushLeaseTombstoneThroughRelay({
   submit: relay.submit,
   now: now,
 );
-
-void validateBuzzPushLeaseTombstonePlaintext(Map<String, dynamic> plaintext) {
-  _requireExactKeys(
-    plaintext,
-    required: const {'v', 'origin', 'generation', 'active'},
-    allowed: const {'v', 'origin', 'generation', 'active'},
-    name: 'lease tombstone plaintext',
-  );
-  if (plaintext['v'] != 1 || plaintext['active'] != false) {
-    throw const FormatException('lease tombstone must be inactive v1');
-  }
-  _canonicalOrigin(plaintext['origin']);
-  final generation = _positiveInt(plaintext['generation'], name: 'generation');
-  if (generation > _maxSafeJsonInteger) {
-    throw const FormatException(
-      'generation exceeds the safe JSON integer range',
-    );
-  }
-}
-
-void validateBuzzPushLeasePlaintext(
-  Map<String, dynamic> plaintext, {
-  int maxEndpointLength = 4096,
-  int maxStringLength = 512,
-}) {
-  _requireExactKeys(
-    plaintext,
-    required: const {
-      'v',
-      'origin',
-      'app_profile',
-      'transport',
-      'endpoint',
-      'generation',
-      'active',
-      'subscriptions',
-    },
-    allowed: const {
-      'v',
-      'origin',
-      'app_profile',
-      'transport',
-      'endpoint',
-      'generation',
-      'active',
-      'subscriptions',
-    },
-    name: 'lease plaintext',
-  );
-  if (plaintext['v'] != 1) {
-    throw const FormatException('lease version must be 1');
-  }
-  final origin = _canonicalOrigin(plaintext['origin']);
-  _checkStringLength(origin, maxStringLength, name: 'origin');
-  if (plaintext['app_profile'] != buzzDevPushAppProfile) {
-    throw const FormatException('lease app_profile must be buzz-ios-dogfood');
-  }
-  if (plaintext['transport'] != buzzPushTransport) {
-    throw const FormatException('lease transport must be apns');
-  }
-  _checkStringLength(
-    buzzDevPushAppProfile,
-    maxStringLength,
-    name: 'app_profile',
-  );
-  _checkStringLength(buzzPushTransport, maxStringLength, name: 'transport');
-  final endpoint = _nonEmptyString(plaintext['endpoint'], name: 'endpoint');
-  _checkStringLength(endpoint, maxEndpointLength, name: 'endpoint');
-  final generation = _positiveInt(plaintext['generation'], name: 'generation');
-  if (generation > _maxSafeJsonInteger) {
-    throw const FormatException(
-      'generation exceeds the safe JSON integer range',
-    );
-  }
-  if (plaintext['active'] != true) {
-    throw const FormatException('push lease must be active');
-  }
-
-  final subscriptions = _mapList(
-    plaintext['subscriptions'],
-    name: 'subscriptions',
-  );
-  if (subscriptions.isEmpty ||
-      subscriptions.length > buzzPushMaxSubscriptions) {
-    throw const FormatException('push lease subscription count is invalid');
-  }
-  for (final subscription in subscriptions) {
-    BuzzPushSubscription.fromJson(subscription);
-  }
-}
 
 void _validateGrant(
   BuzzPushEndpointGrant grant,

@@ -166,46 +166,6 @@ void main() {
     },
   );
 
-  test('strict plaintext validator accepts message kinds only', () {
-    final valid = {
-      'v': 1,
-      'origin': 'wss://tenant.example:8443',
-      'app_profile': 'buzz-ios-dogfood',
-      'transport': 'apns',
-      'endpoint': 'opaque-grant',
-      'generation': 1,
-      'active': true,
-      'subscriptions': [
-        {
-          'filter': {
-            'kinds': [7],
-            '#p': [signer.public],
-          },
-          'class': 'default',
-        },
-      ],
-    };
-
-    expect(
-      () => validateBuzzPushLeasePlaintext(valid),
-      throwsA(
-        isA<FormatException>().having(
-          (error) => error.message,
-          'message',
-          'Push filter contains invalid kinds.',
-        ),
-      ),
-    );
-
-    ((valid['subscriptions'] as List).single['filter'] as Map)['kinds'] = [
-      9,
-      40002,
-      45001,
-      45003,
-    ];
-    expect(() => validateBuzzPushLeasePlaintext(valid), returnsNormally);
-  });
-
   test('propagates relay rejection instead of accepting locally', () async {
     await expectLater(
       publishBuzzDevPushLease(
