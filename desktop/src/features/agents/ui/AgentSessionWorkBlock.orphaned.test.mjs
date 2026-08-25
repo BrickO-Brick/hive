@@ -391,11 +391,27 @@ test("the same relay post outside a work block keeps its message bubble", async 
   await router.load();
   const view = render(createElement(RouterProvider, { router }));
 
+  const bubble = view.container.querySelector(
+    '[data-testid="transcript-tool-message-preview"]',
+  );
   assert.ok(
-    view.container.querySelector(
-      '[data-testid="transcript-tool-message-preview"]',
-    ),
+    bubble,
     "outside a block a posted message is a destination the reader can open — the bubble stays",
+  );
+  assert.doesNotMatch(
+    bubble.className,
+    /max-h-36/,
+    "focus mode shows the full sent message rather than clamping it",
+  );
+  assert.match(
+    bubble.parentElement.className,
+    /pr-9/,
+    "the left-side bubble keeps exterior space mirroring the sender avatar gutter",
+  );
+  assert.match(
+    bubble.className,
+    /(?<!\/)bg-muted(?!\/)/,
+    "agent sends use the stronger muted surface to distinguish them from sender prompts",
   );
 });
 
