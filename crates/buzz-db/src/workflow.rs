@@ -15,6 +15,9 @@ use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
+use buzz_core::workflow_owner_command::{
+    WorkflowOwnerCommand, WorkflowOwnerOperation, WorkflowOwnerResult, WorkflowOwnerResultStatus,
+};
 use buzz_core::CommunityId;
 
 use crate::error::{DbError, Result};
@@ -827,6 +830,407 @@ pub async fn delete_workflow_for_owner(
         Some(row) => Ok(row.try_get("channel_id")?),
         None => Err(DbError::NotFound(format!("workflow {id}"))),
     }
+}
+
+// -- Workflow owner command state ---------------------------------------------
+
+/// Durable state of an owner-signed workflow command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkflowOwnerCommandStatus {
+    /// Awaiting the target agent's signed terminal result.
+    Pending,
+    /// The target agent reported that it applied the operation.
+    Applied,
+    /// The target agent rejected the operation.
+    Rejected,
+}
+
+impl FromStr for WorkflowOwnerCommandStatus {
+    type Err = DbError;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        match value {
+            "pending" => Ok(Self::Pending),
+            "applied" => Ok(Self::Applied),
+            "rejected" => Ok(Self::Rejected),
+            other => Err(DbError::InvalidData(format!(
+                "unknown workflow owner command status: {other}"
+            ))),
+        }
+    }
+}
+
+/// Private command record visible only to its immutable owner or target agent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowOwnerCommandRecord {
+    /// Server-bound tenant containing the command.
+    pub community_id: CommunityId,
+    /// Stable replay identity from the signed `d` tag.
+    pub command_id: Uuid,
+    /// Monotonic insertion order used for target discovery.
+    pub command_sequence: i64,
+    /// Exact owner-signed command event.
+    pub event_id: Vec<u8>,
+    /// Immutable human owner that signed the command.
+    pub owner_pubkey: Vec<u8>,
+    /// Agent that owns the workflow and executes the command.
+    pub agent_pubkey: Vec<u8>,
+    /// Workflow UUID from the signed coordinate.
+    pub workflow_id: Uuid,
+    /// Exact signed definition revision reviewed by the owner.
+    pub expected_revision: Vec<u8>,
+    /// Requested operation.
+    pub operation: WorkflowOwnerOperation,
+    /// Current persistence state.
+    pub status: WorkflowOwnerCommandStatus,
+    /// Exact agent-signed result event, after terminalization.
+    pub result_event_id: Option<Vec<u8>>,
+    /// Optional terminal context from the signed result.
+    pub result_reason: Option<String>,
+}
+
+/// Result of admitting an owner command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkflowOwnerCommandAdmission {
+    /// A new pending row was created.
+    Inserted(WorkflowOwnerCommandRecord),
+    /// The exact signed command was already present.
+    Duplicate(WorkflowOwnerCommandRecord),
+}
+
+/// Result of applying an agent-signed terminal result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkflowOwnerResultTransition {
+    /// This call performed the pending-to-terminal transition.
+    Applied(WorkflowOwnerCommandRecord),
+    /// The exact terminal result had already been applied.
+    Replay(WorkflowOwnerCommandRecord),
+}
+
+/// Minimal workflow coordinate returned only to its immutable human owner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowOwnerTarget {
+    /// Agent author of the workflow definition.
+    pub agent_pubkey: Vec<u8>,
+    /// Exact current kind:30620 event id.
+    pub expected_revision: Vec<u8>,
+}
+
+/// Resolve an owner-management target without granting channel-content access.
+///
+/// Unauthorized and absent workflows deliberately share [`DbError::NotFound`]
+/// so this private discovery path does not disclose workflow existence.
+pub async fn get_workflow_owner_target(
+    pool: &PgPool,
+    community_id: CommunityId,
+    workflow_id: Uuid,
+    owner_pubkey: &[u8],
+) -> Result<WorkflowOwnerTarget> {
+    let row = sqlx::query(
+        r#"SELECT w.owner_pubkey AS agent_pubkey, w.definition_event_id AS expected_revision
+           FROM workflows w
+           JOIN users u ON u.community_id = w.community_id AND u.pubkey = w.owner_pubkey
+           WHERE w.community_id = $1 AND w.id = $2
+             AND u.agent_owner_pubkey = $3
+             AND w.definition_event_id IS NOT NULL"#,
+    )
+    .bind(community_id.as_uuid())
+    .bind(workflow_id)
+    .bind(owner_pubkey)
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| DbError::NotFound(format!("workflow {workflow_id}")))?;
+    Ok(WorkflowOwnerTarget {
+        agent_pubkey: row.try_get("agent_pubkey")?,
+        expected_revision: row.try_get("expected_revision")?,
+    })
+}
+
+/// Admit one owner-signed command after immutable-owner authorization.
+///
+/// The immutable owner lookup occurs before the transaction opens, avoiding a
+/// second pool acquisition while a writer connection is held. The workflow row
+/// then serializes revision checks and command order. At most one command per
+/// workflow may remain pending, so operations cannot be observed out of order.
+pub async fn admit_workflow_owner_command(
+    pool: &PgPool,
+    community_id: CommunityId,
+    command: &WorkflowOwnerCommand,
+) -> Result<WorkflowOwnerCommandAdmission> {
+    let owner = command.owner_pubkey.to_bytes();
+    let agent = command.agent_pubkey.to_bytes();
+    if !crate::user::is_agent_owner(pool, community_id, &agent, &owner).await? {
+        return Err(DbError::AccessDenied(
+            "command author is not the immutable agent owner".into(),
+        ));
+    }
+
+    let mut tx = pool.begin().await?;
+    let workflow = sqlx::query(
+        r#"SELECT owner_pubkey, definition_event_id
+           FROM workflows
+           WHERE community_id = $1 AND id = $2
+           FOR UPDATE"#,
+    )
+    .bind(community_id.as_uuid())
+    .bind(command.workflow_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| DbError::NotFound(format!("workflow {}", command.workflow_id)))?;
+    let workflow_owner: Vec<u8> = workflow.try_get("owner_pubkey")?;
+    if workflow_owner != agent {
+        return Err(DbError::AccessDenied(
+            "workflow coordinate author mismatch".into(),
+        ));
+    }
+
+    // Resolve replay identity before revalidating the mutable current revision.
+    // An exact retry remains an acknowledgement after the workflow advances;
+    // the recorded signed command, not today's revision, defines that replay.
+    let existing = sqlx::query(
+        r#"SELECT community_id, command_id, command_sequence, event_id, owner_pubkey,
+                  agent_pubkey, workflow_id, expected_revision, operation,
+                  status::text AS status, result_event_id, result_reason
+           FROM workflow_owner_commands
+           WHERE community_id = $1 AND (command_id = $2 OR event_id = $3)
+           FOR UPDATE"#,
+    )
+    .bind(community_id.as_uuid())
+    .bind(command.command_id)
+    .bind(command.event_id.as_bytes())
+    .fetch_optional(&mut *tx)
+    .await?;
+    if let Some(row) = existing {
+        let record = row_to_workflow_owner_command(row)?;
+        if command_matches_record(command, &record) {
+            tx.commit().await?;
+            return Ok(WorkflowOwnerCommandAdmission::Duplicate(record));
+        }
+        return Err(DbError::InvalidData(
+            "conflicting workflow owner command replay".into(),
+        ));
+    }
+
+    let revision: Option<Vec<u8>> = workflow.try_get("definition_event_id")?;
+    if revision.as_deref() != Some(command.expected_revision.as_bytes()) {
+        return Err(DbError::InvalidData("workflow revision conflict".into()));
+    }
+
+    let row = sqlx::query(
+        r#"INSERT INTO workflow_owner_commands
+              (community_id, command_id, event_id, owner_pubkey, agent_pubkey,
+               workflow_id, expected_revision, operation)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+           RETURNING community_id, command_id, command_sequence, event_id,
+                     owner_pubkey, agent_pubkey, workflow_id, expected_revision,
+                     operation, status::text AS status, result_event_id, result_reason"#,
+    )
+    .bind(community_id.as_uuid())
+    .bind(command.command_id)
+    .bind(command.event_id.as_bytes())
+    .bind(owner.as_slice())
+    .bind(agent.as_slice())
+    .bind(command.workflow_id)
+    .bind(command.expected_revision.as_bytes())
+    .bind(command.operation.as_str())
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(map_owner_command_insert_error)?;
+    let record = row_to_workflow_owner_command(row)?;
+    tx.commit().await?;
+    Ok(WorkflowOwnerCommandAdmission::Inserted(record))
+}
+
+/// List pending commands for one authenticated target agent in stable order.
+pub async fn list_pending_workflow_owner_commands(
+    pool: &PgPool,
+    community_id: CommunityId,
+    agent_pubkey: &[u8],
+    limit: i64,
+) -> Result<Vec<WorkflowOwnerCommandRecord>> {
+    let rows = sqlx::query(
+        r#"SELECT community_id, command_id, command_sequence, event_id, owner_pubkey,
+                  agent_pubkey, workflow_id, expected_revision, operation,
+                  status::text AS status, result_event_id, result_reason
+           FROM workflow_owner_commands
+           WHERE community_id = $1 AND agent_pubkey = $2 AND status = 'pending'
+           ORDER BY command_sequence
+           LIMIT $3"#,
+    )
+    .bind(community_id.as_uuid())
+    .bind(agent_pubkey)
+    .bind(limit.clamp(1, LIST_MAX_LIMIT))
+    .fetch_all(pool)
+    .await?;
+    rows.into_iter()
+        .map(row_to_workflow_owner_command)
+        .collect()
+}
+
+/// Fetch one command only for its immutable owner or its target agent.
+pub async fn get_workflow_owner_command(
+    pool: &PgPool,
+    community_id: CommunityId,
+    command_id: Uuid,
+    principal_pubkey: &[u8],
+) -> Result<WorkflowOwnerCommandRecord> {
+    let row = sqlx::query(
+        r#"SELECT community_id, command_id, command_sequence, event_id, owner_pubkey,
+                  agent_pubkey, workflow_id, expected_revision, operation,
+                  status::text AS status, result_event_id, result_reason
+           FROM workflow_owner_commands
+           WHERE community_id = $1 AND command_id = $2
+             AND (owner_pubkey = $3 OR agent_pubkey = $3)"#,
+    )
+    .bind(community_id.as_uuid())
+    .bind(command_id)
+    .bind(principal_pubkey)
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| DbError::NotFound(format!("workflow owner command {command_id}")))?;
+    row_to_workflow_owner_command(row)
+}
+
+/// Apply one exact agent-signed terminal result with compare-and-swap semantics.
+pub async fn complete_workflow_owner_command(
+    pool: &PgPool,
+    community_id: CommunityId,
+    result: &WorkflowOwnerResult,
+) -> Result<WorkflowOwnerResultTransition> {
+    let mut tx = pool.begin().await?;
+    let row = sqlx::query(
+        r#"SELECT community_id, command_id, command_sequence, event_id, owner_pubkey,
+                  agent_pubkey, workflow_id, expected_revision, operation,
+                  status::text AS status, result_event_id, result_reason
+           FROM workflow_owner_commands
+           WHERE community_id = $1 AND command_id = $2
+           FOR UPDATE"#,
+    )
+    .bind(community_id.as_uuid())
+    .bind(result.command_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| DbError::NotFound(format!("workflow owner command {}", result.command_id)))?;
+    let current = row_to_workflow_owner_command(row)?;
+    if !result_matches_command(result, &current) {
+        return Err(DbError::InvalidData(
+            "result does not match its workflow owner command".into(),
+        ));
+    }
+    if current.status != WorkflowOwnerCommandStatus::Pending {
+        if current.result_event_id.as_deref() == Some(result.event_id.as_bytes())
+            && current.status == status_from_result(result.status)
+            && current.result_reason == result.reason
+        {
+            tx.commit().await?;
+            return Ok(WorkflowOwnerResultTransition::Replay(current));
+        }
+        return Err(DbError::InvalidData(
+            "conflicting workflow owner result replay".into(),
+        ));
+    }
+
+    let row = sqlx::query(
+        r#"UPDATE workflow_owner_commands
+           SET status = $3::workflow_owner_command_status,
+               result_event_id = $4, result_reason = $5,
+               completed_at = NOW()
+           WHERE community_id = $1 AND command_id = $2 AND status = 'pending'
+           RETURNING community_id, command_id, command_sequence, event_id,
+                     owner_pubkey, agent_pubkey, workflow_id, expected_revision,
+                     operation, status::text AS status, result_event_id, result_reason"#,
+    )
+    .bind(community_id.as_uuid())
+    .bind(result.command_id)
+    .bind(result.status.as_str())
+    .bind(result.event_id.as_bytes())
+    .bind(result.reason.as_deref())
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| {
+        DbError::InvalidData(
+            "workflow owner command terminalization lost its compare-and-swap".into(),
+        )
+    })?;
+    let record = row_to_workflow_owner_command(row)?;
+    tx.commit().await?;
+    Ok(WorkflowOwnerResultTransition::Applied(record))
+}
+
+fn command_matches_record(
+    command: &WorkflowOwnerCommand,
+    record: &WorkflowOwnerCommandRecord,
+) -> bool {
+    record.command_id == command.command_id
+        && record.event_id == command.event_id.as_bytes()
+        && record.owner_pubkey == command.owner_pubkey.to_bytes()
+        && record.agent_pubkey == command.agent_pubkey.to_bytes()
+        && record.workflow_id == command.workflow_id
+        && record.expected_revision == command.expected_revision.as_bytes()
+        && record.operation == command.operation
+}
+
+fn result_matches_command(
+    result: &WorkflowOwnerResult,
+    command: &WorkflowOwnerCommandRecord,
+) -> bool {
+    command.agent_pubkey == result.agent_pubkey.to_bytes()
+        && command.agent_pubkey == result.target_agent_pubkey.to_bytes()
+        && command.owner_pubkey == result.owner_pubkey.to_bytes()
+        && result.command_id == command.command_id
+        && result.workflow_id == command.workflow_id
+        && command.expected_revision == result.expected_revision.as_bytes()
+        && result.operation == command.operation
+}
+
+fn status_from_result(status: WorkflowOwnerResultStatus) -> WorkflowOwnerCommandStatus {
+    match status {
+        WorkflowOwnerResultStatus::Applied => WorkflowOwnerCommandStatus::Applied,
+        WorkflowOwnerResultStatus::Rejected => WorkflowOwnerCommandStatus::Rejected,
+    }
+}
+
+fn row_to_workflow_owner_command(row: sqlx::postgres::PgRow) -> Result<WorkflowOwnerCommandRecord> {
+    let community_id: Uuid = row.try_get("community_id")?;
+    let operation: String = row.try_get("operation")?;
+    let operation = match operation.as_str() {
+        "start" => WorkflowOwnerOperation::Start,
+        "pause" => WorkflowOwnerOperation::Pause,
+        "resume" => WorkflowOwnerOperation::Resume,
+        "cancel" => WorkflowOwnerOperation::Cancel,
+        "restore" => WorkflowOwnerOperation::Restore,
+        other => {
+            return Err(DbError::InvalidData(format!(
+                "unknown workflow owner operation: {other}"
+            )))
+        }
+    };
+    let status: String = row.try_get("status")?;
+    Ok(WorkflowOwnerCommandRecord {
+        community_id: CommunityId::from_uuid(community_id),
+        command_id: row.try_get("command_id")?,
+        command_sequence: row.try_get("command_sequence")?,
+        event_id: row.try_get("event_id")?,
+        owner_pubkey: row.try_get("owner_pubkey")?,
+        agent_pubkey: row.try_get("agent_pubkey")?,
+        workflow_id: row.try_get("workflow_id")?,
+        expected_revision: row.try_get("expected_revision")?,
+        operation,
+        status: status.parse()?,
+        result_event_id: row.try_get("result_event_id")?,
+        result_reason: row.try_get("result_reason")?,
+    })
+}
+
+fn map_owner_command_insert_error(error: sqlx::Error) -> DbError {
+    if let sqlx::Error::Database(database) = &error {
+        if database.constraint() == Some("workflow_owner_commands_workflow_pending_idx") {
+            return DbError::InvalidData(
+                "an earlier workflow owner command is still pending".into(),
+            );
+        }
+    }
+    DbError::Sqlx(error)
 }
 
 // -- Workflow Run CRUD --------------------------------------------------------
@@ -1823,6 +2227,342 @@ mod tests {
         assert_eq!(cloned.status, ApprovalStatus::Granted);
     }
 
+    #[test]
+    fn workflow_owner_command_status_round_trips_and_rejects_unknown() {
+        assert_eq!(
+            "pending".parse::<WorkflowOwnerCommandStatus>().unwrap(),
+            WorkflowOwnerCommandStatus::Pending
+        );
+        assert_eq!(
+            "applied".parse::<WorkflowOwnerCommandStatus>().unwrap(),
+            WorkflowOwnerCommandStatus::Applied
+        );
+        assert_eq!(
+            "rejected".parse::<WorkflowOwnerCommandStatus>().unwrap(),
+            WorkflowOwnerCommandStatus::Rejected
+        );
+        assert!(matches!(
+            "lost".parse::<WorkflowOwnerCommandStatus>(),
+            Err(DbError::InvalidData(message))
+                if message == "unknown workflow owner command status: lost"
+        ));
+    }
+
+    // -- Managed owner-command persistence ------------------------------------
+
+    use crate::user::ensure_user;
+    use nostr::{EventBuilder, Keys, Kind, Tag};
+
+    struct OwnerCommandFixture {
+        admin: PgPool,
+        pool: PgPool,
+        database_name: String,
+        community: CommunityId,
+        workflow_id: Uuid,
+        owner_keys: Keys,
+        agent_keys: Keys,
+        revision: nostr::EventId,
+    }
+
+    impl OwnerCommandFixture {
+        async fn new() -> Self {
+            let admin_url = std::env::var("BUZZ_TEST_DATABASE_URL")
+                .or_else(|_| std::env::var("DATABASE_URL"))
+                .unwrap_or_else(|_| TEST_DB_URL.to_owned());
+            let admin = PgPool::connect(&admin_url)
+                .await
+                .expect("connect isolated PG admin");
+            let database_name = format!("buzz_owner_command_{}", Uuid::new_v4().simple());
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "CREATE DATABASE {database_name}"
+            )))
+            .execute(&admin)
+            .await
+            .expect("create isolated database");
+            let (prefix, _) = admin_url.rsplit_once('/').expect("admin URL path");
+            let pool = PgPool::connect(&format!("{prefix}/{database_name}"))
+                .await
+                .expect("connect isolated database");
+            crate::migration::run_migrations(&pool)
+                .await
+                .expect("migrate isolated database");
+
+            let community = make_community(&pool).await;
+            let owner_keys = Keys::generate();
+            let agent_keys = Keys::generate();
+            let owner = owner_keys.public_key().to_bytes();
+            let agent = agent_keys.public_key().to_bytes();
+            ensure_user(&pool, community, &owner)
+                .await
+                .expect("ensure owner");
+            ensure_user(&pool, community, &agent)
+                .await
+                .expect("ensure agent");
+            assert!(
+                crate::user::set_agent_owner(&pool, community, &agent, &owner)
+                    .await
+                    .expect("set immutable owner")
+            );
+
+            let workflow_id = Uuid::new_v4();
+            let revision = nostr::EventId::from_hex(&"33".repeat(32)).unwrap();
+            let channel = make_channel(&pool, community, &agent).await;
+            let mut conn = pool.acquire().await.expect("acquire workflow connection");
+            upsert_workflow(
+                &mut conn,
+                community,
+                workflow_id,
+                Some(channel),
+                &agent,
+                "owner-command",
+                r#"{"trigger":{"on":"message_posted"},"steps":[]}"#,
+                &[0x44; 32],
+                revision.as_bytes(),
+            )
+            .await
+            .expect("materialize agent workflow");
+            drop(conn);
+
+            Self {
+                admin,
+                pool,
+                database_name,
+                community,
+                workflow_id,
+                owner_keys,
+                agent_keys,
+                revision,
+            }
+        }
+
+        fn command(
+            &self,
+            command_id: Uuid,
+            operation: WorkflowOwnerOperation,
+        ) -> WorkflowOwnerCommand {
+            let body = buzz_core::workflow_owner_command::WorkflowOwnerCommandBody { operation };
+            let event = EventBuilder::new(
+                Kind::Custom(buzz_core::kind::KIND_WORKFLOW_OWNER_COMMAND as u16),
+                serde_json::to_string(&body).expect("serialize command"),
+            )
+            .tags([
+                Tag::parse(["d", &command_id.to_string()]).expect("command id tag"),
+                Tag::parse([
+                    "a",
+                    &format!(
+                        "{}:{}:{}",
+                        buzz_core::kind::KIND_WORKFLOW_DEF,
+                        self.agent_keys.public_key().to_hex(),
+                        self.workflow_id
+                    ),
+                ])
+                .expect("workflow coordinate tag"),
+                Tag::parse(["revision", &self.revision.to_hex()]).expect("revision tag"),
+                Tag::parse(["p", &self.agent_keys.public_key().to_hex()]).expect("recipient tag"),
+            ])
+            .sign_with_keys(&self.owner_keys)
+            .expect("sign command");
+            buzz_core::workflow_owner_command::parse_owner_command(&event).expect("parse command")
+        }
+
+        fn result(
+            &self,
+            command: &WorkflowOwnerCommand,
+            status: WorkflowOwnerResultStatus,
+            reason: Option<&str>,
+        ) -> WorkflowOwnerResult {
+            let body = buzz_core::workflow_owner_command::WorkflowOwnerResultBody {
+                status,
+                reason: reason.map(str::to_owned),
+            };
+            let event = EventBuilder::new(
+                Kind::Custom(buzz_core::kind::KIND_WORKFLOW_OWNER_RESULT as u16),
+                serde_json::to_string(&body).expect("serialize result"),
+            )
+            .tags([
+                Tag::parse(["d", &command.command_id.to_string()]).expect("command id tag"),
+                Tag::parse(["a", &command.workflow_coordinate()]).expect("workflow coordinate tag"),
+                Tag::parse(["revision", &command.expected_revision.to_hex()])
+                    .expect("revision tag"),
+                Tag::parse(["p", &command.owner_pubkey.to_hex()]).expect("owner tag"),
+                Tag::parse(["operation", command.operation.as_str()]).expect("operation tag"),
+                Tag::parse(["status", status.as_str()]).expect("status tag"),
+            ])
+            .sign_with_keys(&self.agent_keys)
+            .expect("sign result");
+            buzz_core::workflow_owner_command::parse_owner_result(&event).expect("parse result")
+        }
+
+        async fn cleanup(self) {
+            self.pool.close().await;
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "DROP DATABASE {} WITH (FORCE)",
+                self.database_name
+            )))
+            .execute(&self.admin)
+            .await
+            .expect("drop isolated database");
+            self.admin.close().await;
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn owner_command_persistence_is_private_ordered_and_replay_stable() {
+        let fixture = OwnerCommandFixture::new().await;
+        let command = fixture.command(Uuid::new_v4(), WorkflowOwnerOperation::Restore);
+        let admitted = admit_workflow_owner_command(&fixture.pool, fixture.community, &command)
+            .await
+            .expect("admit command");
+        let inserted = match admitted {
+            WorkflowOwnerCommandAdmission::Inserted(record) => record,
+            other => panic!("expected inserted command, got {other:?}"),
+        };
+        assert_eq!(inserted.status, WorkflowOwnerCommandStatus::Pending);
+
+        let target = get_workflow_owner_target(
+            &fixture.pool,
+            fixture.community,
+            fixture.workflow_id,
+            &fixture.owner_keys.public_key().to_bytes(),
+        )
+        .await
+        .expect("owner target");
+        assert_eq!(
+            target.agent_pubkey,
+            fixture.agent_keys.public_key().to_bytes()
+        );
+        assert_eq!(target.expected_revision, fixture.revision.as_bytes());
+        assert!(matches!(
+            get_workflow_owner_target(
+                &fixture.pool,
+                fixture.community,
+                fixture.workflow_id,
+                &Keys::generate().public_key().to_bytes(),
+            )
+            .await,
+            Err(DbError::NotFound(_))
+        ));
+
+        assert!(matches!(
+            get_workflow_owner_command(
+                &fixture.pool,
+                fixture.community,
+                command.command_id,
+                &Keys::generate().public_key().to_bytes(),
+            )
+            .await,
+            Err(DbError::NotFound(_))
+        ));
+        let pending = list_pending_workflow_owner_commands(
+            &fixture.pool,
+            fixture.community,
+            &fixture.agent_keys.public_key().to_bytes(),
+            100,
+        )
+        .await
+        .expect("list pending");
+        assert_eq!(pending, vec![inserted.clone()]);
+
+        let blocked = fixture.command(Uuid::new_v4(), WorkflowOwnerOperation::Pause);
+        assert!(matches!(
+            admit_workflow_owner_command(&fixture.pool, fixture.community, &blocked).await,
+            Err(DbError::InvalidData(message))
+                if message == "an earlier workflow owner command is still pending"
+        ));
+
+        let result = fixture.result(
+            &command,
+            WorkflowOwnerResultStatus::Applied,
+            Some("restored"),
+        );
+        let completed = complete_workflow_owner_command(&fixture.pool, fixture.community, &result)
+            .await
+            .expect("complete command");
+        assert!(matches!(
+            completed,
+            WorkflowOwnerResultTransition::Applied(ref record)
+                if record.status == WorkflowOwnerCommandStatus::Applied
+                    && record.result_reason.as_deref() == Some("restored")
+        ));
+        assert!(matches!(
+            complete_workflow_owner_command(&fixture.pool, fixture.community, &result)
+                .await
+                .expect("replay result"),
+            WorkflowOwnerResultTransition::Replay(_)
+        ));
+        assert!(list_pending_workflow_owner_commands(
+            &fixture.pool,
+            fixture.community,
+            &fixture.agent_keys.public_key().to_bytes(),
+            100,
+        )
+        .await
+        .expect("list after terminal")
+        .is_empty());
+
+        // Exact retries acknowledge the recorded command even if the workflow's
+        // mutable current revision has advanced since admission.
+        sqlx::query(
+            "UPDATE workflows SET definition_event_id = $3 WHERE community_id = $1 AND id = $2",
+        )
+        .bind(fixture.community.as_uuid())
+        .bind(fixture.workflow_id)
+        .bind(vec![0x55_u8; 32])
+        .execute(&fixture.pool)
+        .await
+        .expect("advance revision");
+        assert!(matches!(
+            admit_workflow_owner_command(&fixture.pool, fixture.community, &command)
+                .await
+                .expect("replay command"),
+            WorkflowOwnerCommandAdmission::Duplicate(_)
+        ));
+
+        fixture.cleanup().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn owner_command_rejects_stale_revision_wrong_owner_and_conflicting_result() {
+        let fixture = OwnerCommandFixture::new().await;
+        let mut stale = fixture.command(Uuid::new_v4(), WorkflowOwnerOperation::Start);
+        stale.expected_revision = nostr::EventId::from_hex(&"66".repeat(32)).unwrap();
+        assert!(matches!(
+            admit_workflow_owner_command(&fixture.pool, fixture.community, &stale).await,
+            Err(DbError::InvalidData(message)) if message == "workflow revision conflict"
+        ));
+
+        let mut wrong_owner = fixture.command(Uuid::new_v4(), WorkflowOwnerOperation::Start);
+        wrong_owner.owner_pubkey = Keys::generate().public_key();
+        assert!(matches!(
+            admit_workflow_owner_command(&fixture.pool, fixture.community, &wrong_owner).await,
+            Err(DbError::AccessDenied(message))
+                if message == "command author is not the immutable agent owner"
+        ));
+
+        let command = fixture.command(Uuid::new_v4(), WorkflowOwnerOperation::Start);
+        admit_workflow_owner_command(&fixture.pool, fixture.community, &command)
+            .await
+            .expect("admit valid command");
+        let result = fixture.result(&command, WorkflowOwnerResultStatus::Rejected, Some("no"));
+        complete_workflow_owner_command(&fixture.pool, fixture.community, &result)
+            .await
+            .expect("reject command");
+        let conflicting = fixture.result(
+            &command,
+            WorkflowOwnerResultStatus::Applied,
+            Some("different terminal result"),
+        );
+        assert!(matches!(
+            complete_workflow_owner_command(&fixture.pool, fixture.community, &conflicting).await,
+            Err(DbError::InvalidData(message))
+                if message == "conflicting workflow owner result replay"
+        ));
+
+        fixture.cleanup().await;
+    }
+
     // -- Scheduled workflow claim confinement ---------------------------------
     //
     // RECONCILED spec (supersedes the earlier S1 lock; Eva/Max 2026-06-27).
@@ -1856,8 +2596,6 @@ mod tests {
     // claimable). The other two tests are characterization guards: same-window
     // race must yield exactly one winner, and pruning below the largest
     // interval breaks `latest_*` (the §5c retention rule Sami flagged).
-
-    use crate::user::ensure_user;
 
     const TEST_DB_URL: &str = "postgres://buzz:buzz_dev@localhost:5432/buzz";
 

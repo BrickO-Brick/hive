@@ -645,7 +645,7 @@ mod tests {
         let mut migrations: Vec<_> = MIGRATOR.iter().collect();
         migrations.sort_by_key(|migration| migration.version);
 
-        assert_eq!(migrations.len(), 34);
+        assert_eq!(migrations.len(), 35);
         assert_eq!(migrations[0].version, 1);
         assert_eq!(&*migrations[0].description, "initial schema");
         assert!(migrations[0]
@@ -1086,6 +1086,14 @@ mod tests {
         assert!(run_revision.contains("ALTER TABLE workflow_runs"));
         assert!(run_revision.contains("ADD COLUMN definition_event_id BYTEA"));
         assert!(run_revision.contains("octet_length(definition_event_id) = 32"));
+
+        // Owner commands are private durable state, fenced with their community
+        // and bound to an exact workflow revision.
+        assert_eq!(migrations[34].version, 35);
+        let owner_commands = migrations[34].sql.as_str();
+        assert!(owner_commands.contains("CREATE TABLE workflow_owner_commands"));
+        assert!(owner_commands.contains("expected_revision BYTEA NOT NULL"));
+        assert!(owner_commands.contains("attach_community_write_fence('workflow_owner_commands')"));
 
         // Fresh desired-state bootstrap must install the identical executable
         // fence as migration 0032. CI and isolated relay startup use schema.sql
@@ -1559,9 +1567,16 @@ mod tests {
                 "schema.sql is missing operator-global registry row {row:?}"
             );
         }
+        // Recovery policy intentionally excludes two deployment-private tables.
+        // Later additive migrations attach newly introduced community-scoped
+        // tables to the same fence, so include those targets in the expected
+        // desired-state surface.
         let mut expected_fences = migration.fence_attachments.clone();
         expected_fences.remove("product_feedback");
         expected_fences.remove("rate_limit_violations");
+        for migration in MIGRATOR.iter().filter(|migration| migration.version > 29) {
+            expected_fences.extend(surface(migration.sql.as_ref()).fence_attachments);
+        }
         assert_eq!(
             expected_fences, schema.fence_attachments,
             "write-fence attachment targets differ after recovery policy"

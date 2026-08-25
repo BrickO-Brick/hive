@@ -80,6 +80,7 @@ pub const EXPECTED_SCOPED_TABLES: &[&str] = &[
     "thread_metadata",
     "users",
     "workflow_approvals",
+    "workflow_owner_commands",
     "workflow_runs",
     "workflows",
 ];
@@ -87,6 +88,7 @@ pub const EXPECTED_SCOPED_TABLES: &[&str] = &[
 /// Foreign-key-safe child-before-parent order for the PostgreSQL purge.
 pub const PURGE_SCOPED_TABLES: &[&str] = &[
     "workflow_approvals",
+    "workflow_owner_commands",
     "scheduled_workflow_fires",
     "workflow_runs",
     "push_wake_outbox",

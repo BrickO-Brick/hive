@@ -3544,6 +3544,67 @@ impl Db {
         workflow::delete_workflow_for_owner(&self.pool, community_id, id, owner_pubkey).await
     }
 
+    /// Resolve the exact managed-workflow coordinate visible to its immutable human owner.
+    #[datastore_span(name = "get_workflow_owner_target", system = "postgresql")]
+    pub async fn get_workflow_owner_target(
+        &self,
+        community_id: CommunityId,
+        workflow_id: Uuid,
+        owner_pubkey: &[u8],
+    ) -> Result<workflow::WorkflowOwnerTarget> {
+        workflow::get_workflow_owner_target(&self.pool, community_id, workflow_id, owner_pubkey)
+            .await
+    }
+
+    /// Admit one parsed owner-signed command into private durable state.
+    #[datastore_span(name = "admit_workflow_owner_command", system = "postgresql")]
+    pub async fn admit_workflow_owner_command(
+        &self,
+        community_id: CommunityId,
+        command: &buzz_core::workflow_owner_command::WorkflowOwnerCommand,
+    ) -> Result<workflow::WorkflowOwnerCommandAdmission> {
+        workflow::admit_workflow_owner_command(&self.pool, community_id, command).await
+    }
+
+    /// List pending owner commands for one authenticated target agent.
+    #[datastore_span(name = "list_pending_workflow_owner_commands", system = "postgresql")]
+    pub async fn list_pending_workflow_owner_commands(
+        &self,
+        community_id: CommunityId,
+        agent_pubkey: &[u8],
+        limit: i64,
+    ) -> Result<Vec<workflow::WorkflowOwnerCommandRecord>> {
+        workflow::list_pending_workflow_owner_commands(
+            &self.pool,
+            community_id,
+            agent_pubkey,
+            limit,
+        )
+        .await
+    }
+
+    /// Fetch one owner command only for its immutable owner or target agent.
+    #[datastore_span(name = "get_workflow_owner_command", system = "postgresql")]
+    pub async fn get_workflow_owner_command(
+        &self,
+        community_id: CommunityId,
+        command_id: Uuid,
+        principal_pubkey: &[u8],
+    ) -> Result<workflow::WorkflowOwnerCommandRecord> {
+        workflow::get_workflow_owner_command(&self.pool, community_id, command_id, principal_pubkey)
+            .await
+    }
+
+    /// Apply one exact agent-signed terminal result with compare-and-swap semantics.
+    #[datastore_span(name = "complete_workflow_owner_command", system = "postgresql")]
+    pub async fn complete_workflow_owner_command(
+        &self,
+        community_id: CommunityId,
+        result: &buzz_core::workflow_owner_command::WorkflowOwnerResult,
+    ) -> Result<workflow::WorkflowOwnerResultTransition> {
+        workflow::complete_workflow_owner_command(&self.pool, community_id, result).await
+    }
+
     /// Find a workflow by owner pubkey and name within a community. Used for
     /// NIP-09 a-tag deletion where the d-tag is the workflow name (not UUID).
     #[datastore_span(name = "find_workflow_by_owner_and_name", system = "postgresql")]
