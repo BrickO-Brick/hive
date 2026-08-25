@@ -387,9 +387,37 @@ forwarded — if the two ruled actions are not both present and unambiguous, the
 harness fails closed and posts no card. The read loop accepts an owner decision
 only when it matches one of those two snapshotted actions, not on mere membership
 in the adapter's original option list. Because no durable rule can ever be
-offered, there is no durable-rule disclosure. Label values in the sentinel come
-directly from the ACP options' `name` fields, capped at 200 characters; render
-them verbatim.
+offered, there is no durable-rule disclosure.
+
+### D6 frozen sentinel size limits
+
+All untrusted string leaves and the total serialized content are bounded in
+**UTF-8 bytes**, enforced identically on both the harness producer
+(`SENTINEL_STRING_MAX_BYTES` / `SENTINEL_CONTENT_MAX_BYTES` in
+`crates/buzz-acp/src/acp.rs`) and the Desktop parser (`MAX_STRING_BYTES` /
+`MAX_CONTENT_BYTES` in `permissionRequest.ts`). The producer and parser MUST
+agree on both the values AND the unit; a Rust-char-scalar vs JS-UTF-16-code-unit
+split would let a producer-valid card be rejected by Desktop and rendered as raw
+JSON until timeout.
+
+| Field | Limit | Over-limit behavior |
+|-------|-------|---------------------|
+| `requestNonce` | 200 UTF-8 bytes | fail closed (no card) |
+| `sessionId` | 200 UTF-8 bytes | fail closed (no card) |
+| `turnId` | 200 UTF-8 bytes | fail closed (no card) |
+| each `optionId` | 200 UTF-8 bytes | fail closed (no card) |
+| `chosenOptionId` | 200 UTF-8 bytes | fail closed (no edit) |
+| each label value | 200 UTF-8 bytes | truncated on a char boundary at the producer |
+| total serialized content | 4096 UTF-8 bytes | fail closed (no card) |
+
+`sessionId` is the load-bearing case: it comes straight from the adapter's
+unbounded `session/new` response, so an oversized adapter session ID aborts
+sentinel construction (synchronous deny, zero card events) rather than publishing
+an unrenderable card. Labels are lossy display strings and are the only field
+truncated rather than rejected; truncation lands on a UTF-8 char boundary so the
+result is always valid UTF-8 within the byte limit the Desktop parser accepts.
+Label values in the sentinel come directly from the ACP options' `name` fields;
+render them verbatim.
 
 ### Sentinel authenticity
 

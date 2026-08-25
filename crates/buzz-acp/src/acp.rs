@@ -3660,11 +3660,76 @@ fn new_permission_nonce() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
-/// Maximum length of a label string in a sentinel card.
+/// Frozen sentinel byte bounds, shared verbatim with the Desktop parser
+/// (`MAX_STRING_BYTES` / `MAX_CONTENT_BYTES` in `permissionRequest.ts`).
 ///
-/// Matches the D6 frozen schema: labels come from untrusted agent-supplied ACP
-/// options and must be capped before embedding in the Nostr event content.
-const SENTINEL_LABEL_MAX: usize = 200;
+/// The producer and parser MUST agree on both the values AND the unit — UTF-8
+/// bytes — so a card the harness emits always parses and a card the parser
+/// accepts is always one the harness could emit. Measuring in Rust `char`
+/// scalars vs JavaScript UTF-16 code units (the prior split) let a producer-
+/// valid multibyte label be rejected by the parser, publishing a card the
+/// desktop renders as raw JSON until timeout.
+///
+/// `SENTINEL_STRING_MAX_BYTES` bounds every untrusted string leaf: labels,
+/// each `optionId`, `requestNonce`, `sessionId`, `turnId`, and `chosenOptionId`.
+/// `SENTINEL_CONTENT_MAX_BYTES` bounds the total serialized sentinel content.
+const SENTINEL_STRING_MAX_BYTES: usize = 200;
+const SENTINEL_CONTENT_MAX_BYTES: usize = 4096;
+
+/// Truncate `s` to at most `max_bytes` UTF-8 bytes on a char boundary.
+///
+/// Labels are lossy display strings, so an over-long one is truncated (not
+/// rejected). Truncating on a char boundary guarantees valid UTF-8 and a byte
+/// length the Desktop parser — which bounds the same field in bytes — accepts.
+fn truncate_to_bytes(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_string();
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s[..end].to_string()
+}
+
+/// Enforce the frozen sentinel string bound on one field.
+///
+/// Returns `None` (fail closed) when `value` exceeds `SENTINEL_STRING_MAX_BYTES`
+/// UTF-8 bytes. `sessionId` is the load-bearing case: it comes straight from the
+/// adapter's unbounded `session/new` response, so an oversized adapter session
+/// ID must abort sentinel construction rather than publish a card the Desktop
+/// parser rejects (which would render as raw JSON until timeout). Labels are the
+/// exception — they are truncated at the source, never passed here.
+fn check_sentinel_field(field: &str, value: &str) -> Option<()> {
+    if value.len() > SENTINEL_STRING_MAX_BYTES {
+        tracing::warn!(
+            target: "acp::permission",
+            "sentinel field {field} exceeds {SENTINEL_STRING_MAX_BYTES} bytes ({}) — failing closed",
+            value.len()
+        );
+        return None;
+    }
+    Some(())
+}
+
+/// Serialize a sentinel payload and enforce the total-content byte bound.
+///
+/// Returns `None` (fail closed) when serialization fails or the serialized
+/// content exceeds `SENTINEL_CONTENT_MAX_BYTES`. This is the single total-size
+/// gate the Desktop parser mirrors (`MAX_CONTENT_BYTES`), so producer and parser
+/// can never disagree on whether a given card is admissible.
+fn serialize_bounded_sentinel(payload: &serde_json::Value) -> Option<String> {
+    let content = serde_json::to_string(payload).ok()?;
+    if content.len() > SENTINEL_CONTENT_MAX_BYTES {
+        tracing::warn!(
+            target: "acp::permission",
+            "sentinel content exceeds {SENTINEL_CONTENT_MAX_BYTES} bytes ({}) — failing closed",
+            content.len()
+        );
+        return None;
+    }
+    Some(content)
+}
 
 /// The two card actions surfaced to the owner: the validated `allow_once` and
 /// `reject_once` options, in that fixed order. Built by [`select_card_actions`]
@@ -3713,7 +3778,7 @@ fn sentinel_option_fields(actions: &CardActions) -> (Vec<serde_json::Value>, ser
             .and_then(|v| v.as_str())
             .unwrap_or_default();
         let name = opt.get("name").and_then(|v| v.as_str()).unwrap_or("");
-        let capped: String = name.chars().take(SENTINEL_LABEL_MAX).collect();
+        let capped = truncate_to_bytes(name, SENTINEL_STRING_MAX_BYTES);
         option_ids.push(serde_json::Value::String(id.to_string()));
         labels.insert(id.to_string(), serde_json::Value::String(capped));
     }
@@ -3734,6 +3799,11 @@ fn build_sentinel_pending_payload(
     session_id: Option<&str>,
     turn_id: &str,
 ) -> Option<String> {
+    check_sentinel_field("requestNonce", nonce)?;
+    check_sentinel_field("turnId", turn_id)?;
+    if let Some(sid) = session_id {
+        check_sentinel_field("sessionId", sid)?;
+    }
     let (option_ids, labels) = sentinel_option_fields(actions);
     let payload = serde_json::json!({
         "v": 1,
@@ -3745,7 +3815,7 @@ fn build_sentinel_pending_payload(
         "optionIds": option_ids,
         "labels": labels,
     });
-    serde_json::to_string(&payload).ok()
+    serialize_bounded_sentinel(&payload)
 }
 
 /// Build the JSON payload for a kind-40003 RESOLVED sentinel card edit.
@@ -3760,6 +3830,14 @@ fn build_sentinel_resolved_payload(
     outcome: &str,
     chosen_option_id: Option<&str>,
 ) -> Option<String> {
+    check_sentinel_field("requestNonce", nonce)?;
+    check_sentinel_field("turnId", turn_id)?;
+    if let Some(sid) = session_id {
+        check_sentinel_field("sessionId", sid)?;
+    }
+    if let Some(chosen) = chosen_option_id {
+        check_sentinel_field("chosenOptionId", chosen)?;
+    }
     let (option_ids, labels) = sentinel_option_fields(actions);
     let payload = serde_json::json!({
         "v": 1,
@@ -3774,7 +3852,7 @@ fn build_sentinel_resolved_payload(
         "outcome": outcome,
         "chosenOptionId": chosen_option_id,
     });
-    serde_json::to_string(&payload).ok()
+    serialize_bounded_sentinel(&payload)
 }
 
 /// Build and sign a kind-9 sentinel card event.
@@ -3865,12 +3943,6 @@ fn select_unique_option_id(options: &[serde_json::Value], kind: &str) -> Result<
     }
 }
 
-/// Maximum length of an `optionId` string forwarded into a sentinel card.
-///
-/// ACP option IDs are short opaque tokens; this bounds an adversarial adapter
-/// from embedding an oversized ID that inflates the card content or DOM.
-const SENTINEL_OPTION_ID_MAX: usize = 200;
-
 /// Select the exactly-two card actions from a permission request's options:
 /// the unique `allow_once` and the unique `reject_once`. Returns their option
 /// objects (with `kind`/`name`/`optionId`) so the caller can build a card that
@@ -3883,11 +3955,11 @@ fn select_card_actions(options: &[serde_json::Value]) -> Result<CardActions, Str
     let allow_id = select_allow_once(options)?;
     let reject_id = select_reject_once(options)?;
     for id in [&allow_id, &reject_id] {
-        if id.len() > SENTINEL_OPTION_ID_MAX {
+        if id.len() > SENTINEL_STRING_MAX_BYTES {
             return Err(format!(
-                "optionId exceeds {SENTINEL_OPTION_ID_MAX} chars: {} > {}",
+                "optionId exceeds {SENTINEL_STRING_MAX_BYTES} bytes: {} > {}",
                 id.len(),
-                SENTINEL_OPTION_ID_MAX
+                SENTINEL_STRING_MAX_BYTES
             ));
         }
     }
@@ -7176,7 +7248,7 @@ mod tests {
     fn select_card_actions_fails_closed_on_oversized_option_id() {
         // An adversarial adapter embedding an oversized optionId must be
         // rejected before it can inflate the sentinel/DOM.
-        let big = "x".repeat(SENTINEL_OPTION_ID_MAX + 1);
+        let big = "x".repeat(SENTINEL_STRING_MAX_BYTES + 1);
         let opts = serde_json::json!([
             {"optionId": big, "kind": "allow_once", "name": "Allow"},
             {"optionId": "r", "kind": "reject_once", "name": "Reject"},
@@ -7184,7 +7256,128 @@ mod tests {
         let opts = opts.as_array().unwrap().clone();
         assert!(
             select_card_actions(&opts).is_err(),
-            "an optionId over SENTINEL_OPTION_ID_MAX must fail closed"
+            "an optionId over SENTINEL_STRING_MAX_BYTES must fail closed"
+        );
+    }
+
+    // ── F3: frozen sentinel byte bounds (producer side) ──────────────────────
+
+    #[test]
+    fn build_sentinel_pending_fails_closed_on_oversized_session_id() {
+        // The adapter-supplied sessionId is unbounded upstream. An oversized one
+        // must abort sentinel construction — never publish a card the Desktop
+        // parser rejects (which renders as raw JSON until timeout).
+        let actions = test_card_actions();
+        let big_session = "s".repeat(SENTINEL_STRING_MAX_BYTES + 1);
+        let out = build_sentinel_pending_payload(
+            "nonce-abc",
+            &actions,
+            1_700_000_300,
+            Some(&big_session),
+            "turn-xyz",
+        );
+        assert!(
+            out.is_none(),
+            "an over-limit sessionId must fail closed (no sentinel)"
+        );
+    }
+
+    #[test]
+    fn build_sentinel_pending_fails_closed_on_oversized_nonce() {
+        let actions = test_card_actions();
+        let big_nonce = "n".repeat(SENTINEL_STRING_MAX_BYTES + 1);
+        let out = build_sentinel_pending_payload(
+            &big_nonce,
+            &actions,
+            1_700_000_300,
+            Some("sess"),
+            "turn-xyz",
+        );
+        assert!(out.is_none(), "an over-limit nonce must fail closed");
+    }
+
+    #[test]
+    fn build_sentinel_pending_at_session_id_limit_succeeds() {
+        // Exactly at the limit must succeed — the gate is not over-tight.
+        let actions = test_card_actions();
+        let session = "s".repeat(SENTINEL_STRING_MAX_BYTES);
+        let out = build_sentinel_pending_payload(
+            "nonce-abc",
+            &actions,
+            1_700_000_300,
+            Some(&session),
+            "turn-xyz",
+        );
+        assert!(
+            out.is_some(),
+            "a sessionId exactly at SENTINEL_STRING_MAX_BYTES must be accepted"
+        );
+    }
+
+    #[test]
+    fn sentinel_label_truncated_to_byte_limit_on_char_boundary() {
+        // A multibyte label over the byte limit is truncated on a char boundary,
+        // yielding valid UTF-8 within SENTINEL_STRING_MAX_BYTES that the Desktop
+        // byte-bounded parser accepts.
+        let big_label = "😀".repeat(60); // 240 UTF-8 bytes
+        let opts = serde_json::json!([
+            {"optionId":"a","kind":"allow_once","name": big_label},
+            {"optionId":"r","kind":"reject_once","name":"Reject"},
+        ]);
+        let opts = opts.as_array().unwrap().clone();
+        let actions = select_card_actions(&opts).expect("two actions");
+        let (_, labels) = sentinel_option_fields(&actions);
+        let label = labels["a"].as_str().unwrap();
+        assert!(
+            label.len() <= SENTINEL_STRING_MAX_BYTES,
+            "label must be truncated to <= {SENTINEL_STRING_MAX_BYTES} bytes, got {}",
+            label.len()
+        );
+        // Every 😀 is 4 bytes, so a byte-boundary truncation at 200 keeps 50 of
+        // them (200 bytes) — never a split scalar.
+        assert!(
+            label.chars().all(|c| c == '😀'),
+            "truncation must land on a char boundary (no mojibake)"
+        );
+    }
+
+    #[test]
+    fn build_sentinel_fails_closed_on_oversized_total_content() {
+        // A label that individually fits but inflates the serialized total past
+        // SENTINEL_CONTENT_MAX_BYTES cannot happen through select_card_actions
+        // (labels are byte-capped), so drive serialize_bounded_sentinel directly
+        // to prove the total-content gate rejects an oversized payload.
+        let mut labels = serde_json::Map::new();
+        labels.insert("a".into(), serde_json::json!("x".repeat(200)));
+        let payload = serde_json::json!({
+            "v": 1,
+            "state": "pending",
+            "pad": "y".repeat(SENTINEL_CONTENT_MAX_BYTES),
+            "labels": labels,
+        });
+        assert!(
+            serialize_bounded_sentinel(&payload).is_none(),
+            "total content over SENTINEL_CONTENT_MAX_BYTES must fail closed"
+        );
+    }
+
+    #[test]
+    fn build_sentinel_resolved_fails_closed_on_oversized_chosen_option_id() {
+        let actions = test_card_actions();
+        let big_chosen = "c".repeat(SENTINEL_STRING_MAX_BYTES + 1);
+        let out = build_sentinel_resolved_payload(
+            "nonce-abc",
+            "deadbeef0001deadbeef0002deadbeef0003deadbeef0004deadbeef0005dead",
+            &actions,
+            1_700_000_300,
+            Some("sess"),
+            "turn-xyz",
+            "applied",
+            Some(&big_chosen),
+        );
+        assert!(
+            out.is_none(),
+            "an over-limit chosenOptionId must fail closed"
         );
     }
 
@@ -9463,6 +9656,18 @@ mod tests {
         let content =
             build_sentinel_pending_payload(nonce, &actions, expiry_unix_secs, session_id, turn_id)
                 .expect("build_sentinel_pending_payload must succeed");
+
+        // Fixture coupling: the producer output MUST be byte-identical to the
+        // checked-in fixture the Desktop boundary test parses. A producer-side
+        // change to the wire shape breaks THIS assertion, forcing the fixture
+        // (and the desktop test that consumes it) to be updated in lockstep.
+        const FIXTURE: &str = include_str!("../tests/fixtures/sentinel_pending.json");
+        assert_eq!(
+            content, FIXTURE,
+            "producer output must be byte-equal to the shared cross-language fixture \
+             (crates/buzz-acp/tests/fixtures/sentinel_pending.json); if this diff is \
+             intentional, regenerate the fixture and the desktop boundary test"
+        );
 
         // Print the canonical fixture string for the Desktop fixture.
         println!("kind-9 content fixture:\n{content}");

@@ -12,6 +12,8 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 const mod = await import("./permissionRequest.js").catch(
   () => import("./permissionRequest.ts"),
@@ -355,6 +357,68 @@ describe("extractPermissionRequest — rejection cases", () => {
   });
 });
 
+// ── Byte-unit boundary (producer/parser agreement) ──────────────────────────
+// These pin the shared unit: UTF-8 bytes, identical to the harness
+// (`SENTINEL_STRING_MAX_BYTES` / `SENTINEL_CONTENT_MAX_BYTES`). A prior split
+// (Rust char scalars vs JS UTF-16 code units) let a producer-valid multibyte
+// label be rejected here, publishing a card the desktop renders as raw JSON.
+
+describe("extractPermissionRequest — byte-unit boundaries", () => {
+  // "😀" is 1 JS char pair (length 2 as UTF-16 units it counts as 2), 4 UTF-8 bytes.
+  // 50 of them = 200 UTF-8 bytes: exactly at the limit, must be ACCEPTED.
+  it("test_multibyte_label_at_200_bytes_parses", () => {
+    const label = "😀".repeat(50); // 50 * 4 = 200 UTF-8 bytes
+    assert.equal(new TextEncoder().encode(label).length, 200);
+    const ok = {
+      ...PENDING_NORMAL,
+      labels: { "opt-allow": label, "opt-deny": "Deny" },
+    };
+    const result = extractPermissionRequest(raw(ok));
+    assert.ok(result !== null, "a 200-UTF-8-byte label must be accepted");
+    assert.equal(result.labels["opt-allow"], label);
+  });
+
+  it("test_multibyte_label_over_200_bytes_returns_null", () => {
+    const label = "😀".repeat(51); // 204 UTF-8 bytes
+    const bad = {
+      ...PENDING_NORMAL,
+      labels: { "opt-allow": label, "opt-deny": "Deny" },
+    };
+    assert.equal(extractPermissionRequest(raw(bad)), null);
+  });
+
+  it("test_sessionId_over_200_bytes_returns_null", () => {
+    // The adapter-supplied sessionId is the load-bearing hole: an oversized one
+    // must be rejected, not published as an unrenderable card.
+    const bad = { ...PENDING_NORMAL, sessionId: "s".repeat(201) };
+    assert.equal(extractPermissionRequest(raw(bad)), null);
+  });
+
+  it("test_turnId_over_200_bytes_returns_null", () => {
+    const bad = { ...PENDING_NORMAL, turnId: "t".repeat(201) };
+    assert.equal(extractPermissionRequest(raw(bad)), null);
+  });
+
+  it("test_total_content_over_max_bytes_returns_null", () => {
+    // A structurally-valid sentinel padded past MAX_CONTENT_BYTES via an extra
+    // (ignored) field must be rejected before parsing — the total-content gate.
+    const bad = { ...PENDING_NORMAL, pad: "x".repeat(5000) };
+    const serialized = raw(bad);
+    assert.ok(
+      new TextEncoder().encode(serialized).length > 4096,
+      "fixture must exceed MAX_CONTENT_BYTES to exercise the gate",
+    );
+    assert.equal(extractPermissionRequest(serialized), null);
+  });
+
+  it("test_content_just_under_max_bytes_parses", () => {
+    // A label sized so total content stays within MAX_CONTENT_BYTES must parse,
+    // proving the total-content gate is not over-tight.
+    const result = extractPermissionRequest(raw(PENDING_NORMAL));
+    assert.ok(result !== null, "a normal-sized sentinel must parse");
+  });
+});
+
 // ── isPermissionRequestSentinel ───────────────────────────────────────────────
 
 describe("isPermissionRequestSentinel", () => {
@@ -384,15 +448,23 @@ describe("isPermissionRequestSentinel", () => {
 });
 
 // ── Harness integration fixture ───────────────────────────────────────────────
-// This exact string is produced by `build_sentinel_pending_payload` in
-// crates/buzz-acp/src/acp.rs (captured by `kind9_content_fixture_structural_invariants`)
-// from a request carrying allow_once + reject_once + allow_always: the card
-// surfaces ONLY the two ruled actions. serde_json serializes object keys in
-// sorted (BTreeMap) order. It validates that the Desktop parser accepts the
-// exact bytes the harness emits.
+// The exact bytes below live in the shared, checked-in fixture
+// `crates/buzz-acp/tests/fixtures/sentinel_pending.json`. The Rust test
+// `kind9_content_fixture_structural_invariants` asserts `build_sentinel_pending_payload`
+// output is byte-equal to that file; this test asserts the Desktop parser accepts
+// the same file. Because both sides consume ONE file, a producer-side wire change
+// breaks the Rust byte-equality assertion — the literal can no longer silently drift.
+// (serde_json serializes object keys in sorted BTreeMap order.)
 describe("harness integration fixture", () => {
-  const HARNESS_KIND9_CONTENT =
-    '{"expiresAt":1700000300,"labels":{"opt-allow":"Allow once","opt-reject":"Reject"},"optionIds":["opt-allow","opt-reject"],"requestNonce":"test-nonce-fixture-abc123","sessionId":"sess-fixture-001","state":"pending","turnId":"turn-fixture-xyz","v":1}';
+  const HARNESS_KIND9_CONTENT = readFileSync(
+    fileURLToPath(
+      new URL(
+        "../../../../crates/buzz-acp/tests/fixtures/sentinel_pending.json",
+        import.meta.url,
+      ),
+    ),
+    "utf8",
+  );
 
   it("test_harness_kind9_content_parses_to_pending_payload", () => {
     const result = extractPermissionRequest(HARNESS_KIND9_CONTENT);

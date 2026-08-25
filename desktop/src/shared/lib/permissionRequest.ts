@@ -21,7 +21,7 @@
  *   interpreted as ACP kinds by the renderer.
  * - Labels come from `labels[optionId]` — harness-provided display strings,
  *   not raw ACP kind names.
- * - All untrusted display strings are size-bounded (≤ 200 chars) and
+ * - All untrusted display strings are size-bounded (≤ 200 UTF-8 bytes) and
  *   HTML-escaped by React at render time.
  */
 
@@ -31,7 +31,7 @@
  * Pending sentinel — the card is actionable.
  *
  * `requestNonce` and `expiresAt` are trusted as unsigned ints from the harness.
- * `labels` values are untrusted display strings (capped at 200 chars).
+ * `labels` values are untrusted display strings (capped at 200 UTF-8 bytes).
  */
 export type PermissionRequestPending = {
   v: 1;
@@ -46,7 +46,7 @@ export type PermissionRequestPending = {
    * `allow_always`), so any other cardinality is a malformed sentinel.
    */
   optionIds: string[];
-  /** Harness-provided display labels keyed by optionId. Each ≤ 200 chars. */
+  /** Harness-provided display labels keyed by optionId. Each ≤ 200 UTF-8 bytes. */
   labels: Record<string, string>;
 };
 
@@ -78,8 +78,29 @@ export type PermissionRequestPayload =
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-/** Maximum character length for any untrusted display string in the sentinel. */
-const MAX_LABEL_CHARS = 200;
+/**
+ * Frozen sentinel byte bounds — shared verbatim with the harness producer
+ * (`SENTINEL_STRING_MAX_BYTES` / `SENTINEL_CONTENT_MAX_BYTES` in
+ * `crates/buzz-acp/src/acp.rs`).
+ *
+ * Both the values AND the unit — UTF-8 bytes — must match the producer. The
+ * prior split (harness truncated labels by Rust `char` scalars while this parser
+ * bounded by JavaScript `.length` UTF-16 code units) let a producer-valid
+ * multibyte label be rejected here, publishing a card the desktop renders as raw
+ * JSON until timeout. Measuring in bytes on both sides closes that gap.
+ *
+ * `MAX_STRING_BYTES` bounds every untrusted string leaf: labels, each
+ * `optionId`, `requestNonce`, `sessionId`, `turnId`, and `chosenOptionId`.
+ * `MAX_CONTENT_BYTES` bounds the total serialized sentinel content.
+ */
+const MAX_STRING_BYTES = 200;
+const MAX_CONTENT_BYTES = 4096;
+
+/** UTF-8 byte length of a string — the shared measurement unit. */
+const UTF8 = new TextEncoder();
+function byteLength(s: string): number {
+  return UTF8.encode(s).length;
+}
 
 /**
  * Exact number of option IDs in a sentinel. The card is a two-action contract:
@@ -88,13 +109,6 @@ const MAX_LABEL_CHARS = 200;
  * parser rejects any other cardinality so the two sides can never diverge.
  */
 const OPTION_IDS_COUNT = 2;
-
-/**
- * Maximum character length of an opaque `optionId` or `requestNonce`. Matches
- * the harness bound (`SENTINEL_OPTION_ID_MAX`). Bounds an adversarial adapter
- * from embedding an oversized token that inflates the card content or DOM.
- */
-const MAX_ID_CHARS = 200;
 
 /** Regex for a valid 64-character lowercase hex Nostr event ID. */
 const HEX64_RE = /^[0-9a-f]{64}$/;
@@ -128,9 +142,14 @@ const VALID_OUTCOMES = new Set([
 export function extractPermissionRequest(
   content: string,
 ): PermissionRequestPayload | null {
+  const trimmed = content.trim();
+  // Total-content byte bound — the single size gate mirrored by the harness
+  // (`SENTINEL_CONTENT_MAX_BYTES`). Reject before parsing so an oversized signed
+  // payload can never allocate an outsized DOM/control value.
+  if (byteLength(trimmed) > MAX_CONTENT_BYTES) return null;
   let parsed: unknown;
   try {
-    parsed = JSON.parse(content.trim());
+    parsed = JSON.parse(trimmed);
   } catch {
     return null;
   }
@@ -152,7 +171,7 @@ export function isPermissionRequestSentinel(content: string): boolean {
 // ── Type guards ────────────────────────────────────────────────────────────────
 
 function isSafeString(v: unknown): v is string {
-  return typeof v === "string" && v.length <= MAX_LABEL_CHARS;
+  return typeof v === "string" && byteLength(v) <= MAX_STRING_BYTES;
 }
 
 function isNullableString(v: unknown): v is string | null {
@@ -173,7 +192,7 @@ function isPermissionRequestPayload(v: unknown): v is PermissionRequestPayload {
   if (
     typeof p.requestNonce !== "string" ||
     p.requestNonce.length === 0 ||
-    p.requestNonce.length > MAX_ID_CHARS
+    byteLength(p.requestNonce) > MAX_STRING_BYTES
   ) {
     return false;
   }
@@ -194,7 +213,9 @@ function isPermissionRequestPayload(v: unknown): v is PermissionRequestPayload {
     p.optionIds.length !== OPTION_IDS_COUNT ||
     !p.optionIds.every(
       (id) =>
-        typeof id === "string" && id.length > 0 && id.length <= MAX_ID_CHARS,
+        typeof id === "string" &&
+        id.length > 0 &&
+        byteLength(id) <= MAX_STRING_BYTES,
     )
   ) {
     return false;
@@ -237,7 +258,7 @@ function isPermissionRequestPayload(v: unknown): v is PermissionRequestPayload {
       if (
         typeof p.chosenOptionId !== "string" ||
         p.chosenOptionId.length === 0 ||
-        p.chosenOptionId.length > MAX_ID_CHARS ||
+        byteLength(p.chosenOptionId) > MAX_STRING_BYTES ||
         !optionIds.includes(p.chosenOptionId)
       ) {
         return false;
