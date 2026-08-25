@@ -258,6 +258,16 @@ pub async fn start_huddle(
         submit_event(create_builder, &state).await?;
         channel_was_created = true;
 
+        // The huddle window resolves this channel through the member-only
+        // channel poll, but the relay-signed kind:39002 owner membership can
+        // lag the create. Mark the channel pending-owned (same overlay as
+        // `create_channel`, #1761) so the window never races propagation and
+        // falls into the "Select a channel" empty state. Cleared automatically
+        // once real membership is observed, and explicitly on end/rollback.
+        if let Ok(keys) = state.signing_keys() {
+            state.mark_pending_owned_channel(&keys.public_key().to_hex(), &ephemeral_channel_id);
+        }
+
         // 2. Post voice-mode guidelines as kind:48106 BEFORE adding agents.
         //    Agents auto-subscribe on membership notification (kind:9000) and may
         //    complete EOSE before guidelines are stored if we post them after.
@@ -367,6 +377,7 @@ pub async fn start_huddle(
         Err(e) => {
             // Rollback: archive the orphaned ephemeral channel if it was created.
             if channel_was_created {
+                clear_pending_owned_huddle_channel(&state, &ephemeral_channel_id);
                 if let Ok(archive_builder) = events::build_archive(ephemeral_uuid) {
                     if let Err(ae) = submit_event(archive_builder, &state).await {
                         eprintln!(
@@ -523,6 +534,15 @@ fn teardown_huddle(state: &AppState) -> Result<(), String> {
     Ok(())
 }
 
+/// Drop the huddle channel's pending-owned overlay entry (see the mark in
+/// `start_huddle`). Archived huddle channels must not linger classified as
+/// owned-and-visible if the relay's kind:39002 update never arrived.
+fn clear_pending_owned_huddle_channel(state: &AppState, ephemeral_channel_id: &str) {
+    if let Ok(keys) = state.signing_keys() {
+        state.clear_pending_owned_channel(&keys.public_key().to_hex(), ephemeral_channel_id);
+    }
+}
+
 /// Emit HUDDLE_ENDED to the parent channel and archive the ephemeral channel.
 ///
 /// Both steps are best-effort — failures are logged but do not propagate.
@@ -532,6 +552,7 @@ async fn emit_end_and_archive(
     ephemeral_channel_id: &str,
     state: &AppState,
 ) {
+    clear_pending_owned_huddle_channel(state, ephemeral_channel_id);
     if !parent_channel_id.is_empty() && !ephemeral_channel_id.is_empty() {
         if let Ok(ended_builder) =
             events::build_huddle_ended(parent_channel_id, ephemeral_channel_id)
@@ -930,3 +951,7 @@ pub async fn speak_agent_message(
         eprintln!("buzz-desktop: tts stage=queue status=failed reason=closed route_id={route_id}")
     })
 }
+
+#[cfg(test)]
+#[path = "pending_owned_tests.rs"]
+mod pending_owned_tests;
