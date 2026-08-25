@@ -7348,10 +7348,13 @@ mod tests {
 
     #[test]
     fn build_sentinel_fails_closed_on_oversized_total_content() {
-        // A label that individually fits but inflates the serialized total past
-        // SENTINEL_CONTENT_MAX_BYTES cannot happen through select_card_actions
-        // (labels are byte-capped), so drive serialize_bounded_sentinel directly
-        // to prove the total-content gate rejects an oversized payload.
+        // Drive serialize_bounded_sentinel directly to prove the total-content
+        // gate rejects an oversized payload. (Per-field-valid input can reach
+        // this gate through select_card_actions too — JSON escaping expands
+        // control characters, so distinct 200-byte option IDs built from
+        // U+0000/U+0001, repeated as optionIds and label keys, inflate the
+        // serialized total past SENTINEL_CONTENT_MAX_BYTES — but a synthetic
+        // oversized payload exercises the gate in isolation.)
         let mut labels = serde_json::Map::new();
         labels.insert("a".into(), serde_json::json!("x".repeat(200)));
         let payload = serde_json::json!({

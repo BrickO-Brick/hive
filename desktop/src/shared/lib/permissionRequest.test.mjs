@@ -431,12 +431,14 @@ describe("extractPermissionRequest — byte-unit boundaries", () => {
   });
 
   it("test_normal_bounded_content_well_under_max_bytes_parses", () => {
-    // Every string leaf is capped at MAX_STRING_BYTES (200) and the field set is
-    // fixed, so a structurally-valid sentinel is always well under
-    // MAX_CONTENT_BYTES — the total-content gate exists to reject oversized
-    // *signed* content, not to bound producer output. Assert the normal fixture's
-    // byte size to make that headroom explicit and prove the gate is not
-    // over-tight for the content the producer actually emits.
+    // A normal bounded sentinel — every leaf within MAX_STRING_BYTES and the
+    // fixed field set — carries ample headroom below MAX_CONTENT_BYTES, so it
+    // must parse. Assert the fixture's byte size to make that headroom explicit
+    // and prove the total-content gate is not over-tight for typical content.
+    // (Adversarial per-field-valid input can still reach the gate: JSON escaping
+    // expands control characters, so distinct 200-byte option IDs built from
+    // e.g. U+0000/U+0001, repeated as optionIds and label keys, can push the
+    // serialized shape over 4096 and correctly fail closed at the producer.)
     const serialized = raw(PENDING_NORMAL);
     const size = new TextEncoder().encode(serialized).length;
     assert.ok(
