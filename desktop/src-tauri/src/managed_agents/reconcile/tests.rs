@@ -303,6 +303,60 @@ fn empty_relay_url_pin_does_not_abort_boot_reconcile() {
     }
 }
 
+/// A record that genuinely cannot be published (here: an nsec that does not
+/// derive its pubkey) is logged and skipped; the records before and after it
+/// in file order still get both heads, and the bad coordinate gets neither.
+#[test]
+fn unpublishable_record_does_not_abort_boot_reconcile() {
+    use nostr::ToBech32;
+
+    let owner_keys = nostr::Keys::generate();
+    let first_keys = nostr::Keys::generate();
+    let bad_keys = nostr::Keys::generate();
+    let last_keys = nostr::Keys::generate();
+    let mut first = sample_record(&first_keys.public_key().to_hex(), "first");
+    first.private_key_nsec = first_keys.secret_key().to_bech32().unwrap();
+    let mut bad = sample_record(&bad_keys.public_key().to_hex(), "bad");
+    bad.private_key_nsec = nostr::Keys::generate().secret_key().to_bech32().unwrap();
+    let mut last = sample_record(&last_keys.public_key().to_hex(), "last");
+    last.private_key_nsec = last_keys.secret_key().to_bech32().unwrap();
+
+    let dir = TempDir::new().unwrap();
+    write_store(&dir, &[first, bad, last]);
+    let db_path = dir.path().join("retention.db");
+    let reconciled = reconcile_agents_in_dir_with(
+        dir.path(),
+        &owner_keys,
+        &db_path,
+        None::<&crate::secret_store::SecretStore>,
+    )
+    .unwrap();
+    assert_eq!(reconciled, 2);
+
+    let conn = open_retention_db(&db_path).unwrap();
+    let owner = owner_keys.public_key().to_hex();
+    for keys in [&first_keys, &last_keys] {
+        let agent = keys.public_key().to_hex();
+        for kind in [KIND_MANAGED_AGENT, KIND_PRIVATE_MANAGED_AGENT] {
+            assert!(
+                get_retained_event(&conn, kind, &owner, &agent)
+                    .unwrap()
+                    .is_some(),
+                "{kind} for {agent}"
+            );
+        }
+    }
+    let bad_agent = bad_keys.public_key().to_hex();
+    for kind in [KIND_MANAGED_AGENT, KIND_PRIVATE_MANAGED_AGENT] {
+        assert!(
+            get_retained_event(&conn, kind, &owner, &bad_agent)
+                .unwrap()
+                .is_none(),
+            "{kind} must not be retained for the unpublishable record"
+        );
+    }
+}
+
 #[test]
 fn fresh_record_is_retained_pending() {
     let dir = TempDir::new().unwrap();
