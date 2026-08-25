@@ -1095,6 +1095,12 @@ pub struct LargeChannelRoster {
 ///
 /// This is an internal cross-community maintenance read. Callers must preserve
 /// the returned community id when reading or rewriting discovery state.
+///
+/// Lifecycle fencing: the scan feeds fleet-wide snapshot rewrites, so it must
+/// skip tenants that are archived or in any non-`active` deletion state. The
+/// rewrite itself is independently blocked by the universal write-fence
+/// trigger on `events`; this filter keeps a fenced tenant from surfacing as a
+/// candidate (and failing) on every reconciliation pass.
 pub async fn list_large_channel_rosters_needing_reconciliation(
     pool: &PgPool,
     minimum_members: i64,
@@ -1115,7 +1121,11 @@ pub async fn list_large_channel_rosters_needing_reconciliation(
         )
         SELECT lr.community_id, community.host, lr.channel_id, lr.member_count
         FROM large_rosters lr
-        JOIN communities community ON community.id = lr.community_id
+        JOIN communities community
+          ON community.id = lr.community_id
+         AND community.archived_at IS NULL
+         AND community.deletion_state = 'active'
+         AND community.deleted_at IS NULL
         JOIN LATERAL (
             SELECT roster.tags
             FROM events roster
@@ -2572,6 +2582,140 @@ mod tests {
                 .await
                 .expect("check converged snapshot");
         assert!(converged.is_empty());
+    }
+
+    /// Lifecycle fence on the roster-reconciliation scan: a quiescing tenant's
+    /// stale snapshot must not surface as a candidate, while an active
+    /// bystander's identical stale snapshot still does. The rewrite is
+    /// independently blocked by the write-fence trigger on `events`; this
+    /// filter keeps the fenced tenant from failing reconciliation every pass.
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn roster_reconciliation_scan_skips_quiescing_tenant_and_keeps_active_bystander() {
+        let pool = setup_pool().await;
+        let relay_pubkey = random_pubkey();
+        let creator = random_pubkey();
+
+        // Build one community with a channel whose live 39002 snapshot was
+        // canonical (creator-owner + 2 members), then gains a 3rd member — a
+        // reconciliation candidate at minimum_members = 2. The snapshot is
+        // inserted while it exactly matches canonical membership (4-field p
+        // tags, roles included, ordered by pubkey bytes) so the roster INSERT
+        // guard admits it; membership then grows, making the live snapshot
+        // stale without touching `events`.
+        let creator_hex = creator
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        let mut fixtures = Vec::new();
+        for _ in 0..2 {
+            let community_id = make_test_community(&pool).await;
+            let channel = create_test_channel(
+                &pool,
+                community_id,
+                "fence-roster",
+                ChannelType::Stream,
+                ChannelVisibility::Open,
+                None,
+                &creator,
+                None,
+            )
+            .await
+            .expect("create channel");
+            sqlx::query(
+                r#"
+                INSERT INTO channel_members (community_id, channel_id, pubkey, role, joined_at)
+                SELECT $1, $2, decode(lpad(to_hex(n), 64, '0'), 'hex'), 'member',
+                       NOW() + (n || ' seconds')::interval
+                FROM generate_series(1, 2) n
+                "#,
+            )
+            .bind(community_id)
+            .bind(channel.id)
+            .execute(&pool)
+            .await
+            .expect("insert members");
+            // Canonical membership = creator (owner, from create_test_channel)
+            // plus the two synthetic members. The guard orders p tags by raw
+            // pubkey bytes, which matches lexicographic order of the hex.
+            let mut roster: Vec<(String, &str)> = vec![
+                (creator_hex.clone(), "owner"),
+                (format!("{:064x}", 1), "member"),
+                (format!("{:064x}", 2), "member"),
+            ];
+            roster.sort_by(|a, b| a.0.cmp(&b.0));
+            let canonical_tags: Vec<serde_json::Value> =
+                std::iter::once(serde_json::json!(["d", channel.id.to_string()]))
+                    .chain(
+                        roster
+                            .iter()
+                            .map(|(pk, role)| serde_json::json!(["p", pk, "", role])),
+                    )
+                    .collect();
+            sqlx::query(
+                r#"
+                INSERT INTO events
+                    (community_id, id, pubkey, created_at, kind, tags, content, sig, channel_id, d_tag)
+                VALUES ($1, $2, $3, NOW(), 39002, $4, '', $5, $6, $7)
+                "#,
+            )
+            .bind(community_id)
+            .bind(random_pubkey())
+            .bind(&relay_pubkey)
+            .bind(serde_json::Value::Array(canonical_tags))
+            .bind(vec![0u8; 64])
+            .bind(channel.id)
+            .bind(channel.id.to_string())
+            .execute(&pool)
+            .await
+            .expect("insert canonical snapshot");
+            // Grow membership past the snapshot: the live 39002 head is now
+            // stale relative to canonical membership.
+            sqlx::query(
+                r#"
+                INSERT INTO channel_members (community_id, channel_id, pubkey, role, joined_at)
+                VALUES ($1, $2, decode(lpad(to_hex(3), 64, '0'), 'hex'), 'member', NOW())
+                "#,
+            )
+            .bind(community_id)
+            .bind(channel.id)
+            .execute(&pool)
+            .await
+            .expect("insert late-joining member");
+            fixtures.push((CommunityId::from_uuid(community_id), channel.id));
+        }
+        let (active, active_channel) = fixtures[0];
+        let (target, _) = fixtures[1];
+
+        let mut lifecycle = pool.begin().await.expect("begin lifecycle fixture");
+        sqlx::query(
+            "SELECT set_config('buzz.deletion_executor_community', $1, true), \
+                    set_config('buzz.deletion_fence_generation', '0', true)",
+        )
+        .bind(target.to_string())
+        .execute(&mut *lifecycle)
+        .await
+        .expect("authorize target lifecycle");
+        sqlx::query("UPDATE communities SET deletion_state = 'quiescing' WHERE id = $1")
+            .bind(target.as_uuid())
+            .execute(&mut *lifecycle)
+            .await
+            .expect("quiesce target");
+        lifecycle.commit().await.expect("commit target lifecycle");
+
+        let candidates = list_large_channel_rosters_needing_reconciliation(&pool, 2, &relay_pubkey)
+            .await
+            .expect("scan candidates");
+        assert!(
+            candidates
+                .iter()
+                .any(|c| c.community_id == active && c.channel_id == active_channel),
+            "active bystander's stale snapshot must still surface"
+        );
+        assert!(
+            !candidates.iter().any(|c| c.community_id == target),
+            "quiescing tenant must not surface as a reconciliation candidate"
+        );
     }
 
     /// A random non-admin, non-owner user cannot remove someone else's bot.

@@ -545,6 +545,13 @@ pub async fn list_enabled_channel_workflows(
 /// Used by the cron scheduler. Filters by trigger type in SQL to avoid loading
 /// event-triggered workflows that the cron loop would immediately discard.
 /// Results are bounded to [`LIST_MAX_LIMIT`] rows.
+///
+/// Lifecycle fencing: this is a fleet-wide scan, so it must skip tenants that
+/// are archived or in any non-`active` deletion state. The downstream claim
+/// INSERT is independently blocked by the universal write-fence trigger on
+/// `scheduled_workflow_fires`, but without this filter a quiescing tenant's
+/// workflows would surface every tick and turn the trigger rejection into a
+/// recurring scheduler error.
 pub async fn list_all_enabled_workflows(pool: &PgPool) -> Result<Vec<WorkflowRecord>> {
     let rows = sqlx::query(
         r#"
@@ -556,6 +563,8 @@ pub async fn list_all_enabled_workflows(pool: &PgPool) -> Result<Vec<WorkflowRec
           AND w.enabled = TRUE
           AND w.definition->'trigger'->>'on' = 'schedule'
           AND c.archived_at IS NULL
+          AND c.deletion_state = 'active'
+          AND c.deleted_at IS NULL
         ORDER BY w.created_at ASC
         LIMIT $1
         "#,
@@ -2131,6 +2140,60 @@ mod tests {
         .await
         .expect("create workflow");
         (workflow_id, community)
+    }
+
+    /// Move a community into `quiescing` using the executor-authorized
+    /// lifecycle path, mirroring the push-matcher fence fixtures.
+    async fn quiesce_test_community(pool: &PgPool, community: CommunityId) {
+        let mut lifecycle = pool.begin().await.expect("begin lifecycle fixture");
+        sqlx::query(
+            "SELECT set_config('buzz.deletion_executor_community', $1, true), \
+                    set_config('buzz.deletion_fence_generation', '0', true)",
+        )
+        .bind(community.to_string())
+        .execute(&mut *lifecycle)
+        .await
+        .expect("authorize target lifecycle");
+        sqlx::query("UPDATE communities SET deletion_state = 'quiescing' WHERE id = $1")
+            .bind(community.as_uuid())
+            .execute(&mut *lifecycle)
+            .await
+            .expect("quiesce target");
+        lifecycle.commit().await.expect("commit target lifecycle");
+    }
+
+    /// Lifecycle fence on the cron scheduler's fleet-wide scan: a quiescing
+    /// tenant's enabled schedule workflow must not surface, while an active
+    /// bystander's identical workflow still does. Without the
+    /// `deletion_state = 'active'` filter the quiescing tenant's workflow
+    /// reaches the claim INSERT every tick, where the write-fence trigger
+    /// turns it into a recurring scheduler error.
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn scheduler_scan_skips_quiescing_tenant_and_keeps_active_bystander() {
+        let pool = setup_pool().await;
+
+        let active = make_community(&pool).await;
+        let target = make_community(&pool).await;
+        let (active_workflow, _) = make_workflow_in(&pool, active).await;
+        let (target_workflow, _) = make_workflow_in(&pool, target).await;
+        quiesce_test_community(&pool, target).await;
+
+        let workflows = list_all_enabled_workflows(&pool)
+            .await
+            .expect("list enabled workflows");
+        assert!(
+            workflows
+                .iter()
+                .any(|w| w.community_id == active && w.id == active_workflow),
+            "active bystander's schedule workflow must still be scanned"
+        );
+        assert!(
+            !workflows
+                .iter()
+                .any(|w| w.community_id == target && w.id == target_workflow),
+            "quiescing tenant's workflow must not surface in the fleet-wide scan"
+        );
     }
 
     /// Confinement: a duplicate workflow UUID existing in both community A and

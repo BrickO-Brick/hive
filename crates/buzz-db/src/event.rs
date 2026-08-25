@@ -1460,6 +1460,8 @@ pub async fn query_due_reminders(
           AND e.deleted_at IS NULL
           AND e.delivered_at IS NULL
           AND c.archived_at IS NULL
+          AND c.deletion_state = 'active'
+          AND c.deleted_at IS NULL
         ORDER BY e.community_id, e.pubkey, e.d_tag, e.created_at DESC, e.id ASC
         LIMIT $3
         "#,
@@ -2537,6 +2539,67 @@ mod tests {
         assert!(due.iter().any(|row| {
             row.id == event_b.id.as_bytes() && row.community_id == community_b && row.host == host_b
         }));
+    }
+
+    /// Lifecycle fence on the reminder sweep: a quiescing tenant's due
+    /// reminder must not surface, while an active bystander's identical
+    /// reminder still does. The claim UPDATE is independently blocked by the
+    /// universal write-fence trigger on `events`; this filter keeps the fenced
+    /// tenant's row from surfacing (and erroring) on every sweep tick.
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn due_reminder_sweep_skips_quiescing_tenant_and_keeps_active_bystander() {
+        let pool = setup_pool().await;
+        let active = CommunityId::from_uuid(make_test_community(&pool).await);
+        let target = CommunityId::from_uuid(make_test_community(&pool).await);
+
+        let not_before = Utc::now().timestamp() - 1;
+        let make_reminder = |scope: &str| {
+            EventBuilder::new(Kind::Custom(KIND_EVENT_REMINDER as u16), "r")
+                .tags([
+                    Tag::parse(["d", scope]).unwrap(),
+                    Tag::parse(["not_before", &not_before.to_string()]).unwrap(),
+                ])
+                .sign_with_keys(&Keys::generate())
+                .expect("sign reminder")
+        };
+        let active_reminder = make_reminder("fence-active");
+        let target_reminder = make_reminder("fence-target");
+        insert_event(&pool, active, &active_reminder, None)
+            .await
+            .expect("insert active reminder");
+        insert_event(&pool, target, &target_reminder, None)
+            .await
+            .expect("insert target reminder");
+
+        let mut lifecycle = pool.begin().await.expect("begin lifecycle fixture");
+        sqlx::query(
+            "SELECT set_config('buzz.deletion_executor_community', $1, true), \
+                    set_config('buzz.deletion_fence_generation', '0', true)",
+        )
+        .bind(target.to_string())
+        .execute(&mut *lifecycle)
+        .await
+        .expect("authorize target lifecycle");
+        sqlx::query("UPDATE communities SET deletion_state = 'quiescing' WHERE id = $1")
+            .bind(target.as_uuid())
+            .execute(&mut *lifecycle)
+            .await
+            .expect("quiesce target");
+        lifecycle.commit().await.expect("commit target lifecycle");
+
+        let due = query_due_reminders(&pool, Utc::now().timestamp(), 100)
+            .await
+            .expect("query due reminders");
+        assert!(
+            due.iter()
+                .any(|row| row.community_id == active && row.id == active_reminder.id.as_bytes()),
+            "active bystander's due reminder must still surface"
+        );
+        assert!(
+            !due.iter().any(|row| row.community_id == target),
+            "quiescing tenant's reminder must not surface in the sweep"
+        );
     }
 
     /// Two pods race to claim the same due reminder: exactly one wins. The
