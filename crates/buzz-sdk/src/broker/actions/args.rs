@@ -505,7 +505,7 @@ impl AgentsDeleteArgs {
 /// `{ "action": "message.post", "args": { … } }` and an args shape can never be
 /// paired with the wrong action name.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "action", content = "args")]
+#[serde(tag = "action", content = "args", deny_unknown_fields)]
 pub enum ActionArgs {
     /// Read a channel, thread, or mention feed.
     #[serde(rename = "channel.read")]

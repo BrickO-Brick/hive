@@ -770,6 +770,80 @@ fn request_id_must_be_present_bounded_and_printable() {
     assert!(BrokerRequest::new("a".repeat(MAX_REQUEST_ID_LEN + 1), args()).is_err());
 }
 
+/// Duplicate object keys are rejected everywhere the envelope reads, including
+/// inside the `outcome` object.
+///
+/// serde's derived readers reject a repeated field, so most of this contract got
+/// duplicate rejection for free. `outcome` did not: the strict intermediary held
+/// it as a `serde_json::Value` before re-deserializing it under its action tag,
+/// and buffering through `Value` silently collapses duplicates last-wins. That
+/// made `outcome` the one place where a reader could see a value the envelope's
+/// own strictness never vetted — so it now re-parses the original bytes via
+/// `RawValue`.
+///
+/// Each case asserts the de-duplicated form parses first, so a rejection cannot
+/// be a rejection of the surrounding fixture.
+#[test]
+fn a_duplicate_object_key_is_rejected_at_every_depth() {
+    let outcome = format!(r#"{{"agentPubkey":"{PUBKEY}","displayName":"n"}}"#);
+    let response = |body: &str| {
+        format!(
+            r#"{{"type":"{BROKER_RESULT_TYPE}","protocolVersion":1,"requestId":"r","status":"succeeded","action":"agents.delete","outcome":{body}}}"#
+        )
+    };
+
+    serde_json::from_str::<BrokerResponse>(&response(&outcome))
+        .expect("the de-duplicated response parses");
+    let cases = [
+        (
+            "inside the outcome object",
+            response(&format!(
+                r#"{{"agentPubkey":"{PUBKEY}","displayName":"first","displayName":"second"}}"#
+            )),
+        ),
+        (
+            "a top-level envelope member",
+            format!(
+                r#"{{"type":"{BROKER_RESULT_TYPE}","protocolVersion":1,"requestId":"r","requestId":"evil","status":"succeeded","action":"agents.delete","outcome":{outcome}}}"#
+            ),
+        ),
+        (
+            "a flattened member",
+            format!(
+                r#"{{"type":"{BROKER_RESULT_TYPE}","protocolVersion":1,"requestId":"r","status":"succeeded","action":"agents.delete","action":"agents.update","outcome":{outcome}}}"#
+            ),
+        ),
+        (
+            "inside a typed error payload",
+            format!(
+                r#"{{"type":"{BROKER_RESULT_TYPE}","protocolVersion":1,"requestId":"r","status":"failed","error":{{"code":"unauthorized","message":"a","message":"b"}}}}"#
+            ),
+        ),
+    ];
+    for (where_, json) in cases {
+        assert!(
+            serde_json::from_str::<BrokerResponse>(&json).is_err(),
+            "a duplicate key {where_} must not deserialize"
+        );
+    }
+
+    // The request envelope too, where `args` is typed rather than buffered.
+    let request = |args: &str| {
+        format!(
+            r#"{{"type":"{BROKER_REQUEST_TYPE}","protocolVersion":1,"requestId":"r","actionVersion":1,"action":"agents.delete","args":{args}}}"#
+        )
+    };
+    serde_json::from_str::<BrokerRequest>(&request(r#"{"target":{"name":"good"}}"#))
+        .expect("the de-duplicated request parses");
+    assert!(
+        serde_json::from_str::<BrokerRequest>(&request(
+            r#"{"target":{"name":"good"},"target":{"name":"evil"}}"#
+        ))
+        .is_err(),
+        "a duplicate key inside args must not deserialize"
+    );
+}
+
 // ── Wire schemas: the enforceable no-secret invariant ───────────────────────
 
 /// The exact wire key set of every args and outcome type, with every optional
@@ -1071,6 +1145,48 @@ fn no_payload_can_name_its_own_authority() {
     }
 }
 
+/// The nested action enums are strict about their own key set, not just about
+/// the payload inside it.
+///
+/// `ActionArgs`/`ActionOutcome` are adjacently tagged, so their wire form is the
+/// two-key object `{action, args}` / `{action, outcome}`. Without
+/// `deny_unknown_fields` on the enum itself, a *sibling* of those two keys is
+/// silently ignored — and these types are public and wire-facing, so a host
+/// author can deserialize one directly rather than through the envelope. The
+/// envelope's own strictness does not cover that door.
+#[test]
+fn a_nested_action_object_rejects_siblings_of_its_two_keys() {
+    // The valid two-key forms must pass untouched, so a rejection below cannot
+    // be a rejection of the fixture itself.
+    let args = serde_json::json!({
+        "action": "agents.delete", "args": { "target": { "name": "helper" } },
+    });
+    let outcome = serde_json::json!({
+        "action": "agents.delete",
+        "outcome": { "agentPubkey": PUBKEY, "displayName": "Gone" },
+    });
+    serde_json::from_value::<ActionArgs>(args.clone()).expect("the exact args shape deserializes");
+    serde_json::from_value::<ActionOutcome>(outcome.clone())
+        .expect("the exact outcome shape deserializes");
+
+    for extra in ["secretKey", "nsec", "outcome", "unexpected"] {
+        let mut probe = args.clone();
+        probe[extra] = serde_json::json!("x");
+        assert!(
+            serde_json::from_value::<ActionArgs>(probe).is_err(),
+            "ActionArgs must reject the sibling key \"{extra}\""
+        );
+    }
+    for extra in ["secretKey", "nsec", "args", "unexpected"] {
+        let mut probe = outcome.clone();
+        probe[extra] = serde_json::json!("x");
+        assert!(
+            serde_json::from_value::<ActionOutcome>(probe).is_err(),
+            "ActionOutcome must reject the sibling key \"{extra}\""
+        );
+    }
+}
+
 #[test]
 fn pubkey_hex_rejects_anything_but_a_public_key() {
     assert!(PubkeyHex::parse("nothex").is_err());
@@ -1189,6 +1305,211 @@ fn validators_accept_and_reject_at_their_boundaries() {
     }
     .validated()
     .is_err());
+}
+
+/// Validation normalizes, so the frozen body must carry the normalized value —
+/// not the caller's. Otherwise a padded selector passes validation and the host
+/// executes something the validator never approved: it looks up `"  helper  "`,
+/// or publishes a padded reaction.
+///
+/// Both construction paths are checked, because `BrokerRequest`'s fields are
+/// public and it is `Deserialize`, so `prepare` is reachable without ever going
+/// through `new`.
+#[test]
+fn the_frozen_body_carries_exactly_what_validation_approved() {
+    // Path 1: through `new`, which stores the normalized action.
+    let request = BrokerRequest::new(
+        "req-normalize",
+        ActionArgs::AgentsDelete(AgentsDeleteArgs {
+            target: AgentTarget::Name("  helper  ".into()),
+        }),
+    )
+    .expect("a padded name is valid, just not canonical");
+    assert_eq!(
+        request.action,
+        ActionArgs::AgentsDelete(AgentsDeleteArgs {
+            target: AgentTarget::Name("helper".into()),
+        }),
+        "`new` must store the normalized copy"
+    );
+    let body = String::from_utf8(request.prepare().expect("prepares").body().to_vec())
+        .expect("body is utf8");
+    assert!(
+        body.contains(r#""name":"helper""#) && !body.contains("  helper  "),
+        "frozen body still carries the unnormalized name: {body}"
+    );
+
+    // Path 2: a struct literal that bypasses `new` entirely.
+    let bypassed = BrokerRequest {
+        r#type: BROKER_REQUEST_TYPE.to_string(),
+        protocol_version: BROKER_PROTOCOL_VERSION,
+        request_id: "req-bypass".into(),
+        action_version: 1,
+        action: ActionArgs::ReactionAdd(ReactionAddArgs {
+            channel_id: CHANNEL.into(),
+            target_event_id: EVENT.into(),
+            reaction: "  \u{1f41d}  ".into(),
+        }),
+    };
+    let body = String::from_utf8(bypassed.prepare().expect("prepares").body().to_vec())
+        .expect("body is utf8");
+    assert!(
+        body.contains("\"reaction\":\"\u{1f41d}\""),
+        "frozen body did not normalize a padded reaction: {body}"
+    );
+
+    // Normalization is idempotent, so a second freeze is byte-identical: the
+    // retry contract still holds through the new path.
+    let once = BrokerRequest::new(
+        "req-idem",
+        ActionArgs::AgentsDelete(AgentsDeleteArgs {
+            target: AgentTarget::Name(" helper ".into()),
+        }),
+    )
+    .unwrap()
+    .prepare()
+    .unwrap();
+    let twice = BrokerRequest::new(
+        "req-idem",
+        ActionArgs::AgentsDelete(AgentsDeleteArgs {
+            target: AgentTarget::Name("helper".into()),
+        }),
+    )
+    .unwrap()
+    .prepare()
+    .unwrap();
+    assert_eq!(
+        once.body(),
+        twice.body(),
+        "a padded and a pre-trimmed request must freeze to the same bytes"
+    );
+}
+
+/// Correlation must reject an outcome that echoes a different identity than the
+/// request supplied — `requestId` plus action is not enough, because a host
+/// routing bug can return a well-formed success for the wrong subject.
+///
+/// Table-driven over every request/outcome identity pair, so the enumeration in
+/// `correlate_identities`' doc table is pinned by a test rather than asserted in
+/// prose. Each case builds the *matching* response first and requires it to pass,
+/// so a case cannot "reject" for an unrelated reason.
+#[test]
+fn correlation_rejects_an_outcome_naming_a_different_subject() {
+    let requested = pubkey();
+    let other =
+        PubkeyHex::parse("b02c4e0850e5e612b4ddf95dbe2f5c56467cf27c6552203bc833ff438fb31971")
+            .expect("valid hex");
+    let other_channel = "c2c38ca8-9ec3-411e-bab5-f9deab34d52e";
+
+    // (action, matching outcome, mismatched outcome or None when nothing is
+    // comparable). A `None` documents an inherent gap, not an oversight.
+    let cases: Vec<(&str, ActionArgs, ActionOutcome, Option<ActionOutcome>)> = vec![
+        (
+            "agents.create echoes channelId",
+            ActionArgs::AgentsCreate(AgentsCreateArgs {
+                channel_id: CHANNEL.into(),
+                display_name: "Helper".into(),
+                system_prompt: "be useful".into(),
+                runtime: None,
+                provider: None,
+                model: None,
+                respond_to: None,
+            }),
+            ActionOutcome::AgentsCreate(AgentsCreateOutcome {
+                agent_pubkey: requested.clone(),
+                display_name: "Helper".into(),
+                channel_id: CHANNEL.into(),
+            }),
+            Some(ActionOutcome::AgentsCreate(AgentsCreateOutcome {
+                agent_pubkey: requested.clone(),
+                display_name: "Helper".into(),
+                channel_id: other_channel.into(),
+            })),
+        ),
+        (
+            "agents.update targeted by pubkey echoes agentPubkey",
+            ActionArgs::AgentsUpdate(AgentsUpdateArgs {
+                target: AgentTarget::Pubkey(requested.clone()),
+                display_name: Some("Renamed".into()),
+                system_prompt: None,
+                runtime: None,
+                provider: None,
+                model: None,
+                respond_to: None,
+            }),
+            ActionOutcome::AgentsUpdate(AgentsUpdateOutcome {
+                agent_pubkey: requested.clone(),
+                display_name: "Renamed".into(),
+                updated_fields: vec!["displayName".into()],
+            }),
+            Some(ActionOutcome::AgentsUpdate(AgentsUpdateOutcome {
+                agent_pubkey: other.clone(),
+                display_name: "Renamed".into(),
+                updated_fields: vec!["displayName".into()],
+            })),
+        ),
+        (
+            "agents.delete targeted by pubkey echoes agentPubkey",
+            ActionArgs::AgentsDelete(AgentsDeleteArgs {
+                target: AgentTarget::Pubkey(requested.clone()),
+            }),
+            ActionOutcome::AgentsDelete(AgentsDeleteOutcome {
+                agent_pubkey: requested.clone(),
+                display_name: "Gone".into(),
+            }),
+            Some(ActionOutcome::AgentsDelete(AgentsDeleteOutcome {
+                agent_pubkey: other.clone(),
+                display_name: "Gone".into(),
+            })),
+        ),
+        (
+            // Inherent gap: the host resolves the name, and the rename may be
+            // exactly what this call performed, so no pubkey is comparable.
+            "agents.delete targeted by name compares nothing",
+            ActionArgs::AgentsDelete(AgentsDeleteArgs {
+                target: AgentTarget::Name("helper".into()),
+            }),
+            ActionOutcome::AgentsDelete(AgentsDeleteOutcome {
+                agent_pubkey: other.clone(),
+                display_name: "helper".into(),
+            }),
+            None,
+        ),
+        (
+            // Host-minted identifiers only; nothing the request supplied is echoed.
+            "message.post echoes no requested identity",
+            ActionArgs::MessagePost(MessagePostArgs {
+                channel_id: CHANNEL.into(),
+                content: "hi".into(),
+                mentions: vec![],
+            }),
+            ActionOutcome::MessagePost(EventPublished {
+                event_id: EVENT.into(),
+                kind: 9,
+                created_at: 1,
+            }),
+            None,
+        ),
+    ];
+
+    for (label, args, matching, mismatched) in cases {
+        let request = BrokerRequest::new("req-correlate", args)
+            .expect("fixture args validate")
+            .prepare()
+            .expect("fixture prepares");
+        BrokerResponse::new("req-correlate", BrokerResult::succeeded(matching))
+            .validate_for(&request)
+            .unwrap_or_else(|e| panic!("{label}: the matching outcome must pass, got {e}"));
+        if let Some(mismatched) = mismatched {
+            let err = BrokerResponse::new("req-correlate", BrokerResult::succeeded(mismatched))
+                .validate_for(&request)
+                .expect_err(&format!("{label}: a mismatched identity must be rejected"));
+            assert!(
+                matches!(err, SdkError::InvalidInput(_)),
+                "{label}: expected InvalidInput, got {err:?}"
+            );
+        }
+    }
 }
 
 // ── Reads carry verifiable provenance ───────────────────────────────────────

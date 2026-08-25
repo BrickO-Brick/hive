@@ -219,7 +219,7 @@ pub struct AgentsDeleteOutcome {
 
 /// An action-specific success payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "action", content = "outcome")]
+#[serde(tag = "action", content = "outcome", deny_unknown_fields)]
 pub enum ActionOutcome {
     /// `channel.read` succeeded.
     #[serde(rename = "channel.read")]

@@ -55,16 +55,32 @@
 //! [`AgentsCreateOutcome`] is the case that matters — it returns public identity
 //! only, never the key it just minted.
 //!
-//! Strictness has to hold at every layer, or the outermost one decides. Two
+//! Strictness has to hold at every layer, or the outermost one decides. Three
 //! places needed explicit work, because each had a hole a derive left open:
 //! [`BrokerResponse`] cannot combine `deny_unknown_fields` with the `flatten`
-//! that produces its wire shape, and [`BrokerMessage`] wraps `nostr`'s `Event`,
-//! whose own deserializer discards unknown members. Both now deserialize through
-//! private strict intermediaries, so the rule reaches *inside* the envelope and
-//! inside each event object — a host cannot ship a `secretKey` beside `sig` and
-//! have it silently trimmed.
+//! that produces its wire shape; [`BrokerMessage`] wraps `nostr`'s `Event`,
+//! whose own deserializer discards unknown members; and [`ActionArgs`] /
+//! [`ActionOutcome`] are adjacently tagged, so without `deny_unknown_fields` on
+//! the enum itself a sibling of their two keys was ignored when either type was
+//! deserialized directly — and both are public and wire-facing, so that is a
+//! real door, not a hypothetical one. The first two now deserialize through
+//! private strict intermediaries and the third denies unknown fields, so the
+//! rule reaches *inside* the envelope, inside each event object, and around each
+//! nested action object — a host cannot ship a `secretKey` beside `sig`, or
+//! beside `args`, and have it silently trimmed.
 //!
-//! A third hole was subtler and is closed the same way — see
+//! # Duplicate members are rejected
+//!
+//! A key may appear at most once in any object. serde's derived readers reject a
+//! repeated field, so most of this contract gets that for free — but the strict
+//! response intermediary originally buffered `outcome` through a
+//! `serde_json::Value`, and that collapses duplicates last-wins. `outcome` was
+//! therefore the one place a reader could observe a value the envelope's own
+//! strictness never vetted, so it now re-parses the original bytes. The practical
+//! consequence for a host author is the same as the no-null rule: emit each
+//! member once, and do not rely on a later occurrence overriding an earlier one.
+//!
+//! A fourth hole was subtler and is closed the same way — see
 //! [Optional members](#optional-members-omission-is-the-only-spelling-of-absence).
 //!
 //! Two limits are worth stating. A `String` field can physically hold secret
@@ -138,6 +154,7 @@ use crate::SdkError;
 
 pub mod actions;
 pub mod client;
+mod correlate;
 
 use actions::absent_or_valued;
 pub use actions::{
@@ -219,15 +236,21 @@ impl BrokerRequest {
     /// [`MAX_REQUEST_ID_LEN`], or not printable ASCII, or if the action's
     /// arguments fail validation.
     pub fn new(request_id: impl Into<String>, action: ActionArgs) -> Result<Self, SdkError> {
-        let request = Self {
+        let request_id = request_id.into();
+        validate_request_id(&request_id)?;
+        // Store the normalized copy, not the caller's. `validated` both checks
+        // and normalizes (trimming names, lowercasing pubkeys), so keeping the
+        // original would let a padded selector pass validation and then travel
+        // in the frozen body — the host would look up something the validator
+        // never approved.
+        let action = action.validated()?;
+        Ok(Self {
             r#type: BROKER_REQUEST_TYPE.to_string(),
             protocol_version: BROKER_PROTOCOL_VERSION,
-            request_id: request_id.into(),
+            request_id,
             action_version: action.action().current_version(),
             action,
-        };
-        request.validate()?;
-        Ok(request)
+        })
     }
 
     /// The action this request invokes.
@@ -236,14 +259,25 @@ impl BrokerRequest {
         self.action.action()
     }
 
-    /// Validate, then serialize once into the bytes every attempt will send.
+    /// Validate and normalize, then serialize once into the bytes every attempt
+    /// will send.
+    ///
+    /// This re-validates even though [`Self::new`] already did. That is not
+    /// redundant: every field of this struct is public and the type is
+    /// [`Deserialize`], so a value can reach here without ever passing through
+    /// [`Self::new`] — built with a struct literal, parsed from JSON, or mutated
+    /// after construction. Freezing bytes is the last point where anything can
+    /// be checked, so it normalizes here too and serializes the normalized copy.
+    /// Both paths therefore satisfy the same invariant: the frozen body contains
+    /// exactly what validation approved.
     ///
     /// # Errors
     ///
     /// Returns [`SdkError`] when [`Self::validate`] fails, or
     /// [`SdkError::InvalidInput`] if serialization fails.
-    pub fn prepare(self) -> Result<PreparedRequest, SdkError> {
-        self.validate()?;
+    pub fn prepare(mut self) -> Result<PreparedRequest, SdkError> {
+        self.validate_envelope()?;
+        self.action = self.action.validated()?;
         let body = serde_json::to_vec(&self).map_err(|e| {
             SdkError::InvalidInput(format!("broker request is not serializable: {e}"))
         })?;
@@ -264,6 +298,16 @@ impl BrokerRequest {
     /// `protocolVersion` or `actionVersion`, a malformed `requestId`, or
     /// arguments that fail their own validation.
     pub fn validate(&self) -> Result<(), SdkError> {
+        self.validate_envelope()?;
+        self.action.validate()
+    }
+
+    /// Validate everything except the action arguments.
+    ///
+    /// Split out so [`Self::prepare`] can check the envelope and then take the
+    /// normalized arguments from a single `validated` call, rather than
+    /// validating the arguments twice on the way to freezing bytes.
+    fn validate_envelope(&self) -> Result<(), SdkError> {
         if self.r#type != BROKER_REQUEST_TYPE {
             return Err(SdkError::InvalidInput(format!(
                 "broker request type must be \"{BROKER_REQUEST_TYPE}\", got \"{}\"",
@@ -286,7 +330,7 @@ impl BrokerRequest {
                 action.current_version()
             )));
         }
-        self.action.validate()
+        Ok(())
     }
 }
 
@@ -671,7 +715,7 @@ struct WireResponse {
     #[serde(default, deserialize_with = "absent_or_valued")]
     action: Option<String>,
     #[serde(default, deserialize_with = "absent_or_valued")]
-    outcome: Option<serde_json::Value>,
+    outcome: Option<Box<serde_json::value::RawValue>>,
     #[serde(default, deserialize_with = "absent_or_valued")]
     error: Option<BrokerError>,
     #[serde(default)]
@@ -706,9 +750,17 @@ impl<'de> Deserialize<'de> for BrokerResponse {
                 // Re-deserialize the outcome under its action tag, which is how
                 // the adjacently-tagged `ActionOutcome` — and the
                 // `deny_unknown_fields` on each outcome type — get applied.
-                let tagged = serde_json::json!({ "action": action, "outcome": outcome });
+                // Re-deserialize from the original bytes, not from a
+                // `serde_json::Value`: buffering through `Value` collapses
+                // duplicate keys last-wins, which would let `outcome` carry a
+                // duplicate that no other part of this contract accepts.
+                let tagged = format!(
+                    "{{\"action\":{},\"outcome\":{}}}",
+                    serde_json::to_string(&action).map_err(D::Error::custom)?,
+                    outcome.get()
+                );
                 let outcome: ActionOutcome =
-                    serde_json::from_value(tagged).map_err(D::Error::custom)?;
+                    serde_json::from_str(&tagged).map_err(D::Error::custom)?;
                 BrokerResult::Succeeded { outcome }
             }
             status @ ("failed" | "indeterminate") => {
@@ -834,8 +886,33 @@ impl BrokerResponse {
     ///
     /// Returns everything [`Self::validate`] returns, plus
     /// [`SdkError::InvalidInput`] when the `requestId` does not correlate, a
-    /// success outcome names a different action than the request, or a read
-    /// returned more messages than the request allowed.
+    /// success outcome names a different action than the request, a success
+    /// outcome echoes a different identity than the request supplied, or a
+    /// read returned more messages than the request allowed.
+    ///
+    /// # What identity correlation compares
+    ///
+    /// `requestId` plus action is not enough: a host routing bug can return a
+    /// well-formed success for the wrong *subject*. Every identity the request
+    /// supplies and the outcome echoes must match exactly. This is the whole
+    /// table:
+    ///
+    /// | Action | compared | not compared, and why |
+    /// |---|---|---|
+    /// | `channel.read` | — | outcome carries a page and cursor, no echo of `channelId` |
+    /// | `message.post` | — | outcome is `eventId`/`kind`/`createdAt`, all host-minted |
+    /// | `message.reply` | — | same; the parent id is not echoed |
+    /// | `reaction.add` | — | same |
+    /// | `profile.set` | — | same |
+    /// | `storage.address` | — | `slug` is deliberately absent from the outcome: a `d` tag is a keyed hash of it, and echoing the slug would defeat that |
+    /// | `agents.create` | `channelId` | pubkey and name are newly minted, so there is nothing prior to compare |
+    /// | `agents.update` | `agentPubkey` when targeted by pubkey | a name target is resolved host-side; `displayName` may be exactly what this call changed |
+    /// | `agents.delete` | `agentPubkey` when targeted by pubkey | ditto for a name target |
+    ///
+    /// A name-targeted `agents.update`/`agents.delete` is the one case where the
+    /// caller asked for an identity it cannot verify in the reply. That is
+    /// inherent: the host resolves the name, and a rename may be the very thing
+    /// the call performed.
     pub fn validate_for(&self, request: &PreparedRequest) -> Result<(), SdkError> {
         self.validate()?;
         if self.request_id != request.request_id() {
@@ -854,6 +931,7 @@ impl BrokerResponse {
                     expected.as_str()
                 )));
             }
+            correlate::correlate_identities(&request.request.action, outcome)?;
             // `ActionOutcome::validate` can only enforce the protocol-wide cap,
             // because it never sees the request. A page bounded only by that cap
             // still overruns a caller that asked for one message and was handed
