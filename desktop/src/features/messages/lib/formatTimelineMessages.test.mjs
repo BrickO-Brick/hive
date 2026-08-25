@@ -797,23 +797,18 @@ const PENDING_SENTINEL = JSON.stringify({
   expiresAt: 9_999_999_999,
   optionIds: ["opt-allow", "opt-deny"],
   labels: { "opt-allow": "Allow", "opt-deny": "Deny" },
-  hasDurableRule: false,
-  durableRuleNote: null,
 });
 
 const RESOLVED_SENTINEL = JSON.stringify({
   v: 1,
   state: "resolved",
   requestNonce: "sentinel-gate-test-nonce",
-  originalEventId:
-    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  originalEventId: HEX64_A,
   sessionId: null,
   turnId: null,
   expiresAt: 9_999_999_999,
   optionIds: ["opt-allow", "opt-deny"],
   labels: { "opt-allow": "Allow", "opt-deny": "Deny" },
-  hasDurableRule: false,
-  durableRuleNote: null,
   outcome: "applied",
   chosenOptionId: "opt-allow",
 });
@@ -973,6 +968,8 @@ test("sentinel_agent_edit_accepted_card_retires_to_resolved", () => {
     PUBKEY_A,
     row.signerPubkey,
     row.editSignerPubkey,
+    row.id,
+    row.preEditBody,
   );
   assert.ok(payload !== null, "card present");
   assert.equal(payload.state, "resolved", "card retired to resolved");

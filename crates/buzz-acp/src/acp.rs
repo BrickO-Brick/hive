@@ -209,6 +209,11 @@ struct PermissionEntry {
     nonce: String,
     /// The exact options snapshot from the original request.
     options_snapshot: Vec<serde_json::Value>,
+    /// The two validated card actions (allow_once / reject_once) surfaced for
+    /// this request. The read loop accepts an owner decision only when its
+    /// `optionId` matches one of these two — never a forbidden option (e.g.
+    /// `allow_always`) that the adapter offered but the card never showed.
+    card_actions: CardActions,
     /// Current lifecycle state.
     state: PermissionEntryState,
     /// Per-request hard deadline: `min(registered_at + 300s, turn hard deadline)`.
@@ -1546,7 +1551,7 @@ impl AcpClient {
                 let sentinel_context = self.pending_permissions.get(id_str).map(|e| {
                     (
                         e.sentinel_event_id.clone(),
-                        e.options_snapshot.clone(),
+                        e.card_actions.clone(),
                         e.nonce.clone(),
                         e.expiry_unix_secs,
                     )
@@ -1572,7 +1577,7 @@ impl AcpClient {
                 // resolution — the agent has already received the ACP response.
                 if let Some((
                     Some(original_event_id),
-                    options_snapshot,
+                    card_actions,
                     entry_nonce,
                     expiry_unix_secs,
                 )) = sentinel_context
@@ -1601,7 +1606,7 @@ impl AcpClient {
                         if let Some(content) = build_sentinel_resolved_payload(
                             &entry_nonce,
                             &original_event_id,
-                            &options_snapshot,
+                            &card_actions,
                             expiry_unix_secs,
                             session_id_owned.as_deref(),
                             &turn_id,
@@ -2232,22 +2237,21 @@ impl AcpClient {
                         .map(|(k, _)| k.clone());
 
                     if let Some(id_str) = entry_id {
-                        // Validate the chosen option_id is in the snapshot.
+                        // Accept the decision only when its optionId is exactly
+                        // one of the two ruled card actions (allow_once /
+                        // reject_once) — never a forbidden option (e.g.
+                        // `allow_always`) that the adapter offered but the card
+                        // never surfaced. Membership in the raw snapshot is not
+                        // sufficient.
                         let opt_valid = self.pending_permissions
                             .get(&id_str)
-                            .map(|e| {
-                                e.options_snapshot.iter().any(|opt| {
-                                    opt.get("optionId")
-                                        .and_then(|v| v.as_str())
-                                        == Some(decision.option_id.as_str())
-                                })
-                            })
+                            .map(|e| e.card_actions.accepts(decision.option_id.as_str()))
                             .unwrap_or(false);
 
                         if !opt_valid {
                             tracing::warn!(
                                 target: "acp::permission",
-                                "permission_decision optionId {:?} not in snapshot for id={id_str} — ignoring",
+                                "permission_decision optionId {:?} is not a ruled card action for id={id_str} — ignoring",
                                 decision.option_id
                             );
                         } else {
@@ -2362,13 +2366,7 @@ impl AcpClient {
                                 let opt_valid = self
                                     .pending_permissions
                                     .get(&id_str)
-                                    .map(|e| {
-                                        e.options_snapshot.iter().any(|opt| {
-                                            opt.get("optionId")
-                                                .and_then(|v| v.as_str())
-                                                == Some(decision.option_id.as_str())
-                                        })
-                                    })
+                                    .map(|e| e.card_actions.accepts(decision.option_id.as_str()))
                                     .unwrap_or(false);
                                 if opt_valid {
                                     let (nonce, id_val) = {
@@ -3257,6 +3255,37 @@ impl AcpClient {
                     return Ok(true);
                 }
 
+                // Select exactly the two ruled card actions (allow_once /
+                // reject_once). Fail closed — deny with zero card events — if the
+                // adapter does not offer exactly one of each. This is the single
+                // enforcement point that keeps a forbidden option (e.g.
+                // `allow_always`) from ever reaching the owner as a button.
+                let card_actions = match select_card_actions(&options) {
+                    Ok(actions) => actions,
+                    Err(reason) => {
+                        tracing::warn!(
+                            target: "acp::permission",
+                            "ask: cannot build two-action card ({reason}) — downgrading to reject for id={id}"
+                        );
+                        self.pending_permission_id = Some(id.clone());
+                        self.permission_responded = false;
+                        let deny_nonce = new_permission_nonce();
+                        self.emit_permission_read_with_nonce(
+                            &id,
+                            msg,
+                            &deny_nonce,
+                            false,
+                            Some(&format!("policy=ask; fail closed: {reason}")),
+                        );
+                        let response = permission_denial_response(&id, &options)?;
+                        self.finish_permission_sync(&id, &deny_nonce, "rejected", response)
+                            .await?;
+                        self.permission_responded = true;
+                        self.pending_permission_id = None;
+                        return Ok(true);
+                    }
+                };
+
                 // Emit the single enveloped acp_read — suppresses the caller's
                 // generic emit via the Ok(true) return.
                 self.observe_authorized(
@@ -3299,7 +3328,7 @@ impl AcpClient {
                         |((keys, channel_id), owner_hex)| {
                             let content = build_sentinel_pending_payload(
                                 &nonce,
-                                &options,
+                                &card_actions,
                                 expiry_unix_secs,
                                 session_id_owned.as_deref(),
                                 &turn_id,
@@ -3328,6 +3357,7 @@ impl AcpClient {
                             PermissionEntry {
                                 nonce: nonce.clone(),
                                 options_snapshot: options.clone(),
+                                card_actions,
                                 state: PermissionEntryState::Publishing,
                                 deadline: entry_deadline,
                                 expiry_unix_secs,
@@ -3636,50 +3666,75 @@ fn new_permission_nonce() -> String {
 /// options and must be capped before embedding in the Nostr event content.
 const SENTINEL_LABEL_MAX: usize = 200;
 
+/// The two card actions surfaced to the owner: the validated `allow_once` and
+/// `reject_once` options, in that fixed order. Built by [`select_card_actions`]
+/// so the sentinel can never advertise a third (e.g. `allow_always`) action.
+#[derive(Debug, Clone)]
+struct CardActions {
+    allow: serde_json::Value,
+    reject: serde_json::Value,
+}
+
+impl CardActions {
+    /// The `optionId` of the validated `allow_once` action.
+    fn allow_id(&self) -> &str {
+        self.allow
+            .get("optionId")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+    }
+
+    /// The `optionId` of the validated `reject_once` action.
+    fn reject_id(&self) -> &str {
+        self.reject
+            .get("optionId")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+    }
+
+    /// True iff `option_id` is exactly one of the two ruled card actions.
+    /// The read loop gates owner decisions on this so a decision can never
+    /// select a forbidden option (e.g. `allow_always`) that an adapter offered
+    /// but the card never surfaced.
+    fn accepts(&self, option_id: &str) -> bool {
+        option_id == self.allow_id() || option_id == self.reject_id()
+    }
+}
+
+/// Build the ordered `[optionIds, labels]` pair for a sentinel from the two
+/// validated card actions. Order is fixed: allow first, reject second.
+fn sentinel_option_fields(actions: &CardActions) -> (Vec<serde_json::Value>, serde_json::Value) {
+    let mut option_ids = Vec::with_capacity(2);
+    let mut labels = serde_json::Map::with_capacity(2);
+    for opt in [&actions.allow, &actions.reject] {
+        // optionId presence/non-emptiness was validated by select_card_actions.
+        let id = opt
+            .get("optionId")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let name = opt.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        let capped: String = name.chars().take(SENTINEL_LABEL_MAX).collect();
+        option_ids.push(serde_json::Value::String(id.to_string()));
+        labels.insert(id.to_string(), serde_json::Value::String(capped));
+    }
+    (option_ids, labels.into())
+}
+
 /// Build the JSON payload for a kind-9 PENDING sentinel card.
 ///
 /// Returns `None` only when `serde_json::to_string` fails (unreachable in
 /// practice). The `expiry_unix_secs` is `min(registered_at + 300, hard_deadline)`.
+///
+/// The card advertises EXACTLY the two ruled actions (allow_once, reject_once);
+/// no other adapter option (e.g. `allow_always`) is ever forwarded.
 fn build_sentinel_pending_payload(
     nonce: &str,
-    options: &[serde_json::Value],
+    actions: &CardActions,
     expiry_unix_secs: u64,
     session_id: Option<&str>,
     turn_id: &str,
 ) -> Option<String> {
-    // Extract opaque optionIds and capped labels from the ACP options.
-    let option_ids: Vec<serde_json::Value> = options
-        .iter()
-        .filter_map(|o| o.get("optionId").and_then(|v| v.as_str()))
-        .map(|s| serde_json::Value::String(s.to_string()))
-        .collect();
-    let labels: serde_json::Value = options
-        .iter()
-        .filter_map(|o| {
-            let id = o.get("optionId")?.as_str()?;
-            let name = o.get("name")?.as_str().unwrap_or("");
-            let capped: String = name.chars().take(SENTINEL_LABEL_MAX).collect();
-            Some((id.to_string(), serde_json::Value::String(capped)))
-        })
-        .collect::<serde_json::Map<_, _>>()
-        .into();
-
-    // Detect if any option has kind = "allow_always" (D5 durable-rule disclosure).
-    let has_durable_rule = options.iter().any(|o| {
-        o.get("kind")
-            .and_then(|k| k.as_str())
-            .map(|k| k == "allow_always")
-            .unwrap_or(false)
-    });
-    let durable_rule_note = if has_durable_rule {
-        serde_json::Value::String(
-            "Includes an 'Always allow' option — creates a machine-wide durable rule in Codex."
-                .to_string(),
-        )
-    } else {
-        serde_json::Value::Null
-    };
-
+    let (option_ids, labels) = sentinel_option_fields(actions);
     let payload = serde_json::json!({
         "v": 1,
         "state": "pending",
@@ -3689,8 +3744,6 @@ fn build_sentinel_pending_payload(
         "expiresAt": expiry_unix_secs,
         "optionIds": option_ids,
         "labels": labels,
-        "hasDurableRule": has_durable_rule,
-        "durableRuleNote": durable_rule_note,
     });
     serde_json::to_string(&payload).ok()
 }
@@ -3700,44 +3753,14 @@ fn build_sentinel_pending_payload(
 fn build_sentinel_resolved_payload(
     nonce: &str,
     original_event_id: &str,
-    options: &[serde_json::Value],
+    actions: &CardActions,
     expiry_unix_secs: u64,
     session_id: Option<&str>,
     turn_id: &str,
     outcome: &str,
     chosen_option_id: Option<&str>,
 ) -> Option<String> {
-    let option_ids: Vec<serde_json::Value> = options
-        .iter()
-        .filter_map(|o| o.get("optionId").and_then(|v| v.as_str()))
-        .map(|s| serde_json::Value::String(s.to_string()))
-        .collect();
-    let labels: serde_json::Value = options
-        .iter()
-        .filter_map(|o| {
-            let id = o.get("optionId")?.as_str()?;
-            let name = o.get("name")?.as_str().unwrap_or("");
-            let capped: String = name.chars().take(SENTINEL_LABEL_MAX).collect();
-            Some((id.to_string(), serde_json::Value::String(capped)))
-        })
-        .collect::<serde_json::Map<_, _>>()
-        .into();
-
-    let has_durable_rule = options.iter().any(|o| {
-        o.get("kind")
-            .and_then(|k| k.as_str())
-            .map(|k| k == "allow_always")
-            .unwrap_or(false)
-    });
-    let durable_rule_note = if has_durable_rule {
-        serde_json::Value::String(
-            "Includes an 'Always allow' option — creates a machine-wide durable rule in Codex."
-                .to_string(),
-        )
-    } else {
-        serde_json::Value::Null
-    };
-
+    let (option_ids, labels) = sentinel_option_fields(actions);
     let payload = serde_json::json!({
         "v": 1,
         "state": "resolved",
@@ -3748,8 +3771,6 @@ fn build_sentinel_resolved_payload(
         "expiresAt": expiry_unix_secs,
         "optionIds": option_ids,
         "labels": labels,
-        "hasDurableRule": has_durable_rule,
-        "durableRuleNote": durable_rule_note,
         "outcome": outcome,
         "chosenOptionId": chosen_option_id,
     });
@@ -3810,32 +3831,77 @@ fn build_kind40003_sentinel(
 /// `allow_always` options are deliberately not selected — they would grant
 /// indefinite access without a per-request human decision.
 fn select_allow_once(options: &[serde_json::Value]) -> Result<String, String> {
+    select_unique_option_id(options, "allow_once")
+}
+
+/// Select the unique `reject_once` option's `optionId` from a request's option
+/// list. Same fail-closed semantics as [`select_allow_once`].
+fn select_reject_once(options: &[serde_json::Value]) -> Result<String, String> {
+    select_unique_option_id(options, "reject_once")
+}
+
+/// Return the `optionId` of the single option whose `kind` matches `kind`.
+///
+/// Returns `Err(reason)` (fail closed) when zero or multiple options match, or
+/// when the matching option's `optionId` is missing/empty.
+fn select_unique_option_id(options: &[serde_json::Value], kind: &str) -> Result<String, String> {
     let candidates: Vec<&serde_json::Value> = options
         .iter()
-        .filter(|opt| {
-            opt.get("kind")
-                .and_then(|k| k.as_str())
-                .map(|k| k == "allow_once")
-                .unwrap_or(false)
-        })
+        .filter(|opt| opt.get("kind").and_then(|k| k.as_str()) == Some(kind))
         .collect();
 
     match candidates.len() {
-        0 => Err("no allow_once option found".to_string()),
+        0 => Err(format!("no {kind} option found")),
         2.. => Err(format!(
-            "multiple allow_once options found ({}); ambiguous",
+            "multiple {kind} options found ({}); ambiguous",
             candidates.len()
         )),
-        1 => {
-            let opt = candidates[0];
-            let option_id = opt
-                .get("optionId")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| "allow_once option has missing or empty optionId".to_string())?;
-            Ok(option_id.to_string())
+        1 => candidates[0]
+            .get("optionId")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| format!("{kind} option has missing or empty optionId")),
+    }
+}
+
+/// Maximum length of an `optionId` string forwarded into a sentinel card.
+///
+/// ACP option IDs are short opaque tokens; this bounds an adversarial adapter
+/// from embedding an oversized ID that inflates the card content or DOM.
+const SENTINEL_OPTION_ID_MAX: usize = 200;
+
+/// Select the exactly-two card actions from a permission request's options:
+/// the unique `allow_once` and the unique `reject_once`. Returns their option
+/// objects (with `kind`/`name`/`optionId`) so the caller can build a card that
+/// offers ONLY those two, fail closed otherwise.
+///
+/// This is the single enforcement point for the ruled product contract:
+/// Allow-once / Reject only. `allow_always` and any other adapter option are
+/// never surfaced as an actionable button.
+fn select_card_actions(options: &[serde_json::Value]) -> Result<CardActions, String> {
+    let allow_id = select_allow_once(options)?;
+    let reject_id = select_reject_once(options)?;
+    for id in [&allow_id, &reject_id] {
+        if id.len() > SENTINEL_OPTION_ID_MAX {
+            return Err(format!(
+                "optionId exceeds {SENTINEL_OPTION_ID_MAX} chars: {} > {}",
+                id.len(),
+                SENTINEL_OPTION_ID_MAX
+            ));
         }
     }
+    let find = |target: &str| -> serde_json::Value {
+        options
+            .iter()
+            .find(|o| o.get("optionId").and_then(|v| v.as_str()) == Some(target))
+            .cloned()
+            .unwrap_or(serde_json::Value::Null)
+    };
+    Ok(CardActions {
+        allow: find(&allow_id),
+        reject: find(&reject_id),
+    })
 }
 
 /// Validate a `session/request_permission` request before it touches the
@@ -6952,6 +7018,16 @@ mod tests {
         ]
     }
 
+    /// A canonical `CardActions` pair for tests that construct a
+    /// `PermissionEntry` directly (allow-once `opt-allow`, reject-once
+    /// `opt-reject`).
+    fn test_card_actions() -> CardActions {
+        CardActions {
+            allow: serde_json::json!({"optionId":"opt-allow","kind":"allow_once","name":"Allow once"}),
+            reject: serde_json::json!({"optionId":"opt-reject","kind":"reject_once","name":"Reject once"}),
+        }
+    }
+
     /// Set policy=allow on a client and mark owner known.
     fn set_policy(client: &mut AcpClient, policy: PermissionPolicy) {
         let config = ResolvedPermissionConfig::resolve(policy, None).expect("valid policy");
@@ -7046,6 +7122,72 @@ mod tests {
         );
     }
 
+    // ── F1: two-action card contract — select_card_actions + accepts ─────────
+
+    #[test]
+    fn select_card_actions_picks_exactly_allow_and_reject_dropping_allow_always() {
+        // A request offering allow_once, reject_once, AND allow_always must
+        // yield a card carrying only the two ruled actions.
+        let opts = serde_json::from_str::<Vec<serde_json::Value>>(
+            r#"[{"optionId":"a","kind":"allow_once","name":"Allow"},
+               {"optionId":"r","kind":"reject_once","name":"Reject"},
+               {"optionId":"aa","kind":"allow_always","name":"Always"}]"#,
+        )
+        .unwrap();
+        let actions = select_card_actions(&opts).expect("must select the two ruled actions");
+        assert_eq!(actions.allow_id(), "a");
+        assert_eq!(actions.reject_id(), "r");
+        // The forbidden allow_always option is neither surfaced nor acceptable.
+        assert!(actions.accepts("a"), "allow_once must be accepted");
+        assert!(actions.accepts("r"), "reject_once must be accepted");
+        assert!(
+            !actions.accepts("aa"),
+            "allow_always must never be an acceptable decision"
+        );
+    }
+
+    #[test]
+    fn select_card_actions_fails_closed_without_both_actions() {
+        // Missing reject_once → fail closed (no card).
+        let allow_only = serde_json::from_str::<Vec<serde_json::Value>>(
+            r#"[{"optionId":"a","kind":"allow_once","name":"Allow"}]"#,
+        )
+        .unwrap();
+        assert!(select_card_actions(&allow_only).is_err());
+
+        // Missing allow_once → fail closed.
+        let reject_only = serde_json::from_str::<Vec<serde_json::Value>>(
+            r#"[{"optionId":"r","kind":"reject_once","name":"Reject"}]"#,
+        )
+        .unwrap();
+        assert!(select_card_actions(&reject_only).is_err());
+
+        // Ambiguous (two allow_once) → fail closed.
+        let ambiguous = serde_json::from_str::<Vec<serde_json::Value>>(
+            r#"[{"optionId":"a1","kind":"allow_once","name":"A1"},
+               {"optionId":"a2","kind":"allow_once","name":"A2"},
+               {"optionId":"r","kind":"reject_once","name":"R"}]"#,
+        )
+        .unwrap();
+        assert!(select_card_actions(&ambiguous).is_err());
+    }
+
+    #[test]
+    fn select_card_actions_fails_closed_on_oversized_option_id() {
+        // An adversarial adapter embedding an oversized optionId must be
+        // rejected before it can inflate the sentinel/DOM.
+        let big = "x".repeat(SENTINEL_OPTION_ID_MAX + 1);
+        let opts = serde_json::json!([
+            {"optionId": big, "kind": "allow_once", "name": "Allow"},
+            {"optionId": "r", "kind": "reject_once", "name": "Reject"},
+        ]);
+        let opts = opts.as_array().unwrap().clone();
+        assert!(
+            select_card_actions(&opts).is_err(),
+            "an optionId over SENTINEL_OPTION_ID_MAX must fail closed"
+        );
+    }
+
     // ── Pinned §3: duplicate option IDs ──────────────────────────────────────
 
     #[test]
@@ -7087,6 +7229,7 @@ mod tests {
             PermissionEntry {
                 nonce: "nonce-abc".to_string(),
                 options_snapshot: vec![],
+                card_actions: test_card_actions(),
                 state: PermissionEntryState::Pending,
                 deadline: tokio::time::Instant::now() + std::time::Duration::from_secs(300),
                 expiry_unix_secs: 0,
@@ -7296,6 +7439,7 @@ mod tests {
                 PermissionEntry {
                     nonce: format!("nonce-{i}"),
                     options_snapshot: vec![],
+                    card_actions: test_card_actions(),
                     state: PermissionEntryState::Pending,
                     deadline: tokio::time::Instant::now() + std::time::Duration::from_secs(300),
                     expiry_unix_secs: 0,
@@ -8458,6 +8602,7 @@ mod tests {
                 PermissionEntry {
                     nonce: "n99".to_string(),
                     options_snapshot: vec![],
+                    card_actions: test_card_actions(),
                     state: PermissionEntryState::Writing,
                     deadline: tokio::time::Instant::now() + std::time::Duration::from_secs(300),
                     expiry_unix_secs: 0,
@@ -8671,6 +8816,7 @@ mod tests {
                         options_snapshot: vec![
                             serde_json::json!({"optionId":"opt","kind":"reject_once","name":"R"}),
                         ],
+                        card_actions: test_card_actions(),
                         state: PermissionEntryState::Pending,
                         deadline: tokio::time::Instant::now() + std::time::Duration::from_secs(300),
                         expiry_unix_secs: 0,
@@ -9290,13 +9436,16 @@ mod tests {
     // ── Item 5: exact kind-9 content string from build_sentinel_pending_payload ─
 
     /// Emit the exact JSON string that `build_sentinel_pending_payload` produces
-    /// for a canonical 3-option request with a fixed nonce, session, turn, and
-    /// expiry. This string is the cross-boundary fixture Hayt uses to verify the
-    /// Desktop parser against real harness output (no fence wrapper).
+    /// for a canonical request with a fixed nonce, session, turn, and expiry.
+    /// This string is the cross-boundary fixture the Desktop parser is verified
+    /// against (no fence wrapper).
     ///
-    /// The test asserts structural invariants rather than byte equality so it does
-    /// not break if field ordering changes, but the `println!` output is the
-    /// canonical fixture string.
+    /// The card advertises EXACTLY the two ruled actions (allow_once,
+    /// reject_once). A third adapter option (`allow_always`) is present in the
+    /// request but must never appear in the sentinel — this test is the
+    /// mutation proof for that contract (F1): if `select_card_actions` stopped
+    /// filtering, `optionIds` would carry the forbidden ID and the length
+    /// assertion below would fail.
     #[test]
     fn kind9_content_fixture_structural_invariants() {
         let nonce = "test-nonce-fixture-abc123";
@@ -9309,17 +9458,19 @@ mod tests {
         let session_id = Some("sess-fixture-001");
         let turn_id = "turn-fixture-xyz";
 
+        let actions = select_card_actions(&options)
+            .expect("select_card_actions must succeed with one allow_once + one reject_once");
         let content =
-            build_sentinel_pending_payload(nonce, &options, expiry_unix_secs, session_id, turn_id)
+            build_sentinel_pending_payload(nonce, &actions, expiry_unix_secs, session_id, turn_id)
                 .expect("build_sentinel_pending_payload must succeed");
 
-        // Print the canonical fixture string for Hayt to embed as the Desktop fixture.
+        // Print the canonical fixture string for the Desktop fixture.
         println!("kind-9 content fixture:\n{content}");
 
         let v: serde_json::Value =
             serde_json::from_str(&content).expect("content must be valid JSON");
 
-        // Structural invariants required by the Desktop parser (b31c716e schema).
+        // Structural invariants required by the Desktop parser.
         assert_eq!(v["v"], serde_json::json!(1), "v must be 1");
         assert_eq!(v["state"], "pending", "state must be 'pending'");
         assert_eq!(v["requestNonce"], nonce, "requestNonce must match");
@@ -9334,33 +9485,38 @@ mod tests {
         );
         assert_eq!(v["turnId"], turn_id, "turnId must match");
 
-        // optionIds must contain exactly the three option IDs in order.
+        // optionIds must contain EXACTLY the two ruled actions, allow first,
+        // reject second — never the forbidden allow_always option.
         let option_ids = v["optionIds"]
             .as_array()
             .expect("optionIds must be an array");
-        assert_eq!(option_ids.len(), 3, "optionIds must have 3 entries");
+        assert_eq!(option_ids.len(), 2, "optionIds must have exactly 2 entries");
         assert_eq!(option_ids[0], "opt-allow");
         assert_eq!(option_ids[1], "opt-reject");
-        assert_eq!(option_ids[2], "opt-always");
+        assert!(
+            !option_ids.iter().any(|id| id == "opt-always"),
+            "the forbidden allow_always option must never reach the sentinel"
+        );
 
-        // labels must be an object with one key per optionId.
+        // labels must be an object with one key per surfaced optionId.
         let labels = v["labels"].as_object().expect("labels must be an object");
-        assert_eq!(labels.len(), 3, "labels must have 3 entries");
+        assert_eq!(labels.len(), 2, "labels must have exactly 2 entries");
         assert_eq!(labels["opt-allow"], "Allow once");
         assert_eq!(labels["opt-reject"], "Reject");
-        assert_eq!(labels["opt-always"], "Always allow");
+        assert!(
+            !labels.contains_key("opt-always"),
+            "the forbidden allow_always label must never reach the sentinel"
+        );
 
-        // D5: allow_always option → hasDurableRule true, durableRuleNote non-null.
-        assert_eq!(
-            v["hasDurableRule"], true,
-            "hasDurableRule must be true (allow_always present)"
+        // The durable-rule disclosure fields are gone: the card can no longer
+        // carry an allow_always action, so there is nothing to disclose.
+        assert!(
+            v.get("hasDurableRule").is_none(),
+            "hasDurableRule must not be present — the card is two-action only"
         );
         assert!(
-            v["durableRuleNote"]
-                .as_str()
-                .map(|s| !s.is_empty())
-                .unwrap_or(false),
-            "durableRuleNote must be a non-empty string when hasDurableRule is true"
+            v.get("durableRuleNote").is_none(),
+            "durableRuleNote must not be present — the card is two-action only"
         );
 
         // originalEventId must NOT be present in a pending payload.
@@ -9458,6 +9614,10 @@ mod tests {
                 options_snapshot: vec![
                     serde_json::json!({"optionId":"valid-opt","kind":"allow_once","name":"A"}),
                 ],
+                card_actions: CardActions {
+                    allow: serde_json::json!({"optionId":"valid-opt","kind":"allow_once","name":"A"}),
+                    reject: serde_json::json!({"optionId":"valid-reject","kind":"reject_once","name":"R"}),
+                },
                 state: PermissionEntryState::Pending,
                 deadline: tokio::time::Instant::now() + std::time::Duration::from_secs(300),
                 expiry_unix_secs: 0,

@@ -40,18 +40,14 @@ export type PermissionRequestPending = {
   sessionId: string | null;
   turnId: string | null;
   expiresAt: number;
-  /** Opaque option IDs. Size-bounded: ≤ 10. */
+  /**
+   * Opaque option IDs. Exactly two — the ruled `allow_once` and `reject_once`
+   * actions, in that order. The harness never forwards a third option (e.g.
+   * `allow_always`), so any other cardinality is a malformed sentinel.
+   */
   optionIds: string[];
   /** Harness-provided display labels keyed by optionId. Each ≤ 200 chars. */
   labels: Record<string, string>;
-  /** True when an `allow_always` option is present (D5 durable-rule disclosure). */
-  hasDurableRule: boolean;
-  /**
-   * Human-readable durable-rule disclosure note. Non-null only when
-   * `hasDurableRule === true`. E.g. "Includes an 'Always allow' option —
-   * creates a machine-wide durable rule in Codex."
-   */
-  durableRuleNote: string | null;
 };
 
 /**
@@ -70,8 +66,6 @@ export type PermissionRequestResolved = {
   expiresAt: number;
   optionIds: string[];
   labels: Record<string, string>;
-  hasDurableRule: boolean;
-  durableRuleNote: string | null;
   /** Outcome of the permission request. */
   outcome: "applied" | "timed_out" | "cancelled" | "rejected";
   /** Non-null only when outcome === "applied". */
@@ -87,8 +81,20 @@ export type PermissionRequestPayload =
 /** Maximum character length for any untrusted display string in the sentinel. */
 const MAX_LABEL_CHARS = 200;
 
-/** Maximum number of option IDs in a sentinel (PERMISSION_OPTIONS_MAX). */
-const MAX_OPTION_IDS = 10;
+/**
+ * Exact number of option IDs in a sentinel. The card is a two-action contract:
+ * the ruled `allow_once` and `reject_once` options and nothing else. The
+ * harness enforces this on the producer side (`select_card_actions`); the
+ * parser rejects any other cardinality so the two sides can never diverge.
+ */
+const OPTION_IDS_COUNT = 2;
+
+/**
+ * Maximum character length of an opaque `optionId` or `requestNonce`. Matches
+ * the harness bound (`SENTINEL_OPTION_ID_MAX`). Bounds an adversarial adapter
+ * from embedding an oversized token that inflates the card content or DOM.
+ */
+const MAX_ID_CHARS = 200;
 
 /** Regex for a valid 64-character lowercase hex Nostr event ID. */
 const HEX64_RE = /^[0-9a-f]{64}$/;
@@ -164,7 +170,11 @@ function isPermissionRequestPayload(v: unknown): v is PermissionRequestPayload {
   if (p.v !== 1) return false;
 
   // Shared fields present in both states
-  if (typeof p.requestNonce !== "string" || p.requestNonce.length === 0) {
+  if (
+    typeof p.requestNonce !== "string" ||
+    p.requestNonce.length === 0 ||
+    p.requestNonce.length > MAX_ID_CHARS
+  ) {
     return false;
   }
   if (!isNullableString(p.sessionId)) return false;
@@ -178,25 +188,34 @@ function isPermissionRequestPayload(v: unknown): v is PermissionRequestPayload {
   ) {
     return false;
   }
+  // optionIds: EXACTLY two bounded, non-empty, unique opaque strings.
   if (
     !Array.isArray(p.optionIds) ||
-    p.optionIds.length === 0 ||
-    p.optionIds.length > MAX_OPTION_IDS ||
-    !p.optionIds.every((id) => typeof id === "string" && id.length > 0)
+    p.optionIds.length !== OPTION_IDS_COUNT ||
+    !p.optionIds.every(
+      (id) =>
+        typeof id === "string" && id.length > 0 && id.length <= MAX_ID_CHARS,
+    )
+  ) {
+    return false;
+  }
+  if (
+    new Set(p.optionIds as string[]).size !== (p.optionIds as string[]).length
   ) {
     return false;
   }
   if (!isLabelsRecord(p.labels)) return false;
-  // Every advertised optionId must have a label entry
+  // labels must have exactly one entry per advertised optionId — no extra keys.
+  const optionIds = p.optionIds as string[];
+  const labelKeys = Object.keys(p.labels as Record<string, unknown>);
+  if (labelKeys.length !== optionIds.length) return false;
   if (
-    !(p.optionIds as string[]).every(
+    !optionIds.every(
       (id) => typeof (p.labels as Record<string, unknown>)[id] === "string",
     )
   ) {
     return false;
   }
-  if (typeof p.hasDurableRule !== "boolean") return false;
-  if (!isNullableString(p.durableRuleNote)) return false;
 
   if (p.state === "pending") {
     return true;
@@ -212,10 +231,17 @@ function isPermissionRequestPayload(v: unknown): v is PermissionRequestPayload {
     }
     // outcome: exactly one of the four literals
     if (!VALID_OUTCOMES.has(p.outcome as string)) return false;
-    // chosenOptionId: non-null ⟺ outcome === "applied"
+    // chosenOptionId: non-null ⟺ outcome === "applied", bounded, and must be
+    // one of the advertised optionIds.
     if (p.outcome === "applied") {
-      if (typeof p.chosenOptionId !== "string" || p.chosenOptionId.length === 0)
+      if (
+        typeof p.chosenOptionId !== "string" ||
+        p.chosenOptionId.length === 0 ||
+        p.chosenOptionId.length > MAX_ID_CHARS ||
+        !optionIds.includes(p.chosenOptionId)
+      ) {
         return false;
+      }
     } else {
       if (p.chosenOptionId !== null) return false;
     }

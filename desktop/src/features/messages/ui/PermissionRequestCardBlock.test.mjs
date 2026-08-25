@@ -87,6 +87,11 @@ const ATTACKER_PUBKEY =
   "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
 const CHANNEL_ID = "test-channel-id";
 
+// The kind-9 sentinel event ID. A resolved edit must name this in
+// `originalEventId` (F5 correlation).
+const MESSAGE_ID =
+  "deadbeef0001deadbeef0002deadbeef0003deadbeef0004deadbeef0005dead";
+
 // Unix epoch far in the future — buttons are live under the fake clock
 const FUTURE_EXPIRY = Math.floor(FAKE_NOW_MS / 1000) + 9_999_999;
 // Unix epoch in the past — buttons expired immediately (prefixed _ = intentionally unused)
@@ -102,8 +107,6 @@ function makePendingContent(expiresAt = FUTURE_EXPIRY) {
     expiresAt,
     optionIds: ["opt-allow", "opt-deny"],
     labels: { "opt-allow": "Allow once", "opt-deny": "Deny" },
-    hasDurableRule: false,
-    durableRuleNote: null,
   });
 }
 
@@ -112,15 +115,12 @@ function makeResolvedContent() {
     v: 1,
     state: "resolved",
     requestNonce: "a9f3b2c1-d4e5-4f6a-b7c8-d9e0f1a2b3c4",
-    originalEventId:
-      "deadbeef0001deadbeef0002deadbeef0003deadbeef0004deadbeef0005dead",
+    originalEventId: MESSAGE_ID,
     sessionId: "sess-abc",
     turnId: "turn-xyz",
     expiresAt: FUTURE_EXPIRY,
     optionIds: ["opt-allow", "opt-deny"],
     labels: { "opt-allow": "Allow once", "opt-deny": "Deny" },
-    hasDurableRule: false,
-    durableRuleNote: null,
     outcome: "applied",
     chosenOptionId: "opt-allow",
   });
@@ -152,14 +152,23 @@ async function makeQueryClient(viewerPubkey) {
 // Build a minimal TimelineMessage carrying the sentinel. The block reads
 // kind/isAgent/body/signerPubkey/editSignerPubkey/ownerPubkey; other fields
 // are irrelevant to the render gates under test.
-function makeMessage({ content, signerPubkey, editSignerPubkey, ownerPubkey }) {
+function makeMessage({
+  content,
+  signerPubkey,
+  editSignerPubkey,
+  ownerPubkey,
+  id,
+  preEditBody,
+}) {
   return {
+    id,
     kind: 9,
     isAgent: true,
     body: content,
     signerPubkey,
     editSignerPubkey,
     ownerPubkey,
+    preEditBody,
   };
 }
 
@@ -176,6 +185,8 @@ async function renderBlock({
   editSignerPubkey = undefined,
   ownerPubkey = OWNER_PUBKEY,
   viewerPubkey = OWNER_PUBKEY,
+  id = MESSAGE_ID,
+  preEditBody = undefined,
 }) {
   const { createElement, act } = await import("react");
   const { render } = await import("@testing-library/react");
@@ -198,6 +209,8 @@ async function renderBlock({
             signerPubkey,
             editSignerPubkey,
             ownerPubkey,
+            id,
+            preEditBody,
           }),
           isKnownAgentPubkey: makeIsKnownAgentPubkey(agentPubkey),
           channelId: CHANNEL_ID,
@@ -270,6 +283,7 @@ test("test_agent_signed_edit_resolves_card_to_non_actionable", async () => {
     agentPubkey: AGENT_PUBKEY,
     signerPubkey: AGENT_PUBKEY,
     editSignerPubkey: AGENT_PUBKEY, // edit signed by agent ✓
+    preEditBody: makePendingContent(), // correlates nonce/session/turn ✓
     viewerPubkey: OWNER_PUBKEY,
     ownerPubkey: OWNER_PUBKEY,
   });

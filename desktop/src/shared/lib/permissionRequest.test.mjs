@@ -1,8 +1,11 @@
 /**
  * Named test matrix for the `permissionRequest` sentinel parser.
  *
- * All fixtures are verbatim from Duncan's frozen schema (event b31c716e).
- * Tests cover: parse, reject, and sentinel identification.
+ * The card is a two-action contract: the sentinel carries EXACTLY the ruled
+ * `allow_once` and `reject_once` options and nothing else. The harness enforces
+ * this on the producer side (`select_card_actions`); these tests pin the parser
+ * side — exact cardinality, bounded ids/labels, unique ids, and
+ * `chosenOptionId` membership.
  *
  * Wire contract: the harness signs BARE JSON as the kind:9 event content —
  * no fence wrapper. Tests feed raw JSON strings matching that shape exactly.
@@ -15,7 +18,7 @@ const mod = await import("./permissionRequest.js").catch(
 );
 const { extractPermissionRequest, isPermissionRequestSentinel } = mod;
 
-// ── Fixtures (verbatim from event b31c716e — bare JSON as harness emits) ─────
+// ── Fixtures (bare JSON as the harness emits) ────────────────────────────────
 
 const PENDING_NORMAL = {
   v: 1,
@@ -26,26 +29,6 @@ const PENDING_NORMAL = {
   expiresAt: 1786206732,
   optionIds: ["opt-allow", "opt-deny"],
   labels: { "opt-allow": "Allow once", "opt-deny": "Deny" },
-  hasDurableRule: false,
-  durableRuleNote: null,
-};
-
-const PENDING_DURABLE = {
-  v: 1,
-  state: "pending",
-  requestNonce: "b1c2d3e4-f5a6-4b7c-8d9e-0f1a2b3c4d5e",
-  sessionId: "sess-abc",
-  turnId: "turn-xyz",
-  expiresAt: 1786206732,
-  optionIds: ["opt-allow-once", "opt-allow-always", "opt-deny"],
-  labels: {
-    "opt-allow-once": "Allow once",
-    "opt-allow-always": "Always allow",
-    "opt-deny": "Deny",
-  },
-  hasDurableRule: true,
-  durableRuleNote:
-    "Includes an 'Always allow' option — creates a machine-wide durable rule in Codex.",
 };
 
 const RESOLVED_APPLIED = {
@@ -59,8 +42,6 @@ const RESOLVED_APPLIED = {
   expiresAt: 1786206732,
   optionIds: ["opt-allow", "opt-deny"],
   labels: { "opt-allow": "Allow once", "opt-deny": "Deny" },
-  hasDurableRule: false,
-  durableRuleNote: null,
   outcome: "applied",
   chosenOptionId: "opt-allow",
 };
@@ -76,8 +57,6 @@ const RESOLVED_TIMED_OUT = {
   expiresAt: 1786206732,
   optionIds: ["opt-allow", "opt-deny"],
   labels: { "opt-allow": "Allow once", "opt-deny": "Deny" },
-  hasDurableRule: false,
-  durableRuleNote: null,
   outcome: "timed_out",
   chosenOptionId: null,
 };
@@ -93,8 +72,6 @@ const RESOLVED_CANCELLED = {
   expiresAt: 1786206732,
   optionIds: ["opt-allow", "opt-deny"],
   labels: { "opt-allow": "Allow once", "opt-deny": "Deny" },
-  hasDurableRule: false,
-  durableRuleNote: null,
   outcome: "cancelled",
   chosenOptionId: null,
 };
@@ -110,8 +87,6 @@ const RESOLVED_REJECTED = {
   expiresAt: 1786206732,
   optionIds: ["opt-allow", "opt-deny"],
   labels: { "opt-allow": "Allow once", "opt-deny": "Deny" },
-  hasDurableRule: false,
-  durableRuleNote: null,
   outcome: "rejected",
   chosenOptionId: null,
 };
@@ -138,29 +113,10 @@ describe("extractPermissionRequest — pending fixtures", () => {
       "opt-allow": "Allow once",
       "opt-deny": "Deny",
     });
-    assert.equal(result.hasDurableRule, false);
-    assert.equal(result.durableRuleNote, null);
     // pending has no originalEventId, outcome, chosenOptionId
     assert.ok(!("originalEventId" in result));
     assert.ok(!("outcome" in result));
     assert.ok(!("chosenOptionId" in result));
-  });
-
-  it("test_pending_durable_rule_parses_correctly", () => {
-    const result = extractPermissionRequest(raw(PENDING_DURABLE));
-    assert.ok(result !== null, "should parse");
-    assert.equal(result.state, "pending");
-    assert.equal(result.hasDurableRule, true);
-    assert.equal(
-      result.durableRuleNote,
-      "Includes an 'Always allow' option — creates a machine-wide durable rule in Codex.",
-    );
-    assert.deepEqual(result.optionIds, [
-      "opt-allow-once",
-      "opt-allow-always",
-      "opt-deny",
-    ]);
-    assert.equal(result.labels["opt-allow-always"], "Always allow");
   });
 
   it("test_pending_with_leading_whitespace_parses_correctly", () => {
@@ -228,16 +184,67 @@ describe("extractPermissionRequest — rejection cases", () => {
   });
 
   it("test_empty_optionIds_returns_null", () => {
-    const bad = { ...PENDING_NORMAL, optionIds: [] };
+    const bad = { ...PENDING_NORMAL, optionIds: [], labels: {} };
     assert.equal(extractPermissionRequest(raw(bad)), null);
   });
 
-  it("test_too_many_optionIds_returns_null", () => {
-    const ids = Array.from({ length: 11 }, (_, i) => `opt-${i}`);
+  it("test_single_optionId_returns_null", () => {
+    // Exactly two are required — one is not a valid two-action card.
     const bad = {
       ...PENDING_NORMAL,
-      optionIds: ids,
-      labels: Object.fromEntries(ids.map((id) => [id, `Option ${id}`])),
+      optionIds: ["opt-allow"],
+      labels: { "opt-allow": "Allow once" },
+    };
+    assert.equal(extractPermissionRequest(raw(bad)), null);
+  });
+
+  it("test_three_optionIds_returns_null", () => {
+    // A third option (e.g. allow_always) must never produce an actionable card.
+    const bad = {
+      ...PENDING_NORMAL,
+      optionIds: ["opt-allow", "opt-deny", "opt-always"],
+      labels: {
+        "opt-allow": "Allow once",
+        "opt-deny": "Deny",
+        "opt-always": "Always allow",
+      },
+    };
+    assert.equal(extractPermissionRequest(raw(bad)), null);
+  });
+
+  it("test_duplicate_optionIds_returns_null", () => {
+    const bad = {
+      ...PENDING_NORMAL,
+      optionIds: ["opt-allow", "opt-allow"],
+      labels: { "opt-allow": "Allow once" },
+    };
+    assert.equal(extractPermissionRequest(raw(bad)), null);
+  });
+
+  it("test_optionId_exceeding_200_chars_returns_null", () => {
+    const big = "x".repeat(201);
+    const bad = {
+      ...PENDING_NORMAL,
+      optionIds: [big, "opt-deny"],
+      labels: { [big]: "Allow once", "opt-deny": "Deny" },
+    };
+    assert.equal(extractPermissionRequest(raw(bad)), null);
+  });
+
+  it("test_requestNonce_exceeding_200_chars_returns_null", () => {
+    const bad = { ...PENDING_NORMAL, requestNonce: "n".repeat(201) };
+    assert.equal(extractPermissionRequest(raw(bad)), null);
+  });
+
+  it("test_extra_label_key_returns_null", () => {
+    // labels must have exactly one entry per optionId — no unbounded extra keys.
+    const bad = {
+      ...PENDING_NORMAL,
+      labels: {
+        "opt-allow": "Allow once",
+        "opt-deny": "Deny",
+        "opt-extra": "Extra",
+      },
     };
     assert.equal(extractPermissionRequest(raw(bad)), null);
   });
@@ -276,9 +283,9 @@ describe("extractPermissionRequest — rejection cases", () => {
     // Every advertised optionId must have a label entry
     const bad = {
       ...PENDING_NORMAL,
-      optionIds: ["opt-allow", "opt-deny", "opt-extra"],
+      optionIds: ["opt-allow", "opt-extra"],
       labels: { "opt-allow": "Allow once", "opt-deny": "Deny" },
-      // "opt-extra" has no label
+      // "opt-extra" has no label; "opt-deny" is an extra key
     };
     assert.equal(extractPermissionRequest(raw(bad)), null);
   });
@@ -311,6 +318,12 @@ describe("extractPermissionRequest — rejection cases", () => {
   it("test_resolved_applied_with_null_chosenOptionId_returns_null", () => {
     // outcome === "applied" requires a non-null chosenOptionId
     const bad = { ...RESOLVED_APPLIED, chosenOptionId: null };
+    assert.equal(extractPermissionRequest(raw(bad)), null);
+  });
+
+  it("test_resolved_applied_chosenOptionId_not_in_optionIds_returns_null", () => {
+    // chosenOptionId must be one of the advertised optionIds
+    const bad = { ...RESOLVED_APPLIED, chosenOptionId: "opt-nonexistent" };
     assert.equal(extractPermissionRequest(raw(bad)), null);
   });
 
@@ -372,12 +385,14 @@ describe("isPermissionRequestSentinel", () => {
 
 // ── Harness integration fixture ───────────────────────────────────────────────
 // This exact string is produced by `build_sentinel_pending_payload` in
-// crates/buzz-acp/src/acp.rs (captured by `kind9_content_fixture_structural_invariants`).
-// It validates that the Desktop parser accepts the exact bytes the harness emits.
+// crates/buzz-acp/src/acp.rs (captured by `kind9_content_fixture_structural_invariants`)
+// from a request carrying allow_once + reject_once + allow_always: the card
+// surfaces ONLY the two ruled actions. serde_json serializes object keys in
+// sorted (BTreeMap) order. It validates that the Desktop parser accepts the
+// exact bytes the harness emits.
 describe("harness integration fixture", () => {
-  // The em-dash character in durableRuleNote is U+2014 — identical to harness output
   const HARNESS_KIND9_CONTENT =
-    '{"durableRuleNote":"Includes an \'Always allow\' option \u2014 creates a machine-wide durable rule in Codex.","expiresAt":1700000300,"hasDurableRule":true,"labels":{"opt-allow":"Allow once","opt-always":"Always allow","opt-reject":"Reject"},"optionIds":["opt-allow","opt-reject","opt-always"],"requestNonce":"test-nonce-fixture-abc123","sessionId":"sess-fixture-001","state":"pending","turnId":"turn-fixture-xyz","v":1}';
+    '{"expiresAt":1700000300,"labels":{"opt-allow":"Allow once","opt-reject":"Reject"},"optionIds":["opt-allow","opt-reject"],"requestNonce":"test-nonce-fixture-abc123","sessionId":"sess-fixture-001","state":"pending","turnId":"turn-fixture-xyz","v":1}';
 
   it("test_harness_kind9_content_parses_to_pending_payload", () => {
     const result = extractPermissionRequest(HARNESS_KIND9_CONTENT);
@@ -389,12 +404,7 @@ describe("harness integration fixture", () => {
     assert.equal(result.v, 1);
     assert.equal(result.requestNonce, "test-nonce-fixture-abc123");
     assert.equal(result.expiresAt, 1700000300);
-    assert.deepEqual(result.optionIds, [
-      "opt-allow",
-      "opt-reject",
-      "opt-always",
-    ]);
-    assert.equal(result.hasDurableRule, true);
+    assert.deepEqual(result.optionIds, ["opt-allow", "opt-reject"]);
     assert.equal(result.sessionId, "sess-fixture-001");
     assert.equal(result.turnId, "turn-fixture-xyz");
   });

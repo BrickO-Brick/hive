@@ -31,6 +31,14 @@ export type TimelineMessage = {
    * the original agent may resolve the card.
    */
   editSignerPubkey?: string;
+  /**
+   * The message body BEFORE the most recent edit was overlaid, when an edit
+   * exists. For a permission-request sentinel this is the original pending
+   * payload; `computePermissionRequest` correlates the resolved edit's
+   * `requestNonce`/`sessionId`/`turnId` against it so a same-signer agent
+   * cannot cross-apply a resolution meant for a different card.
+   */
+  preEditBody?: string;
   author: string;
   /** True when the displayed author is known to be an agent. */
   isAgent?: boolean;

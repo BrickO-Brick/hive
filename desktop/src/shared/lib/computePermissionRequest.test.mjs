@@ -20,6 +20,11 @@ const ATTACKER_PUBKEY =
 const OWNER_PUBKEY =
   "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 
+// The kind-9 sentinel event ID. A resolved edit must name this in
+// `originalEventId` (F5 correlation).
+const MESSAGE_ID =
+  "deadbeef0001deadbeef0002deadbeef0003deadbeef0004deadbeef0005dead";
+
 const PENDING_PAYLOAD = {
   v: 1,
   state: "pending",
@@ -29,23 +34,18 @@ const PENDING_PAYLOAD = {
   expiresAt: 9999999999,
   optionIds: ["opt-allow", "opt-deny"],
   labels: { "opt-allow": "Allow once", "opt-deny": "Deny" },
-  hasDurableRule: false,
-  durableRuleNote: null,
 };
 
 const RESOLVED_PAYLOAD = {
   v: 1,
   state: "resolved",
   requestNonce: "a9f3b2c1-d4e5-4f6a-b7c8-d9e0f1a2b3c4",
-  originalEventId:
-    "deadbeef0001deadbeef0002deadbeef0003deadbeef0004deadbeef0005dead",
+  originalEventId: MESSAGE_ID,
   sessionId: "sess-abc",
   turnId: "turn-xyz",
   expiresAt: 9999999999,
   optionIds: ["opt-allow", "opt-deny"],
   labels: { "opt-allow": "Allow once", "opt-deny": "Deny" },
-  hasDurableRule: false,
-  durableRuleNote: null,
   outcome: "applied",
   chosenOptionId: "opt-allow",
 };
@@ -146,8 +146,60 @@ test("test_agent_signed_edit_resolves_card", () => {
     AGENT_PUBKEY,
     AGENT_PUBKEY, // original event signer
     AGENT_PUBKEY, // edit signer == agent ✓
+    MESSAGE_ID, // originalEventId names this card ✓
+    raw(PENDING_PAYLOAD), // nonce/session/turn correlate ✓
   );
   assert.deepEqual(result, RESOLVED_PAYLOAD);
+});
+
+test("test_resolved_edit_with_mismatched_originalEventId_returns_null", () => {
+  // F5: same-signer agent edit, but originalEventId names a DIFFERENT card.
+  assert.equal(
+    computePermissionRequest(
+      raw(RESOLVED_PAYLOAD),
+      true,
+      AGENT_PUBKEY,
+      AGENT_PUBKEY,
+      AGENT_PUBKEY,
+      "0000000000000000000000000000000000000000000000000000000000000000",
+      raw(PENDING_PAYLOAD),
+    ),
+    null,
+  );
+});
+
+test("test_resolved_edit_with_mismatched_nonce_returns_null", () => {
+  // F5: originalEventId matches, but the resolved nonce does not correlate
+  // to the pending body the edit overlaid — a cross-applied resolution.
+  const pendingOther = { ...PENDING_PAYLOAD, requestNonce: "different-nonce" };
+  assert.equal(
+    computePermissionRequest(
+      raw(RESOLVED_PAYLOAD),
+      true,
+      AGENT_PUBKEY,
+      AGENT_PUBKEY,
+      AGENT_PUBKEY,
+      MESSAGE_ID,
+      raw(pendingOther),
+    ),
+    null,
+  );
+});
+
+test("test_resolved_edit_without_pending_body_returns_null", () => {
+  // F5: an arrived edit with no retained pending body cannot be correlated.
+  assert.equal(
+    computePermissionRequest(
+      raw(RESOLVED_PAYLOAD),
+      true,
+      AGENT_PUBKEY,
+      AGENT_PUBKEY,
+      AGENT_PUBKEY,
+      MESSAGE_ID,
+      undefined,
+    ),
+    null,
+  );
 });
 
 test("test_owner_signed_edit_does_not_resolve", () => {

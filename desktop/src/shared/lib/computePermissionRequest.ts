@@ -17,6 +17,12 @@ import { normalizePubkey } from "@/shared/lib/pubkey";
  * 3. For resolved state: `editSignerPubkey` must equal `agentPubkey` — only
  *    edits signed by the original agent may flip the card to resolved.
  *    Owner-signed or attacker-signed edits are rejected.
+ * 4. For resolved state: the resolved payload must correlate to THIS card —
+ *    its `originalEventId` must equal `messageId`, and its
+ *    `requestNonce`/`sessionId`/`turnId` must match the original pending
+ *    payload (`preEditContent`). Same-signer authenticity alone is not enough:
+ *    a buggy or compromised agent could otherwise cross-apply a resolution it
+ *    signed for one card onto a different card it also signed.
  *
  * Extracted into its own module so it can be tested without pulling in
  * markdown.tsx's heavy dependency chain.
@@ -34,6 +40,13 @@ export function computePermissionRequest(
    * `editSignerPubkey === agentPubkey` may resolve the card.
    */
   editSignerPubkey?: string | null,
+  /** Event ID of this message (the kind-9 sentinel). A resolved edit must name it. */
+  messageId?: string | null,
+  /**
+   * The pending body before the edit was overlaid. Used to correlate the
+   * resolved edit's nonce/session/turn against the card it claims to resolve.
+   */
+  preEditContent?: string | null,
 ): PermissionRequestPayload | null {
   if (!interactive || !agentPubkey || !signerPubkey) return null;
 
@@ -53,6 +66,25 @@ export function computePermissionRequest(
     editSignerPubkey !== null
   ) {
     if (normalizePubkey(editSignerPubkey) !== normalizePubkey(agentPubkey)) {
+      return null;
+    }
+
+    // Correlate the resolution to THIS card. `originalEventId` must name this
+    // message, and the frozen correlation fields must match the pending
+    // payload the edit overlaid — otherwise a same-signer agent could
+    // cross-apply a resolution meant for a different card.
+    if (!messageId || payload.originalEventId !== messageId) {
+      return null;
+    }
+    const pending = preEditContent
+      ? extractPermissionRequest(preEditContent)
+      : null;
+    if (
+      pending === null ||
+      pending.requestNonce !== payload.requestNonce ||
+      pending.sessionId !== payload.sessionId ||
+      pending.turnId !== payload.turnId
+    ) {
       return null;
     }
   }

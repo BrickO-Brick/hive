@@ -525,6 +525,7 @@ export function formatTimelineMessages(
       time: formatTime(event.created_at),
       body: edit ? edit.content : event.content,
       editSignerPubkey: edit?.signerPubkey,
+      preEditBody: edit ? event.content : undefined,
       parentId: thread.parentId,
       rootId: thread.rootId,
       depth: getDepth(event),

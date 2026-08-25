@@ -2532,7 +2532,6 @@ channels = "ALL"
     fn test_permission_mode_is_default() {
         assert!(PermissionMode::Default.is_default());
         assert!(!PermissionMode::Auto.is_default());
-        assert!(!PermissionMode::BypassPermissions.is_default());
         assert!(!PermissionMode::AcceptEdits.is_default());
         assert!(!PermissionMode::DontAsk.is_default());
         assert!(!PermissionMode::Plan.is_default());

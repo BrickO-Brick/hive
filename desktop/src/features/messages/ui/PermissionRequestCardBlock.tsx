@@ -46,6 +46,8 @@ export const PermissionRequestCardBlock = React.memo(
       agentPubkey,
       message.signerPubkey,
       message.editSignerPubkey,
+      message.id,
+      message.preEditBody,
     );
 
     if (request === null || !agentPubkey) return null;

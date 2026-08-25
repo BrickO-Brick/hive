@@ -154,11 +154,6 @@ function PermissionButtons({
           );
         })}
       </div>
-      {request.hasDurableRule && request.durableRuleNote !== null ? (
-        <p className="max-w-[28rem] text-2xs leading-4 text-amber-700 dark:text-amber-400 opacity-80">
-          ⚠ {request.durableRuleNote}
-        </p>
-      ) : null}
     </div>
   );
 }
