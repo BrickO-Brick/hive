@@ -12,6 +12,8 @@ mod relay;
 mod setup_mode;
 mod usage;
 
+pub mod workflow_lifecycle_executor;
+
 pub use usage::TurnUsage;
 
 use std::collections::{HashMap, HashSet, VecDeque};
