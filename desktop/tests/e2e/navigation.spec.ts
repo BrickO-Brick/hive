@@ -8,16 +8,16 @@ const WATERCOLOR_CHANNEL_ID = "a27e1ee9-76a6-5bdf-a5d5-1d85610dad11";
 const FORUM_POST_ID = "mock-forum-release-thread";
 const FORUM_REPLY_ID = "mock-forum-release-reply";
 
-test.beforeEach(async ({ page }) => {
-  await installMockBridge(page);
-});
-
 const DM_DEEP_LINK_HISTORY_TEST =
   "cold deep link to a top-level DM message stays in the timeline";
 
 test.beforeEach(async ({ page }, testInfo) => {
-  if (testInfo.title !== DM_DEEP_LINK_HISTORY_TEST) return;
-  await installMockBridge(page, { aliceTylerHistoryMessageCount: 80 });
+  await installMockBridge(
+    page,
+    testInfo.title === DM_DEEP_LINK_HISTORY_TEST
+      ? { aliceTylerHistoryMessageCount: 80 }
+      : undefined,
+  );
 });
 
 /**
@@ -939,14 +939,29 @@ test("cold deep link to a top-level DM message stays in the timeline", async ({
 }) => {
   const dmChannelId = "f48efb06-0c93-5025-aac9-2e646bb6bfa8";
   const messageId = "mock-alice-tyler-40";
+  await page.goto(`/#/channels/${dmChannelId}`);
+  await expect(page.getByTestId("chat-title")).toHaveText("alice-tyler");
+  const seededTarget = await page.evaluate(async (eventId) => {
+    const invoke = window.__BUZZ_E2E_INVOKE_MOCK_COMMAND__;
+    if (!invoke) return null;
+    const eventJson = await invoke("get_event", { eventId });
+    return typeof eventJson === "string" ? JSON.parse(eventJson) : eventJson;
+  }, messageId);
+  expect(seededTarget).toMatchObject({
+    id: messageId,
+    content: "Alice and Tyler message #40",
+  });
+
   await page.goto(`/#/channels/${dmChannelId}?messageId=${messageId}`);
   await expect(page.getByTestId("chat-title")).toHaveText("alice-tyler");
 
   const targetRow = page
     .getByTestId("message-timeline")
     .locator(`[data-message-id="${messageId}"]`);
-  await expect(targetRow).toHaveClass(/route-target-highlight-fade/);
+  // Positive control: prove the opt-in fixture supplied the intended target
+  // before asserting the route-specific highlight and panel behavior.
   await expect(targetRow).toContainText("Alice and Tyler message #40");
+  await expect(targetRow).toHaveClass(/route-target-highlight-fade/);
   await expect(page.getByTestId("message-thread-panel")).not.toBeVisible();
   await expect(page).toHaveURL(new RegExp(`#/channels/${dmChannelId}$`));
 });
