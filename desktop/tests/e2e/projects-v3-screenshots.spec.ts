@@ -64,6 +64,25 @@ async function openBuzzProject(page: import("@playwright/test").Page) {
   await page.getByTestId("project-home-context-repo-buzz").click();
 }
 
+test("repository-only relays keep the Repositories section available", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    window.__BUZZ_E2E_REPOSITORY_ONLY_PROJECTS__ = true;
+  });
+  await installMockBridge(page);
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByTestId("open-projects-view").click();
+
+  await expect(page.getByTestId("projects-page-tabs")).toBeVisible();
+  await page.getByTestId("projects-section-repositories").click();
+  await expect(
+    page.locator(
+      '[data-testid="repository-card-buzz"], [data-testid="repository-row-buzz"]',
+    ),
+  ).toBeVisible();
+});
+
 test("projects activity overview screenshot", async ({ page }) => {
   await page.addInitScript(() => {
     window.localStorage.setItem("buzz-theme", "light");
@@ -73,17 +92,11 @@ test("projects activity overview screenshot", async ({ page }) => {
   await page.getByTestId("open-projects-view").click();
   await expect(page.getByTestId("projects-page-tabs")).toBeVisible();
   const activityHeader = page.getByTestId("projects-page-header");
-  const relayIcon = page.getByTestId("projects-activity-relay-icon");
   await expect(activityHeader).toBeVisible();
-  await expect(relayIcon).toBeVisible();
-  const [activityHeaderBox, relayIconBox] = await Promise.all([
-    activityHeader.boundingBox(),
-    relayIcon.boundingBox(),
-  ]);
-  expect(activityHeaderBox).not.toBeNull();
-  expect(relayIconBox).not.toBeNull();
-  expect((relayIconBox?.y ?? 0) + (relayIconBox?.height ?? 0)).toBeLessThan(
-    activityHeaderBox?.y ?? 0,
+  await expect(page.getByTestId("projects-activity-relay-icon")).toHaveCount(0);
+  await expect(page.getByTestId("projects-activity-intro")).toHaveCSS(
+    "text-align",
+    "left",
   );
   await expect(page.getByTestId("projects-activity-search")).toBeVisible();
   await expect(page.getByTestId("projects-activity-intro")).toContainText(
@@ -94,7 +107,7 @@ test("projects activity overview screenshot", async ({ page }) => {
   ).toBeVisible();
   await expect(
     page.getByTestId("projects-overview-create-project"),
-  ).toBeVisible();
+  ).toHaveCount(0);
   await expect(
     page.getByTestId("projects-activity-group").first(),
   ).toBeVisible();
@@ -157,6 +170,10 @@ test("sidebar project add flow browses before creating", async ({ page }) => {
     page.getByTestId("create-project-channel-permissions"),
   ).toBeVisible();
   await expect(page.getByTestId("create-project-listing")).toHaveText("Listed");
+  await expect(page.getByTestId("create-project-template")).toHaveText(
+    "Project home",
+  );
+  await expect(page.getByTestId("create-project-team")).toHaveText("None");
   await expect(page.getByTestId("create-project-agent")).toHaveText("None");
   await page.getByRole("button", { name: "Back to projects" }).click();
   await expect(browser).toBeVisible();
@@ -279,6 +296,7 @@ test("projects v3 workspace screenshot states", async ({ page }) => {
   // Borderless workspace: repository controls live in the persistent,
   // resizable auxiliary panel instead of a header row.
   const backButton = page.getByTestId("project-workspace-back");
+  const overviewTab = page.getByRole("tab", { name: "Overview" });
   const filesTab = page.getByRole("tab", { name: "Files" });
   const channelsTab = page.getByRole("tab", { name: "Channels" });
   const contributorsTab = page.getByRole("tab", { name: "Contributors" });
@@ -311,7 +329,11 @@ test("projects v3 workspace screenshot states", async ({ page }) => {
       (menuBox?.x ?? 0) + (menuBox?.width ?? 0),
     );
   };
+  await expect(overviewTab).toBeVisible();
   await expect(filesTab).toBeVisible();
+  expect((await overviewTab.boundingBox())?.x).toBeLessThan(
+    (await filesTab.boundingBox())?.x ?? 0,
+  );
   await expect(backButton).toBeVisible();
   await expect(page.getByTestId("app-sidebar")).toBeVisible();
   await expect(projectDetailScroll).toHaveCSS("overscroll-behavior-y", "none");
@@ -748,7 +770,7 @@ test("projects v3 workspace screenshot states", async ({ page }) => {
   ).toHaveCount(0);
   await repositoryPanelTab.click();
   await expect(contextRail).toHaveCSS("width", "0px");
-  await expect(repositoryContextIcon).toHaveCSS("opacity", "0.6");
+  await expect(repositoryPanelTab).toHaveAttribute("aria-pressed", "false");
   await expect(repositoryPanelTab).toHaveAttribute(
     "aria-label",
     "Show project context",
@@ -784,7 +806,7 @@ test("projects v3 workspace screenshot states", async ({ page }) => {
   ).toBeLessThanOrEqual(8);
   await repositoryPanelTab.click();
   await expect(contextRail).toHaveCSS("width", "288px");
-  await expect(repositoryContextIcon).toHaveCSS("opacity", "1");
+  await expect(repositoryPanelTab).toHaveAttribute("aria-pressed", "true");
   await expect(repositoryActionsPanel).toBeVisible();
   await expect(repositoryPanelTab).toHaveAttribute(
     "aria-label",

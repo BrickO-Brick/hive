@@ -142,18 +142,24 @@ export function ProjectRepositoryManagement({
         project={project}
         repositories={attachCandidates}
       />
-      {canEdit && !hideTriggers ? (
+      {!hideTriggers ? (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button
               aria-label="Add repository"
               className={
                 compact
-                  ? "h-6 w-6 shrink-0 rounded-md text-muted-foreground hover:bg-muted/70 hover:text-foreground"
+                  ? "h-6 w-6 shrink-0 rounded-md text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
                   : "h-7 shrink-0 gap-1.5 rounded-md"
               }
               data-testid="add-project-repository"
+              disabled={!canEdit}
               size={compact ? "icon" : "sm"}
+              title={
+                canEdit
+                  ? "Add repository"
+                  : "Only the project owner can add repositories"
+              }
               type="button"
               variant={compact ? "ghost" : "outline"}
             >
@@ -186,7 +192,7 @@ export function ProjectRepositoryManagement({
               aria-label="Manage repository access"
               className={
                 compact
-                  ? "h-6 w-6 shrink-0 rounded-md text-muted-foreground hover:bg-muted/70 hover:text-foreground"
+                  ? "h-6 w-6 shrink-0 rounded-md text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
                   : "h-7 shrink-0 gap-1.5 rounded-md"
               }
               disabled={repairMutation.isPending}

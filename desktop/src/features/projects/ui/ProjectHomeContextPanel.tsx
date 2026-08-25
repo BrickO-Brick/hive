@@ -1,4 +1,5 @@
 import {
+  ChevronDown,
   CircleDot,
   FileCode2,
   FolderGit2,
@@ -7,7 +8,7 @@ import {
   Hash,
   Users,
 } from "lucide-react";
-import type * as React from "react";
+import * as React from "react";
 
 import { presentContextCount } from "@/features/projects/lib/projectHomeSummary";
 import type { ProjectHomeWorkspaceSheetTab } from "@/features/projects/lib/projectHomeWorkspaceSheet";
@@ -26,34 +27,60 @@ import type { EntityLinkTab } from "@/shared/lib/entityLink";
 import { Button } from "@/shared/ui/button";
 import { ProjectChannelManagement } from "./ProjectChannelManagement";
 import { ProjectRepositoryManagement } from "./ProjectRepositoryManagement";
-import { PROJECT_CONTEXT_ACTION_BUTTON_CLASS } from "./projectContextActionStyles";
+import { SECTION_ACTION_VISIBILITY_CLASS } from "@/features/sidebar/ui/sidebarSectionStyles";
+
+const PROJECT_HOME_SIDEBAR_ROW_CLASS =
+  "h-8 w-full justify-start gap-2 rounded-md px-2 py-1.5 text-left text-sm font-normal text-sidebar-foreground/80 transition-[background-color,color] hover:bg-sidebar-accent hover:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-50";
 
 function ContextSection({
   children,
+  collapsible = false,
   headerAction,
   testId,
   title,
 }: {
   children: React.ReactNode;
+  collapsible?: boolean;
   headerAction?: React.ReactNode;
   testId?: string;
   title?: string;
 }) {
+  const [expanded, setExpanded] = React.useState(true);
   return (
-    <section className="space-y-0.5" data-testid={testId}>
+    <section className="group/sidebar-section space-y-1" data-testid={testId}>
       {title || headerAction ? (
-        <div className="flex h-7 min-w-0 items-center justify-between gap-2">
-          {title ? (
-            <h3 className="min-w-0 truncate text-sm font-normal text-muted-foreground/70">
+        <div className="flex h-8 min-w-0 items-center justify-between gap-2 px-2">
+          {title && collapsible ? (
+            <button
+              aria-expanded={expanded}
+              className="group/section-label flex min-w-0 items-center gap-1 text-left text-xs font-medium text-sidebar-foreground/70"
+              onClick={() => setExpanded((current) => !current)}
+              type="button"
+            >
+              <span className="truncate">{title}</span>
+              <ChevronDown
+                aria-hidden="true"
+                className={cn(
+                  "size-3 shrink-0 opacity-0 transition-[opacity,transform] group-hover/sidebar-section:opacity-100 group-focus-within/sidebar-section:opacity-100",
+                  expanded ? "rotate-0" : "-rotate-90",
+                )}
+              />
+            </button>
+          ) : title ? (
+            <h3 className="min-w-0 truncate text-xs font-medium text-sidebar-foreground/70">
               {title}
             </h3>
           ) : (
             <span />
           )}
-          {headerAction}
+          {headerAction ? (
+            <span className={SECTION_ACTION_VISIBILITY_CLASS}>
+              {headerAction}
+            </span>
+          ) : null}
         </div>
       ) : null}
-      {children}
+      {!collapsible || expanded ? children : null}
     </section>
   );
 }
@@ -69,11 +96,11 @@ function ContextRowContent({
 }) {
   return (
     <>
-      <span className="flex size-4 shrink-0 items-center justify-center text-muted-foreground">
+      <span className="flex size-4 shrink-0 items-center justify-center text-current">
         {icon}
       </span>
       <span className="min-w-0 flex-1 truncate text-left">{children}</span>
-      <span className="w-8 shrink-0 text-right tabular-nums text-muted-foreground">
+      <span className="w-8 shrink-0 text-right tabular-nums text-current opacity-60">
         {count ?? ""}
       </span>
     </>
@@ -103,8 +130,9 @@ function ContextNavButton({
     <Button
       aria-pressed={pressed}
       className={cn(
-        PROJECT_CONTEXT_ACTION_BUTTON_CLASS,
-        pressed && "bg-muted/70",
+        PROJECT_HOME_SIDEBAR_ROW_CLASS,
+        pressed &&
+          "bg-sidebar-active text-sidebar-active-foreground shadow-xs hover:bg-sidebar-active hover:text-sidebar-active-foreground",
       )}
       data-testid={testId}
       disabled={disabled}
@@ -132,28 +160,20 @@ function ChannelContextRow({
   projectHome?: boolean;
   testId: string;
 }) {
-  const count = presentContextCount(channel.memberCount);
   const Icon = projectHome ? ProjectChannelIcon : Hash;
   if (onClick) {
     return (
-      <ContextNavButton
-        count={count}
-        icon={<Icon />}
-        onClick={onClick}
-        testId={testId}
-      >
+      <ContextNavButton icon={<Icon />} onClick={onClick} testId={testId}>
         {channel.name}
       </ContextNavButton>
     );
   }
   return (
     <div
-      className={`${PROJECT_CONTEXT_ACTION_BUTTON_CLASS} pointer-events-none flex items-center`}
+      className={`${PROJECT_HOME_SIDEBAR_ROW_CLASS} pointer-events-none flex items-center`}
       data-testid={testId}
     >
-      <ContextRowContent count={count} icon={<Icon />}>
-        {channel.name}
-      </ContextRowContent>
+      <ContextRowContent icon={<Icon />}>{channel.name}</ContextRowContent>
     </div>
   );
 }
@@ -238,7 +258,7 @@ export function ProjectHomeContextPanel({
 
   return (
     <div
-      className="space-y-4 px-4 pb-8 pt-1"
+      className="space-y-4 px-2 pb-8 pt-1"
       data-testid="project-home-context-panel"
     >
       <ContextSection testId="project-home-context-workspace">
@@ -302,6 +322,7 @@ export function ProjectHomeContextPanel({
         </ContextNavButton>
       </ContextSection>
       <ContextSection
+        collapsible
         headerAction={
           <ProjectChannelManagement
             identityPubkey={identityPubkey}
@@ -334,13 +355,14 @@ export function ProjectHomeContextPanel({
           })
         ) : (
           <p
-            className={`${PROJECT_CONTEXT_ACTION_BUTTON_CLASS} pointer-events-none flex items-center`}
+            className={`${PROJECT_HOME_SIDEBAR_ROW_CLASS} pointer-events-none flex items-center`}
           >
             <ContextRowContent icon={<Hash />}>Unavailable</ContextRowContent>
           </p>
         )}
       </ContextSection>
       <ContextSection
+        collapsible
         headerAction={
           <ProjectRepositoryManagement
             compact
@@ -365,7 +387,9 @@ export function ProjectHomeContextPanel({
             </ContextNavButton>
           ))
         ) : (
-          <p className="text-sm text-muted-foreground">None yet</p>
+          <p className="px-2 py-1 text-sm text-sidebar-foreground/60">
+            None yet
+          </p>
         )}
       </ContextSection>
     </div>

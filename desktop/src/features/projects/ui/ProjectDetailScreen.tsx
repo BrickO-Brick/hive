@@ -87,6 +87,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
   const {
     commitHash,
     entityNavigationId,
+    filePath,
     projectId,
     pullRequestId,
     issueId,
@@ -682,6 +683,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
     hasAuthoritativeHomeBinding(project) &&
     !wantsProjectRepositorySurface({
       commitHash,
+      filePath,
       issueId,
       projectId,
       pullRequestId,
@@ -886,6 +888,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
                         ? workspaceTabForShareTab(requestedTab)
                         : undefined
                     }
+                    initialFilePath={filePath}
                     initialTabRequestKey={entityNavigationId}
                     fileContentSource={fileContentSource}
                     commitDiff={commitDiffQuery.data}

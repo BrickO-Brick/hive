@@ -13,6 +13,7 @@ import type {
 } from "@/features/profile/ui/UserProfilePanel";
 import type { ProfilePanelOpenOptions } from "@/shared/context/ProfilePanelContext";
 import type { Channel } from "@/shared/api/types";
+import type { IdleAuxiliaryHeaderControls } from "./IdleAuxiliaryPanel";
 export type ChannelPaneProps = {
   activeChannel: Channel | null;
   activityAgents?: BotActivityAgent[];
@@ -41,10 +42,13 @@ export type ChannelPaneProps = {
   header?: React.ReactNode;
   /**
    * Idle-state body for the right auxiliary pane (project extras, etc.).
-   * Shown only when no thread, profile, agent session, or channel-management
-   * panel is open — the same slot as those panels.
+   * Uses the same slot as thread, profile, agent-session, and management panels.
+   * By default it yields to those surfaces; callers may opt into thread override.
    */
   idleAuxiliaryPanel?: React.ReactNode;
+  idleAuxiliaryHeaderActions?: IdleAuxiliaryHeaderControls;
+  /** Show the idle auxiliary surface ahead of an already-open thread. */
+  idleAuxiliaryOverridesThread?: boolean;
   idleAuxiliaryTitle?: string;
   hasOlderMessages?: boolean;
   /** True when the loaded window provably starts at the channel's beginning. */

@@ -6,6 +6,7 @@ import type {
   Profile,
   RelayEvent,
 } from "@/shared/api/types";
+import type { IdleAuxiliaryHeaderControls } from "./IdleAuxiliaryPanel";
 
 export type ChannelScreenProps = {
   activeChannel: Channel | null;
@@ -19,6 +20,8 @@ export type ChannelScreenProps = {
   currentIdentity?: Identity;
   currentProfile?: Profile;
   idleAuxiliaryPanel?: ReactNode;
+  idleAuxiliaryHeaderActions?: IdleAuxiliaryHeaderControls;
+  idleAuxiliaryOverridesThread?: boolean;
   idleAuxiliaryTitle?: string;
   headerEndActions?: ReactNode;
   onAddFiles?: () => void;

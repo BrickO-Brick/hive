@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   getChannelIntroKind,
+  shouldPrioritizeIdleAuxiliary,
   shouldUseFocusIdleDrawer,
 } from "./ChannelPane.helpers.ts";
 
@@ -55,4 +56,10 @@ test("getChannelIntroKind keeps private and ephemeral labels for other streams",
     getChannelIntroKind(channel({ ttlSeconds: 3600 })),
     "ephemeral channel",
   );
+});
+
+test("idle auxiliary priority does not depend on thread layout mode", () => {
+  assert.equal(shouldPrioritizeIdleAuxiliary(true, true), true);
+  assert.equal(shouldPrioritizeIdleAuxiliary(true, false), false);
+  assert.equal(shouldPrioritizeIdleAuxiliary(false, true), false);
 });
