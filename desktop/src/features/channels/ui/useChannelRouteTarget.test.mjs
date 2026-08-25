@@ -48,7 +48,7 @@ test("top-level target with an explicit threadRootId opens its thread panel", ()
   });
 });
 
-test("reply target opens the thread scrolled to the reply", () => {
+test("reply target without threadRootId opens the derived thread", () => {
   const root = makeMessage({ id: "root" });
   const reply = makeMessage({
     id: "reply",
@@ -63,6 +63,40 @@ test("reply target opens the thread scrolled to the reply", () => {
     scrollTargetId: "reply",
     threadHeadId: "root",
   });
+});
+
+test("reply target with its derived threadRootId opens the thread", () => {
+  const root = makeMessage({ id: "root" });
+  const reply = makeMessage({
+    id: "reply",
+    parentId: "root",
+    rootId: "root",
+    depth: 1,
+  });
+  assert.deepEqual(
+    getRouteTargetPanelAction(reply, root.id, byId(root, reply)),
+    {
+      kind: "open-thread",
+      expandedReplyIds: new Set(),
+      replyTargetId: "root",
+      scrollTargetId: "reply",
+      threadHeadId: "root",
+    },
+  );
+});
+
+test("reply target with a mismatched threadRootId does not open the loaded derived thread", () => {
+  const root = makeMessage({ id: "root" });
+  const reply = makeMessage({
+    id: "reply",
+    parentId: "root",
+    rootId: "root",
+    depth: 1,
+  });
+  assert.deepEqual(
+    getRouteTargetPanelAction(reply, "unrelated-root", byId(root, reply)),
+    { kind: "none" },
+  );
 });
 
 test("nested reply target expands its intermediate ancestors", () => {

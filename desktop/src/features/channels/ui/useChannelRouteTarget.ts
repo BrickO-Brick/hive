@@ -84,6 +84,11 @@ export function getRouteTargetPanelAction(
     };
   }
 
+  const derivedRootId = targetMessage.rootId ?? targetMessage.parentId;
+  if (targetThreadRootId !== null && targetThreadRootId !== derivedRootId) {
+    return { kind: "none" };
+  }
+
   if (isBroadcastReply(targetMessage.tags ?? [])) {
     return { kind: "none" };
   }
