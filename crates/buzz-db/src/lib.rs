@@ -2776,6 +2776,15 @@ impl Db {
         user::search_users(&self.pool, community_id, query, limit).await
     }
 
+    /// Fetch okta_user_id for a batch of pubkeys within a community.
+    pub async fn get_user_identities(
+        &self,
+        community_id: CommunityId,
+        pubkeys: &[Vec<u8>],
+    ) -> Result<Vec<user::UserIdentity>> {
+        user::get_user_identities(&self.pool, community_id, pubkeys).await
+    }
+
     /// Atomically set agent owner — only if no owner is currently assigned.
     /// Returns Ok(true) if set, Ok(false) if an owner already exists.
     #[datastore_span(name = "set_agent_owner", system = "postgresql")]

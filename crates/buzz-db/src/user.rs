@@ -280,6 +280,56 @@ pub async fn search_users(
         .collect())
 }
 
+/// A user's identity mapping (pubkey → okta_user_id).
+#[derive(Debug, Clone)]
+pub struct UserIdentity {
+    /// Raw 32-byte compressed public key.
+    pub pubkey: Vec<u8>,
+    /// Okta user ID linked to this Buzz profile, if set.
+    pub okta_user_id: Option<String>,
+}
+
+/// Fetch okta_user_id for a batch of pubkeys within a community.
+///
+/// Returns only rows where `okta_user_id IS NOT NULL`. Pubkeys that have no
+/// Okta binding are omitted from the result.
+pub async fn get_user_identities(
+    pool: &PgPool,
+    community_id: CommunityId,
+    pubkeys: &[Vec<u8>],
+) -> Result<Vec<UserIdentity>> {
+    if pubkeys.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let placeholders = (2..(pubkeys.len() + 2))
+        .map(|i| format!("${i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT pubkey, okta_user_id \
+         FROM users \
+         WHERE community_id = $1 AND pubkey IN ({placeholders}) \
+         AND okta_user_id IS NOT NULL"
+    );
+
+    let mut q = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(community_id.as_uuid());
+    for pk in pubkeys {
+        q = q.bind(pk);
+    }
+
+    let rows = q.fetch_all(pool).await?;
+
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        out.push(UserIdentity {
+            pubkey: row.try_get("pubkey")?,
+            okta_user_id: row.try_get("okta_user_id")?,
+        });
+    }
+    Ok(out)
+}
+
 /// Set the owner pubkey for an agent user.
 /// The owner pubkey must already exist in the users table (FK constraint).
 /// Returns an error if the agent pubkey is not found (rows_affected == 0).

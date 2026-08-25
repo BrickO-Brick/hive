@@ -4,6 +4,7 @@ pub mod admin;
 pub mod bridge;
 pub mod events;
 pub mod git;
+pub mod identities;
 pub mod invites;
 pub mod media;
 pub mod mesh_demo;
