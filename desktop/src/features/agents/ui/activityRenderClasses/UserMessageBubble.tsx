@@ -179,14 +179,13 @@ export function UserMessageBubble({
               "group/bubble cursor-pointer transition-colors hover:border-border hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
             isCompactPreview && "p-2 text-xs leading-4",
             // berd's user-turn recipe (MessageBubble.tsx:990): a soft tint, no
-            // border at all, `px-4 py-2`, and a tighter radius than a chat
-            // "pill". berd's `rounded-sm` is 12px on its own scale
-            // (globals.css `--radius-sm: 12px`), NOT Tailwind's stock 2px —
-            // Buzz's `rounded-xl` is the exact 12px equivalent here.
+            // border at all and `px-4 py-2`. Keep Buzz's native chat-bubble
+            // `rounded-2xl` radius so prompts and sent-message bubbles share the
+            // same silhouette across the channel and focus views.
             // `leading-normal` overrides the `leading-relaxed` base, as berd
             // does, so the prompt sits tighter than the agent's prose.
             isConversation &&
-              "rounded-xl border-0 bg-muted/60 px-4 py-2 leading-normal",
+              "rounded-2xl border-0 bg-muted/60 px-4 py-2 leading-normal",
             bubbleClassName,
           )}
           ref={bubbleRef}
