@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   bestieItemSourceLabel,
+  bestieItemSummary,
   filterBestieFeedItems,
   getVisibleBestieFeedItems,
   reduceBestiePanelState,
@@ -94,6 +95,35 @@ test("bestieItemSourceLabel uses only source metadata with a neutral fallback", 
     ),
     "Buzz",
   );
+});
+
+test("bestieItemSummary extracts a concise headline from actual Buzz text", () => {
+  const actualContent =
+    "Reminder: Review the launch plan before lunch. This second sentence contains implementation details that do not belong in the card headline.";
+  assert.equal(
+    bestieItemSummary(
+      item({
+        groupItems: [{ ...item().item, content: actualContent }],
+        preview: actualContent,
+        subject: "Mention",
+      }),
+    ),
+    "Review the launch plan before lunch.",
+  );
+});
+
+test("bestieItemSummary strips media and bounds long source text", () => {
+  const summary = bestieItemSummary(
+    item({
+      preview:
+        "@arjun Here is the important source update with enough additional context to exceed the compact Bestie headline limit by a wide margin ![proof](https://example.com/proof.png)",
+      subject: "Mention",
+    }),
+  );
+  assert.ok(summary.startsWith("Here is the important source update"));
+  assert.ok(summary.endsWith("…"));
+  assert.ok(Array.from(summary).length <= 96);
+  assert.doesNotMatch(summary, /proof|https/);
 });
 
 test("reduceBestiePanelState keeps only one floating panel open", () => {

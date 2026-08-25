@@ -1,17 +1,13 @@
-import {
-  Bot,
-  Clock3,
-  GitPullRequest,
-  MessageSquareReply,
-  Sparkles,
-} from "lucide-react";
+import { Clock3, MessageSquareReply, Sparkles } from "lucide-react";
 
-import { bestieItemSourceLabel } from "@/features/bestie/lib/bestieFeed";
+import { bestieItemSummary } from "@/features/bestie/lib/bestieFeed";
 import type { InboxItem } from "@/features/home/lib/inbox";
-import { isProjectInboxItem } from "@/features/home/lib/projectInbox";
 import { Badge } from "@/shared/ui/badge";
 import { Button } from "@/shared/ui/button";
+import { parseImetaTags } from "@/shared/ui/markdown/parseImeta";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
+import { UserAvatar } from "@/shared/ui/UserAvatar";
+import { VideoReviewCommentMarkdown } from "@/shared/ui/VideoReviewCommentMarkdown";
 
 type BestieFeedCardProps = {
   item: InboxItem;
@@ -20,12 +16,12 @@ type BestieFeedCardProps = {
   onSnooze: () => void;
 };
 
-function actualSupportingContent(item: InboxItem) {
+function actualSupportingItems(item: InboxItem) {
   const seen = new Set<string>();
   return [...item.groupItems]
     .sort((left, right) => left.createdAt - right.createdAt)
-    .map((event) => event.content.trim())
-    .filter((content) => {
+    .filter((event) => {
+      const content = event.content.trim();
       if (!content || seen.has(content)) return false;
       seen.add(content);
       return true;
@@ -34,42 +30,31 @@ function actualSupportingContent(item: InboxItem) {
 }
 
 function SupportingVisual({ item }: { item: InboxItem }) {
-  const content = actualSupportingContent(item);
-  const projectItem = isProjectInboxItem(item.item);
+  const sourceItems = actualSupportingItems(item);
 
   return (
     <div
       className="rounded-2xl border border-border/60 bg-muted/25 p-4"
       data-testid="bestie-source-visual"
     >
-      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-        {projectItem ? (
-          <GitPullRequest className="h-4 w-4 text-violet-500" />
-        ) : item.categories.includes("agent_activity") ? (
-          <Bot className="h-4 w-4" />
-        ) : (
-          <MessageSquareReply className="h-4 w-4" />
-        )}
-        <span className="font-medium text-foreground">
-          {bestieItemSourceLabel(item)}
-        </span>
-        <span>·</span>
-        <span>{item.categoryLabel}</span>
-        {item.unreadCount > 0 ? <span>· {item.unreadCount} unread</span> : null}
-      </div>
-      {content.length > 0 ? (
-        <div className="mt-3 flex flex-col items-start gap-1.5">
-          {content.map((message) => (
+      {sourceItems.length > 0 ? (
+        <div className="flex flex-col items-start gap-1.5">
+          {sourceItems.map((sourceItem) => (
             <div
-              className="max-w-full rounded-2xl bg-muted/70 px-4 py-2.5 text-sm leading-relaxed text-foreground"
-              key={message}
+              className="max-w-full overflow-hidden rounded-2xl bg-muted/70 px-4 py-2.5"
+              key={sourceItem.id}
             >
-              {message}
+              <VideoReviewCommentMarkdown
+                className="max-w-full text-sm leading-relaxed text-foreground [&_p]:line-clamp-4"
+                content={sourceItem.content}
+                imetaByUrl={parseImetaTags(sourceItem.tags)}
+                messageId={sourceItem.id}
+              />
             </div>
           ))}
         </div>
       ) : (
-        <p className="mt-3 text-sm text-muted-foreground">
+        <p className="text-sm text-muted-foreground">
           This Buzz event has no text content.
         </p>
       )}
@@ -115,6 +100,7 @@ export function BestieFeedCard({
   onSnooze,
 }: BestieFeedCardProps) {
   const headingId = `bestie-card-heading-${item.id}`;
+  const summary = bestieItemSummary(item);
 
   return (
     <article
@@ -147,37 +133,21 @@ export function BestieFeedCard({
       </div>
 
       <div className="mt-6 flex items-center gap-3">
-        {item.avatarUrl ? (
-          <img
-            alt=""
-            className="h-11 w-11 shrink-0 rounded-2xl object-cover"
-            src={item.avatarUrl}
-          />
-        ) : (
-          <div
-            aria-hidden="true"
-            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-foreground text-xs font-semibold text-background"
-          >
-            {item.senderLabel.slice(0, 2).toUpperCase()}
-          </div>
-        )}
-        <div className="min-w-0">
-          <p className="truncate text-sm font-medium">{item.senderLabel}</p>
-          <p className="truncate text-xs text-muted-foreground">
-            {bestieItemSourceLabel(item)}
-          </p>
-        </div>
+        <UserAvatar
+          avatarUrl={item.avatarUrl}
+          className="h-11 w-11 shrink-0"
+          displayName={item.senderLabel}
+          fallbackDelayMs={0}
+          testId={`bestie-avatar-${item.id}`}
+        />
       </div>
 
       <h2
         className="mt-5 text-balance text-xl font-semibold leading-tight tracking-tight sm:text-2xl"
         id={headingId}
       >
-        {item.subject}
+        {summary}
       </h2>
-      <p className="mt-2 max-w-2xl whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground">
-        {item.preview}
-      </p>
 
       <div className="mt-5">
         <SupportingVisual item={item} />
@@ -186,14 +156,14 @@ export function BestieFeedCard({
       <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <IconAction
-            label={`Snooze ${item.subject}`}
+            label={`Snooze ${summary}`}
             onClick={onSnooze}
             testId={`bestie-snooze-${item.id}`}
           >
             <Clock3 />
           </IconAction>
           <IconAction
-            label={`Reply about ${item.subject}`}
+            label={`Reply about ${summary}`}
             onClick={onReply}
             testId={`bestie-reply-${item.id}`}
           >
