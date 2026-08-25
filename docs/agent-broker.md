@@ -11,9 +11,9 @@ and creating the agents it needs. It does so by asking a **broker host** — a
 process that does hold the key — to act on its behalf, one named operation at
 a time.
 
-The broker is the interface half of [#6467][6467], which asks that an agent's
-identity be separable from its signing key so the key can stay under separate
-custody while the agent runs somewhere ephemeral, shared, or less trusted. The
+The broker exists so that an agent's identity can be separated from its
+signing key: the key stays under separate custody while the agent runs
+somewhere ephemeral, shared, or less trusted. The
 protocol is Buzz-defined and lives in Buzz's shared client library, but it is
 **not a NIP**: the relay never sees it. A broker host does ordinary relay work
 as an ordinary client, and nothing about the relay protocol changes.
@@ -86,9 +86,8 @@ Two axioms govern the whole design:
 
 - **(B1) Identity is public-key-only.** The only identity anywhere in this
   protocol is a 64-character lowercase hex public key. No type, field, or
-  message carries a secret key in either direction. This is #6467's
-  "identity separable from signing" requirement made structural rather than
-  procedural.
+  message carries a secret key in either direction. This makes "identity
+  separable from signing" structural rather than procedural.
 - **(B2) The body never asserts authority.** No request names who is asking,
   who owns what, or which scope applies. `H` derives all of that from the
   authenticated session. A body that could name its own subject would let any
@@ -310,8 +309,8 @@ job, derived from the parent's own tags.
 `reaction` is intended to be an emoji or a `:shortcode:`; the contract checks
 only that it is non-empty and at most 66 characters, and what counts as a
 reaction beyond that is `H`'s to decide. This is the one **best-effort** operation in version 1: a host may answer it
-`unsupported` and the agent carries on unharmed (§Results). #6467 asks that
-non-essential signed housekeeping be skippable so an agent can run where it is
+`unsupported` and the agent carries on unharmed (§Results). Non-essential
+signed housekeeping must be skippable so an agent can run where it is
 unavailable; reactions are that housekeeping.
 
 **`profile.set`** — the requester's own profile metadata. No subject field
@@ -327,8 +326,8 @@ the name, 2,000 for the blurb, 300 for the picture URL.
 
 **`storage.address`** — derive the relay address of one encrypted-memory
 record. Deriving the address needs the secret this protocol exists to keep
-away from `A`, which is why #6467 lists it among the operations to route
-through the interface rather than compute locally.
+away from `A`, which is why it is routed through the interface rather than
+computed locally.
 
 ```json
 { "slug": "mem/slice-c" }
@@ -572,13 +571,12 @@ to verdicts.
 ## Relationship to the Implementation
 
 The reference implementation of this contract is the broker module in Buzz's
-shared client library, introduced in [block/buzz#6742][6742] (with its test
-file split mechanically in [#6759][6759]). It is a **contract only** — the
+shared client library. It is a **contract only** — the
 request and response shapes, the validators that enforce the rules above, and
 a client interface whose only implementation is a test double. It contains no
-host, no transport, and no signing. The stack that follows it adds a host and
+host, no transport, and no signing. The work that follows it adds a host and
 then wires the harness to choose between holding a key locally and delegating
-to a broker; those are separate pull requests and, where they change the wire,
+to a broker; those land as separate changes and, where they change the wire,
 amend this document in the same change.
 
 Where this document and the implementation disagree, the implementation is
@@ -591,10 +589,10 @@ wrong and this document is to be amended if the disagreement was intentional.
   profile — is a policy call that affects which hosts an agent can run
   against. Current position: no; a profile is identity-adjacent and a host
   that refuses it should say so loudly.
-- **Stale local key.** #6467 asks whether an agent configured for a broker
-  should tolerate, warn about, or refuse a secret key still present in its
-  environment. This is harness behavior, not wire, and is left to the harness
-  change in the stack; the contract is silent on purpose.
+- **Stale local key.** Should an agent configured for a broker tolerate, warn
+  about, or refuse a secret key still present in its environment? This is
+  harness behavior, not wire, and is left to the harness change that follows;
+  the contract is silent on purpose.
 - **Grant format.** When an authorization field is added (§Non-Goals), it
   will be a discriminated object with a verifier on `H`. Its shape is not
   designed here.
@@ -614,6 +612,3 @@ against the request it answers, and a response that fails that check is no
 answer at all. Nothing optional is ever `null`. No secret, in any direction,
 has a field to travel in. The relay never learns any of this happened.
 
-[6467]: https://github.com/block/buzz/issues/6467
-[6742]: https://github.com/block/buzz/pull/6742
-[6759]: https://github.com/block/buzz/pull/6759
