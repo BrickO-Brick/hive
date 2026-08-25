@@ -165,10 +165,27 @@ async fn create_dm(requester_keys: &Keys, other_pubkey_hex: &str) -> String {
 
 /// Submit a signed command event via REST and assert it was accepted.
 async fn post_signed_event(keys: &Keys, kind: u16, tags: Vec<Tag>) {
+    post_signed_event_created_at(keys, kind, tags, nostr::Timestamp::now()).await;
+}
+
+/// Like [`post_signed_event`] but with an explicit `created_at`. A nostr event
+/// id is `sha256(pubkey, created_at, kind, tags, content)` at second
+/// resolution, so two otherwise-identical command events posted in the same
+/// wall-clock second collide on id and the relay dedupes the second one
+/// (`command_executor` returns `PersistResult::Duplicate` before re-running the
+/// mutation). Callers that must post the same command twice as distinct actions
+/// backdate the first to force distinct ids — the same guard `create_dm` uses.
+async fn post_signed_event_created_at(
+    keys: &Keys,
+    kind: u16,
+    tags: Vec<Tag>,
+    created_at: nostr::Timestamp,
+) {
     let client = reqwest::Client::new();
     let pubkey_hex = keys.public_key().to_hex();
     let event = EventBuilder::new(Kind::Custom(kind), "")
         .tags(tags)
+        .custom_created_at(created_at)
         .sign_with_keys(keys)
         .unwrap();
     let resp = client
@@ -1456,10 +1473,14 @@ async fn test_nipdv_message_replay_preserves_a_newer_rehide() {
     let channel_id = create_dm(&keys_a, &b_pubkey_hex).await;
 
     // B hides the DM, then A sends a message. The message resurfaces it for B.
-    post_signed_event(
+    // Backdate this first hide so it cannot collide on event id with the
+    // identical re-hide posted later in the same wall-clock second (which the
+    // relay would dedupe, silently dropping the second hide).
+    post_signed_event_created_at(
         &keys_b,
         41012,
         vec![Tag::parse(["h", &channel_id]).unwrap()],
+        nostr::Timestamp::from(nostr::Timestamp::now().as_secs() - 10),
     )
     .await;
 

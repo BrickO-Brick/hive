@@ -614,6 +614,15 @@ mod tests {
 
     const TEST_DB_URL: &str = "postgres://buzz:buzz_dev@localhost:5432/buzz";
 
+    /// Postgres `timestamptz` stores microsecond precision, so a raw
+    /// `Utc::now()` (nanoseconds) will not round-trip equal. Truncate to
+    /// microseconds up front so equality assertions compare like for like
+    /// while the seconds-apart fence arithmetic stays intact.
+    fn now_micros() -> DateTime<Utc> {
+        use chrono::SubsecRound;
+        Utc::now().trunc_subsecs(6)
+    }
+
     async fn setup_pool() -> PgPool {
         let database_url = std::env::var("BUZZ_TEST_DATABASE_URL")
             .or_else(|_| std::env::var("DATABASE_URL"))
@@ -690,7 +699,7 @@ mod tests {
             .expect("create dm");
 
         // Recipient hid the DM before the message was received.
-        let hidden_at = Utc::now();
+        let hidden_at = now_micros();
         set_hidden_at(&pool, community_id, dm.id, &recipient, hidden_at).await;
         let message_received_at = hidden_at + chrono::Duration::seconds(1);
 
@@ -725,7 +734,7 @@ mod tests {
 
         // Recipient re-hid the DM on another device AFTER the message arrived
         // (e.g. a delayed replay of that message races the newer user action).
-        let message_received_at = Utc::now();
+        let message_received_at = now_micros();
         let hidden_at = message_received_at + chrono::Duration::seconds(1);
         set_hidden_at(&pool, community_id, dm.id, &recipient, hidden_at).await;
 
@@ -757,7 +766,7 @@ mod tests {
             .expect("create dm");
 
         // Both participants have an old hide; only the recipient may be cleared.
-        let hidden_at = Utc::now();
+        let hidden_at = now_micros();
         set_hidden_at(&pool, community_id, dm.id, &sender, hidden_at).await;
         set_hidden_at(&pool, community_id, dm.id, &recipient, hidden_at).await;
         let message_received_at = hidden_at + chrono::Duration::seconds(1);
