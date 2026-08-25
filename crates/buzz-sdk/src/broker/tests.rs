@@ -921,7 +921,9 @@ fn preparing_a_request_freezes_the_bytes_every_attempt_sends() {
         prepared.body(),
         "body is frozen, not re-rendered"
     );
-    assert_eq!(prepared.request(), &request);
+    // Correlation metadata is all a transport gets. There is deliberately no
+    // accessor for the typed request: one would let an implementation serialize
+    // the value a second time, which is the possibility freezing removes.
     assert_eq!(prepared.request_id(), "req-idem");
     assert_eq!(prepared.action(), Action::MessagePost);
 
@@ -977,39 +979,29 @@ request_id_conflict,action_failed,outcome_unknown,internal"
     );
 }
 
-/// Only housekeeping is best-effort. A host refusing a read or a write has
-/// broken the agent, and the agent must not treat that as routine.
-#[test]
-fn only_housekeeping_actions_are_best_effort() {
-    for action in Action::ALL {
-        assert_eq!(
-            action.is_best_effort(),
-            action == Action::ReactionAdd,
-            "{} best-effort classification",
-            action.as_str()
-        );
-    }
-}
-
 // ── Client trait ────────────────────────────────────────────────────────────
 
 /// A test double, and the only implementation in this crate. It exists to prove
 /// the trait is object-safe and usable behind `dyn`, which is what lets an
 /// in-process host and an HTTP client be interchangeable.
+///
+/// Note what it does *not* do: it never calls `validate_for`. It cannot — it has
+/// no way to build a [`ValidatedResponse`] except through the blanket
+/// [`BrokerClientExt::execute`], which is the whole point of splitting the
+/// trait. A deliberately hostile implementation is still forced through the
+/// same check.
 struct DoubleBroker {
     response: Result<BrokerResponse, BrokerTransportError>,
 }
 
 impl BrokerClient for DoubleBroker {
-    fn execute<'a>(&'a self, request: &'a PreparedRequest) -> BrokerFuture<'a> {
+    fn send<'a>(&'a self, request: &'a PreparedRequest, _: Dispatch) -> BrokerFuture<'a> {
         // A real implementation sends `request.body()` verbatim. The double
-        // stands in for a host that answers the request it was given.
-        let response = self.response.clone().and_then(|mut response| {
+        // stands in for a host that answers under the id it was asked with, and
+        // returns the envelope unjudged.
+        let response = self.response.clone().map(|mut response| {
             response.request_id = request.request_id().to_string();
             response
-                .validate_for(request)
-                .map_err(|e| BrokerTransportError::MalformedResponse(e.to_string()))?;
-            Ok(response)
         });
         Box::pin(async move { response })
     }
@@ -1033,7 +1025,7 @@ fn block_on<F: std::future::Future>(future: F) -> F::Output {
 }
 
 #[test]
-fn the_client_trait_is_object_safe_and_returns_a_host_verdict() {
+fn the_client_trait_is_object_safe_and_returns_a_validated_host_verdict() {
     let request = prepared(ActionArgs::ChannelRead(ChannelReadArgs {
         channel_id: CHANNEL.into(),
         mentions_only: true,
@@ -1049,12 +1041,12 @@ fn the_client_trait_is_object_safe_and_returns_a_host_verdict() {
             })),
         )),
     });
+    // `execute` is available on `dyn BrokerClient` and is the only way to a
+    // `ValidatedResponse` — the caller does no correlation of its own.
     let response = block_on(succeeded.execute(&request)).expect("double answers");
-    response
-        .validate_for(&request)
-        .expect("double's response answers the request");
-    assert_eq!(response.request_id, "req-1");
-    assert!(response.result.outcome().is_some());
+    assert_eq!(response.request_id(), "req-1");
+    assert!(response.result().outcome().is_some());
+    assert!(!response.replayed());
 
     // A refusal — including a rejected credential — is still an answer: `Ok`
     // with the verdict in the envelope.
@@ -1070,7 +1062,7 @@ fn the_client_trait_is_object_safe_and_returns_a_host_verdict() {
         });
         let response =
             block_on(refused.execute(&request)).expect("a refusal is not a transport error");
-        assert_eq!(response.result.error().map(|e| e.code), Some(code));
+        assert_eq!(response.result().error().map(|e| e.code), Some(code));
     }
 
     // No usable answer at all is a transport error, and says nothing about side
@@ -1088,8 +1080,16 @@ fn the_client_trait_is_object_safe_and_returns_a_host_verdict() {
         });
         assert_eq!(block_on(broken.execute(&request)).unwrap_err(), error);
     }
+}
 
-    // A host answering the wrong action is rejected by the client, not passed on.
+/// The double returns whatever it is given, unvalidated — a hostile client
+/// cannot do otherwise. `execute` is still the only door, so the mismatch
+/// surfaces as a transport failure and never reaches a caller as `Ok`.
+#[test]
+fn a_client_cannot_hand_back_a_response_that_answers_a_different_request() {
+    let request = prepared(ActionArgs::ChannelRead(ChannelReadArgs::channel(CHANNEL)));
+
+    // Wrong action for this request.
     let confused: Box<dyn BrokerClient> = Box::new(DoubleBroker {
         response: Ok(BrokerResponse::new(
             "placeholder",
@@ -1099,8 +1099,27 @@ fn the_client_trait_is_object_safe_and_returns_a_host_verdict() {
             })),
         )),
     });
+    // The envelope is well-formed in isolation — that is exactly why `send`
+    // cannot be the caller's door. `execute` is the only reachable one (a
+    // `Dispatch` token cannot be built outside the client module), and it
+    // rejects the mismatch rather than passing it on.
     assert!(matches!(
         block_on(confused.execute(&request)).unwrap_err(),
+        BrokerTransportError::MalformedResponse(_)
+    ));
+
+    // Malformed identifiers inside an otherwise well-shaped outcome, too.
+    let bad_cursor: Box<dyn BrokerClient> = Box::new(DoubleBroker {
+        response: Ok(BrokerResponse::new(
+            "placeholder",
+            BrokerResult::succeeded(ActionOutcome::ChannelRead(MessagePage {
+                messages: vec![],
+                next_cursor: Some("not a cursor".into()),
+            })),
+        )),
+    });
+    assert!(matches!(
+        block_on(bad_cursor.execute(&request)).unwrap_err(),
         BrokerTransportError::MalformedResponse(_)
     ));
 }

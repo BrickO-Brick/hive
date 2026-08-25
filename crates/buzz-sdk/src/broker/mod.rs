@@ -107,7 +107,8 @@ pub use actions::{
     ProfileSetArgs, PubkeyHex, ReactionAddArgs, StorageAddress, StorageAddressArgs,
 };
 pub use client::{
-    BrokerClient, BrokerFuture, BrokerTransportError, BROKER_ACTION_PATH, BROKER_CREDENTIAL_HEADER,
+    BrokerClient, BrokerClientExt, BrokerFuture, BrokerTransportError, Dispatch, ValidatedFuture,
+    ValidatedResponse, BROKER_ACTION_PATH, BROKER_CREDENTIAL_HEADER,
 };
 
 /// Wire `type` discriminator for a broker request payload.
@@ -140,7 +141,7 @@ pub const MAX_REQUEST_ID_LEN: usize = 128;
 /// Retrying means resending the identical serialized request with the same
 /// `requestId`, which is why a client never sends this type directly: call
 /// [`Self::prepare`] to freeze it into a [`PreparedRequest`] and hand *that* to
-/// [`BrokerClient::execute`]. The host hashes the bytes it receives and compares
+/// [`BrokerClientExt::execute`]. The host hashes the bytes it receives and compares
 /// that digest against the digest recorded under the same idempotency key:
 ///
 /// - same key, same digest → the recorded outcome is replayed, nothing re-runs
@@ -282,13 +283,16 @@ pub fn validate_request_id(request_id: &str) -> Result<(), SdkError> {
 
 /// A validated request together with the exact bytes to send.
 ///
-/// This is what [`BrokerClient::execute`] takes, so the retry contract is
+/// This is what [`BrokerClient::send`] takes, so the retry contract is
 /// structural rather than documented: the first attempt and every retry send
 /// `body` verbatim, and no implementation gets the chance to reserialize.
 ///
 /// Construct one with [`BrokerRequest::prepare`]. The typed [`BrokerRequest`] is
-/// kept alongside so a client can correlate the response without reparsing —
-/// see [`BrokerResponse::validate_for`].
+/// retained privately and **deliberately not exposed**: an implementation that
+/// could reach the typed value could serialize it again, which is exactly the
+/// possibility freezing the bytes removes. What an implementation legitimately
+/// needs is correlation metadata, so that — and only that — is public:
+/// [`Self::request_id`] and [`Self::action`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreparedRequest {
     request: BrokerRequest,
@@ -300,12 +304,6 @@ impl PreparedRequest {
     #[must_use]
     pub fn body(&self) -> &[u8] {
         &self.body
-    }
-
-    /// The typed request these bytes encode.
-    #[must_use]
-    pub fn request(&self) -> &BrokerRequest {
-        &self.request
     }
 
     /// The idempotency key the host keys replay on.
@@ -584,10 +582,12 @@ impl BrokerResponse {
     /// host (or a confused proxy) could return a `message.post` success to a
     /// `channel.read`, and a caller matching on the outcome enum would quietly
     /// take the wrong branch. This is the check that makes such a response
-    /// unusable instead of merely surprising, which is why
-    /// [`BrokerClient::execute`] implementations are expected to run it before
-    /// returning `Ok` and to report a failure as
-    /// [`BrokerTransportError::MalformedResponse`].
+    /// unusable instead of merely surprising.
+    ///
+    /// A client does not call this directly and cannot forget to:
+    /// [`BrokerClientExt::execute`] runs it for every implementation and returns
+    /// a [`ValidatedResponse`], which is the only response type a caller can
+    /// obtain. This method stays public for a host validating its own output.
     ///
     /// Signature verification of read results is deliberately not included; see
     /// [`BrokerMessage::verify`].
