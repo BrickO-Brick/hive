@@ -341,12 +341,62 @@ test("a running step pulses and a failed one does not", async () => {
     { streamingItemId: "b" },
   );
   const [failed, running] = view.qa("[data-step-state]");
-  assert.ok(
-    running.className.includes("animate-pulse"),
-    "work in flight pulses",
+  assert.deepEqual(
+    view.pulseStates(),
+    ["running"],
+    "work in flight pulses and a settled failure does not",
   );
-  assert.ok(
-    !failed.className.includes("animate-pulse"),
+  assert.equal(
+    failed.classList.contains("motion-safe:animate-pulse"),
+    false,
     "a settled failure is not in flight",
   );
+  assert.equal(
+    running.classList.contains("motion-safe:animate-pulse"),
+    true,
+    "the running step is the one that pulses",
+  );
+});
+
+/**
+ * Reduced motion has to reach this pulse through the CLASS, not the hook.
+ *
+ * `useWorkBlockMotionEnabled` skips the fold's height animation, but the running
+ * glyph's pulse is a CSS keyframe animation applied by a Tailwind utility, which
+ * no hook can switch off — so the guard has to be `motion-safe:animate-pulse`.
+ * Compiled with this repo's Tailwind (4.3.0), `animate-pulse` is
+ * `animation: var(--animate-pulse)` with no guard, while
+ * `motion-safe:animate-pulse` wraps exactly that declaration in
+ * `@media (prefers-reduced-motion: no-preference)`. jsdom does not evaluate
+ * media queries, so the assertion is on the class: the bare form would keep
+ * pulsing forever for a reader who asked for no motion, and none of the app's 20
+ * `prefers-reduced-motion: reduce` blocks matches `.animate-pulse` (all are
+ * scoped to `buzz-*`/`motion-*`/`t-skel-*` classes), so nothing else would catch
+ * it.
+ *
+ * The preference is irrelevant to which class is emitted, and that is the point:
+ * asserting under BOTH settings is what proves the guard is in the class rather
+ * than in a conditional that reduced motion could flip.
+ */
+test("a running glyph's pulse is guarded so reduced motion silences it", async () => {
+  for (const reduced of [false, true]) {
+    setPrefersReducedMotion(reduced);
+    const view = await renderBlock(
+      [step("a"), step("b", { status: "executing", completedAt: null })],
+      { streamingItemId: "b" },
+    );
+    const [, running] = view.qa("[data-step-state]");
+    assert.equal(
+      running.classList.contains("motion-safe:animate-pulse"),
+      true,
+      `the pulse is reduced-motion-safe (prefersReducedMotion=${reduced})`,
+    );
+    assert.deepEqual(
+      view.unguardedPulseStates(),
+      [],
+      `no glyph pulses unconditionally (prefersReducedMotion=${reduced})`,
+    );
+    const { cleanup } = await import("@testing-library/react");
+    cleanup();
+  }
 });

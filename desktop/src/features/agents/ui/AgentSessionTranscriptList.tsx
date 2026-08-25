@@ -176,8 +176,9 @@ export function AgentSessionTranscriptList({
   // Returns a shared constant for the other variants, so their render output is
   // untouched.
   const turnMeta = React.useMemo(
-    () => buildConversationTurnMeta(displayBlocks, { isTurnLive, variant }),
-    [displayBlocks, isTurnLive, variant],
+    () =>
+      buildConversationTurnMeta(displayBlocks, { isTurnLive, items, variant }),
+    [displayBlocks, isTurnLive, items, variant],
   );
 
   const scrollContainerClassNames = cn(

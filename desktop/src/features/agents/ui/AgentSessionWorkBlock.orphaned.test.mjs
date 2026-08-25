@@ -45,9 +45,22 @@ test("a block whose running step has no live session folds like finished work", 
     "an abandoned step is not known to have failed, so the count stays neutral",
   );
   assert.equal(await view.settleToStepCount(0), 0, "the rail folds away");
-  assert.equal(
-    view.qa(".animate-pulse").length,
-    0,
+  // Then OPEN it and look. Asserting "nothing pulses" on the folded block would
+  // be vacuous: the fold unmounts every row, so no glyph exists to carry a
+  // pulse class and the assertion would hold against a build where abandoned
+  // steps pulse forever — the exact Codex finding. The reader's complaint is
+  // about what they see when they scroll back and expand, so that is where the
+  // assertion belongs.
+  await view.expand();
+  assert.equal(view.stepCount(), 2, "the expanded rail has rows to inspect");
+  assert.deepEqual(
+    view.glyphStates(),
+    ["settled", "settled"],
+    "the abandoned step reads as settled, not running",
+  );
+  assert.deepEqual(
+    view.pulseStates(),
+    [],
     "nothing pulses when nothing is running",
   );
 });
@@ -63,7 +76,7 @@ test("the same items still hold the block open while the turn is live", async ()
   assert.equal(view.summary(), null, "a live block has no folded line");
   assert.equal(view.stepCount(), 2, "the rail stays open");
   assert.deepEqual(view.glyphStates(), ["settled", "running"]);
-  assert.equal(view.qa(".animate-pulse").length, 1, "live work pulses");
+  assert.deepEqual(view.pulseStates(), ["running"], "live work pulses");
 });
 
 test("an agent live on a later turn does not resurrect an earlier turn's abandoned step", async () => {
@@ -79,7 +92,11 @@ test("an agent live on a later turn does not resurrect an earlier turn's abandon
     "this turn is history even though the agent is busy",
   );
   assert.equal(await view.settleToStepCount(0), 0);
-  assert.equal(view.qa(".animate-pulse").length, 0);
+  // Expanded, for the same reason as above: a folded rail has no glyph to pulse,
+  // so the negative has to be taken on rows that exist.
+  await view.expand();
+  assert.deepEqual(view.glyphStates(), ["settled", "settled"]);
+  assert.deepEqual(view.pulseStates(), []);
 });
 
 test("a block live when the session ends folds instead of spinning forever", async () => {
@@ -105,8 +122,67 @@ test("a block live when the session ends folds instead of spinning forever", asy
 
   assert.ok(view.summary(), "the block settles when its session goes away");
   assert.match(view.summary().textContent, /2 steps$/);
+  // Taken HERE, before the fold finishes: the rail is still mounted for the
+  // settle frame, so the glyph that was pulsing a moment ago still exists and
+  // can be asked whether it stopped. Once `settleToStepCount(0)` has run there
+  // are no rows left and the same assertion proves nothing.
+  assert.equal(view.stepCount(), 2, "the rail is still mounted to inspect");
+  assert.deepEqual(view.glyphStates(), ["settled", "settled"]);
+  assert.deepEqual(
+    view.pulseStates(),
+    [],
+    "the pulse stops the moment the session goes away, not when the fold finishes",
+  );
   assert.equal(await view.settleToStepCount(0), 0);
-  assert.equal(view.qa(".animate-pulse").length, 0);
+});
+
+// ── The gap between two turns ─────────────────────────────────────────────────
+
+/**
+ * A finished block must stay folded through the gap before the next turn shows
+ * anything.
+ *
+ * The rendered half of the `buildConversationTurnMeta` gap contract (see
+ * `agentSessionConversationMeta.test.mjs`). The meta test proves the hints are
+ * right; this proves the reader sees the consequence, because the symptom was
+ * never a wrong id — it was a settled 6-step block re-opening, dropping to its
+ * last three steps behind a "previous steps" disclosure, and then folding back,
+ * on every single turn.
+ *
+ * Six steps rather than two on purpose: the live window only applies above
+ * three, so a smaller block would hide the loudest part of the regression.
+ */
+test("a finished block stays folded while the next turn has started but shown nothing", async () => {
+  const { act } = await import("@testing-library/react");
+  const items = ["a", "b", "c", "d", "e", "f"].map((id) => step(id));
+
+  // Finished: nothing live, so the block is folded to its summary line.
+  const view = await renderBlock(items, {
+    liveTurnId: null,
+    streamingItemId: null,
+  });
+  assert.match(view.summary().textContent, /6 steps$/);
+  assert.equal(await view.settleToStepCount(0), 0, "it starts folded");
+
+  // The next turn starts. It owns liveness (turn-2) and, having emitted nothing
+  // renderable, contributes no streaming item — which is exactly what the fixed
+  // `latestTurnId`/`streamingIdForTail` pair reports for this frame.
+  await act(async () => {
+    view.stream(items, null, "turn-2");
+  });
+
+  assert.ok(
+    view.summary(),
+    "the folded summary line survives the next turn starting",
+  );
+  assert.match(view.summary().textContent, /6 steps$/);
+  assert.equal(view.stepCount(), 0, "the rail does not re-open");
+  assert.equal(
+    view.previousSteps(),
+    null,
+    "and the live window's previous-steps disclosure never appears",
+  );
+  assert.deepEqual(view.pulseStates(), []);
 });
 
 test("an orphaned step keeps its own row detail rather than gaining an interrupted marker", async () => {

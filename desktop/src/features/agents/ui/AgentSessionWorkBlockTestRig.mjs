@@ -305,6 +305,31 @@ export async function renderBlock(
       qa("[data-step-state]").map((node) =>
         node.getAttribute("data-step-state"),
       ),
+    // Which rail glyphs pulse, reported as their step states, and the same
+    // narrowed to pulses that are NOT reduced-motion-safe.
+    //
+    // Both read `classList.contains`, which matches a whole class token, rather
+    // than a `.animate-pulse` CSS selector or `className.includes` —
+    // `animate-pulse` is a SUBSTRING of `motion-safe:animate-pulse`, so a
+    // substring check cannot tell the guarded class from the bare one and would
+    // report the reduced-motion regression as fixed.
+    //
+    // They return step-state STRINGS rather than the elements: a failing
+    // `deepEqual` over jsdom nodes makes node:test serialize the whole DOM tree
+    // and the runner dies on SIGKILL instead of printing an assertion, which
+    // silently turns "the mutant was caught" into an unreadable crash.
+    pulseStates: () =>
+      qa("[data-step-state]")
+        .filter(
+          (node) =>
+            node.classList.contains("motion-safe:animate-pulse") ||
+            node.classList.contains("animate-pulse"),
+        )
+        .map((node) => node.getAttribute("data-step-state")),
+    unguardedPulseStates: () =>
+      qa("[data-step-state]")
+        .filter((node) => node.classList.contains("animate-pulse"))
+        .map((node) => node.getAttribute("data-step-state")),
     q,
     qa,
   };

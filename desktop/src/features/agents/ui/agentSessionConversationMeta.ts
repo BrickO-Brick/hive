@@ -48,29 +48,91 @@ function turnSegmentItems(segment: TranscriptTurnSegment): TranscriptItem[] {
  */
 export function buildConversationTurnMeta(
   displayBlocks: TranscriptDisplayBlock[],
-  options: { isTurnLive: boolean; variant: AgentSessionTranscriptVariant },
+  options: {
+    isTurnLive: boolean;
+    items: TranscriptItem[];
+    variant: AgentSessionTranscriptVariant;
+  },
 ): AgentSessionTranscriptTurnMeta {
   if (options.variant !== "conversation" || !options.isTurnLive) {
     return EMPTY_TRANSCRIPT_TURN_META;
   }
 
   const lastBlock = displayBlocks[displayBlocks.length - 1];
-  // The live turn is the last turn in the transcript: work arrives in order, so
-  // a turn with anything after it has already been superseded. Read from the
-  // blocks rather than from the active-turn store because the store's turn ids
-  // and the transcript's are populated by different paths, and a mismatch would
-  // silently gate every step off.
-  const liveTurnId = lastTurnId(displayBlocks);
+  // The live turn is the newest turn in the ITEM stream, not the newest turn
+  // that produced a block. See `latestTurnId` for why the distinction is
+  // load-bearing. Read from the transcript rather than from the active-turn
+  // store because the store's turn ids and the transcript's are populated by
+  // different paths, and a mismatch would silently gate every step off.
+  const liveTurnId = latestTurnId(options.items, displayBlocks);
 
   if (lastBlock?.kind === "single") {
-    return { liveTurnId, streamingItemId: lastBlock.item.id };
+    return {
+      liveTurnId,
+      streamingItemId: streamingIdForTail(lastBlock.item, liveTurnId),
+    };
   }
   if (lastBlock?.kind !== "turn") {
     return { liveTurnId, streamingItemId: null };
   }
 
   const items = lastBlock.segments.flatMap(turnSegmentItems);
-  return { liveTurnId, streamingItemId: items[items.length - 1]?.id ?? null };
+  const tail = items[items.length - 1];
+  return {
+    liveTurnId,
+    streamingItemId: tail ? streamingIdForTail(tail, liveTurnId) : null,
+  };
+}
+
+/**
+ * The trailing item counts as streaming only if the LIVE turn owns it.
+ *
+ * Without this check the newest block's tail is reported as streaming no matter
+ * whose turn it belongs to, so a finished turn's last step would hold that
+ * turn's work block open while a *different* turn is the live one. That is the
+ * same class of bug as an abandoned `executing` step: presenting settled history
+ * as work in flight.
+ */
+function streamingIdForTail(
+  tail: TranscriptItem,
+  liveTurnId: string | null,
+): string | null {
+  // Compared rather than tested for truthiness, for the same reason as
+  // `toolEntryState`: an item with no turn id is owned by nobody, and
+  // `null === null` must not read as ownership.
+  if (liveTurnId === null || tail.turnId !== liveTurnId) return null;
+  return tail.id;
+}
+
+/**
+ * The id of the newest turn the transcript has seen — including a turn that has
+ * arrived but has nothing renderable in it yet.
+ *
+ * Read from the items rather than the blocks because a turn that has only
+ * emitted setup lifecycle rows (`turn_started`, `session_resolved`) classifies
+ * to zero segments and so produces NO block at all
+ * (`agentSessionTranscriptGrouping`: `if (segments.length > 0)`). Walking the
+ * blocks backwards for the last `turn` therefore skipped straight past the new
+ * turn and returned the turn that had already ended — which then made its own
+ * trailing item the streaming item, and a settled block visibly re-opened,
+ * dropped to its last three steps and re-expanded for the whole gap between
+ * `turn_started` and the new turn's first prompt or thought. That gap is real
+ * observer-stream latency and happens on every turn, so this was not an edge
+ * case.
+ *
+ * Items are in wire order, so the last one carrying a turn id names the newest
+ * turn. Falls back to the last turn block for an item stream that carries no
+ * turn ids at all.
+ */
+function latestTurnId(
+  items: TranscriptItem[],
+  displayBlocks: TranscriptDisplayBlock[],
+): string | null {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const turnId = items[index]?.turnId;
+    if (turnId) return turnId;
+  }
+  return lastTurnBlockId(displayBlocks);
 }
 
 /**
@@ -80,7 +142,9 @@ export function buildConversationTurnMeta(
  * turn it belongs to and arrives as a `single` block, so the last block is not
  * always the live turn — but the last *turn* is.
  */
-function lastTurnId(displayBlocks: TranscriptDisplayBlock[]): string | null {
+function lastTurnBlockId(
+  displayBlocks: TranscriptDisplayBlock[],
+): string | null {
   for (let index = displayBlocks.length - 1; index >= 0; index -= 1) {
     const block = displayBlocks[index];
     if (block.kind === "turn") return block.turnId;

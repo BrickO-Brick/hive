@@ -601,7 +601,18 @@ function WorkBlockRailGlyph({
       <div
         className={cn(
           "relative z-10 mt-0.5 flex size-5 items-center justify-center rounded-full bg-background text-muted-foreground ring-2 ring-background",
-          entry.state === "running" && "animate-pulse",
+          // `motion-safe:`, not bare `animate-pulse`: the guard has to be in the
+          // class because this animation is CSS, not motion. The block's height
+          // animation is skipped through `useWorkBlockMotionEnabled`, but that
+          // hook cannot reach a keyframe animation applied by a utility — and no
+          // reduced-motion rule in the app's CSS matches `.animate-pulse` (every
+          // one of them is scoped to a `buzz-*`/`motion-*` class), so an
+          // unguarded pulse would keep pulsing forever for a reader who asked
+          // for no motion. Tailwind compiles `motion-safe:` to
+          // `@media (prefers-reduced-motion: no-preference)`, which is the only
+          // thing that actually stops it. Matches every other pulse in this
+          // feature (`AgentStatusBadge`, `ManagedAgentRow`).
+          entry.state === "running" && "motion-safe:animate-pulse",
         )}
         data-step-state={entry.state}
       >
