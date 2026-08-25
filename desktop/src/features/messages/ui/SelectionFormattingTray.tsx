@@ -161,7 +161,16 @@ export function SelectionFormattingTray({
       return;
     }
 
-    const editorDom = editor.view.dom;
+    // Tiptap v3 returns a Proxy from `editor.view` before the ProseMirror view
+    // is mounted, and that Proxy *throws* for any key it does not carry —
+    // including `dom`. This effect runs on the same commit that mounts
+    // `EditorContent`, so on a freshly mounted composer (e.g. navigating into a
+    // channel) `editor.view.dom` can throw and tear down the subtree. Retry on
+    // the next frame until the view exists, matching `useComposerSpoilerParticles`.
+    let cancelled = false;
+    let retryFrame = 0;
+    let detach: (() => void) | undefined;
+
     const hide = () => setPosition(null);
     const handleContextMenu = () => {
       suppressRightClickUpdatesRef.current = true;
@@ -176,28 +185,48 @@ export function SelectionFormattingTray({
       if (event.button === 0) clearSuppression();
     };
 
-    scheduleUpdate();
-    editor.on("selectionUpdate", scheduleUpdate);
-    editor.on("transaction", scheduleUpdate);
-    editor.on("focus", scheduleUpdate);
-    editor.on("blur", hide);
-    editorDom.addEventListener("contextmenu", handleContextMenu);
-    editorDom.addEventListener("pointerdown", handlePointerDown);
-    editorDom.addEventListener("keydown", clearSuppression);
-    window.addEventListener("resize", scheduleUpdate);
-    window.addEventListener("scroll", scheduleUpdate, true);
+    const attach = () => {
+      if (cancelled) return;
+
+      let editorDom: HTMLElement;
+      try {
+        editorDom = editor.view.dom as HTMLElement;
+      } catch {
+        retryFrame = window.requestAnimationFrame(attach);
+        return;
+      }
+
+      scheduleUpdate();
+      editor.on("selectionUpdate", scheduleUpdate);
+      editor.on("transaction", scheduleUpdate);
+      editor.on("focus", scheduleUpdate);
+      editor.on("blur", hide);
+      editorDom.addEventListener("contextmenu", handleContextMenu);
+      editorDom.addEventListener("pointerdown", handlePointerDown);
+      editorDom.addEventListener("keydown", clearSuppression);
+      window.addEventListener("resize", scheduleUpdate);
+      window.addEventListener("scroll", scheduleUpdate, true);
+
+      detach = () => {
+        editor.off("selectionUpdate", scheduleUpdate);
+        editor.off("transaction", scheduleUpdate);
+        editor.off("focus", scheduleUpdate);
+        editor.off("blur", hide);
+        editorDom.removeEventListener("contextmenu", handleContextMenu);
+        editorDom.removeEventListener("pointerdown", handlePointerDown);
+        editorDom.removeEventListener("keydown", clearSuppression);
+        window.removeEventListener("resize", scheduleUpdate);
+        window.removeEventListener("scroll", scheduleUpdate, true);
+      };
+    };
+
+    attach();
 
     return () => {
+      cancelled = true;
+      if (retryFrame) window.cancelAnimationFrame(retryFrame);
       cancelScheduledUpdate();
-      editor.off("selectionUpdate", scheduleUpdate);
-      editor.off("transaction", scheduleUpdate);
-      editor.off("focus", scheduleUpdate);
-      editor.off("blur", hide);
-      editorDom.removeEventListener("contextmenu", handleContextMenu);
-      editorDom.removeEventListener("pointerdown", handlePointerDown);
-      editorDom.removeEventListener("keydown", clearSuppression);
-      window.removeEventListener("resize", scheduleUpdate);
-      window.removeEventListener("scroll", scheduleUpdate, true);
+      detach?.();
     };
   }, [cancelScheduledUpdate, editor, scheduleUpdate]);
 
