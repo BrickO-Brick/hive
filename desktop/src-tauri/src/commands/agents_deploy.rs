@@ -40,6 +40,11 @@ pub(crate) fn resolve_deploy_model_provider(
     .unwrap_or((None, None))
 }
 
+pub(super) struct LaunchExperimentContext<'a> {
+    pub effective_model: Option<&'a str>,
+    pub shared_instructions_enabled: bool,
+}
+
 /// Resolve assignments and serialize the portable launch contract used by production deploys.
 pub(super) fn build_launch_block(
     record: &ManagedAgentRecord,
@@ -47,11 +52,10 @@ pub(super) fn build_launch_block(
     teams: &[crate::managed_agents::TeamRecord],
     personas: &[AgentDefinition],
     effective_prompt: Option<&str>,
-    effective_model: Option<&str>,
-    shared_instructions_enabled: bool,
+    experiment: LaunchExperimentContext<'_>,
     owner_pubkey: &str,
 ) -> Result<serde_json::Value, String> {
-    let assigned_shared_instructions: &[String] = if shared_instructions_enabled {
+    let assigned_shared_instructions: &[String] = if experiment.shared_instructions_enabled {
         crate::managed_agents::effective_config::resolve_effective_assigned_shared_instructions(
             record, personas,
         )?
@@ -63,7 +67,7 @@ pub(super) fn build_launch_block(
         descriptor,
         teams,
         effective_prompt,
-        effective_model,
+        experiment.effective_model,
         assigned_shared_instructions,
         owner_pubkey,
     ))
@@ -235,10 +239,12 @@ pub(crate) fn build_deploy_payload(
         &teams,
         &personas,
         effective.system_prompt.value.as_deref(),
-        effective.model.value.as_deref(),
-        state
-            .shared_instructions_enabled
-            .load(std::sync::atomic::Ordering::Relaxed),
+        LaunchExperimentContext {
+            effective_model: effective.model.value.as_deref(),
+            shared_instructions_enabled: state
+                .shared_instructions_enabled
+                .load(std::sync::atomic::Ordering::Relaxed),
+        },
         &owner_pubkey,
     )?;
 
@@ -358,8 +364,11 @@ mod tests {
             &[],
             &personas,
             None,
-            None,
-            true,
+            LaunchExperimentContext {
+                effective_model: None,
+
+                shared_instructions_enabled: true,
+            },
             "owner-hex",
         )
         .unwrap();
@@ -395,8 +404,11 @@ mod tests {
             &[],
             &[],
             None,
-            None,
-            false,
+            LaunchExperimentContext {
+                effective_model: None,
+
+                shared_instructions_enabled: false,
+            },
             "owner-hex",
         )
         .unwrap();
@@ -432,8 +444,11 @@ mod tests {
             &teams,
             &[],
             Some("prompt"),
-            Some("model"),
-            true,
+            LaunchExperimentContext {
+                effective_model: Some("model"),
+
+                shared_instructions_enabled: true,
+            },
             "owner-hex",
         )
         .unwrap();
@@ -487,8 +502,11 @@ mod tests {
             &teams,
             &[],
             None,
-            Some("claude-opus-4"),
-            true,
+            LaunchExperimentContext {
+                effective_model: Some("claude-opus-4"),
+
+                shared_instructions_enabled: true,
+            },
             "owner-hex",
         )
         .unwrap();
@@ -526,8 +544,11 @@ mod tests {
             &[],
             &[],
             None,
-            Some("claude-opus-4"),
-            true,
+            LaunchExperimentContext {
+                effective_model: Some("claude-opus-4"),
+
+                shared_instructions_enabled: true,
+            },
             "owner-hex",
         )
         .unwrap();
@@ -569,8 +590,11 @@ mod tests {
             &[],
             &[],
             None,
-            None,
-            true,
+            LaunchExperimentContext {
+                effective_model: None,
+
+                shared_instructions_enabled: true,
+            },
             "owner-hex",
         )
         .unwrap();
@@ -604,8 +628,11 @@ mod tests {
             &[],
             &[],
             None,
-            Some("model"),
-            true,
+            LaunchExperimentContext {
+                effective_model: Some("model"),
+
+                shared_instructions_enabled: true,
+            },
             "owner-hex",
         )
         .unwrap();
@@ -632,8 +659,11 @@ mod tests {
             &[],
             &[],
             None,
-            None,
-            true,
+            LaunchExperimentContext {
+                effective_model: None,
+
+                shared_instructions_enabled: true,
+            },
             "owner-hex",
         )
         .unwrap();
@@ -658,8 +688,11 @@ mod tests {
             &[],
             &[],
             None,
-            None,
-            true,
+            LaunchExperimentContext {
+                effective_model: None,
+
+                shared_instructions_enabled: true,
+            },
             "owner-hex",
         )
         .unwrap();
@@ -690,8 +723,11 @@ mod tests {
             &[],
             &[],
             None,
-            None,
-            true,
+            LaunchExperimentContext {
+                effective_model: None,
+
+                shared_instructions_enabled: true,
+            },
             "owner-hex",
         )
         .unwrap();
@@ -726,8 +762,11 @@ mod tests {
             &[],
             &[],
             None,
-            None,
-            true,
+            LaunchExperimentContext {
+                effective_model: None,
+
+                shared_instructions_enabled: true,
+            },
             "owner-hex",
         )
         .unwrap();
@@ -764,8 +803,11 @@ mod tests {
             &[],
             &[],
             None,
-            None,
-            true,
+            LaunchExperimentContext {
+                effective_model: None,
+
+                shared_instructions_enabled: true,
+            },
             "owner-hex",
         )
         .unwrap();
@@ -796,8 +838,11 @@ mod tests {
             &[],
             &[],
             None,
-            None,
-            true,
+            LaunchExperimentContext {
+                effective_model: None,
+
+                shared_instructions_enabled: true,
+            },
             "owner-hex",
         )
         .unwrap();
@@ -836,8 +881,11 @@ mod tests {
             &[],
             &[],
             None,
-            None,
-            true,
+            LaunchExperimentContext {
+                effective_model: None,
+
+                shared_instructions_enabled: true,
+            },
             "owner-hex",
         )
         .unwrap();
@@ -891,8 +939,11 @@ mod tests {
             &[],
             &[],
             None,
-            None,
-            true,
+            LaunchExperimentContext {
+                effective_model: None,
+
+                shared_instructions_enabled: true,
+            },
             "owner-hex",
         )
         .unwrap();
@@ -947,8 +998,11 @@ mod tests {
             &[],
             &[],
             None,
-            None,
-            true,
+            LaunchExperimentContext {
+                effective_model: None,
+
+                shared_instructions_enabled: true,
+            },
             "owner-hex",
         )
         .unwrap();

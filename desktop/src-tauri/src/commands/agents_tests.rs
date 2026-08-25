@@ -515,8 +515,11 @@ fn deploy_payload_matches_the_shared_full_launch_fixture() {
         &[],
         &[],
         None,
-        Some("gpt-5"),
-        true,
+        super::deploy::LaunchExperimentContext {
+            effective_model: Some("gpt-5"),
+
+            shared_instructions_enabled: true,
+        },
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     )
     .unwrap();
