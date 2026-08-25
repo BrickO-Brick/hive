@@ -26,6 +26,8 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 function getSelectionRect(editor: Editor): DOMRect | null {
+  if (editor.isDestroyed) return null;
+
   const { from, to } = editor.state.selection;
 
   try {
@@ -46,15 +48,19 @@ function getSelectionRect(editor: Editor): DOMRect | null {
     // Fall back to the caret coordinates below.
   }
 
-  const startCoords = editor.view.coordsAtPos(from);
-  const endCoords = editor.view.coordsAtPos(to);
-  const left = Math.min(startCoords.left, endCoords.left);
-  const right = Math.max(startCoords.right, endCoords.right);
-  const top = Math.min(startCoords.top, endCoords.top);
-  const bottom = Math.max(startCoords.bottom, endCoords.bottom);
+  try {
+    const startCoords = editor.view.coordsAtPos(from);
+    const endCoords = editor.view.coordsAtPos(to);
+    const left = Math.min(startCoords.left, endCoords.left);
+    const right = Math.max(startCoords.right, endCoords.right);
+    const top = Math.min(startCoords.top, endCoords.top);
+    const bottom = Math.max(startCoords.bottom, endCoords.bottom);
 
-  if (right <= left && bottom <= top) return null;
-  return new DOMRect(left, top, Math.max(1, right - left), bottom - top);
+    if (right <= left && bottom <= top) return null;
+    return new DOMRect(left, top, Math.max(1, right - left), bottom - top);
+  } catch {
+    return null;
+  }
 }
 
 function getTrayPosition(
@@ -129,6 +135,7 @@ export function SelectionFormattingTray({
     if (
       suppressRightClickUpdatesRef.current ||
       !editor ||
+      editor.isDestroyed ||
       disabled ||
       !editor.isEditable ||
       !editor.isFocused
@@ -155,13 +162,20 @@ export function SelectionFormattingTray({
   React.useEffect(() => {
     suppressRightClickUpdatesRef.current = false;
 
-    if (!editor) {
+    if (!editor || editor.isDestroyed) {
       cancelScheduledUpdate();
       setPosition(null);
       return;
     }
 
-    const editorDom = editor.view.dom;
+    let editorDom: HTMLElement;
+    try {
+      editorDom = editor.view.dom;
+    } catch {
+      cancelScheduledUpdate();
+      setPosition(null);
+      return;
+    }
     const hide = () => setPosition(null);
     const handleContextMenu = () => {
       suppressRightClickUpdatesRef.current = true;
