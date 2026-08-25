@@ -65,6 +65,7 @@ import { EncryptedBackupProvider } from "@/features/settings/EncryptedBackupProv
 import { createBuzzQueryClient } from "@/shared/api/queryClient";
 import { hydrateChannelHeads } from "@/features/messages/lib/channelHeadCache";
 import { useIdentityQuery } from "@/shared/api/hooks";
+import { startProfilingHarness } from "@/shared/profiling/harness";
 import { isSharedIdentity as isSharedIdentityCmd } from "@/shared/api/tauri";
 import { getProfile } from "@/shared/api/tauriProfiles";
 import {
@@ -240,6 +241,10 @@ function CommunityQueryProvider({
   });
 
   useEffect(() => setAvatarProfileSyncQueryClient(queryClient), [queryClient]);
+
+  // Temporary profiling harness (never merges): start once with a live
+  // QueryClient so the accumulator census can read the query cache.
+  useEffect(() => startProfilingHarness(queryClient), [queryClient]);
 
   useEffect(() => {
     const e2eWindow = window as Window & {
