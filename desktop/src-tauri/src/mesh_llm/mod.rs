@@ -6,7 +6,8 @@ pub use coordinator::{start_coordinator, MeshCoordinator, KIND_BUZZ_MESH_MEMBER_
 
 mod discovery;
 pub use discovery::{
-    availability_from_events, mesh_status_filter, owner_ids_from_events, relay_membership_filter,
+    availability_from_events, availability_from_events_for_mode, mesh_status_filter,
+    owner_ids_from_events, relay_membership_filter, relay_mesh_mode_from_nip11, MeshRelayMode,
 };
 pub(crate) use discovery::{
     current_member_pubkeys, has_membership_snapshot, MESH_STATUS_PAGE_SIZE,

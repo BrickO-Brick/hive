@@ -666,6 +666,133 @@ fn owner_roster_without_membership_list_fails_closed() {
 }
 
 #[test]
+fn relay_mesh_mode_reads_nip43_advertisement() {
+    use super::MeshRelayMode;
+
+    // `buzz-relay` advertises NIP-43 only when membership is enforced, so the
+    // advertisement is the deployment-mode signal.
+    assert_eq!(
+        super::relay_mesh_mode_from_nip11(&json!({"supported_nips": [1, 11, 42, 43]})),
+        MeshRelayMode::ClosedMembershipEnforced
+    );
+    // The live open relay's actual shape (no 43).
+    assert_eq!(
+        super::relay_mesh_mode_from_nip11(
+            &json!({"supported_nips": [1, 2, 10, 11, 16, 17, 23, 25, 29, 33, 38, 42, 50, 56]})
+        ),
+        MeshRelayMode::OpenNoMembership
+    );
+    // A missing or malformed document describes a relay that cannot be
+    // enforcing membership, so it is treated as open. Callers that could not
+    // reach the relay at all keep the enforcing default instead of calling in
+    // here — an unreachable relay must never relax admission.
+    assert_eq!(
+        super::relay_mesh_mode_from_nip11(&json!({})),
+        MeshRelayMode::OpenNoMembership
+    );
+    assert_eq!(
+        super::relay_mesh_mode_from_nip11(&json!({"supported_nips": "not-an-array"})),
+        MeshRelayMode::OpenNoMembership
+    );
+}
+
+#[test]
+fn open_relay_routes_without_a_membership_snapshot() {
+    use super::MeshRelayMode;
+
+    // The bug this fixes: on a relay that does not enforce membership, no
+    // kind:13534 snapshot ever lists ordinary users, so requiring one made
+    // every serving peer permanently undiscoverable — each node sat at
+    // "1 NODE" with an empty peer list forever.
+    let endpoint = test_endpoint_token();
+    let events = vec![signed_reporter_target(
+        &"a".repeat(64),
+        "model-open",
+        &endpoint,
+    )];
+
+    let closed = super::availability_from_events_for_mode(
+        events.clone(),
+        MeshRelayMode::ClosedMembershipEnforced,
+    );
+    assert!(
+        closed.serve_targets.is_empty(),
+        "an enforcing relay must still wait for its roster"
+    );
+
+    let open = super::availability_from_events_for_mode(events, MeshRelayMode::OpenNoMembership);
+    assert_eq!(open.serve_targets.len(), 1);
+    assert_eq!(open.serve_targets[0].endpoint_addr, endpoint);
+}
+
+#[test]
+fn closed_relay_without_snapshot_never_silently_opens_up() {
+    use super::MeshRelayMode;
+
+    // Regression guard for the risk this change introduces. On an enforcing
+    // relay a missing snapshot is a transient read gap, NOT permission to
+    // admit everyone: if that ever resolved to the open path, one replication
+    // blip would drop admission enforcement on a closed relay.
+    let events = vec![
+        signed_reporter_target(&"b".repeat(64), "model-a", &test_endpoint_token()),
+        signed_reporter_target(&"c".repeat(64), "model-b", &test_endpoint_token()),
+    ];
+
+    let availability =
+        super::availability_from_events_for_mode(events, MeshRelayMode::ClosedMembershipEnforced);
+    assert!(availability.serve_targets.is_empty());
+    assert_eq!(
+        availability.reason.as_deref(),
+        Some("Buzz shared compute is waiting for the current member roster")
+    );
+}
+
+#[test]
+fn open_relay_still_enforces_freshness_and_endpoint_binding() {
+    use super::MeshRelayMode;
+
+    // Dropping the membership intersection must not drop the other
+    // protections: a stale note is still unroutable, and an unsigned endpoint
+    // substitution is still rejected.
+    let stale = signed_reporter_target_at(
+        &"d".repeat(64),
+        "stale-model",
+        &test_endpoint_token(),
+        1_000,
+    );
+    let stale_availability =
+        super::availability_from_events_for_mode(vec![stale], MeshRelayMode::OpenNoMembership);
+    assert!(
+        stale_availability.serve_targets.is_empty(),
+        "freshness still gates routing on an open relay"
+    );
+
+    let signed_endpoint = test_endpoint_token();
+    let mut forged = serde_json::from_str::<serde_json::Value>(
+        &signed_reporter_target(&"e".repeat(64), "model-x", &signed_endpoint).content,
+    )
+    .expect("status content is json");
+    // Swap in an endpoint the owner never signed for. Assert the substitution
+    // is real so this test can never pass vacuously by reusing the same token.
+    let substituted_endpoint = test_endpoint_token();
+    assert_ne!(signed_endpoint, substituted_endpoint);
+    forged["serveTargets"][0]["endpointAddr"] = json!(substituted_endpoint);
+    let keys = nostr::Keys::parse(&"e".repeat(64)).unwrap();
+    let substituted = super::coordinator::build_status_report_event(forged)
+        .expect("status builder")
+        .sign_with_keys(&keys)
+        .expect("signs");
+    let forged_availability = super::availability_from_events_for_mode(
+        vec![substituted],
+        MeshRelayMode::OpenNoMembership,
+    );
+    assert!(
+        forged_availability.serve_targets.is_empty(),
+        "endpoint binding is still verified on an open relay"
+    );
+}
+
+#[test]
 fn serving_usage_extracts_local_and_remote_attempts() {
     // Captured shape from a live serving node's status payload. The local vs
     // remote/endpoint split is what tells "my own agent" apart from "a peer

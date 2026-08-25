@@ -234,14 +234,21 @@ fn roster_shrinks(current: &[String], fresh: &[String]) -> bool {
 ///
 /// Rules:
 /// - query failed (`Err`)              → `Keep` (never de-admit on a relay blip)
+/// - relay enforces no membership (`Ok(None)`) → `Keep` (see below)
 /// - resolved roster == current        → `Keep` (no-op)
 /// - grows (only additions)            → `RestartProcess` immediately (fast admission)
 /// - shrinks/empties, first observation → `AwaitConfirm` (hold, re-check next poll)
 /// - shrinks/empties, confirmed         → `RestartProcess` (same reduced roster twice)
+///
+/// `Ok(None)` means the relay does not enforce NIP-43 membership, so there is
+/// no roster to reconcile against. A node that is *already* enforcing an
+/// allowlist keeps it: relaxing a live node's admission on the strength of a
+/// NIP-11 read would let a relay downgrade (or a spoofed document) de-restrict
+/// a running mesh. The open-relay path is chosen at start, not mid-flight.
 fn roster_reconcile_action(
     current_owners: &[String],
     pending_shrink: Option<&[String]>,
-    query: Result<Vec<String>, String>,
+    query: Result<Option<Vec<String>>, String>,
 ) -> RosterReconcileAction {
     let fresh = match query {
         Err(error) => {
@@ -250,7 +257,13 @@ fn roster_reconcile_action(
             );
             return RosterReconcileAction::Keep;
         }
-        Ok(fresh) => fresh,
+        Ok(None) => {
+            eprintln!(
+                "buzz-mesh: relay does not enforce membership; keeping this node's current allowlist"
+            );
+            return RosterReconcileAction::Keep;
+        }
+        Ok(Some(fresh)) => fresh,
     };
 
     if fresh == current_owners {
@@ -561,7 +574,7 @@ mod tests {
     #[test]
     fn unchanged_roster_is_a_noop() {
         let current = vec!["owner-a".to_string()];
-        let action = roster_reconcile_action(&current, None, Ok(vec!["owner-a".to_string()]));
+        let action = roster_reconcile_action(&current, None, Ok(Some(vec!["owner-a".to_string()])));
         assert_eq!(action, RosterReconcileAction::Keep);
     }
 
@@ -570,7 +583,7 @@ mod tests {
     fn roster_growth_requests_process_restart_immediately() {
         let current = vec!["owner-a".to_string()];
         let fresh = vec!["owner-a".to_string(), "owner-c".to_string()];
-        let action = roster_reconcile_action(&current, None, Ok(fresh));
+        let action = roster_reconcile_action(&current, None, Ok(Some(fresh)));
         assert_eq!(action, RosterReconcileAction::RestartProcess);
     }
 
@@ -579,7 +592,7 @@ mod tests {
     fn roster_shrink_awaits_confirmation_first() {
         let current = vec!["owner-a".to_string(), "owner-b".to_string()];
         let reduced = vec!["owner-a".to_string()];
-        let action = roster_reconcile_action(&current, None, Ok(reduced.clone()));
+        let action = roster_reconcile_action(&current, None, Ok(Some(reduced.clone())));
         assert_eq!(action, RosterReconcileAction::AwaitConfirm(reduced));
     }
 
@@ -588,7 +601,7 @@ mod tests {
     fn roster_shrink_requests_process_restart_once_confirmed() {
         let current = vec!["owner-a".to_string(), "owner-b".to_string()];
         let reduced = vec!["owner-a".to_string()];
-        let action = roster_reconcile_action(&current, Some(&reduced), Ok(reduced.clone()));
+        let action = roster_reconcile_action(&current, Some(&reduced), Ok(Some(reduced.clone())));
         assert_eq!(action, RosterReconcileAction::RestartProcess);
     }
 
@@ -599,8 +612,11 @@ mod tests {
         let current = vec!["a".to_string(), "b".to_string(), "c".to_string()];
         let first_reduced = vec!["a".to_string(), "b".to_string()];
         let second_reduced = vec!["a".to_string()];
-        let action =
-            roster_reconcile_action(&current, Some(&first_reduced), Ok(second_reduced.clone()));
+        let action = roster_reconcile_action(
+            &current,
+            Some(&first_reduced),
+            Ok(Some(second_reduced.clone())),
+        );
         assert_eq!(action, RosterReconcileAction::AwaitConfirm(second_reduced));
     }
 
@@ -609,10 +625,10 @@ mod tests {
     #[test]
     fn genuinely_empty_roster_awaits_then_restarts_to_self_only() {
         let current = vec!["owner-a".to_string()];
-        let first = roster_reconcile_action(&current, None, Ok(Vec::new()));
+        let first = roster_reconcile_action(&current, None, Ok(Some(Vec::new())));
         assert_eq!(first, RosterReconcileAction::AwaitConfirm(Vec::new()));
         let empty: Vec<String> = Vec::new();
-        let confirmed = roster_reconcile_action(&current, Some(&empty), Ok(Vec::new()));
+        let confirmed = roster_reconcile_action(&current, Some(&empty), Ok(Some(Vec::new())));
         assert_eq!(confirmed, RosterReconcileAction::RestartProcess);
     }
 
@@ -621,9 +637,10 @@ mod tests {
     fn roster_shrink_then_recovery_keeps_allowlist() {
         let current = vec!["owner-a".to_string(), "owner-b".to_string()];
         let reduced = vec!["owner-a".to_string()];
-        let held = roster_reconcile_action(&current, None, Ok(reduced.clone()));
+        let held = roster_reconcile_action(&current, None, Ok(Some(reduced.clone())));
         assert_eq!(held, RosterReconcileAction::AwaitConfirm(reduced.clone()));
-        let recovered = roster_reconcile_action(&current, Some(&reduced), Ok(current.clone()));
+        let recovered =
+            roster_reconcile_action(&current, Some(&reduced), Ok(Some(current.clone())));
         assert_eq!(recovered, RosterReconcileAction::Keep);
     }
 
