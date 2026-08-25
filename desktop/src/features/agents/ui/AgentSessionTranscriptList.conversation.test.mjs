@@ -60,10 +60,10 @@ test("conversation renders the prompt as a filled right-aligned bubble with an a
     '[data-testid="transcript-user-message"]',
   );
   assert.match(row.className, /justify-end/);
-  // berd's user-turn recipe: soft tint, no border, `px-4 py-2`, and a 12px
-  // radius (berd's `rounded-sm` on its own scale = Buzz's `rounded-xl`).
-  const bubble = row.querySelector(".rounded-xl");
-  assert.ok(bubble, "the prompt bubble should take berd's 12px radius");
+  // Keep Buzz's native 16px chat-bubble radius while adopting the focus view's
+  // soft tint, borderless surface, and `px-4 py-2` spacing.
+  const bubble = row.querySelector(".rounded-2xl");
+  assert.ok(bubble, "the prompt should match Buzz's chat-bubble radius");
   assert.match(bubble.className, /bg-muted\/60/);
   assert.match(bubble.className, /px-4/);
   assert.match(bubble.className, /py-2(?!\.)/);
@@ -71,11 +71,6 @@ test("conversation renders the prompt as a filled right-aligned bubble with an a
     bubble.className,
     /border-0/,
     "berd never draws a border on the user turn",
-  );
-  assert.doesNotMatch(
-    bubble.className,
-    /rounded-2xl/,
-    "the old 16px pill radius should be gone",
   );
   // Focus mode shows the whole prompt rather than clamping it.
   assert.doesNotMatch(bubble.className, /max-h-36/);
