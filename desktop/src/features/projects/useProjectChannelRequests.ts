@@ -51,11 +51,11 @@ export function useProjectChannelRequests() {
       ) {
         return;
       }
-      const accepted = enqueueProjectChannelRequest(acceptedRequests.current, {
+      const result = enqueueProjectChannelRequest(acceptedRequests.current, {
         agentPubkey,
         request: next,
       });
-      if (accepted) showRequest(accepted);
+      if (result.status === "show") showRequest(result.candidate);
     },
   );
 
