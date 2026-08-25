@@ -1,4 +1,11 @@
-import { Bell, Clock, Ellipsis, ExternalLink, MailOpen } from "lucide-react";
+import {
+  Bell,
+  Clock,
+  Ellipsis,
+  ExternalLink,
+  MailOpen,
+  Sparkles,
+} from "lucide-react";
 import * as React from "react";
 
 import {
@@ -25,6 +32,7 @@ import {
 import { TopChromeInsetHeader } from "@/shared/layout/TopChromeInsetHeader";
 import { cn } from "@/shared/lib/cn";
 import { normalizePubkey } from "@/shared/lib/pubkey";
+import { Button } from "@/shared/ui/button";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -596,7 +604,7 @@ export function InboxListPane({
                 </PopoverContent>
               </Popover>
             </div>
-            <div className="order-1 flex shrink-0 items-center justify-start">
+            <div className="order-1 flex shrink-0 items-center justify-start gap-1.5">
               <InboxFilterMenu
                 activeDraftCount={activeDraftCount}
                 dueReminderCount={dueReminderCount}
@@ -604,6 +612,19 @@ export function InboxListPane({
                 onFilterChange={onFilterChange}
                 reminderCount={reminders.length}
               />
+              <Button
+                aria-label="Open Bestie Feed"
+                asChild
+                className="h-7 rounded-full px-2 text-2xs text-muted-foreground"
+                data-testid="open-bestie-feed"
+                size="sm"
+                variant="ghost"
+              >
+                <a href="/#/?view=bestie">
+                  <Sparkles className="h-3.5 w-3.5" />
+                  Bestie
+                </a>
+              </Button>
             </div>
           </div>
         </div>

@@ -15,6 +15,7 @@ type HomeRouteSearch = {
   profile?: string;
   profileTab?: string;
   profileView?: string;
+  view?: "bestie";
 };
 
 function validateHomeSearch(search: Record<string, unknown>): HomeRouteSearch {
@@ -35,6 +36,7 @@ function validateHomeSearch(search: Record<string, unknown>): HomeRouteSearch {
       typeof search.profileView === "string" && search.profileView.length > 0
         ? search.profileView
         : undefined,
+    view: search.view === "bestie" ? "bestie" : undefined,
   };
 }
 
@@ -44,6 +46,8 @@ export const Route = createFileRoute("/")({
 });
 
 function HomeRouteComponent() {
+  const navigate = Route.useNavigate();
+  const { view } = Route.useSearch();
   const { goChannel } = useAppNavigation();
   const channelsQuery = useChannelsQuery();
   const identityQuery = useIdentityQuery();
@@ -93,10 +97,13 @@ function HomeRouteComponent() {
   return (
     <HomeScreen
       availableChannelIds={availableChannelIds}
+      channels={channels}
       currentPubkey={identityQuery.data?.pubkey}
+      onOpenInbox={() => void navigate({ search: {}, to: "/" })}
       onOpenContext={(channelId, messageId, threadRootId) => {
         void goChannel(channelId, { messageId, threadRootId });
       }}
+      view={view}
     />
   );
 }
