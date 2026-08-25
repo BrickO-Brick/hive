@@ -673,27 +673,19 @@ fn relay_mesh_mode_reads_nip43_advertisement() {
     // advertisement is the deployment-mode signal.
     assert_eq!(
         super::relay_mesh_mode_from_nip11(&json!({"supported_nips": [1, 11, 42, 43]})),
-        MeshRelayMode::ClosedMembershipEnforced
+        Ok(MeshRelayMode::ClosedMembershipEnforced)
     );
     // The live open relay's actual shape (no 43).
     assert_eq!(
         super::relay_mesh_mode_from_nip11(
             &json!({"supported_nips": [1, 2, 10, 11, 16, 17, 23, 25, 29, 33, 38, 42, 50, 56]})
         ),
-        MeshRelayMode::OpenNoMembership
+        Ok(MeshRelayMode::OpenNoMembership)
     );
-    // A missing or malformed document describes a relay that cannot be
-    // enforcing membership, so it is treated as open. Callers that could not
-    // reach the relay at all keep the enforcing default instead of calling in
-    // here — an unreachable relay must never relax admission.
-    assert_eq!(
-        super::relay_mesh_mode_from_nip11(&json!({})),
-        MeshRelayMode::OpenNoMembership
-    );
-    assert_eq!(
-        super::relay_mesh_mode_from_nip11(&json!({"supported_nips": "not-an-array"})),
-        MeshRelayMode::OpenNoMembership
-    );
+    // Missing or malformed mode evidence must fail closed at the caller. An
+    // ambiguous NIP-11 response is not proof that membership is disabled.
+    assert!(super::relay_mesh_mode_from_nip11(&json!({})).is_err());
+    assert!(super::relay_mesh_mode_from_nip11(&json!({"supported_nips": "not-an-array"})).is_err());
 }
 
 #[test]

@@ -52,18 +52,19 @@ impl MeshRelayMode {
 ///
 /// `buzz-relay` lists NIP-43 in `supported_nips` only when it has a stable
 /// signing key *and* `BUZZ_REQUIRE_RELAY_MEMBERSHIP=true`, so the advertisement
-/// is a faithful proxy for "membership is enforced here". A document that omits
-/// it — including a malformed one with no `supported_nips` array — describes a
-/// relay where signing in never creates a member row.
-pub fn relay_mesh_mode_from_nip11(document: &serde_json::Value) -> MeshRelayMode {
-    let advertises_nip43 = document
+/// is a faithful proxy for "membership is enforced here" when the field is
+/// well formed. A missing or malformed `supported_nips` field is rejected so
+/// callers keep the fail-closed fallback rather than treating an ambiguous
+/// response as evidence that membership is disabled.
+pub fn relay_mesh_mode_from_nip11(document: &serde_json::Value) -> Result<MeshRelayMode, String> {
+    let nips = document
         .get("supported_nips")
-        .and_then(|value| value.as_array())
-        .is_some_and(|nips| nips.iter().any(|nip| nip.as_u64() == Some(43)));
-    if advertises_nip43 {
-        MeshRelayMode::ClosedMembershipEnforced
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "NIP-11 document has no supported_nips array".to_string())?;
+    if nips.iter().any(|nip| nip.as_u64() == Some(43)) {
+        Ok(MeshRelayMode::ClosedMembershipEnforced)
     } else {
-        MeshRelayMode::OpenNoMembership
+        Ok(MeshRelayMode::OpenNoMembership)
     }
 }
 

@@ -200,19 +200,7 @@ async fn probe_relay_mesh_mode(relay_url: &str) -> Result<mesh_llm::MeshRelayMod
         .json()
         .await
         .map_err(|error| format!("NIP-11 document was not JSON: {error}"))?;
-    Ok(mesh_llm::relay_mesh_mode_from_nip11(&document))
-}
-
-async fn query_mesh_discovery_events_at(
-    state: &AppState,
-    relay_url: &str,
-) -> Result<Vec<nostr::Event>, String> {
-    query_mesh_discovery_events_for_mode(
-        state,
-        relay_url,
-        resolved_relay_mesh_mode(relay_url).await,
-    )
-    .await
+    mesh_llm::relay_mesh_mode_from_nip11(&document)
 }
 
 /// Probe the relay's membership mode, falling back to the enforcing behaviour.
@@ -305,10 +293,6 @@ async fn query_mesh_discovery_events_for_mode(
             return Ok(events);
         }
     }
-}
-
-async fn query_mesh_discovery_events(state: &AppState) -> Result<Vec<nostr::Event>, String> {
-    query_mesh_discovery_events_at(state, &relay::relay_ws_url_with_override(state)).await
 }
 
 /// Resolve the admission roster by intersecting member-signed mesh status
@@ -748,9 +732,11 @@ pub(crate) async fn resolve_mesh_bootstrap_target(
     if model_id.is_empty() {
         return Ok(None);
     }
-    let events = query_mesh_discovery_events(state).await?;
+    let relay_url = relay::relay_ws_url_with_override(state);
+    let mode = resolved_relay_mesh_mode(&relay_url).await;
+    let events = query_mesh_discovery_events_for_mode(state, &relay_url, mode).await?;
     Ok(pick_serve_target_for_model(
-        mesh_llm::availability_from_events(events).serve_targets,
+        mesh_llm::availability_from_events_for_mode(events, mode).serve_targets,
         model_id,
     ))
 }
