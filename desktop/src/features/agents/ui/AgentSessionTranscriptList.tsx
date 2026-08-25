@@ -35,6 +35,7 @@ import {
 } from "./AgentSessionTranscriptChrome";
 import { buildConversationTurnMeta } from "./agentSessionConversationMeta";
 import { AgentSessionWorkBlockSegment } from "./AgentSessionWorkBlock";
+import { AgentSessionWorkBlockDisclosureProvider } from "./agentSessionWorkBlockDisclosure";
 import {
   conversationSegmentsForBlock,
   type TranscriptConversationSegment,
@@ -246,40 +247,42 @@ export function AgentSessionTranscriptList({
         >
           <AgentSessionTranscriptVariantProvider value={variant}>
             <AgentSessionTranscriptTurnMetaProvider value={turnMeta}>
-              {displayBlocks.map((block) => {
-                const blockKey = getDisplayBlockKey(block);
-                return (
-                  <motion.div
-                    animate={ROW_ENTER_TO}
-                    data-message-id={blockKey}
-                    initial={
-                      animationsDisabled ||
-                      !hasCompletedInitialRenderRef.current
-                        ? false
-                        : ROW_ENTER_FROM
-                    }
-                    key={blockKey}
-                    layout={layoutAnimationsEnabled ? "position" : false}
-                    transition={ROW_ENTER_SPRING}
-                  >
-                    {/* content-visibility stays on a non-animated child: motion
+              <AgentSessionWorkBlockDisclosureProvider>
+                {displayBlocks.map((block) => {
+                  const blockKey = getDisplayBlockKey(block);
+                  return (
+                    <motion.div
+                      animate={ROW_ENTER_TO}
+                      data-message-id={blockKey}
+                      initial={
+                        animationsDisabled ||
+                        !hasCompletedInitialRenderRef.current
+                          ? false
+                          : ROW_ENTER_FROM
+                      }
+                      key={blockKey}
+                      layout={layoutAnimationsEnabled ? "position" : false}
+                      transition={ROW_ENTER_SPRING}
+                    >
+                      {/* content-visibility stays on a non-animated child: motion
                     measures the outer wrapper for layout animations, which
                     would otherwise force skipped offscreen rows to render. */}
-                    <div className="content-visibility-auto">
-                      <TranscriptDisplayBlockView
-                        agentAvatarUrl={agentAvatarUrl}
-                        agentName={agentName}
-                        agentPubkey={agentPubkey}
-                        block={block}
-                        profiles={profiles}
-                      />
-                    </div>
-                  </motion.div>
-                );
-              })}
-              {isTurnLive && !isCompactPreview ? (
-                <TurnLivenessIndicator />
-              ) : null}
+                      <div className="content-visibility-auto">
+                        <TranscriptDisplayBlockView
+                          agentAvatarUrl={agentAvatarUrl}
+                          agentName={agentName}
+                          agentPubkey={agentPubkey}
+                          block={block}
+                          profiles={profiles}
+                        />
+                      </div>
+                    </motion.div>
+                  );
+                })}
+                {isTurnLive && !isCompactPreview ? (
+                  <TurnLivenessIndicator />
+                ) : null}
+              </AgentSessionWorkBlockDisclosureProvider>
             </AgentSessionTranscriptTurnMetaProvider>
           </AgentSessionTranscriptVariantProvider>
         </CodeBlockVariantContext.Provider>

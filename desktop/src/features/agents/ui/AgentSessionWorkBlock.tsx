@@ -11,6 +11,11 @@ import {
   useAgentSessionTranscriptTurnMeta,
 } from "./agentSessionTranscriptContext";
 import { useTranscriptAnimationEnabled } from "./transcriptAnimationPreference";
+import {
+  readWorkBlockChoice,
+  useWorkBlockDisclosureState,
+  useWorkBlockDisclosureStore,
+} from "./agentSessionWorkBlockDisclosure";
 import { formatTranscriptTimestampTitle } from "./agentSessionUtils";
 import { TranscriptActivityItem } from "./activityRenderClasses/TranscriptActivityItem";
 import type { AgentTranscriptIdentityProps } from "./activityRenderClasses/types";
@@ -166,10 +171,16 @@ function useSettleOnFinish(isActive: boolean, motionEnabled: boolean) {
  * Whether the block renders open, and how the reader takes that decision over.
  *
  * The policy is "open while work is in flight, folded once it finishes". The
- * reader's own click wins from then on, for as long as the block stays mounted.
+ * reader's own click wins from then on.
  *
- * This is deliberately local and button-native. An earlier version used a
- * shared `useControlledDisclosure` hook whose whole reason to exist was the
+ * The reader's choice is held ABOVE this component, keyed by the step ids it was
+ * taken on, because a work block does not outlive its own membership: blocks are
+ * regrouped from scratch each render and merge when a second assistant message
+ * demotes the first from final answer, so a `useState` here is destroyed by the
+ * agent posting again. See `agentSessionWorkBlockDisclosure`.
+ *
+ * The trigger is deliberately button-native. An earlier version used a shared
+ * `useControlledDisclosure` hook whose whole reason to exist was the
  * `<details>` echo trap: `<details>` fires `toggle` for programmatic `open`
  * changes as well as for clicks, indistinguishably, so a policy-driven open
  * echoes back looking like reader intent and pins the row to its first policy
@@ -177,14 +188,25 @@ function useSettleOnFinish(isActive: boolean, motionEnabled: boolean) {
  * can call `onToggle` is a real click — there is no echo to discriminate, and a
  * guard against it would be dead code that reads as though it were load-bearing.
  */
-function useWorkBlockDisclosure(policyOpen: boolean) {
-  const [readerChoice, setReaderChoice] = React.useState<boolean | null>(null);
+function useWorkBlockDisclosure(
+  policyOpen: boolean,
+  itemIds: readonly string[],
+) {
+  // Local state is the fallback for a block mounted outside a transcript, where
+  // nothing regroups it and per-component state is correct. Both hooks always
+  // run; only one of them is read.
+  const localStore = useWorkBlockDisclosureState();
+  const { choices, choose } = useWorkBlockDisclosureStore() ?? localStore;
+  const readerChoice = readWorkBlockChoice(choices, itemIds);
   const open = readerChoice ?? policyOpen;
 
   return {
     chosenByReader: readerChoice !== null,
     open,
-    toggle: React.useCallback(() => setReaderChoice(!open), [open]),
+    toggle: React.useCallback(
+      () => choose(itemIds, !open),
+      [choose, itemIds, open],
+    ),
   };
 }
 
@@ -218,7 +240,17 @@ export function AgentSessionWorkBlockSegment({
   const motionEnabled = useWorkBlockMotionEnabled();
   const settling = useSettleOnFinish(status.isActive, motionEnabled);
 
-  const disclosure = useWorkBlockDisclosure(status.isActive || settling);
+  // The steps the reader's fold choice is recorded against. Memoized on the
+  // items so `toggle`'s identity is stable between renders that did not change
+  // membership.
+  const itemIds = React.useMemo(
+    () => block.items.map((item) => item.id),
+    [block.items],
+  );
+  const disclosure = useWorkBlockDisclosure(
+    status.isActive || settling,
+    itemIds,
+  );
   const isLive = status.isActive;
   // A reader who expanded the block asked to see all of it, so windowing stops
   // applying. The test is the reader's *choice*, not `open`: policy already

@@ -24,6 +24,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  act,
   AUTHOR,
   AUTHOR_PROFILES,
   AUTHOR_TRUNCATED,
@@ -363,4 +364,143 @@ test("the byte-for-byte baseline actually exercises every renderable item kind",
     .join("\n");
   assert.match(lifecycleText, /Context compacted/);
   assert.match(lifecycleText, /Turn failed/);
+});
+
+/**
+ * A reader's expansion survives the work blocks being regrouped underneath it.
+ *
+ * Work blocks are derived, not stored: `groupConversationWorkBlocks` rebuilds
+ * them every render and ids each one after its first step
+ * (`work-block:${items[0].id}`). `findFinalAnswerId` exempts only the LAST
+ * assistant message from the block, so a second assistant message demotes the
+ * first — the earlier answer becomes work, and the runs on either side of it
+ * merge into one block:
+ *
+ *     frame 2  work-block:thought:1[...]  msg:1  work-block:thought:2[...]
+ *     frame 3  work-block:thought:1[thought:1,tool:1,msg:1,thought:2,tool:2]  msg:2
+ *
+ * `work-block:thought:2` stops existing, so React unmounts it. With the fold
+ * state held in that component, a reader who had opened the second block to read
+ * its steps was folded shut by the agent posting a second message — an event
+ * they did not cause and cannot predict. This drives the real list so the actual
+ * regrouping runs, rather than asserting against hand-built segments.
+ */
+test("conversation keeps a reader's expanded work block open when a later answer regroups it", async () => {
+  const shared = { channelId: "chan-1", sessionId: "sess-1", turnId: "turn-1" };
+  const at = (seconds) =>
+    `2026-06-14T19:00:${String(seconds).padStart(2, "0")}.000Z`;
+  const thought = (id, seconds) => ({
+    ...shared,
+    id,
+    type: "thought",
+    renderClass: "thought",
+    title: "Thinking",
+    text: `reasoning ${id}`,
+    timestamp: at(seconds),
+  });
+  const tool = (id, seconds) => ({
+    ...shared,
+    id,
+    type: "tool",
+    renderClass: "shell",
+    title: id,
+    toolName: "shell",
+    buzzToolName: null,
+    status: "completed",
+    args: {},
+    result: "ok",
+    isError: false,
+    timestamp: at(seconds),
+    startedAt: at(seconds),
+    completedAt: at(seconds),
+    descriptor: {
+      renderClass: "shell",
+      label: "Ran command",
+      preview: id,
+      source: "shell",
+      groupKey: "shell:command",
+    },
+  });
+  const answer = (id, seconds) => ({
+    ...shared,
+    id,
+    type: "message",
+    renderClass: "message",
+    role: "assistant",
+    title: "Test Agent",
+    text: `answer ${id}`,
+    timestamp: at(seconds),
+  });
+
+  const firstRun = [thought("thought:1", 1), tool("tool:1", 2)];
+  const frame1 = [...firstRun, answer("msg:1", 3)];
+  const frame2 = [...frame1, thought("thought:2", 4), tool("tool:2", 5)];
+  const frame3 = [...frame2, answer("msg:2", 6)];
+
+  const { container, setOverrides } = await renderRerenderableTranscript(
+    "conversation",
+    { items: frame1 },
+  );
+  const blocks = () => [
+    ...container.querySelectorAll('[data-testid="transcript-work-block"]'),
+  ];
+  const summaries = () => [
+    ...container.querySelectorAll(
+      '[data-testid="transcript-work-block-summary"]',
+    ),
+  ];
+  const openCount = () =>
+    summaries().filter((node) => node.getAttribute("aria-expanded") === "true")
+      .length;
+
+  await setOverrides({ items: frame2 });
+  assert.equal(
+    blocks().length,
+    2,
+    "the demoted-answer frame should show two separate work blocks",
+  );
+  assert.equal(openCount(), 0, "both blocks start folded once work finished");
+
+  // The reader opens the SECOND block — the one the merge destroys.
+  await act(async () => {
+    summaries()[1].click();
+  });
+  assert.equal(openCount(), 1, "the reader's click should open that block");
+
+  await setOverrides({ items: frame3 });
+  assert.equal(
+    blocks().length,
+    1,
+    "the second answer should merge the runs into one block",
+  );
+  assert.equal(
+    openCount(),
+    1,
+    "the merged block must stay open — the reader asked to see those steps, and an agent posting again is not a reason to fold them away",
+  );
+  // The steps they were reading are actually on screen, not merely a block
+  // reporting itself open.
+  const stepText = [
+    ...container.querySelectorAll('[data-testid="transcript-work-block-step"]'),
+  ]
+    .map((node) => node.textContent)
+    .join("\n");
+  assert.match(
+    stepText,
+    /tool:2/,
+    "the reader's steps should still be visible",
+  );
+
+  // ...and the merged block is still theirs to fold. Recording the choice
+  // against only the block's first step would leave the absorbed block's stale
+  // `open` entry behind, and since an open choice wins the read, the merged
+  // block could never be folded again — the reader's click would do nothing.
+  await act(async () => {
+    summaries()[0].click();
+  });
+  assert.equal(
+    openCount(),
+    0,
+    "a reader who folds the merged block must actually fold it",
+  );
 });
