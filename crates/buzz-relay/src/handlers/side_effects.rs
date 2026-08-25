@@ -3395,6 +3395,44 @@ pub async fn publish_dm_visibility_snapshot(
     let hidden = state.db.list_hidden_dms(tenant.community(), viewer).await?;
     let relay_pubkey_hex = state.relay_keypair.public_key().to_hex();
 
+    // Read the latest snapshot once: it feeds both the drift check below and the
+    // monotonic `created_at` bump. A missing snapshot conveys the empty set.
+    let existing = state
+        .db
+        .query_events(&buzz_db::event::EventQuery {
+            kinds: Some(vec![KIND_DM_VISIBILITY as i32]),
+            pubkey: Some(state.relay_keypair.public_key().to_bytes().to_vec()),
+            d_tag: Some(viewer_hex.clone()),
+            limit: Some(1),
+            ..buzz_db::event::EventQuery::for_community(tenant.community())
+        })
+        .await
+        .unwrap_or_default();
+
+    // Drift guard: skip the replace when the last published snapshot already
+    // conveys the canonical hidden set. This makes republishing idempotent, so
+    // callers can safely re-run for every active recipient (Jude review #1,
+    // retryable publication) without churning unchanged viewers or minting an
+    // empty snapshot for a viewer who has never hidden a DM. When canonical and
+    // conveyed diverge — e.g. a replay repairing a resurface whose original
+    // publish failed — the snapshot is republished.
+    let canonical: std::collections::HashSet<String> =
+        hidden.iter().map(|c| c.to_string()).collect();
+    let conveyed: std::collections::HashSet<String> = existing
+        .first()
+        .map(|e| {
+            e.event
+                .tags
+                .iter()
+                .filter(|t| t.kind().to_string() == "h")
+                .filter_map(|t| t.content().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    if canonical == conveyed {
+        return Ok(());
+    }
+
     let mut tags: Vec<Tag> = Vec::with_capacity(hidden.len() + 2);
     tags.push(
         Tag::parse(["d", &viewer_hex])
@@ -3421,23 +3459,10 @@ pub async fn publish_dm_visibility_snapshot(
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let ts = {
-        let existing = state
-            .db
-            .query_events(&buzz_db::event::EventQuery {
-                kinds: Some(vec![KIND_DM_VISIBILITY as i32]),
-                pubkey: Some(state.relay_keypair.public_key().to_bytes().to_vec()),
-                d_tag: Some(viewer_hex.clone()),
-                limit: Some(1),
-                ..buzz_db::event::EventQuery::for_community(tenant.community())
-            })
-            .await
-            .unwrap_or_default();
-        existing
-            .first()
-            .map(|e| (e.event.created_at.as_secs() + 1).max(now))
-            .unwrap_or(now)
-    };
+    let ts = existing
+        .first()
+        .map(|e| (e.event.created_at.as_secs() + 1).max(now))
+        .unwrap_or(now);
 
     let event = EventBuilder::new(Kind::Custom(KIND_DM_VISIBILITY as u16), "")
         .tags(tags)
@@ -3472,13 +3497,22 @@ pub async fn publish_dm_visibility_snapshot(
 /// Resurface a DM for recipients of a newly accepted message.
 ///
 /// Hidden state is per viewer, so only active members other than the effective
-/// author are changed. A fresh snapshot makes the update visible across clients.
+/// author are cleared. A fresh snapshot makes the update visible across clients.
 ///
 /// `message_received_at` fences the clear so only hides older than the message
 /// are lifted (see [`buzz_db::Database::unhide_dm_recipients`]). Passing the
 /// message's original `received_at` also makes this safe to re-run on the
 /// duplicate/replay path: the operation is idempotent, so a crash between the
 /// accepted message and the resurface self-heals when the message is replayed.
+///
+/// Snapshot publication targets *every* active non-sender recipient, not only
+/// the rows the clear changed. `unhide_dm_recipients` returns zero rows on a
+/// replay (the hide was already cleared), so publishing only for changed rows
+/// would never retry a snapshot whose original publish failed — leaving the
+/// client hidden indefinitely (Jude review #1, retryable publication). The
+/// per-viewer drift guard in [`publish_dm_visibility_snapshot`] keeps this
+/// idempotent: viewers whose latest snapshot already matches canonical state
+/// are skipped, so the wider fan-out never churns unchanged recipients.
 pub async fn resurface_dm_for_message_recipients(
     tenant: &TenantContext,
     state: &Arc<AppState>,
@@ -3486,7 +3520,7 @@ pub async fn resurface_dm_for_message_recipients(
     sender_pubkey: &[u8],
     message_received_at: chrono::DateTime<chrono::Utc>,
 ) -> anyhow::Result<()> {
-    let recipients = state
+    state
         .db
         .unhide_dm_recipients(
             tenant.community(),
@@ -3495,6 +3529,19 @@ pub async fn resurface_dm_for_message_recipients(
             message_received_at,
         )
         .await?;
+
+    // Republish for every active recipient other than the sender. Combined with
+    // the drift guard this is a no-op for viewers already converged, and repairs
+    // any viewer whose snapshot lags the canonical hidden set (e.g. a resurface
+    // whose publish previously failed and is now reached on replay).
+    let recipients: Vec<Vec<u8>> = state
+        .db
+        .get_members(tenant.community(), channel_id)
+        .await?
+        .into_iter()
+        .map(|m| m.pubkey)
+        .filter(|pubkey| pubkey.as_slice() != sender_pubkey)
+        .collect();
 
     let mut failures = Vec::new();
     for recipient in recipients {

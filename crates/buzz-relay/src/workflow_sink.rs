@@ -13,7 +13,7 @@ use buzz_core::tenant::CommunityId;
 use buzz_workflow::action_sink::{ActionSink, ActionSinkError};
 use chrono::Utc;
 use nostr::{EventBuilder, Kind, Tag};
-use tracing::info;
+use tracing::{error, info};
 use uuid::Uuid;
 
 use crate::handlers::event::dispatch_persistent_event;
@@ -426,6 +426,57 @@ impl ActionSink for RelayActionSink {
                 }
             }
 
+            // Resurface hidden DMs for the recipients of this message. Workflow
+            // sends persist a real human-visible kind:9 without entering generic
+            // ingest, so without this call a hidden recipient stays hidden when
+            // the DM comes from a workflow/agent (Jude review #2). Runs on both
+            // the fresh-insert and replay paths and is fenced by the message's
+            // *original* received_at, matching the ingest path: on a fresh insert
+            // that is `stored_event.received_at`; on a replay `stored_event`
+            // carries the new replay time, so the persisted receive time is read
+            // back so a recipient's newer re-hide is never cleared. Best-effort:
+            // a failure here must not fail the workflow send.
+            if channel.channel_type == "dm" {
+                let message_received_at = if was_inserted {
+                    Some(stored_event.received_at)
+                } else {
+                    match state
+                        .db
+                        .get_event_by_id(tenant.community(), event.id.as_bytes())
+                        .await
+                    {
+                        Ok(Some(original)) => Some(original.received_at),
+                        Ok(None) => None,
+                        Err(error) => {
+                            error!(
+                                event_id = %event_id_hex,
+                                channel_id = %channel_id_canonical,
+                                "Workflow SendMessage: failed to load original message for DM resurface replay: {error}"
+                            );
+                            None
+                        }
+                    }
+                };
+                if let Some(message_received_at) = message_received_at {
+                    if let Err(error) =
+                        crate::handlers::side_effects::resurface_dm_for_message_recipients(
+                            &tenant,
+                            &state,
+                            channel_uuid,
+                            &author_pubkey_bytes,
+                            message_received_at,
+                        )
+                        .await
+                    {
+                        error!(
+                            event_id = %event_id_hex,
+                            channel_id = %channel_id_canonical,
+                            "Workflow SendMessage: failed to resurface DM for message recipients: {error}"
+                        );
+                    }
+                }
+            }
+
             Ok(event_id_hex)
         })
     }
@@ -676,6 +727,51 @@ mod integration_tests {
         Arc::new(state)
     }
 
+    /// Build the `TenantContext` for a community the same way `send_message`
+    /// does (host is label-only; the community is authoritative).
+    async fn tenant_for(
+        state: &Arc<AppState>,
+        community: CommunityId,
+    ) -> buzz_core::tenant::TenantContext {
+        let host = state
+            .db
+            .lookup_community_host(community)
+            .await
+            .expect("lookup host")
+            .expect("community mapped to host");
+        buzz_core::tenant::TenantContext::resolved(community, host)
+    }
+
+    /// The `h` tags of a viewer's latest relay-signed NIP-DV snapshot.
+    async fn read_snapshot_h_tags(
+        state: &Arc<AppState>,
+        community: CommunityId,
+        viewer_hex: &str,
+    ) -> Vec<String> {
+        let events = state
+            .db
+            .query_events(&buzz_db::event::EventQuery {
+                kinds: Some(vec![buzz_core::kind::KIND_DM_VISIBILITY as i32]),
+                pubkey: Some(state.relay_keypair.public_key().to_bytes().to_vec()),
+                d_tag: Some(viewer_hex.to_owned()),
+                limit: Some(1),
+                ..buzz_db::event::EventQuery::for_community(community)
+            })
+            .await
+            .expect("query snapshot");
+        events
+            .first()
+            .map(|e| {
+                e.event
+                    .tags
+                    .iter()
+                    .filter(|t| t.kind().to_string() == "h")
+                    .filter_map(|t| t.content().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     #[tokio::test]
     #[ignore = "requires Postgres"]
     async fn workflow_send_message_p_tags_mentioned_member() {
@@ -886,6 +982,186 @@ mod integration_tests {
             .to_vec();
         assert_eq!(meta.parent_event_id.as_deref(), Some(root_bytes.as_slice()));
         assert_eq!(meta.root_event_id.as_deref(), Some(root_bytes.as_slice()));
+    }
+
+    /// Jude review #2: a workflow-authored DM message must resurface the hidden
+    /// DM for its recipients while preserving the sender's own hide. The workflow
+    /// path persists a real kind:9 without entering generic ingest, so the
+    /// resurface must be invoked from the workflow writer.
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn workflow_dm_message_resurfaces_hidden_recipient() {
+        let state = test_state().await;
+
+        let author = nostr::Keys::generate();
+        let author_hex = author.public_key().to_hex();
+        let author_bytes = author.public_key().to_bytes().to_vec();
+        let recipient = nostr::Keys::generate();
+        let recipient_bytes = recipient.public_key().to_bytes().to_vec();
+
+        let host = format!("wf-dm-resurface-{}.example", uuid::Uuid::new_v4().simple());
+        let community = match state
+            .db
+            .create_community_with_owner(&host, &author_hex)
+            .await
+            .expect("create community")
+        {
+            CreateCommunityWithOwnerResult::Created(rec) => rec.id,
+            other => panic!("expected fresh community, got {other:?}"),
+        };
+
+        // A DM between the workflow owner (author) and the recipient. Both are
+        // active members; the channel is private.
+        let dm = state
+            .db
+            .create_dm(
+                community,
+                &[author_bytes.as_slice(), recipient_bytes.as_slice()],
+                &author_bytes,
+            )
+            .await
+            .expect("create dm");
+
+        // Both participants hide the DM.
+        state
+            .db
+            .hide_dm(community, dm.id, &author_bytes)
+            .await
+            .expect("hide for author");
+        state
+            .db
+            .hide_dm(community, dm.id, &recipient_bytes)
+            .await
+            .expect("hide for recipient");
+
+        // The workflow sends a DM message authored by the owner.
+        let sink = RelayActionSink::new(&state);
+        sink.send_message(
+            community,
+            &dm.id.to_string(),
+            "workflow ping",
+            &author_hex,
+            None,
+        )
+        .await
+        .expect("workflow send_message into DM");
+
+        // The recipient's hide is cleared; the sender's own hide survives.
+        let recipient_hidden = state
+            .db
+            .list_hidden_dms(community, &recipient_bytes)
+            .await
+            .expect("list recipient hidden");
+        assert!(
+            !recipient_hidden.contains(&dm.id),
+            "workflow DM must resurface the DM for the recipient; recipient sees: {recipient_hidden:?}"
+        );
+
+        let author_hidden = state
+            .db
+            .list_hidden_dms(community, &author_bytes)
+            .await
+            .expect("list author hidden");
+        assert!(
+            author_hidden.contains(&dm.id),
+            "workflow DM must preserve the sender's own hide; author sees: {author_hidden:?}"
+        );
+
+        // The relay published a NIP-DV snapshot for the resurfaced recipient
+        // reflecting the now-empty hidden set.
+        let hidden_h_tags =
+            read_snapshot_h_tags(&state, community, &hex::encode(&recipient_bytes)).await;
+        assert!(
+            !hidden_h_tags.contains(&dm.id.to_string()),
+            "recipient snapshot must no longer list the resurfaced DM; h tags: {hidden_h_tags:?}"
+        );
+    }
+
+    /// Jude review #1 (retryable publication): a resurface whose canonical clear
+    /// committed but whose snapshot publish failed must self-heal on replay. The
+    /// clear reports zero changed rows the second time (`hidden_at` is already
+    /// NULL), so publishing only for changed rows would never republish — the
+    /// client stays hidden forever. Resurface now republishes for every active
+    /// recipient, and the drift guard repairs the lagging snapshot.
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn resurface_repairs_a_stale_snapshot_on_replay() {
+        let state = test_state().await;
+
+        let author = nostr::Keys::generate();
+        let author_hex = author.public_key().to_hex();
+        let author_bytes = author.public_key().to_bytes().to_vec();
+        let recipient = nostr::Keys::generate();
+        let recipient_bytes = recipient.public_key().to_bytes().to_vec();
+        let recipient_hex = hex::encode(&recipient_bytes);
+
+        let host = format!("wf-dm-repair-{}.example", uuid::Uuid::new_v4().simple());
+        let community = match state
+            .db
+            .create_community_with_owner(&host, &author_hex)
+            .await
+            .expect("create community")
+        {
+            CreateCommunityWithOwnerResult::Created(rec) => rec.id,
+            other => panic!("expected fresh community, got {other:?}"),
+        };
+
+        let dm = state
+            .db
+            .create_dm(
+                community,
+                &[author_bytes.as_slice(), recipient_bytes.as_slice()],
+                &author_bytes,
+            )
+            .await
+            .expect("create dm");
+
+        // The recipient hid the DM and their snapshot reflects it.
+        state
+            .db
+            .hide_dm(community, dm.id, &recipient_bytes)
+            .await
+            .expect("hide for recipient");
+        crate::handlers::side_effects::publish_dm_visibility_snapshot(
+            &tenant_for(&state, community).await,
+            &state,
+            &recipient_bytes,
+        )
+        .await
+        .expect("publish stale snapshot");
+
+        // Simulate a resurface whose canonical clear committed but whose snapshot
+        // publish failed: clear the hide directly, WITHOUT republishing. The
+        // recipient's latest snapshot now lags canonical state (still lists the
+        // DM as hidden) — the exact stuck state Jude flagged.
+        state
+            .db
+            .unhide_dm(community, dm.id, &recipient_bytes)
+            .await
+            .expect("clear recipient hide");
+        let stale = read_snapshot_h_tags(&state, community, &recipient_hex).await;
+        assert!(
+            stale.contains(&dm.id.to_string()),
+            "precondition: snapshot must still lag canonical state; got: {stale:?}"
+        );
+
+        // Replay resurface. The clear now changes zero rows, but publication must
+        // still run for the recipient and repair the lagging snapshot.
+        crate::handlers::side_effects::resurface_dm_for_message_recipients(
+            &tenant_for(&state, community).await,
+            &state,
+            dm.id,
+            &author_bytes,
+            chrono::Utc::now(),
+        )
+        .await
+        .expect("replay resurface");
+
+        let repaired = read_snapshot_h_tags(&state, community, &recipient_hex).await;
+        assert!(
+            !repaired.contains(&dm.id.to_string()),
+            "replay must republish the recipient snapshot to drop the resurfaced DM; got: {repaired:?}"
+        );
     }
 
     #[tokio::test]
