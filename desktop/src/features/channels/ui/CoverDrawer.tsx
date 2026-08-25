@@ -1,4 +1,4 @@
-import { motion, useReducedMotion } from "motion/react";
+import { motion, useIsPresent, useReducedMotion } from "motion/react";
 import * as React from "react";
 
 import {
@@ -181,6 +181,16 @@ export function CoverDrawer({
   testId,
 }: CoverDrawerProps) {
   const prefersReducedMotion = useReducedMotion();
+  /**
+   * False from the moment `AnimatePresence` starts this drawer's exit.
+   *
+   * The covered slot belongs to the drawer that is arriving or settled, not to
+   * one that is animating away, and this is the only signal that distinguishes
+   * them — the focus slot cannot, because a drawer that never captures focus
+   * (its content may take it instead) leaves the outgoing drawer's claim
+   * current. See the Escape handler.
+   */
+  const isPresent = useIsPresent();
   const travelPx = prefersReducedMotion ? 0 : COVER_DRAWER_TRAVEL_PX;
   const drawerRef = React.useRef<HTMLDivElement>(null);
   const previousFocusRef = React.useRef<HTMLElement | null>(null);
@@ -195,6 +205,29 @@ export function CoverDrawer({
 
   React.useEffect(() => {
     if (!ownsEscape) return;
+    // Stand down for the whole exit: a drawer on its way out does not own the
+    // covered slot, so the key belongs to whatever replaced it.
+    //
+    // `AnimatePresence` keeps a replaced drawer mounted through its exit
+    // animation, so during a replacement two drawers have this listener
+    // installed at once, and capture-phase listeners on the same target fire in
+    // registration order — the outgoing one registered first, so it would
+    // otherwise always win. It then consumes the press via
+    // `stopImmediatePropagation`, which is invisible to the successor, and the
+    // user has to press Escape twice to leave the drawer that just arrived.
+    //
+    // `useEscapeKey` carries the same guard for the same reason. This one is not
+    // sufficient on its own: the agent activity drawer sets `ownsEscape={false}`
+    // and routes the key through its panel, so on that path no code here runs
+    // and it is the exiting *panel*'s `preventDefault` that swallows the press.
+    //
+    // Gating on presence rather than the focus slot is deliberate. The focus
+    // slot is claimed only by a drawer that captures focus, and a successor
+    // whose content takes focus instead never claims it — which leaves the
+    // outgoing drawer's claim current and makes a slot check pass for exactly
+    // the drawer that should stand down. Presence is the state that actually
+    // distinguishes arriving from leaving.
+    if (!isPresent) return;
 
     function handleEscape(event: KeyboardEvent) {
       if (event.key !== "Escape") return;
@@ -219,7 +252,7 @@ export function CoverDrawer({
     return () => {
       window.removeEventListener("keydown", handleEscape, { capture: true });
     };
-  }, [escapeYieldsToContent, onClose, ownsEscape]);
+  }, [escapeYieldsToContent, isPresent, onClose, ownsEscape]);
 
   React.useLayoutEffect(() => {
     // Capture the opener exactly once per drawer instance.

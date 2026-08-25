@@ -193,6 +193,36 @@ async function openActivityFromThreadComposer(
 }
 
 /**
+ * Opens activity over a covering thread by URL param.
+ *
+ * Reaches the same open handler as the thread-composer ingress, but through a
+ * navigation rather than a Radix popover — so the page holds no dismissable
+ * layer of its own and a press during the overlap can be attributed to the
+ * cover surfaces alone.
+ */
+async function openActivityByParam(page: Page, channelId: string) {
+  await page.evaluate(
+    ({ currentChannelId, pubkey }) => {
+      const hash = window.location.hash.replace(/^#/, "") || "/";
+      const [path, query = ""] = hash.split("?");
+      const params = new URLSearchParams(query);
+      params.delete("messageId");
+      params.delete("thread");
+      params.set("agentSession", pubkey);
+      params.set("agentSessionChannel", currentChannelId);
+      window.history.pushState(
+        {},
+        "",
+        `${window.location.pathname}#${path}?${params.toString()}`,
+      );
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    },
+    { currentChannelId: channelId, pubkey: AGENT_PUBKEY },
+  );
+}
+
+/**
  * The default mock bridge already seeds alice as an agent in `#agents`, which
  * is what makes her eligible for the composer activity bar once she types.
  * Re-seeding her through `managedAgents` instead *replaces* that relay-agent
@@ -314,6 +344,65 @@ test("cover drawers replace each other in both directions without stacking", asy
   await expect(page).not.toHaveURL(new RegExp(`thread=${rootId}`));
   await expect(page).toHaveURL(/agentSession=/);
   await expectFocusInside(page, "agent-activity-drawer");
+});
+
+test("a single Escape closes the drawer that replaced another", async ({
+  page,
+}) => {
+  // `AnimatePresence` holds the replaced drawer mounted through its exit
+  // animation, so for a short window (~210ms measured) two surfaces are
+  // listening for Escape at once. The exiting one must stand down at both
+  // layers: the drawer's own capture-phase claim would consume the press with
+  // `stopImmediatePropagation`, and — on activity's path, where the drawer sets
+  // `ownsEscape={false}` and the panel handles the key — the exiting panel's
+  // `preventDefault` would swallow it just as completely, since `useEscapeKey`
+  // ignores an already-`defaultPrevented` event. Either one alone forces a
+  // second press. Deliberately does not wait for the overlap to settle; that
+  // wait is what makes the other tests here blind to this.
+  await page.setViewportSize(WIDE_VIEWPORT);
+  await page.addInitScript(() => {
+    localStorage.setItem("buzz.channels.threadViewMode", "focus");
+  });
+  await page.goto("/");
+  const rootId = await seedThreadRoot(page);
+  // Both ingresses here are navigations, so the page never holds a Radix layer
+  // of its own — the composer ingress opens a popover that would legitimately
+  // own the next Escape, and it clears at the same time as the outgoing drawer
+  // (both ~233ms measured), leaving no moment where the overlap is live and the
+  // popover is gone. Keeping the page free of dismissable layers is what lets
+  // the press be attributed to the cover surfaces alone.
+  await page.getByTestId("channel-agents").click();
+  await expect(page.getByTestId("chat-title")).toHaveText("agents");
+  const channelId = await page.evaluate(() => {
+    const hash = window.location.hash.replace(/^#/, "");
+    return hash.split("?")[0].split("/").pop() ?? "";
+  });
+  await openThreadByMessageLink(page, rootId);
+  await expect(page.getByTestId("focus-thread-drawer")).toBeVisible();
+
+  // Activity replaces the thread. The successor is up, and the outgoing thread
+  // drawer is still mounted mid-exit.
+  await openActivityByParam(page, channelId);
+  await expect(page.getByTestId("agent-activity-drawer")).toBeVisible();
+  expect(
+    await page.getByTestId("focus-thread-drawer-overlay").count(),
+  ).toBeGreaterThan(0);
+  // Nothing but a cover drawer can absorb the press below.
+  await expect(page.locator("[data-radix-popper-content-wrapper]")).toHaveCount(
+    0,
+  );
+
+  // One press, inside that window, and activity is gone.
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("agent-activity-drawer-overlay")).toHaveCount(
+    0,
+  );
+  await expect(page.getByTestId("agent-session-thread-panel")).toHaveCount(0);
+  await expect(page.getByTestId("channel-drop-zone")).not.toHaveAttribute(
+    "inert",
+    "",
+  );
+  await expect(page).not.toHaveURL(/agentSession=/);
 });
 
 test("narrow viewports keep the existing activity presentation", async ({
