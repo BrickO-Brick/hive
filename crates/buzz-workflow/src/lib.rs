@@ -2060,17 +2060,25 @@ steps:
             "enabled": true,
         })
         .to_string();
-        let workflow_id = db
-            .create_workflow(
-                community,
-                Some(channel_id),
-                &member,
-                "sec006-event",
-                &def_json,
-                &[0u8; 32],
-            )
-            .await
-            .expect("create workflow");
+        // Seed through the production insert path (`upsert_workflow`), which
+        // binds a signed definition revision: run creation now skips any
+        // workflow without one (legacy NULL-revision rows fail closed).
+        let workflow_id = Uuid::new_v4();
+        let mut tx = db.begin_transaction().await.expect("begin tx");
+        db.upsert_workflow(
+            &mut tx,
+            community,
+            workflow_id,
+            Some(channel_id),
+            &member,
+            "sec006-event",
+            &def_json,
+            &[0u8; 32],
+            &[0x42u8; 32],
+        )
+        .await
+        .expect("create workflow");
+        tx.commit().await.expect("commit workflow");
 
         let engine = Arc::new(WorkflowEngine::new(db.clone(), WorkflowConfig::default()));
 
@@ -2125,29 +2133,41 @@ steps:
         })
         .to_string();
 
-        // Same definition, two owners: plain member vs channel owner.
-        let wf_member = db
-            .create_workflow(
-                community,
-                Some(channel_id),
-                &member,
-                "hook-member",
-                &def_json,
-                &[0u8; 32],
-            )
-            .await
-            .expect("create member workflow");
-        let wf_owner = db
-            .create_workflow(
-                community,
-                Some(channel_id),
-                &creator,
-                "hook-owner",
-                &def_json,
-                &[1u8; 32],
-            )
-            .await
-            .expect("create owner workflow");
+        // Same definition, two owners: plain member vs channel owner. Seed
+        // through `upsert_workflow` so each row carries a bound signed
+        // revision (run creation skips NULL-revision rows fail-closed).
+        let wf_member = Uuid::new_v4();
+        let mut tx = db.begin_transaction().await.expect("begin member tx");
+        db.upsert_workflow(
+            &mut tx,
+            community,
+            wf_member,
+            Some(channel_id),
+            &member,
+            "hook-member",
+            &def_json,
+            &[0u8; 32],
+            &[0x42u8; 32],
+        )
+        .await
+        .expect("create member workflow");
+        tx.commit().await.expect("commit member workflow");
+        let wf_owner = Uuid::new_v4();
+        let mut tx = db.begin_transaction().await.expect("begin owner tx");
+        db.upsert_workflow(
+            &mut tx,
+            community,
+            wf_owner,
+            Some(channel_id),
+            &creator,
+            "hook-owner",
+            &def_json,
+            &[1u8; 32],
+            &[0x43u8; 32],
+        )
+        .await
+        .expect("create owner workflow");
+        tx.commit().await.expect("commit owner workflow");
 
         let engine = Arc::new(WorkflowEngine::new(db.clone(), WorkflowConfig::default()));
         engine
