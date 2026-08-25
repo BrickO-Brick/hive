@@ -408,6 +408,7 @@ mod tests {
             None,
             Some("claude-opus-4"),
             "owner-hex",
+            None,
         );
         assert_eq!(
             launch["policy_env"]["ANTHROPIC_MODEL"], "claude-opus-4",
@@ -444,6 +445,7 @@ mod tests {
             None,
             Some("claude-opus-4"),
             "owner-hex",
+            None,
         );
 
         // Canonical model rides policy_env alone.
@@ -477,7 +479,7 @@ mod tests {
                 ("ANTHROPIC_MODEL".to_string(), "user-opus".to_string()),
             ]),
         };
-        let launch = build_launch_block(&record, &descriptor, &[], None, None, "owner-hex");
+        let launch = build_launch_block(&record, &descriptor, &[], None, None, "owner-hex", None);
 
         assert!(launch["policy_env"]["ANTHROPIC_MODEL"].is_null());
         assert!(launch["policy_env"]["BUZZ_ACP_MODEL"].is_null());
@@ -502,8 +504,15 @@ mod tests {
             args: vec![],
             env: BTreeMap::from([("BUZZ_ACP_MODEL".to_string(), "user-model".to_string())]),
         };
-        let launch =
-            build_launch_block(&record, &descriptor, &[], None, Some("model"), "owner-hex");
+        let launch = build_launch_block(
+            &record,
+            &descriptor,
+            &[],
+            None,
+            Some("model"),
+            "owner-hex",
+            None,
+        );
 
         // goose puts canonical in policy_env, and the user launch.env value is
         // preserved (later-wins is the intended goose behavior).
@@ -521,7 +530,7 @@ mod tests {
             args: vec![],
             env: BTreeMap::new(),
         };
-        let launch = build_launch_block(&record, &descriptor, &[], None, None, "owner-hex");
+        let launch = build_launch_block(&record, &descriptor, &[], None, None, "owner-hex", None);
         assert_eq!(
             launch["policy_env"]["BUZZ_ACP_EFFORT_LEVEL"], "high",
             "claude remote must receive BUZZ_ACP_EFFORT_LEVEL when effort_level is set"
@@ -537,7 +546,7 @@ mod tests {
             args: vec![],
             env: BTreeMap::new(),
         };
-        let launch = build_launch_block(&record, &descriptor, &[], None, None, "owner-hex");
+        let launch = build_launch_block(&record, &descriptor, &[], None, None, "owner-hex", None);
         assert!(
             launch["policy_env"]["BUZZ_ACP_EFFORT_LEVEL"].is_null(),
             "policy_env must NOT contain BUZZ_ACP_EFFORT_LEVEL when effort_level is None"
@@ -559,7 +568,7 @@ mod tests {
             // User-supplied conflicting value in descriptor.env.
             env: BTreeMap::from([("BUZZ_ACP_EFFORT_LEVEL".to_string(), "low".to_string())]),
         };
-        let launch = build_launch_block(&record, &descriptor, &[], None, None, "owner-hex");
+        let launch = build_launch_block(&record, &descriptor, &[], None, None, "owner-hex", None);
 
         // Canonical must be in policy_env (tier 1).
         assert_eq!(
@@ -585,7 +594,7 @@ mod tests {
             args: vec![],
             env: BTreeMap::from([("BUZZ_ACP_EFFORT_LEVEL".to_string(), "low".to_string())]),
         };
-        let launch = build_launch_block(&record, &descriptor, &[], None, None, "owner-hex");
+        let launch = build_launch_block(&record, &descriptor, &[], None, None, "owner-hex", None);
 
         // No canonical — key must NOT appear in policy_env.
         assert!(

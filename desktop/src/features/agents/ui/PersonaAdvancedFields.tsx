@@ -28,7 +28,10 @@ import {
   PERSONA_FIELD_SHELL_CLASS,
   PERSONA_LABEL_OPTIONAL_CLASS,
 } from "./agentConfigOptions";
-import type { AcpRuntimeCatalogEntry, PermissionPolicy } from "@/shared/api/types";
+import type {
+  AcpRuntimeCatalogEntry,
+  PermissionPolicy,
+} from "@/shared/api/types";
 import {
   deriveNumericDescriptors,
   structuredEnvKeys,

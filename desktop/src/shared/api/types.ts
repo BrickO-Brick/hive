@@ -377,9 +377,9 @@ export type ManagedAgent = {
   respondToAllowlist: string[];
   /** Effective permission policy at the last spawn. */
   permissionPolicy: PermissionPolicy;
-  /** Where `permissionPolicy` came from: agent, definition, global_default, or built_in. */
+  /** Source of `permissionPolicy`: agent, definition, global_default, or built_in. */
   permissionPolicySource: PermissionPolicySource;
-  /** Policy active on the remote worker; non-null only after a successful deploy. Differs from `permissionPolicy` when drift exists. */
+  /** Policy active on the remote worker; non-null only after a successful deploy. */
   appliedPermissionPolicy: PermissionPolicy | null;
 };
 
@@ -731,13 +731,7 @@ export type AgentPersona = {
   respondTo: RespondToMode | null;
   respondToAllowlist: string[];
   parallelism: number | null;
-  /**
-   * Definition-level default permission policy — tier 2 of the resolver
-   * (instance override → this → global → built-in `ask`). Null = no default
-   * (defer to the lower tiers). Unlike the fields above it is a local
-   * authority grant: never published to the catalog or mint-copied onto
-   * instances.
-   */
+  /** Definition-level default permission policy — tier 2 of the resolver (instance → this → global → built-in `ask`). Null = defer. Local-only. */
   permissionPolicy: PermissionPolicy | null;
   createdAt: string;
   updatedAt: string;
@@ -761,11 +755,7 @@ export type PersonaBehaviorInput = {
   respondTo?: RespondToMode;
   respondToAllowlist?: string[];
   parallelism?: number;
-  /**
-   * Definition-level default permission policy. Within a present behavior
-   * group it replaces the stored value as a unit: omitted/undefined clears
-   * the definition default (defer to global/built-in). Never published.
-   */
+  /** Definition-level default permission policy. Within a present behavior group it replaces the stored value as a unit: omitted clears the default. Never published. */
   permissionPolicy?: PermissionPolicy;
 };
 

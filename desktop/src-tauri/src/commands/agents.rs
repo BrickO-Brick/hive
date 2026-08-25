@@ -1176,11 +1176,11 @@ mod deploy;
 pub(super) mod provider_access;
 mod provider_deploy;
 pub(super) use deploy::build_deploy_payload;
+use deploy::extract_applied_permission_policy;
 #[cfg(test)]
 use deploy::{deploy_payload_json, DeployProjections};
 #[cfg(test)]
 use deploy::{ensure_remote_provider_supported, resolve_deploy_model_provider};
-use deploy::extract_applied_permission_policy;
 
 #[path = "agents_profile.rs"]
 mod profile;

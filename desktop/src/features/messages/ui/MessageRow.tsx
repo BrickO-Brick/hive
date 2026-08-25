@@ -424,10 +424,8 @@ export const MessageRow = React.memo(
             );
           }
 
-          // Suppress prose for permission-request sentinels. The harness
-          // encodes the sentinel as bare JSON in the event content — the
-          // PermissionRequestCardBlock below renders the card; there is no
-          // separate prose to preserve.
+          // Suppress prose for permission-request sentinels: the harness
+          // encodes them as bare JSON, and the card below renders the ask.
           if (message.isAgent && isPermissionRequestSentinel(message.body)) {
             return null;
           }
