@@ -649,7 +649,7 @@ mod tests {
         let mut migrations: Vec<_> = MIGRATOR.iter().collect();
         migrations.sort_by_key(|migration| migration.version);
 
-        assert_eq!(migrations.len(), 36);
+        assert_eq!(migrations.len(), 37);
         assert_eq!(migrations[0].version, 1);
         assert_eq!(&*migrations[0].description, "initial schema");
         assert!(migrations[0]
@@ -1102,6 +1102,25 @@ mod tests {
         assert!(run_revision.contains("ALTER TABLE workflow_runs"));
         assert!(run_revision.contains("ADD COLUMN definition_event_id BYTEA"));
         assert!(run_revision.contains("octet_length(definition_event_id) = 32"));
+
+        // Durable managed-agent delivery inbox and its complete transition state
+        // machine: fenced leases, terminal-once finish, and a fleet-wide reaper.
+        // The delivery status enum, the monotonic lease fence, and the tenant
+        // write fence are all load-bearing for the dormant delivery contract.
+        assert_eq!(migrations[36].version, 37);
+        let deliveries = migrations[36].sql.as_str();
+        assert!(deliveries.contains("CREATE TABLE workflow_agent_deliveries"));
+        assert!(deliveries.contains(
+            "CREATE TYPE workflow_agent_delivery_status AS ENUM (\n    'pending', 'claimed', 'finished', 'failed'\n)"
+        ));
+        assert!(deliveries.contains("lease_generation BIGINT NOT NULL DEFAULT 0"));
+        assert!(deliveries.contains("UNIQUE (community_id, run_id, step_id, target_pubkey)"));
+        assert!(deliveries.contains("cause_kind IN ('event', 'schedule', 'webhook')"));
+        assert!(deliveries.contains("attach_community_write_fence('workflow_agent_deliveries')"));
+        assert!(desired_schema.contains("CREATE TABLE workflow_agent_deliveries"));
+        assert!(
+            desired_schema.contains("attach_community_write_fence('workflow_agent_deliveries')")
+        );
 
         // Fresh desired-state bootstrap must install the identical executable
         // fence as migration 0032. CI and isolated relay startup use schema.sql
@@ -1657,6 +1676,9 @@ mod tests {
         let mut expected_fences = migration.fence_attachments.clone();
         expected_fences.remove("product_feedback");
         expected_fences.remove("rate_limit_violations");
+        // Migration 0035 attaches the fence to the durable managed-agent
+        // delivery inbox after 0029; the desired-state schema carries it inline.
+        expected_fences.insert("workflow_agent_deliveries".to_owned());
         assert_eq!(
             expected_fences, schema.fence_attachments,
             "write-fence attachment targets differ after recovery policy"
