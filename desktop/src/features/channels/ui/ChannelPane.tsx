@@ -357,7 +357,6 @@ export const ChannelPane = React.memo(function ChannelPane({
       }),
     [activeChannel, currentPubkey, profiles],
   );
-
   const handleWelcomeAddAgent = React.useCallback(() => {
     onAddAgent?.({
       beforeSend: () =>
@@ -374,13 +373,14 @@ export const ChannelPane = React.memo(function ChannelPane({
     onWelcomeAddAgent: onAddAgent ? handleWelcomeAddAgent : undefined,
   });
   const channelIntro = isHuddleTranscript ? null : standardChannelIntro;
-  const { mainTimelineEntries, visibleMessages } = useChannelPaneMessages({
-    activeChannel,
-    isHuddleTranscript,
-    messages,
-    profiles,
-    threadSummaries,
-  });
+  const { mainTimelineEntries, recentMentions, visibleMessages } =
+    useChannelPaneMessages({
+      activeChannel,
+      isHuddleTranscript,
+      messages,
+      profiles,
+      threadSummaries,
+    });
   useRenderScopedReactionHydration({
     activeChannel,
     mainTimelineEntries,
@@ -738,7 +738,7 @@ export const ChannelPane = React.memo(function ChannelPane({
                         : undefined
                     }
                     onSend={handleSendMessage}
-                    profiles={profiles}
+                    {...{ profiles, recentMentionPubkeys: recentMentions }}
                     showBackgroundUploadProgress={false}
                     placeholder={
                       timeoutState.active
@@ -847,7 +847,7 @@ export const ChannelPane = React.memo(function ChannelPane({
                 onScrollTargetSettled={resolveScrollTarget}
                 onToggleReaction={onToggleReaction}
                 onUnfollowThread={onUnfollowThread}
-                profiles={profiles}
+                {...{ profiles, recentMentionPubkeys: recentMentions }}
                 replyTargetMessage={threadReplyTargetMessage}
                 scrollTargetHighlights={!layoutScrollTargetId}
                 scrollTargetId={layoutScrollTargetId ?? threadScrollTargetId}
