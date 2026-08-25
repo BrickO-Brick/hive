@@ -377,13 +377,6 @@ pub async fn deny_approval(
 
 // ── Helpers (pure, unit-tested in workflows_tests.rs) ─────────────────────────
 
-fn current_workflow_revision(events: &[nostr::Event]) -> Result<String, String> {
-    events
-        .first()
-        .map(|event| event.id.to_hex())
-        .ok_or_else(|| "workflow not found".to_string())
-}
-
 fn trigger_wire_from_message(
     workflow_id: String,
     message: &str,
