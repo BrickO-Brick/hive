@@ -2193,4 +2193,89 @@ steps:
             "channel owner's call_webhook workflow fires"
         );
     }
+
+    /// A run is bound to the exact signed revision persisted at creation.
+    /// Replacing the definition (NIP-33) soft-deletes the old kind-30620
+    /// event, but historical runs must keep loading their bound revision —
+    /// `load_run_definition` reads through soft deletion.
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn run_definition_loads_after_revision_soft_deleted() {
+        let db = setup_db().await;
+        let owner_keys = nostr::Keys::generate();
+        let owner = owner_keys.public_key().to_bytes().to_vec();
+        let member = nostr::Keys::generate().public_key().to_bytes().to_vec();
+        let (community, channel_id) = setup_channel(&db, &owner, &member).await;
+
+        let workflow_id = Uuid::new_v4();
+        let yaml = concat!(
+            "name: revision-history\n",
+            "trigger:\n  on: message_posted\n",
+            "steps:\n  - id: s1\n    action: send_message\n    text: hi\n",
+        );
+        let definition_event =
+            nostr::EventBuilder::new(nostr::Kind::Custom(KIND_WORKFLOW_DEF as u16), yaml)
+                .tags([
+                    nostr::Tag::parse(["d", &workflow_id.to_string()]).expect("d tag"),
+                    nostr::Tag::parse(["h", &channel_id.to_string()]).expect("h tag"),
+                ])
+                .sign_with_keys(&owner_keys)
+                .expect("sign definition");
+        db.insert_event(community, &definition_event, Some(channel_id))
+            .await
+            .expect("store definition event");
+
+        let (def, _) = WorkflowEngine::parse_yaml(yaml).expect("parse yaml");
+        let def_json = serde_json::to_string(&def).expect("serialize definition");
+        let mut tx = db.begin_transaction().await.expect("begin tx");
+        db.upsert_workflow(
+            &mut tx,
+            community,
+            workflow_id,
+            Some(channel_id),
+            &owner,
+            "revision-history",
+            &def_json,
+            &[0u8; 32],
+            definition_event.id.as_bytes(),
+        )
+        .await
+        .expect("create workflow");
+        tx.commit().await.expect("commit workflow");
+
+        let run_id = db
+            .create_workflow_run(
+                community,
+                workflow_id,
+                definition_event.id.as_bytes(),
+                None,
+                None,
+            )
+            .await
+            .expect("create run");
+
+        let engine = Arc::new(WorkflowEngine::new(db.clone(), WorkflowConfig::default()));
+
+        // Bound revision loads while the event is live.
+        engine
+            .load_run_definition(community, run_id)
+            .await
+            .expect("load definition before deletion");
+
+        // Definition replacement soft-deletes the superseded revision event.
+        assert!(
+            db.soft_delete_event(community, definition_event.id.as_bytes())
+                .await
+                .expect("soft delete revision"),
+            "revision event must exist to be soft-deleted"
+        );
+
+        // The historical run still resolves its exact signed revision.
+        let (run, loaded) = engine
+            .load_run_definition(community, run_id)
+            .await
+            .expect("load definition after soft deletion");
+        assert_eq!(run.id, run_id);
+        assert_eq!(loaded.name, "revision-history");
+    }
 }
