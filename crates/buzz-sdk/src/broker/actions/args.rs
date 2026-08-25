@@ -3,15 +3,17 @@
 //!
 //! Every type here is `deny_unknown_fields`, so a credential or environment map
 //! smuggled into a payload fails to deserialize rather than reaching an
-//! executor. Each carries a `validated()` returning a normalized copy; the
-//! shared validators live in the [parent module](super).
+//! executor. Optional members mean absent by being **omitted**: an explicit
+//! `null` is rejected, so there is one spelling of absence and no member can be
+//! present-but-empty. Each carries a `validated()` returning a normalized copy;
+//! the shared validators live in the [parent module](super).
 
 use serde::{Deserialize, Serialize};
 
 use super::{
-    channel, content, cursor, event_id, is_false, limit, mentions, optional, required, respond_to,
-    validate_slug, Action, PubkeyHex, DEFAULT_PAGE_LIMIT, MAX_ABOUT_CHARS, MAX_EMOJI_CHARS,
-    MAX_NAME_CHARS, MAX_PROMPT_CHARS, MAX_SCALAR_CHARS,
+    absent_or_valued, channel, content, cursor, event_id, is_false, limit, mentions, optional,
+    required, respond_to, validate_slug, Action, PubkeyHex, DEFAULT_PAGE_LIMIT, MAX_ABOUT_CHARS,
+    MAX_EMOJI_CHARS, MAX_NAME_CHARS, MAX_PROMPT_CHARS, MAX_SCALAR_CHARS,
 };
 use crate::SdkError;
 
@@ -29,12 +31,19 @@ pub struct ChannelReadArgs {
     /// Channel to read.
     pub channel_id: String,
     /// Narrow to one thread by its root event.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "absent_or_valued",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub root_event_id: Option<String>,
     /// Narrow to messages mentioning the requester — the wake path.
     ///
     /// The requester is never named; see [`crate::broker::BrokerRequest`] on why no body
     /// names its own subject.
+    ///
+    /// A plain `bool`, so it needs no explicit null guard: `null` already fails
+    /// as a type error rather than defaulting to `false`.
     #[serde(default, skip_serializing_if = "is_false")]
     pub mentions_only: bool,
     /// Opaque position to resume from, as returned in [`super::outcomes::MessagePage::next_cursor`].
@@ -46,13 +55,21 @@ pub struct ChannelReadArgs {
     /// second, and it would commit every future host to one relay ordering
     /// strategy. The host defines ordering and cursor stability, including
     /// whether a cursor stays valid across restarts.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "absent_or_valued",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub cursor: Option<String>,
     /// Maximum events to return, capped at [`super::MAX_PAGE_LIMIT`].
     ///
     /// Absent means [`super::DEFAULT_PAGE_LIMIT`], not "unbounded": see
     /// [`Self::effective_limit`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "absent_or_valued",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub limit: Option<u32>,
 }
 
@@ -209,13 +226,25 @@ impl ReactionAddArgs {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProfileSetArgs {
     /// Replacement display name.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "absent_or_valued",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub display_name: Option<String>,
     /// Replacement bio.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "absent_or_valued",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub about: Option<String>,
     /// Replacement avatar URL.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "absent_or_valued",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub picture: Option<String>,
 }
 
@@ -312,16 +341,32 @@ pub struct AgentsCreateArgs {
     /// Instructions the new agent runs with.
     pub system_prompt: String,
     /// Preferred harness id; the host refuses a runtime it cannot resolve.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "absent_or_valued",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub runtime: Option<String>,
     /// Inference provider.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "absent_or_valued",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub provider: Option<String>,
     /// Model identifier, interpreted relative to the runtime.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "absent_or_valued",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub model: Option<String>,
     /// Inbound author gate mode; absent = the host's owner-only default.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "absent_or_valued",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub respond_to: Option<String>,
 }
 
@@ -352,22 +397,46 @@ pub struct AgentsUpdateArgs {
     /// Which agent to patch.
     pub target: AgentTarget,
     /// Rename the agent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "absent_or_valued",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub display_name: Option<String>,
     /// Replacement instructions.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "absent_or_valued",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub system_prompt: Option<String>,
     /// Harness id to pin.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "absent_or_valued",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub runtime: Option<String>,
     /// Inference provider.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "absent_or_valued",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub provider: Option<String>,
     /// Model identifier.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "absent_or_valued",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub model: Option<String>,
     /// Inbound author gate mode.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "absent_or_valued",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub respond_to: Option<String>,
 }
 

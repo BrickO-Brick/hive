@@ -5,11 +5,13 @@
 //! event-publishing actions all return [`EventPublished`]. Every type is
 //! `deny_unknown_fields` with its exact wire key set pinned by test, which is
 //! what enforces the no-secret rule — see the [contract docs](crate::broker).
+//! Optional members are absent by omission; an explicit `null` is rejected.
 
 use serde::{Deserialize, Serialize};
 
 use super::{
-    channel, cursor, event_id, required, Action, PubkeyHex, MAX_NAME_CHARS, MAX_PAGE_LIMIT,
+    absent_or_valued, channel, cursor, event_id, required, Action, PubkeyHex, MAX_NAME_CHARS,
+    MAX_PAGE_LIMIT,
 };
 use crate::SdkError;
 use nostr::{Event, EventId, Kind, PublicKey, Tags, Timestamp};
@@ -141,7 +143,11 @@ pub struct MessagePage {
     /// Absent when the host has nothing further, which is how a caller learns
     /// to stop rather than by comparing lengths against a limit it may not have
     /// set.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "absent_or_valued",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub next_cursor: Option<String>,
 }
 

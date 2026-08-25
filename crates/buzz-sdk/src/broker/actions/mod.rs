@@ -213,6 +213,54 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+/// Deserialize an optional member that may be **absent but never `null`**.
+///
+/// Every optional member in this contract means "absent" by being absent. JSON
+/// `null` is a second spelling of the same thing that no serializer here emits —
+/// `skip_serializing_if` omits the member instead — so accepting it would define
+/// a wire value the contract does not.
+///
+/// That is not merely untidy. `#[serde(default)] Option<T>` maps an explicit
+/// `null` to `None`, which is *indistinguishable from absent* to any code
+/// downstream. A reader that decides something from absence — the status match in
+/// [`crate::broker::BrokerResponse`], or
+/// [`args::ChannelReadArgs::effective_limit`] choosing [`DEFAULT_PAGE_LIMIT`] —
+/// then silently treats a member the sender did supply as one it did not. In the
+/// response envelope that was a real hole: `{"status":"failed","outcome":null}`
+/// parsed as a plain failure, so the per-status contradiction check never fired.
+///
+/// Rejecting `null` outright is stronger than tracking presence beside the value
+/// and cheaper to reason about: there is then exactly one way to say "absent",
+/// and no layer has to decide what a present-but-empty member meant. Applied
+/// uniformly, it also means a host implementer never has to guess whether
+/// `{"limit": null}` means the default or no limit — it means neither, it is a
+/// malformed request.
+///
+/// Used with `#[serde(default, deserialize_with = "…")]`: serde calls this only
+/// when the key is present, so reaching the `None` arm below means the member was
+/// present and `null`. `deny_unknown_fields` stays in force alongside it.
+///
+/// Not every member needs this. A required member of a non-`Option` type already
+/// rejects `null` as a type error — which covers the request envelope's flattened
+/// `action`/`args` (adjacently tagged, both required), every canonical member of
+/// the strict event intermediary, and the two `bool` members here. The guard is
+/// only load-bearing where `Option` plus `default` would otherwise make `null`
+/// and absent the same value.
+pub(super) fn absent_or_valued<'de, T, D>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error as _;
+
+    match Option::<T>::deserialize(deserializer)? {
+        Some(value) => Ok(Some(value)),
+        None => Err(D::Error::custom(
+            "must not be null; omit the member to mean absent",
+        )),
+    }
+}
+
 fn required(value: &str, label: &str, max: usize) -> Result<String, SdkError> {
     let value = value.trim();
     if value.is_empty() {

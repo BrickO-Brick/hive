@@ -461,6 +461,213 @@ fn a_request_envelope_rejects_anything_outside_its_exact_key_set() {
     }
 }
 
+/// Every JSON-pointer path to an object member reachable in `value`, including
+/// members nested inside arrays, so a null-injection table cannot miss one.
+fn member_paths(value: &serde_json::Value, prefix: &str, out: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map {
+                // Escape per RFC 6901, so a key containing `/` or `~` still
+                // addresses the member it names.
+                let escaped = key.replace('~', "~0").replace('/', "~1");
+                let path = format!("{prefix}/{escaped}");
+                out.push(path.clone());
+                member_paths(child, &path, out);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for (index, child) in items.iter().enumerate() {
+                member_paths(child, &format!("{prefix}/{index}"), out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The bug this guards: `#[serde(default)] Option<T>` maps an explicit `null` to
+/// `None`, which is indistinguishable from *absent*. The response envelope decides
+/// its shape from absence, so `{"status":"failed","action":null,"outcome":null}`
+/// and a succeeded response with `"error":null` both parsed as well-formed and
+/// skipped the per-status contradiction check entirely — a malformed envelope
+/// validating `Ok`.
+///
+/// The rule adopted in response is uniform and therefore checkable: **no member
+/// anywhere in this contract accepts an explicit `null`.** Nothing here emits one
+/// (`skip_serializing_if` omits instead), so `null` is a second spelling of
+/// "absent" that the contract simply does not define. One spelling means no layer
+/// has to decide what a present-but-null member meant.
+///
+/// This walks the real fixtures rather than a hand-written list of members, so an
+/// optional field added later is covered without anyone remembering to add it
+/// here.
+#[test]
+fn no_member_of_any_payload_accepts_an_explicit_null() {
+    let keys = Keys::generate();
+
+    // Requests: every action, with every optional member populated.
+    for args in action_fixtures() {
+        let request = BrokerRequest::new("req-1", args).expect("fixture request builds");
+        let valid = serde_json::to_value(&request).expect("request serializes");
+        // The untouched fixture must parse, or nulling members below would
+        // "reject" for a reason that has nothing to do with null.
+        assert_eq!(
+            serde_json::from_value::<BrokerRequest>(valid.clone()).expect("fixture parses"),
+            request,
+        );
+
+        let mut paths = Vec::new();
+        member_paths(&valid, "", &mut paths);
+        assert!(
+            paths.len() > 1,
+            "fixture should expose several members: {valid}"
+        );
+        for path in paths {
+            let mut json = valid.clone();
+            *json.pointer_mut(&path).expect("path addresses a member") = serde_json::Value::Null;
+            assert!(
+                serde_json::from_value::<BrokerRequest>(json.clone()).is_err(),
+                "request with null at \"{path}\" must not deserialize: {json}"
+            );
+        }
+    }
+
+    // Responses: every outcome, plus both error-carrying statuses.
+    let mut results: Vec<BrokerResult> = outcome_fixtures(&keys)
+        .into_iter()
+        .map(BrokerResult::succeeded)
+        .collect();
+    results.push(BrokerResult::failed(BrokerError::new(
+        BrokerErrorCode::ActionFailed,
+        "runtime not installed",
+    )));
+    results.push(BrokerResult::indeterminate(BrokerError::new(
+        BrokerErrorCode::OutcomeUnknown,
+        "host restarted mid-execution",
+    )));
+
+    for result in results {
+        let response = BrokerResponse::new("req-1", result).replayed();
+        let valid = serde_json::to_value(&response).expect("response serializes");
+        assert_eq!(
+            serde_json::from_value::<BrokerResponse>(valid.clone()).expect("fixture parses"),
+            response,
+        );
+
+        let mut paths = Vec::new();
+        member_paths(&valid, "", &mut paths);
+        for path in paths {
+            let mut json = valid.clone();
+            *json.pointer_mut(&path).expect("path addresses a member") = serde_json::Value::Null;
+            assert!(
+                serde_json::from_value::<BrokerResponse>(json.clone()).is_err(),
+                "response with null at \"{path}\" must not deserialize: {json}"
+            );
+        }
+    }
+    // The two `bool` members carry no explicit guard, because `null` already
+    // fails as a type error rather than defaulting to `false`. Pin that, so the
+    // docs saying so cannot drift and so a later change to `Option<bool>` — which
+    // *would* need the guard — fails here.
+    let mut json = serde_json::json!({
+        "type": BROKER_REQUEST_TYPE,
+        "protocolVersion": 1,
+        "requestId": "req-1",
+        "actionVersion": 1,
+        "action": "channel.read",
+        "args": { "channelId": CHANNEL, "mentionsOnly": serde_json::Value::Null },
+    });
+    assert!(
+        serde_json::from_value::<BrokerRequest>(json.clone()).is_err(),
+        "a null mentionsOnly must not deserialize: {json}"
+    );
+    json = serde_json::json!({
+        "type": BROKER_RESULT_TYPE,
+        "protocolVersion": 1,
+        "requestId": "req-1",
+        "status": "failed",
+        "error": { "code": "action_failed", "message": "no" },
+        "replayed": serde_json::Value::Null,
+    });
+    assert!(
+        serde_json::from_value::<BrokerResponse>(json.clone()).is_err(),
+        "a null replayed must not deserialize: {json}"
+    );
+}
+
+/// The exact repro that reached `Ok`: a member the declared status does not admit,
+/// supplied as `null` rather than as a value. The fixtures above cannot cover this
+/// — a serialized response never contains the member its status forbids — so each
+/// status-incompatible member is injected here by name.
+///
+/// This is the case that makes the null hole a contract bug rather than a
+/// tidiness one: these envelopes contradict themselves, and before the fix
+/// `validate()` returned `Ok(())` on all of them.
+#[test]
+fn a_status_incompatible_member_is_rejected_as_null_not_only_as_a_value() {
+    let succeeded = || {
+        serde_json::json!({
+            "type": BROKER_RESULT_TYPE,
+            "protocolVersion": 1,
+            "requestId": "req-1",
+            "status": "succeeded",
+            "action": "agents.delete",
+            "outcome": { "agentPubkey": PUBKEY, "displayName": "Gone" },
+        })
+    };
+    let failed = || {
+        serde_json::json!({
+            "type": BROKER_RESULT_TYPE,
+            "protocolVersion": 1,
+            "requestId": "req-1",
+            "status": "failed",
+            "error": { "code": "action_failed", "message": "no" },
+        })
+    };
+
+    let mut cases: Vec<(String, serde_json::Value)> = Vec::new();
+
+    // `error` is the member a success does not admit.
+    let mut json = succeeded();
+    json["error"] = serde_json::Value::Null;
+    cases.push(("null error beside a success".into(), json));
+
+    // `action` and `outcome` are the members the two failure statuses do not
+    // admit — individually and together, since the original report showed both.
+    for status in ["failed", "indeterminate"] {
+        let base = || {
+            let mut json = failed();
+            json["status"] = serde_json::json!(status);
+            if status == "indeterminate" {
+                json["error"] = serde_json::json!({ "code": "outcome_unknown", "message": "?" });
+            }
+            json
+        };
+        for member in ["action", "outcome"] {
+            let mut json = base();
+            json[member] = serde_json::Value::Null;
+            cases.push((format!("null {member} beside a {status}"), json));
+        }
+        let mut json = base();
+        json["action"] = serde_json::Value::Null;
+        json["outcome"] = serde_json::Value::Null;
+        cases.push((format!("null action and outcome beside a {status}"), json));
+    }
+
+    for (what, json) in cases {
+        let parsed = serde_json::from_value::<BrokerResponse>(json.clone());
+        // Assert on the parse, not on `validate()`: a response that parses and
+        // then fails validation would still have to be *reported* by a caller
+        // that remembered to validate. Rejecting at the boundary means a
+        // malformed envelope never becomes a value at all.
+        assert!(
+            parsed.is_err(),
+            "{what} must not deserialize, but parsed as {:?} which validates {:?}: {json}",
+            parsed.as_ref().ok(),
+            parsed.as_ref().map(BrokerResponse::validate).ok(),
+        );
+    }
+}
+
 // ── Envelope rejection ──────────────────────────────────────────────────────
 
 /// Unknown names must not resolve, and neither must the *mechanism* names this

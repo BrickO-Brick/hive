@@ -64,6 +64,15 @@
 //! inside each event object — a host cannot ship a `secretKey` beside `sig` and
 //! have it silently trimmed.
 //!
+//! A third hole was subtler and is closed the same way: `deny_unknown_fields`
+//! constrains *which* members may appear, not what they may hold, and
+//! `#[serde(default)] Option<T>` accepts an explicit `null` as `None` —
+//! indistinguishable from absent. An envelope that decides its shape from absence
+//! therefore accepted `{"status":"failed","outcome":null}` as a plain failure. So
+//! **no optional member anywhere in this contract accepts `null`**: nothing here
+//! emits one, absence is spelled by omission, and a `null` is a malformed payload
+//! rather than a second spelling with its own interpretation.
+//!
 //! Two limits are worth stating. A `String` field can physically hold secret
 //! text, so keeping secrets out of message content and error messages is host
 //! policy this contract cannot enforce. And nothing stops a host from *holding*
@@ -109,6 +118,7 @@ use crate::SdkError;
 pub mod actions;
 pub mod client;
 
+use actions::absent_or_valued;
 pub use actions::{
     Action, ActionArgs, ActionOutcome, AgentTarget, AgentsCreateArgs, AgentsCreateOutcome,
     AgentsDeleteArgs, AgentsDeleteOutcome, AgentsUpdateArgs, AgentsUpdateOutcome, BrokerMessage,
@@ -601,6 +611,9 @@ pub struct BrokerResponse {
     #[serde(flatten)]
     pub result: BrokerResult,
     /// True when this response replays a previously recorded outcome.
+    ///
+    /// A plain `bool`, so it needs no explicit null guard: `null` already fails
+    /// as a type error rather than defaulting to `false`.
     #[serde(default, skip_serializing_if = "is_false")]
     pub replayed: bool,
 }
@@ -614,6 +627,15 @@ pub struct BrokerResponse {
 /// missing `outcome` under `succeeded` — is a parse failure rather than a field
 /// nobody reads.
 ///
+/// Those members deserialize through [`absent_or_valued`] rather than plain
+/// `#[serde(default)]`, because the status match below reads `None` as *absent*
+/// and `#[serde(default)] Option<T>` also produces `None` for an explicit
+/// `null`. Without it, `{"status":"failed","action":null,"outcome":null}` — or a
+/// succeeded response with `"error":null` — parsed as well-formed and skipped the
+/// contradiction check entirely. `null` is now rejected for these members whether
+/// or not the declared status admits them, so there is exactly one way for a
+/// member to be absent.
+///
 /// `outcome` is held as a `serde_json::Value` and re-deserialized under its
 /// action tag, so this reader is JSON-specific. That is not a narrowing: the HTTP
 /// binding in [`client`] declares `application/json`, and JSON is the only
@@ -625,11 +647,11 @@ struct WireResponse {
     protocol_version: u16,
     request_id: String,
     status: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "absent_or_valued")]
     action: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "absent_or_valued")]
     outcome: Option<serde_json::Value>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "absent_or_valued")]
     error: Option<BrokerError>,
     #[serde(default)]
     replayed: bool,
