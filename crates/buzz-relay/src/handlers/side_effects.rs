@@ -3396,7 +3396,12 @@ pub async fn publish_dm_visibility_snapshot(
     let relay_pubkey_hex = state.relay_keypair.public_key().to_hex();
 
     // Read the latest snapshot once: it feeds both the drift check below and the
-    // monotonic `created_at` bump. A missing snapshot conveys the empty set.
+    // monotonic `created_at` bump. A missing snapshot (empty `Ok`) conveys the
+    // empty set, but a read *error* must propagate: swallowing it as `[]` would
+    // let the drift guard below mistake a transient failure for convergence and
+    // report `Ok(())` while a stale snapshot survives, stranding a hidden DM on
+    // the client forever (Jude review: snapshot-read failure misreported as
+    // convergence). Propagating instead makes the caller log and retry.
     let existing = state
         .db
         .query_events(&buzz_db::event::EventQuery {
@@ -3406,8 +3411,7 @@ pub async fn publish_dm_visibility_snapshot(
             limit: Some(1),
             ..buzz_db::event::EventQuery::for_community(tenant.community())
         })
-        .await
-        .unwrap_or_default();
+        .await?;
 
     // Drift guard: skip the replace when the last published snapshot already
     // conveys the canonical hidden set. This makes republishing idempotent, so
