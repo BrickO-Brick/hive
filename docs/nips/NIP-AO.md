@@ -348,8 +348,12 @@ state is buffered and applied as soon as the relay `OK` is received, with no
 additional round trip.
 
 The event content is a compact JSON object that matches the D6 frozen schema
-(`requestNonce`, `optionIds`, `labels`, `expiresAt`, `hasDurableRule`, …). Desktop
-identifies it via `"v":1` + `"state":"pending"` in the content. Key properties:
+(`requestNonce`, `optionIds`, `labels`, `expiresAt`, …). `optionIds` is a
+**two-action contract**: exactly one `allow_once` and one `reject_once`, in that
+order — the harness selects them via `select_card_actions` and fails closed if
+either is absent or ambiguous, so no other option (e.g. `allow_always`) can ever
+be forwarded. Desktop identifies the sentinel via `"v":1` + `"state":"pending"`
+in the content. Key properties:
 
 - Signed by the **agent's relay keys** (not the agent's ACP identity).
 - `h` tag: channel UUID.
@@ -374,13 +378,18 @@ The `ask` path includes a **D7-final admission check**: the harness compares the
 
 Heartbeat turns and turns without a resolved owner always downgrade to reject.
 
-### D5 durable-rule disclosure
+### D5 two-action contract
 
-If any option in the request has `kind = "allow_always"`, the sentinel sets
-`hasDurableRule: true` and populates `durableRuleNote` with a disclosure string.
-Desktop MUST render this note visibly before the owner confirms an `allow_always`
-selection. The label value in the sentinel comes directly from the ACP option's
-`name` field, capped at 200 characters; render it verbatim.
+The sentinel forwards **exactly two** options: one `allow_once` and one
+`reject_once`, selected by the harness (`select_card_actions`) from the adapter's
+option list. An adapter offering a durable `allow_always` option never has it
+forwarded — if the two ruled actions are not both present and unambiguous, the
+harness fails closed and posts no card. The read loop accepts an owner decision
+only when it matches one of those two snapshotted actions, not on mere membership
+in the adapter's original option list. Because no durable rule can ever be
+offered, there is no durable-rule disclosure. Label values in the sentinel come
+directly from the ACP options' `name` fields, capped at 200 characters; render
+them verbatim.
 
 ### Sentinel authenticity
 
