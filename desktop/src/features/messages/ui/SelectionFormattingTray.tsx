@@ -161,7 +161,9 @@ export function SelectionFormattingTray({
       return;
     }
 
-    const editorDom = editor.view.dom;
+    let disposed = false;
+    let attachFrame: number | null = null;
+    let editorDom: HTMLElement | null = null;
     const hide = () => setPosition(null);
     const handleContextMenu = () => {
       suppressRightClickUpdatesRef.current = true;
@@ -175,27 +177,42 @@ export function SelectionFormattingTray({
     const handlePointerDown = (event: PointerEvent) => {
       if (event.button === 0) clearSuppression();
     };
+    const attachToEditorView = () => {
+      if (disposed || editor.isDestroyed) return;
+      try {
+        editorDom = editor.view.dom;
+      } catch {
+        // Tiptap creates the Editor before EditorContent mounts its view.
+        // A sibling state update can run this effect inside that brief gap.
+        attachFrame = window.requestAnimationFrame(attachToEditorView);
+        return;
+      }
 
-    scheduleUpdate();
-    editor.on("selectionUpdate", scheduleUpdate);
-    editor.on("transaction", scheduleUpdate);
-    editor.on("focus", scheduleUpdate);
-    editor.on("blur", hide);
-    editorDom.addEventListener("contextmenu", handleContextMenu);
-    editorDom.addEventListener("pointerdown", handlePointerDown);
-    editorDom.addEventListener("keydown", clearSuppression);
-    window.addEventListener("resize", scheduleUpdate);
-    window.addEventListener("scroll", scheduleUpdate, true);
+      scheduleUpdate();
+      editor.on("selectionUpdate", scheduleUpdate);
+      editor.on("transaction", scheduleUpdate);
+      editor.on("focus", scheduleUpdate);
+      editor.on("blur", hide);
+      editorDom.addEventListener("contextmenu", handleContextMenu);
+      editorDom.addEventListener("pointerdown", handlePointerDown);
+      editorDom.addEventListener("keydown", clearSuppression);
+      window.addEventListener("resize", scheduleUpdate);
+      window.addEventListener("scroll", scheduleUpdate, true);
+    };
+
+    attachToEditorView();
 
     return () => {
+      disposed = true;
+      if (attachFrame !== null) window.cancelAnimationFrame(attachFrame);
       cancelScheduledUpdate();
       editor.off("selectionUpdate", scheduleUpdate);
       editor.off("transaction", scheduleUpdate);
       editor.off("focus", scheduleUpdate);
       editor.off("blur", hide);
-      editorDom.removeEventListener("contextmenu", handleContextMenu);
-      editorDom.removeEventListener("pointerdown", handlePointerDown);
-      editorDom.removeEventListener("keydown", clearSuppression);
+      editorDom?.removeEventListener("contextmenu", handleContextMenu);
+      editorDom?.removeEventListener("pointerdown", handlePointerDown);
+      editorDom?.removeEventListener("keydown", clearSuppression);
       window.removeEventListener("resize", scheduleUpdate);
       window.removeEventListener("scroll", scheduleUpdate, true);
     };
