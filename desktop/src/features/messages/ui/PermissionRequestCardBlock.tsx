@@ -8,6 +8,8 @@
  */
 import * as React from "react";
 
+import type { TimelineMessage } from "@/features/messages/types";
+import { getPermissionRequestAgentPubkey } from "@/features/messages/ui/permissionRequestAuthPubkey";
 import { useIdentityQuery } from "@/shared/api/hooks";
 import { computePermissionRequest } from "@/shared/lib/computePermissionRequest";
 import { normalizePubkey } from "@/shared/lib/pubkey";
@@ -15,51 +17,40 @@ import { AttachmentGroup } from "@/shared/ui/attachment";
 import { PermissionRequestCard } from "@/shared/ui/permission-request-card";
 
 export type PermissionRequestCardBlockProps = {
-  /** Message body content — may contain the sentinel or may not. */
-  content: string;
-  /** Whether this is an interactive render surface. Non-interactive → no card. */
-  interactive: boolean;
-  /**
-   * Normalized hex pubkey of the known agent that signed the kind-9 event.
-   * Undefined → card disabled (no agent signer on this message).
-   */
-  agentPubkey: string | undefined;
-  /** Raw signer pubkey from the signed event envelope. */
-  signerPubkey: string | undefined;
-  /**
-   * Signer pubkey of the most recent authorized kind-40003 edit, if any.
-   * Used to enforce edit authenticity: only agent-signed edits resolve the card.
-   */
-  editSignerPubkey?: string;
-  /** Verified owner pubkey for the agent (from the agent's profile). */
-  ownerPubkey?: string | null;
-  /** Channel ID for routing the permission decision click. */
-  channelId: string;
+  /** The message that may carry a permission-request sentinel. */
+  message: TimelineMessage;
+  /** Predicate identifying a known agent signer (enables the card). */
+  isKnownAgentPubkey: (pubkey: string) => boolean;
+  /** Channel ID for routing the decision click; falsy → no card. */
+  channelId: string | null | undefined;
 };
 
 export const PermissionRequestCardBlock = React.memo(
   function PermissionRequestCardBlock({
-    content,
-    interactive,
-    agentPubkey,
-    signerPubkey,
-    editSignerPubkey,
-    ownerPubkey,
+    message,
+    isKnownAgentPubkey,
     channelId,
   }: PermissionRequestCardBlockProps) {
     const identityQuery = useIdentityQuery();
     const viewerPubkey = identityQuery.data?.pubkey;
 
+    if (!channelId || !message.isAgent) return null;
+
+    const agentPubkey = getPermissionRequestAgentPubkey(
+      message,
+      isKnownAgentPubkey,
+    );
     const request = computePermissionRequest(
-      content,
-      interactive,
+      message.body,
+      true,
       agentPubkey,
-      signerPubkey,
-      editSignerPubkey,
+      message.signerPubkey,
+      message.editSignerPubkey,
     );
 
     if (request === null || !agentPubkey) return null;
 
+    const ownerPubkey = message.ownerPubkey;
     const isOwner =
       !!viewerPubkey &&
       !!ownerPubkey &&
@@ -80,11 +71,7 @@ export const PermissionRequestCardBlock = React.memo(
     );
   },
   (prev, next) =>
-    prev.content === next.content &&
-    prev.interactive === next.interactive &&
-    prev.agentPubkey === next.agentPubkey &&
-    prev.signerPubkey === next.signerPubkey &&
-    prev.editSignerPubkey === next.editSignerPubkey &&
-    prev.ownerPubkey === next.ownerPubkey &&
+    prev.message === next.message &&
+    prev.isKnownAgentPubkey === next.isKnownAgentPubkey &&
     prev.channelId === next.channelId,
 );

@@ -149,6 +149,26 @@ async function makeQueryClient(viewerPubkey) {
 
 // ── Render helper ─────────────────────────────────────────────────────────────
 
+// Build a minimal TimelineMessage carrying the sentinel. The block reads
+// kind/isAgent/body/signerPubkey/editSignerPubkey/ownerPubkey; other fields
+// are irrelevant to the render gates under test.
+function makeMessage({ content, signerPubkey, editSignerPubkey, ownerPubkey }) {
+  return {
+    kind: 9,
+    isAgent: true,
+    body: content,
+    signerPubkey,
+    editSignerPubkey,
+    ownerPubkey,
+  };
+}
+
+// The block resolves `agentPubkey` from the signer via this predicate, so a
+// forged signer (signer ≠ agent) fails the gate exactly as production does.
+function makeIsKnownAgentPubkey(agentPubkey) {
+  return (pubkey) => pubkey === agentPubkey;
+}
+
 async function renderBlock({
   content,
   signerPubkey = AGENT_PUBKEY,
@@ -173,12 +193,13 @@ async function renderBlock({
         QueryClientProvider,
         { client: qc },
         createElement(PermissionRequestCardBlock, {
-          content,
-          interactive: true,
-          agentPubkey,
-          signerPubkey,
-          editSignerPubkey,
-          ownerPubkey,
+          message: makeMessage({
+            content,
+            signerPubkey,
+            editSignerPubkey,
+            ownerPubkey,
+          }),
+          isKnownAgentPubkey: makeIsKnownAgentPubkey(agentPubkey),
           channelId: CHANNEL_ID,
         }),
       ),
@@ -315,11 +336,12 @@ test("test_expiry_disables_buttons_after_clock_tick", async () => {
         QueryClientProvider,
         { client: qc },
         createElement(PermissionRequestCardBlock, {
-          content: makePendingContent(EXPIRY_SECS),
-          interactive: true,
-          agentPubkey: AGENT_PUBKEY,
-          signerPubkey: AGENT_PUBKEY,
-          ownerPubkey: OWNER_PUBKEY,
+          message: makeMessage({
+            content: makePendingContent(EXPIRY_SECS),
+            signerPubkey: AGENT_PUBKEY,
+            ownerPubkey: OWNER_PUBKEY,
+          }),
+          isKnownAgentPubkey: makeIsKnownAgentPubkey(AGENT_PUBKEY),
           channelId: CHANNEL_ID,
         }),
       ),

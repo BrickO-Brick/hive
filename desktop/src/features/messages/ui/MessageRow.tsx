@@ -33,7 +33,6 @@ import {
   KIND_STREAM_MESSAGE_DIFF,
 } from "@/shared/constants/kinds";
 import { getConfigNudgeAuthorPubkey } from "@/features/messages/ui/configNudgeAuthPubkey";
-import { getPermissionRequestAgentPubkey } from "@/features/messages/ui/permissionRequestAuthPubkey";
 import { PermissionRequestCardBlock } from "@/features/messages/ui/PermissionRequestCardBlock";
 import { cn } from "@/shared/lib/cn";
 import { normalizePubkey } from "@/shared/lib/pubkey";
@@ -688,20 +687,11 @@ export const MessageRow = React.memo(
       <>
         <SentFromThreadLine channelId={channelId} tags={message.tags} />
         {renderBody()}
-        {channelId && message.isAgent ? (
-          <PermissionRequestCardBlock
-            agentPubkey={getPermissionRequestAgentPubkey(
-              message,
-              isKnownAgentPubkey,
-            )}
-            channelId={channelId}
-            content={message.body}
-            editSignerPubkey={message.editSignerPubkey}
-            interactive
-            ownerPubkey={message.ownerPubkey}
-            signerPubkey={message.signerPubkey}
-          />
-        ) : null}
+        <PermissionRequestCardBlock
+          message={message}
+          isKnownAgentPubkey={isKnownAgentPubkey}
+          channelId={channelId}
+        />
         {continuationMetadataNode}
         <MessageReactions
           messageId={message.id}

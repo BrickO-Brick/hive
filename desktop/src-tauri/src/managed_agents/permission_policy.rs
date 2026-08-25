@@ -120,6 +120,20 @@ pub fn apply_permission_policy_update(
     Ok(())
 }
 
+/// Resolve the effective policy and inject `BUZZ_ACP_PERMISSION_POLICY` so the
+/// running process and the UI-visible setting stay in sync. Returns the policy
+/// so the caller can stamp it onto the spawn-config snapshot.
+pub fn inject_spawn_permission_policy(
+    command: &mut std::process::Command,
+    record: &ManagedAgentRecord,
+    definitions: &[AgentDefinition],
+    global: &super::global_config::GlobalAgentConfig,
+) -> PermissionPolicy {
+    let (policy, _) = resolve_effective_permission_policy(record, definitions, global);
+    command.env("BUZZ_ACP_PERMISSION_POLICY", policy.as_str());
+    policy
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
