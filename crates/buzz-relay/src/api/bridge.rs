@@ -2100,12 +2100,16 @@ pub async fn workflow_webhook(
         .await
         .map_err(|_| not_found("workflow not found"))?;
 
+    let definition_event_id = workflow
+        .definition_event_id
+        .as_deref()
+        .ok_or_else(|| not_found("workflow not found"))?;
     let run_id = state
         .db
         .create_workflow_run(
             community_id,
             id,
-            workflow.definition_event_id.as_deref(),
+            definition_event_id,
             None,
             trigger_ctx_json.as_ref(),
         )

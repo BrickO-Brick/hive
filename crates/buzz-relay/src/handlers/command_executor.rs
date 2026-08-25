@@ -1133,7 +1133,7 @@ async fn handle_workflow_trigger(
             &mut tx,
             community_id,
             workflow_id,
-            Some(&requested_revision),
+            &requested_revision,
             Some(&event_id_bytes),
             trigger_ctx_json.as_ref(),
         )

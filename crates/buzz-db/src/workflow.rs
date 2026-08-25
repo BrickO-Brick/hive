@@ -839,7 +839,7 @@ pub async fn create_workflow_run_in_transaction(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     community_id: CommunityId,
     workflow_id: Uuid,
-    definition_event_id: Option<&[u8]>,
+    definition_event_id: &[u8],
     trigger_event_id: Option<&[u8]>,
     trigger_context: Option<&serde_json::Value>,
 ) -> Result<Uuid> {
@@ -873,7 +873,7 @@ pub async fn create_workflow_run(
     pool: &PgPool,
     community_id: CommunityId,
     workflow_id: Uuid,
-    definition_event_id: Option<&[u8]>,
+    definition_event_id: &[u8],
     trigger_event_id: Option<&[u8]>,
     trigger_context: Option<&serde_json::Value>,
 ) -> Result<Uuid> {
@@ -2043,7 +2043,7 @@ mod tests {
             .expect("claim wins");
 
         // Create the run the won claim is responsible for, then attach it.
-        let run_id = create_workflow_run(&pool, community, workflow_id, None, None, None)
+        let run_id = create_workflow_run(&pool, community, workflow_id, &[0x42; 32], None, None)
             .await
             .expect("create run ok");
 
@@ -2072,7 +2072,7 @@ mod tests {
 
         // A second attach is a no-op: the `workflow_run_id IS NULL` guard means
         // an already-linked claim is never re-pointed to a different run.
-        let other_run = create_workflow_run(&pool, community, workflow_id, None, None, None)
+        let other_run = create_workflow_run(&pool, community, workflow_id, &[0x42; 32], None, None)
             .await
             .expect("create second run ok");
         let reattached =
@@ -2304,7 +2304,7 @@ mod tests {
             &mut aborted,
             community,
             workflow_id,
-            None,
+            &[0x42; 32],
             Some(&trigger_event_id),
             None,
         )
@@ -2350,7 +2350,7 @@ mod tests {
             &mut retry,
             community,
             workflow_id,
-            None,
+            &[0x42; 32],
             Some(&trigger_event_id),
             None,
         )
@@ -2524,10 +2524,10 @@ mod tests {
         insert_workflow_with_ids(&pool, community_a, workflow_id, channel_id, "wf-A").await;
         insert_workflow_with_ids(&pool, community_b, workflow_id, Uuid::new_v4(), "wf-B").await;
 
-        let run_a = create_workflow_run(&pool, community_a, workflow_id, None, None, None)
+        let run_a = create_workflow_run(&pool, community_a, workflow_id, &[0x42; 32], None, None)
             .await
             .expect("run A");
-        let run_b = create_workflow_run(&pool, community_b, workflow_id, None, None, None)
+        let run_b = create_workflow_run(&pool, community_b, workflow_id, &[0x42; 32], None, None)
             .await
             .expect("run B");
 
