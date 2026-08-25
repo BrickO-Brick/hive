@@ -21,6 +21,7 @@ fn snapshot_with_policy(
         teams,
         workspace_relay,
         global,
+        true,
         enforced_owner_only,
     )
     .canonical()

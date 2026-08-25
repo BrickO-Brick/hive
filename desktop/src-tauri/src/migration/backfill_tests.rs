@@ -137,6 +137,7 @@ fn backfill_of_promptless_record_keeps_spawn_snapshot_stable() {
         &[],
         "wss://ws.example",
         &Default::default(),
+        true,
         false,
     );
 
@@ -154,6 +155,7 @@ fn backfill_of_promptless_record_keeps_spawn_snapshot_stable() {
         &[],
         "wss://ws.example",
         &Default::default(),
+        true,
         false,
     );
 
@@ -189,6 +191,7 @@ fn backfill_of_prompted_record_keeps_spawn_snapshot_stable() {
         &[],
         "wss://ws.example",
         &Default::default(),
+        true,
         false,
     );
 
@@ -206,6 +209,7 @@ fn backfill_of_prompted_record_keeps_spawn_snapshot_stable() {
         &[],
         "wss://ws.example",
         &Default::default(),
+        true,
         false,
     );
 

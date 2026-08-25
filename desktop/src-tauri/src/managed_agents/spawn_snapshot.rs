@@ -264,6 +264,7 @@ pub(crate) fn prospective_spawn_config_snapshot(
     teams: &[TeamRecord],
     workspace_relay: &str,
     global: &GlobalAgentConfig,
+    shared_instructions_enabled: bool,
     enforced_owner_only: bool,
 ) -> SpawnConfigSnapshot {
     // Prospective re-snapshot: apply the same `apply_persona_snapshot` the
@@ -304,9 +305,12 @@ pub(crate) fn prospective_spawn_config_snapshot(
         EffectiveConfigResult::OrphanedInstance { .. } => (None, None, None),
     };
 
-    let assigned_shared_instructions =
+    let assigned_shared_instructions: &[String] = if shared_instructions_enabled {
         super::effective_config::resolve_effective_assigned_shared_instructions(record, personas)
-            .unwrap_or_default();
+            .unwrap_or_default()
+    } else {
+        &[]
+    };
 
     SpawnConfigSnapshot::from_inputs(SpawnConfigInputs {
         record,

@@ -247,6 +247,10 @@ pub fn build_managed_agent_summary(
 
     // The prospective side is computed only for a tracked pair: an unstamped
     // agent has nothing to compare against.
+    let shared_instructions_enabled = app
+        .state::<crate::app_state::AppState>()
+        .shared_instructions_enabled
+        .load(std::sync::atomic::Ordering::Relaxed);
     let tracked_spawn = pair_key.as_ref().zip(pair_runtime).map(|(key, runtime)| {
         let current = crate::managed_agents::spawn_snapshot::prospective_spawn_config_snapshot(
             record,
@@ -254,6 +258,7 @@ pub fn build_managed_agent_summary(
             teams,
             &key.relay_url,
             global_config,
+            shared_instructions_enabled,
             super::owner_only_access_build(),
         );
         (runtime, current)
