@@ -13,7 +13,7 @@ use crate::{
     events,
     managed_agents::{find_managed_agent_mut, load_managed_agents, ManagedAgentRecord},
     models::{
-        FeedItemInfo, FeedMeta, FeedResponse, FeedSections, SearchResponse,
+        FeedItemCategory, FeedItemInfo, FeedMeta, FeedResponse, FeedSections, SearchResponse,
         SendChannelMessageResponse, ThreadRepliesResponse,
     },
     nostr_convert,
@@ -138,14 +138,14 @@ pub async fn get_feed(
     let mentions: Vec<FeedItemInfo> = mention_events
         .iter()
         .map(|ev| {
-            let mut item = feed_item_from_event(ev, "mentions");
+            let mut item = feed_item_from_event(ev, FeedItemCategory::Mention);
             apply_link_preview_suppression(&mut item.tags, &item.id, &suppressed_mentions);
             item
         })
         .collect();
     let needs_action: Vec<FeedItemInfo> = approval_events
         .iter()
-        .map(|ev| feed_item_from_event(ev, "needs_action"))
+        .map(|ev| feed_item_from_event(ev, FeedItemCategory::NeedsAction))
         .collect();
 
     let total = (mentions.len() + needs_action.len()) as u64;
@@ -396,23 +396,8 @@ pub async fn get_channel_messages_before(
     })
 }
 
-#[tauri::command]
-pub async fn get_event(event_id: String, state: State<'_, AppState>) -> Result<String, String> {
-    let events = query_relay(
-        &state,
-        &[serde_json::json!({
-            "ids": [event_id],
-            "kinds": [0, 1, 3, 5, 7, 9, 30078, 40002, 40003, 40008, 40099, 40100, 45001, 45003, buzz_core_pkg::kind::KIND_HUDDLE_STARTED],
-            "limit": 1
-        })],
-    )
-    .await?;
-
-    let ev = events
-        .first()
-        .ok_or_else(|| "event not found".to_string())?;
-    serde_json::to_string(ev).map_err(|e| format!("serialize event: {e}"))
-}
+mod event_batch;
+pub use event_batch::{get_event, get_events};
 
 // ── Writes ──────────────────────────────────────────────────────────────────
 
@@ -966,7 +951,7 @@ fn tags_to_vec(ev: &nostr::Event) -> Vec<Vec<String>> {
     ev.tags.iter().map(|t| t.as_slice().to_vec()).collect()
 }
 
-fn feed_item_from_event(ev: &nostr::Event, category: &str) -> FeedItemInfo {
+fn feed_item_from_event(ev: &nostr::Event, category: FeedItemCategory) -> FeedItemInfo {
     let channel_id = channel_id_from_tags(ev);
     FeedItemInfo {
         id: ev.id.to_hex(),
@@ -978,7 +963,7 @@ fn feed_item_from_event(ev: &nostr::Event, category: &str) -> FeedItemInfo {
         channel_name: String::new(),
         channel_type: None,
         tags: tags_to_vec(ev),
-        category: category.to_string(),
+        category,
     }
 }
 #[cfg(test)]
