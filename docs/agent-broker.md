@@ -121,7 +121,7 @@ enforce. And nothing prevents a host from *holding* keys — that is its job.
 The invariant is that it cannot *hand them over* through this interface.
 
 **(I2) Authority comes from the session, never the body.** Axiom B2, restated
-as a property of the wire: the request envelope has exactly five members
+as a property of the wire: the request envelope has exactly six members
 (§Request) and none of them is a requester, owner, scope, relay, or
 credential. The credential travels in a transport header, opaque to the
 contract. Ownership of a created agent is implicitly the requester, which is
@@ -205,7 +205,9 @@ load-bearing alone.
 
 ### Request
 
-A request is a JSON object with exactly these members, and no others:
+A request is a JSON object with exactly these six members, and no others.
+Throughout this document `…` in an example marks a placeholder for a real
+value; the three full envelope examples in §Results use values that parse.
 
 ```json
 {
@@ -246,11 +248,11 @@ cost of a closed set is that adding an operation is a change to this document
 — which is the point; it makes a new capability a reviewable change rather
 than a new use of an existing blank cheque.
 
-Throughout, string fields other than message content and cursors are trimmed
-of surrounding whitespace before being frozen into the request. Message
-content publishes exactly as written. A cursor is opaque and nothing may alter
-it. Length limits on names, prompts, and similar fields count **characters**;
-limits on content, cursors, request ids, and storage slugs count **bytes**.
+Throughout, string fields are trimmed of surrounding whitespace before being
+frozen into the request, with three exceptions: message content publishes
+exactly as written; a cursor is opaque and nothing may alter it; and a
+`requestId` is never trimmed because it may not contain whitespace at all. Length limits on names, prompts, and similar fields count **characters**;
+limits on content, cursors, and request ids count **bytes**.
 
 **`channel.read`** — the one read operation. It covers a whole channel, a
 single thread, or the requester's mention feed, because those differ only by
@@ -278,8 +280,8 @@ outcome is a page:
 `messages` are signed events in the host's declared order (I4). `nextCursor`
 is present when there is more to read and omitted when there is not; a caller
 learns to stop from its absence, never by comparing a page length against a
-limit it may not have set. A cursor is 1–256 bytes of printable ASCII, issued
-by `H`, validated for shape only, and **never parsed, compared, or
+limit it may not have set. A cursor is 1–256 bytes of printable ASCII with no
+spaces, issued by `H`, validated for shape only, and **never parsed, compared, or
 synthesized** by `A`. This is deliberate: a timestamp cursor cannot page
 safely when more events than `limit` share one second, and it would commit
 every future host to one ordering strategy. `H` owns ordering and cursor
@@ -305,8 +307,9 @@ job, derived from the parent's own tags.
 { "channelId": "…", "targetEventId": "…", "reaction": "👍" }
 ```
 
-`reaction` is an emoji or a `:shortcode:`, non-empty, at most 66 characters.
-This is the one **best-effort** operation in version 1: a host may answer it
+`reaction` is intended to be an emoji or a `:shortcode:`; the contract checks
+only that it is non-empty and at most 66 characters, and what counts as a
+reaction beyond that is `H`'s to decide. This is the one **best-effort** operation in version 1: a host may answer it
 `unsupported` and the agent carries on unharmed (§Results). #6467 asks that
 non-essential signed housekeeping be skippable so an agent can run where it is
 unavailable; reactions are that housekeeping.
@@ -331,7 +334,8 @@ through the interface rather than compute locally.
 { "slug": "mem/slice-c" }
 ```
 
-`slug` is `core` or a `mem/…` path in the NIP-AE grammar, at most 255 bytes.
+`slug` is `core` or a `mem/…` path in the NIP-AE grammar, at most 255
+characters (the grammar is ASCII-only, so bytes and characters coincide).
 The outcome is addressing material only:
 
 ```json
@@ -374,8 +378,9 @@ place to be (I1).
 `target` names the agent by **exactly one** of `pubkey` or `name`, so a host
 never has to decide which of two selectors wins. At least one other member
 must be present. The outcome reports the agent's pubkey, its name after the
-update, and `updatedFields`: the sorted wire names of the members `H`
-actually changed.
+update, and `updatedFields`, in which `H` lists the wire names of the members
+it actually changed, sorted. The client holds `H` to that only by convention —
+it checks the name's shape and nothing about the list.
 
 **`agents.delete`** — remove a managed agent the requester owns. Arguments
 are the `target` selector alone; the outcome is the removed agent's pubkey and
@@ -400,19 +405,20 @@ A response is a JSON object with one of three shapes, discriminated by
 `status`:
 
 ```json
-{ "type": "broker_result", "protocolVersion": 1, "requestId": "…",
+{ "type": "broker_result", "protocolVersion": 1, "requestId": "a9f3c2e1-0b5d-4e8a-9c71-3f2b6d8e4a10",
   "status": "succeeded", "action": "message.reply",
-  "outcome": { "eventId": "…", "kind": 9, "createdAt": 1787675471 } }
+  "outcome": { "eventId": "5ff391bf2c6d4e8a9b7c1d3e5f7a9b1c3d5e7f9a1b3c5d7e9f1a3b5c7d9e1f3a",
+               "kind": 9, "createdAt": 1787675471 } }
 ```
 
 ```json
-{ "type": "broker_result", "protocolVersion": 1, "requestId": "…",
+{ "type": "broker_result", "protocolVersion": 1, "requestId": "a9f3c2e1-0b5d-4e8a-9c71-3f2b6d8e4a10",
   "status": "failed",
   "error": { "code": "unauthorized", "message": "agents.create is not permitted for this session" } }
 ```
 
 ```json
-{ "type": "broker_result", "protocolVersion": 1, "requestId": "…",
+{ "type": "broker_result", "protocolVersion": 1, "requestId": "a9f3c2e1-0b5d-4e8a-9c71-3f2b6d8e4a10",
   "status": "indeterminate",
   "error": { "code": "outcome_unknown", "message": "relay connection dropped after publish was attempted" } }
 ```
@@ -535,7 +541,7 @@ to verdicts.
 
 ### [C2] Host conformance — any broker host
 
-- Accepts only the request envelope in §Request with exactly its five
+- Accepts only the request envelope in §Request with exactly its six
   members; rejects an unknown member anywhere, a `null` anywhere, a repeated
   key, an unknown `protocolVersion`, an unknown action, or an unsupported
   `actionVersion` — each as `failed` with the matching code.
