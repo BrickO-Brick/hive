@@ -1059,6 +1059,13 @@ async fn handle_workflow_trigger(
         PersistResult::Inserted(tx) => tx,
     };
 
+    // Serialize the final authority check and run commit with channel
+    // membership writers. If revocation commits first we observe no role; if
+    // this lock wins, revocation cannot commit until this run is durable.
+    buzz_db::channel::acquire_channel_membership_lock(&mut tx, community_id, wf_channel_id)
+        .await
+        .map_err(|e| IngestError::Internal(format!("error: membership lock: {e}")))?;
+
     // Re-read the workflow under a row lock on the same transaction that will
     // commit the trigger event and run. Definition replacement updates this row,
     // so it cannot commit between this exact-revision check and our commit. A
@@ -1077,6 +1084,22 @@ async fn handle_workflow_trigger(
     if !workflow.enabled || workflow.status != buzz_db::workflow::WorkflowStatus::Active {
         return Err(IngestError::Rejected(
             "forbidden: workflow is disabled or inactive".into(),
+        ));
+    }
+    let role = buzz_db::channel::get_member_role_in_transaction(
+        &mut tx,
+        community_id,
+        wf_channel_id,
+        &workflow.owner_pubkey,
+    )
+    .await
+    .map_err(|e| IngestError::Internal(format!("error: owner authority lookup: {e}")))?;
+    if !matches!(
+        (role.as_deref(), def.requires_elevated_authority()),
+        (Some(_), false) | (Some("owner" | "admin"), true)
+    ) {
+        return Err(IngestError::Rejected(
+            "forbidden: not authorized to trigger this workflow".into(),
         ));
     }
 
@@ -1124,44 +1147,23 @@ async fn handle_workflow_trigger(
 
     // 5. Spawn workflow execution
     let engine = Arc::clone(&state.workflow_engine);
-    let db = state.db.clone();
-    let def_value = workflow.definition.clone();
     let trigger_ctx_clone = trigger_ctx.clone();
     tokio::spawn(async move {
-        let def: buzz_workflow::WorkflowDef = match serde_json::from_value(def_value) {
-            Ok(d) => d,
-            Err(e) => {
-                tracing::error!("workflow_trigger: failed to parse definition: {e}");
-                if let Err(db_err) = db
-                    .update_workflow_run(
-                        community_id,
-                        run_id,
-                        RunStatus::Failed,
-                        0,
-                        &serde_json::json!([]),
-                        Some(buzz_db::workflow::WorkflowRunFailure {
-                            code: "invalid_definition",
-                            message: &format!("definition parse error: {e}"),
-                        }),
-                    )
-                    .await
-                {
-                    tracing::error!("workflow_trigger: failed to mark run as failed: {db_err}");
-                }
-                return;
+        let result = match engine.load_run_definition(community_id, run_id).await {
+            Ok((_, definition)) => {
+                buzz_workflow::executor::execute_from_step(
+                    &engine,
+                    community_id,
+                    run_id,
+                    &definition,
+                    &trigger_ctx_clone,
+                    0,
+                    None,
+                )
+                .await
             }
+            Err(error) => Err((error, buzz_workflow::error::PartialProgress::default())),
         };
-
-        let result = buzz_workflow::executor::execute_from_step(
-            &engine,
-            community_id,
-            run_id,
-            &def,
-            &trigger_ctx_clone,
-            0,
-            None,
-        )
-        .await;
         engine
             .finalize_run(community_id, run_id, result, None)
             .await;
@@ -1473,15 +1475,38 @@ async fn resume_workflow_after_approval(
     workflow_id: Uuid,
     resume_index: usize,
 ) {
-    let run = match db.get_workflow_run(community_id, run_id).await {
-        Ok(r) => r,
+    let (run, def) = match engine.load_run_definition(community_id, run_id).await {
+        Ok(bound) => bound,
         Err(e) => {
-            tracing::error!("resume_workflow: failed to fetch run {run_id}: {e}");
+            tracing::error!(
+                "resume_workflow: failed to load run-bound definition for {run_id}: {e}"
+            );
+            if let Ok(run) = db.get_workflow_run(community_id, run_id).await {
+                let _ = db
+                    .update_workflow_run(
+                        community_id,
+                        run_id,
+                        RunStatus::Failed,
+                        run.current_step,
+                        &run.execution_trace,
+                        Some(buzz_db::workflow::WorkflowRunFailure {
+                            code: "invalid_definition_revision",
+                            message: &e.to_string(),
+                        }),
+                    )
+                    .await;
+            }
             return;
         }
     };
 
-    // Guard: only resume runs that are actually waiting for approval
+    if run.workflow_id != workflow_id {
+        tracing::error!(
+            "resume_workflow: approval workflow {workflow_id} does not match run {}",
+            run.workflow_id
+        );
+        return;
+    }
     if run.status != RunStatus::WaitingApproval {
         tracing::warn!(
             "resume_workflow: run {run_id} has status '{}', expected 'waiting_approval'",
@@ -1490,40 +1515,6 @@ async fn resume_workflow_after_approval(
         return;
     }
 
-    let workflow = match db.get_workflow(community_id, workflow_id).await {
-        Ok(w) => w,
-        Err(e) => {
-            tracing::error!("resume_workflow: failed to fetch workflow {workflow_id}: {e}");
-            return;
-        }
-    };
-
-    let def: buzz_workflow::WorkflowDef = match serde_json::from_value(workflow.definition.clone())
-    {
-        Ok(d) => d,
-        Err(e) => {
-            tracing::error!("resume_workflow: failed to parse workflow definition: {e}");
-            if let Err(db_err) = db
-                .update_workflow_run(
-                    community_id,
-                    run_id,
-                    RunStatus::Failed,
-                    run.current_step,
-                    &run.execution_trace,
-                    Some(buzz_db::workflow::WorkflowRunFailure {
-                        code: "invalid_definition",
-                        message: &format!("definition parse error: {e}"),
-                    }),
-                )
-                .await
-            {
-                tracing::error!("resume_workflow: failed to mark run as failed: {db_err}");
-            }
-            return;
-        }
-    };
-
-    // Reconstruct step_outputs from execution trace for template resolution
     let mut initial_outputs: std::collections::HashMap<String, serde_json::Value> =
         std::collections::HashMap::new();
     if let Some(trace_arr) = run.execution_trace.as_array() {
@@ -1537,14 +1528,11 @@ async fn resume_workflow_after_approval(
         }
     }
 
-    // Restore trigger context for {{trigger.*}} templates
     let trigger_ctx: TriggerContext = run
         .trigger_context
         .as_ref()
         .and_then(|v| serde_json::from_value(v.clone()).ok())
         .unwrap_or_default();
-
-    // Execute remaining steps
     let existing_trace = run.execution_trace.as_array().cloned();
     let result = buzz_workflow::executor::execute_from_step(
         &engine,

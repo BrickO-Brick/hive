@@ -166,16 +166,13 @@ async fn current_workflow_revision(
     client: &BuzzClient,
     workflow_id: &str,
 ) -> Result<String, CliError> {
-    let filter = serde_json::json!({
-        "kinds": [30620],
-        "#d": [workflow_id],
-        "limit": 1
-    });
-    let response = client.query(&filter).await?;
-    let events: Vec<serde_json::Value> = serde_json::from_str(&response).unwrap_or_default();
-    events
-        .first()
-        .and_then(|event| event.get("id"))
+    let response = client
+        .get_authed(&format!("/workflows/{workflow_id}/revision"))
+        .await?;
+    let event: serde_json::Value = serde_json::from_str(&response)
+        .map_err(|e| CliError::Other(format!("invalid workflow revision response: {e}")))?;
+    event
+        .get("id")
         .and_then(|id| id.as_str())
         .map(str::to_owned)
         .ok_or_else(|| CliError::NotFound(format!("workflow {workflow_id} not found")))

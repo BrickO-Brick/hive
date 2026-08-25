@@ -326,16 +326,9 @@ pub async fn trigger_workflow(
     // Resolve the current signed definition at trigger time. The relay binds
     // authorization and execution to this exact revision and rejects a stale
     // result if an update races this command.
-    let prior = query_relay(
-        &state,
-        &[serde_json::json!({
-            "kinds": [30620],
-            "#d": [workflow_id.clone()],
-            "limit": 1
-        })],
-    )
-    .await?;
-    let definition_event_id = current_workflow_revision(&prior)?;
+    let revision: nostr::Event =
+        get_relay_json(&state, &format!("/workflows/{workflow_id}/revision")).await?;
+    let definition_event_id = revision.id.to_hex();
     let builder = events::build_workflow_trigger(&workflow_id, &definition_event_id)?;
     let result = submit_event(builder, &state).await?;
     trigger_wire_from_message(workflow_id, &result.message)

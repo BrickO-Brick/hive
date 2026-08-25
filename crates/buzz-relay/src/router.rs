@@ -73,6 +73,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/query", post(api::bridge::query_events))
         .route("/count", post(api::bridge::count_events))
         .route(
+            "/workflows/{workflow_id}/revision",
+            get(api::workflows::workflow_revision),
+        )
+        .route(
             "/workflows/{workflow_id}/runs",
             get(api::workflows::workflow_runs),
         )
