@@ -3553,8 +3553,21 @@ fn conversation_context_delta(
 /// - The REST fetch fails or times out (graceful degradation)
 /// - `context_message_limit` is 0
 ///
-/// For batches with multiple events, thread context is fetched for the **last**
-/// reply event only (most recent = most likely to need a response).
+/// Context is scoped by the batch's resolved [`SessionScope`], never inferred
+/// from whichever event happens to be last:
+///
+/// - **Thread scope** → fetch only that canonical thread's history (all
+///   messages under the root, including intervening non-mention human
+///   messages). A brand-new thread (root == the triggering event, first turn)
+///   has no prior history, so this returns `None`, which is correct: the
+///   trigger itself is delivered as the `[Event]` block.
+/// - **Conversation scope** (DMs always; channels under the `channel` policy)
+///   → preserve legacy behavior: a threaded reply fetches its reply chain;
+///   a DM non-reply fetches recent conversation history.
+///
+/// The delivery-delta filter (`conversation_context_delta`) then removes any
+/// events this scope's live session already received, so subsequent turns
+/// deliver only intervening same-thread messages plus the trigger.
 async fn fetch_conversation_context(
     batch: &FlushBatch,
     channel_info: &Option<PromptChannelInfo>,
@@ -3566,28 +3579,54 @@ async fn fetch_conversation_context(
         .map(|ci| ci.channel_type == "dm")
         .unwrap_or(false);
 
-    // Check thread tags on the last event first — this applies to both
-    // channels and DMs. A DM reply needs thread context (not channel history)
-    // because /api/channels/{id}/messages excludes thread replies.
-    let last_event = batch.events.last()?;
-    let tags = crate::queue::parse_thread_tags(&last_event.event);
-    if let Some(root_id) = tags.root_event_id {
-        return fetch_thread_context(
-            batch.channel_id,
-            &root_id,
-            limit,
-            ctx.agent_keys.public_key(),
-            &ctx.rest_client,
-        )
-        .await;
+    match resolve_context_target(batch, is_dm) {
+        ContextTarget::Thread(root_id) => {
+            fetch_thread_context(
+                batch.channel_id,
+                &root_id,
+                limit,
+                ctx.agent_keys.public_key(),
+                &ctx.rest_client,
+            )
+            .await
+        }
+        ContextTarget::Dm => fetch_dm_context(batch.channel_id, limit, &ctx.rest_client).await,
+        ContextTarget::None => None,
     }
+}
 
-    // DM non-reply: fetch recent conversation history.
+/// Which history to fetch for a batch's context section.
+#[derive(Debug, PartialEq, Eq)]
+enum ContextTarget {
+    /// Fetch the canonical thread rooted at this event id.
+    Thread(String),
+    /// Fetch recent DM conversation history.
+    Dm,
+    /// No supplementary context (new thread's first turn, or plain channel).
+    None,
+}
+
+/// Decide which history to gather, driven by the batch's resolved
+/// [`SessionScope`] — never by inferring scope from the last event.
+///
+/// - Thread scope: the canonical root is authoritative.
+/// - Conversation scope (DMs always; channels under `channel` policy): a
+///   threaded reply fetches its reply chain; a DM non-reply fetches recent
+///   conversation history; a plain top-level channel message has none.
+fn resolve_context_target(batch: &FlushBatch, is_dm: bool) -> ContextTarget {
+    if let Some(root_id) = batch.scope.root_event_id() {
+        return ContextTarget::Thread(root_id.to_string());
+    }
+    let Some(last_event) = batch.events.last() else {
+        return ContextTarget::None;
+    };
+    if let Some(root_id) = crate::queue::parse_thread_tags(&last_event.event).root_event_id {
+        return ContextTarget::Thread(root_id);
+    }
     if is_dm {
-        return fetch_dm_context(batch.channel_id, limit, &ctx.rest_client).await;
+        return ContextTarget::Dm;
     }
-
-    None
+    ContextTarget::None
 }
 
 /// Normalize AND validate a pubkey for the batch profile API request.
@@ -7061,6 +7100,98 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
         assert!(!s.turn_counts.contains_key(&ta));
         // Sibling thread's session survives.
         assert_eq!(s.sessions.get(&tb).map(String::as_str), Some("b"));
+    }
+
+    fn batch_with_scope(scope: SessionScope, event: nostr::Event) -> FlushBatch {
+        FlushBatch {
+            channel_id: scope.channel_id(),
+            scope,
+            events: vec![crate::queue::BatchEvent {
+                event,
+                prompt_tag: "test".into(),
+                received_at: std::time::Instant::now(),
+            }],
+            cancelled_events: vec![],
+            cancel_reason: None,
+        }
+    }
+
+    fn signed_event_with_tags(tags: Vec<Vec<String>>) -> nostr::Event {
+        let keys = Keys::generate();
+        let tags: Vec<Tag> = tags.into_iter().map(|t| Tag::parse(t).unwrap()).collect();
+        EventBuilder::new(Kind::Custom(9), "hi")
+            .tags(tags)
+            .sign_with_keys(&keys)
+            .unwrap()
+    }
+
+    #[test]
+    fn context_target_uses_thread_scope_root_not_last_event_tags() {
+        let ch = Uuid::new_v4();
+        let scope_root = "a".repeat(64);
+        // Last event carries a DIFFERENT root tag than the scope; the scope
+        // must win so context is gathered for the canonical thread.
+        let ev = signed_event_with_tags(vec![vec![
+            "e".into(),
+            "b".repeat(64),
+            String::new(),
+            "root".into(),
+        ]]);
+        let batch = batch_with_scope(thread_scope(ch, &scope_root), ev);
+        assert_eq!(
+            resolve_context_target(&batch, false),
+            ContextTarget::Thread(scope_root)
+        );
+    }
+
+    #[test]
+    fn context_target_new_top_level_thread_has_no_history() {
+        // A top-level mention opens a thread rooted at its own id; on the first
+        // turn there is no prior thread history to fetch, but the scope still
+        // resolves to that root (subsequent turns fetch it).
+        let ch = Uuid::new_v4();
+        let ev = signed_event_with_tags(vec![]);
+        let root = ev.id.to_hex();
+        let batch = batch_with_scope(thread_scope(ch, &root), ev);
+        assert_eq!(
+            resolve_context_target(&batch, false),
+            ContextTarget::Thread(root)
+        );
+    }
+
+    #[test]
+    fn context_target_conversation_channel_plain_has_none() {
+        // Channel-policy conversation scope + a plain (no-thread-tag) event =>
+        // no unrelated channel transcript is injected.
+        let ch = Uuid::new_v4();
+        let ev = signed_event_with_tags(vec![]);
+        let batch = batch_with_scope(conv(ch), ev);
+        assert_eq!(resolve_context_target(&batch, false), ContextTarget::None);
+    }
+
+    #[test]
+    fn context_target_dm_nonreply_is_dm_history() {
+        let ch = Uuid::new_v4();
+        let ev = signed_event_with_tags(vec![]);
+        let batch = batch_with_scope(conv(ch), ev);
+        assert_eq!(resolve_context_target(&batch, true), ContextTarget::Dm);
+    }
+
+    #[test]
+    fn context_target_conversation_reply_uses_reply_chain() {
+        // DM (or legacy channel-policy) reply: conversation scope but the last
+        // event has thread tags => fetch that reply chain.
+        let ch = Uuid::new_v4();
+        let root = "c".repeat(64);
+        let ev = signed_event_with_tags(vec![
+            vec!["e".into(), root.clone(), String::new(), "root".into()],
+            vec!["e".into(), "d".repeat(64), String::new(), "reply".into()],
+        ]);
+        let batch = batch_with_scope(conv(ch), ev);
+        assert_eq!(
+            resolve_context_target(&batch, true),
+            ContextTarget::Thread(root)
+        );
     }
 
     #[test]
