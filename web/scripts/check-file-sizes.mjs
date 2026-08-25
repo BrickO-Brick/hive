@@ -3,11 +3,15 @@ import { fileURLToPath } from "node:url";
 import { runFileSizeCheck } from "../../scripts/check-file-sizes-core.mjs";
 import { rules } from "./file-size-policy.mjs";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const projectRoot = path.resolve(__dirname, "..");
+const scriptPath = fileURLToPath(import.meta.url);
+const projectRoot = path.resolve(path.dirname(scriptPath), "..");
 
-await runFileSizeCheck({
+export const policy = {
   projectRoot,
   rules,
   label: "Web",
-});
+};
+
+if (process.argv[1] && path.resolve(process.argv[1]) === scriptPath) {
+  await runFileSizeCheck(policy);
+}

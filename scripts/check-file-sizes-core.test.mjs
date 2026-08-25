@@ -4,9 +4,9 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { rules as desktopRules } from "../desktop/scripts/file-size-policy.mjs";
-import { rules as mobileRules } from "../mobile/scripts/file-size-policy.mjs";
-import { rules as webRules } from "../web/scripts/file-size-policy.mjs";
+import { policy as desktopPolicy } from "../desktop/scripts/check-file-sizes.mjs";
+import { policy as mobilePolicy } from "../mobile/scripts/check-file-sizes.mjs";
+import { policy as webPolicy } from "../web/scripts/check-file-sizes.mjs";
 import {
   allowedLineCount,
   countLines,
@@ -56,43 +56,46 @@ test("counts empty, LF, and CRLF content with the existing semantics", () => {
   assert.equal(countLines("one\r\ntwo"), 2);
 });
 
-test("surface policies enforce the intended ceilings", () => {
+test("surface entrypoints expose the exact ordered production policies", () => {
   const policies = [
     [
-      "Desktop",
-      desktopRules,
-      new Map([
-        ["src-tauri/src", 1500],
-        ["src-tauri/crates", 1500],
-        ["src/app", 1200],
-        ["src/features", 1200],
-        ["src/shared/api", 1200],
-        ["src/shared/context", 1200],
-        ["src/shared/lib", 1200],
-        ["src/shared/ui", 1200],
-        ["src/shared/styles", 1200],
-      ]),
+      desktopPolicy,
+      [
+        ["src-tauri/src", [".rs"], 1500],
+        ["src-tauri/crates", [".rs"], 1500],
+        ["src/app", [".ts", ".tsx"], 1200],
+        ["src/features", [".ts", ".tsx"], 1200],
+        ["src/shared/api", [".ts", ".tsx"], 1200],
+        ["src/shared/context", [".ts", ".tsx"], 1200],
+        ["src/shared/lib", [".ts", ".tsx"], 1200],
+        ["src/shared/ui", [".ts", ".tsx"], 1200],
+        ["src/shared/styles", [".css"], 1200],
+      ],
     ],
-    ["Mobile", mobileRules, new Map([["lib", 1200]])],
+    [mobilePolicy, [["lib", [".dart"], 1200]]],
     [
-      "Web",
-      webRules,
-      new Map([
-        ["src/app", 1000],
-        ["src/features", 1000],
-        ["src/shared/api", 1000],
-      ]),
+      webPolicy,
+      [
+        ["src/app", [".ts", ".tsx"], 1000],
+        ["src/features", [".ts", ".tsx"], 1000],
+        ["src/shared/api", [".ts", ".tsx"], 1000],
+      ],
     ],
   ];
 
-  for (const [surface, rules, expectedCeilings] of policies) {
+  for (const [policy, expectedRules] of policies) {
+    const actualRules = policy.rules.map((rule) => [
+      rule.root,
+      [...rule.extensions],
+      rule.maxLines,
+    ]);
     assert.deepEqual(
-      new Map(rules.map((rule) => [rule.root, rule.maxLines])),
-      expectedCeilings,
-      `${surface} rule ceilings`,
+      actualRules,
+      expectedRules,
+      `${policy.label} production rules`,
     );
 
-    for (const rule of rules) {
+    for (const rule of policy.rules) {
       assert.equal(
         evaluateFileSize({
           baseLines: null,
@@ -100,7 +103,7 @@ test("surface policies enforce the intended ceilings", () => {
           maxLines: rule.maxLines,
         }).violates,
         false,
-        `${surface} ${rule.root} should allow the ceiling`,
+        `${policy.label} ${rule.root} should allow the ceiling`,
       );
       assert.equal(
         evaluateFileSize({
@@ -109,7 +112,7 @@ test("surface policies enforce the intended ceilings", () => {
           maxLines: rule.maxLines,
         }).violates,
         true,
-        `${surface} ${rule.root} should reject ceiling + 1`,
+        `${policy.label} ${rule.root} should reject ceiling + 1`,
       );
     }
   }
