@@ -640,7 +640,7 @@ mod tests {
         let mut migrations: Vec<_> = MIGRATOR.iter().collect();
         migrations.sort_by_key(|migration| migration.version);
 
-        assert_eq!(migrations.len(), 33);
+        assert_eq!(migrations.len(), 34);
         assert_eq!(migrations[0].version, 1);
         assert_eq!(&*migrations[0].description, "initial schema");
         assert!(migrations[0]
@@ -1073,6 +1073,14 @@ mod tests {
         let workflow_revision = migrations[32].sql.as_str();
         assert!(workflow_revision.contains("ADD COLUMN definition_event_id BYTEA"));
         assert!(workflow_revision.contains("octet_length(definition_event_id) = 32"));
+
+        // Runs durably inherit the exact signed revision they execute. Existing
+        // runs remain nullable and execution/resume must fail them closed.
+        assert_eq!(migrations[33].version, 34);
+        let run_revision = migrations[33].sql.as_str();
+        assert!(run_revision.contains("ALTER TABLE workflow_runs"));
+        assert!(run_revision.contains("ADD COLUMN definition_event_id BYTEA"));
+        assert!(run_revision.contains("octet_length(definition_event_id) = 32"));
 
         // Fresh desired-state bootstrap must install the identical executable
         // fence as migration 0032. CI and isolated relay startup use schema.sql

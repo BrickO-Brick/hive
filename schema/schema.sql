@@ -393,6 +393,9 @@ CREATE TABLE workflow_runs (
     community_id        UUID NOT NULL REFERENCES communities(id),
     id                  UUID NOT NULL DEFAULT gen_random_uuid(),
     workflow_id         UUID NOT NULL,
+    definition_event_id BYTEA CHECK (
+        definition_event_id IS NULL OR octet_length(definition_event_id) = 32
+    ),
     status              run_status NOT NULL DEFAULT 'pending',
     trigger_event_id    BYTEA,
     current_step        INT NOT NULL DEFAULT 0,

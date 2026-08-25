@@ -4090,6 +4090,7 @@ impl Db {
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         community_id: CommunityId,
         workflow_id: Uuid,
+        definition_event_id: Option<&[u8]>,
         trigger_event_id: Option<&[u8]>,
         trigger_context: Option<&serde_json::Value>,
     ) -> Result<Uuid> {
@@ -4097,6 +4098,7 @@ impl Db {
             tx,
             community_id,
             workflow_id,
+            definition_event_id,
             trigger_event_id,
             trigger_context,
         )
@@ -4109,6 +4111,7 @@ impl Db {
         &self,
         community_id: CommunityId,
         workflow_id: Uuid,
+        definition_event_id: Option<&[u8]>,
         trigger_event_id: Option<&[u8]>,
         trigger_context: Option<&serde_json::Value>,
     ) -> Result<Uuid> {
@@ -4116,6 +4119,7 @@ impl Db {
             &self.pool,
             community_id,
             workflow_id,
+            definition_event_id,
             trigger_event_id,
             trigger_context,
         )
