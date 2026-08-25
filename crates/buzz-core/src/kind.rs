@@ -794,10 +794,20 @@ pub const fn is_workflow_execution_kind(kind: u32) -> bool {
 ///
 /// Reactions, edits, deletions, and system events are deliberately excluded:
 /// they must not resurface a direct message without a new human-visible message.
+///
+/// `KIND_HUDDLE_STARTED` is included: clients render the huddle-start card as
+/// visible timeline content and desktop treats it as a notifiable DM invitation,
+/// so a hidden DM must resurface to deliver the (time-sensitive) invite. The
+/// other huddle lifecycle kinds (joined/left/ended/reaction) are not message
+/// content and stay excluded.
 pub const fn is_human_visible_message_kind(kind: u32) -> bool {
     matches!(
         kind,
-        KIND_STREAM_MESSAGE | KIND_STREAM_MESSAGE_V2 | KIND_FORUM_POST | KIND_FORUM_COMMENT
+        KIND_STREAM_MESSAGE
+            | KIND_STREAM_MESSAGE_V2
+            | KIND_FORUM_POST
+            | KIND_FORUM_COMMENT
+            | KIND_HUDDLE_STARTED
     )
 }
 
@@ -951,11 +961,20 @@ mod tests {
             KIND_STREAM_MESSAGE_V2,
             KIND_FORUM_POST,
             KIND_FORUM_COMMENT,
+            KIND_HUDDLE_STARTED,
         ] {
             assert!(is_human_visible_message_kind(kind), "kind {kind}");
         }
 
-        for kind in [KIND_REACTION, KIND_STREAM_MESSAGE_EDIT, KIND_DELETION] {
+        for kind in [
+            KIND_REACTION,
+            KIND_STREAM_MESSAGE_EDIT,
+            KIND_DELETION,
+            KIND_HUDDLE_PARTICIPANT_JOINED,
+            KIND_HUDDLE_PARTICIPANT_LEFT,
+            KIND_HUDDLE_ENDED,
+            KIND_HUDDLE_REACTION,
+        ] {
             assert!(!is_human_visible_message_kind(kind), "kind {kind}");
         }
     }

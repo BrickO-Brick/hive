@@ -289,8 +289,12 @@ pub(super) async fn fetch_channels(
                 DirectoryScope::MemberOnly => Ok(Vec::new()),
             }
         },
-        // Step 6: NIP-DV hidden-DM snapshot. Tolerant — a failure means no DMs
-        // are hidden rather than aborting the whole fetch.
+        // Step 6: NIP-DV hidden-DM snapshot. A read *failure* must NOT be
+        // treated as "no DMs are hidden": that fail-open collapse would
+        // re-expose every hidden DM until the next successful refresh. Only a
+        // successful read of zero snapshots means nothing is hidden. Propagate
+        // the transport error so the whole refresh fails and the caller keeps
+        // the previously rendered (correctly filtered) channel list.
         async {
             let events = query_relay(
                 state,
@@ -300,21 +304,22 @@ pub(super) async fn fetch_channels(
                     "limit": 1,
                 })],
             )
-            .await
-            .unwrap_or_default();
-            events
-                .iter()
-                .max_by_key(|e| e.created_at.as_secs())
-                .map(|e| {
-                    e.tags
-                        .iter()
-                        .filter_map(|t| {
-                            let s = t.as_slice();
-                            (s.len() >= 2 && s[0] == "h").then(|| s[1].clone())
-                        })
-                        .collect::<std::collections::HashSet<String>>()
-                })
-                .unwrap_or_default()
+            .await?;
+            Ok::<std::collections::HashSet<String>, String>(
+                events
+                    .iter()
+                    .max_by_key(|e| e.created_at.as_secs())
+                    .map(|e| {
+                        e.tags
+                            .iter()
+                            .filter_map(|t| {
+                                let s = t.as_slice();
+                                (s.len() >= 2 && s[0] == "h").then(|| s[1].clone())
+                            })
+                            .collect::<std::collections::HashSet<String>>()
+                    })
+                    .unwrap_or_default(),
+            )
         },
     );
 
@@ -323,7 +328,9 @@ pub(super) async fn fetch_channels(
 
     let meta_events = member_chain_result?;
     let open_meta_events = open_meta_result?;
-    // hidden_dms is already a resolved HashSet (tolerant path above)
+    // A snapshot read failure fails the whole refresh (fail-closed): the caller
+    // preserves the last rendered list rather than showing every hidden DM.
+    let hidden_dms = hidden_dms?;
 
     // Merge: member channels (marked as member) + non-member channels (open
     // directory when included, else pending-owned) not already in the member set.

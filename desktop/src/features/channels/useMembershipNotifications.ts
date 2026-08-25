@@ -2,9 +2,14 @@ import * as React from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { channelsQueryKey } from "@/features/channels/hooks";
+import { refreshChannelsWhenIdle } from "@/features/channels/refreshChannelsWhenIdle";
 import { getChannelIdFromTags } from "@/features/messages/lib/threading";
 import { relayClient } from "@/shared/api/relayClient";
 import type { RelayEvent } from "@/shared/api/types";
+import {
+  createTrailingDebounce,
+  type TrailingDebounce,
+} from "@/shared/lib/trailingDebounce";
 import {
   KIND_DM_VISIBILITY,
   KIND_MEMBER_ADDED_NOTIFICATION,
@@ -13,16 +18,39 @@ import {
 
 const MEMBERSHIP_NOTIFICATION_RETRY_BASE_MS = 1_000;
 const MEMBERSHIP_NOTIFICATION_RETRY_MAX_MS = 30_000;
+// Matches useLiveChannelUpdates: collapse a burst of notifications into a
+// single trailing refresh once the channels query goes idle.
+const CHANNELS_INVALIDATE_DEBOUNCE_MS = 500;
 
 export function useMembershipNotifications(currentPubkey?: string) {
   const queryClient = useQueryClient();
   const normalizedCurrentPubkey = currentPubkey?.trim().toLowerCase() ?? "";
 
+  // Route channel-list invalidation through the idle-aware trailing mechanism
+  // rather than invalidating directly. A direct invalidate while get_channels
+  // is mid-flight is silently undone when the older (pre-event) response lands
+  // and clears the dirty flag — dropping the resurface signal so an incoming
+  // DM stays out of navigation until the next poll. This mirrors ordinary live
+  // channel traffic (useLiveChannelUpdates), which invalidates the same key.
+  const channelsInvalidateRef = React.useRef<TrailingDebounce | null>(null);
+  if (channelsInvalidateRef.current === null) {
+    channelsInvalidateRef.current = createTrailingDebounce(() => {
+      refreshChannelsWhenIdle({
+        isFetching: () =>
+          queryClient.isFetching({ queryKey: channelsQueryKey }),
+        invalidate: () => {
+          void queryClient.invalidateQueries({ queryKey: channelsQueryKey });
+        },
+        reArm: () => channelsInvalidateRef.current?.trigger(),
+      });
+    }, CHANNELS_INVALIDATE_DEBOUNCE_MS);
+  }
+
   const handleMembershipNotification = React.useEffectEvent(
     (event: RelayEvent) => {
       const channelId = getChannelIdFromTags(event.tags);
 
-      void queryClient.invalidateQueries({ queryKey: channelsQueryKey });
+      channelsInvalidateRef.current?.trigger();
       if (event.kind === KIND_DM_VISIBILITY) {
         return;
       }
@@ -134,6 +162,7 @@ export function useMembershipNotifications(currentPubkey?: string) {
       if (retryTimeout !== undefined) {
         window.clearTimeout(retryTimeout);
       }
+      channelsInvalidateRef.current?.cancel();
       if (dispose) {
         void dispose().catch(() => {});
       }

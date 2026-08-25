@@ -319,14 +319,19 @@ async fn insert_event_on(
     let created_at_secs = event.created_at.as_secs() as i64;
     let created_at = DateTime::from_timestamp(created_at_secs, 0)
         .ok_or(DbError::InvalidTimestamp(created_at_secs))?;
-    let received_at = Utc::now();
     let d_tag = extract_d_tag(event);
     let not_before = extract_not_before(event);
-    let result = sqlx::query(
+    // `received_at` is assigned by the database clock (`NOW()`) and read back,
+    // not by the relay process clock. The DM resurface fence compares this
+    // value against `channel_members.hidden_at`, which is also written with
+    // `NOW()` (see `hide_dm`); sourcing both from the single database clock is
+    // what makes that causal comparison sound under relay/DB clock skew.
+    let inserted_received_at: Option<DateTime<Utc>> = sqlx::query_scalar(
         r#"
         INSERT INTO events (community_id, id, pubkey, created_at, kind, tags, content, sig, received_at, channel_id, d_tag, not_before)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), $9, $10, $11)
         ON CONFLICT DO NOTHING
+        RETURNING received_at
         "#,
     )
     .bind(community_id.as_uuid())
@@ -337,14 +342,17 @@ async fn insert_event_on(
     .bind(&tags_json)
     .bind(&event.content)
     .bind(sig_bytes.as_slice())
-    .bind(received_at)
     .bind(channel_id)
     .bind(d_tag.as_deref())
     .bind(not_before)
-    .execute(connection)
+    .fetch_optional(connection)
     .await?;
 
-    let was_inserted = result.rows_affected() > 0;
+    let was_inserted = inserted_received_at.is_some();
+    // On a conflict (duplicate/replay) no row is returned; the value is only
+    // informational here because callers gate on `was_inserted`, and the
+    // resurface replay path re-reads the original event's `received_at`.
+    let received_at = inserted_received_at.unwrap_or_else(Utc::now);
 
     Ok((
         StoredEvent::with_received_at(event.clone(), received_at, channel_id, true),
@@ -1178,15 +1186,19 @@ pub(crate) async fn insert_event_with_thread_metadata_tx(
     let created_at_secs = event.created_at.as_secs() as i64;
     let created_at = DateTime::from_timestamp(created_at_secs, 0)
         .ok_or(DbError::InvalidTimestamp(created_at_secs))?;
-    let received_at = Utc::now();
     let d_tag = extract_d_tag(event);
     let not_before = extract_not_before(event);
 
-    let result = sqlx::query(
+    // `received_at` is assigned by the database clock (`NOW()`) and read back,
+    // not by the relay process clock, so the DM resurface fence compares it
+    // against `channel_members.hidden_at` (also `NOW()`) under one clock. See
+    // `insert_event_on` for the full rationale.
+    let inserted_received_at: Option<DateTime<Utc>> = sqlx::query_scalar(
         r#"
         INSERT INTO events (community_id, id, pubkey, created_at, kind, tags, content, sig, received_at, channel_id, d_tag, not_before)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), $9, $10, $11)
         ON CONFLICT DO NOTHING
+        RETURNING received_at
         "#,
     )
     .bind(community_id.as_uuid())
@@ -1197,14 +1209,17 @@ pub(crate) async fn insert_event_with_thread_metadata_tx(
     .bind(&tags_json)
     .bind(&event.content)
     .bind(sig_bytes.as_slice())
-    .bind(received_at)
     .bind(channel_id)
     .bind(d_tag.as_deref())
     .bind(not_before)
-    .execute(&mut **tx)
+    .fetch_optional(&mut **tx)
     .await?;
 
-    let was_inserted = result.rows_affected() > 0;
+    let was_inserted = inserted_received_at.is_some();
+    // On a conflict (duplicate/replay) no row is returned; callers gate on
+    // `was_inserted`, and the resurface replay path re-reads the original
+    // event's `received_at`.
+    let received_at = inserted_received_at.unwrap_or_else(Utc::now);
 
     if was_inserted {
         if let Some(ref meta) = thread_meta {
@@ -1654,6 +1669,57 @@ mod tests {
                 .await
                 .expect("count rolled-back event");
         assert_eq!(persisted, 0);
+    }
+
+    /// The DM resurface fence (`unhide_dm_recipients`) compares an event's
+    /// `received_at` against `channel_members.hidden_at`, which is written with
+    /// the database clock (`hide_dm` uses `NOW()`). For that comparison to be
+    /// causally sound under relay/DB clock skew, `received_at` must also come
+    /// from the database clock — not the relay process `Utc::now()`.
+    ///
+    /// This asserts the persisted `received_at` falls inside a `[before, after]`
+    /// window sampled from the *same database's* `NOW()`, and that the value the
+    /// insert returns matches the persisted column. A relay-process timestamp
+    /// would only satisfy this by accident of zero skew.
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn insert_event_sources_received_at_from_the_database_clock() {
+        let pool = setup_pool().await;
+        let community_uuid = make_test_community(&pool).await;
+        let community = CommunityId::from_uuid(community_uuid);
+        let event = make_text_event("db-clock received_at");
+
+        let before: DateTime<Utc> = sqlx::query_scalar("SELECT NOW()")
+            .fetch_one(&pool)
+            .await
+            .expect("read db NOW() before insert");
+        let (stored, was_inserted) = insert_event(&pool, community, &event, None)
+            .await
+            .expect("insert event");
+        let after: DateTime<Utc> = sqlx::query_scalar("SELECT NOW()")
+            .fetch_one(&pool)
+            .await
+            .expect("read db NOW() after insert");
+
+        assert!(was_inserted, "fresh event must insert");
+        assert!(
+            stored.received_at >= before && stored.received_at <= after,
+            "received_at {} must fall within the database clock window [{before}, {after}]",
+            stored.received_at
+        );
+
+        let persisted: DateTime<Utc> = sqlx::query_scalar(
+            "SELECT received_at FROM events WHERE community_id = $1 AND id = $2",
+        )
+        .bind(community_uuid)
+        .bind(event.id.as_bytes().as_slice())
+        .fetch_one(&pool)
+        .await
+        .expect("read persisted received_at");
+        assert_eq!(
+            stored.received_at, persisted,
+            "the returned received_at must equal the persisted database value"
+        );
     }
 
     #[tokio::test]

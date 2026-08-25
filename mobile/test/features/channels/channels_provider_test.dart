@@ -2085,6 +2085,42 @@ void main() {
     expect(session.visibilitySubscribeFilters.single.tags['#p'], [myPk]);
   });
 
+  test('a failed hidden-DM read keeps DMs hidden (fail-closed)', () async {
+    // A transient hidden-DM snapshot read failure must NOT collapse to "no
+    // DMs are hidden": that fail-open behavior would re-expose every hidden
+    // DM until the next successful refresh. The read now propagates its error
+    // like the sibling membership/huddle reads, so a refresh that can't read
+    // the snapshot fails and preserves the previously rendered (correctly
+    // filtered) list instead of surfacing the hidden DM.
+    final session = _FakeRelaySession(
+      memberships: [_membership(_channelA, myPk), _membership(_channelB, myPk)],
+      metadata: [
+        _meta(id: _channelA, name: 'Alice', channelType: 'dm'),
+        _meta(id: _channelB, name: 'Bob', channelType: 'dm'),
+      ],
+      hiddenDmEvents: [
+        _hiddenDms([_channelA], pubkey: myPk),
+      ],
+    );
+    final container = _buildContainer(session: session);
+    addTearDown(container.dispose);
+
+    final initial = await container.read(channelsProvider.future);
+    expect(initial.map((c) => c.id), [_channelB]);
+
+    // The next snapshot read fails. `retryDirectory` preserves the prior list
+    // on any refresh failure; the hidden DM must stay hidden, never resurface.
+    session.hiddenDmFailures = 1;
+    await container.read(channelsProvider.notifier).retryDirectory();
+
+    expect(
+      container.read(channelsProvider).requireValue.map((c) => c.id),
+      [_channelB],
+      reason:
+          'a hidden-DM read failure must not re-expose the hidden DM (fail-closed)',
+    );
+  });
+
   test('a DM visibility snapshot refreshes the hidden channel list', () async {
     final hiddenDmEvents = [
       _hiddenDms([_channelA], pubkey: myPk),
@@ -2130,6 +2166,85 @@ void main() {
       unorderedEquals([_channelA, _channelB]),
     );
   });
+
+  test(
+    'a re-delivered identical visibility snapshot does not re-refresh',
+    () async {
+      // The `limit: 1` DM-visibility subscription replays the latest stored
+      // snapshot on every (re)subscribe. If a replay that repeats the snapshot
+      // we already acted on triggered another refresh, the refresh would bump
+      // the subscription version, discard the in-flight subscription, resubscribe,
+      // and replay the same snapshot again — an unbounded refresh/resubscribe
+      // loop. Snapshots are parameterized-replaceable (stable id), so a repeated
+      // id must be suppressed while a genuinely new snapshot still refreshes.
+      final hiddenDmEvents = [
+        _hiddenDms([_channelA], pubkey: myPk),
+      ];
+      final session = _FakeRelaySession(
+        memberships: [
+          _membership(_channelA, myPk),
+          _membership(_channelB, myPk),
+        ],
+        metadata: [
+          _meta(id: _channelA, name: 'Alice', channelType: 'dm'),
+          _meta(id: _channelB, name: 'Bob', channelType: 'dm'),
+        ],
+        hiddenDmEvents: hiddenDmEvents,
+      );
+      final container = _buildContainer(session: session);
+      addTearDown(container.dispose);
+
+      expect(
+        (await container.read(
+          channelsProvider.future,
+        )).map((channel) => channel.id),
+        [_channelB],
+      );
+      final refreshesAfterLoad = session.membershipRequestCount;
+
+      // A new snapshot (channelA no longer hidden) drives exactly one refresh.
+      final unhide = _hiddenDms(const [], pubkey: myPk);
+      hiddenDmEvents
+        ..clear()
+        ..add(unhide);
+      session.emit(unhide);
+      await _waitUntil(
+        () =>
+            container
+                .read(channelsProvider)
+                .value
+                ?.map((channel) => channel.id)
+                .toSet()
+                .length ==
+            2,
+      );
+      final refreshesAfterNewSnapshot = session.membershipRequestCount;
+      expect(
+        refreshesAfterNewSnapshot,
+        greaterThan(refreshesAfterLoad),
+        reason: 'a new snapshot id must refresh',
+      );
+
+      // Re-delivering the SAME snapshot id (the replay) must NOT refresh again.
+      session.emit(unhide);
+      session.emit(unhide);
+      // Let any erroneously-scheduled refresh run.
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(
+        session.membershipRequestCount,
+        refreshesAfterNewSnapshot,
+        reason:
+            'a repeated identical snapshot must be suppressed, not re-refreshed',
+      );
+      expect(
+        container
+            .read(channelsProvider)
+            .requireValue
+            .map((channel) => channel.id),
+        unorderedEquals([_channelA, _channelB]),
+      );
+    },
+  );
 
   test(
     'archived kind:39000 metadata sets Channel.isArchived (covers TTL auto-archive)',
@@ -2489,6 +2604,7 @@ class _FakeRelaySession extends RelaySessionNotifier {
   List<NostrEvent> recentMessages;
   int membershipFailures;
   int directoryFailures = 0;
+  int hiddenDmFailures = 0;
   bool failClaimedMemberCountQuery = false;
   bool failClaimedUnreadCatchUpQuery = false;
   int membershipRequestCount = 0;
@@ -2741,6 +2857,10 @@ class _FakeRelaySession extends RelaySessionNotifier {
         _hiddenDmStarted!.complete();
         _hiddenDmStarted = null;
         await paused.future;
+      }
+      if (hiddenDmFailures > 0) {
+        hiddenDmFailures--;
+        throw Exception('hidden-DM snapshot fetch failed');
       }
       return hiddenDmEvents;
     }

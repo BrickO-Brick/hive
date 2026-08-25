@@ -225,24 +225,29 @@ Future<Map<String, String>> _resolveDmDisplayNames(
   return displayNames;
 }
 
+/// Fetch the set of DM channel ids the viewer currently has hidden, from the
+/// relay-signed NIP-DV snapshot.
+///
+/// A read *failure* is propagated to the caller rather than swallowed: treating
+/// a transient history-read error as "nothing is hidden" would fail open and
+/// re-expose every hidden DM until the next successful refresh. An empty result
+/// (`events.isEmpty`) is a legitimate "no DMs hidden" and returns `{}`. Callers
+/// wrap this in `_fenced` and preserve the prior list on failure, matching the
+/// sibling membership/huddle reads.
 Future<Set<String>> _fetchHiddenDmIds(
   RelaySessionNotifier session,
   String myPk,
 ) async {
-  try {
-    final events = await session.fetchHistory(NostrFilters.hiddenDms(myPk));
-    if (events.isEmpty) return const {};
-    NostrEvent latest = events.first;
-    for (final event in events.skip(1)) {
-      if (event.createdAt > latest.createdAt) latest = event;
-    }
-    return {
-      for (final tag in latest.tags)
-        if (tag.length >= 2 && tag[0] == 'h') tag[1],
-    };
-  } catch (_) {
-    return const {};
+  final events = await session.fetchHistory(NostrFilters.hiddenDms(myPk));
+  if (events.isEmpty) return const {};
+  NostrEvent latest = events.first;
+  for (final event in events.skip(1)) {
+    if (event.createdAt > latest.createdAt) latest = event;
   }
+  return {
+    for (final tag in latest.tags)
+      if (tag.length >= 2 && tag[0] == 'h') tag[1],
+  };
 }
 
 Future<List<NostrEvent>> _fetchHuddleStarts(
