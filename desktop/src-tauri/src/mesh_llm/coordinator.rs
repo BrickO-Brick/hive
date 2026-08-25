@@ -234,17 +234,24 @@ fn roster_shrinks(current: &[String], fresh: &[String]) -> bool {
 ///
 /// Rules:
 /// - query failed (`Err`)              → `Keep` (never de-admit on a relay blip)
-/// - relay enforces no membership (`Ok(None)`) → `Keep` (see below)
+/// - relay enforces no membership (`Ok(None)`), roster beyond self → `Keep` (see below)
+/// - relay enforces no membership (`Ok(None)`), self-only roster → `RestartProcess` (see below)
 /// - resolved roster == current        → `Keep` (no-op)
 /// - grows (only additions)            → `RestartProcess` immediately (fast admission)
 /// - shrinks/empties, first observation → `AwaitConfirm` (hold, re-check next poll)
 /// - shrinks/empties, confirmed         → `RestartProcess` (same reduced roster twice)
 ///
 /// `Ok(None)` means the relay does not enforce NIP-43 membership, so there is
-/// no roster to reconcile against. A node that is *already* enforcing an
-/// allowlist keeps it: relaxing a live node's admission on the strength of a
-/// NIP-11 read would let a relay downgrade (or a spoofed document) de-restrict
-/// a running mesh. The open-relay path is chosen at start, not mid-flight.
+/// no roster to reconcile against. A node enforcing an allowlist that admits
+/// *other* owners keeps it: relaxing a live multi-party allowlist on the
+/// strength of a NIP-11 read would let a relay downgrade (or a spoofed
+/// document) de-restrict a running mesh. A **self-only** allowlist is
+/// different: it admits nobody else, so it protects nothing — and it is
+/// exactly the fallback a transient NIP-11 probe failure at startup produces
+/// on an open relay. Without recovery here that node stays at "1 NODE" until
+/// an app restart (the original bug, reintroduced by a single HTTP blip).
+/// Restarting resolves the roster afresh, which on an open relay yields
+/// `None` → `TrustPolicy::Off`.
 fn roster_reconcile_action(
     current_owners: &[String],
     pending_shrink: Option<&[String]>,
@@ -256,6 +263,13 @@ fn roster_reconcile_action(
                 "buzz-mesh: roster reconcile query failed; keeping current allowlist: {error}"
             );
             return RosterReconcileAction::Keep;
+        }
+        Ok(None) if current_owners.is_empty() => {
+            eprintln!(
+                "buzz-mesh: relay does not enforce membership and this node is isolated by the \
+                 startup fallback; restarting to run the mesh unenforced"
+            );
+            return RosterReconcileAction::RestartProcess;
         }
         Ok(None) => {
             eprintln!(
@@ -569,6 +583,34 @@ mod tests {
             RosterReconcileAction::Keep,
             "a failed query must keep the running allowlist, never de-admit members"
         );
+    }
+
+    // Regression: a transient NIP-11 probe failure at startup on an OPEN relay
+    // falls back to the enforcing path and starts the node with a self-only
+    // allowlist. If reconcile then treated `Ok(None)` as an unconditional
+    // `Keep`, that node would sit at "1 NODE" until an app restart — the
+    // original open-relay bug, reintroduced by a single HTTP blip. A self-only
+    // roster admits nobody else, so restarting to run unenforced relaxes
+    // nothing that was protecting anyone.
+    #[test]
+    fn open_relay_recovers_a_fallback_isolated_node() {
+        let self_only: Vec<String> = Vec::new();
+        let action = roster_reconcile_action(&self_only, None, Ok(None));
+        assert_eq!(
+            action,
+            RosterReconcileAction::RestartProcess,
+            "a fallback-isolated node on an open relay must restart into open mesh"
+        );
+    }
+
+    // The other side of that rule: an allowlist that admits OTHER owners is
+    // never relaxed on the strength of a NIP-11 read. A relay downgrade (or a
+    // spoofed document) must not de-restrict a running mesh.
+    #[test]
+    fn open_relay_report_keeps_a_multi_party_allowlist() {
+        let current = vec!["owner-a".to_string(), "owner-b".to_string()];
+        let action = roster_reconcile_action(&current, None, Ok(None));
+        assert_eq!(action, RosterReconcileAction::Keep);
     }
 
     #[test]

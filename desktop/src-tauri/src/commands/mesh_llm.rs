@@ -219,9 +219,29 @@ async fn query_mesh_discovery_events_at(
 ///
 /// A failed probe must not open the mesh up: an unreachable or malformed NIP-11
 /// document leaves admission exactly as strict as it is today.
+///
+/// Successful probes are memoized per relay URL: the deployment mode
+/// (`BUZZ_REQUIRE_RELAY_MEMBERSHIP`) does not flap at runtime, and the
+/// discovery/reconcile paths would otherwise re-issue this HTTP GET on every
+/// poll. Failures are NOT cached, so a node that fell back to enforcing on a
+/// transient blip re-probes on the next poll and can recover.
 async fn resolved_relay_mesh_mode(relay_url: &str) -> mesh_llm::MeshRelayMode {
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, mesh_llm::MeshRelayMode>>,
+    > = std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    if let Ok(guard) = cache.lock() {
+        if let Some(mode) = guard.get(relay_url).copied() {
+            return mode;
+        }
+    }
     match probe_relay_mesh_mode(relay_url).await {
-        Ok(mode) => mode,
+        Ok(mode) => {
+            if let Ok(mut guard) = cache.lock() {
+                guard.insert(relay_url.to_string(), mode);
+            }
+            mode
+        }
         Err(error) => {
             eprintln!("buzz-mesh: NIP-11 probe failed; assuming membership is enforced: {error}");
             mesh_llm::MeshRelayMode::ClosedMembershipEnforced
@@ -260,9 +280,12 @@ async fn query_mesh_discovery_events_for_mode(
         }
     }
     let mut status_filter = mesh_llm::mesh_status_filter();
-    // On an enforcing relay, scope status reads to current members. Without a
-    // roster there is nobody to scope to, so read every reporter's note.
-    if !member_pubkeys.is_empty() {
+    // On an enforcing relay, scope status reads to current members. On an open
+    // relay the snapshot is not a trust boundary even when one exists (added
+    // out of band) — admission runs unenforced there, so scoping reads to a
+    // stray roster would hide peers the mesh admits. Read every reporter's
+    // note and let freshness + endpoint-binding checks gate routing.
+    if !mode.is_open() && !member_pubkeys.is_empty() {
         status_filter["authors"] = serde_json::json!(member_pubkeys);
     }
     let mut previous_cursor: Option<(u64, String)> = None;

@@ -240,16 +240,25 @@ pub fn availability_from_events_for_mode(
     if events.is_empty() {
         return MeshAvailability::unavailable("Buzz shared compute status is not published yet");
     }
-    let members = match latest_membership_list(&events) {
-        Some(members) => Some(members),
-        // An enforcing relay always publishes a snapshot (even a zero-member
-        // one), so its absence there means an incomplete read: stay closed.
-        None if !mode.is_open() => {
-            return MeshAvailability::unavailable(
-                "Buzz shared compute is waiting for the current member roster",
-            );
+    // On an open relay the snapshot is not a trust boundary even when one
+    // happens to exist (added out of band): admission runs `TrustPolicy::Off`
+    // there, so intersecting routing with a stray roster would hide peers the
+    // mesh happily admits. Ignore membership entirely and accept status notes
+    // on their own merits.
+    let members = if mode.is_open() {
+        None
+    } else {
+        match latest_membership_list(&events) {
+            Some(members) => Some(members),
+            // An enforcing relay always publishes a snapshot (even a
+            // zero-member one), so its absence means an incomplete read:
+            // stay closed.
+            None => {
+                return MeshAvailability::unavailable(
+                    "Buzz shared compute is waiting for the current member roster",
+                );
+            }
         }
-        None => None,
     };
 
     // Status is replaceable per member pubkey, so a query returns multiple

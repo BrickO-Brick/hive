@@ -726,6 +726,45 @@ fn open_relay_routes_without_a_membership_snapshot() {
 }
 
 #[test]
+fn open_relay_ignores_a_stray_membership_snapshot() {
+    use super::MeshRelayMode;
+
+    // On an open relay a kind:13534 snapshot can still exist (members added
+    // out of band), but it is not a trust boundary there: admission runs
+    // `TrustPolicy::Off` regardless. Intersecting routing with that stray
+    // roster would hide peers the mesh happily admits — a hybrid state where
+    // admission and discovery disagree. Routing must ignore it entirely.
+    let reporter_secret = "a".repeat(64);
+    let reporter_pubkey = nostr::Keys::parse(&reporter_secret)
+        .unwrap()
+        .public_key()
+        .to_hex();
+    let endpoint = test_endpoint_token();
+    let events = vec![
+        // Snapshot deliberately lists someone else, NOT the reporter.
+        signed_membership_event(&["f".repeat(64)]),
+        signed_reporter_target(&reporter_secret, "model-open", &endpoint),
+    ];
+
+    let closed = super::availability_from_events_for_mode(
+        events.clone(),
+        MeshRelayMode::ClosedMembershipEnforced,
+    );
+    assert!(
+        closed.serve_targets.is_empty(),
+        "an enforcing relay still intersects routing with the roster"
+    );
+
+    let open = super::availability_from_events_for_mode(events, MeshRelayMode::OpenNoMembership);
+    assert_eq!(
+        open.serve_targets.len(),
+        1,
+        "an open relay accepts a non-roster reporter's status: {reporter_pubkey} was hidden"
+    );
+    assert_eq!(open.serve_targets[0].endpoint_addr, endpoint);
+}
+
+#[test]
 fn closed_relay_without_snapshot_never_silently_opens_up() {
     use super::MeshRelayMode;
 
