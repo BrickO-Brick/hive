@@ -56,7 +56,7 @@ export function AgentInstructionsField({
           labelFor="persona-system-prompt"
           onChange={onAssignedSharedInstructionsChange}
           onEdit={onEditSharedInstruction}
-          publishedSkills={publishedSharedInstructions}
+          publishedInstructions={publishedSharedInstructions}
           selected={assignedSharedInstructions}
         >
           {textarea(

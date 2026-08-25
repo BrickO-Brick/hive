@@ -37,7 +37,7 @@ type SharedInstructionPreviewButtonProps = Omit<
   previewAlign?: React.ComponentProps<typeof PopoverContent>["align"];
   previewOnFocus?: boolean;
   previewSide?: React.ComponentProps<typeof PopoverContent>["side"];
-  skill: SharedInstructionCover;
+  instruction: SharedInstructionCover;
 };
 
 type PreviewState = "idle" | "loading" | "ready" | "error";
@@ -54,7 +54,7 @@ export function SharedInstructionPreviewButton({
   previewAlign = "center",
   previewOnFocus = true,
   previewSide = "top",
-  skill,
+  instruction,
   ...buttonProps
 }: SharedInstructionPreviewButtonProps) {
   const [open, setOpen] = React.useState(false);
@@ -63,7 +63,8 @@ export function SharedInstructionPreviewButton({
     null,
   );
   const currentDetail =
-    detail?.coordinate === skill.coordinate && detail.eventId === skill.eventId
+    detail?.coordinate === instruction.coordinate &&
+    detail.eventId === instruction.eventId
       ? detail
       : null;
   const contentRef = React.useRef<HTMLDivElement | null>(null);
@@ -152,7 +153,7 @@ export function SharedInstructionPreviewButton({
 
     let active = true;
     setPreviewState("loading");
-    void resolveSharedInstructions([skill.coordinate])
+    void resolveSharedInstructions([instruction.coordinate])
       .then(([resolved]) => {
         if (!active) return;
         setDetail(resolved ?? null);
@@ -167,10 +168,11 @@ export function SharedInstructionPreviewButton({
     return () => {
       active = false;
     };
-  }, [currentDetail, open, skill.coordinate]);
+  }, [currentDetail, open, instruction.coordinate]);
 
-  const displayTitle = currentDetail?.title || skill.title || skill.slug;
-  const displaySummary = currentDetail?.summary || skill.summary;
+  const displayTitle =
+    currentDetail?.title || instruction.title || instruction.slug;
+  const displaySummary = currentDetail?.summary || instruction.summary;
   const focusPreviewOnTab = (event: React.KeyboardEvent<HTMLElement>) => {
     if (event.key !== "Tab" || event.shiftKey || !open) return;
     event.preventDefault();

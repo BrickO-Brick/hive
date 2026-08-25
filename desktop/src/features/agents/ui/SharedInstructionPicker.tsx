@@ -27,7 +27,7 @@ type SharedInstructionPickerProps = {
   selected: readonly string[];
   onChange: (coordinates: string[]) => void;
   onEdit: (detail: ResolvedSharedInstruction | null) => void;
-  publishedSkills: readonly SharedInstructionCover[];
+  publishedInstructions: readonly SharedInstructionCover[];
 };
 
 type LoadState = "loading" | "ready" | "error";
@@ -40,16 +40,18 @@ export function SharedInstructionPicker({
   selected,
   onChange,
   onEdit,
-  publishedSkills,
+  publishedInstructions,
 }: SharedInstructionPickerProps) {
-  const [skills, setSkills] = React.useState<SharedInstructionCover[]>([]);
+  const [instructions, setInstructions] = React.useState<
+    SharedInstructionCover[]
+  >([]);
   const [loadState, setLoadState] = React.useState<LoadState>("loading");
   const [pickerOpen, setPickerOpen] = React.useState(false);
 
-  const loadSkills = React.useCallback(async () => {
+  const loadInstructions = React.useCallback(async () => {
     setLoadState("loading");
     try {
-      setSkills(await listMySharedInstructions());
+      setInstructions(await listMySharedInstructions());
       setLoadState("ready");
     } catch {
       setLoadState("error");
@@ -57,40 +59,46 @@ export function SharedInstructionPicker({
   }, []);
 
   React.useEffect(() => {
-    void loadSkills();
-  }, [loadSkills]);
+    void loadInstructions();
+  }, [loadInstructions]);
 
-  const visibleSkills = React.useMemo(
+  const visibleInstructions = React.useMemo(
     () => [
-      ...publishedSkills,
-      ...skills.filter(
-        (skill) =>
-          !publishedSkills.some(
-            (published) => published.coordinate === skill.coordinate,
+      ...publishedInstructions,
+      ...instructions.filter(
+        (instruction) =>
+          !publishedInstructions.some(
+            (published) => published.coordinate === instruction.coordinate,
           ),
       ),
     ],
-    [publishedSkills, skills],
+    [publishedInstructions, instructions],
   );
   const knownCoordinates = React.useMemo(
-    () => new Set(visibleSkills.map((skill) => skill.coordinate)),
-    [visibleSkills],
+    () =>
+      new Set(visibleInstructions.map((instruction) => instruction.coordinate)),
+    [visibleInstructions],
   );
   const unknownSelected =
     loadState === "ready"
       ? selected.filter((coordinate) => !knownCoordinates.has(coordinate))
       : [];
-  const selectedSkills = selected
+  const selectedInstructions = selected
     .map((coordinate) =>
-      visibleSkills.find((skill) => skill.coordinate === coordinate),
+      visibleInstructions.find(
+        (instruction) => instruction.coordinate === coordinate,
+      ),
     )
-    .filter((skill): skill is SharedInstructionCover => skill !== undefined);
-  const hasSelectedSkills =
-    selectedSkills.length > 0 || unknownSelected.length > 0;
+    .filter(
+      (instruction): instruction is SharedInstructionCover =>
+        instruction !== undefined,
+    );
+  const hasSelectedInstructions =
+    selectedInstructions.length > 0 || unknownSelected.length > 0;
 
-  function toggleSkill(skill: SharedInstructionCover) {
+  function toggleInstruction(instruction: SharedInstructionCover) {
     if (disabled) return;
-    const next = toggleSharedInstructionCoordinate(selected, skill);
+    const next = toggleSharedInstructionCoordinate(selected, instruction);
     if (
       next.length !== selected.length ||
       next.some((coordinate, index) => coordinate !== selected[index])
@@ -112,7 +120,7 @@ export function SharedInstructionPicker({
   function renderPickerIngress() {
     if (loadState !== "ready") return null;
 
-    if (visibleSkills.length === 0) {
+    if (visibleInstructions.length === 0) {
       return (
         <button
           aria-label="Create shared instruction"
@@ -172,19 +180,19 @@ export function SharedInstructionPicker({
           sideOffset={5}
         >
           <div className="max-h-[min(20rem,var(--radix-dropdown-menu-content-available-height))] overflow-y-auto overscroll-contain">
-            {visibleSkills.map((skill) => (
+            {visibleInstructions.map((instruction) => (
               <SharedInstructionPreviewButton
                 asChild
-                key={skill.coordinate}
+                key={instruction.coordinate}
                 onEdit={openEditEditor}
                 previewSide="left"
-                skill={skill}
+                instruction={instruction}
               >
                 <DropdownMenuCheckboxItem
-                  checked={selected.includes(skill.coordinate)}
+                  checked={selected.includes(instruction.coordinate)}
                   className="group gap-2 px-2 py-1 [&>span:first-child]:hidden"
-                  disabled={disabled || !skill.compatible}
-                  onCheckedChange={() => toggleSkill(skill)}
+                  disabled={disabled || !instruction.compatible}
+                  onCheckedChange={() => toggleInstruction(instruction)}
                   onSelect={(event) => event.preventDefault()}
                 >
                   <span className="min-w-0 flex-1">
@@ -192,19 +200,19 @@ export function SharedInstructionPicker({
                       className="line-clamp-1 text-xs font-medium text-foreground"
                       data-testid="shared-instruction-menu-title"
                     >
-                      {skill.title || skill.slug}
+                      {instruction.title || instruction.slug}
                     </span>
-                    {skill.summary ? (
+                    {instruction.summary ? (
                       <span
                         className="mt-0.5 block truncate text-2xs font-light leading-5 text-muted-foreground"
                         data-testid="shared-instruction-menu-summary"
                       >
-                        {skill.summary}
+                        {instruction.summary}
                       </span>
                     ) : null}
-                    {!skill.compatible ? (
+                    {!instruction.compatible ? (
                       <span className="mt-0.5 line-clamp-1 text-xs text-destructive">
-                        {skill.incompatibilities[0]?.message}
+                        {instruction.incompatibilities[0]?.message}
                       </span>
                     ) : null}
                   </span>
@@ -212,7 +220,7 @@ export function SharedInstructionPicker({
                     className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted text-foreground transition-colors group-focus:bg-muted/80"
                     data-testid="shared-instruction-menu-toggle"
                   >
-                    {selected.includes(skill.coordinate) ? (
+                    {selected.includes(instruction.coordinate) ? (
                       <Check className="h-3.5 w-3.5" />
                     ) : (
                       <Plus className="h-3.5 w-3.5" />
@@ -251,12 +259,12 @@ export function SharedInstructionPicker({
         className={cn(
           PERSONA_FIELD_SHELL_CLASS,
           "grid min-h-40 resize-y overflow-hidden",
-          hasSelectedSkills && "[&_textarea]:pb-[3.25rem]",
+          hasSelectedInstructions && "[&_textarea]:pb-[3.25rem]",
         )}
         data-testid="shared-instruction-picker-field"
       >
         <div className="col-start-1 row-start-1 min-h-0">{children}</div>
-        {hasSelectedSkills ? (
+        {hasSelectedInstructions ? (
           <div
             className="z-10 col-start-1 row-start-1 mr-6 flex max-h-20 flex-wrap items-center gap-1.5 self-end overflow-y-auto px-3 pb-2 pt-4"
             data-testid="shared-instruction-picker-selected"
@@ -265,25 +273,27 @@ export function SharedInstructionPicker({
                 "linear-gradient(to bottom, transparent 0, color-mix(in oklab, hsl(var(--muted)) 40%, hsl(var(--background))) 0.75rem)",
             }}
           >
-            {selectedSkills.map((skill) => (
+            {selectedInstructions.map((instruction) => (
               <div
                 className="flex h-7 max-w-full items-center rounded-full border border-border/70 bg-muted/35 pl-2.5 pr-1 text-xs text-foreground"
-                key={skill.coordinate}
+                key={instruction.coordinate}
               >
                 <SharedInstructionPreviewButton
                   className="max-w-56 truncate"
                   onEdit={openEditEditor}
-                  skill={skill}
+                  instruction={instruction}
                 >
-                  {skill.title || skill.slug}
+                  {instruction.title || instruction.slug}
                 </SharedInstructionPreviewButton>
                 <button
-                  aria-label={`Remove ${skill.title || skill.slug}`}
+                  aria-label={`Remove ${instruction.title || instruction.slug}`}
                   className="ml-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground"
                   disabled={disabled}
                   onClick={() =>
                     onChange(
-                      selected.filter((value) => value !== skill.coordinate),
+                      selected.filter(
+                        (value) => value !== instruction.coordinate,
+                      ),
                     )
                   }
                   type="button"
@@ -325,7 +335,11 @@ export function SharedInstructionPicker({
           <p className="text-xs text-destructive">
             Shared instructions couldn’t be loaded.
           </p>
-          <Button onClick={() => void loadSkills()} size="sm" variant="ghost">
+          <Button
+            onClick={() => void loadInstructions()}
+            size="sm"
+            variant="ghost"
+          >
             Try again
           </Button>
         </div>
