@@ -86,7 +86,8 @@ pub enum BrokerTransportError {
         detail: String,
     },
     /// An envelope arrived but did not validate against the request that was
-    /// sent — wrong `requestId`, wrong action, or a malformed outcome.
+    /// sent — wrong `requestId`, wrong action, a malformed outcome, or a status
+    /// contradicting its own error code.
     ///
     /// Produced by [`ValidatedResponse::validate`], which every
     /// [`BrokerClientExt::execute`] call runs. A host that answers something
@@ -127,9 +128,10 @@ impl ValidatedResponse {
     /// # Errors
     ///
     /// Returns [`BrokerTransportError::MalformedResponse`] when the response
-    /// does not correlate, carries an outcome for a different action, or asserts
-    /// a malformed identifier. A response that fails here is not a host verdict
-    /// — nothing can be concluded about side effects from it.
+    /// does not correlate, carries an outcome for a different action, asserts a
+    /// malformed identifier, or pairs a status with a code that contradicts it.
+    /// A response that fails here is not a host verdict — nothing can be
+    /// concluded about side effects from it.
     pub fn validate(
         response: BrokerResponse,
         request: &PreparedRequest,

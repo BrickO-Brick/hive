@@ -55,6 +55,15 @@
 //! [`AgentsCreateOutcome`] is the case that matters — it returns public identity
 //! only, never the key it just minted.
 //!
+//! Strictness has to hold at every layer, or the outermost one decides. Two
+//! places needed explicit work, because each had a hole a derive left open:
+//! [`BrokerResponse`] cannot combine `deny_unknown_fields` with the `flatten`
+//! that produces its wire shape, and [`BrokerMessage`] wraps `nostr`'s `Event`,
+//! whose own deserializer discards unknown members. Both now deserialize through
+//! private strict intermediaries, so the rule reaches *inside* the envelope and
+//! inside each event object — a host cannot ship a `secretKey` beside `sig` and
+//! have it silently trimmed.
+//!
 //! Two limits are worth stating. A `String` field can physically hold secret
 //! text, so keeping secrets out of message content and error messages is host
 //! policy this contract cannot enforce. And nothing stops a host from *holding*
@@ -323,6 +332,30 @@ impl PreparedRequest {
 /// These name failures the *broker* is responsible for. Failures inside an
 /// action arrive as [`BrokerErrorCode::ActionFailed`] with detail in the
 /// message.
+///
+/// # Which status a code may carry
+///
+/// A code and a [`BrokerResult`] status are two statements about the same thing
+/// — whether side effects landed — so they cannot be paired freely. This is the
+/// whole table, and it lives only here:
+///
+/// | Code | with `failed` | with `indeterminate` |
+/// |---|---|---|
+/// | `outcome_unknown` | no | yes |
+/// | `internal` | yes | yes |
+/// | every other code | yes | no |
+///
+/// `Failed` promises no side effects took hold; `Indeterminate` promises
+/// nothing. Every code but two names a fate the host *knows* — a refused
+/// credential, a rejected envelope, a `requestId` conflict, an action that ran
+/// and failed — so those are `Failed`-only. [`Self::OutcomeUnknown`] is the code
+/// for not knowing, so it is `Indeterminate`-only. [`Self::Internal`] is the one
+/// code that is legitimately either: a host fault before dispatch is a known
+/// no-op, and the same fault mid-execution genuinely is not.
+///
+/// [`Self::may_be_failed`] and [`Self::may_be_indeterminate`] are that table in
+/// code, consulted by [`BrokerResponse::validate`], which rejects a mismatched
+/// pairing as malformed rather than trusting either half.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BrokerErrorCode {
@@ -354,9 +387,13 @@ pub enum BrokerErrorCode {
     ActionFailed,
     /// The host could not determine whether side effects occurred.
     ///
-    /// Only ever paired with [`BrokerResult::Indeterminate`].
+    /// The only code that is [`BrokerResult::Indeterminate`]-only; see the
+    /// status table on [`BrokerErrorCode`].
     OutcomeUnknown,
     /// An unexpected host-side fault.
+    ///
+    /// The only code that may carry either status: a fault before dispatch is a
+    /// known no-op, the same fault mid-execution is not.
     Internal,
 }
 
@@ -376,6 +413,49 @@ impl BrokerErrorCode {
             Self::ActionFailed => "action_failed",
             Self::OutcomeUnknown => "outcome_unknown",
             Self::Internal => "internal",
+        }
+    }
+
+    /// Whether this code may appear with [`BrokerResult::Failed`], which
+    /// promises no side effects took hold.
+    ///
+    /// One half of the table documented on [`BrokerErrorCode`]. Written as an
+    /// exhaustive match so adding a code forces a decision here rather than
+    /// silently inheriting a default.
+    #[must_use]
+    pub fn may_be_failed(self) -> bool {
+        match self {
+            Self::InvalidRequest
+            | Self::UnsupportedProtocolVersion
+            | Self::UnknownAction
+            | Self::UnsupportedActionVersion
+            | Self::Unsupported
+            | Self::Unauthenticated
+            | Self::Unauthorized
+            | Self::RequestIdConflict
+            | Self::ActionFailed
+            | Self::Internal => true,
+            Self::OutcomeUnknown => false,
+        }
+    }
+
+    /// Whether this code may appear with [`BrokerResult::Indeterminate`], which
+    /// promises nothing about side effects.
+    ///
+    /// The other half of the table documented on [`BrokerErrorCode`].
+    #[must_use]
+    pub fn may_be_indeterminate(self) -> bool {
+        match self {
+            Self::OutcomeUnknown | Self::Internal => true,
+            Self::InvalidRequest
+            | Self::UnsupportedProtocolVersion
+            | Self::UnknownAction
+            | Self::UnsupportedActionVersion
+            | Self::Unsupported
+            | Self::Unauthenticated
+            | Self::Unauthorized
+            | Self::RequestIdConflict
+            | Self::ActionFailed => false,
         }
     }
 }
@@ -425,7 +505,8 @@ impl BrokerError {
 ///
 /// [`Self::Indeterminate`] is distinct from [`Self::Failed`] on purpose:
 /// `Failed` promises no side effects took hold, while `Indeterminate` promises
-/// nothing at all and demands reconciliation.
+/// nothing at all and demands reconciliation. Which [`BrokerErrorCode`] may
+/// carry which status is a closed table, documented on that type.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum BrokerResult {
@@ -491,10 +572,23 @@ impl BrokerResult {
 /// domain outcome, and is never persisted as part of the stored result. A
 /// replayed response is byte-identical in `result` to the original.
 ///
-/// Note: this struct cannot use `deny_unknown_fields`, because serde does not
-/// support combining it with `#[serde(flatten)]`. Strictness is enforced where
-/// it guards execution — on [`BrokerRequest`] and each args type.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// # Why deserialization goes through an intermediary
+///
+/// `#[serde(flatten)]` on `result` silently disables `deny_unknown_fields` —
+/// serde cannot combine the two — so this envelope used to accept and discard an
+/// unknown top-level key, an unknown key beside `status`, and even an `error`
+/// riding alongside a succeeded outcome. Every other payload in this contract is
+/// strict, and a discarded field is exactly how a secret-bearing host field
+/// crosses a boundary unnoticed.
+///
+/// So [`Deserialize`] routes through a private strict wire form with an exact key
+/// set per status, and anything else fails to parse. A transport reports that as
+/// [`BrokerTransportError::MalformedResponse`] — the bytes claimed to be an
+/// envelope and were not one — so the caller gets no verdict instead of a
+/// quietly trimmed one. Serialization is unchanged, so the wire form is still
+/// the flattened one; a round-trip test pins that the strict reader accepts what
+/// the writer emits.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BrokerResponse {
     /// Payload discriminator — must equal [`BROKER_RESULT_TYPE`].
@@ -509,6 +603,99 @@ pub struct BrokerResponse {
     /// True when this response replays a previously recorded outcome.
     #[serde(default, skip_serializing_if = "is_false")]
     pub replayed: bool,
+}
+
+/// The strict wire form of a [`BrokerResponse`]: every key spelled out, no
+/// `flatten`, so `deny_unknown_fields` is actually in force.
+///
+/// The status-specific members are `Option` here only because one struct has to
+/// describe three shapes; [`BrokerResponse::deserialize`] then requires the exact
+/// set for the declared status, so `error` beside a succeeded outcome — or a
+/// missing `outcome` under `succeeded` — is a parse failure rather than a field
+/// nobody reads.
+///
+/// `outcome` is held as a `serde_json::Value` and re-deserialized under its
+/// action tag, so this reader is JSON-specific. That is not a narrowing: the HTTP
+/// binding in [`client`] declares `application/json`, and JSON is the only
+/// encoding this contract has ever specified.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct WireResponse {
+    r#type: String,
+    protocol_version: u16,
+    request_id: String,
+    status: String,
+    #[serde(default)]
+    action: Option<String>,
+    #[serde(default)]
+    outcome: Option<serde_json::Value>,
+    #[serde(default)]
+    error: Option<BrokerError>,
+    #[serde(default)]
+    replayed: bool,
+}
+
+impl<'de> Deserialize<'de> for BrokerResponse {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error as _;
+
+        let wire = WireResponse::deserialize(deserializer)?;
+
+        // One arm per status, each naming the members that status may carry.
+        // Anything present that this status does not admit is rejected here, so
+        // "succeeded with an error" cannot be parsed and then ignored.
+        let result = match wire.status.as_str() {
+            "succeeded" => {
+                if wire.error.is_some() {
+                    return Err(D::Error::custom(
+                        "a succeeded response must not carry an error",
+                    ));
+                }
+                let action = wire
+                    .action
+                    .ok_or_else(|| D::Error::missing_field("action"))?;
+                let outcome = wire
+                    .outcome
+                    .ok_or_else(|| D::Error::missing_field("outcome"))?;
+                // Re-deserialize the outcome under its action tag, which is how
+                // the adjacently-tagged `ActionOutcome` — and the
+                // `deny_unknown_fields` on each outcome type — get applied.
+                let tagged = serde_json::json!({ "action": action, "outcome": outcome });
+                let outcome: ActionOutcome =
+                    serde_json::from_value(tagged).map_err(D::Error::custom)?;
+                BrokerResult::Succeeded { outcome }
+            }
+            status @ ("failed" | "indeterminate") => {
+                if wire.action.is_some() || wire.outcome.is_some() {
+                    return Err(D::Error::custom(format!(
+                        "a {status} response must not carry an action or outcome"
+                    )));
+                }
+                let error = wire.error.ok_or_else(|| D::Error::missing_field("error"))?;
+                if status == "failed" {
+                    BrokerResult::Failed { error }
+                } else {
+                    BrokerResult::Indeterminate { error }
+                }
+            }
+            other => {
+                return Err(D::Error::custom(format!(
+                    "unknown broker result status \"{other}\""
+                )))
+            }
+        };
+
+        Ok(Self {
+            r#type: wire.r#type,
+            protocol_version: wire.protocol_version,
+            request_id: wire.request_id,
+            result,
+            replayed: wire.replayed,
+        })
+    }
 }
 
 fn is_false(value: &bool) -> bool {
@@ -562,14 +749,22 @@ impl BrokerResponse {
         validate_request_id(&self.request_id)?;
         match &self.result {
             BrokerResult::Succeeded { outcome } => outcome.validate()?,
-            // `OutcomeUnknown` is the one code that describes not knowing
-            // whether side effects landed. Paired with `Failed` — which promises
-            // they did not — it would be self-contradictory, so it is rejected
-            // rather than left for each caller to notice.
-            BrokerResult::Failed { error } if error.code == BrokerErrorCode::OutcomeUnknown => {
-                return Err(SdkError::InvalidInput(
-                    "outcome_unknown is only valid with an indeterminate status".into(),
-                ));
+            // A code and a status are two statements about whether side effects
+            // landed, so a pairing the table forbids is a response
+            // contradicting itself. Neither half can be trusted over the other,
+            // so it is rejected rather than reinterpreted. The table itself
+            // lives on `BrokerErrorCode`.
+            BrokerResult::Failed { error } if !error.code.may_be_failed() => {
+                return Err(SdkError::InvalidInput(format!(
+                    "{} is not a valid code for a failed status",
+                    error.code.as_str()
+                )));
+            }
+            BrokerResult::Indeterminate { error } if !error.code.may_be_indeterminate() => {
+                return Err(SdkError::InvalidInput(format!(
+                    "{} is not a valid code for an indeterminate status",
+                    error.code.as_str()
+                )));
             }
             BrokerResult::Failed { .. } | BrokerResult::Indeterminate { .. } => {}
         }
@@ -595,8 +790,9 @@ impl BrokerResponse {
     /// # Errors
     ///
     /// Returns everything [`Self::validate`] returns, plus
-    /// [`SdkError::InvalidInput`] when the `requestId` does not correlate or a
-    /// success outcome names a different action than the request.
+    /// [`SdkError::InvalidInput`] when the `requestId` does not correlate, a
+    /// success outcome names a different action than the request, or a read
+    /// returned more messages than the request allowed.
     pub fn validate_for(&self, request: &PreparedRequest) -> Result<(), SdkError> {
         self.validate()?;
         if self.request_id != request.request_id() {
@@ -614,6 +810,24 @@ impl BrokerResponse {
                     outcome.action().as_str(),
                     expected.as_str()
                 )));
+            }
+            // `ActionOutcome::validate` can only enforce the protocol-wide cap,
+            // because it never sees the request. A page bounded only by that cap
+            // still overruns a caller that asked for one message and was handed
+            // five hundred, so the request's own number is applied here — the
+            // one place both halves are in scope.
+            if let (
+                ActionArgs::ChannelRead(args),
+                ActionOutcome::ChannelRead(MessagePage { messages, .. }),
+            ) = (&request.request.action, outcome)
+            {
+                let allowed = args.effective_limit() as usize;
+                if messages.len() > allowed {
+                    return Err(SdkError::InvalidInput(format!(
+                        "read returned {} messages for a limit of {allowed}",
+                        messages.len()
+                    )));
+                }
             }
         }
         Ok(())

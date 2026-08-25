@@ -12,7 +12,30 @@ use super::{
     channel, cursor, event_id, required, Action, PubkeyHex, MAX_NAME_CHARS, MAX_PAGE_LIMIT,
 };
 use crate::SdkError;
-use nostr::Event;
+use nostr::{Event, EventId, Kind, PublicKey, Tags, Timestamp};
+
+/// The seven canonical members of a Nostr event object, and nothing else.
+///
+/// `nostr`'s own `Event` deserializer accepts and *discards* unknown members, so
+/// deserializing straight into it would put read results outside the strict-wire
+/// rule that every other payload in this contract obeys: a host could ship an
+/// extra `secretKey` member inside an event and nothing would object. Routing
+/// through a `deny_unknown_fields` intermediary restores the rule at the one
+/// place the contract does not own the type.
+///
+/// Field names are the wire names from NIP-01 (`created_at`, not `createdAt`) —
+/// this is the event's own encoding, not ours to rename.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StrictEvent {
+    id: EventId,
+    pubkey: PublicKey,
+    created_at: Timestamp,
+    kind: Kind,
+    tags: Tags,
+    content: String,
+    sig: nostr::secp256k1::schnorr::Signature,
+}
 
 /// One message returned by a read: the signed Nostr event, verbatim.
 ///
@@ -27,9 +50,33 @@ use nostr::Event;
 /// The wire form is the event's own JSON, so this adds no envelope of its own.
 /// Ancestry and mentions are exposed as derived accessors rather than sibling
 /// fields, so there is nothing that can disagree with the signed bytes.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Deserialization is **strict**, via a private `deny_unknown_fields`
+/// intermediary: an event object carrying any member beyond the canonical seven
+/// is rejected rather than quietly trimmed, which is what keeps read results
+/// inside the same no-secret rule as every other payload here. Serialization is
+/// the event's own, so the wire form is unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
 pub struct BrokerMessage(pub Event);
+
+impl<'de> Deserialize<'de> for BrokerMessage {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let strict = StrictEvent::deserialize(deserializer)?;
+        Ok(Self(Event::new(
+            strict.id,
+            strict.pubkey,
+            strict.created_at,
+            strict.kind,
+            strict.tags,
+            strict.content,
+            strict.sig,
+        )))
+    }
+}
 
 impl BrokerMessage {
     /// The signed event.

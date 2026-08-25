@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     channel, content, cursor, event_id, is_false, limit, mentions, optional, required, respond_to,
-    validate_slug, Action, PubkeyHex, MAX_ABOUT_CHARS, MAX_EMOJI_CHARS, MAX_NAME_CHARS,
-    MAX_PROMPT_CHARS, MAX_SCALAR_CHARS,
+    validate_slug, Action, PubkeyHex, DEFAULT_PAGE_LIMIT, MAX_ABOUT_CHARS, MAX_EMOJI_CHARS,
+    MAX_NAME_CHARS, MAX_PROMPT_CHARS, MAX_SCALAR_CHARS,
 };
 use crate::SdkError;
 
@@ -49,11 +49,26 @@ pub struct ChannelReadArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
     /// Maximum events to return, capped at [`super::MAX_PAGE_LIMIT`].
+    ///
+    /// Absent means [`super::DEFAULT_PAGE_LIMIT`], not "unbounded": see
+    /// [`Self::effective_limit`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
 }
 
 impl ChannelReadArgs {
+    /// The page size a response to these arguments is held to.
+    ///
+    /// Explicit `limit` when set, otherwise [`super::DEFAULT_PAGE_LIMIT`].
+    /// Omitting a limit asks the host to choose a sensible page, not to send an
+    /// unbounded one, so there is always a number a response can be checked
+    /// against — which is what
+    /// [`crate::broker::BrokerResponse::validate_for`] does.
+    #[must_use]
+    pub fn effective_limit(&self) -> u32 {
+        self.limit.unwrap_or(DEFAULT_PAGE_LIMIT)
+    }
+
     /// Read a whole channel from the host's default window.
     #[must_use]
     pub fn channel(channel_id: impl Into<String>) -> Self {

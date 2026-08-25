@@ -53,6 +53,15 @@ pub const MAX_MENTIONS: usize = 50;
 /// Maximum events a single read may return.
 pub const MAX_PAGE_LIMIT: u32 = 500;
 
+/// Events a read returns when the request sets no explicit `limit`.
+///
+/// A caller that omits `limit` is not agreeing to an unbounded page, so this is
+/// the number a response is held to in that case — see
+/// [`crate::broker::BrokerResponse::validate_for`]. It is deliberately well
+/// under [`MAX_PAGE_LIMIT`]: the cap is what a host may ever send, this is what
+/// it may send unasked.
+pub const DEFAULT_PAGE_LIMIT: u32 = 100;
+
 /// Maximum accepted length of a read cursor, in bytes.
 pub const MAX_CURSOR_LEN: usize = 256;
 

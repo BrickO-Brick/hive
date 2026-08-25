@@ -25,6 +25,25 @@ fn signed_message(keys: &Keys) -> BrokerMessage {
     BrokerMessage(event)
 }
 
+/// Every [`BrokerErrorCode`] variant, so code-driven tables cannot silently skip
+/// one: [`error_codes_have_stable_wire_strings`] pins this list against the enum.
+fn all_error_codes() -> [BrokerErrorCode; 11] {
+    use BrokerErrorCode as E;
+    [
+        E::InvalidRequest,
+        E::UnsupportedProtocolVersion,
+        E::UnknownAction,
+        E::UnsupportedActionVersion,
+        E::Unsupported,
+        E::Unauthenticated,
+        E::Unauthorized,
+        E::RequestIdConflict,
+        E::ActionFailed,
+        E::OutcomeUnknown,
+        E::Internal,
+    ]
+}
+
 /// One valid `args` value per action, so table-driven tests cannot silently
 /// skip an action: [`fixtures_cover_every_action`] pins the coverage.
 fn action_fixtures() -> Vec<ActionArgs> {
@@ -246,6 +265,202 @@ fn an_args_shape_cannot_be_paired_with_another_action_name() {
     assert!(serde_json::from_value::<BrokerRequest>(json).is_err());
 }
 
+/// `#[serde(flatten)]` silently disables `deny_unknown_fields`, so the response
+/// envelope — the one payload here that needs `flatten` for its wire shape — read
+/// as strict while accepting and discarding extra keys. Every rejection below
+/// parsed cleanly before the strict intermediary existed.
+///
+/// The request envelope has the same `flatten` but *not* the same hole: its
+/// `ActionArgs` is adjacently tagged, contributing exactly `action` and `args`,
+/// so `deny_unknown_fields` still applies to the whole set. That is pinned in
+/// [`a_request_envelope_rejects_anything_outside_its_exact_key_set`] rather than
+/// assumed.
+#[test]
+fn a_response_envelope_rejects_anything_outside_its_exact_key_set() {
+    let succeeded = || {
+        serde_json::json!({
+            "type": BROKER_RESULT_TYPE,
+            "protocolVersion": 1,
+            "requestId": "req-1",
+            "status": "succeeded",
+            "action": "agents.delete",
+            "outcome": { "agentPubkey": PUBKEY, "displayName": "Gone" },
+        })
+    };
+    let failed = || {
+        serde_json::json!({
+            "type": BROKER_RESULT_TYPE,
+            "protocolVersion": 1,
+            "requestId": "req-1",
+            "status": "failed",
+            "error": { "code": "action_failed", "message": "no" },
+        })
+    };
+    assert!(serde_json::from_value::<BrokerResponse>(succeeded()).is_ok());
+    assert!(serde_json::from_value::<BrokerResponse>(failed()).is_ok());
+
+    let mut rejected: Vec<(&str, serde_json::Value)> = Vec::new();
+
+    // An unknown top-level key, including one that reads as key material.
+    for extra in ["hostNote", "secretKey", "credential"] {
+        let mut json = succeeded();
+        json[extra] = serde_json::json!("nsec1deadbeef");
+        rejected.push((extra, json));
+        let mut json = failed();
+        json[extra] = serde_json::json!("nsec1deadbeef");
+        rejected.push((extra, json));
+    }
+
+    // Members the declared status does not admit. Each of these is a
+    // contradiction the type system already forbids in Rust, and the envelope
+    // used to accept it on the wire and drop the half it could not represent.
+    let mut error_beside_success = succeeded();
+    error_beside_success["error"] = serde_json::json!({ "code": "internal", "message": "?" });
+    rejected.push(("error beside a success", error_beside_success));
+
+    let mut outcome_beside_failure = failed();
+    outcome_beside_failure["action"] = serde_json::json!("agents.delete");
+    outcome_beside_failure["outcome"] =
+        serde_json::json!({ "agentPubkey": PUBKEY, "displayName": "Gone" });
+    rejected.push(("outcome beside a failure", outcome_beside_failure));
+
+    let mut outcome_beside_indeterminate = failed();
+    outcome_beside_indeterminate["status"] = serde_json::json!("indeterminate");
+    outcome_beside_indeterminate["error"] =
+        serde_json::json!({ "code": "outcome_unknown", "message": "?" });
+    outcome_beside_indeterminate["action"] = serde_json::json!("agents.delete");
+    outcome_beside_indeterminate["outcome"] =
+        serde_json::json!({ "agentPubkey": PUBKEY, "displayName": "Gone" });
+    rejected.push((
+        "outcome beside an indeterminate",
+        outcome_beside_indeterminate,
+    ));
+
+    // Missing the member its status requires.
+    let mut no_outcome = succeeded();
+    no_outcome.as_object_mut().unwrap().remove("outcome");
+    rejected.push(("success with no outcome", no_outcome));
+    let mut no_error = failed();
+    no_error.as_object_mut().unwrap().remove("error");
+    rejected.push(("failure with no error", no_error));
+
+    // An unknown status is not a fourth disposition to ignore.
+    for status in ["succeeded_partially", "pending", "SUCCEEDED", ""] {
+        let mut json = failed();
+        json["status"] = serde_json::json!(status);
+        rejected.push(("unknown status", json));
+    }
+
+    // Strictness still reaches inside the outcome.
+    let mut extra_in_outcome = succeeded();
+    extra_in_outcome["outcome"]["secretKey"] = serde_json::json!("nsec1deadbeef");
+    rejected.push(("unknown key inside the outcome", extra_in_outcome));
+
+    let mut extra_in_error = failed();
+    extra_in_error["error"]["secretKey"] = serde_json::json!("nsec1deadbeef");
+    rejected.push(("unknown key inside the error", extra_in_error));
+
+    for (what, json) in rejected {
+        assert!(
+            serde_json::from_value::<BrokerResponse>(json.clone()).is_err(),
+            "{what} must not deserialize: {json}"
+        );
+    }
+}
+
+/// Strict deserialization must not have narrowed what the writer emits: the
+/// wire form is still the flattened one, and the strict reader is its inverse for
+/// every status, with and without the optional `replayed`.
+#[test]
+fn the_strict_reader_accepts_exactly_what_the_writer_emits() {
+    let signer = Keys::generate();
+    let mut results: Vec<BrokerResult> = outcome_fixtures(&signer)
+        .into_iter()
+        .map(BrokerResult::succeeded)
+        .collect();
+    results.push(BrokerResult::failed(BrokerError::new(
+        BrokerErrorCode::ActionFailed,
+        "runtime not installed",
+    )));
+    results.push(BrokerResult::indeterminate(BrokerError::new(
+        BrokerErrorCode::OutcomeUnknown,
+        "host restarted mid-execution",
+    )));
+
+    for result in results {
+        for replayed in [false, true] {
+            let response = if replayed {
+                BrokerResponse::new("req-1", result.clone()).replayed()
+            } else {
+                BrokerResponse::new("req-1", result.clone())
+            };
+            let json = serde_json::to_value(&response).expect("response serializes");
+            let parsed: BrokerResponse = serde_json::from_value(json.clone())
+                .unwrap_or_else(|e| panic!("strict reader rejected our own bytes {json}: {e}"));
+            assert_eq!(parsed, response);
+            assert_eq!(parsed.replayed, replayed);
+        }
+    }
+}
+
+/// The request envelope flattens too, so it was checked for the same hole. It
+/// does not have one — `ActionArgs` is adjacently tagged and contributes exactly
+/// `action` and `args`, leaving `deny_unknown_fields` in force — and this pins
+/// that, so the request side cannot regress into the response side's bug.
+#[test]
+fn a_request_envelope_rejects_anything_outside_its_exact_key_set() {
+    let valid = || {
+        serde_json::json!({
+            "type": BROKER_REQUEST_TYPE,
+            "protocolVersion": 1,
+            "requestId": "req-1",
+            "actionVersion": 1,
+            "action": "channel.read",
+            "args": { "channelId": CHANNEL },
+        })
+    };
+    assert!(serde_json::from_value::<BrokerRequest>(valid()).is_ok());
+
+    // Unknown top-level key, beside the flattened discriminator, and inside the
+    // args — all four positions a smuggled field could take.
+    for extra in ["hostNote", "secretKey", "onBehalfOf", "envVars"] {
+        let mut json = valid();
+        json[extra] = serde_json::json!("nsec1deadbeef");
+        assert!(
+            serde_json::from_value::<BrokerRequest>(json.clone()).is_err(),
+            "a request carrying top-level \"{extra}\" must not deserialize: {json}"
+        );
+
+        let mut json = valid();
+        json["args"][extra] = serde_json::json!("nsec1deadbeef");
+        assert!(
+            serde_json::from_value::<BrokerRequest>(json.clone()).is_err(),
+            "a request carrying \"{extra}\" inside args must not deserialize: {json}"
+        );
+    }
+
+    // A second discriminator-shaped key is not a place to hide one either.
+    let mut extra_tag = valid();
+    extra_tag["outcome"] = serde_json::json!({});
+    assert!(serde_json::from_value::<BrokerRequest>(extra_tag).is_err());
+
+    // Missing required members, so the pin cannot pass by accepting anything.
+    for missing in [
+        "type",
+        "protocolVersion",
+        "requestId",
+        "actionVersion",
+        "args",
+    ] {
+        let mut json = valid();
+        json.as_object_mut().unwrap().remove(missing);
+        assert!(
+            serde_json::from_value::<BrokerRequest>(json).is_err(),
+            "a request missing \"{missing}\" must not deserialize"
+        );
+    }
+}
+
 // ── Envelope rejection ──────────────────────────────────────────────────────
 
 /// Unknown names must not resolve, and neither must the *mechanism* names this
@@ -351,17 +566,70 @@ fn request_id_must_be_present_bounded_and_printable() {
 // ── Wire schemas: the enforceable no-secret invariant ───────────────────────
 
 /// The exact wire key set of every args and outcome type, with every optional
-/// field populated so nothing escapes the pin by being absent.
+/// field populated so nothing escapes the pin by being absent — plus the two
+/// envelopes, whose own key sets are now equally enforceable.
 ///
 /// This table *is* the no-secret invariant. Combined with
 /// `deny_unknown_fields`, it means no field — secret-bearing or otherwise — can
 /// be added to this contract without a reviewer changing a line here. The
 /// `agents.create` outcome is the case that matters: public identity only, never
 /// the key the host just minted.
+///
+/// The envelopes are here because a key set nobody pins is a key set a field can
+/// be added to. The response envelope in particular admits a *different* exact
+/// set per status, which is what its strict deserializer enforces.
 #[test]
 fn every_payload_has_an_exact_and_secret_free_wire_schema() {
     let signer = Keys::generate();
     let expected: Vec<(&str, Vec<&str>)> = vec![
+        // Envelopes. Every optional member present, so the pin covers the
+        // widest shape each may take.
+        (
+            "request/envelope",
+            vec![
+                "action",
+                "actionVersion",
+                "args",
+                "protocolVersion",
+                "requestId",
+                "type",
+            ],
+        ),
+        (
+            "response/envelope/succeeded",
+            vec![
+                "action",
+                "outcome",
+                "protocolVersion",
+                "replayed",
+                "requestId",
+                "status",
+                "type",
+            ],
+        ),
+        (
+            "response/envelope/failed",
+            vec![
+                "error",
+                "protocolVersion",
+                "replayed",
+                "requestId",
+                "status",
+                "type",
+            ],
+        ),
+        (
+            "response/envelope/indeterminate",
+            vec![
+                "error",
+                "protocolVersion",
+                "replayed",
+                "requestId",
+                "status",
+                "type",
+            ],
+        ),
+        ("error", vec!["code", "message"]),
         // Args, fully populated (optional fields present).
         (
             "channel.read/args",
@@ -437,6 +705,47 @@ fn every_payload_has_an_exact_and_secret_free_wire_schema() {
     ];
 
     let mut actual: Vec<(String, Vec<String>)> = Vec::new();
+    // Envelopes first, in the same order as the table above. `replayed` is set
+    // so the widest shape is what gets pinned.
+    let request = BrokerRequest::new(
+        "req-1",
+        ActionArgs::ChannelRead(ChannelReadArgs::channel(CHANNEL)),
+    )
+    .expect("envelope fixture builds");
+    actual.push((
+        "request/envelope".to_string(),
+        keys_of(&serde_json::to_value(&request).expect("request serializes")),
+    ));
+    for (name, result) in [
+        (
+            "succeeded",
+            BrokerResult::succeeded(ActionOutcome::AgentsDelete(AgentsDeleteOutcome {
+                agent_pubkey: pubkey(),
+                display_name: "Gone".into(),
+            })),
+        ),
+        (
+            "failed",
+            BrokerResult::failed(BrokerError::new(BrokerErrorCode::ActionFailed, "no")),
+        ),
+        (
+            "indeterminate",
+            BrokerResult::indeterminate(BrokerError::new(BrokerErrorCode::OutcomeUnknown, "?")),
+        ),
+    ] {
+        let response = BrokerResponse::new("req-1", result).replayed();
+        actual.push((
+            format!("response/envelope/{name}"),
+            keys_of(&serde_json::to_value(&response).expect("response serializes")),
+        ));
+    }
+    actual.push((
+        "error".to_string(),
+        keys_of(
+            &serde_json::to_value(BrokerError::new(BrokerErrorCode::Internal, "?"))
+                .expect("error serializes"),
+        ),
+    ));
     for args in action_fixtures() {
         let json = serde_json::to_value(&args).expect("args serialize");
         actual.push((
@@ -720,6 +1029,74 @@ fn read_results_are_signed_events_a_keyless_caller_can_verify() {
     );
 }
 
+/// The one type here the contract does not own. `nostr`'s `Event` deserializer
+/// accepts and discards unknown members, so a genuinely signed event could carry
+/// an extra `secretKey` and parse clean — the no-secret rule stopping at the
+/// envelope boundary instead of reaching inside it. Deserializing through a
+/// `deny_unknown_fields` intermediary closes that, and this drives the injection
+/// on a real signed event so nothing is rejected for a bad signature instead.
+#[test]
+fn an_event_object_cannot_smuggle_a_member_past_the_seven_canonical_ones() {
+    let signer = Keys::generate();
+    let message = signed_message(&signer);
+    let wire = serde_json::to_value(&message).expect("event serializes");
+
+    // The baseline: untouched, this same JSON parses and verifies.
+    let parsed: BrokerMessage =
+        serde_json::from_value(wire.clone()).expect("a signed event round-trips");
+    parsed.verify().expect("and still verifies");
+
+    for extra in ["secretKey", "nsec", "seckey", "credential", "hostNote"] {
+        let mut smuggled = wire.clone();
+        smuggled[extra] = serde_json::json!("nsec1deadbeef");
+        assert!(
+            serde_json::from_value::<BrokerMessage>(smuggled.clone()).is_err(),
+            "an event carrying \"{extra}\" must not deserialize: {smuggled}"
+        );
+
+        // And not through the outcome or the envelope either — the rejection has
+        // to hold at every depth a read result travels.
+        let outcome = serde_json::json!({
+            "action": "channel.read",
+            "outcome": { "messages": [smuggled.clone()] },
+        });
+        assert!(
+            serde_json::from_value::<ActionOutcome>(outcome).is_err(),
+            "an outcome holding an event with \"{extra}\" must not deserialize"
+        );
+        let envelope = serde_json::json!({
+            "type": BROKER_RESULT_TYPE,
+            "protocolVersion": 1,
+            "requestId": "req-1",
+            "status": "succeeded",
+            "action": "channel.read",
+            "outcome": { "messages": [smuggled] },
+        });
+        assert!(
+            serde_json::from_value::<BrokerResponse>(envelope).is_err(),
+            "a response holding an event with \"{extra}\" must not deserialize"
+        );
+    }
+
+    // Dropping a canonical member is a parse failure too, not a default.
+    for missing in [
+        "id",
+        "pubkey",
+        "created_at",
+        "kind",
+        "tags",
+        "content",
+        "sig",
+    ] {
+        let mut json = wire.clone();
+        json.as_object_mut().unwrap().remove(missing);
+        assert!(
+            serde_json::from_value::<BrokerMessage>(json).is_err(),
+            "an event missing \"{missing}\" must not deserialize"
+        );
+    }
+}
+
 #[test]
 fn a_page_is_bounded_and_its_cursor_opaque() {
     let signer = Keys::generate();
@@ -738,6 +1115,75 @@ fn a_page_is_bounded_and_its_cursor_opaque() {
         vec![signed_message(&signer); actions::MAX_PAGE_LIMIT as usize + 1],
         None
     )
+    .is_err());
+}
+
+/// The protocol cap is not the caller's limit. `ActionOutcome::validate` never
+/// sees the request, so on its own it would let a host answer a one-message read
+/// with five hundred — within the cap, and still an overrun of what was asked.
+/// The request's own number is therefore enforced where both halves are in
+/// scope, and an absent `limit` is held to [`actions::DEFAULT_PAGE_LIMIT`]
+/// rather than treated as consent to an unbounded page.
+#[test]
+fn a_read_page_is_bounded_by_the_limit_its_own_request_asked_for() {
+    let signer = Keys::generate();
+    let page = |count: usize| {
+        BrokerResult::succeeded(ActionOutcome::ChannelRead(MessagePage {
+            messages: vec![signed_message(&signer); count],
+            next_cursor: None,
+        }))
+    };
+
+    // Explicit limits, and the absent case — which is the one a host could
+    // otherwise read as "as many as you like".
+    for limit in [Some(1_u32), Some(2), Some(actions::MAX_PAGE_LIMIT), None] {
+        let args = ChannelReadArgs {
+            channel_id: CHANNEL.into(),
+            limit,
+            ..ChannelReadArgs::default()
+        };
+        let allowed = limit.unwrap_or(actions::DEFAULT_PAGE_LIMIT) as usize;
+        assert_eq!(
+            args.effective_limit() as usize,
+            allowed,
+            "effective_limit must not diverge from the documented default"
+        );
+        let request = prepared(ActionArgs::ChannelRead(args));
+
+        BrokerResponse::new(request.request_id(), page(allowed))
+            .validate_for(&request)
+            .unwrap_or_else(|e| panic!("a page exactly at a limit of {allowed} is allowed: {e}"));
+        BrokerResponse::new(request.request_id(), page(allowed - 1))
+            .validate_for(&request)
+            .unwrap_or_else(|e| panic!("a short page is allowed: {e}"));
+
+        // One over is rejected — including one over the default, which is the
+        // case an unlimited request would have smuggled through. At the
+        // protocol cap the outcome's own bound fires first, which is a rejection
+        // for a different (and also correct) reason, so only the message below
+        // the cap is pinned to the request's number.
+        let over =
+            BrokerResponse::new(request.request_id(), page(allowed + 1)).validate_for(&request);
+        let error = over.unwrap_err().to_string();
+        if allowed < actions::MAX_PAGE_LIMIT as usize {
+            assert!(
+                error.contains(&format!("limit of {allowed}")),
+                "unexpected error for a limit of {allowed}: {error}"
+            );
+        }
+    }
+
+    // The default is a real bound, not the cap under another name: a host that
+    // answers an unlimited read with a cap-sized page is still overrunning it.
+    const {
+        assert!(actions::DEFAULT_PAGE_LIMIT < actions::MAX_PAGE_LIMIT);
+    }
+    let unlimited = prepared(ActionArgs::ChannelRead(ChannelReadArgs::channel(CHANNEL)));
+    assert!(BrokerResponse::new(
+        unlimited.request_id(),
+        page(actions::MAX_PAGE_LIMIT as usize)
+    )
+    .validate_for(&unlimited)
     .is_err());
 }
 
@@ -768,37 +1214,76 @@ fn failed_and_indeterminate_are_distinct_and_carry_no_outcome() {
     assert!(indeterminate.outcome().is_none());
 }
 
-/// A rejected credential is a host verdict with a known fate — the action did
-/// not run — so it belongs in a `Failed` envelope, not in the transport error
-/// type where it would tell the caller to reconcile something that never
-/// happened. `OutcomeUnknown` is the mirror image: it may only ever be
-/// `Indeterminate`.
+/// A code and a status are two statements about the same fact — whether side
+/// effects landed — so the contract fixes which pairings are meaningful and
+/// rejects the rest. Driven across every code × both statuses, so adding a code
+/// forces a decision here.
 #[test]
 fn status_and_error_code_must_agree_about_side_effects() {
-    let auth_failure = BrokerResponse::new(
-        "req-1",
-        BrokerResult::failed(BrokerError::new(
-            BrokerErrorCode::Unauthenticated,
-            "credential rejected",
-        )),
-    );
-    auth_failure
-        .validate()
-        .expect("a rejected credential is a valid Failed verdict");
+    use BrokerErrorCode as E;
+    for code in all_error_codes() {
+        let failed =
+            BrokerResponse::new("req-1", BrokerResult::failed(BrokerError::new(code, "?")))
+                .validate();
+        let indeterminate = BrokerResponse::new(
+            "req-1",
+            BrokerResult::indeterminate(BrokerError::new(code, "?")),
+        )
+        .validate();
 
-    let contradiction = BrokerResponse::new(
-        "req-1",
-        BrokerResult::failed(BrokerError::new(BrokerErrorCode::OutcomeUnknown, "?")),
-    );
-    let error = contradiction.validate().unwrap_err().to_string();
-    assert!(error.contains("outcome_unknown"), "unexpected: {error}");
+        // The table, spelled out independently of the predicates it checks: a
+        // second copy is the point, since a test that asked `may_be_failed()`
+        // would pass for any implementation of it. Exhaustive with no wildcard,
+        // so a new code cannot inherit an answer — it must be decided here too.
+        let (failed_ok, indeterminate_ok) = match code {
+            E::InvalidRequest
+            | E::UnsupportedProtocolVersion
+            | E::UnknownAction
+            | E::UnsupportedActionVersion
+            | E::Unsupported
+            | E::Unauthenticated
+            | E::Unauthorized
+            | E::RequestIdConflict
+            | E::ActionFailed => (true, false),
+            E::OutcomeUnknown => (false, true),
+            E::Internal => (true, true),
+        };
 
-    BrokerResponse::new(
+        assert_eq!(
+            failed.is_ok(),
+            failed_ok,
+            "{} with a failed status: {failed:?}",
+            code.as_str()
+        );
+        assert_eq!(
+            indeterminate.is_ok(),
+            indeterminate_ok,
+            "{} with an indeterminate status: {indeterminate:?}",
+            code.as_str()
+        );
+        assert_eq!(code.may_be_failed(), failed_ok);
+        assert_eq!(code.may_be_indeterminate(), indeterminate_ok);
+    }
+
+    // The two directions review found, named: a rejected credential is a
+    // known-fate refusal and cannot claim not to know, and `outcome_unknown`
+    // cannot claim a clean failure.
+    let error = BrokerResponse::new(
         "req-1",
-        BrokerResult::indeterminate(BrokerError::new(BrokerErrorCode::OutcomeUnknown, "?")),
+        BrokerResult::indeterminate(BrokerError::new(E::Unauthenticated, "credential rejected")),
     )
     .validate()
-    .expect("outcome_unknown is valid with indeterminate");
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("unauthenticated"), "unexpected: {error}");
+    let error = BrokerResponse::new(
+        "req-1",
+        BrokerResult::failed(BrokerError::new(E::OutcomeUnknown, "?")),
+    )
+    .validate()
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("outcome_unknown"), "unexpected: {error}");
 }
 
 #[test]
@@ -948,22 +1433,11 @@ fn preparing_a_request_freezes_the_bytes_every_attempt_sends() {
 /// The hand-written [`BrokerErrorCode::as_str`] and serde's derived name are two
 /// encodings of one wire string, so each is pinned against the other and the
 /// whole set is pinned against this literal — a rename in either fails here.
+/// This is also what pins [`all_error_codes`] against the enum: a new variant
+/// missing from that fixture changes the joined string and fails here.
 #[test]
 fn error_codes_have_stable_wire_strings() {
-    use BrokerErrorCode as E;
-    let codes = [
-        E::InvalidRequest,
-        E::UnsupportedProtocolVersion,
-        E::UnknownAction,
-        E::UnsupportedActionVersion,
-        E::Unsupported,
-        E::Unauthenticated,
-        E::Unauthorized,
-        E::RequestIdConflict,
-        E::ActionFailed,
-        E::OutcomeUnknown,
-        E::Internal,
-    ];
+    let codes = all_error_codes();
     for code in codes {
         assert_eq!(
             serde_json::to_value(code).unwrap(),
@@ -972,7 +1446,7 @@ fn error_codes_have_stable_wire_strings() {
         );
     }
     assert_eq!(
-        codes.map(E::as_str).join(","),
+        codes.map(BrokerErrorCode::as_str).join(","),
         "invalid_request,unsupported_protocol_version,unknown_action,\
 unsupported_action_version,unsupported,unauthenticated,unauthorized,\
 request_id_conflict,action_failed,outcome_unknown,internal"
@@ -1122,4 +1596,98 @@ fn a_client_cannot_hand_back_a_response_that_answers_a_different_request() {
         block_on(bad_cursor.execute(&request)).unwrap_err(),
         BrokerTransportError::MalformedResponse(_)
     ));
+
+    // A status contradicting its own code, which is how the review reached this:
+    // `unauthenticated` is a known pre-dispatch refusal, so claiming not to know
+    // the fate is not a verdict `execute` may pass on as `Ok`.
+    let contradictory: Box<dyn BrokerClient> = Box::new(DoubleBroker {
+        response: Ok(BrokerResponse::new(
+            "placeholder",
+            BrokerResult::indeterminate(BrokerError::new(
+                BrokerErrorCode::Unauthenticated,
+                "credential rejected",
+            )),
+        )),
+    });
+    assert!(matches!(
+        block_on(contradictory.execute(&request)).unwrap_err(),
+        BrokerTransportError::MalformedResponse(_)
+    ));
+}
+
+/// A second double, parsing bytes the way a real HTTP client does, because the
+/// strict-envelope and strict-event guards live in `Deserialize` and the typed
+/// double above can never exercise them: it hands back a value that was never on
+/// a wire.
+///
+/// This is the shape the bug actually had — bytes arriving from a host — and what
+/// the caller sees now is [`BrokerTransportError::MalformedResponse`], not an
+/// `Ok` whose extra members were quietly dropped.
+struct WireBroker {
+    body: Vec<u8>,
+}
+
+impl BrokerClient for WireBroker {
+    fn send<'a>(&'a self, _: &'a PreparedRequest, _: Dispatch) -> BrokerFuture<'a> {
+        // Exactly a transport's job: parse an envelope, and report the absence
+        // of one as a transport failure.
+        let parsed = serde_json::from_slice::<BrokerResponse>(&self.body)
+            .map_err(|e| BrokerTransportError::MalformedResponse(e.to_string()));
+        Box::pin(async move { parsed })
+    }
+}
+
+#[test]
+fn bytes_carrying_more_than_the_contract_declares_never_reach_a_caller_as_ok() {
+    let signer = Keys::generate();
+    let request = prepared(ActionArgs::ChannelRead(ChannelReadArgs::channel(CHANNEL)));
+    let event = serde_json::to_value(signed_message(&signer)).expect("event serializes");
+    let envelope = || {
+        serde_json::json!({
+            "type": BROKER_RESULT_TYPE,
+            "protocolVersion": 1,
+            "requestId": request.request_id(),
+            "status": "succeeded",
+            "action": "channel.read",
+            "outcome": { "messages": [event.clone()] },
+        })
+    };
+
+    // The honest bytes are accepted, so the rejections below are about the
+    // smuggled members and not about this fixture being unparseable.
+    let client = WireBroker {
+        body: serde_json::to_vec(&envelope()).unwrap(),
+    };
+    let response = block_on(client.execute(&request)).expect("honest bytes are an answer");
+    assert!(response.result().outcome().is_some());
+
+    // A key at each depth: on the envelope, inside the outcome, and inside the
+    // signed event — the last being the one `nostr` would have discarded.
+    let mut on_envelope = envelope();
+    on_envelope["secretKey"] = serde_json::json!("nsec1deadbeef");
+    let mut in_outcome = envelope();
+    in_outcome["outcome"]["secretKey"] = serde_json::json!("nsec1deadbeef");
+    let mut in_event = envelope();
+    in_event["outcome"]["messages"][0]["secretKey"] = serde_json::json!("nsec1deadbeef");
+    // And the contradiction the envelope could previously hold on the wire.
+    let mut error_beside_success = envelope();
+    error_beside_success["error"] = serde_json::json!({ "code": "internal", "message": "?" });
+
+    for (what, json) in [
+        ("on the envelope", on_envelope),
+        ("inside the outcome", in_outcome),
+        ("inside the event", in_event),
+        ("an error beside a success", error_beside_success),
+    ] {
+        let client = WireBroker {
+            body: serde_json::to_vec(&json).unwrap(),
+        };
+        assert!(
+            matches!(
+                block_on(client.execute(&request)),
+                Err(BrokerTransportError::MalformedResponse(_))
+            ),
+            "{what}: must not reach the caller as Ok"
+        );
+    }
 }
