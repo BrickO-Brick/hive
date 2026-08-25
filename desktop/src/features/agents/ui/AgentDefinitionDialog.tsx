@@ -16,6 +16,7 @@ import type { EnvVarsValue } from "./EnvVarsEditor";
 import { PersonaAdvancedFields } from "./PersonaAdvancedFields";
 import { PersonaModelField } from "./PersonaModelField";
 import { runtimeAvailabilityWarning } from "./runtimeAvailabilityWarning";
+import { useRelaySkillEditor } from "./useRelaySkillEditor";
 import { PersonaProviderApiKeyField } from "./PersonaProviderApiKeyField";
 import {
   canSubmitPersonaDialog,
@@ -159,15 +160,12 @@ export function AgentDefinitionDialog({
   const [behaviorDraft, setBehaviorDraft] = React.useState(
     emptyPersonaBehaviorDraft,
   );
-  // The seed the draft is diffed against at submit: an untouched quad
   // submits no behavior group, keeping unrelated edits hash-quiet.
   const behaviorSeedRef = React.useRef(emptyPersonaBehaviorDraft);
-  // Tracks when the runtime was auto-seeded by the default-runtime effect in
   // edit mode (i.e. the user never explicitly chose a runtime). Used to omit
   // the seeded runtime from the submit payload for builtin definitions whose
   // canonical runtime is null — the sync would revert it anyway.
   const isRuntimeAutoSeededRef = React.useRef(false);
-  // Guards the seeding effect so it fires at most once per dialog-open.
   // Without this, clearing runtime back to "" via "No preference" would re-
   // trigger the effect (the `runtime` dep would pass the length guard) and
   // snap the dropdown back to the default — an edit-mode regression.
@@ -176,6 +174,14 @@ export function AgentDefinitionDialog({
   const [isAvatarUploadPending, setIsAvatarUploadPending] =
     React.useState(false);
   const [hasUserChanges, setHasUserChanges] = React.useState(false);
+  const relaySkillEditor = useRelaySkillEditor({
+    assignedRelaySkills,
+    embedded,
+    open,
+    onDirtyChange,
+    setAssignedRelaySkills,
+    setHasUserChanges,
+  });
   const [isAddHarnessOpen, setIsAddHarnessOpen] = React.useState(false);
   const {
     globalConfig,
@@ -211,6 +217,7 @@ export function AgentDefinitionDialog({
     setAvatarUrl(initialValues.avatarUrl ?? "");
     setSystemPrompt(initialValues.systemPrompt);
     setAssignedRelaySkills(initialValues.assignedRelaySkills ?? []);
+    relaySkillEditor.resetRelaySkillEditor();
     setRuntime(initialValues.runtime ?? "");
     setModel(initialValues.model ?? "");
     setIsCustomModelEditing(false);
@@ -239,7 +246,7 @@ export function AgentDefinitionDialog({
     setHasUserChanges(false);
     isRuntimeAutoSeededRef.current = false;
     hasSeededForOpenRef.current = false;
-  }, [initialValues, open]);
+  }, [initialValues, open, relaySkillEditor.resetRelaySkillEditor]);
 
   React.useEffect(() => {
     if (
@@ -794,12 +801,8 @@ export function AgentDefinitionDialog({
         </div>
 
         <AgentInstructionsField
-          assignedRelaySkills={assignedRelaySkills}
+          {...relaySkillEditor.fieldProps}
           disabled={isPending}
-          onAssignedRelaySkillsChange={(coordinates) => {
-            setAssignedRelaySkills(coordinates);
-            setHasUserChanges(true);
-          }}
           onSystemPromptChange={setSystemPrompt}
           systemPrompt={systemPrompt}
         />
@@ -1009,6 +1012,8 @@ export function AgentDefinitionDialog({
       </div>
     </form>
   );
+
+  if (relaySkillEditor.editor) return relaySkillEditor.editor;
 
   return (
     <AgentDefinitionDialogShell

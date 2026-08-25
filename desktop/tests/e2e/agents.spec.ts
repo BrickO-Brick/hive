@@ -554,10 +554,11 @@ test("shared instruction creation stays compact and derives safe names", async (
     .getByRole("button", { name: "Create shared instruction" })
     .click();
 
-  const createDialog = page.getByRole("dialog", {
-    name: "Create shared instruction",
-  });
+  const createDialog = page.getByTestId("relay-skill-editor");
   await expect(createDialog).toBeVisible();
+  await expect(createDialog).toContainText(
+    "Anyone in your community can read this.",
+  );
   await expect(createDialog.locator("#relay-skill-name")).toHaveCount(0);
   await expect(createDialog.locator("#relay-skill-title")).toHaveAttribute(
     "placeholder",
@@ -572,7 +573,9 @@ test("shared instruction creation stays compact and derives safe names", async (
   ).toHaveAttribute("placeholder", /Target a 9\/10 or better standard/);
   await expect
     .poll(() =>
-      createDialog.evaluate((element) => getComputedStyle(element).overflowY),
+      createDialog
+        .getByTestId("relay-skill-editor-scroll-area")
+        .evaluate((element) => getComputedStyle(element).overflowY),
     )
     .toBe("auto");
   await expect
@@ -593,7 +596,7 @@ test("shared instruction creation stays compact and derives safe names", async (
     .locator("#relay-skill-instructions")
     .fill("Validate work in the shape the task demands.");
 
-  await createDialog.getByRole("button", { name: "Create and add" }).click();
+  await createDialog.getByRole("button", { name: "Publish" }).click();
   await expect(createDialog).toBeHidden();
   await expect(
     personaDialog.getByRole("button", {
@@ -620,7 +623,7 @@ test("shared instruction creation stays compact and derives safe names", async (
   await createDialog
     .locator("#relay-skill-instructions")
     .fill("Review the implementation carefully before completion.");
-  await createDialog.getByRole("button", { name: "Create and add" }).click();
+  await createDialog.getByRole("button", { name: "Publish" }).click();
   await expect(
     personaDialog.getByRole("button", {
       name: "設計レビュー",
@@ -994,7 +997,7 @@ test("shared instruction editing is author-only and does not leak into creation"
   await page.getByTestId("open-agents-view").click();
   await page.getByTestId("new-agent-card").click();
 
-  const personaDialog = page.getByTestId("persona-dialog");
+  let personaDialog = page.getByTestId("persona-dialog");
   await personaDialog
     .getByRole("button", { name: "Add shared instructions" })
     .click();
@@ -1008,9 +1011,7 @@ test("shared instruction editing is author-only and does not leak into creation"
   await expect(editButton).toBeVisible();
   await editButton.click();
 
-  const editDialog = page.getByRole("dialog", {
-    name: "Edit shared instruction",
-  });
+  const editDialog = page.getByTestId("relay-skill-editor");
   await expect(editDialog.locator("#relay-skill-title")).toHaveValue(
     "Design engineering",
   );
@@ -1021,14 +1022,25 @@ test("shared instruction editing is author-only and does not leak into creation"
     "Review interface decisions against the product intent.",
   );
 
+  await editDialog.locator("#relay-skill-title").fill("Design review draft");
   await editDialog.getByRole("button", { name: "Cancel" }).click();
+  const discardDialog = page.getByRole("alertdialog", {
+    name: "Discard changes?",
+  });
+  await expect(discardDialog).toBeVisible();
+  await discardDialog.getByRole("button", { name: "Keep editing" }).click();
+  await expect(editDialog).toBeVisible();
+  await editDialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(discardDialog).toBeVisible();
+  await discardDialog.getByRole("button", { name: "Discard changes" }).click();
+  await expect(editDialog).toBeHidden();
+  personaDialog = page.getByTestId("persona-dialog");
+  await expect(personaDialog).toBeVisible();
   await personaDialog
     .getByRole("button", { name: "Add shared instructions" })
     .click();
   await page.getByRole("menuitem", { name: "Create new" }).click();
-  const createDialog = page.getByRole("dialog", {
-    name: "Create shared instruction",
-  });
+  const createDialog = page.getByTestId("relay-skill-editor");
   await expect(createDialog.locator("#relay-skill-title")).toHaveValue("");
   await expect(createDialog.locator("#relay-skill-summary")).toHaveValue("");
   await expect(createDialog.locator("#relay-skill-instructions")).toHaveValue(

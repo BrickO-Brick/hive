@@ -1,3 +1,7 @@
+import type {
+  RelaySkillCover,
+  ResolvedRelaySkill,
+} from "@/shared/api/tauriPersonas";
 import { useFeatureEnabled } from "@/shared/features/useFeatureEnabled";
 import { cn } from "@/shared/lib/cn";
 import { Textarea } from "@/shared/ui/textarea";
@@ -11,6 +15,8 @@ type AgentInstructionsFieldProps = {
   assignedRelaySkills: string[];
   disabled: boolean;
   onAssignedRelaySkillsChange: (coordinates: string[]) => void;
+  onEditRelaySkill: (detail: ResolvedRelaySkill | null) => void;
+  publishedRelaySkills: readonly RelaySkillCover[];
   onSystemPromptChange: (value: string) => void;
   systemPrompt: string;
 };
@@ -35,6 +41,8 @@ export function AgentInstructionsField({
   assignedRelaySkills,
   disabled,
   onAssignedRelaySkillsChange,
+  onEditRelaySkill,
+  publishedRelaySkills,
   onSystemPromptChange,
   systemPrompt,
 }: AgentInstructionsFieldProps) {
@@ -47,6 +55,8 @@ export function AgentInstructionsField({
           label="Agent instructions"
           labelFor="persona-system-prompt"
           onChange={onAssignedRelaySkillsChange}
+          onEdit={onEditRelaySkill}
+          publishedSkills={publishedRelaySkills}
           selected={assignedRelaySkills}
         >
           {textarea(

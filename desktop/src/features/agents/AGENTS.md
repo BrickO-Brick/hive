@@ -184,7 +184,16 @@ with a TypeScript lookup table or an id comparison in a component.
    import boundary. Do not silently strip them: rejection keeps the reviewed
    string identical to the executed string. New sharing paths must reuse the
    same validation before they persist or activate a definition.
-13. **Profile runtime sections render only reported agent data.** Missing
+13. **Shared-instruction editing replaces the agent form; it never nests a
+    dialog.** Create and author-owned Edit open `RelaySkillEditor` in the
+    existing agent-dialog surface while preserving the parent agent draft.
+    Publishing a new instruction returns to that draft and assigns the accepted
+    relay coordinate immediately; updating an existing instruction preserves
+    its assignment. Dirty Title, When to use it, or Instructions fields must
+    confirm before Cancel or the enclosing dialog close discards them. The
+    primary create action is **Publish**, and the footer discloses that anyone
+    in the community can read the instruction.
+14. **Profile runtime sections render only reported agent data.** Missing
    runtime, model, status, command, MCP, advanced, or diagnostics values stay
    absent in every build mode. Do not fill profile or agent-panel gaps with
    development/staging examples, preview controls, or synthetic configuration;
