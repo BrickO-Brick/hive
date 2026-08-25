@@ -48,12 +48,16 @@ pub(super) fn build_launch_block(
     personas: &[AgentDefinition],
     effective_prompt: Option<&str>,
     effective_model: Option<&str>,
+    shared_instructions_enabled: bool,
     owner_pubkey: &str,
 ) -> Result<serde_json::Value, String> {
-    let assigned_shared_instructions =
+    let assigned_shared_instructions: &[String] = if shared_instructions_enabled {
         crate::managed_agents::effective_config::resolve_effective_assigned_shared_instructions(
             record, personas,
-        )?;
+        )?
+    } else {
+        &[]
+    };
     Ok(serialize_launch_block(
         record,
         descriptor,
@@ -232,6 +236,9 @@ pub(crate) fn build_deploy_payload(
         &personas,
         effective.system_prompt.value.as_deref(),
         effective.model.value.as_deref(),
+        state
+            .shared_instructions_enabled
+            .load(std::sync::atomic::Ordering::Relaxed),
         &owner_pubkey,
     )?;
 
@@ -352,6 +359,7 @@ mod tests {
             &personas,
             None,
             None,
+            true,
             "owner-hex",
         )
         .unwrap();
@@ -366,6 +374,35 @@ mod tests {
                 .unwrap()
                 .contains("revoked-b")
         );
+    }
+
+    #[test]
+    fn launch_block_omits_shared_instructions_when_experiment_is_disabled() {
+        let mut record = record();
+        record.assigned_shared_instructions = vec![format!("30023:{}:review", "a".repeat(64))];
+        let descriptor = EffectiveHarnessDescriptor {
+            command: "goose".into(),
+            args: vec![],
+            env: BTreeMap::from([(
+                "BUZZ_ACP_ASSIGNED_SHARED_INSTRUCTIONS".into(),
+                "user-supplied".into(),
+            )]),
+        };
+
+        let launch = build_launch_block(
+            &record,
+            &descriptor,
+            &[],
+            &[],
+            None,
+            None,
+            false,
+            "owner-hex",
+        )
+        .unwrap();
+
+        assert!(launch["policy_env"]["BUZZ_ACP_ASSIGNED_SHARED_INSTRUCTIONS"].is_null());
+        assert!(launch["env"]["BUZZ_ACP_ASSIGNED_SHARED_INSTRUCTIONS"].is_null());
     }
 
     #[test]
@@ -396,6 +433,7 @@ mod tests {
             &[],
             Some("prompt"),
             Some("model"),
+            true,
             "owner-hex",
         )
         .unwrap();
@@ -450,6 +488,7 @@ mod tests {
             &[],
             None,
             Some("claude-opus-4"),
+            true,
             "owner-hex",
         )
         .unwrap();
@@ -488,6 +527,7 @@ mod tests {
             &[],
             None,
             Some("claude-opus-4"),
+            true,
             "owner-hex",
         )
         .unwrap();
@@ -523,8 +563,17 @@ mod tests {
                 ("ANTHROPIC_MODEL".to_string(), "user-opus".to_string()),
             ]),
         };
-        let launch =
-            build_launch_block(&record, &descriptor, &[], &[], None, None, "owner-hex").unwrap();
+        let launch = build_launch_block(
+            &record,
+            &descriptor,
+            &[],
+            &[],
+            None,
+            None,
+            true,
+            "owner-hex",
+        )
+        .unwrap();
 
         assert!(launch["policy_env"]["ANTHROPIC_MODEL"].is_null());
         assert!(launch["policy_env"]["BUZZ_ACP_MODEL"].is_null());
@@ -556,6 +605,7 @@ mod tests {
             &[],
             None,
             Some("model"),
+            true,
             "owner-hex",
         )
         .unwrap();
@@ -576,8 +626,17 @@ mod tests {
             args: vec![],
             env: BTreeMap::new(),
         };
-        let launch =
-            build_launch_block(&record, &descriptor, &[], &[], None, None, "owner-hex").unwrap();
+        let launch = build_launch_block(
+            &record,
+            &descriptor,
+            &[],
+            &[],
+            None,
+            None,
+            true,
+            "owner-hex",
+        )
+        .unwrap();
         assert_eq!(
             launch["policy_env"]["BUZZ_ACP_EFFORT_LEVEL"], "high",
             "claude remote must receive BUZZ_ACP_EFFORT_LEVEL when effort_level is set"
@@ -593,8 +652,17 @@ mod tests {
             args: vec![],
             env: BTreeMap::new(),
         };
-        let launch =
-            build_launch_block(&record, &descriptor, &[], &[], None, None, "owner-hex").unwrap();
+        let launch = build_launch_block(
+            &record,
+            &descriptor,
+            &[],
+            &[],
+            None,
+            None,
+            true,
+            "owner-hex",
+        )
+        .unwrap();
         assert!(
             launch["policy_env"]["BUZZ_ACP_EFFORT_LEVEL"].is_null(),
             "policy_env must NOT contain BUZZ_ACP_EFFORT_LEVEL when effort_level is None"
@@ -616,8 +684,17 @@ mod tests {
             // User-supplied conflicting value in descriptor.env.
             env: BTreeMap::from([("BUZZ_ACP_EFFORT_LEVEL".to_string(), "low".to_string())]),
         };
-        let launch =
-            build_launch_block(&record, &descriptor, &[], &[], None, None, "owner-hex").unwrap();
+        let launch = build_launch_block(
+            &record,
+            &descriptor,
+            &[],
+            &[],
+            None,
+            None,
+            true,
+            "owner-hex",
+        )
+        .unwrap();
 
         // Canonical must be in policy_env (tier 1).
         assert_eq!(
@@ -643,8 +720,17 @@ mod tests {
             args: vec![],
             env: BTreeMap::from([("BUZZ_ACP_EFFORT_LEVEL".to_string(), "low".to_string())]),
         };
-        let launch =
-            build_launch_block(&record, &descriptor, &[], &[], None, None, "owner-hex").unwrap();
+        let launch = build_launch_block(
+            &record,
+            &descriptor,
+            &[],
+            &[],
+            None,
+            None,
+            true,
+            "owner-hex",
+        )
+        .unwrap();
 
         // No canonical — key must NOT appear in policy_env.
         assert!(
@@ -672,8 +758,17 @@ mod tests {
             env: BTreeMap::new(),
         };
 
-        let launch =
-            build_launch_block(&record, &descriptor, &[], &[], None, None, "owner-hex").unwrap();
+        let launch = build_launch_block(
+            &record,
+            &descriptor,
+            &[],
+            &[],
+            None,
+            None,
+            true,
+            "owner-hex",
+        )
+        .unwrap();
 
         assert_eq!(
             launch["policy_env"]["BUZZ_ACP_AGENTS"],
@@ -695,8 +790,17 @@ mod tests {
             env: BTreeMap::new(),
         };
 
-        let launch =
-            build_launch_block(&record, &descriptor, &[], &[], None, None, "owner-hex").unwrap();
+        let launch = build_launch_block(
+            &record,
+            &descriptor,
+            &[],
+            &[],
+            None,
+            None,
+            true,
+            "owner-hex",
+        )
+        .unwrap();
 
         assert_eq!(
             launch["policy_env"]["BUZZ_ACP_AGENTS"], "8",
@@ -726,8 +830,17 @@ mod tests {
         };
         let cap = crate::managed_agents::parallelism::OPENCLAW_MAX_PARALLELISM;
 
-        let launch =
-            build_launch_block(&record, &descriptor, &[], &[], None, None, "owner-hex").unwrap();
+        let launch = build_launch_block(
+            &record,
+            &descriptor,
+            &[],
+            &[],
+            None,
+            None,
+            true,
+            "owner-hex",
+        )
+        .unwrap();
         let effective_parallelism =
             crate::managed_agents::effective_parallelism(&descriptor.command, record.parallelism);
         let payload = deploy_payload_json(
@@ -772,8 +885,17 @@ mod tests {
             env: BTreeMap::new(),
         };
 
-        let launch =
-            build_launch_block(&record, &descriptor, &[], &[], None, None, "owner-hex").unwrap();
+        let launch = build_launch_block(
+            &record,
+            &descriptor,
+            &[],
+            &[],
+            None,
+            None,
+            true,
+            "owner-hex",
+        )
+        .unwrap();
         let effective_parallelism =
             crate::managed_agents::effective_parallelism(&descriptor.command, record.parallelism);
         let payload = deploy_payload_json(
@@ -819,8 +941,17 @@ mod tests {
         };
         let cap = crate::managed_agents::parallelism::OPENCLAW_MAX_PARALLELISM;
 
-        let launch =
-            build_launch_block(&record, &descriptor, &[], &[], None, None, "owner-hex").unwrap();
+        let launch = build_launch_block(
+            &record,
+            &descriptor,
+            &[],
+            &[],
+            None,
+            None,
+            true,
+            "owner-hex",
+        )
+        .unwrap();
         let effective_parallelism =
             crate::managed_agents::effective_parallelism(&descriptor.command, record.parallelism);
         let payload = deploy_payload_json(
