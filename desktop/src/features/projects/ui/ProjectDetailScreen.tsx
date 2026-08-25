@@ -90,7 +90,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
     repositoryId,
     tab,
   } = props;
-  const { goProject, goProjects } = useAppNavigation();
+  const { goChannel, goHome, goProject } = useAppNavigation();
   const { activeCommunity } = useCommunities();
   const projectQuery = useProjectQuery(projectId);
   const projectsQuery = useProjectsQuery();
@@ -660,7 +660,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
     return (
       <ProjectDetailUnavailableState
         kind="load-error"
-        onBack={() => void goProjects()}
+        onBack={() => void goHome()}
         onRetry={() => void projectQuery.refetch()}
       />
     );
@@ -669,7 +669,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
     return (
       <ProjectDetailUnavailableState
         kind="not-found"
-        onBack={() => void goProjects()}
+        onBack={() => void goHome()}
       />
     );
   }
@@ -835,8 +835,14 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
                 activeTabCrumb={activeTabCrumb}
                 activeWorkItemCrumb={activeWorkItemCrumb}
                 onGoProjectHome={handleGoToProjectHome}
-                onGoProjects={() => {
-                  void goProjects();
+                onGoRootChannel={() => {
+                  const rootChannelId =
+                    project.projectChannelId ?? repository.channelId;
+                  if (rootChannelId) {
+                    void goChannel(rootChannelId);
+                  } else {
+                    void goHome();
+                  }
                 }}
                 project={project}
                 repository={repository}

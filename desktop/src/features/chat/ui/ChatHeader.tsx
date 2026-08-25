@@ -32,6 +32,7 @@ type ChatHeaderProps = {
   leadingContent?: React.ReactNode;
   mode?: "home" | "channel" | "agents" | "workflows" | "pulse" | "projects";
   overlaysContent?: boolean;
+  secondaryNavigation?: React.ReactNode;
   statusBadge?: React.ReactNode;
   /** Render the chrome wrapper without an individual backdrop when a parent supplies shared blur. */
   transparentChrome?: boolean;
@@ -95,6 +96,7 @@ export function ChatHeader({
   leadingContent,
   mode = "channel",
   overlaysContent = false,
+  secondaryNavigation,
   statusBadge,
   transparentChrome = false,
 }: ChatHeaderProps) {
@@ -186,6 +188,7 @@ export function ChatHeader({
       )}
     >
       {header}
+      {secondaryNavigation}
     </div>
   );
 }

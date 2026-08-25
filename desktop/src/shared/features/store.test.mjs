@@ -32,22 +32,22 @@ test("getOverrides drops unknown feature IDs without writing to storage", () => 
   );
 });
 
-test("setOverride persists filtered overrides", () => {
+test("setOverride persists stable IDs but unknown IDs stay filtered on read", () => {
   const { values } = installStorage({
     workflows: true,
     removedFeature: false,
   });
 
-  setOverride("projects", true);
+  setOverride("removedFeature", true);
 
   assert.equal(
     values.get(OVERRIDES_KEY),
-    JSON.stringify({ workflows: true, projects: true }),
+    JSON.stringify({ workflows: true, removedFeature: true }),
   );
 });
 
 test("getOverrides drops non-boolean values", () => {
-  installStorage({ workflows: "yes", projects: false });
+  installStorage({ workflows: "yes", pulse: false });
 
-  assert.deepEqual(getOverrides(), { projects: false });
+  assert.deepEqual(getOverrides(), { pulse: false });
 });

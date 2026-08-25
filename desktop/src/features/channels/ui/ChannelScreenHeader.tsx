@@ -8,6 +8,7 @@ import { getChannelDescription } from "@/features/channels/lib/channelDescriptio
 import { getDmParticipantPreview } from "@/features/channels/lib/dmParticipantDisplay";
 import { ChannelHeaderStatusBadge } from "@/features/channels/ui/ChannelHeaderStatusBadge";
 import { ChannelMembersBar } from "@/features/channels/ui/ChannelMembersBar";
+import { ChannelProjectFeatureBar } from "@/features/projects/ui/ChannelProjectFeatureBar";
 import {
   DEFAULT_HOVER_PROFILE_STATUS_GEOMETRY,
   ProfileAvatarWithStatus,
@@ -179,6 +180,15 @@ export function ChannelScreenHeader({
         <ChannelHeaderStatusBadge
           ephemeralDisplay={activeChannelEphemeralDisplay}
         />
+      }
+      secondaryNavigation={
+        activeChannel ? (
+          <ChannelProjectFeatureBar
+            channel={activeChannel}
+            currentPubkey={currentPubkey}
+            key={activeChannel.id}
+          />
+        ) : null
       }
       title={activeChannelTitle}
       transparentChrome={transparentChrome}
