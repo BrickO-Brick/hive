@@ -69,6 +69,33 @@
 //! nested action object — a host cannot ship a `secretKey` beside `sig`, or
 //! beside `args`, and have it silently trimmed.
 //!
+//! There is also exactly **one** wire door per payload, so no lax reader sits
+//! beside a strict one. [`BrokerResult`] is the case that needed work: its
+//! members reach the wire only flattened into [`BrokerResponse`], but it also
+//! derived a reader of its own, and that reader accepted and dropped siblings the
+//! envelope rejects. It is no longer [`Deserialize`] — see the reasoning on that
+//! type. Removing the second door is what keeps the rule single-sourced, since two
+//! copies of a strictness check are exactly how this hole arose.
+//!
+//! # Identities have exactly one spelling
+//!
+//! Both identity types in this contract admit several legal spellings. A UUID may
+//! be uppercase, unhyphenated, `{braced}`, or `urn:uuid:`-prefixed; hex may be
+//! either case. Two spellings of one identity are the same identity, so the
+//! contract picks one and normalizes to it: **lowercase hyphenated** for a
+//! `channelId`, **lowercase** for a pubkey, `eventId`, or `dTag`.
+//!
+//! Normalization happens at both doors — each `validated()` and the
+//! [`Deserialize`] impl of every member that holds an identity — so a value is
+//! canonical whether it was built in Rust or parsed from JSON, and the frozen
+//! request body carries the canonical spelling rather than the caller's. A host
+//! may send any legal spelling and will be read as having sent the canonical one.
+//!
+//! Without this, [`BrokerResponse::validate_for`] would have compared the
+//! caller's spelling of a `channelId` against the host's canonical echo of the
+//! same channel and rejected a correct answer. That check compares parsed
+//! identities as well, so neither guard is load-bearing alone.
+//!
 //! # Duplicate members are rejected
 //!
 //! A key may appear at most once in any object. serde's derived readers reject a
@@ -155,6 +182,7 @@ use crate::SdkError;
 pub mod actions;
 pub mod client;
 mod correlate;
+mod wire;
 
 use actions::absent_or_valued;
 pub use actions::{
@@ -582,7 +610,32 @@ impl BrokerError {
 /// `Failed` promises no side effects took hold, while `Indeterminate` promises
 /// nothing at all and demands reconciliation. Which [`BrokerErrorCode`] may
 /// carry which status is a closed table, documented on that type.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// # Why this type is not [`Deserialize`]
+///
+/// It is deliberately **not readable from the wire**, and that is the point:
+/// [`BrokerResponse`] is the only door, and it is strict.
+///
+/// This type has no wire form of its own. Its members only ever appear flattened
+/// into the response envelope, whose strict reader requires the exact key set the
+/// declared status admits — so `status: failed` beside an `error` and a
+/// `secretKey`, or a succeeded result beside an `error`, fail to parse. A derived
+/// reader on this type answered the same bytes with `Ok`, dropping the members it
+/// could not represent, so a consumer that parsed the result directly got a value
+/// whose complete wire shape had never been checked.
+///
+/// The two ways to close that were to give this type its own strict reader, or to
+/// take it off the wire. A second strict reader would be a second copy of the
+/// per-status contradiction rules, and two copies of a security check drift — the
+/// hole above exists precisely because one layer's strictness did not reach
+/// another's. Removing the door leaves one implementation of the rule and nothing
+/// to keep in sync. Nothing is lost: a bare `{"status": …}` object is not a
+/// payload this contract defines, so no host or client had a legitimate reason to
+/// parse one.
+///
+/// [`Serialize`] is retained — it is what produces the envelope's flattened wire
+/// form — so this is a read-side restriction only, and the wire form is unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum BrokerResult {
     /// The action completed and produced this outcome.
@@ -681,116 +734,6 @@ pub struct BrokerResponse {
     /// as a type error rather than defaulting to `false`.
     #[serde(default, skip_serializing_if = "is_false")]
     pub replayed: bool,
-}
-
-/// The strict wire form of a [`BrokerResponse`]: every key spelled out, no
-/// `flatten`, so `deny_unknown_fields` is actually in force.
-///
-/// The status-specific members are `Option` here only because one struct has to
-/// describe three shapes; [`BrokerResponse::deserialize`] then requires the exact
-/// set for the declared status, so `error` beside a succeeded outcome — or a
-/// missing `outcome` under `succeeded` — is a parse failure rather than a field
-/// nobody reads.
-///
-/// Those members deserialize through [`absent_or_valued`] rather than plain
-/// `#[serde(default)]`, because the status match below reads `None` as *absent*
-/// and `#[serde(default)] Option<T>` also produces `None` for an explicit
-/// `null`. Without it, `{"status":"failed","action":null,"outcome":null}` — or a
-/// succeeded response with `"error":null` — parsed as well-formed and skipped the
-/// contradiction check entirely. `null` is now rejected for these members whether
-/// or not the declared status admits them, so there is exactly one way for a
-/// member to be absent.
-///
-/// `outcome` is held as a `serde_json::Value` and re-deserialized under its
-/// action tag, so this reader is JSON-specific. That is not a narrowing: the HTTP
-/// binding in [`client`] declares `application/json`, and JSON is the only
-/// encoding this contract has ever specified.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct WireResponse {
-    r#type: String,
-    protocol_version: u16,
-    request_id: String,
-    status: String,
-    #[serde(default, deserialize_with = "absent_or_valued")]
-    action: Option<String>,
-    #[serde(default, deserialize_with = "absent_or_valued")]
-    outcome: Option<Box<serde_json::value::RawValue>>,
-    #[serde(default, deserialize_with = "absent_or_valued")]
-    error: Option<BrokerError>,
-    #[serde(default)]
-    replayed: bool,
-}
-
-impl<'de> Deserialize<'de> for BrokerResponse {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        use serde::de::Error as _;
-
-        let wire = WireResponse::deserialize(deserializer)?;
-
-        // One arm per status, each naming the members that status may carry.
-        // Anything present that this status does not admit is rejected here, so
-        // "succeeded with an error" cannot be parsed and then ignored.
-        let result = match wire.status.as_str() {
-            "succeeded" => {
-                if wire.error.is_some() {
-                    return Err(D::Error::custom(
-                        "a succeeded response must not carry an error",
-                    ));
-                }
-                let action = wire
-                    .action
-                    .ok_or_else(|| D::Error::missing_field("action"))?;
-                let outcome = wire
-                    .outcome
-                    .ok_or_else(|| D::Error::missing_field("outcome"))?;
-                // Re-deserialize the outcome under its action tag, which is how
-                // the adjacently-tagged `ActionOutcome` — and the
-                // `deny_unknown_fields` on each outcome type — get applied.
-                // Re-deserialize from the original bytes, not from a
-                // `serde_json::Value`: buffering through `Value` collapses
-                // duplicate keys last-wins, which would let `outcome` carry a
-                // duplicate that no other part of this contract accepts.
-                let tagged = format!(
-                    "{{\"action\":{},\"outcome\":{}}}",
-                    serde_json::to_string(&action).map_err(D::Error::custom)?,
-                    outcome.get()
-                );
-                let outcome: ActionOutcome =
-                    serde_json::from_str(&tagged).map_err(D::Error::custom)?;
-                BrokerResult::Succeeded { outcome }
-            }
-            status @ ("failed" | "indeterminate") => {
-                if wire.action.is_some() || wire.outcome.is_some() {
-                    return Err(D::Error::custom(format!(
-                        "a {status} response must not carry an action or outcome"
-                    )));
-                }
-                let error = wire.error.ok_or_else(|| D::Error::missing_field("error"))?;
-                if status == "failed" {
-                    BrokerResult::Failed { error }
-                } else {
-                    BrokerResult::Indeterminate { error }
-                }
-            }
-            other => {
-                return Err(D::Error::custom(format!(
-                    "unknown broker result status \"{other}\""
-                )))
-            }
-        };
-
-        Ok(Self {
-            r#type: wire.r#type,
-            protocol_version: wire.protocol_version,
-            request_id: wire.request_id,
-            result,
-            replayed: wire.replayed,
-        })
-    }
 }
 
 fn is_false(value: &bool) -> bool {
@@ -894,8 +837,8 @@ impl BrokerResponse {
     ///
     /// `requestId` plus action is not enough: a host routing bug can return a
     /// well-formed success for the wrong *subject*. Every identity the request
-    /// supplies and the outcome echoes must match exactly. This is the whole
-    /// table:
+    /// supplies and the outcome echoes must name the same thing. This is the
+    /// whole table:
     ///
     /// | Action | compared | not compared, and why |
     /// |---|---|---|
@@ -905,9 +848,19 @@ impl BrokerResponse {
     /// | `reaction.add` | — | same |
     /// | `profile.set` | — | same |
     /// | `storage.address` | — | `slug` is deliberately absent from the outcome: a `d` tag is a keyed hash of it, and echoing the slug would defeat that |
-    /// | `agents.create` | `channelId` | pubkey and name are newly minted, so there is nothing prior to compare |
+    /// | `agents.create` | `channelId`, as UUIDs | pubkey and name are newly minted, so there is nothing prior to compare |
     /// | `agents.update` | `agentPubkey` when targeted by pubkey | a name target is resolved host-side; `displayName` may be exactly what this call changed |
     /// | `agents.delete` | `agentPubkey` when targeted by pubkey | ditto for a name target |
+    ///
+    /// **Comparison is on parsed identities, never on bytes.** Both identity
+    /// types here admit more than one legal spelling — a UUID may be uppercase,
+    /// unhyphenated, braced or `urn:uuid:`-prefixed; hex may be either case — and
+    /// two spellings of one identity are the same identity. A byte comparison
+    /// would reject a correct answer whenever the caller and the host spelled it
+    /// differently, which is a worse failure than the one this check exists to
+    /// catch. Values are also canonicalized where they enter — at each
+    /// `validated()` and at the wire — so both sides normally arrive canonical;
+    /// the parsed comparison does not depend on that having happened.
     ///
     /// A name-targeted `agents.update`/`agents.delete` is the one case where the
     /// caller asked for an identity it cannot verify in the reply. That is

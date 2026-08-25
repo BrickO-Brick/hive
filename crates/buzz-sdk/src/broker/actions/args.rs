@@ -11,9 +11,10 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
-    absent_or_valued, channel, content, cursor, event_id, is_false, limit, mentions, optional,
-    required, respond_to, validate_slug, Action, PubkeyHex, DEFAULT_PAGE_LIMIT, MAX_ABOUT_CHARS,
-    MAX_EMOJI_CHARS, MAX_NAME_CHARS, MAX_PROMPT_CHARS, MAX_SCALAR_CHARS,
+    absent_or_valued, absent_or_valued_hex64, channel, channel_id, content, cursor, event_id,
+    hex64_field, is_false, limit, mentions, optional, required, respond_to, validate_slug, Action,
+    PubkeyHex, DEFAULT_PAGE_LIMIT, MAX_ABOUT_CHARS, MAX_EMOJI_CHARS, MAX_NAME_CHARS,
+    MAX_PROMPT_CHARS, MAX_SCALAR_CHARS,
 };
 use crate::SdkError;
 
@@ -29,11 +30,12 @@ use crate::SdkError;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ChannelReadArgs {
     /// Channel to read.
+    #[serde(deserialize_with = "channel_id")]
     pub channel_id: String,
     /// Narrow to one thread by its root event.
     #[serde(
         default,
-        deserialize_with = "absent_or_valued",
+        deserialize_with = "absent_or_valued_hex64",
         skip_serializing_if = "Option::is_none"
     )]
     pub root_event_id: Option<String>,
@@ -124,6 +126,7 @@ impl ChannelReadArgs {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MessagePostArgs {
     /// Channel to post in.
+    #[serde(deserialize_with = "channel_id")]
     pub channel_id: String,
     /// Message body.
     pub content: String,
@@ -154,8 +157,10 @@ impl MessagePostArgs {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MessageReplyArgs {
     /// Channel containing the parent.
+    #[serde(deserialize_with = "channel_id")]
     pub channel_id: String,
     /// Event being replied to.
+    #[serde(deserialize_with = "hex64_field")]
     pub reply_to_event_id: String,
     /// Reply body.
     pub content: String,
@@ -187,8 +192,10 @@ impl MessageReplyArgs {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReactionAddArgs {
     /// Channel containing the target.
+    #[serde(deserialize_with = "channel_id")]
     pub channel_id: String,
     /// Event being reacted to.
+    #[serde(deserialize_with = "hex64_field")]
     pub target_event_id: String,
     /// Reaction payload — an emoji or a `:shortcode:`.
     pub reaction: String,
@@ -335,6 +342,7 @@ impl AgentTarget {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentsCreateArgs {
     /// Channel the new agent is attached to.
+    #[serde(deserialize_with = "channel_id")]
     pub channel_id: String,
     /// Name for the new agent.
     pub display_name: String,

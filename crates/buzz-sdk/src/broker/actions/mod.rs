@@ -278,11 +278,45 @@ fn optional(value: Option<&String>, label: &str, max: usize) -> Result<Option<St
     value.map(|value| required(value, label, max)).transpose()
 }
 
+/// Validate a channel id and return its **canonical** spelling.
+///
+/// A UUID has several legal spellings — `Uuid::parse_str` accepts uppercase, the
+/// unhyphenated 32-character form, `{braced}`, and `urn:uuid:` — and they all
+/// name the same channel. Returning the caller's spelling would freeze a request
+/// body that disagrees with the host's canonical echo of the same identity, and
+/// the response correlation in
+/// [`crate::broker::BrokerResponse::validate_for`] would then reject a correct
+/// answer. So this returns the lowercase hyphenated form and nothing else: one
+/// identity, one spelling, chosen at the only point that sees the value before it
+/// is frozen.
+///
+/// This is the same treatment [`PubkeyHex::parse`] gives the other identity in
+/// this contract, and it is applied at both doors — the validators, and the
+/// [`channel_id`] deserializer — so a value cannot reach a caller
+/// un-canonicalized whether it was built or parsed.
 fn channel(value: &str) -> Result<String, SdkError> {
     let value = required(value, "channel", 128)?;
     uuid::Uuid::parse_str(&value)
-        .map_err(|_| SdkError::InvalidInput(format!("invalid channel UUID: {value}")))?;
-    Ok(value)
+        .map(|id| id.as_hyphenated().to_string())
+        .map_err(|_| SdkError::InvalidInput(format!("invalid channel UUID: {value}")))
+}
+
+/// Deserialize a `channelId`, canonicalizing it and rejecting a non-UUID.
+///
+/// The wire is the one door a validator cannot cover: every args and outcome
+/// field holding a channel id is a public `String`, so a payload parsed from
+/// JSON reaches a caller without passing through any `validated()`. Delegating
+/// to [`channel`] means the wire form and the constructed form are canonicalized
+/// by the same code, so the two cannot drift, and a malformed channel id never
+/// becomes a value at all — the same rule the no-null guard follows.
+pub(super) fn channel_id<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error as _;
+
+    let raw = String::deserialize(deserializer)?;
+    channel(&raw).map_err(D::Error::custom)
 }
 
 fn event_id(value: &str, label: &str) -> Result<String, SdkError> {
@@ -293,6 +327,47 @@ fn event_id(value: &str, label: &str) -> Result<String, SdkError> {
         )));
     }
     Ok(value.to_ascii_lowercase())
+}
+
+/// Deserialize a 64-hex identifier (`eventId`, `dTag`), lowercasing it and
+/// rejecting anything that is not 64 hex characters.
+///
+/// Hex admits two spellings of one identifier, so this is the [`channel_id`] rule
+/// applied to the contract's other multi-spelling identities. See that function
+/// for why the wire needs a door of its own.
+///
+/// The label is generic because serde reports which member failed; naming the
+/// member here as well would be a second copy to keep true.
+pub(super) fn hex64_field<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error as _;
+
+    let raw = String::deserialize(deserializer)?;
+    event_id(&raw, "identifier").map_err(D::Error::custom)
+}
+
+/// [`hex64_field`] for an optional member: `null` is still rejected.
+///
+/// A dedicated function rather than a composition of the two guards, because
+/// `deserialize_with` takes one function and both rules — reject `null`,
+/// canonicalize the value — apply to the same member. Reaching the `None` arm
+/// means the key was present and `null`; see [`absent_or_valued`].
+pub(super) fn absent_or_valued_hex64<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error as _;
+
+    match Option::<String>::deserialize(deserializer)? {
+        Some(raw) => Ok(Some(
+            event_id(&raw, "identifier").map_err(D::Error::custom)?,
+        )),
+        None => Err(D::Error::custom(
+            "must not be null; omit the member to mean absent",
+        )),
+    }
 }
 
 fn content(value: &str) -> Result<String, SdkError> {

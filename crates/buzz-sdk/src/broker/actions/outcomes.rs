@@ -10,8 +10,8 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
-    absent_or_valued, channel, cursor, event_id, required, Action, PubkeyHex, MAX_NAME_CHARS,
-    MAX_PAGE_LIMIT,
+    absent_or_valued, channel, channel_id, cursor, event_id, hex64_field, required, Action,
+    PubkeyHex, MAX_NAME_CHARS, MAX_PAGE_LIMIT,
 };
 use crate::SdkError;
 use nostr::{Event, EventId, Kind, PublicKey, Tags, Timestamp};
@@ -156,6 +156,7 @@ pub struct MessagePage {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EventPublished {
     /// The published event's id (hex).
+    #[serde(deserialize_with = "hex64_field")]
     pub event_id: String,
     /// The published event's kind.
     pub kind: u32,
@@ -175,6 +176,7 @@ pub struct StorageAddress {
     /// Event kind holding the record.
     pub kind: u32,
     /// Derived `d` tag (64 hex characters).
+    #[serde(deserialize_with = "hex64_field")]
     pub d_tag: String,
 }
 
@@ -192,6 +194,7 @@ pub struct AgentsCreateOutcome {
     /// The new agent's name as stored.
     pub display_name: String,
     /// Channel the agent was attached to.
+    #[serde(deserialize_with = "channel_id")]
     pub channel_id: String,
 }
 
