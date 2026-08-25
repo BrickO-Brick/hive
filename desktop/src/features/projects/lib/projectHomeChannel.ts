@@ -9,7 +9,10 @@ export function findProjectHomeByChannelId(
   if (!channelId) return null;
   const matching = projects
     .filter(
-      (project) => !project.legacy && project.projectChannelId === channelId,
+      (project) =>
+        !project.legacy &&
+        project.projectChannelId === channelId &&
+        hasAuthoritativeHomeBinding(project),
     )
     .sort((left, right) => left.createdAt - right.createdAt);
   return (

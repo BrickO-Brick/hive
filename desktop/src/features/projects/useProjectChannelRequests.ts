@@ -8,6 +8,12 @@ import { useChannelsQuery } from "@/features/channels/hooks";
 import { useChannelTemplatesQuery } from "@/features/channel-templates/hooks";
 import { useProjectsQuery } from "@/features/projects/hooks";
 import type { ProjectChannelRequest } from "@/features/projects/projectChannelRequest";
+import {
+  advanceProjectChannelRequestQueue,
+  createProjectChannelRequestQueue,
+  enqueueProjectChannelRequest,
+  type AcceptedProjectChannelRequest,
+} from "@/features/projects/projectChannelRequestQueue";
 import { useAddProjectChannelMutation } from "@/features/projects/useAddProjectChannel";
 import { useIdentityQuery } from "@/shared/api/hooks";
 import { normalizePubkey } from "@/shared/lib/pubkey";
@@ -26,8 +32,7 @@ export function useProjectChannelRequests() {
     string | null
   >(null);
   const [error, setError] = React.useState<string | null>(null);
-  const seenRequestIds = React.useRef(new Set<string>());
-  const pendingRequestId = React.useRef<string | null>(null);
+  const acceptedRequests = React.useRef(createProjectChannelRequestQueue());
   const bufferedRequests = React.useRef<
     Array<{ agentPubkey: string; request: ProjectChannelRequest }>
   >([]);
@@ -42,17 +47,15 @@ export function useProjectChannelRequests() {
           channelsRef.current,
           agentPubkey,
           next.request.homeChannelId,
-        ) !== "accept" ||
-        seenRequestIds.current.has(next.requestId)
+        ) !== "accept"
       ) {
         return;
       }
-      seenRequestIds.current.add(next.requestId);
-      if (pendingRequestId.current !== null) return;
-      pendingRequestId.current = next.requestId;
-      setError(null);
-      setSourceAgentPubkey(agentPubkey);
-      setRequest(next);
+      const accepted = enqueueProjectChannelRequest(acceptedRequests.current, {
+        agentPubkey,
+        request: next,
+      });
+      if (accepted) showRequest(accepted);
     },
   );
 
@@ -87,6 +90,16 @@ export function useProjectChannelRequests() {
     [],
   );
 
+  function showRequest(candidate: AcceptedProjectChannelRequest | null) {
+    setError(null);
+    setSourceAgentPubkey(candidate?.agentPubkey ?? null);
+    setRequest(candidate?.request ?? null);
+  }
+
+  function advanceRequestQueue() {
+    showRequest(advanceProjectChannelRequestQueue(acceptedRequests.current));
+  }
+
   const project =
     request == null
       ? null
@@ -109,10 +122,7 @@ export function useProjectChannelRequests() {
 
   function dismiss() {
     if (mutation.isPending) return;
-    setRequest(null);
-    setSourceAgentPubkey(null);
-    pendingRequestId.current = null;
-    setError(null);
+    advanceRequestQueue();
   }
 
   async function approve() {
@@ -148,9 +158,7 @@ export function useProjectChannelRequests() {
         visibility: request.request.visibility,
       });
       toast.success(`Channel "#${request.request.name}" created.`);
-      setRequest(null);
-      setSourceAgentPubkey(null);
-      pendingRequestId.current = null;
+      advanceRequestQueue();
     } catch (nextError) {
       setError(
         nextError instanceof Error

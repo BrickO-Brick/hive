@@ -80,11 +80,56 @@ test("isProjectHomeChannel is false for unbound channels", () => {
   assert.equal(isProjectHomeChannel(null, [project()]), false);
 });
 
-test("findProjectHomeByChannelId prefers the oldest listed home", () => {
+test("findProjectHomeByChannelId rejects bare and unauthorized route assertions", () => {
   const base = {
     createdAt: 0,
     legacy: false,
+    owner: OWNER,
     projectChannelId: "channel-a",
+    visibility: "listed",
+  };
+
+  assert.equal(
+    findProjectHomeByChannelId("channel-a", [
+      { ...base, id: "bare", repositories: [] },
+      {
+        ...base,
+        id: "unauthorized",
+        owner: MAINTAINER,
+        repositories: [{ channelId: "channel-a", owner: OWNER }],
+      },
+    ]),
+    null,
+  );
+});
+
+test("findProjectHomeByChannelId ignores an older unauthorized competitor", () => {
+  const base = {
+    createdAt: 0,
+    legacy: false,
+    owner: OWNER,
+    projectChannelId: "channel-a",
+    visibility: "listed",
+  };
+  const selected = findProjectHomeByChannelId("channel-a", [
+    { ...base, createdAt: 50, id: "attacker", repositories: [] },
+    {
+      ...base,
+      createdAt: 100,
+      id: "authorized",
+      repositories: [{ channelId: "channel-a", owner: OWNER }],
+    },
+  ]);
+  assert.equal(selected?.id, "authorized");
+});
+
+test("findProjectHomeByChannelId prefers the oldest listed authoritative home", () => {
+  const base = {
+    createdAt: 0,
+    legacy: false,
+    owner: OWNER,
+    projectChannelId: "channel-a",
+    repositories: [{ channelId: "channel-a", owner: OWNER }],
     visibility: "listed",
   };
   const selected = findProjectHomeByChannelId("channel-a", [
