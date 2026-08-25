@@ -359,6 +359,10 @@ test("a linked instance overrides stale definition access in the edit dialog", (
     respondTo: "allowlist",
     respondToAllowlist: ["c".repeat(64)],
     parallelism: 2,
+    // No definition-default policy on this persona, so the seed carries it as
+    // undefined alongside the other unset fields (JSON.stringify drops it on
+    // submit); the access override only rewrites respondTo/respondToAllowlist.
+    permissionPolicy: undefined,
   });
 });
 
