@@ -440,6 +440,10 @@ pub const KIND_WINDOW_BOUNDS: u32 = 39006;
 
 /// Workflow definition (parameterized replaceable, d=workflow_uuid).
 pub const KIND_WORKFLOW_DEF: u32 = 30620;
+/// Owner-signed lifecycle command targeting a managed workflow.
+pub const KIND_WORKFLOW_OWNER_COMMAND: u32 = 46021;
+/// Agent-signed terminal result for a workflow owner command.
+pub const KIND_WORKFLOW_OWNER_RESULT: u32 = 46022;
 
 /// NIP-DV: per-viewer DM visibility snapshot (relay-signed, parameterized
 /// replaceable, d=viewer_pubkey). Carries one `h` tag per DM the viewer has
@@ -726,6 +730,8 @@ pub const ALL_KINDS: &[u32] = &[
     KIND_MEMBER_REMOVED_NOTIFICATION,
     KIND_AGENT_TURN_METRIC,
     KIND_WORKFLOW_DEF,
+    KIND_WORKFLOW_OWNER_COMMAND,
+    KIND_WORKFLOW_OWNER_RESULT,
     KIND_LONG_FORM,
     KIND_USER_STATUS,
     KIND_READ_STATE,
@@ -820,6 +826,7 @@ pub const fn is_command_kind(kind: u32) -> bool {
             | KIND_DM_ADD_MEMBER
             | KIND_DM_HIDE
             | KIND_WORKFLOW_TRIGGER
+            | KIND_WORKFLOW_OWNER_COMMAND
             | KIND_APPROVAL_GRANT
             | KIND_APPROVAL_DENY
     )

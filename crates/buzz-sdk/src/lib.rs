@@ -20,6 +20,10 @@ pub use builders::*;
 
 /// Re-export kind constants so consumers don't need buzz-core directly.
 pub use buzz_core::kind;
+/// Operation requested by a managed-workflow owner.
+pub use buzz_core::workflow_owner_command::WorkflowOwnerOperation;
+/// Terminal status reported by an agent for a workflow owner command.
+pub use buzz_core::workflow_owner_command::WorkflowOwnerResultStatus;
 
 /// Thread reference for reply builders (NIP-10 markers).
 ///

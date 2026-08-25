@@ -42,6 +42,8 @@ pub mod relay;
 pub mod tenant;
 /// Schnorr signature and event ID verification.
 pub mod verification;
+/// Signed owner lifecycle commands for managed workflows.
+pub mod workflow_owner_command;
 
 pub use error::VerificationError;
 pub use event::StoredEvent;

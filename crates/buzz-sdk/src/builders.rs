@@ -12,7 +12,8 @@ use buzz_core::{
         KIND_GIT_STATUS_OPEN, KIND_IA_ARCHIVE_REQUEST, KIND_IA_UNARCHIVE_REQUEST,
         KIND_MODERATION_BAN, KIND_MODERATION_RESOLVE_REPORT, KIND_MODERATION_TIMEOUT,
         KIND_MODERATION_UNBAN, KIND_MODERATION_UNTIMEOUT, KIND_PRESENCE_UPDATE, KIND_PROJECT,
-        KIND_USER_STATUS, KIND_WORKFLOW_DEF, KIND_WORKFLOW_TRIGGER,
+        KIND_USER_STATUS, KIND_WORKFLOW_DEF, KIND_WORKFLOW_OWNER_COMMAND,
+        KIND_WORKFLOW_OWNER_RESULT, KIND_WORKFLOW_TRIGGER,
     },
     observer::{
         content_looks_like_nip44, OBSERVER_AGENT_TAG, OBSERVER_FRAME_CONTROL, OBSERVER_FRAME_TAG,
@@ -1638,6 +1639,88 @@ pub fn build_workflow_delete(
     workflow_id: Uuid,
 ) -> Result<EventBuilder, SdkError> {
     build_delete_addressable(KIND_WORKFLOW_DEF, author_pubkey, &workflow_id.to_string())
+}
+
+/// Build an owner-signed managed-workflow lifecycle command (kind 46021).
+///
+/// All five lifecycle operations use this same wire shape. The caller signs
+/// the returned builder with the human owner's keys. The target agent is the
+/// immutable author in the parameterized kind:30620 coordinate and the `p`
+/// recipient.
+pub fn build_workflow_owner_command(
+    command_id: Uuid,
+    agent_pubkey: &str,
+    workflow_id: Uuid,
+    expected_revision: &str,
+    operation: crate::WorkflowOwnerOperation,
+) -> Result<EventBuilder, SdkError> {
+    if command_id.is_nil() {
+        return Err(SdkError::InvalidInput("command_id must not be nil".into()));
+    }
+    if workflow_id.is_nil() {
+        return Err(SdkError::InvalidInput("workflow_id must not be nil".into()));
+    }
+    let agent = check_pubkey_hex(agent_pubkey, "agent pubkey")?;
+    let revision = check_hex_exact(expected_revision, 64, "expected revision")?;
+    let body = buzz_core::workflow_owner_command::WorkflowOwnerCommandBody { operation };
+    let content = serde_json::to_string(&body)
+        .map_err(|error| SdkError::InvalidInput(format!("invalid owner command: {error}")))?;
+    let coordinate = format!("{KIND_WORKFLOW_DEF}:{agent}:{workflow_id}");
+    let tags = vec![
+        tag(&["d", &command_id.to_string()])?,
+        tag(&["a", &coordinate])?,
+        tag(&["revision", &revision])?,
+        tag(&["p", &agent])?,
+    ];
+    Ok(EventBuilder::new(Kind::Custom(KIND_WORKFLOW_OWNER_COMMAND as u16), content).tags(tags))
+}
+
+/// Build an agent-signed terminal result (kind 46022) for an owner command.
+///
+/// The caller signs the returned builder with the target agent's keys. The
+/// `p` recipient is the human owner, while the coordinate's agent identity is
+/// explicit because builders do not receive signing keys.
+pub fn build_workflow_owner_result(
+    command_id: Uuid,
+    owner_pubkey: &str,
+    agent_pubkey: &str,
+    workflow_id: Uuid,
+    expected_revision: &str,
+    operation: crate::WorkflowOwnerOperation,
+    status: crate::WorkflowOwnerResultStatus,
+    reason: Option<&str>,
+) -> Result<EventBuilder, SdkError> {
+    if command_id.is_nil() {
+        return Err(SdkError::InvalidInput("command_id must not be nil".into()));
+    }
+    if workflow_id.is_nil() {
+        return Err(SdkError::InvalidInput("workflow_id must not be nil".into()));
+    }
+    let owner = check_pubkey_hex(owner_pubkey, "owner pubkey")?;
+    let agent = check_pubkey_hex(agent_pubkey, "agent pubkey")?;
+    let revision = check_hex_exact(expected_revision, 64, "expected revision")?;
+    if let Some(reason) = reason {
+        check_content(
+            reason,
+            buzz_core::workflow_owner_command::WORKFLOW_OWNER_MAX_REASON_BYTES,
+        )?;
+    }
+    let body = buzz_core::workflow_owner_command::WorkflowOwnerResultBody {
+        status,
+        reason: reason.map(str::to_owned),
+    };
+    let content = serde_json::to_string(&body)
+        .map_err(|error| SdkError::InvalidInput(format!("invalid owner result: {error}")))?;
+    let coordinate = format!("{KIND_WORKFLOW_DEF}:{agent}:{workflow_id}");
+    let tags = vec![
+        tag(&["d", &command_id.to_string()])?,
+        tag(&["a", &coordinate])?,
+        tag(&["revision", &revision])?,
+        tag(&["p", &owner])?,
+        tag(&["operation", operation.as_str()])?,
+        tag(&["status", status.as_str()])?,
+    ];
+    Ok(EventBuilder::new(Kind::Custom(KIND_WORKFLOW_OWNER_RESULT as u16), content).tags(tags))
 }
 
 /// Build a workflow trigger event (kind 46020) bound to an exact signed revision.
@@ -4012,6 +4095,98 @@ mod tests {
     fn workflow_delete_rejects_bad_pubkey() {
         let err = build_workflow_delete("bad", uuid()).unwrap_err();
         assert!(matches!(err, SdkError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn workflow_owner_command_covers_all_five_lifecycle_operations() {
+        let owner = nostr::Keys::generate();
+        let agent = nostr::Keys::generate();
+        let workflow = uuid();
+        let command_id = uuid();
+        let revision = "a".repeat(64);
+        for operation in [
+            crate::WorkflowOwnerOperation::Start,
+            crate::WorkflowOwnerOperation::Pause,
+            crate::WorkflowOwnerOperation::Resume,
+            crate::WorkflowOwnerOperation::Cancel,
+            crate::WorkflowOwnerOperation::Restore,
+        ] {
+            let event = build_workflow_owner_command(
+                command_id,
+                &agent.public_key().to_hex(),
+                workflow,
+                &revision,
+                operation,
+            )
+            .unwrap()
+            .sign_with_keys(&owner)
+            .unwrap();
+            let parsed = buzz_core::workflow_owner_command::parse_owner_command(&event).unwrap();
+            assert_eq!(parsed.operation, operation);
+            assert_eq!(parsed.owner_pubkey, owner.public_key());
+            assert_eq!(parsed.agent_pubkey, agent.public_key());
+        }
+    }
+
+    #[test]
+    fn workflow_owner_result_preserves_agent_and_owner_identities() {
+        let owner = nostr::Keys::generate();
+        let agent = nostr::Keys::generate();
+        let command_id = uuid();
+        let workflow = uuid();
+        let revision = "b".repeat(64);
+        let event = build_workflow_owner_result(
+            command_id,
+            &owner.public_key().to_hex(),
+            &agent.public_key().to_hex(),
+            workflow,
+            &revision,
+            crate::WorkflowOwnerOperation::Restore,
+            crate::WorkflowOwnerResultStatus::Applied,
+            Some("restored"),
+        )
+        .unwrap()
+        .sign_with_keys(&agent)
+        .unwrap();
+        let parsed = buzz_core::workflow_owner_command::parse_owner_result(&event).unwrap();
+        assert_eq!(parsed.agent_pubkey, agent.public_key());
+        assert_eq!(parsed.owner_pubkey, owner.public_key());
+        assert_eq!(parsed.operation, crate::WorkflowOwnerOperation::Restore);
+        assert_eq!(parsed.status, crate::WorkflowOwnerResultStatus::Applied);
+        assert_eq!(parsed.reason.as_deref(), Some("restored"));
+    }
+
+    #[test]
+    fn workflow_owner_builders_reject_nil_and_malformed_identity() {
+        let revision = "c".repeat(64);
+        let agent = "a".repeat(64);
+        assert!(build_workflow_owner_command(
+            Uuid::nil(),
+            &agent,
+            uuid(),
+            &revision,
+            crate::WorkflowOwnerOperation::Start,
+        )
+        .is_err());
+        assert!(build_workflow_owner_command(
+            uuid(),
+            "bad",
+            uuid(),
+            &revision,
+            crate::WorkflowOwnerOperation::Pause,
+        )
+        .is_err());
+        assert!(build_workflow_owner_result(
+            uuid(),
+            &agent,
+            &agent,
+            uuid(),
+            &revision,
+            crate::WorkflowOwnerOperation::Cancel,
+            crate::WorkflowOwnerResultStatus::Rejected,
+            Some(&"x".repeat(4097)),
+        )
+        .is_err());
     }
 
     #[test]
