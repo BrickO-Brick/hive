@@ -359,8 +359,13 @@ test("the same relay post outside a work block keeps its message bubble", async 
     "./activityRenderClasses/TranscriptActivityItem.tsx"
   );
 
+  // `gcTime: 0`: React Query's default is 300000ms, and this is the one test
+  // that actually drives the bubble presenter's `useQuery`, so its query arms a
+  // five-minute gc timer at teardown. node:test waits that timer out before
+  // exiting — this file's tests sum to ~2s but the wall was ~303s, all passing,
+  // with no failing assertion to point at the cause.
   const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
+    defaultOptions: { queries: { gcTime: 0, retry: false } },
   });
   const rootRoute = createRootRoute({
     component: () =>

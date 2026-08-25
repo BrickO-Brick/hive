@@ -414,6 +414,14 @@ test("buildConversationTurnMeta reports no live turn when there is no turn at al
  * Built from a raw item stream through the real grouping rather than from
  * hand-written blocks, because the whole bug is which turns DO and DO NOT
  * produce a block: hand-built blocks would assume the answer away.
+ *
+ * The frames pin the PLAIN next turn (`turn_started`, then `session_resolved`,
+ * with no `session/new` card) because that is the common path and the only one
+ * that pins the bug. On a session restart the `session/new` card lands as a
+ * trailing `single` block, which moves `streamingItemId` off turn-1's work block
+ * on its own — so a restart-only fixture would pass against the old
+ * block-walking code. Both sequences are covered; only the plain one is
+ * load-bearing.
  */
 test("buildConversationTurnMeta hands liveness to a next turn that has no block yet", () => {
   const stream = (...extra) => [
@@ -426,25 +434,38 @@ test("buildConversationTurnMeta hands liveness to a next turn that has no block 
     ...extra,
   ];
 
+  const started = lifecycleItem("life:start:2", "turn_started", "turn-2");
+  const resolved = lifecycleItem(
+    "life:resolved:2",
+    "session_resolved",
+    "turn-2",
+  );
+  const sysPrompt = systemPromptItem("meta:sysprompt");
+
   const frames = [
+    // The plain next turn — no session restart, so no `session/new` card. This
+    // is both the common path and the only one that pins the bug: a
+    // `session/new` card renders as a trailing `single` block, which moves the
+    // streaming item off turn-1's work block by itself and so lets the old
+    // block-walking code pass for the wrong reason.
     {
       label: "turn-2 has only started",
-      items: stream(lifecycleItem("life:start:2", "turn_started", "turn-2")),
+      items: stream(started),
     },
     {
-      label: "the new session's system prompt has landed",
-      items: stream(
-        lifecycleItem("life:start:2", "turn_started", "turn-2"),
-        systemPromptItem("meta:sysprompt"),
-      ),
+      label: "the session has resolved with no restart card",
+      items: stream(started, resolved),
+    },
+    // The restarting next turn, where a system-prompt card lands between the
+    // lifecycle rows. A different route through the grouping, kept because it
+    // has to settle too.
+    {
+      label: "the restarting turn's system prompt has landed",
+      items: stream(started, sysPrompt),
     },
     {
-      label: "the session has resolved",
-      items: stream(
-        lifecycleItem("life:start:2", "turn_started", "turn-2"),
-        systemPromptItem("meta:sysprompt"),
-        lifecycleItem("life:resolved:2", "session_resolved", "turn-2"),
-      ),
+      label: "the restarted session has resolved",
+      items: stream(started, sysPrompt, resolved),
     },
   ];
 
@@ -465,13 +486,12 @@ test("buildConversationTurnMeta hands liveness to a next turn that has no block 
     );
   }
 
-  // Fourth frame: turn-2 finally has something renderable, so it gets a block
+  // Final frame: turn-2 finally has something renderable, so it gets a block
   // and its own prompt becomes the tail. Included so the sequence ends in the
   // steady state rather than stopping at the gap.
   const renderable = stream(
-    lifecycleItem("life:start:2", "turn_started", "turn-2"),
-    systemPromptItem("meta:sysprompt"),
-    lifecycleItem("life:resolved:2", "session_resolved", "turn-2"),
+    started,
+    resolved,
     promptItem("prompt:2", "turn-2"),
   );
   const meta = buildConversationTurnMeta(

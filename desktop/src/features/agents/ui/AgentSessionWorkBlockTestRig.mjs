@@ -253,8 +253,15 @@ export async function renderBlock(
   // unconditionally so that if a rail step ever DID reach that presenter, the
   // relay test below would fail on its bubble assertion rather than on a
   // missing provider — a test must fail for the reason it claims.
+  // `gcTime: 0` because React Query's default is 300000ms, and an un-collected
+  // query arms a timer that long at teardown — node:test then waits it out
+  // before exiting, turning a 2s suite into a 5-minute wall with no failing
+  // assertion. Dormant here today (only the relay-bubble test reaches a
+  // `useQuery`, and it builds its own client), but a silent five-minute hang is
+  // an expensive thing to leave armed for the next rig-based test that renders
+  // a bubble.
   const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
+    defaultOptions: { queries: { gcTime: 0, retry: false } },
   });
   const rootRoute = createRootRoute({
     component: () =>
