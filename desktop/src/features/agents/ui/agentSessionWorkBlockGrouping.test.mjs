@@ -210,6 +210,34 @@ test("the plan stays a sibling and splits the work around it", () => {
   assert.deepEqual(blockItemIds(grouped[2]), ["tool:2"]);
 });
 
+test("message sends stay outside the work block as chat bubbles", () => {
+  const send = tool("tool:send", {
+    args: { content: "Posted an update" },
+    buzzToolName: "send_message",
+    descriptor: {
+      renderClass: "message",
+      label: "Sent message",
+      preview: "Posted an update",
+      tone: "neutral",
+      source: "buzz",
+    },
+    renderClass: "message",
+    toolName: "send_message",
+  });
+  const grouped = groupConversationWorkBlocks(
+    itemSegments(tool("tool:1"), send, tool("tool:2")),
+  );
+
+  assert.deepEqual(kinds(grouped), ["work-block", "item", "work-block"]);
+  assert.deepEqual(blockItemIds(grouped[0]), ["tool:1"]);
+  assert.equal(
+    grouped[1].item.id,
+    "tool:send",
+    "the existing message presenter can render the send as a readable bubble",
+  );
+  assert.deepEqual(blockItemIds(grouped[2]), ["tool:2"]);
+});
+
 test("permission gates and errors stay loud, in position", () => {
   for (const renderClass of ["permission", "error", "status"]) {
     const grouped = groupConversationWorkBlocks(
