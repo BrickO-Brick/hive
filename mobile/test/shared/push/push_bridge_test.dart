@@ -16,7 +16,6 @@ void main() {
   setUp(() {
     apnsDeviceToken.value = null;
     apnsRegistrationError.value = null;
-    pushAuthorizationGranted.value = null;
     pushEndpointGrants.value = const [];
     pushEndpointGrantError.value = null;
     pushCommunitySnapshotError.value = null;
@@ -44,17 +43,19 @@ void main() {
     expect(apnsRegistrationError.value, isNull);
   });
 
-  test('records denied authorization so enrollment stays blocked', () async {
-    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(_channel, (call) async {
-          expect(call.method, 'requestAuthorization');
-          return false;
-        });
+  test(
+    'starts native permission and APNs registration without a result gate',
+    () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(_channel, (call) async {
+            expect(call.method, 'startRegistration');
+            return null;
+          });
 
-    expect(await requestBuzzPushAuthorization(), isFalse);
-    expect(pushAuthorizationGranted.value, isFalse);
-  });
+      await startBuzzPushRegistration();
+    },
+  );
 
   test('reads and exposes persisted endpoint grants on iOS', () async {
     debugDefaultTargetPlatformOverride = TargetPlatform.iOS;

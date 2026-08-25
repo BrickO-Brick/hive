@@ -3,57 +3,57 @@ import 'package:buzz/shared/push/push_relay_capability_provider.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  test('valid capability permits notification authorization', () async {
-    var requests = 0;
+  test(
+    'valid capability starts independent permission and APNs registration',
+    () async {
+      var requests = 0;
 
-    final granted = await requestBuzzPushAuthorizationIfCapable(
-      _descriptor,
-      requestAuthorization: () async {
-        requests += 1;
-        return true;
-      },
-    );
+      await startBuzzPushRegistrationIfCapable(
+        _descriptor,
+        startRegistration: () async {
+          requests += 1;
+        },
+      );
 
-    expect(granted, isTrue);
-    expect(requests, 1);
-  });
+      expect(requests, 1);
+    },
+  );
 
-  test('missing or invalid capability cannot start authorization', () async {
-    var requests = 0;
+  test(
+    'missing capability cannot start permission or APNs registration',
+    () async {
+      var requests = 0;
 
-    final granted = await requestBuzzPushAuthorizationIfCapable(
-      null,
-      requestAuthorization: () async {
-        requests += 1;
-        return true;
-      },
-    );
+      await startBuzzPushRegistrationIfCapable(
+        null,
+        startRegistration: () async {
+          requests += 1;
+        },
+      );
 
-    expect(granted, isFalse);
-    expect(requests, 0);
-  });
+      expect(requests, 0);
+    },
+  );
 
   for (final failure in <Object>[
     const FormatException('malformed descriptor'),
     StateError('relay unreachable'),
   ]) {
-    test('$failure keeps capability inactive without authorization', () async {
+    test('$failure keeps capability inactive without registration', () async {
       final descriptor = await discoverBuzzPushRelayCapability(
         'https://relay.example',
         fetchDescriptor: (_) async => throw failure,
       );
       var requests = 0;
 
-      final granted = await requestBuzzPushAuthorizationIfCapable(
+      await startBuzzPushRegistrationIfCapable(
         descriptor,
-        requestAuthorization: () async {
+        startRegistration: () async {
           requests += 1;
-          return true;
         },
       );
 
       expect(descriptor, isNull);
-      expect(granted, isFalse);
       expect(requests, 0);
     });
   }

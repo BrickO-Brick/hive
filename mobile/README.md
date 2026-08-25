@@ -97,10 +97,12 @@ installs are never touched.
 
 Every iOS artifact builds and embeds the Notification Service Extension and
 native push bridge. Runtime activation is fail-closed and scoped to the current
-relay: Buzz requests notification permission, registers with APNs, enrolls with
-the gateway, and publishes a lease only after authenticated connectivity and a
-fully valid NIP-11 `nip-pl` push descriptor. An absent, malformed, or
-unreachable descriptor leaves push inactive without partial enrollment.
+relay. After authenticated connectivity and a fully valid NIP-11 `nip-pl` push
+descriptor, Buzz independently requests display permission and registers with
+APNs. Display denial or request failure does not gate the device token, gateway
+enrollment, or lease publication, so a later user opt-in can display pushes
+without rebuilding transport authority. An absent, malformed, or unreachable
+descriptor leaves push inactive without partial enrollment.
 
 Relay rollout remains an explicit deployment opt-in. Only deployments with
 `BUZZ_PUSH_ENABLED=true` advertise the descriptor and process push. See

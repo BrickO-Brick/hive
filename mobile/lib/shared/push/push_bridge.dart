@@ -13,7 +13,6 @@ const _channel = MethodChannel('buzz/push');
 /// the Flutter method channel attaches.
 final apnsDeviceToken = ValueNotifier<String?>(null);
 final apnsRegistrationError = ValueNotifier<String?>(null);
-final pushAuthorizationGranted = ValueNotifier<bool?>(null);
 
 final pushEndpointGrants = ValueNotifier<List<BuzzPushEndpointGrant>>([]);
 final pushEndpointGrantError = ValueNotifier<String?>(null);
@@ -59,16 +58,15 @@ Future<void> syncPendingBuzzPushNotificationResponse() async {
   }
 }
 
-Future<bool> requestBuzzPushAuthorization() async {
-  if (defaultTargetPlatform != TargetPlatform.iOS) return false;
+/// Starts the independent iOS notification-authorization and APNs-registration
+/// requests. Display authorization is intentionally not returned or persisted:
+/// APNs registration and enrollment remain valid while display is denied.
+Future<void> startBuzzPushRegistration() async {
+  if (defaultTargetPlatform != TargetPlatform.iOS) return;
   try {
-    final granted =
-        await _channel.invokeMethod<bool>('requestAuthorization') ?? false;
-    pushAuthorizationGranted.value = granted;
-    return granted;
+    await _channel.invokeMethod<void>('startRegistration');
   } on MissingPluginException {
-    pushAuthorizationGranted.value = false;
-    return false;
+    // Flutter tests and non-Runner embeddings do not install the native bridge.
   }
 }
 

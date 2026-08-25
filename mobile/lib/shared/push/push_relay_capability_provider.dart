@@ -52,10 +52,10 @@ Future<BuzzPushLeaseDescriptor?> discoverBuzzPushRelayCapability(
   }
 }
 
-Future<bool> requestBuzzPushAuthorizationIfCapable(
+Future<void> startBuzzPushRegistrationIfCapable(
   BuzzPushLeaseDescriptor? descriptor, {
-  required Future<bool> Function() requestAuthorization,
+  required Future<void> Function() startRegistration,
 }) async {
-  if (descriptor == null) return false;
-  return requestAuthorization();
+  if (descriptor == null) return;
+  await startRegistration();
 }

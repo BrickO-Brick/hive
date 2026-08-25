@@ -24,8 +24,7 @@ class BuzzPushBootstrap extends HookConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     useListenable(apnsDeviceToken);
-    useListenable(pushAuthorizationGranted);
-    final authorizationAttempt = useRef<String?>(null);
+    final registrationAttempt = useRef<String?>(null);
     final publicationAttempt = useRef<String?>(null);
     final session = ref.watch(relaySessionProvider);
     final config = ref.watch(relayConfigProvider);
@@ -40,17 +39,17 @@ class BuzzPushBootstrap extends HookConsumerWidget {
           return null;
         }
         final attempt = '${community!.id}|${config.baseUrl}';
-        if (authorizationAttempt.value == attempt) return null;
-        authorizationAttempt.value = attempt;
+        if (registrationAttempt.value == attempt) return null;
+        registrationAttempt.value = attempt;
         unawaited(() async {
           try {
-            await requestBuzzPushAuthorizationIfCapable(
+            await startBuzzPushRegistrationIfCapable(
               descriptor,
-              requestAuthorization: requestBuzzPushAuthorization,
+              startRegistration: startBuzzPushRegistration,
             );
           } catch (error, stack) {
-            authorizationAttempt.value = null;
-            debugPrint('Push authorization bootstrap failed: $error');
+            registrationAttempt.value = null;
+            debugPrint('Push registration bootstrap failed: $error');
             debugPrintStack(stackTrace: stack);
           }
         }());
@@ -60,12 +59,10 @@ class BuzzPushBootstrap extends HookConsumerWidget {
     );
 
     final token = apnsDeviceToken.value;
-    final authorized = pushAuthorizationGranted.value;
     useEffect(
       () {
         if (!_ready(session, config, community, memberPubkey) ||
             descriptor == null ||
-            authorized != true ||
             token == null) {
           return null;
         }
@@ -112,7 +109,6 @@ class BuzzPushBootstrap extends HookConsumerWidget {
         community?.pushSubscriptionState,
         memberPubkey,
         descriptor,
-        authorized,
         token,
       ],
     );

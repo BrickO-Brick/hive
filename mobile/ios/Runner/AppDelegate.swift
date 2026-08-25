@@ -3,6 +3,7 @@ import BuzzPushKit
 import Flutter
 import UIKit
 import UserNotifications
+import os.log
 
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
@@ -329,8 +330,8 @@ import UserNotifications
       return
     }
     switch call.method {
-    case "requestAuthorization":
-      requestPushAuthorization(result: result)
+    case "startRegistration":
+      startPushRegistration(result: result)
     case "takePendingNotificationResponse":
       result(pushNavigationBuffer.take()?.flutterArguments)
     case "saveCommunitySnapshot":
@@ -376,28 +377,21 @@ import UserNotifications
     }
   }
 
-  private func requestPushAuthorization(result: @escaping FlutterResult) {
+  private func startPushRegistration(result: @escaping FlutterResult) {
     UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) {
-      granted, error in
-      DispatchQueue.main.async {
-        if let error {
-          result(
-            FlutterError(
-              code: "notification_authorization_failed",
-              message: "Unable to request notification authorization.",
-              details: error.localizedDescription
-            )
-          )
-          return
-        }
-        guard granted else {
-          result(false)
-          return
-        }
-        UIApplication.shared.registerForRemoteNotifications()
-        result(true)
+      _, error in
+      if let error {
+        os_log(
+          "Buzz notification authorization request failed: %{public}@",
+          type: .error,
+          error.localizedDescription
+        )
       }
     }
+    // APNs token registration is independent from display authorization. A
+    // denied or failed prompt must not prevent gateway enrollment and leases.
+    UIApplication.shared.registerForRemoteNotifications()
+    result(nil)
   }
 
   private func handleDevPushEnrollment(
