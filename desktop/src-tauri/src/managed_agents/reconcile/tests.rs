@@ -258,6 +258,51 @@ fn keyring_resident_nsec_is_hydrated_for_private_config() {
     assert_eq!(payload.identity.private_key_nsec, nsec);
 }
 
+/// A record whose legacy `relay_url` pin is empty (legal since #2122 — the
+/// pin is ignored at read time) must not stop the boot reconcile: the records
+/// after it in file order still get their first 30179.
+#[test]
+fn empty_relay_url_pin_does_not_abort_boot_reconcile() {
+    use nostr::ToBech32;
+
+    let owner_keys = nostr::Keys::generate();
+    let pinless_keys = nostr::Keys::generate();
+    let later_keys = nostr::Keys::generate();
+    let mut pinless = sample_record(&pinless_keys.public_key().to_hex(), "pinless");
+    pinless.relay_url.clear();
+    pinless.private_key_nsec = pinless_keys.secret_key().to_bech32().unwrap();
+    let mut later = sample_record(&later_keys.public_key().to_hex(), "later");
+    later.private_key_nsec = later_keys.secret_key().to_bech32().unwrap();
+
+    let dir = TempDir::new().unwrap();
+    write_store(&dir, &[pinless, later]);
+    let db_path = dir.path().join("retention.db");
+    reconcile_agents_in_dir_with(
+        dir.path(),
+        &owner_keys,
+        &db_path,
+        None::<&crate::secret_store::SecretStore>,
+    )
+    .unwrap();
+
+    let conn = open_retention_db(&db_path).unwrap();
+    let owner = owner_keys.public_key().to_hex();
+    for keys in [&pinless_keys, &later_keys] {
+        let agent = keys.public_key().to_hex();
+        assert!(
+            get_retained_event(&conn, KIND_MANAGED_AGENT, &owner, &agent)
+                .unwrap()
+                .is_some(),
+            "30177 for {agent}"
+        );
+        let row = get_retained_event(&conn, KIND_PRIVATE_MANAGED_AGENT, &owner, &agent)
+            .unwrap()
+            .unwrap_or_else(|| panic!("first 30179 for {agent}"));
+        let event = nostr::Event::from_json(&row.raw_event).unwrap();
+        private_managed_agent::validate_and_decrypt(&event, &owner_keys).unwrap();
+    }
+}
+
 #[test]
 fn fresh_record_is_retained_pending() {
     let dir = TempDir::new().unwrap();

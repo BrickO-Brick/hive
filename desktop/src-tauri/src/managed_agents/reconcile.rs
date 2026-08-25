@@ -144,8 +144,12 @@ fn reconcile_agents_in_dir_with(
             continue;
         }
 
-        if retain_agent_record_at_boot(&conn, keys, record)? {
-            reconciled += 1;
+        // One unpublishable record must not strand every record after it in
+        // file order: log it and keep walking.
+        match retain_agent_record_at_boot(&conn, keys, record) {
+            Ok(true) => reconciled += 1,
+            Ok(false) => {}
+            Err(e) => eprintln!("buzz-desktop: agent-event-reconcile: {e}"),
         }
     }
 

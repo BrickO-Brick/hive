@@ -417,7 +417,9 @@ fn validate_identity_and_config(
     if let Some(auth_tag) = &identity.auth_tag {
         validate_auth_tag(auth_tag, &owner.to_hex(), agent)?;
     }
-    if config.relay_url.is_empty() || config.relay_url.len() > 4096 {
+    // Empty is legal: a pin-less agent resolves to the active workspace relay
+    // at read time, so only the upper bound is enforced here.
+    if config.relay_url.len() > 4096 {
         return Err(Error::InvalidPayload("invalid relay_url length".into()));
     }
     if config.name.is_empty() || config.name.len() > 4096 {
@@ -762,6 +764,16 @@ mod tests {
             validate_payload(&candidate),
             Err(Error::InvalidPayload(message)) if message.contains("does not derive")
         ));
+    }
+
+    /// A pin-less agent (empty `relay_url`, legal since the per-record pin
+    /// became read-time-ignored) must still produce a valid payload.
+    #[test]
+    fn empty_relay_url_is_accepted() {
+        let owner = Keys::generate();
+        let mut candidate = payload(&owner, &Keys::generate());
+        candidate.config.relay_url.clear();
+        validate_payload(&candidate).unwrap();
     }
 
     #[test]
