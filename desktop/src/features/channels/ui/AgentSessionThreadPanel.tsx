@@ -68,6 +68,12 @@ type AgentSessionThreadPanelProps = {
   channel: Channel | null;
   channelId?: string | null;
   canInterruptTurn: boolean;
+  /**
+   * When false, the panel skips its own slide-in. Set by the cover drawer,
+   * which already animates itself, so the two don't compound into a double
+   * slide. Defaults to animating.
+   */
+  enterMotion?: boolean;
   layout?: "standalone" | "split";
   isSinglePanelView?: boolean;
   profiles?: UserProfileLookup;
@@ -98,6 +104,7 @@ export function AgentSessionThreadPanel({
   canInterruptTurn,
   channel,
   channelId = null,
+  enterMotion = true,
   layout = "standalone",
   isSinglePanelView = false,
   profiles,
@@ -469,6 +476,7 @@ export function AgentSessionThreadPanel({
 
   return (
     <AuxiliaryPanel
+      enterMotion={enterMotion}
       isSinglePanelView={isSinglePanelView}
       layout={layout}
       onClose={onClose}
