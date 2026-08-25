@@ -66,8 +66,8 @@ import type {
   RawConnectAcpRuntimeResult,
 } from "@/shared/api/tauriAgentAuth";
 import type {
-  RelaySkillCover,
-  ResolvedRelaySkill,
+  SharedInstructionCover,
+  ResolvedSharedInstruction,
 } from "@/shared/api/tauriPersonas";
 import type {
   RawAcpRuntimeCatalogEntry,
@@ -151,7 +151,7 @@ type MockPersonaSeed = {
   model?: string | null;
   provider?: string | null;
   namePool?: string[];
-  assignedRelaySkills?: string[];
+  assignedSharedInstructions?: string[];
   respondTo?: "owner-only" | "allowlist" | "anyone";
   respondToAllowlist?: string[];
 };
@@ -315,9 +315,9 @@ type E2eConfig = {
     managedAgentRuntimes?: MockManagedAgentRuntimeSeed[];
     personas?: MockPersonaSeed[];
     /** Reusable relay instructions returned to agent create/edit surfaces. */
-    relaySkills?: RelaySkillCover[];
+    sharedInstructions?: SharedInstructionCover[];
     /** Full relay instructions returned when a reusable instruction is previewed. */
-    relaySkillDetails?: ResolvedRelaySkill[];
+    sharedInstructionDetails?: ResolvedSharedInstruction[];
     /** Community catalog replaceable-event heads returned by relay queries. */
     personaCatalogEvents?: RelayEvent[];
     /** Outcomes for successive explicit persona share publications. */
@@ -991,7 +991,7 @@ type RawPersona = {
   model?: string | null;
   provider?: string | null;
   name_pool?: string[];
-  assigned_relay_skills?: string[];
+  assigned_shared_instructions?: string[];
   is_builtin: boolean;
   is_active: boolean;
   shared: boolean;
@@ -2493,7 +2493,9 @@ function resetMockPersonas(config?: E2eConfig) {
       model: persona.model ?? null,
       provider: persona.provider ?? null,
       name_pool: persona.namePool ?? [],
-      assigned_relay_skills: [...(persona.assignedRelaySkills ?? [])],
+      assigned_shared_instructions: [
+        ...(persona.assignedSharedInstructions ?? []),
+      ],
       respond_to: persona.respondTo ?? null,
       respond_to_allowlist:
         persona.respondTo === "allowlist"
@@ -3354,8 +3356,10 @@ function mockPersonaCatalogPublications() {
         runtime: optionalString(content.runtime),
         model: optionalString(content.model),
         provider: optionalString(content.provider),
-        assignedRelaySkills: Array.isArray(content.assigned_relay_skills)
-          ? content.assigned_relay_skills.filter(
+        assignedSharedInstructions: Array.isArray(
+          content.assigned_shared_instructions,
+        )
+          ? content.assigned_shared_instructions.filter(
               (value): value is string => typeof value === "string",
             )
           : [],
@@ -8506,7 +8510,7 @@ async function handleCreatePersona(args: {
     runtime?: string;
     model?: string;
     provider?: string;
-    assignedRelaySkills?: string[];
+    assignedSharedInstructions?: string[];
     envVars?: Record<string, string>;
     behavior?: PersonaBehaviorInput;
     catalogSource?: { ownerPubkey: string; personaId: string };
@@ -8521,7 +8525,9 @@ async function handleCreatePersona(args: {
     runtime: args.input.runtime?.trim() || null,
     model: args.input.model?.trim() || null,
     provider: args.input.provider?.trim() || null,
-    assigned_relay_skills: [...(args.input.assignedRelaySkills ?? [])],
+    assigned_shared_instructions: [
+      ...(args.input.assignedSharedInstructions ?? []),
+    ],
     is_builtin: false,
     is_active: true,
     shared: false,
@@ -8554,7 +8560,7 @@ type MockUpdatePersonaInput = {
   runtime?: string;
   model?: string;
   provider?: string;
-  assignedRelaySkills?: string[];
+  assignedSharedInstructions?: string[];
   envVars?: Record<string, string>;
   behavior?: PersonaBehaviorInput;
 };
@@ -8588,8 +8594,10 @@ async function applyMockPersonaUpdate(
   persona.runtime = input.runtime?.trim() || null;
   persona.model = input.model?.trim() || null;
   persona.provider = input.provider?.trim() || null;
-  if (input.assignedRelaySkills !== undefined) {
-    persona.assigned_relay_skills = [...input.assignedRelaySkills];
+  if (input.assignedSharedInstructions !== undefined) {
+    persona.assigned_shared_instructions = [
+      ...input.assignedSharedInstructions,
+    ];
   }
   if (input.envVars !== undefined) {
     // Absent = preserve; present = replace entirely (matches Rust handler).
@@ -13139,6 +13147,7 @@ export function maybeInstallE2eTauriMocks() {
         // Post-create bootstrap reconcile: no new pairs in the mock world.
         return [];
       case "set_agent_managed_profiles":
+      case "set_shared_instructions_enabled":
         return undefined;
       case "set_managed_agent_auto_restart":
         return handleSetManagedAgentAutoRestart(
@@ -13995,9 +14004,9 @@ export function maybeInstallE2eTauriMocks() {
         window.localStorage.removeItem(key);
         return null;
       }
-      case "list_my_relay_skills":
-        return getConfig()?.mock?.relaySkills ?? [];
-      case "create_relay_skill": {
+      case "list_my_shared_instructions":
+        return getConfig()?.mock?.sharedInstructions ?? [];
+      case "create_shared_instruction": {
         const input = (
           payload as {
             input: {
@@ -14021,7 +14030,7 @@ export function maybeInstallE2eTauriMocks() {
         };
       }
 
-      case "update_relay_skill": {
+      case "update_shared_instruction": {
         const input = (
           payload as {
             input: {
@@ -14037,7 +14046,7 @@ export function maybeInstallE2eTauriMocks() {
         const eventId = "de".repeat(32);
         const updatedAt = 1_700_000_001;
         const mock = getConfig()?.mock;
-        const cover = mock?.relaySkills?.find(
+        const cover = mock?.sharedInstructions?.find(
           (candidate) => candidate.coordinate === input.coordinate,
         );
         if (cover) {
@@ -14048,7 +14057,7 @@ export function maybeInstallE2eTauriMocks() {
             updatedAt,
           });
         }
-        const detail = mock?.relaySkillDetails?.find(
+        const detail = mock?.sharedInstructionDetails?.find(
           (candidate) => candidate.coordinate === input.coordinate,
         );
         if (detail) {
@@ -14073,11 +14082,11 @@ export function maybeInstallE2eTauriMocks() {
         };
       }
 
-      case "resolve_relay_skills": {
+      case "resolve_shared_instructions": {
         const coordinates =
           (payload as { coordinates?: string[] }).coordinates ?? [];
         return coordinates.map((coordinate) => {
-          const configured = getConfig()?.mock?.relaySkillDetails?.find(
+          const configured = getConfig()?.mock?.sharedInstructionDetails?.find(
             (detail) => detail.coordinate === coordinate,
           );
           if (configured) return configured;
@@ -14092,7 +14101,7 @@ export function maybeInstallE2eTauriMocks() {
               .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
               .join(" "),
             summary: "Shared expertise from this exact signed publisher.",
-            content: "# Skill\n\nMock relay skill content.",
+            content: "# Skill\n\nMock shared instruction content.",
             eventId: "ab".repeat(32),
             updatedAt: 1_700_000_000,
             editable:

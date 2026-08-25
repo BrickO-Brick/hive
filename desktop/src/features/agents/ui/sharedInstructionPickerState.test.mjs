@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { toggleRelaySkillCoordinate } from "./relaySkillPickerState.ts";
+import { toggleSharedInstructionCoordinate } from "./sharedInstructionPickerState.ts";
 
 const owner = "a".repeat(64);
 const compatible = {
@@ -23,16 +23,16 @@ const incompatible = {
   summary: "An older note that is not compatible yet.",
   compatible: false,
   incompatibilities: [
-    { code: "invalidName", message: "Use an Agent Skills-compatible name" },
+    { code: "invalidName", message: "Use an shared-instruction name" },
   ],
 };
 
-test("relay skill selection adds and removes exact coordinates", () => {
-  assert.deepEqual(toggleRelaySkillCoordinate([], compatible), [
+test("shared instruction selection adds and removes exact coordinates", () => {
+  assert.deepEqual(toggleSharedInstructionCoordinate([], compatible), [
     compatible.coordinate,
   ]);
   assert.deepEqual(
-    toggleRelaySkillCoordinate([compatible.coordinate], compatible),
+    toggleSharedInstructionCoordinate([compatible.coordinate], compatible),
     [],
   );
 });
@@ -40,7 +40,7 @@ test("relay skill selection adds and removes exact coordinates", () => {
 test("incompatible relay notes cannot enter the assignment", () => {
   const selected = [compatible.coordinate];
   assert.deepEqual(
-    toggleRelaySkillCoordinate(selected, incompatible),
+    toggleSharedInstructionCoordinate(selected, incompatible),
     selected,
   );
 });

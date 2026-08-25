@@ -8,7 +8,7 @@ use crate::relay::RestClient;
 
 const SKILL_KIND: u16 = 30023;
 const MAX_SKILLS: usize = 64;
-const MAX_SLUG_BYTES: usize = 80;
+const MAX_SLUG_BYTES: usize = 64;
 const MAX_DESCRIPTION_BYTES: usize = 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,7 +42,7 @@ fn parse_coordinate(raw: &str) -> Option<Coordinate> {
 /// Fetch compact, verified covers for exact owner-assigned coordinates.
 ///
 /// Failure is non-fatal at startup: callers omit the section and log the error.
-pub(crate) async fn fetch_assigned_skill_covers(
+pub(crate) async fn fetch_assigned_instruction_covers(
     rest: &RestClient,
     coordinates: &[String],
 ) -> Result<Option<String>, String> {
@@ -61,11 +61,11 @@ pub(crate) async fn fetch_assigned_skill_covers(
         .map_err(|error| format!("shared instruction query failed: {error}"))?;
     let events = value
         .as_array()
-        .ok_or_else(|| "relay skill query returned non-array".to_string())?
+        .ok_or_else(|| "shared instruction query returned non-array".to_string())?
         .iter()
         .filter_map(|value| serde_json::from_value::<Event>(value.clone()).ok())
         .collect::<Vec<_>>();
-    Ok(render_assigned_skill_covers(&coordinates, events))
+    Ok(render_assigned_instruction_covers(&coordinates, events))
 }
 
 fn exact_coordinate_filters(coordinates: &[Coordinate]) -> Vec<Filter> {
@@ -82,7 +82,10 @@ fn exact_coordinate_filters(coordinates: &[Coordinate]) -> Vec<Filter> {
         .collect()
 }
 
-fn render_assigned_skill_covers(coordinates: &[Coordinate], events: Vec<Event>) -> Option<String> {
+fn render_assigned_instruction_covers(
+    coordinates: &[Coordinate],
+    events: Vec<Event>,
+) -> Option<String> {
     let requested = coordinates
         .iter()
         .map(|coordinate| {
@@ -136,7 +139,7 @@ fn render_assigned_skill_covers(coordinates: &[Coordinate], events: Vec<Event>) 
     }
     (!rows.is_empty()).then(|| {
         format!(
-            "[Assigned Relay Skills]\nThese exact coordinates were assigned by the owner and are authorized for on-demand loading. Read the cover first; fetch a full note only when its description matches the work.\n\n{}",
+            "[Shared Instructions]\nThese exact coordinates were assigned by the owner and are authorized for on-demand loading. Read the cover first; fetch a full note only when its description matches the work.\n\n{}",
             rows.join("\n\n")
         )
     })
@@ -228,7 +231,7 @@ mod tests {
         .iter()
         .filter_map(|value| parse_coordinate(value))
         .collect::<Vec<_>>();
-        let rendered = render_assigned_skill_covers(
+        let rendered = render_assigned_instruction_covers(
             &coordinates,
             vec![
                 note(&first, "design-engineering", "Design", "Polish UI", 10),
@@ -256,9 +259,11 @@ mod tests {
             ])
             .sign_with_keys(&author)
             .unwrap();
-        let rendered =
-            render_assigned_skill_covers(&[parse_coordinate(&coordinate).unwrap()], vec![event])
-                .unwrap();
+        let rendered = render_assigned_instruction_covers(
+            &[parse_coordinate(&coordinate).unwrap()],
+            vec![event],
+        )
+        .unwrap();
 
         assert!(rendered.contains("**safe-slug**"));
         assert!(!rendered.contains(&"x".repeat(MAX_DESCRIPTION_BYTES + 1)));

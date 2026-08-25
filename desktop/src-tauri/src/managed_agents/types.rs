@@ -74,9 +74,9 @@ pub struct AgentDefinition {
     /// Exact NIP-23 coordinates explicitly assigned to this definition.
     ///
     /// Each value is `30023:<publisher-pubkey-hex>:<slug>`. Empty is omitted
-    /// so records predating relay-skill assignment remain byte-identical.
+    /// so records predating shared-instruction assignment remain byte-identical.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub assigned_relay_skills: Vec<String>,
+    pub assigned_shared_instructions: Vec<String>,
     /// Harness-level configuration passed to the agent subprocess as environment variables.
     /// Opaque to Buzz — keys and values are runtime-specific.
     ///
@@ -156,7 +156,7 @@ impl AgentDefinition {
             source_team: self.source_team,
             source_team_persona_slug: self.source_team_persona_slug,
             catalog_source: self.catalog_source,
-            assigned_relay_skills: self.assigned_relay_skills,
+            assigned_shared_instructions: self.assigned_shared_instructions,
             definition_respond_to: self.respond_to,
             definition_respond_to_allowlist: self.respond_to_allowlist,
             definition_parallelism: self.parallelism,
@@ -192,7 +192,7 @@ impl ManagedAgentRecord {
             source_team: self.source_team.clone(),
             source_team_persona_slug: self.source_team_persona_slug.clone(),
             catalog_source: self.catalog_source.clone(),
-            assigned_relay_skills: self.assigned_relay_skills.clone(),
+            assigned_shared_instructions: self.assigned_shared_instructions.clone(),
             env_vars: self.env_vars.clone(),
             respond_to: self.definition_respond_to.clone(),
             respond_to_allowlist: self.definition_respond_to_allowlist.clone(),
@@ -422,7 +422,7 @@ pub struct ManagedAgentRecord {
     /// Exact NIP-23 coordinates assigned on a definition. Instance records do
     /// not use this field directly; linked spawns resolve the live definition.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub assigned_relay_skills: Vec<String>,
+    pub assigned_shared_instructions: Vec<String>,
     /// NIP-AP definition-level behavioral defaults, absorbed from
     /// `AgentDefinition` in WIRE shape (kebab-case string / optional u32),
     /// distinct from the instance-side `respond_to`/`respond_to_allowlist`/

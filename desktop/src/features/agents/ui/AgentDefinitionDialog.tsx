@@ -16,7 +16,7 @@ import type { EnvVarsValue } from "./EnvVarsEditor";
 import { PersonaAdvancedFields } from "./PersonaAdvancedFields";
 import { PersonaModelField } from "./PersonaModelField";
 import { runtimeAvailabilityWarning } from "./runtimeAvailabilityWarning";
-import { useRelaySkillEditor } from "./useRelaySkillEditor";
+import { useSharedInstructionEditor } from "./useSharedInstructionEditor";
 import { PersonaProviderApiKeyField } from "./PersonaProviderApiKeyField";
 import {
   canSubmitPersonaDialog,
@@ -144,9 +144,8 @@ export function AgentDefinitionDialog({
   const aiDefaultsTriggerRef = React.useRef<HTMLButtonElement>(null);
   const [avatarUrl, setAvatarUrl] = React.useState("");
   const [systemPrompt, setSystemPrompt] = React.useState("");
-  const [assignedRelaySkills, setAssignedRelaySkills] = React.useState<
-    string[]
-  >([]);
+  const [assignedSharedInstructions, setAssignedSharedInstructions] =
+    React.useState<string[]>([]);
   const [runtime, setRuntime] = React.useState("");
   const [model, setModel] = React.useState("");
   const [isCustomModelEditing, setIsCustomModelEditing] = React.useState(false);
@@ -174,12 +173,12 @@ export function AgentDefinitionDialog({
   const [isAvatarUploadPending, setIsAvatarUploadPending] =
     React.useState(false);
   const [hasUserChanges, setHasUserChanges] = React.useState(false);
-  const relaySkillEditor = useRelaySkillEditor({
-    assignedRelaySkills,
+  const sharedInstructionEditor = useSharedInstructionEditor({
+    assignedSharedInstructions,
     embedded,
     open,
     onDirtyChange,
-    setAssignedRelaySkills,
+    setAssignedSharedInstructions,
     setHasUserChanges,
   });
   const [isAddHarnessOpen, setIsAddHarnessOpen] = React.useState(false);
@@ -216,8 +215,10 @@ export function AgentDefinitionDialog({
     setDisplayName(initialValues.displayName);
     setAvatarUrl(initialValues.avatarUrl ?? "");
     setSystemPrompt(initialValues.systemPrompt);
-    setAssignedRelaySkills(initialValues.assignedRelaySkills ?? []);
-    relaySkillEditor.resetRelaySkillEditor();
+    setAssignedSharedInstructions(
+      initialValues.assignedSharedInstructions ?? [],
+    );
+    sharedInstructionEditor.resetSharedInstructionEditor();
     setRuntime(initialValues.runtime ?? "");
     setModel(initialValues.model ?? "");
     setIsCustomModelEditing(false);
@@ -246,7 +247,11 @@ export function AgentDefinitionDialog({
     setHasUserChanges(false);
     isRuntimeAutoSeededRef.current = false;
     hasSeededForOpenRef.current = false;
-  }, [initialValues, open, relaySkillEditor.resetRelaySkillEditor]);
+  }, [
+    initialValues,
+    open,
+    sharedInstructionEditor.resetSharedInstructionEditor,
+  ]);
 
   React.useEffect(() => {
     if (
@@ -318,7 +323,7 @@ export function AgentDefinitionDialog({
       setDisplayName("");
       setAvatarUrl("");
       setSystemPrompt("");
-      setAssignedRelaySkills([]);
+      setAssignedSharedInstructions([]);
       setRuntime("");
       setModel("");
       setIsCustomModelEditing(false);
@@ -375,7 +380,7 @@ export function AgentDefinitionDialog({
       model: modelForSubmit,
       provider: providerForSubmit,
       namePool: namePoolInput,
-      assignedRelaySkills,
+      assignedSharedInstructions,
       envVars,
       behavior: behaviorForSubmit(
         behaviorDraft,
@@ -801,7 +806,7 @@ export function AgentDefinitionDialog({
         </div>
 
         <AgentInstructionsField
-          {...relaySkillEditor.fieldProps}
+          {...sharedInstructionEditor.fieldProps}
           disabled={isPending}
           onSystemPromptChange={setSystemPrompt}
           systemPrompt={systemPrompt}
@@ -1013,7 +1018,7 @@ export function AgentDefinitionDialog({
     </form>
   );
 
-  if (relaySkillEditor.editor) return relaySkillEditor.editor;
+  if (sharedInstructionEditor.editor) return sharedInstructionEditor.editor;
 
   return (
     <AgentDefinitionDialogShell

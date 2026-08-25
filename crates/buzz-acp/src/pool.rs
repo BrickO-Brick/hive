@@ -603,8 +603,8 @@ pub struct PromptContext {
     /// on `session/new`. Never part of the prompt.
     pub session_title: Option<String>,
     pub team_instructions: Option<String>,
-    /// Compact owner-assigned relay-skill covers, including their own section header.
-    pub assigned_relay_skills: Option<String>,
+    /// Compact owner-assigned shared-instruction covers, including their own section header.
+    pub assigned_shared_instructions: Option<String>,
     pub heartbeat_prompt: Option<String>,
     /// Base prompt content, or `None` if `--no-base-prompt` was passed.
     ///
@@ -1024,13 +1024,13 @@ async fn create_session_and_apply_model(
         with_huddle_instructions(
             with_core(
                 with_team(
-                    with_assigned_relay_skills(
+                    with_assigned_shared_instructions(
                         framed_system_prompt(
                             &ctx.cwd,
                             ctx.base_prompt,
                             ctx.system_prompt.as_deref(),
                         ),
-                        ctx.assigned_relay_skills.as_deref(),
+                        ctx.assigned_shared_instructions.as_deref(),
                     ),
                     ctx.team_instructions.as_deref(),
                 ),
@@ -1649,18 +1649,38 @@ fn workspace_section(cwd: &str) -> String {
     format!("[Workspace]\nCurrent working directory: {cwd}")
 }
 
-/// Append owner-assigned skill covers after agent instructions and before team instructions.
-fn with_assigned_relay_skills(prompt: Option<String>, skills: Option<&str>) -> Option<String> {
-    let skills = skills.map(str::trim).filter(|value| !value.is_empty());
-    match (prompt, skills) {
-        (Some(prompt), Some(skills)) => Some(format!("{prompt}\n\n{skills}")),
-        (None, Some(skills)) => Some(skills.to_string()),
+/// Append owner-assigned instruction covers after agent instructions and before team instructions.
+fn with_assigned_shared_instructions(
+    prompt: Option<String>,
+    instructions: Option<&str>,
+) -> Option<String> {
+    let instructions = instructions
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    match (prompt, instructions) {
+        (Some(prompt), Some(instructions)) => Some(format!("{prompt}\n\n{instructions}")),
+        (None, Some(instructions)) => Some(instructions.to_string()),
         (Some(prompt), None) => Some(prompt),
         (None, None) => None,
     }
 }
 
-/// Append team instructions after assigned-skill covers and before core memory.
+#[cfg(test)]
+mod shared_instruction_prompt_tests {
+    use super::with_assigned_shared_instructions;
+
+    #[test]
+    fn absent_assignments_leave_prompt_unchanged() {
+        let prompt = "[Base]\nbase\n\n[Agent Instructions]\nagent".to_string();
+        assert_eq!(
+            with_assigned_shared_instructions(Some(prompt.clone()), None),
+            Some(prompt)
+        );
+        assert_eq!(with_assigned_shared_instructions(None, None), None);
+    }
+}
+
+/// Append team instructions after assigned-instruction covers and before core memory.
 fn with_team(prompt: Option<String>, instructions: Option<&str>) -> Option<String> {
     let instructions = instructions
         .map(str::trim)
@@ -2125,7 +2145,7 @@ pub async fn run_prompt_task(
     let standing = crate::queue::StandingContext {
         base_prompt: ctx.base_prompt,
         system_prompt: ctx.system_prompt.as_deref(),
-        assigned_relay_skills: ctx.assigned_relay_skills.as_deref(),
+        assigned_shared_instructions: ctx.assigned_shared_instructions.as_deref(),
         team_instructions: ctx.team_instructions.as_deref(),
         agent_core: agent_core.as_deref(),
         huddle_instructions: huddle_instructions.as_deref(),
@@ -2395,7 +2415,7 @@ pub async fn run_prompt_task(
                 has_system_prompt_support: agent.has_system_prompt_support(),
                 base_prompt: standing.base_prompt,
                 system_prompt: standing.system_prompt,
-                assigned_relay_skills: standing.assigned_relay_skills,
+                assigned_shared_instructions: standing.assigned_shared_instructions,
                 team_instructions: standing.team_instructions,
                 agent_canvas: standing.agent_canvas,
                 standing_context_sent,
@@ -4924,7 +4944,7 @@ mod tests {
         crate::queue::StandingContext {
             base_prompt: Some("be helpful"),
             system_prompt: Some("you are Eva"),
-            assigned_relay_skills: None,
+            assigned_shared_instructions: None,
             team_instructions: Some("ship small"),
             agent_core: Some("[Agent Memory — core]\nremember this"),
             huddle_instructions: Some("reply immediately"),
@@ -7950,7 +7970,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             system_prompt: None,
             session_title: None,
             team_instructions: None,
-            assigned_relay_skills: None,
+            assigned_shared_instructions: None,
             heartbeat_prompt: None,
             base_prompt: None,
             cwd: ".".to_string(),

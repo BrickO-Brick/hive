@@ -17,7 +17,7 @@ use tauri::State;
 
 use crate::{
     app_state::AppState,
-    managed_agents::{validate_agent_definition_text, validate_assigned_relay_skills},
+    managed_agents::{validate_agent_definition_text, validate_assigned_shared_instructions},
     native_relay_client::NativeRelayClient,
 };
 
@@ -53,7 +53,7 @@ struct CatalogAgentProjection {
     model: Option<String>,
     provider: Option<String>,
     name_pool: Vec<String>,
-    assigned_relay_skills: Vec<String>,
+    assigned_shared_instructions: Vec<String>,
     respond_to: Option<String>,
     parallelism: Option<u64>,
 }
@@ -235,11 +235,12 @@ fn parse_agent(content: &str) -> Option<CatalogAgentProjection> {
         .get("parallelism")
         .and_then(Value::as_u64)
         .filter(|value| (1..=32).contains(value));
-    let assigned_relay_skills = match object.get("assigned_relay_skills") {
+    let assigned_shared_instructions = match object.get("assigned_shared_instructions") {
         Some(value) => serde_json::from_value::<Vec<String>>(value.clone()).ok()?,
         None => Vec::new(),
     };
-    let assigned_relay_skills = validate_assigned_relay_skills(assigned_relay_skills).ok()?;
+    let assigned_shared_instructions =
+        validate_assigned_shared_instructions(assigned_shared_instructions).ok()?;
     let name_pool = object
         .get("name_pool")
         .and_then(Value::as_array)
@@ -264,7 +265,7 @@ fn parse_agent(content: &str) -> Option<CatalogAgentProjection> {
         model: optional_string(object.get("model")),
         provider: optional_string(object.get("provider")),
         name_pool,
-        assigned_relay_skills,
+        assigned_shared_instructions,
         respond_to,
         parallelism,
     })

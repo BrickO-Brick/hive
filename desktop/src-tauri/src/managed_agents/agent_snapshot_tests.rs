@@ -70,7 +70,7 @@ fn minimal_record() -> ManagedAgentRecord {
         source_team_persona_slug: Some("lep".to_string()), // MUST NOT appear
         definition_respond_to: Some("allowlist".to_string()),
         catalog_source: None,
-        assigned_relay_skills: Vec::new(),
+        assigned_shared_instructions: Vec::new(),
         definition_respond_to_allowlist: vec!["abc123def".to_string()],
         definition_parallelism: Some(4),
         relay_mesh: None,
@@ -90,16 +90,19 @@ fn json_round_trip_config_only() {
 }
 
 #[test]
-fn json_round_trip_preserves_assigned_relay_skills() {
+fn json_round_trip_preserves_assigned_shared_instructions() {
     let mut record = minimal_record();
     let coordinate = format!("30023:{}:review", "a".repeat(64));
-    record.assigned_relay_skills = vec![coordinate.clone()];
+    record.assigned_shared_instructions = vec![coordinate.clone()];
 
     let snapshot = build_snapshot(&record, MemoryLevel::None, vec![], None);
     let bytes = encode_snapshot_json(&snapshot).unwrap();
     let parsed = decode_snapshot_json(&bytes).unwrap();
 
-    assert_eq!(parsed.definition.assigned_relay_skills, vec![coordinate]);
+    assert_eq!(
+        parsed.definition.assigned_shared_instructions,
+        vec![coordinate]
+    );
 }
 
 #[test]

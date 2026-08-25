@@ -1,10 +1,10 @@
 import * as React from "react";
 
 import {
-  createRelaySkill,
-  type RelaySkillCover,
-  type ResolvedRelaySkill,
-  updateRelaySkill,
+  createSharedInstruction,
+  type SharedInstructionCover,
+  type ResolvedSharedInstruction,
+  updateSharedInstruction,
 } from "@/shared/api/tauriPersonas";
 import { cn } from "@/shared/lib/cn";
 import {
@@ -27,25 +27,25 @@ import {
   PERSONA_FIELD_SHELL_CLASS,
 } from "./agentConfigOptions";
 
-type RelaySkillEditorProps = {
-  detail: ResolvedRelaySkill | null;
+type SharedInstructionEditorProps = {
+  detail: ResolvedSharedInstruction | null;
   embedded?: boolean;
   onClose: () => void;
   onDirtyChange?: (dirty: boolean) => void;
-  onPublished: (skill: RelaySkillCover) => void;
+  onPublished: (skill: SharedInstructionCover) => void;
   registerCloseRequest: (request: (() => void) | null) => void;
 };
 
 const EMPTY_DRAFT = { title: "", summary: "", instructions: "" };
 
-export function RelaySkillEditor({
+export function SharedInstructionEditor({
   detail,
   embedded = false,
   onClose,
   onDirtyChange,
   onPublished,
   registerCloseRequest,
-}: RelaySkillEditorProps) {
+}: SharedInstructionEditorProps) {
   const seed = React.useMemo(
     () =>
       detail
@@ -100,12 +100,12 @@ export function RelaySkillEditor({
     setPublishError("");
     try {
       const skill = detail
-        ? await updateRelaySkill({
+        ? await updateSharedInstruction({
             ...draft,
             coordinate: detail.coordinate,
             expectedEventId: detail.eventId,
           })
-        : await createRelaySkill({
+        : await createSharedInstruction({
             ...draft,
             name: relayInstructionNameFromTitle(draft.title),
           });
@@ -144,7 +144,7 @@ export function RelaySkillEditor({
             !draft.summary.trim() ||
             !draft.instructions.trim()
           }
-          form="relay-skill-editor-form"
+          form="shared-instruction-editor-form"
           type="submit"
         >
           {publishState === "publishing"
@@ -171,7 +171,7 @@ export function RelaySkillEditor({
             "h-full max-h-none w-full max-w-none rounded-none shadow-none",
         )}
         contentClassName="pt-3"
-        data-testid="relay-skill-editor"
+        data-testid="shared-instruction-editor"
         description={
           detail
             ? "Update the reusable guidance agents apply to relevant tasks."
@@ -184,17 +184,20 @@ export function RelaySkillEditor({
             ? "Update the reusable guidance agents apply to relevant tasks."
             : "Add reusable guidance agents can apply to relevant tasks."
         }
-        scrollAreaTestId="relay-skill-editor-scroll-area"
+        scrollAreaTestId="shared-instruction-editor-scroll-area"
         showCloseButton={!embedded}
         title={detail ? "Edit shared instruction" : "Create shared instruction"}
       >
         <form
           className="space-y-4"
-          id="relay-skill-editor-form"
+          id="shared-instruction-editor-form"
           onSubmit={publishSkill}
         >
           <div className="space-y-1.5">
-            <label className="text-sm font-medium" htmlFor="relay-skill-title">
+            <label
+              className="text-sm font-medium"
+              htmlFor="shared-instruction-title"
+            >
               Title
             </label>
             <div
@@ -209,7 +212,7 @@ export function RelaySkillEditor({
                   "h-8 px-0 py-0 leading-6",
                   PERSONA_FIELD_CONTROL_CLASS,
                 )}
-                id="relay-skill-title"
+                id="shared-instruction-title"
                 maxLength={280}
                 onChange={(event) => updateDraft("title", event.target.value)}
                 placeholder="Engineering discipline"
@@ -220,7 +223,7 @@ export function RelaySkillEditor({
           <div className="space-y-1.5">
             <label
               className="text-sm font-medium"
-              htmlFor="relay-skill-summary"
+              htmlFor="shared-instruction-summary"
             >
               When to use it
             </label>
@@ -230,7 +233,7 @@ export function RelaySkillEditor({
                   "resize-none px-3 py-3 leading-5",
                   PERSONA_FIELD_CONTROL_CLASS,
                 )}
-                id="relay-skill-summary"
+                id="shared-instruction-summary"
                 maxLength={1024}
                 onChange={(event) => updateDraft("summary", event.target.value)}
                 placeholder="Raises implementation quality through validation, self-review, boundary checks, coverage, and second opinions. Use when coding, refactoring, reviewing changes, testing, or preparing work for completion."
@@ -242,7 +245,7 @@ export function RelaySkillEditor({
           <div className="space-y-1.5">
             <label
               className="text-sm font-medium"
-              htmlFor="relay-skill-instructions"
+              htmlFor="shared-instruction-instructions"
             >
               Instructions
             </label>
@@ -252,7 +255,7 @@ export function RelaySkillEditor({
                   "min-h-40 resize-none px-3 py-3 font-mono text-sm leading-5",
                   PERSONA_FIELD_CONTROL_CLASS,
                 )}
-                id="relay-skill-instructions"
+                id="shared-instruction-instructions"
                 maxLength={32768}
                 onChange={(event) =>
                   updateDraft("instructions", event.target.value)

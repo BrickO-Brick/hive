@@ -185,7 +185,7 @@ with a TypeScript lookup table or an id comparison in a component.
    string identical to the executed string. New sharing paths must reuse the
    same validation before they persist or activate a definition.
 13. **Shared-instruction editing replaces the agent form; it never nests a
-    dialog.** Create and author-owned Edit open `RelaySkillEditor` in the
+    dialog.** Create and author-owned Edit open `SharedInstructionEditor` in the
     existing agent-dialog surface while preserving the parent agent draft.
     Publishing a new instruction returns to that draft and assigns the accepted
     relay coordinate immediately; updating an existing instruction preserves

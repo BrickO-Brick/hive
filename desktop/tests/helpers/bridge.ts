@@ -1,8 +1,8 @@
 import type { Page } from "@playwright/test";
 import type { ChannelTemplate, RelayEvent } from "../../src/shared/api/types";
 import type {
-  RelaySkillCover,
-  ResolvedRelaySkill,
+  SharedInstructionCover,
+  ResolvedSharedInstruction,
 } from "../../src/shared/api/tauriPersonas";
 import type { MockManagedAgentSeed } from "../../src/testing/e2eBridge";
 import { FEATURE_OVERRIDES_STORAGE_KEY, PREVIEW_FEATURE_IDS } from "./features";
@@ -250,9 +250,9 @@ type MockBridgeOptions = {
   }>;
   personas?: MockPersonaSeed[];
   /** Reusable relay instructions returned to agent create/edit surfaces. */
-  relaySkills?: RelaySkillCover[];
+  sharedInstructions?: SharedInstructionCover[];
   /** Full relay instructions returned when a reusable instruction is previewed. */
-  relaySkillDetails?: ResolvedRelaySkill[];
+  sharedInstructionDetails?: ResolvedSharedInstruction[];
   /** Community catalog replaceable-event heads returned by relay queries. */
   personaCatalogEvents?: RelayEvent[];
   /** Outcomes for successive explicit persona share publications. */

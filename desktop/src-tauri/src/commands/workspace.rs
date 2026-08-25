@@ -155,6 +155,7 @@ pub async fn apply_workspace(
     nsec: Option<String>,
     repos_dir: Option<String>,
     agent_managed_profiles: Option<bool>,
+    shared_instructions: Option<bool>,
     app: AppHandle,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
@@ -230,6 +231,12 @@ pub async fn apply_workspace(
         state
             .managed_agent_profile_reconcile_enabled
             .store(!agent_managed_profiles.unwrap_or(false), Ordering::Release);
+        // Shared instructions change the spawned harness environment and prompt,
+        // so mirror the frontend experiment before launch restoration starts.
+        // Missing means the default-off behavior and yields no prompt changes.
+        state
+            .shared_instructions_enabled
+            .store(shared_instructions.unwrap_or(false), Ordering::Release);
 
         // ── Filesystem side-effect (non-fatal) ────────────────────────────────
         // Persist the *effective* repos_dir (None when the candidate failed

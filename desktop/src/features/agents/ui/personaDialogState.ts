@@ -73,7 +73,7 @@ export function duplicatePersonaDialogState(
       // The user sees the inherited values in the dialog and can clear
       // them if they want a blank template.
       namePool: persona.namePool ?? [],
-      assignedRelaySkills: persona.assignedRelaySkills,
+      assignedSharedInstructions: persona.assignedSharedInstructions,
       envVars: persona.envVars ?? {},
       ...behaviorEntry(persona),
     },
@@ -131,7 +131,7 @@ export function editPersonaDialogState(
       // (Persona update treats Some(empty) as "clear all" intentionally;
       // the dialog must therefore round-trip the existing values.)
       namePool: persona.namePool ?? [],
-      assignedRelaySkills: persona.assignedRelaySkills,
+      assignedSharedInstructions: persona.assignedSharedInstructions,
       envVars: persona.envVars ?? {},
       ...behaviorEntry(behaviorSource),
     },

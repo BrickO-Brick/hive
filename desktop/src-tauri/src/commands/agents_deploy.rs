@@ -50,8 +50,8 @@ pub(super) fn build_launch_block(
     effective_model: Option<&str>,
     owner_pubkey: &str,
 ) -> Result<serde_json::Value, String> {
-    let assigned_relay_skills =
-        crate::managed_agents::effective_config::resolve_effective_assigned_relay_skills(
+    let assigned_shared_instructions =
+        crate::managed_agents::effective_config::resolve_effective_assigned_shared_instructions(
             record, personas,
         )?;
     Ok(serialize_launch_block(
@@ -60,7 +60,7 @@ pub(super) fn build_launch_block(
         teams,
         effective_prompt,
         effective_model,
-        assigned_relay_skills,
+        assigned_shared_instructions,
         owner_pubkey,
     ))
 }
@@ -71,7 +71,7 @@ fn serialize_launch_block(
     teams: &[crate::managed_agents::TeamRecord],
     effective_prompt: Option<&str>,
     effective_model: Option<&str>,
-    assigned_relay_skills: &[String],
+    assigned_shared_instructions: &[String],
     owner_pubkey: &str,
 ) -> serde_json::Value {
     use crate::managed_agents::{
@@ -138,10 +138,10 @@ fn serialize_launch_block(
     {
         policy_env.insert("BUZZ_ACP_TEAM_INSTRUCTIONS".into(), value);
     }
-    if !assigned_relay_skills.is_empty() {
+    if !assigned_shared_instructions.is_empty() {
         policy_env.insert(
-            "BUZZ_ACP_ASSIGNED_RELAY_SKILLS".into(),
-            assigned_relay_skills.join(","),
+            "BUZZ_ACP_ASSIGNED_SHARED_INSTRUCTIONS".into(),
+            assigned_shared_instructions.join(","),
         );
     }
 
@@ -164,7 +164,7 @@ fn serialize_launch_block(
     // matching local, where `apply_claude_model_env(None)` removes both.
     let is_claude = runtime.map(|r| r.id == "claude").unwrap_or(false);
     let strip_key = |k: &str| {
-        k.eq_ignore_ascii_case("BUZZ_ACP_ASSIGNED_RELAY_SKILLS")
+        k.eq_ignore_ascii_case("BUZZ_ACP_ASSIGNED_SHARED_INSTRUCTIONS")
             || (record.effort_level.is_some() && k.eq_ignore_ascii_case("BUZZ_ACP_EFFORT_LEVEL"))
             || (is_claude
                 && (k.eq_ignore_ascii_case("BUZZ_ACP_MODEL")
@@ -326,7 +326,7 @@ mod tests {
     fn linked_assignments_resolve_from_live_definition() {
         let mut record = record();
         record.persona_id = Some("persona-1".into());
-        record.assigned_relay_skills = vec!["stale-a".into(), "revoked-b".into()];
+        record.assigned_shared_instructions = vec!["stale-a".into(), "revoked-b".into()];
         let mut persona: AgentDefinition = serde_json::from_value(serde_json::json!({
             "id": "persona-1",
             "display_name": "Persona",
@@ -338,7 +338,7 @@ mod tests {
             "updated_at": "2026-01-01T00:00:00Z"
         }))
         .unwrap();
-        persona.assigned_relay_skills = vec!["current-a".into()];
+        persona.assigned_shared_instructions = vec!["current-a".into()];
         let personas = [persona];
         let descriptor = EffectiveHarnessDescriptor {
             command: "goose".into(),
@@ -357,20 +357,22 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            launch["policy_env"]["BUZZ_ACP_ASSIGNED_RELAY_SKILLS"],
+            launch["policy_env"]["BUZZ_ACP_ASSIGNED_SHARED_INSTRUCTIONS"],
             "current-a"
         );
-        assert!(!launch["policy_env"]["BUZZ_ACP_ASSIGNED_RELAY_SKILLS"]
-            .as_str()
-            .unwrap()
-            .contains("revoked-b"));
+        assert!(
+            !launch["policy_env"]["BUZZ_ACP_ASSIGNED_SHARED_INSTRUCTIONS"]
+                .as_str()
+                .unwrap()
+                .contains("revoked-b")
+        );
     }
 
     #[test]
     fn launch_block_preserves_descriptor_and_spawn_policy() {
         let mut record = record();
         let coordinate = format!("30023:{}:review", "a".repeat(64));
-        record.assigned_relay_skills = vec![coordinate.clone()];
+        record.assigned_shared_instructions = vec![coordinate.clone()];
         let descriptor = EffectiveHarnessDescriptor {
             command: "goose".into(),
             args: vec!["acp".into()],
@@ -378,7 +380,7 @@ mod tests {
                 ("GOOSE_MODE".into(), "custom".into()),
                 ("SECRET_FROM_PERSONA".into(), "secret".into()),
                 (
-                    "BUZZ_ACP_ASSIGNED_RELAY_SKILLS".into(),
+                    "BUZZ_ACP_ASSIGNED_SHARED_INSTRUCTIONS".into(),
                     "user-supplied".into(),
                 ),
             ]),
@@ -411,10 +413,10 @@ mod tests {
             "Coordinate"
         );
         assert_eq!(
-            launch["policy_env"]["BUZZ_ACP_ASSIGNED_RELAY_SKILLS"],
+            launch["policy_env"]["BUZZ_ACP_ASSIGNED_SHARED_INSTRUCTIONS"],
             coordinate
         );
-        assert!(launch["env"]["BUZZ_ACP_ASSIGNED_RELAY_SKILLS"].is_null());
+        assert!(launch["env"]["BUZZ_ACP_ASSIGNED_SHARED_INSTRUCTIONS"].is_null());
         assert_eq!(launch["policy_env"]["BUZZ_ACP_SESSION_TITLE"], "Agent Name");
         assert_eq!(launch["policy_env"]["BUZZ_ACP_DISPLAY_NAME"], "Agent Name");
         assert_eq!(launch["policy_env"]["BUZZ_ACP_SYSTEM_PROMPT"], "prompt");

@@ -15,7 +15,7 @@ type CatalogAgentProjection = {
   model: string | null;
   provider: string | null;
   namePool: string[];
-  assignedRelaySkills: string[];
+  assignedSharedInstructions: string[];
   respondTo: RespondToMode | null;
   parallelism: number | null;
 };
@@ -75,7 +75,7 @@ function publicationToPersona(
     model: publication.agent.model,
     provider: publication.agent.provider,
     namePool: publication.agent.namePool,
-    assignedRelaySkills: publication.agent.assignedRelaySkills,
+    assignedSharedInstructions: publication.agent.assignedSharedInstructions,
     isBuiltIn: false,
     isActive: localPersona?.isActive ?? false,
     shared: true,

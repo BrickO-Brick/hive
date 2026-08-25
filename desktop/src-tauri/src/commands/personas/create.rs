@@ -8,7 +8,7 @@ use crate::{
     app_state::AppState,
     managed_agents::{
         apply_persona_behavior, load_personas, save_personas, try_regenerate_nest,
-        validate_agent_definition_text, validate_assigned_relay_skills, AgentDefinition,
+        validate_agent_definition_text, validate_assigned_shared_instructions, AgentDefinition,
         CatalogSource, CreatePersonaRequest,
     },
     util::now_iso,
@@ -70,7 +70,9 @@ pub async fn create_persona(
             source_team: None,
             source_team_persona_slug: None,
             catalog_source,
-            assigned_relay_skills: validate_assigned_relay_skills(input.assigned_relay_skills)?,
+            assigned_shared_instructions: validate_assigned_shared_instructions(
+                input.assigned_shared_instructions,
+            )?,
             env_vars: input.env_vars,
             respond_to: None,
             respond_to_allowlist: Vec::new(),

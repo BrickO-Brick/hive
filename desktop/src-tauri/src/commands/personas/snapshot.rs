@@ -488,7 +488,7 @@ mod png_body_tests {
                 respond_to: None,
                 respond_to_allowlist: vec![],
                 name_pool: vec![],
-                assigned_relay_skills: vec![],
+                assigned_shared_instructions: vec![],
                 idle_timeout_seconds: None,
                 max_turn_duration_seconds: None,
             },

@@ -1,56 +1,55 @@
 import * as React from "react";
 
 import type {
-  RelaySkillCover,
-  ResolvedRelaySkill,
+  SharedInstructionCover,
+  ResolvedSharedInstruction,
 } from "@/shared/api/tauriPersonas";
 import { Dialog } from "@/shared/ui/dialog";
-import { RelaySkillEditor } from "./RelaySkillEditor";
+import { SharedInstructionEditor } from "./SharedInstructionEditor";
 
-type UseRelaySkillEditorOptions = {
+type UseSharedInstructionEditorOptions = {
   embedded: boolean;
   open: boolean;
   onDirtyChange?: (dirty: boolean) => void;
-  assignedRelaySkills: string[];
-  setAssignedRelaySkills: React.Dispatch<React.SetStateAction<string[]>>;
+  assignedSharedInstructions: string[];
+  setAssignedSharedInstructions: React.Dispatch<React.SetStateAction<string[]>>;
   setHasUserChanges: React.Dispatch<React.SetStateAction<boolean>>;
 };
 
-export function useRelaySkillEditor({
+export function useSharedInstructionEditor({
   embedded,
   open,
   onDirtyChange,
-  assignedRelaySkills,
-  setAssignedRelaySkills,
+  assignedSharedInstructions,
+  setAssignedSharedInstructions,
   setHasUserChanges,
-}: UseRelaySkillEditorOptions) {
-  const [publishedRelaySkills, setPublishedRelaySkills] = React.useState<
-    RelaySkillCover[]
-  >([]);
+}: UseSharedInstructionEditorOptions) {
+  const [publishedSharedInstructions, setPublishedSharedInstructions] =
+    React.useState<SharedInstructionCover[]>([]);
   const [editorState, setEditorState] = React.useState<{
     key: number;
-    detail: ResolvedRelaySkill | null;
+    detail: ResolvedSharedInstruction | null;
   } | null>(null);
   const closeRequestRef = React.useRef<(() => void) | null>(null);
 
-  const resetRelaySkillEditor = React.useCallback(() => {
-    setPublishedRelaySkills([]);
+  const resetSharedInstructionEditor = React.useCallback(() => {
+    setPublishedSharedInstructions([]);
     setEditorState(null);
     closeRequestRef.current = null;
   }, []);
-  const openRelaySkillEditor = React.useCallback(
-    (detail: ResolvedRelaySkill | null) =>
+  const openSharedInstructionEditor = React.useCallback(
+    (detail: ResolvedSharedInstruction | null) =>
       setEditorState({ key: Date.now(), detail }),
     [],
   );
 
-  function handlePublished(skill: RelaySkillCover) {
-    setPublishedRelaySkills((current) => [
+  function handlePublished(skill: SharedInstructionCover) {
+    setPublishedSharedInstructions((current) => [
       skill,
       ...current.filter((item) => item.coordinate !== skill.coordinate),
     ]);
     if (!editorState?.detail) {
-      setAssignedRelaySkills((current) =>
+      setAssignedSharedInstructions((current) =>
         current.includes(skill.coordinate)
           ? current
           : [...current, skill.coordinate],
@@ -61,25 +60,25 @@ export function useRelaySkillEditor({
   }
 
   const fieldProps = {
-    assignedRelaySkills,
-    onAssignedRelaySkillsChange: (coordinates: string[]) => {
-      setAssignedRelaySkills(coordinates);
+    assignedSharedInstructions,
+    onAssignedSharedInstructionsChange: (coordinates: string[]) => {
+      setAssignedSharedInstructions(coordinates);
       setHasUserChanges(true);
     },
-    onEditRelaySkill: openRelaySkillEditor,
-    publishedRelaySkills,
+    onEditSharedInstruction: openSharedInstructionEditor,
+    publishedSharedInstructions,
   };
 
   if (!editorState) {
     return {
       editor: null,
       fieldProps,
-      resetRelaySkillEditor,
+      resetSharedInstructionEditor,
     };
   }
 
   const editorContent = (
-    <RelaySkillEditor
+    <SharedInstructionEditor
       detail={editorState.detail}
       embedded={embedded}
       key={editorState.key}
@@ -107,6 +106,6 @@ export function useRelaySkillEditor({
   return {
     editor,
     fieldProps,
-    resetRelaySkillEditor,
+    resetSharedInstructionEditor,
   };
 }

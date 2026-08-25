@@ -1077,6 +1077,7 @@ export async function applyCommunity(
   token?: string,
   reposDir?: string,
   agentManagedProfiles?: boolean,
+  sharedInstructions?: boolean,
 ): Promise<void> {
   await invokeTauri("apply_workspace", {
     relayUrl,
@@ -1084,6 +1085,7 @@ export async function applyCommunity(
     token: token ?? null,
     reposDir: reposDir ?? null,
     agentManagedProfiles: agentManagedProfiles ?? false,
+    sharedInstructions: sharedInstructions ?? false,
   });
 }
 
@@ -1098,6 +1100,9 @@ export const setPreventSleepActive = (active: boolean) =>
 
 export const setAgentManagedProfiles = (enabled: boolean) =>
   invokeTauri("set_agent_managed_profiles", { enabled });
+
+export const setSharedInstructionsEnabled = (enabled: boolean) =>
+  invokeTauri("set_shared_instructions_enabled", { enabled });
 
 /** Returns true on macOS, Windows, and Linux AppImage installs.
  *  Returns false on Linux non-AppImage packages (e.g. .deb) where

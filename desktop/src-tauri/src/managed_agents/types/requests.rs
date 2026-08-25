@@ -97,7 +97,7 @@ pub struct CreatePersonaRequest {
     pub catalog_source: Option<CatalogSource>,
     /// Exact NIP-23 coordinates selected for this definition.
     #[serde(default)]
-    pub assigned_relay_skills: Vec<String>,
+    pub assigned_shared_instructions: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -130,7 +130,7 @@ pub struct UpdatePersonaRequest {
     pub behavior: Option<PersonaBehaviorRequest>,
     /// Absent = don't touch; present = validate and replace the assignment set.
     #[serde(default)]
-    pub assigned_relay_skills: Option<Vec<String>>,
+    pub assigned_shared_instructions: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -289,7 +289,7 @@ mod tests {
             source_team: None,
             source_team_persona_slug: None,
             catalog_source: None,
-            assigned_relay_skills: Vec::new(),
+            assigned_shared_instructions: Vec::new(),
             env_vars: BTreeMap::new(),
             respond_to: None,
             respond_to_allowlist: Vec::new(),

@@ -716,7 +716,7 @@ export type AgentPersona = {
   provider: string | null;
   namePool: string[];
   /** Exact author-pinned NIP-23 coordinates assigned to this definition. */
-  assignedRelaySkills: string[];
+  assignedSharedInstructions: string[];
   isBuiltIn: boolean;
   isActive: boolean;
   /** Whether this persona is discoverable in the active community catalog. */
@@ -767,7 +767,7 @@ export type CreatePersonaInput = {
   model?: string;
   provider?: string;
   namePool?: string[];
-  assignedRelaySkills?: string[];
+  assignedSharedInstructions?: string[];
   envVars?: Record<string, string>;
   behavior?: PersonaBehaviorInput;
   /**
@@ -787,7 +787,7 @@ export type UpdatePersonaInput = {
   provider?: string;
   namePool?: string[];
   /** Absent = don't touch. Present = replace all assignments. */
-  assignedRelaySkills?: string[];
+  assignedSharedInstructions?: string[];
   envVars?: Record<string, string>;
   behavior?: PersonaBehaviorInput;
 };

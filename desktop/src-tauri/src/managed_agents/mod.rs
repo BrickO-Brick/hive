@@ -29,13 +29,13 @@ mod process_lifecycle;
 pub(crate) mod readiness;
 pub(crate) mod reconcile;
 mod relay_mesh;
-mod relay_skills;
 mod repos;
 mod restore;
 pub mod retention;
 mod runtime;
 mod runtime_commands;
 mod runtime_types;
+mod shared_instructions;
 pub(crate) mod snapshot_avatar;
 pub(crate) mod spawn_snapshot;
 pub(crate) mod storage;
@@ -78,7 +78,6 @@ pub(crate) use readiness::{
     AgentReadiness, Requirement,
 };
 pub use relay_mesh::*;
-pub use relay_skills::*;
 pub use repos::{
     effective_repos_dir, ensure_repos_symlink, resolve_repos_at_boot, validate_repos_dir,
     write_persisted_repos_dir,
@@ -87,6 +86,7 @@ pub use restore::*;
 pub use runtime::*;
 pub use runtime_commands::*;
 pub use runtime_types::*;
+pub use shared_instructions::*;
 pub use storage::*;
 pub use teams::*;
 pub use types::*;

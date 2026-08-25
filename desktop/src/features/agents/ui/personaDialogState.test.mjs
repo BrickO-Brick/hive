@@ -79,7 +79,7 @@ test("duplicatePersonaDialogState copies persona fields into a new draft", () =>
     runtime: "provider-a",
     model: "model-a",
     provider: null,
-    assignedRelaySkills: [],
+    assignedSharedInstructions: [],
     isBuiltIn: false,
     isActive: true,
     createdAt: "2025-01-01T00:00:00Z",
@@ -94,7 +94,7 @@ test("duplicatePersonaDialogState copies persona fields into a new draft", () =>
     model: "model-a",
     provider: undefined,
     namePool: [],
-    assignedRelaySkills: [],
+    assignedSharedInstructions: [],
     envVars: {},
   });
 });
@@ -134,7 +134,7 @@ test("editPersonaDialogState preserves the persona id for updates", () => {
     runtime: null,
     model: null,
     provider: null,
-    assignedRelaySkills: [],
+    assignedSharedInstructions: [],
     isBuiltIn: true,
     isActive: true,
     createdAt: "2025-01-01T00:00:00Z",
@@ -153,7 +153,7 @@ test("editPersonaDialogState preserves the persona id for updates", () => {
     model: undefined,
     provider: undefined,
     namePool: [],
-    assignedRelaySkills: [],
+    assignedSharedInstructions: [],
     envVars: {},
   });
 });
@@ -329,7 +329,7 @@ test("a non-allowlist mode does not seed a stale allowlist into the dialog", () 
   );
 });
 
-test("edit and duplicate preserve exact assigned relay-skill coordinates", () => {
+test("edit and duplicate preserve exact assigned shared-instruction coordinates", () => {
   const coordinate = `30023:${"a".repeat(64)}:design-review`;
   const persona = {
     id: "persona-skills",
@@ -339,7 +339,7 @@ test("edit and duplicate preserve exact assigned relay-skill coordinates", () =>
     runtime: null,
     model: null,
     provider: null,
-    assignedRelaySkills: [coordinate],
+    assignedSharedInstructions: [coordinate],
     isBuiltIn: false,
     isActive: true,
     createdAt: "2025-01-01T00:00:00Z",
@@ -347,11 +347,12 @@ test("edit and duplicate preserve exact assigned relay-skill coordinates", () =>
   };
 
   assert.deepEqual(
-    editPersonaDialogState(persona).initialValues.assignedRelaySkills,
+    editPersonaDialogState(persona).initialValues.assignedSharedInstructions,
     [coordinate],
   );
   assert.deepEqual(
-    duplicatePersonaDialogState(persona).initialValues.assignedRelaySkills,
+    duplicatePersonaDialogState(persona).initialValues
+      .assignedSharedInstructions,
     [coordinate],
   );
 });

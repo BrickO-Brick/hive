@@ -9,8 +9,8 @@ mod pool;
 mod pool_lifecycle;
 mod queue;
 mod relay;
-mod relay_skills;
 mod setup_mode;
+mod shared_instructions;
 mod usage;
 
 pub use usage::TurnUsage;
@@ -2190,15 +2190,15 @@ async fn tokio_main() -> Result<()> {
     }
 
     let base_prompt_content = config.base_prompt_content.take();
-    let assigned_relay_skills = match relay_skills::fetch_assigned_skill_covers(
+    let assigned_shared_instructions = match shared_instructions::fetch_assigned_instruction_covers(
         &relay.rest_client(),
-        &config.assigned_relay_skills,
+        &config.assigned_shared_instructions,
     )
     .await
     {
         Ok(covers) => covers,
         Err(error) => {
-            tracing::warn!("failed to load assigned relay skill covers: {error}");
+            tracing::warn!("failed to load assigned shared instruction covers: {error}");
             None
         }
     };
@@ -2213,7 +2213,7 @@ async fn tokio_main() -> Result<()> {
         system_prompt: config.system_prompt.clone(),
         session_title: config.session_title.clone(),
         team_instructions: config.team_instructions.clone(),
-        assigned_relay_skills,
+        assigned_shared_instructions,
         base_prompt: if config.no_base_prompt {
             None
         } else if let Some(content) = base_prompt_content {
@@ -6782,7 +6782,7 @@ mod build_mcp_servers_tests {
             heartbeat_prompt: None,
             system_prompt: None,
             team_instructions: None,
-            assigned_relay_skills: Vec::new(),
+            assigned_shared_instructions: Vec::new(),
             initial_message: None,
             subscribe_mode: config::SubscribeMode::All,
             dedup_mode: config::DedupMode::Queue,
@@ -7007,7 +7007,7 @@ mod error_outcome_emission_tests {
             heartbeat_prompt: None,
             system_prompt: None,
             team_instructions: None,
-            assigned_relay_skills: Vec::new(),
+            assigned_shared_instructions: Vec::new(),
             initial_message: None,
             subscribe_mode: config::SubscribeMode::All,
             dedup_mode: config::DedupMode::Queue,

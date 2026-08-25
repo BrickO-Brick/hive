@@ -1,6 +1,6 @@
 import type {
-  RelaySkillCover,
-  ResolvedRelaySkill,
+  SharedInstructionCover,
+  ResolvedSharedInstruction,
 } from "@/shared/api/tauriPersonas";
 import { useFeatureEnabled } from "@/shared/features/useFeatureEnabled";
 import { cn } from "@/shared/lib/cn";
@@ -9,14 +9,14 @@ import {
   PERSONA_FIELD_CONTROL_CLASS,
   PERSONA_FIELD_SHELL_CLASS,
 } from "./agentConfigOptions";
-import { RelaySkillPicker } from "./RelaySkillPicker";
+import { SharedInstructionPicker } from "./SharedInstructionPicker";
 
 type AgentInstructionsFieldProps = {
-  assignedRelaySkills: string[];
+  assignedSharedInstructions: string[];
   disabled: boolean;
-  onAssignedRelaySkillsChange: (coordinates: string[]) => void;
-  onEditRelaySkill: (detail: ResolvedRelaySkill | null) => void;
-  publishedRelaySkills: readonly RelaySkillCover[];
+  onAssignedSharedInstructionsChange: (coordinates: string[]) => void;
+  onEditSharedInstruction: (detail: ResolvedSharedInstruction | null) => void;
+  publishedSharedInstructions: readonly SharedInstructionCover[];
   onSystemPromptChange: (value: string) => void;
   systemPrompt: string;
 };
@@ -38,11 +38,11 @@ const textarea = (
 );
 
 export function AgentInstructionsField({
-  assignedRelaySkills,
+  assignedSharedInstructions,
   disabled,
-  onAssignedRelaySkillsChange,
-  onEditRelaySkill,
-  publishedRelaySkills,
+  onAssignedSharedInstructionsChange,
+  onEditSharedInstruction,
+  publishedSharedInstructions,
   onSystemPromptChange,
   systemPrompt,
 }: AgentInstructionsFieldProps) {
@@ -50,14 +50,14 @@ export function AgentInstructionsField({
   return (
     <div className="space-y-1.5">
       {sharedInstructionsEnabled ? (
-        <RelaySkillPicker
+        <SharedInstructionPicker
           disabled={disabled}
           label="Agent instructions"
           labelFor="persona-system-prompt"
-          onChange={onAssignedRelaySkillsChange}
-          onEdit={onEditRelaySkill}
-          publishedSkills={publishedRelaySkills}
-          selected={assignedRelaySkills}
+          onChange={onAssignedSharedInstructionsChange}
+          onEdit={onEditSharedInstruction}
+          publishedSkills={publishedSharedInstructions}
+          selected={assignedSharedInstructions}
         >
           {textarea(
             disabled,
@@ -65,7 +65,7 @@ export function AgentInstructionsField({
             onSystemPromptChange,
             "h-full min-h-28 resize-none px-3 py-3 leading-5",
           )}
-        </RelaySkillPicker>
+        </SharedInstructionPicker>
       ) : (
         <>
           <label

@@ -21,7 +21,7 @@ fn base() -> SpawnConfigSnapshot {
         system_prompt: Some("You are a test agent.".into()),
         model: Some("gpt-5".into()),
         provider: Some("openai".into()),
-        assigned_relay_skills: vec![format!("30023:{}:review", "a".repeat(64))],
+        assigned_shared_instructions: vec![format!("30023:{}:review", "a".repeat(64))],
         session_title: Some("Fizz".into()),
         auth_tag: Some("tag-abcdefgh".into()),
         respond_to: "owner-only".into(),
@@ -63,7 +63,9 @@ fn mutations() -> Vec<Mutation> {
         ("system_prompt", |s| s.system_prompt = None),
         ("model", |s| s.model = None),
         ("provider", |s| s.provider = None),
-        ("assigned_relay_skills", |s| s.assigned_relay_skills.clear()),
+        ("assigned_shared_instructions", |s| {
+            s.assigned_shared_instructions.clear()
+        }),
         ("session_title", |s| s.session_title = None),
         ("auth_tag", |s| s.auth_tag = None),
         ("respond_to", |s| s.respond_to = "anyone".into()),

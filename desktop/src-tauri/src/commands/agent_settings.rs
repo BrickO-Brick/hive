@@ -18,6 +18,13 @@ pub fn set_agent_managed_profiles(enabled: bool, state: State<'_, AppState>) {
 }
 
 #[tauri::command]
+pub fn set_shared_instructions_enabled(enabled: bool, state: State<'_, AppState>) {
+    state
+        .shared_instructions_enabled
+        .store(enabled, Ordering::Release);
+}
+
+#[tauri::command]
 pub async fn set_managed_agent_start_on_app_launch(
     pubkey: String,
     start_on_app_launch: bool,

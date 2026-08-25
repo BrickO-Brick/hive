@@ -55,7 +55,7 @@ pub(super) fn sample_record() -> ManagedAgentRecord {
         source_team: None,
         source_team_persona_slug: None,
         catalog_source: None,
-        assigned_relay_skills: Vec::new(),
+        assigned_shared_instructions: Vec::new(),
         definition_respond_to: None,
         definition_respond_to_allowlist: Vec::new(),
         definition_parallelism: None,
@@ -158,7 +158,7 @@ pub(super) fn sample_persona() -> AgentDefinition {
         source_team: None,
         source_team_persona_slug: Some("test-slug".to_string()),
         catalog_source: None,
-        assigned_relay_skills: Vec::new(),
+        assigned_shared_instructions: Vec::new(),
         env_vars: BTreeMap::from([("KEY".to_string(), "value".to_string())]),
         respond_to: None,
         respond_to_allowlist: Vec::new(),
@@ -171,13 +171,16 @@ pub(super) fn sample_persona() -> AgentDefinition {
 #[test]
 fn apply_snapshot_refreshes_shared_instructions_for_existing_instance() {
     let mut record = sample_record();
-    record.assigned_relay_skills = vec![format!("30023:{}:old", "a".repeat(64))];
+    record.assigned_shared_instructions = vec![format!("30023:{}:old", "a".repeat(64))];
     let mut persona = sample_persona();
-    persona.assigned_relay_skills = vec![format!("30023:{}:new", "b".repeat(64))];
+    persona.assigned_shared_instructions = vec![format!("30023:{}:new", "b".repeat(64))];
 
     apply_persona_snapshot(&mut record, &persona);
 
-    assert_eq!(record.assigned_relay_skills, persona.assigned_relay_skills);
+    assert_eq!(
+        record.assigned_shared_instructions,
+        persona.assigned_shared_instructions
+    );
 }
 
 #[test]
@@ -337,7 +340,7 @@ fn content_matches_nip_ap_vector() {
         runtime: Some("goose".to_string()),
         model: Some("claude-opus-4".to_string()),
         provider: Some("anthropic".to_string()),
-        assigned_relay_skills: Vec::new(),
+        assigned_shared_instructions: Vec::new(),
         name_pool: vec!["Alpha".to_string(), "Beta".to_string()],
         respond_to: None,
         respond_to_allowlist: Vec::new(),
@@ -399,7 +402,7 @@ fn content_matches_nip_ap_vector() {
         source_team: None,
         source_team_persona_slug: None,
         catalog_source: None,
-        assigned_relay_skills: Vec::new(),
+        assigned_shared_instructions: Vec::new(),
         env_vars: BTreeMap::new(),
         respond_to: None,
         respond_to_allowlist: Vec::new(),
@@ -415,21 +418,24 @@ fn content_matches_nip_ap_vector() {
 }
 
 #[test]
-fn assigned_relay_skills_round_trip_without_affecting_legacy_vector() {
+fn assigned_shared_instructions_round_trip_without_affecting_legacy_vector() {
     let key = "a".repeat(64);
     let coordinate = format!("30023:{key}:design-engineering");
     let mut record = sample_persona();
-    record.assigned_relay_skills = vec![coordinate.clone()];
+    record.assigned_shared_instructions = vec![coordinate.clone()];
 
     let event = build_persona_event(&record)
         .unwrap()
         .sign_with_keys(&nostr::Keys::generate())
         .unwrap();
     let content: PersonaEventContent = serde_json::from_str(&event.content).unwrap();
-    assert_eq!(content.assigned_relay_skills, vec![coordinate.clone()]);
+    assert_eq!(
+        content.assigned_shared_instructions,
+        vec![coordinate.clone()]
+    );
 
     let restored = persona_from_event(&event).unwrap();
-    assert_eq!(restored.assigned_relay_skills, vec![coordinate]);
+    assert_eq!(restored.assigned_shared_instructions, vec![coordinate]);
 }
 
 #[test]
@@ -449,7 +455,7 @@ fn round_trip_minimal_persona() {
         source_team: Some("team-1".to_string()),
         source_team_persona_slug: None,
         catalog_source: None,
-        assigned_relay_skills: Vec::new(),
+        assigned_shared_instructions: Vec::new(),
         env_vars: BTreeMap::new(),
         respond_to: None,
         respond_to_allowlist: Vec::new(),
@@ -547,7 +553,7 @@ fn quad_absent_definition_hash_stable_across_activation() {
         source_team: None,
         source_team_persona_slug: None,
         catalog_source: None,
-        assigned_relay_skills: Vec::new(),
+        assigned_shared_instructions: Vec::new(),
         env_vars: BTreeMap::new(),
         respond_to: None,
         respond_to_allowlist: Vec::new(),
@@ -592,7 +598,7 @@ fn persona_from_event_content_for_test(content: PersonaEventContent) -> AgentDef
         source_team: None,
         source_team_persona_slug: None,
         catalog_source: None,
-        assigned_relay_skills: content.assigned_relay_skills,
+        assigned_shared_instructions: content.assigned_shared_instructions,
         env_vars: BTreeMap::new(),
         respond_to: content.respond_to,
         respond_to_allowlist: content.respond_to_allowlist,
@@ -611,7 +617,7 @@ fn persona_content_hash_is_deterministic() {
         runtime: None,
         model: None,
         provider: None,
-        assigned_relay_skills: Vec::new(),
+        assigned_shared_instructions: Vec::new(),
         name_pool: vec![],
         respond_to: None,
         respond_to_allowlist: Vec::new(),
@@ -632,7 +638,7 @@ fn persona_content_hash_changes_on_edit() {
         runtime: None,
         model: None,
         provider: None,
-        assigned_relay_skills: Vec::new(),
+        assigned_shared_instructions: Vec::new(),
         name_pool: vec![],
         respond_to: None,
         respond_to_allowlist: Vec::new(),

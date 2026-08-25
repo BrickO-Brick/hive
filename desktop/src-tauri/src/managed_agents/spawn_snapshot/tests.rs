@@ -2,7 +2,7 @@ use super::*;
 use crate::managed_agents::types::RespondTo;
 use std::collections::BTreeMap;
 
-mod assigned_relay_skills;
+mod assigned_shared_instructions;
 
 /// Canonical projection of a prospective snapshot — the exact value the drift
 /// comparison reads, so these tests assert on drift itself rather than on a
@@ -94,7 +94,7 @@ fn record() -> ManagedAgentRecord {
         source_team: None,
         source_team_persona_slug: None,
         catalog_source: None,
-        assigned_relay_skills: Vec::new(),
+        assigned_shared_instructions: Vec::new(),
         definition_respond_to: None,
         definition_respond_to_allowlist: Vec::new(),
         definition_parallelism: None,
@@ -119,7 +119,7 @@ fn persona(id: &str, runtime: Option<&str>, prompt: &str) -> AgentDefinition {
         source_team: None,
         source_team_persona_slug: None,
         catalog_source: None,
-        assigned_relay_skills: Vec::new(),
+        assigned_shared_instructions: Vec::new(),
         env_vars: BTreeMap::new(),
         respond_to: None,
         respond_to_allowlist: Vec::new(),
@@ -230,9 +230,9 @@ fn persona_shared_instruction_edit_changes_snapshot() {
     let mut rec = record();
     rec.persona_id = Some("pers".into());
     let mut before = persona("pers", Some("goose"), "prompt");
-    before.assigned_relay_skills = vec![format!("30023:{}:before", "a".repeat(64))];
+    before.assigned_shared_instructions = vec![format!("30023:{}:before", "a".repeat(64))];
     let mut after = before.clone();
-    after.assigned_relay_skills = vec![format!("30023:{}:after", "b".repeat(64))];
+    after.assigned_shared_instructions = vec![format!("30023:{}:after", "b".repeat(64))];
 
     assert_ne!(
         snapshot(

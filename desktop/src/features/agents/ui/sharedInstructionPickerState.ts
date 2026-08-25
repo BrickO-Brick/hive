@@ -1,8 +1,8 @@
-import type { RelaySkillCover } from "@/shared/api/tauriPersonas";
+import type { SharedInstructionCover } from "@/shared/api/tauriPersonas";
 
-export function toggleRelaySkillCoordinate(
+export function toggleSharedInstructionCoordinate(
   selected: readonly string[],
-  skill: RelaySkillCover,
+  skill: SharedInstructionCover,
 ): string[] {
   if (!skill.compatible) return [...selected];
 

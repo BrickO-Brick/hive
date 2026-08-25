@@ -9,7 +9,7 @@ use buzz_core_pkg::kind::{event_is_shared, KIND_PERSONA};
 use nostr::{EventBuilder, Kind, Tag};
 use serde::{Deserialize, Serialize};
 
-use super::{validate_assigned_relay_skills, AgentDefinition, ManagedAgentRecord};
+use super::{validate_assigned_shared_instructions, AgentDefinition, ManagedAgentRecord};
 use crate::app_state::AppState;
 
 /// The JSON body stored in a persona event's content field.
@@ -41,7 +41,7 @@ pub struct PersonaEventContent {
     pub name_pool: Vec<String>,
     /// Exact NIP-23 coordinates assigned by the definition owner.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub assigned_relay_skills: Vec<String>,
+    pub assigned_shared_instructions: Vec<String>,
     /// Definition-level defaults copied onto instances at creation
     /// (NIP-AP behavioral fields). Absent = defer to client defaults;
     /// `skip_serializing_if` keeps pre-revision hashes stable.
@@ -181,7 +181,8 @@ pub fn persona_from_event(event: &nostr::Event) -> Result<AgentDefinition, Strin
 
     let content: PersonaEventContent = serde_json::from_str(event.content.as_ref())
         .map_err(|e| format!("failed to parse persona event content: {e}"))?;
-    let assigned_relay_skills = validate_assigned_relay_skills(content.assigned_relay_skills)?;
+    let assigned_shared_instructions =
+        validate_assigned_shared_instructions(content.assigned_shared_instructions)?;
 
     let created_at = event.created_at.to_human_datetime();
 
@@ -200,7 +201,7 @@ pub fn persona_from_event(event: &nostr::Event) -> Result<AgentDefinition, Strin
         source_team: None,
         source_team_persona_slug: Some(d_tag),
         catalog_source: None,
-        assigned_relay_skills,
+        assigned_shared_instructions,
         env_vars: BTreeMap::new(),
         respond_to: content.respond_to,
         respond_to_allowlist: content.respond_to_allowlist,
@@ -408,7 +409,7 @@ pub fn persona_event_content(record: &AgentDefinition) -> PersonaEventContent {
         model: record.model.clone(),
         provider: record.provider.clone(),
         name_pool: record.name_pool.clone(),
-        assigned_relay_skills: record.assigned_relay_skills.clone(),
+        assigned_shared_instructions: record.assigned_shared_instructions.clone(),
         // NIP-AP behavioral defaults: live since the create-path unification
         // (B5) — carried on AgentDefinition in wire shape and copied verbatim.
         // Quad-absent records serialize identically to the reserved era, so
@@ -435,7 +436,7 @@ pub struct PersonaSnapshot {
     pub provider: Option<String>,
     /// Exact publisher-pinned shared-instruction coordinates, copied verbatim
     /// from the definition so edits reach an existing instance on restart.
-    pub assigned_relay_skills: Vec<String>,
+    pub assigned_shared_instructions: Vec<String>,
     /// Preferred ACP runtime ID, copied verbatim from the persona (including
     /// `None`). Unlike `model`/`provider`, there is no record-fallback: the
     /// materialized instance `runtime` must mirror the definition so that
@@ -457,7 +458,7 @@ pub fn persona_snapshot(persona: &AgentDefinition) -> PersonaSnapshot {
         system_prompt: Some(persona.system_prompt.clone()),
         model: persona.model.clone(),
         provider: persona.provider.clone(),
-        assigned_relay_skills: persona.assigned_relay_skills.clone(),
+        assigned_shared_instructions: persona.assigned_shared_instructions.clone(),
         runtime: persona.runtime.clone(),
         source_version: persona_content_hash(&persona_event_content(persona)),
     }
@@ -488,7 +489,7 @@ pub fn apply_persona_snapshot(record: &mut ManagedAgentRecord, persona: &AgentDe
     }
     record.model = snapshot.model;
     record.provider = snapshot.provider;
-    record.assigned_relay_skills = snapshot.assigned_relay_skills;
+    record.assigned_shared_instructions = snapshot.assigned_shared_instructions;
     record.runtime = snapshot.runtime;
     // Drop a stale create-time harness pin when the definition switches to a
     // different known runtime (builtin, static preset, or loaded custom). A pin

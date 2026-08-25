@@ -153,7 +153,7 @@ fn reserved_keys_include_authorization_gates() {
         "BUZZ_ACP_RESPOND_TO",
         "BUZZ_ACP_RESPOND_TO_ALLOWLIST",
         "BUZZ_ACP_ALLOWED_RESPOND_TO",
-        "BUZZ_ACP_ASSIGNED_RELAY_SKILLS",
+        "BUZZ_ACP_ASSIGNED_SHARED_INSTRUCTIONS",
     ] {
         assert!(is_reserved_env_key(key), "{key} should be reserved");
         let agent = map(&[(key, "anyone")]);

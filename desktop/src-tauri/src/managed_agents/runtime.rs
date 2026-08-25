@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 use super::agent_env::{build_buzz_agent_provider_defaults, idle_pool_sleep_env};
 
@@ -15,7 +15,7 @@ use crate::{
 };
 
 use super::claude_config::{apply_claude_model_env, apply_effort_env};
-use super::relay_skills::resolve_and_apply_assigned_relay_skills_env;
+use super::shared_instructions::resolve_and_apply_assigned_shared_instructions_env;
 mod path;
 pub(in crate::managed_agents) use path::build_augmented_path;
 pub(crate) use path::{compose_path_entries, should_skip_claude_executable, should_use_inherited};
@@ -695,8 +695,14 @@ pub fn spawn_agent_child(
     } else {
         command.env_remove("BUZZ_ACP_TEAM_INSTRUCTIONS");
     }
-    let assigned_relay_skills =
-        resolve_and_apply_assigned_relay_skills_env(&mut command, record, &personas)?;
+    let assigned_shared_instructions = resolve_and_apply_assigned_shared_instructions_env(
+        &mut command,
+        record,
+        &personas,
+        app.state::<crate::app_state::AppState>()
+            .shared_instructions_enabled
+            .load(std::sync::atomic::Ordering::Acquire),
+    )?;
 
     // Prompt, model, and provider all come from the single `effective_cfg`
     // resolved at the top of this function — the SAME resolve the spawn-config
@@ -863,7 +869,7 @@ pub fn spawn_agent_child(
             system_prompt: effective_prompt.as_deref(),
             model: effective_model.as_deref(),
             provider: effective_provider.as_deref(),
-            assigned_relay_skills,
+            assigned_shared_instructions,
             enforced_owner_only: super::owner_only_access_build(),
         },
     );

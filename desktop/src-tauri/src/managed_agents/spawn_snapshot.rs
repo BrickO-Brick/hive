@@ -74,7 +74,7 @@ pub(crate) struct SpawnConfigInputs<'a> {
     pub model: Option<&'a str>,
     pub provider: Option<&'a str>,
     /// Exact live authorization list applied to the spawned process.
-    pub assigned_relay_skills: &'a [String],
+    pub assigned_shared_instructions: &'a [String],
     /// Compile-time distribution capability projected at this runtime boundary.
     /// The stored record remains portable; only effective spawned access is stamped.
     pub enforced_owner_only: bool,
@@ -114,7 +114,7 @@ pub(crate) struct SpawnConfigSnapshot {
     pub model: Option<String>,
     pub provider: Option<String>,
     /// Exact publisher-pinned shared-instruction coordinates exported to ACP.
-    pub assigned_relay_skills: Vec<String>,
+    pub assigned_shared_instructions: Vec<String>,
     /// `None` when a user env override shadows `BUZZ_ACP_SESSION_TITLE`: spawn
     /// writes the title BEFORE the user env layer, so the override is what
     /// actually runs and it already reaches this snapshot through `env`.
@@ -169,7 +169,7 @@ impl SpawnConfigSnapshot {
             system_prompt,
             model,
             provider,
-            assigned_relay_skills,
+            assigned_shared_instructions,
             enforced_owner_only,
         } = inputs;
         let (respond_to, respond_to_allowlist) =
@@ -198,7 +198,7 @@ impl SpawnConfigSnapshot {
             system_prompt: system_prompt.map(str::to_string),
             model: model.map(str::to_string),
             provider: provider.map(str::to_string),
-            assigned_relay_skills: assigned_relay_skills.to_vec(),
+            assigned_shared_instructions: assigned_shared_instructions.to_vec(),
             session_title: (!descriptor.env.contains_key(SESSION_TITLE_ENV_VAR))
                 .then(|| resolve_session_title(record.display_name.as_deref(), &record.name))
                 .flatten(),
@@ -304,8 +304,8 @@ pub(crate) fn prospective_spawn_config_snapshot(
         EffectiveConfigResult::OrphanedInstance { .. } => (None, None, None),
     };
 
-    let assigned_relay_skills =
-        super::effective_config::resolve_effective_assigned_relay_skills(record, personas)
+    let assigned_shared_instructions =
+        super::effective_config::resolve_effective_assigned_shared_instructions(record, personas)
             .unwrap_or_default();
 
     SpawnConfigSnapshot::from_inputs(SpawnConfigInputs {
@@ -318,7 +318,7 @@ pub(crate) fn prospective_spawn_config_snapshot(
         system_prompt: prompt.as_deref(),
         model: model.as_deref(),
         provider: provider.as_deref(),
-        assigned_relay_skills,
+        assigned_shared_instructions,
         enforced_owner_only,
     })
 }

@@ -13,7 +13,7 @@ function rawPersona(overrides = {}) {
     model: null,
     provider: null,
     name_pool: [],
-    assigned_relay_skills: [],
+    assigned_shared_instructions: [],
     is_builtin: false,
     is_active: true,
     source_team: null,
@@ -30,11 +30,11 @@ test("fromRawPersona maps source_team to sourceTeam", () => {
   assert.equal(persona.sourceTeam, "team-research");
 });
 
-test("fromRawPersona maps assigned relay-skill coordinates without rewriting them", () => {
+test("fromRawPersona maps assigned shared-instruction coordinates without rewriting them", () => {
   const coordinate = `30023:${"a".repeat(64)}:design-review`;
   const persona = fromRawPersona(
-    rawPersona({ assigned_relay_skills: [coordinate] }),
+    rawPersona({ assigned_shared_instructions: [coordinate] }),
   );
 
-  assert.deepEqual(persona.assignedRelaySkills, [coordinate]);
+  assert.deepEqual(persona.assignedSharedInstructions, [coordinate]);
 });

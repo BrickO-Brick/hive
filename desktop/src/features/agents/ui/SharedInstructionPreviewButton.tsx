@@ -2,9 +2,9 @@ import * as React from "react";
 import { BookOpen, Pencil } from "lucide-react";
 
 import {
-  resolveRelaySkills,
-  type RelaySkillCover,
-  type ResolvedRelaySkill,
+  resolveSharedInstructions,
+  type SharedInstructionCover,
+  type ResolvedSharedInstruction,
 } from "@/shared/api/tauriPersonas";
 import {
   DEFAULT_POPOVER_HOVER_OPEN_DELAY_MS,
@@ -27,22 +27,22 @@ function claimPreview(owner: PreviewOwner) {
   }
 }
 
-type RelaySkillPreviewButtonProps = Omit<
+type SharedInstructionPreviewButtonProps = Omit<
   React.ButtonHTMLAttributes<HTMLButtonElement>,
   "children"
 > & {
   asChild?: boolean;
   children: React.ReactNode;
-  onEdit?: (detail: ResolvedRelaySkill) => void;
+  onEdit?: (detail: ResolvedSharedInstruction) => void;
   previewAlign?: React.ComponentProps<typeof PopoverContent>["align"];
   previewOnFocus?: boolean;
   previewSide?: React.ComponentProps<typeof PopoverContent>["side"];
-  skill: RelaySkillCover;
+  skill: SharedInstructionCover;
 };
 
 type PreviewState = "idle" | "loading" | "ready" | "error";
 
-export function RelaySkillPreviewButton({
+export function SharedInstructionPreviewButton({
   asChild = false,
   children,
   onBlur,
@@ -56,10 +56,12 @@ export function RelaySkillPreviewButton({
   previewSide = "top",
   skill,
   ...buttonProps
-}: RelaySkillPreviewButtonProps) {
+}: SharedInstructionPreviewButtonProps) {
   const [open, setOpen] = React.useState(false);
   const [previewState, setPreviewState] = React.useState<PreviewState>("idle");
-  const [detail, setDetail] = React.useState<ResolvedRelaySkill | null>(null);
+  const [detail, setDetail] = React.useState<ResolvedSharedInstruction | null>(
+    null,
+  );
   const currentDetail =
     detail?.coordinate === skill.coordinate && detail.eventId === skill.eventId
       ? detail
@@ -70,7 +72,7 @@ export function RelaySkillPreviewButton({
   );
   const pointerInsidePreviewRef = React.useRef(false);
   const previewOwnerRef = React.useRef<PreviewOwner>(
-    Symbol("relay-skill-preview"),
+    Symbol("shared-instruction-preview"),
   );
   const triggerRef = React.useRef<HTMLElement | null>(null);
 
@@ -150,7 +152,7 @@ export function RelaySkillPreviewButton({
 
     let active = true;
     setPreviewState("loading");
-    void resolveRelaySkills([skill.coordinate])
+    void resolveSharedInstructions([skill.coordinate])
       .then(([resolved]) => {
         if (!active) return;
         setDetail(resolved ?? null);
@@ -246,7 +248,7 @@ export function RelaySkillPreviewButton({
         align={previewAlign}
         aria-label={`${displayTitle} shared instruction preview`}
         className="flex max-h-[min(18rem,var(--radix-popover-content-available-height))] w-[min(28rem,calc(100vw-2rem))] max-w-none flex-col overflow-hidden p-0"
-        data-testid="relay-skill-hover-card"
+        data-testid="shared-instruction-hover-card"
         onBlur={closeWithDelay}
         onEscapeKeyDown={() => setOpen(false)}
         onFocus={clearHoverTimer}
@@ -268,7 +270,7 @@ export function RelaySkillPreviewButton({
       >
         <PortalledScrollArea
           className="min-h-24 flex-1 overflow-y-auto overscroll-contain"
-          data-testid="relay-skill-hover-card-content"
+          data-testid="shared-instruction-hover-card-content"
         >
           <div className="px-4 pb-2 pt-3">
             <div className="flex items-center justify-between gap-3">

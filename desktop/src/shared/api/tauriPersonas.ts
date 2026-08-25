@@ -15,7 +15,7 @@ export type RawPersona = {
   model?: string | null;
   provider?: string | null;
   name_pool?: string[];
-  assigned_relay_skills?: string[];
+  assigned_shared_instructions?: string[];
   is_builtin: boolean;
   is_active?: boolean;
   shared?: boolean;
@@ -46,7 +46,7 @@ export function fromRawPersona(persona: RawPersona): AgentPersona {
     model: persona.model ?? null,
     provider: persona.provider ?? null,
     namePool: persona.name_pool ?? [],
-    assignedRelaySkills: persona.assigned_relay_skills ?? [],
+    assignedSharedInstructions: persona.assigned_shared_instructions ?? [],
     isBuiltIn: persona.is_builtin,
     isActive: persona.is_active ?? true,
     shared: persona.shared ?? false,
@@ -66,19 +66,19 @@ export function fromRawPersona(persona: RawPersona): AgentPersona {
   };
 }
 
-export type RelaySkillIncompatibilityCode =
+export type SharedInstructionIncompatibilityCode =
   | "invalidName"
   | "missingDescription"
   | "descriptionTooLong"
   | "emptyBody"
   | "bodyTooLarge";
 
-export type RelaySkillIncompatibility = {
-  code: RelaySkillIncompatibilityCode;
+export type SharedInstructionIncompatibility = {
+  code: SharedInstructionIncompatibilityCode;
   message: string;
 };
 
-export type RelaySkillCover = {
+export type SharedInstructionCover = {
   coordinate: string;
   publisher: string;
   slug: string;
@@ -87,27 +87,29 @@ export type RelaySkillCover = {
   eventId: string;
   updatedAt: number;
   compatible: boolean;
-  incompatibilities: RelaySkillIncompatibility[];
+  incompatibilities: SharedInstructionIncompatibility[];
 };
 
-export function listMyRelaySkills(): Promise<RelaySkillCover[]> {
-  return invokeTauri<RelaySkillCover[]>("list_my_relay_skills");
+export function listMySharedInstructions(): Promise<SharedInstructionCover[]> {
+  return invokeTauri<SharedInstructionCover[]>("list_my_shared_instructions");
 }
 
-export type CreateRelaySkillInput = {
+export type CreateSharedInstructionInput = {
   name: string;
   title: string;
   summary: string;
   instructions: string;
 };
 
-export function createRelaySkill(
-  input: CreateRelaySkillInput,
-): Promise<RelaySkillCover> {
-  return invokeTauri<RelaySkillCover>("create_relay_skill", { input });
+export function createSharedInstruction(
+  input: CreateSharedInstructionInput,
+): Promise<SharedInstructionCover> {
+  return invokeTauri<SharedInstructionCover>("create_shared_instruction", {
+    input,
+  });
 }
 
-export type UpdateRelaySkillInput = {
+export type UpdateSharedInstructionInput = {
   coordinate: string;
   expectedEventId: string;
   title: string;
@@ -115,13 +117,15 @@ export type UpdateRelaySkillInput = {
   instructions: string;
 };
 
-export function updateRelaySkill(
-  input: UpdateRelaySkillInput,
-): Promise<RelaySkillCover> {
-  return invokeTauri<RelaySkillCover>("update_relay_skill", { input });
+export function updateSharedInstruction(
+  input: UpdateSharedInstructionInput,
+): Promise<SharedInstructionCover> {
+  return invokeTauri<SharedInstructionCover>("update_shared_instruction", {
+    input,
+  });
 }
 
-export type ResolvedRelaySkill = {
+export type ResolvedSharedInstruction = {
   coordinate: string;
   publisher: string;
   slug: string;
@@ -133,12 +137,15 @@ export type ResolvedRelaySkill = {
   editable: boolean;
 };
 
-export function resolveRelaySkills(
+export function resolveSharedInstructions(
   coordinates: readonly string[],
-): Promise<ResolvedRelaySkill[]> {
-  return invokeTauri<ResolvedRelaySkill[]>("resolve_relay_skills", {
-    coordinates,
-  });
+): Promise<ResolvedSharedInstruction[]> {
+  return invokeTauri<ResolvedSharedInstruction[]>(
+    "resolve_shared_instructions",
+    {
+      coordinates,
+    },
+  );
 }
 
 export async function listPersonas(): Promise<AgentPersona[]> {
@@ -158,7 +165,7 @@ export async function createPersona(
         model: input.model,
         provider: input.provider,
         namePool: input.namePool ?? [],
-        assignedRelaySkills: input.assignedRelaySkills ?? [],
+        assignedSharedInstructions: input.assignedSharedInstructions ?? [],
         envVars: input.envVars ?? {},
         behavior: input.behavior,
         catalogSource: input.catalogSource,
@@ -179,7 +186,7 @@ function updatePersonaPayload(input: UpdatePersonaInput) {
     provider: input.provider,
     namePool: input.namePool ?? [],
     // Omit on legacy callers so unrelated edits preserve assignments.
-    assignedRelaySkills: input.assignedRelaySkills,
+    assignedSharedInstructions: input.assignedSharedInstructions,
     // Send envVars only when caller explicitly provided it; omitting
     // tells the backend "don't touch the stored env vars" so editing
     // unrelated fields can't silently wipe saved credentials.
