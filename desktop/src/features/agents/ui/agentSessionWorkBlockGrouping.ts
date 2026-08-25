@@ -2,6 +2,7 @@ import type {
   TranscriptTurnSegment,
   TranscriptDisplayBlock,
 } from "./agentSessionTranscriptGrouping";
+import { buildCompactToolSummary } from "./agentSessionToolSummary";
 import type { TranscriptItem } from "./agentSessionTypes";
 
 /** Reasoning. */
@@ -63,12 +64,14 @@ export type TranscriptConversationSegment =
  * Which items are *work* — the material the block absorbs.
  *
  *  - **thoughts** — reasoning is a step on the rail, not a sibling disclosure.
- *  - **tool steps**, including failed ones. A failure belongs to the work it
- *    happened in; the folded line reports it (`N steps · 1 failed`) so it is
- *    never hidden behind a neutral count.
+ *  - **tool steps**, including failed ones, except message sends. A failure
+ *    belongs to the work it happened in; the folded line reports it
+ *    (`N steps · 1 failed`) so it is never hidden behind a neutral count.
+ *    Message sends stay outside as chat bubbles: they are communication the
+ *    reader should be able to read and open, not generic work telemetry.
  *  - **interim agent notes** — an assistant message that is not the turn's
- *    answer. A relay post the agent makes mid-turn is a tool step and lands
- *    here for the same reason: it reads as progress, not as the reply.
+ *    answer. Unlike a message-send tool, a note is narration within the turn,
+ *    so it stays on the rail as progress.
  *
  * Everything else stays outside and keeps its own row. Plans stay a sibling
  * (Buzz's checklist is a first-class surface, not a step), and lifecycle rows —
@@ -84,7 +87,10 @@ function isWorkItem(
   item: TranscriptItem,
   finalAnswerId: string | null,
 ): item is WorkBlockItem {
-  if (item.type === "thought" || item.type === "tool") return true;
+  if (item.type === "thought") return true;
+  if (item.type === "tool") {
+    return buildCompactToolSummary(item).presentation !== "message";
+  }
   return (
     item.type === "message" &&
     item.role === "assistant" &&

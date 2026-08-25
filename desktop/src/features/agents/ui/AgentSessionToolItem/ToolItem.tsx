@@ -59,9 +59,10 @@ export function ToolItem({
     [],
   );
 
-  // On a work block's rail a posted message is a step the agent took, so it
-  // takes the same muted, expandable row as every other step. Everywhere else
-  // it keeps the bubble: see `useIsInsideWorkBlockRail`.
+  // Message presentations keep their readable bubble whenever they are standalone.
+  // The conversation grouping keeps message sends standalone rather than placing
+  // them on a work block rail; this guard preserves the muted row if another
+  // transcript composition explicitly embeds one in a rail.
   if (compactSummary.presentation === "message" && !insideWorkBlockRail) {
     return (
       <div
