@@ -151,6 +151,7 @@ export function CompactMessageSummary({
                 ? "text-xs leading-4"
                 : "text-sm leading-relaxed",
               shouldClampBubble && "relative max-h-36 overflow-hidden",
+              isConversation && "relative",
               canOpenMessage &&
                 "group/bubble cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
               isCompactPreview

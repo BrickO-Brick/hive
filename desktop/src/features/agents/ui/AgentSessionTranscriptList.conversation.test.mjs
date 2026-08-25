@@ -64,7 +64,20 @@ test("conversation renders the prompt as a filled right-aligned bubble with an a
   // soft tint, borderless surface, and `px-4 py-2` spacing.
   const bubble = row.querySelector(".rounded-2xl");
   assert.ok(bubble, "the prompt should match Buzz's chat-bubble radius");
+  assert.match(bubble.className, /relative/);
   assert.match(bubble.className, /bg-muted\/60/);
+  const openInChatCue = bubble.querySelector('[aria-hidden="true"]');
+  assert.ok(openInChatCue, "linked prompts should retain the hover cue");
+  assert.match(
+    openInChatCue.className,
+    /top-1\.5/,
+    "the sender hover cue uses its native inset once the bubble is its containing block",
+  );
+  assert.doesNotMatch(
+    openInChatCue.className,
+    /top-3/,
+    "the cue should not be pushed into the prompt text to compensate for the old containing-block bug",
+  );
   assert.doesNotMatch(
     bubble.className,
     /(?<!\/)bg-muted(?!\/)/,

@@ -185,7 +185,7 @@ export function UserMessageBubble({
             // `leading-normal` overrides the `leading-relaxed` base, as berd
             // does, so the prompt sits tighter than the agent's prose.
             isConversation &&
-              "rounded-2xl border-0 bg-muted/60 px-4 py-2 leading-normal",
+              "relative rounded-2xl border-0 bg-muted/60 px-4 py-2 leading-normal",
             bubbleClassName,
           )}
           ref={bubbleRef}
@@ -206,11 +206,7 @@ export function UserMessageBubble({
           {hasBubbleOverflow ? (
             <span className="pointer-events-none absolute inset-x-0 bottom-0 h-8 rounded-b-2xl bg-linear-to-b from-transparent to-background" />
           ) : null}
-          {messageLink ? (
-            <MessageLinkHoverCue
-              className={isConversation ? "top-3" : undefined}
-            />
-          ) : null}
+          {messageLink ? <MessageLinkHoverCue /> : null}
         </div>
         {isConversation && footer ? (
           // Timestamp/context row is chrome, not content: focus mode keeps it
