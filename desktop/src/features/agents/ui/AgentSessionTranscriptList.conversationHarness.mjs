@@ -191,7 +191,7 @@ export const AUTHOR_TRUNCATED = `${AUTHOR.slice(0, 8)}…${AUTHOR.slice(-4)}`;
  * (`agentSessionTranscriptHelpers.ts` `parsePromptText`). The author row must
  * never display this as a name.
  */
-export const TRIGGER_TITLE = "@Mention";
+const TRIGGER_TITLE = "@Mention";
 export const AUTHOR_PROFILES = {
   [AUTHOR]: {
     displayName: "Ada Lovelace",
@@ -569,8 +569,3 @@ afterEach(() => {
   resetActiveAgentTurnsStore?.();
 });
 after(() => dom.window.close());
-/**
- * The jsdom window itself. Exported for the few tests that must construct a
- * real DOM event (`new domWindow.Event("toggle")`) to simulate a browser echo.
- */
-export const domWindow = dom.window;
