@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { getValidatedRouteThreadRootId } from "./ChannelRouteScreen.tsx";
+import {
+  getValidatedRouteThreadRootId,
+  hasValidRouteThreadIntent,
+  isRouteEventForChannel,
+} from "./ChannelRouteScreen.tsx";
 
 function event(id, tags = [["h", "channel"]]) {
   return {
@@ -29,4 +33,15 @@ test("a reply route derives its containing root", () => {
     ["e", "root", "", "reply"],
   ]);
   assert.equal(getValidatedRouteThreadRootId(target, null), "root");
+  assert.equal(getValidatedRouteThreadRootId(target, "root"), "root");
+  assert.equal(getValidatedRouteThreadRootId(target, "unrelated-root"), null);
+  assert.equal(hasValidRouteThreadIntent(target, null), true);
+  assert.equal(hasValidRouteThreadIntent(target, "root"), true);
+  assert.equal(hasValidRouteThreadIntent(target, "unrelated-root"), false);
+});
+
+test("route events must belong to the routed channel", () => {
+  assert.equal(isRouteEventForChannel(event("target"), "channel"), true);
+  assert.equal(isRouteEventForChannel(event("target"), "other-channel"), false);
+  assert.equal(isRouteEventForChannel(event("target", []), "channel"), false);
 });

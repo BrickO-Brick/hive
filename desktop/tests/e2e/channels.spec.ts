@@ -2453,9 +2453,16 @@ test("sidebar clears unread indicator after opening a DM", async ({ page }) => {
   await expect(page.getByTestId("message-dm-intro")).toContainText(
     "This is the beginning of your direct message with",
   );
+  // `.first()`: backdated seeds can straddle midnight UTC and render two
+  // dividers (Yesterday + Today); a bare locator fails Playwright strict mode.
+  await expect(
+    page.getByTestId("message-timeline-day-divider").first(),
+  ).toBeVisible();
   await expect(page.getByTestId("message-timeline")).toContainText(
     "Unread update for the DM",
   );
+  await expectSameLeftInset(page, "message-dm-intro", "message-row");
+  await expectIntroSpacedAboveDayDivider(page, "message-dm-intro");
   await expect(page.getByTestId("channel-unread-alice-tyler")).toHaveCount(0);
 });
 

@@ -12,6 +12,14 @@ test.beforeEach(async ({ page }) => {
   await installMockBridge(page);
 });
 
+const DM_DEEP_LINK_HISTORY_TEST =
+  "cold deep link to a top-level DM message stays in the timeline";
+
+test.beforeEach(async ({ page }, testInfo) => {
+  if (testInfo.title !== DM_DEEP_LINK_HISTORY_TEST) return;
+  await installMockBridge(page, { aliceTylerHistoryMessageCount: 80 });
+});
+
 /**
  * Inline message chips no longer change their label when metadata resolves, so
  * a single hover can land while the chip is still the plain (untriggered) span.
