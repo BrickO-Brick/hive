@@ -192,7 +192,13 @@ with a TypeScript lookup table or an id comparison in a component.
     its assignment. Dirty Title, When to use it, or Instructions fields must
     confirm before Cancel or the enclosing dialog close discards them. The
     primary create action is **Publish**, and the footer discloses that anyone
-    in the community can read the instruction.
+    in the community can read the instruction. The `sharedInstructions`
+    experiment gates execution, not only this UI: local prospective restart
+    snapshots and remote deployment payloads must both omit assignments while
+    disabled. A successful toggle records the running value until the user
+    restarts agents (or toggles back), so the restart affordance survives
+    leaving and reopening Settings without claiming a restart is needed when
+    runtime context is unchanged.
 14. **Profile runtime sections render only reported agent data.** Missing
    runtime, model, status, command, MCP, advanced, or diagnostics values stay
    absent in every build mode. Do not fill profile or agent-panel gaps with

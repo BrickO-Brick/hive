@@ -15,10 +15,19 @@ import { Button } from "@/shared/ui/button";
 import { Switch } from "@/shared/ui/switch";
 import { SettingsOptionGroup, SettingsOptionRow } from "./SettingsOptionGroup";
 import { SettingsSectionHeader } from "./SettingsSectionHeader";
+import {
+  clearSharedInstructionsRestartPending,
+  isSharedInstructionsRestartPending,
+  recordSharedInstructionsToggle,
+} from "./sharedInstructionsRestartPending";
 
 function FeatureRow({ feature }: { feature: FeatureDefinition }) {
   const [enabled, toggle] = useFeatureToggle(feature.id);
-  const [restartPending, setRestartPending] = React.useState(false);
+  const [restartPending, setRestartPending] = React.useState(() =>
+    feature.id === "sharedInstructions"
+      ? isSharedInstructionsRestartPending(enabled)
+      : false,
+  );
   const [restarting, setRestarting] = React.useState(false);
   const switchId = `feature-toggle-${feature.id}`;
 
@@ -40,6 +49,7 @@ function FeatureRow({ feature }: { feature: FeatureDefinition }) {
         );
         return;
       }
+      clearSharedInstructionsRestartPending();
       setRestartPending(false);
       toast.success(
         running.length === 0
@@ -99,7 +109,10 @@ function FeatureRow({ feature }: { feature: FeatureDefinition }) {
           }
           if (feature.id === "sharedInstructions") {
             void setSharedInstructionsEnabled(value)
-              .then(() => setRestartPending(true))
+              .then(() => {
+                const pending = recordSharedInstructionsToggle(value);
+                setRestartPending(pending);
+              })
               .catch((error) => {
                 console.error(
                   "Failed to apply shared instructions setting:",
