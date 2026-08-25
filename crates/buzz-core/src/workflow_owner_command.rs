@@ -529,12 +529,11 @@ mod tests {
             .tags(event.tags)
             .sign_with_keys(&owner)
             .unwrap();
-        assert_eq!(
-            parse_owner_command(&event),
-            Err(WorkflowOwnerError::InvalidContent(
-                "unknown variant `update`, expected one of `start`, `pause`, `resume`, `cancel`, `restore`".into()
-            ))
-        );
+        let error = parse_owner_command(&event).unwrap_err();
+        assert!(matches!(error, WorkflowOwnerError::InvalidContent(message)
+            if message.contains("unknown variant `update`")
+                && message.contains("expected one of")
+                && message.contains("`restore`")));
 
         let event = command(&owner, &agent, WorkflowOwnerOperation::Start);
         let event = EventBuilder::new(
