@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import {
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -15,6 +21,8 @@ import {
   resolveBaseRef,
 } from "./check-file-sizes-core.mjs";
 
+const repoRoot = path.resolve(import.meta.dirname, "..");
+
 function git(repo, ...args) {
   // These fixture repositories inherit both hook configuration and Git's
   // repository-local environment when this test runs from pre-push. Isolate
@@ -27,6 +35,53 @@ function git(repo, ...args) {
     encoding: "utf8",
     env,
   }).trim();
+}
+
+function createEntrypointFixture({
+  surface,
+  relativeFile,
+  extension,
+  maxLines,
+}) {
+  const repo = realpathSync(
+    mkdtempSync(path.join(tmpdir(), `file-size-${surface}-`)),
+  );
+  const scriptsDir = path.join(repo, "scripts");
+  const surfaceScriptsDir = path.join(repo, surface, "scripts");
+  mkdirSync(scriptsDir, { recursive: true });
+  mkdirSync(surfaceScriptsDir, { recursive: true });
+  copyFileSync(
+    path.join(repoRoot, "scripts/check-file-sizes-core.mjs"),
+    path.join(scriptsDir, "check-file-sizes-core.mjs"),
+  );
+  copyFileSync(
+    path.join(repoRoot, surface, "scripts/check-file-sizes.mjs"),
+    path.join(surfaceScriptsDir, "check-file-sizes.mjs"),
+  );
+  writeFileSync(
+    path.join(surfaceScriptsDir, "file-size-policy.mjs"),
+    `export const rules = [{ root: ${JSON.stringify(path.posix.dirname(relativeFile))}, extensions: new Set([${JSON.stringify(extension)}]), maxLines: ${maxLines} }];\n`,
+  );
+
+  git(repo, "init", "-b", "main");
+  git(repo, "config", "user.name", "Test");
+  git(repo, "config", "user.email", "test@example.com");
+  git(repo, "add", ".");
+  git(repo, "commit", "-m", "base");
+  const base = git(repo, "rev-parse", "HEAD");
+  git(repo, "switch", "-c", "feature");
+
+  const governedFile = path.join(repo, surface, relativeFile);
+  mkdirSync(path.dirname(governedFile), { recursive: true });
+  writeFileSync(governedFile, `${"line\n".repeat(maxLines)}line`);
+
+  const entrypointPath = path.join(surfaceScriptsDir, "check-file-sizes.mjs");
+  const result = spawnSync(realpathSync(process.execPath), [entrypointPath], {
+    cwd: repo,
+    encoding: "utf8",
+    env: { ...process.env, CHECK_FILE_SIZES_BASE: base },
+  });
+  return { result, relativeFile };
 }
 
 test("local base resolution uses the branch merge-base and fails without origin/main", () => {
@@ -48,6 +103,39 @@ test("local base resolution uses the branch merge-base and fails without origin/
     () => resolveBaseRef(repo, {}),
     /Fetch origin\/main or set CHECK_FILE_SIZES_BASE/,
   );
+});
+
+test("surface entrypoints execute their exported policies", () => {
+  const cases = [
+    {
+      surface: "desktop",
+      relativeFile: "src-tauri/src/oversized.rs",
+      extension: ".rs",
+      maxLines: 1500,
+    },
+    {
+      surface: "mobile",
+      relativeFile: "lib/oversized.dart",
+      extension: ".dart",
+      maxLines: 1200,
+    },
+    {
+      surface: "web",
+      relativeFile: "src/app/oversized.ts",
+      extension: ".ts",
+      maxLines: 1000,
+    },
+  ];
+
+  for (const fixture of cases) {
+    const { result, relativeFile } = createEntrypointFixture(fixture);
+    assert.equal(
+      result.status,
+      1,
+      `${fixture.surface} should reject ceiling + 1: ${result.stderr || result.stdout}`,
+    );
+    assert.ok(result.stderr.includes(relativeFile), result.stderr);
+  }
 });
 
 test("counts empty, LF, and CRLF content with the existing semantics", () => {
