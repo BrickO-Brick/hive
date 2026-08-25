@@ -142,14 +142,16 @@ const VALID_OUTCOMES = new Set([
 export function extractPermissionRequest(
   content: string,
 ): PermissionRequestPayload | null {
-  const trimmed = content.trim();
   // Total-content byte bound — the single size gate mirrored by the harness
-  // (`SENTINEL_CONTENT_MAX_BYTES`). Reject before parsing so an oversized signed
-  // payload can never allocate an outsized DOM/control value.
-  if (byteLength(trimmed) > MAX_CONTENT_BYTES) return null;
+  // (`SENTINEL_CONTENT_MAX_BYTES`). Measured against the RAW content, not the
+  // trimmed value, so the bound matches the producer's complete serialized
+  // output byte-for-byte; gating trimmed content would let whitespace padding
+  // smuggle signed content past the frozen boundary. Reject before parsing so
+  // an oversized signed payload can never allocate an outsized DOM/control value.
+  if (byteLength(content) > MAX_CONTENT_BYTES) return null;
   let parsed: unknown;
   try {
-    parsed = JSON.parse(trimmed);
+    parsed = JSON.parse(content.trim());
   } catch {
     return null;
   }

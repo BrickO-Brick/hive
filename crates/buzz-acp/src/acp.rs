@@ -3787,8 +3787,13 @@ fn sentinel_option_fields(actions: &CardActions) -> (Vec<serde_json::Value>, ser
 
 /// Build the JSON payload for a kind-9 PENDING sentinel card.
 ///
-/// Returns `None` only when `serde_json::to_string` fails (unreachable in
-/// practice). The `expiry_unix_secs` is `min(registered_at + 300, hard_deadline)`.
+/// Fails closed (`None`) when any bounded string field (`requestNonce`,
+/// `turnId`, `sessionId`) exceeds `SENTINEL_STRING_MAX_BYTES`, when the total
+/// serialized content exceeds `SENTINEL_CONTENT_MAX_BYTES`, or when
+/// `serde_json::to_string` fails (the last is unreachable in practice). Labels
+/// are truncated to the byte limit rather than rejected. A `None` return routes
+/// to synchronous denial — no card is ever published. The `expiry_unix_secs` is
+/// `min(registered_at + 300, hard_deadline)`.
 ///
 /// The card advertises EXACTLY the two ruled actions (allow_once, reject_once);
 /// no other adapter option (e.g. `allow_always`) is ever forwarded.

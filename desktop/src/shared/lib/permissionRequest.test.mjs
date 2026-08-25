@@ -411,11 +411,42 @@ describe("extractPermissionRequest — byte-unit boundaries", () => {
     assert.equal(extractPermissionRequest(serialized), null);
   });
 
-  it("test_content_just_under_max_bytes_parses", () => {
-    // A label sized so total content stays within MAX_CONTENT_BYTES must parse,
-    // proving the total-content gate is not over-tight.
-    const result = extractPermissionRequest(raw(PENDING_NORMAL));
-    assert.ok(result !== null, "a normal-sized sentinel must parse");
+  it("test_total_content_with_whitespace_padding_over_max_bytes_returns_null", () => {
+    // The gate measures RAW content, not the trimmed value. A structurally-valid
+    // sentinel prefixed with whitespace whose RAW size exceeds MAX_CONTENT_BYTES
+    // must be rejected — otherwise whitespace padding smuggles signed content
+    // past the frozen total boundary. Mutation proof: gating `content.trim()`
+    // instead of `content` makes this test pass the oversized payload and parse.
+    const body = raw(PENDING_NORMAL);
+    const padded = " ".repeat(5000) + body;
+    assert.ok(
+      new TextEncoder().encode(body).length <= 4096,
+      "the trimmed body alone must be within MAX_CONTENT_BYTES",
+    );
+    assert.ok(
+      new TextEncoder().encode(padded).length > 4096,
+      "raw padded content must exceed MAX_CONTENT_BYTES to exercise the gate",
+    );
+    assert.equal(extractPermissionRequest(padded), null);
+  });
+
+  it("test_normal_bounded_content_well_under_max_bytes_parses", () => {
+    // Every string leaf is capped at MAX_STRING_BYTES (200) and the field set is
+    // fixed, so a structurally-valid sentinel is always well under
+    // MAX_CONTENT_BYTES — the total-content gate exists to reject oversized
+    // *signed* content, not to bound producer output. Assert the normal fixture's
+    // byte size to make that headroom explicit and prove the gate is not
+    // over-tight for the content the producer actually emits.
+    const serialized = raw(PENDING_NORMAL);
+    const size = new TextEncoder().encode(serialized).length;
+    assert.ok(
+      size < 4096,
+      `a normal bounded sentinel must be under MAX_CONTENT_BYTES (got ${size})`,
+    );
+    assert.ok(
+      extractPermissionRequest(serialized) !== null,
+      "normal bounded content must parse",
+    );
   });
 });
 
