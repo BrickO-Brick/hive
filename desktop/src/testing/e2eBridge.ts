@@ -8858,10 +8858,15 @@ async function handleDeleteTeam(args: { id: string }): Promise<void> {
   mockTeams = mockTeams.filter((candidate) => candidate.id !== args.id);
 }
 
-async function handleExportTeamToJson(args: { id: string }): Promise<boolean> {
-  const team = mockTeams.find((candidate) => candidate.id === args.id);
+function getMockTeamForExport(id: string): RawTeam {
+  const team = mockTeams.find((candidate) => candidate.id === id);
   if (!team) {
-    throw new Error(`Team ${args.id} not found.`);
+    throw new Error(`Team ${id} not found.`);
+  }
+  if (team.persona_ids.length === 0) {
+    throw new Error(
+      "This team has no agents. Add at least one agent before you share or export it.",
+    );
   }
 
   const missingPersonaIds = team.persona_ids.filter(
@@ -8874,6 +8879,18 @@ async function handleExportTeamToJson(args: { id: string }): Promise<boolean> {
     );
   }
 
+  return team;
+}
+
+async function handleExportTeamToJson(args: { id: string }): Promise<boolean> {
+  getMockTeamForExport(args.id);
+  return true;
+}
+
+async function handleExportTeamSnapshot(args: {
+  id: string;
+}): Promise<boolean> {
+  getMockTeamForExport(args.id);
   return true;
 }
 
@@ -13020,9 +13037,16 @@ export function maybeInstallE2eTauriMocks() {
         return importResult;
       }
       case "export_team_snapshot":
-        // Mimics the save-to-disk path: report success without a real dialog.
-        return true;
+        return handleExportTeamSnapshot(
+          payload as Parameters<typeof handleExportTeamSnapshot>[0],
+        );
       case "encode_team_snapshot_for_send": {
+        const input = payload as {
+          id: string;
+          memoryLevel: "none" | "core" | "everything";
+          format: "json" | "png";
+        };
+        getMockTeamForExport(input.id);
         // Return a minimal PNG-shaped payload so the send flow can proceed
         // through upload_media_bytes without a real Rust encode step.
         const encodeDelayMs = activeConfig?.mock?.encodeDelayMs ?? 0;

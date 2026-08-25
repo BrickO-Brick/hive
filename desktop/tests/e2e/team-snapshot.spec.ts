@@ -23,6 +23,35 @@ async function readCommandLog(page: import("@playwright/test").Page) {
   });
 }
 
+async function invokeTauriExpectError(
+  page: import("@playwright/test").Page,
+  command: string,
+  payload?: Record<string, unknown>,
+) {
+  return page.evaluate(
+    async ({ targetCommand, targetPayload }) => {
+      const invoke = (
+        window as Window & {
+          __BUZZ_E2E_INVOKE_MOCK_COMMAND__?: (
+            command: string,
+            payload?: Record<string, unknown>,
+          ) => Promise<unknown>;
+        }
+      ).__BUZZ_E2E_INVOKE_MOCK_COMMAND__;
+      if (!invoke) {
+        throw new Error("Mock invoke bridge is unavailable.");
+      }
+      try {
+        await invoke(targetCommand, targetPayload);
+        return null;
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error);
+      }
+    },
+    { targetCommand: command, targetPayload: payload },
+  );
+}
+
 async function gotoAgentsPage(page: import("@playwright/test").Page) {
   await page.goto("/");
   await page.getByTestId("open-agents-view").click();
@@ -59,6 +88,29 @@ const SHARE_TEAM_SEED = {
   description: "Team for the share tests",
   personaIds: [ANALYST_PERSONA_ID],
 };
+
+const EMPTY_TEAM_EXPORT_ERROR =
+  "This team has no agents. Add at least one agent before you share or export it.";
+
+test("empty teams cannot export or share snapshots through the mock bridge", async ({
+  page,
+}) => {
+  await installMockBridge(page);
+  await gotoAgentsPage(page);
+
+  for (const command of [
+    "export_team_to_json",
+    "export_team_snapshot",
+    "encode_team_snapshot_for_send",
+  ]) {
+    const error = await invokeTauriExpectError(page, command, {
+      id: "team-engineering-001",
+      format: "png",
+      memoryLevel: "none",
+    });
+    expect(error).toBe(EMPTY_TEAM_EXPORT_ERROR);
+  }
+});
 
 // ── (a) Confirm-fail + retry ────────────────────────────────────────────────
 
