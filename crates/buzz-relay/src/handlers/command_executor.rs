@@ -843,6 +843,7 @@ fn exact_tag_value<'a>(event: &'a Event, name: &str) -> Option<&'a str> {
 
 async fn verify_workflow_revision(
     state: &Arc<AppState>,
+    mut tx: Option<&mut sqlx::Transaction<'_, sqlx::Postgres>>,
     community_id: CommunityId,
     workflow: &buzz_db::workflow::WorkflowRecord,
     requested_revision: &[u8],
@@ -858,14 +859,22 @@ async fn verify_workflow_revision(
         ));
     }
 
-    let stored = state
-        .db
-        .get_event_by_id(community_id, persisted_revision)
-        .await
-        .map_err(|e| IngestError::Internal(format!("error: workflow revision lookup: {e}")))?
-        .ok_or_else(|| {
-            IngestError::Rejected("invalid: signed workflow revision not found".into())
-        })?;
+    let stored = match tx.as_mut() {
+        Some(tx) => {
+            state
+                .db
+                .get_event_by_id_in_transaction(tx, community_id, persisted_revision)
+                .await
+        }
+        None => {
+            state
+                .db
+                .get_event_by_id(community_id, persisted_revision)
+                .await
+        }
+    }
+    .map_err(|e| IngestError::Internal(format!("error: workflow revision lookup: {e}")))?
+    .ok_or_else(|| IngestError::Rejected("invalid: signed workflow revision not found".into()))?;
     let definition_event = &stored.event;
     let workflow_id = workflow.id.to_string();
     let workflow_channel_id = workflow.channel_id.map(|id| id.to_string());
@@ -944,8 +953,12 @@ async fn handle_workflow_trigger(
             "forbidden: not authorized to trigger this workflow".into(),
         ));
     }
+    // Managed-agent ownership is immutable. Carry the authorized workflow
+    // principal across the transaction boundary so no pool-backed ownership
+    // lookup is attempted while the command transaction holds its connection.
+    let authorized_workflow_owner = workflow.owner_pubkey.clone();
 
-    verify_workflow_revision(state, community_id, &workflow, &requested_revision).await?;
+    verify_workflow_revision(state, None, community_id, &workflow, &requested_revision).await?;
 
     // SEC-006: manual triggers must honor the workflow's lifecycle state and
     // recheck the owner's *current* channel authority before creating a run.
@@ -1002,12 +1015,19 @@ async fn handle_workflow_trigger(
         .get_workflow_for_share_in_transaction(&mut tx, community_id, workflow_id)
         .await
         .map_err(|_| IngestError::Rejected("invalid: workflow not found".into()))?;
-    if !caller_controls_workflow(state, community_id, &workflow.owner_pubkey, &self_bytes).await? {
+    if workflow.owner_pubkey != authorized_workflow_owner {
         return Err(IngestError::Rejected(
-            "forbidden: not authorized to trigger this workflow".into(),
+            "conflict: workflow owner changed while trigger was being processed".into(),
         ));
     }
-    verify_workflow_revision(state, community_id, &workflow, &requested_revision).await?;
+    verify_workflow_revision(
+        state,
+        Some(&mut tx),
+        community_id,
+        &workflow,
+        &requested_revision,
+    )
+    .await?;
     if !workflow.enabled || workflow.status != buzz_db::workflow::WorkflowStatus::Active {
         return Err(IngestError::Rejected(
             "forbidden: workflow is disabled or inactive".into(),
@@ -1485,7 +1505,10 @@ mod tests {
         let url = std::env::var("BUZZ_TEST_DATABASE_URL")
             .or_else(|_| std::env::var("DATABASE_URL"))
             .unwrap_or_else(|_| "postgres://buzz:buzz_dev@localhost:5432/buzz".to_string());
-        let pool = sqlx::PgPool::connect(&url)
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(std::time::Duration::from_secs(1))
+            .connect(&url)
             .await
             .expect("connect workflow persistence test database");
         let db = buzz_db::Db::from_pool(pool);
@@ -1499,6 +1522,164 @@ mod tests {
             .expect("create workflow persistence test community")
             .id;
         (db, TenantContext::resolved(community, host))
+    }
+
+    async fn manual_trigger_test_context() -> (Arc<AppState>, TenantContext, Keys, Uuid, Event) {
+        use buzz_core::channel::{ChannelType, ChannelVisibility};
+
+        let url = std::env::var("BUZZ_TEST_DATABASE_URL")
+            .or_else(|_| std::env::var("DATABASE_URL"))
+            .unwrap_or_else(|_| "postgres://buzz:buzz_dev@localhost:5432/buzz".to_string());
+        let setup_pool = sqlx::PgPool::connect(&url)
+            .await
+            .expect("connect workflow trigger setup database");
+        let setup_db = buzz_db::Db::from_pool(setup_pool.clone());
+        setup_db
+            .migrate()
+            .await
+            .expect("migrate workflow trigger test database");
+
+        let host = format!("workflow-trigger-{}.example", Uuid::new_v4().simple());
+        let community = setup_db
+            .ensure_configured_community(&host)
+            .await
+            .expect("create workflow trigger test community")
+            .id;
+        let tenant = TenantContext::resolved(community, host.clone());
+        let human = Keys::generate();
+        let agent = Keys::generate();
+        let human_bytes = human.public_key().to_bytes();
+        let agent_bytes = agent.public_key().to_bytes();
+        setup_db
+            .ensure_user(community, &human_bytes)
+            .await
+            .expect("ensure human owner");
+        setup_db
+            .ensure_user(community, &agent_bytes)
+            .await
+            .expect("ensure managed agent");
+        assert!(setup_db
+            .set_agent_owner(community, &agent_bytes, &human_bytes)
+            .await
+            .expect("set immutable agent owner"));
+        let channel = setup_db
+            .create_channel(
+                community,
+                "manual-trigger-pool",
+                ChannelType::Stream,
+                ChannelVisibility::Open,
+                None,
+                &agent_bytes,
+                None,
+            )
+            .await
+            .expect("create workflow channel");
+        let workflow_id = Uuid::new_v4();
+        let definition = EventBuilder::new(
+            Kind::Custom(KIND_WORKFLOW_DEF as u16),
+            concat!(
+                "name: manual-trigger-pool\n",
+                "trigger:\n  on: message_posted\n",
+                "steps:\n  - id: send\n    action: send_message\n    text: done\n",
+            ),
+        )
+        .tags(vec![
+            Tag::parse(["d", workflow_id.to_string().as_str()]).expect("d tag"),
+            Tag::parse(["h", channel.id.to_string().as_str()]).expect("h tag"),
+        ])
+        .sign_with_keys(&agent)
+        .expect("sign workflow definition");
+        let (_, definition_json) = buzz_workflow::WorkflowEngine::parse_yaml(&definition.content)
+            .expect("parse signed workflow definition");
+        let definition_hash = compute_definition_hash(&definition_json);
+        let mut tx = setup_db
+            .begin_transaction()
+            .await
+            .expect("begin workflow seed");
+        buzz_db::event::insert_event_in_transaction(
+            &mut tx,
+            community,
+            &definition,
+            Some(channel.id),
+        )
+        .await
+        .expect("persist signed workflow definition");
+        setup_db
+            .upsert_workflow(
+                &mut tx,
+                community,
+                workflow_id,
+                Some(channel.id),
+                &agent_bytes,
+                "manual-trigger-pool",
+                &definition_json,
+                &definition_hash,
+                definition.id.as_bytes(),
+            )
+            .await
+            .expect("materialize signed workflow");
+        tx.commit().await.expect("commit signed workflow");
+
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(std::time::Duration::from_secs(1))
+            .connect(&url)
+            .await
+            .expect("connect one-connection workflow trigger pool");
+        let db = buzz_db::Db::from_pool(pool.clone());
+        let mut config = crate::config::Config::from_env().expect("config from env");
+        config.database_url = url;
+        config.redis_url = "redis://127.0.0.1:1".to_string();
+        config.relay_url = format!("wss://{host}");
+        config.require_relay_membership = false;
+        let redis_pool = deadpool_redis::Config::from_url(&config.redis_url)
+            .create_pool(Some(deadpool_redis::Runtime::Tokio1))
+            .expect("redis pool config");
+        let pubsub = Arc::new(
+            buzz_pubsub::PubSubManager::new(&config.redis_url, redis_pool.clone())
+                .await
+                .expect("pubsub manager"),
+        );
+        let audit = buzz_audit::AuditService::new(pool.clone());
+        let auth = buzz_auth::AuthService::new(config.auth.clone());
+        let search = buzz_search::SearchService::new(pool);
+        let workflow_engine = Arc::new(buzz_workflow::WorkflowEngine::new(
+            db.clone(),
+            buzz_workflow::WorkflowConfig::default(),
+        ));
+        let media_storage = buzz_media::MediaStorage::new(&config.media).expect("media storage");
+        let (state, _audit_shutdown) = AppState::new(
+            config,
+            db,
+            redis_pool,
+            audit,
+            pubsub,
+            auth,
+            search,
+            workflow_engine,
+            Keys::generate(),
+            media_storage,
+        );
+        setup_pool.close().await;
+        (Arc::new(state), tenant, human, workflow_id, definition)
+    }
+
+    fn workflow_trigger_event(keys: &Keys, workflow_id: Uuid, revision: &Event) -> Event {
+        EventBuilder::new(Kind::Custom(KIND_WORKFLOW_TRIGGER as u16), "")
+            .tags(vec![
+                Tag::parse(["d", workflow_id.to_string().as_str()]).expect("d tag"),
+                Tag::parse(["e", revision.id.to_hex().as_str()]).expect("revision tag"),
+            ])
+            .sign_with_keys(keys)
+            .expect("sign workflow trigger")
+    }
+
+    fn http_auth(keys: &Keys) -> IngestAuth {
+        IngestAuth::Http {
+            pubkey: keys.public_key(),
+            scopes: vec![buzz_auth::Scope::MessagesWrite],
+            auth_method: super::super::ingest::HttpAuthMethod::Nip98,
+        }
     }
 
     fn workflow_event(
@@ -1533,6 +1714,60 @@ mod tests {
             Err(IngestError::AuthFailed(message)) => panic!("unexpected auth failure: {message}"),
             Err(IngestError::Internal(message)) => panic!("unexpected internal failure: {message}"),
             Ok(_) => panic!("expected revision parsing to fail"),
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn human_owner_manual_trigger_completes_with_one_connection() {
+        let (state, tenant, human, workflow_id, revision) = manual_trigger_test_context().await;
+        let trigger = workflow_trigger_event(&human, workflow_id, &revision);
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            handle_workflow_trigger(&tenant, &state, &trigger, &http_auth(&human)),
+        )
+        .await
+        .expect("human-owner trigger must not wait for a second pool connection")
+        .expect("human-owner trigger must succeed");
+        assert!(result.message.contains("\"run_id\""));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn concurrent_human_owner_manual_triggers_do_not_starve_one_connection_pool() {
+        let (state, tenant, human, workflow_id, revision) = manual_trigger_test_context().await;
+        let triggers = (0..8)
+            .map(|_| workflow_trigger_event(&human, workflow_id, &revision))
+            .collect::<Vec<_>>();
+
+        let results = tokio::time::timeout(std::time::Duration::from_secs(8), async {
+            let mut tasks = tokio::task::JoinSet::new();
+            for trigger in triggers {
+                let state = Arc::clone(&state);
+                let tenant = tenant.clone();
+                let auth = http_auth(&human);
+                tasks.spawn(async move {
+                    handle_workflow_trigger(&tenant, &state, &trigger, &auth).await
+                });
+            }
+            let mut results = Vec::new();
+            while let Some(result) = tasks.join_next().await {
+                results.push(result.expect("trigger task must not panic"));
+            }
+            results
+        })
+        .await
+        .expect("concurrent triggers must drain rather than pool-starve");
+
+        assert_eq!(results.len(), 8);
+        for result in results {
+            assert!(
+                result
+                    .expect("concurrent human-owner trigger must succeed")
+                    .accepted,
+                "manual trigger should be accepted"
+            );
         }
     }
 

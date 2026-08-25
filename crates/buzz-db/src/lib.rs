@@ -1413,6 +1413,17 @@ impl Db {
         event::get_event_by_id(&self.pool, community_id, id_bytes).await
     }
 
+    /// Fetches a single non-deleted event by its raw ID bytes on the caller's transaction.
+    #[datastore_span(name = "get_event_by_id_in_transaction", system = "postgresql")]
+    pub async fn get_event_by_id_in_transaction(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        community_id: CommunityId,
+        id_bytes: &[u8],
+    ) -> Result<Option<StoredEvent>> {
+        event::get_event_by_id_in_transaction(tx, community_id, id_bytes).await
+    }
+
     /// Fetches a single event by its raw ID bytes, **including soft-deleted rows**.
     #[datastore_span(name = "get_event_by_id_including_deleted", system = "postgresql")]
     pub async fn get_event_by_id_including_deleted(
