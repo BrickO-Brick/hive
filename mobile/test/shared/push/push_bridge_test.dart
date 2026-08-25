@@ -100,7 +100,7 @@ void main() {
         if (call.method == 'endpointGrants') {
           return [_grantMap('new-grant')];
         }
-        if (call.method == 'saveCommunitySnapshot') {
+        if (call.method == 'syncPushSnapshot') {
           snapshotArguments.add(call.arguments);
           return null;
         }
@@ -142,20 +142,18 @@ void main() {
         'endpointGrants',
         'enrollPush',
         'endpointGrants',
-        'saveCommunitySnapshot',
+        'syncPushSnapshot',
       ]);
       expect(snapshotArguments, [
         {
+          'section': 'communities',
           'communities': [
             {
               'id': 'community-id',
               'name': 'Community',
               'relayUrl': 'wss://relay.example/',
               'pubkey': 'd' * 64,
-              'pushSubscriptionState': {
-                'authority': 'desired',
-                'desired': <Object?>[],
-              },
+              'policies': <Object?>[],
             },
           ],
           'signingKeys': <String, String>{},

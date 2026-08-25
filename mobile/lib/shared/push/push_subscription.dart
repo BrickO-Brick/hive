@@ -12,7 +12,7 @@ const buzzPushMaxSubscriptions = 16;
 const buzzPushMaxIgnoreFilters = 8;
 const buzzPushHellthreadParticipantLimit = 20;
 
-const _supportedNotificationClasses = {'silent', 'default', 'time_sensitive'};
+const _supportedNotificationClasses = {'default'};
 const _filterKeys = {'kinds', 'authors', '#p', '#h', '#e'};
 final _exactHexPattern = RegExp(r'^[0-9a-f]{64}$');
 final _channelIdPattern = RegExp(
@@ -185,40 +185,22 @@ class BuzzPushLeaseSubscriptionState {
   /// Monotonic generation of the relay-facing kind-30350 lease.
   final int? acceptedGeneration;
 
-  /// Generation sealed into the gateway's opaque relay delegation grant.
-  final int? acceptedGrantGeneration;
-  final String? acceptedInstallationId;
-
   const BuzzPushLeaseSubscriptionState.desired({
     this.desired = const [],
     this.accepted,
     this.acceptedGeneration,
-    this.acceptedGrantGeneration,
-    this.acceptedInstallationId,
   }) : authority = BuzzPushLeaseSubscriptionAuthority.desired;
 
   BuzzPushLeaseSubscriptionState.accepted({
     required Iterable<BuzzPushSubscription> desired,
     required Iterable<BuzzPushSubscription> acceptedSubscriptions,
     required this.acceptedGeneration,
-    required this.acceptedGrantGeneration,
-    required this.acceptedInstallationId,
   }) : authority = BuzzPushLeaseSubscriptionAuthority.accepted,
        desired = List.unmodifiable(desired),
        accepted = List.unmodifiable(acceptedSubscriptions) {
     if (acceptedGeneration == null || acceptedGeneration! <= 0) {
       throw const FormatException(
         'Accepted push authority requires a positive lease generation.',
-      );
-    }
-    if (acceptedGrantGeneration == null || acceptedGrantGeneration! <= 0) {
-      throw const FormatException(
-        'Accepted push authority requires a positive gateway grant generation.',
-      );
-    }
-    if (acceptedInstallationId == null || acceptedInstallationId!.isEmpty) {
-      throw const FormatException(
-        'Accepted push authority requires an installation ID.',
       );
     }
   }
@@ -238,16 +220,12 @@ class BuzzPushLeaseSubscriptionState {
           desired: updated,
           accepted: accepted,
           acceptedGeneration: acceptedGeneration,
-          acceptedGrantGeneration: acceptedGrantGeneration,
-          acceptedInstallationId: acceptedInstallationId,
         ),
       BuzzPushLeaseSubscriptionAuthority.accepted =>
         BuzzPushLeaseSubscriptionState.accepted(
           desired: updated,
           acceptedSubscriptions: accepted!,
           acceptedGeneration: acceptedGeneration,
-          acceptedGrantGeneration: acceptedGrantGeneration,
-          acceptedInstallationId: acceptedInstallationId,
         ),
     };
   }
@@ -255,14 +233,10 @@ class BuzzPushLeaseSubscriptionState {
   BuzzPushLeaseSubscriptionState withAccepted({
     required Iterable<BuzzPushSubscription> subscriptions,
     required int generation,
-    required int grantGeneration,
-    required String installationId,
   }) => BuzzPushLeaseSubscriptionState.accepted(
     desired: desired,
     acceptedSubscriptions: subscriptions,
     acceptedGeneration: generation,
-    acceptedGrantGeneration: grantGeneration,
-    acceptedInstallationId: installationId,
   );
 
   Map<String, dynamic> toJson() => {
@@ -271,10 +245,6 @@ class BuzzPushLeaseSubscriptionState {
     if (accepted != null)
       'accepted': [for (final subscription in accepted!) subscription.toJson()],
     if (acceptedGeneration != null) 'acceptedGeneration': acceptedGeneration,
-    if (acceptedGrantGeneration != null)
-      'acceptedGrantGeneration': acceptedGrantGeneration,
-    if (acceptedInstallationId != null)
-      'acceptedInstallationId': acceptedInstallationId,
   };
 
   factory BuzzPushLeaseSubscriptionState.fromJson(Map<String, dynamic> json) {
@@ -283,8 +253,6 @@ class BuzzPushLeaseSubscriptionState {
       'desired',
       'accepted',
       'acceptedGeneration',
-      'acceptedGrantGeneration',
-      'acceptedInstallationId',
     }, 'push subscription state');
     final authority = json['authority'];
     final desired = _subscriptionList(
@@ -297,24 +265,9 @@ class BuzzPushLeaseSubscriptionState {
         ? null
         : _subscriptionList(acceptedRaw, 'accepted');
     final acceptedGeneration = json['acceptedGeneration'];
-    // Pre-MVP snapshots coupled relay and gateway generations; interpreting
-    // that single value as both preserves them until the next publication.
-    final acceptedGrantGeneration =
-        json['acceptedGrantGeneration'] ?? acceptedGeneration;
-    final acceptedInstallationId = json['acceptedInstallationId'];
     if (acceptedGeneration != null && acceptedGeneration is! int) {
       throw const FormatException(
         'Accepted push lease generation must be an integer.',
-      );
-    }
-    if (acceptedGrantGeneration != null && acceptedGrantGeneration is! int) {
-      throw const FormatException(
-        'Accepted gateway grant generation must be an integer.',
-      );
-    }
-    if (acceptedInstallationId != null && acceptedInstallationId is! String) {
-      throw const FormatException(
-        'Accepted push installation ID must be a string.',
       );
     }
     return switch (authority) {
@@ -322,20 +275,12 @@ class BuzzPushLeaseSubscriptionState {
         desired: desired,
         accepted: accepted,
         acceptedGeneration: acceptedGeneration as int?,
-        acceptedGrantGeneration: acceptedGrantGeneration as int?,
-        acceptedInstallationId: acceptedInstallationId as String?,
       ),
-      'accepted'
-          when accepted != null &&
-              acceptedGeneration is int &&
-              acceptedGrantGeneration is int &&
-              acceptedInstallationId is String =>
+      'accepted' when accepted != null && acceptedGeneration is int =>
         BuzzPushLeaseSubscriptionState.accepted(
           desired: desired,
           acceptedSubscriptions: accepted,
           acceptedGeneration: acceptedGeneration,
-          acceptedGrantGeneration: acceptedGrantGeneration,
-          acceptedInstallationId: acceptedInstallationId,
         ),
       'accepted' => throw const FormatException(
         'Accepted push authority requires accepted subscriptions and generations.',

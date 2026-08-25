@@ -717,19 +717,14 @@ final class BuzzPushNotificationResolverTests: XCTestCase {
       relayUrl: relayUrl,
       relayMetadataPubkey: relayMetadataPubkey,
       pubkey: pubkey,
-      pushSubscriptionState: PushLeaseSubscriptionState(
-        authority: "accepted",
-        desired: [],
-        accepted: [
-          PushLeaseSubscription(
+      policies: [
+          PushResolutionPolicy(
             filter: PushLeaseFilter(
               kinds: [9, 40002, 45001, 45003],
               hTags: [Self.channelID]
-            ),
-            notificationClass: "default"
+            )
           )
         ]
-      )
     )
   }
 

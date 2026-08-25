@@ -512,20 +512,6 @@ struct BuzzPushPresentationCacheTests {
     #expect(cached.membershipEventID == membership.id)
   }
 
-  @Test("Legacy cache decodes with channel membership unavailable")
-  func legacyCacheCompatibility() throws {
-    let legacy = try #require(
-      #"{"version":1,"profiles":[],"channels":[{"communityID":"community-a","relayOrigin":"https://relay.example","channelID":"opaque","relayMetadataPubkey":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","displayName":"General","eventID":"event","eventCreatedAt":1,"cachedAt":2}]}"#
-        .data(using: .utf8)
-    )
-
-    let channel = try #require(BuzzPushPresentationCacheSnapshot.decode(legacy).channels.first)
-
-    #expect(channel.displayName == "General")
-    #expect(channel.memberCount == nil)
-    #expect(channel.memberDigests == nil)
-  }
-
   @Test("Missing or malformed channel metadata never fabricates a name")
   func malformedChannelMetadataFallback() throws {
     let directory = try temporaryDirectory()
@@ -589,9 +575,18 @@ struct BuzzPushPresentationCacheTests {
       membershipEvents: []
     )
 
-    try store.retainCommunities(["retained"])
+    try store.replaceCommunities([
+      PushLeaseCommunity(
+        id: "retained",
+        name: "Retained",
+        relayUrl: "https://relay.example",
+        pubkey: nil,
+        policies: []
+      )
+    ])
 
     let snapshot = try loadSnapshot(directory)
+    #expect(snapshot.communities.map(\.id) == ["retained"])
     #expect(snapshot.profiles.isEmpty)
     #expect(snapshot.channels.isEmpty)
   }

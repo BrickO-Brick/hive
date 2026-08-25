@@ -23,15 +23,11 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "dogfood",
-        "appStore"
+        "dogfood"
       ],
       "properties": {
         "dogfood": {
           "$ref": "#/$defs/enabledProfile"
-        },
-        "appStore": {
-          "$ref": "#/$defs/dormantProfile"
         }
       }
     },
@@ -285,9 +281,6 @@
           ]
         }
       ]
-    },
-    "dormantProfile": {
-      "$ref": "#/$defs/profileBase"
     },
     "apnsCert": {
       "type": "object",

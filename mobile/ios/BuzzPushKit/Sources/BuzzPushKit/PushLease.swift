@@ -1,11 +1,5 @@
 import Foundation
 
-public enum PushLeaseError: Error, Equatable {
-  case unsupportedAuthority(String)
-  case acceptedAuthorityMissingSubscriptions
-  case emptySubscriptions
-}
-
 public struct PushLeaseSnapshot: Codable, Equatable, Sendable {
   public let communities: [PushLeaseCommunity]
 
@@ -21,7 +15,7 @@ public struct PushLeaseCommunity: Codable, Equatable, Sendable {
   /// Relay NIP-11 `self` key used to verify NIP-29 channel metadata.
   public let relayMetadataPubkey: String?
   public let pubkey: String?
-  public let pushSubscriptionState: PushLeaseSubscriptionState
+  public let policies: [PushResolutionPolicy]
 
   public init(
     id: String,
@@ -29,80 +23,28 @@ public struct PushLeaseCommunity: Codable, Equatable, Sendable {
     relayUrl: String,
     relayMetadataPubkey: String? = nil,
     pubkey: String?,
-    pushSubscriptionState: PushLeaseSubscriptionState
+    policies: [PushResolutionPolicy]
   ) {
     self.id = id
     self.name = name
     self.relayUrl = relayUrl
     self.relayMetadataPubkey = relayMetadataPubkey
     self.pubkey = pubkey
-    self.pushSubscriptionState = pushSubscriptionState
+    self.policies = policies
   }
 }
 
-public struct PushLeaseSubscriptionState: Codable, Equatable, Sendable {
-  public enum Authority: String, Codable, Sendable {
-    case desired
-    case accepted
-  }
-
-  public let authority: String
-  public let desired: [PushLeaseSubscription]
-  public let accepted: [PushLeaseSubscription]?
-
-  public init(
-    authority: String,
-    desired: [PushLeaseSubscription],
-    accepted: [PushLeaseSubscription]? = nil
-  ) {
-    self.authority = authority
-    self.desired = desired
-    self.accepted = accepted
-  }
-
-  /// The app persists accepted authority only after the relay acknowledges the
-  /// corresponding lease. Until then the desired policy is used for snapshots.
-  public func authoritativeSubscriptions() throws -> [PushLeaseSubscription] {
-    let subscriptions: [PushLeaseSubscription]
-    switch authority {
-    case Authority.desired.rawValue:
-      subscriptions = desired
-    case Authority.accepted.rawValue:
-      guard let accepted else {
-        throw PushLeaseError.acceptedAuthorityMissingSubscriptions
-      }
-      subscriptions = accepted
-    default:
-      throw PushLeaseError.unsupportedAuthority(authority)
-    }
-    guard !subscriptions.isEmpty else {
-      throw PushLeaseError.emptySubscriptions
-    }
-    return subscriptions
-  }
-}
-
-public struct PushLeaseSubscription: Codable, Equatable, Sendable {
+public struct PushResolutionPolicy: Codable, Equatable, Sendable {
   public let filter: PushLeaseFilter
-  public let notificationClass: String
   public let ignore: [PushLeaseFilter]
   public let suppress: PushLeaseSuppression?
 
-  enum CodingKeys: String, CodingKey {
-    case filter
-    case notificationClass = "class"
-    case ignore
-    case suppress
-  }
-
   public init(
     filter: PushLeaseFilter,
-    notificationClass: String,
     ignore: [PushLeaseFilter] = [],
     suppress: PushLeaseSuppression? = nil
   ) {
     self.filter = filter
-    self.notificationClass = notificationClass
     self.ignore = ignore
     self.suppress = suppress
   }
@@ -172,11 +114,11 @@ public struct PushLeaseFilter: Codable, Equatable, Sendable {
 public enum PushLeaseMatcher {
   public static func matches(
     event: VerifiedNostrEvent,
-    subscription: PushLeaseSubscription
+    policy: PushResolutionPolicy
   ) -> Bool {
-    guard subscription.filter.matches(event) else { return false }
-    if subscription.ignore.contains(where: { $0.matches(event) }) { return false }
-    if let maximum = subscription.suppress?.pTagsMax,
+    guard policy.filter.matches(event) else { return false }
+    if policy.ignore.contains(where: { $0.matches(event) }) { return false }
+    if let maximum = policy.suppress?.pTagsMax,
       event.tagCount(named: "p") > maximum
     {
       return false

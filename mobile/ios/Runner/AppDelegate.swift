@@ -19,8 +19,13 @@ import os.log
   private var appGroupIdentifier: String? {
     Bundle.main.object(forInfoDictionaryKey: "BuzzAppGroupIdentifier") as? String
   }
-  private lazy var pushPresentationCacheBridge = BuzzPushPresentationCacheBridge(
-    appGroupIdentifier: appGroupIdentifier
+  private var pushKeychainAccessGroup: String? {
+    Bundle.main.object(forInfoDictionaryKey: "BuzzKeychainAccessGroup") as? String
+  }
+  private lazy var pushSnapshotBridge = BuzzPushSnapshotBridge(
+    appGroupIdentifier: appGroupIdentifier,
+    endpointGrantStore: endpointGrantStore,
+    keychainAccessGroup: pushKeychainAccessGroup
   )
   private var qrScannerChannel: FlutterMethodChannel?
   private var inlinePhotoPickerSupportChannel: FlutterMethodChannel?
@@ -326,7 +331,7 @@ import os.log
     _ call: FlutterMethodCall,
     result: @escaping FlutterResult
   ) {
-    if pushPresentationCacheBridge.handle(call, result: result) {
+    if pushSnapshotBridge.handle(call, result: result) {
       return
     }
     switch call.method {
@@ -334,30 +339,6 @@ import os.log
       startPushRegistration(result: result)
     case "takePendingNotificationResponse":
       result(pushNavigationBuffer.take()?.flutterArguments)
-    case "saveCommunitySnapshot":
-      guard let arguments = call.arguments as? [String: Any],
-        let communities = arguments["communities"] as? [[String: Any]],
-        let signingKeys = arguments["signingKeys"] as? [String: String]
-      else {
-        result(
-          FlutterError(
-            code: "invalid_arguments", message: "Expected communities array.", details: nil))
-        return
-      }
-      do {
-        try savePushCommunitySnapshot(communities)
-        try BuzzPushKeychain.replace(
-          signingKeys: signingKeys,
-          accessGroup: Bundle.main.object(forInfoDictionaryKey: "BuzzKeychainAccessGroup")
-            as? String
-        )
-        result(nil)
-      } catch {
-        result(
-          FlutterError(
-            code: "save_failed", message: "Unable to save push community credentials.",
-            details: error.localizedDescription))
-      }
     case "endpointGrants":
       do {
         result(try endpointGrantStore.records().map(\.flutterArguments))
@@ -445,21 +426,13 @@ import os.log
     }
 
     do {
-      let driver: BuzzDevPushEnrollmentDriver
-      #if DEBUG
-        driver = try BuzzDevPushEnrollmentDriver(
-          gatewayBaseURL: gatewayURL,
-          store: endpointGrantStore
-        )
-      #else
-        driver = try BuzzDevPushEnrollmentDriver(
-          gatewayBaseURL: gatewayURL,
-          store: endpointGrantStore,
-          appAttestKeychainAccessGroup: Bundle.main.object(
-            forInfoDictionaryKey: "BuzzKeychainAccessGroup"
-          ) as? String
-        )
-      #endif
+      let driver = try BuzzDevPushEnrollmentDriver(
+        gatewayBaseURL: gatewayURL,
+        store: endpointGrantStore,
+        appAttestKeychainAccessGroup: Bundle.main.object(
+          forInfoDictionaryKey: "BuzzKeychainAccessGroup"
+        ) as? String
+      )
       enrollmentTask = Task { [weak self] in
         defer { self?.enrollmentTask = nil }
         do {
@@ -489,58 +462,6 @@ import os.log
         )
       )
     }
-  }
-
-  private func savePushCommunitySnapshot(_ communities: [[String: Any]]) throws {
-    guard let appGroupIdentifier else {
-      throw NSError(
-        domain: "BuzzPush", code: 1,
-        userInfo: [NSLocalizedDescriptionKey: "Missing BuzzAppGroupIdentifier"])
-    }
-    guard
-      let container = FileManager.default.containerURL(
-        forSecurityApplicationGroupIdentifier: appGroupIdentifier)
-    else {
-      throw NSError(
-        domain: "BuzzPush", code: 2,
-        userInfo: [NSLocalizedDescriptionKey: "Missing App Group container"])
-    }
-    // Channel-name enrichment is optional presentation state. A damaged or
-    // unavailable grant cache must not block the core NSE snapshot/key update.
-    let grants = (try? endpointGrantStore.records()) ?? []
-    let enriched = communities.map { community -> [String: Any] in
-      var community = community
-      guard let relayURL = community["relayUrl"] as? String,
-        let relayMetadataPubkey = Self.pushRelayMetadataPubkey(
-          relayURL: relayURL,
-          grants: grants
-        )
-      else { return community }
-      community["relayMetadataPubkey"] = relayMetadataPubkey
-      return community
-    }
-    let data = try JSONSerialization.data(
-      withJSONObject: ["communities": enriched], options: [.sortedKeys])
-    let destination = container.appendingPathComponent("push-communities.json")
-    try data.write(to: destination, options: [.atomic])
-    pushPresentationCacheBridge.retainCommunities(
-      Set(enriched.compactMap { $0["id"] as? String })
-    )
-  }
-
-  static func pushRelayMetadataPubkey(
-    relayURL: String,
-    grants: [BuzzPushEndpointGrantRecord]
-  ) -> String? {
-    guard let origin = BuzzPushPresentationCacheStore.canonicalRelayOrigin(relayURL) else {
-      return nil
-    }
-    return grants.filter {
-      $0.appProfile == BuzzDevPushEnrollmentDriver.appProfile
-        && BuzzPushPresentationCacheStore.canonicalRelayOrigin($0.relayOrigin) == origin
-    }.max {
-      $0.generation < $1.generation
-    }?.relayMetadataPubkey
   }
 
   private func handleMediaUploadMethodCall(

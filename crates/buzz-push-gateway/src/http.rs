@@ -1,7 +1,7 @@
 //! Stateful installation, delegation, delivery, and health APIs.
 use crate::{
     apns::{DeliveryAttempt, DeliveryOutcome, PushTransport},
-    app_attest_policy::AppAttestPolicy,
+    app_attest::AppAttestVerifier,
     authority::{
         AuthorityError, AuthorityStore, Challenge, Delegation, DeliveryDisposition, NewInstallation,
     },
@@ -23,7 +23,6 @@ use nostr::{
     Event, JsonUtil, Timestamp,
 };
 use std::{
-    collections::HashMap,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -35,15 +34,8 @@ use tower_http::{limit::RequestBodyLimitLayer, timeout::TimeoutLayer};
 
 #[derive(Clone)]
 pub struct ProfileRuntime {
-    /// Both values are absent for a registered but dormant profile.
-    pub app_attest: Option<Arc<AppAttestPolicy>>,
-    pub transport: Option<Arc<dyn PushTransport>>,
-}
-
-impl ProfileRuntime {
-    fn enabled(&self) -> bool {
-        self.app_attest.is_some() && self.transport.is_some()
-    }
+    pub app_attest: Arc<AppAttestVerifier>,
+    pub transport: Arc<dyn PushTransport>,
 }
 
 #[derive(Clone)]
@@ -51,10 +43,9 @@ pub struct AppState {
     pub grant_keyring: Arc<GrantKeyring>,
     pub authority: Arc<dyn AuthorityStore>,
     pub token_keyring: Arc<TokenKeyring>,
-    /// Closed server-owned app identity registry. Client profile selectors
-    /// choose only a candidate; App Attest verifies the configured application
-    /// ID before the profile is persisted as installation authority.
-    pub profiles: Arc<HashMap<AppProfile, ProfileRuntime>>,
+    /// Server-owned dogfood application identity and APNs transport. The wire
+    /// profile selector is fixed and App Attest verifies the configured app ID.
+    pub profile: Arc<ProfileRuntime>,
     pub delivery_url: url::Url,
     pub max_grant_lifetime_seconds: i64,
     pub max_installation_lifetime_seconds: i64,
@@ -177,10 +168,9 @@ async fn enroll(State(s): State<AppState>, body: Bytes) -> Response {
         Some(v) => v,
         None => return error(StatusCode::BAD_REQUEST, "invalid_request"),
     };
-    let profile = match s.profiles.get(&r.app_profile) {
-        Some(profile) if profile.enabled() => profile,
-        _ => return error(StatusCode::BAD_REQUEST, "invalid_request"),
-    };
+    if r.app_profile != AppProfile::BuzzIosDogfood {
+        return error(StatusCode::BAD_REQUEST, "invalid_request");
+    }
     if r.v != WIRE_VERSION
         || r.endpoint_epoch != 1
         || r.expires_at <= now
@@ -207,14 +197,15 @@ async fn enroll(State(s): State<AppState>, body: Bytes) -> Response {
         Some(v) => v,
         None => return error(StatusCode::BAD_REQUEST, "invalid_request"),
     };
-    let verified = match profile.app_attest.as_ref().and_then(|policy| {
-        policy
+    let verified =
+        match s
+            .profile
+            .app_attest
             .verify_attestation(&r.attestation, &r.key_id, signed.as_bytes())
-            .ok()
-    }) {
-        Some(value) => value,
-        None => return error(StatusCode::UNAUTHORIZED, "invalid_attestation"),
-    };
+        {
+            Ok(value) => value,
+            Err(_) => return error(StatusCode::UNAUTHORIZED, "invalid_attestation"),
+        };
     if let Err(e) = s
         .authority
         .consume_challenge(r.challenge_id, challenge, now)
@@ -269,14 +260,14 @@ async fn verify_installation_assertion<T: serde::Serialize>(
         .installation(installation_id, now)
         .await
         .map_err(authority_error)?;
-    let app_attest = s
-        .profiles
-        .get(&installation.profile)
-        .and_then(|profile| profile.app_attest.as_ref())
-        .ok_or_else(|| error(StatusCode::NOT_FOUND, "not_authorized"))?;
+    if installation.profile != AppProfile::BuzzIosDogfood {
+        return Err(error(StatusCode::NOT_FOUND, "not_authorized"));
+    }
     let transcript = transcript(domain, signed)
         .ok_or_else(|| error(StatusCode::BAD_REQUEST, "invalid_request"))?;
-    let verified = app_attest
+    let verified = s
+        .profile
+        .app_attest
         .verify_assertion(
             assertion,
             transcript.as_bytes(),
@@ -655,23 +646,15 @@ async fn deliver(State(s): State<AppState>, headers: HeaderMap, body: Bytes) -> 
             .await;
         return error(StatusCode::NOT_FOUND, "invalid_grant");
     }
-    let profile = permit.authority.profile;
-    let transport = match s
-        .profiles
-        .get(&profile)
-        .and_then(|runtime| runtime.transport.as_ref())
-        .cloned()
-    {
-        Some(transport) => transport,
-        None => {
-            crate::metrics::record_delivery_error("profile_disabled");
-            let _ = s
-                .authority
-                .finish_delivery(permit, DeliveryDisposition::Retryable)
-                .await;
-            return error(StatusCode::SERVICE_UNAVAILABLE, "configuration_fault");
-        }
-    };
+    if permit.authority.profile != AppProfile::BuzzIosDogfood {
+        crate::metrics::record_delivery_error("profile_disabled");
+        let _ = s
+            .authority
+            .finish_delivery(permit, DeliveryDisposition::Retryable)
+            .await;
+        return error(StatusCode::SERVICE_UNAVAILABLE, "configuration_fault");
+    }
+    let transport = Arc::clone(&s.profile.transport);
     let endpoint = match s.token_keyring.open(&permit.authority.token_ciphertext) {
         Ok(token) => hex::encode(token),
         Err(_) => {

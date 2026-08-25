@@ -682,14 +682,8 @@ fn nip98_header(keys: &nostr::Keys, url: &str, body: &[u8]) -> anyhow::Result<St
     ))
 }
 
-fn class_rank(class: &str) -> u8 {
-    match class {
-        "silent" => 0,
-        "default" => 1,
-        "time_sensitive" => 2,
-        "urgent" => 3,
-        _ => 0,
-    }
+fn class_rank(_: &str) -> u8 {
+    1
 }
 
 #[cfg(test)]

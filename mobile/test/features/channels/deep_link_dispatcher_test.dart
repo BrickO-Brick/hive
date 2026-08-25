@@ -189,6 +189,7 @@ void main() {
         container: container,
         child: MaterialApp(
           home: DeepLinkDispatcher(
+            key: const ValueKey('before-community-switch'),
             destinationBuilder: (channel, link) =>
                 _CapturedDestination(channel: channel, link: link),
             child: const Scaffold(body: SizedBox()),
@@ -199,6 +200,25 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(await storage.loadActiveId(), _notificationCommunity.id);
+    expect(container.read(pendingDeepLinkProvider), link);
+
+    // Production remounts the community-scoped app subtree after a switch.
+    // The parked link is consumed by the replacement dispatcher.
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: MaterialApp(
+          home: DeepLinkDispatcher(
+            key: const ValueKey('after-community-switch'),
+            destinationBuilder: (channel, link) =>
+                _CapturedDestination(channel: channel, link: link),
+            child: const Scaffold(body: SizedBox()),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
     final destination = tester.widget<_CapturedDestination>(
       find.byType(_CapturedDestination),
     );

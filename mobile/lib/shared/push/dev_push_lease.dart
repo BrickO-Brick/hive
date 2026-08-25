@@ -87,7 +87,6 @@ class BuzzPushLeaseDescriptor {
         'keys',
         'app_profiles',
         'push_kinds',
-        'urgent_kinds',
         'h_grammar',
         'class_support',
         'limitation',
@@ -97,7 +96,6 @@ class BuzzPushLeaseDescriptor {
         'keys',
         'app_profiles',
         'push_kinds',
-        'urgent_kinds',
         'h_grammar',
         'class_support',
         'limitation',
@@ -170,16 +168,6 @@ class BuzzPushLeaseDescriptor {
         'NIP-11 does not advertise every Buzz message kind for push',
       );
     }
-    final urgentKinds = _intList(
-      push['urgent_kinds'],
-      name: 'urgent_kinds',
-      allowEmpty: true,
-    );
-    if (urgentKinds.any((kind) => !pushKinds.contains(kind))) {
-      throw const FormatException(
-        'urgent_kinds must be a subset of push_kinds',
-      );
-    }
     final hGrammar = _nonEmptyString(push['h_grammar'], name: 'h_grammar');
     if (hGrammar != 'uuid-v4-lowercase') {
       throw const FormatException('Unsupported push h_grammar');
@@ -193,7 +181,7 @@ class BuzzPushLeaseDescriptor {
       classSupport[buzzPushTransport],
       name: 'class_support.apns',
     );
-    const knownClasses = {'silent', 'default', 'time_sensitive', 'urgent'};
+    const knownClasses = {'default'};
     if (supportedClasses.any((value) => !knownClasses.contains(value))) {
       throw const FormatException('class_support contains an unknown class');
     }

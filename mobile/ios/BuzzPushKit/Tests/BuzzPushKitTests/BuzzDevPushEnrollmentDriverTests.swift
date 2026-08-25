@@ -215,25 +215,6 @@ final class BuzzDevPushEnrollmentDriverTests: XCTestCase {
     XCTAssertEqual(record.relayOrigin, "wss://relay.example:8443")
   }
 
-  #if DEBUG
-  func testDevelopmentAttestationMatchesGatewayBypassShape() async throws {
-      let entropy = Data(repeating: 0xAB, count: 32)
-      let provider = BuzzDevAppAttestProvider(randomBytes: { entropy })
-      let prepared = try await provider.prepareAttestation()
-      let bytes = try XCTUnwrap(Data(base64Encoded: prepared.attestation))
-      XCTAssertEqual(
-        bytes,
-        Data("buzz-dev-app-attest-v1:".utf8) + entropy
-      )
-      XCTAssertEqual(
-        prepared.keyId,
-        Data(SHA256.hash(data: bytes)).base64EncodedString()
-      )
-      let assertion = try await provider.assertion(clientData: Data("transcript".utf8))
-      XCTAssertEqual(assertion, Self.assertion)
-    }
-  #endif
-
   func testLegacyGrantDecodesWithoutMetadataAuthority() throws {
     let data = Data(
       #"{"relayOrigin":"wss://relay.example","relayPubkey":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","installationId":"000102030405060708090a0b0c0d0e0f","endpointGrant":"opaque","endpointHash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","appProfile":"buzz-ios-dogfood","endpointEpoch":1,"generation":1,"expiresAt":1752624000}"#.utf8

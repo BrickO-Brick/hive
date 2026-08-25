@@ -101,18 +101,23 @@ final communityPushLeaseDeactivatorProvider =
 Future<void> _deactivateCommunityPushLease(Community community) async {
   final state = community.pushSubscriptionState;
   final acceptedGeneration = state.acceptedGeneration;
-  final installationId = state.acceptedInstallationId;
   final nsec = community.nsec;
-  if (acceptedGeneration == null ||
-      installationId == null ||
-      nsec == null ||
-      nsec.isEmpty) {
+  if (acceptedGeneration == null || nsec == null || nsec.isEmpty) {
     return;
   }
   try {
     final decoded = nostr.Nip19.decode(payload: nsec);
     final memberPubkey = community.pubkey ?? nostr.Keys(decoded.data).public;
     final descriptor = await fetchBuzzPushLeaseDescriptor(community.relayUrl);
+    final installationId = (await readBuzzPushEndpointGrants())
+        .where(
+          (grant) =>
+              grant.relayOrigin == descriptor.origin &&
+              grant.appProfile == buzzDevPushAppProfile,
+        )
+        .map((grant) => grant.installationId)
+        .firstOrNull;
+    if (installationId == null) return;
     final uri = Uri.parse(community.relayUrl);
     final httpScheme = switch (uri.scheme) {
       'wss' => 'https',
@@ -320,8 +325,6 @@ class CommunityListNotifier extends AsyncNotifier<List<Community>> {
     String id, {
     required List<BuzzPushSubscription> subscriptions,
     required int generation,
-    required int grantGeneration,
-    required String installationId,
   }) async {
     final storage = ref.read(communityStorageProvider);
     final current = state.value ?? await storage.loadAll();
@@ -333,8 +336,6 @@ class CommunityListNotifier extends AsyncNotifier<List<Community>> {
       pushSubscriptionState: community.pushSubscriptionState.withAccepted(
         subscriptions: subscriptions,
         generation: generation,
-        grantGeneration: grantGeneration,
-        installationId: installationId,
       ),
     );
     await storage.save(updated);

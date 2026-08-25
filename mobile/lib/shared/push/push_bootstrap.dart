@@ -68,21 +68,11 @@ class BuzzPushBootstrap extends HookConsumerWidget {
         }
         final state = community!.pushSubscriptionState;
         if (state.desired.isEmpty) return null;
-        final desiredFingerprint = buzzPushSubscriptionsFingerprint(
-          state.desired,
-        );
-        final acceptedFingerprint = state.accepted == null
-            ? '-'
-            : buzzPushSubscriptionsFingerprint(state.accepted!);
         final attempt = [
           community.id,
           config.baseUrl,
           token,
-          desiredFingerprint,
-          acceptedFingerprint,
-          state.acceptedGeneration,
-          state.acceptedGrantGeneration,
-          state.acceptedInstallationId,
+          buzzPushSubscriptionsFingerprint(state.desired),
         ].join('|');
         if (publicationAttempt.value == attempt) return null;
         publicationAttempt.value = attempt;
@@ -138,10 +128,6 @@ class BuzzPushBootstrap extends HookConsumerWidget {
   ) async {
     final state = community.pushSubscriptionState;
     final desired = state.desired;
-    final desiredFingerprint = buzzPushSubscriptionsFingerprint(desired);
-    final acceptedFingerprint = state.accepted == null
-        ? null
-        : buzzPushSubscriptionsFingerprint(state.accepted!);
     final descriptor = await fetchBuzzPushLeaseDescriptor(config.baseUrl);
     final grant = await enrollBuzzPush(
       config.wsUrl,
@@ -149,12 +135,6 @@ class BuzzPushBootstrap extends HookConsumerWidget {
       communitiesForSnapshotRefresh:
           ref.read(communityListProvider).value ?? [community],
     );
-    if (state.authority == BuzzPushLeaseSubscriptionAuthority.accepted &&
-        acceptedFingerprint == desiredFingerprint &&
-        state.acceptedGrantGeneration == grant.generation &&
-        state.acceptedInstallationId == grant.installationId) {
-      return;
-    }
     // Relay lease replacement and gateway delegation are independent state
     // machines. Subscription changes advance only the kind-30350 generation;
     // the opaque grant remains reusable until its own authority changes.
@@ -175,8 +155,6 @@ class BuzzPushBootstrap extends HookConsumerWidget {
           community.id,
           subscriptions: desired,
           generation: leaseGeneration,
-          grantGeneration: grant.generation,
-          installationId: grant.installationId,
         );
   }
 }

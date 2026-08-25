@@ -258,16 +258,6 @@ void main() {
     );
   });
 
-  test('descriptor rejects urgent kinds outside push kinds', () {
-    final information = _descriptorJson(relay.public);
-    (information['push'] as Map<String, dynamic>)['urgent_kinds'] = [7];
-
-    expect(
-      () => BuzzPushLeaseDescriptor.fromRelayInformation(information),
-      throwsA(isA<FormatException>()),
-    );
-  });
-
   test('descriptor rejects unsupported h grammar', () {
     final information = _descriptorJson(relay.public);
     (information['push'] as Map<String, dynamic>)['h_grammar'] = 'opaque';
@@ -361,10 +351,9 @@ Map<String, dynamic> _descriptorJson(String relayPubkey) => {
       {'id': 'buzz-ios-dogfood', 'transport': 'apns'},
     ],
     'push_kinds': [9, 40002, 45001, 45003],
-    'urgent_kinds': <int>[],
     'h_grammar': 'uuid-v4-lowercase',
     'class_support': {
-      'apns': ['silent', 'default', 'time_sensitive'],
+      'apns': ['default'],
     },
     'limitation': {
       'max_lease_ttl': 2592000,

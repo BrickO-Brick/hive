@@ -187,7 +187,7 @@ Future<void> registerBuzzPushCommunitySnapshot(
           name: community.name,
           relayUrl: community.relayUrl,
           pubkey: community.pubkey ?? pubkeyFromNsec(community.nsec),
-          pushSubscriptionState: community.pushSubscriptionState,
+          subscriptions: community.pushSubscriptionState.authoritative,
         ),
     ];
     final signingKeys = <String, String>{};
@@ -205,7 +205,8 @@ Future<void> registerBuzzPushCommunitySnapshot(
         // Native storage is fail-closed; malformed keys are never exported.
       }
     }
-    await _channel.invokeMethod<void>('saveCommunitySnapshot', {
+    await _channel.invokeMethod<void>('syncPushSnapshot', {
+      'section': 'communities',
       'communities': [for (final snapshot in snapshots) snapshot.toJson()],
       'signingKeys': signingKeys,
     });

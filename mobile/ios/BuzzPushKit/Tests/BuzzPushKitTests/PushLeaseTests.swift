@@ -6,28 +6,6 @@ final class PushLeaseTests: XCTestCase {
   private let mine = String(repeating: "a", count: 64)
   private let other = String(repeating: "b", count: 64)
 
-  func testDesiredAuthorityIsExplicitAndAcceptedAuthorityRequiresState() throws {
-    let subscription = PushLeaseSubscription(
-      filter: PushLeaseFilter(kinds: [9], pTags: [mine]),
-      notificationClass: "default"
-    )
-    XCTAssertEqual(
-      try PushLeaseSubscriptionState(
-        authority: "desired",
-        desired: [subscription]
-      ).authoritativeSubscriptions(),
-      [subscription]
-    )
-    XCTAssertThrowsError(
-      try PushLeaseSubscriptionState(
-        authority: "accepted",
-        desired: [subscription]
-      ).authoritativeSubscriptions()
-    ) { error in
-      XCTAssertEqual(error as? PushLeaseError, .acceptedAuthorityMissingSubscriptions)
-    }
-  }
-
   func testFilterBuildsQueryFromLeaseWithoutHardcodedKinds() {
     let filter = PushLeaseFilter(
       kinds: [7, 1059],
@@ -47,46 +25,43 @@ final class PushLeaseTests: XCTestCase {
 
   func testPushEligibleKindAbsentFromOldConstantMatchesLease() {
     let event = makeEvent(kind: 1059, tags: [["p", mine]])
-    let subscription = PushLeaseSubscription(
-      filter: PushLeaseFilter(kinds: [1059], pTags: [mine]),
-      notificationClass: "default"
+    let policy = PushResolutionPolicy(
+      filter: PushLeaseFilter(kinds: [1059], pTags: [mine])
     )
 
-    XCTAssertTrue(PushLeaseMatcher.matches(event: event, subscription: subscription))
+    XCTAssertTrue(PushLeaseMatcher.matches(event: event, policy: policy))
   }
 
   func testIgnoreAndHellthreadSuppressionRejectCandidates() {
     let ignored = makeEvent(kind: 9, pubkey: other, tags: [["p", mine]])
-    let ignoreSubscription = PushLeaseSubscription(
+    let ignorePolicy = PushResolutionPolicy(
       filter: PushLeaseFilter(kinds: [9], pTags: [mine]),
-      notificationClass: "default",
       ignore: [PushLeaseFilter(kinds: [9], authors: [other])]
     )
     XCTAssertFalse(
-      PushLeaseMatcher.matches(event: ignored, subscription: ignoreSubscription)
+      PushLeaseMatcher.matches(event: ignored, policy: ignorePolicy)
     )
 
     let hellthread = makeEvent(
       kind: 9,
       tags: (0..<21).map { ["p", String(format: "%064x", $0)] }
     )
-    let suppressed = PushLeaseSubscription(
+    let suppressed = PushResolutionPolicy(
       filter: PushLeaseFilter(kinds: [9], authors: [other]),
-      notificationClass: "default",
       suppress: PushLeaseSuppression(pTagsMax: 20)
     )
-    XCTAssertFalse(PushLeaseMatcher.matches(event: hellthread, subscription: suppressed))
+    XCTAssertFalse(PushLeaseMatcher.matches(event: hellthread, policy: suppressed))
   }
 
   func testDecodesSnapshotContractFromDartShape() throws {
     let json = """
-      {"communities":[{"id":"origin","name":"Team","relayUrl":"https://relay.example.com","pubkey":"\(mine)","pushSubscriptionState":{"authority":"desired","desired":[{"filter":{"kinds":[9],"#p":["\(mine)"]},"class":"default","ignore":[{"kinds":[9],"authors":["\(mine)"]}],"suppress":{"p_tags_max":20}}]}}]}
+      {"communities":[{"id":"origin","name":"Team","relayUrl":"https://relay.example.com","pubkey":"\(mine)","policies":[{"filter":{"kinds":[9],"#p":["\(mine)"]},"ignore":[{"kinds":[9],"authors":["\(mine)"]}],"suppress":{"p_tags_max":20}}]}]}
       """
     let snapshot = try JSONDecoder().decode(PushLeaseSnapshot.self, from: Data(json.utf8))
 
     XCTAssertEqual(snapshot.communities.count, 1)
     XCTAssertEqual(
-      try snapshot.communities[0].pushSubscriptionState.authoritativeSubscriptions().count,
+      snapshot.communities[0].policies.count,
       1
     )
   }

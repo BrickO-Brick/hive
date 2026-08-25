@@ -1,7 +1,6 @@
 use buzz_push_gateway::{
     apns::ApnsTransport,
     app_attest::AppAttestVerifier,
-    app_attest_policy::AppAttestPolicy,
     authority::AuthorityStore,
     config::Config,
     grant::{GrantKey, GrantKeyring},
@@ -11,7 +10,6 @@ use buzz_push_gateway::{
     AppState,
 };
 use std::{
-    collections::HashMap,
     fs,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -38,40 +36,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let c = Config::from_env()?;
     let metrics_handle = buzz_push_gateway::metrics::install()?;
     let app_attest_root = fs::read(&c.app_attest_root_cert_path)?;
-    let mut profiles = HashMap::new();
-    for (profile, configured) in &c.profiles {
-        let runtime = if configured.enabled {
-            let cert_path = configured.apns_cert_path.as_ref().ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "enabled push profile has no APNs identity path",
-                )
-            })?;
-            let transport = Arc::new(ApnsTransport::certificate(
-                &fs::read(cert_path)?,
-                configured.apns_topic.clone(),
-                configured.apns_environment,
-            )?);
-            let apple = AppAttestVerifier::new(
-                configured.app_attest_app_id.clone(),
-                app_attest_root.clone(),
-            )?;
-            #[cfg(feature = "dev-app-attest-bypass")]
-            let policy = AppAttestPolicy::from_config(c.dev_app_attest_bypass(), apple);
-            #[cfg(not(feature = "dev-app-attest-bypass"))]
-            let policy = AppAttestPolicy::apple(apple);
-            buzz_push_gateway::http::ProfileRuntime {
-                app_attest: Some(Arc::new(policy)),
-                transport: Some(transport),
-            }
-        } else {
-            buzz_push_gateway::http::ProfileRuntime {
-                app_attest: None,
-                transport: None,
-            }
-        };
-        profiles.insert(*profile, runtime);
-    }
+    let configured = &c.profile;
+    let profile = {
+        let transport = Arc::new(ApnsTransport::certificate(
+            &fs::read(&configured.apns_cert_path)?,
+            configured.apns_topic.clone(),
+            configured.apns_environment,
+        )?);
+        let apple = AppAttestVerifier::new(
+            configured.app_attest_app_id.clone(),
+            app_attest_root.clone(),
+        )?;
+        buzz_push_gateway::http::ProfileRuntime {
+            app_attest: Arc::new(apple),
+            transport,
+        }
+    };
     let grant_keyring = GrantKeyring::new(
         c.grant_keys
             .iter()
@@ -114,7 +94,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             grant_keyring: Arc::new(grant_keyring),
             authority,
             token_keyring: Arc::new(token_keyring),
-            profiles: Arc::new(profiles),
+            profile: Arc::new(profile),
             delivery_url: c.public_delivery_url,
             max_grant_lifetime_seconds: c.max_grant_lifetime_seconds,
             max_installation_lifetime_seconds: c.max_installation_lifetime_seconds,

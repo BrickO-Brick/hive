@@ -182,13 +182,13 @@ final class BuzzPushSnapshotEnrichmentTests: XCTestCase {
       metadataPubkey: String(repeating: "a", count: 64)
     )
     let wrongProfile = grant(
-      appProfile: "buzz-ios-app-store",
+      appProfile: "other-profile",
       generation: 99,
       metadataPubkey: String(repeating: "b", count: 64)
     )
 
     XCTAssertEqual(
-      AppDelegate.pushRelayMetadataPubkey(
+      BuzzPushSnapshotBridge.relayMetadataPubkey(
         relayURL: "wss://relay.example/",
         grants: [wrongProfile, correctProfile]
       ),

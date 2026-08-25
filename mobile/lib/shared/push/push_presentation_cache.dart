@@ -8,9 +8,6 @@ import 'package:nostr/nostr.dart' as nostr;
 import '../relay/nostr_models.dart';
 
 const _pushPresentationChannel = MethodChannel('buzz/push');
-// Keep these bridge payload bounds aligned with BuzzPushPresentationCacheStore.
-const _maximumPresentationProfiles = 256;
-const _maximumPresentationChannels = 512;
 const _maximumAvatarSourceBytes = 512 * 1024;
 const _maximumAvatarPNGBytes = 64 * 1024;
 Future<void> _avatarEncodeTail = Future.value();
@@ -44,14 +41,14 @@ Future<void> cacheBuzzPushProfileEvents(
   if (defaultTargetPlatform != TargetPlatform.iOS || communityID.isEmpty) {
     return;
   }
-  final verified = _boundedNewestEvents(
+  final verified = _newestVerifiedEvents(
     events,
     kind: 0,
-    maximum: _maximumPresentationProfiles,
     scope: (event) => event.pubkey.toLowerCase(),
   ).values.toList();
   if (verified.isEmpty) return;
-  await _invokeBestEffort('cachePresentationProfiles', {
+  await _invokeBestEffort({
+    'section': 'profiles',
     'communityId': communityID,
     'events': [for (final event in verified) event.toJson()],
   });
@@ -68,14 +65,12 @@ Future<void> cacheBuzzPushChannelEvents(
       communityID.isEmpty) {
     return;
   }
-  final batch = selectBoundedPushChannelEvents(
-    metadataEvents,
-    membershipEvents,
-  );
+  final batch = selectPushChannelEvents(metadataEvents, membershipEvents);
   final verifiedMetadata = batch.metadata;
   final verifiedMembership = batch.membership;
   if (verifiedMetadata.isEmpty && verifiedMembership.isEmpty) return;
-  await _invokeBestEffort('cachePresentationChannels', {
+  await _invokeBestEffort({
+    'section': 'channels',
     'communityId': communityID,
     'metadataEvents': [for (final event in verifiedMetadata) event.toJson()],
     'membershipEvents': [
@@ -84,25 +79,22 @@ Future<void> cacheBuzzPushChannelEvents(
   });
 }
 
-/// Selects a bounded, paired set of verified channel metadata and membership events.
+/// Selects the newest paired verified channel metadata and membership events.
 @visibleForTesting
 ({List<NostrEvent> metadata, List<NostrEvent> membership})
-selectBoundedPushChannelEvents(
+selectPushChannelEvents(
   Iterable<NostrEvent> metadataEvents,
-  Iterable<NostrEvent> membershipEvents, {
-  @visibleForTesting int maximumChannels = _maximumPresentationChannels,
-}) {
-  final verifiedMembershipByChannel = _boundedNewestEvents(
+  Iterable<NostrEvent> membershipEvents,
+) {
+  final verifiedMembershipByChannel = _newestVerifiedEvents(
     membershipEvents,
     kind: 39002,
-    maximum: maximumChannels,
     scope: (event) => event.getTagValue('d'),
   );
   final selectedChannelIDs = verifiedMembershipByChannel.keys.toSet();
-  final verifiedMetadataByChannel = _boundedNewestEvents(
+  final verifiedMetadataByChannel = _newestVerifiedEvents(
     metadataEvents,
     kind: 39000,
-    maximum: maximumChannels,
     scope: (event) => event.getTagValue('d'),
     allowedScopes: selectedChannelIDs.isEmpty ? null : selectedChannelIDs,
   );
@@ -120,15 +112,13 @@ selectBoundedPushChannelEvents(
   return (metadata: verifiedMetadata, membership: verifiedMembership);
 }
 
-Map<String, NostrEvent> _boundedNewestEvents(
+Map<String, NostrEvent> _newestVerifiedEvents(
   Iterable<NostrEvent> events, {
   required int kind,
-  required int maximum,
   required String? Function(NostrEvent event) scope,
   Set<String>? allowedScopes,
 }) {
   final selected = <String, NostrEvent>{};
-  if (maximum <= 0) return selected;
   for (final event in events) {
     if (event.kind != kind || !isVerifiedPushPresentationEvent(event)) continue;
     final key = scope(event);
@@ -139,18 +129,7 @@ Map<String, NostrEvent> _boundedNewestEvents(
       if (_isNewerEvent(event, existing)) selected[key] = event;
       continue;
     }
-    if (selected.length < maximum) {
-      selected[key] = event;
-      continue;
-    }
-    final oldest = selected.entries.reduce(
-      (left, right) => _isNewerEvent(left.value, right.value) ? right : left,
-    );
-    if (_isNewerEvent(event, oldest.value)) {
-      selected
-        ..remove(oldest.key)
-        ..[key] = event;
-    }
+    selected[key] = event;
   }
   return selected;
 }
@@ -183,7 +162,8 @@ Future<void> cacheBuzzPushAvatarFromLoadedBytes(
   try {
     final png = await _boundedAvatarPNG(sourceBytes);
     if (png == null) return;
-    await _invokeBestEffort('cachePresentationAvatar', {
+    await _invokeBestEffort({
+      'section': 'avatar',
       'communityId': communityID,
       'sourceUrl': sourceURL,
       'png': png,
@@ -193,15 +173,15 @@ Future<void> cacheBuzzPushAvatarFromLoadedBytes(
   }
 }
 
-Future<void> _invokeBestEffort(
-  String method,
-  Map<String, Object> arguments,
-) async {
+Future<void> _invokeBestEffort(Map<String, Object> arguments) async {
   try {
-    await _pushPresentationChannel.invokeMethod<void>(method, arguments);
+    await _pushPresentationChannel.invokeMethod<void>(
+      'syncPushSnapshot',
+      arguments,
+    );
     pushPresentationCacheError.value = null;
   } on MissingPluginException {
-    // Push-free builds and non-Runner embeddings intentionally omit the bridge.
+    // Non-Runner embeddings do not provide the native snapshot bridge.
   } catch (error, stackTrace) {
     pushPresentationCacheError.value = error.toString();
     debugPrint('Push presentation cache update failed: $error');

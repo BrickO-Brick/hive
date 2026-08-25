@@ -83,7 +83,7 @@ public final class BuzzPushNotificationResolver: BuzzPushNotificationResolving {
     let communities = loadCommunities().filter {
       $0.pubkey?.isEmpty == false
         && loadPrivateKey($0.id) != nil
-        && (try? $0.pushSubscriptionState.authoritativeSubscriptions().isEmpty == false) == true
+        && !$0.policies.isEmpty
     }
     guard !communities.isEmpty else {
       completion(nil)
@@ -124,12 +124,11 @@ public final class BuzzPushNotificationResolver: BuzzPushNotificationResolving {
       return
     }
     guard
-      let subscriptions = try? community.pushSubscriptionState.authoritativeSubscriptions(),
-      !subscriptions.isEmpty,
+      !community.policies.isEmpty,
       let relayURL = community.relayURL,
       let url = URL(string: "/query", relativeTo: relayURL),
       let body = try? JSONSerialization.data(
-        withJSONObject: subscriptions.map { $0.filter.queryFilter(since: nil, limit: 10) }
+        withJSONObject: community.policies.map { $0.filter.queryFilter(since: nil, limit: 10) }
       )
     else {
       completion(nil)
@@ -159,8 +158,8 @@ public final class BuzzPushNotificationResolver: BuzzPushNotificationResolving {
       let candidate = Self.newestMessage(
         events: events.filter { event in
           event.hasValidIDAndSignature()
-            && subscriptions.contains { subscription in
-              PushLeaseMatcher.matches(event: event, subscription: subscription)
+            && community.policies.contains { policy in
+              PushLeaseMatcher.matches(event: event, policy: policy)
             }
         },
         community: community

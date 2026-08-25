@@ -16,25 +16,20 @@
 | `BUZZ_PUSH_PUBLIC_DELIVERY_URL` | Exact externally signed URL, normally `https://push.buzz.xyz/v1/deliveries/apns`. |
 | `BUZZ_PUSH_MAX_GRANT_LIFETIME_SECONDS` | Maximum delegation capability lifetime (`1..=31536000`). |
 | `BUZZ_PUSH_MAX_INSTALLATION_LIFETIME_SECONDS` | Maximum encrypted-token installation lifetime (default 90 days, max one year). Clients must renew before expiry. |
-| `BUZZ_PUSH_ENABLED_PROFILES` | Comma-separated closed application profiles: `buzz-ios-dogfood` and/or `buzz-ios-app-store`. Dogfood is the only enabled MVP profile. |
 | `BUZZ_PUSH_APP_ATTEST_ROOT_CERT_PATH` | Read-only mounted Apple App Attest root certificate PEM. |
-| `BUZZ_PUSH_{DOGFOOD,APP_STORE}_APP_ATTEST_APP_ID` | Exact server-owned Apple App Attest application identifier (`TEAMID.bundle-id`) for each closed profile. |
-| `BUZZ_PUSH_{DOGFOOD,APP_STORE}_APNS_TOPIC` | Server-owned APNs topic for each profile. Never accepted from a client. |
-| `BUZZ_PUSH_{DOGFOOD,APP_STORE}_APNS_ENVIRONMENT` | `production` or `sandbox`, selected per profile by deployment configuration. |
-| `BUZZ_PUSH_{DOGFOOD,APP_STORE}_APNS_CERT_PATH` | Read-only certificate/private-key PEM for an enabled profile. A dormant profile may omit it. |
+| `BUZZ_PUSH_DOGFOOD_APP_ATTEST_APP_ID` | Exact server-owned Apple App Attest application identifier (`TEAMID.bundle-id`). |
+| `BUZZ_PUSH_DOGFOOD_APNS_TOPIC` | Server-owned APNs topic. Never accepted from a client. |
+| `BUZZ_PUSH_DOGFOOD_APNS_ENVIRONMENT` | `production` or `sandbox`, selected by deployment configuration. |
+| `BUZZ_PUSH_DOGFOOD_APNS_CERT_PATH` | Read-only certificate/private-key PEM. |
 | `BUZZ_PUSH_GRANT_KEYS` | Capability AEAD keyring, `id:base64-32-bytes[,predecessor...]`; current key first. |
 | `BUZZ_PUSH_TOKEN_KEYS` | Independent token-custody AEAD keyring in the same format. Never reuse grant keys. |
 
-The single canonical `push.buzz.xyz` deployment owns a closed profile registry
-for both dogfood (`xyz.block.buzz.dogfood.mobile`) and App Store
-(`xyz.block.buzz.mobile`) application identities. Enrollment's profile selector
-only chooses a candidate entry: the corresponding App Attest verifier must
-cryptographically validate that entry's configured application ID before the
-profile is stored with the installation. Assertions and delivery subsequently
-select App Attest policy, APNs topic, certificate-backed connection pool, and
-environment from that stored profile. No client request or relay grant can
-supply or override an APNs topic. The MVP enables and credentials dogfood only;
-the App Store entry remains registered but dormant until a later rollout.
+The canonical `push.buzz.xyz` MVP serves the dogfood application identity
+(`xyz.block.buzz.dogfood.mobile`). App Attest must cryptographically validate
+the configured application ID before enrollment. Assertions and delivery use
+the server-owned APNs topic, certificate-backed connection pool, and
+environment. No client request or relay grant can supply or override an APNs
+topic.
 
 Optional endpoint quota policy variables are `BUZZ_PUSH_ENDPOINT_QUOTA_WINDOW_SECONDS` (default `10`, max `86400`) and `BUZZ_PUSH_ENDPOINT_QUOTA_MAX_DELIVERIES` (default `10`, max `10000`). These are Buzz policy hypotheses, not Apple-published limits; tune under load while retaining a hard ceiling.
 
@@ -73,7 +68,7 @@ Alerting rules ship as an opt-in prometheus-operator `PrometheusRule` (`promethe
 
 | Alert | Fires when | Severity | Action |
 |---|---|---|---|
-| `PushGatewayConfigurationFault` | any `configuration_fault` outcomes for 10m | critical | The enabled profile's APNs certificate/topic/environment is unhealthy. Check the matching `BUZZ_PUSH_{DOGFOOD,APP_STORE}_APNS_*` configuration. No endpoints are being invalidated. |
+| `PushGatewayConfigurationFault` | any `configuration_fault` outcomes for 10m | critical | The APNs certificate/topic/environment is unhealthy. Check `BUZZ_PUSH_DOGFOOD_APNS_*` configuration. No endpoints are being invalidated. |
 | `PushGatewayAdmissionUnavailable` | any admission `unavailable` for 5m | critical | PostgreSQL authority store is unreachable. Check DB connectivity and the pod's `postgresEgressCidrs` NetworkPolicy. |
 | `PushGatewayReadinessAuthorityFailing` | readiness `authority` failures for 5m | warning | Replicas are being pulled from the Service on DB check failure. Fix DB health before capacity drops below the PodDisruptionBudget. |
 | `PushGatewayReaperFailing` | reaper failed ≥2 times within 30m (runs every 5m) | warning | Expired reservations aren't being swept, growing the bounded-until-expiry window. Check DB write availability. |

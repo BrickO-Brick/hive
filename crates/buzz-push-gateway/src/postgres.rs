@@ -64,7 +64,6 @@ fn ts(v: DateTime<Utc>) -> i64 {
 fn profile(v: &str) -> Result<AppProfile, AuthorityError> {
     match v {
         "buzz-ios-dogfood" => Ok(AppProfile::BuzzIosDogfood),
-        "buzz-ios-app-store" => Ok(AppProfile::BuzzIosAppStore),
         _ => Err(AuthorityError::Unavailable),
     }
 }
@@ -409,7 +408,7 @@ mod tests {
     use super::*;
     use sqlx::{postgres::PgPoolOptions, AssertSqlSafe};
 
-    const TEST_DB_URL: &str = "postgres://buzz:buzz_dev@localhost:5432/buzz";
+    const TEST_DB_URL: &str = "postgres://buzz:buzz_dev@localhost:5432/buzz"; // sadscan:disable np.postgres.1 -- local test-only credentials
 
     #[tokio::test]
     #[ignore = "requires PostgreSQL with CREATEDB/CREATEROLE"]

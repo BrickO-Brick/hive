@@ -19,7 +19,7 @@ final class NotificationService: UNNotificationServiceExtension {
     return BuzzPushNotificationResolver(
       session: .shared,
       loadCommunitiesData: {
-        Self.loadCommunitiesData(appGroupIdentifier: appGroupIdentifier)
+        Self.loadPushSnapshotData(appGroupIdentifier: appGroupIdentifier)
       },
       loadPrivateKey: { communityID in
         Self.loadPrivateKey(
@@ -28,11 +28,7 @@ final class NotificationService: UNNotificationServiceExtension {
         )
       },
       loadPresentationCacheData: {
-        Self.loadAppGroupData(
-          fileName: BuzzPushPresentationCacheStore.fileName,
-          appGroupIdentifier: appGroupIdentifier,
-          maximumBytes: BuzzPushPresentationCacheStore.maximumSnapshotBytes
-        )
+        Self.loadPushSnapshotData(appGroupIdentifier: appGroupIdentifier)
       }
     )
   }()
@@ -113,10 +109,11 @@ final class NotificationService: UNNotificationServiceExtension {
     return String(data: data, encoding: .utf8)
   }
 
-  private static func loadCommunitiesData(appGroupIdentifier: String?) -> Data? {
+  private static func loadPushSnapshotData(appGroupIdentifier: String?) -> Data? {
     loadAppGroupData(
-      fileName: "push-communities.json",
-      appGroupIdentifier: appGroupIdentifier
+      fileName: BuzzPushPresentationCacheStore.fileName,
+      appGroupIdentifier: appGroupIdentifier,
+      maximumBytes: BuzzPushPresentationCacheStore.maximumSnapshotBytes
     )
   }
 

@@ -54,11 +54,10 @@ env_names = d.dig("spec", "template", "spec", "containers", 0, "env")
 required = Set.new(%w[
   DATABASE_URL BUZZ_PUSH_DOGFOOD_APNS_CERT_PATH
   BUZZ_PUSH_DOGFOOD_APNS_TOPIC BUZZ_PUSH_DOGFOOD_APP_ATTEST_APP_ID
-  BUZZ_PUSH_APP_STORE_APNS_TOPIC BUZZ_PUSH_APP_STORE_APP_ATTEST_APP_ID
   BUZZ_PUSH_GRANT_KEYS BUZZ_PUSH_TOKEN_KEYS BUZZ_PUSH_MAX_GRANT_LIFETIME_SECONDS
 ])
 assert!(required.subset?(env_names))
-assert!(!env_names.include?("BUZZ_PUSH_APP_STORE_APNS_CERT_PATH"))
+assert!(!env_names.any? { |name| name.include?("APP_STORE") })
 apns_volume = d.dig("spec", "template", "spec", "volumes").find { |volume| volume["name"] == "apns-dogfood" }
 assert!(apns_volume.dig("secret", "defaultMode") == 0o400, apns_volume.inspect)
 assert!(d.dig("spec", "replicas") >= 2)

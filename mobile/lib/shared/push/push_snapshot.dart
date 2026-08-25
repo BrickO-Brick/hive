@@ -6,22 +6,33 @@ class BuzzPushCommunitySnapshot {
   final String name;
   final String relayUrl;
   final String? pubkey;
-  final BuzzPushLeaseSubscriptionState pushSubscriptionState;
+  final List<BuzzPushSubscription> subscriptions;
 
-  const BuzzPushCommunitySnapshot({
+  BuzzPushCommunitySnapshot({
     required this.id,
     required this.name,
     required this.relayUrl,
     this.pubkey,
-    required this.pushSubscriptionState,
-  });
+    required Iterable<BuzzPushSubscription> subscriptions,
+  }) : subscriptions = List.unmodifiable(subscriptions);
 
   Map<String, dynamic> toJson() => {
     'id': id,
     'name': name,
     'relayUrl': relayUrl,
     if (pubkey != null) 'pubkey': pubkey,
-    'pushSubscriptionState': pushSubscriptionState.toJson(),
+    'policies': [
+      for (final subscription in subscriptions)
+        {
+          'filter': subscription.filter.toJson(),
+          if (subscription.ignore.isNotEmpty)
+            'ignore': [
+              for (final filter in subscription.ignore) filter.toJson(),
+            ],
+          if (subscription.suppress != null)
+            'suppress': subscription.suppress!.toJson(),
+        },
+    ],
   };
 
   factory BuzzPushCommunitySnapshot.fromJson(Map<String, dynamic> json) {
@@ -30,9 +41,13 @@ class BuzzPushCommunitySnapshot {
       name: json['name'] as String,
       relayUrl: json['relayUrl'] as String,
       pubkey: json['pubkey'] as String?,
-      pushSubscriptionState: BuzzPushLeaseSubscriptionState.fromJson(
-        Map<String, dynamic>.from(json['pushSubscriptionState'] as Map),
-      ),
+      subscriptions: [
+        for (final raw in json['policies'] as List<dynamic>)
+          BuzzPushSubscription.fromJson({
+            ...Map<String, dynamic>.from(raw as Map),
+            'class': 'default',
+          }),
+      ],
     );
   }
 }

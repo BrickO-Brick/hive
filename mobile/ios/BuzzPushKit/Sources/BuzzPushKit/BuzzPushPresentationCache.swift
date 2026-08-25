@@ -97,15 +97,18 @@ public struct BuzzPushPresentationCacheSnapshot: Codable, Equatable, Sendable {
   public static let currentVersion = 1
 
   public let version: Int
+  public var communities: [PushLeaseCommunity]
   public var profiles: [BuzzPushCachedProfile]
   public var channels: [BuzzPushCachedChannel]
 
   public init(
     version: Int = currentVersion,
+    communities: [PushLeaseCommunity] = [],
     profiles: [BuzzPushCachedProfile] = [],
     channels: [BuzzPushCachedChannel] = []
   ) {
     self.version = version
+    self.communities = communities
     self.profiles = profiles
     self.channels = channels
   }
@@ -155,10 +158,11 @@ public struct BuzzPushProfileCacheUpdate: Sendable {
 
 /// Maintains the bounded presentation snapshot. The app is the sole writer.
 public final class BuzzPushPresentationCacheStore: @unchecked Sendable {
-  public static let fileName = "push-presentation-cache.json"
+  public static let fileName = "push-snapshot.json"
   public static let freshnessLifetime: TimeInterval = 24 * 60 * 60
   public static let maximumProfiles = 256
   public static let maximumChannels = 512
+  public static let maximumCommunities = 64
   public static let maximumMembersPerChannel = 512
   public static let maximumTotalMemberDigests = 8_192
   public static let maximumAvatarBytes = 64 * 1024
@@ -173,6 +177,19 @@ public final class BuzzPushPresentationCacheStore: @unchecked Sendable {
   public init(containerURL: URL, now: @escaping () -> Date = Date.init) {
     fileURL = containerURL.appendingPathComponent(Self.fileName)
     self.now = now
+  }
+
+  /// Replaces the app's flattened, relay-accepted community query policy.
+  public func replaceCommunities(_ communities: [PushLeaseCommunity]) throws {
+    guard communities.count <= Self.maximumCommunities else { return }
+    lock.lock()
+    defer { lock.unlock() }
+    var snapshot = loadLocked()
+    snapshot.communities = communities
+    let retained = Set(communities.map(\.id))
+    snapshot.profiles.removeAll { !retained.contains($0.communityID) }
+    snapshot.channels.removeAll { !retained.contains($0.communityID) }
+    try writeLocked(snapshot)
   }
 
   /// Saves verified kind-0 events and returns the event IDs still needing thumbnails.
@@ -416,16 +433,6 @@ public final class BuzzPushPresentationCacheStore: @unchecked Sendable {
     return true
   }
 
-  /// Removes metadata belonging to communities no longer present in the app.
-  public func retainCommunities(_ communityIDs: Set<String>) throws {
-    lock.lock()
-    defer { lock.unlock() }
-    var snapshot = loadLocked()
-    snapshot.profiles.removeAll { !communityIDs.contains($0.communityID) }
-    snapshot.channels.removeAll { !communityIDs.contains($0.communityID) }
-    try writeLocked(snapshot)
-  }
-
   private func loadLocked() -> BuzzPushPresentationCacheSnapshot {
     guard let values = try? fileURL.resourceValues(forKeys: [.fileSizeKey]),
       let fileSize = values.fileSize,
@@ -630,6 +637,7 @@ public final class BuzzPushPresentationCacheStore: @unchecked Sendable {
   }
 
   static func enforceBounds(_ snapshot: inout BuzzPushPresentationCacheSnapshot) {
+    snapshot.communities = Array(snapshot.communities.prefix(maximumCommunities))
     snapshot.profiles = Array(
       snapshot.profiles.sorted(by: profileNewestFirst).prefix(maximumProfiles)
     )

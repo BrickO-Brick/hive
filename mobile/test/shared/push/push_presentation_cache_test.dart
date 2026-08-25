@@ -61,51 +61,47 @@ void main() {
     );
   });
 
-  test(
-    'bounded channel selection keeps metadata paired with selected rosters',
-    () {
-      NostrEvent signedChannelEvent(int kind, String channelID, int createdAt) {
-        final signed = nostr.Event.from(
-          kind: kind,
-          content: '',
-          tags: [
-            ['d', channelID],
-            if (kind == 39002)
-              [
-                'p',
-                '79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798',
-              ],
-          ],
-          secretKey: secretKey,
-          createdAt: createdAt,
-        );
-        return NostrEvent.fromJson(signed.toMap());
-      }
-
-      final batch = selectBoundedPushChannelEvents(
-        [
-          signedChannelEvent(39000, 'channel-0', 100),
-          signedChannelEvent(39000, 'channel-1', 300),
-          signedChannelEvent(39000, 'channel-2', 200),
+  test('channel selection keeps newest metadata paired with rosters', () {
+    NostrEvent signedChannelEvent(int kind, String channelID, int createdAt) {
+      final signed = nostr.Event.from(
+        kind: kind,
+        content: '',
+        tags: [
+          ['d', channelID],
+          if (kind == 39002)
+            [
+              'p',
+              '79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798',
+            ],
         ],
-        [
-          signedChannelEvent(39002, 'channel-0', 300),
-          signedChannelEvent(39002, 'channel-1', 200),
-          signedChannelEvent(39002, 'channel-2', 100),
-        ],
-        maximumChannels: 2,
+        secretKey: secretKey,
+        createdAt: createdAt,
       );
+      return NostrEvent.fromJson(signed.toMap());
+    }
 
-      expect(batch.metadata.map((event) => event.getTagValue('d')).toSet(), {
-        'channel-0',
-        'channel-1',
-      });
-      expect(batch.membership.map((event) => event.getTagValue('d')).toSet(), {
-        'channel-0',
-        'channel-1',
-      });
-    },
-  );
+    final batch = selectPushChannelEvents(
+      [
+        signedChannelEvent(39000, 'channel-0', 100),
+        signedChannelEvent(39000, 'channel-1', 300),
+        signedChannelEvent(39000, 'channel-1', 200),
+        signedChannelEvent(39000, 'metadata-only', 400),
+      ],
+      [
+        signedChannelEvent(39002, 'channel-0', 300),
+        signedChannelEvent(39002, 'channel-1', 200),
+      ],
+    );
+
+    expect(batch.metadata.map((event) => event.getTagValue('d')).toSet(), {
+      'channel-0',
+      'channel-1',
+    });
+    expect(batch.membership.map((event) => event.getTagValue('d')).toSet(), {
+      'channel-0',
+      'channel-1',
+    });
+  });
 
   test('rejects changed content and malformed signatures', () {
     final signed = nostr.Event.from(

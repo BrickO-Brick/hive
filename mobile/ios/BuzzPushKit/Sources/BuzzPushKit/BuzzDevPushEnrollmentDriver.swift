@@ -121,46 +121,6 @@ private enum BuzzSecureRandom {
   }
 }
 
-#if DEBUG
-  struct BuzzDevAppAttestProvider: BuzzDevAppAttesting {
-    private static let attestationPrefix = Data("buzz-dev-app-attest-v1:".utf8)
-    private static let assertionBytes = Data("buzz-dev-app-assertion-v1".utf8)
-
-    let randomBytes: () throws -> Data
-
-    init(
-      randomBytes: @escaping () throws -> Data = {
-        try BuzzSecureRandom.bytes(count: 32)
-      }
-    ) {
-      self.randomBytes = randomBytes
-    }
-
-    func prepareAttestation() async throws -> BuzzDevAttestation {
-      let entropy = try randomBytes()
-      precondition(entropy.count == 32, "Development attestation entropy must be exactly 32 bytes")
-      let bytes = Self.attestationPrefix + entropy
-      return BuzzDevAttestation(
-        keyId: Data(SHA256.hash(data: bytes)).base64EncodedString(),
-        attestation: bytes.base64EncodedString()
-      )
-    }
-
-    func attestation(
-      _ prepared: BuzzDevAttestation,
-      clientData: Data
-    ) async throws -> BuzzDevAttestation {
-      precondition(!clientData.isEmpty, "Enrollment client data must not be empty")
-      return prepared
-    }
-
-    func assertion(clientData: Data) async throws -> String {
-      precondition(!clientData.isEmpty, "Delegation client data must not be empty")
-      return Self.assertionBytes.base64EncodedString()
-    }
-  }
-#endif
-
 private enum BuzzAppAttestKeyId {
   static func isValid(_ keyId: String) -> Bool {
     guard !keyId.isEmpty,
@@ -373,24 +333,6 @@ public final class BuzzDevPushEnrollmentDriver {
       installationIdBytes: { try BuzzSecureRandom.bytes(count: 16) }
     )
   }
-
-  #if DEBUG
-    public convenience init(
-      gatewayBaseURL: URL,
-      store: BuzzPushEndpointGrantStore,
-      session: URLSession = .shared
-    ) throws {
-      try self.init(
-        gatewayBaseURL: gatewayBaseURL,
-        store: store,
-        session: session,
-        appAttest: BuzzDevAppAttestProvider(),
-        now: Date.init,
-        lifetimeSeconds: 2_592_000,
-        installationIdBytes: { try BuzzSecureRandom.bytes(count: 16) }
-      )
-    }
-  #endif
 
   init(
     gatewayBaseURL: URL,

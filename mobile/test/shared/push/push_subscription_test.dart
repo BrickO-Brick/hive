@@ -43,27 +43,15 @@ void main() {
     );
   });
 
-  test('tracks relay lease and gateway grant generations independently', () {
+  test('persists only the relay-accepted lease generation', () {
     final subscription = buildDesiredBuzzPushSubscriptions(myPubkey: me).single;
-    final state =
-        BuzzPushLeaseSubscriptionState.desired(
-          desired: [subscription],
-        ).withAccepted(
-          subscriptions: [subscription],
-          generation: 9,
-          grantGeneration: 3,
-          installationId: 'c' * 32,
-        );
+    final state = BuzzPushLeaseSubscriptionState.desired(
+      desired: [subscription],
+    ).withAccepted(subscriptions: [subscription], generation: 9);
 
     final decoded = BuzzPushLeaseSubscriptionState.fromJson(state.toJson());
     expect(decoded.acceptedGeneration, 9);
-    expect(decoded.acceptedGrantGeneration, 3);
-
-    final migrated = BuzzPushLeaseSubscriptionState.fromJson({
-      ...state.toJson()..remove('acceptedGrantGeneration'),
-    });
-    expect(migrated.acceptedGeneration, 9);
-    expect(migrated.acceptedGrantGeneration, 9);
+    expect(decoded.toJson(), state.toJson());
   });
 
   test('builds aligned self and unmuted channel subscriptions', () {
