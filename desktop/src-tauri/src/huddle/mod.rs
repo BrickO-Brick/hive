@@ -90,7 +90,11 @@ use std::sync::{atomic::Ordering, Arc};
 use tauri::State;
 use uuid::Uuid;
 
-use crate::{app_state::AppState, events, relay::submit_event};
+use crate::{
+    app_state::AppState,
+    events,
+    relay::{submit_event, submit_event_with_keys},
+};
 
 use agent_tts_routing::{
     classify_agent_tts_runtime, enqueue_agent_tts_text, normalize_agent_tts_text,
@@ -255,18 +259,23 @@ pub async fn start_huddle(
             None,
             Some(3600),
         )?;
-        submit_event(create_builder, &state).await?;
+        // Capture the signing identity before submission and sign with exactly
+        // those keys, mirroring `create_channel` (`commands/channels.rs`): an
+        // in-process identity swap during the network await must not be able
+        // to retarget the pending-owned mark below onto a non-creator.
+        let creator_keys = state.signing_keys()?;
+        let creator_pubkey = creator_keys.public_key().to_hex();
+        submit_event_with_keys(create_builder, &state, &creator_keys, None).await?;
         channel_was_created = true;
 
         // The huddle window resolves this channel through the member-only
         // channel poll, but the relay-signed kind:39002 owner membership can
         // lag the create. Mark the channel pending-owned (same overlay as
         // `create_channel`, #1761) so the window never races propagation and
-        // falls into the "Select a channel" empty state. Cleared automatically
-        // once real membership is observed, and explicitly on end/rollback.
-        if let Ok(keys) = state.signing_keys() {
-            state.mark_pending_owned_channel(&keys.public_key().to_hex(), &ephemeral_channel_id);
-        }
+        // falls into the "Select a channel" empty state. Bound to the identity
+        // that signed the create above. Cleared automatically once real
+        // membership is observed, and explicitly on end/rollback.
+        state.mark_pending_owned_channel(&creator_pubkey, &ephemeral_channel_id);
 
         // 2. Post voice-mode guidelines as kind:48106 BEFORE adding agents.
         //    Agents auto-subscribe on membership notification (kind:9000) and may
@@ -536,11 +545,13 @@ fn teardown_huddle(state: &AppState) -> Result<(), String> {
 
 /// Drop the huddle channel's pending-owned overlay entry (see the mark in
 /// `start_huddle`). Archived huddle channels must not linger classified as
-/// owned-and-visible if the relay's kind:39002 update never arrived.
+/// owned-and-visible if the relay's kind:39002 update never arrived. Clears
+/// the channel id for every identity rather than re-reading the current
+/// signing keys: by end/rollback time an in-process identity swap may have
+/// replaced the creator's keys (and recovery mode has none at all), and the
+/// creator's mark must die with the channel regardless.
 fn clear_pending_owned_huddle_channel(state: &AppState, ephemeral_channel_id: &str) {
-    if let Ok(keys) = state.signing_keys() {
-        state.clear_pending_owned_channel(&keys.public_key().to_hex(), ephemeral_channel_id);
-    }
+    state.clear_pending_owned_channel_all_identities(ephemeral_channel_id);
 }
 
 /// Emit HUDDLE_ENDED to the parent channel and archive the ephemeral channel.
