@@ -1,12 +1,9 @@
 import type { ManagedAgent } from "@/shared/api/types";
+import { canonicalRelayUrl } from "../managedAgentRuntimeStatus.ts";
 
 export const BESTIE_PERSONA_ID = "builtin:bestie";
 
 const BESTIE_FALLBACK_NAMES = new Set(["bestie", "chief of staff"]);
-
-function normalizeRelayUrl(relayUrl: string | null | undefined) {
-  return relayUrl?.trim().replace(/\/+$/, "").toLowerCase() ?? null;
-}
 
 function preferredByLifecycle(agents: readonly ManagedAgent[]) {
   return (
@@ -22,11 +19,10 @@ export function pickBestieAgent(
   agents: readonly ManagedAgent[],
   relayUrl?: string | null,
 ) {
-  const normalizedRelayUrl = normalizeRelayUrl(relayUrl);
+  const normalizedRelayUrl = canonicalRelayUrl(relayUrl ?? "");
+  if (normalizedRelayUrl === null) return null;
   const scoped = agents.filter(
-    (agent) =>
-      !normalizedRelayUrl ||
-      normalizeRelayUrl(agent.relayUrl) === normalizedRelayUrl,
+    (agent) => canonicalRelayUrl(agent.relayUrl) === normalizedRelayUrl,
   );
   const builtIn = scoped.filter(
     (agent) => agent.personaId === BESTIE_PERSONA_ID,

@@ -22,7 +22,7 @@ test("prefers the built-in Bestie over a name fallback", () => {
     personaId: "builtin:bestie",
   });
 
-  assert.equal(pickBestieAgent([chief, bestie]), bestie);
+  assert.equal(pickBestieAgent([chief, bestie], "wss://buzz.example"), bestie);
 });
 
 test("reuses an existing Chief of Staff within the active relay", () => {
@@ -52,5 +52,36 @@ test("prefers a running Bestie instance", () => {
     status: "running",
   });
 
-  assert.equal(pickBestieAgent([stopped, running]), running);
+  assert.equal(
+    pickBestieAgent([stopped, running], "wss://buzz.example"),
+    running,
+  );
+});
+
+test("uses backend-compatible relay identity equivalences", () => {
+  const loopback = agent({
+    relayUrl: "WSS://localhost:443/",
+    personaId: "builtin:bestie",
+  });
+
+  assert.equal(pickBestieAgent([loopback], "wss://[::1]"), loopback);
+});
+
+test("fails closed without a valid inherited relay", () => {
+  const bestie = agent({ personaId: "builtin:bestie" });
+
+  assert.equal(pickBestieAgent([bestie], null), null);
+  assert.equal(pickBestieAgent([bestie], "  "), null);
+  assert.equal(pickBestieAgent([bestie], "not a relay"), null);
+  assert.equal(pickBestieAgent([bestie], "wss://user@buzz.example"), null);
+  assert.equal(pickBestieAgent([bestie], "wss://buzz.example/#fragment"), null);
+});
+
+test("never selects a Bestie from another relay", () => {
+  const relayA = agent({
+    relayUrl: "wss://a.example",
+    personaId: "builtin:bestie",
+  });
+
+  assert.equal(pickBestieAgent([relayA], "wss://b.example"), null);
 });

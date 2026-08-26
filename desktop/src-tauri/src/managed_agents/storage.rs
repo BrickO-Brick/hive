@@ -238,12 +238,16 @@ pub(crate) fn spawn_key_refusal(record: &ManagedAgentRecord) -> Option<String> {
 /// with fail-loud parse handling. Internal seam; public readers filter.
 fn load_agent_store(app: &AppHandle) -> Result<Vec<ManagedAgentRecord>, String> {
     let path = managed_agents_store_path(app)?;
+    load_agent_store_from_path(&path)
+}
+
+pub(crate) fn load_agent_store_from_path(path: &Path) -> Result<Vec<ManagedAgentRecord>, String> {
     if !path.exists() {
         return Ok(Vec::new());
     }
 
-    let content = fs::read_to_string(&path)
-        .map_err(|error| format!("failed to read agent store: {error}"))?;
+    let content =
+        fs::read_to_string(path).map_err(|error| format!("failed to read agent store: {error}"))?;
     serde_json::from_str(&content).map_err(|error| {
         // Fail loudly and preserve the evidence: a later in-app save rewrites
         // this file wholesale, which would silently destroy a malformed hand
@@ -251,7 +255,7 @@ fn load_agent_store(app: &AppHandle) -> Result<Vec<ManagedAgentRecord>, String> 
         // reconcile): the broken content survives as `.invalid` for the user
         // to recover, and the parse error propagates instead of being
         // swallowed into an empty store.
-        backup_invalid_store(&path);
+        backup_invalid_store(path);
         format!("failed to parse agent store (preserved as .invalid): {error}")
     })
 }
@@ -387,11 +391,19 @@ pub(crate) fn save_agent_definitions(
     app: &AppHandle,
     definitions: &[ManagedAgentRecord],
 ) -> Result<(), String> {
-    let mut instances = load_agent_store(app)?;
+    let path = managed_agents_store_path(app)?;
+    save_agent_definitions_to_path(&path, definitions)
+}
+
+pub(crate) fn save_agent_definitions_to_path(
+    path: &Path,
+    definitions: &[ManagedAgentRecord],
+) -> Result<(), String> {
+    let mut instances = load_agent_store_from_path(path)?;
     instances.retain(|record| !record.pubkey.is_empty());
     let mut definitions = definitions.to_vec();
     definitions.retain(|record| record.pubkey.is_empty());
-    write_agent_store(app, definitions, instances)
+    write_agent_store_to_path(path, definitions, instances)
 }
 
 /// Serialize definitions + instances into the single unified store file.
@@ -399,6 +411,15 @@ pub(crate) fn save_agent_definitions(
 /// name/pubkey order their save path established.
 fn write_agent_store(
     app: &AppHandle,
+    definitions: Vec<ManagedAgentRecord>,
+    instances: Vec<ManagedAgentRecord>,
+) -> Result<(), String> {
+    let path = managed_agents_store_path(app)?;
+    write_agent_store_to_path(&path, definitions, instances)
+}
+
+pub(crate) fn write_agent_store_to_path(
+    path: &Path,
     mut definitions: Vec<ManagedAgentRecord>,
     instances: Vec<ManagedAgentRecord>,
 ) -> Result<(), String> {
@@ -406,7 +427,6 @@ fn write_agent_store(
     let mut all = definitions;
     all.extend(instances);
 
-    let path = managed_agents_store_path(app)?;
     let payload = serde_json::to_vec_pretty(&all)
         .map_err(|error| format!("failed to serialize agent store: {error}"))?;
 
@@ -414,7 +434,7 @@ fn write_agent_store(
     // fallback. Write it owner-only (`0o600`) unconditionally — harmless for the
     // keyring-backed case (it is the user's own agent store) and closes the
     // umask window a post-write `chmod` would leave open.
-    atomic_write_json_restricted(&path, &payload)
+    atomic_write_json_restricted(path, &payload)
 }
 
 /// Write each record's in-memory key to the keyring and blank the inline copy
