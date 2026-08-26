@@ -7492,33 +7492,65 @@ mod tests {
     #[tokio::test]
     async fn handle_permission_request_denies_second_while_publishing() {
         // A distinct-id Ask request arriving while an earlier one is still in
-        // `Publishing` must be denied synchronously — never inserting a second
-        // Publishing entry that would overwrite the single ACK receiver slot or
-        // create an unroutable card. The in-flight entry and its ACK slot stay
-        // untouched.
-        let mut client = spawn_inert_client().await;
-        set_policy(&mut client, PermissionPolicy::Ask);
-        // Seed a Publishing entry with a live ACK receiver in the single slot.
-        client.pending_permissions.insert(
-            "1".to_string(),
-            PermissionEntry {
-                nonce: "nonce-publishing".to_string(),
-                options_snapshot: vec![],
-                card_actions: test_card_actions(),
-                state: PermissionEntryState::Publishing,
-                deadline: tokio::time::Instant::now() + std::time::Duration::from_secs(300),
-                expiry_unix_secs: 0,
-                sentinel_event_id: Some("sentinel-1".to_string()),
-                early_decision: None,
-            },
+        // `Publishing` must be denied synchronously by the publish-in-flight
+        // guard — never inserting a second Publishing entry that would overwrite
+        // the single ACK receiver slot or create an unroutable card.
+        //
+        // Production-shaped: a full owner/initiator/channel/publisher context is
+        // installed and the FIRST entry is created through
+        // `handle_permission_request` with a SILENT publisher (never ACKs), so
+        // it genuinely reaches and stays in `Publishing`. This exercises the real
+        // insertion path after preflight — the acceptance bar is that mutating
+        // ONLY the production `is_publish_in_flight` argument (~acp.rs:3102) to
+        // `false` turns THIS test red (the second request would then be admitted
+        // and overwrite the live ACK slot).
+        let mut client = spawn_script("sleep 600").await;
+        client.set_permission_config(
+            ResolvedPermissionConfig::resolve(PermissionPolicy::Ask, None).unwrap(),
         );
-        let (_ack_tx, ack_rx) = tokio::sync::mpsc::channel(1);
-        client.sentinel_ack_result_rx = Some(ack_rx);
+        client.set_owner_pubkey_known(true);
+        // Silent publisher: never sends an ACK, so the first entry stays Publishing.
+        let keys = Keys::generate();
+        let owner_hex = keys.public_key().to_hex();
+        let (publisher, event_rx) = crate::relay::RelayEventPublisher::test_pair_silent();
+        tokio::spawn(async move {
+            let mut rx = event_rx;
+            while rx.recv().await.is_some() {}
+        });
+        client.set_relay_publisher(publisher, keys.clone());
+        client.set_agent_owner_pubkey_hex(Some(owner_hex));
+        client.set_turn_initiator_pubkey(Some(keys.public_key()));
+        client.set_turn_channel_context(
+            Some(uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000007").unwrap()),
+            None,
+        );
+        let obs = crate::observer::ObserverHandle::in_process();
+        client.set_observer(Some(obs.clone()), 0);
+        let (_tx, perm_rx) = tokio::sync::mpsc::channel::<PermissionDecision>(8);
+        client.install_permission_decision_rx(perm_rx);
 
-        // A SECOND request with a DIFFERENT id while the first is Publishing.
-        let msg = perm_request(2, default_opts());
-        let hard_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
-        let result = client.handle_permission_request(&msg, hard_deadline).await;
+        // First request: reaches Publishing (silent publisher never ACKs).
+        let first = perm_request(1, default_opts());
+        let hard = tokio::time::Instant::now() + std::time::Duration::from_secs(300);
+        client
+            .handle_permission_request(&first, hard)
+            .await
+            .expect("first request must register as Publishing");
+        assert!(
+            matches!(
+                client.pending_permissions.get("1").map(|e| e.state.clone()),
+                Some(PermissionEntryState::Publishing)
+            ),
+            "first entry must be in Publishing state"
+        );
+        assert!(
+            client.sentinel_ack_result_rx.is_some(),
+            "first request must install its ACK receiver"
+        );
+
+        // Second request with a DIFFERENT id while the first is Publishing.
+        let second = perm_request(2, default_opts());
+        let result = client.handle_permission_request(&second, hard).await;
         assert!(
             result.is_ok(),
             "publish-in-flight denial must not propagate as Err, got {result:?}"
@@ -7537,6 +7569,27 @@ mod tests {
         assert!(
             client.sentinel_ack_result_rx.is_some(),
             "the in-flight ACK receiver must not be overwritten or dropped"
+        );
+        // The denial reason must explicitly name the publish-in-flight guard —
+        // this is what distinguishes it from any unrelated fail-closed gate and
+        // makes the production mutation (is_publish_in_flight → false) turn the
+        // test red rather than passing via a different denial path.
+        let events = obs.snapshot();
+        let publish_in_flight_denials: Vec<_> = events
+            .iter()
+            .filter(|e| {
+                e.kind == "acp_read"
+                    && e.authorization
+                        .as_ref()
+                        .and_then(|a| a.reason.as_deref())
+                        .map(|r| r.contains("publish is already in flight"))
+                        .unwrap_or(false)
+            })
+            .collect();
+        assert_eq!(
+            publish_in_flight_denials.len(),
+            1,
+            "second request must be denied by the publish-in-flight guard; events: {events:?}"
         );
     }
 
