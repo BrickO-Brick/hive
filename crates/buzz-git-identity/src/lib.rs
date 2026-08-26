@@ -215,18 +215,30 @@ pub fn authorship_entries(id: &KeyIdentity) -> Vec<(String, String)> {
     ]
 }
 
+/// The signing-config entries whose values are the same for every agent — the
+/// invariant part of [`signing_entries`]. This is the single source of truth
+/// for the fixed signing contract: [`signing_entries`] writes it, and the
+/// wrapper's manifest validator ([`crate::git_wrapper`]) accepts a manifest
+/// only when it carries exactly these key/value pairs, so the written and
+/// validated contracts cannot drift apart.
+pub const FIXED_SIGNING_ENTRIES: &[(&str, &str)] = &[
+    ("gpg.format", "x509"),
+    ("gpg.x509.program", "git-sign-nostr"),
+    ("commit.gpgSign", "true"),
+    ("tag.gpgSign", "true"),
+];
+
 /// The NIP-GS signing git config. Applying this makes git invoke
 /// `git-sign-nostr` for every commit/tag, so the caller MUST ensure that
 /// program is reachable on the child's PATH — otherwise every commit fails.
 pub fn signing_entries(id: &KeyIdentity) -> Vec<(String, String)> {
-    vec![
-        ("gpg.format".into(), "x509".into()),
-        ("gpg.x509.program".into(), "git-sign-nostr".into()),
-        ("commit.gpgSign".into(), "true".into()),
-        ("tag.gpgSign".into(), "true".into()),
-        ("user.signingkey".into(), id.pubkey_hex.clone()),
-        keyfile_entry(id),
-    ]
+    let mut entries: Vec<(String, String)> = FIXED_SIGNING_ENTRIES
+        .iter()
+        .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+        .collect();
+    entries.push(("user.signingkey".into(), id.pubkey_hex.clone()));
+    entries.push(keyfile_entry(id));
+    entries
 }
 
 /// The `nostr.keyfile` git config pointing at the 0600 keyfile. Both

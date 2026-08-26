@@ -26,6 +26,10 @@ use std::process::Command;
 
 const ALIAS_HOP_LIMIT: usize = 10;
 
+/// A named manifest mutation: a label and a fn that rewrites the manifest body.
+/// Aliased to keep the tampered-manifest table under `clippy::type_complexity`.
+type ManifestMutation = (&'static str, fn(&str) -> String);
+
 /// Directory of the first real `git` on PATH; the wrapper is installed ahead
 /// of it so `find_real_git` skips our shim symlink and reaches this one.
 fn real_git_dir() -> PathBuf {
@@ -699,12 +703,14 @@ fn wrapper_refuses_push_of_unsigned_commit_tree() {
 /// names the agent but drops, falsifies, or misdirects the signing contract is
 /// tampered — not a legitimate unsigned mode — and must fail closed for EVERY
 /// command, not silently disable or redirect the push-gate signature check.
-/// Three mutations, each a distinct silent-disable/misdirect the contract check
+/// Five mutations, each a distinct silent-disable/misdirect the contract check
 /// rejects at classification time (`run()` refuses before any dispatch), so
-/// even a read-only `status` is refused.
+/// even a read-only `status` is refused. The duplicate-key and `include.path`
+/// cases cover the last-value-wins redirect that a first-value-only validator
+/// would miss.
 #[test]
 fn wrapper_refuses_every_command_when_manifest_signing_contract_is_tampered() {
-    let variants: [(&str, fn(&str) -> String); 3] = [
+    let variants: [ManifestMutation; 5] = [
         // `commit.gpgSign` removed → the signature gate would never fire.
         ("commit.gpgSign removed", |m| {
             m.lines()
@@ -729,6 +735,18 @@ fn wrapper_refuses_every_command_when_manifest_signing_contract_is_tampered() {
                 })
                 .collect::<Vec<_>>()
                 .join("\n")
+        }),
+        // A DUPLICATE later `user.signingkey=B` appended after the canonical
+        // first value → git config is last-value-wins, so the probe would
+        // resolve B. classify() rejects any duplicate canonical key.
+        ("duplicate user.signingkey", |m| {
+            format!("{m}\nuser.signingkey={}", "b".repeat(64))
+        }),
+        // An appended `include.path` → an unknown key that could pull in another
+        // key file whose later `user.signingkey` wins. classify() rejects any
+        // unknown key.
+        ("appended include.path", |m| {
+            format!("{m}\ninclude.path=/tmp/evil.inc")
         }),
     ];
 

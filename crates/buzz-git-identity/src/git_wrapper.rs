@@ -103,44 +103,94 @@ impl Authority {
     /// it is testable without `PATH`/filesystem.
     ///
     /// A managed install is written solely by [`crate::identity_signing_entries`]
-    /// (agent mode); `user` mode writes no manifest. So a valid manifest MUST
-    /// carry the full signing config with its canonical values AND a
-    /// `user.signingkey` equal to the pubkey encoded in `user.email`. Any weaker
-    /// state is tampering: dropping/falsifying `commit.gpgSign` would leave the
-    /// signature gate off, and swapping `user.signingkey` to another key would
-    /// make the push probe accept a valid signature by the *wrong* key while the
-    /// commit still appears authored as the agent. Both are rejected here so
-    /// every surviving `Authority` enforces a signature by exactly the agent key.
+    /// (agent mode); `user` mode writes no manifest. So a valid manifest carries
+    /// EXACTLY the eight canonical keys that function writes, each once, with the
+    /// fixed values ([`crate::FIXED_SIGNING_ENTRIES`]) and a `user.signingkey`
+    /// equal to the pubkey encoded in `user.email`. Any deviation is tampering
+    /// and fails closed:
+    ///
+    /// - Dropping/falsifying `commit.gpgSign` would leave the signature gate off.
+    /// - Swapping `user.signingkey` to another key would make the push probe
+    ///   accept a valid signature by the *wrong* key while the commit still
+    ///   appears authored as the agent.
+    /// - Because git config is last-value-wins and the accepted entries are
+    ///   injected verbatim as `-c` into every commit and the signature probe, a
+    ///   *duplicate* later `user.signingkey`, or any *unknown* key (e.g. an
+    ///   `include.path` that pulls in another key file), could redirect the key
+    ///   the probe trusts. Rejecting duplicate and unknown keys — and rebuilding
+    ///   the authority's entries solely from the validated canonical fields, so
+    ///   nothing unvalidated crosses into git — closes that class by
+    ///   construction.
     fn classify(entries: Vec<(String, String)>) -> AuthorityState {
-        let get = |name: &str| {
-            entries
+        // Collect each canonical key's single value, rejecting duplicates and
+        // unknown keys. `CANONICAL_KEYS` mirrors `identity_signing_entries`.
+        const CANONICAL_KEYS: &[&str] = &[
+            "user.name",
+            "user.email",
+            "gpg.format",
+            "gpg.x509.program",
+            "commit.gpgSign",
+            "tag.gpgSign",
+            "user.signingkey",
+            "nostr.keyfile",
+        ];
+        let mut seen: Vec<Option<String>> = vec![None; CANONICAL_KEYS.len()];
+        for (key, value) in entries {
+            let Some(idx) = CANONICAL_KEYS
                 .iter()
-                .find(|(k, _)| k.eq_ignore_ascii_case(name))
-                .map(|(_, v)| v.as_str())
+                .position(|k| key.eq_ignore_ascii_case(k))
+            else {
+                return AuthorityState::Tampered; // unknown key
+            };
+            if seen[idx].replace(value).is_some() {
+                return AuthorityState::Tampered; // duplicate key
+            }
+        }
+        let get = |name: &str| {
+            let idx = CANONICAL_KEYS.iter().position(|k| *k == name).unwrap();
+            seen[idx].as_deref()
         };
 
-        let Some(email) = get("user.email").map(str::to_owned) else {
-            return AuthorityState::Tampered; // no usable identity
+        // Author identity must be present and non-empty.
+        let Some(email) = get("user.email")
+            .filter(|v| !v.is_empty())
+            .map(str::to_owned)
+        else {
+            return AuthorityState::Tampered;
         };
-        // The fixed signing entries, with the canonical values
-        // `signing_entries` writes. `gpg.x509.program` pins the verifier the
-        // push probe invokes, so a tampered program cannot redirect it.
-        let contract_ok = get("gpg.format").is_some_and(|v| v.eq_ignore_ascii_case("x509"))
-            && get("gpg.x509.program") == Some("git-sign-nostr")
-            && get("commit.gpgSign").is_some_and(|v| v.eq_ignore_ascii_case("true"))
-            && get("nostr.keyfile").is_some_and(|v| !v.is_empty());
+        if get("user.name").is_none_or(str::is_empty) {
+            return AuthorityState::Tampered;
+        }
+        // The fixed signing entries must carry their canonical values verbatim.
+        // `gpg.x509.program` pins the verifier the push probe invokes, so a
+        // tampered program cannot redirect it.
+        let fixed_ok = crate::FIXED_SIGNING_ENTRIES
+            .iter()
+            .all(|&(k, expected)| get(k).is_some_and(|v| v.eq_ignore_ascii_case(expected)));
+        if !fixed_ok || get("nostr.keyfile").is_none_or(str::is_empty) {
+            return AuthorityState::Tampered;
+        }
         // `user.signingkey` must be the pubkey the author email encodes
         // (`<pubkey_hex>@<host>`), so the key the probe trusts is the same key
         // the commit is attributed to.
         let email_pubkey = email.split('@').next().unwrap_or("");
-        let key_matches = !email_pubkey.is_empty()
-            && get("user.signingkey").is_some_and(|k| k.eq_ignore_ascii_case(email_pubkey));
-
-        if contract_ok && key_matches {
-            AuthorityState::Managed(Self { entries, email })
-        } else {
-            AuthorityState::Tampered
+        if email_pubkey.is_empty()
+            || get("user.signingkey").is_none_or(|k| !k.eq_ignore_ascii_case(email_pubkey))
+        {
+            return AuthorityState::Tampered;
         }
+
+        // Rebuild the entries from the validated canonical fields in the order
+        // `identity_signing_entries` writes them — nothing unvalidated (a
+        // duplicate, an unknown redirect key) crosses into the `-c` injection.
+        let canonical: Vec<(String, String)> = CANONICAL_KEYS
+            .iter()
+            .map(|k| ((*k).to_owned(), get(k).unwrap_or_default().to_owned()))
+            .collect();
+        AuthorityState::Managed(Self {
+            entries: canonical,
+            email,
+        })
     }
 }
 
@@ -2294,6 +2344,32 @@ mod tests {
             .1 = "/bin/true".into();
         assert!(matches!(
             Authority::classify(wrong_program),
+            AuthorityState::Tampered
+        ));
+
+        // A DUPLICATE later `user.signingkey` — git config is last-value-wins,
+        // so a first canonical value cannot launder an appended override.
+        let mut dup_key = complete();
+        dup_key.push(("user.signingkey".into(), "b".repeat(64)));
+        assert!(matches!(
+            Authority::classify(dup_key),
+            AuthorityState::Tampered
+        ));
+
+        // Any UNKNOWN key (e.g. an `include.path` pulling in another key file)
+        // is rejected — accepted entries are injected verbatim as `-c`.
+        let mut extra_key = complete();
+        extra_key.push(("include.path".into(), "/tmp/evil.inc".into()));
+        assert!(matches!(
+            Authority::classify(extra_key),
+            AuthorityState::Tampered
+        ));
+
+        // A missing canonical key (here `tag.gpgSign`) is incomplete → tampered.
+        let mut missing_tag = complete();
+        missing_tag.retain(|(k, _)| k != "tag.gpgSign");
+        assert!(matches!(
+            Authority::classify(missing_tag),
             AuthorityState::Tampered
         ));
     }
