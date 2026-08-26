@@ -40,6 +40,63 @@ test("Bestie sidebar shortcut always opens its direct message", async ({
   await expect(page.getByTestId("chat-title")).toHaveText("Bestie");
 });
 
+test("Bestie header avatar opens an inline conversation and sends messages", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1000, height: 760 });
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+  await expect(page.getByTestId("chat-title")).toHaveText("general");
+
+  const trigger = page.getByTestId("open-bestie-panel");
+  await expect(trigger).toBeVisible();
+  await expect(trigger).toHaveAccessibleName("Open Bestie chat");
+  await trigger.click();
+
+  const popover = page.getByTestId("bestie-chat-popover");
+  await expect(popover).toBeVisible();
+  await expect(popover).toContainText("Bestie");
+  const composer = popover.getByTestId("message-composer");
+  await expect(composer).toBeVisible();
+  await expect(composer.getByRole("button", { name: "Send" })).toBeDisabled();
+  const editor = composer.locator('[contenteditable="true"]');
+  await expect(editor).toBeEditable();
+  for (let index = 0; index < 7; index += 1) {
+    const content = `History note ${index + 1}: This is a longer Bestie conversation entry for the scrollable floating panel.`;
+    await editor.fill(content);
+    await composer.getByRole("button", { name: "Send" }).click();
+    await expect(popover.getByTestId("bestie-chat-transcript")).toContainText(
+      content,
+    );
+  }
+  const scroll = popover.getByTestId("bestie-chat-scroll");
+  await expect
+    .poll(() =>
+      scroll.evaluate((element) => element.scrollHeight > element.clientHeight),
+    )
+    .toBe(true);
+  await scroll.evaluate((element) => {
+    element.scrollTop = 0;
+  });
+  await expect
+    .poll(() => scroll.evaluate((element) => element.scrollTop))
+    .toBe(0);
+  if (process.env.BUZZ_BESTIE_CHAT_SCREENSHOT) {
+    await page.screenshot({
+      animations: "disabled",
+      path: process.env.BUZZ_BESTIE_CHAT_SCREENSHOT,
+    });
+  }
+  await editor.fill("Can you help me prioritize this?");
+  await expect(composer.getByRole("button", { name: "Send" })).toBeEnabled();
+  await composer.getByRole("button", { name: "Send" }).click();
+
+  await expect(popover.getByTestId("bestie-chat-transcript")).toContainText(
+    "Can you help me prioritize this?",
+  );
+  await expect(page.getByTestId("chat-title")).toHaveText("general");
+});
+
 test("message action sends a message link and optional note to Bestie", async ({
   page,
 }) => {
