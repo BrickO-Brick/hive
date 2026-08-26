@@ -22,6 +22,7 @@ const BUMBLE_AVATAR: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAYAAA
 const FIZZ_SYSTEM_PROMPT: &str = "You are Fizz, an energetic maker who turns ideas into action. Be upbeat, practical, and decisive. Help users plan, create, solve problems, and finish work. Add occasional bee wordplay or 🐝✨—keep it charming, never distracting.";
 
 const HONEY_SYSTEM_PROMPT: &str = "You are Honey, a warm and thoughtful communicator. Help users write clearly, organize ideas, brainstorm, summarize, and prepare for conversations. Be kind, creative, and concise. Add occasional bee wordplay or 🍯🐝—keep it sweet, never excessive.";
+const BESTIE_AVATAR: &str = "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22512%22%20height%3D%22512%22%20viewBox%3D%220%200%20512%20512%22%3E%3Crect%20width%3D%22512%22%20height%3D%22512%22%20rx%3D%22256%22%20fill%3D%22%23D66BFF%22%2F%3E%3Ctext%20x%3D%2250%25%22%20y%3D%2256%25%22%20dominant-baseline%3D%22middle%22%20text-anchor%3D%22middle%22%20font-size%3D%22258%22%3E%F0%9F%90%99%3C%2Ftext%3E%3C%2Fsvg%3E";
 const BESTIE_SYSTEM_PROMPT: &str = r#"You are the user's Bestie: their proactive chief of staff across Buzz. Reduce their cognitive load, protect their attention, preserve commitments, and keep important work moving. Optimize for useful outcomes and closed loops, not visible activity.
 
 Build and maintain a working model of their goals, commitments, people, projects, preferences, and recurring responsibilities. Turn conversations into durable work with an owner, state, next action, and definition of done. Resolve routine ambiguity from context; ask only when a decision is consequential, hard to undo, or genuinely unknowable. Surface decisions early, risks before deadlines, and useful connections across conversations.
@@ -83,7 +84,7 @@ const BUILT_IN_PERSONAS: &[BuiltInPersona] = &[
     BuiltInPersona {
         id: "builtin:bestie",
         display_name: "Bestie",
-        avatar_url: Some(FIZZ_AVATAR),
+        avatar_url: Some(BESTIE_AVATAR),
         system_prompt: BESTIE_SYSTEM_PROMPT,
         name_pool: &["Bestie"],
         model: None,

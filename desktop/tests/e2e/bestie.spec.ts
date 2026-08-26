@@ -5,7 +5,7 @@ import { installMockBridge } from "../helpers/bridge";
 const BESTIE_PUBKEY =
   "be571e0000000000000000000000000000000000000000000000000000000000";
 const BESTIE_AVATAR =
-  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='18' fill='%23252b33'/%3E%3Ccircle cx='22' cy='27' r='8' fill='%23ffd54a'/%3E%3Ccircle cx='42' cy='27' r='8' fill='%23ffd54a'/%3E%3Cpath d='M18 42c7 7 21 7 28 0' fill='none' stroke='%23ffd54a' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E";
+  "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22512%22%20height%3D%22512%22%20viewBox%3D%220%200%20512%20512%22%3E%3Crect%20width%3D%22512%22%20height%3D%22512%22%20rx%3D%22256%22%20fill%3D%22%23D66BFF%22%2F%3E%3Ctext%20x%3D%2250%25%22%20y%3D%2256%25%22%20dominant-baseline%3D%22middle%22%20text-anchor%3D%22middle%22%20font-size%3D%22258%22%3E%F0%9F%90%99%3C%2Ftext%3E%3C%2Fsvg%3E";
 
 test.beforeEach(async ({ page }) => {
   await installMockBridge(page, {
