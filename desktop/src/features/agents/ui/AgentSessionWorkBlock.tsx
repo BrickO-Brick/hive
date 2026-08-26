@@ -552,9 +552,8 @@ function WorkBlockEntryBody(props: WorkBlockEntryBodyProps) {
  * chosen to reveal.
  *
  * A note deliberately does NOT go through the message presenter. That presenter
- * gives every conversation-variant assistant message an avatar + name identity
- * row, which is right for the turn's answer and wrong here: a fully attributed
- * agent turn nested inside a muted rail step reads as a second reply rather
+ * renders assistant answers as standalone prose. Sending a note through that
+ * presenter would still make a muted rail step read as a second reply rather
  * than as progress. berd draws the same distinction — its `progress` entry is a
  * plain rail row, not a message bubble. The focus code-block recipe is kept by
  * providing the same `CodeBlockVariantContext` value the presenter would.

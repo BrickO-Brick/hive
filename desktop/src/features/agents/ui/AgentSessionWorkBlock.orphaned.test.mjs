@@ -247,10 +247,9 @@ test("thinking renders as a rail row with its own glyph, not a nested disclosure
 /**
  * An interim note is progress, not a second reply.
  *
- * #6720 gives every conversation-variant assistant message a 20px avatar + name
- * identity row, which is right for the turn's answer. A rail note is the same
- * item type, so routing it through that presenter would render a fully
- * attributed agent turn nested inside a muted step row — the reader would see
+ * Conversation mode renders the turn's answer as standalone prose. A rail note
+ * is the same item type, so routing it through that presenter would render an
+ * authored agent turn nested inside a muted step row—the reader would see
  * the agent apparently reply twice, once inside the work it was doing. berd
  * draws the same line: its `progress` entry is a plain rail row.
  *
