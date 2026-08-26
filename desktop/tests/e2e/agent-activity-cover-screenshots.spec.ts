@@ -465,6 +465,18 @@ test.describe("agent activity cover drawer screenshots", () => {
       page.getByTestId("transcript-user-message").first(),
     ).toBeVisible({ timeout: 10_000 });
 
+    // The reading view is pinned by presentation rather than inferred from panel
+    // width: the drawer is the reading surface, so its transcript renders the
+    // conversation variant. Asserted here rather than in
+    // `agent-activity-cover.spec.ts` because the marker only exists once the
+    // transcript has content, and this is the spec that seeds a turn. Asserted
+    // on the DOM marker rather than the prop so it proves the value survives the
+    // whole path from the presentation resolver through the panel.
+    await expect(panel.locator("[data-transcript-variant]")).toHaveAttribute(
+      "data-transcript-variant",
+      "conversation",
+    );
+
     await waitForAnimations(page);
     // Full window: the drawer against the sliver and the scrimmed channel,
     // which is the part of this presentation a panel-only shot cannot show.
