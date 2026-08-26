@@ -1,6 +1,34 @@
-import { formatTimelineMessages } from "@/features/messages/lib/formatTimelineMessages";
+import {
+  formatTimelineMessages,
+  isTimelineContentEvent,
+} from "@/features/messages/lib/formatTimelineMessages";
 import { buildThreadPanelData } from "@/features/messages/lib/threadPanel";
 import type { RelayEvent } from "@/shared/api/types";
+
+/**
+ * Aux events (edits/deletions/reactions) already loaded in the channel window
+ * that reference `headId` via an `#e` tag. The thread head is the single
+ * content event found by id, but its overlay events live alongside it in the
+ * channel window — `formatTimelineMessages` only applies an edit/deletion when
+ * the aux event sits in the SAME array as its target. Carrying them here keeps
+ * the thread head byte-identical to the main timeline the instant the thread
+ * opens, instead of rendering the un-edited original until the async
+ * thread-aux backfill (`withThreadAux`) lands — the stale-edit-in-thread bug.
+ *
+ * Restricted to non-content kinds so reply content events (which also `#e` the
+ * head as their parent) never leak in here — replies come from `replyEvents`.
+ */
+function headAuxEventsFromChannelWindow(
+  channelEvents: RelayEvent[],
+  headId: string,
+): RelayEvent[] {
+  return channelEvents.filter(
+    (event) =>
+      event.id !== headId &&
+      !isTimelineContentEvent(event) &&
+      event.tags.some((tag) => tag[0] === "e" && tag[1] === headId),
+  );
+}
 
 export function buildIndependentThreadPanel(
   channelEvents: RelayEvent[],
@@ -17,7 +45,15 @@ export function buildIndependentThreadPanel(
     };
   }
   const head = channelEvents.find((event) => event.id === rootId);
-  const events = head ? [head, ...replyEvents] : replyEvents;
+  // Dedup the channel-window head aux against `replyEvents`: `withThreadAux`
+  // fetches the same overlays by reference, so both sources can carry an edit.
+  const replyEventIds = new Set(replyEvents.map((event) => event.id));
+  const headAux = head
+    ? headAuxEventsFromChannelWindow(channelEvents, rootId).filter(
+        (event) => !replyEventIds.has(event.id),
+      )
+    : [];
+  const events = head ? [head, ...headAux, ...replyEvents] : replyEvents;
   const messages = formatTimelineMessages(events, ...formatArgs);
   return {
     ...buildThreadPanelData(messages, rootId, replyTargetId, expandedReplyIds),
