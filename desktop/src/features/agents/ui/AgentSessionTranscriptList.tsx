@@ -16,6 +16,7 @@ import { useStableArrayShallow } from "@/shared/hooks/useStableReference";
 import { cn } from "@/shared/lib/cn";
 import { AnimatedCount } from "@/shared/ui/AnimatedCount";
 import { FuzzyLogo } from "@/shared/ui/buzz-logo/FuzzyLogo";
+import { CodeBlockVariantContext } from "@/shared/ui/markdown/CodeBlock";
 import type { TranscriptItem } from "./agentSessionTypes";
 import { TurnLivenessIndicator } from "./TurnLivenessIndicator";
 import {
@@ -229,41 +230,53 @@ export function AgentSessionTranscriptList({
         ref={autoTail ? contentRef : undefined}
         role="log"
       >
-        <AgentSessionTranscriptVariantProvider value={variant}>
-          <AgentSessionTranscriptTurnMetaProvider value={turnMeta}>
-            {displayBlocks.map((block) => {
-              const blockKey = getDisplayBlockKey(block);
-              return (
-                <motion.div
-                  animate={ROW_ENTER_TO}
-                  data-message-id={blockKey}
-                  initial={
-                    animationsDisabled || !hasCompletedInitialRenderRef.current
-                      ? false
-                      : ROW_ENTER_FROM
-                  }
-                  key={blockKey}
-                  layout={layoutAnimationsEnabled ? "position" : false}
-                  transition={ROW_ENTER_SPRING}
-                >
-                  {/* content-visibility stays on a non-animated child: motion
+        {/* The berd code-block recipe is a property of the *surface*, not of a
+            role: a fenced block in a human prompt must get the same chrome as
+            one in an agent reply. Provided at the transcript boundary so every
+            descendant markdown render inherits it. A context provider emits no
+            DOM, so `default`/`compactPreview` markup is unaffected. */}
+        <CodeBlockVariantContext.Provider
+          value={isConversation ? "focusProse" : "default"}
+        >
+          <AgentSessionTranscriptVariantProvider value={variant}>
+            <AgentSessionTranscriptTurnMetaProvider value={turnMeta}>
+              {displayBlocks.map((block) => {
+                const blockKey = getDisplayBlockKey(block);
+                return (
+                  <motion.div
+                    animate={ROW_ENTER_TO}
+                    data-message-id={blockKey}
+                    initial={
+                      animationsDisabled ||
+                      !hasCompletedInitialRenderRef.current
+                        ? false
+                        : ROW_ENTER_FROM
+                    }
+                    key={blockKey}
+                    layout={layoutAnimationsEnabled ? "position" : false}
+                    transition={ROW_ENTER_SPRING}
+                  >
+                    {/* content-visibility stays on a non-animated child: motion
                     measures the outer wrapper for layout animations, which
                     would otherwise force skipped offscreen rows to render. */}
-                  <div className="content-visibility-auto">
-                    <TranscriptDisplayBlockView
-                      agentAvatarUrl={agentAvatarUrl}
-                      agentName={agentName}
-                      agentPubkey={agentPubkey}
-                      block={block}
-                      profiles={profiles}
-                    />
-                  </div>
-                </motion.div>
-              );
-            })}
-            {isTurnLive && !isCompactPreview ? <TurnLivenessIndicator /> : null}
-          </AgentSessionTranscriptTurnMetaProvider>
-        </AgentSessionTranscriptVariantProvider>
+                    <div className="content-visibility-auto">
+                      <TranscriptDisplayBlockView
+                        agentAvatarUrl={agentAvatarUrl}
+                        agentName={agentName}
+                        agentPubkey={agentPubkey}
+                        block={block}
+                        profiles={profiles}
+                      />
+                    </div>
+                  </motion.div>
+                );
+              })}
+              {isTurnLive && !isCompactPreview ? (
+                <TurnLivenessIndicator />
+              ) : null}
+            </AgentSessionTranscriptTurnMetaProvider>
+          </AgentSessionTranscriptVariantProvider>
+        </CodeBlockVariantContext.Provider>
       </div>
     </motion.div>
   );

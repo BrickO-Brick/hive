@@ -1,437 +1,41 @@
 /**
- * Rendering contract for the `conversation` transcript variant (focus mode).
+ * Rendering contract for the `conversation` transcript variant (focus mode):
+ * layout, prompt authorship, thoughts, plans, lifecycle chrome, and the
+ * byte-for-byte guarantee for the other variants.
  *
  * Mounts the shipping AgentSessionTranscriptList so the variant plumbing
  * (variant context + derived turn meta) is exercised end to end rather than
  * asserting against re-implemented render classes.
  *
+ * The identity row and code-block chrome live in
+ * `AgentSessionTranscriptList.conversationChrome.test.mjs`; shared jsdom setup,
+ * ambient-formatting pins, and render helpers live in the harness both import.
+ *
  * The byte-for-byte tests at the bottom are the important ones: `conversation`
- * is purely additive, so the `default` and `compactPreview` markup for the same
+ * is purely additive, so `default` and `compactPreview` markup for the same
  * transcript must be byte-identical to the markup captured before the variant
- * existed. That snapshot lives in
- * AgentSessionTranscriptList.conversation.baseline.json and was produced by
- * mounting `baselineItems()` — a transcript containing every renderable item
- * kind across two sessions — on pre-change main (074561233) in a clean
- * throwaway worktree. Regenerate it only when a deliberate change to the other
- * variants is being made.
+ * existed. See the harness for how that fixture was produced.
  */
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { after, afterEach, before, test } from "node:test";
+import { test } from "node:test";
 
-// The captured markup embeds formatted dates and times, so the fixture is only
-// reproducible if every ambient formatting input is pinned. Two of them bite:
-//
-//  - **Zone.** `formatTranscriptTimestampTitle` formats in the ambient zone
-//    ("… at 7:00:01 PM"), so a capture at UTC-7 fails against CI's UTC.
-//  - **Locale.** The session-boundary divider uses a bare `toLocaleString()`
-//    (`AgentSessionTranscriptChrome.tsx`), which is locale-sensitive as well as
-//    zone-sensitive: "6/14/2026, 7:05:00 PM" becomes "14.6.2026, 19:05:00"
-//    under de-DE. Node derives its default locale from LANG/LC_ALL, so this
-//    varies by machine independently of the zone.
-//
-// `TZ` can be set here because `Date` reads it lazily. The locale CANNOT: node
-// resolves its default locale once at startup, so assigning `process.env.LANG`
-// at runtime has no effect (verified — it silently keeps the startup locale).
-// Pinning it therefore means overriding the two formatting surfaces the render
-// path can reach: `Intl.DateTimeFormat` when constructed with no explicit
-// locale, and `Date.prototype.toLocale*`, which does NOT route through
-// `Intl.DateTimeFormat` and so needs its own patch.
-//
-// All of this must happen before the transcript modules are imported: their
-// `Intl.DateTimeFormat` instances are module-level constants that resolve zone
-// and locale once, at construction.
-process.env.TZ = "UTC";
-
-const FIXTURE_LOCALE = "en-US";
-const OriginalDateTimeFormat = Intl.DateTimeFormat;
-// A plain function, not an arrow: the render path calls
-// `new Intl.DateTimeFormat(...)`, and an arrow function is not a constructor.
-// Returning a genuine instance keeps `new`, plain calls, and `instanceof` all
-// working.
-function LocalePinnedDateTimeFormat(locales, options) {
-  return new OriginalDateTimeFormat(locales ?? FIXTURE_LOCALE, options);
-}
-LocalePinnedDateTimeFormat.prototype = OriginalDateTimeFormat.prototype;
-LocalePinnedDateTimeFormat.supportedLocalesOf =
-  OriginalDateTimeFormat.supportedLocalesOf.bind(OriginalDateTimeFormat);
-Intl.DateTimeFormat = LocalePinnedDateTimeFormat;
-for (const method of [
-  "toLocaleString",
-  "toLocaleDateString",
-  "toLocaleTimeString",
-]) {
-  const original = Date.prototype[method];
-  Date.prototype[method] = function (locales, options) {
-    return original.call(this, locales ?? FIXTURE_LOCALE, options);
-  };
-}
-
-import { JSDOM } from "jsdom";
-
-const BASELINE_MARKUP = JSON.parse(
-  readFileSync(
-    new URL(
-      "./AgentSessionTranscriptList.conversation.baseline.json",
-      import.meta.url,
-    ),
-    "utf8",
-  ),
-);
-
-const dom = new JSDOM("<!doctype html><html><body></body></html>", {
-  url: "http://localhost",
-});
-
-class NoopObserver {
-  disconnect() {}
-  observe() {}
-  unobserve() {}
-}
-
-Object.assign(globalThis, {
-  Element: dom.window.Element,
-  Event: dom.window.Event,
-  HTMLElement: dom.window.HTMLElement,
-  IS_REACT_ACT_ENVIRONMENT: true,
-  IntersectionObserver: NoopObserver,
-  MutationObserver: dom.window.MutationObserver,
-  Node: dom.window.Node,
-  ResizeObserver: NoopObserver,
-  document: dom.window.document,
-  getComputedStyle: (...args) => dom.window.getComputedStyle(...args),
-  localStorage: dom.window.localStorage,
-  self: dom.window,
-  window: dom.window,
-});
-Object.defineProperty(globalThis, "navigator", {
-  configurable: true,
-  value: dom.window.navigator,
-  writable: true,
-});
-dom.window.matchMedia = () => ({
-  matches: false,
-  addEventListener() {},
-  removeEventListener() {},
-});
-dom.window.requestAnimationFrame = (callback) => setTimeout(callback, 0);
-dom.window.cancelAnimationFrame = (id) => clearTimeout(id);
-globalThis.requestAnimationFrame = dom.window.requestAnimationFrame;
-globalThis.cancelAnimationFrame = dom.window.cancelAnimationFrame;
-
-let act;
-let cleanup;
-let render;
-let createElement;
-let useState;
-let createMemoryHistory;
-let createRootRoute;
-let createRouter;
-let RouterProvider;
-let AgentSessionTranscriptList;
-let resetActiveAgentTurnsStore;
-let syncAgentTurnsFromEvents;
-
-const AGENT = {
-  agentAvatarUrl: null,
-  agentName: "Test Agent",
-  agentPubkey: "f".repeat(64),
-};
-const AUTHOR = "a".repeat(64);
-const AUTHOR_TRUNCATED = `${AUTHOR.slice(0, 8)}…${AUTHOR.slice(-4)}`;
-/**
- * What the transcript builder actually puts in a prompt item's `title`: a
- * description of the trigger that started the turn, not an identity. Real values
- * are "Prompt", "Buzz event", and title-cased event kinds like "@Mention"
- * (`agentSessionTranscriptHelpers.ts` `parsePromptText`). The author row must
- * never display this as a name.
- */
-const TRIGGER_TITLE = "@Mention";
-const AUTHOR_PROFILES = {
-  [AUTHOR]: {
-    displayName: "Ada Lovelace",
-    avatarUrl: null,
-    nip05Handle: null,
-    ownerPubkey: null,
-  },
-};
-
-function items() {
-  const shared = { channelId: "chan-1", sessionId: "sess-1", turnId: "turn-1" };
-  return [
-    {
-      ...shared,
-      id: "msg:user",
-      type: "message",
-      renderClass: "message",
-      role: "user",
-      title: TRIGGER_TITLE,
-      text: "please summarize the plan",
-      timestamp: "2026-06-14T19:00:00.000Z",
-      messageId: "event-1",
-      authorPubkey: AUTHOR,
-    },
-    {
-      ...shared,
-      id: "thought:1",
-      type: "thought",
-      renderClass: "thought",
-      title: "Thinking",
-      text: "weighing the options",
-      timestamp: "2026-06-14T19:00:02.000Z",
-    },
-    {
-      ...shared,
-      id: "plan:1",
-      type: "plan",
-      renderClass: "plan",
-      title: "Plan",
-      text: "- [x] read the transcript\n- [ ] write the summary (in progress)\n- [ ] ship it",
-      timestamp: "2026-06-14T19:00:07.000Z",
-    },
-    {
-      ...shared,
-      id: "msg:assistant",
-      type: "message",
-      renderClass: "message",
-      role: "assistant",
-      title: "Test Agent",
-      text: "Here is the summary with `code`.",
-      timestamp: "2026-06-14T19:00:09.000Z",
-    },
-  ];
-}
-
-/**
- * Everything the legacy variants can render, in one transcript.
- *
- * The byte-for-byte contract covers `default`/`compactPreview` for EVERY item
- * kind, so the baseline input has to contain every kind rather than the happy
- * path: prompt (with prompt context and setup lifecycle so the ingress chrome
- * renders), assistant message, thought, plan, a tool item, ordinary lifecycle
- * status, error, permission — across two sessions so a session-boundary divider
- * is forced too. Where `compactPreview` deliberately suppresses a kind, that
- * absence is captured in the fixture and is therefore also protected.
- *
- * Single tool item on purpose: a run of three would collapse into a grouped
- * summary and the leaf tool row would never be captured.
- */
-function baselineItems() {
-  const first = { channelId: "chan-1", sessionId: "sess-1", turnId: "turn-1" };
-  const second = { channelId: "chan-1", sessionId: "sess-2", turnId: "turn-2" };
-  return [
-    {
-      ...first,
-      id: "life:setup",
-      type: "lifecycle",
-      renderClass: "status",
-      title: "Turn started",
-      text: "1 trigger",
-      timestamp: "2026-06-14T19:00:00.000Z",
-      acpSource: "turn_started",
-    },
-    {
-      ...first,
-      id: "meta:context",
-      type: "metadata",
-      renderClass: "raw-rail",
-      title: "Prompt context",
-      sections: [{ title: "Channel", body: "engineering" }],
-      timestamp: "2026-06-14T19:00:00.500Z",
-      acpSource: "session/prompt:context",
-    },
-    {
-      ...first,
-      id: "msg:user",
-      type: "message",
-      renderClass: "message",
-      role: "user",
-      title: "Ada",
-      text: "please summarize the plan",
-      timestamp: "2026-06-14T19:00:01.000Z",
-      messageId: "event-1",
-      authorPubkey: AUTHOR,
-      acpSource: "session/prompt:user",
-    },
-    {
-      ...first,
-      id: "thought:1",
-      type: "thought",
-      renderClass: "thought",
-      title: "Thinking",
-      text: "weighing the options",
-      timestamp: "2026-06-14T19:00:02.000Z",
-    },
-    {
-      ...first,
-      id: "plan:1",
-      type: "plan",
-      renderClass: "plan",
-      title: "Plan",
-      text: "- [x] read the transcript\n- [ ] write the summary (in progress)\n- [ ] ship it",
-      timestamp: "2026-06-14T19:00:03.000Z",
-    },
-    {
-      ...first,
-      id: "tool:1",
-      type: "tool",
-      renderClass: "shell",
-      descriptor: {
-        renderClass: "shell",
-        label: "Ran a command",
-        preview: "cargo test",
-        tone: "neutral",
-        source: "shell",
-      },
-      title: "Ran a command",
-      toolName: "shell",
-      buzzToolName: null,
-      status: "completed",
-      args: { command: "cargo test" },
-      result: "ok",
-      isError: false,
-      timestamp: "2026-06-14T19:00:04.000Z",
-      startedAt: "2026-06-14T19:00:04.000Z",
-      completedAt: "2026-06-14T19:00:05.000Z",
-    },
-    {
-      ...first,
-      id: "life:permission",
-      type: "lifecycle",
-      renderClass: "permission",
-      title: "Permission requested",
-      text: "write src/main.rs\nOptions: Allow, Deny",
-      outcome: "Approved (once)",
-      timestamp: "2026-06-14T19:00:06.000Z",
-    },
-    {
-      ...first,
-      id: "life:status",
-      type: "lifecycle",
-      renderClass: "status",
-      title: "Context compacted",
-      text: "",
-      timestamp: "2026-06-14T19:00:07.000Z",
-    },
-    {
-      ...first,
-      id: "msg:assistant",
-      type: "message",
-      renderClass: "message",
-      role: "assistant",
-      title: "Test Agent",
-      text: "Here is the summary with `code`.",
-      timestamp: "2026-06-14T19:00:08.000Z",
-    },
-    {
-      ...first,
-      id: "life:error",
-      type: "lifecycle",
-      renderClass: "error",
-      title: "Turn failed",
-      text: "the harness exited",
-      timestamp: "2026-06-14T19:00:09.000Z",
-    },
-    // Second session run: forces a session-boundary divider between the runs.
-    {
-      ...second,
-      id: "msg:user2",
-      type: "message",
-      renderClass: "message",
-      role: "user",
-      title: "Ada",
-      text: "next task",
-      timestamp: "2026-06-14T19:05:00.000Z",
-      messageId: "event-2",
-      authorPubkey: AUTHOR,
-      acpSource: "session/prompt:user",
-    },
-    {
-      ...second,
-      id: "msg:assistant2",
-      type: "message",
-      renderClass: "message",
-      role: "assistant",
-      title: "Test Agent",
-      text: "on it",
-      timestamp: "2026-06-14T19:05:01.000Z",
-    },
-  ];
-}
-
-async function renderTranscript(variant, overrides = {}) {
-  const rootRoute = createRootRoute({
-    component: () =>
-      createElement(AgentSessionTranscriptList, {
-        ...AGENT,
-        emptyDescription: "nothing yet",
-        items: items(),
-        variant,
-        ...overrides,
-      }),
-  });
-  const router = createRouter({
-    history: createMemoryHistory({ initialEntries: ["/"] }),
-    routeTree: rootRoute,
-  });
-  await router.load();
-  return render(createElement(RouterProvider, { router }));
-}
-
-/**
- * Same mount, but the caller can swap the list props afterwards. Needed for the
- * contracts that are only visible across a rerender: a streaming thought
- * folding once the turn moves on, and a plan mutating in place.
- */
-async function renderRerenderableTranscript(variant, initialOverrides = {}) {
-  let applyProps;
-  const Harness = () => {
-    const [overrides, setOverrides] = useState(initialOverrides);
-    applyProps = setOverrides;
-    return createElement(AgentSessionTranscriptList, {
-      ...AGENT,
-      emptyDescription: "nothing yet",
-      items: items(),
-      variant,
-      ...overrides,
-    });
-  };
-  const rootRoute = createRootRoute({ component: Harness });
-  const router = createRouter({
-    history: createMemoryHistory({ initialEntries: ["/"] }),
-    routeTree: rootRoute,
-  });
-  await router.load();
-  const utils = render(createElement(RouterProvider, { router }));
-  return {
-    ...utils,
-    async setOverrides(next) {
-      await act(async () => {
-        applyProps(next);
-      });
-    },
-  };
-}
-
-before(async () => {
-  ({ act, cleanup, render } = await import("@testing-library/react"));
-  ({ createElement, useState } = await import("react"));
-  ({ createMemoryHistory, createRootRoute, createRouter, RouterProvider } =
-    await import("@tanstack/react-router"));
-  ({ AgentSessionTranscriptList } = await import(
-    "./AgentSessionTranscriptList.tsx"
-  ));
-  ({ resetActiveAgentTurnsStore, syncAgentTurnsFromEvents } = await import(
-    "../activeAgentTurnsStore.ts"
-  ));
-});
-
-afterEach(() => {
-  cleanup?.();
-  resetActiveAgentTurnsStore?.();
-});
-after(() => dom.window.close());
+import {
+  act,
+  AGENT,
+  AUTHOR,
+  AUTHOR_PROFILES,
+  AUTHOR_TRUNCATED,
+  BASELINE_MARKUP,
+  baselineItems,
+  cleanup,
+  domWindow,
+  FIXTURE_LOCALE,
+  items,
+  renderRerenderableTranscript,
+  renderTranscript,
+  syncAgentTurnsFromEvents,
+} from "./AgentSessionTranscriptList.conversationHarness.mjs";
 
 test("conversation marks the transcript container and centers a reading column", async () => {
   const { container } = await renderTranscript("conversation");
@@ -456,10 +60,38 @@ test("conversation renders the prompt as a filled right-aligned bubble with an a
     '[data-testid="transcript-user-message"]',
   );
   assert.match(row.className, /justify-end/);
-  const bubble = row.querySelector(".rounded-2xl");
+  // berd's user-turn recipe: soft tint, no border, `px-4 py-2`, and a 12px
+  // radius (berd's `rounded-sm` on its own scale = Buzz's `rounded-xl`).
+  const bubble = row.querySelector(".rounded-xl");
+  assert.ok(bubble, "the prompt bubble should take berd's 12px radius");
   assert.match(bubble.className, /bg-muted\/60/);
+  assert.match(bubble.className, /px-4/);
+  assert.match(bubble.className, /py-2(?!\.)/);
+  assert.match(
+    bubble.className,
+    /border-0/,
+    "berd never draws a border on the user turn",
+  );
+  assert.doesNotMatch(
+    bubble.className,
+    /rounded-2xl/,
+    "the old 16px pill radius should be gone",
+  );
   // Focus mode shows the whole prompt rather than clamping it.
   assert.doesNotMatch(bubble.className, /max-h-36/);
+});
+
+test("conversation caps the prompt bubble at a fixed measure, not a percentage", async () => {
+  // berd caps the user turn with `--chat-user-message-max-width: 640px`. A
+  // percentage cap re-wraps the prompt every time the cover view is resized;
+  // a fixed measure holds one stable line length, which is the point of the
+  // recipe. Guards against a silent revert to `max-w-[85%]`.
+  const { container } = await renderTranscript("conversation");
+  const column = container.querySelector(
+    '[data-testid="transcript-user-message-author"]',
+  ).parentElement;
+  assert.match(column.className, /max-w-prompt-bubble/);
+  assert.doesNotMatch(column.className, /max-w-\[\d+%\]/);
 });
 
 test("conversation never shows the trigger title as the prompt author when the sender is unresolved", async () => {
@@ -600,7 +232,7 @@ test("conversation folds the thought when the turn moves on, even after the brow
   // event follows rather than causes that state.
   await act(async () => {
     disclosure.open = true;
-    disclosure.dispatchEvent(new dom.window.Event("toggle"));
+    disclosure.dispatchEvent(new domWindow.Event("toggle"));
   });
   assert.equal(
     disclosure.open,
@@ -657,7 +289,7 @@ test("conversation keeps a reader-opened thought open after the turn moves on", 
 
   await act(async () => {
     disclosure.open = true;
-    disclosure.dispatchEvent(new dom.window.Event("toggle"));
+    disclosure.dispatchEvent(new domWindow.Event("toggle"));
   });
 
   await setOverrides({ ...settledItems, items: items() });
