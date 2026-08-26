@@ -210,7 +210,9 @@ value is canonical whether it was constructed or parsed:
   sender may use uppercase, the unhyphenated 32-character form, braces, or a
   `urn:uuid:` prefix and will be read as having sent the canonical form.
 - A **public key**, **event id**, or **d-tag** is 64 hex characters. Canonical
-  form is lowercase.
+  form is lowercase. A public key must additionally be a valid secp256k1
+  x-only point — 64 hex characters that name no point on the curve are
+  malformed, not merely useless.
 
 Without this, a caller's spelling of a channel and `H`'s canonical echo of the
 same channel would fail I5's correlation check for a correct answer. The
