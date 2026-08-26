@@ -226,6 +226,7 @@ final class BuzzPushNotificationResponseTests: XCTestCase {
       ["Reply", "Remind Me in 1 Hour", "Remind Me Tomorrow", "Remind Me Next Week"]
     )
     XCTAssertTrue(category.actions.allSatisfy { $0.icon != nil })
+    XCTAssertEqual(BuzzPushReminderPreset.allCases.map(\.systemImageName), ["clock", "clock", "clock"])
   }
 
   func testBackgroundCompletionReturnsToMainThreadExactlyOnce() {

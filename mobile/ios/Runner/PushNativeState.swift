@@ -137,11 +137,7 @@ enum BuzzPushReminderPreset: CaseIterable, Equatable {
   }
 
   var systemImageName: String {
-    switch self {
-    case .oneHour: "clock"
-    case .tomorrowAt9AM: "sun.max"
-    case .nextMondayAt9AM: "calendar"
-    }
+    "clock"
   }
 
   func fireDate(now: Date, calendar: Calendar) -> Date? {
