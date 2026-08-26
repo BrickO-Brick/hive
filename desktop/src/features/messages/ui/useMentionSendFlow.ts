@@ -116,9 +116,8 @@ export function useMentionSendFlow({
       agents.map((agent) => [normalizePubkey(agent.pubkey), agent]),
     );
   }, [managedAgentsQuery.refetch, queryClient]);
-  useMentionWakePreflight({
+  const { prepareMentionWake } = useMentionWakePreflight({
     channelId,
-    content: contentRef.current,
     contentRef,
     enabled:
       mentionWakeEnabled &&
@@ -984,6 +983,7 @@ export function useMentionSendFlow({
       onInvite: handleInviteNonMembers,
       open: pendingNonMemberSend !== null,
     },
+    prepareMentionWake,
     sendMessageWithMentionFlow,
   };
 }

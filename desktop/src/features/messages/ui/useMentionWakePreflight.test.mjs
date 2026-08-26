@@ -72,6 +72,37 @@ test("wake plan rejects non-member managed agents", () => {
   );
 });
 
+test("editor updates arm a mention-first draft without a rerender", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { act, renderHook } = await import("@testing-library/react");
+  let starts = 0;
+  const contentRef = { current: "@Fizz " };
+  const view = renderHook(() =>
+    useMentionWakePreflight({
+      channelId: "general",
+      contentRef,
+      enabled: true,
+      expectedRelayUrl: "wss://relay.example",
+      expectedSignerPubkey: "c".repeat(64),
+      getDraftMentionRefs: () => [fizzRef],
+      getManagedAgentsByPubkey: async () =>
+        new Map([[AGENT, { pubkey: AGENT, status: "stopped" }]]),
+      isManagedAgentPubkey: () => true,
+      memberPubkeys: new Set([AGENT]),
+      startManagedAgent: async () => {
+        starts += 1;
+        return { pubkey: AGENT, status: "running" };
+      },
+    }),
+  );
+
+  contentRef.current = "@Fizz please investigate";
+  act(() => view.result.current.prepareMentionWake(contentRef.current));
+  await act(async () => t.mock.timers.tick(MENTION_WAKE_DELAY_MS));
+
+  assert.equal(starts, 1);
+});
+
 test("unmount prevents a wake after an in-flight lookup resolves", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const { act, renderHook } = await import("@testing-library/react");
@@ -84,7 +115,6 @@ test("unmount prevents a wake after an in-flight lookup resolves", async (t) => 
   const view = renderHook(() =>
     useMentionWakePreflight({
       channelId: "general",
-      content: contentRef.current,
       contentRef,
       enabled: true,
       expectedRelayUrl: "wss://relay.example",

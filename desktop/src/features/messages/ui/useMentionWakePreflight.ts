@@ -68,7 +68,6 @@ export function buildMentionWakePlan({
 
 export function useMentionWakePreflight({
   channelId,
-  content,
   contentRef,
   enabled,
   expectedRelayUrl,
@@ -80,7 +79,6 @@ export function useMentionWakePreflight({
   startManagedAgent,
 }: {
   channelId: string | null;
-  content: string;
   contentRef: React.MutableRefObject<string>;
   enabled: boolean;
   expectedRelayUrl?: string;
@@ -196,10 +194,10 @@ export function useMentionWakePreflight({
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: contextRef keeps callbacks fresh; these inputs are plan invalidation signals.
   React.useEffect(() => {
-    prepareMentionWake(content);
+    prepareMentionWake(contentRef.current);
   }, [
     channelId,
-    content,
+    contentRef,
     enabled,
     expectedRelayUrl,
     expectedSignerPubkey,
@@ -210,4 +208,6 @@ export function useMentionWakePreflight({
   ]);
 
   React.useEffect(() => cancelMentionWake, [cancelMentionWake]);
+
+  return { prepareMentionWake };
 }

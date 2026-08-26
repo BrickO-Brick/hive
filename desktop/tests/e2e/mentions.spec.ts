@@ -2085,13 +2085,16 @@ test("substantive in-channel managed-agent mentions wake before send", async ({
     "start_managed_agent",
   );
   const input = page.getByTestId("message-input");
-  await input.fill("Hey @fizz");
+  await input.fill("@fizz");
 
   const dropdown = autocomplete(page);
   await expect(dropdown.getByText("fizz")).toBeVisible();
   await expect(dropdown.getByText("agent")).toBeVisible();
   await input.press("Enter");
-  await page.keyboard.type(" can you help?");
+  await page.keyboard.type(
+    " Can you investigate this? Please report what you find.",
+    { delay: 75 },
+  );
 
   await expect
     .poll(

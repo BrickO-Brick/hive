@@ -217,6 +217,7 @@ function MessageComposerImpl({
   const syncAddressedAgentsFromTextRef = React.useRef<(text: string) => void>(
     () => {},
   );
+  const prepareMentionWakeRef = React.useRef<(text: string) => void>(() => {});
   disabledRef.current = disabled;
   isSendingRef.current = isSending;
   isUploadingRef.current = media.isUploading;
@@ -274,6 +275,7 @@ function MessageComposerImpl({
     onUpdate: ({ cursor, linkPreviewContent, text }) => {
       trackAuthoredContent(text);
       contentRef.current = text;
+      prepareMentionWakeRef.current(text);
       setComposerContentFromText(text);
       setPreviewContent(linkPreviewContent);
       if (!isSubmitLockedRef.current && !editTargetRef.current) {
@@ -373,6 +375,7 @@ function MessageComposerImpl({
     restoreQueuedAttachments: media.restoreQueuedAttachments,
     setSpoileredAttachmentUrls,
   });
+  prepareMentionWakeRef.current = mentionSendFlow.prepareMentionWake;
   React.useEffect(() => {
     onDeferredEditPendingChange?.(isDeferredEditPending);
     return () => onDeferredEditPendingChange?.(false);
