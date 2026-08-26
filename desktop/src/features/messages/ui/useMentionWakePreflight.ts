@@ -4,7 +4,10 @@ import { getMentionOffsets } from "@/features/messages/lib/hasMention";
 import type { DraftMentionRef } from "@/features/messages/lib/useDrafts";
 import type { ManagedAgent } from "@/shared/api/types";
 import { normalizePubkey } from "@/shared/lib/pubkey";
-import { isManagedAgentRunning } from "./useMentionSendFlow.helpers";
+import {
+  isManagedAgentRunning,
+  isProviderBackedAgent,
+} from "./useMentionSendFlow.helpers";
 
 export const MENTION_WAKE_DELAY_MS = 1_000;
 
@@ -127,7 +130,10 @@ export function useMentionWakePreflight({
     if (
       !context.enabled ||
       !context.expectedRelayUrl ||
-      !context.expectedSignerPubkey
+      !context.expectedSignerPubkey ||
+      // Mentions require a literal "@" (see getMentionOffsets), so drafts
+      // without one can't produce a plan — skip the per-keystroke ref scan.
+      !content.includes("@")
     ) {
       return null;
     }
@@ -175,7 +181,11 @@ export function useMentionWakePreflight({
           await Promise.allSettled(
             beforeWake.pubkeys.flatMap((pubkey) => {
               const agent = managedAgents.get(pubkey);
-              return agent && !isManagedAgentRunning(agent)
+              // A draft mention must never deploy remote compute; only the
+              // send path may start provider-backed agents.
+              return agent &&
+                !isProviderBackedAgent(agent) &&
+                !isManagedAgentRunning(agent)
                 ? [
                     context.startManagedAgent({
                       pubkey,

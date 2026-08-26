@@ -86,7 +86,12 @@ test("editor updates arm a mention-first draft without a rerender", async (t) =>
       expectedSignerPubkey: "c".repeat(64),
       getDraftMentionRefs: () => [fizzRef],
       getManagedAgentsByPubkey: async () =>
-        new Map([[AGENT, { pubkey: AGENT, status: "stopped" }]]),
+        new Map([
+          [
+            AGENT,
+            { pubkey: AGENT, status: "stopped", backend: { type: "local" } },
+          ],
+        ]),
       isManagedAgentPubkey: () => true,
       memberPubkeys: new Set([AGENT]),
       startManagedAgent: async () => {
@@ -101,6 +106,73 @@ test("editor updates arm a mention-first draft without a rerender", async (t) =>
   await act(async () => t.mock.timers.tick(MENTION_WAKE_DELAY_MS));
 
   assert.equal(starts, 1);
+});
+
+test("mention-free drafts skip the mention-ref snapshot entirely", async () => {
+  const { act, renderHook } = await import("@testing-library/react");
+  let snapshots = 0;
+  const contentRef = { current: "" };
+  const view = renderHook(() =>
+    useMentionWakePreflight({
+      channelId: "general",
+      contentRef,
+      enabled: true,
+      expectedRelayUrl: "wss://relay.example",
+      expectedSignerPubkey: "c".repeat(64),
+      getDraftMentionRefs: () => {
+        snapshots += 1;
+        return [];
+      },
+      getManagedAgentsByPubkey: async () => new Map(),
+      isManagedAgentPubkey: () => true,
+      memberPubkeys: new Set([AGENT]),
+      startManagedAgent: async () => ({ pubkey: AGENT, status: "running" }),
+    }),
+  );
+
+  contentRef.current = "no mentions in this draft";
+  act(() => view.result.current.prepareMentionWake(contentRef.current));
+
+  assert.equal(snapshots, 0);
+});
+
+test("provider-backed agents are never woken speculatively", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { act, renderHook } = await import("@testing-library/react");
+  let starts = 0;
+  const contentRef = { current: "@Fizz please investigate" };
+  const view = renderHook(() =>
+    useMentionWakePreflight({
+      channelId: "general",
+      contentRef,
+      enabled: true,
+      expectedRelayUrl: "wss://relay.example",
+      expectedSignerPubkey: "c".repeat(64),
+      getDraftMentionRefs: () => [fizzRef],
+      getManagedAgentsByPubkey: async () =>
+        new Map([
+          [
+            AGENT,
+            {
+              pubkey: AGENT,
+              status: "not_deployed",
+              backend: { type: "provider", id: "blox", config: {} },
+            },
+          ],
+        ]),
+      isManagedAgentPubkey: () => true,
+      memberPubkeys: new Set([AGENT]),
+      startManagedAgent: async () => {
+        starts += 1;
+        return { pubkey: AGENT, status: "deployed" };
+      },
+    }),
+  );
+
+  act(() => view.result.current.prepareMentionWake(contentRef.current));
+  await act(async () => t.mock.timers.tick(MENTION_WAKE_DELAY_MS));
+
+  assert.equal(starts, 0);
 });
 
 test("unmount prevents a wake after an in-flight lookup resolves", async (t) => {
@@ -134,7 +206,12 @@ test("unmount prevents a wake after an in-flight lookup resolves", async (t) => 
   view.unmount();
   await act(async () => {
     resolveManagedAgents(
-      new Map([[AGENT, { pubkey: AGENT, status: "stopped" }]]),
+      new Map([
+        [
+          AGENT,
+          { pubkey: AGENT, status: "stopped", backend: { type: "local" } },
+        ],
+      ]),
     );
     await managedAgents;
   });
