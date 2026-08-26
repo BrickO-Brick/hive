@@ -297,6 +297,7 @@ test("welcome team starter definitions and role identities are stable", () => {
     { name: "Fizz", personaId: "builtin:fizz", role: "lead" },
     { name: "Honey", personaId: "builtin:honey", role: "teammate" },
     { name: "Pollen", personaId: "builtin:bumble", role: "teammate" },
+    { name: "Bestie", personaId: "builtin:bestie", role: "teammate" },
   ]);
 });
 

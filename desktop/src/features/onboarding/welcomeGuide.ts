@@ -45,9 +45,15 @@ export const WELCOME_TEAM_STARTERS = [
   { name: "Fizz", personaId: "builtin:fizz", role: "lead" },
   { name: "Honey", personaId: "builtin:honey", role: "teammate" },
   { name: "Pollen", personaId: "builtin:bumble", role: "teammate" },
+  { name: "Bestie", personaId: "builtin:bestie", role: "teammate" },
 ] as const satisfies readonly WelcomeTeamStarterDefinition[];
 
-export type WelcomeTeamAgents = [ManagedAgent, ManagedAgent, ManagedAgent];
+export type WelcomeTeamAgents = [
+  ManagedAgent,
+  ManagedAgent,
+  ManagedAgent,
+  ManagedAgent,
+];
 
 const welcomeTeamPromises = new Map<string, Promise<WelcomeTeamAgents>>();
 
@@ -317,7 +323,7 @@ export function welcomeTeammateAccessUpdate(
 /**
  * Ensure the complete built-in Welcome Team is ready for kickoff.
  * The team itself is Rust-seeded; this only activates personas, creates any
- * missing relay-scoped instances, and adds all three to Welcome as bots.
+ * missing relay-scoped instances, and adds every starter to Welcome as a bot.
  */
 async function provisionWelcomeTeam(
   channelId: string,
@@ -370,13 +376,13 @@ async function provisionWelcomeTeam(
     const created = await createManagedAgent(desired);
     agents.push(created.agent);
   }
-  const [lead, honey, pollen] = agents;
-  if (!lead || !honey || !pollen) {
+  const [lead, honey, pollen, bestie] = agents;
+  if (!lead || !honey || !pollen || !bestie) {
     throw new Error("Welcome Team provisioning did not return every starter.");
   }
-  const welcomeAgents: WelcomeTeamAgents = [lead, honey, pollen];
+  const welcomeAgents: WelcomeTeamAgents = [lead, honey, pollen, bestie];
   const leadPubkey = lead.pubkey;
-  for (const index of [1, 2] as const) {
+  for (const index of [1, 2, 3] as const) {
     const teammate = welcomeAgents[index];
     const accessUpdate = welcomeTeammateAccessUpdate(
       teammate,

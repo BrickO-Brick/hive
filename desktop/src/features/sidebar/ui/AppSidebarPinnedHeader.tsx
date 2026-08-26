@@ -2,8 +2,9 @@ import { Activity, Bot, Folders, Inbox, Zap } from "lucide-react";
 
 import { TopbarSearch } from "@/features/search/ui/TopbarSearch";
 import { SidebarProjectsSection } from "@/features/sidebar/ui/SidebarProjectsSection";
+import { ProfileAvatar } from "@/features/profile/ui/ProfileAvatar";
 import { FeatureGate } from "@/shared/features";
-import type { Channel, SearchHit } from "@/shared/api/types";
+import type { Channel, ManagedAgent, SearchHit } from "@/shared/api/types";
 import {
   SidebarHeader,
   SidebarMenu,
@@ -39,7 +40,9 @@ type AppSidebarPinnedHeaderProps = {
 };
 
 type AppSidebarPrimaryMenuProps = {
+  bestieAgent: ManagedAgent | null;
   homeBadgeCount: number;
+  onOpenBestie: () => void;
   onSelectAgents: () => void;
   onSelectHome: () => void;
   onSelectProjects: () => void;
@@ -89,7 +92,9 @@ export function AppSidebarPinnedHeader({
 }
 
 export function AppSidebarPrimaryMenu({
+  bestieAgent,
   homeBadgeCount,
+  onOpenBestie,
   onSelectAgents,
   onSelectHome,
   onSelectProjects,
@@ -167,6 +172,25 @@ export function AppSidebarPrimaryMenu({
               <SidebarMenuLabel>Agents</SidebarMenuLabel>
             </SidebarMenuButton>
           </SidebarMenuItem>
+          {bestieAgent ? (
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                data-testid="open-bestie-dm"
+                onClick={onOpenBestie}
+                tooltip={`Message ${bestieAgent.name}`}
+                type="button"
+              >
+                <ProfileAvatar
+                  avatarUrl={bestieAgent.avatarUrl}
+                  className="size-4 text-[7px] shadow-none"
+                  label={bestieAgent.name}
+                  plain
+                  testId="bestie-sidebar-avatar"
+                />
+                <SidebarMenuLabel>Bestie</SidebarMenuLabel>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          ) : null}
           <FeatureGate feature="workflows">
             <SidebarMenuItem>
               <SidebarMenuButton

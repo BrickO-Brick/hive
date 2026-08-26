@@ -42,6 +42,7 @@ import {
 import { isPositiveEmojiParticle } from "@/shared/ui/EmojiBurstProvider";
 import { Popover, PopoverContent, PopoverTrigger } from "@/shared/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
+import { BestieMessagePopover } from "./BestieMessagePopover";
 
 const ACTION_BUTTON_CLASS = "h-8 w-8 rounded-full p-0";
 const ACTION_ICON_CLASS = "!h-4 !w-4";
@@ -371,6 +372,7 @@ export const MessageActionBar = React.memo(function MessageActionBar({
   isUnread?: boolean;
 }) {
   const [isReactionPickerOpen, setIsReactionPickerOpen] = React.useState(false);
+  const [isBestiePopoverOpen, setIsBestiePopoverOpen] = React.useState(false);
   const [isDropdownOpen, setIsDropdownOpen] = React.useState(false);
   const hasReplyAction = Boolean(onReply);
   const hasReactionAction = Boolean(onReactionSelect);
@@ -428,7 +430,7 @@ export const MessageActionBar = React.memo(function MessageActionBar({
         "opacity-100 sm:pointer-events-none sm:opacity-0",
         "sm:group-hover/message:pointer-events-auto sm:group-hover/message:opacity-100",
         "sm:group-focus-within/message:pointer-events-auto sm:group-focus-within/message:opacity-100",
-        isReactionPickerOpen || isDropdownOpen
+        isReactionPickerOpen || isBestiePopoverOpen || isDropdownOpen
           ? "sm:pointer-events-auto sm:opacity-100"
           : "",
       )}
@@ -481,6 +483,15 @@ export const MessageActionBar = React.memo(function MessageActionBar({
                 />
               </PopoverContent>
             </Popover>
+          ) : null}
+
+          {canCopyMessageLink(message, channelId) ? (
+            <BestieMessagePopover
+              channelId={channelId}
+              message={message}
+              onOpenChange={setIsBestiePopoverOpen}
+              open={isBestiePopoverOpen}
+            />
           ) : null}
 
           {hasReplyAction ? (

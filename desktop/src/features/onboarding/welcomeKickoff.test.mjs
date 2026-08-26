@@ -32,13 +32,14 @@ function agent(name, personaId, pubkey) {
 const fizz = agent("Fizz", "builtin:fizz", "f".repeat(64));
 const honey = agent("Honey", "builtin:honey", "h".repeat(64));
 const pollen = agent("Pollen", "builtin:bumble", "b".repeat(64));
+const bestie = agent("Bestie", "builtin:bestie", "e".repeat(64));
 
 test("resolveWelcomeAgentSet orders agents by stable persona identity", () => {
-  assert.deepEqual(resolveWelcomeAgentSet([pollen, fizz, honey]), {
+  assert.deepEqual(resolveWelcomeAgentSet([pollen, bestie, fizz, honey]), {
     lead: fizz,
-    teammates: [honey, pollen],
+    teammates: [honey, pollen, bestie],
   });
-  assert.equal(resolveWelcomeAgentSet([fizz, honey]), null);
+  assert.equal(resolveWelcomeAgentSet([fizz, honey, pollen]), null);
 });
 
 test("opener uses current agent names and requests bounded simultaneous intros", () => {

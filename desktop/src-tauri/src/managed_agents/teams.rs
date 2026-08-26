@@ -34,8 +34,13 @@ struct BuiltInTeam {
 const BUILT_IN_TEAMS: &[BuiltInTeam] = &[BuiltInTeam {
     id: "builtin-team:welcome",
     name: "Welcome Team",
-    description: Some("A friendly starter trio ready to help you plan, create, and ship."),
-    persona_ids: &["builtin:fizz", "builtin:honey", "builtin:bumble"],
+    description: Some("A friendly starter team ready to help you plan, create, and ship."),
+    persona_ids: &[
+        "builtin:fizz",
+        "builtin:honey",
+        "builtin:bumble",
+        "builtin:bestie",
+    ],
 }];
 
 // Built-in teams that have been retired. A stored copy that still exactly

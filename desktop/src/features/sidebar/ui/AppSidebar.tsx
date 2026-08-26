@@ -44,6 +44,8 @@ import {
 import { CreateChannelDialog } from "@/features/sidebar/ui/CreateChannelDialog";
 import { SidebarProfileCard } from "@/features/sidebar/ui/SidebarProfileCard";
 import { HuddleProfileControl } from "@/features/huddle";
+import { useManagedAgentsQuery } from "@/features/agents/hooks";
+import { pickBestieAgent } from "@/features/agents/lib/bestie";
 import type {
   AppSidebarProps,
   CollapsibleSidebarGroup,
@@ -136,6 +138,12 @@ export function AppSidebar({
   onUnstarChannel,
 }: AppSidebarProps) {
   const activeWorkingByChannelId = useActiveWorkingChannelsById();
+  const managedAgentsQuery = useManagedAgentsQuery();
+  const bestieAgent = React.useMemo(
+    () =>
+      pickBestieAgent(managedAgentsQuery.data ?? [], activeCommunity?.relayUrl),
+    [activeCommunity?.relayUrl, managedAgentsQuery.data],
+  );
   const { status: updateStatus } = useUpdaterContext();
   const canShowSidebarUpdateCard = shouldShowSidebarUpdateCard(updateStatus);
   const { open: sidebarOpen, openMobile } = useSidebar();
@@ -505,7 +513,13 @@ export function AppSidebar({
               data-testid="sidebar-scroll-content"
             >
               <AppSidebarPrimaryMenu
+                bestieAgent={bestieAgent}
                 homeBadgeCount={homeBadgeCount}
+                onOpenBestie={() => {
+                  if (bestieAgent) {
+                    void onOpenDm({ pubkeys: [bestieAgent.pubkey] });
+                  }
+                }}
                 onSelectAgents={onSelectAgents}
                 onSelectHome={onSelectHome}
                 onSelectProjects={onSelectProjects}
