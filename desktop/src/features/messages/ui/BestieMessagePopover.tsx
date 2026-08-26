@@ -125,7 +125,7 @@ export function BestieMessagePopover({
           </div>
 
           <div
-            className="mx-auto aspect-[4/3] w-4/5 overflow-hidden rounded-xl border border-border/60 bg-background p-2.5 shadow-sm"
+            className="w-3/4 overflow-hidden rounded-xl border border-border/60 bg-background p-2.5 shadow-sm"
             data-testid={`bestie-message-snapshot-${message.id}`}
           >
             <div className="flex min-w-0 items-start gap-2">
@@ -144,9 +144,12 @@ export function BestieMessagePopover({
                     {message.time}
                   </p>
                 </div>
-                <div className="mt-0.5 max-h-10.5 overflow-hidden">
+                <div
+                  className="mt-0.5 max-h-3.5 overflow-hidden"
+                  data-testid={`bestie-message-snapshot-body-${message.id}`}
+                >
                   <VideoReviewCommentMarkdown
-                    className="line-clamp-3 text-[10px] leading-3.5 text-foreground/80 [&_p]:leading-3.5"
+                    className="line-clamp-1 text-[10px] leading-3.5 text-foreground/80 [&_p]:leading-3.5"
                     content={message.body}
                     interactive={false}
                     messageId={message.id}

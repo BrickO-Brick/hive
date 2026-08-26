@@ -72,17 +72,26 @@ test("message action sends a message link and optional note to Bestie", async ({
   await expect(popover).not.toContainText("Share this message with Bestie");
   await expect(popover).toContainText("Please fold this launch decision");
   const snapshot = popover.getByTestId(`bestie-message-snapshot-${messageId}`);
+  const snapshotBody = popover.getByTestId(
+    `bestie-message-snapshot-body-${messageId}`,
+  );
   await expect(snapshot).toBeVisible();
-  const [popoverBox, snapshotBox] = await Promise.all([
+  const [popoverBox, snapshotBox, snapshotBodyBox] = await Promise.all([
     popover.boundingBox(),
     snapshot.boundingBox(),
+    snapshotBody.boundingBox(),
   ]);
   expect(popoverBox).not.toBeNull();
   expect(snapshotBox).not.toBeNull();
-  if (popoverBox && snapshotBox) {
+  expect(snapshotBodyBox).not.toBeNull();
+  if (popoverBox && snapshotBox && snapshotBodyBox) {
     expect(popoverBox.width).toBeLessThanOrEqual(328);
-    expect(snapshotBox.width / snapshotBox.height).toBeCloseTo(4 / 3, 1);
-    expect(snapshotBox.width / (popoverBox.width - 32)).toBeCloseTo(0.8, 1);
+    expect(snapshotBox.width / (popoverBox.width - 32)).toBeCloseTo(0.75, 1);
+    expect(Math.abs(snapshotBox.x - (popoverBox.x + 16))).toBeLessThanOrEqual(
+      1,
+    );
+    expect(snapshotBox.height).toBeLessThan(64);
+    expect(snapshotBodyBox.height).toBeLessThanOrEqual(14);
   }
   const composer = popover.getByTestId("message-composer");
   await expect(composer).toBeVisible();
