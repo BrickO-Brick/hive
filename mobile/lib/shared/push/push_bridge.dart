@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import '../community/community.dart';
 import '../deeplink/deep_link.dart';
 import '../relay/relay_provider.dart';
+import '../reminders/reminder_service.dart';
 import 'push_snapshot.dart';
 
 const _channel = MethodChannel('buzz/push');
@@ -22,6 +23,17 @@ final pushEndpointGrantError = ValueNotifier<String?>(null);
 /// Native iOS buffers cold-start responses until Dart asks for them. This
 /// notifier also carries warm responses into the existing deep-link pipeline.
 final pendingPushNotificationLink = ValueNotifier<MessageDeepLink?>(null);
+
+class BuzzPushReminderRequest {
+  final MessageDeepLink link;
+  final ReminderTarget target;
+
+  const BuzzPushReminderRequest({required this.link, required this.target});
+}
+
+final pendingPushReminderRequest = ValueNotifier<BuzzPushReminderRequest?>(
+  null,
+);
 
 MessageDeepLink? _pushNotificationLink(Object? arguments) {
   if (arguments is! Map) return null;
@@ -43,6 +55,34 @@ MessageDeepLink? _pushNotificationLink(Object? arguments) {
   );
 }
 
+BuzzPushReminderRequest? _pushReminderRequest(Object? arguments) {
+  final link = _pushNotificationLink(arguments);
+  if (link == null || arguments is! Map) return null;
+  final authorPubkey = arguments['authorPubkey'];
+  final preview = arguments['preview'];
+  if (authorPubkey is! String ||
+      !RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(authorPubkey) ||
+      preview is! String) {
+    return null;
+  }
+  return BuzzPushReminderRequest(
+    link: link,
+    target: ReminderTarget(
+      eventId: link.messageId,
+      channelId: link.channelId,
+      preview: preview,
+      authorPubkey: authorPubkey.toLowerCase(),
+    ),
+  );
+}
+
+void _recordPushReminder(Object? arguments) {
+  final request = _pushReminderRequest(arguments);
+  if (request == null) return;
+  pendingPushReminderRequest.value = request;
+  pendingPushNotificationLink.value = request.link;
+}
+
 /// Pulls a notification response that arrived before the Flutter method
 /// handler was installed.
 Future<void> syncPendingBuzzPushNotificationResponse() async {
@@ -53,6 +93,10 @@ Future<void> syncPendingBuzzPushNotificationResponse() async {
     );
     final link = _pushNotificationLink(arguments);
     if (link != null) pendingPushNotificationLink.value = link;
+    final reminderArguments = await _channel.invokeMapMethod<dynamic, dynamic>(
+      'takePendingReminderRequest',
+    );
+    _recordPushReminder(reminderArguments);
   } on MissingPluginException {
     // Flutter tests and non-Runner embeddings do not install the native bridge.
   }
@@ -240,6 +284,11 @@ void installBuzzPushMethodHandler() {
         final link = _pushNotificationLink(call.arguments);
         if (link == null) return 'ignored';
         pendingPushNotificationLink.value = link;
+        return 'handled';
+      case 'notificationReminderRequested':
+        final request = _pushReminderRequest(call.arguments);
+        if (request == null) return 'ignored';
+        _recordPushReminder(call.arguments);
         return 'handled';
       default:
         throw MissingPluginException('Unknown buzz/push method ${call.method}');

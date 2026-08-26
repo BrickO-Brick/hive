@@ -29,6 +29,7 @@ enum BuzzPushNotificationResponseCoordinator {
     onReply: (
       (BuzzPushReplyContext, String, @escaping () -> Void) -> Void
     )? = nil,
+    onReminder: ((BuzzPushReplyContext) -> Void)? = nil,
     forwardToFlutter: (@escaping () -> Void) -> Void,
     completion: @escaping () -> Void
   ) {
@@ -40,6 +41,15 @@ enum BuzzPushNotificationResponseCoordinator {
       let onReply
     {
       onReply(context, textInput) { completionGate.call() }
+      return
+    }
+
+    if actionIdentifier == BuzzPushNotificationActions.remindActionIdentifier,
+      let context = BuzzPushReplyContext.decodeIfPresent(from: userInfo),
+      let onReminder
+    {
+      onReminder(context)
+      completionGate.call()
       return
     }
 
@@ -62,14 +72,59 @@ enum BuzzPushNotificationCategoryRegistrar {
       textInputButtonTitle: "Send",
       textInputPlaceholder: "Reply to Buzz"
     )
+    let remind = UNNotificationAction(
+      identifier: BuzzPushNotificationActions.remindActionIdentifier,
+      title: "Remind me",
+      options: [.foreground]
+    )
     center.setNotificationCategories([
       UNNotificationCategory(
         identifier: BuzzPushNotificationActions.messageCategoryIdentifier,
-        actions: [reply],
+        actions: [reply, remind],
         intentIdentifiers: [],
         options: []
       )
     ])
+  }
+}
+
+struct BuzzPushReminderRequest: Equatable {
+  let context: BuzzPushReplyContext
+  let preview: String
+
+  var flutterArguments: [String: Any] {
+    [
+      "eventId": context.eventID,
+      "communityId": context.communityID,
+      "channelId": context.channelID,
+      "authorPubkey": context.senderPubkey,
+      "preview": preview,
+    ]
+  }
+}
+
+final class BuzzPushReminderBuffer {
+  private let lock = NSLock()
+  private var request: BuzzPushReminderRequest?
+
+  func record(_ request: BuzzPushReminderRequest) {
+    lock.lock()
+    self.request = request
+    lock.unlock()
+  }
+
+  func take() -> BuzzPushReminderRequest? {
+    lock.lock()
+    defer { lock.unlock() }
+    let current = request
+    request = nil
+    return current
+  }
+
+  func remove(ifMatching expected: BuzzPushReminderRequest) {
+    lock.lock()
+    defer { lock.unlock() }
+    if request == expected { request = nil }
   }
 }
 

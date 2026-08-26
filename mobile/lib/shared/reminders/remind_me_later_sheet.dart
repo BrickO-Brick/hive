@@ -15,6 +15,7 @@ void showRemindMeLaterSheet({
   required BuildContext context,
   required WidgetRef ref,
   required ReminderTarget target,
+  bool includeCustomDateTime = true,
 }) {
   final service = ref.read(reminderServiceProvider);
   final messenger = ScaffoldMessenger.of(context);
@@ -66,20 +67,22 @@ void showRemindMeLaterSheet({
                       submit(preset.getTimestamp());
                     },
                   ),
-                const SheetDivider(),
-                ListTile(
-                  leading: const Icon(LucideIcons.calendarClock),
-                  title: const Text('Pick a date & time'),
-                  onTap: () async {
-                    final navigator = Navigator.of(sheetContext);
-                    final timestamp = await _pickCustomDateTime(context);
-                    // Cancelled or not-in-the-future: keep the preset sheet
-                    // open so retrying doesn't mean long-pressing again.
-                    if (timestamp == null) return;
-                    if (navigator.mounted) navigator.pop();
-                    await submit(timestamp);
-                  },
-                ),
+                if (includeCustomDateTime) ...[
+                  const SheetDivider(),
+                  ListTile(
+                    leading: const Icon(LucideIcons.calendarClock),
+                    title: const Text('Pick a date & time'),
+                    onTap: () async {
+                      final navigator = Navigator.of(sheetContext);
+                      final timestamp = await _pickCustomDateTime(context);
+                      // Cancelled or not-in-the-future: keep the preset sheet
+                      // open so retrying doesn't mean long-pressing again.
+                      if (timestamp == null) return;
+                      if (navigator.mounted) navigator.pop();
+                      await submit(timestamp);
+                    },
+                  ),
+                ],
               ],
             ),
           ),

@@ -20,6 +20,7 @@ void main() {
     pushEndpointGrantError.value = null;
     pushCommunitySnapshotError.value = null;
     pendingPushNotificationLink.value = null;
+    pendingPushReminderRequest.value = null;
     installBuzzPushMethodHandler();
   });
 
@@ -211,6 +212,44 @@ void main() {
     );
   });
 
+  test(
+    'routes a warm notification reminder request to the exact message',
+    () async {
+      final response = Completer<ByteData?>();
+      await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .handlePlatformMessage(
+            _channel.name,
+            _channel.codec.encodeMethodCall(
+              MethodCall('notificationReminderRequested', {
+                'eventId': 'MESSAGE-ID',
+                'communityId': 'community-id',
+                'channelId': 'CHANNEL/GENERAL',
+                'authorPubkey': 'A' * 64,
+                'preview': 'Incoming message',
+              }),
+            ),
+            response.complete,
+          );
+
+      final envelope = await response.future;
+      expect(envelope, isNotNull);
+      expect(_channel.codec.decodeEnvelope(envelope!), 'handled');
+      expect(pendingPushReminderRequest.value?.target.authorPubkey, 'a' * 64);
+      expect(
+        pendingPushReminderRequest.value?.target.preview,
+        'Incoming message',
+      );
+      expect(
+        pendingPushNotificationLink.value,
+        const MessageDeepLink(
+          communityId: 'community-id',
+          channelId: 'CHANNEL/GENERAL',
+          messageId: 'MESSAGE-ID',
+        ),
+      );
+    },
+  );
+
   test('rejects a notification response with an empty channel ID', () async {
     final response = Completer<ByteData?>();
     await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
@@ -280,11 +319,14 @@ void main() {
     debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(_channel, (call) async {
-          expect(call.method, 'takePendingNotificationResponse');
-          return {
-            'eventId': 'b' * 64,
-            'communityId': 'community-id',
-            'channelId': '123e4567-e89b-42d3-a456-426614174000',
+          return switch (call.method) {
+            'takePendingNotificationResponse' => {
+              'eventId': 'b' * 64,
+              'communityId': 'community-id',
+              'channelId': '123e4567-e89b-42d3-a456-426614174000',
+            },
+            'takePendingReminderRequest' => null,
+            _ => fail('Unexpected method ${call.method}'),
           };
         });
 

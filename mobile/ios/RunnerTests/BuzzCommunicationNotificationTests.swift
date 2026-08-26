@@ -217,6 +217,33 @@ final class BuzzPushSnapshotEnrichmentTests: XCTestCase {
 }
 
 final class BuzzPushNotificationResponseTests: XCTestCase {
+  func testValidReminderActionRoutesContextWithoutOpeningFlutter() {
+    let context = BuzzPushReplyContext(
+      eventID: "message-id",
+      rootEventID: "root-id",
+      communityID: "community-id",
+      channelID: "opaque-channel-id",
+      senderPubkey: String(repeating: "a", count: 64),
+      replyKind: 9
+    )
+    var reminders: [BuzzPushReplyContext] = []
+    var forwarded = 0
+    var completions = 0
+
+    BuzzPushNotificationResponseCoordinator.handle(
+      actionIdentifier: BuzzPushNotificationActions.remindActionIdentifier,
+      userInfo: [BuzzPushReplyContext.userInfoKey: context.userInfoValue],
+      onTarget: { _ in XCTFail("Reminder must not navigate as an ordinary tap") },
+      onReminder: { reminders.append($0) },
+      forwardToFlutter: { _ in forwarded += 1 },
+      completion: { completions += 1 }
+    )
+
+    XCTAssertEqual(reminders, [context])
+    XCTAssertEqual(forwarded, 0)
+    XCTAssertEqual(completions, 1)
+  }
+
   func testValidTextReplyWaitsForPublisherAndDoesNotOpenFlutter() throws {
     let context = BuzzPushReplyContext(
       eventID: "message-id",

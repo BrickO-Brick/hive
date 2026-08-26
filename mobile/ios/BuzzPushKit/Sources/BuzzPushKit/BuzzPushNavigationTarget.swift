@@ -112,6 +112,7 @@ public struct BuzzPushReplyContext: Codable, Equatable, Sendable {
 public enum BuzzPushNotificationActions {
   public static let messageCategoryIdentifier = "buzz.message"
   public static let replyActionIdentifier = "buzz.reply"
+  public static let remindActionIdentifier = "buzz.remind"
 }
 
 /// Thread-safe one-item buffer spanning notification delivery and Flutter

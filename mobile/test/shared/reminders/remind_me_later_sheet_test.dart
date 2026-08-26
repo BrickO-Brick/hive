@@ -48,6 +48,7 @@ ReminderCrypto _stubCrypto() {
 Future<void> _pumpSheet(
   WidgetTester tester, {
   required ReminderService service,
+  bool includeCustomDateTime = true,
 }) async {
   await tester.pumpWidget(
     ProviderScope(
@@ -61,6 +62,7 @@ Future<void> _pumpSheet(
                 context: context,
                 ref: ref,
                 target: _target,
+                includeCustomDateTime: includeCustomDateTime,
               ),
               child: const Text('open'),
             ),
@@ -75,6 +77,23 @@ Future<void> _pumpSheet(
 
 void main() {
   group('showRemindMeLaterSheet', () {
+    testWidgets('notification variant shows only the five fixed presets', (
+      tester,
+    ) async {
+      await _pumpSheet(
+        tester,
+        service: _RecordingReminderService(),
+        includeCustomDateTime: false,
+      );
+
+      expect(find.text('In 30 minutes'), findsOneWidget);
+      expect(find.text('In 1 hour'), findsOneWidget);
+      expect(find.text('In 3 hours'), findsOneWidget);
+      expect(find.text('Tomorrow at 9am'), findsOneWidget);
+      expect(find.text('Next Monday at 9am'), findsOneWidget);
+      expect(find.text('Pick a date & time'), findsNothing);
+    });
+
     testWidgets('cancelling the custom date picker keeps the reminder sheet '
         'open', (tester) async {
       final service = _RecordingReminderService();

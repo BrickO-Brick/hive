@@ -11,6 +11,7 @@ import os.log
   private var pushChannel: FlutterMethodChannel?
   private let apnsRegistrationBuffer = APNsRegistrationBuffer()
   private let pushNavigationBuffer = BuzzPushNavigationBuffer()
+  private let pushReminderBuffer = BuzzPushReminderBuffer()
   private let pushReplyPublisher = BuzzPushReplyPublisher()
   private var apnsDeviceToken: Data?
   private lazy var endpointGrantStore = BuzzPushEndpointGrantKeychainStore(
@@ -305,6 +306,14 @@ import os.log
           completion: replyCompletion
         ) ?? replyCompletion()
       },
+      onReminder: { [weak self] context in
+        let request = BuzzPushReminderRequest(
+          context: context,
+          preview: response.notification.request.content.body
+        )
+        self?.pushReminderBuffer.record(request)
+        self?.deliverPushReminderRequest(request)
+      },
       forwardToFlutter: { pluginCompletion in
         self.forwardPushNotificationResponseToFlutter(
           center,
@@ -388,6 +397,16 @@ import os.log
     }
   }
 
+  private func deliverPushReminderRequest(_ request: BuzzPushReminderRequest) {
+    pushChannel?.invokeMethod(
+      "notificationReminderRequested",
+      arguments: request.flutterArguments
+    ) { [weak self] result in
+      guard result as? String == "handled" else { return }
+      self?.pushReminderBuffer.remove(ifMatching: request)
+    }
+  }
+
   private func handlePushMethodCall(
     _ call: FlutterMethodCall,
     result: @escaping FlutterResult
@@ -400,6 +419,8 @@ import os.log
       startPushRegistration(result: result)
     case "takePendingNotificationResponse":
       result(pushNavigationBuffer.take()?.flutterArguments)
+    case "takePendingReminderRequest":
+      result(pushReminderBuffer.take()?.flutterArguments)
     case "endpointGrants":
       do {
         result(try endpointGrantStore.records().map(\.flutterArguments))

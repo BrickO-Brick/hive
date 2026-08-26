@@ -5,6 +5,8 @@ import 'package:hooks_riverpod/hooks_riverpod.dart';
 
 import '../../shared/deeplink/deep_link.dart';
 import '../../shared/deeplink/pending_deep_link_provider.dart';
+import '../../shared/push/push_bridge.dart';
+import '../../shared/reminders/remind_me_later_sheet.dart';
 import '../invites/invite_join_provider.dart';
 import '../invites/invite_join_sheet.dart';
 import 'channel.dart';
@@ -137,8 +139,23 @@ class _DeepLinkDispatcherState extends ConsumerState<DeepLinkDispatcher> {
     }
     if (!context.mounted) return;
 
+    final reminderRequest = pendingPushReminderRequest.value;
+    final shouldPresentReminder =
+        link is MessageDeepLink && reminderRequest?.link == link;
     _pushChannel(channel, link);
     ref.read(pendingDeepLinkProvider.notifier).consume();
+    if (shouldPresentReminder && reminderRequest != null) {
+      pendingPushReminderRequest.value = null;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        showRemindMeLaterSheet(
+          context: context,
+          ref: ref,
+          target: reminderRequest.target,
+          includeCustomDateTime: false,
+        );
+      });
+    }
   }
 
   void _pushChannel(Channel channel, BuzzDeepLink link) {
