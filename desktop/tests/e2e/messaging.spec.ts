@@ -74,10 +74,8 @@ type MockInboxWindow = Window & {
   __BUZZ_E2E_PUSH_MOCK_FEED_ITEM__?: (item: MockInboxFeedItem) => unknown;
 };
 
-async function waitForStableAgentHeader(row: Locator, timestampTestId: string) {
+async function waitForLoadedAgentHeader(row: Locator, timestampTestId: string) {
   await row.evaluate(async (element, timestampId) => {
-    await document.fonts.ready;
-
     const targets = [
       element.querySelector<HTMLElement>('[data-testid="message-author"]'),
       element.querySelector<HTMLElement>('[data-testid="message-agent-owner"]'),
@@ -86,6 +84,38 @@ async function waitForStableAgentHeader(row: Locator, timestampTestId: string) {
     if (targets.some((target) => !target)) {
       throw new Error("Expected a complete agent message header.");
     }
+
+    const fontSample = "alice managed by bob 5:57 PM";
+    const fontRequests = new Set(
+      targets.map((target) => {
+        const style = getComputedStyle(target as HTMLElement);
+        const primaryFamily = style.fontFamily
+          .split(",")[0]
+          ?.replaceAll('"', "")
+          .trim();
+        if (primaryFamily !== "Inter Variable") {
+          throw new Error(
+            `Expected Inter Variable, received ${style.fontFamily}.`,
+          );
+        }
+        return `${style.fontStyle} ${style.fontWeight} ${style.fontSize} "Inter Variable"`;
+      }),
+    );
+
+    for (const fontRequest of fontRequests) {
+      const loadedFaces = await document.fonts.load(fontRequest, fontSample);
+      if (
+        loadedFaces.length === 0 ||
+        loadedFaces.some(
+          (face) =>
+            face.family !== "Inter Variable" || face.status !== "loaded",
+        ) ||
+        !document.fonts.check(fontRequest, fontSample)
+      ) {
+        throw new Error(`Expected loaded font face: ${fontRequest}.`);
+      }
+    }
+    await document.fonts.ready;
 
     await new Promise<void>((resolve, reject) => {
       let previousSignature: string | null = null;
@@ -213,7 +243,7 @@ async function expectAlignedAgentHeader(
     await page.evaluate((value) => {
       document.documentElement.dataset.fontSize = value;
     }, fontSize);
-    await waitForStableAgentHeader(row, timestampTestId);
+    await waitForLoadedAgentHeader(row, timestampTestId);
 
     const geometry = await measureAgentHeaderGeometry(row, timestampTestId);
     for (const [label, baseline] of Object.entries(geometry.baselines)) {
@@ -605,7 +635,7 @@ test.beforeEach(async ({ page }, testInfo) => {
   await installMockBridge(page, mock);
 });
 
-test("agent owner label aligns in the timeline and Inbox", async ({ page }) => {
+test("agent owner label aligns in the timeline", async ({ page }) => {
   await page.goto("/");
   await page.getByTestId("channel-general").click();
 
@@ -630,7 +660,9 @@ test("agent owner label aligns in the timeline and Inbox", async ({ page }) => {
     "message-timestamp",
     "timeline",
   );
+});
 
+test("agent owner label aligns in Inbox", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByTestId("home-inbox-list")).toBeVisible();
   const inboxMessageId = await seedAgentInboxMessage(page);
