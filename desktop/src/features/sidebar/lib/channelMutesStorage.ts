@@ -1,8 +1,9 @@
 import { normalizeRelayUrl } from "@/shared/lib/normalizeRelayUrl";
 import {
-  clearOutboxEntry,
-  readOutboxEntry,
-  writeOutboxEntry,
+  clearOwnOutbox,
+  enumerateOutbox,
+  reclaimOutbox,
+  writeOwnOutbox,
 } from "./sidebarSyncWatermark";
 
 const STORAGE_KEY_PREFIX = "buzz-channel-mutes.v1";
@@ -125,23 +126,26 @@ export function boundMuteStore(
 }
 
 /**
- * Read-merge-write the main store: fold `incoming` into whatever is currently
- * persisted (which a peer window may have advanced since this window last read)
- * and persist + return the merged result, so a concurrent click in another
- * window is carried forward instead of clobbered. Returns the merged store, or
- * `null` on write failure. Uses the same per-entry `mergeStores` as every other
- * observation path, so the write is order-independent and idempotent.
+ * Persist the main store. Writes the passed store as-is (bounded) — no read of
+ * the shared key, so it is never a shared-key read-modify-write. Callers merge
+ * peer state into the window's OWN React state (via the storage-event handler
+ * and applyRemote) before calling here, so the write carries an owned, merged
+ * value. Returns the bounded store, or `null` on write failure.
+ *
+ * Cross-window convergence of the on-disk cache is eventual: a peer's storage
+ * event folds into this window's state, and the relay reconcile writes the
+ * merged head back. Durable no-loss of an unpublished click is held by the
+ * per-window outbox, not this cache.
  */
 export function writeChannelMutesStore(
   pubkey: string,
-  incoming: ChannelMuteStore,
+  store: ChannelMuteStore,
   preservedKey?: string,
 ): ChannelMuteStore | null {
   try {
-    const persisted = readChannelMutesStore(pubkey);
-    const merged = mergeStores(persisted, incoming, preservedKey);
-    window.localStorage.setItem(storageKey(pubkey), JSON.stringify(merged));
-    return merged;
+    const bounded = boundMuteStore(store, preservedKey);
+    window.localStorage.setItem(storageKey(pubkey), JSON.stringify(bounded));
+    return bounded;
   } catch {
     return null;
   }
@@ -201,61 +205,95 @@ export function mutedChannelIdsFromStore(store: ChannelMuteStore): Set<string> {
 
 const OUTBOX_KEY_PREFIX = "buzz-channel-mutes-outbox.v1";
 
-// The outbox is a per-relay sync-lane structure (like the watermark), so it is
-// relay-scoped even though the main store stays pubkey-only: an edit made
-// against relay A must never resume-publish onto relay B after a community
-// switch.
-function outboxKey(pubkey: string, relayUrl: string): string {
+// The single shared key written by builds before the outbox was keyed
+// per-window. Enumerated as one more record so an edit persisted by a prior
+// build still resumes, and reclaimed by the same relay-gated rule.
+function legacyOutboxKey(pubkey: string, relayUrl: string): string {
   return `${OUTBOX_KEY_PREFIX}:${pubkey}:${encodeURIComponent(normalizeRelayUrl(relayUrl))}`;
 }
 
 /**
- * Persist an unpublished edit so it survives quit/community-switch within the
- * 2s publish debounce. Written synchronously on every click; cleared once the
- * edit is published or found identical to the last published store. Resumed on
- * next mount so a durable intent is never silently dropped at teardown.
- *
- * Read-merge-write: the incoming edit is folded (via `mergeStores`) into
- * whatever a peer window may have already persisted under the shared key, so
- * two windows clicking different channels before their `storage` events deliver
- * both survive in the durable outbox. `token` gives this write cross-window
- * ownership so a peer's older completing publish cannot clear the merged entry.
+ * Persist this window's unpublished edit under its own outbox key. Written
+ * synchronously on every click as a single unconditional `setItem` (no shared-
+ * key read-modify-write); resumed by merging every window's record on next
+ * mount so a click made <2s before quit/community-switch is never dropped.
  */
 export function writeChannelMutesOutbox(
   pubkey: string,
   store: ChannelMuteStore,
   relayUrl: string,
-  token: string,
 ): void {
-  const key = outboxKey(pubkey, relayUrl);
-  const existing = readOutboxEntry(key, parseMutePayload)?.store;
-  const merged = existing
-    ? mergeStores(existing, store)
-    : boundMuteStore(store);
-  writeOutboxEntry(key, merged, token);
+  writeOwnOutbox(OUTBOX_KEY_PREFIX, pubkey, relayUrl, boundMuteStore(store));
 }
 
-/** Read a persisted unpublished edit, or null when none/unparseable. */
+/**
+ * Merge every window's persisted unpublished edit into one store for resume, or
+ * null when none exists. Per-entry `mergeStores` is order-independent, so two
+ * windows' concurrent clicks on different channels both survive.
+ */
 export function readChannelMutesOutbox(
   pubkey: string,
   relayUrl: string,
 ): ChannelMuteStore | null {
-  return (
-    readOutboxEntry(outboxKey(pubkey, relayUrl), parseMutePayload)?.store ??
-    null
+  const records = enumerateOutbox(
+    OUTBOX_KEY_PREFIX,
+    legacyOutboxKey(pubkey, relayUrl),
+    pubkey,
+    relayUrl,
+    parseMutePayload,
+  );
+  if (records.length === 0) return null;
+  return records.reduce<ChannelMuteStore>(
+    (acc, r) => mergeStores(acc, r.store),
+    DEFAULT_STORE,
   );
 }
 
-/**
- * Clear the persisted outbox (edit published or a no-op). Compare-and-clear on
- * `token`: a peer window that overwrote the entry replaced the token, so an
- * older window's completion no-ops and the peer's edit survives. Omit `token`
- * to clear unconditionally.
- */
+/** Clear this window's own outbox key (its edit published or is a no-op). */
 export function clearChannelMutesOutbox(
   pubkey: string,
   relayUrl: string,
-  token?: string,
 ): void {
-  clearOutboxEntry(outboxKey(pubkey, relayUrl), token);
+  clearOwnOutbox(OUTBOX_KEY_PREFIX, pubkey, relayUrl);
+}
+
+/**
+ * Reclaim foreign outbox keys the fetched relay head already subsumes: a record
+ * is redundant when merging it into `head` yields `head` unchanged (the head
+ * carries an entry at least as new for every channel). Never touches this
+ * window's own key; a still-unpublished peer edit the head does not yet reflect
+ * is kept. Call only after a successful head fetch.
+ */
+export function reclaimSubsumedMutesOutbox(
+  pubkey: string,
+  relayUrl: string,
+  head: ChannelMuteStore,
+): void {
+  reclaimOutbox(
+    OUTBOX_KEY_PREFIX,
+    legacyOutboxKey(pubkey, relayUrl),
+    pubkey,
+    relayUrl,
+    parseMutePayload,
+    (record) => muteStoresEqual(mergeStores(head, record.store), head),
+  );
+}
+
+/** Deep per-channel equality of two mute stores (order-independent). */
+function muteStoresEqual(a: ChannelMuteStore, b: ChannelMuteStore): boolean {
+  const aKeys = Object.keys(a.channels);
+  const bKeys = Object.keys(b.channels);
+  if (aKeys.length !== bKeys.length) return false;
+  for (const id of aKeys) {
+    const l = a.channels[id];
+    const r = b.channels[id];
+    if (
+      !r ||
+      l.muted !== r.muted ||
+      l.updatedAt !== r.updatedAt ||
+      l.rev !== r.rev
+    )
+      return false;
+  }
+  return true;
 }

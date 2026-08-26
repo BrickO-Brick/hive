@@ -7,6 +7,10 @@ export function makeFakeWindow() {
     setItem: (k, v) => storage.set(k, v),
     removeItem: (k) => storage.delete(k),
     clear: () => storage.clear(),
+    get length() {
+      return storage.size;
+    },
+    key: (i) => [...storage.keys()][i] ?? null,
   };
   let timerCallback = null;
   let nextTimerId = 100;

@@ -3,43 +3,88 @@ import test from "node:test";
 
 // Multi-window durable-outbox safety (Carl's CHANGES_REQUESTED, finding P1).
 //
-// All four sidebar-sync lanes share one localStorage outbox key per
-// (identity, relay), but generation ownership is in-memory per window. Without
-// a per-write ownership token, window A's completing publish can clear window
-// B's still-unpublished edit (stale-clear, prong a), and — for the merge lanes
-// — B's write can overwrite A's still-unpublished payload (overwrite, prong b).
+// All four sidebar-sync lanes persist an unpublished edit so it survives a
+// quit/community-switch inside the 2s publish debounce. localStorage offers no
+// atomic compare-and-delete or transactional read-modify-write, so a single key
+// shared across windows can never be mutated safely: one window's read→write or
+// read→remove races a peer's write and drops its still-unpublished edit.
 //
-// The fix: every outbox write mints a token and stores a `{store, token}`
-// envelope; a completing publish compare-and-clears only when the stored token
-// still matches its own. Merge lanes (stars/mutes) additionally read-merge-write
-// so two windows editing different channels both survive. Replace lanes
-// (sort/sections) resolve whole-blob LWW: the last writer's token owns the entry.
+// The fix keys the outbox PER WINDOW: `<prefix>:<pubkey>:<relay>:<nonce>`, where
+// the nonce is stable per window (sessionStorage). Each window is the sole
+// writer of its own key, so a hot-path write is one unconditional `setItem` — no
+// read, no shared-key contention (prong b is designed out, not guarded). Resume
+// enumerates ALL windows' keys: merge lanes (stars/mutes) fold every record
+// (order-independent); whole-blob lanes (sort/sections) replay the max-`queuedAt`
+// record, ties broken by key. Redundant FOREIGN keys are reclaimed at boot,
+// gated on durable relay evidence and re-read immediately before removal so a
+// live peer's fresh write in the recheck gap is never destroyed. A window never
+// removes another window's key on the hot path and never touches its own key
+// during reclamation.
 //
-// This matrix drives the shared helpers directly through localStorage — no
-// relay, no timers — so each interleaving is deterministic. Manager-level and
-// hook-level behavior is covered by their own suites; this file isolates the
-// cross-window contract the token exists to hold.
+// This matrix drives the shared helpers directly through a mock Storage seam —
+// no relay, no timers — so each interleaving is deterministic. The seam mocks
+// both localStorage (with a read-then-mutate hook to interpose a foreign write
+// between the reclaim decision-read and the delete) and sessionStorage (for the
+// per-window nonce). Manager- and hook-level behavior is covered by their own
+// suites; this file isolates the cross-window storage contract.
 
-function withFreshStorage(fn) {
-  const store = new Map();
-  const ls = {
-    getItem: (k) => store.get(k) ?? null,
-    setItem: (k, v) => store.set(k, v),
-    removeItem: (k) => store.delete(k),
-    clear: () => store.clear(),
+// A mock Storage. `onReadMutate(key, afterReads, fn)` runs `fn(map)` right after
+// the Nth getItem of `key` returns its captured value — used to simulate a peer
+// window rewriting a key in the reclaim recheck gap.
+function makeStorage(initial = {}) {
+  const map = new Map(Object.entries(initial));
+  const reads = new Map();
+  const hooks = [];
+  return {
+    getItem(k) {
+      const n = (reads.get(k) ?? 0) + 1;
+      reads.set(k, n);
+      const val = map.has(k) ? map.get(k) : null;
+      for (const h of hooks) if (h.key === k && h.afterReads === n) h.fn(map);
+      return val;
+    },
+    setItem(k, v) {
+      map.set(k, String(v));
+    },
+    removeItem(k) {
+      map.delete(k);
+    },
+    clear() {
+      map.clear();
+    },
+    get length() {
+      return map.size;
+    },
+    key(i) {
+      return [...map.keys()][i] ?? null;
+    },
+    onReadMutate(key, afterReads, fn) {
+      hooks.push({ key, afterReads, fn });
+    },
+    has: (k) => map.has(k),
   };
-  const orig = globalThis.window?.localStorage;
-  if (typeof globalThis.window === "undefined") globalThis.window = {};
-  globalThis.window.localStorage = ls;
+}
+
+// Run `fn(localStorage)` with fresh mock local + session storage installed.
+function withStorage(fn) {
+  const ls = makeStorage();
+  const ss = makeStorage();
+  const priorWindow = globalThis.window;
+  globalThis.window = {
+    ...(priorWindow ?? {}),
+    localStorage: ls,
+    sessionStorage: ss,
+  };
   try {
-    fn(ls);
+    return fn(ls);
   } finally {
-    if (orig !== undefined) globalThis.window.localStorage = orig;
-    else delete globalThis.window.localStorage;
+    if (priorWindow !== undefined) globalThis.window = priorWindow;
+    else delete globalThis.window;
   }
 }
 
-const { mintOutboxToken } = await import("./sidebarSyncWatermark.ts");
+const { normalizeRelayUrl } = await import("@/shared/lib/normalizeRelayUrl");
+const { outboxWindowNonce } = await import("./sidebarSyncWatermark.ts");
 const stars = await import("./channelStarsStorage.ts");
 const mutes = await import("./channelMutesStorage.ts");
 const sort = await import("./channelSortPreference.ts");
@@ -47,6 +92,21 @@ const sections = await import("./channelSectionsStorage.ts");
 
 const PK = "pk";
 const RELAY = "wss://relay.example.com";
+const SCOPE = `${PK}:${encodeURIComponent(normalizeRelayUrl(RELAY))}`;
+
+const PREFIX = {
+  stars: "buzz-channel-stars-outbox.v1",
+  mutes: "buzz-channel-mutes-outbox.v1",
+  sort: "buzz-channel-sort-outbox.v1",
+  sections: "buzz-channel-sections-outbox.v1",
+};
+
+// A foreign window's key: same (pubkey, relay) scope, a different nonce than
+// this process's own. `legacyKey` is the pre-per-window shared key (no nonce).
+const foreignKey = (lane, nonce) => `${PREFIX[lane]}:${SCOPE}:${nonce}`;
+const legacyKey = (lane) => `${PREFIX[lane]}:${SCOPE}`;
+const writeAt = (ls, key, store, queuedAt) =>
+  ls.setItem(key, JSON.stringify({ store, queuedAt }));
 
 const starStore = (channels) => ({ version: 1, channels });
 const starEntry = (starred, updatedAt, rev) => ({ starred, updatedAt, rev });
@@ -59,240 +119,99 @@ const sectionStore = (secs, assignments = {}) => ({
   assignments,
 });
 
-// ── (a) stale-clear: A queues → B queues → A completes and clears → B survives ─
+// ── (i) Recheck skips a foreign write injected between decision-read and delete ─
 //
-// Applies to every lane: A's completion carries A's token; B's later write
-// replaced the token, so A's compare-and-clear must no-op and B's edit stays.
+// reclaimOutbox re-reads each foreign key immediately before removing it and
+// skips when the value changed since the reclaim decision. A peer that rewrote
+// its key in that gap owns a fresh edit that must survive. Merge lane (stars):
+// the head subsumes the enumerated value, so reclaim would fire — but the peer's
+// interposed write must be preserved.
 
-test("(a) stars: A's completing clear does not erase B's later queued edit", () => {
-  withFreshStorage(() => {
-    const tokenA = mintOutboxToken();
-    stars.writeChannelStarsOutbox(
+test("(i) stars: reclaim recheck skips a foreign key rewritten in the decision→delete gap", () => {
+  withStorage((ls) => {
+    const key = foreignKey("stars", "peerB");
+    // Foreign edit the fetched head has already absorbed → decision = reclaim.
+    writeAt(ls, key, starStore({ a: starEntry(true, 100, 1) }), 100);
+    // Between the enumerate read (#1) and the recheck read (#2), the peer writes
+    // a FRESH edit the head does not reflect.
+    ls.onReadMutate(key, 1, (map) =>
+      map.set(
+        key,
+        JSON.stringify({
+          store: starStore({ a: starEntry(false, 300, 9) }),
+          queuedAt: 300,
+        }),
+      ),
+    );
+    // Head carries `a` at (100,1) — subsumes the enumerated value.
+    stars.reclaimSubsumedStarsOutbox(
       PK,
+      RELAY,
       starStore({ a: starEntry(true, 100, 1) }),
-      RELAY,
-      tokenA,
     );
-    const tokenB = mintOutboxToken();
-    stars.writeChannelStarsOutbox(
-      PK,
-      starStore({ b: starEntry(true, 200, 1) }),
-      RELAY,
-      tokenB,
-    );
-    // A completes and tries to clear with its own (now-stale) token.
-    stars.clearChannelStarsOutbox(PK, RELAY, tokenA);
+    assert.ok(ls.has(key), "peer's fresh edit must survive the recheck");
     const survived = stars.readChannelStarsOutbox(PK, RELAY);
-    assert.ok(survived, "B's edit must survive A's stale clear");
-    assert.deepEqual(survived.channels.b, starEntry(true, 200, 1));
-    // B's own completion clears cleanly.
-    stars.clearChannelStarsOutbox(PK, RELAY, tokenB);
-    assert.equal(stars.readChannelStarsOutbox(PK, RELAY), null);
+    assert.deepEqual(survived.channels.a, starEntry(false, 300, 9));
   });
 });
 
-test("(a) mutes: A's completing clear does not erase B's later queued edit", () => {
-  withFreshStorage(() => {
-    const tokenA = mintOutboxToken();
-    mutes.writeChannelMutesOutbox(
-      PK,
-      muteStore({ a: muteEntry(true, 100, 1) }),
-      RELAY,
-      tokenA,
+test("(i) sort: reclaim recheck skips a foreign key rewritten in the decision→delete gap", () => {
+  withStorage((ls) => {
+    const key = foreignKey("sort", "peerB");
+    writeAt(ls, key, sortStore({ dms: "alpha" }), 100);
+    ls.onReadMutate(key, 1, (map) =>
+      map.set(
+        key,
+        JSON.stringify({ store: sortStore({ dms: "recent" }), queuedAt: 500 }),
+      ),
     );
-    const tokenB = mintOutboxToken();
-    mutes.writeChannelMutesOutbox(
-      PK,
-      muteStore({ b: muteEntry(true, 200, 1) }),
-      RELAY,
-      tokenB,
-    );
-    mutes.clearChannelMutesOutbox(PK, RELAY, tokenA);
-    const survived = mutes.readChannelMutesOutbox(PK, RELAY);
-    assert.ok(survived, "B's edit must survive A's stale clear");
-    assert.deepEqual(survived.channels.b, muteEntry(true, 200, 1));
-    mutes.clearChannelMutesOutbox(PK, RELAY, tokenB);
-    assert.equal(mutes.readChannelMutesOutbox(PK, RELAY), null);
+    // Head created_at 200 supersedes the queuedAt=100 decision, but not the
+    // interposed queuedAt=500 write.
+    sort.reclaimSupersededSortOutbox(PK, RELAY, 200);
+    assert.ok(ls.has(key), "peer's fresh edit must survive the recheck");
+    assert.equal(sort.readChannelSortOutbox(PK, RELAY).groups.dms, "recent");
   });
 });
 
-test("(a) sort: A's completing clear does not erase B's later queued edit", () => {
-  withFreshStorage(() => {
-    const tokenA = mintOutboxToken();
-    sort.writeChannelSortOutbox(
-      PK,
-      sortStore({ channels: "alpha" }),
-      RELAY,
-      tokenA,
-    );
-    const tokenB = mintOutboxToken();
-    sort.writeChannelSortOutbox(
-      PK,
-      sortStore({ channels: "recent" }),
-      RELAY,
-      tokenB,
-    );
-    sort.clearChannelSortOutbox(PK, RELAY, tokenA);
-    const survived = sort.readChannelSortOutbox(PK, RELAY);
-    assert.ok(survived, "B's edit must survive A's stale clear");
-    assert.equal(survived.groups.channels, "recent");
-    sort.clearChannelSortOutbox(PK, RELAY, tokenB);
-    assert.equal(sort.readChannelSortOutbox(PK, RELAY), null);
-  });
-});
+// ── (ii) Two windows teardown/remount: every unpublished intent preserved ──────
+//
+// Windows A and B each persist an edit and quit; a fresh window remounts and
+// enumerates both keys. Merge lanes keep BOTH; whole-blob lanes keep the newest
+// (an older peer blob is LWW-superseded by definition, the documented residual).
 
-test("(a) sections: A's completing clear does not erase B's later queued edit", () => {
-  withFreshStorage(() => {
-    const tokenA = mintOutboxToken();
-    sections.writeChannelSectionsOutbox(
-      PK,
-      sectionStore([{ id: "s1", name: "One", order: 0 }]),
-      RELAY,
-      tokenA,
-    );
-    const tokenB = mintOutboxToken();
-    sections.writeChannelSectionsOutbox(
-      PK,
-      sectionStore([{ id: "s2", name: "Two", order: 0 }]),
-      RELAY,
-      tokenB,
-    );
-    sections.clearChannelSectionsOutbox(PK, RELAY, tokenA);
-    const survived = sections.readChannelSectionsOutbox(PK, RELAY);
-    assert.ok(survived, "B's edit must survive A's stale clear");
-    assert.deepEqual(survived.sections, [{ id: "s2", name: "Two", order: 0 }]);
-    sections.clearChannelSectionsOutbox(PK, RELAY, tokenB);
-    assert.equal(sections.readChannelSectionsOutbox(PK, RELAY), null);
-  });
-});
-
-// ── (b) overwrite (merge lanes only): two windows click DIFFERENT channels →
-//        both survive in the durable outbox. This is the read-merge-write that
-//        distinguishes stars/mutes from the replace lanes.
-
-test("(b) stars: two windows clicking different channels both survive in the outbox", () => {
-  withFreshStorage(() => {
-    stars.writeChannelStarsOutbox(
-      PK,
+test("(ii) stars (merge): both windows' distinct-channel edits resume", () => {
+  withStorage((ls) => {
+    writeAt(
+      ls,
+      foreignKey("stars", "A"),
       starStore({ a: starEntry(true, 100, 1) }),
-      RELAY,
-      mintOutboxToken(),
+      100,
     );
-    // Window B does not read A first; its write must fold, not clobber.
-    stars.writeChannelStarsOutbox(
-      PK,
+    writeAt(
+      ls,
+      foreignKey("stars", "B"),
       starStore({ b: starEntry(true, 200, 1) }),
-      RELAY,
-      mintOutboxToken(),
+      200,
     );
-    const merged = stars.readChannelStarsOutbox(PK, RELAY);
-    assert.deepEqual(
-      merged.channels.a,
-      starEntry(true, 100, 1),
-      "A's click retained",
-    );
-    assert.deepEqual(
-      merged.channels.b,
-      starEntry(true, 200, 1),
-      "B's click retained",
-    );
-  });
-});
-
-test("(b) mutes: two windows clicking different channels both survive in the outbox", () => {
-  withFreshStorage(() => {
-    mutes.writeChannelMutesOutbox(
-      PK,
-      muteStore({ a: muteEntry(true, 100, 1) }),
-      RELAY,
-      mintOutboxToken(),
-    );
-    mutes.writeChannelMutesOutbox(
-      PK,
-      muteStore({ b: muteEntry(true, 200, 1) }),
-      RELAY,
-      mintOutboxToken(),
-    );
-    const merged = mutes.readChannelMutesOutbox(PK, RELAY);
-    assert.deepEqual(
-      merged.channels.a,
-      muteEntry(true, 100, 1),
-      "A's click retained",
-    );
-    assert.deepEqual(
-      merged.channels.b,
-      muteEntry(true, 200, 1),
-      "B's click retained",
-    );
-  });
-});
-
-test("(b) stars: same-channel concurrent writes resolve by merge order (higher rev wins)", () => {
-  withFreshStorage(() => {
-    stars.writeChannelStarsOutbox(
-      PK,
-      starStore({ c: starEntry(true, 100, 5) }),
-      RELAY,
-      mintOutboxToken(),
-    );
-    // A stale same-second peer write for the same channel folds and loses on rev.
-    stars.writeChannelStarsOutbox(
-      PK,
-      starStore({ c: starEntry(false, 100, 2) }),
-      RELAY,
-      mintOutboxToken(),
-    );
-    const merged = stars.readChannelStarsOutbox(PK, RELAY);
-    assert.deepEqual(
-      merged.channels.c,
-      starEntry(true, 100, 5),
-      "higher rev wins the same-second tie",
-    );
-  });
-});
-
-// ── (c) teardown-in-debounce → remount resumes a merged outbox. Window A edits
-//        and tears down before its debounce fires (edit persisted, not cleared);
-//        window B edits a different channel meanwhile. On remount the resume
-//        reads one merged outbox carrying both — no edit is lost across the
-//        teardown boundary. (Merge lanes; replace lanes resolve whole-blob LWW.)
-
-test("(c) stars: an edit persisted before teardown resumes merged with a peer's concurrent edit", () => {
-  withFreshStorage(() => {
-    // Window A persists its debounce-window edit, then tears down (no clear).
-    stars.writeChannelStarsOutbox(
-      PK,
-      starStore({ a: starEntry(true, 100, 1) }),
-      RELAY,
-      mintOutboxToken(),
-    );
-    // Window B persists a different channel before A's remount.
-    stars.writeChannelStarsOutbox(
-      PK,
-      starStore({ b: starEntry(true, 200, 1) }),
-      RELAY,
-      mintOutboxToken(),
-    );
-    // Remount reads the durable outbox (the hook's resume path); both survive.
     const resumed = stars.readChannelStarsOutbox(PK, RELAY);
     assert.deepEqual(resumed.channels.a, starEntry(true, 100, 1));
     assert.deepEqual(resumed.channels.b, starEntry(true, 200, 1));
   });
 });
 
-test("(c) mutes: an edit persisted before teardown resumes merged with a peer's concurrent edit", () => {
-  withFreshStorage(() => {
-    mutes.writeChannelMutesOutbox(
-      PK,
+test("(ii) mutes (merge): both windows' distinct-channel edits resume", () => {
+  withStorage((ls) => {
+    writeAt(
+      ls,
+      foreignKey("mutes", "A"),
       muteStore({ a: muteEntry(true, 100, 1) }),
-      RELAY,
-      mintOutboxToken(),
+      100,
     );
-    mutes.writeChannelMutesOutbox(
-      PK,
+    writeAt(
+      ls,
+      foreignKey("mutes", "B"),
       muteStore({ b: muteEntry(true, 200, 1) }),
-      RELAY,
-      mintOutboxToken(),
+      200,
     );
     const resumed = mutes.readChannelMutesOutbox(PK, RELAY);
     assert.deepEqual(resumed.channels.a, muteEntry(true, 100, 1));
@@ -300,105 +219,202 @@ test("(c) mutes: an edit persisted before teardown resumes merged with a peer's 
   });
 });
 
-// ── (d) adopt-path clear no-ops on a mismatched token (sort/sections). The
-//        adopt path clears the outbox after applying a newer remote head; it
-//        must not erase a peer window's fresher local edit.
-
-test("(d) sort: adopt-path clear with a stale token leaves the peer's fresher edit", () => {
-  withFreshStorage(() => {
-    // Window A adopted a remote head and holds tokenA (its last write).
-    const tokenA = mintOutboxToken();
-    sort.writeChannelSortOutbox(PK, sortStore({ dms: "alpha" }), RELAY, tokenA);
-    // Window B queues a fresher edit, replacing the token.
-    const tokenB = mintOutboxToken();
-    sort.writeChannelSortOutbox(
-      PK,
-      sortStore({ dms: "recent" }),
-      RELAY,
-      tokenB,
+test("(ii) sort (whole-blob): the newest queued window resumes; older is LWW-superseded", () => {
+  withStorage((ls) => {
+    writeAt(ls, foreignKey("sort", "A"), sortStore({ channels: "alpha" }), 100);
+    writeAt(
+      ls,
+      foreignKey("sort", "B"),
+      sortStore({ channels: "recent" }),
+      200,
     );
-    // A's adopt-path clear fires with its now-stale token → must no-op.
-    sort.clearChannelSortOutbox(PK, RELAY, tokenA);
-    assert.equal(sort.readChannelSortOutbox(PK, RELAY).groups.dms, "recent");
+    assert.equal(
+      sort.readChannelSortOutbox(PK, RELAY).groups.channels,
+      "recent",
+    );
   });
 });
 
-test("(d) sections: adopt-path clear with a stale token leaves the peer's fresher edit", () => {
-  withFreshStorage(() => {
-    const tokenA = mintOutboxToken();
-    sections.writeChannelSectionsOutbox(
-      PK,
+test("(ii) sections (whole-blob): the newest queued window resumes; older is LWW-superseded", () => {
+  withStorage((ls) => {
+    writeAt(
+      ls,
+      foreignKey("sections", "A"),
       sectionStore([{ id: "s1", name: "One", order: 0 }]),
-      RELAY,
-      tokenA,
+      100,
     );
-    const tokenB = mintOutboxToken();
-    sections.writeChannelSectionsOutbox(
-      PK,
-      sectionStore([{ id: "s1", name: "Renamed", order: 0 }]),
-      RELAY,
-      tokenB,
+    writeAt(
+      ls,
+      foreignKey("sections", "B"),
+      sectionStore([{ id: "s2", name: "Two", order: 0 }]),
+      200,
     );
-    sections.clearChannelSectionsOutbox(PK, RELAY, tokenA);
     assert.deepEqual(sections.readChannelSectionsOutbox(PK, RELAY).sections, [
-      { id: "s1", name: "Renamed", order: 0 },
+      { id: "s2", name: "Two", order: 0 },
     ]);
   });
 });
 
-// ── (e) legacy token-less resume: an outbox entry written by a prior (pre-token)
-//        build is a bare store, not a `{store, token}` envelope. It must still
-//        parse, resume, and be unconditionally clearable.
+// ── (iii) Legacy v1 shared key: replays, then reclaimed only by relay gating ───
+//
+// A pre-per-window build wrote one shared key. It enumerates as one more record
+// (queuedAt 0 for a bare store), resumes, and is reclaimed by the same relay-
+// gated rule — never dropped on replay alone (mixed dev/DMG fleet residual).
 
-test("(e) stars: a legacy bare-store outbox entry parses and is clearable", () => {
-  withFreshStorage((ls) => {
-    // Simulate a pre-token build's write: bare store under the outbox key.
-    const key = `buzz-channel-stars-outbox.v1:${PK}:${encodeURIComponent(RELAY)}`;
-    ls.setItem(key, JSON.stringify(starStore({ a: starEntry(true, 100, 0) })));
+test("(iii) stars: legacy shared key resumes, then is reclaimed once the head subsumes it", () => {
+  withStorage((ls) => {
+    // Legacy bare store (no envelope) from a pre-per-window build.
+    ls.setItem(
+      legacyKey("stars"),
+      JSON.stringify(starStore({ a: starEntry(true, 100, 1) })),
+    );
     const resumed = stars.readChannelStarsOutbox(PK, RELAY);
-    assert.ok(resumed, "legacy bare-store entry must parse");
-    assert.deepEqual(resumed.channels.a, starEntry(true, 100, 0));
-    // A token-carrying clear must still remove a legacy (token-less) entry.
-    stars.clearChannelStarsOutbox(PK, RELAY, mintOutboxToken());
-    assert.equal(stars.readChannelStarsOutbox(PK, RELAY), null);
+    assert.deepEqual(
+      resumed.channels.a,
+      starEntry(true, 100, 1),
+      "legacy entry resumes",
+    );
+    // A head that does NOT subsume it (older rev) keeps it.
+    stars.reclaimSubsumedStarsOutbox(
+      PK,
+      RELAY,
+      starStore({ a: starEntry(true, 50, 0) }),
+    );
+    assert.ok(ls.has(legacyKey("stars")), "unsubsumed legacy entry is kept");
+    // A head that subsumes it reclaims it.
+    stars.reclaimSubsumedStarsOutbox(
+      PK,
+      RELAY,
+      starStore({ a: starEntry(true, 100, 1) }),
+    );
+    assert.ok(
+      !ls.has(legacyKey("stars")),
+      "subsumed legacy entry is reclaimed",
+    );
   });
 });
 
-test("(e) sort: a legacy bare-store outbox entry parses and is clearable", () => {
-  withFreshStorage((ls) => {
-    const key = `buzz-channel-sort-outbox.v1:${PK}:${encodeURIComponent(RELAY)}`;
-    ls.setItem(key, JSON.stringify(sortStore({ forums: "recent" })));
-    const resumed = sort.readChannelSortOutbox(PK, RELAY);
-    assert.ok(resumed, "legacy bare-store entry must parse");
-    assert.equal(resumed.groups.forums, "recent");
-    sort.clearChannelSortOutbox(PK, RELAY, mintOutboxToken());
-    assert.equal(sort.readChannelSortOutbox(PK, RELAY), null);
+test("(iii) sections: legacy shared key resumes, then is reclaimed once the head supersedes it", () => {
+  withStorage((ls) => {
+    // Legacy entry as a {store, queuedAt} envelope from an interim build.
+    writeAt(
+      ls,
+      legacyKey("sections"),
+      sectionStore([{ id: "s1", name: "One", order: 0 }]),
+      100,
+    );
+    assert.deepEqual(sections.readChannelSectionsOutbox(PK, RELAY).sections, [
+      { id: "s1", name: "One", order: 0 },
+    ]);
+    // Head created_at before the queued stamp keeps it (not yet superseded).
+    sections.reclaimSupersededSectionsOutbox(PK, RELAY, 50);
+    assert.ok(
+      ls.has(legacyKey("sections")),
+      "un-superseded legacy entry is kept",
+    );
+    // Head created_at at/after the queued stamp supersedes and reclaims it.
+    sections.reclaimSupersededSectionsOutbox(PK, RELAY, 100);
+    assert.ok(
+      !ls.has(legacyKey("sections")),
+      "superseded legacy entry is reclaimed",
+    );
   });
 });
 
-// ── Token-envelope round-trip + omitted-token unconditional clear ──────────────
+// ── (iv) Whole-blob replay tie → deterministic nonce (key) tiebreak ────────────
 
-test("write/read/clear: envelope round-trips and an omitted token clears unconditionally", () => {
-  withFreshStorage(() => {
-    const token = mintOutboxToken();
+test("(iv) sort: equal-queuedAt records resolve by key so replay is deterministic", () => {
+  withStorage((ls) => {
+    writeAt(ls, foreignKey("sort", "aaa"), sortStore({ forums: "alpha" }), 100);
+    writeAt(
+      ls,
+      foreignKey("sort", "zzz"),
+      sortStore({ forums: "recent" }),
+      100,
+    );
+    // Same queuedAt → the lexicographically-greater key wins (…:zzz).
+    assert.equal(sort.readChannelSortOutbox(PK, RELAY).groups.forums, "recent");
+  });
+});
+
+// ── (v) Merge-lane replay is order-independent ─────────────────────────────────
+
+test("(v) stars: same-channel records fold to the max entry regardless of key order", () => {
+  withStorage((ls) => {
+    // Lower-rev record under a lexicographically-greater key (enumerated later)
+    // must still lose to the higher-rev record — merge is order-independent.
+    writeAt(
+      ls,
+      foreignKey("stars", "aaa"),
+      starStore({ c: starEntry(true, 100, 5) }),
+      100,
+    );
+    writeAt(
+      ls,
+      foreignKey("stars", "zzz"),
+      starStore({ c: starEntry(false, 100, 2) }),
+      200,
+    );
+    const merged = stars.readChannelStarsOutbox(PK, RELAY);
+    assert.deepEqual(
+      merged.channels.c,
+      starEntry(true, 100, 5),
+      "higher rev wins the tie",
+    );
+  });
+});
+
+// ── (vi) GC no-op when the head subsumes/supersedes nothing ────────────────────
+//
+// The hook calls reclaim only inside the `apply-remote` branch, so a `failed`
+// head fetch (or `absent`) never invokes it — that guard is structural in the
+// hook. At the storage layer the matching invariant is that a head which
+// subsumes/supersedes nothing removes nothing: a foreign edit newer than the
+// head is live intent and is kept, so a stale/empty head can never over-collect.
+
+test("(vi) stars: a head that subsumes nothing reclaims nothing", () => {
+  withStorage((ls) => {
+    const key = foreignKey("stars", "B");
+    writeAt(ls, key, starStore({ a: starEntry(true, 300, 2) }), 300);
+    // Empty head subsumes no channel → keep everything.
+    stars.reclaimSubsumedStarsOutbox(PK, RELAY, starStore({}));
+    assert.ok(ls.has(key), "unsubsumed foreign edit is kept");
+  });
+});
+
+test("(vi) sort: a head older than the queued edit supersedes nothing", () => {
+  withStorage((ls) => {
+    const key = foreignKey("sort", "B");
+    writeAt(ls, key, sortStore({ dms: "recent" }), 300);
+    // headCreatedAt=0 (absent-equivalent) < queuedAt → keep.
+    sort.reclaimSupersededSortOutbox(PK, RELAY, 0);
+    assert.ok(ls.has(key), "edit queued after the head is kept");
+  });
+});
+
+// ── Own-key round trip: write, read, clear (single-window baseline) ────────────
+
+test("own key: write resumes, clear removes only this window's own key", () => {
+  withStorage((ls) => {
     stars.writeChannelStarsOutbox(
       PK,
       starStore({ a: starEntry(true, 100, 1) }),
       RELAY,
-      token,
     );
-    assert.deepEqual(
-      stars.readChannelStarsOutbox(PK, RELAY).channels.a,
-      starEntry(true, 100, 1),
+    const ownKey = `${PREFIX.stars}:${SCOPE}:${outboxWindowNonce()}`;
+    assert.ok(ls.has(ownKey), "own edit is written under this window's nonce");
+    // A foreign peer key is untouched by an own-key clear.
+    writeAt(
+      ls,
+      foreignKey("stars", "peer"),
+      starStore({ z: starEntry(true, 9, 1) }),
+      9,
     );
-    // Omitted token = unconditional clear (bootstrap "nothing to resume" path).
     stars.clearChannelStarsOutbox(PK, RELAY);
-    assert.equal(stars.readChannelStarsOutbox(PK, RELAY), null);
+    assert.ok(!ls.has(ownKey), "own key cleared");
+    assert.ok(
+      ls.has(foreignKey("stars", "peer")),
+      "foreign key untouched by own clear",
+    );
   });
-});
-
-test("mintOutboxToken: successive mints are distinct", () => {
-  const seen = new Set();
-  for (let i = 0; i < 1000; i++) seen.add(mintOutboxToken());
-  assert.equal(seen.size, 1000, "every minted token must be unique");
 });

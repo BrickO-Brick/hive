@@ -16,7 +16,6 @@ import {
 import {
   advanceWatermark,
   clampPublishCreatedAt,
-  mintOutboxToken,
   readWatermark,
   runBootstrap,
   type FetchResult,
@@ -63,13 +62,6 @@ export class ChannelStarSyncManager {
   // compare-and-swap on this generation, so an older in-flight publish can
   // never erase a newer edit that arrived while it was in flight.
   private pendingGeneration = 0;
-  // The ownership token of the durable outbox entry this window most recently
-  // wrote. A completion (success or no-op) clears the shared outbox only when
-  // its stored token still matches this one, so a peer window that read-merge-
-  // wrote the entry (replacing the token) keeps its still-unpublished clicks.
-  // Reset to null once cleared so a stale token can never authorize a later
-  // clear.
-  private pendingOutboxToken: string | null = null;
   // Publish cycles are serialized: at most one runs at a time. A newer edit
   // queued while a cycle is in flight defers; the in-flight cycle's completion
   // re-drives it. Serialization guarantees there is never more than one
@@ -169,16 +161,10 @@ export class ChannelStarSyncManager {
     this.pendingStore = store;
     ++this.pendingGeneration;
     // Persist synchronously so a click made <2s before quit/community-switch
-    // survives teardown and resumes on next mount (durable outbox). Mint a fresh
-    // ownership token: the write read-merges into a peer window's persisted
-    // clicks, and the token lets a later completion clear only what it still owns.
-    this.pendingOutboxToken = mintOutboxToken();
-    writeChannelStarsOutbox(
-      this.pubkey,
-      store,
-      this.relayUrl,
-      this.pendingOutboxToken,
-    );
+    // survives teardown and resumes on next mount (durable outbox). This
+    // window's own key is the only one written — a single unconditional
+    // setItem, never a shared-key read-modify-write.
+    writeChannelStarsOutbox(this.pubkey, store, this.relayUrl);
     if (this.debounceTimer !== null) {
       window.clearTimeout(this.debounceTimer);
     }
@@ -265,30 +251,15 @@ export class ChannelStarSyncManager {
   }
 
   /**
-   * Clear the in-memory pending edit and its durable outbox — but only if the
-   * completing publish still owns the current generation. A publish for an
-   * older edit that finishes after a newer edit was queued must leave the newer
-   * edit (and its retry state) untouched.
+   * Clear the in-memory pending edit and this window's own durable outbox key —
+   * but only if the completing publish still owns the current generation. A
+   * publish for an older edit that finishes after a newer edit was queued must
+   * leave the newer edit (and its retry state) untouched.
    */
   private discardPending(gen: number): void {
     if (gen !== this.pendingGeneration) return;
     this.pendingStore = null;
-    this.clearOwnedOutbox();
-  }
-
-  /**
-   * Compare-and-clear the shared outbox against the token this window wrote, so
-   * a peer window that read-merge-wrote the entry (replacing the token) keeps
-   * its still-unpublished clicks. Reset the token so a stale value cannot
-   * authorize a later clear.
-   */
-  private clearOwnedOutbox(): void {
-    clearChannelStarsOutbox(
-      this.pubkey,
-      this.relayUrl,
-      this.pendingOutboxToken ?? undefined,
-    );
-    this.pendingOutboxToken = null;
+    clearChannelStarsOutbox(this.pubkey, this.relayUrl);
   }
 
   /** Schedule a bounded-backoff retry of the retained pending edit. */

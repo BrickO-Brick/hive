@@ -1,8 +1,9 @@
 import { normalizeRelayUrl } from "@/shared/lib/normalizeRelayUrl";
 import {
-  clearOutboxEntry,
-  readOutboxEntry,
-  writeOutboxEntry,
+  clearOwnOutbox,
+  latestOutbox,
+  reclaimOutbox,
+  writeOwnOutbox,
 } from "./sidebarSyncWatermark";
 
 const STORAGE_KEY_PREFIX = "buzz-channel-sections.v1";
@@ -202,55 +203,79 @@ export function writeChannelSectionsStore(
 
 const OUTBOX_KEY_PREFIX = "buzz-channel-sections-outbox.v1";
 
-function outboxKey(pubkey: string, relayUrl: string): string {
+// The single shared key written by builds before the outbox was keyed
+// per-window. Enumerated as one more record so an edit persisted by a prior
+// build still resumes, and reclaimed by the same relay-gated rule.
+function legacyOutboxKey(pubkey: string, relayUrl: string): string {
   return `${OUTBOX_KEY_PREFIX}:${pubkey}:${encodeURIComponent(normalizeRelayUrl(relayUrl))}`;
 }
 
 /**
- * Persist an unpublished edit so it survives quit/community-switch within the
- * 2s publish debounce. Written synchronously on every edit; cleared once the
- * edit is published, superseded by an adopted remote head, or found identical
- * to the last published store. Resumed on next mount so a durable intent is
- * never silently dropped at teardown.
- *
- * Whole-blob LWW: the write REPLACES the shared entry, and `token` gives the
- * writing window cross-window ownership so a peer's older completing publish
- * (which carries a different token) cannot clear this newer edit.
+ * Persist this window's unpublished edit under its own outbox key. Written
+ * synchronously on every edit as a single unconditional `setItem` (no shared-
+ * key read-modify-write); resumed on next mount so an edit made <2s before
+ * quit/community-switch is never dropped. `queuedAt` stamps the write so resume
+ * replays only the newest queued blob (whole-blob LWW).
  */
 export function writeChannelSectionsOutbox(
   pubkey: string,
   store: ChannelSectionStore,
   relayUrl: string,
-  token: string,
 ): void {
-  writeOutboxEntry(
-    outboxKey(pubkey, relayUrl),
+  writeOwnOutbox(
+    OUTBOX_KEY_PREFIX,
+    pubkey,
+    relayUrl,
     boundChannelSectionsStore(store),
-    token,
-  );
-}
-
-/** Read a persisted unpublished edit, or null when none/unparseable. */
-export function readChannelSectionsOutbox(
-  pubkey: string,
-  relayUrl: string,
-): ChannelSectionStore | null {
-  return (
-    readOutboxEntry(outboxKey(pubkey, relayUrl), parseChannelSectionPayload)
-      ?.store ?? null
   );
 }
 
 /**
- * Clear the persisted outbox (edit published, superseded, or a no-op).
- * Compare-and-clear on `token`: a peer window that overwrote the entry replaced
- * the token, so an older window's completion no-ops and the peer's edit
- * survives. Omit `token` to clear unconditionally.
+ * The newest window's persisted unpublished edit for resume, or null when none
+ * exists. Whole-blob LWW: only the max-`queuedAt` record is replayed, so an
+ * older blob a peer queued is superseded by definition, never resurrected.
  */
+export function readChannelSectionsOutbox(
+  pubkey: string,
+  relayUrl: string,
+): ChannelSectionStore | null {
+  return latestOutbox(
+    OUTBOX_KEY_PREFIX,
+    legacyOutboxKey(pubkey, relayUrl),
+    pubkey,
+    relayUrl,
+    parseChannelSectionPayload,
+  );
+}
+
+/** Clear this window's own outbox key (its edit published or is a no-op). */
 export function clearChannelSectionsOutbox(
   pubkey: string,
   relayUrl: string,
-  token?: string,
 ): void {
-  clearOutboxEntry(outboxKey(pubkey, relayUrl), token);
+  clearOwnOutbox(OUTBOX_KEY_PREFIX, pubkey, relayUrl);
+}
+
+/**
+ * Reclaim foreign outbox keys the relay head itself supersedes: a whole-blob
+ * record queued at or before the durable head's `created_at` (`queuedAt` ≤
+ * `headCreatedAt`) lost LWW to a blob the relay already holds, so dropping it
+ * matches the relay's own resolution. A record queued AFTER the head is live
+ * intent the head does not yet reflect and is kept — never reclaimed merely for
+ * losing a local max-`queuedAt` comparison. Never touches this window's own key
+ * and rechecks each key before removing. Call only after a successful fetch.
+ */
+export function reclaimSupersededSectionsOutbox(
+  pubkey: string,
+  relayUrl: string,
+  headCreatedAt: number,
+): void {
+  reclaimOutbox(
+    OUTBOX_KEY_PREFIX,
+    legacyOutboxKey(pubkey, relayUrl),
+    pubkey,
+    relayUrl,
+    parseChannelSectionPayload,
+    (record) => record.queuedAt <= headCreatedAt,
+  );
 }

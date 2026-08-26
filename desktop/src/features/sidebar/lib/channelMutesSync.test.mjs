@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test, { mock } from "node:test";
 
 import { relayClient } from "@/shared/api/relayClient";
+import { readChannelMutesOutbox } from "./channelMutesStorage.ts";
 import { ChannelMuteSyncManager } from "./channelMutesSync.ts";
 import {
   installFakeWindow,
@@ -28,6 +29,10 @@ function makeMultiTimerWindow() {
       getItem: (k) => storage.get(k) ?? null,
       setItem: (k, v) => storage.set(k, v),
       removeItem: (k) => storage.delete(k),
+      get length() {
+        return storage.size;
+      },
+      key: (i) => [...storage.keys()][i] ?? null,
     },
     setTimeout: (fn, ms) => {
       const id = nextId++;
@@ -167,7 +172,6 @@ test("A-in-flight → B-click → A-succeeds: B stays pending and B publishes", 
   const t = makeMultiTimerWindow();
   const restore = installFakeWindow(t.win);
   const tauri = installTauriMock("{}");
-  const outboxKey = `buzz-channel-mutes-outbox.v1:pk-ab:${RELAY_KEY}`;
   try {
     const manager = new ChannelMuteSyncManager("pk-ab", RELAY);
     const storeA = makeStore({ a: E(true, 100, 1) });
@@ -184,7 +188,7 @@ test("A-in-flight → B-click → A-succeeds: B stays pending and B publishes", 
       ["b"],
       "B is now pending",
     );
-    assert.ok(t.storage.get(outboxKey), "outbox holds B");
+    assert.ok(readChannelMutesOutbox("pk-ab", RELAY), "outbox holds B");
 
     // A completes — must NOT clear B.
     releaseFirst();
@@ -194,7 +198,10 @@ test("A-in-flight → B-click → A-succeeds: B stays pending and B publishes", 
       ["b"],
       "older A completion leaves B pending",
     );
-    assert.ok(t.storage.get(outboxKey), "older A completion leaves B outbox");
+    assert.ok(
+      readChannelMutesOutbox("pk-ab", RELAY),
+      "older A completion leaves B outbox",
+    );
 
     // B's own debounce fires and B reaches the relay (published) with no kick.
     const capturedBefore = tauri.capturedPlaintext();
@@ -210,7 +217,11 @@ test("A-in-flight → B-click → A-succeeds: B stays pending and B publishes", 
       null,
       "B cleared after publish",
     );
-    assert.equal(t.storage.get(outboxKey), undefined, "B outbox cleared");
+    assert.equal(
+      readChannelMutesOutbox("pk-ab", RELAY),
+      null,
+      "B outbox cleared",
+    );
     manager.destroy();
   } finally {
     tauri.restore();
@@ -237,7 +248,6 @@ test("A-in-flight → B-click → A-fails: B remains pending and B publishes", a
   const t = makeMultiTimerWindow();
   const restore = installFakeWindow(t.win);
   const tauri = installTauriMock("{}");
-  const outboxKey = `buzz-channel-mutes-outbox.v1:pk-abfail:${RELAY_KEY}`;
   try {
     const manager = new ChannelMuteSyncManager("pk-abfail", RELAY);
     manager.publishMutes(makeStore({ a: E(true, 100, 1) }));
@@ -253,7 +263,10 @@ test("A-in-flight → B-click → A-fails: B remains pending and B publishes", a
       ["b"],
       "B still pending after A's failure",
     );
-    assert.ok(t.storage.get(outboxKey), "B outbox intact after A's failure");
+    assert.ok(
+      readChannelMutesOutbox("pk-abfail", RELAY),
+      "B outbox intact after A's failure",
+    );
 
     // B's debounce fires and B publishes successfully.
     await t.fireDelay(2000);

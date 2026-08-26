@@ -15,7 +15,6 @@ import {
 import {
   advanceWatermark,
   clampPublishCreatedAt,
-  mintOutboxToken,
   readWatermark,
   runBootstrap,
   type FetchResult,
@@ -142,12 +141,6 @@ export class ChannelSortSyncManager {
   // compare-and-swap on this generation, so an older in-flight publish can
   // never erase a newer edit that arrived while it was in flight.
   private pendingGeneration = 0;
-  // The ownership token of the durable outbox entry this window most recently
-  // wrote. A completion (publish/adopt/no-op) clears the shared outbox only when
-  // its stored token still matches this one, so a peer window that overwrote the
-  // entry (replacing the token) keeps its still-unpublished edit. Reset to null
-  // once cleared so a stale token can never authorize a later clear.
-  private pendingOutboxToken: string | null = null;
   // Publish cycles are serialized: at most one runs at a time. A newer edit
   // queued while a cycle is in flight defers; the in-flight cycle's completion
   // re-drives it. This kills the cross-generation race class by construction.
@@ -259,37 +252,22 @@ export class ChannelSortSyncManager {
     this.recordRemoteHead(remote.createdAt, remote.eventId);
     if (gen !== this.pendingGeneration) return;
     this.pendingStore = null;
-    this.clearOwnedOutbox();
+    clearChannelSortOutbox(this.pubkey, this.relayUrl);
     this.lastPublishedStore = remote.store;
     if (this.destroyed) return;
     this.onRemoteAdopted?.(remote);
   }
 
   /**
-   * Clear the in-memory pending edit and its durable outbox — but only if the
-   * completing publish still owns the current generation. A publish for an older
-   * edit that finishes after a newer edit was queued must leave the newer edit
-   * (and its retry state) untouched.
+   * Clear the in-memory pending edit and this window's own durable outbox key —
+   * but only if the completing publish still owns the current generation. A
+   * publish for an older edit that finishes after a newer edit was queued must
+   * leave the newer edit (and its retry state) untouched.
    */
   private discardPending(gen: number): void {
     if (gen !== this.pendingGeneration) return;
     this.pendingStore = null;
-    this.clearOwnedOutbox();
-  }
-
-  /**
-   * Compare-and-clear the shared outbox against the token this window wrote, so
-   * a peer window that overwrote the entry (replacing the token) keeps its
-   * still-unpublished edit. Reset the token so a stale value cannot authorize a
-   * later clear.
-   */
-  private clearOwnedOutbox(): void {
-    clearChannelSortOutbox(
-      this.pubkey,
-      this.relayUrl,
-      this.pendingOutboxToken ?? undefined,
-    );
-    this.pendingOutboxToken = null;
+    clearChannelSortOutbox(this.pubkey, this.relayUrl);
   }
 
   publishSortPrefs(store: ChannelSortStore): void {
@@ -304,16 +282,11 @@ export class ChannelSortSyncManager {
     // than mistaken for a competing remote.
     this.publishBaseline = { ...this.lastRemoteHead };
     // Persist synchronously so an edit made <2s before quit/community-switch
-    // survives teardown and resumes on next mount (durable outbox). Mint a fresh
-    // ownership token: whole-blob LWW means this write REPLACES the shared entry,
-    // and the token lets a later completion clear only what it still owns.
-    this.pendingOutboxToken = mintOutboxToken();
-    writeChannelSortOutbox(
-      this.pubkey,
-      store,
-      this.relayUrl,
-      this.pendingOutboxToken,
-    );
+    // survives teardown and resumes on next mount (durable outbox). This
+    // window's own key is the only one written — a single unconditional
+    // setItem, never a shared-key read-modify-write; `queuedAt` stamps it so
+    // resume replays only the newest queued blob (whole-blob LWW).
+    writeChannelSortOutbox(this.pubkey, store, this.relayUrl);
     if (this.debounceTimer !== null) {
       window.clearTimeout(this.debounceTimer);
     }

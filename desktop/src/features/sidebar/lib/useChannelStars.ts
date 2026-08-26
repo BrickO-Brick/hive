@@ -8,6 +8,7 @@ import {
   mergeStores,
   readChannelStarsOutbox,
   readChannelStarsStore,
+  reclaimSubsumedStarsOutbox,
   starredChannelIdsFromStore,
   storageKey,
   writeChannelStarsStore,
@@ -106,10 +107,15 @@ export function useChannelStars(
       if (cancelled) return;
       if (result.action === "apply-remote") {
         setStore(applyRemote(result.data));
+        // Head fetch succeeded: reclaim any foreign window's outbox key the
+        // head already subsumes (a peer that published then quit). Gated on the
+        // fetched head and rechecked per key, so a live peer's unpublished edit
+        // is never destroyed. A `hold` (absent/failed head) reclaims nothing.
+        reclaimSubsumedStarsOutbox(pubkey, relayUrl, result.data.store);
       }
-      // "hold": seed already performed by bootstrap (if first-sync), or blocked.
-      // Resume any edit persisted to the durable outbox before a prior
-      // quit/community-switch so a click made <2s before teardown still syncs.
+      // Resume every window's edit persisted to the durable outbox before a
+      // prior quit/community-switch so a click made <2s before teardown still
+      // syncs. Merges all records (order-independent), then publishes.
       const outbox = readChannelStarsOutbox(pubkey, relayUrl);
       if (outbox) {
         managerRef.current?.publishStars(outbox);

@@ -7,6 +7,7 @@ import {
   DEFAULT_STORE,
   readChannelSectionsOutbox,
   readChannelSectionsStore,
+  reclaimSupersededSectionsOutbox,
   storageKey,
   writeChannelSectionsStore,
 } from "./channelSectionsStorage";
@@ -143,6 +144,15 @@ export function useChannelSections(
       if (cancelled) return;
       if (result.action === "apply-remote") {
         setStore(applyRemote(result.data));
+        // Head fetch succeeded: reclaim any foreign window's outbox key the
+        // relay head itself supersedes (`queuedAt` ≤ head `created_at`). Gated
+        // on the fetched head and rechecked per key, so a live peer's edit
+        // queued after the head is kept. A `hold` (absent/failed) reclaims none.
+        reclaimSupersededSectionsOutbox(
+          pubkey,
+          relayUrl,
+          result.data.createdAt,
+        );
       }
       // "hold": seed already performed by bootstrap (if first-sync), or
       // blocked (failed fetch / prior watermark). The reconciliation effect

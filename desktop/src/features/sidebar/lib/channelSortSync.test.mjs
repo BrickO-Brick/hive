@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test, { mock } from "node:test";
 
 import { relayClient } from "@/shared/api/relayClient";
+import { readChannelSortOutbox } from "./channelSortPreference.ts";
 import { ChannelSortSyncManager } from "./channelSortSync.ts";
 import {
   makeFakeWindow,
@@ -15,7 +16,6 @@ function makeStore(groups = {}) {
 
 const RELAY = "wss://r.test";
 const RELAY_KEY = encodeURIComponent(RELAY);
-const OUTBOX_KEY = (pk) => `buzz-channel-sort-outbox.v1:${pk}:${RELAY_KEY}`;
 
 // ─── destroy() must cancel pending publish, not flush ─────────────────────────
 test("destroy: cancels pending publish without flushing to the relay", () => {
@@ -185,7 +185,7 @@ test("adopt-winner: newer remote head at pre-publish adopts remote and skips pub
     manager.setOnRemoteAdopted((r) => adopted.push(r));
     manager.publishSortPrefs(makeStore({ "local-group": "recent" }));
     assert.ok(
-      fw.localStorage.getItem(OUTBOX_KEY("pk-lww")) !== null,
+      readChannelSortOutbox("pk-lww", RELAY) !== null,
       "edit must be persisted to the durable outbox",
     );
     fw._fireTimer();
@@ -202,7 +202,7 @@ test("adopt-winner: newer remote head at pre-publish adopts remote and skips pub
     );
     assert.equal(manager.getPendingStore(), null, "pending must be cleared");
     assert.equal(
-      fw.localStorage.getItem(OUTBOX_KEY("pk-lww")),
+      readChannelSortOutbox("pk-lww", RELAY),
       null,
       "outbox must be cleared on adopt so the loser is never replayed",
     );
@@ -231,7 +231,7 @@ test("adopt-winner: local edit at/ahead of head publishes and clears outbox", as
     await new Promise((r) => setTimeout(r, 20));
     assert.equal(publishCalls.length, 1, "local edit must be published");
     assert.equal(
-      fw.localStorage.getItem(OUTBOX_KEY("pk-win")),
+      readChannelSortOutbox("pk-win", RELAY),
       null,
       "outbox must be cleared once the edit is published",
     );
@@ -309,20 +309,20 @@ test("durable outbox: edit destroyed inside the debounce resumes and publishes o
     // Window 1: edit then destroy before the debounce fires.
     const m1 = new ChannelSortSyncManager("pk-resume", RELAY);
     m1.publishSortPrefs(makeStore({ channels: "recent" }));
-    const persisted = fw.localStorage.getItem(OUTBOX_KEY("pk-resume"));
+    const persisted = readChannelSortOutbox("pk-resume", RELAY);
     assert.ok(persisted !== null, "edit must be persisted before teardown");
     m1.destroy();
     assert.equal(publishCalls.length, 0, "destroy must not flush");
 
     // Window 2: resume the persisted outbox (the hook does this after bootstrap
-    // via readChannelSortOutbox, which unwraps the `{store, token}` envelope).
+    // via readChannelSortOutbox, which enumerates every window's outbox key).
     const m2 = new ChannelSortSyncManager("pk-resume", RELAY);
-    m2.publishSortPrefs(JSON.parse(persisted).store);
+    m2.publishSortPrefs(persisted);
     fw._fireTimer();
     await new Promise((r) => setTimeout(r, 20));
     assert.equal(publishCalls.length, 1, "resumed edit must publish");
     assert.equal(
-      fw.localStorage.getItem(OUTBOX_KEY("pk-resume")),
+      readChannelSortOutbox("pk-resume", RELAY),
       null,
       "outbox must be cleared once the resumed edit publishes",
     );
@@ -399,6 +399,10 @@ test("overlapping publishes: older completion does not erase a newer queued edit
       getItem: (k) => storage.get(k) ?? null,
       setItem: (k, v) => storage.set(k, v),
       removeItem: (k) => storage.delete(k),
+      get length() {
+        return storage.size;
+      },
+      key: (i) => [...storage.keys()][i] ?? null,
     },
     setTimeout: (fn, ms) => {
       const id = nextId++;
@@ -430,9 +434,7 @@ test("overlapping publishes: older completion does not erase a newer queued edit
       "B is now the pending edit",
     );
     assert.deepEqual(
-      Object.keys(
-        JSON.parse(storage.get(OUTBOX_KEY("pk-overlap"))).store.groups,
-      ),
+      Object.keys(readChannelSortOutbox("pk-overlap", RELAY)?.groups ?? {}),
       ["dms"],
       "outbox holds B",
     );
@@ -448,7 +450,7 @@ test("overlapping publishes: older completion does not erase a newer queued edit
       "older completion must leave B pending",
     );
     assert.ok(
-      storage.get(OUTBOX_KEY("pk-overlap")) !== undefined,
+      readChannelSortOutbox("pk-overlap", RELAY) !== null,
       "older completion must leave B's outbox intact",
     );
     manager.destroy();

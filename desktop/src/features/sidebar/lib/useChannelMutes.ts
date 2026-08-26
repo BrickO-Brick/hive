@@ -9,6 +9,7 @@ import {
   mutedChannelIdsFromStore,
   readChannelMutesOutbox,
   readChannelMutesStore,
+  reclaimSubsumedMutesOutbox,
   storageKey,
   writeChannelMutesStore,
   type ChannelMuteEntry,
@@ -106,6 +107,11 @@ export function useChannelMutes(
       if (cancelled) return;
       if (result.action === "apply-remote") {
         setStore(applyRemote(result.data));
+        // Head fetch succeeded: reclaim any foreign window's outbox key the
+        // head already subsumes (a peer that published then quit). Gated on the
+        // fetched head and rechecked per key, so a live peer's unpublished edit
+        // is never destroyed. A `hold` (absent/failed head) reclaims nothing.
+        reclaimSubsumedMutesOutbox(pubkey, relayUrl, result.data.store);
       }
       // "hold": seed already performed by bootstrap (if first-sync), or blocked.
       // Resume any edit persisted to the durable outbox before a prior

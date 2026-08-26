@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test, { mock } from "node:test";
 
 import { relayClient } from "@/shared/api/relayClient";
+import { readChannelSectionsOutbox } from "./channelSectionsStorage.ts";
 import { ChannelSectionSyncManager } from "./channelSectionsSync.ts";
 import {
   makeFakeWindow,
@@ -219,9 +220,7 @@ test("adopt-winner: newer remote head at pre-publish adopts remote and skips pub
     );
     // Outbox persisted synchronously on the edit.
     assert.ok(
-      fw.localStorage.getItem(
-        `buzz-channel-sections-outbox.v1:pk-lww:${RELAY_KEY}`,
-      ) !== null,
+      readChannelSectionsOutbox("pk-lww", RELAY) !== null,
       "edit must be persisted to the durable outbox",
     );
     fw._fireTimer();
@@ -238,9 +237,7 @@ test("adopt-winner: newer remote head at pre-publish adopts remote and skips pub
     );
     assert.equal(manager.getPendingStore(), null, "pending must be cleared");
     assert.equal(
-      fw.localStorage.getItem(
-        `buzz-channel-sections-outbox.v1:pk-lww:${RELAY_KEY}`,
-      ),
+      readChannelSectionsOutbox("pk-lww", RELAY),
       null,
       "outbox must be cleared on adopt so the loser is never replayed",
     );
@@ -271,9 +268,7 @@ test("adopt-winner: local edit at/ahead of head publishes and clears outbox", as
     await new Promise((r) => setTimeout(r, 20));
     assert.equal(publishCalls.length, 1, "local edit must be published");
     assert.equal(
-      fw.localStorage.getItem(
-        `buzz-channel-sections-outbox.v1:pk-win:${RELAY_KEY}`,
-      ),
+      readChannelSectionsOutbox("pk-win", RELAY),
       null,
       "outbox must be cleared once the edit is published",
     );
@@ -414,6 +409,10 @@ test("overlapping publishes: older completion does not erase a newer queued edit
       getItem: (k) => storage.get(k) ?? null,
       setItem: (k, v) => storage.set(k, v),
       removeItem: (k) => storage.delete(k),
+      get length() {
+        return storage.size;
+      },
+      key: (i) => [...storage.keys()][i] ?? null,
     },
     setTimeout: (fn, ms) => {
       const id = nextId++;
@@ -432,7 +431,6 @@ test("overlapping publishes: older completion does not erase a newer queued edit
   };
   const restore = installFakeWindow(fakeWindow);
   const tauri = installTauriMock("{}");
-  const outboxKey = `buzz-channel-sections-outbox.v1:pk-overlap:${RELAY_KEY}`;
   try {
     const manager = new ChannelSectionSyncManager("pk-overlap", RELAY);
     const storeA = makeSectionsStore([{ id: "a", name: "A", order: 0 }]);
@@ -450,7 +448,7 @@ test("overlapping publishes: older completion does not erase a newer queued edit
       "B is now the pending edit",
     );
     assert.equal(
-      JSON.parse(storage.get(outboxKey)).store.sections[0].id,
+      readChannelSectionsOutbox("pk-overlap", RELAY).sections[0].id,
       "b",
       "outbox holds B",
     );
@@ -467,7 +465,7 @@ test("overlapping publishes: older completion does not erase a newer queued edit
       "older completion must leave B pending",
     );
     assert.ok(
-      storage.get(outboxKey) !== undefined,
+      readChannelSectionsOutbox("pk-overlap", RELAY) !== null,
       "older completion must leave B's outbox intact",
     );
     assert.ok(
@@ -520,6 +518,10 @@ test("live remote during debounce is adopted at pre-publish, not overwritten", a
       getItem: (k) => storage.get(k) ?? null,
       setItem: (k, v) => storage.set(k, v),
       removeItem: (k) => storage.delete(k),
+      get length() {
+        return storage.size;
+      },
+      key: (i) => [...storage.keys()][i] ?? null,
     },
     setTimeout: (fn, ms) => {
       const id = nextId++;
@@ -543,7 +545,6 @@ test("live remote during debounce is adopted at pre-publish, not overwritten", a
       assignments: {},
     }),
   );
-  const outboxKey = `buzz-channel-sections-outbox.v1:pk-livedebounce:${RELAY_KEY}`;
   try {
     const manager = new ChannelSectionSyncManager("pk-livedebounce", RELAY);
     const adopted = [];
@@ -573,8 +574,8 @@ test("live remote during debounce is adopted at pre-publish, not overwritten", a
     );
     assert.equal(manager.getPendingStore(), null, "pending cleared on adopt");
     assert.equal(
-      storage.get(outboxKey),
-      undefined,
+      readChannelSectionsOutbox("pk-livedebounce", RELAY),
+      null,
       "outbox cleared on adopt so the loser can't replay",
     );
     manager.destroy();

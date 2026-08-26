@@ -86,6 +86,9 @@ test("live remote while a local edit is pending defers to the pending edit", asy
   const { act, cleanup, renderHook } = await import("@testing-library/react");
   const { relayClient } = await import("@/shared/api/relayClient");
   const { useChannelSections } = await import("./useChannelSections.ts");
+  const { readChannelSectionsOutbox } = await import(
+    "./channelSectionsStorage.ts"
+  );
 
   const origFetch = relayClient.fetchEvents;
   const origLive = relayClient.subscribeLive;
@@ -130,7 +133,6 @@ test("live remote while a local edit is pending defers to the pending edit", asy
 
   const pubkey = "pk-live-pending";
   const relayUrl = "wss://r.live";
-  const outboxKey = `buzz-channel-sections-outbox.v1:${pubkey}:${encodeURIComponent(relayUrl)}`;
 
   let hook = null;
   try {
@@ -147,7 +149,7 @@ test("live remote while a local edit is pending defers to the pending edit", asy
       hook.result.current.createSection("Local");
     });
     assert.ok(
-      window.localStorage.getItem(outboxKey),
+      readChannelSectionsOutbox(pubkey, relayUrl),
       "local edit persisted to outbox",
     );
     const localSectionIds = hook.result.current.sections.map((s) => s.id);
@@ -173,7 +175,7 @@ test("live remote while a local edit is pending defers to the pending edit", asy
       "pending local edit must NOT be overwritten by the live remote",
     );
     assert.ok(
-      window.localStorage.getItem(outboxKey),
+      readChannelSectionsOutbox(pubkey, relayUrl),
       "outbox for the pending edit must survive the live remote",
     );
     hook.unmount();

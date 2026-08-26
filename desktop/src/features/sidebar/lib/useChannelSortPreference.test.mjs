@@ -29,6 +29,7 @@ test("live remote while a local edit is pending defers to the pending edit", asy
   const { useChannelSortPreference } = await import(
     "./useChannelSortPreference.ts"
   );
+  const { readChannelSortOutbox } = await import("./channelSortPreference.ts");
 
   const origFetch = relayClient.fetchEvents;
   const origLive = relayClient.subscribeLive;
@@ -72,7 +73,6 @@ test("live remote while a local edit is pending defers to the pending edit", asy
 
   const pubkey = "pk-sort-pending";
   const relayUrl = "wss://r.live";
-  const outboxKey = `buzz-channel-sort-outbox.v1:${pubkey}:${encodeURIComponent(relayUrl)}`;
 
   let hook = null;
   try {
@@ -89,7 +89,7 @@ test("live remote while a local edit is pending defers to the pending edit", asy
       hook.result.current.setSortModeFor("channels", "recent");
     });
     assert.ok(
-      window.localStorage.getItem(outboxKey),
+      readChannelSortOutbox(pubkey, relayUrl),
       "local edit persisted to outbox",
     );
     assert.equal(
@@ -124,7 +124,7 @@ test("live remote while a local edit is pending defers to the pending edit", asy
       "remote store must not have been applied over the pending edit",
     );
     assert.ok(
-      window.localStorage.getItem(outboxKey),
+      readChannelSortOutbox(pubkey, relayUrl),
       "outbox for the pending edit must survive the live remote",
     );
     hook.unmount();
