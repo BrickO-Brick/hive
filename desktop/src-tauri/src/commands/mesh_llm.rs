@@ -295,6 +295,19 @@ async fn query_mesh_discovery_events_for_mode(
     }
 }
 
+/// Resolve model availability using the same relay-mode probe and discovery
+/// query as mesh startup and routing. Agent model pickers must go through this
+/// path too: the legacy closed-mode helper rejects every open relay because an
+/// open relay correctly publishes no membership snapshot.
+pub(crate) async fn resolve_mesh_availability(
+    state: &AppState,
+) -> Result<mesh_llm::MeshAvailability, String> {
+    let relay_url = relay::relay_ws_url_with_override(state);
+    let mode = resolved_relay_mesh_mode(&relay_url).await;
+    let events = query_mesh_discovery_events_for_mode(state, &relay_url, mode).await?;
+    Ok(mesh_llm::availability_from_events_for_mode(events, mode))
+}
+
 /// Resolve the admission roster by intersecting member-signed mesh status
 /// reporters with the current NIP-43 direct-member list.
 ///
