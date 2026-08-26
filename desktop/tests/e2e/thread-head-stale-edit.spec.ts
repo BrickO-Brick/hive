@@ -9,9 +9,12 @@ import { waitForAnimations } from "../helpers/animations";
 // edit) but its overlay was previously dropped, relying solely on the async
 // thread-reply aux backfill — so before that fetch lands the head renders stale.
 //
-// We reproduce the divergence deterministically by delaying the thread-replies
-// fetch (`threadRepliesDelayMs`): the channel window already holds the edit, but
-// the thread-aux response is still in flight when the panel first renders.
+// We reproduce the divergence deterministically by *gating* the thread-replies
+// fetch (`deferThreadReplies`): the channel window already holds the edit, but
+// the thread-aux response is held open — it provably cannot land until the test
+// releases it. This is stronger than a timed delay: a 4s timer self-heals
+// inside Playwright's auto-retry window, so on the buggy code the delayed aux
+// backfill could arrive mid-assertion and false-green. A held gate cannot.
 
 const CHANNEL = "general";
 const SHOT = "test-results/thread-head-stale-edit";
@@ -52,9 +55,9 @@ async function waitForMockLiveSubscription(
 test("thread head reflects the channel-window edit even before thread aux loads", async ({
   page,
 }) => {
-  // Long delay so the thread-replies (and its aux edit backfill) response is
-  // still in flight when the thread panel first renders the head.
-  await installMockBridge(page, { threadRepliesDelayMs: 4000 });
+  // Hold the thread-replies (and its aux edit backfill) response open so it
+  // provably cannot land until we release it after asserting the head.
+  await installMockBridge(page, { deferThreadReplies: true });
   await page.goto("/");
   await page.getByTestId(`channel-${CHANNEL}`).click();
   await expect(page.getByTestId("chat-title")).toHaveText(CHANNEL);
@@ -124,14 +127,44 @@ test("thread head reflects the channel-window edit even before thread aux loads"
   await expect(threadPanel).toBeVisible();
 
   // 4. The thread head must show the EDITED body immediately — while the
-  //    thread-aux backfill is still delayed in flight. Pre-fix this rendered
-  //    the stale original ("these two PRs?").
+  //    thread-aux backfill is still gated (provably not yet delivered). Pre-fix
+  //    this rendered the stale original ("these two PRs?"), and because the gate
+  //    is held (not merely delayed) no backfill can arrive to heal it.
   const headBody = threadPanel
     .locator(`[data-testid="message-row"][data-message-id="${rootId}"]`)
     .getByTestId("message-body");
   await expect(headBody).toContainText("these PRs?");
   await expect(headBody).not.toContainText("these two PRs?");
 
+  // The thread-aux fetch must actually be held: this proves the edited head
+  // above came purely from the channel-window overlay, not from a backfill that
+  // slipped in. (Guards against the fetch never having been dispatched.)
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (
+            window as Window & {
+              __BUZZ_E2E_THREAD_REPLIES_PENDING__?: () => number;
+            }
+          ).__BUZZ_E2E_THREAD_REPLIES_PENDING__?.() ?? 0,
+      ),
+    )
+    .toBeGreaterThan(0);
+
   await waitForAnimations(page);
   await page.screenshot({ path: `${SHOT}/thread-head-edited.png` });
+
+  // 5. Release the gate; the held thread-aux backfill now lands and the head
+  //    stays edited (dedup against relay-provided aux, no regression).
+  await page.evaluate(
+    () =>
+      (
+        window as Window & {
+          __BUZZ_E2E_RELEASE_THREAD_REPLIES__?: () => number;
+        }
+      ).__BUZZ_E2E_RELEASE_THREAD_REPLIES__?.(),
+  );
+  await expect(headBody).toContainText("these PRs?");
+  await expect(headBody).not.toContainText("these two PRs?");
 });
