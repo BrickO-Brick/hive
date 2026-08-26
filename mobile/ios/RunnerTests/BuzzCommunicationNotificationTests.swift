@@ -235,7 +235,7 @@ final class BuzzPushNotificationResponseTests: XCTestCase {
     XCTAssertEqual(completionCount, 1)
   }
 
-  func testValidReminderActionRoutesContextWithoutOpeningFlutter() {
+  func testReminderActionsRoutePresetWithoutOpeningFlutter() throws {
     let context = BuzzPushReplyContext(
       eventID: "message-id",
       rootEventID: "root-id",
@@ -244,22 +244,52 @@ final class BuzzPushNotificationResponseTests: XCTestCase {
       senderPubkey: String(repeating: "a", count: 64),
       replyKind: 9
     )
-    var reminders: [BuzzPushReplyContext] = []
-    var forwarded = 0
-    var completions = 0
+    for preset in BuzzPushReminderPreset.allCases {
+      var reminder: (BuzzPushReplyContext, BuzzPushReminderPreset)?
+      var reminderCompletion: (() -> Void)?
+      var forwarded = 0
+      var completions = 0
 
-    BuzzPushNotificationResponseCoordinator.handle(
-      actionIdentifier: BuzzPushNotificationActions.remindActionIdentifier,
-      userInfo: [BuzzPushReplyContext.userInfoKey: context.userInfoValue],
-      onTarget: { _ in XCTFail("Reminder must not navigate as an ordinary tap") },
-      onReminder: { reminders.append($0) },
-      forwardToFlutter: { _ in forwarded += 1 },
-      completion: { completions += 1 }
+      BuzzPushNotificationResponseCoordinator.handle(
+        actionIdentifier: preset.actionIdentifier,
+        userInfo: [BuzzPushReplyContext.userInfoKey: context.userInfoValue],
+        onTarget: { _ in XCTFail("Reminder must not navigate as an ordinary tap") },
+        onReminder: { routedContext, routedPreset, completion in
+          reminder = (routedContext, routedPreset)
+          reminderCompletion = completion
+        },
+        forwardToFlutter: { _ in forwarded += 1 },
+        completion: { completions += 1 }
+      )
+
+      XCTAssertEqual(reminder?.0, context)
+      XCTAssertEqual(reminder?.1, preset)
+      XCTAssertEqual(forwarded, 0)
+      XCTAssertEqual(completions, 0)
+      try XCTUnwrap(reminderCompletion)()
+      XCTAssertEqual(completions, 1)
+    }
+  }
+
+  func testReminderPresetsMatchExistingBuzzDurations() throws {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "America/Los_Angeles"))
+    let now = try XCTUnwrap(
+      calendar.date(from: DateComponents(year: 2026, month: 8, day: 26, hour: 11))
     )
 
-    XCTAssertEqual(reminders, [context])
-    XCTAssertEqual(forwarded, 0)
-    XCTAssertEqual(completions, 1)
+    XCTAssertEqual(
+      BuzzPushReminderPreset.oneHour.fireDate(now: now, calendar: calendar),
+      now.addingTimeInterval(60 * 60)
+    )
+    XCTAssertEqual(
+      BuzzPushReminderPreset.tomorrowAt9AM.fireDate(now: now, calendar: calendar),
+      calendar.date(from: DateComponents(year: 2026, month: 8, day: 27, hour: 9))
+    )
+    XCTAssertEqual(
+      BuzzPushReminderPreset.nextMondayAt9AM.fireDate(now: now, calendar: calendar),
+      calendar.date(from: DateComponents(year: 2026, month: 8, day: 31, hour: 9))
+    )
   }
 
   func testValidTextReplyWaitsForPublisherAndDoesNotOpenFlutter() throws {

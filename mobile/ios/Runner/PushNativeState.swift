@@ -36,7 +36,9 @@ enum BuzzPushNotificationResponseCoordinator {
     onReply: (
       (BuzzPushReplyContext, String, @escaping () -> Void) -> Void
     )? = nil,
-    onReminder: ((BuzzPushReplyContext) -> Void)? = nil,
+    onReminder: (
+      (BuzzPushReplyContext, BuzzPushReminderPreset, @escaping () -> Void) -> Void
+    )? = nil,
     forwardToFlutter: (@escaping () -> Void) -> Void,
     completion: @escaping () -> Void
   ) {
@@ -51,12 +53,11 @@ enum BuzzPushNotificationResponseCoordinator {
       return
     }
 
-    if actionIdentifier == BuzzPushNotificationActions.remindActionIdentifier,
+    if let preset = BuzzPushReminderPreset(actionIdentifier: actionIdentifier),
       let context = BuzzPushReplyContext.decodeIfPresent(from: userInfo),
       let onReminder
     {
-      onReminder(context)
-      completionGate.call()
+      onReminder(context, preset) { completionGate.call() }
       return
     }
 
@@ -79,20 +80,124 @@ enum BuzzPushNotificationCategoryRegistrar {
       textInputButtonTitle: "Send",
       textInputPlaceholder: "Reply to Buzz"
     )
-    let remind = UNNotificationAction(
-      identifier: BuzzPushNotificationActions.remindActionIdentifier,
-      title: "Remind me",
-      options: [.foreground]
-    )
+    let reminderActions = BuzzPushReminderPreset.allCases.map { preset in
+      UNNotificationAction(
+        identifier: preset.actionIdentifier,
+        title: preset.actionTitle,
+        options: []
+      )
+    }
     center.setNotificationCategories([
       UNNotificationCategory(
         identifier: BuzzPushNotificationActions.messageCategoryIdentifier,
-        actions: [reply, remind],
+        actions: [reply] + reminderActions,
         intentIdentifiers: [],
         options: []
       )
     ])
   }
+}
+
+enum BuzzPushReminderPreset: CaseIterable, Equatable {
+  case oneHour
+  case tomorrowAt9AM
+  case nextMondayAt9AM
+
+  init?(actionIdentifier: String) {
+    switch actionIdentifier {
+    case BuzzPushNotificationActions.remindInOneHourActionIdentifier:
+      self = .oneHour
+    case BuzzPushNotificationActions.remindTomorrowActionIdentifier:
+      self = .tomorrowAt9AM
+    case BuzzPushNotificationActions.remindNextWeekActionIdentifier:
+      self = .nextMondayAt9AM
+    default:
+      return nil
+    }
+  }
+
+  var actionIdentifier: String {
+    switch self {
+    case .oneHour: BuzzPushNotificationActions.remindInOneHourActionIdentifier
+    case .tomorrowAt9AM: BuzzPushNotificationActions.remindTomorrowActionIdentifier
+    case .nextMondayAt9AM: BuzzPushNotificationActions.remindNextWeekActionIdentifier
+    }
+  }
+
+  var actionTitle: String {
+    switch self {
+    case .oneHour: "Remind Me in 1 Hour"
+    case .tomorrowAt9AM: "Remind Me Tomorrow at 9 AM"
+    case .nextMondayAt9AM: "Remind Me Next Monday at 9 AM"
+    }
+  }
+
+  func fireDate(now: Date, calendar: Calendar) -> Date? {
+    switch self {
+    case .oneHour:
+      return now.addingTimeInterval(60 * 60)
+    case .tomorrowAt9AM:
+      guard let tomorrow = calendar.date(byAdding: .day, value: 1, to: now) else {
+        return nil
+      }
+      return calendar.date(bySettingHour: 9, minute: 0, second: 0, of: tomorrow)
+    case .nextMondayAt9AM:
+      let weekday = calendar.component(.weekday, from: now)
+      let monday = 2
+      let daysUntilMonday = ((monday - weekday + 7) % 7) + (weekday == monday ? 7 : 0)
+      guard let nextMonday = calendar.date(
+        byAdding: .day,
+        value: daysUntilMonday,
+        to: now
+      ) else { return nil }
+      return calendar.date(bySettingHour: 9, minute: 0, second: 0, of: nextMonday)
+    }
+  }
+}
+
+enum BuzzPushReminderScheduler {
+  // Temporary demo behavior: each action schedules a local copy of the rich
+  // notification without foregrounding Buzz. The canonical in-app reminder
+  // flow continues to publish its cross-client kind-30300 event separately.
+  static func schedule(
+    with center: UNUserNotificationCenter,
+    originalContent: UNNotificationContent,
+    preset: BuzzPushReminderPreset,
+    now: Date = Date(),
+    calendar: Calendar = .current,
+    completion: @escaping (Result<Void, Error>) -> Void
+  ) {
+    guard let fireDate = preset.fireDate(now: now, calendar: calendar) else {
+      completion(.failure(BuzzPushReminderError.invalidFireDate))
+      return
+    }
+    let content = originalContent.mutableCopy() as? UNMutableNotificationContent
+    guard let content else {
+      completion(.failure(BuzzPushReminderError.invalidContent))
+      return
+    }
+    let components = calendar.dateComponents(
+      [.year, .month, .day, .hour, .minute, .second],
+      from: fireDate
+    )
+    let request = UNNotificationRequest(
+      identifier: "buzz.reminder.\(UUID().uuidString)",
+      content: content,
+      trigger: UNCalendarNotificationTrigger(dateMatching: components, repeats: false)
+    )
+    center.add(request) { error in
+      if let error {
+        completion(.failure(error))
+      } else {
+        completion(.success(()))
+      }
+    }
+  }
+}
+
+enum BuzzPushReminderError: Error {
+  case invalidContent
+  case invalidFireDate
 }
 
 struct BuzzPushReminderRequest: Equatable {

@@ -306,13 +306,28 @@ import os.log
           completion: replyCompletion
         ) ?? replyCompletion()
       },
-      onReminder: { [weak self] context in
-        let request = BuzzPushReminderRequest(
-          context: context,
-          preview: response.notification.request.content.body
-        )
-        self?.pushReminderBuffer.record(request)
-        self?.deliverPushReminderRequest(request)
+      onReminder: { _, preset, reminderCompletion in
+        BuzzPushReminderScheduler.schedule(
+          with: center,
+          originalContent: response.notification.request.content,
+          preset: preset
+        ) { result in
+          switch result {
+          case .success:
+            os_log(
+              "Buzz notification reminder scheduled: %{public}@",
+              type: .info,
+              preset.actionIdentifier
+            )
+          case .failure(let error):
+            os_log(
+              "Buzz notification reminder failed: %{public}@",
+              type: .error,
+              error.localizedDescription
+            )
+          }
+          reminderCompletion()
+        }
       },
       forwardToFlutter: { pluginCompletion in
         self.forwardPushNotificationResponseToFlutter(
