@@ -27,6 +27,7 @@ import { ONBOARDING_KEY_TEXT_CLASS } from "./NsecMaskedDisplay";
  * pause sells the creation moment.
  */
 const INTRO_HOLD_MS = 1400;
+const PREVIEW_KEY_TEXT = `nsec1${"q".repeat(58)}`;
 
 /**
  * The creation moment should only be sold once per app session. Module-level
@@ -53,6 +54,7 @@ type BackupStepProps = {
   onOpenPasswordBackup: () => void;
   onShowOptions: () => void;
   optionsExpanded: boolean;
+  previewMode?: boolean;
   returningFromSecurity: boolean;
 };
 
@@ -69,6 +71,7 @@ export function BackupStep({
   onOpenPasswordBackup,
   onShowOptions,
   optionsExpanded,
+  previewMode = false,
   returningFromSecurity,
 }: BackupStepProps) {
   const reduceMotion = useReducedMotion() ?? false;
@@ -112,7 +115,7 @@ export function BackupStep({
     setCopyState("copying");
     setCopyError(null);
     try {
-      const value = nsec ?? (await getNsec());
+      const value = nsec ?? (previewMode ? PREVIEW_KEY_TEXT : await getNsec());
       await writeTextToClipboard(value);
       if (cancelledRef.current) return;
       setCopyState("copied");
@@ -128,7 +131,7 @@ export function BackupStep({
         err instanceof Error ? err.message : "Failed to retrieve private key.",
       );
     }
-  }, [nsec]);
+  }, [nsec, previewMode]);
 
   const toggleReveal = React.useCallback(async () => {
     if (isRevealed) {
@@ -138,7 +141,7 @@ export function BackupStep({
     setCopyError(null);
     try {
       // The raw key enters the DOM only after this explicit reveal action.
-      const value = nsec ?? (await getNsec());
+      const value = nsec ?? (previewMode ? PREVIEW_KEY_TEXT : await getNsec());
       if (cancelledRef.current) return;
       setNsec(value);
       setIsRevealed(true);
@@ -148,7 +151,7 @@ export function BackupStep({
         err instanceof Error ? err.message : "Failed to retrieve private key.",
       );
     }
-  }, [isRevealed, nsec]);
+  }, [isRevealed, nsec, previewMode]);
 
   // Fixed-length decorative mask (nsec keys are 63 chars) so no key material
   // is fetched just to render the blurred row. Bullets are joined with a

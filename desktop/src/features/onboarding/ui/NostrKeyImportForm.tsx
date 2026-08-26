@@ -45,6 +45,8 @@ type NostrKeyImportFormProps = {
   footerMode?: "onboarding" | "inline";
   /** "spotlight" is the first-launch treatment: glowy centered input, no drop zone, pill buttons. */
   variant?: "default" | "spotlight";
+  /** Use fixed in-memory presentation data and bypass credential parsing. */
+  previewMode?: boolean;
 };
 
 /**
@@ -67,6 +69,7 @@ export function NostrKeyImportForm({
   mode = "key",
   footerMode = "onboarding",
   variant = "default",
+  previewMode = false,
 }: NostrKeyImportFormProps) {
   const [nsecInput, setNsecInput] = React.useState("");
   const [passphrase, setPassphrase] = React.useState("");
@@ -101,7 +104,7 @@ export function NostrKeyImportForm({
       setPassphrase("");
     }
   }, [isPasswordStage]);
-  const isValid = keyImportSubmitEnabled(nsecInput, passphrase);
+  const isValid = previewMode || keyImportSubmitEnabled(nsecInput, passphrase);
   const isInteractionDisabled = disabled || isImporting;
   const showInvalidHint =
     hasInput &&
@@ -217,7 +220,10 @@ export function NostrKeyImportForm({
     setImportError(null);
 
     try {
-      await onImport(trimmedInput, isPasswordStage ? passphrase : undefined);
+      await onImport(
+        previewMode ? "" : trimmedInput,
+        isPasswordStage ? passphrase : undefined,
+      );
     } catch (error) {
       setImportError(
         error instanceof Error ? error.message : "Couldn't import this key.",
@@ -235,6 +241,7 @@ export function NostrKeyImportForm({
     onImport,
     onImportingChange,
     passphrase,
+    previewMode,
     trimmedInput,
   ]);
 
@@ -302,14 +309,16 @@ export function NostrKeyImportForm({
                   data-testid="nostr-import-nsec-input"
                   id="nostr-private-key"
                   onChange={(event) => {
+                    if (previewMode) return;
                     setNsecInput(event.target.value);
                     setImportError(null);
                   }}
                   placeholder="Enter your key here"
+                  readOnly={previewMode}
                   ref={inputRef}
                   spellCheck={false}
                   type={isRevealed ? "text" : "password"}
-                  value={nsecInput}
+                  value={previewMode ? `nsec1${"•".repeat(24)}` : nsecInput}
                 />
                 {/* Absolutely positioned so appearing/disappearing never resizes
                   the input or shifts its centered text; fades with hasInput. */}
