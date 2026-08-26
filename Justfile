@@ -313,6 +313,13 @@ test-unit:
         cargo nextest run -p buzz-core -p buzz-auth --lib
         cargo nextest run -p buzz-voice --lib
         cargo nextest run -p buzz-cli
+        # buzz-sdk builder/validation unit tests: pure event-builder and input
+        # validation (e.g. the canvas writer-discipline/skew guard and the
+        # canvas_write_survived predicate), no infra. `--lib` runs all unit
+        # tests without the rustdoc dependency-resolution flake the full-package
+        # invocation hits. Enumerated explicitly because nothing in CI runs
+        # `cargo test --workspace` — membership buys clippy/check, not tests.
+        cargo nextest run -p buzz-sdk --lib
         # buzz-db migrator/lint tests: pure SQL-parsing unit tests (no infra).
         # They guard the embedded-migrator invariant (exactly the consolidated
         # 0001; cutover/backfill stays an operator script, not startup state)
