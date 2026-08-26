@@ -13,6 +13,7 @@ import {
   SmilePlus,
   Trash2,
 } from "lucide-react";
+import { LayoutGroup, motion } from "motion/react";
 import * as React from "react";
 import { toast } from "sonner";
 
@@ -43,6 +44,10 @@ import { isPositiveEmojiParticle } from "@/shared/ui/EmojiBurstProvider";
 import { Popover, PopoverContent, PopoverTrigger } from "@/shared/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 import { BestieMessagePopover } from "./BestieMessagePopover";
+import {
+  MESSAGE_ACTION_BLOOM_EASE_OUT,
+  MessageActionBloomSurface,
+} from "./MessageActionBloomSurface";
 
 const ACTION_BUTTON_CLASS = "h-8 w-8 rounded-full p-0";
 const ACTION_ICON_CLASS = "!h-4 !w-4";
@@ -150,9 +155,11 @@ function MoreActionsMenu({
           <TooltipContent>More actions</TooltipContent>
         </Tooltip>
         <DropdownMenuContent
+          asChild
           align="end"
+          className="data-[state=closed]:animate-none data-[state=open]:animate-none"
           side="top"
-          sideOffset={6}
+          sideOffset={2}
           onCloseAutoFocus={(event) => {
             if (editJustSelectedRef.current) {
               event.preventDefault();
@@ -160,153 +167,158 @@ function MoreActionsMenu({
             }
           }}
         >
-          {onEdit ? (
-            <DropdownMenuItem
-              data-testid={`edit-message-${message.id}`}
-              onSelect={() => {
-                editJustSelectedRef.current = true;
-                onEdit(message);
-              }}
-            >
-              <Pencil className="h-4 w-4" />
-              Edit message
-            </DropdownMenuItem>
-          ) : null}
+          <MessageActionBloomSurface
+            className="max-h-[min(420px,calc(100vh-3rem))] min-w-60 overflow-y-auto p-1"
+            data-testid={`more-actions-panel-${message.id}`}
+          >
+            {onEdit ? (
+              <DropdownMenuItem
+                data-testid={`edit-message-${message.id}`}
+                onSelect={() => {
+                  editJustSelectedRef.current = true;
+                  onEdit(message);
+                }}
+              >
+                <Pencil className="h-4 w-4" />
+                Edit message
+              </DropdownMenuItem>
+            ) : null}
 
-          {onMarkRead || onMarkUnread ? (
-            <DropdownMenuItem
-              data-testid={`mark-read-toggle-${message.id}`}
-              onClick={() => {
-                if (isUnread) {
-                  onMarkRead?.(message);
-                } else {
-                  onMarkUnread?.(message);
-                }
-              }}
-            >
-              {isUnread ? (
-                <MailCheck className="h-4 w-4" />
-              ) : (
-                <MailOpen className="h-4 w-4" />
-              )}
-              {isUnread ? "Mark read" : "Mark unread"}
-            </DropdownMenuItem>
-          ) : null}
+            {onMarkRead || onMarkUnread ? (
+              <DropdownMenuItem
+                data-testid={`mark-read-toggle-${message.id}`}
+                onClick={() => {
+                  if (isUnread) {
+                    onMarkRead?.(message);
+                  } else {
+                    onMarkUnread?.(message);
+                  }
+                }}
+              >
+                {isUnread ? (
+                  <MailCheck className="h-4 w-4" />
+                ) : (
+                  <MailOpen className="h-4 w-4" />
+                )}
+                {isUnread ? "Mark read" : "Mark unread"}
+              </DropdownMenuItem>
+            ) : null}
 
-          {onFollowThread || onUnfollowThread ? (
-            <DropdownMenuItem
-              onClick={() => {
-                if (isFollowingThread) {
-                  onUnfollowThread?.(message);
-                } else {
-                  onFollowThread?.(message);
-                }
-              }}
-            >
-              {isFollowingThread ? (
-                <BellOff className="h-4 w-4" />
-              ) : (
-                <BellRing className="h-4 w-4" />
-              )}
-              {isFollowingThread ? "Unfollow thread" : "Follow thread"}
-            </DropdownMenuItem>
-          ) : null}
+            {onFollowThread || onUnfollowThread ? (
+              <DropdownMenuItem
+                onClick={() => {
+                  if (isFollowingThread) {
+                    onUnfollowThread?.(message);
+                  } else {
+                    onFollowThread?.(message);
+                  }
+                }}
+              >
+                {isFollowingThread ? (
+                  <BellOff className="h-4 w-4" />
+                ) : (
+                  <BellRing className="h-4 w-4" />
+                )}
+                {isFollowingThread ? "Unfollow thread" : "Follow thread"}
+              </DropdownMenuItem>
+            ) : null}
 
-          {hasCopyActions ? (
-            <DropdownMenuItem
-              onClick={() => {
-                copyTextToClipboard(
-                  message.body,
-                  "Message copied to clipboard",
-                );
-              }}
-            >
-              <Copy className="h-4 w-4" />
-              Copy message
-            </DropdownMenuItem>
-          ) : null}
+            {hasCopyActions ? (
+              <DropdownMenuItem
+                onClick={() => {
+                  copyTextToClipboard(
+                    message.body,
+                    "Message copied to clipboard",
+                  );
+                }}
+              >
+                <Copy className="h-4 w-4" />
+                Copy message
+              </DropdownMenuItem>
+            ) : null}
 
-          {onRemindLater ? (
-            <DropdownMenuItem
-              onClick={() => {
-                onRemindLater(message);
-              }}
-            >
-              <Clock className="h-4 w-4" />
-              Remind me later
-            </DropdownMenuItem>
-          ) : null}
+            {onRemindLater ? (
+              <DropdownMenuItem
+                onClick={() => {
+                  onRemindLater(message);
+                }}
+              >
+                <Clock className="h-4 w-4" />
+                Remind me later
+              </DropdownMenuItem>
+            ) : null}
 
-          {onSendToChannel ? (
-            <DropdownMenuItem
-              aria-label="Send to channel"
-              data-testid={`send-to-channel-${message.id}`}
-              onClick={() => {
-                void onSendToChannel(message)
-                  .then(() => toast.success("Sent to channel"))
-                  .catch((error) => {
-                    console.error(
-                      "Failed to send thread message to channel",
-                      error,
-                    );
-                    toast.error("Couldn't send to channel");
-                  });
-              }}
-            >
-              <HashArrowIn
-                aria-hidden="true"
-                className="h-4 w-4"
-                data-testid="send-to-channel-icon"
+            {onSendToChannel ? (
+              <DropdownMenuItem
+                aria-label="Send to channel"
+                data-testid={`send-to-channel-${message.id}`}
+                onClick={() => {
+                  void onSendToChannel(message)
+                    .then(() => toast.success("Sent to channel"))
+                    .catch((error) => {
+                      console.error(
+                        "Failed to send thread message to channel",
+                        error,
+                      );
+                      toast.error("Couldn't send to channel");
+                    });
+                }}
+              >
+                <HashArrowIn
+                  aria-hidden="true"
+                  className="h-4 w-4"
+                  data-testid="send-to-channel-icon"
+                />
+                Send to channel
+              </DropdownMenuItem>
+            ) : null}
+
+            {canCopyMessageLink(message, channelId) ? (
+              <DropdownMenuItem
+                data-testid={`copy-message-link-${message.id}`}
+                onClick={() => {
+                  copyMessageLink(channelId, message);
+                }}
+              >
+                <Link2 className="h-4 w-4" />
+                Copy link
+              </DropdownMenuItem>
+            ) : null}
+
+            {canReport || onDelete ? <DropdownMenuSeparator /> : null}
+
+            {canReport ? (
+              <DropdownMenuItem
+                data-testid={`report-message-${message.id}`}
+                onClick={() => {
+                  setIsReportDialogOpen(true);
+                }}
+              >
+                <Flag className="h-4 w-4" />
+                Report message
+              </DropdownMenuItem>
+            ) : null}
+
+            {onDelete ? (
+              <DropdownMenuItem
+                className="text-destructive focus:text-destructive"
+                data-testid={`delete-message-${message.id}`}
+                onClick={() => {
+                  setIsDeleteDialogOpen(true);
+                }}
+              >
+                <Trash2 className="h-4 w-4" />
+                Delete message
+              </DropdownMenuItem>
+            ) : null}
+
+            {canReport ? (
+              <MessageModerationMenuItems
+                channelId={channelId}
+                message={message}
               />
-              Send to channel
-            </DropdownMenuItem>
-          ) : null}
-
-          {canCopyMessageLink(message, channelId) ? (
-            <DropdownMenuItem
-              data-testid={`copy-message-link-${message.id}`}
-              onClick={() => {
-                copyMessageLink(channelId, message);
-              }}
-            >
-              <Link2 className="h-4 w-4" />
-              Copy link
-            </DropdownMenuItem>
-          ) : null}
-
-          {canReport || onDelete ? <DropdownMenuSeparator /> : null}
-
-          {canReport ? (
-            <DropdownMenuItem
-              data-testid={`report-message-${message.id}`}
-              onClick={() => {
-                setIsReportDialogOpen(true);
-              }}
-            >
-              <Flag className="h-4 w-4" />
-              Report message
-            </DropdownMenuItem>
-          ) : null}
-
-          {onDelete ? (
-            <DropdownMenuItem
-              className="text-destructive focus:text-destructive"
-              data-testid={`delete-message-${message.id}`}
-              onClick={() => {
-                setIsDeleteDialogOpen(true);
-              }}
-            >
-              <Trash2 className="h-4 w-4" />
-              Delete message
-            </DropdownMenuItem>
-          ) : null}
-
-          {canReport ? (
-            <MessageModerationMenuItems
-              channelId={channelId}
-              message={message}
-            />
-          ) : null}
+            ) : null}
+          </MessageActionBloomSurface>
         </DropdownMenuContent>
       </DropdownMenu>
 
@@ -371,9 +383,12 @@ export const MessageActionBar = React.memo(function MessageActionBar({
    *  unread badge uses. Drives the single mark-read/unread toggle label. */
   isUnread?: boolean;
 }) {
-  const [isReactionPickerOpen, setIsReactionPickerOpen] = React.useState(false);
-  const [isBestiePopoverOpen, setIsBestiePopoverOpen] = React.useState(false);
-  const [isDropdownOpen, setIsDropdownOpen] = React.useState(false);
+  const [activeSurface, setActiveSurface] = React.useState<
+    "reactions" | "bestie" | "more" | null
+  >(null);
+  const isReactionPickerOpen = activeSurface === "reactions";
+  const isBestiePopoverOpen = activeSurface === "bestie";
+  const isDropdownOpen = activeSurface === "more";
   const hasReplyAction = Boolean(onReply);
   const hasReactionAction = Boolean(onReactionSelect);
 
@@ -412,11 +427,20 @@ export const MessageActionBar = React.memo(function MessageActionBar({
         .catch(() => {})
         .finally(() => {
           if (closePicker) {
-            setIsReactionPickerOpen(false);
+            setActiveSurface(null);
           }
         });
     },
     [onReactionBadgeBurstRequest, onReactionSelect, wouldAddReaction],
+  );
+  const handleSurfaceOpenChange = React.useCallback(
+    (surface: Exclude<typeof activeSurface, null>, nextOpen: boolean) => {
+      setActiveSurface((current) => {
+        if (nextOpen) return surface;
+        return current === surface ? null : current;
+      });
+    },
+    [],
   );
 
   if (!hasReplyAction && !hasReactionAction && !hasMoreMenuActions) {
@@ -424,139 +448,173 @@ export const MessageActionBar = React.memo(function MessageActionBar({
   }
 
   return (
-    <div
-      className={cn(
-        "-m-1 p-1 transition-opacity duration-150 ease-out",
-        "opacity-100 sm:pointer-events-none sm:opacity-0",
-        "sm:group-hover/message:pointer-events-auto sm:group-hover/message:opacity-100",
-        "sm:group-focus-within/message:pointer-events-auto sm:group-focus-within/message:opacity-100",
-        isReactionPickerOpen || isBestiePopoverOpen || isDropdownOpen
-          ? "sm:pointer-events-auto sm:opacity-100"
-          : "",
-      )}
-      data-testid={`message-action-bar-${message.id}`}
-    >
-      <div className="overflow-hidden rounded-full border border-border/70 bg-background/95 shadow-xs backdrop-blur-sm supports-[backdrop-filter]:bg-background/85">
-        <div className="flex items-center gap-0.5 p-1">
-          {hasReactionAction ? (
-            <Popover
-              onOpenChange={setIsReactionPickerOpen}
-              open={isReactionPickerOpen}
-            >
+    <LayoutGroup id={`message-action-bloom-${message.id}`}>
+      <div
+        className={cn(
+          "-m-1 p-1 transition-opacity duration-150 ease-out",
+          "opacity-100 sm:pointer-events-none sm:opacity-0",
+          "sm:group-hover/message:pointer-events-auto sm:group-hover/message:opacity-100",
+          "sm:group-focus-within/message:pointer-events-auto sm:group-focus-within/message:opacity-100",
+          activeSurface ? "sm:pointer-events-auto sm:opacity-100" : "",
+        )}
+        data-bloom-surface={activeSurface ?? "toolbar"}
+        data-testid={`message-action-bar-${message.id}`}
+      >
+        <div className="relative">
+          {activeSurface === null ? (
+            <MessageActionBloomSurface
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-0"
+              data-testid={`message-action-bloom-surface-${message.id}`}
+              revealContent={false}
+              surfaceRadius={999}
+            />
+          ) : null}
+          <motion.div
+            animate={{ opacity: activeSurface ? 0 : 1 }}
+            aria-hidden={activeSurface ? true : undefined}
+            className={cn(
+              "relative flex items-center gap-0.5 p-1",
+              activeSurface && "pointer-events-none",
+            )}
+            transition={{
+              duration: 0.12,
+              ease: MESSAGE_ACTION_BLOOM_EASE_OUT,
+            }}
+          >
+            {hasReactionAction ? (
+              <Popover
+                onOpenChange={(nextOpen) =>
+                  handleSurfaceOpenChange("reactions", nextOpen)
+                }
+                open={isReactionPickerOpen}
+              >
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <PopoverTrigger asChild>
+                      <Button
+                        aria-label="Open reactions"
+                        className={ACTION_BUTTON_CLASS}
+                        data-testid={`react-message-${message.id}`}
+                        size="sm"
+                        type="button"
+                        variant={isReactionPickerOpen ? "secondary" : "ghost"}
+                      >
+                        <SmilePlus className={ACTION_ICON_CLASS} />
+                      </Button>
+                    </PopoverTrigger>
+                  </TooltipTrigger>
+                  <TooltipContent>React</TooltipContent>
+                </Tooltip>
+                <PopoverContent
+                  asChild
+                  align="end"
+                  className="data-[state=closed]:animate-none data-[state=open]:animate-none"
+                  side="top"
+                  sideOffset={6}
+                >
+                  <MessageActionBloomSurface
+                    className="w-auto p-0"
+                    data-testid={`reaction-bloom-panel-${message.id}`}
+                    surfaceRadius={16}
+                  >
+                    {reactionErrorMessage ? (
+                      <div className="px-3 pb-0 pt-3">
+                        <p className="text-xs text-destructive">
+                          {reactionErrorMessage}
+                        </p>
+                      </div>
+                    ) : null}
+                    <EmojiPicker
+                      autoFocus
+                      onSelect={(value) => {
+                        // `value` is already a `native` glyph or a `:shortcode:` for
+                        // custom emoji; the toggle mutation resolves the URL.
+                        handleReactionSelection(value, true);
+                      }}
+                    />
+                  </MessageActionBloomSurface>
+                </PopoverContent>
+              </Popover>
+            ) : null}
+
+            {canCopyMessageLink(message, channelId) ? (
+              <BestieMessagePopover
+                channelId={channelId}
+                message={message}
+                onOpenChange={(nextOpen) =>
+                  handleSurfaceOpenChange("bestie", nextOpen)
+                }
+                open={isBestiePopoverOpen}
+              />
+            ) : null}
+
+            {hasReplyAction ? (
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <PopoverTrigger asChild>
-                    <Button
-                      aria-label="Open reactions"
-                      className={ACTION_BUTTON_CLASS}
-                      data-testid={`react-message-${message.id}`}
-                      size="sm"
-                      type="button"
-                      variant={isReactionPickerOpen ? "secondary" : "ghost"}
-                    >
-                      <SmilePlus className={ACTION_ICON_CLASS} />
-                    </Button>
-                  </PopoverTrigger>
+                  <Button
+                    aria-label="Reply"
+                    className={ACTION_BUTTON_CLASS}
+                    data-testid={`reply-message-${message.id}`}
+                    onClick={() => {
+                      onReply?.(message);
+                    }}
+                    size="sm"
+                    type="button"
+                    variant="ghost"
+                  >
+                    <CornerUpLeft className={ACTION_ICON_CLASS} />
+                  </Button>
                 </TooltipTrigger>
-                <TooltipContent>React</TooltipContent>
+                <TooltipContent>Reply</TooltipContent>
               </Tooltip>
-              <PopoverContent
-                align="end"
-                className="w-auto p-0 rounded-2xl overflow-hidden border-0 bg-transparent shadow-none"
-                side="top"
-                sideOffset={10}
-              >
-                {reactionErrorMessage ? (
-                  <div className="px-3 pt-3 pb-0">
-                    <p className="text-xs text-destructive">
-                      {reactionErrorMessage}
-                    </p>
-                  </div>
-                ) : null}
-                <EmojiPicker
-                  autoFocus
-                  onSelect={(value) => {
-                    // `value` is already a `native` glyph or a `:shortcode:` for
-                    // custom emoji; the toggle mutation resolves the URL.
-                    handleReactionSelection(value, true);
-                  }}
-                />
-              </PopoverContent>
-            </Popover>
-          ) : null}
+            ) : null}
 
-          {canCopyMessageLink(message, channelId) ? (
-            <BestieMessagePopover
-              channelId={channelId}
-              message={message}
-              onOpenChange={setIsBestiePopoverOpen}
-              open={isBestiePopoverOpen}
-            />
-          ) : null}
+            {canCopyMessageLink(message, channelId) ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    aria-label="Copy link"
+                    className={ACTION_BUTTON_CLASS}
+                    data-testid={`copy-link-message-${message.id}`}
+                    onClick={() => {
+                      copyMessageLink(channelId, message);
+                    }}
+                    size="sm"
+                    type="button"
+                    variant="ghost"
+                  >
+                    <Link2 className={ACTION_ICON_CLASS} />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Copy link</TooltipContent>
+              </Tooltip>
+            ) : null}
 
-          {hasReplyAction ? (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  aria-label="Reply"
-                  className={ACTION_BUTTON_CLASS}
-                  data-testid={`reply-message-${message.id}`}
-                  onClick={() => {
-                    onReply?.(message);
-                  }}
-                  size="sm"
-                  type="button"
-                  variant="ghost"
-                >
-                  <CornerUpLeft className={ACTION_ICON_CLASS} />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Reply</TooltipContent>
-            </Tooltip>
-          ) : null}
-
-          {canCopyMessageLink(message, channelId) ? (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  aria-label="Copy link"
-                  className={ACTION_BUTTON_CLASS}
-                  data-testid={`copy-link-message-${message.id}`}
-                  onClick={() => {
-                    copyMessageLink(channelId, message);
-                  }}
-                  size="sm"
-                  type="button"
-                  variant="ghost"
-                >
-                  <Link2 className={ACTION_ICON_CLASS} />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Copy link</TooltipContent>
-            </Tooltip>
-          ) : null}
-
-          {hasMoreMenuActions ? (
-            <MoreActionsMenu
-              channelId={channelId}
-              message={message}
-              onDelete={onDelete}
-              onEdit={onEdit}
-              onFollowThread={onFollowThread}
-              onMarkUnread={onMarkUnread}
-              onMarkRead={onMarkRead}
-              onOpenChange={setIsDropdownOpen}
-              onRemindLater={onRemindLater}
-              onSendToChannel={onSendToChannel}
-              onUnfollowThread={onUnfollowThread}
-              open={isDropdownOpen}
-              isFollowingThread={isFollowingThread}
-              isUnread={isUnread}
-            />
-          ) : null}
+            {hasMoreMenuActions ? (
+              <MoreActionsMenu
+                channelId={channelId}
+                message={message}
+                onDelete={onDelete}
+                onEdit={onEdit}
+                onFollowThread={onFollowThread}
+                onMarkUnread={onMarkUnread}
+                onMarkRead={onMarkRead}
+                onRemindLater={onRemindLater}
+                onSendToChannel={onSendToChannel}
+                onUnfollowThread={onUnfollowThread}
+                onOpenChange={(nextOpen) =>
+                  handleSurfaceOpenChange("more", nextOpen)
+                }
+                open={isDropdownOpen}
+                isFollowingThread={isFollowingThread}
+                isUnread={isUnread}
+              />
+            ) : null}
+          </motion.div>
         </div>
       </div>
-    </div>
+    </LayoutGroup>
   );
 });
 

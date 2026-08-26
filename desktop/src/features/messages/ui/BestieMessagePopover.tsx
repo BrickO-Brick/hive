@@ -10,6 +10,7 @@ import { getThreadReference } from "@/features/messages/lib/threading";
 import { useSendMessageMutation } from "@/features/messages/hooks";
 import type { TimelineMessage } from "@/features/messages/types";
 import { MessageComposer } from "@/features/messages/ui/MessageComposer";
+import { MessageActionBloomSurface } from "@/features/messages/ui/MessageActionBloomSurface";
 import { ProfileAvatar } from "@/features/profile/ui/ProfileAvatar";
 import { useIdentityQuery } from "@/shared/api/hooks";
 import { Button } from "@/shared/ui/button";
@@ -108,70 +109,75 @@ export function BestieMessagePopover({
         <TooltipContent>Send to Bestie</TooltipContent>
       </Tooltip>
       <PopoverContent
+        asChild
         align="end"
-        className="w-[min(328px,calc(100vw-2rem))]"
-        data-testid={`bestie-popover-${message.id}`}
+        className="data-[state=closed]:animate-none data-[state=open]:animate-none"
         side="top"
-        sideOffset={10}
+        sideOffset={6}
       >
-        <div className="space-y-3.5">
-          <div className="flex items-center gap-2.5">
-            <ProfileAvatar
-              avatarUrl={bestie.avatarUrl}
-              className="size-8 text-xs"
-              label={bestie.name}
-            />
-            <p className="min-w-0 truncate text-sm font-semibold">Bestie</p>
-          </div>
-
-          <div
-            className="w-3/4 overflow-hidden rounded-xl border border-border/60 bg-background p-2.5 shadow-sm"
-            data-testid={`bestie-message-snapshot-${message.id}`}
-          >
-            <div className="flex min-w-0 items-start gap-2">
-              <UserAvatar
-                avatarUrl={message.avatarUrl ?? null}
-                className="size-6 shrink-0"
-                displayName={message.author}
-                size="sm"
+        <MessageActionBloomSurface
+          className="w-[min(328px,calc(100vw-2rem))] p-4"
+          data-testid={`bestie-popover-${message.id}`}
+        >
+          <div className="space-y-3.5">
+            <div className="flex items-center gap-2.5">
+              <ProfileAvatar
+                avatarUrl={bestie.avatarUrl}
+                className="size-8 text-xs"
+                label={bestie.name}
               />
-              <div className="min-w-0 flex-1">
-                <div className="flex min-w-0 items-baseline gap-1">
-                  <p className="truncate text-[10px] font-semibold leading-3.5">
-                    {message.author}
-                  </p>
-                  <p className="shrink-0 text-[9px] leading-3.5 text-muted-foreground/70">
-                    {message.time}
-                  </p>
-                </div>
-                <div
-                  className="mt-0.5 max-h-3.5 overflow-hidden"
-                  data-testid={`bestie-message-snapshot-body-${message.id}`}
-                >
-                  <VideoReviewCommentMarkdown
-                    className="line-clamp-1 text-[10px] leading-3.5 text-foreground/80 [&_p]:leading-3.5"
-                    content={message.body}
-                    interactive={false}
-                    messageId={message.id}
-                  />
+              <p className="min-w-0 truncate text-sm font-semibold">Bestie</p>
+            </div>
+
+            <div
+              className="w-3/4 overflow-hidden rounded-xl border border-border/60 bg-background p-2.5 shadow-sm"
+              data-testid={`bestie-message-snapshot-${message.id}`}
+            >
+              <div className="flex min-w-0 items-start gap-2">
+                <UserAvatar
+                  avatarUrl={message.avatarUrl ?? null}
+                  className="size-6 shrink-0"
+                  displayName={message.author}
+                  size="sm"
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="flex min-w-0 items-baseline gap-1">
+                    <p className="truncate text-[10px] font-semibold leading-3.5">
+                      {message.author}
+                    </p>
+                    <p className="shrink-0 text-[9px] leading-3.5 text-muted-foreground/70">
+                      {message.time}
+                    </p>
+                  </div>
+                  <div
+                    className="mt-0.5 max-h-3.5 overflow-hidden"
+                    data-testid={`bestie-message-snapshot-body-${message.id}`}
+                  >
+                    <VideoReviewCommentMarkdown
+                      className="line-clamp-1 text-[10px] leading-3.5 text-foreground/80 [&_p]:leading-3.5"
+                      content={message.body}
+                      interactive={false}
+                      messageId={message.id}
+                    />
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
 
-          <MessageComposer
-            allowEmptySend
-            channelName="Bestie"
-            channelType="dm"
-            containerClassName="px-0 pb-0"
-            disabled={isPending}
-            draftKey={`bestie-share:${message.id}`}
-            isSending={isPending}
-            onSend={submit}
-            placeholder="Add a note (optional)"
-            showBackgroundUploadProgress={false}
-          />
-        </div>
+            <MessageComposer
+              allowEmptySend
+              channelName="Bestie"
+              channelType="dm"
+              containerClassName="px-0 pb-0"
+              disabled={isPending}
+              draftKey={`bestie-share:${message.id}`}
+              isSending={isPending}
+              onSend={submit}
+              placeholder="Add a note (optional)"
+              showBackgroundUploadProgress={false}
+            />
+          </div>
+        </MessageActionBloomSurface>
       </PopoverContent>
     </Popover>
   );

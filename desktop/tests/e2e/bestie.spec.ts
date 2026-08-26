@@ -121,10 +121,51 @@ test("message action sends a message link and optional note to Bestie", async ({
   const row = page.locator(`[data-message-id="${messageId}"]`);
   await expect(row).toContainText("launch decision");
   await row.hover();
+  const actionBar = row.getByTestId(`message-action-bar-${messageId}`);
+  await expect(actionBar).toHaveAttribute("data-bloom-surface", "toolbar");
+
+  await row.getByTestId(`react-message-${messageId}`).click();
+  await expect(actionBar).toHaveAttribute("data-bloom-surface", "reactions");
+  await expect(
+    page.getByTestId(`reaction-bloom-panel-${messageId}`),
+  ).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(actionBar).toHaveAttribute("data-bloom-surface", "toolbar");
+
+  await row.getByTestId(`more-actions-${messageId}`).click();
+  await expect(actionBar).toHaveAttribute("data-bloom-surface", "more");
+  await expect(
+    page.getByTestId(`more-actions-panel-${messageId}`),
+  ).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(actionBar).toHaveAttribute("data-bloom-surface", "toolbar");
+
   await row.getByTestId(`send-to-bestie-${messageId}`).click();
 
   const popover = page.getByTestId(`bestie-popover-${messageId}`);
   await expect(popover).toBeVisible();
+  await expect(actionBar).toHaveAttribute("data-bloom-surface", "bestie");
+  await expect(
+    actionBar.getByTestId(`message-action-bloom-surface-${messageId}`),
+  ).toHaveCount(0);
+  await expect
+    .poll(() =>
+      popover.evaluate((element) =>
+        Number.parseFloat(window.getComputedStyle(element).opacity),
+      ),
+    )
+    .toBeGreaterThan(0.99);
+  await expect
+    .poll(
+      async () =>
+        (await popover.boundingBox())?.width ?? Number.POSITIVE_INFINITY,
+    )
+    .toBeLessThanOrEqual(328);
+  await expect
+    .poll(() =>
+      popover.evaluate((element) => window.getComputedStyle(element).transform),
+    )
+    .toBe("none");
   await expect(popover).toContainText("Bestie");
   await expect(popover).not.toContainText("Share this message with Bestie");
   await expect(popover).toContainText("Please fold this launch decision");
@@ -155,7 +196,7 @@ test("message action sends a message link and optional note to Bestie", async ({
   await expect(composer.getByRole("button", { name: "Send" })).toBeEnabled();
   if (process.env.BUZZ_BESTIE_POPOVER_SCREENSHOT) {
     await page.screenshot({
-      animations: "disabled",
+      animations: "allow",
       path: process.env.BUZZ_BESTIE_POPOVER_SCREENSHOT,
     });
   }
