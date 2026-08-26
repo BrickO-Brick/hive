@@ -341,6 +341,7 @@ function MessageComposerImpl({
     drafts,
     emojiAutocomplete,
     mentions,
+    mentionWakeEnabled: editTarget == null && !isSubmitLocked,
     onAddressedAgentsSendStarted: addressPulse.pulseMany,
     onAddressedAgentsComposerCleared: (pubkeys) =>
       restoreAddressedAgentMentionsRef.current(pubkeys),
@@ -770,7 +771,6 @@ function MessageComposerImpl({
     setPendingImeta: media.setPendingImeta,
     uploadFile: media.uploadFile,
   });
-  // ── Send button state ───────────────────────────────────────────────
   const sendDisabled =
     composerDisabled ||
     media.isUploading ||

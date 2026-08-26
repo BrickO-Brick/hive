@@ -2062,10 +2062,11 @@ test("shared agents wait for initial directory authorization", async ({
   });
 });
 
-test("mentioning an in-channel stopped managed agent starts it before sending", async ({
+test("substantive in-channel managed-agent mentions wake before send", async ({
   page,
 }) => {
   await installMockBridge(page, {
+    startManagedAgentDelayMs: 750,
     managedAgents: [
       {
         pubkey: IN_CHANNEL_MANAGED_AGENT_PUBKEY,
@@ -2079,6 +2080,10 @@ test("mentioning an in-channel stopped managed agent starts it before sending", 
   await page.getByTestId("channel-general").click();
   await expect(page.getByTestId("chat-title")).toHaveText("general");
 
+  const baselineStartCount = commandCount(
+    await readCommandLog(page),
+    "start_managed_agent",
+  );
   const input = page.getByTestId("message-input");
   await input.fill("Hey @fizz");
 
@@ -2088,23 +2093,30 @@ test("mentioning an in-channel stopped managed agent starts it before sending", 
   await input.press("Enter");
   await page.keyboard.type(" can you help?");
 
-  const baselineStartCount = commandCount(
+  await expect
+    .poll(
+      async () =>
+        commandCount(await readCommandLog(page), "start_managed_agent"),
+      { timeout: 3_000 },
+    )
+    .toBeGreaterThan(baselineStartCount);
+  const preSendStartCount = commandCount(
     await readCommandLog(page),
     "start_managed_agent",
   );
-  await page.getByTestId("send-message").click();
 
-  await expect
-    .poll(async () =>
-      commandCount(await readCommandLog(page), "start_managed_agent"),
-    )
-    .toBeGreaterThan(baselineStartCount);
+  const sendButton = page.getByTestId("send-message");
+  await expect(sendButton).toBeEnabled();
+  await sendButton.click();
 
   const mentionChip = page
     .getByTestId("message-row")
     .last()
     .locator("[data-mention].agent-mention-highlight", { hasText: "fizz" });
   await expect(mentionChip).toBeVisible();
+  expect(commandCount(await readCommandLog(page), "start_managed_agent")).toBe(
+    preSendStartCount,
+  );
 });
 
 test("mentioning an in-channel provider managed agent deploys it before sending", async ({
