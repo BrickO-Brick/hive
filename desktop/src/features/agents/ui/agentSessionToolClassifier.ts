@@ -519,15 +519,21 @@ function findBuzzCommand(tokens: ShellToken[]): BuzzCommandRange | null {
  *
  * `hasSubstitution` is what quote context buys us: `$` and a backtick mean
  * expansion when they are unquoted or inside double quotes, and mean nothing at
- * all inside single quotes or after a backslash. Without this distinction a
- * markdown code span in `--content 'use `pnpm test`'` is indistinguishable from
- * a real `--content "$(cat file)"`, and both have to be discarded.
+ * all inside single quotes. Without this distinction a markdown code span in
+ * `--content 'use `pnpm test`'` is indistinguishable from a real
+ * `--content "$(cat file)"`, and both have to be discarded.
  *
- * The `$` rule is deliberately conservative — any unescaped `$` outside single
- * quotes flags the token, even where bash would leave it literal (a trailing
- * `$`, or `$` before a space). Displaying an unexpanded shell expression as if
- * it were the sent text is the failure this guard exists to prevent, so it errs
- * towards dropping the preview.
+ * Only single quoting is trusted, because only single quoting is literal in
+ * every shell `BUZZ_SHELL` supports. A backslash escape is not: PowerShell
+ * keeps the backslash and still expands `"literal \$MESSAGE"`. So escaped
+ * substitution characters stay flagged even though bash would treat them as
+ * literal text.
+ *
+ * The `$` rule is deliberately conservative in the same direction — any `$`
+ * outside single quotes flags the token, even where bash would leave it literal
+ * (a trailing `$`, or `$` before a space). Displaying an unexpanded shell
+ * expression as if it were the sent text is the failure this guard exists to
+ * prevent, so it errs towards dropping the preview.
  */
 export type ShellToken = {
   value: string;
@@ -555,6 +561,13 @@ export function tokenizeShellCommandTokens(command: string): ShellToken[] {
 
   for (const char of command) {
     if (escaping) {
+      // The value is built as bash would build it, but a backslash escape does
+      // not earn substitution credit: backslash is not an escape character in
+      // PowerShell (`"literal \$MESSAGE"` keeps the backslash AND expands the
+      // variable) or cmd, and `BUZZ_SHELL` explicitly supports both. Only
+      // single quoting is literal across all of them, so escape forms stay
+      // conservative and keep #2201's behaviour.
+      if (isSubstitutionChar(char)) hasSubstitution = true;
       current += char;
       escaping = false;
       continue;

@@ -149,12 +149,16 @@ test("parseBuzzCliCommand preserves single-quoted literals in the --content=valu
   assert.equal(descriptor?.preview, "use `pnpm test`");
 });
 
-test("parseBuzzCliCommand preserves backslash-escaped substitution characters", () => {
+test("parseBuzzCliCommand rejects backslash-escaped substitution characters as non-portable", () => {
+  // bash treats `\$MESSAGE` as literal text, but PowerShell keeps the backslash
+  // and expands the variable anyway, so the escaped form cannot be trusted as a
+  // literal. Only single quoting is literal across the shells BUZZ_SHELL allows.
   const descriptor = parseBuzzCliCommand(
     'buzz messages send --channel agents --content "literal \\$MESSAGE and \\`code\\`"',
   );
 
-  assert.equal(descriptor?.preview, "literal $MESSAGE and `code`");
+  assert.equal(descriptor?.renderClass, "message");
+  assert.equal(descriptor?.preview, null);
 });
 
 test("parseBuzzCliCommand still rejects an unquoted substitution in --content", () => {
