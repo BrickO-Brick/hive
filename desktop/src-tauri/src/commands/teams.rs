@@ -1,3 +1,6 @@
+use std::path::PathBuf;
+
+use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 use uuid::Uuid;
 
@@ -24,6 +27,98 @@ fn trim_optional(value: Option<String>) -> Option<String> {
         let trimmed = candidate.trim();
         (!trimmed.is_empty()).then(|| trimmed.to_string())
     })
+}
+
+/// A staged team update. The record persists before the two stores change so a
+/// later save or launch can replay the original membership delta.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PendingTeamMembershipUpdate {
+    team_id: String,
+    previous_persona_ids: Vec<String>,
+    current_persona_ids: Vec<String>,
+}
+
+fn pending_team_membership_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(crate::managed_agents::managed_agents_base_dir(app)?.join("pending-team-membership.json"))
+}
+
+fn save_pending_team_membership(
+    app: &AppHandle,
+    pending: &PendingTeamMembershipUpdate,
+) -> Result<(), String> {
+    let path = pending_team_membership_path(app)?;
+    let payload = serde_json::to_vec_pretty(pending)
+        .map_err(|error| format!("failed to serialize pending team update: {error}"))?;
+    crate::managed_agents::storage::atomic_write_json(&path, &payload)
+}
+
+fn load_pending_team_membership(
+    app: &AppHandle,
+) -> Result<Option<PendingTeamMembershipUpdate>, String> {
+    let path = pending_team_membership_path(app)?;
+    if !path.exists() {
+        return Ok(None);
+    }
+    let payload = std::fs::read_to_string(&path)
+        .map_err(|error| format!("failed to read pending team update: {error}"))?;
+    serde_json::from_str(&payload)
+        .map(Some)
+        .map_err(|error| format!("failed to parse pending team update: {error}"))
+}
+
+fn clear_pending_team_membership(app: &AppHandle) -> Result<(), String> {
+    let path = pending_team_membership_path(app)?;
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("failed to clear pending team update: {error}")),
+    }
+}
+
+enum PendingTeamMembershipState {
+    Pending,
+    Superseded,
+}
+
+fn pending_team_membership_state(
+    pending: &PendingTeamMembershipUpdate,
+    teams: &[TeamRecord],
+) -> Result<PendingTeamMembershipState, String> {
+    let team = teams
+        .iter()
+        .find(|team| team.id == pending.team_id)
+        .ok_or_else(|| format!("pending team {} no longer exists", pending.team_id))?;
+    if team.persona_ids == pending.current_persona_ids {
+        Ok(PendingTeamMembershipState::Pending)
+    } else if team.persona_ids == pending.previous_persona_ids {
+        Ok(PendingTeamMembershipState::Superseded)
+    } else {
+        Err(format!(
+            "pending team {} has an unexpected roster; save the team again",
+            pending.team_id
+        ))
+    }
+}
+
+/// Replay a staged membership delta. Callers hold `managed_agents_store_lock`.
+pub(crate) fn replay_pending_team_membership(app: &AppHandle) -> Result<(), String> {
+    let Some(pending) = load_pending_team_membership(app)? else {
+        return Ok(());
+    };
+    match pending_team_membership_state(&pending, &load_teams(app)?)? {
+        PendingTeamMembershipState::Pending => {
+            propagate_membership(
+                &pending.team_id,
+                &pending.previous_persona_ids,
+                &pending.current_persona_ids,
+                || load_managed_agents(app),
+                |records| save_managed_agents(app, records),
+            )
+            .map_err(|error| format!("could not replay pending team update: {error}"))?;
+        }
+        PendingTeamMembershipState::Superseded => {}
+    }
+    clear_pending_team_membership(app)
 }
 
 /// Clear `team_id` on every instance that is bound to `team_id` but whose
@@ -60,24 +155,17 @@ fn detach_agents_outside_roster(
     changed
 }
 
-/// Reports a membership propagation failure. The update command reports a
-/// failure for a roster removal or a failed stale-binding detach. Other changes
-/// keep the best-effort policy.
+/// Reports a membership propagation failure.
+#[derive(Debug)]
 pub(in crate::commands) enum MembershipPropagationError {
     Load(String),
-    Save { error: String, detached: bool },
-}
-
-impl MembershipPropagationError {
-    fn must_report(&self) -> bool {
-        matches!(self, Self::Save { detached: true, .. })
-    }
+    Save(String),
 }
 
 impl std::fmt::Display for MembershipPropagationError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Load(error) | Self::Save { error, .. } => formatter.write_str(error),
+            Self::Load(error) | Self::Save(error) => formatter.write_str(error),
         }
     }
 }
@@ -103,8 +191,7 @@ pub(in crate::commands) fn propagate_membership(
     );
     let detached = detach_agents_outside_roster(&mut records, team_id, current_persona_ids);
     if delta_changed || detached {
-        save_agents(&records)
-            .map_err(|error| MembershipPropagationError::Save { error, detached })?;
+        save_agents(&records).map_err(MembershipPropagationError::Save)?;
     }
     Ok(())
 }
@@ -172,21 +259,13 @@ fn commit_team_create(
 /// keeps it `AppHandle`-free; a `persist_teams` error propagates. Returns the
 /// updated team.
 ///
-/// Unlike [`commit_team_create`], an update reports an agent-store failure for
-/// a roster removal or a failed stale-binding detach. A removal clears `team_id`
-/// on the removed member. If that write does not land, the agent keeps the
-/// binding and `delete_team_with_cascade` refuses the team, so the user gets an
-/// empty team that they cannot delete — the exact defect this command must not
-/// create. The command must not report success while the delete guard can still
-/// refuse.
+/// Keeps the team roster and instance bindings recoverable across two stores.
+/// It stages the prior→current delta before it writes either store. A failed
+/// agent write leaves the stage file in place. The next update or launch replays
+/// that original delta before it accepts another team edit.
 ///
-/// When this reports an agent-store error after the team write, `update_team`
-/// does not retain the team for relay sync until a retry or the next launch
-/// migration runs.
-///
-/// Reporting is safe here because an update is idempotent: it targets an
-/// existing team by id, so a retry cannot mint a duplicate team. A create has no
-/// id yet, which is why it keeps the best-effort policy.
+/// A create has no stable id, so it keeps a best-effort policy to avoid a
+/// duplicate team on retry.
 #[allow(clippy::too_many_arguments)]
 fn commit_team_update(
     teams: &mut [TeamRecord],
@@ -215,10 +294,8 @@ fn commit_team_update(
     team.updated_at = now;
 
     let updated = team.clone();
+    let membership_changed = previous_persona_ids != updated.persona_ids;
     persist_teams(teams)?;
-    let has_removal = previous_persona_ids
-        .iter()
-        .any(|persona_id| !updated.persona_ids.contains(persona_id));
     if let Err(error) = propagate_membership(
         &updated.id,
         &previous_persona_ids,
@@ -226,10 +303,9 @@ fn commit_team_update(
         load_agents,
         save_agents,
     ) {
-        if has_removal || error.must_report() {
+        if membership_changed || matches!(error, MembershipPropagationError::Save(_)) {
             return Err(format!(
-                "Saved the team, but could not update its agents: {error}. The team can refuse deletion \
-                 until this succeeds. Save the team again."
+                "Saved the team, but could not update its agents: {error}. Save the team again."
             ));
         }
         eprintln!("buzz-desktop: team-membership-propagate: {error}");
@@ -475,9 +551,27 @@ pub async fn update_team(input: UpdateTeamRequest, app: AppHandle) -> Result<Tea
             .managed_agents_store_lock
             .lock()
             .map_err(|error| error.to_string())?;
+        replay_pending_team_membership(&app)?;
         let personas = load_personas(&app)?;
         ensure_persona_ids_are_active(&personas, &input.persona_ids)?;
         let mut teams = load_teams(&app)?;
+        let previous_persona_ids = teams
+            .iter()
+            .find(|team| team.id == input.id)
+            .ok_or_else(|| format!("team {} not found", input.id))?
+            .persona_ids
+            .clone();
+        let membership_changed = previous_persona_ids != input.persona_ids;
+        if membership_changed {
+            save_pending_team_membership(
+                &app,
+                &PendingTeamMembershipUpdate {
+                    team_id: input.id.clone(),
+                    previous_persona_ids,
+                    current_persona_ids: input.persona_ids.clone(),
+                },
+            )?;
+        }
         let updated = commit_team_update(
             &mut teams,
             &input.id,
@@ -490,6 +584,9 @@ pub async fn update_team(input: UpdateTeamRequest, app: AppHandle) -> Result<Tea
             || load_managed_agents(&app),
             |records| save_managed_agents(&app, records),
         )?;
+        if membership_changed {
+            clear_pending_team_membership(&app)?;
+        }
         // Built-in teams are not owner-authored — never publish them.
         if !updated.is_builtin {
             retain_team_pending(&app, &state, &updated);
@@ -513,6 +610,7 @@ pub async fn delete_team(id: String, app: AppHandle) -> Result<(), String> {
             .managed_agents_store_lock
             .lock()
             .map_err(|error| error.to_string())?;
+        replay_pending_team_membership(&app)?;
         let cascaded_persona_d_tags = delete_team_with_cascade(&app, &id)?;
         // delete_team_with_cascade rejects built-in teams via validate_team_deletion,
         // so reaching here means this team was owner-published — tombstone it. The

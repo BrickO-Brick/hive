@@ -31,6 +31,7 @@ const LEGACY_RELEASE_IDENTIFIER: &str = "xyz.block.sprout.app";
 /// receive their identity via the `BUZZ_PRIVATE_KEY` env var.
 const SHARED_AGENT_FILES: &[&str] = &[
     "agents/managed-agents.json",
+    "agents/pending-team-membership.json",
     "agents/personas.json",
     "agents/teams.json",
 ];
@@ -186,6 +187,7 @@ fn run_boot_migrations_inner(app: &tauri::AppHandle, reset_completed: bool) {
     // Repair dropped team↔member links, then detach directory-backed teams,
     // gated on a clean repair so a failure preserves `source_dir` for a retry.
     team_membership::repair_then_detach_teams(app);
+    replay_pending_team_membership_update(app);
     reconcile_provider_mcp_commands(app);
     reconcile_databricks_v1_to_v2(app);
     materialize_agent_runtimes(app);
@@ -1367,6 +1369,18 @@ pub fn migrate_persona_provider_to_runtime(app: &tauri::AppHandle) {
 }
 mod materialize;
 pub use materialize::materialize_agent_runtimes;
+
+fn replay_pending_team_membership_update(app: &tauri::AppHandle) {
+    let state = app.state::<crate::app_state::AppState>();
+    let Ok(_store_guard) = state.managed_agents_store_lock.lock() else {
+        eprintln!("buzz-desktop: pending-team-membership: cannot lock agent store");
+        return;
+    };
+    if let Err(error) = crate::commands::replay_pending_team_membership(app) {
+        eprintln!("buzz-desktop: pending-team-membership: {error}");
+    }
+}
+
 mod fold;
 pub use fold::fold_personas_into_agent_store;
 use fold::load_persona_runtimes;

@@ -4,7 +4,8 @@
 
 use super::{
     apply_team_membership_delta, commit_team_create, commit_team_update,
-    detach_agents_outside_roster,
+    detach_agents_outside_roster, pending_team_membership_state, propagate_membership,
+    PendingTeamMembershipState, PendingTeamMembershipUpdate,
 };
 use crate::managed_agents::{ManagedAgentRecord, TeamRecord};
 use std::cell::RefCell;
@@ -200,13 +201,13 @@ fn commit_update_ignores_agent_load_failure_for_metadata_only_edit() {
     assert_eq!(teams[0].name, "Renamed team");
 }
 
-/// An add-only update also keeps its disk-authoritative result when the
-/// agent store cannot load. A missed bind does not block team deletion.
+/// An add-only update reports an agent-store load failure. The staged delta
+/// remains available for replay on the next save or launch.
 #[test]
-fn commit_update_ignores_agent_load_failure_for_add_only_edit() {
+fn commit_update_reports_agent_load_failure_for_add_only_edit() {
     let mut teams = vec![team("team-a", &["duncan"])];
 
-    let updated = commit_team_update(
+    let error = commit_team_update(
         &mut teams,
         "team-a",
         "team-a".to_string(),
@@ -218,9 +219,9 @@ fn commit_update_ignores_agent_load_failure_for_add_only_edit() {
         || Err("corrupt managed-agents.json".to_string()),
         |_| Ok(()),
     )
-    .expect("add-only update keeps the best-effort policy");
+    .expect_err("an add-only update must report the lost binding");
 
-    assert_eq!(updated.persona_ids, ids(&["duncan", "ada"]));
+    assert!(error.contains("could not update its agents"), "{error}");
     assert_eq!(teams[0].persona_ids, ids(&["duncan", "ada"]));
 }
 
@@ -550,6 +551,65 @@ fn detach_outside_roster_is_scoped_to_this_team_and_absent_personas() {
         Some("team-a"),
         "still on the roster, so the binding stays"
     );
+}
+
+/// A staged update only replays when the team still has the staged roster.
+/// A prior roster means the team write did not land, so the stale stage is safe
+/// to clear without a membership change.
+#[test]
+fn pending_membership_state_distinguishes_pending_and_superseded_writes() {
+    let pending = PendingTeamMembershipUpdate {
+        team_id: "team-a".to_string(),
+        previous_persona_ids: ids(&["duncan"]),
+        current_persona_ids: ids(&["ada"]),
+    };
+
+    assert!(matches!(
+        pending_team_membership_state(&pending, &[team("team-a", &["ada"])]),
+        Ok(PendingTeamMembershipState::Pending)
+    ));
+    assert!(matches!(
+        pending_team_membership_state(&pending, &[team("team-a", &["duncan"])]),
+        Ok(PendingTeamMembershipState::Superseded)
+    ));
+}
+
+/// The durable replay uses the original replace delta after the first agent
+/// save fails. It binds Ada on retry even though the persisted roster already
+/// contains Ada and therefore supplies no new delta.
+#[test]
+fn replayed_replace_delta_binds_the_added_instance() {
+    let previous = ids(&["duncan"]);
+    let current = ids(&["ada"]);
+    let store = RefCell::new(vec![
+        instance('a', "duncan", Some("team-a")),
+        instance('b', "ada", None),
+    ]);
+
+    let error = propagate_membership(
+        "team-a",
+        &previous,
+        &current,
+        || Ok(store.borrow().clone()),
+        |_| Err("disk full".to_string()),
+    )
+    .expect_err("the first save fails");
+    assert!(error.to_string().contains("disk full"));
+
+    propagate_membership(
+        "team-a",
+        &previous,
+        &current,
+        || Ok(store.borrow().clone()),
+        |records| {
+            *store.borrow_mut() = records.to_vec();
+            Ok(())
+        },
+    )
+    .expect("the durable replay succeeds");
+
+    assert_eq!(store.borrow()[0].team_id, None);
+    assert_eq!(store.borrow()[1].team_id.as_deref(), Some("team-a"));
 }
 
 /// A roster with every binding already correct writes nothing.
