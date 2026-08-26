@@ -614,7 +614,6 @@ impl AuthorizedNormalListenerEvent {
 
 struct QueuedNormalListenerEvent {
     accepted: bool,
-    channel_id: Uuid,
     scope: scope::SessionScope,
     effective_author: String,
     event_id_hex: String,
@@ -658,7 +657,7 @@ impl QueuedNormalListenerEvent {
                 steer_ack_tx,
             );
         if !native_attempted {
-            signal_in_flight_task(pool, self.channel_id, signal);
+            signal_in_flight_task_for_scope(pool, &self.scope, signal);
         }
     }
 }
@@ -687,7 +686,6 @@ impl NormalListenerIngress {
         });
         QueuedNormalListenerEvent {
             accepted,
-            channel_id,
             scope: session_scope,
             effective_author,
             event_id_hex,
@@ -3784,10 +3782,12 @@ async fn tokio_main() -> Result<()> {
                 if signal_fallback {
                     // Universal cancel+merge fallback. Note: the
                     // queued event has already been released to the
-                    // front of `queues[channel_id]`, so the cancel
-                    // will pick it up as part of the merged batch and
-                    // re-prompt the agent.
-                    signal_in_flight_task(&mut pool, channel_id, ControlSignal::Steer);
+                    // front of `queues[scope]`, so the cancel will pick
+                    // it up as part of the merged batch and re-prompt the
+                    // agent. Scope-exact so the fallback cancels the
+                    // steered event's OWN thread, not a sibling thread
+                    // in the same channel.
+                    signal_in_flight_task_for_scope(&mut pool, &scope, ControlSignal::Steer);
                 }
                 // After releasing a withheld event, give dispatch a chance
                 // to re-flush. If the prompt is still in flight, the
@@ -4024,6 +4024,14 @@ fn mode_gate_signal(
 }
 
 /// Send a control signal to the in-flight task for `channel_id`.
+///
+/// Channel-targeted: picks the first in-flight task matching the channel. Used
+/// only by the explicitly-deferred channel-level control paths (`!cancel`,
+/// `!rotate`, observer `cancel_turn` / `switch_model`). For per-thread mid-turn
+/// steering/interruption use [`signal_in_flight_task_for_scope`], which targets
+/// one exact [`scope::SessionScope`] so a message in thread A can never
+/// interrupt thread B running in the same channel.
+///
 /// Returns `true` if a signal was sent, `false` if no in-flight task was found.
 fn signal_in_flight_task(
     pool: &mut AgentPool,
@@ -4038,6 +4046,39 @@ fn signal_in_flight_task(
     if let Some(meta) = entry {
         if let Some(tx) = meta.control_tx.take() {
             tracing::info!(channel = %channel_id, ?mode, "control signal sent to in-flight task");
+            let _ = tx.send(mode);
+            return true;
+        }
+    }
+    false
+}
+
+/// Send a control signal to the in-flight task for one exact session scope.
+///
+/// The scope-precise counterpart of [`signal_in_flight_task`]: mid-turn
+/// steer/interrupt must target the thread the triggering event belongs to, not
+/// “whichever task the channel happens to have first” — otherwise two threads
+/// running concurrently in one channel could steer each other.
+///
+/// Returns `true` if a signal was sent, `false` if no in-flight task matched.
+fn signal_in_flight_task_for_scope(
+    pool: &mut AgentPool,
+    scope: &scope::SessionScope,
+    mode: ControlSignal,
+) -> bool {
+    let entry = pool
+        .task_map_mut()
+        .values_mut()
+        .find(|m| m.scope.as_ref() == Some(scope));
+
+    if let Some(meta) = entry {
+        if let Some(tx) = meta.control_tx.take() {
+            tracing::info!(
+                channel = %scope.channel_id(),
+                scope = %scope.telemetry_label(),
+                ?mode,
+                "control signal sent to in-flight task (scope-exact)"
+            );
             let _ = tx.send(mode);
             return true;
         }
@@ -4171,6 +4212,12 @@ fn dispatch_pending(
     last_activity: &mut tokio::time::Instant,
 ) -> Vec<(Uuid, ThreadTags)> {
     let mut dispatched_channels = Vec::new();
+    // Batches held back this cycle because the worker that owns their thread's
+    // session is busy. They stay flushed-out of the queue (in-flight) until we
+    // release them at the end so `flush_next` cannot re-pick them mid-loop;
+    // releasing requeues them so the next dispatch (when the owner returns)
+    // reuses that exact session instead of forking a duplicate.
+    let mut held: Vec<FlushBatch> = Vec::new();
     loop {
         let batch = match queue.flush_next() {
             Some(b) => b,
@@ -4178,6 +4225,18 @@ fn dispatch_pending(
         };
         let channel_id = batch.channel_id;
         let scope = batch.scope.clone();
+        // Authoritative affinity: if the worker that owns this thread's session
+        // is checked out (busy on another turn), hold the batch rather than let
+        // an idle worker open a second session for the same thread.
+        if pool.should_hold_for_busy_owner(&scope) {
+            tracing::debug!(
+                channel = %channel_id,
+                scope = %scope.telemetry_label(),
+                "holding batch — session owner busy; awaiting its return to avoid duplicate session"
+            );
+            held.push(batch);
+            continue;
+        }
         let typing_scope = batch
             .events
             .last()
@@ -4245,7 +4304,7 @@ fn dispatch_pending(
             pool::TaskMeta {
                 agent_index,
                 channel_id: Some(channel_id),
-                scope: Some(scope),
+                scope: Some(scope.clone()),
                 turn_id,
                 recoverable_batch,
                 control_tx: Some(control_tx),
@@ -4253,8 +4312,20 @@ fn dispatch_pending(
                 successful_steer_deliveries: HashSet::new(),
             },
         );
+        // Record this worker as the scope's session owner so a later dispatch
+        // while it is busy holds instead of forking a duplicate session.
+        pool.record_scope_owner(scope, agent_index);
         dispatched_channels.push((channel_id, typing_scope));
         *last_activity = tokio::time::Instant::now();
+    }
+    // Release held batches back to the queue (owner busy). They were flushed
+    // out (in-flight) so they could not be re-picked above; requeue preserves
+    // their timestamps and mark_complete clears the in-flight marker, leaving
+    // them queued for the next dispatch when the owner frees up.
+    for batch in held {
+        let scope = batch.scope.clone();
+        queue.requeue_preserve_timestamps(batch);
+        queue.mark_complete(scope);
     }
     tracing::debug!(
         dispatched = dispatched_channels.len(),
@@ -4754,7 +4825,15 @@ fn recover_panicked_agent(
     }
 
     if let Some(ch) = meta.channel_id {
-        queue.mark_complete(ch);
+        // Clear the EXACT session scope, not the channel. Passing a bare
+        // channel id would resolve to `Conversation(channel_id)` via IntoScope
+        // and, under thread policy, leave the actual `Thread(...)` entry wedged
+        // in-flight until the ~2h backstop deadline — blocking the batch we
+        // just requeued. `meta.scope` is the authoritative in-flight scope.
+        match &meta.scope {
+            Some(scope) => queue.mark_complete(scope.clone()),
+            None => queue.mark_complete(ch),
+        }
         typing_channels.remove(&ch);
         tracing::warn!("cleared wedged in-flight channel {ch} from panicked agent {i}");
     } else {
@@ -5730,6 +5809,105 @@ mod owner_control_command_tests {
             channel_id,
             ControlSignal::Rotate
         ));
+    }
+
+    fn thread_scope(channel_id: Uuid, root: &str) -> scope::SessionScope {
+        scope::SessionScope::Thread {
+            channel_id,
+            root_event_id: root.to_string(),
+        }
+    }
+
+    fn insert_task_meta(
+        pool: &mut AgentPool,
+        agent_index: usize,
+        scope: scope::SessionScope,
+        control_tx: tokio::sync::oneshot::Sender<ControlSignal>,
+    ) {
+        let abort_handle = pool.join_set.spawn(async {});
+        pool.task_map_mut().insert(
+            abort_handle.id(),
+            pool::TaskMeta {
+                agent_index,
+                channel_id: Some(scope.channel_id()),
+                scope: Some(scope),
+                turn_id: "t".to_string(),
+                recoverable_batch: None,
+                control_tx: Some(control_tx),
+                steer_tx: None,
+                successful_steer_deliveries: HashSet::new(),
+            },
+        );
+    }
+
+    // Fix #2: mid-turn steer/interrupt must target the exact thread scope, not
+    // “the first task in the channel” — two threads in one channel must not
+    // interrupt each other.
+    #[tokio::test]
+    async fn signal_in_flight_task_for_scope_targets_only_matching_thread() {
+        let mut pool = AgentPool::from_slots(vec![]);
+        let ch = Uuid::new_v4();
+        let ta = thread_scope(ch, &"a".repeat(64));
+        let tb = thread_scope(ch, &"b".repeat(64));
+        let (tx_a, rx_a) = tokio::sync::oneshot::channel();
+        let (tx_b, rx_b) = tokio::sync::oneshot::channel();
+        insert_task_meta(&mut pool, 0, ta.clone(), tx_a);
+        insert_task_meta(&mut pool, 1, tb.clone(), tx_b);
+
+        // Signalling thread A must reach A's task only.
+        assert!(signal_in_flight_task_for_scope(
+            &mut pool,
+            &ta,
+            ControlSignal::Steer
+        ));
+        assert_eq!(rx_a.await.unwrap(), ControlSignal::Steer);
+
+        // Thread B's control channel is untouched (still open, no signal).
+        assert!(signal_in_flight_task_for_scope(
+            &mut pool,
+            &tb,
+            ControlSignal::Interrupt
+        ));
+        assert_eq!(rx_b.await.unwrap(), ControlSignal::Interrupt);
+
+        // A scope with no in-flight task returns false.
+        assert!(!signal_in_flight_task_for_scope(
+            &mut pool,
+            &thread_scope(ch, &"c".repeat(64)),
+            ControlSignal::Steer
+        ));
+    }
+
+    // Fix #1: a thread must not get a second provider session when the worker
+    // that owns its session is busy on another turn.
+    #[tokio::test]
+    async fn busy_session_owner_holds_batch_instead_of_forking_session() {
+        let mut pool = AgentPool::from_slots(vec![]);
+        let ch = Uuid::new_v4();
+        let ta = thread_scope(ch, &"a".repeat(64));
+        let tb = thread_scope(ch, &"b".repeat(64));
+
+        // Worker 0 owns thread A's session and is currently busy running B.
+        pool.record_scope_owner(ta.clone(), 0);
+        let (tx_b, _rx_b) = tokio::sync::oneshot::channel();
+        insert_task_meta(&mut pool, 0, tb.clone(), tx_b);
+
+        // A new A message must be HELD (owner busy, no idle worker holds A).
+        assert!(
+            pool.should_hold_for_busy_owner(&ta),
+            "owner busy => hold to avoid a duplicate session"
+        );
+
+        // A brand-new thread with no recorded owner is never held.
+        assert!(!pool.should_hold_for_busy_owner(&thread_scope(ch, &"d".repeat(64))));
+
+        // Channel-wide session invalidation prunes the directory so a stale
+        // owner can never strand a held batch.
+        pool.invalidate_channel_sessions(ch);
+        assert!(
+            !pool.should_hold_for_busy_owner(&ta),
+            "owner directory pruned on channel invalidation"
+        );
     }
 
     #[test]
@@ -9227,6 +9405,103 @@ mod error_outcome_emission_tests {
             Some(channel_id.to_string().as_str())
         );
         assert_eq!(panic.turn_id.as_deref(), Some("panic-turn-id"));
+    }
+
+    // Fix #3: a panicked thread-scoped task must clear its EXACT scope from the
+    // in-flight set (via meta.scope), not `Conversation(channel_id)`. Otherwise
+    // the requeued batch stays wedged until the ~2h in-flight backstop.
+    #[tokio::test]
+    async fn panic_recovery_frees_the_exact_thread_scope() {
+        let mut pool = AgentPool::from_slots(vec![]);
+        let channel_id = Uuid::new_v4();
+        let scope = scope::SessionScope::Thread {
+            channel_id,
+            root_event_id: "a".repeat(64),
+        };
+
+        // A thread-scoped batch is in flight (queue marks the Thread scope).
+        let mut queue = EventQueue::new(config::DedupMode::Queue);
+        let event = EventBuilder::new(Kind::Custom(9), "x")
+            .tags([])
+            .sign_with_keys(&Keys::generate())
+            .unwrap();
+        queue.push(queue::QueuedEvent {
+            channel_id,
+            scope: scope.clone(),
+            event,
+            received_at: std::time::Instant::now(),
+            prompt_tag: "t".into(),
+        });
+        let batch = queue.flush_next().expect("flush thread batch");
+        assert!(queue.is_scope_in_flight(&scope));
+
+        // Spawn a task we can panic/abort, wired to the same scope + a
+        // recoverable batch so recovery requeues it.
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let abort_handle = pool.join_set.spawn(async move {
+            let _ = started_tx.send(());
+            std::future::pending::<()>().await;
+        });
+        pool.task_map_mut().insert(
+            abort_handle.id(),
+            crate::pool::TaskMeta {
+                agent_index: 0,
+                channel_id: Some(channel_id),
+                scope: Some(scope.clone()),
+                turn_id: "panic-turn-id".to_string(),
+                recoverable_batch: Some(batch),
+                control_tx: None,
+                steer_tx: None,
+                successful_steer_deliveries: HashSet::new(),
+            },
+        );
+        started_rx.await.unwrap();
+        abort_handle.abort();
+        let join_error = pool.join_set.join_next().await.unwrap().unwrap_err();
+
+        let config = test_config();
+        let mut heartbeat_in_flight = false;
+        let removed_channels = HashSet::new();
+        let mut typing_channels = HashMap::new();
+        // Pre-open the circuit so recovery returns before attempting a real
+        // respawn subprocess (mark_complete runs before the circuit check).
+        let mut crash_history = vec![SlotCircuit {
+            crash_times: Vec::new(),
+            open_until: Some(std::time::Instant::now() + Duration::from_secs(3600)),
+            respawn_in_flight: false,
+        }];
+        let (respawn_tx, _respawn_rx) = mpsc::channel(8);
+        let mut respawn_tasks = tokio::task::JoinSet::new();
+
+        recover_panicked_agent(
+            &mut pool,
+            &mut queue,
+            &config,
+            join_error,
+            &mut heartbeat_in_flight,
+            &removed_channels,
+            &mut typing_channels,
+            &mut crash_history,
+            &respawn_tx,
+            &mut respawn_tasks,
+            None,
+        );
+
+        // The exact Thread scope is freed and the requeued batch is flushable
+        // again immediately — not stranded behind a Conversation(channel_id)
+        // entry until the backstop deadline.
+        assert!(
+            !queue.is_scope_in_flight(&scope),
+            "panic recovery must clear the exact Thread scope"
+        );
+        // The requeued batch is queued again (recovery uses `requeue`, which
+        // applies a short retry backoff — so it is undispatched work now and
+        // becomes flushable once the backoff expires, rather than being stranded
+        // in-flight behind the wrong scope until the ~2h backstop).
+        assert!(
+            queue.has_undispatched_work(),
+            "requeued thread batch must be queued (undispatched) after recovery"
+        );
     }
 
     #[tokio::test]

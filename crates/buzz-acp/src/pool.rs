@@ -330,6 +330,13 @@ pub struct AgentPool {
     result_rx: mpsc::UnboundedReceiver<PromptResult>,
     pub join_set: JoinSet<()>,
     task_map: HashMap<tokio::task::Id, TaskMeta>,
+    /// Authoritative directory of which worker most recently owned each session
+    /// scope's provider session. Survives while a worker is checked out (its
+    /// `SessionState` is invisible to the pool then), so a busy owner does not
+    /// cause another worker to open a duplicate session for the same thread.
+    /// Best-effort: stale entries (rotation, crash/respawn) self-heal on the
+    /// next dispatch and are pruned on channel-wide session invalidation.
+    session_owners: HashMap<SessionScope, usize>,
 }
 
 /// Result returned by a completed prompt task.
@@ -805,6 +812,32 @@ impl AgentPool {
             result_rx,
             join_set: JoinSet::new(),
             task_map: HashMap::new(),
+            session_owners: HashMap::new(),
+        }
+    }
+
+    /// Record which worker is handling `scope` so a later dispatch can detect a
+    /// busy owner and avoid opening a duplicate session on another worker.
+    pub fn record_scope_owner(&mut self, scope: SessionScope, agent_index: usize) {
+        self.session_owners.insert(scope, agent_index);
+    }
+
+    /// True when this scope should be **held** (left queued) rather than
+    /// dispatched to a fresh worker, because the worker that owns its provider
+    /// session is currently checked out (busy on another turn).
+    ///
+    /// Only holds when no idle worker already holds the session
+    /// ([`has_session_for`](Self::has_session_for) is false): if an idle owner
+    /// exists, [`try_claim`](Self::try_claim) reuses it directly. Holding waits
+    /// for the busy owner to return so its exact session (and tool/turn
+    /// context) is reused, instead of forking a second session for the thread.
+    pub fn should_hold_for_busy_owner(&self, scope: &SessionScope) -> bool {
+        if self.has_session_for(scope) {
+            return false;
+        }
+        match self.session_owners.get(scope) {
+            Some(&owner_idx) => self.task_map.values().any(|m| m.agent_index == owner_idx),
+            None => false,
         }
     }
 
@@ -1008,6 +1041,11 @@ impl AgentPool {
                 count += agent.state.invalidate_channel(&channel_id);
             }
         }
+        // Drop every scope-owner entry for this channel so the directory does
+        // not grow without bound and cannot strand a held batch behind a stale
+        // owner after the channel's sessions are gone.
+        self.session_owners
+            .retain(|scope, _| scope.channel_id() != channel_id);
         count
     }
 
