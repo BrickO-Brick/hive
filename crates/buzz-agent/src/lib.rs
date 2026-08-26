@@ -189,7 +189,7 @@ async fn build_agent(
         )
         .await
         .map_err(|e| AgentError::Llm(format!("session create: {e}")))?;
-    let session_id = session.id;
+    let session_id = session.id.clone();
 
     // Provider/model names come from the `GOOSE_*` variables `Config::from_env`
     // projected out of the `BUZZ_AGENT_*` ones; goose's registry owns base-url
@@ -275,11 +275,32 @@ async fn build_agent(
     // global ones, plugin-installed skills and its own builtins, and supports
     // `args` templating we never had.
     //
-    // Registered by *name* rather than by handing over a client: `skills` is
-    // in goose's `PLATFORM_EXTENSIONS` table, so `add_extension` runs its
-    // factory. It is declared `unprefixed_tools: true` there, which is why the
-    // tool the model sees is plain `load_skill` and not `skills__load_skill`.
-    let skills = goose::skills::discover_skills(Some(std::path::Path::new(cwd)));
+    // Registered by handing over a *client* rather than by name, and that is
+    // the whole point: goose's platform factory
+    // (`platform_extensions/mod.rs:219-221`) calls plain `SkillsClient::new`,
+    // which leaves goose's own bundled skills switched on. Those are
+    // `goose-doc-guide` and `web-search` (`skills/builtins/`) — neither is a
+    // Buzz skill, and `web-search` advertises a capability Buzz does not
+    // provide, so every Buzz agent would offer the model a tool-shaped promise
+    // to shell out to `uvx ddgs`. `with_builtin_skills(false)` is only
+    // reachable off the constructor, so buzz builds the client itself and
+    // registers it with `add_client`.
+    //
+    // What that route costs: `add_client` does not consult
+    // `PLATFORM_EXTENSIONS`, so nothing here inherits the table's
+    // `unprefixed_tools: true`. It does not have to — `is_unprefixed_extension`
+    // (`extension_manager.rs:392-400`) keys off the *config*, and this passes
+    // the same `ExtensionConfig::Platform { name: "skills" }` the factory route
+    // does, so the lookup still hits the table entry and the model still sees a
+    // bare `load_skill`. Verified by driving both routes: same tool name, same
+    // filesystem skills, builtins gone.
+    //
+    // The prompt index is filtered to match. A skill listed in the index but
+    // absent from the client is a dead `load_skill` reference.
+    let skills: Vec<_> = goose::skills::discover_skills(Some(std::path::Path::new(cwd)))
+        .into_iter()
+        .filter(|s| s.source_type != goose::custom_requests::SourceType::BuiltinSkill)
+        .collect();
     if !skills.is_empty() {
         let ext = ExtensionConfig::Platform {
             name: goose::skills::EXTENSION_NAME.to_string(),
@@ -288,15 +309,37 @@ async fn build_agent(
             bundled: Some(true),
             available_tools: Vec::new(),
         };
-        if let Err(e) = agent.add_extension(ext, &session_id).await {
-            // Unlike an MCP server, a missing skills extension is not fatal:
-            // the agent still has every other tool. Losing it silently would
-            // be worse than losing it loudly, hence the warning.
-            tracing::warn!(error = %e, "skills extension unavailable");
-        } else {
-            prompt
-                .add_extra("skills", crate::skills::skill_index(&skills))
-                .await;
+        // The factory receives a context carrying the session, because
+        // `SkillsClient::new` reads `session.working_dir` for discovery and
+        // falls back to the *process* cwd without it — which for a
+        // desktop-spawned agent is not the nest.
+        let mut ctx = agent.extension_manager.get_context().clone();
+        ctx.extension_manager = Some(Arc::downgrade(&agent.extension_manager));
+        ctx.session = Some(Arc::new(session.clone()));
+        match goose::skills::SkillsClient::new(ctx) {
+            Ok(client) => {
+                let client = client.with_builtin_skills(false);
+                let info = goose::agents::mcp_client::McpClientTrait::get_info(&client).cloned();
+                agent
+                    .extension_manager
+                    .add_client(
+                        goose::skills::EXTENSION_NAME.to_string(),
+                        ext,
+                        Arc::new(client),
+                        info,
+                        None,
+                    )
+                    .await;
+                prompt
+                    .add_extra("skills", crate::skills::skill_index(&skills))
+                    .await;
+            }
+            Err(e) => {
+                // Unlike an MCP server, a missing skills extension is not
+                // fatal: the agent still has every other tool. Losing it
+                // silently would be worse than losing it loudly.
+                tracing::warn!(error = %e, "skills extension unavailable");
+            }
         }
     }
 

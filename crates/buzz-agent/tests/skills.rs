@@ -19,7 +19,17 @@ mod approve;
 
 /// Fake OpenAI provider that asks for `load_skill` on the first turn, then
 /// answers normally. Sends every observed `system` prompt and tool list back.
-fn spawn_provider() -> (String, mpsc::Receiver<(String, Vec<String>)>) {
+type Observed = (String, Vec<String>, String);
+
+/// `(system prompt, tool names, whole request body)` for each provider call.
+fn spawn_provider() -> (String, mpsc::Receiver<Observed>) {
+    spawn_provider_requesting("widget-maker")
+}
+
+/// As [`spawn_provider`], but the first turn asks for `skill_name`. Used to
+/// drive `load_skill` at a name the client is expected *not* to know.
+fn spawn_provider_requesting(skill_name: &str) -> (String, mpsc::Receiver<Observed>) {
+    let skill_name = skill_name.to_string();
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().expect("addr");
     let (tx, rx) = mpsc::channel();
@@ -92,7 +102,7 @@ fn spawn_provider() -> (String, mpsc::Receiver<(String, Vec<String>)>) {
                             .collect()
                     })
                     .unwrap_or_default();
-                let _ = tx.send((system, tools));
+                let _ = tx.send((system, tools, req.to_string()));
             }
 
             call_count += 1;
@@ -103,7 +113,7 @@ fn spawn_provider() -> (String, mpsc::Receiver<(String, Vec<String>)>) {
                     "id":"c","object":"chat.completion.chunk","created":1,"model":"fake-model",
                     "choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{
                         "index":0,"id":"call_1","type":"function",
-                        "function":{"name":"load_skill","arguments":"{\"name\":\"widget-maker\"}"}
+                        "function":{"name":"load_skill","arguments": format!("{{\"name\":\"{skill_name}\"}}")}
                     }]},"finish_reason":null}]
                 });
                 let d = json!({
@@ -257,9 +267,11 @@ fn agents_md_and_skill_index_reach_the_model_and_load_skill_resolves() {
 
     let mut systems = Vec::new();
     let mut tool_lists = Vec::new();
-    while let Ok((sys, tools)) = seen.recv_timeout(Duration::from_millis(500)) {
+    let mut bodies = Vec::new();
+    while let Ok((sys, tools, body)) = seen.recv_timeout(Duration::from_millis(500)) {
         systems.push(sys);
         tool_lists.push(tools);
+        bodies.push(body);
     }
     assert!(!systems.is_empty(), "provider was never called");
 
@@ -284,5 +296,84 @@ fn agents_md_and_skill_index_reach_the_model_and_load_skill_resolves() {
     assert!(
         systems.len() >= 2,
         "expected a second round after the tool result"
+    );
+
+    // The turn completing is not evidence the skill loaded. A `load_skill`
+    // answering "Skill not found." also reaches `end_turn` with a second
+    // round, so `stopReason` alone passes on a broken skills path. Assert on
+    // the tool result the model was actually handed.
+    let second = &bodies[1];
+    assert!(
+        second.contains("Step 2: cut the flange."),
+        "skill body never reached the model as a tool result:\n{second}"
+    );
+    assert!(
+        !second.contains("not found"),
+        "load_skill failed to resolve the skill:\n{second}"
+    );
+}
+
+/// goose's `SkillsClient` ships two skills compiled into the crate —
+/// `goose-doc-guide` and `web-search` (`goose/src/skills/builtins/`). Neither
+/// is a Buzz skill, and `web-search` tells the model to shell out to `uvx
+/// ddgs`, a capability Buzz does not provide. buzz-agent on `main` had no such
+/// thing, so registering the client with builtins on would have widened every
+/// Buzz agent's advertised surface as a side effect of the goose swap.
+///
+/// This pins both halves: absent from the prompt index, and unresolvable
+/// through the tool. Index-only would pass while the tool still served them.
+#[test]
+fn goose_builtin_skills_are_not_offered_to_buzz_agents() {
+    let (base_url, seen) = spawn_provider_requesting("web-search");
+    let home = tempfile::tempdir().expect("home");
+    let ws = workspace();
+    let mut h = Harness::start(&base_url, home.path());
+
+    h.call("initialize", json!({"protocolVersion": 2}));
+    let r = h.call(
+        "session/new",
+        json!({"cwd": ws.path().to_str().unwrap(), "mcpServers": []}),
+    );
+    let sid = r["result"]["sessionId"]
+        .as_str()
+        .unwrap_or_else(|| panic!("session/new failed: {r}"))
+        .to_string();
+
+    let r = h.call(
+        "session/prompt",
+        json!({"sessionId": sid, "prompt": [{"type":"text","text":"search the web"}]}),
+    );
+    assert_eq!(r["result"]["stopReason"], "end_turn", "turn stalled: {r}");
+
+    let mut systems = Vec::new();
+    let mut bodies = Vec::new();
+    while let Ok((sys, _tools, body)) = seen.recv_timeout(Duration::from_millis(500)) {
+        systems.push(sys);
+        bodies.push(body);
+    }
+    assert!(!systems.is_empty(), "provider was never called");
+
+    let first = &systems[0];
+    for builtin in ["web-search", "goose-doc-guide"] {
+        assert!(
+            !first.contains(builtin),
+            "goose builtin {builtin:?} is advertised in the system prompt:\n{first}"
+        );
+    }
+    // The filesystem skill still has to be there — an empty index would pass
+    // the assertions above for the wrong reason.
+    assert!(
+        first.contains("widget-maker"),
+        "filesystem skills were lost along with the builtins:\n{first}"
+    );
+
+    assert!(
+        bodies.len() >= 2,
+        "expected a second round carrying the tool result"
+    );
+    let second = &bodies[1];
+    assert!(
+        second.contains("not found"),
+        "load_skill served a goose builtin:\n{second}"
     );
 }
