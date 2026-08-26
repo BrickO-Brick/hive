@@ -78,25 +78,23 @@ fn clear_pending_team_membership(app: &AppHandle) -> Result<(), String> {
 enum PendingTeamMembershipState {
     Pending,
     Superseded,
+    MissingTeam,
+    UnexpectedRoster,
 }
 
 fn pending_team_membership_state(
     pending: &PendingTeamMembershipUpdate,
     teams: &[TeamRecord],
 ) -> Result<PendingTeamMembershipState, String> {
-    let team = teams
-        .iter()
-        .find(|team| team.id == pending.team_id)
-        .ok_or_else(|| format!("pending team {} no longer exists", pending.team_id))?;
+    let Some(team) = teams.iter().find(|team| team.id == pending.team_id) else {
+        return Ok(PendingTeamMembershipState::MissingTeam);
+    };
     if team.persona_ids == pending.current_persona_ids {
         Ok(PendingTeamMembershipState::Pending)
     } else if team.persona_ids == pending.previous_persona_ids {
         Ok(PendingTeamMembershipState::Superseded)
     } else {
-        Err(format!(
-            "pending team {} has an unexpected roster; save the team again",
-            pending.team_id
-        ))
+        Ok(PendingTeamMembershipState::UnexpectedRoster)
     }
 }
 
@@ -117,6 +115,14 @@ pub(crate) fn replay_pending_team_membership(app: &AppHandle) -> Result<(), Stri
             .map_err(|error| format!("could not replay pending team update: {error}"))?;
         }
         PendingTeamMembershipState::Superseded => {}
+        PendingTeamMembershipState::MissingTeam => eprintln!(
+            "buzz-desktop: pending-team-membership: discarding staged update for missing team {:?}",
+            pending.team_id
+        ),
+        PendingTeamMembershipState::UnexpectedRoster => eprintln!(
+            "buzz-desktop: pending-team-membership: discarding staged update for team {:?} with a different roster",
+            pending.team_id
+        ),
     }
     clear_pending_team_membership(app)
 }

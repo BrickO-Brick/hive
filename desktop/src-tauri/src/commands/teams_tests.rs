@@ -553,11 +553,12 @@ fn detach_outside_roster_is_scoped_to_this_team_and_absent_personas() {
     );
 }
 
-/// A staged update only replays when the team still has the staged roster.
-/// A prior roster means the team write did not land, so the stale stage is safe
+/// A staged update replays only when the team keeps the staged roster. The
+/// prior roster means the team write did not land. A missing team or a different
+/// roster means an inbound event superseded the stage. Each stale stage is safe
 /// to clear without a membership change.
 #[test]
-fn pending_membership_state_distinguishes_pending_and_superseded_writes() {
+fn pending_membership_state_distinguishes_replay_and_stale_stages() {
     let pending = PendingTeamMembershipUpdate {
         team_id: "team-a".to_string(),
         previous_persona_ids: ids(&["duncan"]),
@@ -571,6 +572,14 @@ fn pending_membership_state_distinguishes_pending_and_superseded_writes() {
     assert!(matches!(
         pending_team_membership_state(&pending, &[team("team-a", &["duncan"])]),
         Ok(PendingTeamMembershipState::Superseded)
+    ));
+    assert!(matches!(
+        pending_team_membership_state(&pending, &[]),
+        Ok(PendingTeamMembershipState::MissingTeam)
+    ));
+    assert!(matches!(
+        pending_team_membership_state(&pending, &[team("team-a", &["paul"])]),
+        Ok(PendingTeamMembershipState::UnexpectedRoster)
     ));
 }
 

@@ -130,10 +130,9 @@ pub fn run_boot_migrations_after_reset(app: &tauri::AppHandle) {
 }
 
 fn run_boot_migrations_inner(app: &tauri::AppHandle, reset_completed: bool) {
-    // Initialize the process-lifetime nest directory before any filesystem
-    // operation that calls nest_dir(). The discriminator matches the existing
-    // pattern used by reconcile_target_dir: dev instances have an app-data-dir
-    // name starting with CANONICAL_DEV_IDENTIFIER.
+    // Initialize the process-lifetime nest directory before filesystem access
+    // that calls nest_dir(). The discriminator matches reconcile_target_dir:
+    // dev instances have an app-data-dir name starting with CANONICAL_DEV_IDENTIFIER.
     let is_dev = if let Ok(data_dir) = app.path().app_data_dir() {
         let dev = data_dir
             .file_name()
@@ -145,12 +144,10 @@ fn run_boot_migrations_inner(app: &tauri::AppHandle, reset_completed: bool) {
         false
     };
 
-    // On dev builds, copy `.repos-dir` from ~/.buzz → ~/.buzz-dev BEFORE
-    // control returns to lib.rs where resolve_repos_at_boot() reads it. This
-    // ensures the dev nest boots with the correct workspace on its first launch,
-    // matching what the prod nest had configured. Skip-if-dest-exists so it is
-    // idempotent and never clobbers a value the dev nest already set explicitly.
-    // Uses the composed helper so gate + migration share the tested code path.
+    // On dev builds, copy `.repos-dir` from ~/.buzz → ~/.buzz-dev before
+    // resolve_repos_at_boot() reads it. Skip-if-dest-exists so it is idempotent
+    // and never clobbers a value the dev nest already set explicitly.
+    // The composed helper keeps gate + migration on the tested code path.
     if let (Some(home), Some(dev_nest)) = (dirs::home_dir(), crate::managed_agents::nest_dir()) {
         maybe_migrate_dev_repos_dir(is_dev, reset_completed, &home, &dev_nest);
     }
@@ -187,7 +184,7 @@ fn run_boot_migrations_inner(app: &tauri::AppHandle, reset_completed: bool) {
     // Repair dropped team↔member links, then detach directory-backed teams,
     // gated on a clean repair so a failure preserves `source_dir` for a retry.
     team_membership::repair_then_detach_teams(app);
-    replay_pending_team_membership_update(app);
+    team_membership::replay_pending_team_membership_update(app);
     reconcile_provider_mcp_commands(app);
     reconcile_databricks_v1_to_v2(app);
     materialize_agent_runtimes(app);
@@ -1369,17 +1366,6 @@ pub fn migrate_persona_provider_to_runtime(app: &tauri::AppHandle) {
 }
 mod materialize;
 pub use materialize::materialize_agent_runtimes;
-
-fn replay_pending_team_membership_update(app: &tauri::AppHandle) {
-    let state = app.state::<crate::app_state::AppState>();
-    let Ok(_store_guard) = state.managed_agents_store_lock.lock() else {
-        eprintln!("buzz-desktop: pending-team-membership: cannot lock agent store");
-        return;
-    };
-    if let Err(error) = crate::commands::replay_pending_team_membership(app) {
-        eprintln!("buzz-desktop: pending-team-membership: {error}");
-    }
-}
 
 mod fold;
 pub use fold::fold_personas_into_agent_store;
