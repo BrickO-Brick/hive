@@ -756,7 +756,7 @@ export function useRichTextEditor({
         .setMeta("preventUpdate", true);
       tr.setSelection(TextSelection.atEnd(tr.doc));
       editor.view.dispatch(tr);
-      editor.view.focus();
+      editor.commands.focus();
     },
     [editor],
   );
@@ -852,7 +852,7 @@ export function useRichTextEditor({
           const cursorPM = afterNode + (text ? text.length : 0);
           tr = tr.setSelection(TextSelection.create(tr.doc, cursorPM));
           editor.view.dispatch(tr);
-          editor.view.focus();
+          editor.commands.focus();
           return;
         }
         // No node type (shouldn't happen) → fall through to literal text.
@@ -874,7 +874,7 @@ export function useRichTextEditor({
       }
       settleAutocompleteMentionInsert(editor, tr, text, !preserveSelection);
       editor.view.dispatch(tr);
-      editor.view.focus();
+      editor.commands.focus();
       if (!preserveSelection) reassertMentionCaretAfterFocus(editor.view);
     },
     [editor, customEmojiWiring.resolveUrl],
@@ -933,7 +933,7 @@ export function useRichTextEditor({
       const cursorPM = tr.mapping.map(end);
       tr.setSelection(TextSelection.create(tr.doc, cursorPM));
       editor.view.dispatch(tr);
-      editor.view.focus();
+      editor.commands.focus();
     },
     [editor],
   );

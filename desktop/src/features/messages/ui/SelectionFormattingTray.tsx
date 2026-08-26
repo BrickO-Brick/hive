@@ -4,7 +4,8 @@ import type { Editor } from "@tiptap/react";
 
 import { cn } from "@/shared/lib/cn";
 import { FormattingToolbar } from "./FormattingToolbar";
-import { getMountedEditorDom } from "./selectionFormattingTrayEditorDom";
+import { getEditorSelectionRect } from "../lib/composerEditorGeometry";
+import { getMountedEditorDom } from "../lib/composerEditorView";
 
 type SelectionFormattingTrayProps = {
   editor: Editor | null;
@@ -26,38 +27,6 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
-function getSelectionRect(editor: Editor): DOMRect | null {
-  const { from, to } = editor.state.selection;
-
-  try {
-    const range = document.createRange();
-    const start = editor.view.domAtPos(from);
-    const end = editor.view.domAtPos(to);
-    range.setStart(start.node, start.offset);
-    range.setEnd(end.node, end.offset);
-
-    const clientRects = Array.from(range.getClientRects()).filter(
-      (rect) => rect.width > 0 || rect.height > 0,
-    );
-    const rect = clientRects[0] ?? range.getBoundingClientRect();
-    range.detach();
-
-    if (rect.width > 0 || rect.height > 0) return rect;
-  } catch {
-    // Fall back to the caret coordinates below.
-  }
-
-  const startCoords = editor.view.coordsAtPos(from);
-  const endCoords = editor.view.coordsAtPos(to);
-  const left = Math.min(startCoords.left, endCoords.left);
-  const right = Math.max(startCoords.right, endCoords.right);
-  const top = Math.min(startCoords.top, endCoords.top);
-  const bottom = Math.max(startCoords.bottom, endCoords.bottom);
-
-  if (right <= left && bottom <= top) return null;
-  return new DOMRect(left, top, Math.max(1, right - left), bottom - top);
-}
-
 function getTrayPosition(
   editor: Editor,
   trayWidth: number,
@@ -73,7 +42,7 @@ function getTrayPosition(
   );
   if (selectedText.trim().length === 0) return null;
 
-  const rect = getSelectionRect(editor);
+  const rect = getEditorSelectionRect(editor, selection.from, selection.to);
   if (!rect) return null;
 
   const viewportWidth = window.innerWidth;

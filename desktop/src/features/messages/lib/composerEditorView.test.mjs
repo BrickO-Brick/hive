@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { getMountedEditorDom } from "./selectionFormattingTrayEditorDom.ts";
+import { getMountedEditorDom } from "./composerEditorView.ts";
 
-test("returns null while the TipTap editor view is not mounted", () => {
-  const editor = {
+function unmountedEditor() {
+  return {
     get view() {
       return new Proxy(
         {},
@@ -16,13 +16,13 @@ test("returns null while the TipTap editor view is not mounted", () => {
       );
     },
   };
+}
 
-  assert.equal(getMountedEditorDom(editor), null);
+test("returns null while the TipTap editor view is not mounted", () => {
+  assert.equal(getMountedEditorDom(unmountedEditor()), null);
 });
 
 test("returns the editor DOM after the TipTap view mounts", () => {
   const dom = {};
-  const editor = { view: { dom } };
-
-  assert.equal(getMountedEditorDom(editor), dom);
+  assert.equal(getMountedEditorDom({ view: { dom } }), dom);
 });

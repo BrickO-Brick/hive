@@ -3,6 +3,7 @@ import * as React from "react";
 import type { Editor } from "@tiptap/react";
 
 import { mountSpoilerParticleCanvas } from "@/shared/ui/SpoilerParticles";
+import { getMountedEditorDom } from "./composerEditorView";
 
 type ComposerSpoilerMount = {
   canvas: HTMLCanvasElement;
@@ -23,10 +24,8 @@ export function useComposerSpoilerParticles(
     let teardown: (() => void) | undefined;
 
     const setup = () => {
-      let editorRoot: HTMLElement;
-      try {
-        editorRoot = editor.view.dom as HTMLElement;
-      } catch {
+      const editorRoot = getMountedEditorDom(editor);
+      if (!editorRoot) {
         if (!cancelled) setupFrame = window.requestAnimationFrame(setup);
         return;
       }

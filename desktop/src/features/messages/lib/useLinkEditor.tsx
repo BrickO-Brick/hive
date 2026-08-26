@@ -22,6 +22,7 @@ import {
   type LinkEditorInitialFocus,
 } from "./linkEditorFocus";
 import { openPopoverLink } from "./openPopoverLink";
+import { getEditorLinkRect } from "./composerEditorGeometry";
 
 type DraftState = {
   text: string;
@@ -80,35 +81,7 @@ export function useLinkEditor(richText: UseRichTextEditorResult) {
     (info: LinkSelectionInfo): LinkCardState["rect"] | null => {
       const editor = richText.editor;
       if (!editor) return null;
-
-      try {
-        const range = document.createRange();
-        const start = editor.view.domAtPos(info.from);
-        const end = editor.view.domAtPos(info.to);
-        range.setStart(start.node, start.offset);
-        range.setEnd(end.node, end.offset);
-
-        const rect = range.getBoundingClientRect();
-        range.detach();
-        if (rect.width > 0 || rect.height > 0) {
-          return {
-            left: rect.left,
-            top: rect.top,
-            width: rect.width,
-            height: rect.height,
-          };
-        }
-      } catch {
-        // Fall through to the caret coordinates below.
-      }
-
-      const coords = editor.view.coordsAtPos(info.from);
-      return {
-        left: coords.left,
-        top: coords.top,
-        width: Math.max(1, coords.right - coords.left),
-        height: Math.max(1, coords.bottom - coords.top),
-      };
+      return getEditorLinkRect(editor, info.from, info.to);
     },
     [richText.editor],
   );
