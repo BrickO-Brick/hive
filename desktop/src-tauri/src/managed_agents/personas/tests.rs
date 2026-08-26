@@ -1,7 +1,8 @@
 use super::{
-    built_in_persona_records, ensure_persona_ids_are_active, ensure_persona_is_active,
-    merge_personas, migrate_retired_personas, validate_persona_activation_change,
-    validate_persona_deletion, BUILT_IN_PERSONAS, RETIRED_PERSONAS,
+    built_in_persona_records, built_in_persona_records_for_build, ensure_persona_ids_are_active,
+    ensure_persona_is_active, merge_personas, migrate_retired_personas,
+    validate_persona_activation_change, validate_persona_deletion, BUILT_IN_PERSONAS,
+    RETIRED_PERSONAS,
 };
 use crate::managed_agents::discovery::{default_agent_command, effective_agent_command};
 use crate::managed_agents::AgentDefinition;
@@ -37,7 +38,7 @@ fn merge_personas_adds_missing_built_ins() {
     let (records, changed) = merge_personas(Vec::new(), "2026-03-19T00:00:00Z");
 
     assert!(changed);
-    assert_eq!(records.len(), BUILT_IN_PERSONAS.len());
+    assert_eq!(records.len(), BUILT_IN_PERSONAS.len() - 1);
     assert!(records.iter().all(|record| record.is_builtin));
     assert!(records
         .iter()
@@ -56,6 +57,23 @@ fn merge_personas_adds_missing_built_ins() {
         active_ids,
         vec!["builtin:fizz", "builtin:honey", "builtin:bumble"]
     );
+}
+
+#[test]
+fn bestie_persona_requires_the_internal_build_capability() {
+    let without_bestie = built_in_persona_records_for_build("2026-03-19T00:00:00Z", false);
+    let with_bestie = built_in_persona_records_for_build("2026-03-19T00:00:00Z", true);
+
+    assert!(!without_bestie
+        .iter()
+        .any(|record| record.id == "builtin:bestie"));
+    let bestie = with_bestie
+        .iter()
+        .find(|record| record.id == "builtin:bestie")
+        .expect("eligible builds should include Bestie");
+    assert_eq!(bestie.display_name, "Bestie");
+    assert!(bestie.is_builtin);
+    assert!(bestie.is_active);
 }
 
 #[test]
