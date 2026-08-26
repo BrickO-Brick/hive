@@ -55,7 +55,8 @@ test("message action sends a message link and optional note to Bestie", async ({
   await page.evaluate((id) => {
     window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
       channelName: "general",
-      content: "Please fold this launch decision into tomorrow's priorities.",
+      content:
+        "Please fold this launch decision into tomorrow's priorities. Product and engineering need one owner, a clear deadline, and a short note explaining the tradeoff before the review begins.",
       id,
     });
   }, messageId);
@@ -67,17 +68,25 @@ test("message action sends a message link and optional note to Bestie", async ({
 
   const popover = page.getByTestId(`bestie-popover-${messageId}`);
   await expect(popover).toBeVisible();
+  await expect(popover).toContainText("Bestie");
+  await expect(popover).not.toContainText("Share this message with Bestie");
   await expect(popover).toContainText("Please fold this launch decision");
+  await expect(
+    popover.getByTestId(`bestie-message-snapshot-${messageId}`),
+  ).toBeVisible();
+  const composer = popover.getByTestId("message-composer");
+  await expect(composer).toBeVisible();
+  await expect(composer.getByRole("button", { name: "Send" })).toBeEnabled();
   if (process.env.BUZZ_BESTIE_POPOVER_SCREENSHOT) {
     await page.screenshot({
       animations: "disabled",
       path: process.env.BUZZ_BESTIE_POPOVER_SCREENSHOT,
     });
   }
-  await popover
-    .getByRole("textbox", { name: "Note for Bestie" })
+  await composer
+    .locator('[contenteditable="true"]')
     .fill("Make sure product and engineering agree on the owner.");
-  await popover.getByRole("button", { name: "Send" }).click();
+  await composer.getByRole("button", { name: "Send" }).click();
 
   await expect(popover).toBeHidden();
   await page.getByTestId("open-bestie-dm").click();

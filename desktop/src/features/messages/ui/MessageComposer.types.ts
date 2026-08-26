@@ -24,6 +24,11 @@ export type MessageComposerEditTarget = {
 };
 
 export type MessageComposerProps = {
+  /**
+   * Keeps the send control available without authored text. The owner must
+   * supply meaningful fallback content in onSend.
+   */
+  allowEmptySend?: boolean;
   audienceContext?: {
     type: "channel" | "thread";
   } | null;

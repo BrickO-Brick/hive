@@ -69,6 +69,7 @@ import { useComposerLinkPreviews } from "./useComposerLinkPreviews";
 import { scheduleSettleGatedAutoSubmit } from "./messageComposerAutoSubmit";
 import type { MessageComposerProps } from "./MessageComposer.types";
 function MessageComposerImpl({
+  allowEmptySend = false,
   audienceContext = null,
   channelId = null,
   channelName,
@@ -597,7 +598,7 @@ function MessageComposerImpl({
     const hasMedia =
       currentPendingImeta.length > 0 || currentQueuedAttachments.length > 0;
     if (
-      (!trimmed && !hasMedia) ||
+      (!allowEmptySend && !trimmed && !hasMedia) ||
       disabledRef.current ||
       isSendingRef.current ||
       isSubmitLockedRef.current ||
@@ -644,6 +645,7 @@ function MessageComposerImpl({
       onPreparingMentionSendChange?.(false);
     }
   }, [
+    allowEmptySend,
     channelId,
     channelLinks.clearChannels,
     customEmoji,
@@ -775,7 +777,8 @@ function MessageComposerImpl({
     composerDisabled ||
     media.isUploading ||
     mentionSendFlow.isPreparingMentionSend ||
-    (isContentEmpty &&
+    (!allowEmptySend &&
+      isContentEmpty &&
       media.pendingImeta.length === 0 &&
       media.queuedAttachments.length === 0);
   const handleCaptureSelection = React.useCallback(() => {}, []);
