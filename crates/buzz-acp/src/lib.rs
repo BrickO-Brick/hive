@@ -4007,6 +4007,7 @@ fn handle_prompt_result(
                     }
                     PromptOutcome::AgentExited => "the agent process exited".to_string(),
                     PromptOutcome::Error(e) => format!("{e}"),
+                    PromptOutcome::ProjectContextIndeterminate(reason) => reason.clone(),
                     _ => "repeated failures".to_string(),
                 };
                 let content = format!(
@@ -4039,6 +4040,7 @@ fn handle_prompt_result(
     let outcome_label = match &result.outcome {
         PromptOutcome::Ok(_) => "ok",
         PromptOutcome::Error(_) => "error",
+        PromptOutcome::ProjectContextIndeterminate(_) => "project_context_indeterminate",
         PromptOutcome::Timeout(TimeoutKind::Idle) => "idle_timeout",
         PromptOutcome::Timeout(TimeoutKind::Hard { .. }) => "hard_timeout",
         PromptOutcome::AgentExited => "exited",
@@ -4198,6 +4200,16 @@ fn handle_prompt_result(
                 pid = harness_pid,
                 "agent_returned (cancelled)"
             );
+            pool.return_agent(result.agent);
+        }
+        PromptOutcome::ProjectContextIndeterminate(reason) => {
+            tracing::warn!(
+                agent = agent_index,
+                outcome = outcome_label,
+                reason,
+                "agent_returned (local project context indeterminate — pipe intact)"
+            );
+            emit_turn_error(&reason, None);
             pool.return_agent(result.agent);
         }
         PromptOutcome::Error(ref e) => {
@@ -8241,6 +8253,94 @@ mod error_outcome_emission_tests {
     async fn application_error_emits_exactly_one_feed_event() {
         let app = AcpError::IdleTimeout(std::time::Duration::from_secs(1));
         assert_eq!(turn_errors_emitted_for(PromptOutcome::Error(app)).await, 1);
+    }
+
+    #[tokio::test]
+    async fn indeterminate_project_context_requeues_without_poisoning_agent_or_circuit() {
+        let channel_id = Uuid::new_v4();
+        let event = EventBuilder::new(Kind::Custom(9), "project work")
+            .sign_with_keys(&Keys::generate())
+            .unwrap();
+        let batch = FlushBatch {
+            channel_id,
+            events: vec![BatchEvent {
+                event,
+                prompt_tag: "test".into(),
+                received_at: std::time::Instant::now(),
+            }],
+            cancelled_events: vec![],
+            cancel_reason: None,
+        };
+
+        let mut agent = dummy_agent(0).await;
+        agent
+            .state
+            .sessions
+            .insert(channel_id, "healthy-session".into());
+        let mut pool = AgentPool::from_slots(vec![None]);
+        let task_id = pool.join_set.spawn(async {}).id();
+        pool.task_map_mut().insert(
+            task_id,
+            crate::pool::TaskMeta {
+                agent_index: 0,
+                channel_id: Some(channel_id),
+                turn_id: "indeterminate-project".into(),
+                recoverable_batch: None,
+                control_tx: None,
+                steer_tx: None,
+                successful_steer_deliveries: HashSet::new(),
+            },
+        );
+        let mut queue = EventQueue::new(config::DedupMode::Queue);
+        let config = test_config();
+        let mut heartbeat_in_flight = false;
+        let removed_channels = HashSet::new();
+        let mut crash_history = vec![SlotCircuit {
+            crash_times: Vec::new(),
+            open_until: None,
+            respawn_in_flight: false,
+        }];
+        let (respawn_tx, _respawn_rx) = mpsc::channel(8);
+        let mut respawn_tasks = tokio::task::JoinSet::new();
+        let result = PromptResult {
+            agent,
+            source: PromptSource::Channel(channel_id),
+            turn_id: "indeterminate-project".into(),
+            outcome: PromptOutcome::ProjectContextIndeterminate(
+                "project context is indeterminate".into(),
+            ),
+            batch: Some(batch),
+        };
+
+        assert!(matches!(
+            handle_prompt_result(
+                &mut pool,
+                &mut queue,
+                &config,
+                result,
+                &mut heartbeat_in_flight,
+                &removed_channels,
+                &mut crash_history,
+                &respawn_tx,
+                &mut respawn_tasks,
+                None,
+                None,
+            ),
+            LoopAction::Continue
+        ));
+
+        let returned = pool.agents_mut()[0]
+            .as_ref()
+            .expect("healthy agent returns to its slot");
+        assert_eq!(
+            returned.state.sessions.get(&channel_id).map(String::as_str),
+            Some("healthy-session")
+        );
+        assert_eq!(queue.queued_event_count(&channel_id), 1);
+        assert!(crash_history[0].crash_times.is_empty());
+        assert!(crash_history[0].open_until.is_none());
+        assert!(!crash_history[0].respawn_in_flight);
+        assert!(respawn_tasks.is_empty());
     }
 
     // ── is_auth_error classification ───────────────────────────────────────

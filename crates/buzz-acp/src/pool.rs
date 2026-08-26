@@ -515,6 +515,9 @@ pub enum TimeoutKind {
 pub enum PromptOutcome {
     Ok(StopReason),
     Error(AcpError),
+    /// Local relay state could not establish project authority. The ACP
+    /// process is healthy; preserve the batch for bounded retry.
+    ProjectContextIndeterminate(String),
     AgentExited,
     Timeout(TimeoutKind),
     /// Intentional cancel via `!cancel` command or interrupt mode.
@@ -1046,15 +1049,14 @@ const UNKNOWN_CHANNEL_NAME: &str = "unknown";
 /// process restarts. An agent rename lands on the next spawn (the desktop
 /// restart badge covers it — see `spawn_config_hash`).
 async fn resolve_new_session_channel_context(
-    channel_info: &ChannelInfoResolver,
-    channel_id: Uuid,
+    channel_info: Option<&PromptChannelInfo>,
 ) -> (bool, Option<String>, Option<String>) {
-    let Ok(Some(info)) = channel_info.resolve(channel_id).await else {
+    let Some(info) = channel_info else {
         return (true, None, None);
     };
     let is_dm = info.channel_type == "dm";
-    let title_channel = (!is_dm && info.name != UNKNOWN_CHANNEL_NAME).then_some(info.name);
-    (is_dm, title_channel, Some(info.channel_type))
+    let title_channel = (!is_dm && info.name != UNKNOWN_CHANNEL_NAME).then(|| info.name.clone());
+    (is_dm, title_channel, Some(info.channel_type.clone()))
 }
 
 /// Create a new ACP session via `session_new_full()`, populate model capabilities
@@ -1895,6 +1897,33 @@ pub async fn run_prompt_task(
         .unwrap_or_default();
     let _reaction_guard = ReactionGuard::new(ctx.rest_client.clone(), reaction_ids.clone());
 
+    // Resolve project authority exactly once, before any ACP session creation or
+    // initial-message delivery. An indeterminate result is a local relay-state
+    // outcome: fail closed and preserve the batch without poisoning the healthy
+    // ACP process.
+    let resolved_channel_info = match &source {
+        PromptSource::Channel(channel_id) => match ctx.channel_info.resolve(*channel_id).await {
+            Ok(info) => info,
+            Err(error) => {
+                tracing::warn!(
+                    channel_id = %channel_id,
+                    "project context is indeterminate; requeueing turn before ACP session creation: {}",
+                    error.0
+                );
+                send_prompt_result(
+                    &result_tx,
+                    &turn_id,
+                    agent,
+                    source,
+                    PromptOutcome::ProjectContextIndeterminate(error.0),
+                    requeue_batch_if_queue(&ctx, batch),
+                );
+                return;
+            }
+        },
+        PromptSource::Heartbeat => None,
+    };
+
     //
     // Core memory is delivered inside the system prompt the harness already
     // builds (system role for protocol >= 2, the `[Agent Instructions]` user-message
@@ -1982,7 +2011,7 @@ pub async fn run_prompt_task(
         let needs_canvas = is_new_channel_session && !agent.state.canvas_sections.contains_key(cid);
         if is_new_channel_session {
             let (is_dm, resolved_channel, resolved_channel_type) =
-                resolve_new_session_channel_context(&ctx.channel_info, *cid).await;
+                resolve_new_session_channel_context(resolved_channel_info.as_ref()).await;
             title_channel = resolved_channel;
             origin_channel_type = resolved_channel_type;
             if let Some(owner) = ctx.agent_owner_pubkey.as_ref() {
@@ -2374,29 +2403,9 @@ pub async fn run_prompt_task(
         };
         vec![text]
     } else if let Some(ref b) = batch {
-        // Build prompt from batch with context enrichment.
-        // Try startup cache first; lazy-fetch via REST for dynamic channels.
-        let channel_info = match ctx.channel_info.resolve(b.channel_id).await {
-            Ok(channel_info) => channel_info,
-            Err(error) => {
-                tracing::warn!(
-                    channel_id = %b.channel_id,
-                    "project context is indeterminate; requeueing turn before ACP delivery: {}",
-                    error.0
-                );
-                send_prompt_result(
-                    &result_tx,
-                    &turn_id,
-                    agent,
-                    source,
-                    PromptOutcome::Error(AcpError::Protocol(
-                        "project context is indeterminate".into(),
-                    )),
-                    requeue_batch_if_queue(&ctx, batch),
-                );
-                return;
-            }
-        };
+        // Project authority was resolved before any ACP session boundary above;
+        // reuse that exact typed result for prompt formatting.
+        let channel_info = resolved_channel_info.clone();
 
         let conversation_context = if ctx.context_message_limit > 0 {
             fetch_conversation_context(b, &channel_info, &ctx).await
@@ -7053,6 +7062,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             PromptOutcome::Timeout(TimeoutKind::Hard { .. }) => "Timeout(Hard)",
             PromptOutcome::CancelDrainTimeout(_) => "CancelDrainTimeout",
             PromptOutcome::Error(_) => "Error",
+            PromptOutcome::ProjectContextIndeterminate(_) => "ProjectContextIndeterminate",
             PromptOutcome::Cancelled => "Cancelled",
             PromptOutcome::Ok(_) => "Ok",
         };
@@ -8703,7 +8713,7 @@ done"#
         let acp = AcpClient::spawn("bash", &["-c".into(), script], &[], false)
             .await
             .expect("spawn wire-capture ACP");
-        let mut agent = OwnedAgent {
+        let agent = OwnedAgent {
             index: 0,
             acp,
             state: SessionState::default(),
@@ -8717,10 +8727,6 @@ done"#
             goose_system_prompt_supported: None,
             protocol_version: 1,
         };
-        agent
-            .state
-            .sessions
-            .insert(channel_id, "live-session".into());
 
         let event = EventBuilder::new(Kind::Custom(9), "do project work")
             .sign_with_keys(&Keys::generate())
@@ -8739,6 +8745,7 @@ done"#
 
         let mut ctx = make_prompt_context_no_owner();
         ctx.dedup_mode = DedupMode::Queue;
+        ctx.initial_message = Some("inspect this project before the triggering turn".into());
         ctx.rest_client.base_url = base_url.clone();
         ctx.channel_info = ChannelInfoResolver::new(
             HashMap::from([(
@@ -8776,7 +8783,10 @@ done"#
         .await;
 
         let mut result = result_rx.recv().await.expect("prompt result");
-        assert!(matches!(result.outcome, PromptOutcome::Error(_)));
+        assert!(matches!(
+            result.outcome,
+            PromptOutcome::ProjectContextIndeterminate(_)
+        ));
         let retry = result
             .batch
             .take()
@@ -8878,14 +8888,16 @@ done"#
         let response = channel_metadata_response(id, &[["name", "buzz-dev"], ["t", "stream"]]);
         let (resolver, requests, server) = counting_resolver(response).await;
 
+        let info = resolver.resolve(id).await.expect("project lookup succeeds");
         let (is_dm, title_channel, channel_type) =
-            resolve_new_session_channel_context(&resolver, id).await;
+            resolve_new_session_channel_context(info.as_ref()).await;
         assert!(!is_dm, "a stream channel is not a DM");
         assert_eq!(title_channel.as_deref(), Some("buzz-dev"));
         assert_eq!(channel_type.as_deref(), Some("stream"));
         assert_eq!(requests.load(Ordering::SeqCst), 3);
 
-        let (_, again, _) = resolve_new_session_channel_context(&resolver, id).await;
+        let again_info = resolver.resolve(id).await.expect("cached lookup succeeds");
+        let (_, again, _) = resolve_new_session_channel_context(again_info.as_ref()).await;
         assert_eq!(again.as_deref(), Some("buzz-dev"));
         assert_eq!(
             requests.load(Ordering::SeqCst),
@@ -8943,8 +8955,9 @@ done"#
         let response = channel_metadata_response(id, &[["name", "DM"], ["t", "dm"]]);
         let (resolver, _requests, server) = counting_resolver(response).await;
 
+        let info = resolver.resolve(id).await.expect("project lookup succeeds");
         let (is_dm, title_channel, channel_type) =
-            resolve_new_session_channel_context(&resolver, id).await;
+            resolve_new_session_channel_context(info.as_ref()).await;
         assert!(is_dm);
         assert_eq!(channel_type.as_deref(), Some("dm"));
         assert_eq!(
@@ -8963,7 +8976,8 @@ done"#
         let response = channel_metadata_response(id, &[["t", "stream"]]);
         let (resolver, _requests, server) = counting_resolver(response).await;
 
-        let (is_dm, title_channel, _) = resolve_new_session_channel_context(&resolver, id).await;
+        let info = resolver.resolve(id).await.expect("project lookup succeeds");
+        let (is_dm, title_channel, _) = resolve_new_session_channel_context(info.as_ref()).await;
         assert!(!is_dm, "a nameless stream channel is still not a DM");
         assert_eq!(
             title_channel, None,
@@ -8983,8 +8997,12 @@ done"#
 
         let (resolver, requests, server) = counting_resolver(json!([])).await;
 
+        let info = resolver
+            .resolve(Uuid::new_v4())
+            .await
+            .expect("missing metadata is not a project lookup error");
         let (is_dm, title_channel, channel_type) =
-            resolve_new_session_channel_context(&resolver, Uuid::new_v4()).await;
+            resolve_new_session_channel_context(info.as_ref()).await;
         assert!(is_dm, "an undeterminable channel type must fail closed");
         assert_eq!(title_channel, None, "unresolved channels get a bare title");
         assert_eq!(channel_type, None);
