@@ -3069,42 +3069,47 @@ impl AcpClient {
             &options,
             msg,
             self.permission_config.policy,
-            // Check for duplicate live requestId under ask.
-            if matches!(self.permission_config.policy, PermissionPolicy::Ask) {
-                let id_str = id.to_string();
-                self.pending_permissions.contains_key(&id_str)
-            } else {
-                false
-            },
-            if matches!(self.permission_config.policy, PermissionPolicy::Ask) {
-                // Count every live entry — including `Publishing` — against the
-                // cap. A broken/malicious adapter that never triggers the ACK
-                // could otherwise accumulate unbounded Publishing entries/cards
-                // below the cap; counting them here bounds the total live set.
-                self.pending_permissions
-                    .values()
-                    .filter(|e| {
-                        matches!(
-                            e.state,
-                            PermissionEntryState::Publishing
-                                | PermissionEntryState::Pending
-                                | PermissionEntryState::Writing
-                        )
-                    })
-                    .count()
-                    >= PERMISSION_MAP_CAP
-            } else {
-                false
-            },
-            // A single sentinel ACK receiver slot is shared across publishes,
-            // so at most one entry may be in `Publishing` at a time. A new Ask
-            // request while a publish is still in flight is denied (fail closed).
-            if matches!(self.permission_config.policy, PermissionPolicy::Ask) {
-                self.pending_permissions
-                    .values()
-                    .any(|e| matches!(e.state, PermissionEntryState::Publishing))
-            } else {
-                false
+            AskGates {
+                // Check for duplicate live requestId under ask.
+                is_duplicate_id: if matches!(self.permission_config.policy, PermissionPolicy::Ask) {
+                    let id_str = id.to_string();
+                    self.pending_permissions.contains_key(&id_str)
+                } else {
+                    false
+                },
+                is_map_at_cap: if matches!(self.permission_config.policy, PermissionPolicy::Ask) {
+                    // Count every live entry — including `Publishing` — against the
+                    // cap. A broken/malicious adapter that never triggers the ACK
+                    // could otherwise accumulate unbounded Publishing entries/cards
+                    // below the cap; counting them here bounds the total live set.
+                    self.pending_permissions
+                        .values()
+                        .filter(|e| {
+                            matches!(
+                                e.state,
+                                PermissionEntryState::Publishing
+                                    | PermissionEntryState::Pending
+                                    | PermissionEntryState::Writing
+                            )
+                        })
+                        .count()
+                        >= PERMISSION_MAP_CAP
+                } else {
+                    false
+                },
+                // A single sentinel ACK receiver slot is shared across publishes,
+                // so at most one entry may be in `Publishing` at a time. A new Ask
+                // request while a publish is still in flight is denied (fail closed).
+                is_publish_in_flight: if matches!(
+                    self.permission_config.policy,
+                    PermissionPolicy::Ask
+                ) {
+                    self.pending_permissions
+                        .values()
+                        .any(|e| matches!(e.state, PermissionEntryState::Publishing))
+                } else {
+                    false
+                },
             },
             (&self.observer_context, self.observer_agent_index),
         );
@@ -3999,6 +4004,15 @@ fn select_card_actions(options: &[serde_json::Value]) -> Result<CardActions, Str
     })
 }
 
+/// Ask-only admission gates the caller precomputes from live map state. Grouped
+/// so the preflight signature stays small; each field short-circuits a distinct
+/// fail-closed reason (see checks 6, 7, 7b below).
+struct AskGates {
+    is_duplicate_id: bool,
+    is_map_at_cap: bool,
+    is_publish_in_flight: bool,
+}
+
 /// Validate a `session/request_permission` request before it touches the
 /// pending map or policy dispatch.
 ///
@@ -4019,11 +4033,14 @@ fn run_admission_preflight(
     options: &[serde_json::Value],
     msg: &serde_json::Value,
     _policy: PermissionPolicy,
-    is_duplicate_id: bool,
-    is_map_at_cap: bool,
-    is_publish_in_flight: bool,
+    ask_gates: AskGates,
     size_ctx: (&ObserverContext, Option<usize>),
 ) -> Result<(), String> {
+    let AskGates {
+        is_duplicate_id,
+        is_map_at_cap,
+        is_publish_in_flight,
+    } = ask_gates;
     let (observer_context, agent_index) = size_ctx;
     // 1. options nonempty
     if options.is_empty() {
@@ -7428,9 +7445,11 @@ mod tests {
             &opts,
             &msg,
             PermissionPolicy::Ask,
-            false,
-            false,
-            false,
+            AskGates {
+                is_duplicate_id: false,
+                is_map_at_cap: false,
+                is_publish_in_flight: false,
+            },
             (&ObserverContext::default(), None),
         );
         assert!(result.is_err(), "duplicate optionId must fail preflight");
@@ -7457,9 +7476,11 @@ mod tests {
             &opts,
             &msg,
             PermissionPolicy::Ask,
-            false,
-            false,
-            true, // publish already in flight
+            AskGates {
+                is_duplicate_id: false,
+                is_map_at_cap: false,
+                is_publish_in_flight: true, // publish already in flight
+            },
             (&ObserverContext::default(), None),
         );
         assert!(
@@ -7477,9 +7498,11 @@ mod tests {
                 &opts,
                 &msg,
                 PermissionPolicy::Ask,
-                false,
-                false,
-                false,
+                AskGates {
+                    is_duplicate_id: false,
+                    is_map_at_cap: false,
+                    is_publish_in_flight: false,
+                },
                 (&ObserverContext::default(), None),
             )
             .is_ok(),
@@ -7661,9 +7684,11 @@ mod tests {
             &opts,
             &msg,
             PermissionPolicy::Ask,
-            false,
-            false,
-            false,
+            AskGates {
+                is_duplicate_id: false,
+                is_map_at_cap: false,
+                is_publish_in_flight: false,
+            },
             (&ObserverContext::default(), None),
         );
         assert!(result.is_err(), "oversize msg must fail preflight");
@@ -7746,9 +7771,11 @@ mod tests {
             &opts,
             &overflow_msg,
             PermissionPolicy::Ask,
-            false,
-            false,
-            false,
+            AskGates {
+                is_duplicate_id: false,
+                is_map_at_cap: false,
+                is_publish_in_flight: false,
+            },
             (&ctx, None),
         );
         assert!(
@@ -7775,9 +7802,11 @@ mod tests {
             &opts,
             &tiny_msg,
             PermissionPolicy::Ask,
-            false,
-            false,
-            false,
+            AskGates {
+                is_duplicate_id: false,
+                is_map_at_cap: false,
+                is_publish_in_flight: false,
+            },
             (&ctx, None),
         );
         assert!(
