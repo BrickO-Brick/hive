@@ -1,8 +1,40 @@
-use std::{collections::BTreeMap, sync::atomic::Ordering};
+use std::{
+    collections::BTreeMap,
+    sync::atomic::{AtomicBool, Ordering},
+};
+
+use tauri::{AppHandle, Manager};
 
 use crate::app_state::AppState;
 
 pub(crate) const ACP_SESSION_POLICY_ENV_VAR: &str = "BUZZ_ACP_SESSION_POLICY";
+
+/// Desktop experiment state that influences managed-agent lifecycle behavior.
+pub struct ManagedAgentExperimentState {
+    pub(crate) profile_reconcile_enabled: AtomicBool,
+    pub(crate) thread_scoped_acp_sessions_enabled: AtomicBool,
+}
+
+impl Default for ManagedAgentExperimentState {
+    fn default() -> Self {
+        Self {
+            profile_reconcile_enabled: AtomicBool::new(true),
+            thread_scoped_acp_sessions_enabled: AtomicBool::new(false),
+        }
+    }
+}
+
+impl AppState {
+    pub(crate) fn managed_agent_profile_reconcile_enabled(&self) -> &AtomicBool {
+        &self.managed_agent_experiments.profile_reconcile_enabled
+    }
+
+    pub(crate) fn thread_scoped_acp_sessions_enabled(&self) -> &AtomicBool {
+        &self
+            .managed_agent_experiments
+            .thread_scoped_acp_sessions_enabled
+    }
+}
 
 /// Desktop-owned ACP session policy applied to every managed-agent launch.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -32,7 +64,7 @@ impl AcpSessionPolicy {
 pub(crate) fn acp_session_policy(state: &AppState) -> AcpSessionPolicy {
     AcpSessionPolicy::from_thread_scoped_enabled(
         state
-            .thread_scoped_acp_sessions_enabled
+            .thread_scoped_acp_sessions_enabled()
             .load(Ordering::Acquire),
     )
 }
@@ -42,6 +74,13 @@ pub(crate) fn apply_acp_session_policy_env(
     policy: AcpSessionPolicy,
 ) {
     command.env(ACP_SESSION_POLICY_ENV_VAR, policy.as_str());
+}
+
+pub(crate) fn apply_app_acp_session_policy_env(
+    app: &AppHandle,
+    command: &mut std::process::Command,
+) {
+    apply_acp_session_policy_env(command, acp_session_policy(app.state::<AppState>().inner()));
 }
 
 pub(crate) fn insert_acp_session_policy_env(
