@@ -27,10 +27,10 @@ import { buildVideoReviewPresentationByMessageId } from "@/features/messages/lib
 import { useComposerHeightPadding } from "@/features/messages/ui/useComposerHeightPadding";
 import { UserProfilePanel } from "@/features/profile/ui/UserProfilePanel";
 import { ChannelManagementAuxiliaryPanel } from "@/features/channels/ui/ChannelManagementAuxiliaryPanel";
-import { IdleAuxiliaryPanel } from "@/features/channels/ui/IdleAuxiliaryPanel";
 import { RightAuxiliaryPane } from "@/features/channels/ui/RightAuxiliaryPane";
 import { ThreadViewModeToggle } from "@/features/channels/ui/ThreadViewModeToggle";
 import { ChannelAgentSessionSurface } from "@/features/channels/ui/ChannelAgentSessionSurface";
+import { ChannelIdleAuxiliarySurface } from "@/features/channels/ui/ChannelIdleAuxiliarySurface";
 import { FocusThreadDrawer } from "@/features/channels/ui/FocusThreadDrawer";
 import { AGENT_SESSION_SURFACE_KEY } from "@/features/channels/lib/agentSessionPanelPresentation";
 import {
@@ -540,38 +540,32 @@ export const ChannelPane = React.memo(function ChannelPane({
     ) : (
       wrapAux(panel, "message-thread-panel", { key: THREAD_SURFACE_KEY })
     );
-  const wrapIdlePanel = (panel: React.ReactNode) =>
-    useFocusIdleDrawer && onCloseIdleAuxiliaryPanel ? (
-      <FocusThreadDrawer
-        channelName={activeChannel?.name ?? "channel"}
-        key="idle-auxiliary-surface"
-        label={idleAuxiliaryTitle || "Panel"}
-        onClose={onCloseIdleAuxiliaryPanel}
-      >
-        {panel}
-      </FocusThreadDrawer>
-    ) : (
-      wrapAux(panel, "idle-auxiliary-panel")
-    );
   const idleAuxiliarySurface =
-    idleAuxiliaryPanel && onCloseIdleAuxiliaryPanel
-      ? wrapIdlePanel(
-          <IdleAuxiliaryPanel
-            canResetWidth={canResetThreadPanelWidth}
-            headerControls={idleAuxiliaryHeaderActions}
-            isFocusDrawer={useFocusIdleDrawer}
-            isSinglePanelView={isSinglePanelView}
-            onClose={onCloseIdleAuxiliaryPanel}
-            onResetWidth={onResetThreadPanelWidth}
-            onResizeStart={onThreadPanelResizeStart}
-            title={idleAuxiliaryTitle}
-            useSplitAuxiliaryPane={useSplitAuxiliaryPane}
-            widthPx={threadPanelWidthPx}
-          >
-            {idleAuxiliaryPanel}
-          </IdleAuxiliaryPanel>,
-        )
-      : null;
+    idleAuxiliaryPanel && onCloseIdleAuxiliaryPanel ? (
+      <ChannelIdleAuxiliarySurface
+        // Keyed here, on `AnimatePresence`'s direct child, and deliberately
+        // per-presentation: the cover drawer and the split pane were distinct
+        // keys before this surface was extracted, so a viewport change that
+        // flips the presentation remounts exactly as it did then.
+        key={
+          useFocusIdleDrawer ? "idle-auxiliary-surface" : "idle-auxiliary-panel"
+        }
+        canResetWidth={canResetThreadPanelWidth}
+        channelName={activeChannel?.name ?? "channel"}
+        headerControls={idleAuxiliaryHeaderActions}
+        isCoverDrawer={useFocusIdleDrawer}
+        isSinglePanelView={isSinglePanelView}
+        onClose={onCloseIdleAuxiliaryPanel}
+        onResetWidth={onResetThreadPanelWidth}
+        onResizeStart={onThreadPanelResizeStart}
+        title={idleAuxiliaryTitle}
+        useSplitAuxiliaryPane={useSplitAuxiliaryPane}
+        widthPx={threadPanelWidthPx}
+        wrapSplitPane={(panel) => wrapAux(panel, "idle-auxiliary-panel")}
+      >
+        {idleAuxiliaryPanel}
+      </ChannelIdleAuxiliarySurface>
+    ) : null;
   const wrapAgentSessionSplitPane = (panel: React.ReactNode) =>
     wrapAux(panel, "agent-session-thread-panel", {
       key: AGENT_SESSION_SURFACE_KEY,
