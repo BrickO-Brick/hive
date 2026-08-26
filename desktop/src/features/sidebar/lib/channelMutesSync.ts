@@ -15,6 +15,7 @@ import {
 } from "./channelMutesStorage";
 import {
   advanceWatermark,
+  clampPublishCreatedAt,
   readWatermark,
   runBootstrap,
   type FetchResult,
@@ -295,10 +296,10 @@ export class ChannelMuteSyncManager {
         channels: merged.channels,
       };
       const ciphertext = await nip44EncryptToSelf(JSON.stringify(payload));
-      const createdAt = Math.max(
-        Math.floor(Date.now() / 1_000),
-        this.lastRemoteCreatedAt + 1,
-      );
+      // Clamp inside the relay's future-drift window so a skewed remote head
+      // can never make us stamp an unbounded future timestamp that wedges every
+      // subsequent publish; we adopt such a head on the next fetch instead.
+      const createdAt = clampPublishCreatedAt(this.lastRemoteCreatedAt);
       const event = await signRelayEvent({
         kind: KIND_CHANNEL_MUTES,
         content: ciphertext,

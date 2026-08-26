@@ -18,6 +18,126 @@ before(() => {
 
 after(() => dom.window.close());
 
+// Carl P1-sort regression: a live remote arriving while a local sort edit is
+// still pending must NOT overwrite the optimistic edit or strand its durable
+// outbox. Reverting applyRemote's `hasPendingEdit()` guard (or restoring the
+// old `cancelPendingPublish()` on remote arrival) lets the remote clobber the
+// pending edit and drop it.
+test("live remote while a local edit is pending defers to the pending edit", async () => {
+  const { act, cleanup, renderHook } = await import("@testing-library/react");
+  const { relayClient } = await import("@/shared/api/relayClient");
+  const { useChannelSortPreference } = await import(
+    "./useChannelSortPreference.ts"
+  );
+
+  const origFetch = relayClient.fetchEvents;
+  const origLive = relayClient.subscribeLive;
+  const origReconnect = relayClient.subscribeToReconnects;
+  const origPublish = relayClient.publishEvent;
+  const origTauri = window.__TAURI_INTERNALS__;
+
+  let live = null;
+  relayClient.fetchEvents = async () => [];
+  relayClient.subscribeLive = async (_f, cb) => {
+    live = cb;
+    return async () => {};
+  };
+  relayClient.subscribeToReconnects = () => () => {};
+  relayClient.publishEvent = async () => {};
+  window.__TAURI_INTERNALS__ = {
+    invoke: (cmd) => {
+      if (cmd === "nip44_decrypt_from_self")
+        return Promise.resolve(
+          JSON.stringify({
+            version: 1,
+            groups: { "remote-group": "recent" },
+          }),
+        );
+      if (cmd === "nip44_encrypt_to_self") return Promise.resolve("ct");
+      if (cmd === "sign_event")
+        return Promise.resolve(
+          JSON.stringify({
+            id: "signed",
+            pubkey: "pk-sort-pending",
+            content: "ct",
+            created_at: 0,
+            kind: 30078,
+            tags: [],
+            sig: "s",
+          }),
+        );
+      return Promise.reject(new Error(`unmocked ${cmd}`));
+    },
+  };
+
+  const pubkey = "pk-sort-pending";
+  const relayUrl = "wss://r.live";
+  const outboxKey = `buzz-channel-sort-outbox.v1:${pubkey}:${encodeURIComponent(relayUrl)}`;
+
+  let hook = null;
+  try {
+    await act(async () => {
+      hook = renderHook(() => useChannelSortPreference(pubkey, relayUrl));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.ok(live, "live subscription installed");
+
+    // Make a local edit — it becomes the pending store and persists to outbox.
+    await act(async () => {
+      hook.result.current.setSortModeFor("channels", "recent");
+    });
+    assert.ok(
+      window.localStorage.getItem(outboxKey),
+      "local edit persisted to outbox",
+    );
+    assert.equal(
+      hook.result.current.sortModeFor("channels"),
+      "recent",
+      "optimistic local edit applied",
+    );
+
+    // A remote live event arrives while the edit is still pending.
+    await act(async () => {
+      live({
+        id: "remote-event",
+        pubkey,
+        created_at: 500,
+        content: "cipher",
+        kind: 30078,
+        tags: [["d", "channel-sort"]],
+        sig: "s",
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    assert.equal(
+      hook.result.current.sortModeFor("channels"),
+      "recent",
+      "pending local edit must NOT be overwritten by the live remote",
+    );
+    assert.equal(
+      hook.result.current.sortModeFor("remote-group"),
+      "alpha",
+      "remote store must not have been applied over the pending edit",
+    );
+    assert.ok(
+      window.localStorage.getItem(outboxKey),
+      "outbox for the pending edit must survive the live remote",
+    );
+    hook.unmount();
+  } finally {
+    cleanup();
+    relayClient.fetchEvents = origFetch;
+    relayClient.subscribeLive = origLive;
+    relayClient.subscribeToReconnects = origReconnect;
+    relayClient.publishEvent = origPublish;
+    window.__TAURI_INTERNALS__ = origTauri;
+  }
+});
+
 // Equal-timestamp tie-break must match the relay's canonical winner
 // (`created_at DESC, id ASC` → LOWEST id wins). Deliver the larger id first,
 // then the lower id at the same timestamp; the lower id is the stored winner

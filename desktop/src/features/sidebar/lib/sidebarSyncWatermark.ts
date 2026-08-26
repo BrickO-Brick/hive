@@ -23,6 +23,35 @@ import { normalizeRelayUrl } from "@/shared/lib/normalizeRelayUrl";
 
 const PREFIX = "buzz-sync-watermark.v1";
 
+// The relay rejects events more than ±15 minutes (900s) from server time
+// (`MAX_TIMESTAMP_DRIFT_SECS` in ingest.rs). Clamp every sidebar-sync publish's
+// `created_at` well inside that window so a skewed remote head can never make a
+// manager manufacture an unbounded future timestamp that wedges every
+// subsequent publish. 840s leaves ~60s of transit margin while still letting a
+// publish win LWW against any legitimately-timestamped head.
+const MAX_PUBLISH_FUTURE_SECS = 840;
+
+/**
+ * Compute the `created_at` for a sidebar-sync publish.
+ *
+ * Stamps one second past the newest observed remote head so the write wins
+ * last-write-wins, but never further ahead than the relay's future-drift
+ * window. If a skewed remote head sits beyond the window the manager loses LWW
+ * and adopts it on the next fetch rather than walking past it and wedging.
+ *
+ * `nowSecs` defaults to the current wall clock in seconds; callers pass it
+ * explicitly only to keep a single clock reading across a publish.
+ */
+export function clampPublishCreatedAt(
+  lastRemoteCreatedAt: number,
+  nowSecs: number = Math.floor(Date.now() / 1_000),
+): number {
+  return Math.min(
+    Math.max(nowSecs, lastRemoteCreatedAt + 1),
+    nowSecs + MAX_PUBLISH_FUTURE_SECS,
+  );
+}
+
 /**
  * Tri-state result returned by every `fetchRemote*()` method.
  *

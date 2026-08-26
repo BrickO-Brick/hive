@@ -15,6 +15,7 @@ import {
 } from "./channelSectionsStorage";
 import {
   advanceWatermark,
+  clampPublishCreatedAt,
   readWatermark,
   runBootstrap,
   type FetchResult,
@@ -23,14 +24,6 @@ import {
 const D_TAG = "channel-sections";
 const BLOB_TYPE = D_TAG;
 const DEBOUNCE_MS = 2_000;
-
-// The relay rejects events more than ±15 minutes (900s) from server time
-// (`MAX_TIMESTAMP_DRIFT_SECS` in ingest.rs). Clamp our published `created_at`
-// well inside that window so a skewed remote head can never make us manufacture
-// an unbounded future timestamp that wedges every subsequent publish. 840s
-// leaves ~60s of transit margin while still letting us win LWW against any
-// legitimately-timestamped head.
-const MAX_PUBLISH_FUTURE_SECS = 840;
 
 // Bounded backoff for a retained pending edit whose publish failed transiently
 // (timeout / socket error) on an otherwise-healthy socket, so it does not wait
@@ -460,16 +453,12 @@ export class ChannelSectionSyncManager {
         assignments: merged.assignments,
       };
       const ciphertext = await nip44EncryptToSelf(JSON.stringify(payload));
-      const now = Math.floor(Date.now() / 1_000);
       // Clamp inside the relay's future-drift window: never manufacture a
       // timestamp so far ahead that this or a later publish is rejected for
       // drift and wedges. If a skewed remote head sits beyond the window we
       // will lose LWW and adopt it on the next pre-publish fetch rather than
       // walking past it.
-      const createdAt = Math.min(
-        Math.max(now, this.lastRemoteCreatedAt + 1),
-        now + MAX_PUBLISH_FUTURE_SECS,
-      );
+      const createdAt = clampPublishCreatedAt(this.lastRemoteCreatedAt);
       const event = await signRelayEvent({
         kind: KIND_CHANNEL_SECTIONS,
         content: ciphertext,

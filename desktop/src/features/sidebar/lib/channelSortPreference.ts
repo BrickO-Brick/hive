@@ -133,6 +133,59 @@ export function writeChannelSortStore(
   }
 }
 
+const OUTBOX_KEY_PREFIX = "buzz-channel-sort-outbox.v1";
+
+function outboxKey(pubkey: string, relayUrl: string): string {
+  return `${OUTBOX_KEY_PREFIX}:${pubkey}:${encodeURIComponent(normalizeRelayUrl(relayUrl))}`;
+}
+
+/**
+ * Persist an unpublished sort edit so it survives quit/community-switch within
+ * the 2s publish debounce. Written synchronously on every edit; cleared once
+ * the edit is published, superseded by an adopted remote head, or found
+ * identical to the last published store. Resumed on next mount so a durable
+ * intent is never silently dropped at teardown.
+ */
+export function writeChannelSortOutbox(
+  pubkey: string,
+  store: ChannelSortStore,
+  relayUrl: string,
+): void {
+  try {
+    window.localStorage.setItem(
+      outboxKey(pubkey, relayUrl),
+      JSON.stringify(boundChannelSortStore(store)),
+    );
+  } catch {
+    // Best-effort durability; the in-memory pendingStore still drives this
+    // session's publish even if the persisted copy could not be written.
+  }
+}
+
+/** Read a persisted unpublished sort edit, or null when none/unparseable. */
+export function readChannelSortOutbox(
+  pubkey: string,
+  relayUrl: string,
+): ChannelSortStore | null {
+  try {
+    const raw = window.localStorage.getItem(outboxKey(pubkey, relayUrl));
+    if (!raw) return null;
+    return parseChannelSortPayload(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+
+/** Clear the persisted sort outbox (edit published, superseded, or a no-op). */
+export function clearChannelSortOutbox(pubkey: string, relayUrl: string): void {
+  try {
+    window.localStorage.removeItem(outboxKey(pubkey, relayUrl));
+  } catch {
+    // Ignore — a stale outbox entry is re-evaluated (and re-cleared if
+    // identical to the head) on the next publish attempt.
+  }
+}
+
 export function sortModeForGroup(
   store: ChannelSortStore,
   group: ChannelSortGroupKey,

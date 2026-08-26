@@ -393,3 +393,50 @@ test("revert-fix: relay-A watermark does not suppress first-sync seed on relay-B
     mock.reset();
   }
 });
+
+// ─── Timestamp clamp (Carl P2): a far-future remote head must not push our
+//     published createdAt past the relay's ±15min future-drift window.
+// Mutation test: removing the clamp lets createdAt = lastRemote+1 (~now+3600),
+// which exceeds now + MAX_PUBLISH_FUTURE_SECS.
+test("timestamp clamp: published createdAt stays inside the relay future window", async () => {
+  const nowSecs = Math.floor(Date.now() / 1000);
+  const farFutureHead = nowSecs + 3_600; // 1h ahead — beyond the ±15min window
+  let call = 0;
+  mock.method(relayClient, "fetchEvents", () => {
+    call++;
+    // First call primes lastRemoteCreatedAt to farFutureHead (undecryptable so
+    // it does not merge into the store); pre-publish call returns created_at=0.
+    return Promise.resolve([
+      {
+        pubkey: "pk-clamp",
+        content: "bad-cipher",
+        created_at: call === 1 ? farFutureHead : 0,
+        id: "evt-clamp",
+      },
+    ]);
+  });
+  let signedCreatedAt = null;
+  const fw = makeFakeWindow();
+  const restore = installFakeWindow(fw);
+  const tauri = installTauriMock(JSON.stringify({ version: 1, channels: {} }));
+  mock.method(relayClient, "publishEvent", (evt) => {
+    signedCreatedAt = evt.created_at;
+    return Promise.resolve();
+  });
+  try {
+    const manager = new ChannelMuteSyncManager("pk-clamp", RELAY);
+    await manager.fetchRemoteMutes(); // prime lastRemoteCreatedAt
+    manager.publishMutes(makeStore({ ch1: E(true, 100, 1) }));
+    fw._fireTimer();
+    await new Promise((r) => setTimeout(r, 20));
+    assert.ok(signedCreatedAt !== null, "publish must have been attempted");
+    assert.ok(
+      signedCreatedAt <= Math.floor(Date.now() / 1000) + 840,
+      `createdAt must be clamped inside the future window — got ${signedCreatedAt}`,
+    );
+  } finally {
+    tauri.restore();
+    restore();
+    mock.reset();
+  }
+});

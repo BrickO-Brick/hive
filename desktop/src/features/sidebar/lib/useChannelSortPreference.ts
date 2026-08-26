@@ -3,7 +3,9 @@ import * as React from "react";
 import { relayClient } from "@/shared/api/relayClient";
 import {
   boundChannelSortStore,
+  clearChannelSortOutbox,
   DEFAULT_STORE,
+  readChannelSortOutbox,
   readChannelSortStore,
   sortModeForGroup,
   storageKey,
@@ -15,6 +17,13 @@ import {
 } from "./channelSortPreference";
 import { ChannelSortSyncManager } from "./channelSortSync";
 import type { RemoteSortPrefs } from "./channelSortSync";
+
+// Reconciliation cadence (mirrors sections). Steady interval re-fetches the head
+// on a healthy socket so divergence self-heals without a reconnect; the retry
+// window backs off from base to max while the fetch keeps failing.
+const RECONCILE_STEADY_MS = 60_000;
+const RECONCILE_RETRY_BASE_MS = 3_000;
+const RECONCILE_RETRY_MAX_MS = 60_000;
 
 /**
  * Persistent per-group sidebar sort preferences, scoped by pubkey + relay so
@@ -85,6 +94,13 @@ export function useChannelSortPreference(
     ): ((prev: ChannelSortStore) => ChannelSortStore) => {
       return (prev) => {
         if (!pubkey) return prev;
+        // A pending local edit owns convergence: its debounced publish re-checks
+        // the head and either wins (publish) or loses (adopt, which routes back
+        // through onRemoteAdopted with pending already cleared). Never let a
+        // passive remote arrival clobber the optimistic edit or strand its
+        // durable outbox. The adopt path clears pending before calling us, so
+        // this guard is false there and the winning remote still writes through.
+        if (managerRef.current?.hasPendingEdit()) return prev;
         if (remote.createdAt < lastAppliedRemoteTs.current) return prev;
         // Equal timestamps: the relay/database break ties by `id ASC` — the
         // LOWEST event id is the canonical winner. Apply a strictly-lower id and
@@ -97,13 +113,25 @@ export function useChannelSortPreference(
           return prev;
         lastAppliedRemoteTs.current = remote.createdAt;
         lastAppliedEventId.current = remote.eventId;
-        managerRef.current?.cancelPendingPublish();
         if (!writeChannelSortStore(pubkey, remote.store, relayUrl)) return prev;
         return remote.store;
       };
     },
     [pubkey, relayUrl],
   );
+
+  React.useEffect(() => {
+    if (!pubkey || !relayUrl) return;
+    const manager = managerRef.current;
+    if (!manager) return;
+    // When a local edit loses whole-blob LWW (pre-publish head is newer), the
+    // manager adopts the winning remote store. Write it through to React state +
+    // localStorage so the UI and relay never diverge; applyRemote also advances
+    // the applied-ts guard.
+    manager.setOnRemoteAdopted((remote) => {
+      setStore(applyRemote(remote));
+    });
+  }, [pubkey, relayUrl, applyRemote]);
 
   React.useEffect(() => {
     if (!pubkey || !relayUrl) return;
@@ -114,10 +142,68 @@ export function useChannelSortPreference(
       if (result.action === "apply-remote") {
         setStore(applyRemote(result.data));
       }
-      // "hold": seed already performed by bootstrap (if first-sync), or blocked.
+      // "hold": seed already performed by bootstrap (if first-sync), or blocked
+      // (failed fetch / prior watermark). Resume any edit persisted to the
+      // durable outbox before a prior quit/community-switch.
+      const outbox = readChannelSortOutbox(pubkey, relayUrl);
+      if (outbox) {
+        managerRef.current?.publishSortPrefs(outbox);
+      } else {
+        clearChannelSortOutbox(pubkey, relayUrl);
+      }
     });
     return () => {
       cancelled = true;
+    };
+  }, [pubkey, relayUrl, applyRemote]);
+
+  // Reconciliation loop (mirrors sections): a single scheduler that both retries
+  // a failed bootstrap with bounded backoff and periodically re-fetches the
+  // head, so stale-at-open state converges without waiting for a reconnect event
+  // a healthy socket never fires. Also refreshes when the window becomes visible.
+  React.useEffect(() => {
+    if (!pubkey || !relayUrl) return;
+    let cancelled = false;
+    let timer: number | null = null;
+    let delayMs = RECONCILE_RETRY_BASE_MS;
+
+    const schedule = (ms: number) => {
+      if (cancelled) return;
+      if (timer !== null) window.clearTimeout(timer);
+      timer = window.setTimeout(tick, ms);
+    };
+
+    const tick = () => {
+      void managerRef.current?.fetchRemoteSortPrefs().then((result) => {
+        if (cancelled) return;
+        if (result.status === "found") {
+          // applyRemote defers to a pending local edit (whose own debounced
+          // publish converges via publish-or-adopt), so a periodic reconcile
+          // can never drop it — no re-queue needed.
+          setStore(applyRemote(result.data));
+          delayMs = RECONCILE_STEADY_MS; // relay answered → steady cadence
+        } else if (result.status === "absent") {
+          delayMs = RECONCILE_STEADY_MS; // answered (no blob) → steady cadence
+        } else {
+          delayMs = Math.min(delayMs * 2, RECONCILE_RETRY_MAX_MS); // fetch failed → back off
+        }
+        schedule(delayMs);
+      });
+    };
+
+    const onVisible = () => {
+      if (document.visibilityState === "visible") {
+        delayMs = RECONCILE_RETRY_BASE_MS;
+        tick();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    schedule(delayMs);
+
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, [pubkey, relayUrl, applyRemote]);
 
