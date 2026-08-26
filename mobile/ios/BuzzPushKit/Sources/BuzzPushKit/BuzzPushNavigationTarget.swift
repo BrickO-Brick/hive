@@ -47,6 +47,73 @@ public struct BuzzPushNavigationTarget: Codable, Equatable, Sendable {
 
 }
 
+/// Reply metadata attached only after the NSE has fetched and verified the
+/// event behind an opaque push wake-up.
+public struct BuzzPushReplyContext: Codable, Equatable, Sendable {
+  public static let userInfoKey = "buzz_push_reply"
+
+  public let eventID: String
+  public let rootEventID: String
+  public let communityID: String
+  public let channelID: String
+  public let senderPubkey: String
+  public let replyKind: Int
+
+  public init(
+    eventID: String,
+    rootEventID: String,
+    communityID: String,
+    channelID: String,
+    senderPubkey: String,
+    replyKind: Int
+  ) {
+    self.eventID = eventID
+    self.rootEventID = rootEventID
+    self.communityID = communityID
+    self.channelID = channelID
+    self.senderPubkey = senderPubkey
+    self.replyKind = replyKind
+  }
+
+  public var userInfoValue: [String: Any] {
+    [
+      "event_id": eventID,
+      "root_event_id": rootEventID,
+      "community_id": communityID,
+      "channel_id": channelID,
+      "sender_pubkey": senderPubkey,
+      "reply_kind": replyKind,
+    ]
+  }
+
+  public static func decodeIfPresent(from userInfo: [AnyHashable: Any]) -> Self? {
+    guard let raw = userInfo[userInfoKey] as? [String: Any], raw.count == 6,
+      let eventID = raw["event_id"] as? String, !eventID.isEmpty,
+      let rootEventID = raw["root_event_id"] as? String, !rootEventID.isEmpty,
+      let communityID = raw["community_id"] as? String, !communityID.isEmpty,
+      let channelID = raw["channel_id"] as? String, !channelID.isEmpty,
+      let senderPubkey = raw["sender_pubkey"] as? String,
+      senderPubkey.count == 64,
+      senderPubkey.allSatisfy({ $0.isHexDigit }),
+      let replyKind = raw["reply_kind"] as? Int,
+      [9, 45_003].contains(replyKind)
+    else { return nil }
+    return Self(
+      eventID: eventID,
+      rootEventID: rootEventID,
+      communityID: communityID,
+      channelID: channelID,
+      senderPubkey: senderPubkey.lowercased(),
+      replyKind: replyKind
+    )
+  }
+}
+
+public enum BuzzPushNotificationActions {
+  public static let messageCategoryIdentifier = "buzz.message"
+  public static let replyActionIdentifier = "buzz.reply"
+}
+
 /// Thread-safe one-item buffer spanning notification delivery and Flutter
 /// engine startup during a cold notification launch.
 public final class BuzzPushNavigationBuffer: @unchecked Sendable {

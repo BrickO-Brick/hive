@@ -165,6 +165,17 @@ final class BuzzPushNotificationResolverTests: XCTestCase {
         channelID: Self.channelID
       )
     )
+    XCTAssertEqual(
+      result.replyContext,
+      BuzzPushReplyContext(
+        eventID: event.id,
+        rootEventID: event.id,
+        communityID: "community-id",
+        channelID: Self.channelID,
+        senderPubkey: event.pubkey,
+        replyKind: 9
+      )
+    )
   }
 
   func testFreshVerifiedCacheResolvesSenderAvatarAndChannelWithoutRefresh() throws {
@@ -718,13 +729,13 @@ final class BuzzPushNotificationResolverTests: XCTestCase {
       relayMetadataPubkey: relayMetadataPubkey,
       pubkey: pubkey,
       policies: [
-          PushResolutionPolicy(
-            filter: PushLeaseFilter(
-              kinds: [9, 40002, 45001, 45003],
-              hTags: [Self.channelID]
-            )
+        PushResolutionPolicy(
+          filter: PushLeaseFilter(
+            kinds: [9, 40002, 45001, 45003],
+            hTags: [Self.channelID]
           )
-        ]
+        )
+      ]
     )
   }
 

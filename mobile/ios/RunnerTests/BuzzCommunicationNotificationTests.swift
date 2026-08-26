@@ -217,6 +217,41 @@ final class BuzzPushSnapshotEnrichmentTests: XCTestCase {
 }
 
 final class BuzzPushNotificationResponseTests: XCTestCase {
+  func testValidTextReplyWaitsForPublisherAndDoesNotOpenFlutter() throws {
+    let context = BuzzPushReplyContext(
+      eventID: "message-id",
+      rootEventID: "root-id",
+      communityID: "community-id",
+      channelID: "opaque-channel-id",
+      senderPubkey: String(repeating: "a", count: 64),
+      replyKind: 9
+    )
+    var published: (BuzzPushReplyContext, String)?
+    var publishCompletion: (() -> Void)?
+    var forwarded = 0
+    var completions = 0
+
+    BuzzPushNotificationResponseCoordinator.handle(
+      actionIdentifier: BuzzPushNotificationActions.replyActionIdentifier,
+      userInfo: [BuzzPushReplyContext.userInfoKey: context.userInfoValue],
+      textInput: "A lock-screen reply",
+      onTarget: { _ in XCTFail("Reply must not navigate") },
+      onReply: { replyContext, content, completion in
+        published = (replyContext, content)
+        publishCompletion = completion
+      },
+      forwardToFlutter: { _ in forwarded += 1 },
+      completion: { completions += 1 }
+    )
+
+    XCTAssertEqual(published?.0, context)
+    XCTAssertEqual(published?.1, "A lock-screen reply")
+    XCTAssertEqual(forwarded, 0)
+    XCTAssertEqual(completions, 0)
+    try XCTUnwrap(publishCompletion)()
+    XCTAssertEqual(completions, 1)
+  }
+
   func testValidDefaultActionRoutesAndCompletesExactlyOnce() {
     let target = BuzzPushNavigationTarget(
       eventID: "message-id",

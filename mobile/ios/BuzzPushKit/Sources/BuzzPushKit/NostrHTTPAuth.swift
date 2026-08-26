@@ -141,3 +141,43 @@ public enum NostrHTTPAuth {
         }
     }
 }
+
+public enum BuzzNostrEventSigner {
+    public static func sign(
+        kind: Int,
+        tags: [[String]],
+        content: String,
+        privateKeyHex: String,
+        createdAt: Int = Int(Date().timeIntervalSince1970)
+    ) throws -> VerifiedNostrEvent {
+        guard let privateKeyBytes = VerifiedNostrEvent.hexBytes(privateKeyHex),
+            privateKeyBytes.count == 32
+        else { throw NostrHTTPAuthError.invalidHex }
+        do {
+            let privateKey = try P256K.Schnorr.PrivateKey(
+                dataRepresentation: privateKeyBytes
+            )
+            let pubkey = VerifiedNostrEvent.hex(privateKey.xonly.bytes)
+            let serialized = try VerifiedNostrEvent.canonicalSerialization(
+                pubkey: pubkey, createdAt: createdAt, kind: kind,
+                tags: tags, content: content
+            )
+            let digest = Array(SHA256.hash(data: serialized))
+            var message = digest
+            let signature = try privateKey.signature(message: &message, auxiliaryRand: nil)
+            return VerifiedNostrEvent(
+                id: VerifiedNostrEvent.hex(digest),
+                pubkey: pubkey,
+                createdAt: createdAt,
+                kind: kind,
+                tags: tags,
+                content: content,
+                sig: VerifiedNostrEvent.hex(signature.dataRepresentation)
+            )
+        } catch let error as NostrHTTPAuthError {
+            throw error
+        } catch {
+            throw NostrHTTPAuthError.signingFailed
+        }
+    }
+}

@@ -75,3 +75,43 @@ import Testing
   #expect(buffer.take() == first)
   #expect(buffer.take() == nil)
 }
+
+@Test func `Round-trip verified reply context and reject malformed values`() {
+  let context = BuzzPushReplyContext(
+    eventID: "message-id",
+    rootEventID: "root-id",
+    communityID: "community-id",
+    channelID: "opaque/channel",
+    senderPubkey: String(repeating: "A", count: 64),
+    replyKind: 9
+  )
+
+  #expect(
+    BuzzPushReplyContext.decodeIfPresent(
+      from: [BuzzPushReplyContext.userInfoKey: context.userInfoValue]
+    )
+      == BuzzPushReplyContext(
+        eventID: "message-id",
+        rootEventID: "root-id",
+        communityID: "community-id",
+        channelID: "opaque/channel",
+        senderPubkey: String(repeating: "a", count: 64),
+        replyKind: 9
+      )
+  )
+
+  var malformed = context.userInfoValue
+  malformed["sender_pubkey"] = "not-a-pubkey"
+  #expect(
+    BuzzPushReplyContext.decodeIfPresent(
+      from: [BuzzPushReplyContext.userInfoKey: malformed]
+    ) == nil
+  )
+  malformed = context.userInfoValue
+  malformed["reply_kind"] = 1
+  #expect(
+    BuzzPushReplyContext.decodeIfPresent(
+      from: [BuzzPushReplyContext.userInfoKey: malformed]
+    ) == nil
+  )
+}

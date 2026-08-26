@@ -11,6 +11,7 @@ public struct BuzzPushResolution: Decodable, Equatable, Sendable {
   public let subtitle: String?
   public let threadIdentifier: String?
   public let navigationTarget: BuzzPushNavigationTarget?
+  public let replyContext: BuzzPushReplyContext?
   public let senderPubkey: String?
   public let senderAvatarPNG: Data?
   public let conversationIdentifier: String?
@@ -24,6 +25,7 @@ public struct BuzzPushResolution: Decodable, Equatable, Sendable {
     subtitle: String?,
     threadIdentifier: String?,
     navigationTarget: BuzzPushNavigationTarget? = nil,
+    replyContext: BuzzPushReplyContext? = nil,
     senderPubkey: String? = nil,
     senderAvatarPNG: Data? = nil,
     conversationIdentifier: String? = nil,
@@ -35,6 +37,7 @@ public struct BuzzPushResolution: Decodable, Equatable, Sendable {
     self.subtitle = subtitle
     self.threadIdentifier = threadIdentifier
     self.navigationTarget = navigationTarget
+    self.replyContext = replyContext
     self.senderPubkey = senderPubkey
     self.senderAvatarPNG = senderAvatarPNG
     self.conversationIdentifier = conversationIdentifier
@@ -453,6 +456,11 @@ public final class BuzzPushNotificationResolver: BuzzPushNotificationResolving {
     let conversation = channel.flatMap {
       communicationConversation(event: event, community: community, channel: $0)
     }
+    let rootEventID =
+      event.tags.first {
+        $0.count >= 4 && $0[0] == "e" && $0[3] == "root" && !$0[1].isEmpty
+      }?[1] ?? event.id
+    let replyKind = [45_001, 45_003].contains(event.kind) ? 45_003 : 9
     return BuzzPushResolution(
       title: profile?.displayName ?? shortPubkey(event.pubkey),
       body: body,
@@ -463,6 +471,16 @@ public final class BuzzPushNotificationResolver: BuzzPushNotificationResolving {
           eventID: event.id,
           communityID: community.id,
           channelID: $0
+        )
+      },
+      replyContext: channelID.map {
+        BuzzPushReplyContext(
+          eventID: event.id,
+          rootEventID: rootEventID,
+          communityID: community.id,
+          channelID: $0,
+          senderPubkey: event.pubkey.lowercased(),
+          replyKind: replyKind
         )
       },
       senderPubkey: event.pubkey.lowercased(),

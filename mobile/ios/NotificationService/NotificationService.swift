@@ -45,6 +45,7 @@ final class NotificationService: UNNotificationServiceExtension {
     bestAttemptContent = content
     var cleanUserInfo = content.userInfo
     cleanUserInfo.removeValue(forKey: BuzzPushNavigationTarget.userInfoKey)
+    cleanUserInfo.removeValue(forKey: BuzzPushReplyContext.userInfoKey)
     content.userInfo = cleanUserInfo
 
     resolver.resolve { [weak self] resolution in
@@ -62,6 +63,12 @@ final class NotificationService: UNNotificationServiceExtension {
           var userInfo = content.userInfo
           userInfo[BuzzPushNavigationTarget.userInfoKey] = navigationTarget.userInfoValue
           content.userInfo = userInfo
+        }
+        if let replyContext = resolution.replyContext {
+          var userInfo = content.userInfo
+          userInfo[BuzzPushReplyContext.userInfoKey] = replyContext.userInfoValue
+          content.userInfo = userInfo
+          content.categoryIdentifier = BuzzPushNotificationActions.messageCategoryIdentifier
         }
         self.bestAttemptContent = content
         self.communicationPresenter.present(

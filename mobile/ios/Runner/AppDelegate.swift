@@ -11,6 +11,7 @@ import os.log
   private var pushChannel: FlutterMethodChannel?
   private let apnsRegistrationBuffer = APNsRegistrationBuffer()
   private let pushNavigationBuffer = BuzzPushNavigationBuffer()
+  private let pushReplyPublisher = BuzzPushReplyPublisher()
   private var apnsDeviceToken: Data?
   private lazy var endpointGrantStore = BuzzPushEndpointGrantKeychainStore(
     accessGroup: Bundle.main.object(forInfoDictionaryKey: "BuzzKeychainAccessGroup") as? String
@@ -41,6 +42,7 @@ import os.log
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
     UNUserNotificationCenter.current().delegate = self
+    BuzzPushNotificationCategoryRegistrar.register(with: .current())
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
@@ -287,12 +289,21 @@ import os.log
     didReceive response: UNNotificationResponse,
     withCompletionHandler completionHandler: @escaping () -> Void
   ) {
+    let textInput = (response as? UNTextInputNotificationResponse)?.userText
     BuzzPushNotificationResponseCoordinator.handle(
       actionIdentifier: response.actionIdentifier,
       userInfo: response.notification.request.content.userInfo,
+      textInput: textInput,
       onTarget: { target in
         pushNavigationBuffer.record(target)
         deliverPushNavigationTarget(target)
+      },
+      onReply: { [weak self] context, content, replyCompletion in
+        self?.publishPushReply(
+          context: context,
+          content: content,
+          completion: replyCompletion
+        ) ?? replyCompletion()
       },
       forwardToFlutter: { pluginCompletion in
         self.forwardPushNotificationResponseToFlutter(
@@ -303,6 +314,56 @@ import os.log
       },
       completion: completionHandler
     )
+  }
+
+  private func publishPushReply(
+    context: BuzzPushReplyContext,
+    content: String,
+    completion: @escaping () -> Void
+  ) {
+    guard let relayURL = pushReplyRelayURL(communityID: context.communityID),
+      let privateKey = BuzzPushKeychain.signingKey(
+        communityID: context.communityID,
+        accessGroup: pushKeychainAccessGroup
+      )
+    else {
+      os_log("Buzz notification reply is missing scoped relay or signing state", type: .error)
+      completion()
+      return
+    }
+    pushReplyPublisher.publish(
+      context: context,
+      content: content,
+      relayURL: relayURL,
+      privateKeyHex: privateKey
+    ) { result in
+      if case .failure(let error) = result {
+        os_log(
+          "Buzz notification reply failed: %{public}@",
+          type: .error,
+          error.localizedDescription
+        )
+      }
+      completion()
+    }
+  }
+
+  private func pushReplyRelayURL(communityID: String) -> URL? {
+    guard let appGroupIdentifier,
+      let container = FileManager.default.containerURL(
+        forSecurityApplicationGroupIdentifier: appGroupIdentifier
+      ),
+      let data = try? Data(
+        contentsOf: container.appendingPathComponent(
+          BuzzPushPresentationCacheStore.fileName
+        )
+      ),
+      data.count <= BuzzPushPresentationCacheStore.maximumSnapshotBytes
+    else { return nil }
+    let snapshot = BuzzPushPresentationCacheSnapshot.decode(data)
+    guard let relayText = snapshot.communities.first(where: { $0.id == communityID })?.relayUrl
+    else { return nil }
+    return URL(string: relayText)
   }
 
   private func forwardPushNotificationResponseToFlutter(
