@@ -703,14 +703,14 @@ fn wrapper_refuses_push_of_unsigned_commit_tree() {
 /// names the agent but drops, falsifies, or misdirects the signing contract is
 /// tampered — not a legitimate unsigned mode — and must fail closed for EVERY
 /// command, not silently disable or redirect the push-gate signature check.
-/// Five mutations, each a distinct silent-disable/misdirect the contract check
+/// Six mutations, each a distinct silent-disable/misdirect the contract check
 /// rejects at classification time (`run()` refuses before any dispatch), so
 /// even a read-only `status` is refused. The duplicate-key and `include.path`
 /// cases cover the last-value-wins redirect that a first-value-only validator
 /// would miss.
 #[test]
 fn wrapper_refuses_every_command_when_manifest_signing_contract_is_tampered() {
-    let variants: [ManifestMutation; 5] = [
+    let variants: [ManifestMutation; 6] = [
         // `commit.gpgSign` removed → the signature gate would never fire.
         ("commit.gpgSign removed", |m| {
             m.lines()
@@ -747,6 +747,16 @@ fn wrapper_refuses_every_command_when_manifest_signing_contract_is_tampered() {
         // unknown key.
         ("appended include.path", |m| {
             format!("{m}\ninclude.path=/tmp/evil.inc")
+        }),
+        // `gpg.x509.program` differing ONLY in case. On a case-sensitive host
+        // `GIT-SIGN-NOSTR` resolves past the managed install to an agent-
+        // controlled fake verifier later on PATH; the probe would then accept
+        // an unsigned commit. classify() compares fixed values byte for byte.
+        ("gpg.x509.program cased", |m| {
+            m.replace(
+                "gpg.x509.program=git-sign-nostr",
+                "gpg.x509.program=GIT-SIGN-NOSTR",
+            )
         }),
     ];
 

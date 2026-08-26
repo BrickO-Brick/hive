@@ -161,12 +161,15 @@ impl Authority {
         if get("user.name").is_none_or(str::is_empty) {
             return AuthorityState::Tampered;
         }
-        // The fixed signing entries must carry their canonical values verbatim.
-        // `gpg.x509.program` pins the verifier the push probe invokes, so a
-        // tampered program cannot redirect it.
+        // The fixed signing entries must carry their canonical values byte for
+        // byte. `gpg.x509.program` pins the verifier the push probe invokes, and
+        // the installers emit exactly one canonical spelling, so any case
+        // variance is tampering: on a case-sensitive host `GIT-SIGN-NOSTR`
+        // resolves past the managed install to an agent-controlled binary later
+        // on PATH. Comparing verbatim keeps the probe bound to the real signer.
         let fixed_ok = crate::FIXED_SIGNING_ENTRIES
             .iter()
-            .all(|&(k, expected)| get(k).is_some_and(|v| v.eq_ignore_ascii_case(expected)));
+            .all(|&(k, expected)| get(k) == Some(expected));
         if !fixed_ok || get("nostr.keyfile").is_none_or(str::is_empty) {
             return AuthorityState::Tampered;
         }
@@ -2344,6 +2347,20 @@ mod tests {
             .1 = "/bin/true".into();
         assert!(matches!(
             Authority::classify(wrong_program),
+            AuthorityState::Tampered
+        ));
+
+        // A verifier program differing ONLY in case — on a case-sensitive host
+        // `GIT-SIGN-NOSTR` resolves past the managed install to a later PATH
+        // entry, so fixed values must match byte for byte, not case-insensitively.
+        let mut cased_program = complete();
+        cased_program
+            .iter_mut()
+            .find(|(k, _)| k == "gpg.x509.program")
+            .unwrap()
+            .1 = "GIT-SIGN-NOSTR".into();
+        assert!(matches!(
+            Authority::classify(cased_program),
             AuthorityState::Tampered
         ));
 
