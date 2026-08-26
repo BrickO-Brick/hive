@@ -135,8 +135,12 @@ impl Config {
         let public_delivery_url = req(e, "BUZZ_PUSH_PUBLIC_DELIVERY_URL")?
             .parse::<url::Url>()
             .map_err(|_| ConfigError::Invalid("BUZZ_PUSH_PUBLIC_DELIVERY_URL"))?;
+        let host = public_delivery_url.host_str();
         if public_delivery_url.scheme() != "https"
-            || public_delivery_url.host_str() != Some("push.buzz.xyz")
+            || !matches!(
+                host,
+                Some("push.buzz.xyz") | Some("buzz-push-gateway-dev-production.up.railway.app")
+            )
             || public_delivery_url.port().is_some()
             || public_delivery_url.path() != "/v1/deliveries/apns"
             || public_delivery_url.query().is_some()

@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const MAX_REQUEST_BYTES: usize = 8 * 1024;
+pub const MAX_REQUEST_BYTES: usize = 32 * 1024;
 pub const MAX_GRANT_BYTES: usize = 4096;
 pub const MAX_ENDPOINT_HEX_BYTES: usize = 512;
 pub const APNS_RECONNECT_PAYLOAD: &[u8] =

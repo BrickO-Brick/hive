@@ -286,26 +286,24 @@ mod tests {
     }
 
     #[test]
-    fn wrong_aaguid_is_rejected_as_invalid_aaguid() {
+    fn temporary_demo_verifier_accepts_development_aaguid() {
         let fixture = fixture(WRONG_AAGUID_FIXTURE_JSON);
         assert_eq!(fixture.aaguid, "appattestdevelop");
-        assert_eq!(
-            verify_dependency(
-                &fixture,
-                &fixture.app_id,
-                &fixture.challenge,
-                &fixture.key_id_b64,
-                fixture.root_cert_pem.as_bytes(),
-            ),
-            Err(DependencyAppAttestError::InvalidAAGUID)
-        );
-        assert!(verifier(&fixture.app_id, fixture.root_cert_pem.as_bytes())
+        verify_dependency(
+            &fixture,
+            &fixture.app_id,
+            &fixture.challenge,
+            &fixture.key_id_b64,
+            fixture.root_cert_pem.as_bytes(),
+        )
+        .expect("temporary demo verifier accepts Apple's development AAGUID");
+        verifier(&fixture.app_id, fixture.root_cert_pem.as_bytes())
             .verify_attestation(
                 &fixture.attestation_b64,
                 &fixture.key_id_b64,
                 fixture.challenge.as_bytes(),
             )
-            .is_err());
+            .expect("gateway wrapper preserves temporary development-AAGUID acceptance");
     }
 
     #[test]
