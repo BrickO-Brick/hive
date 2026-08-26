@@ -16,7 +16,14 @@ final class BuzzOneShotCompletion {
     let completion = completion
     self.completion = nil
     lock.unlock()
-    completion?()
+    guard let completion else { return }
+    if Thread.isMainThread {
+      completion()
+    } else {
+      // Reply publication finishes on a URLSession callback queue, while the
+      // notification response completion crosses back into UIKit.
+      DispatchQueue.main.async(execute: completion)
+    }
   }
 }
 

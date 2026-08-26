@@ -217,6 +217,24 @@ final class BuzzPushSnapshotEnrichmentTests: XCTestCase {
 }
 
 final class BuzzPushNotificationResponseTests: XCTestCase {
+  func testBackgroundCompletionReturnsToMainThreadExactlyOnce() {
+    let completed = expectation(description: "completion returned on main thread")
+    var completionCount = 0
+    let completion = BuzzOneShotCompletion {
+      XCTAssertTrue(Thread.isMainThread)
+      completionCount += 1
+      completed.fulfill()
+    }
+
+    DispatchQueue.global().async {
+      completion.call()
+      completion.call()
+    }
+
+    wait(for: [completed], timeout: 1)
+    XCTAssertEqual(completionCount, 1)
+  }
+
   func testValidReminderActionRoutesContextWithoutOpeningFlutter() {
     let context = BuzzPushReplyContext(
       eventID: "message-id",
