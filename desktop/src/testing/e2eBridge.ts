@@ -13515,6 +13515,8 @@ export function maybeInstallE2eTauriMocks() {
         return [];
       case "set_agent_managed_profiles":
         return undefined;
+      case "set_thread_scoped_acp_sessions":
+        return undefined;
       case "set_managed_agent_auto_restart":
         return handleSetManagedAgentAutoRestart(
           payload as Parameters<typeof handleSetManagedAgentAutoRestart>[0],

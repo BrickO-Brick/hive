@@ -1077,6 +1077,7 @@ export async function applyCommunity(
   token?: string,
   reposDir?: string,
   agentManagedProfiles?: boolean,
+  threadScopedAcpSessions?: boolean,
 ): Promise<void> {
   await invokeTauri("apply_workspace", {
     relayUrl,
@@ -1084,6 +1085,7 @@ export async function applyCommunity(
     token: token ?? null,
     reposDir: reposDir ?? null,
     agentManagedProfiles: agentManagedProfiles ?? false,
+    threadScopedAcpSessions: threadScopedAcpSessions ?? false,
   });
 }
 
@@ -1098,6 +1100,9 @@ export const setPreventSleepActive = (active: boolean) =>
 
 export const setAgentManagedProfiles = (enabled: boolean) =>
   invokeTauri("set_agent_managed_profiles", { enabled });
+
+export const setThreadScopedAcpSessions = (enabled: boolean) =>
+  invokeTauri("set_thread_scoped_acp_sessions", { enabled });
 
 /** Returns true on macOS, Windows, and Linux AppImage installs.
  *  Returns false on Linux non-AppImage packages (e.g. .deb) where

@@ -38,6 +38,8 @@ pub struct AppState {
     pub managed_agent_restore_pending: AtomicBool,
     /// Disabled by agent-managed profiles so agent profile updates survive start/restore.
     pub managed_agent_profile_reconcile_enabled: AtomicBool,
+    /// Enables one ACP provider session per channel thread on the next managed-agent start.
+    pub thread_scoped_acp_sessions_enabled: AtomicBool,
     /// Shared shutdown signal checked by launch-time agent restoration.
     pub shutdown_started: AtomicBool,
     /// Serializes every managed-runtime transition that changes the protected
@@ -208,6 +210,7 @@ pub fn build_app_state() -> AppState {
         workspace_apply_generation: AtomicU64::new(0),
         managed_agent_restore_pending: AtomicBool::new(false),
         managed_agent_profile_reconcile_enabled: AtomicBool::new(true),
+        thread_scoped_acp_sessions_enabled: AtomicBool::new(false),
         shutdown_started: AtomicBool::new(false),
         managed_agent_runtime_transition: Mutex::new(()),
         identity_mutation: Mutex::new(()),
