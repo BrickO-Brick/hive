@@ -6,13 +6,14 @@ import {
   getEditorSelectionRect,
 } from "./composerEditorGeometry.ts";
 
-function unmountedEditor() {
+function unmountedEditor(keysTouched) {
   return {
     get view() {
       return new Proxy(
         {},
         {
           get(_target, key) {
+            keysTouched.push(key);
             throw new Error(`editor view cannot access ${String(key)}`);
           },
         },
@@ -21,12 +22,33 @@ function unmountedEditor() {
   };
 }
 
-test("selection geometry returns null instead of throwing after view teardown", () => {
-  assert.equal(getEditorSelectionRect(unmountedEditor(), 1, 2), null);
+function withRangeStub(callback) {
+  const previousDocument = globalThis.document;
+  globalThis.document = { createRange: () => ({}) };
+  try {
+    callback();
+  } finally {
+    globalThis.document = previousDocument;
+  }
+}
+
+test("selection geometry reaches the unmounted view and returns null", () => {
+  withRangeStub(() => {
+    const keysTouched = [];
+    assert.equal(
+      getEditorSelectionRect(unmountedEditor(keysTouched), 1, 2),
+      null,
+    );
+    assert.deepEqual(keysTouched, ["domAtPos", "coordsAtPos"]);
+  });
 });
 
-test("link geometry returns null instead of throwing after view teardown", () => {
-  assert.equal(getEditorLinkRect(unmountedEditor(), 1, 2), null);
+test("link geometry reaches the unmounted view and returns null", () => {
+  withRangeStub(() => {
+    const keysTouched = [];
+    assert.equal(getEditorLinkRect(unmountedEditor(keysTouched), 1, 2), null);
+    assert.deepEqual(keysTouched, ["domAtPos", "coordsAtPos"]);
+  });
 });
 
 function mountedEditorWithCaretGeometry() {

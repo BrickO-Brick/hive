@@ -8,3 +8,12 @@ export function getMountedEditorDom(editor: Editor): HTMLElement | null {
     return null;
   }
 }
+
+/** Focuses the mounted view synchronously and ignores TipTap teardown races. */
+export function focusMountedEditorView(editor: Editor): void {
+  try {
+    editor.view.focus();
+  } catch {
+    // TipTap exposes a throwing view proxy between mount cycles.
+  }
+}

@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { getMountedEditorDom } from "./composerEditorView.ts";
+import {
+  focusMountedEditorView,
+  getMountedEditorDom,
+} from "./composerEditorView.ts";
 
 function unmountedEditor() {
   return {
@@ -25,4 +28,29 @@ test("returns null while the TipTap editor view is not mounted", () => {
 test("returns the editor DOM after the TipTap view mounts", () => {
   const dom = {};
   assert.equal(getMountedEditorDom({ view: { dom } }), dom);
+});
+
+test("focus is synchronous while the TipTap view is mounted", () => {
+  const calls = [];
+  const editor = {
+    commands: {
+      focus() {
+        calls.push("commands.focus");
+      },
+    },
+    view: {
+      focus() {
+        calls.push("view.focus");
+      },
+    },
+  };
+
+  focusMountedEditorView(editor);
+  calls.push("after focus");
+
+  assert.deepEqual(calls, ["view.focus", "after focus"]);
+});
+
+test("focus does not throw while the TipTap view is unmounted", () => {
+  assert.doesNotThrow(() => focusMountedEditorView(unmountedEditor()));
 });
