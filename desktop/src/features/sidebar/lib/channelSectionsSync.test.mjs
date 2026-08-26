@@ -450,7 +450,7 @@ test("overlapping publishes: older completion does not erase a newer queued edit
       "B is now the pending edit",
     );
     assert.equal(
-      JSON.parse(storage.get(outboxKey)).sections[0].id,
+      JSON.parse(storage.get(outboxKey)).store.sections[0].id,
       "b",
       "outbox holds B",
     );

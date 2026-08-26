@@ -1,4 +1,9 @@
 import { normalizeRelayUrl } from "@/shared/lib/normalizeRelayUrl";
+import {
+  clearOutboxEntry,
+  readOutboxEntry,
+  writeOutboxEntry,
+} from "./sidebarSyncWatermark";
 
 const STORAGE_KEY_PREFIX = "buzz-channel-mutes.v1";
 export const MAX_CHANNEL_MUTE_ENTRIES = 500;
@@ -119,18 +124,26 @@ export function boundMuteStore(
   };
 }
 
+/**
+ * Read-merge-write the main store: fold `incoming` into whatever is currently
+ * persisted (which a peer window may have advanced since this window last read)
+ * and persist + return the merged result, so a concurrent click in another
+ * window is carried forward instead of clobbered. Returns the merged store, or
+ * `null` on write failure. Uses the same per-entry `mergeStores` as every other
+ * observation path, so the write is order-independent and idempotent.
+ */
 export function writeChannelMutesStore(
   pubkey: string,
-  store: ChannelMuteStore,
-): boolean {
+  incoming: ChannelMuteStore,
+  preservedKey?: string,
+): ChannelMuteStore | null {
   try {
-    window.localStorage.setItem(
-      storageKey(pubkey),
-      JSON.stringify(boundMuteStore(store)),
-    );
-    return true;
+    const persisted = readChannelMutesStore(pubkey);
+    const merged = mergeStores(persisted, incoming, preservedKey);
+    window.localStorage.setItem(storageKey(pubkey), JSON.stringify(merged));
+    return merged;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -152,6 +165,7 @@ export function writeChannelMutesStore(
 export function mergeStores(
   a: ChannelMuteStore,
   b: ChannelMuteStore,
+  preservedKey?: string,
 ): ChannelMuteStore {
   const allIds = new Set([
     ...Object.keys(a.channels),
@@ -163,7 +177,7 @@ export function mergeStores(
     const r = b.channels[id];
     merged[id] = l && r ? pickMuteEntry(l, r) : ((l ?? r) as ChannelMuteEntry);
   }
-  return boundMuteStore({ version: 1, channels: merged });
+  return boundMuteStore({ version: 1, channels: merged }, preservedKey);
 }
 
 /** The winner of two entries under `updatedAt` → `rev` → `muted` order. */
@@ -200,21 +214,25 @@ function outboxKey(pubkey: string, relayUrl: string): string {
  * 2s publish debounce. Written synchronously on every click; cleared once the
  * edit is published or found identical to the last published store. Resumed on
  * next mount so a durable intent is never silently dropped at teardown.
+ *
+ * Read-merge-write: the incoming edit is folded (via `mergeStores`) into
+ * whatever a peer window may have already persisted under the shared key, so
+ * two windows clicking different channels before their `storage` events deliver
+ * both survive in the durable outbox. `token` gives this write cross-window
+ * ownership so a peer's older completing publish cannot clear the merged entry.
  */
 export function writeChannelMutesOutbox(
   pubkey: string,
   store: ChannelMuteStore,
   relayUrl: string,
+  token: string,
 ): void {
-  try {
-    window.localStorage.setItem(
-      outboxKey(pubkey, relayUrl),
-      JSON.stringify(boundMuteStore(store)),
-    );
-  } catch {
-    // Best-effort durability; the in-memory pendingStore still drives this
-    // session's publish even if the persisted copy could not be written.
-  }
+  const key = outboxKey(pubkey, relayUrl);
+  const existing = readOutboxEntry(key, parseMutePayload)?.store;
+  const merged = existing
+    ? mergeStores(existing, store)
+    : boundMuteStore(store);
+  writeOutboxEntry(key, merged, token);
 }
 
 /** Read a persisted unpublished edit, or null when none/unparseable. */
@@ -222,24 +240,22 @@ export function readChannelMutesOutbox(
   pubkey: string,
   relayUrl: string,
 ): ChannelMuteStore | null {
-  try {
-    const raw = window.localStorage.getItem(outboxKey(pubkey, relayUrl));
-    if (!raw) return null;
-    return parseMutePayload(JSON.parse(raw));
-  } catch {
-    return null;
-  }
+  return (
+    readOutboxEntry(outboxKey(pubkey, relayUrl), parseMutePayload)?.store ??
+    null
+  );
 }
 
-/** Clear the persisted outbox (edit published or a no-op). */
+/**
+ * Clear the persisted outbox (edit published or a no-op). Compare-and-clear on
+ * `token`: a peer window that overwrote the entry replaced the token, so an
+ * older window's completion no-ops and the peer's edit survives. Omit `token`
+ * to clear unconditionally.
+ */
 export function clearChannelMutesOutbox(
   pubkey: string,
   relayUrl: string,
+  token?: string,
 ): void {
-  try {
-    window.localStorage.removeItem(outboxKey(pubkey, relayUrl));
-  } catch {
-    // Ignore — a stale outbox entry is re-evaluated (and re-cleared if
-    // identical to the head) on the next publish attempt.
-  }
+  clearOutboxEntry(outboxKey(pubkey, relayUrl), token);
 }

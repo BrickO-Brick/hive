@@ -52,6 +52,120 @@ export function clampPublishCreatedAt(
   );
 }
 
+// Monotonic fallback counter so two token mints in the same millisecond within
+// one window (or in an environment without `crypto.randomUUID`) still differ.
+let tokenCounter = 0;
+
+/**
+ * Mint a per-write ownership token for a durable outbox entry.
+ *
+ * Every window writes the outbox under one shared `(pubkey, relay)` key but
+ * holds only an in-memory generation, so a completion in one window must never
+ * clear an entry another window overwrote. The token identifies which write
+ * produced the persisted entry: a completing publish clears only when the
+ * stored token still matches the one it wrote (compare-and-clear), so a peer's
+ * newer write — which replaced the token — survives an older window's ACK.
+ *
+ * Prefers `crypto.randomUUID` for cross-window uniqueness; the counter/time/
+ * random fallback keeps tokens distinct where it is unavailable (older runtimes
+ * and the test harness).
+ */
+export function mintOutboxToken(): string {
+  const uuid = globalThis.crypto?.randomUUID?.();
+  if (uuid) return uuid;
+  return `${Date.now().toString(36)}-${(tokenCounter++).toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+/**
+ * Read a durable outbox entry, tolerating both the token envelope written by
+ * this build (`{ store, token }`) and the bare-store shape written by a prior
+ * build (token absent). Returns the parsed store plus its ownership token
+ * (`null` for a legacy entry, which is therefore unconditionally clearable), or
+ * `null` when the key is empty/unparseable or the store fails validation.
+ */
+export function readOutboxEntry<T>(
+  key: string,
+  parseStore: (json: unknown) => T | null,
+): { store: T; token: string | null } | null {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return null;
+    const json = JSON.parse(raw);
+    if (
+      json !== null &&
+      typeof json === "object" &&
+      !Array.isArray(json) &&
+      "store" in (json as Record<string, unknown>)
+    ) {
+      const env = json as { store: unknown; token?: unknown };
+      const store = parseStore(env.store);
+      if (!store) return null;
+      return {
+        store,
+        token: typeof env.token === "string" ? env.token : null,
+      };
+    }
+    // Legacy bare-store shape from a pre-token build. Token absent ⇒ clearable.
+    const store = parseStore(json);
+    if (!store) return null;
+    return { store, token: null };
+  } catch {
+    return null;
+  }
+}
+
+/** Persist a durable outbox entry as a token envelope. Best-effort. */
+export function writeOutboxEntry(
+  key: string,
+  store: unknown,
+  token: string,
+): void {
+  try {
+    window.localStorage.setItem(key, JSON.stringify({ store, token }));
+  } catch {
+    // Best-effort durability; the in-memory pending edit still drives this
+    // session's publish even if the persisted copy could not be written.
+  }
+}
+
+/**
+ * Clear a durable outbox entry with cross-window ownership.
+ *
+ * When `token` is provided this is a compare-and-clear: the entry is removed
+ * only if its stored token still matches (or is a legacy token-less value).
+ * A peer window that overwrote the entry replaced the token, so an older
+ * window's completing publish no-ops here and the peer's still-unpublished
+ * edit survives. An omitted `token` clears unconditionally (used when the
+ * caller has already established there is nothing worth preserving).
+ */
+export function clearOutboxEntry(key: string, token?: string): void {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (raw === null) return;
+    if (token !== undefined) {
+      let stored: string | null = null;
+      try {
+        const json = JSON.parse(raw);
+        if (
+          json !== null &&
+          typeof json === "object" &&
+          typeof (json as { token?: unknown }).token === "string"
+        ) {
+          stored = (json as { token: string }).token;
+        }
+      } catch {
+        // Unparseable ⇒ treat as legacy/foreign and fall through to remove.
+      }
+      // A newer write replaced our entry — leave it for its owner to clear.
+      if (stored !== null && stored !== token) return;
+    }
+    window.localStorage.removeItem(key);
+  } catch {
+    // Ignore — a stale entry is re-evaluated (and re-cleared if identical to
+    // the head) on the next publish attempt.
+  }
+}
+
 /**
  * Tri-state result returned by every `fetchRemote*()` method.
  *

@@ -1,5 +1,10 @@
 import { normalizeRelayUrl } from "@/shared/lib/normalizeRelayUrl";
 import type { Channel } from "@/shared/api/types";
+import {
+  clearOutboxEntry,
+  readOutboxEntry,
+  writeOutboxEntry,
+} from "./sidebarSyncWatermark";
 
 const STORAGE_KEY_PREFIX = "buzz-channel-sort.v1";
 export const MAX_CHANNEL_SORT_GROUPS = 104;
@@ -145,21 +150,22 @@ function outboxKey(pubkey: string, relayUrl: string): string {
  * the edit is published, superseded by an adopted remote head, or found
  * identical to the last published store. Resumed on next mount so a durable
  * intent is never silently dropped at teardown.
+ *
+ * Whole-blob LWW: the write REPLACES the shared entry, and `token` gives the
+ * writing window cross-window ownership so a peer's older completing publish
+ * (which carries a different token) cannot clear this newer edit.
  */
 export function writeChannelSortOutbox(
   pubkey: string,
   store: ChannelSortStore,
   relayUrl: string,
+  token: string,
 ): void {
-  try {
-    window.localStorage.setItem(
-      outboxKey(pubkey, relayUrl),
-      JSON.stringify(boundChannelSortStore(store)),
-    );
-  } catch {
-    // Best-effort durability; the in-memory pendingStore still drives this
-    // session's publish even if the persisted copy could not be written.
-  }
+  writeOutboxEntry(
+    outboxKey(pubkey, relayUrl),
+    boundChannelSortStore(store),
+    token,
+  );
 }
 
 /** Read a persisted unpublished sort edit, or null when none/unparseable. */
@@ -167,23 +173,24 @@ export function readChannelSortOutbox(
   pubkey: string,
   relayUrl: string,
 ): ChannelSortStore | null {
-  try {
-    const raw = window.localStorage.getItem(outboxKey(pubkey, relayUrl));
-    if (!raw) return null;
-    return parseChannelSortPayload(JSON.parse(raw));
-  } catch {
-    return null;
-  }
+  return (
+    readOutboxEntry(outboxKey(pubkey, relayUrl), parseChannelSortPayload)
+      ?.store ?? null
+  );
 }
 
-/** Clear the persisted sort outbox (edit published, superseded, or a no-op). */
-export function clearChannelSortOutbox(pubkey: string, relayUrl: string): void {
-  try {
-    window.localStorage.removeItem(outboxKey(pubkey, relayUrl));
-  } catch {
-    // Ignore — a stale outbox entry is re-evaluated (and re-cleared if
-    // identical to the head) on the next publish attempt.
-  }
+/**
+ * Clear the persisted sort outbox (edit published, superseded, or a no-op).
+ * Compare-and-clear on `token`: a peer window that overwrote the entry replaced
+ * the token, so an older window's completion no-ops and the peer's edit
+ * survives. Omit `token` to clear unconditionally.
+ */
+export function clearChannelSortOutbox(
+  pubkey: string,
+  relayUrl: string,
+  token?: string,
+): void {
+  clearOutboxEntry(outboxKey(pubkey, relayUrl), token);
 }
 
 export function sortModeForGroup(

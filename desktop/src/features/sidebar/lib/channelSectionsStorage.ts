@@ -1,4 +1,9 @@
 import { normalizeRelayUrl } from "@/shared/lib/normalizeRelayUrl";
+import {
+  clearOutboxEntry,
+  readOutboxEntry,
+  writeOutboxEntry,
+} from "./sidebarSyncWatermark";
 
 const STORAGE_KEY_PREFIX = "buzz-channel-sections.v1";
 export const MAX_CHANNEL_SECTIONS = 100;
@@ -207,21 +212,22 @@ function outboxKey(pubkey: string, relayUrl: string): string {
  * edit is published, superseded by an adopted remote head, or found identical
  * to the last published store. Resumed on next mount so a durable intent is
  * never silently dropped at teardown.
+ *
+ * Whole-blob LWW: the write REPLACES the shared entry, and `token` gives the
+ * writing window cross-window ownership so a peer's older completing publish
+ * (which carries a different token) cannot clear this newer edit.
  */
 export function writeChannelSectionsOutbox(
   pubkey: string,
   store: ChannelSectionStore,
   relayUrl: string,
+  token: string,
 ): void {
-  try {
-    window.localStorage.setItem(
-      outboxKey(pubkey, relayUrl),
-      JSON.stringify(boundChannelSectionsStore(store)),
-    );
-  } catch {
-    // Best-effort durability; the in-memory pendingStore still drives this
-    // session's publish even if the persisted copy could not be written.
-  }
+  writeOutboxEntry(
+    outboxKey(pubkey, relayUrl),
+    boundChannelSectionsStore(store),
+    token,
+  );
 }
 
 /** Read a persisted unpublished edit, or null when none/unparseable. */
@@ -229,22 +235,22 @@ export function readChannelSectionsOutbox(
   pubkey: string,
   relayUrl: string,
 ): ChannelSectionStore | null {
-  try {
-    return parseRaw(window.localStorage.getItem(outboxKey(pubkey, relayUrl)));
-  } catch {
-    return null;
-  }
+  return (
+    readOutboxEntry(outboxKey(pubkey, relayUrl), parseChannelSectionPayload)
+      ?.store ?? null
+  );
 }
 
-/** Clear the persisted outbox (edit published, superseded, or a no-op). */
+/**
+ * Clear the persisted outbox (edit published, superseded, or a no-op).
+ * Compare-and-clear on `token`: a peer window that overwrote the entry replaced
+ * the token, so an older window's completion no-ops and the peer's edit
+ * survives. Omit `token` to clear unconditionally.
+ */
 export function clearChannelSectionsOutbox(
   pubkey: string,
   relayUrl: string,
+  token?: string,
 ): void {
-  try {
-    window.localStorage.removeItem(outboxKey(pubkey, relayUrl));
-  } catch {
-    // Ignore — a stale outbox entry is re-evaluated (and re-cleared if
-    // identical to the head) on the next publish attempt.
-  }
+  clearOutboxEntry(outboxKey(pubkey, relayUrl), token);
 }

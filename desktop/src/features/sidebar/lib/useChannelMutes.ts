@@ -84,9 +84,15 @@ export function useChannelMutes(
     (remote: RemoteMutes): ((prev: ChannelMuteStore) => ChannelMuteStore) => {
       return (prev) => {
         if (!pubkey) return prev;
-        const merged = mergeStores(prev, remote.store);
-        if (!writeChannelMutesStore(pubkey, merged)) return prev;
-        return merged;
+        // Read-merge-write folds the head into whatever a peer window has
+        // persisted since; use the returned store so a concurrent click there
+        // is carried into this window's state rather than lost.
+        const persisted = writeChannelMutesStore(
+          pubkey,
+          mergeStores(prev, remote.store),
+        );
+        if (!persisted) return prev;
+        return persisted;
       };
     },
     [pubkey],
@@ -243,9 +249,15 @@ export function useChannelMutes(
           },
           channelId,
         );
-        if (!writeChannelMutesStore(pubkey, next)) return prev;
-        manager?.publishMutes(next);
-        return next;
+        // Read-merge-write: fold this click into any concurrent peer-window
+        // click already persisted under the shared key, then thread the merged
+        // store into both React state and the publish so neither window's edit
+        // is dropped (Carl prong b). Preserve the clicked channel through the
+        // re-bound so a same-second mutation is not evicted at capacity.
+        const persisted = writeChannelMutesStore(pubkey, next, channelId);
+        if (!persisted) return prev;
+        manager?.publishMutes(persisted);
+        return persisted;
       });
     },
     [pubkey],

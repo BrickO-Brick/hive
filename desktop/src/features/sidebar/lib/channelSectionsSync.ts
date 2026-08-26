@@ -16,6 +16,7 @@ import {
 import {
   advanceWatermark,
   clampPublishCreatedAt,
+  mintOutboxToken,
   readWatermark,
   runBootstrap,
   type FetchResult,
@@ -142,6 +143,12 @@ export class ChannelSectionSyncManager {
   // touching shared manager state, so a stale generation can never sign or
   // publish after a newer edit exists.
   private publishInFlight = false;
+  // The ownership token of the durable outbox entry this window most recently
+  // wrote. A completion (publish/adopt/no-op) clears the shared outbox only when
+  // its stored token still matches this one, so a peer window that overwrote the
+  // entry (replacing the token) keeps its still-unpublished edit. Reset to null
+  // once cleared so a stale token can never authorize a later clear.
+  private pendingOutboxToken: string | null = null;
   // Event ids we signed and sent to the relay but whose ACK never arrived (the
   // publish promise rejected as a timeout/socket error after the frame left).
   // The relay MAY have accepted such a write, so if a later cycle's pre-publish
@@ -256,7 +263,7 @@ export class ChannelSectionSyncManager {
     this.recordRemoteHead(remote.createdAt, remote.eventId);
     if (gen !== this.pendingGeneration) return;
     this.pendingStore = null;
-    clearChannelSectionsOutbox(this.pubkey, this.relayUrl);
+    this.clearOwnedOutbox();
     this.lastPublishedStore = remote.store;
     if (this.destroyed) return;
     this.onRemoteAdopted?.(remote);
@@ -271,7 +278,22 @@ export class ChannelSectionSyncManager {
   private discardPending(gen: number): void {
     if (gen !== this.pendingGeneration) return;
     this.pendingStore = null;
-    clearChannelSectionsOutbox(this.pubkey, this.relayUrl);
+    this.clearOwnedOutbox();
+  }
+
+  /**
+   * Compare-and-clear the shared outbox against the token this window wrote, so
+   * a peer window that overwrote the entry (replacing the token) keeps its
+   * still-unpublished edit. Reset the token so a stale value cannot authorize a
+   * later clear.
+   */
+  private clearOwnedOutbox(): void {
+    clearChannelSectionsOutbox(
+      this.pubkey,
+      this.relayUrl,
+      this.pendingOutboxToken ?? undefined,
+    );
+    this.pendingOutboxToken = null;
   }
 
   publishSections(store: ChannelSectionStore): void {
@@ -288,8 +310,16 @@ export class ChannelSectionSyncManager {
     // mistaken for a competing remote.
     this.publishBaseline = { ...this.lastRemoteHead };
     // Persist synchronously so an edit made <2s before quit/community-switch
-    // survives teardown and resumes on next mount (fix-3 durable outbox).
-    writeChannelSectionsOutbox(this.pubkey, store, this.relayUrl);
+    // survives teardown and resumes on next mount (fix-3 durable outbox). Mint a
+    // fresh ownership token: whole-blob LWW means this write REPLACES the shared
+    // entry, and the token lets a later completion clear only what it still owns.
+    this.pendingOutboxToken = mintOutboxToken();
+    writeChannelSectionsOutbox(
+      this.pubkey,
+      store,
+      this.relayUrl,
+      this.pendingOutboxToken,
+    );
     if (this.debounceTimer !== null) {
       window.clearTimeout(this.debounceTimer);
     }
