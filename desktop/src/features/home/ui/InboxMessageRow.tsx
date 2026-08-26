@@ -209,7 +209,7 @@ export function InboxMessageRow({
         <div className="min-w-0 flex-1">
           {isContinuation ? null : (
             <div
-              className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0"
+              className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0"
               data-testid="message-header"
             >
               <UserProfilePopover
@@ -236,7 +236,7 @@ export function InboxMessageRow({
                     start of a line on its own. Gap matches the container's, so
                     spacing reads the same either side of the divider.
                   */}
-                  <span className="inline-flex min-w-0 items-center gap-x-2">
+                  <span className="inline-flex min-w-0 items-baseline gap-x-2">
                     <MessageMetaSeparator />
                     {timestampNode}
                   </span>

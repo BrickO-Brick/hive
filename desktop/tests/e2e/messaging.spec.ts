@@ -49,6 +49,18 @@ async function expectThreadReplyUnobscured(row: Locator) {
     .toBe(true);
 }
 
+async function measureInlineBaseline(locator: Locator) {
+  return locator.evaluate((element) => {
+    const marker = document.createElement("span");
+    marker.style.cssText =
+      "display:inline-block;width:0;height:0;margin:0;padding:0;border:0";
+    element.append(marker);
+    const baseline = marker.getBoundingClientRect().top;
+    marker.remove();
+    return baseline;
+  });
+}
+
 async function measureThreadSummaryGeometry(summaryRow: Locator) {
   return summaryRow.evaluate((summaryButton) => {
     const summaryWrapper = summaryButton.parentElement;
@@ -396,6 +408,64 @@ test("agent owner label identifies the agent and owner", async ({ page }) => {
   await expect(ownerTreatment.locator(".sr-only")).toHaveText(
     "Agent managed by",
   );
+
+  const author = aliceMessage.getByTestId("message-author");
+  const managedBy = ownerTreatment.getByText("managed by", { exact: true });
+  const owner = ownerTreatment.locator(".font-semibold");
+  const timestamp = aliceMessage.getByTestId("message-timestamp");
+
+  for (const fontSize of ["smaller", "default", "larger"]) {
+    await page.evaluate((value) => {
+      document.documentElement.dataset.fontSize = value;
+    }, fontSize);
+
+    const [
+      authorBaseline,
+      managedByBaseline,
+      ownerBaseline,
+      timestampBaseline,
+    ] = await Promise.all([
+      measureInlineBaseline(author),
+      measureInlineBaseline(managedBy),
+      measureInlineBaseline(owner),
+      measureInlineBaseline(timestamp),
+    ]);
+    const [ownerTypography, timestampTypography] = await Promise.all([
+      ownerTreatment.evaluate((element) => {
+        const style = getComputedStyle(element);
+        return { fontSize: style.fontSize, lineHeight: style.lineHeight };
+      }),
+      timestamp.evaluate((element) => {
+        const style = getComputedStyle(element);
+        return { fontSize: style.fontSize, lineHeight: style.lineHeight };
+      }),
+    ]);
+    const iconCenterOffset = await ownerTreatment.evaluate((element) => {
+      const icon = element.querySelector("svg");
+      if (!icon) throw new Error("Expected the agent owner icon.");
+      const ownerRect = element.getBoundingClientRect();
+      const iconRect = icon.getBoundingClientRect();
+      return (
+        iconRect.top +
+        iconRect.height / 2 -
+        (ownerRect.top + ownerRect.height / 2)
+      );
+    });
+
+    expect(
+      { managedByBaseline, ownerBaseline, timestampBaseline },
+      `message header baselines at ${fontSize} font size`,
+    ).toEqual({
+      managedByBaseline: authorBaseline,
+      ownerBaseline: authorBaseline,
+      timestampBaseline: authorBaseline,
+    });
+    expect(ownerTypography).toEqual(timestampTypography);
+    expect(
+      Math.abs(iconCenterOffset),
+      `agent icon center at ${fontSize} font size`,
+    ).toBeLessThan(0.01);
+  }
 });
 
 test("send a message and see it in timeline", async ({ page }) => {
