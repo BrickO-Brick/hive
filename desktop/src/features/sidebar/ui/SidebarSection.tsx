@@ -79,7 +79,10 @@ function UnreadCountBadge({
       data-testid={`channel-unread-${channelName}`}
     >
       {formatUnreadCount(count)}
-      <span className="sr-only"> new comment{count === 1 ? "" : "s"}</span>
+      <span className="sr-only">
+        {" "}
+        unread notification{count === 1 ? "" : "s"}
+      </span>
     </span>
   );
 }
@@ -255,6 +258,7 @@ export function ChannelMenuButton({
   label,
   isActive,
   hasUnread,
+  unreadCount = 0,
   activeWorking,
   isMuted,
   dmParticipants,
@@ -290,6 +294,14 @@ export function ChannelMenuButton({
     (hasSidebarUnreadProjections
       ? unreadThreadChannelIds.has(channel.id)
       : hasUnread);
+  const showsUnreadCount =
+    !isActive && channel.channelType !== "dm" && unreadCount > 0;
+  const showsEphemeralBadge =
+    Boolean(ephemeralDisplay) &&
+    !activeWorking &&
+    !isMuted &&
+    !showsUnreadCount &&
+    !hasThreadUnread;
   const inactiveContentOpacity = cn(
     !isActive && !hasTopLevelUnread && !isMuted && "opacity-80",
     !isActive &&
@@ -330,7 +342,7 @@ export function ChannelMenuButton({
       >
         {resolvedLabel}
       </span>
-      {ephemeralDisplay ? (
+      {showsEphemeralBadge && ephemeralDisplay ? (
         <EphemeralChannelBadge
           display={ephemeralDisplay}
           testId={`channel-ephemeral-${channel.name}`}
@@ -354,7 +366,13 @@ export function ChannelMenuButton({
           )}
         />
       ) : null}
-      {hasThreadUnread ? (
+      {showsUnreadCount ? (
+        <UnreadCountBadge
+          channelName={channel.name}
+          className="ml-auto bg-notification text-notification-foreground"
+          count={unreadCount}
+        />
+      ) : hasThreadUnread ? (
         <UnreadDotBadge channelName={channel.name} className="ml-auto" />
       ) : null}
     </SidebarMenuButton>
