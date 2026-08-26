@@ -236,7 +236,7 @@ export function InboxMessageRow({
                     start of a line on its own. Gap matches the container's, so
                     spacing reads the same either side of the divider.
                   */}
-                  <span className="inline-flex min-w-0 items-baseline gap-x-2">
+                  <span className="inline-flex min-w-0 items-center gap-x-2">
                     <MessageMetaSeparator />
                     {timestampNode}
                   </span>
