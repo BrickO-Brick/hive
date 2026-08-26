@@ -110,10 +110,10 @@ export function BestieMessagePanel({
             />
             <div className="min-w-0 flex-1">
               <div className="flex min-w-0 items-baseline gap-1">
-                <p className="truncate text-[10px] font-semibold leading-3.5">
+                <p className="truncate text-2xs font-semibold leading-3.5">
                   {message.author}
                 </p>
-                <p className="shrink-0 text-[9px] leading-3.5 text-muted-foreground/70">
+                <p className="shrink-0 text-3xs leading-3.5 text-muted-foreground/70">
                   {message.time}
                 </p>
               </div>
@@ -122,7 +122,7 @@ export function BestieMessagePanel({
                 data-testid={`bestie-message-snapshot-body-${message.id}`}
               >
                 <VideoReviewCommentMarkdown
-                  className="line-clamp-1 text-[10px] leading-3.5 text-foreground/80 [&_p]:leading-3.5"
+                  className="line-clamp-1 text-2xs leading-3.5 text-foreground/80 [&_p]:leading-3.5"
                   content={message.body}
                   interactive={false}
                   messageId={message.id}

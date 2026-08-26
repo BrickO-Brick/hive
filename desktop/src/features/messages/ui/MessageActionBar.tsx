@@ -17,10 +17,8 @@ import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import * as React from "react";
 import { toast } from "sonner";
 
-import { buildMessageLink } from "@/features/messages/lib/messageLink";
 import { EmojiPicker } from "@/features/custom-emoji/ui/EmojiPicker";
 import { useCustomEmoji } from "@/features/custom-emoji/hooks";
-import { getThreadReference } from "@/features/messages/lib/threading";
 import { ReportMessageDialog } from "@/features/moderation/ui/ReportMessageDialog";
 import { MessageModerationInlineItems } from "@/features/moderation/ui/MessageModerationMenuItems";
 import type {
@@ -34,8 +32,6 @@ import {
 import { reactionEmojiUrl } from "@/shared/api/customEmoji";
 import { cn } from "@/shared/lib/cn";
 import { copyTextToClipboard } from "@/shared/lib/clipboard";
-import { emojiDisplayName } from "@/shared/lib/emojiName";
-import { rewriteRelayUrl } from "@/shared/lib/mediaUrl";
 import { KIND_HUDDLE_STARTED } from "@/shared/constants/kinds";
 import { Button } from "@/shared/ui/button";
 import { HashArrowIn } from "@/shared/ui/icons";
@@ -53,35 +49,15 @@ import {
   MESSAGE_ACTION_BLOOM_VISUAL_DURATION,
   MessageActionBloomSurface,
 } from "./MessageActionBloomSurface";
+import {
+  canCopyMessageLink,
+  copyMessageLink,
+  isCustomEmojiShortcode,
+  QuickReactionButton,
+} from "./MessageActionToolbarHelpers";
 
 const ACTION_BUTTON_CLASS = "h-8 w-8 rounded-full p-0";
 const ACTION_ICON_CLASS = "!h-4 !w-4";
-
-/** Copying a message link is offered from both the hover action bar and the
- *  More menu; both paths share this exact link-building + toast behavior. */
-function copyMessageLink(channelId: string, message: TimelineMessage) {
-  const { rootId } = getThreadReference(message.tags ?? []);
-  const link = buildMessageLink({
-    channelId,
-    messageId: message.id,
-    threadRootId: rootId,
-  });
-  copyTextToClipboard(link, "Link copied to clipboard");
-}
-
-/** Gate shared by every copy-link surface: pending sends have no delivered
- *  event to link to, huddle system rows aren't linkable, and callers without
- *  a channelId (e.g. inbox preview rows) can't build the link. */
-function canCopyMessageLink(
-  message: TimelineMessage,
-  channelId: string | null | undefined,
-): channelId is string {
-  return (
-    !message.pending &&
-    message.kind !== KIND_HUDDLE_STARTED &&
-    Boolean(channelId)
-  );
-}
 
 function MoreActionsPanel({
   channelId,
@@ -372,51 +348,6 @@ function MoreActionsPanel({
       ) : null}
     </>
   );
-}
-
-function QuickReactionButton({
-  customEmojiUrl,
-  emoji,
-  onSelect,
-}: {
-  customEmojiUrl?: string;
-  emoji: string;
-  onSelect: (emoji: string) => void;
-}) {
-  const displayName = emojiDisplayName(emoji);
-  const mediaUrl = customEmojiUrl ? rewriteRelayUrl(customEmojiUrl) : null;
-
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          aria-label={`React with ${displayName}`}
-          className="flex h-8 w-8 items-center justify-center rounded-full text-base leading-none text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
-          onClick={() => onSelect(emoji)}
-          title={displayName}
-          type="button"
-        >
-          {mediaUrl ? (
-            <img
-              alt={emoji}
-              className="h-5 w-5 object-contain"
-              draggable={false}
-              src={mediaUrl}
-            />
-          ) : (
-            <span aria-hidden="true" className="translate-y-px">
-              {emoji}
-            </span>
-          )}
-        </button>
-      </TooltipTrigger>
-      <TooltipContent>{displayName}</TooltipContent>
-    </Tooltip>
-  );
-}
-
-function isCustomEmojiShortcode(emoji: string) {
-  return emoji.startsWith(":") && emoji.endsWith(":");
 }
 
 export const MessageActionBar = React.memo(function MessageActionBar({
@@ -834,7 +765,7 @@ export const MessageActionBar = React.memo(function MessageActionBar({
                 >
                   <ProfileAvatar
                     avatarUrl={bestie.avatarUrl}
-                    className="size-4 text-[7px] shadow-none"
+                    className="size-4 text-3xs shadow-none"
                     label={bestie.name}
                     plain
                     testId={`bestie-action-avatar-${message.id}`}

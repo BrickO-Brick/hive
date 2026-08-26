@@ -182,7 +182,7 @@ export function AppSidebarPrimaryMenu({
               >
                 <ProfileAvatar
                   avatarUrl={bestieAgent.avatarUrl}
-                  className="size-4 text-[7px] shadow-none"
+                  className="size-4 text-3xs shadow-none"
                   label={bestieAgent.name}
                   plain
                   testId="bestie-sidebar-avatar"

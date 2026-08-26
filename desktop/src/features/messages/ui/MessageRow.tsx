@@ -933,9 +933,8 @@ export const MessageRow = React.memo(
         </article>
       </div>
     );
-    // Callbacks (onReply, onToggleReaction) intentionally excluded: inline arrows
-    // from parent create new refs every render — including them defeats memo.
   },
+  // Ignore unstable callback identities; compare createdAt for timestamp-derived UI.
   (prev, next) =>
     prev.message.id === next.message.id &&
     prev.message.pubkey === next.message.pubkey &&
@@ -946,8 +945,6 @@ export const MessageRow = React.memo(
     prev.message.ownerLabel === next.message.ownerLabel &&
     prev.message.avatarUrl === next.message.avatarUrl &&
     prev.message.accent === next.message.accent &&
-    // The header timestamp and hover gutter both derive from createdAt (the
-    // old `time` prop was the same value pre-formatted; this row reads neither).
     prev.message.createdAt === next.message.createdAt &&
     prev.message.depth === next.message.depth &&
     prev.message.kind === next.message.kind &&

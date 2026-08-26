@@ -419,16 +419,13 @@ function MessageComposerImpl({
       setSpoileredAttachmentUrls(restoredSpoileredAttachmentUrls);
     }
   }, [editTarget?.id]);
-  // ── Focus on reply ──────────────────────────────────────────────────
-  // Use focusPreserve so that re-renders (e.g. new messages arriving in
-  // a thread) don't yank the cursor to the end while the user is editing.
+  // Preserve the cursor when reply-driven rerenders refocus the composer.
   React.useEffect(() => {
     if (!replyTarget || composerDisabled) return;
     richText.focusPreserve();
   }, [composerDisabled, replyTarget, richText.focusPreserve]);
   useComposerAutofocus(richText.focus, effectiveDraftKey, composerDisabled);
-  // Hooks return a plain-text edit descriptor; `replacePlainTextRange`
-  // applies it as a single ProseMirror transaction (no markdown round-trip).
+  // Apply autocomplete as one ProseMirror transaction, without a markdown round-trip.
   const applyAutocompleteEdit = React.useCallback(
     (edit: AutocompleteEdit) => {
       richText.replacePlainTextRange(

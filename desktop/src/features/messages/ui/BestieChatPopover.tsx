@@ -207,7 +207,7 @@ export function BestieChatPopover() {
             >
               <ProfileAvatar
                 avatarUrl={bestie.avatarUrl}
-                className="size-6 text-[9px]"
+                className="size-6 text-3xs"
                 label={bestie.name}
                 plain
                 testId="bestie-header-avatar"
