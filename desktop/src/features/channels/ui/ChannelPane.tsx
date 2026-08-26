@@ -830,13 +830,16 @@ export const ChannelPane = React.memo(function ChannelPane({
        * the real content through the exit rather than a frozen snapshot because
        * both panels are fully prop-driven.
        *
-       * `mode="wait"` serializes replacements so cover drawers keep one travel
-       * direction. It also closes the window where an outgoing and an incoming
-       * drawer are mounted together; `CoverDrawer`'s presence and focus-slot
-       * guards stay in place because they protect the surface itself rather
-       * than this host's choice of mode.
+       * Deliberately NOT `mode="wait"` (added here by #6590 to serialize
+       * replacements). Overlapping mount is load-bearing for a cover drawer:
+       * `mode="wait"` unmounts the outgoing drawer before the incoming one
+       * enters, leaving the Escape-handoff guards documented in `CoverDrawer`
+       * with nothing to coordinate, so replacing one cover surface with another
+       * would need a second Escape. Covered by
+       * `agent-activity-cover.spec.ts:349`, which fails deterministically with
+       * `mode="wait"` present.
        */}
-      <AnimatePresence mode="wait" onExitComplete={markExitComplete}>
+      <AnimatePresence onExitComplete={markExitComplete}>
         {auxiliarySurface === "channel-management" && activeChannel ? (
           <ChannelManagementAuxiliaryPanel
             activeChannel={activeChannel}
