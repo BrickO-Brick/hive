@@ -8,10 +8,12 @@ import { AppShellOverlays, TerminalBootstrap } from "@/app/AppShellOverlays";
 import { AppShellChannelSurface } from "@/app/AppShellChannelSurface";
 import { AppHuddleShell } from "@/app/AppHuddleShell";
 import { AppTopChrome } from "@/app/AppTopChrome";
+import { BestieChatPopover } from "@/features/messages/ui/BestieChatPopover";
 import {
   type TerminalContextOverride,
   TerminalContextOverrideProvider,
 } from "@/app/TerminalContextOverrideContext";
+import { useFeatureEnabled } from "@/shared/features";
 import { useAppNavigation } from "@/app/navigation/useAppNavigation";
 import { useBackForwardControls } from "@/app/navigation/useBackForwardControls";
 import { useCommunityNavigationTransitions } from "@/app/useCommunityNavigationTransitions";
@@ -106,6 +108,7 @@ import { AppWorkflowEditorOverlayProvider } from "@/app/AppWorkflowEditorOverlay
 import { LazySettingsScreen } from "@/app/LazySettingsScreen";
 const EMPTY_CHANNELS: Channel[] = [];
 export function AppShell() {
+  const bestieEnabled = useFeatureEnabled("bestie");
   useWebviewZoomShortcuts();
   useTauriWindowDrag();
   useWebviewScrollBoundaryLock();
@@ -783,6 +786,9 @@ export function AppShell() {
                       hasCommunityRail={hasCommunityRail}
                       onGoBack={goBack}
                       onGoForward={goForward}
+                      trailingContent={
+                        bestieEnabled ? <BestieChatPopover /> : null
+                      }
                     />
                   ) : null}
                   {settingsOpen ? (
