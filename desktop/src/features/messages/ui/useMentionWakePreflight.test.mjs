@@ -6,7 +6,7 @@ import { JSDOM } from "jsdom";
 import {
   buildMentionWakePlan,
   hasSubstantiveNonMentionText,
-  MENTION_WAKE_DELAY_MS,
+  MENTION_WAKE_GATE_HOLD_MS,
   useMentionWakePreflight,
 } from "./useMentionWakePreflight.ts";
 
@@ -34,6 +34,25 @@ const AGENT = "a".repeat(64);
 const OTHER_AGENT = "b".repeat(64);
 
 const fizzRef = { displayName: "Fizz", pubkey: AGENT, isAgent: true };
+
+const localAgentOptions = (contentRef, onStart) => ({
+  channelId: "general",
+  contentRef,
+  enabled: true,
+  expectedRelayUrl: "wss://relay.example",
+  expectedSignerPubkey: "c".repeat(64),
+  getDraftMentionRefs: () => [fizzRef],
+  getManagedAgentsByPubkey: async () =>
+    new Map([
+      [AGENT, { pubkey: AGENT, status: "stopped", backend: { type: "local" } }],
+    ]),
+  isManagedAgentPubkey: () => true,
+  memberPubkeys: new Set([AGENT]),
+  startManagedAgent: async () => {
+    onStart();
+    return { pubkey: AGENT, status: "running" };
+  },
+});
 
 test("mention-only composer content is not substantive", () => {
   assert.equal(hasSubstantiveNonMentionText("@Fizz ", [fizzRef]), false);
@@ -103,7 +122,68 @@ test("editor updates arm a mention-first draft without a rerender", async (t) =>
 
   contentRef.current = "@Fizz please investigate";
   act(() => view.result.current.prepareMentionWake(contentRef.current));
-  await act(async () => t.mock.timers.tick(MENTION_WAKE_DELAY_MS));
+  await act(async () => t.mock.timers.tick(MENTION_WAKE_GATE_HOLD_MS));
+
+  assert.equal(starts, 1);
+});
+
+test("typing through the window does not restart the gate hold", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { act, renderHook } = await import("@testing-library/react");
+  let starts = 0;
+  const contentRef = { current: "@Fizz " };
+  const view = renderHook(() =>
+    useMentionWakePreflight(
+      localAgentOptions(contentRef, () => {
+        starts += 1;
+      }),
+    ),
+  );
+
+  contentRef.current = "@Fizz initial";
+  act(() => view.result.current.prepareMentionWake(contentRef.current));
+  await act(async () => t.mock.timers.tick(MENTION_WAKE_GATE_HOLD_MS / 2));
+  assert.equal(starts, 0);
+
+  // Still typing to the same agent: no gate lapsed, so the window keeps running
+  // from its original arming. The wake fires one second after the gates began
+  // holding, not one second after the last keystroke.
+  contentRef.current = "@Fizz initial and still typing";
+  act(() => view.result.current.prepareMentionWake(contentRef.current));
+  await act(async () => t.mock.timers.tick(MENTION_WAKE_GATE_HOLD_MS / 2));
+
+  assert.equal(starts, 1);
+});
+
+test("a lapse in the gates requires a fresh full gate hold", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { act, renderHook } = await import("@testing-library/react");
+  let starts = 0;
+  const contentRef = { current: "@Fizz " };
+  const view = renderHook(() =>
+    useMentionWakePreflight(
+      localAgentOptions(contentRef, () => {
+        starts += 1;
+      }),
+    ),
+  );
+
+  contentRef.current = "@Fizz initial";
+  act(() => view.result.current.prepareMentionWake(contentRef.current));
+  await act(async () => t.mock.timers.tick(MENTION_WAKE_GATE_HOLD_MS - 100));
+
+  // Trimmed back to the bare mention: the substantive-text gate stops holding,
+  // which cancels the window outright instead of letting it mature 100 ms later.
+  contentRef.current = "@Fizz ";
+  act(() => view.result.current.prepareMentionWake(contentRef.current));
+  await act(async () => t.mock.timers.tick(MENTION_WAKE_GATE_HOLD_MS));
+  assert.equal(starts, 0);
+
+  contentRef.current = "@Fizz back again";
+  act(() => view.result.current.prepareMentionWake(contentRef.current));
+  await act(async () => t.mock.timers.tick(MENTION_WAKE_GATE_HOLD_MS - 1));
+  assert.equal(starts, 0);
+  await act(async () => t.mock.timers.tick(1));
 
   assert.equal(starts, 1);
 });
@@ -170,7 +250,7 @@ test("provider-backed agents are never woken speculatively", async (t) => {
   );
 
   act(() => view.result.current.prepareMentionWake(contentRef.current));
-  await act(async () => t.mock.timers.tick(MENTION_WAKE_DELAY_MS));
+  await act(async () => t.mock.timers.tick(MENTION_WAKE_GATE_HOLD_MS));
 
   assert.equal(starts, 0);
 });
@@ -202,7 +282,7 @@ test("unmount prevents a wake after an in-flight lookup resolves", async (t) => 
     }),
   );
 
-  await act(async () => t.mock.timers.tick(MENTION_WAKE_DELAY_MS));
+  await act(async () => t.mock.timers.tick(MENTION_WAKE_GATE_HOLD_MS));
   view.unmount();
   await act(async () => {
     resolveManagedAgents(

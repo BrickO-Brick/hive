@@ -9,7 +9,25 @@ import {
   isProviderBackedAgent,
 } from "./useMentionSendFlow.helpers";
 
-export const MENTION_WAKE_DELAY_MS = 1_000;
+/**
+ * How long the wake gates must hold continuously before a mentioned agent is
+ * started speculatively.
+ *
+ * This measures **gate hold time, not keyboard idle time**. The gates are an
+ * active channel, a known relay/signer scope, a mention of an in-channel
+ * locally managed agent, and substantive draft text beyond the mention itself
+ * (see `buildMentionWakePlan`). `prepareMentionWake` runs on every editor
+ * update, so the window is cancelled the instant any gate stops holding —
+ * dropping the mention, or trimming the draft back to the bare mention, means a
+ * fresh full interval is required once the gates hold again.
+ *
+ * Continued typing deliberately does *not* restart the window. Typing more of a
+ * message addressed to an agent is further evidence of intent, not less, and a
+ * keystroke debounce would defeat the feature outright: someone who composes
+ * straight through and hits Send never pauses, so the wake would never fire for
+ * exactly the flow it exists to speed up.
+ */
+export const MENTION_WAKE_GATE_HOLD_MS = 1_000;
 
 export type ManagedAgentStartInput =
   | string
@@ -142,8 +160,14 @@ export function useMentionWakePreflight(options: {
 
   const prepareMentionWake = React.useCallback(
     (content: string) => {
+      // Any gate that stopped holding drops the plan, which cancels the window
+      // outright rather than shortening it: the next arming starts a fresh
+      // MENTION_WAKE_GATE_HOLD_MS.
       const plan = currentPlan(content);
       if (!plan) return cancelMentionWake();
+      // The gates are still holding for the same plan, so leave the running
+      // window alone. Re-arming here would turn the interval into a keystroke
+      // debounce and never fire for an uninterrupted typist.
       if (activePlanKeyRef.current === plan.key) return;
 
       cancelMentionWake();
@@ -151,6 +175,9 @@ export function useMentionWakePreflight(options: {
       timerRef.current = setTimeout(() => {
         timerRef.current = null;
         void (async () => {
+          // Re-confirm the gates at fire time and again after the lookup await,
+          // so the interval is a hold on live draft state rather than a promise
+          // made once at arming time.
           if (activePlanKeyRef.current !== plan.key) return;
           const beforeLookup = currentPlan(contentRef.current);
           if (beforeLookup?.key !== plan.key) return;
@@ -180,7 +207,7 @@ export function useMentionWakePreflight(options: {
             }),
           );
         })();
-      }, MENTION_WAKE_DELAY_MS);
+      }, MENTION_WAKE_GATE_HOLD_MS);
     },
     [cancelMentionWake, contentRef, currentPlan],
   );

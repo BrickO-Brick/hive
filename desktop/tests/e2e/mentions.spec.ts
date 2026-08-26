@@ -2062,6 +2062,10 @@ test("shared agents wait for initial directory authorization", async ({
   });
 });
 
+// The wake gates are the mention of an in-channel local managed agent plus
+// substantive draft text. This journey pins both halves of that contract: a
+// bare mention never wakes however long it sits, and once both gates hold the
+// wake lands before Send even though typing never pauses.
 test("substantive in-channel managed-agent mentions wake before send", async ({
   page,
 }) => {
@@ -2091,22 +2095,35 @@ test("substantive in-channel managed-agent mentions wake before send", async ({
   await expect(dropdown.getByText("fizz")).toBeVisible();
   await expect(dropdown.getByText("agent")).toBeVisible();
   await input.press("Enter");
-  await page.keyboard.type(
-    " Can you investigate this? Please report what you find.",
-    { delay: 75 },
+
+  // Bare mention: the substantive-text gate is not holding, so no wake arms no
+  // matter how long the draft rests. Well past the one-second hold.
+  await page.waitForTimeout(2_500);
+  expect(commandCount(await readCommandLog(page), "start_managed_agent")).toBe(
+    baselineStartCount,
   );
+
+  // Both gates now hold. This first chunk is ~26 keystrokes at 75 ms, so the
+  // one-second hold matures partway through it and the wake must land while the
+  // keyboard is still active -- the hold is on the gates, not on typing pauses.
+  await page.keyboard.type(" Can you investigate this?", { delay: 75 });
 
   await expect
     .poll(
       async () =>
         commandCount(await readCommandLog(page), "start_managed_agent"),
-      { timeout: 3_000 },
+      { timeout: 1_000 },
     )
     .toBeGreaterThan(baselineStartCount);
+
+  // More typing after the wake: composition never paused, and the extra
+  // keystrokes must not queue a second start.
+  await page.keyboard.type(" Please report what you find.", { delay: 75 });
   const preSendStartCount = commandCount(
     await readCommandLog(page),
     "start_managed_agent",
   );
+  expect(preSendStartCount).toBe(baselineStartCount + 1);
 
   const sendButton = page.getByTestId("send-message");
   await expect(sendButton).toBeEnabled();
