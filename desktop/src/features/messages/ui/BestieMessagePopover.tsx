@@ -109,12 +109,12 @@ export function BestieMessagePopover({
       </Tooltip>
       <PopoverContent
         align="end"
-        className="w-[min(30rem,calc(100vw-2rem))] rounded-3xl p-0 shadow-xl"
+        className="w-[min(328px,calc(100vw-2rem))]"
         data-testid={`bestie-popover-${message.id}`}
         side="top"
         sideOffset={10}
       >
-        <div className="space-y-3.5 p-4">
+        <div className="space-y-3.5">
           <div className="flex items-center gap-2.5">
             <ProfileAvatar
               avatarUrl={bestie.avatarUrl}
@@ -125,28 +125,28 @@ export function BestieMessagePopover({
           </div>
 
           <div
-            className="rounded-2xl border border-border/60 bg-background px-3 py-3 shadow-md"
+            className="mx-auto aspect-[4/3] w-4/5 overflow-hidden rounded-xl border border-border/60 bg-background p-2.5 shadow-sm"
             data-testid={`bestie-message-snapshot-${message.id}`}
           >
-            <div className="flex min-w-0 items-start gap-2.5">
+            <div className="flex min-w-0 items-start gap-2">
               <UserAvatar
                 avatarUrl={message.avatarUrl ?? null}
-                className="size-7 shrink-0"
+                className="size-6 shrink-0"
                 displayName={message.author}
                 size="sm"
               />
               <div className="min-w-0 flex-1">
-                <div className="flex min-w-0 items-baseline gap-1.5">
-                  <p className="truncate text-xs font-semibold leading-4">
+                <div className="flex min-w-0 items-baseline gap-1">
+                  <p className="truncate text-[10px] font-semibold leading-3.5">
                     {message.author}
                   </p>
-                  <p className="shrink-0 text-[10px] leading-4 text-muted-foreground/70">
+                  <p className="shrink-0 text-[9px] leading-3.5 text-muted-foreground/70">
                     {message.time}
                   </p>
                 </div>
-                <div className="mt-0.5 max-h-12 overflow-hidden">
+                <div className="mt-0.5 max-h-10.5 overflow-hidden">
                   <VideoReviewCommentMarkdown
-                    className="line-clamp-3 text-xs leading-4 text-foreground/80 [&_p]:leading-4"
+                    className="line-clamp-3 text-[10px] leading-3.5 text-foreground/80 [&_p]:leading-3.5"
                     content={message.body}
                     interactive={false}
                     messageId={message.id}

@@ -71,9 +71,19 @@ test("message action sends a message link and optional note to Bestie", async ({
   await expect(popover).toContainText("Bestie");
   await expect(popover).not.toContainText("Share this message with Bestie");
   await expect(popover).toContainText("Please fold this launch decision");
-  await expect(
-    popover.getByTestId(`bestie-message-snapshot-${messageId}`),
-  ).toBeVisible();
+  const snapshot = popover.getByTestId(`bestie-message-snapshot-${messageId}`);
+  await expect(snapshot).toBeVisible();
+  const [popoverBox, snapshotBox] = await Promise.all([
+    popover.boundingBox(),
+    snapshot.boundingBox(),
+  ]);
+  expect(popoverBox).not.toBeNull();
+  expect(snapshotBox).not.toBeNull();
+  if (popoverBox && snapshotBox) {
+    expect(popoverBox.width).toBeLessThanOrEqual(328);
+    expect(snapshotBox.width / snapshotBox.height).toBeCloseTo(4 / 3, 1);
+    expect(snapshotBox.width / (popoverBox.width - 32)).toBeCloseTo(0.8, 1);
+  }
   const composer = popover.getByTestId("message-composer");
   await expect(composer).toBeVisible();
   await expect(composer.getByRole("button", { name: "Send" })).toBeEnabled();
