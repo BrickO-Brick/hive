@@ -10371,7 +10371,7 @@ mod error_outcome_emission_tests {
             returned.state.sessions.get(&channel_id).map(String::as_str),
             Some("healthy-session")
         );
-        assert_eq!(queue.queued_event_count(&channel_id), 1);
+        assert_eq!(queue.queued_event_count(channel_id), 1);
         assert!(crash_history[0].crash_times.is_empty());
         assert!(crash_history[0].open_until.is_none());
         assert!(!crash_history[0].respawn_in_flight);
