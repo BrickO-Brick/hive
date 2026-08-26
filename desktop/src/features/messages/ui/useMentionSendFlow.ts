@@ -56,7 +56,6 @@ export function useMentionSendFlow({
   mentionWakeEnabled,
   mentions,
   onPrepareSendChannel,
-  onAddressedAgentsSendStarted,
   onAddressedAgentsComposerCleared,
   onAddressedAgentsSendFailed,
   onAddressedAgentsSendSucceeded,
@@ -428,9 +427,6 @@ export function useMentionSendFlow({
         draft.capturedChannelId === channelIdRef.current ||
         channelIdRef.current === null
       ) {
-        if (draft.addressedAgentPubkeys.length > 0) {
-          onAddressedAgentsSendStarted?.(draft.addressedAgentPubkeys);
-        }
         clearComposer();
         if (draft.addressedAgentPubkeys.length > 0) {
           optimisticComposerContent =
@@ -664,7 +660,6 @@ export function useMentionSendFlow({
       getManagedAgentsByPubkey,
       mentions.isAgentPubkey,
       mentions.revalidateMentionPubkeys,
-      onAddressedAgentsSendStarted,
       onAddressedAgentsComposerCleared,
       onAddressedAgentsSendFailed,
       onAddressedAgentsSendSucceeded,

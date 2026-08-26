@@ -20,7 +20,6 @@ export type UseMentionSendFlowOptions = {
   mentionWakeEnabled: boolean;
   mentions: UseMentionsResult;
   onPrepareSendChannel?: (pubkeys?: string[]) => Promise<string | null>;
-  onAddressedAgentsSendStarted?: (pubkeys: readonly string[]) => void;
   onAddressedAgentsComposerCleared?: (pubkeys: readonly string[]) => string;
   onAddressedAgentsSendFailed?: (pubkeys: readonly string[]) => void;
   onAddressedAgentsSendSucceeded?: (

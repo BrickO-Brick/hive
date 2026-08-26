@@ -344,7 +344,6 @@ function MessageComposerImpl({
     emojiAutocomplete,
     mentions,
     mentionWakeEnabled: editTarget == null && !isSubmitLocked,
-    onAddressedAgentsSendStarted: addressPulse.pulseMany,
     onAddressedAgentsComposerCleared: (pubkeys) =>
       restoreAddressedAgentMentionsRef.current(pubkeys),
     onAddressedAgentsSendFailed: addressPulse.shakeMany,
