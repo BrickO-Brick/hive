@@ -393,31 +393,27 @@ async function scrollTranscriptToBottom(page: Page) {
 }
 
 /**
- * Open every collapsed row in the transcript.
+ * Open every folded work block in the transcript.
  *
- * The transcript opens with thinking and tool runs folded, so the default frame
- * is a stack of one-line summaries — true to the product, but it shows none of
- * the turn's actual shape. Expanding gives the second shot the content the
- * drawer's width exists for: command output, a failed step, plan items.
+ * The transcript opens with finished work folded, so the default frame is a
+ * stack of one-line summaries—true to the product, but it shows none of the
+ * turn's actual shape. Expanding gives the second shot the content the drawer's
+ * width exists for: command output, a failed step, plan items.
  *
- * Driven through the native `<details>` `open` property rather than by clicking
- * a toggle, because the fold's markup and any toggle test id belong to the
- * transcript variants being restyled in parallel. `open` is the DOM contract
- * underneath whatever they render, and it survives their changes.
+ * Drive the product's summary buttons rather than reaching through the old
+ * `<details>` implementation. This keeps the reference flow exercising the same
+ * disclosure state a reader uses.
  */
 async function expandTranscriptRows(page: Page) {
-  const expanded = await page
-    .getByTestId("agent-session-thread-panel")
-    .evaluate((panel) => {
-      const rows = panel.querySelectorAll("details:not([open])");
-      for (const row of rows) {
-        (row as HTMLDetailsElement).open = true;
-      }
-      return rows.length;
-    });
-  // A zero here would mean the folds moved and the shot silently became a
-  // duplicate of the collapsed one, which is the failure worth catching.
-  expect(expanded).toBeGreaterThan(0);
+  const summaries = page.getByTestId("transcript-work-block-summary");
+  const count = await summaries.count();
+  expect(count).toBeGreaterThan(0);
+  for (let index = 0; index < count; index += 1) {
+    const summary = summaries.nth(index);
+    if ((await summary.getAttribute("aria-expanded")) !== "true") {
+      await summary.click();
+    }
+  }
 }
 
 /**
