@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 use super::agent_env::{build_buzz_agent_provider_defaults, idle_pool_sleep_env};
 
@@ -809,6 +809,14 @@ pub fn spawn_agent_child(
     for (key, value) in &descriptor.env {
         command.env(key, value);
     }
+
+    // The experiment is desktop-owned and applies at managed-agent start.
+    // Write it after layered user env so the persisted UI state is the sole
+    // launch authority for ordinary starts and launch-time restores alike.
+    super::apply_acp_session_policy_env(
+        &mut command,
+        super::acp_session_policy(app.state::<crate::app_state::AppState>().inner()),
+    );
 
     // B5: carry persisted effort; harness resolves thought_level configId at first session.
     // Written AFTER descriptor.env so the canonical persisted value wins over any
