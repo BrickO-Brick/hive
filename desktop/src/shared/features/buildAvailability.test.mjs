@@ -40,4 +40,11 @@ describe("feature build availability", () => {
       [publicFeature],
     );
   });
+
+  it("includes the Bestie experiment only in an eligible build", () => {
+    assert.deepEqual(
+      filterBuildAvailableFeatures([publicFeature, bestie], { bestie: true }),
+      [publicFeature, bestie],
+    );
+  });
 });
