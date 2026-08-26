@@ -456,10 +456,7 @@ public final class BuzzPushNotificationResolver: BuzzPushNotificationResolving {
     let conversation = channel.flatMap {
       communicationConversation(event: event, community: community, channel: $0)
     }
-    let rootEventID =
-      event.tags.first {
-        $0.count >= 4 && $0[0] == "e" && $0[3] == "root" && !$0[1].isEmpty
-      }?[1] ?? event.id
+    let rootEventID = replyRootEventID(for: event)
     let replyKind = [45_001, 45_003].contains(event.kind) ? 45_003 : 9
     return BuzzPushResolution(
       title: profile?.displayName ?? shortPubkey(event.pubkey),
@@ -489,6 +486,21 @@ public final class BuzzPushNotificationResolver: BuzzPushNotificationResolving {
       conversationDisplayName: conversation?.displayName,
       conversationRecipientCount: conversation?.recipientCount
     )
+  }
+
+  /// Resolves the NIP-10 root carried by an incoming message. A direct reply
+  /// to a root commonly carries only a `reply` marker, so that parent is also
+  /// the thread root. Nested replies carry an explicit `root` marker, which
+  /// remains authoritative.
+  private static func replyRootEventID(for event: VerifiedNostrEvent) -> String {
+    for marker in ["root", "reply"] {
+      if let value = event.tags.first(where: {
+        $0.count >= 4 && $0[0] == "e" && $0[3] == marker && !$0[1].isEmpty
+      })?[1] {
+        return value
+      }
+    }
+    return event.id
   }
 
   private static func ephemeralProfile(

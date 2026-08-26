@@ -129,6 +129,43 @@ final class BuzzPushNotificationResolverTests: XCTestCase {
     XCTAssertEqual(result?.0.body, "lower ID")
   }
 
+  func testReplyContextUsesReplyMarkerAsRootForDirectReply() throws {
+    let incoming = event(
+      id: "incoming-reply",
+      content: "Reply to the thread root",
+      tags: [
+        ["h", Self.channelID],
+        ["e", "thread-root", "", "reply"],
+      ]
+    )
+
+    let result = BuzzPushNotificationResolver.decodeResolution(
+      events: [incoming],
+      community: community()
+    )
+
+    XCTAssertEqual(try XCTUnwrap(result?.0.replyContext).rootEventID, "thread-root")
+  }
+
+  func testReplyContextPrefersExplicitRootForNestedReply() throws {
+    let incoming = event(
+      id: "incoming-nested-reply",
+      content: "Nested reply",
+      tags: [
+        ["h", Self.channelID],
+        ["e", "thread-root", "", "root"],
+        ["e", "immediate-parent", "", "reply"],
+      ]
+    )
+
+    let result = BuzzPushNotificationResolver.decodeResolution(
+      events: [incoming],
+      community: community()
+    )
+
+    XCTAssertEqual(try XCTUnwrap(result?.0.replyContext).rootEventID, "thread-root")
+  }
+
   func testResolveSucceedsAndMutatesGatewayContent() throws {
     let event = try JSONDecoder().decode(
       VerifiedNostrEvent.self,
