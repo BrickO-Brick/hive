@@ -450,6 +450,43 @@ test("Enter selects a channel when create row is not highlighted", async ({
   await expect(page.getByTestId("chat-title")).toHaveText("design");
 });
 
+test("non-member open channel header shows its member count and roster", async ({
+  page,
+}) => {
+  await page.goto("/");
+
+  await openChannelBrowser(page);
+  const designRow = page.getByTestId("browse-channel-design");
+  await expect(designRow).toContainText("2 members");
+  await designRow.locator("button").first().click();
+
+  await expect(page.getByTestId("channel-browser-dialog")).not.toBeVisible();
+  await expect(page.getByTestId("chat-title")).toHaveText("design");
+  await expect(
+    page.getByRole("button", { name: "Join", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByTestId("channel-members-trigger")).toHaveAttribute(
+    "aria-label",
+    "View channel members (2)",
+  );
+  await expect(page.getByTestId("channel-start-huddle-trigger")).toHaveCount(0);
+  await expect(page.getByTestId("channel-management-trigger")).toHaveCount(0);
+
+  await page.getByTestId("channel-members-trigger").click();
+  const members = page.getByTestId("members-sidebar");
+  await expect(members).toBeVisible();
+  await expect(
+    members.getByTestId(
+      "sidebar-member-953d3363262e86b770419834c53d2446409db6d918a57f8f339d495d54ab001f",
+    ),
+  ).toBeVisible();
+  await expect(
+    members.getByTestId(
+      "sidebar-member-bb22a5299220cad76ffd46190ccbeede8ab5dc260faa28b6e5a2cb31b9aff260",
+    ),
+  ).toBeVisible();
+});
+
 test("joining a channel from browser adds it to the sidebar", async ({
   page,
 }) => {
