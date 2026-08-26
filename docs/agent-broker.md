@@ -136,8 +136,12 @@ require the very scope field B2 forbids.
 **(I3) Retry means identical bytes.** A request is validated, normalized, and
 serialized **exactly once**; the transport only ever sees that frozen form,
 and the first attempt and every retry send the same bytes under the same
-`requestId`. `H` hashes the bytes it receives and compares that digest to the
-one recorded under the same `requestId`: same key and same digest replays the
+`requestId`. The durable idempotency record is keyed on the **authenticated
+principal and the `requestId` together**, never on the `requestId` alone —
+otherwise one caller reusing another's id would be handed the other's recorded
+verdict, a cross-principal read that no authorization check would ever see.
+`H` hashes the bytes it receives and compares that digest to the
+one recorded under the same key: same key and same digest replays the
 recorded outcome without re-running anything; same key and a different digest
 is rejected as a `request_id_conflict`. Because there is no path by which a
 client can re-render a request between attempts, a retry cannot drift and be
@@ -155,7 +159,15 @@ read result can disagree with the signature. Each event object is held to the
 canonical seven members and nothing else, so I1 reaches inside events too.
 
 *Limits.* Verification is available to `A`, not forced on it; whether to pay
-for it and what to do when it fails is the caller's policy.
+for it and what to do when it fails is the caller's policy. And the trust in
+completeness lands hardest on the wake path: a keyless agent polls its
+mentions instead of holding a subscription, cursors are opaque and
+host-issued, and pages end when `nextCursor` is absent — so a host that
+silently withholds mentions from one sender is indistinguishable, to the
+agent, from a quiet channel, forever. This document places that squarely on
+the trust already extended to `H`: the host holds the key and could as easily
+refuse to act; selective silence on reads is the same betrayal by a different
+door, detectable only from outside the pair.
 
 **(I5) A verdict is only read against the request it answers.** The only
 response a caller can obtain is one that has been checked against the request
@@ -176,7 +188,10 @@ the name, and a rename may be the very thing the call performed.
 **(I6) Absence has one spelling.** Every optional member means "absent" by
 being **omitted**. `null` is never a legal value anywhere in this protocol, at
 any depth, in either direction; a member present with the value `null` makes
-the whole payload malformed. A key may also appear at most once in any object.
+the whole payload malformed. The same rule covers empty collections: an
+optional array member is omitted when it has no elements, and a member present
+as `[]` is malformed — otherwise absence would have exactly the second
+spelling this invariant exists to forbid. A key may also appear at most once in any object.
 The reason is that this contract decides meaning from absence — which members
 a status admits, whether a read has a default page size — so absence cannot
 have two spellings without one of them slipping past a check. This rule costs
@@ -231,7 +246,11 @@ value; the three full envelope examples in §Results use values that parse.
 - `requestId` is the caller-chosen idempotency key, unique per logical
   operation: 1–128 bytes of printable ASCII with no spaces. It becomes part of
   a durable idempotency record and appears in audit logs, which is why its
-  character set is constrained.
+  character set is constrained. A request whose `requestId` is itself
+  unusable — missing, `null`, repeated, or malformed — is the one envelope
+  error a host cannot answer with a correlated verdict; whatever it returns
+  is uncorrelated by construction, and the caller treats it as "no answer"
+  (I5), never as a verdict.
 - `actionVersion` is the version of the operation's argument shape the caller
   wrote against. All nine operations are at version 1 in this document.
 - `action` is one of the nine wire names in §Operations.
@@ -250,8 +269,9 @@ than a new use of an existing blank cheque.
 Throughout, string fields are trimmed of surrounding whitespace before being
 frozen into the request, with three exceptions: message content publishes
 exactly as written; a cursor is opaque and nothing may alter it; and a
-`requestId` is never trimmed because it may not contain whitespace at all. Length limits on names, prompts, and similar fields count **characters**;
-limits on content, cursors, and request ids count **bytes**.
+`requestId` is never trimmed because it may not contain whitespace at all. Length limits on names, prompts, and similar fields count **characters**
+(Unicode scalar values — code points, not grapheme clusters and not UTF-16
+units); limits on content, cursors, and request ids count **bytes**.
 
 **`channel.read`** — the one read operation. It covers a whole channel, a
 single thread, or the requester's mention feed, because those differ only by
@@ -293,8 +313,14 @@ stability, including whether a cursor survives its own restart.
 ```
 
 `content` is required, non-empty, and at most 64 KiB. `mentions` is optional,
-at most 50 public keys, and is what produces notification tags; it may be
-omitted when empty.
+at most 50 public keys, and is what produces notification tags; it is
+omitted when empty (I6). The outcome — shared by all four publishing operations
+(`message.post`, `message.reply`, `reaction.add`, `profile.set`) — is the
+published event's `eventId`, `kind`, and `createdAt`, all three host-minted:
+
+```json
+{ "eventId": "…", "kind": 9, "createdAt": 1787675471 }
+```
 
 **`message.reply`** — a reply to an existing message. As `message.post`, plus
 a required `replyToEventId`. Which event becomes the thread root is `H`'s
@@ -338,7 +364,7 @@ characters (the grammar is ASCII-only, so bytes and characters coincide).
 The outcome is addressing material only:
 
 ```json
-{ "authorPubkey": "…", "kind": 30078, "dTag": "…" }
+{ "authorPubkey": "…", "kind": 30174, "dTag": "…" }
 ```
 
 The d-tag is a keyed hash of the slug, so it identifies the record without
@@ -547,7 +573,8 @@ to verdicts.
 - Derives requester, owner, and scope from the authenticated session and
   nothing else (I2). Binds each credential to the agent and conversation it
   was issued for.
-- Records, per `requestId`, a digest of the received bytes and the verdict
+- Records, per authenticated principal and `requestId`, a digest of the
+  received bytes and the verdict
   reached; replays the recorded verdict with `replayed: true` on a matching
   digest and answers `request_id_conflict` on a differing one (I3).
 - Returns read results as the relay's signed events with exactly the
