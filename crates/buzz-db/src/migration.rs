@@ -649,7 +649,7 @@ mod tests {
         let mut migrations: Vec<_> = MIGRATOR.iter().collect();
         migrations.sort_by_key(|migration| migration.version);
 
-        assert_eq!(migrations.len(), 37);
+        assert_eq!(migrations.len(), 38);
         assert_eq!(migrations[0].version, 1);
         assert_eq!(&*migrations[0].description, "initial schema");
         assert!(migrations[0]
@@ -1676,9 +1676,11 @@ mod tests {
         let mut expected_fences = migration.fence_attachments.clone();
         expected_fences.remove("product_feedback");
         expected_fences.remove("rate_limit_violations");
-        // Migration 0035 attaches the fence to the durable managed-agent
-        // delivery inbox after 0029; the desired-state schema carries it inline.
+        // Migrations 0037 and 0038 attach fences to the durable managed-agent
+        // delivery inbox and webhook invocation authority after 0029; the
+        // desired-state schema carries both inline.
         expected_fences.insert("workflow_agent_deliveries".to_owned());
+        expected_fences.insert("workflow_webhook_invocations".to_owned());
         assert_eq!(
             expected_fences, schema.fence_attachments,
             "write-fence attachment targets differ after recovery policy"
