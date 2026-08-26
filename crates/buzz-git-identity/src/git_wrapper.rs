@@ -10,7 +10,10 @@
 //!    `-c user.email=` (and `--config-env` for the same keys) in global position,
 //!    and `--author`/`--reset-author` on `commit`/`am`.
 //! 3. On `push`, **verifies** that every outgoing commit not already on a remote
-//!    is authored by the agent identity, and fails the push otherwise.
+//!    is authored by the agent identity, and — when the session enforces
+//!    signing — carries a valid NIP-GS signature by the agent key. This closes
+//!    unsigned agent commits from `merge`/`pull`/`commit-tree`/plumbing that the
+//!    flag-based `enforce` cannot reject. Fails the push otherwise.
 //! 4. Execs the real `git` (found by skipping PATH entries that resolve back to
 //!    this binary), so nothing the agent can pass reaches git with a spoofed
 //!    identity on the default path.
@@ -95,6 +98,16 @@ impl Authority {
             return AuthorityState::Tampered; // present but no usable identity
         };
         AuthorityState::Managed(Self { entries, email })
+    }
+
+    /// Whether the manifest enforces signing (`commit.gpgSign=true`). Only then
+    /// does the push gate require a valid agent signature on each agent-authored
+    /// commit — an unconfigured/`user`-mode session installs no signing, so
+    /// requiring one there would be wrong.
+    fn signing_enforced(&self) -> bool {
+        self.entries.iter().any(|(k, v)| {
+            k.eq_ignore_ascii_case("commit.gpgSign") && v.eq_ignore_ascii_case("true")
+        })
     }
 }
 
@@ -608,7 +621,8 @@ fn subcommand(argv: &[String]) -> Option<String> {
 }
 
 /// Verify that every commit being pushed that is not already on a remote is
-/// authored by the agent identity. `Ok(())` allows the push.
+/// authored by the agent identity — and, when this session enforces signing,
+/// carries a valid NIP-GS signature by the agent key. `Ok(())` allows the push.
 ///
 /// The set of refs being pushed is git's own resolved update plan, obtained via
 /// `push --no-verify --dry-run --porcelain` rather than reconstructed from a
@@ -651,6 +665,11 @@ fn verify_push(
     };
 
     let mut offenders = Vec::new();
+    let mut unsigned = Vec::new();
+    // Signing is required per-commit only when this managed session enforces it
+    // (`commit.gpgSign=true`). A `user`-mode/unconfigured authority installs no
+    // signer, so requiring a signature there would wrongly block every push.
+    let require_signature = authority.signing_enforced();
     for from in sources {
         let shas = match rev_list_outgoing(real_git, ctx, &from) {
             Some(s) => s,
@@ -672,7 +691,28 @@ fn verify_push(
         let mut upstream: Option<std::collections::HashSet<String>> = None;
         for sha in shas {
             match commit_author_email(real_git, ctx, &sha) {
-                Some(email) if &email == expected => {}
+                // Agent-authored: attribution is correct. When this session
+                // enforces signing, it must ALSO carry a valid signature by the
+                // agent key — this is the one check that covers every
+                // creation path (`merge`/`pull`/`commit-tree`/plumbing) that
+                // `enforce` cannot reject on the literal argv.
+                Some(email) if &email == expected => {
+                    if require_signature {
+                        match commit_signature_is_agent(real_git, ctx, authority, &sha) {
+                            Some(true) => {}
+                            Some(false) => unsigned.push(sha),
+                            // The verification probe itself failed to run: fail
+                            // closed rather than let an unverified commit leave.
+                            None => {
+                                return Err(format!(
+                                    "buzz git wrapper: refusing to push — could not verify the \
+                                     signature of outgoing commit `{}`. Enforcement fails closed.",
+                                    &sha[..sha.len().min(12)]
+                                ))
+                            }
+                        }
+                    }
+                }
                 Some(email) => {
                     // A non-agent author is allowed only when this commit is a
                     // replay (same patch-id) of a commit already upstream —
@@ -702,26 +742,46 @@ fn verify_push(
         }
     }
 
-    if offenders.is_empty() {
+    if offenders.is_empty() && unsigned.is_empty() {
         return Ok(());
     }
-    let mut msg = String::from(
-        "buzz git wrapper: refusing to push — these outgoing commits are not authored \
-         by your agent identity (expected author email ",
-    );
-    msg.push_str(expected);
-    msg.push_str("):\n");
-    for (sha, email) in &offenders {
-        msg.push_str(&format!(
-            "  {} authored by {}\n",
-            &sha[..sha.len().min(12)],
-            email
-        ));
+    let mut msg = String::new();
+    if !offenders.is_empty() {
+        msg.push_str(
+            "buzz git wrapper: refusing to push — these outgoing commits are not authored \
+             by your agent identity (expected author email ",
+        );
+        msg.push_str(expected);
+        msg.push_str("):\n");
+        for (sha, email) in &offenders {
+            msg.push_str(&format!(
+                "  {} authored by {}\n",
+                &sha[..sha.len().min(12)],
+                email
+            ));
+        }
+        msg.push_str(
+            "Re-author them as your agent identity (e.g. `git rebase` with `--reset-author`-free \
+             re-commits under the managed identity) before pushing.",
+        );
     }
-    msg.push_str(
-        "Re-author them as your agent identity (e.g. `git rebase` with `--reset-author`-free \
-         re-commits under the managed identity) before pushing.",
-    );
+    if !unsigned.is_empty() {
+        if !msg.is_empty() {
+            msg.push('\n');
+        }
+        msg.push_str(
+            "buzz git wrapper: refusing to push — these outgoing commits are authored by your \
+             agent identity but carry no valid signature by your agent key (e.g. created via \
+             `git merge`/`pull --no-gpg-sign` or `commit-tree`):\n",
+        );
+        for sha in &unsigned {
+            msg.push_str(&format!("  {}\n", &sha[..sha.len().min(12)]));
+        }
+        msg.push_str(
+            "Re-sign them under the managed identity (e.g. `git rebase --exec 'git commit \
+             --amend --no-edit -S' <base>`) before pushing.",
+        );
+    }
     Err(msg)
 }
 
@@ -864,6 +924,39 @@ fn reuse_commit_arg(args: &[String]) -> Option<String> {
 
 fn commit_author_email(real_git: &Path, ctx: &[String], sha: &str) -> Option<String> {
     capture(real_git, ctx, &["show", "-s", "--format=%ae", sha])
+}
+
+/// Whether `sha` carries a valid NIP-GS signature by the agent key. Returns
+/// `Some(true)` only when git's signature-status placeholder `%G?` is `G` —
+/// a good signature whose key is `TRUST_FULLY`, which `git-sign-nostr` emits
+/// solely when the verified key equals the configured `user.signingkey`. So `G`
+/// means both "cryptographically valid" and "by the expected agent key" in one
+/// git-native, network-free probe. `Some(false)` is any other status
+/// (`N` unsigned, `U`/`E` valid-but-untrusted/uncheckable, `B` bad). `None`
+/// only when the probe itself fails to run — the caller fails closed on that.
+///
+/// The authority's signing config (`gpg.x509.program`, `user.signingkey`,
+/// `nostr.keyfile`) is injected as `-c` so the probe invokes `git-sign-nostr`
+/// and resolves trust against the agent key regardless of the repo's own
+/// config, mirroring how [`inject_identity_args`] arms real commits.
+fn commit_signature_is_agent(
+    real_git: &Path,
+    ctx: &[String],
+    authority: &Authority,
+    sha: &str,
+) -> Option<bool> {
+    let mut args = ctx.to_vec();
+    for (key, value) in &authority.entries {
+        args.push("-c".to_string());
+        args.push(format!("{key}={value}"));
+    }
+    args.extend(["show", "-s", "--format=%G?", sha].map(String::from));
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let out = capture_raw(real_git, &arg_refs)?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&out.stdout).trim() == "G")
 }
 
 /// The stable patch-id of a single commit, or `None` if it has no diff patch-id
@@ -2069,6 +2162,128 @@ mod tests {
         )
         .expect_err("a brand-new human commit must be refused");
         assert!(err.contains("not authored by your agent identity"), "{err}");
+    }
+
+    // ── L3b: signing enforcement in the push gate ─────────────────────────────
+
+    /// `signing_enforced` reads the manifest: true only for `commit.gpgSign=true`
+    /// (case-insensitive), false for `false`/absent — so an unconfigured/`user`
+    /// session never triggers the per-commit signature requirement.
+    #[test]
+    fn signing_enforced_reads_manifest_gpgsign() {
+        assert!(managed().signing_enforced(), "managed() sets gpgSign=true");
+        assert!(
+            !managed_nosign().signing_enforced(),
+            "managed_nosign() sets gpgSign=false"
+        );
+        let case = Authority {
+            entries: vec![("commit.gpgSign".into(), "TRUE".into())],
+            email: AGENT_EMAIL.into(),
+        };
+        assert!(case.signing_enforced(), "value match is case-insensitive");
+        let absent = Authority {
+            entries: vec![("user.email".into(), AGENT_EMAIL.into())],
+            email: AGENT_EMAIL.into(),
+        };
+        assert!(!absent.signing_enforced(), "absent key => not enforced");
+    }
+
+    /// When the session enforces signing, an agent-authored but UNSIGNED
+    /// outgoing commit is refused. This is the `merge`/`pull`/`commit-tree`
+    /// class the flag-based `enforce` cannot catch: the commit is correctly
+    /// agent-authored, so only the signature check rejects it. An unsigned
+    /// commit yields `%G?` = `N`, so no signer binary is needed to drive this.
+    #[test]
+    fn verify_push_rejects_unsigned_agent_commit_when_signing_enforced() {
+        let (_d, repo) = agent_authored_unsigned_repo();
+        let remote = tempfile::tempdir().unwrap();
+        let g = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .status()
+                .unwrap();
+        };
+        g(&["init", "-q", "--bare", remote.path().to_str().unwrap()]);
+        g(&[
+            "-C",
+            repo.to_str().unwrap(),
+            "remote",
+            "add",
+            "origin",
+            remote.path().to_str().unwrap(),
+        ]);
+        let ctx = vec!["-C".to_string(), repo.to_string_lossy().into_owned()];
+        let err = verify_push(
+            &real_git(),
+            &v(&["-C", repo.to_str().unwrap(), "push", "origin", "main"]),
+            &ctx,
+            &managed(), // signing enforced
+        )
+        .expect_err("an unsigned agent commit must be refused when signing is enforced");
+        assert!(
+            err.contains("no valid signature by your agent key"),
+            "expected the unsigned-commit rejection; {err}"
+        );
+    }
+
+    /// The SAME unsigned agent commit pushes cleanly when the session does NOT
+    /// enforce signing (`user` mode / unconfigured) — the requirement must not
+    /// fire without an installed signer.
+    #[test]
+    fn verify_push_allows_unsigned_agent_commit_when_signing_not_enforced() {
+        let (_d, repo) = agent_authored_unsigned_repo();
+        let remote = tempfile::tempdir().unwrap();
+        let g = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .status()
+                .unwrap();
+        };
+        g(&["init", "-q", "--bare", remote.path().to_str().unwrap()]);
+        g(&[
+            "-C",
+            repo.to_str().unwrap(),
+            "remote",
+            "add",
+            "origin",
+            remote.path().to_str().unwrap(),
+        ]);
+        let ctx = vec!["-C".to_string(), repo.to_string_lossy().into_owned()];
+        assert!(
+            verify_push(
+                &real_git(),
+                &v(&["-C", repo.to_str().unwrap(), "push", "origin", "main"]),
+                &ctx,
+                &managed_nosign(), // signing NOT enforced
+            )
+            .is_ok(),
+            "unsigned agent commit must be allowed when signing is not enforced"
+        );
+    }
+
+    /// A repo with one agent-authored, unsigned commit and no remote.
+    fn agent_authored_unsigned_repo() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().to_path_buf();
+        let g = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_SYSTEM", "/dev/null")
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "git {args:?} failed");
+        };
+        g(&["init", "-q", "-b", "main"]);
+        g(&["config", "user.name", "Agent"]);
+        g(&["config", "user.email", AGENT_EMAIL]);
+        g(&["config", "commit.gpgSign", "false"]);
+        std::fs::write(repo.join("f"), "x").unwrap();
+        g(&["add", "f"]);
+        g(&["commit", "-qm", "agent commit"]);
+        (dir, repo)
     }
 
     // ── I6: the dry-run probe is bounded and a timeout fails closed ────────────

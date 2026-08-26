@@ -511,6 +511,208 @@ fn wrapper_reapplies_agent_identity_over_repo_config() {
     );
 }
 
+/// Build a shim dir wired for REAL signing: `git` and `git-sign-nostr` both
+/// symlink to the buzz-acp multicall, and the `.git-identity` manifest carries
+/// the full identity + signing config (`commit.gpgSign=true`, the signer
+/// program, `user.signingkey`, and the keyfile) for a freshly generated key.
+/// Returns (shim TempDir, PATH string, expected author email, keyfile-holding
+/// TempDir). Signing itself needs no network — `BUZZ_AUTH_TAG` is left unset so
+/// the signer works offline.
+#[cfg(unix)]
+fn signed_shim_env() -> (tempfile::TempDir, String, String, tempfile::TempDir) {
+    let keys = nostr::Keys::generate();
+    let nsec = keys.secret_key().to_bech32().unwrap();
+
+    // Keyfile + derived identity live in their own 0700 dir (the manifest's
+    // `nostr.keyfile` points here). Kept separate from the shim so the shim
+    // holds only the git symlinks + manifest, as the harness installs them.
+    let keydir = tempfile::tempdir().unwrap();
+    let id = buzz_git_identity::write_keyfile(keydir.path(), &nsec).expect("write keyfile");
+    let expected_email = buzz_git_identity::derive_git_email(&id.pubkey_hex);
+
+    let shim = tempfile::tempdir().unwrap();
+    for name in ["git", "git-sign-nostr"] {
+        std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_buzz-acp"), shim.path().join(name)).unwrap();
+    }
+    let entries = buzz_git_identity::identity_signing_entries(&id);
+    buzz_git_identity::write_identity_manifest(shim.path(), &entries).unwrap();
+
+    let real = real_git_dir();
+    let path = std::env::join_paths([shim.path().to_path_buf(), real])
+        .unwrap()
+        .into_string()
+        .unwrap();
+    (shim, path, expected_email, keydir)
+}
+
+/// A repo whose local config names the AGENT identity (author is correct) and a
+/// reachable bare remote, ready for one commit. Returns (work TempDir, repo
+/// path, remote path). `commit.gpgSign` is left to the wrapper's injected config
+/// so the commit shape is set per-test.
+fn agent_repo_with_remote(agent_email: &str) -> (tempfile::TempDir, PathBuf, PathBuf) {
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let remote = work.path().join("remote.git");
+    let g = |cwd: &Path, args: &[&str]| {
+        assert!(Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .status()
+            .unwrap()
+            .success());
+    };
+    g(
+        work.path(),
+        &["init", "-q", "--bare", remote.to_str().unwrap()],
+    );
+    g(&repo, &["init", "-q", "-b", "main"]);
+    g(&repo, &["config", "user.name", "Agent"]);
+    g(&repo, &["config", "user.email", agent_email]);
+    g(
+        &repo,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    (work, repo, remote)
+}
+
+/// L3b (real signer): a genuinely signed agent commit pushes cleanly. This
+/// proves the push-gate signature check accepts a valid NIP-GS signature by the
+/// agent key — the happy path that the reject tests below are measured against.
+#[cfg(unix)]
+#[test]
+fn wrapper_allows_push_of_signed_agent_commit() {
+    let (_shim, path, email, _keydir) = signed_shim_env();
+    let (_work, repo, _remote) = agent_repo_with_remote(&email);
+    std::fs::write(repo.join("f"), "x").unwrap();
+    wrapper(&path, &repo, &["add", "f"]);
+    // The wrapper injects commit.gpgSign=true + the signer, so this commit is
+    // signed by the agent key.
+    let out = wrapper(&path, &repo, &["commit", "-m", "agent signed"]);
+    assert!(
+        out.status.success(),
+        "signed agent commit should succeed; stderr={}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let out = wrapper(&path, &repo, &["push", "origin", "main"]);
+    assert!(
+        out.status.success(),
+        "pushing a signed agent commit must be allowed; stderr={}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+}
+
+/// L3b (real signer): an agent-authored but UNSIGNED commit created via
+/// `git merge --no-gpg-sign` — Carl's live repro of the P1 gap — must be refused
+/// at push. The merge commit is correctly agent-authored, so only the signature
+/// check catches it; `enforce` cannot, because `merge` is not in its signing
+/// blocklist.
+#[cfg(unix)]
+#[test]
+fn wrapper_refuses_push_of_unsigned_merge_commit() {
+    let (_shim, path, email, _keydir) = signed_shim_env();
+    let (_work, repo, _remote) = agent_repo_with_remote(&email);
+    // Base signed commit on main.
+    std::fs::write(repo.join("base"), "b").unwrap();
+    wrapper(&path, &repo, &["add", "base"]);
+    assert!(wrapper(&path, &repo, &["commit", "-m", "base"])
+        .status
+        .success());
+    // A signed commit on a side branch.
+    wrapper(&path, &repo, &["checkout", "-q", "-b", "side"]);
+    std::fs::write(repo.join("side"), "s").unwrap();
+    wrapper(&path, &repo, &["add", "side"]);
+    assert!(wrapper(&path, &repo, &["commit", "-m", "side work"])
+        .status
+        .success());
+    // Back on main, merge the side branch WITHOUT signing — an agent-authored
+    // but unsigned merge commit. `--no-ff` forces a merge commit object.
+    wrapper(&path, &repo, &["checkout", "-q", "main"]);
+    let m = wrapper(
+        &path,
+        &repo,
+        &[
+            "merge",
+            "--no-ff",
+            "--no-gpg-sign",
+            "-m",
+            "merge side",
+            "side",
+        ],
+    );
+    assert!(
+        m.status.success(),
+        "the unsigned merge itself should succeed; stderr={}",
+        String::from_utf8_lossy(&m.stderr),
+    );
+    let out = wrapper(&path, &repo, &["push", "origin", "main"]);
+    assert!(
+        !out.status.success(),
+        "pushing an unsigned merge commit must be refused; stderr={}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("no valid signature by your agent key"),
+        "expected the unsigned-commit rejection; stderr={}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+}
+
+/// L3b (real signer): an agent-authored but UNSIGNED commit created via the
+/// `commit-tree` plumbing — which bypasses `commit` entirely and so is never
+/// touched by `enforce` — must be refused at push. Pins that the push-gate
+/// check covers the plumbing path, not just porcelain.
+#[cfg(unix)]
+#[test]
+fn wrapper_refuses_push_of_unsigned_commit_tree() {
+    let (_shim, path, email, _keydir) = signed_shim_env();
+    let (_work, repo, _remote) = agent_repo_with_remote(&email);
+    // Seed a signed base so HEAD and the tree exist.
+    std::fs::write(repo.join("f"), "x").unwrap();
+    wrapper(&path, &repo, &["add", "f"]);
+    assert!(wrapper(&path, &repo, &["commit", "-m", "base"])
+        .status
+        .success());
+    // Build an unsigned commit object directly with `commit-tree` (no signing,
+    // agent identity via env), then move the branch to it.
+    let tree = wrapper(&path, &repo, &["write-tree"]);
+    let tree_sha = String::from_utf8_lossy(&tree.stdout).trim().to_string();
+    let parent = head_sha(&repo);
+    let out = Command::new("git")
+        .args(["commit-tree", &tree_sha, "-p", &parent, "-m", "plumbed"])
+        .current_dir(&repo)
+        .env("PATH", &path)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("GIT_AUTHOR_NAME", "Agent")
+        .env("GIT_AUTHOR_EMAIL", &email)
+        .env("GIT_COMMITTER_NAME", "Agent")
+        .env("GIT_COMMITTER_EMAIL", &email)
+        .output()
+        .expect("run commit-tree");
+    assert!(
+        out.status.success(),
+        "commit-tree should succeed; stderr={}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let new_sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    wrapper(&path, &repo, &["update-ref", "refs/heads/main", &new_sha]);
+
+    let out = wrapper(&path, &repo, &["push", "origin", "main"]);
+    assert!(
+        !out.status.success(),
+        "pushing an unsigned commit-tree commit must be refused; stderr={}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("no valid signature by your agent key"),
+        "expected the unsigned-commit rejection; stderr={}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+}
+
 /// I4: the spawn-path wiring — `AcpClient::spawn` → `install_git_identity` —
 /// must actually install the wrapper + manifest onto the agent-runtime child.
 ///
