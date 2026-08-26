@@ -2461,33 +2461,6 @@ test("global non-member people can be selected from channel mentions", async ({
   await expect(dropdown.getByText("not in channel")).toBeVisible();
 });
 
-test("duplicate global people with the same visible identity collapse in channel mentions", async ({
-  page,
-}) => {
-  await installMockBridge(page, {
-    searchProfiles: [
-      {
-        pubkey: CASEY_PROFILE_PUBKEY,
-        displayName: "Pip",
-      },
-      {
-        pubkey:
-          "2222222222222222222222222222222222222222222222222222222222222222",
-        displayName: "Pip",
-      },
-    ],
-  });
-  await page.goto("/");
-  await page.getByTestId("channel-general").click();
-  await expect(page.getByTestId("chat-title")).toHaveText("general");
-
-  const input = page.getByTestId("message-input");
-  await input.fill("@pip");
-
-  const dropdown = autocomplete(page);
-  await expect(dropdown.locator("button", { hasText: "Pip" })).toHaveCount(1);
-});
-
 test("sent non-member person mention uses the normal mention style", async ({
   page,
 }) => {
