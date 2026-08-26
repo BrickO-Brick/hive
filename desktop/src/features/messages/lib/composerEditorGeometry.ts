@@ -15,18 +15,22 @@ export function getEditorSelectionRect(
   to: number,
 ): EditorRect | null {
   try {
-    const range = document.createRange();
-    const start = editor.view.domAtPos(from);
-    const end = editor.view.domAtPos(to);
-    range.setStart(start.node, start.offset);
-    range.setEnd(end.node, end.offset);
+    try {
+      const range = document.createRange();
+      const start = editor.view.domAtPos(from);
+      const end = editor.view.domAtPos(to);
+      range.setStart(start.node, start.offset);
+      range.setEnd(end.node, end.offset);
 
-    const clientRects = Array.from(range.getClientRects()).filter(
-      (rect) => rect.width > 0 || rect.height > 0,
-    );
-    const rect = clientRects[0] ?? range.getBoundingClientRect();
-    range.detach();
-    if (rect.width > 0 || rect.height > 0) return rect;
+      const clientRects = Array.from(range.getClientRects()).filter(
+        (rect) => rect.width > 0 || rect.height > 0,
+      );
+      const rect = clientRects[0] ?? range.getBoundingClientRect();
+      range.detach();
+      if (rect.width > 0 || rect.height > 0) return rect;
+    } catch {
+      // A mounted view can still have stale Range offsets; use caret geometry.
+    }
 
     const startCoords = editor.view.coordsAtPos(from);
     const endCoords = editor.view.coordsAtPos(to);
@@ -55,23 +59,27 @@ export function getEditorLinkRect(
   to: number,
 ): EditorRect | null {
   try {
-    const range = document.createRange();
-    const start = editor.view.domAtPos(from);
-    const end = editor.view.domAtPos(to);
-    range.setStart(start.node, start.offset);
-    range.setEnd(end.node, end.offset);
+    try {
+      const range = document.createRange();
+      const start = editor.view.domAtPos(from);
+      const end = editor.view.domAtPos(to);
+      range.setStart(start.node, start.offset);
+      range.setEnd(end.node, end.offset);
 
-    const rect = range.getBoundingClientRect();
-    range.detach();
-    if (rect.width > 0 || rect.height > 0) {
-      return {
-        left: rect.left,
-        top: rect.top,
-        width: rect.width,
-        height: rect.height,
-        right: rect.right,
-        bottom: rect.bottom,
-      };
+      const rect = range.getBoundingClientRect();
+      range.detach();
+      if (rect.width > 0 || rect.height > 0) {
+        return {
+          left: rect.left,
+          top: rect.top,
+          width: rect.width,
+          height: rect.height,
+          right: rect.right,
+          bottom: rect.bottom,
+        };
+      }
+    } catch {
+      // A mounted view can still have stale Range offsets; use caret geometry.
     }
 
     const coords = editor.view.coordsAtPos(from);
