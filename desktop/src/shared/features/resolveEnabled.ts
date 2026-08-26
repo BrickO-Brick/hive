@@ -14,6 +14,8 @@ export function resolveEnabled(
   featureId: string,
   overrides: Record<string, boolean>,
   defaultEnabled = false,
+  buildAvailable = true,
 ): boolean {
+  if (!buildAvailable) return false;
   return overrides[featureId] ?? defaultEnabled;
 }

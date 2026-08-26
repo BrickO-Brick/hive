@@ -8,6 +8,7 @@ import type { FeatureDefinition, FeaturesManifest } from "./types";
 // The app keeps working; gated UI stays hidden; nothing accidentally leaks.
 
 const FeaturePlatformSchema = z.enum(["desktop", "mobile"]);
+const FeatureBuildFlagSchema = z.enum(["bestie"]);
 
 const FeatureDefinitionSchema = z.object({
   id: z.string().min(1),
@@ -15,6 +16,7 @@ const FeatureDefinitionSchema = z.object({
   description: z.string(),
   defaultEnabled: z.boolean().optional(),
   platforms: z.array(FeaturePlatformSchema).optional(),
+  requiredBuildFlag: FeatureBuildFlagSchema.optional(),
 });
 
 const FeaturesManifestSchema = z.object({

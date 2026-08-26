@@ -30,4 +30,20 @@ describe("resolveEnabled (preview-only)", () => {
   it("ignores overrides for unrelated ids", () => {
     assert.equal(resolveEnabled("workflows", { pulse: true }), false);
   });
+
+  it("requires both build availability and a user opt-in", () => {
+    const cases = [
+      { buildAvailable: false, optedIn: false, expected: false },
+      { buildAvailable: false, optedIn: true, expected: false },
+      { buildAvailable: true, optedIn: false, expected: false },
+      { buildAvailable: true, optedIn: true, expected: true },
+    ];
+
+    for (const { buildAvailable, optedIn, expected } of cases) {
+      assert.equal(
+        resolveEnabled("bestie", { bestie: optedIn }, false, buildAvailable),
+        expected,
+      );
+    }
+  });
 });

@@ -1,6 +1,7 @@
 import { useSyncExternalStore, useCallback, useEffect } from "react";
 import { getFeature } from "./manifest";
 import { resolveEnabled } from "./resolveEnabled";
+import { isFeatureAvailableInThisBuild } from "./runtimeBuildAvailability";
 import { getOverrides, setOverride, OVERRIDES_KEY } from "./store";
 
 type Listener = () => void;
@@ -102,7 +103,12 @@ export function useFeatureEnabled(featureId: string): boolean {
     return true;
   }
 
-  return resolveEnabled(featureId, overrides, feature.defaultEnabled);
+  return resolveEnabled(
+    featureId,
+    overrides,
+    feature.defaultEnabled,
+    isFeatureAvailableInThisBuild(feature),
+  );
 }
 
 /**
