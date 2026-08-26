@@ -279,6 +279,14 @@ export function ChannelMenuButton({
     (hasSidebarUnreadProjections
       ? unreadThreadChannelIds.has(channel.id)
       : hasUnread);
+  const showsUnreadCount =
+    !isActive && channel.channelType !== "dm" && unreadCount > 0;
+  const showsEphemeralBadge =
+    Boolean(ephemeralDisplay) &&
+    !activeWorking &&
+    !isMuted &&
+    !showsUnreadCount &&
+    !hasThreadUnread;
   const inactiveContentOpacity = cn(
     !isActive && !hasTopLevelUnread && !isMuted && "opacity-80",
     !isActive &&
@@ -319,7 +327,7 @@ export function ChannelMenuButton({
       >
         {resolvedLabel}
       </span>
-      {ephemeralDisplay ? (
+      {showsEphemeralBadge && ephemeralDisplay ? (
         <EphemeralChannelBadge
           display={ephemeralDisplay}
           testId={`channel-ephemeral-${channel.name}`}
@@ -343,7 +351,7 @@ export function ChannelMenuButton({
           )}
         />
       ) : null}
-      {!isActive && channel.channelType !== "dm" && unreadCount > 0 ? (
+      {showsUnreadCount ? (
         <UnreadCountBadge
           channelName={channel.name}
           className="ml-auto bg-notification text-notification-foreground"
