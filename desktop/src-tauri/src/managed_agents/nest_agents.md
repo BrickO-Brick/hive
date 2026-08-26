@@ -44,17 +44,24 @@ created: 2026-01-15
 - **`.scratch/` is disposable** — don't rely on it across sessions
 - **Stay on task** — only stage files relevant to your current work
 
-## Git Commit Identity
+## Git Commit Attribution
 
-Your commit **author** identity is machine-managed. Every commit is automatically authored and cryptographically signed as your agent identity (`<pubkey>@<relay-host>`) — you do not, and cannot, set it. The managed `git` rejects `user.name`/`user.email` config, `-c user.*`, `--author`, and `--reset-author`. The human operator is credited in the commit message trailers, which the author identity does not replace.
+Git authorship, co-authorship, DCO sign-off, and cryptographic signing are separate claims. Follow repository-local rules and the authorizing human's explicit directions; do not infer attribution from repository ownership or from who requested, approved, or reviewed the work.
 
-> The operator can turn this off with `BUZZ_GIT_IDENTITY=user` (default `agent`, settable per-agent). In `user` mode your commits carry the operator's own git identity and signing config — no managed `git`, no signing enforcement — and the trailers below are redundant since the commit already *is* the operator's identity. The rest of this section describes the default `agent` mode.
+- **Author:** use the person or agent required by the applicable policy. If no policy specifies an author, use the identity that actually authored the change.
+- **Co-authors:** add `Co-authored-by` only for other people or agents who materially authored the change. Request, approval, review, or accountability alone is not co-authorship.
+- **DCO:** add `Signed-off-by` only when repository policy requires that identity's DCO certification. A sign-off is not an approval marker.
+- **Identity:** resolve required identities from trusted local configuration or explicit verified direction; never hard-code or guess them. A managed runtime may make effective `git config user.*` values identify the agent. Stop and ask if a required identity cannot be established.
+- **Signing:** use only the signing key configured for the committing identity. Never use another person's signing key.
+- **Verify before pushing:** inspect every outgoing commit against the actual upstream or base and confirm its attribution matches the applicable policy.
 
-- **Human sign-off (required):** every commit MUST include a `Signed-off-by` trailer for the human operator responsible for the agent's work. Add via `git commit --trailer "Signed-off-by: Human Name <human@email>"`. One blank line must separate trailers from the commit body.
-- **Human credit (`Co-authored-by`):** every commit MUST also include a `Co-authored-by` trailer for the same human operator, with identical name and email to the `Signed-off-by` line. GitHub parses `Co-authored-by` for contribution-graph credit; `Signed-off-by` alone does not grant it. Add via `git commit --trailer "Co-authored-by: Human Name <human@email>"`. Place `Co-authored-by` before `Signed-off-by` in the trailer block.
-- **Discovering the human's identity:** `git config user.name`/`user.email` now resolve to your machine-managed *agent* identity, NOT the operator's — do not use them for the trailers. Take the operator's name and email from the repository's `AGENTS.md` / contribution docs or from an explicit instruction. Do NOT hardcode or guess. If you cannot determine the operator's email, STOP and ask before committing.
-- **Signing:** commits are signed with your agent nostr key automatically (NIP-GS). Do not configure a separate signing key and do not use the human's signing key.
-- **Verify before pushing:** `git log -1 --format='%B' | git interpret-trailers --parse` should show the human's `Co-authored-by` and `Signed-off-by` trailers as a contiguous block.
+A repository may require an accountable human as author and the implementing agent as co-author. An agent-owned repository may use the agent as author and require no human trailer. In both cases, repository-local policy controls.
+
+### Managed runtime default
+
+By default (`BUZZ_GIT_IDENTITY` unset or `agent`), the Buzz runtime makes your agent nostr identity the effective committer: `git config user.name`/`user.email` resolve to `<pubkey>@<relay-host>`, and commits are signed with your agent key (NIP-GS). Do not set `user.*` config, `-c user.*`, `--author`, or a separate signing key — the managed `git` enforces the agent identity and rejects attempts to override it. This is the identity to treat as the author above; add human `Co-authored-by`/`Signed-off-by` trailers when repository policy requires them.
+
+The operator can opt out per-agent with `BUZZ_GIT_IDENTITY=user`. In `user` mode the runtime installs no attribution machinery — no managed `git`, no injected identity, no signing enforcement — and commits carry the operator's own repo/global git identity and signing config. Relay git authentication works in both modes.
 
 <!-- BEGIN BUZZ MANAGED — regenerated automatically, do not edit below -->
 ## Active Agents
