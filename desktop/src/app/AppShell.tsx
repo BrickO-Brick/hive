@@ -8,6 +8,7 @@ import { AppShellOverlays, TerminalBootstrap } from "@/app/AppShellOverlays";
 import { AppShellChannelSurface } from "@/app/AppShellChannelSurface";
 import { AppHuddleShell } from "@/app/AppHuddleShell";
 import { AppTopChrome } from "@/app/AppTopChrome";
+import { BestieChatPopover } from "@/features/messages/ui/BestieChatPopover";
 import {
   type TerminalContextOverride,
   TerminalContextOverrideProvider,
@@ -773,6 +774,7 @@ export function AppShell() {
                       hasCommunityRail={hasCommunityRail}
                       onGoBack={goBack}
                       onGoForward={goForward}
+                      trailingContent={<BestieChatPopover />}
                     />
                   ) : null}
                   {settingsOpen ? (

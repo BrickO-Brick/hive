@@ -3,101 +3,80 @@ import * as React from "react";
 
 import { cn } from "@/shared/lib/cn";
 
-export const MESSAGE_ACTION_BLOOM_LAYOUT_ID = "message-action-bloom-surface";
 export const MESSAGE_ACTION_BLOOM_EASE_OUT = [0.23, 1, 0.32, 1] as const;
+export const MESSAGE_ACTION_BLOOM_SPEED_MULTIPLIER = 1.8;
+export const MESSAGE_ACTION_BLOOM_VISUAL_DURATION =
+  0.15 / MESSAGE_ACTION_BLOOM_SPEED_MULTIPLIER;
 
-const BLOOM_LAYOUT_TRANSITION = {
-  duration: 0.24,
-  ease: MESSAGE_ACTION_BLOOM_EASE_OUT,
-} as const;
+const MESSAGE_ACTION_RESTING_RADIUS = 32;
+const MESSAGE_ACTION_EXPANDED_RADIUS = 24;
 
 type MessageActionBloomSurfaceProps = Omit<
   React.ComponentPropsWithoutRef<typeof motion.div>,
   "children"
 > & {
-  children?: React.ReactNode;
-  contentClassName?: string;
-  revealContent?: boolean;
-  surfaceRadius?: number;
+  children: React.ReactNode;
+  expanded: boolean;
+  size?: { height: number; width: number } | null;
 };
 
 /**
- * The single visual shell shared by the message hover toolbar and each of its
- * expanded destinations. Motion pairs instances by layoutId, so the toolbar
- * itself appears to change shape instead of spawning a second surface above it.
+ * The one persistent message-action surface. Its DOM node never changes when
+ * a destination opens: only its contents and measured layout do. Keeping this
+ * in the message row avoids every portal/coordinate-space handoff.
  */
 export const MessageActionBloomSurface = React.forwardRef<
   HTMLDivElement,
   MessageActionBloomSurfaceProps
 >(function MessageActionBloomSurface(
-  {
-    children,
-    className,
-    contentClassName,
-    revealContent = true,
-    surfaceRadius = 12,
-    style,
-    ...props
-  },
+  { children, className, expanded, size, style, ...props },
   ref,
 ) {
   const reduceMotion = useReducedMotion();
-  const [contentReady, setContentReady] = React.useState(
-    reduceMotion || !revealContent,
-  );
-
-  React.useEffect(() => {
-    if (reduceMotion || !revealContent) {
-      setContentReady(true);
-      return;
-    }
-
-    // Radix positions portalled content after it mounts. Keep the destination
-    // content out of sight through that measurement and the first part of the
-    // shell morph; the callback below normally wins, while this is a safety net
-    // for browsers that skip layout-complete notifications.
-    const fallback = window.setTimeout(() => setContentReady(true), 160);
-    return () => window.clearTimeout(fallback);
-  }, [reduceMotion, revealContent]);
 
   return (
     <motion.div
+      animate={{
+        borderRadius: expanded
+          ? MESSAGE_ACTION_EXPANDED_RADIUS
+          : MESSAGE_ACTION_RESTING_RADIUS,
+        ...(size ? { height: size.height, width: size.width } : {}),
+      }}
       className={cn(
-        "overflow-hidden border border-border/70 bg-background/95 shadow-xs backdrop-blur-sm supports-[backdrop-filter]:bg-background/85",
+        "contain-layout contain-paint overflow-hidden border border-border/70 bg-background/95 shadow-xs backdrop-blur-sm supports-[backdrop-filter]:bg-background/85",
         className,
       )}
-      layoutId={MESSAGE_ACTION_BLOOM_LAYOUT_ID}
-      onLayoutAnimationComplete={() => setContentReady(true)}
+      initial={false}
       ref={ref}
-      style={{ ...style, borderRadius: surfaceRadius }}
+      style={{
+        ...style,
+        transformOrigin: "bottom right",
+        willChange: "width, height, border-radius",
+      }}
       transition={
         reduceMotion
           ? { duration: 0 }
           : {
-              layout: BLOOM_LAYOUT_TRANSITION,
+              borderRadius: {
+                bounce: 0,
+                type: "spring",
+                visualDuration: MESSAGE_ACTION_BLOOM_VISUAL_DURATION,
+              },
+              height: {
+                bounce: 0,
+                type: "spring",
+                visualDuration: MESSAGE_ACTION_BLOOM_VISUAL_DURATION,
+              },
+              width: {
+                bounce: 0,
+                type: "spring",
+                visualDuration: MESSAGE_ACTION_BLOOM_VISUAL_DURATION,
+              },
             }
       }
       {...props}
     >
-      {revealContent ? (
-        <motion.div
-          animate={{ opacity: contentReady ? 1 : 0 }}
-          className={contentClassName}
-          initial={{ opacity: 0 }}
-          transition={
-            reduceMotion
-              ? { duration: 0 }
-              : {
-                  duration: 0.12,
-                  ease: MESSAGE_ACTION_BLOOM_EASE_OUT,
-                }
-          }
-        >
-          {children}
-        </motion.div>
-      ) : (
-        children
-      )}
+      {children}
     </motion.div>
   );
 });

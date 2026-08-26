@@ -96,6 +96,14 @@ export const KEYBOARD_SHORTCUTS: KeyboardShortcut[] = [
     category: "Navigation",
   },
   {
+    id: "open-bestie",
+    label: "Open Bestie",
+    description: "Open or close the floating Bestie conversation",
+    keys: "⌘1",
+    keysWindows: "Ctrl+1",
+    category: "Navigation",
+  },
+  {
     id: "toggle-sidebar",
     label: "Toggle sidebar",
     description: "Show or hide the sidebar",

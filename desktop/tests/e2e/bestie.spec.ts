@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, type Locator, test } from "@playwright/test";
 
 import { installMockBridge } from "../helpers/bridge";
 
@@ -40,7 +40,7 @@ test("Bestie sidebar shortcut always opens its direct message", async ({
   await expect(page.getByTestId("chat-title")).toHaveText("Bestie");
 });
 
-test("Bestie header avatar opens an inline conversation and sends messages", async ({
+test("Bestie top chrome avatar and command shortcut open the floating conversation", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1000, height: 760 });
@@ -51,9 +51,35 @@ test("Bestie header avatar opens an inline conversation and sends messages", asy
   const trigger = page.getByTestId("open-bestie-panel");
   await expect(trigger).toBeVisible();
   await expect(trigger).toHaveAccessibleName("Open Bestie chat");
-  await trigger.click();
+
+  const [triggerBox, topChromeBox, chatHeaderBox] = await Promise.all([
+    trigger.boundingBox(),
+    page.getByTestId("app-top-chrome").boundingBox(),
+    page.getByTestId("chat-header").boundingBox(),
+  ]);
+  expect(triggerBox).not.toBeNull();
+  expect(topChromeBox).not.toBeNull();
+  expect(chatHeaderBox).not.toBeNull();
+  if (triggerBox && topChromeBox && chatHeaderBox) {
+    expect(
+      Math.abs(
+        triggerBox.x +
+          triggerBox.width -
+          (topChromeBox.x + topChromeBox.width - 12),
+      ),
+    ).toBeLessThanOrEqual(1);
+    expect(triggerBox.y).toBeGreaterThanOrEqual(topChromeBox.y);
+    expect(triggerBox.y + triggerBox.height).toBeLessThanOrEqual(
+      chatHeaderBox.y,
+    );
+  }
 
   const popover = page.getByTestId("bestie-chat-popover");
+  await page.keyboard.press("Meta+1");
+  await expect(popover).toBeVisible();
+  await page.keyboard.press("Meta+1");
+  await expect(popover).toBeHidden();
+  await trigger.click();
   await expect(popover).toBeVisible();
   await expect(popover).toContainText("Bestie");
   const composer = popover.getByTestId("message-composer");
@@ -122,7 +148,59 @@ test("message action sends a message link and optional note to Bestie", async ({
   await expect(row).toContainText("launch decision");
   await row.hover();
   const actionBar = row.getByTestId(`message-action-bar-${messageId}`);
+  const bloomContainer = row.getByTestId(
+    `message-action-bloom-container-${messageId}`,
+  );
   await expect(actionBar).toHaveAttribute("data-bloom-surface", "toolbar");
+  await bloomContainer.evaluate((element) => {
+    element.setAttribute("data-persistent-node", "original");
+  });
+  const toolbarBox = await bloomContainer.boundingBox();
+  expect(toolbarBox).not.toBeNull();
+  const expectSurfaceRadius = async (radius: number) => {
+    await expect
+      .poll(() =>
+        bloomContainer.evaluate((element) =>
+          Number.parseFloat(window.getComputedStyle(element).borderRadius),
+        ),
+      )
+      .toBeCloseTo(radius, 0);
+  };
+  await expectSurfaceRadius(32);
+
+  const expectPersistentSurfaceSettled = async (destination: Locator) => {
+    await expect
+      .poll(async () => {
+        const [surfaceBox, destinationBox] = await Promise.all([
+          bloomContainer.boundingBox(),
+          destination.boundingBox(),
+        ]);
+        if (!surfaceBox || !destinationBox) return false;
+        return (
+          Math.abs(surfaceBox.width - destinationBox.width) <= 1 &&
+          Math.abs(surfaceBox.height - destinationBox.height) <= 1
+        );
+      })
+      .toBe(true);
+    await expect(bloomContainer).toHaveAttribute(
+      "data-persistent-node",
+      "original",
+    );
+    const currentBox = await bloomContainer.boundingBox();
+    expect(currentBox).not.toBeNull();
+    if (toolbarBox && currentBox) {
+      expect(
+        Math.abs(
+          currentBox.x + currentBox.width - (toolbarBox.x + toolbarBox.width),
+        ),
+      ).toBeLessThanOrEqual(1);
+      expect(
+        Math.abs(
+          currentBox.y + currentBox.height - (toolbarBox.y + toolbarBox.height),
+        ),
+      ).toBeLessThanOrEqual(1);
+    }
+  };
 
   await row.getByTestId(`react-message-${messageId}`).click();
   await expect(actionBar).toHaveAttribute("data-bloom-surface", "reactions");
@@ -130,30 +208,21 @@ test("message action sends a message link and optional note to Bestie", async ({
     page.getByTestId(`reaction-bloom-panel-${messageId}`),
   ).toBeVisible();
   const reactionPanel = page.getByTestId(`reaction-bloom-panel-${messageId}`);
+  await expectPersistentSurfaceSettled(reactionPanel);
+  await expectSurfaceRadius(24);
   await expect
     .poll(() =>
-      reactionPanel.evaluate(
-        (element) => window.getComputedStyle(element).transform,
+      reactionPanel.evaluate((element) =>
+        Number.parseFloat(window.getComputedStyle(element).opacity),
       ),
     )
-    .toBe("none");
-  const [reactionBox, reactionAnchorBox] = await Promise.all([
-    reactionPanel.boundingBox(),
-    actionBar.boundingBox(),
-  ]);
-  expect(reactionBox).not.toBeNull();
-  expect(reactionAnchorBox).not.toBeNull();
-  if (reactionBox && reactionAnchorBox) {
-    expect(
-      Math.abs(
-        reactionBox.x +
-          reactionBox.width -
-          (reactionAnchorBox.x + reactionAnchorBox.width),
-      ),
-    ).toBeLessThanOrEqual(10);
-  }
+    .toBeGreaterThan(0.99);
   await page.keyboard.press("Escape");
   await expect(actionBar).toHaveAttribute("data-bloom-surface", "toolbar");
+  await expectPersistentSurfaceSettled(
+    actionBar.getByTestId(`message-action-bloom-surface-${messageId}`),
+  );
+  await expectSurfaceRadius(32);
 
   await row.getByTestId(`more-actions-${messageId}`).click();
   await expect(actionBar).toHaveAttribute("data-bloom-surface", "more");
@@ -161,37 +230,40 @@ test("message action sends a message link and optional note to Bestie", async ({
     page.getByTestId(`more-actions-panel-${messageId}`),
   ).toBeVisible();
   const morePanel = page.getByTestId(`more-actions-panel-${messageId}`);
+  await expectPersistentSurfaceSettled(morePanel);
+  await expectSurfaceRadius(24);
   await expect
     .poll(() =>
-      morePanel.evaluate(
-        (element) => window.getComputedStyle(element).transform,
+      morePanel.evaluate((element) =>
+        Number.parseFloat(window.getComputedStyle(element).opacity),
       ),
     )
-    .toBe("none");
-  const [moreBox, moreAnchorBox] = await Promise.all([
-    morePanel.boundingBox(),
-    actionBar.boundingBox(),
-  ]);
-  expect(moreBox).not.toBeNull();
-  expect(moreAnchorBox).not.toBeNull();
-  if (moreBox && moreAnchorBox) {
-    expect(
-      Math.abs(
-        moreBox.x + moreBox.width - (moreAnchorBox.x + moreAnchorBox.width),
-      ),
-    ).toBeLessThanOrEqual(10);
-  }
+    .toBeGreaterThan(0.99);
   await page.keyboard.press("Escape");
   await expect(actionBar).toHaveAttribute("data-bloom-surface", "toolbar");
+  await expectPersistentSurfaceSettled(
+    actionBar.getByTestId(`message-action-bloom-surface-${messageId}`),
+  );
+  await expectSurfaceRadius(32);
 
   await row.getByTestId(`send-to-bestie-${messageId}`).click();
 
   const popover = page.getByTestId(`bestie-popover-${messageId}`);
   await expect(popover).toBeVisible();
   await expect(actionBar).toHaveAttribute("data-bloom-surface", "bestie");
-  await expect(
-    actionBar.getByTestId(`message-action-bloom-surface-${messageId}`),
-  ).toHaveCount(0);
+  const dormantToolbar = actionBar.getByTestId(
+    `message-action-bloom-surface-${messageId}`,
+  );
+  await expect(dormantToolbar).toHaveCount(1);
+  await expect
+    .poll(() =>
+      dormantToolbar.evaluate((element) =>
+        Number.parseFloat(window.getComputedStyle(element).opacity),
+      ),
+    )
+    .toBeLessThan(0.01);
+  await expectPersistentSurfaceSettled(popover);
+  await expectSurfaceRadius(24);
   await expect
     .poll(() =>
       popover.evaluate((element) =>
@@ -205,20 +277,6 @@ test("message action sends a message link and optional note to Bestie", async ({
         (await popover.boundingBox())?.width ?? Number.POSITIVE_INFINITY,
     )
     .toBeLessThanOrEqual(328);
-  await expect
-    .poll(() =>
-      popover.evaluate((element) => window.getComputedStyle(element).transform),
-    )
-    .toBe("none");
-  await expect
-    .poll(() =>
-      popover.evaluate((element) =>
-        Number.parseFloat(
-          window.getComputedStyle(element.firstElementChild as Element).opacity,
-        ),
-      ),
-    )
-    .toBeGreaterThan(0.99);
   await expect(popover).toContainText("Bestie");
   await expect(popover).not.toContainText("Share this message with Bestie");
   await expect(popover).toContainText("Please fold this launch decision");
@@ -237,17 +295,6 @@ test("message action sends a message link and optional note to Bestie", async ({
   expect(snapshotBodyBox).not.toBeNull();
   if (popoverBox && snapshotBox && snapshotBodyBox) {
     expect(popoverBox.width).toBeLessThanOrEqual(328);
-    const actionBarBox = await actionBar.boundingBox();
-    expect(actionBarBox).not.toBeNull();
-    if (actionBarBox) {
-      expect(
-        Math.abs(
-          popoverBox.x +
-            popoverBox.width -
-            (actionBarBox.x + actionBarBox.width),
-        ),
-      ).toBeLessThanOrEqual(10);
-    }
     expect(snapshotBox.width / (popoverBox.width - 32)).toBeCloseTo(0.75, 1);
     expect(Math.abs(snapshotBox.x - (popoverBox.x + 16))).toBeLessThanOrEqual(
       1,

@@ -19,6 +19,8 @@ import { useProfileQuery } from "@/features/profile/hooks";
 import { useIdentityQuery } from "@/shared/api/hooks";
 import type { Channel } from "@/shared/api/types";
 import { normalizePubkey } from "@/shared/lib/pubkey";
+import { hasPrimaryShortcutModifier } from "@/shared/lib/platform";
+import { getPlatformKeysById } from "@/shared/lib/keyboard-shortcuts";
 import { Button } from "@/shared/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/shared/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
@@ -113,35 +115,64 @@ export function BestieChatPopover() {
     setChannel(null);
   }, [conversationScope]);
 
-  if (!bestie) return null;
+  const handleOpenChange = React.useCallback(
+    (nextOpen: boolean) => {
+      if (!bestie) return;
+      setOpen(nextOpen);
+      hasPositionedScrollRef.current = false;
+      shouldStickToBottomRef.current = true;
+      const requestId = ++openRequestRef.current;
+      if (!nextOpen) {
+        setChannel(null);
+        return;
+      }
 
-  const handleOpenChange = (nextOpen: boolean) => {
-    setOpen(nextOpen);
-    hasPositionedScrollRef.current = false;
-    shouldStickToBottomRef.current = true;
-    const requestId = ++openRequestRef.current;
-    if (!nextOpen) {
-      setChannel(null);
+      void openDmMutation
+        .mutateAsync({
+          pubkeys: [bestie.pubkey],
+          expectedRelayUrl: activeCommunity?.relayUrl,
+          expectedSignerPubkey: currentPubkey ?? undefined,
+        })
+        .then((openedChannel) => {
+          if (openRequestRef.current === requestId) {
+            setChannel(openedChannel);
+          }
+        })
+        .catch((error) => {
+          if (openRequestRef.current !== requestId) return;
+          console.error("Failed to open Bestie conversation", error);
+          toast.error(`Couldn't open ${bestie.name}`);
+        });
+    },
+    [activeCommunity?.relayUrl, bestie, currentPubkey, openDmMutation],
+  );
+
+  const handleBestieShortcut = React.useEffectEvent((event: KeyboardEvent) => {
+    if (
+      !bestie ||
+      !hasPrimaryShortcutModifier(event) ||
+      event.altKey ||
+      event.shiftKey ||
+      event.repeat ||
+      event.defaultPrevented ||
+      event.code !== "Digit1"
+    ) {
       return;
     }
 
-    void openDmMutation
-      .mutateAsync({
-        pubkeys: [bestie.pubkey],
-        expectedRelayUrl: activeCommunity?.relayUrl,
-        expectedSignerPubkey: currentPubkey ?? undefined,
-      })
-      .then((openedChannel) => {
-        if (openRequestRef.current === requestId) {
-          setChannel(openedChannel);
-        }
-      })
-      .catch((error) => {
-        if (openRequestRef.current !== requestId) return;
-        console.error("Failed to open Bestie conversation", error);
-        toast.error(`Couldn't open ${bestie.name}`);
-      });
-  };
+    event.preventDefault();
+    handleOpenChange(!open);
+  });
+
+  React.useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => handleBestieShortcut(event);
+    window.addEventListener("keydown", onKeyDown, { capture: true });
+    return () => {
+      window.removeEventListener("keydown", onKeyDown, { capture: true });
+    };
+  }, []);
+
+  if (!bestie) return null;
 
   const submit = async (
     content: string,
@@ -168,7 +199,7 @@ export function BestieChatPopover() {
           <PopoverTrigger asChild>
             <Button
               aria-label={`Open ${bestie.name} chat`}
-              className="h-9 w-9 rounded-full p-0"
+              className="h-[28px] w-[28px] rounded-[6px] p-0"
               data-testid="open-bestie-panel"
               size="icon"
               type="button"
@@ -176,7 +207,7 @@ export function BestieChatPopover() {
             >
               <ProfileAvatar
                 avatarUrl={bestie.avatarUrl}
-                className="size-7 text-[10px]"
+                className="size-6 text-[9px]"
                 label={bestie.name}
                 plain
                 testId="bestie-header-avatar"
@@ -184,7 +215,9 @@ export function BestieChatPopover() {
             </Button>
           </PopoverTrigger>
         </TooltipTrigger>
-        <TooltipContent>Message {bestie.name}</TooltipContent>
+        <TooltipContent>
+          Message {bestie.name} ({getPlatformKeysById("open-bestie")})
+        </TooltipContent>
       </Tooltip>
 
       <PopoverContent

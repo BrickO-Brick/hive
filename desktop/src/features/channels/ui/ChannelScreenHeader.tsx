@@ -8,7 +8,6 @@ import { getChannelDescription } from "@/features/channels/lib/channelDescriptio
 import { getDmParticipantPreview } from "@/features/channels/lib/dmParticipantDisplay";
 import { ChannelHeaderStatusBadge } from "@/features/channels/ui/ChannelHeaderStatusBadge";
 import { ChannelMembersBar } from "@/features/channels/ui/ChannelMembersBar";
-import { BestieChatPopover } from "@/features/messages/ui/BestieChatPopover";
 import {
   DEFAULT_HOVER_PROFILE_STATUS_GEOMETRY,
   ProfileAvatarWithStatus,
@@ -119,7 +118,6 @@ export function ChannelScreenHeader({
   ) : null;
   const actions = activeChannel ? (
     <div className="flex items-center gap-1">
-      <BestieChatPopover />
       {terminalButton}
       {channelActions}
     </div>
