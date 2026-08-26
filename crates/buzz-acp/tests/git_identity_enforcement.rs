@@ -12,15 +12,18 @@
 //!   * `apply_authority_env`— the agent identity is re-applied over caller/repo
 //!     config (the env-var override vector), so commits land agent-authored
 //!     even when repo-local config names a human.
+//!
+//! The whole suite is unix-only: enforcement installs the wrapper as a PATH
+//! symlink and every test wires a real `git-sign-nostr` signer via
+//! [`signed_shim_env`], both of which need unix symlinks. buzz-acp's tests do
+//! not run on Windows CI; this gate keeps `cargo check --all-targets` there
+//! from compiling helpers it can never exercise.
+#![cfg(unix)]
 
+use nostr::ToBech32;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-#[cfg(unix)]
-use nostr::ToBech32;
-
-const AGENT_EMAIL: &str =
-    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@relay.test";
 const ALIAS_HOP_LIMIT: usize = 10;
 
 /// Directory of the first real `git` on PATH; the wrapper is installed ahead
@@ -33,33 +36,6 @@ fn real_git_dir() -> PathBuf {
         }
     }
     panic!("no real git on PATH");
-}
-
-/// Build a shim dir containing `git` -> the buzz-acp multicall binary and a
-/// `.git-identity` manifest, and a PATH with the shim ahead of real git.
-/// Returns (shim TempDir, PATH string).
-fn shim_env(manifest: &str) -> (tempfile::TempDir, String) {
-    let shim = tempfile::tempdir().unwrap();
-    let git_link = shim.path().join("git");
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_buzz-acp"), &git_link).unwrap();
-    #[cfg(not(unix))]
-    std::fs::copy(env!("CARGO_BIN_EXE_buzz-acp"), &git_link).unwrap();
-
-    std::fs::write(shim.path().join(".git-identity"), manifest).unwrap();
-
-    let real = real_git_dir();
-    let path = std::env::join_paths([shim.path().to_path_buf(), real])
-        .unwrap()
-        .into_string()
-        .unwrap();
-    (shim, path)
-}
-
-/// Standard managed manifest with signing OFF (the test box has no nostr
-/// signer; signing enforcement is covered by unit tests).
-fn manifest() -> String {
-    format!("user.name=Agent\nuser.email={AGENT_EMAIL}\ncommit.gpgSign=false\n")
 }
 
 /// A git repo with one human-authored commit and human-named local config.
@@ -131,6 +107,13 @@ fn commit_object_count(repo: &Path) -> usize {
 }
 
 /// Invoke the wrapper (`git` on the shim PATH) with `args`, in `cwd`.
+///
+/// `NOSTR_PRIVATE_KEY`/`BUZZ_PRIVATE_KEY` are scrubbed so `git-sign-nostr` signs
+/// from the manifest's `nostr.keyfile` — the real agent-runtime child has the
+/// private key env removed, and leaving the runner's ambient key set would make
+/// the signer load the wrong identity (a non-hermetic test). `BUZZ_AUTH_TAG` is
+/// scrubbed so the signer skips NIP-OA owner attestation (no relay to verify
+/// against offline); signing itself needs no network.
 fn wrapper(path: &str, cwd: &Path, args: &[&str]) -> std::process::Output {
     Command::new("git")
         .args(args)
@@ -138,6 +121,9 @@ fn wrapper(path: &str, cwd: &Path, args: &[&str]) -> std::process::Output {
         .env("PATH", path)
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env_remove("NOSTR_PRIVATE_KEY")
+        .env_remove("BUZZ_PRIVATE_KEY")
+        .env_remove("BUZZ_AUTH_TAG")
         .output()
         .expect("run wrapper git")
 }
@@ -156,7 +142,7 @@ fn head_sha(repo: &Path) -> String {
 
 #[test]
 fn wrapper_rejects_flag_based_identity_override() {
-    let (_shim, path) = shim_env(&manifest());
+    let (_shim, path, _email, _keydir) = signed_shim_env();
     let repo = human_repo();
     std::fs::write(repo.path().join("f"), "two").unwrap();
     wrapper(&path, repo.path(), &["add", "f"]);
@@ -181,7 +167,7 @@ fn wrapper_rejects_flag_based_identity_override() {
 
 #[test]
 fn wrapper_refuses_to_push_human_authored_commit() {
-    let (_shim, path) = shim_env(&manifest());
+    let (_shim, path, _email, _keydir) = signed_shim_env();
     let repo = human_repo();
     // A reachable bare remote so the dry-run plan resolves and HEAD (human
     // authored) is examined as an offender.
@@ -234,7 +220,7 @@ fn wrapper_refuses_to_push_human_authored_commit() {
 /// identity, proving the allowlist did not over-reject Gurney's working shapes.
 #[test]
 fn wrapper_rejects_quoted_and_shell_aliases_and_allows_plain_alias() {
-    let (_shim, path) = shim_env(&manifest());
+    let (_shim, path, email, _keydir) = signed_shim_env();
     let repo = human_repo();
 
     // (a) quoted config alias — the parser-parity bypass.
@@ -317,7 +303,7 @@ fn wrapper_rejects_quoted_and_shell_aliases_and_allows_plain_alias() {
         .unwrap();
     assert_eq!(
         String::from_utf8_lossy(&author.stdout).trim(),
-        AGENT_EMAIL,
+        email,
         "plain-alias commit must be authored as the agent identity"
     );
 }
@@ -336,7 +322,7 @@ fn wrapper_rejects_quoted_and_shell_aliases_and_allows_plain_alias() {
 ///     hops, pinning that unification applies to the final accumulated command.
 #[test]
 fn wrapper_rejects_bare_word_alias_carried_identity_and_signing_flags() {
-    let (_shim, path) = shim_env(&manifest());
+    let (_shim, path, _email, _keydir) = signed_shim_env();
     let repo = human_repo();
 
     // (a) Thufir's exact bypass probe — bare-word `--author`/`--no-gpg-sign`.
@@ -394,7 +380,7 @@ fn wrapper_rejects_bare_word_alias_carried_identity_and_signing_flags() {
 
 #[test]
 fn wrapper_refuses_alias_chain_beyond_limit_and_allows_exact_limit() {
-    let (_shim, path) = shim_env(&manifest());
+    let (_shim, path, email, _keydir) = signed_shim_env();
     let repo = unborn_repo();
 
     // Exactly ALIAS_HOP_LIMIT substitutions end at real `commit`, so the wrapper
@@ -430,7 +416,7 @@ fn wrapper_refuses_alias_chain_beyond_limit_and_allows_exact_limit() {
         ])
         .output()
         .unwrap();
-    assert_eq!(String::from_utf8_lossy(&author.stdout).trim(), AGENT_EMAIL);
+    assert_eq!(String::from_utf8_lossy(&author.stdout).trim(), email);
 
     // Thufir's limit+1 counterexample: the wrapper must not hand a partial
     // expansion to git. A human-author `commit` beyond the bound is refused
@@ -481,7 +467,7 @@ fn wrapper_reapplies_agent_identity_over_repo_config() {
     // human, yet the wrapper re-appends the agent identity at the highest
     // GIT_CONFIG_* index, so the resulting commit is agent-authored. Deleting
     // `apply_authority_env` makes this commit land as `human@example.com`.
-    let (_shim, path) = shim_env(&manifest());
+    let (_shim, path, email, _keydir) = signed_shim_env();
     let repo = human_repo();
     std::fs::write(repo.path().join("f"), "two").unwrap();
     wrapper(&path, repo.path(), &["add", "f"]);
@@ -506,7 +492,7 @@ fn wrapper_reapplies_agent_identity_over_repo_config() {
         .unwrap();
     assert_eq!(
         String::from_utf8_lossy(&author.stdout).trim(),
-        AGENT_EMAIL,
+        email,
         "commit must be authored as the agent identity, not the repo-local human"
     );
 }
@@ -518,7 +504,6 @@ fn wrapper_reapplies_agent_identity_over_repo_config() {
 /// Returns (shim TempDir, PATH string, expected author email, keyfile-holding
 /// TempDir). Signing itself needs no network — `BUZZ_AUTH_TAG` is left unset so
 /// the signer works offline.
-#[cfg(unix)]
 fn signed_shim_env() -> (tempfile::TempDir, String, String, tempfile::TempDir) {
     let keys = nostr::Keys::generate();
     let nsec = keys.secret_key().to_bech32().unwrap();
@@ -581,7 +566,6 @@ fn agent_repo_with_remote(agent_email: &str) -> (tempfile::TempDir, PathBuf, Pat
 /// L3b (real signer): a genuinely signed agent commit pushes cleanly. This
 /// proves the push-gate signature check accepts a valid NIP-GS signature by the
 /// agent key — the happy path that the reject tests below are measured against.
-#[cfg(unix)]
 #[test]
 fn wrapper_allows_push_of_signed_agent_commit() {
     let (_shim, path, email, _keydir) = signed_shim_env();
@@ -609,7 +593,6 @@ fn wrapper_allows_push_of_signed_agent_commit() {
 /// at push. The merge commit is correctly agent-authored, so only the signature
 /// check catches it; `enforce` cannot, because `merge` is not in its signing
 /// blocklist.
-#[cfg(unix)]
 #[test]
 fn wrapper_refuses_push_of_unsigned_merge_commit() {
     let (_shim, path, email, _keydir) = signed_shim_env();
@@ -664,7 +647,6 @@ fn wrapper_refuses_push_of_unsigned_merge_commit() {
 /// `commit-tree` plumbing — which bypasses `commit` entirely and so is never
 /// touched by `enforce` — must be refused at push. Pins that the push-gate
 /// check covers the plumbing path, not just porcelain.
-#[cfg(unix)]
 #[test]
 fn wrapper_refuses_push_of_unsigned_commit_tree() {
     let (_shim, path, email, _keydir) = signed_shim_env();
@@ -713,10 +695,154 @@ fn wrapper_refuses_push_of_unsigned_commit_tree() {
     );
 }
 
+/// Contract regression (Thufir rd-2 IMPORTANT): a `.git-identity` manifest that
+/// names the agent but drops, falsifies, or misdirects the signing contract is
+/// tampered — not a legitimate unsigned mode — and must fail closed for EVERY
+/// command, not silently disable or redirect the push-gate signature check.
+/// Three mutations, each a distinct silent-disable/misdirect the contract check
+/// rejects at classification time (`run()` refuses before any dispatch), so
+/// even a read-only `status` is refused.
+#[test]
+fn wrapper_refuses_every_command_when_manifest_signing_contract_is_tampered() {
+    let variants: [(&str, fn(&str) -> String); 3] = [
+        // `commit.gpgSign` removed → the signature gate would never fire.
+        ("commit.gpgSign removed", |m| {
+            m.lines()
+                .filter(|l| !l.starts_with("commit.gpgSign="))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }),
+        // `commit.gpgSign=false` → the same silent-disable, spelled out.
+        ("commit.gpgSign=false", |m| {
+            m.replace("commit.gpgSign=true", "commit.gpgSign=false")
+        }),
+        // `user.signingkey` swapped to a key the author email does not encode →
+        // the probe would trust the wrong key.
+        ("user.signingkey swapped", |m| {
+            m.lines()
+                .map(|l| {
+                    if l.starts_with("user.signingkey=") {
+                        format!("user.signingkey={}", "b".repeat(64))
+                    } else {
+                        l.to_string()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        }),
+    ];
+
+    for (label, mutate) in variants {
+        let (shim, path, _email, _keydir) = signed_shim_env();
+        let manifest_path = shim.path().join(".git-identity");
+        let original = std::fs::read_to_string(&manifest_path).unwrap();
+        std::fs::write(&manifest_path, mutate(&original)).unwrap();
+
+        let repo = human_repo();
+        let out = wrapper(&path, repo.path(), &["status"]);
+        assert!(
+            !out.status.success(),
+            "[{label}] a tampered manifest must refuse every command; stderr={}",
+            String::from_utf8_lossy(&out.stderr),
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("complete signing contract"),
+            "[{label}] expected the tampered-manifest refusal; stderr={}",
+            String::from_utf8_lossy(&out.stderr),
+        );
+    }
+}
+
+/// L3b (real signer): the wrong-key case Thufir called out — a commit correctly
+/// authored as the agent (key A) but VALIDLY signed by a DIFFERENT key B must be
+/// refused at push. `git-sign-nostr` verifies B's signature as cryptographically
+/// good, but the push probe injects the authority's `user.signingkey=A`, so the
+/// verified key ≠ the expected key → not `TRUST_FULLY` → `%G?` ≠ `G`. A valid
+/// signature by the wrong key is not a valid agent signature.
+#[test]
+fn wrapper_refuses_push_of_commit_validly_signed_by_wrong_key() {
+    let (_shim, path, email_a, _keydir_a) = signed_shim_env();
+    let (_work, repo, _remote) = agent_repo_with_remote(&email_a);
+
+    // A second, unrelated signing identity (key B) with its own keyfile.
+    let keys_b = nostr::Keys::generate();
+    let nsec_b = keys_b.secret_key().to_bech32().unwrap();
+    let keydir_b = tempfile::tempdir().unwrap();
+    let id_b = buzz_git_identity::write_keyfile(keydir_b.path(), &nsec_b).expect("write B keyfile");
+
+    // Create a commit authored as agent A but signed with key B, bypassing the
+    // wrapper's `enforce` by invoking the real git binary directly with B's
+    // signing config. `git-sign-nostr` resolves from the shim on PATH.
+    let real_git = real_git_dir().join("git");
+    let out = Command::new(&real_git)
+        .args([
+            "-C",
+            repo.to_str().unwrap(),
+            "-c",
+            "gpg.format=x509",
+            "-c",
+            "gpg.x509.program=git-sign-nostr",
+            "-c",
+            "commit.gpgSign=true",
+            "-c",
+            &format!("user.signingkey={}", id_b.pubkey_hex),
+            "-c",
+            &format!("nostr.keyfile={}", id_b.keyfile_path),
+            "commit",
+            "--allow-empty",
+            "-m",
+            "authored by A, signed by B",
+        ])
+        .current_dir(&repo)
+        .env("PATH", &path)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("GIT_AUTHOR_NAME", "Agent")
+        .env("GIT_AUTHOR_EMAIL", &email_a)
+        .env("GIT_COMMITTER_NAME", "Agent")
+        .env("GIT_COMMITTER_EMAIL", &email_a)
+        .env_remove("NOSTR_PRIVATE_KEY")
+        .env_remove("BUZZ_PRIVATE_KEY")
+        .env_remove("BUZZ_AUTH_TAG")
+        .output()
+        .expect("create B-signed commit");
+    assert!(
+        out.status.success(),
+        "the B-signed commit itself should be created; stderr={}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    // Sanity: it is agent-authored, so the push gate demands a valid agent
+    // signature on it (rather than skipping it as someone else's commit).
+    let author = Command::new(&real_git)
+        .args([
+            "-C",
+            repo.to_str().unwrap(),
+            "show",
+            "-s",
+            "--format=%ae",
+            "HEAD",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&author.stdout).trim(), email_a);
+
+    let out = wrapper(&path, &repo, &["push", "origin", "main"]);
+    assert!(
+        !out.status.success(),
+        "a commit signed by the wrong key must be refused at push; stderr={}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("no valid signature by your agent key"),
+        "expected the wrong-key rejection; stderr={}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+}
+
 /// I4: the spawn-path wiring — `AcpClient::spawn` → `install_git_identity` —
 /// must actually install the wrapper + manifest onto the agent-runtime child.
 ///
-/// The tests above manufacture their own `.git-identity` manifest, so they stay
+/// The tests above wire their own shim + `.git-identity` manifest, so they stay
 /// green even if the `install_git_identity(&mut cmd)?` call in `spawn` is
 /// deleted. This one drives the REAL `buzz-acp` binary through `buzz-acp models`
 /// (whose spawn path is the code under test) with a script agent that runs a
@@ -728,7 +854,6 @@ fn wrapper_refuses_push_of_unsigned_commit_tree() {
 ///
 /// `BUZZ_AUTH_TAG` is cleared so `git-sign-nostr` signs offline (no NIP-OA owner
 /// attestation to verify against a relay); signing itself needs no network.
-#[cfg(unix)]
 #[test]
 fn spawn_path_installs_identity_so_agent_commits_land_agent_authored() {
     use std::os::unix::fs::PermissionsExt;

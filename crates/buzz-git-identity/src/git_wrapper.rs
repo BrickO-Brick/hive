@@ -10,10 +10,10 @@
 //!    `-c user.email=` (and `--config-env` for the same keys) in global position,
 //!    and `--author`/`--reset-author` on `commit`/`am`.
 //! 3. On `push`, **verifies** that every outgoing commit not already on a remote
-//!    is authored by the agent identity, and — when the session enforces
-//!    signing — carries a valid NIP-GS signature by the agent key. This closes
-//!    unsigned agent commits from `merge`/`pull`/`commit-tree`/plumbing that the
-//!    flag-based `enforce` cannot reject. Fails the push otherwise.
+//!    is authored by the agent identity and carries a valid NIP-GS signature by
+//!    the agent key. This closes unsigned agent commits from
+//!    `merge`/`pull`/`commit-tree`/plumbing that the flag-based `enforce`
+//!    cannot reject. Fails the push otherwise.
 //! 4. Execs the real `git` (found by skipping PATH entries that resolve back to
 //!    this binary), so nothing the agent can pass reaches git with a spoofed
 //!    identity on the default path.
@@ -69,12 +69,16 @@ enum AuthorityState {
     /// ceiling — e.g. the real `git` invoked by absolute path — so there is no
     /// authority to enforce against: passthrough.
     Unmanaged,
-    /// The install dir is located and holds a valid manifest: enforce.
+    /// The install dir is located and holds a complete, self-consistent
+    /// manifest: enforce (author identity AND a signature by the agent key).
     Managed(Authority),
-    /// The install dir is located but its manifest is missing, empty, or lacks
-    /// a usable `user.email`. A managed install always writes a valid manifest,
-    /// so this means the authority was deleted or corrupted after install —
-    /// fail closed rather than silently drop enforcement.
+    /// The install dir is located but its manifest is missing, unreadable, or
+    /// does not carry the complete managed signing contract (see
+    /// [`Authority::classify`]). A managed install always writes the full
+    /// contract via [`crate::identity_signing_entries`], and `user` mode
+    /// installs no manifest at all — so an incomplete or inconsistent manifest
+    /// means the authority was removed, corrupted, or tampered after install.
+    /// Fail closed rather than silently drop or misdirect enforcement.
     Tampered,
 }
 
@@ -90,24 +94,53 @@ impl Authority {
         let Some(entries) = crate::read_identity_manifest(&dir) else {
             return AuthorityState::Tampered; // manifest missing/unreadable
         };
-        let Some(email) = entries
-            .iter()
-            .find(|(k, _)| k == "user.email")
-            .map(|(_, v)| v.clone())
-        else {
-            return AuthorityState::Tampered; // present but no usable identity
-        };
-        AuthorityState::Managed(Self { entries, email })
+        Self::classify(entries)
     }
 
-    /// Whether the manifest enforces signing (`commit.gpgSign=true`). Only then
-    /// does the push gate require a valid agent signature on each agent-authored
-    /// commit — an unconfigured/`user`-mode session installs no signing, so
-    /// requiring one there would be wrong.
-    fn signing_enforced(&self) -> bool {
-        self.entries.iter().any(|(k, v)| {
-            k.eq_ignore_ascii_case("commit.gpgSign") && v.eq_ignore_ascii_case("true")
-        })
+    /// Validate a parsed manifest against the complete managed signing contract,
+    /// returning [`AuthorityState::Managed`] only when every part holds and
+    /// [`AuthorityState::Tampered`] otherwise. Pure over its `entries` input so
+    /// it is testable without `PATH`/filesystem.
+    ///
+    /// A managed install is written solely by [`crate::identity_signing_entries`]
+    /// (agent mode); `user` mode writes no manifest. So a valid manifest MUST
+    /// carry the full signing config with its canonical values AND a
+    /// `user.signingkey` equal to the pubkey encoded in `user.email`. Any weaker
+    /// state is tampering: dropping/falsifying `commit.gpgSign` would leave the
+    /// signature gate off, and swapping `user.signingkey` to another key would
+    /// make the push probe accept a valid signature by the *wrong* key while the
+    /// commit still appears authored as the agent. Both are rejected here so
+    /// every surviving `Authority` enforces a signature by exactly the agent key.
+    fn classify(entries: Vec<(String, String)>) -> AuthorityState {
+        let get = |name: &str| {
+            entries
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(name))
+                .map(|(_, v)| v.as_str())
+        };
+
+        let Some(email) = get("user.email").map(str::to_owned) else {
+            return AuthorityState::Tampered; // no usable identity
+        };
+        // The fixed signing entries, with the canonical values
+        // `signing_entries` writes. `gpg.x509.program` pins the verifier the
+        // push probe invokes, so a tampered program cannot redirect it.
+        let contract_ok = get("gpg.format").is_some_and(|v| v.eq_ignore_ascii_case("x509"))
+            && get("gpg.x509.program") == Some("git-sign-nostr")
+            && get("commit.gpgSign").is_some_and(|v| v.eq_ignore_ascii_case("true"))
+            && get("nostr.keyfile").is_some_and(|v| !v.is_empty());
+        // `user.signingkey` must be the pubkey the author email encodes
+        // (`<pubkey_hex>@<host>`), so the key the probe trusts is the same key
+        // the commit is attributed to.
+        let email_pubkey = email.split('@').next().unwrap_or("");
+        let key_matches = !email_pubkey.is_empty()
+            && get("user.signingkey").is_some_and(|k| k.eq_ignore_ascii_case(email_pubkey));
+
+        if contract_ok && key_matches {
+            AuthorityState::Managed(Self { entries, email })
+        } else {
+            AuthorityState::Tampered
+        }
     }
 }
 
@@ -117,17 +150,21 @@ pub fn run() -> i32 {
     let argv: Vec<String> = std::env::args().skip(1).collect();
 
     // Classify the authority. `Tampered` (install dir located but manifest
-    // missing/corrupt) fails closed for every command: a managed install always
-    // writes a valid manifest, so its absence means the authority was removed or
-    // damaged after install, and continuing would silently drop enforcement.
+    // missing/unreadable or not carrying the complete, self-consistent signing
+    // contract) fails closed for every command: a managed install always writes
+    // the full contract and `user` mode writes no manifest, so anything weaker
+    // means the authority was removed, damaged, or tampered after install, and
+    // continuing would silently drop or misdirect enforcement.
     let authority = match Authority::load() {
         AuthorityState::Managed(a) => Some(a),
         AuthorityState::Unmanaged => None,
         AuthorityState::Tampered => {
             eprintln!(
                 "buzz git wrapper: refusing to run — this `git` is a managed enforcement \
-                 wrapper but its identity manifest is missing or unreadable. Enforcement fails \
-                 closed rather than fall back to an ambient identity."
+                 wrapper but its identity manifest is missing, unreadable, or does not carry \
+                 the complete signing contract (a valid manifest names the agent identity and \
+                 a matching signing key). Enforcement fails closed rather than fall back to an \
+                 ambient identity or trust the wrong signing key."
             );
             return 1;
         }
@@ -620,9 +657,85 @@ fn subcommand(argv: &[String]) -> Option<String> {
     idx.map(|i| argv[i].clone())
 }
 
+/// Walk the outgoing commits for each source ref once, partitioning them into
+/// `(offenders, agent_shas)`: non-agent-authored commits that are NOT a
+/// replayed-upstream commit (attribution failures) and agent-authored commit
+/// SHAs (whose signature the caller must still verify). Fails closed (`Err`) on
+/// any probe error — an unverifiable commit must never be treated as clean.
+///
+/// Split out of [`verify_push`] so the authorship logic — including the
+/// cherry-pick/rebase patch-id exemption — is unit-testable without a signer,
+/// which the unconditional signature check in `verify_push` would otherwise
+/// require for every agent commit.
+#[allow(clippy::type_complexity)]
+fn partition_outgoing(
+    real_git: &Path,
+    ctx: &[String],
+    expected: &str,
+    sources: &[String],
+) -> Result<(Vec<(String, String)>, Vec<String>), String> {
+    let mut offenders = Vec::new();
+    let mut agent_shas = Vec::new();
+    for from in sources {
+        let shas = match rev_list_outgoing(real_git, ctx, from) {
+            Some(s) => s,
+            // The plan named this ref as an update, so it resolves — an inability
+            // to compute its outgoing range is a verification failure, not an
+            // empty set. Fail closed.
+            None => {
+                return Err(format!(
+                    "buzz git wrapper: refusing to push — could not verify the authorship of \
+                     outgoing commits for `{from}`. Enforcement fails closed rather than let \
+                     an unverified commit leave the machine."
+                ))
+            }
+        };
+        // Patch-ids of commits on a remote but not on this tip — the pool a
+        // replayed (cherry-picked/rebased) upstream commit matches. Computed
+        // lazily and only when a non-agent author is actually found, so the
+        // ordinary all-agent push pays nothing.
+        let mut upstream: Option<std::collections::HashSet<String>> = None;
+        for sha in shas {
+            match commit_author_email(real_git, ctx, &sha) {
+                // Agent-authored: attribution is correct. Signature is checked
+                // by the caller.
+                Some(email) if email == expected => agent_shas.push(sha),
+                Some(email) => {
+                    // A non-agent author is allowed only when this commit is a
+                    // replay (same patch-id) of a commit already upstream —
+                    // i.e. a cherry-picked/rebased human commit, which is
+                    // correct attribution, not new agent work masquerading as
+                    // someone else. Any other non-agent author is an offender.
+                    let pool =
+                        upstream.get_or_insert_with(|| upstream_patch_ids(real_git, ctx, from));
+                    match commit_patch_id(real_git, ctx, &sha) {
+                        Some(pid) if pool.contains(&pid) => {} // replayed upstream — exempt
+                        Some(_) => offenders.push((sha, email)),
+                        // No patch-id (e.g. a merge, or diff-tree failed) means
+                        // we cannot prove it is a replay: fail closed on it.
+                        None => offenders.push((sha, email)),
+                    }
+                }
+                // Author lookup failed for a commit that rev-list just listed:
+                // fail closed rather than silently skip.
+                None => {
+                    return Err(format!(
+                        "buzz git wrapper: refusing to push — could not read the author of \
+                         outgoing commit `{}`. Enforcement fails closed.",
+                        &sha[..sha.len().min(12)]
+                    ))
+                }
+            }
+        }
+    }
+    Ok((offenders, agent_shas))
+}
+
 /// Verify that every commit being pushed that is not already on a remote is
-/// authored by the agent identity — and, when this session enforces signing,
-/// carries a valid NIP-GS signature by the agent key. `Ok(())` allows the push.
+/// authored by the agent identity and carries a valid NIP-GS signature by the
+/// agent key. `Ok(())` allows the push. Every valid [`Authority`] enforces
+/// signing (the manifest contract guarantees it), so the signature requirement
+/// is unconditional here.
 ///
 /// The set of refs being pushed is git's own resolved update plan, obtained via
 /// `push --no-verify --dry-run --porcelain` rather than reconstructed from a
@@ -664,80 +777,30 @@ fn verify_push(
         }
     };
 
-    let mut offenders = Vec::new();
+    // One walk of the outgoing commits, partitioned by the two distinct
+    // enforcement concerns: authorship (non-agent authors that are not a
+    // replayed-upstream commit) and signing (agent-authored commits whose
+    // signature must be verified). Fails closed on any probe error.
+    let (offenders, agent_shas) = partition_outgoing(real_git, ctx, expected, &sources)?;
+
+    // Every valid `Authority` enforces signing (the manifest contract
+    // guarantees `commit.gpgSign=true` and a signing key matching the author
+    // email), so each agent-authored outgoing commit MUST carry a valid
+    // signature by the agent key — the one check that covers every creation
+    // path (`merge`/`pull`/`commit-tree`/plumbing) `enforce` cannot reject.
     let mut unsigned = Vec::new();
-    // Signing is required per-commit only when this managed session enforces it
-    // (`commit.gpgSign=true`). A `user`-mode/unconfigured authority installs no
-    // signer, so requiring a signature there would wrongly block every push.
-    let require_signature = authority.signing_enforced();
-    for from in sources {
-        let shas = match rev_list_outgoing(real_git, ctx, &from) {
-            Some(s) => s,
-            // The plan named this ref as an update, so it resolves — an inability
-            // to compute its outgoing range is a verification failure, not an
-            // empty set. Fail closed.
+    for sha in agent_shas {
+        match commit_signature_is_agent(real_git, ctx, authority, &sha) {
+            Some(true) => {}
+            Some(false) => unsigned.push(sha),
+            // The verification probe itself failed to run: fail closed rather
+            // than let an unverified commit leave.
             None => {
                 return Err(format!(
-                    "buzz git wrapper: refusing to push — could not verify the authorship of \
-                     outgoing commits for `{from}`. Enforcement fails closed rather than let \
-                     an unverified commit leave the machine."
+                    "buzz git wrapper: refusing to push — could not verify the \
+                     signature of outgoing commit `{}`. Enforcement fails closed.",
+                    &sha[..sha.len().min(12)]
                 ))
-            }
-        };
-        // Patch-ids of commits on a remote but not on this tip — the pool a
-        // replayed (cherry-picked/rebased) upstream commit matches. Computed
-        // lazily and only when a non-agent author is actually found, so the
-        // ordinary all-agent push pays nothing.
-        let mut upstream: Option<std::collections::HashSet<String>> = None;
-        for sha in shas {
-            match commit_author_email(real_git, ctx, &sha) {
-                // Agent-authored: attribution is correct. When this session
-                // enforces signing, it must ALSO carry a valid signature by the
-                // agent key — this is the one check that covers every
-                // creation path (`merge`/`pull`/`commit-tree`/plumbing) that
-                // `enforce` cannot reject on the literal argv.
-                Some(email) if &email == expected => {
-                    if require_signature {
-                        match commit_signature_is_agent(real_git, ctx, authority, &sha) {
-                            Some(true) => {}
-                            Some(false) => unsigned.push(sha),
-                            // The verification probe itself failed to run: fail
-                            // closed rather than let an unverified commit leave.
-                            None => {
-                                return Err(format!(
-                                    "buzz git wrapper: refusing to push — could not verify the \
-                                     signature of outgoing commit `{}`. Enforcement fails closed.",
-                                    &sha[..sha.len().min(12)]
-                                ))
-                            }
-                        }
-                    }
-                }
-                Some(email) => {
-                    // A non-agent author is allowed only when this commit is a
-                    // replay (same patch-id) of a commit already upstream —
-                    // i.e. a cherry-picked/rebased human commit, which is
-                    // correct attribution, not new agent work masquerading as
-                    // someone else. Any other non-agent author is an offender.
-                    let pool =
-                        upstream.get_or_insert_with(|| upstream_patch_ids(real_git, ctx, &from));
-                    match commit_patch_id(real_git, ctx, &sha) {
-                        Some(pid) if pool.contains(&pid) => {} // replayed upstream — exempt
-                        Some(_) => offenders.push((sha, email)),
-                        // No patch-id (e.g. a merge, or diff-tree failed) means
-                        // we cannot prove it is a replay: fail closed on it.
-                        None => offenders.push((sha, email)),
-                    }
-                }
-                // Author lookup failed for a commit that rev-list just listed:
-                // fail closed rather than silently skip.
-                None => {
-                    return Err(format!(
-                        "buzz git wrapper: refusing to push — could not read the author of \
-                         outgoing commit `{}`. Enforcement fails closed.",
-                        &sha[..sha.len().min(12)]
-                    ))
-                }
             }
         }
     }
@@ -1238,22 +1301,37 @@ mod tests {
 
     const AGENT_EMAIL: &str =
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@relay.test";
+    /// The pubkey `AGENT_EMAIL` encodes — the `user.signingkey` a valid managed
+    /// manifest must name.
+    const AGENT_PUBKEY: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
-    /// A managed-session authority with the standard identity/signing entries,
-    /// so `enforce`/`verify_*` behave as they do in a real managed session.
+    /// A managed-session authority with the COMPLETE signing contract — the
+    /// state [`Authority::classify`] accepts as `Managed`. Used by the push
+    /// tests: `verify_push` requires a signature by the agent key on every
+    /// agent-authored commit, and these entries are the authority that check
+    /// resolves against.
     fn managed() -> Authority {
         Authority {
             entries: vec![
                 ("user.name".into(), "Agent".into()),
                 ("user.email".into(), AGENT_EMAIL.into()),
+                ("gpg.format".into(), "x509".into()),
+                ("gpg.x509.program".into(), "git-sign-nostr".into()),
                 ("commit.gpgSign".into(), "true".into()),
+                ("tag.gpgSign".into(), "true".into()),
+                ("user.signingkey".into(), AGENT_PUBKEY.into()),
+                ("nostr.keyfile".into(), "/tmp/.nostr-key".into()),
             ],
             email: AGENT_EMAIL.into(),
         }
     }
 
-    /// Like [`managed`] but with signing disabled, for tests that create real
-    /// commits through the injected argv (no GPG key available in CI).
+    /// A synthetic authority with signing DISABLED, used ONLY by the exec/inject
+    /// tests that create a real `git commit` (CI has no nostr signer, so signing
+    /// must be off or the commit fails). This is NOT a state
+    /// [`Authority::classify`] would ever return — a real manifest with
+    /// `commit.gpgSign=false` is `Tampered` — it is a hand-built fixture for
+    /// exercising `inject_identity_args` in isolation from the push gate.
     fn managed_nosign() -> Authority {
         Authority {
             entries: vec![
@@ -2080,21 +2158,14 @@ mod tests {
         );
 
         let ctx = vec!["-C".to_string(), local.to_string_lossy().into_owned()];
-        let res = verify_push(
-            &real_git(),
-            &v(&[
-                "-C",
-                local.to_str().unwrap(),
-                "push",
-                "origin",
-                "HEAD:refs/heads/feature",
-            ]),
-            &ctx,
-            &managed_nosign(),
-        );
+        // Authorship only (the signature check is exercised by the real-signer
+        // integration tests); `HEAD` is the push source ref.
+        let (offenders, _agent) =
+            partition_outgoing(&real_git(), &ctx, AGENT_EMAIL, &[String::from("HEAD")])
+                .expect("partition must succeed");
         assert!(
-            res.is_ok(),
-            "replayed upstream human commit must be exempt by patch-id, got: {res:?}"
+            offenders.is_empty(),
+            "replayed upstream human commit must be exempt by patch-id, got: {offenders:?}"
         );
     }
 
@@ -2109,21 +2180,12 @@ mod tests {
         git_in(&local, &["add", "agent"]);
         git_in(&local, &["commit", "-qm", "agent work"]);
         let ctx = vec!["-C".to_string(), local.to_string_lossy().into_owned()];
-        let res = verify_push(
-            &real_git(),
-            &v(&[
-                "-C",
-                local.to_str().unwrap(),
-                "push",
-                "origin",
-                "HEAD:refs/heads/feature",
-            ]),
-            &ctx,
-            &managed_nosign(),
-        );
+        let (offenders, _agent) =
+            partition_outgoing(&real_git(), &ctx, AGENT_EMAIL, &[String::from("HEAD")])
+                .expect("partition must succeed");
         assert!(
-            res.is_ok(),
-            "agent commit atop upstream human tip must be allowed: {res:?}"
+            offenders.is_empty(),
+            "agent commit atop upstream human tip must be allowed: {offenders:?}"
         );
     }
 
@@ -2148,44 +2210,92 @@ mod tests {
             ],
         );
         let ctx = vec!["-C".to_string(), local.to_string_lossy().into_owned()];
-        let err = verify_push(
-            &real_git(),
-            &v(&[
-                "-C",
-                local.to_str().unwrap(),
-                "push",
-                "origin",
-                "HEAD:refs/heads/feature",
-            ]),
-            &ctx,
-            &managed_nosign(),
-        )
-        .expect_err("a brand-new human commit must be refused");
-        assert!(err.contains("not authored by your agent identity"), "{err}");
+        let (offenders, _agent) =
+            partition_outgoing(&real_git(), &ctx, AGENT_EMAIL, &[String::from("HEAD")])
+                .expect("partition must succeed");
+        assert!(
+            offenders.iter().any(|(_, e)| e == "human@example.com"),
+            "a brand-new human commit must be an offender; got {offenders:?}"
+        );
     }
 
     // ── L3b: signing enforcement in the push gate ─────────────────────────────
 
-    /// `signing_enforced` reads the manifest: true only for `commit.gpgSign=true`
-    /// (case-insensitive), false for `false`/absent — so an unconfigured/`user`
-    /// session never triggers the per-commit signature requirement.
+    /// `Authority::classify` accepts a manifest ONLY when it carries the
+    /// complete signing contract and a `user.signingkey` matching the pubkey in
+    /// `user.email`. Every weaker/inconsistent state is `Tampered`, so no
+    /// surviving `Authority` can silently skip or misdirect the signature gate.
     #[test]
-    fn signing_enforced_reads_manifest_gpgsign() {
-        assert!(managed().signing_enforced(), "managed() sets gpgSign=true");
-        assert!(
-            !managed_nosign().signing_enforced(),
-            "managed_nosign() sets gpgSign=false"
-        );
-        let case = Authority {
-            entries: vec![("commit.gpgSign".into(), "TRUE".into())],
-            email: AGENT_EMAIL.into(),
+    fn classify_accepts_only_the_complete_and_consistent_signing_contract() {
+        let complete = || {
+            vec![
+                ("user.name".to_string(), "Agent".to_string()),
+                ("user.email".to_string(), AGENT_EMAIL.to_string()),
+                ("gpg.format".to_string(), "x509".to_string()),
+                ("gpg.x509.program".to_string(), "git-sign-nostr".to_string()),
+                ("commit.gpgSign".to_string(), "true".to_string()),
+                ("tag.gpgSign".to_string(), "true".to_string()),
+                ("user.signingkey".to_string(), AGENT_PUBKEY.to_string()),
+                ("nostr.keyfile".to_string(), "/tmp/.nostr-key".to_string()),
+            ]
         };
-        assert!(case.signing_enforced(), "value match is case-insensitive");
-        let absent = Authority {
-            entries: vec![("user.email".into(), AGENT_EMAIL.into())],
-            email: AGENT_EMAIL.into(),
-        };
-        assert!(!absent.signing_enforced(), "absent key => not enforced");
+
+        // The canonical install manifest is accepted.
+        assert!(matches!(
+            Authority::classify(complete()),
+            AuthorityState::Managed(_)
+        ));
+
+        // No usable identity.
+        assert!(matches!(
+            Authority::classify(vec![("user.name".into(), "Agent".into())]),
+            AuthorityState::Tampered
+        ));
+
+        // `commit.gpgSign` absent → the signature gate would never fire.
+        let mut no_sign = complete();
+        no_sign.retain(|(k, _)| k != "commit.gpgSign");
+        assert!(matches!(
+            Authority::classify(no_sign),
+            AuthorityState::Tampered
+        ));
+
+        // `commit.gpgSign=false` → same silent-disable defect, spelled out.
+        let mut false_sign = complete();
+        false_sign
+            .iter_mut()
+            .find(|(k, _)| k == "commit.gpgSign")
+            .unwrap()
+            .1 = "false".into();
+        assert!(matches!(
+            Authority::classify(false_sign),
+            AuthorityState::Tampered
+        ));
+
+        // `user.signingkey` naming a DIFFERENT key than the author email encodes
+        // → the probe would trust the wrong key.
+        let mut wrong_key = complete();
+        wrong_key
+            .iter_mut()
+            .find(|(k, _)| k == "user.signingkey")
+            .unwrap()
+            .1 = "b".repeat(64);
+        assert!(matches!(
+            Authority::classify(wrong_key),
+            AuthorityState::Tampered
+        ));
+
+        // A tampered verifier program cannot pose as managed.
+        let mut wrong_program = complete();
+        wrong_program
+            .iter_mut()
+            .find(|(k, _)| k == "gpg.x509.program")
+            .unwrap()
+            .1 = "/bin/true".into();
+        assert!(matches!(
+            Authority::classify(wrong_program),
+            AuthorityState::Tampered
+        ));
     }
 
     /// When the session enforces signing, an agent-authored but UNSIGNED
@@ -2223,41 +2333,6 @@ mod tests {
         assert!(
             err.contains("no valid signature by your agent key"),
             "expected the unsigned-commit rejection; {err}"
-        );
-    }
-
-    /// The SAME unsigned agent commit pushes cleanly when the session does NOT
-    /// enforce signing (`user` mode / unconfigured) — the requirement must not
-    /// fire without an installed signer.
-    #[test]
-    fn verify_push_allows_unsigned_agent_commit_when_signing_not_enforced() {
-        let (_d, repo) = agent_authored_unsigned_repo();
-        let remote = tempfile::tempdir().unwrap();
-        let g = |args: &[&str]| {
-            std::process::Command::new("git")
-                .args(args)
-                .status()
-                .unwrap();
-        };
-        g(&["init", "-q", "--bare", remote.path().to_str().unwrap()]);
-        g(&[
-            "-C",
-            repo.to_str().unwrap(),
-            "remote",
-            "add",
-            "origin",
-            remote.path().to_str().unwrap(),
-        ]);
-        let ctx = vec!["-C".to_string(), repo.to_string_lossy().into_owned()];
-        assert!(
-            verify_push(
-                &real_git(),
-                &v(&["-C", repo.to_str().unwrap(), "push", "origin", "main"]),
-                &ctx,
-                &managed_nosign(), // signing NOT enforced
-            )
-            .is_ok(),
-            "unsigned agent commit must be allowed when signing is not enforced"
         );
     }
 
