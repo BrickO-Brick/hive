@@ -14,9 +14,11 @@ import { normalizePubkey } from "@/shared/lib/pubkey";
  *    the sentinel against the raw event signer from the signed envelope, not
  *    a relay-delegated author. This enforces the D1 requirement that forged
  *    cards (wrong signer) never become actionable.
- * 3. For resolved state: `editSignerPubkey` must equal `agentPubkey` — only
- *    edits signed by the original agent may flip the card to resolved.
- *    Owner-signed or attacker-signed edits are rejected.
+ * 3. For resolved state: `editSignerPubkey` must be present AND equal
+ *    `agentPubkey` — only edits signed by the original agent may flip the
+ *    card to resolved. Owner-signed, attacker-signed, and born-resolved
+ *    payloads (a kind-9 whose content is already `resolved`, carrying no edit
+ *    provenance) are all rejected.
  * 4. For resolved state: the resolved payload must correlate to THIS card —
  *    its `originalEventId` must equal `messageId`, and its
  *    `requestNonce`/`sessionId`/`turnId` must match the original pending
@@ -58,14 +60,22 @@ export function computePermissionRequest(
   const payload = extractPermissionRequest(content);
   if (payload === null) return null;
 
-  // For resolved state (edit has arrived): verify the edit was signed by the
-  // original agent. Owner-signed or attacker-signed edits are rejected.
-  if (
-    payload.state === "resolved" &&
-    editSignerPubkey !== undefined &&
-    editSignerPubkey !== null
-  ) {
-    if (normalizePubkey(editSignerPubkey) !== normalizePubkey(agentPubkey)) {
+  // For resolved state: a completed card must have arrived as a kind-40003
+  // edit overlaid on its pending kind-9. `formatTimelineMessages` supplies
+  // `editSignerPubkey`, `messageId`, and `preEditContent` together only when
+  // an edit exists, so legitimate resolutions always carry all three. A
+  // kind-9 whose content is *born* `resolved` has no edit provenance —
+  // requiring it here rejects a forged completed card that would otherwise
+  // pass the D1 signer gate alone and render with zero evidence of an edit.
+  if (payload.state === "resolved") {
+    // Edit signer must be present and match the original agent. Owner-signed
+    // or attacker-signed edits, and born-resolved payloads (no signer), are
+    // all rejected.
+    if (
+      editSignerPubkey === undefined ||
+      editSignerPubkey === null ||
+      normalizePubkey(editSignerPubkey) !== normalizePubkey(agentPubkey)
+    ) {
       return null;
     }
 

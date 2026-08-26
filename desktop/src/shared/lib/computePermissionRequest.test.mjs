@@ -228,19 +228,21 @@ test("test_attacker_signed_edit_does_not_resolve", () => {
   );
 });
 
-test("test_resolved_body_with_no_edit_arrived_parses_body_directly", () => {
-  // When editSignerPubkey is undefined, no edit-authenticity check runs.
-  // If the original event body happened to contain a resolved sentinel, we
-  // return it. This handles the edge case where the edit arrives before we
-  // query the original event.
+test("test_born_resolved_body_without_edit_provenance_returns_null", () => {
+  // A kind-9 whose content is *born* `resolved` (no kind-40003 edit overlaid)
+  // carries no edit provenance: editSignerPubkey is undefined. Such a payload
+  // must NOT render as a completed card — it would pass the D1 signer gate
+  // alone with zero evidence of an edit, matching original event, or matching
+  // nonce/session/turn. Mutation proof: relaxing the resolved-state guard to
+  // run only when editSignerPubkey is non-null turns this red.
   const result = computePermissionRequest(
     raw(RESOLVED_PAYLOAD),
     true,
     AGENT_PUBKEY,
     AGENT_PUBKEY,
-    undefined,
+    undefined, // no edit arrived → no provenance
   );
-  assert.deepEqual(result, RESOLVED_PAYLOAD);
+  assert.equal(result, null);
 });
 
 // ── selectProseOrPermission ───────────────────────────────────────────────────
@@ -276,17 +278,19 @@ test("test_non_owner_viewer_gets_payload_but_is_owner_false", () => {
   // viewerPubkey !== ownerPubkey — card renders in read-only mode (no buttons).
 });
 
-test("test_replay_archive_resolved_state_returns_resolved_payload", () => {
-  // Simulates archive/replay: the message body carries resolved payload
-  // (edit already applied), agentPubkey present, editSignerPubkey absent.
-  // computePermissionRequest must return the resolved payload — the card
-  // renders in non-actionable archived state.
+test("test_replay_with_edit_provenance_returns_resolved_payload", () => {
+  // Archive/replay of a resolved card: `formatTimelineMessages` overlays the
+  // kind-40003 edit onto the pending kind-9 and supplies editSignerPubkey,
+  // messageId, and preEditContent together (formatTimelineMessages.ts:526-528).
+  // With full provenance the resolved payload renders in non-actionable state.
   const result = computePermissionRequest(
     raw(RESOLVED_PAYLOAD),
     true,
     AGENT_PUBKEY,
     AGENT_PUBKEY,
-    undefined, // no separate edit event needed in archive — body is resolved
+    AGENT_PUBKEY, // edit signer supplied on replay ✓
+    MESSAGE_ID, // originalEventId names this card ✓
+    raw(PENDING_PAYLOAD), // pre-edit pending body correlates ✓
   );
   assert.deepEqual(result, RESOLVED_PAYLOAD);
   assert.equal(result?.state, "resolved");

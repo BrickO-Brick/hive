@@ -312,8 +312,10 @@ pub struct AcpClient {
     ///
     /// Set by `handle_permission_request` when a kind-9 is sent via
     /// `register_publish_ack`. The read loop's select! arm polls this until
-    /// the relay responds or the publish deadline fires. Exactly one entry can
-    /// be in `Publishing` state at a time (capacity-guarded).
+    /// the relay responds or the publish deadline fires. At most one entry can
+    /// be in `Publishing` state at a time — the admission preflight denies a
+    /// new Ask request while a publish is in flight, so this single slot is
+    /// never overwritten with an unacknowledged receiver still live.
     ///
     /// A background task awaits the `oneshot::Receiver<AckOutcome>` and forwards
     /// the `(entry_id, outcome)` pair here via mpsc, decoupling the borrow from
@@ -3075,16 +3077,32 @@ impl AcpClient {
                 false
             },
             if matches!(self.permission_config.policy, PermissionPolicy::Ask) {
+                // Count every live entry — including `Publishing` — against the
+                // cap. A broken/malicious adapter that never triggers the ACK
+                // could otherwise accumulate unbounded Publishing entries/cards
+                // below the cap; counting them here bounds the total live set.
                 self.pending_permissions
                     .values()
                     .filter(|e| {
                         matches!(
                             e.state,
-                            PermissionEntryState::Pending | PermissionEntryState::Writing
+                            PermissionEntryState::Publishing
+                                | PermissionEntryState::Pending
+                                | PermissionEntryState::Writing
                         )
                     })
                     .count()
                     >= PERMISSION_MAP_CAP
+            } else {
+                false
+            },
+            // A single sentinel ACK receiver slot is shared across publishes,
+            // so at most one entry may be in `Publishing` at a time. A new Ask
+            // request while a publish is still in flight is denied (fail closed).
+            if matches!(self.permission_config.policy, PermissionPolicy::Ask) {
+                self.pending_permissions
+                    .values()
+                    .any(|e| matches!(e.state, PermissionEntryState::Publishing))
             } else {
                 false
             },
@@ -4003,6 +4021,7 @@ fn run_admission_preflight(
     _policy: PermissionPolicy,
     is_duplicate_id: bool,
     is_map_at_cap: bool,
+    is_publish_in_flight: bool,
     size_ctx: (&ObserverContext, Option<usize>),
 ) -> Result<(), String> {
     let (observer_context, agent_index) = size_ctx;
@@ -4064,6 +4083,11 @@ fn run_admission_preflight(
             "pending permission map at capacity ({})",
             PERMISSION_MAP_CAP
         ));
+    }
+
+    // 7b. a sentinel publish is already in flight (ask only — one at a time)
+    if is_publish_in_flight {
+        return Err("a sentinel publish is already in flight".to_string());
     }
 
     // 8. Full annotated `ObserverEvent` fits within `OBSERVER_MAX_PLAINTEXT_LEN`.
@@ -7406,6 +7430,7 @@ mod tests {
             PermissionPolicy::Ask,
             false,
             false,
+            false,
             (&ObserverContext::default(), None),
         );
         assert!(result.is_err(), "duplicate optionId must fail preflight");
@@ -7413,6 +7438,105 @@ mod tests {
         assert!(
             reason.contains("duplicate optionId"),
             "reason must name the check, got: {reason}"
+        );
+    }
+
+    // ── Publish-in-flight admission guard ────────────────────────────────────
+
+    #[test]
+    fn admission_preflight_rejects_publish_in_flight() {
+        // A single sentinel ACK slot is shared across publishes, so at most one
+        // entry may be in `Publishing` at a time. When a publish is already in
+        // flight the preflight must fail closed. Mutation proof: flipping the
+        // flag to `false` makes the same input pass.
+        let id = serde_json::json!(2);
+        let msg = perm_request(2, default_opts());
+        let opts = msg["params"]["options"].as_array().unwrap().clone();
+        let result = run_admission_preflight(
+            &id,
+            &opts,
+            &msg,
+            PermissionPolicy::Ask,
+            false,
+            false,
+            true, // publish already in flight
+            (&ObserverContext::default(), None),
+        );
+        assert!(
+            result.is_err(),
+            "a request while a publish is in flight must fail preflight"
+        );
+        assert!(
+            result.unwrap_err().contains("publish is already in flight"),
+            "reason must name the check"
+        );
+        // Same input with no publish in flight passes the guard.
+        assert!(
+            run_admission_preflight(
+                &id,
+                &opts,
+                &msg,
+                PermissionPolicy::Ask,
+                false,
+                false,
+                false,
+                (&ObserverContext::default(), None),
+            )
+            .is_ok(),
+            "identical input must pass when no publish is in flight"
+        );
+    }
+
+    // ── Publish-in-flight: second Ask denied without disturbing the slot ─────
+
+    #[tokio::test]
+    async fn handle_permission_request_denies_second_while_publishing() {
+        // A distinct-id Ask request arriving while an earlier one is still in
+        // `Publishing` must be denied synchronously — never inserting a second
+        // Publishing entry that would overwrite the single ACK receiver slot or
+        // create an unroutable card. The in-flight entry and its ACK slot stay
+        // untouched.
+        let mut client = spawn_inert_client().await;
+        set_policy(&mut client, PermissionPolicy::Ask);
+        // Seed a Publishing entry with a live ACK receiver in the single slot.
+        client.pending_permissions.insert(
+            "1".to_string(),
+            PermissionEntry {
+                nonce: "nonce-publishing".to_string(),
+                options_snapshot: vec![],
+                card_actions: test_card_actions(),
+                state: PermissionEntryState::Publishing,
+                deadline: tokio::time::Instant::now() + std::time::Duration::from_secs(300),
+                expiry_unix_secs: 0,
+                sentinel_event_id: Some("sentinel-1".to_string()),
+                early_decision: None,
+            },
+        );
+        let (_ack_tx, ack_rx) = tokio::sync::mpsc::channel(1);
+        client.sentinel_ack_result_rx = Some(ack_rx);
+
+        // A SECOND request with a DIFFERENT id while the first is Publishing.
+        let msg = perm_request(2, default_opts());
+        let hard_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        let result = client.handle_permission_request(&msg, hard_deadline).await;
+        assert!(
+            result.is_ok(),
+            "publish-in-flight denial must not propagate as Err, got {result:?}"
+        );
+        // No second entry added — only the original Publishing entry remains.
+        assert_eq!(
+            client.pending_permissions.len(),
+            1,
+            "second request must be denied, not registered"
+        );
+        assert!(
+            client.pending_permissions.contains_key("1"),
+            "the in-flight Publishing entry must survive untouched"
+        );
+        // The single ACK slot must still hold the ORIGINAL receiver (not overwritten).
+        assert!(
+            client.sentinel_ack_result_rx.is_some(),
+            "the in-flight ACK receiver must not be overwritten or dropped"
         );
     }
 
@@ -7484,6 +7608,7 @@ mod tests {
             &opts,
             &msg,
             PermissionPolicy::Ask,
+            false,
             false,
             false,
             (&ObserverContext::default(), None),
@@ -7570,6 +7695,7 @@ mod tests {
             PermissionPolicy::Ask,
             false,
             false,
+            false,
             (&ctx, None),
         );
         assert!(
@@ -7596,6 +7722,7 @@ mod tests {
             &opts,
             &tiny_msg,
             PermissionPolicy::Ask,
+            false,
             false,
             false,
             (&ctx, None),
@@ -7664,6 +7791,82 @@ mod tests {
             client.pending_permissions.len(),
             PERMISSION_MAP_CAP,
             "map must not grow beyond capacity after denial"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_permission_request_counts_publishing_toward_capacity() {
+        // The cap must count `Publishing` entries too: 7 Pending + 1 Publishing
+        // == PERMISSION_MAP_CAP, so a 9th request is denied at the CAPACITY
+        // check (which precedes the publish-in-flight check). Mutation proof:
+        // excluding `Publishing` from the count drops the total to 7 < cap, so
+        // the request instead reaches — and is denied by — the publish-in-flight
+        // guard, changing the reason string. Asserting the "at capacity" reason
+        // pins that Publishing is counted.
+        let mut client = spawn_inert_client().await;
+        set_policy(&mut client, PermissionPolicy::Ask);
+        let obs = crate::observer::ObserverHandle::in_process();
+        client.set_observer(Some(obs.clone()), 0);
+
+        for i in 0..(PERMISSION_MAP_CAP - 1) {
+            client.pending_permissions.insert(
+                format!("{i}"),
+                PermissionEntry {
+                    nonce: format!("nonce-{i}"),
+                    options_snapshot: vec![],
+                    card_actions: test_card_actions(),
+                    state: PermissionEntryState::Pending,
+                    deadline: tokio::time::Instant::now() + std::time::Duration::from_secs(300),
+                    expiry_unix_secs: 0,
+                    sentinel_event_id: None,
+                    early_decision: None,
+                },
+            );
+        }
+        // The 8th entry is Publishing (with a live ACK slot).
+        client.pending_permissions.insert(
+            "pub".to_string(),
+            PermissionEntry {
+                nonce: "nonce-pub".to_string(),
+                options_snapshot: vec![],
+                card_actions: test_card_actions(),
+                state: PermissionEntryState::Publishing,
+                deadline: tokio::time::Instant::now() + std::time::Duration::from_secs(300),
+                expiry_unix_secs: 0,
+                sentinel_event_id: Some("sentinel-pub".to_string()),
+                early_decision: None,
+            },
+        );
+        let (_ack_tx, ack_rx) = tokio::sync::mpsc::channel(1);
+        client.sentinel_ack_result_rx = Some(ack_rx);
+        assert_eq!(client.pending_permissions.len(), PERMISSION_MAP_CAP);
+
+        let msg = perm_request(99, default_opts());
+        let hard_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        let result = client.handle_permission_request(&msg, hard_deadline).await;
+        assert!(result.is_ok(), "cap denial must not propagate Err");
+        assert_eq!(
+            client.pending_permissions.len(),
+            PERMISSION_MAP_CAP,
+            "map must not grow past the cap"
+        );
+        // The denial reason must name the capacity check (proving Publishing counts).
+        let events = obs.snapshot();
+        let cap_reads: Vec<_> = events
+            .iter()
+            .filter(|e| {
+                e.kind == "acp_read"
+                    && e.authorization
+                        .as_ref()
+                        .and_then(|a| a.reason.as_deref())
+                        .map(|r| r.contains("at capacity"))
+                        .unwrap_or(false)
+            })
+            .collect();
+        assert_eq!(
+            cap_reads.len(),
+            1,
+            "denial reason must name the capacity check; events: {events:?}"
         );
     }
 
