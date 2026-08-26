@@ -1,6 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { installMockBridge, openChannelBrowser } from "../helpers/bridge";
+import {
+  installMockBridge,
+  openChannelBrowser,
+  TEST_IDENTITIES,
+} from "../helpers/bridge";
 
 const MOCK_PUBKEY = "deadbeef".repeat(8);
 const CUSTOM_SECTION = { id: "sec-projects", name: "Projects", order: 0 };
@@ -22,7 +26,25 @@ test.beforeEach(async ({ page }, testInfo) => {
     page,
     testInfo.title.includes("failed section create")
       ? { createChannelErrors: ["Create failed"] }
-      : undefined,
+      : testInfo.title.includes("pre-join roster")
+        ? {
+            // The strongest-authority pre-join viewer: a community admin who
+            // also owns a managed bot inside the unjoined channel. Neither
+            // authority may surface row actions before Join. Membership
+            // support must be on for the NIP-43 snapshot (and thus the relay
+            // role) to reach the client at all.
+            relayRequiresMembership: true,
+            relayRole: "admin",
+            managedAgents: [
+              {
+                pubkey: TEST_IDENTITIES.charlie.pubkey,
+                name: "scout",
+                status: "running",
+                channelNames: ["design"],
+              },
+            ],
+          }
+        : undefined,
   );
 });
 
@@ -498,6 +520,93 @@ test("non-member open channel header shows its member count and roster", async (
   await expect(
     members.locator('[data-testid^="channel-user-search-result-"]'),
   ).toHaveCount(0);
+});
+
+async function openMemberMenu(page: Page, pubkey: string) {
+  const row = page.getByTestId(`sidebar-member-${pubkey}`);
+  const trigger = page.getByTestId(`sidebar-member-menu-${pubkey}`);
+  await row.scrollIntoViewIfNeeded();
+  await row.hover();
+  // Radix dropdown re-opens are unreliable via pointer after a prior item
+  // interaction; keyboard open (focus + Enter) is deterministic.
+  await trigger.focus();
+  await trigger.press("Enter");
+  await expect(trigger).toHaveAttribute("data-state", "open");
+}
+
+test("pre-join roster is read-only until the viewer joins", async ({
+  page,
+}) => {
+  // Seeded by beforeEach: the viewer is a community admin (relay role) and
+  // owns the running managed bot "scout" that is a member of #design.
+  const botPubkey = TEST_IDENTITIES.charlie.pubkey;
+  const bobPubkey = TEST_IDENTITIES.bob.pubkey;
+
+  await page.goto("/");
+  await openChannelBrowser(page);
+  await page
+    .getByTestId("browse-channel-design")
+    .locator("button")
+    .first()
+    .click();
+  await expect(page.getByTestId("chat-title")).toHaveText("design");
+  const joinButton = page.getByRole("button", { name: "Join", exact: true });
+  await expect(joinButton).toBeVisible();
+  await expect(page.getByTestId("channel-members-trigger")).toHaveAttribute(
+    "aria-label",
+    "View channel members (3)",
+  );
+
+  await page.getByTestId("channel-members-trigger").click();
+  const members = page.getByTestId("members-sidebar");
+  await expect(members).toBeVisible();
+
+  // The roster reads normally — human rows and the owned bot's status badge —
+  await expect(
+    members.getByTestId(`sidebar-member-${bobPubkey}`),
+  ).toBeVisible();
+  await expect(
+    members.getByTestId(`sidebar-member-${botPubkey}`),
+  ).toBeVisible();
+  await expect(
+    members.getByTestId(`sidebar-managed-agent-status-${botPubkey}`),
+  ).toBeVisible();
+
+  // — but neither community-admin moderation nor owned-agent lifecycle may
+  // surface any row menu or bulk agent control before Join.
+  await expect(
+    members.locator('[data-testid^="sidebar-member-menu-"]'),
+  ).toHaveCount(0);
+  await expect(
+    members.getByTestId("members-sidebar-agent-controls"),
+  ).toHaveCount(0);
+
+  await page.keyboard.press("Escape");
+  await expect(members).not.toBeVisible();
+
+  await joinButton.click();
+  await expect(joinButton).toHaveCount(0);
+  await expect(page.getByTestId("channel-members-trigger")).toHaveAttribute(
+    "aria-label",
+    "View channel members (4)",
+  );
+
+  // The same authorities light up once the viewer is a member: relay-admin
+  // moderation on a human row, lifecycle + access management on the owned bot.
+  await page.getByTestId("channel-members-trigger").click();
+  await expect(members).toBeVisible();
+
+  await openMemberMenu(page, bobPubkey);
+  await expect(page.getByTestId(`sidebar-ban-${bobPubkey}`)).toBeVisible();
+  await page.keyboard.press("Escape");
+
+  await openMemberMenu(page, botPubkey);
+  await expect(
+    page.getByTestId(`sidebar-agent-action-${botPubkey}`),
+  ).toBeVisible();
+  await expect(
+    page.getByTestId(`sidebar-edit-respond-to-${botPubkey}`),
+  ).toBeVisible();
 });
 
 test("joining a channel from browser adds it to the sidebar", async ({

@@ -142,6 +142,13 @@ export function MembersSidebar({
   relayUrl,
 }: MembersSidebarProps) {
   const channelId = channel?.id ?? null;
+  // An open channel's roster is reachable before joining, and that pre-join
+  // view is strictly read-only. Every management affordance — add/search,
+  // community moderation, managed-agent lifecycle/access, view activity, role
+  // changes, removal, bulk agent actions — and each supporting action-data
+  // fetch hangs off this single membership fence. Profile opening stays: it
+  // is part of reading the roster, not managing it.
+  const isReadOnlyRoster = channel?.isMember !== true;
   const queryClient = useQueryClient();
   const searchInputRef = React.useRef<HTMLInputElement>(null);
   const [searchQuery, setSearchQuery] = React.useState("");
@@ -244,7 +251,7 @@ export function MembersSidebar({
     [rawMembers],
   );
   const canAddMembers =
-    channel?.isMember === true &&
+    !isReadOnlyRoster &&
     canAddChannelMembers({
       channelType: channel?.channelType,
       visibility: channel?.visibility,
@@ -447,17 +454,22 @@ export function MembersSidebar({
   ]);
 
   const canManageMembers =
-    selfMember?.role === "owner" || selfMember?.role === "admin";
+    !isReadOnlyRoster &&
+    (selfMember?.role === "owner" || selfMember?.role === "admin");
 
   const {
-    canModerate,
+    canModerate: canModerateCommunity,
     isModerationPending,
     moderationStateByPubkey,
     onBan,
     onUnban,
     onTimeout,
     onUntimeout,
-  } = useMembersSidebarModeration(open);
+  } = useMembersSidebarModeration(open && !isReadOnlyRoster);
+  // Community moderation authority is relay-role derived and so survives into
+  // channels the viewer never joined — the pre-join fence still applies before
+  // it can reach a row.
+  const canModerate = !isReadOnlyRoster && canModerateCommunity;
 
   const isArchived =
     channel?.archivedAt !== null && channel?.archivedAt !== undefined;
@@ -481,18 +493,27 @@ export function MembersSidebar({
     [archived, bots, managedAgentByPubkey],
   );
   const managedAgentRuntimesQuery = useManagedAgentRuntimesQuery({
-    enabled: open && Boolean(relayUrl) && hasLocalManagedMember,
+    enabled:
+      open && !isReadOnlyRoster && Boolean(relayUrl) && hasLocalManagedMember,
   });
   const controllableManagedBots = React.useMemo(
     () =>
-      bots.flatMap((member) => {
-        const agent = managedAgentByPubkey.get(normalizePubkey(member.pubkey));
-        return agent ? [agent] : [];
-      }),
-    [bots, managedAgentByPubkey],
+      isReadOnlyRoster
+        ? []
+        : bots.flatMap((member) => {
+            const agent = managedAgentByPubkey.get(
+              normalizePubkey(member.pubkey),
+            );
+            return agent ? [agent] : [];
+          }),
+    [bots, isReadOnlyRoster, managedAgentByPubkey],
   );
   const canRemoveMember = React.useCallback(
     (member: ChannelMember) => {
+      if (isReadOnlyRoster) {
+        return false;
+      }
+
       return (
         (selfMember?.role === "admin" && member.pubkey !== currentPubkey) ||
         (selfMember?.role === "owner" && member.role !== "owner") ||
@@ -500,7 +521,7 @@ export function MembersSidebar({
         member.pubkey === currentPubkey
       );
     },
-    [currentPubkey, isMyBot, selfMember],
+    [currentPubkey, isMyBot, isReadOnlyRoster, selfMember],
   );
   const removableManagedBots = React.useMemo(
     () =>
@@ -692,6 +713,7 @@ export function MembersSidebar({
           memberPresenceQuery.data?.[member.pubkey.toLowerCase()] ?? null
         }
         profileAvatarUrl={memberProfile?.avatarUrl ?? null}
+        readOnly={isReadOnlyRoster}
         showOtherSetupMarker={showOtherSetupMarker}
         viewerIsOwner={viewerIsOwner}
       />
