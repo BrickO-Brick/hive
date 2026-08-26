@@ -601,20 +601,15 @@ impl ChannelInfoResolver {
         Some(info)
     }
 
-    pub async fn resolve(&self, channel_id: Uuid) -> Option<PromptChannelInfo> {
-        let mut info = self.resolve_channel_metadata(channel_id).await?;
-        match self.lookup_project(channel_id).await {
-            Ok(project) => info.project = project,
-            Err(error) => {
-                tracing::warn!(
-                    channel_id = %channel_id,
-                    "project context is indeterminate; refusing ordinary-channel context: {}",
-                    error.0
-                );
-                return None;
-            }
-        }
-        Some(info)
+    pub async fn resolve(
+        &self,
+        channel_id: Uuid,
+    ) -> Result<Option<PromptChannelInfo>, ProjectLookupError> {
+        let Some(mut info) = self.resolve_channel_metadata(channel_id).await else {
+            return Ok(None);
+        };
+        info.project = self.lookup_project(channel_id).await?;
+        Ok(Some(info))
     }
 
     async fn lookup_project(
@@ -1054,7 +1049,7 @@ async fn resolve_new_session_channel_context(
     channel_info: &ChannelInfoResolver,
     channel_id: Uuid,
 ) -> (bool, Option<String>, Option<String>) {
-    let Some(info) = channel_info.resolve(channel_id).await else {
+    let Ok(Some(info)) = channel_info.resolve(channel_id).await else {
         return (true, None, None);
     };
     let is_dm = info.channel_type == "dm";
@@ -2381,7 +2376,27 @@ pub async fn run_prompt_task(
     } else if let Some(ref b) = batch {
         // Build prompt from batch with context enrichment.
         // Try startup cache first; lazy-fetch via REST for dynamic channels.
-        let channel_info = ctx.channel_info.resolve(b.channel_id).await;
+        let channel_info = match ctx.channel_info.resolve(b.channel_id).await {
+            Ok(channel_info) => channel_info,
+            Err(error) => {
+                tracing::warn!(
+                    channel_id = %b.channel_id,
+                    "project context is indeterminate; requeueing turn before ACP delivery: {}",
+                    error.0
+                );
+                send_prompt_result(
+                    &result_tx,
+                    &turn_id,
+                    agent,
+                    source,
+                    PromptOutcome::Error(AcpError::Protocol(
+                        "project context is indeterminate".into(),
+                    )),
+                    requeue_batch_if_queue(&ctx, batch),
+                );
+                return;
+            }
+        };
 
         let conversation_context = if ctx.context_message_limit > 0 {
             fetch_conversation_context(b, &channel_info, &ctx).await
@@ -8610,8 +8625,8 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             },
         );
         assert!(
-            resolver.resolve(id).await.is_none(),
-            "an expired absence plus failed refresh must suppress ordinary-channel context"
+            resolver.resolve(id).await.is_err(),
+            "an expired absence plus failed refresh must remain indeterminate"
         );
         assert!(
             resolver
@@ -8643,6 +8658,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
         let resolved = resolver
             .resolve(id)
             .await
+            .expect("project lookup succeeds")
             .expect("stale project is retained");
         assert_eq!(resolved.project, Some(stale_project));
         assert_eq!(
@@ -8651,6 +8667,127 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             "each refresh is retried once"
         );
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn indeterminate_project_context_never_reaches_acp_prompt_boundary() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let channel_id = Uuid::new_v4();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = vec![0; 8192];
+                let _ = socket.read(&mut buf).await;
+                let body = "not-json";
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(), body
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+            }
+        });
+
+        let capture = std::env::temp_dir().join(format!(
+            "buzz-acp-indeterminate-project-wire-{}.ndjson",
+            Uuid::new_v4()
+        ));
+        let quoted_capture = capture.to_string_lossy().replace('\'', "'\\''");
+        let script = format!(
+            r#"while IFS= read -r line; do
+  printf '%s\n' "$line" >> '{quoted_capture}'
+  printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'
+done"#
+        );
+        let acp = AcpClient::spawn("bash", &["-c".into(), script], &[], false)
+            .await
+            .expect("spawn wire-capture ACP");
+        let mut agent = OwnedAgent {
+            index: 0,
+            acp,
+            state: SessionState::default(),
+            model_capabilities: None,
+            desired_model: None,
+            model_overridden: false,
+            desired_model_request_id: None,
+            desired_model_pending_ack: false,
+            startup_effort: None,
+            agent_name: "boundary-test-agent".into(),
+            goose_system_prompt_supported: None,
+            protocol_version: 1,
+        };
+        agent
+            .state
+            .sessions
+            .insert(channel_id, "live-session".into());
+
+        let event = EventBuilder::new(Kind::Custom(9), "do project work")
+            .sign_with_keys(&Keys::generate())
+            .unwrap();
+        let event_id = event.id.to_hex();
+        let batch = FlushBatch {
+            channel_id,
+            events: vec![crate::queue::BatchEvent {
+                event,
+                prompt_tag: "test".into(),
+                received_at: std::time::Instant::now(),
+            }],
+            cancelled_events: vec![],
+            cancel_reason: None,
+        };
+
+        let mut ctx = make_prompt_context_no_owner();
+        ctx.dedup_mode = DedupMode::Queue;
+        ctx.rest_client.base_url = base_url.clone();
+        ctx.channel_info = ChannelInfoResolver::new(
+            HashMap::from([(
+                channel_id,
+                crate::relay::ChannelInfo {
+                    name: "ordinary-looking".into(),
+                    channel_type: "stream".into(),
+                    description: None,
+                },
+            )]),
+            RestClient {
+                http: reqwest::Client::new(),
+                base_url,
+                keys: ctx.agent_keys.clone(),
+                auth_tag_json: None,
+            },
+        );
+        ctx.channel_info.projects.write().unwrap().insert(
+            channel_id,
+            CachedProjectInfo {
+                fetched_at: std::time::Instant::now() - PROJECT_INFO_CACHE_TTL,
+                value: None,
+            },
+        );
+        let (result_tx, mut result_rx) = mpsc::unbounded_channel();
+        run_prompt_task(
+            agent,
+            Some(batch),
+            None,
+            Arc::new(ctx),
+            result_tx,
+            None,
+            "indeterminate-project-turn".into(),
+        )
+        .await;
+
+        let mut result = result_rx.recv().await.expect("prompt result");
+        assert!(matches!(result.outcome, PromptOutcome::Error(_)));
+        let retry = result
+            .batch
+            .take()
+            .expect("indeterminate turn must be requeued");
+        assert_eq!(retry.events[0].event.id.to_hex(), event_id);
+        result.agent.acp.shutdown().await;
+        server.abort();
+        assert!(
+            !capture.exists(),
+            "indeterminate project context must not send any ACP prompt, especially Scope: channel"
+        );
     }
 
     #[tokio::test]
@@ -8720,7 +8857,11 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             },
         );
 
-        let info = resolver.resolve(id).await.expect("context resolves");
+        let info = resolver
+            .resolve(id)
+            .await
+            .expect("project lookup succeeds")
+            .expect("context resolves");
         assert_eq!(info.project.expect("project context").slug, "app");
         assert_eq!(requests.load(Ordering::SeqCst), 3);
         server.abort();
@@ -8769,7 +8910,11 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
         );
         let (resolver, _requests, server) = counting_resolver(response).await;
 
-        let info = resolver.resolve(id).await.expect("should resolve");
+        let info = resolver
+            .resolve(id)
+            .await
+            .expect("project lookup succeeds")
+            .expect("should resolve");
         assert_eq!(info.description.as_deref(), Some("Engineering discussions"));
         server.abort();
     }
@@ -8781,7 +8926,11 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
         let response = channel_metadata_response(id, &[["name", "buzz-dev"], ["t", "stream"]]);
         let (resolver, _requests, server) = counting_resolver(response).await;
 
-        let info = resolver.resolve(id).await.expect("should resolve");
+        let info = resolver
+            .resolve(id)
+            .await
+            .expect("project lookup succeeds")
+            .expect("should resolve");
         assert_eq!(info.description, None);
         server.abort();
     }
