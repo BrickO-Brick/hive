@@ -42,6 +42,7 @@ export function useAppNavigation() {
       behavior: NavigationBehavior = {},
       guardedTarget?: GuardedNavigation,
       traceChannelId?: string,
+      traceStartedAt?: number,
     ) => {
       const nextLocation = router.buildLocation(next as never);
       return commitGuardedNavigation({
@@ -66,6 +67,7 @@ export function useAppNavigation() {
           } as never),
         nextHref: nextLocation.href,
         traceChannelId,
+        traceStartedAt,
       });
     },
     [location.href, navigate, router],
@@ -281,6 +283,13 @@ export function useAppNavigation() {
         preserveSearchHighlight?: boolean;
         searchHighlight?: SearchHighlightNavigation;
         replace?: boolean;
+        /**
+         * Click-time anchor from `captureSwitchTraceAnchor()`, for callers
+         * that must await before they know the channel id (DM actions await
+         * `open_dm`). Without it the trace would start after that relay
+         * round-trip and exclude felt click latency.
+         */
+        traceStartedAt?: number;
         /** Open this thread panel directly without waiting for a timeline row. */
         thread?: string;
         threadRootId?: string | null;
@@ -327,9 +336,10 @@ export function useAppNavigation() {
           : undefined,
         // goChannel is the click-time anchor for the switch trace; it opens
         // inside commitGuardedNavigation only after the navigation guard
-        // accepts. Coverage: sidebar/search/notification navigations funnel
-        // through here — direct navigate() callers (Pulse startDm) and
-        // history back/forward are untraced. Navigations that stay on the
+        // accepts. Coverage: sidebar, search, notification, and DM-open
+        // navigations all funnel through here; DM callers pass traceStartedAt
+        // so the open_dm round-trip stays inside the measurement. History
+        // back/forward is deliberately untraced. Navigations that stay on the
         // already-active channel (exact re-click only rewrites router state;
         // jump-to-message/autoSend/force change only search params) never
         // re-run the channel's settle effects, so a trace could only time out
@@ -337,6 +347,7 @@ export function useAppNavigation() {
         location.pathname.endsWith(`/channels/${channelId}`)
           ? undefined
           : channelId,
+        options?.traceStartedAt,
       );
     },
     [commitNavigation, location.pathname],

@@ -1,5 +1,6 @@
 import * as React from "react";
-import { useNavigate } from "@tanstack/react-router";
+import { useAppNavigation } from "@/app/navigation/useAppNavigation";
+import { captureSwitchTraceAnchor } from "@/shared/lib/channelSwitchPerf";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
@@ -47,7 +48,7 @@ export function usePulseNoteActions({
   const [pendingUpvoteNoteIds, setPendingUpvoteNoteIds] = React.useState<
     ReadonlySet<string>
   >(() => new Set());
-  const navigate = useNavigate();
+  const { goChannel } = useAppNavigation();
   const queryClient = useQueryClient();
   const replyMutation = usePublishNoteMutation(currentPubkey);
   const toggleReactionMutation = useToggleReactionMutation();
@@ -154,21 +155,22 @@ export function usePulseNoteActions({
 
   const startDm = React.useCallback(
     async (pubkey: string) => {
+      // goChannel, not raw navigate: this is a first-class channel entry and
+      // must produce a switch measurement like every other one. Anchor before
+      // awaiting open_dm; see captureSwitchTraceAnchor.
+      const traceStartedAt = captureSwitchTraceAnchor();
       try {
         const directMessage = await openDmMutation.mutateAsync({
           pubkeys: [pubkey],
         });
-        await navigate({
-          to: "/channels/$channelId",
-          params: { channelId: directMessage.id },
-        });
+        await goChannel(directMessage.id, { traceStartedAt });
       } catch (error) {
         toast.error(
           error instanceof Error ? error.message : "Failed to open DM",
         );
       }
     },
-    [navigate, openDmMutation],
+    [goChannel, openDmMutation],
   );
 
   return {

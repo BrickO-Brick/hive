@@ -4,6 +4,7 @@ import {
 } from "@/app/navigation/navigationGuard";
 import {
   beginChannelSwitchTrace,
+  cancelChannelSwitchTrace,
   dropActiveChannelSwitchTrace,
 } from "@/shared/lib/channelSwitchPerf";
 
@@ -18,8 +19,12 @@ import {
  * navigation (deliberately untraced) would settle with the refused click's
  * inflated wall time. When `leavesChannelSurface` is set, any active trace is
  * dropped instead: the trace may be live with no channel screen mounted
- * (route still resolving), so this is the only reliable exit hook. Returns
- * whether the navigation was performed. `deps` exists for unit tests.
+ * (route still resolving), so this is the only reliable exit hook. A
+ * `navigate()` rejection cancels the trace this call opened — by identity, so
+ * a newer same-channel attempt is never erased — because no destination
+ * committed and an untraced re-entry would otherwise settle the failed
+ * attempt. Returns whether the navigation was performed. `deps` exists for
+ * unit tests.
  */
 export async function commitGuardedNavigation(
   input: {
@@ -30,16 +35,20 @@ export async function commitGuardedNavigation(
     hasStateUpdate?: boolean;
     leavesChannelSurface?: boolean;
     traceChannelId?: string;
+    /** Click-time anchor for callers that await before `goChannel`. */
+    traceStartedAt?: number;
     navigate: () => Promise<unknown>;
   },
   deps: {
     allow?: typeof allowNavigation;
     beginTrace?: typeof beginChannelSwitchTrace;
+    cancelTrace?: typeof cancelChannelSwitchTrace;
     dropActiveTrace?: typeof dropActiveChannelSwitchTrace;
   } = {},
 ): Promise<boolean> {
   const allow = deps.allow ?? allowNavigation;
   const beginTrace = deps.beginTrace ?? beginChannelSwitchTrace;
+  const cancelTrace = deps.cancelTrace ?? cancelChannelSwitchTrace;
   const dropActiveTrace = deps.dropActiveTrace ?? dropActiveChannelSwitchTrace;
   if (
     input.currentHref === input.nextHref &&
@@ -54,9 +63,15 @@ export async function commitGuardedNavigation(
   if (input.leavesChannelSurface) {
     dropActiveTrace();
   }
+  let handle = null;
   if (input.traceChannelId !== undefined) {
-    beginTrace(input.traceChannelId);
+    handle = beginTrace(input.traceChannelId, input.traceStartedAt) ?? null;
   }
-  await input.navigate();
+  try {
+    await input.navigate();
+  } catch (error) {
+    cancelTrace(handle);
+    throw error;
+  }
   return true;
 }

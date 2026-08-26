@@ -9,6 +9,14 @@
  * traces and settles for non-active channels are ignored, so background
  * refetches never pollute a switch measurement.
  *
+ * Traced entry paths: every navigation that reaches `goChannel` — sidebar,
+ * search, notification activation, and the DM actions, which capture
+ * `captureSwitchTraceAnchor()` at the click so their `open_dm` round-trip is
+ * inside the interval rather than before it. Deliberately untraced: history
+ * back/forward (no click to anchor on) and navigations that stay on the
+ * already-active channel (nothing re-runs the settle, so a trace could only
+ * time out).
+ *
  * Output per switch: a `[switch-perf]` console line plus User Timing
  * marks/measures (`buzz:channel-switch:*`) so Playwright perf specs and the
  * Performance panel can read the same numbers.
@@ -245,8 +253,42 @@ function traceOverlapsHiddenWindow(trace: ChannelSwitchTrace): boolean {
   );
 }
 
-export function beginChannelSwitchTrace(channelId: string): void {
-  if (typeof performance === "undefined") return;
+/**
+ * Timestamp to anchor a switch trace on, read during synchronous event
+ * dispatch. Callers that must await before they know the target channel (DM
+ * actions await `open_dm` for its id) capture this at the click and hand it to
+ * `goChannel`, so the relay round-trip stays inside the measured interval
+ * instead of silently preceding it.
+ */
+export function captureSwitchTraceAnchor(): number {
+  if (typeof performance === "undefined") return 0;
+  const now = performance.now();
+  const dispatchingEvent =
+    typeof window === "undefined" ? undefined : window.event;
+  return dispatchingEvent && typeof dispatchingEvent.timeStamp === "number"
+    ? Math.min(dispatchingEvent.timeStamp, now)
+    : now;
+}
+
+/** Opaque identity for one opened trace; see `cancelChannelSwitchTrace`. */
+export type ChannelSwitchTraceHandle = { readonly trace: ChannelSwitchTrace };
+
+/**
+ * Cancels `handle`'s trace, and only that one. A later begin for the same
+ * channel installs a different trace object, so a failed navigation can never
+ * erase a newer attempt's measurement.
+ */
+export function cancelChannelSwitchTrace(
+  handle: ChannelSwitchTraceHandle | null,
+): void {
+  if (handle && activeTrace === handle.trace) activeTrace = null;
+}
+
+export function beginChannelSwitchTrace(
+  channelId: string,
+  anchoredAt?: number,
+): ChannelSwitchTraceHandle | null {
+  if (typeof performance === "undefined") return null;
   ensureVisibilityWatcher();
   // A same-task unmount-then-renavigate to this channel leaves the exit
   // cleanup's scheduled abandon pending; it must not kill the fresh trace
@@ -256,14 +298,13 @@ export function beginChannelSwitchTrace(channelId: string): void {
   // can sit queued behind a long task before its handler runs, and that
   // input delay is felt switch latency. window.event is set only during
   // synchronous dispatch, so a stale timestamp can never leak in from async
-  // continuations; min() guards against skewed event clocks.
+  // continuations; min() guards against skewed event clocks and against a
+  // caller-supplied anchor that a monotonic-clock skew put in the future.
   const now = performance.now();
-  const dispatchingEvent =
-    typeof window === "undefined" ? undefined : window.event;
   const startedAt =
-    dispatchingEvent && typeof dispatchingEvent.timeStamp === "number"
-      ? Math.min(dispatchingEvent.timeStamp, now)
-      : now;
+    anchoredAt === undefined
+      ? captureSwitchTraceAnchor()
+      : Math.min(anchoredAt, now);
   activeTrace = {
     channelId,
     startedAt,
@@ -271,6 +312,7 @@ export function beginChannelSwitchTrace(channelId: string): void {
     windowFetch: null,
     membersFetch: null,
   };
+  const handle: ChannelSwitchTraceHandle = { trace: activeTrace };
   // Clear the whole previous switch here, not only in record(): traces that
   // die without recording (forum visits, route exits, drops) never reach
   // record()'s buffer clearing — weeks-long sessions would accumulate a
@@ -287,6 +329,7 @@ export function beginChannelSwitchTrace(channelId: string): void {
     detail: { channelId },
     startTime: startedAt,
   });
+  return handle;
 }
 
 export function markChannelSwitchRouteCommit(channelId: string): void {
@@ -418,6 +461,26 @@ export function resolveSettleWait(
 }
 
 /**
+ * Decides whether the post-readiness paint frame may still be recorded.
+ * `awaitDeferredCommit` guards every frame it drives, but the readiness →
+ * paint frame is a starvation seam of its own: process suspension (App Nap,
+ * a suspended VM) can land there with no `visibilitychange`, and the resumed
+ * frame would record the whole absence as an ordinary clean switch. Pure for
+ * unit testing.
+ */
+export function resolveFinalFrame(
+  now: number,
+  readyAt: number,
+  startedAt: number,
+): "record" | "drop" {
+  if (now - readyAt > MAX_SETTLE_FRAME_GAP_MS) return "drop";
+  if (now - startedAt > SWITCH_TRACE_TIMEOUT_MS + SETTLE_RENDER_WAIT_MS) {
+    return "drop";
+  }
+  return "record";
+}
+
+/**
  * Closes the active trace once the settled frame has painted. The timeline
  * renders rows through a deferred snapshot that exposes
  * `data-render-pending` until the low-priority commit catches up, and the
@@ -526,9 +589,17 @@ export function settleChannelSwitchTrace(channelId: string): void {
       dropTrace();
       return;
     }
+    const readyAt = now;
     window.requestAnimationFrame(() => {
       if (activeTrace !== trace) return;
       if (traceOverlapsHiddenWindow(trace)) {
+        dropTrace();
+        return;
+      }
+      if (
+        resolveFinalFrame(performance.now(), readyAt, trace.startedAt) ===
+        "drop"
+      ) {
         dropTrace();
         return;
       }

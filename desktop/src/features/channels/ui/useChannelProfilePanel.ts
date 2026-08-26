@@ -1,6 +1,7 @@
 import * as React from "react";
 
 import { useAppNavigation } from "@/app/navigation/useAppNavigation";
+import { captureSwitchTraceAnchor } from "@/shared/lib/channelSwitchPerf";
 import { useOpenDmMutation } from "@/features/channels/hooks";
 import type { ProfilePanelOpenOptions } from "@/shared/context/ProfilePanelContext";
 
@@ -60,8 +61,10 @@ export function useChannelProfilePanel({
   const openDmMutateAsync = openDmMutation.mutateAsync;
   const handleOpenDm = React.useCallback(
     async (pubkeys: string[]) => {
+      // Anchor before awaiting open_dm; see captureSwitchTraceAnchor.
+      const traceStartedAt = captureSwitchTraceAnchor();
       const dm = await openDmMutateAsync({ pubkeys });
-      await goChannel(dm.id);
+      await goChannel(dm.id, { traceStartedAt });
     },
     [goChannel, openDmMutateAsync],
   );

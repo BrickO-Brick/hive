@@ -3,6 +3,7 @@ import * as React from "react";
 import { toast } from "sonner";
 
 import { useAppNavigation } from "@/app/navigation/useAppNavigation";
+import { captureSwitchTraceAnchor } from "@/shared/lib/channelSwitchPerf";
 import {
   channelsQueryKey,
   useChannelsQuery,
@@ -152,9 +153,12 @@ export function useProfileInteractionActions({
       return;
     }
 
+    // Anchor before awaiting open_dm: that relay round-trip is felt click
+    // latency and belongs inside the switch measurement.
+    const traceStartedAt = captureSwitchTraceAnchor();
     void runAction("message", async (targetPubkey) => {
       const dm = await openDm({ pubkeys: [targetPubkey] });
-      await goChannel(dm.id);
+      await goChannel(dm.id, { traceStartedAt });
       if (isMountedRef.current) {
         onClose();
       }

@@ -268,3 +268,89 @@ test("a same-destination navigation carrying router state still commits", async 
   assert.equal(committed, true);
   assert.deepEqual(order, ["guard", "navigate"]);
 });
+
+test("a rejected navigate cancels the trace it opened", async () => {
+  await withTraceHarness(async ({ flush, measures }) => {
+    // Router/loader rejection: no destination committed, so the trace must
+    // not survive for a later untraced re-entry to settle with the failed
+    // attempt plus everything in between.
+    await assert.rejects(
+      commitGuardedNavigation({
+        currentHref: "/channels/aaaa",
+        nextHref: "/channels/bbbb",
+        guardedTarget: route("/channels/bbbb"),
+        traceChannelId: "bbbb",
+        navigate: async () => {
+          throw new Error("loader failed");
+        },
+      }),
+      /loader failed/,
+    );
+    settleChannelSwitchTrace("bbbb");
+    flush();
+    assert.deepEqual(measures(), []);
+  });
+});
+
+test("a rejected navigate never cancels a newer same-channel trace", async () => {
+  await withTraceHarness(async ({ flush, measures }) => {
+    // Cancel by identity, not by channel: the retry's trace is a different
+    // object and must keep its measurement when the first attempt rejects.
+    let releaseFirst;
+    const firstGate = new Promise((resolve) => {
+      releaseFirst = resolve;
+    });
+    const failing = assert.rejects(
+      commitGuardedNavigation({
+        currentHref: "/channels/aaaa",
+        nextHref: "/channels/bbbb",
+        guardedTarget: route("/channels/bbbb"),
+        traceChannelId: "bbbb",
+        navigate: async () => {
+          await firstGate;
+          throw new Error("loader failed");
+        },
+      }),
+      /loader failed/,
+    );
+    // Retry lands while the first attempt is still in flight.
+    await commitGuardedNavigation({
+      currentHref: "/channels/aaaa",
+      nextHref: "/channels/bbbb",
+      guardedTarget: route("/channels/bbbb"),
+      force: true,
+      traceChannelId: "bbbb",
+      navigate: async () => {},
+    });
+    releaseFirst();
+    await failing;
+    settleChannelSwitchTrace("bbbb");
+    flush();
+    assert.deepEqual(measures(), ["bbbb"]);
+  });
+});
+
+test("a DM caller's click anchor is carried into the trace", async () => {
+  await withTraceHarness(async () => {
+    const anchors = [];
+    await commitGuardedNavigation(
+      {
+        currentHref: "/",
+        nextHref: "/channels/bbbb",
+        guardedTarget: route("/channels/bbbb"),
+        traceChannelId: "bbbb",
+        traceStartedAt: 1234,
+        navigate: async () => {},
+      },
+      {
+        allow: () => true,
+        beginTrace: (channelId, anchoredAt) => {
+          anchors.push([channelId, anchoredAt]);
+          return null;
+        },
+      },
+    );
+    // Without this the open_dm round-trip would sit outside the measurement.
+    assert.deepEqual(anchors, [["bbbb", 1234]]);
+  });
+});

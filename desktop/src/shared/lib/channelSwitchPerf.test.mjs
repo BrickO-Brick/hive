@@ -5,7 +5,12 @@ import {
   shouldAttributeFetch,
   buildSwitchPerfLogRecord,
   resolveSettleAction,
+  CHANNEL_SWITCH_MEASURE,
+  beginChannelSwitchTrace,
+  resetChannelSwitchTrace,
+  resolveFinalFrame,
   resolveSettleWait,
+  settleChannelSwitchTrace,
   summarizeChannelSwitchTrace,
 } from "./channelSwitchPerf.ts";
 
@@ -535,4 +540,98 @@ test("leaving the channel surface abandons the trace; history-back records nothi
       assert.deepEqual(measures(), []);
     },
   );
+});
+
+test("suspension between readiness and the paint frame drops the record", () => {
+  // The reviewer's repro: readiness at t=10ms, final frame at t=20_000ms.
+  // Recording here would emit total=20000ms as an ordinary clean switch —
+  // App Nap fires no visibilitychange, so the hidden-window guard cannot see
+  // it and the frame-gap guard in awaitDeferredCommit has already run.
+  assert.equal(resolveFinalFrame(20_000, 10, 0), "drop");
+  // A normal paint frame one refresh interval after readiness still records.
+  assert.equal(resolveFinalFrame(27, 10, 0), "record");
+  // Boundary: exactly the frame-gap cap is still a record; one past it drops.
+  assert.equal(resolveFinalFrame(3_010, 10, 0), "record");
+  assert.equal(resolveFinalFrame(3_011, 10, 0), "drop");
+});
+
+test("the final frame also honors the overall trace age cap", () => {
+  // Readiness landed just under the age cap and the paint frame is prompt,
+  // so the frame gap is innocent — only the age check can catch this.
+  assert.equal(resolveFinalFrame(35_001, 35_000, 0), "drop");
+  assert.equal(resolveFinalFrame(35_000, 34_999, 0), "record");
+});
+
+// Drives the real settle lifecycle with a controllable clock and rAF queue so
+// a stall can be injected at one exact seam. Offsets are rebased above the
+// real clock: earlier tests in this file fire visibilitychange, and a trace
+// back-dated below those timestamps is (correctly) dropped at settle entry —
+// which would make every assertion here vacuous.
+function withClockedFrames(run) {
+  const frames = [];
+  const originalWindow = globalThis.window;
+  const originalDocument = globalThis.document;
+  const originalNow = performance.now;
+  const base = originalNow.call(performance) + 1_000;
+  let clock = base;
+  performance.now = () => clock;
+  globalThis.window = {
+    requestAnimationFrame: (cb) => frames.push(cb) && frames.length,
+    cancelAnimationFrame: () => {},
+  };
+  globalThis.document = {
+    addEventListener: () => {},
+    // No pending marker: readiness is reached on the first settle frame.
+    querySelector: () => null,
+    removeEventListener: () => {},
+    visibilityState: "visible",
+  };
+  performance.clearMeasures?.(CHANNEL_SWITCH_MEASURE);
+  const at = (offset) => {
+    clock = base + offset;
+  };
+  const step = (offset) => {
+    at(offset);
+    for (const cb of frames.splice(0, frames.length)) cb();
+  };
+  const measures = () =>
+    performance.getEntriesByName(CHANNEL_SWITCH_MEASURE).length;
+  try {
+    run({ at, step, measures });
+  } finally {
+    performance.now = originalNow;
+    resetChannelSwitchTrace();
+    performance.clearMeasures?.(CHANNEL_SWITCH_MEASURE);
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+    if (originalDocument === undefined) delete globalThis.document;
+    else globalThis.document = originalDocument;
+  }
+}
+
+test("a stall between readiness and the paint frame records nothing", () => {
+  withClockedFrames(({ at, step, measures }) => {
+    at(0);
+    beginChannelSwitchTrace("aaaa");
+    at(10);
+    settleChannelSwitchTrace("aaaa");
+    // Readiness frame: no pending marker, inside the wait deadline.
+    step(10);
+    // Process suspended here (App Nap): no visibilitychange fires, so only
+    // the final-frame guard can catch it.
+    step(20_000);
+    assert.equal(measures(), 0, "a 20s suspension must not record a switch");
+  });
+});
+
+test("a prompt paint frame after readiness still records", () => {
+  withClockedFrames(({ at, step, measures }) => {
+    at(0);
+    beginChannelSwitchTrace("aaaa");
+    at(10);
+    settleChannelSwitchTrace("aaaa");
+    step(10);
+    step(26);
+    assert.equal(measures(), 1, "the guard must not drop healthy switches");
+  });
 });
