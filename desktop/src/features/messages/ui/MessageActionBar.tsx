@@ -41,7 +41,12 @@ import {
   DropdownMenuTrigger,
 } from "@/shared/ui/dropdown-menu";
 import { isPositiveEmojiParticle } from "@/shared/ui/EmojiBurstProvider";
-import { Popover, PopoverContent, PopoverTrigger } from "@/shared/ui/popover";
+import {
+  Popover,
+  PopoverAnchor,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/shared/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 import { BestieMessagePopover } from "./BestieMessagePopover";
 import {
@@ -386,6 +391,7 @@ export const MessageActionBar = React.memo(function MessageActionBar({
   const [activeSurface, setActiveSurface] = React.useState<
     "reactions" | "bestie" | "more" | null
   >(null);
+  const toolbarAnchorRef = React.useRef<HTMLDivElement>(null);
   const isReactionPickerOpen = activeSurface === "reactions";
   const isBestiePopoverOpen = activeSurface === "bestie";
   const isDropdownOpen = activeSurface === "more";
@@ -477,6 +483,7 @@ export const MessageActionBar = React.memo(function MessageActionBar({
               "relative flex items-center gap-0.5 p-1",
               activeSurface && "pointer-events-none",
             )}
+            ref={toolbarAnchorRef}
             transition={{
               duration: 0.12,
               ease: MESSAGE_ACTION_BLOOM_EASE_OUT,
@@ -489,6 +496,7 @@ export const MessageActionBar = React.memo(function MessageActionBar({
                 }
                 open={isReactionPickerOpen}
               >
+                <PopoverAnchor virtualRef={toolbarAnchorRef} />
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <PopoverTrigger asChild>
@@ -511,7 +519,7 @@ export const MessageActionBar = React.memo(function MessageActionBar({
                   align="end"
                   className="data-[state=closed]:animate-none data-[state=open]:animate-none"
                   side="top"
-                  sideOffset={6}
+                  sideOffset={2}
                 >
                   <MessageActionBloomSurface
                     className="w-auto p-0"
@@ -540,6 +548,7 @@ export const MessageActionBar = React.memo(function MessageActionBar({
 
             {canCopyMessageLink(message, channelId) ? (
               <BestieMessagePopover
+                anchorRef={toolbarAnchorRef}
                 channelId={channelId}
                 message={message}
                 onOpenChange={(nextOpen) =>

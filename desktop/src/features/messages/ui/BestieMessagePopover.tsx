@@ -14,7 +14,12 @@ import { MessageActionBloomSurface } from "@/features/messages/ui/MessageActionB
 import { ProfileAvatar } from "@/features/profile/ui/ProfileAvatar";
 import { useIdentityQuery } from "@/shared/api/hooks";
 import { Button } from "@/shared/ui/button";
-import { Popover, PopoverContent, PopoverTrigger } from "@/shared/ui/popover";
+import {
+  Popover,
+  PopoverAnchor,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/shared/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 import { UserAvatar } from "@/shared/ui/UserAvatar";
 import { VideoReviewCommentMarkdown } from "@/shared/ui/VideoReviewCommentMarkdown";
@@ -22,11 +27,13 @@ import { VideoReviewCommentMarkdown } from "@/shared/ui/VideoReviewCommentMarkdo
 const ACTION_BUTTON_CLASS = "h-8 w-8 rounded-full p-0";
 
 export function BestieMessagePopover({
+  anchorRef,
   channelId,
   message,
   onOpenChange,
   open,
 }: {
+  anchorRef: React.RefObject<HTMLElement | null>;
   channelId: string;
   message: TimelineMessage;
   onOpenChange: (open: boolean) => void;
@@ -85,6 +92,7 @@ export function BestieMessagePopover({
 
   return (
     <Popover onOpenChange={onOpenChange} open={open}>
+      <PopoverAnchor virtualRef={anchorRef} />
       <Tooltip>
         <TooltipTrigger asChild>
           <PopoverTrigger asChild>
@@ -113,7 +121,7 @@ export function BestieMessagePopover({
         align="end"
         className="data-[state=closed]:animate-none data-[state=open]:animate-none"
         side="top"
-        sideOffset={6}
+        sideOffset={2}
       >
         <MessageActionBloomSurface
           className="w-[min(328px,calc(100vw-2rem))] p-4"

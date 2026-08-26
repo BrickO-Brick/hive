@@ -6,10 +6,9 @@ import { cn } from "@/shared/lib/cn";
 export const MESSAGE_ACTION_BLOOM_LAYOUT_ID = "message-action-bloom-surface";
 export const MESSAGE_ACTION_BLOOM_EASE_OUT = [0.23, 1, 0.32, 1] as const;
 
-const BLOOM_LAYOUT_SPRING = {
-  type: "spring",
-  stiffness: 400,
-  damping: 28,
+const BLOOM_LAYOUT_TRANSITION = {
+  duration: 0.24,
+  ease: MESSAGE_ACTION_BLOOM_EASE_OUT,
 } as const;
 
 type MessageActionBloomSurfaceProps = Omit<
@@ -43,6 +42,23 @@ export const MessageActionBloomSurface = React.forwardRef<
   ref,
 ) {
   const reduceMotion = useReducedMotion();
+  const [contentReady, setContentReady] = React.useState(
+    reduceMotion || !revealContent,
+  );
+
+  React.useEffect(() => {
+    if (reduceMotion || !revealContent) {
+      setContentReady(true);
+      return;
+    }
+
+    // Radix positions portalled content after it mounts. Keep the destination
+    // content out of sight through that measurement and the first part of the
+    // shell morph; the callback below normally wins, while this is a safety net
+    // for browsers that skip layout-complete notifications.
+    const fallback = window.setTimeout(() => setContentReady(true), 160);
+    return () => window.clearTimeout(fallback);
+  }, [reduceMotion, revealContent]);
 
   return (
     <motion.div
@@ -51,28 +67,28 @@ export const MessageActionBloomSurface = React.forwardRef<
         className,
       )}
       layoutId={MESSAGE_ACTION_BLOOM_LAYOUT_ID}
+      onLayoutAnimationComplete={() => setContentReady(true)}
       ref={ref}
       style={{ ...style, borderRadius: surfaceRadius }}
       transition={
         reduceMotion
           ? { duration: 0 }
           : {
-              layout: BLOOM_LAYOUT_SPRING,
+              layout: BLOOM_LAYOUT_TRANSITION,
             }
       }
       {...props}
     >
       {revealContent ? (
         <motion.div
-          animate={{ opacity: 1 }}
+          animate={{ opacity: contentReady ? 1 : 0 }}
           className={contentClassName}
           initial={{ opacity: 0 }}
           transition={
             reduceMotion
               ? { duration: 0 }
               : {
-                  delay: 0.08,
-                  duration: 0.14,
+                  duration: 0.12,
                   ease: MESSAGE_ACTION_BLOOM_EASE_OUT,
                 }
           }

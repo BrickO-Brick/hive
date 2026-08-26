@@ -129,6 +129,29 @@ test("message action sends a message link and optional note to Bestie", async ({
   await expect(
     page.getByTestId(`reaction-bloom-panel-${messageId}`),
   ).toBeVisible();
+  const reactionPanel = page.getByTestId(`reaction-bloom-panel-${messageId}`);
+  await expect
+    .poll(() =>
+      reactionPanel.evaluate(
+        (element) => window.getComputedStyle(element).transform,
+      ),
+    )
+    .toBe("none");
+  const [reactionBox, reactionAnchorBox] = await Promise.all([
+    reactionPanel.boundingBox(),
+    actionBar.boundingBox(),
+  ]);
+  expect(reactionBox).not.toBeNull();
+  expect(reactionAnchorBox).not.toBeNull();
+  if (reactionBox && reactionAnchorBox) {
+    expect(
+      Math.abs(
+        reactionBox.x +
+          reactionBox.width -
+          (reactionAnchorBox.x + reactionAnchorBox.width),
+      ),
+    ).toBeLessThanOrEqual(10);
+  }
   await page.keyboard.press("Escape");
   await expect(actionBar).toHaveAttribute("data-bloom-surface", "toolbar");
 
@@ -137,6 +160,27 @@ test("message action sends a message link and optional note to Bestie", async ({
   await expect(
     page.getByTestId(`more-actions-panel-${messageId}`),
   ).toBeVisible();
+  const morePanel = page.getByTestId(`more-actions-panel-${messageId}`);
+  await expect
+    .poll(() =>
+      morePanel.evaluate(
+        (element) => window.getComputedStyle(element).transform,
+      ),
+    )
+    .toBe("none");
+  const [moreBox, moreAnchorBox] = await Promise.all([
+    morePanel.boundingBox(),
+    actionBar.boundingBox(),
+  ]);
+  expect(moreBox).not.toBeNull();
+  expect(moreAnchorBox).not.toBeNull();
+  if (moreBox && moreAnchorBox) {
+    expect(
+      Math.abs(
+        moreBox.x + moreBox.width - (moreAnchorBox.x + moreAnchorBox.width),
+      ),
+    ).toBeLessThanOrEqual(10);
+  }
   await page.keyboard.press("Escape");
   await expect(actionBar).toHaveAttribute("data-bloom-surface", "toolbar");
 
@@ -166,6 +210,15 @@ test("message action sends a message link and optional note to Bestie", async ({
       popover.evaluate((element) => window.getComputedStyle(element).transform),
     )
     .toBe("none");
+  await expect
+    .poll(() =>
+      popover.evaluate((element) =>
+        Number.parseFloat(
+          window.getComputedStyle(element.firstElementChild as Element).opacity,
+        ),
+      ),
+    )
+    .toBeGreaterThan(0.99);
   await expect(popover).toContainText("Bestie");
   await expect(popover).not.toContainText("Share this message with Bestie");
   await expect(popover).toContainText("Please fold this launch decision");
@@ -184,6 +237,17 @@ test("message action sends a message link and optional note to Bestie", async ({
   expect(snapshotBodyBox).not.toBeNull();
   if (popoverBox && snapshotBox && snapshotBodyBox) {
     expect(popoverBox.width).toBeLessThanOrEqual(328);
+    const actionBarBox = await actionBar.boundingBox();
+    expect(actionBarBox).not.toBeNull();
+    if (actionBarBox) {
+      expect(
+        Math.abs(
+          popoverBox.x +
+            popoverBox.width -
+            (actionBarBox.x + actionBarBox.width),
+        ),
+      ).toBeLessThanOrEqual(10);
+    }
     expect(snapshotBox.width / (popoverBox.width - 32)).toBeCloseTo(0.75, 1);
     expect(Math.abs(snapshotBox.x - (popoverBox.x + 16))).toBeLessThanOrEqual(
       1,
