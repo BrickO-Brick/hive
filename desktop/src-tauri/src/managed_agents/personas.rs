@@ -190,7 +190,13 @@ pub(crate) fn built_in_persona_definition(id: &str, now: &str) -> Option<AgentDe
 }
 
 fn built_in_order(id: &str) -> Option<usize> {
-    available_built_in_personas(bestie_build_enabled()).position(|persona| persona.id == id)
+    BUILT_IN_PERSONAS
+        .iter()
+        .position(|persona| persona.id == id)
+}
+
+fn persona_available_in_build(id: &str, include_bestie: bool) -> bool {
+    include_bestie || id != BESTIE_PERSONA_ID
 }
 
 fn sort_personas(records: &mut [AgentDefinition]) {
@@ -215,10 +221,19 @@ fn sort_personas(records: &mut [AgentDefinition]) {
     });
 }
 
-fn merge_personas(mut stored: Vec<AgentDefinition>, now: &str) -> (Vec<AgentDefinition>, bool) {
+#[cfg(test)]
+fn merge_personas(stored: Vec<AgentDefinition>, now: &str) -> (Vec<AgentDefinition>, bool) {
+    merge_personas_for_build(stored, now, bestie_build_enabled())
+}
+
+fn merge_personas_for_build(
+    mut stored: Vec<AgentDefinition>,
+    now: &str,
+    include_bestie: bool,
+) -> (Vec<AgentDefinition>, bool) {
     let mut changed = false;
 
-    for built_in in built_in_persona_records(now) {
+    for built_in in built_in_persona_records_for_build(now, include_bestie) {
         if let Some(existing) = stored.iter_mut().find(|record| record.id == built_in.id) {
             if !existing.is_builtin {
                 existing.is_builtin = true;
@@ -232,6 +247,8 @@ fn merge_personas(mut stored: Vec<AgentDefinition>, now: &str) -> (Vec<AgentDefi
 
     // Demote any stored persona still flagged as built-in whose id is no
     // longer in BUILT_IN_PERSONAS (e.g. a built-in that has been retired).
+    // Build-gated personas remain known built-ins even when unavailable. An
+    // ineligible build hides them but must never rewrite their ownership.
     // The record stays so existing managed-agent and team references keep
     // working; the user can delete it from the catalog like any custom
     // persona once they no longer need it.
@@ -252,6 +269,34 @@ fn merge_personas(mut stored: Vec<AgentDefinition>, now: &str) -> (Vec<AgentDefi
 
     sort_personas(&mut stored);
     (stored, changed)
+}
+
+fn visible_personas_for_build(
+    records: Vec<AgentDefinition>,
+    include_bestie: bool,
+) -> Vec<AgentDefinition> {
+    records
+        .into_iter()
+        .filter(|record| persona_available_in_build(&record.id, include_bestie))
+        .collect()
+}
+
+fn definitions_for_save(
+    records: &[AgentDefinition],
+    existing: &[AgentDefinition],
+    include_bestie: bool,
+) -> Vec<AgentDefinition> {
+    let mut complete = records.to_vec();
+    for hidden_builtin in existing.iter().filter(|record| {
+        built_in_order(&record.id).is_some()
+            && !persona_available_in_build(&record.id, include_bestie)
+    }) {
+        if !complete.iter().any(|record| record.id == hidden_builtin.id) {
+            complete.push(hidden_builtin.clone());
+        }
+    }
+    sort_personas(&mut complete);
+    complete
 }
 
 /// Soft-deprecate retired built-in personas by appending " (retired)" to
@@ -375,6 +420,7 @@ pub fn load_personas<R: tauri::Runtime>(
     app: &AppHandle<R>,
 ) -> Result<Vec<AgentDefinition>, String> {
     let now = now_iso();
+    let include_bestie = bestie_build_enabled();
 
     // Post-fold: definitions live in the unified agent store, presented in
     // the legacy shape. Pre-fold stores are converted by
@@ -385,12 +431,12 @@ pub fn load_personas<R: tauri::Runtime>(
         .filter_map(|record| record.to_definition_view())
         .collect();
 
-    let (records, changed) = merge_personas(records, &now);
+    let (records, changed) = merge_personas_for_build(records, &now, include_bestie);
     if changed {
-        save_personas(app, &records)?;
+        save_personas_for_build(app, &records, include_bestie)?;
     }
 
-    Ok(records)
+    Ok(visible_personas_for_build(records, include_bestie))
 }
 
 /// Read the raw persona records at `path` — no built-in merge, no write-back.
@@ -415,12 +461,23 @@ pub fn save_personas<R: tauri::Runtime>(
     app: &AppHandle<R>,
     records: &[AgentDefinition],
 ) -> Result<(), String> {
-    let mut sorted = records.to_vec();
-    sort_personas(&mut sorted);
+    save_personas_for_build(app, records, bestie_build_enabled())
+}
+
+fn save_personas_for_build<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    records: &[AgentDefinition],
+    include_bestie: bool,
+) -> Result<(), String> {
+    let existing: Vec<_> = crate::managed_agents::storage::load_agent_definitions_unfiltered(app)?
+        .iter()
+        .filter_map(|record| record.to_definition_view())
+        .collect();
+    let complete = definitions_for_save(records, &existing, include_bestie);
 
     // Post-fold: persona saves write key-less definition records into the
     // unified agent store (instances preserved by `save_agent_definitions`).
-    let definitions: Vec<_> = sorted
+    let definitions: Vec<_> = complete
         .into_iter()
         .map(|persona| persona.into_agent_record())
         .collect();
