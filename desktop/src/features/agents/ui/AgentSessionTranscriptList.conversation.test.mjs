@@ -1,15 +1,18 @@
 /**
  * Rendering contract for the `conversation` transcript variant (focus mode):
- * layout, prompt authorship, thoughts, plans, lifecycle chrome, and the
- * byte-for-byte guarantee for the other variants.
+ * layout, prompt authorship, plans, lifecycle chrome, and the byte-for-byte
+ * guarantee for the other variants.
  *
  * Mounts the shipping AgentSessionTranscriptList so the variant plumbing
  * (variant context + derived turn meta) is exercised end to end rather than
  * asserting against re-implemented render classes.
  *
- * The identity row and code-block chrome live in
- * `AgentSessionTranscriptList.conversationChrome.test.mjs`; shared jsdom setup,
- * ambient-formatting pins, and render helpers live in the harness both import.
+ * Reasoning is no longer a per-thought disclosure on this path — thoughts,
+ * tool steps and interim notes fold into one work block, whose contract lives in
+ * `AgentSessionWorkBlock.test.mjs`. The identity row and code-block chrome live
+ * in `AgentSessionTranscriptList.conversationChrome.test.mjs`; shared jsdom
+ * setup, ambient-formatting pins, and render helpers live in the harness they
+ * all import.
  *
  * The byte-for-byte tests at the bottom are the important ones: `conversation`
  * is purely additive, so `default` and `compactPreview` markup for the same
@@ -22,19 +25,16 @@ import { test } from "node:test";
 
 import {
   act,
-  AGENT,
   AUTHOR,
   AUTHOR_PROFILES,
   AUTHOR_TRUNCATED,
   BASELINE_MARKUP,
   baselineItems,
   cleanup,
-  domWindow,
   FIXTURE_LOCALE,
   items,
   renderRerenderableTranscript,
   renderTranscript,
-  syncAgentTurnsFromEvents,
 } from "./AgentSessionTranscriptList.conversationHarness.mjs";
 
 test("conversation marks the transcript container and centers a reading column", async () => {
@@ -145,160 +145,6 @@ test("conversation renders agent messages as unboxed prose at full fidelity", as
   assert.doesNotMatch(message.innerHTML, /rounded-2xl/);
   // The shared markdown renderer is reused, so inline code still renders as code.
   assert.ok(message.querySelector("code"), "markdown/code fidelity preserved");
-});
-
-test("conversation collapses a finished thought into a Thought for Ns disclosure", async () => {
-  const { container } = await renderTranscript("conversation");
-  const disclosure = container.querySelector(
-    '[data-testid="transcript-thought-item"]',
-  );
-  assert.ok(disclosure, "thought should render");
-  assert.equal(disclosure.tagName, "DETAILS");
-  assert.equal(disclosure.open, false, "finished thoughts start collapsed");
-  // thought at :02, next turn item (plan) at :07 → 5s.
-  assert.equal(
-    disclosure
-      .querySelector('[data-testid="transcript-thought-disclosure"]')
-      .textContent.trim(),
-    "Thought for 5s",
-  );
-});
-
-test("conversation auto-opens the thought disclosure while it is streaming", async () => {
-  // A live turn on this channel makes the trailing item the streaming one, which
-  // is exactly the condition the disclosure auto-opens for.
-  syncAgentTurnsFromEvents(AGENT.agentPubkey, [
-    {
-      seq: 1,
-      timestamp: "2026-06-14T19:00:02.000Z",
-      kind: "turn_started",
-      agentIndex: 0,
-      channelId: "chan-1",
-      sessionId: "sess-1",
-      turnId: "turn-1",
-      payload: null,
-    },
-  ]);
-  const streamingThought = items().slice(0, 2);
-  const { container } = await renderTranscript("conversation", {
-    channelId: "chan-1",
-    items: streamingThought,
-  });
-
-  const disclosure = container.querySelector(
-    '[data-testid="transcript-thought-item"]',
-  );
-  assert.equal(disclosure.open, true, "streaming thought should be open");
-  const summary = disclosure.querySelector(
-    '[data-testid="transcript-thought-disclosure"]',
-  );
-  // Shimmer paints a visual-only aria-hidden duplicate of the label, so match a
-  // prefix rather than the whole text node.
-  assert.match(summary.textContent, /^Thinking…/);
-  assert.doesNotMatch(summary.textContent, /Thought for/);
-});
-
-test("conversation folds the thought when the turn moves on, even after the browser echoes the auto-open toggle", async () => {
-  // Regression guard for the programmatic-toggle echo trap: a real browser fires
-  // `toggle` when React flips `open`, so the auto-open for a streaming thought
-  // arrives back at the component as if the reader had clicked. JSDOM does not
-  // fire that event itself, so the test injects it. If the handler records it as
-  // a reader choice, the disclosure stays pinned open forever and reasoning
-  // never recedes once the agent acts.
-  syncAgentTurnsFromEvents(AGENT.agentPubkey, [
-    {
-      seq: 1,
-      timestamp: "2026-06-14T19:00:02.000Z",
-      kind: "turn_started",
-      agentIndex: 0,
-      channelId: "chan-1",
-      sessionId: "sess-1",
-      turnId: "turn-1",
-      payload: null,
-    },
-  ]);
-  const streaming = { channelId: "chan-1", items: items().slice(0, 2) };
-  const { container, setOverrides } = await renderRerenderableTranscript(
-    "conversation",
-    streaming,
-  );
-
-  const disclosure = container.querySelector(
-    '[data-testid="transcript-thought-item"]',
-  );
-  assert.equal(disclosure.open, true, "streaming thought should auto-open");
-
-  // The browser echo: `open` already agrees with what React rendered, and the
-  // event follows rather than causes that state.
-  await act(async () => {
-    disclosure.open = true;
-    disclosure.dispatchEvent(new domWindow.Event("toggle"));
-  });
-  assert.equal(
-    disclosure.open,
-    true,
-    "the echo must not disturb the open tail",
-  );
-
-  // The turn produces its next item, so the thought is no longer the streaming
-  // tail and should recede.
-  await setOverrides({ ...streaming, items: items().slice(0, 3) });
-
-  const settled = container.querySelector(
-    '[data-testid="transcript-thought-item"]',
-  );
-  assert.equal(
-    settled.open,
-    false,
-    "a thought the agent has acted on should fold again",
-  );
-  assert.match(
-    settled
-      .querySelector('[data-testid="transcript-thought-disclosure"]')
-      .textContent.trim(),
-    /^Thought for 5s/,
-  );
-});
-
-test("conversation keeps a reader-opened thought open after the turn moves on", async () => {
-  // The other half of the guard: a toggle that DISAGREES with the rendered state
-  // is a genuine reader choice and must win over the stream transition.
-  syncAgentTurnsFromEvents(AGENT.agentPubkey, [
-    {
-      seq: 1,
-      timestamp: "2026-06-14T19:00:02.000Z",
-      kind: "turn_started",
-      agentIndex: 0,
-      channelId: "chan-1",
-      sessionId: "sess-1",
-      turnId: "turn-1",
-      payload: null,
-    },
-  ]);
-  // Three items so the thought is not the streaming tail: it renders collapsed.
-  const settledItems = { channelId: "chan-1", items: items().slice(0, 3) };
-  const { container, setOverrides } = await renderRerenderableTranscript(
-    "conversation",
-    settledItems,
-  );
-
-  const disclosure = container.querySelector(
-    '[data-testid="transcript-thought-item"]',
-  );
-  assert.equal(disclosure.open, false, "a settled thought starts collapsed");
-
-  await act(async () => {
-    disclosure.open = true;
-    disclosure.dispatchEvent(new domWindow.Event("toggle"));
-  });
-
-  await setOverrides({ ...settledItems, items: items() });
-
-  assert.equal(
-    container.querySelector('[data-testid="transcript-thought-item"]').open,
-    true,
-    "the reader's choice should survive later transcript items",
-  );
 });
 
 test("conversation renders the plan as a checklist card with in-place progress", async () => {
@@ -518,4 +364,143 @@ test("the byte-for-byte baseline actually exercises every renderable item kind",
     .join("\n");
   assert.match(lifecycleText, /Context compacted/);
   assert.match(lifecycleText, /Turn failed/);
+});
+
+/**
+ * A reader's expansion survives the work blocks being regrouped underneath it.
+ *
+ * Work blocks are derived, not stored: `groupConversationWorkBlocks` rebuilds
+ * them every render and ids each one after its first step
+ * (`work-block:${items[0].id}`). `findFinalAnswerId` exempts only the LAST
+ * assistant message from the block, so a second assistant message demotes the
+ * first — the earlier answer becomes work, and the runs on either side of it
+ * merge into one block:
+ *
+ *     frame 2  work-block:thought:1[...]  msg:1  work-block:thought:2[...]
+ *     frame 3  work-block:thought:1[thought:1,tool:1,msg:1,thought:2,tool:2]  msg:2
+ *
+ * `work-block:thought:2` stops existing, so React unmounts it. With the fold
+ * state held in that component, a reader who had opened the second block to read
+ * its steps was folded shut by the agent posting a second message — an event
+ * they did not cause and cannot predict. This drives the real list so the actual
+ * regrouping runs, rather than asserting against hand-built segments.
+ */
+test("conversation keeps a reader's expanded work block open when a later answer regroups it", async () => {
+  const shared = { channelId: "chan-1", sessionId: "sess-1", turnId: "turn-1" };
+  const at = (seconds) =>
+    `2026-06-14T19:00:${String(seconds).padStart(2, "0")}.000Z`;
+  const thought = (id, seconds) => ({
+    ...shared,
+    id,
+    type: "thought",
+    renderClass: "thought",
+    title: "Thinking",
+    text: `reasoning ${id}`,
+    timestamp: at(seconds),
+  });
+  const tool = (id, seconds) => ({
+    ...shared,
+    id,
+    type: "tool",
+    renderClass: "shell",
+    title: id,
+    toolName: "shell",
+    buzzToolName: null,
+    status: "completed",
+    args: {},
+    result: "ok",
+    isError: false,
+    timestamp: at(seconds),
+    startedAt: at(seconds),
+    completedAt: at(seconds),
+    descriptor: {
+      renderClass: "shell",
+      label: "Ran command",
+      preview: id,
+      source: "shell",
+      groupKey: "shell:command",
+    },
+  });
+  const answer = (id, seconds) => ({
+    ...shared,
+    id,
+    type: "message",
+    renderClass: "message",
+    role: "assistant",
+    title: "Test Agent",
+    text: `answer ${id}`,
+    timestamp: at(seconds),
+  });
+
+  const firstRun = [thought("thought:1", 1), tool("tool:1", 2)];
+  const frame1 = [...firstRun, answer("msg:1", 3)];
+  const frame2 = [...frame1, thought("thought:2", 4), tool("tool:2", 5)];
+  const frame3 = [...frame2, answer("msg:2", 6)];
+
+  const { container, setOverrides } = await renderRerenderableTranscript(
+    "conversation",
+    { items: frame1 },
+  );
+  const blocks = () => [
+    ...container.querySelectorAll('[data-testid="transcript-work-block"]'),
+  ];
+  const summaries = () => [
+    ...container.querySelectorAll(
+      '[data-testid="transcript-work-block-summary"]',
+    ),
+  ];
+  const openCount = () =>
+    summaries().filter((node) => node.getAttribute("aria-expanded") === "true")
+      .length;
+
+  await setOverrides({ items: frame2 });
+  assert.equal(
+    blocks().length,
+    2,
+    "the demoted-answer frame should show two separate work blocks",
+  );
+  assert.equal(openCount(), 0, "both blocks start folded once work finished");
+
+  // The reader opens the SECOND block — the one the merge destroys.
+  await act(async () => {
+    summaries()[1].click();
+  });
+  assert.equal(openCount(), 1, "the reader's click should open that block");
+
+  await setOverrides({ items: frame3 });
+  assert.equal(
+    blocks().length,
+    1,
+    "the second answer should merge the runs into one block",
+  );
+  assert.equal(
+    openCount(),
+    1,
+    "the merged block must stay open — the reader asked to see those steps, and an agent posting again is not a reason to fold them away",
+  );
+  // The steps they were reading are actually on screen, not merely a block
+  // reporting itself open.
+  const stepText = [
+    ...container.querySelectorAll('[data-testid="transcript-work-block-step"]'),
+  ]
+    .map((node) => node.textContent)
+    .join("\n");
+  assert.match(
+    stepText,
+    /tool:2/,
+    "the reader's steps should still be visible",
+  );
+
+  // ...and the merged block is still theirs to fold. Recording the choice
+  // against only the block's first step would leave the absorbed block's stale
+  // `open` entry behind, and since an open choice wins the read, the merged
+  // block could never be folded again — the reader's click would do nothing.
+  await act(async () => {
+    summaries()[0].click();
+  });
+  assert.equal(
+    openCount(),
+    0,
+    "a reader who folds the merged block must actually fold it",
+  );
 });

@@ -10,6 +10,7 @@ import type { TranscriptItem } from "../agentSessionTypes";
 import { getBuzzToolInfo } from "../agentSessionToolCatalog";
 import { buildCompactToolSummary } from "../agentSessionToolSummary";
 import type { AgentTranscriptIdentityProps } from "../activityRenderClasses/types";
+import { useIsInsideWorkBlockRail } from "../agentSessionTranscriptContext";
 import {
   formatTranscriptTimestampTitle,
   getToolDurationDisplay,
@@ -34,6 +35,7 @@ export function ToolItem({
   profiles?: UserProfileLookup;
 }) {
   const [isExpanded, setIsExpanded] = React.useState(false);
+  const insideWorkBlockRail = useIsInsideWorkBlockRail();
   const hasArgs = Object.keys(item.args).length > 0;
   const hasResult = item.result.trim().length > 0;
   const canonicalToolName = item.buzzToolName ?? item.toolName;
@@ -57,7 +59,10 @@ export function ToolItem({
     [],
   );
 
-  if (compactSummary.presentation === "message") {
+  // On a work block's rail a posted message is a step the agent took, so it
+  // takes the same muted, expandable row as every other step. Everywhere else
+  // it keeps the bubble: see `useIsInsideWorkBlockRail`.
+  if (compactSummary.presentation === "message" && !insideWorkBlockRail) {
     return (
       <div
         className="not-prose w-full"
