@@ -3,8 +3,19 @@
 //! goose's `Agent::dispatch_tool_call` resolves the prefixed tool name, runs
 //! the MCP call, and applies goose's own pre/post hooks — so we use it rather
 //! than reaching into `ExtensionManager` directly. What we keep is the policy
-//! around it: parallel dispatch, the announce→terminal wire invariant, and
-//! `[Reflect]` appended to failed results.
+//! around it: parallel dispatch, the announce→terminal wire invariant,
+//! `[Reflect]` appended to failed results, and the client authorization gate.
+//!
+//! # Authorization
+//!
+//! Every LLM-issued tool call is put to the client over
+//! `session/request_permission` *before* it is dispatched, and only a selected
+//! allow option lets it run (`crate::permission`). This is buzz's own gate, not
+//! goose's `GooseMode` approval: goose applies its mode inside `Agent::reply`,
+//! which buzz-agent does not call, so without this the mode is inert on this
+//! path. Lifecycle hooks (`_Stop`, `_PostCompact`) are dispatched by
+//! `crate::hooks`, not through here, so they are deliberately not gated — they
+//! are the runtime's own calls, not the model's.
 
 use std::sync::Arc;
 
@@ -16,6 +27,7 @@ use goose::agents::Agent;
 use goose::session::session_manager::Session;
 use goose_provider_types::conversation::message::{ToolRequest, ToolResult};
 
+use crate::permission::{AskSubject, PermissionBroker, PermissionDecision};
 use crate::wire::WireSender;
 
 /// One tool's outcome, keyed by the request id the model used.
@@ -27,17 +39,29 @@ pub type Outcome = (String, ToolResult<CallToolResult>);
 /// not pay for them serially — but results are returned in **request order**,
 /// because providers require tool results to line up with the requests that
 /// produced them.
+#[allow(clippy::too_many_arguments)]
 pub async fn execute(
     agent: &Arc<Agent>,
     session: &Session,
     wire_tx: &WireSender,
     cancel: &CancellationToken,
+    permissions: &Arc<PermissionBroker>,
+    protocol_version: u32,
     requests: &[ToolRequest],
     reflections: &mut usize,
 ) -> Vec<Outcome> {
     let mut pending = FuturesUnordered::new();
     for (index, request) in requests.iter().enumerate() {
-        pending.push(run_one(agent, session, wire_tx, cancel, index, request));
+        pending.push(run_one(
+            agent,
+            session,
+            wire_tx,
+            cancel,
+            permissions,
+            protocol_version,
+            index,
+            request,
+        ));
     }
 
     let mut collected: Vec<Option<Outcome>> = (0..requests.len()).map(|_| None).collect();
@@ -74,11 +98,14 @@ pub fn cancelled_results(requests: &[ToolRequest]) -> Vec<Outcome> {
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_one(
     agent: &Arc<Agent>,
     session: &Session,
     wire_tx: &WireSender,
     cancel: &CancellationToken,
+    permissions: &Arc<PermissionBroker>,
+    protocol_version: u32,
     index: usize,
     request: &ToolRequest,
 ) -> (usize, Outcome) {
@@ -91,6 +118,61 @@ async fn run_one(
     };
 
     crate::agent::emit_tool_call(wire_tx, &session.id, &id, &call).await;
+
+    // Ask the client to authorize this call. Every non-authorizing outcome
+    // fails closed: the model sees an ordinary tool failure and the turn
+    // continues, exactly as it would for any other refused call.
+    let arguments = call
+        .arguments
+        .clone()
+        .map(serde_json::Value::Object)
+        .unwrap_or(serde_json::Value::Null);
+    match permissions
+        .request_permission(
+            wire_tx,
+            protocol_version,
+            &session.id,
+            AskSubject {
+                tool_call_id: &id,
+                tool_name: &call.name,
+                arguments: &arguments,
+            },
+            cancel,
+        )
+        .await
+    {
+        PermissionDecision::Allowed => {}
+        PermissionDecision::Denied(msg) => {
+            return (
+                index,
+                (id, Ok(CallToolResult::error(vec![ContentBlock::text(msg)]))),
+            );
+        }
+        PermissionDecision::Cancelled => {
+            return (
+                index,
+                (
+                    id,
+                    Ok(CallToolResult::error(vec![ContentBlock::text(
+                        "Tool call was cancelled before execution",
+                    )])),
+                ),
+            );
+        }
+    }
+
+    // A cancel may have landed while we waited for approval; do not start it.
+    if cancel.is_cancelled() {
+        return (
+            index,
+            (
+                id,
+                Ok(CallToolResult::error(vec![ContentBlock::text(
+                    "Tool call was cancelled before execution",
+                )])),
+            ),
+        );
+    }
 
     let (_request_id, dispatched) = agent
         .dispatch_tool_call(call, id.clone(), Some(cancel.clone()), session)

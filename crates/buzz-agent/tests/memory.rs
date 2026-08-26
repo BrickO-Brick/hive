@@ -20,6 +20,8 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
+mod approve;
+
 /// Fake OpenAI-compatible provider that forwards every request's `messages`
 /// array, so the test can inspect exactly what history the model was shown.
 fn spawn_history_capturing_provider() -> (String, mpsc::Receiver<Value>) {
@@ -170,6 +172,15 @@ impl Harness {
             let Ok(value) = serde_json::from_str::<Value>(&line) else {
                 continue;
             };
+            // Answer the authorization gate so the tool under test actually
+            // runs. This suite's subject is not the permission boundary (see
+            // `permission_boundary.rs`), so approval is automatic.
+            if approve::is_permission_request(&value) {
+                let response = approve::approve(&value);
+                writeln!(self.stdin, "{response}").expect("write approval");
+                self.stdin.flush().expect("flush approval");
+                continue;
+            }
             if value["id"] == json!(id) {
                 return value;
             }

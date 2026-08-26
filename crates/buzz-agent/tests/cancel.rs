@@ -20,6 +20,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
+mod approve;
+
 /// Provider whose first generation calls a tool that will hang.
 fn spawn_hanging_tool_provider() -> String {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -168,6 +170,31 @@ impl Harness {
         self.stdin.flush().expect("flush");
     }
 
+    /// Pump agent output until the authorization gate has been answered, so a
+    /// subsequent cancel lands while the tool is genuinely in flight rather
+    /// than while the ask is still outstanding.
+    ///
+    /// Without this the cancel resolves the permission wait instead, the tool
+    /// is never dispatched, and a test named "cancel mid tool call" would in
+    /// fact exercise "cancel before tool call" — which is a different path and
+    /// cannot produce `notifications/cancelled`.
+    fn approve_next_tool_call(&mut self) {
+        loop {
+            let mut line = String::new();
+            let n = self.stdout.read_line(&mut line).expect("read");
+            assert_ne!(n, 0, "agent closed stdout before asking for permission");
+            let Ok(msg) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            if approve::is_permission_request(&msg) {
+                let response = approve::approve(&msg);
+                writeln!(self.stdin, "{response}").expect("write approval");
+                self.stdin.flush().expect("flush approval");
+                return;
+            }
+        }
+    }
+
     fn await_response(&mut self, id: i64) -> (Value, Vec<Value>) {
         let mut notifications = Vec::new();
         loop {
@@ -177,6 +204,15 @@ impl Harness {
             let Ok(msg) = serde_json::from_str::<Value>(&line) else {
                 continue;
             };
+            // Answer the authorization gate so the tool under test actually
+            // runs. This suite's subject is not the permission boundary (see
+            // `permission_boundary.rs`), so approval is automatic.
+            if approve::is_permission_request(&msg) {
+                let response = approve::approve(&msg);
+                writeln!(self.stdin, "{response}").expect("write approval");
+                self.stdin.flush().expect("flush approval");
+                continue;
+            }
             if msg.get("id").and_then(Value::as_i64) == Some(id) {
                 return (msg, notifications);
             }
@@ -194,7 +230,27 @@ impl Drop for Harness {
     }
 }
 
-fn new_session(h: &mut Harness, cwd: &std::path::Path, cancel_log: &std::path::Path) -> String {
+/// Block until `fake_mcp` records that it received the `tools/call`, so a
+/// cancel that follows is genuinely mid-flight.
+fn wait_for_call_received(path: &std::path::Path) {
+    for _ in 0..100 {
+        if path.exists() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    panic!(
+        "MCP server never received the tool call: {}",
+        path.display()
+    );
+}
+
+fn new_session(
+    h: &mut Harness,
+    cwd: &std::path::Path,
+    cancel_log: &std::path::Path,
+    call_received: &std::path::Path,
+) -> String {
     let id = h.request("initialize", json!({ "protocolVersion": 2 }));
     let _ = h.await_response(id);
 
@@ -210,6 +266,7 @@ fn new_session(h: &mut Harness, cwd: &std::path::Path, cancel_log: &std::path::P
                     // Tool call blocks ~forever, so cancel lands mid-flight.
                     { "name": "FAKE_MCP_TOOL_DELAY", "value": "999" },
                     { "name": "FAKE_MCP_CANCEL_LOG", "value": cancel_log.to_str().unwrap() },
+                    { "name": "FAKE_MCP_CALL_RECEIVED", "value": call_received.to_str().unwrap() },
                 ],
             }],
         }),
@@ -228,9 +285,10 @@ fn cancel_mid_tool_call_returns_cancelled() {
     let cwd = tempfile::tempdir().expect("cwd");
     let logs = tempfile::tempdir().expect("logs");
     let cancel_log = logs.path().join("cancelled.jsonl");
+    let call_received = logs.path().join("call-received");
 
     let mut h = Harness::start(&base_url, home.path());
-    let session_id = new_session(&mut h, cwd.path(), &cancel_log);
+    let session_id = new_session(&mut h, cwd.path(), &cancel_log, &call_received);
 
     let id = h.request(
         "session/prompt",
@@ -240,8 +298,11 @@ fn cancel_mid_tool_call_returns_cancelled() {
         }),
     );
 
-    // Let the turn reach the hanging tool, then cancel.
-    std::thread::sleep(Duration::from_secs(2));
+    // Let the turn reach the hanging tool, then cancel. Authorization has to
+    // be answered first, or the cancel resolves the permission wait and the
+    // tool is never dispatched at all.
+    h.approve_next_tool_call();
+    wait_for_call_received(&call_received);
     h.notify("session/cancel", json!({ "sessionId": session_id }));
 
     let started = Instant::now();
@@ -301,9 +362,10 @@ fn cancel_propagates_notifications_cancelled_to_mcp() {
     let cwd = tempfile::tempdir().expect("cwd");
     let logs = tempfile::tempdir().expect("logs");
     let cancel_log = logs.path().join("cancelled.jsonl");
+    let call_received = logs.path().join("call-received");
 
     let mut h = Harness::start(&base_url, home.path());
-    let session_id = new_session(&mut h, cwd.path(), &cancel_log);
+    let session_id = new_session(&mut h, cwd.path(), &cancel_log, &call_received);
 
     let id = h.request(
         "session/prompt",
@@ -313,7 +375,8 @@ fn cancel_propagates_notifications_cancelled_to_mcp() {
         }),
     );
 
-    std::thread::sleep(Duration::from_secs(2));
+    h.approve_next_tool_call();
+    wait_for_call_received(&call_received);
     h.notify("session/cancel", json!({ "sessionId": session_id }));
     let _ = h.await_response(id);
 

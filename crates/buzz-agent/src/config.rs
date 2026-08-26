@@ -38,6 +38,18 @@ pub struct Config {
     pub max_rounds: Option<u32>,
     /// Concurrent sessions this process will hold.
     pub max_sessions: usize,
+    /// Process-wide cap on simultaneously-outstanding `session/request_permission`
+    /// asks. Bounds the [`PermissionBroker`](crate::permission::PermissionBroker)
+    /// correlation map independently of `max_sessions` (unbounded by default).
+    /// Default 32. Set via `BUZZ_AGENT_MAX_PENDING_PERMISSIONS`; a value of 0 is
+    /// treated as 1 by the broker.
+    pub max_pending_permissions: usize,
+    /// Single absolute deadline for a permission ask — shared by broker
+    /// admission and the response wait, so a saturated call cannot live for two
+    /// full timeout windows. Default 330s, chosen to outlast the client's 300s
+    /// auto-deny so the answer (or auto-deny) lands first. Set via
+    /// `BUZZ_AGENT_PERMISSION_TIMEOUT_SECS`.
+    pub permission_timeout: std::time::Duration,
     /// Default system prompt, used only when `session/new` omits one.
     pub system_prompt: Option<String>,
     /// Tool-call approval policy.
@@ -213,6 +225,14 @@ impl Config {
             // and an agent that never set this must not start refusing
             // sessions after some arbitrary count.
             max_sessions: env_parse("BUZZ_AGENT_MAX_SESSIONS").unwrap_or(usize::MAX),
+            max_pending_permissions: env_parse("BUZZ_AGENT_MAX_PENDING_PERMISSIONS")
+                .filter(|n| *n > 0)
+                .unwrap_or(32),
+            permission_timeout: std::time::Duration::from_secs(
+                env_parse("BUZZ_AGENT_PERMISSION_TIMEOUT_SECS")
+                    .filter(|n| *n > 0)
+                    .unwrap_or(330),
+            ),
             system_prompt,
             goose_mode: parse_approval(env_str("BUZZ_AGENT_APPROVAL").as_deref()),
             require_reply: env_str("BUZZ_AGENT_REQUIRE_REPLY").is_some_and(|v| v != "0"),
@@ -232,6 +252,8 @@ impl Config {
             model: None,
             max_rounds: None,
             max_sessions: 1,
+            max_pending_permissions: 32,
+            permission_timeout: std::time::Duration::from_secs(330),
             system_prompt: None,
             goose_mode: GooseMode::default(),
             require_reply: false,

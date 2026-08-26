@@ -126,6 +126,13 @@ pub struct TurnContext<'a> {
     /// from goose's `Agent`, which resolves the config out of its session
     /// store; see [`crate::model`].
     pub model: &'a crate::model::SessionModel,
+    /// Client authorization broker for model-issued tool calls. Shared
+    /// process-wide so its admission cap bounds outstanding asks across every
+    /// session. See [`crate::permission`].
+    pub permissions: &'a Arc<crate::permission::PermissionBroker>,
+    /// ACP protocol version negotiated at `initialize`, fixed for the
+    /// connection. Selects the `session/request_permission` wire shape.
+    pub protocol_version: u32,
 }
 
 /// Drive one `session/prompt` turn to completion.
@@ -438,6 +445,8 @@ async fn round(
         state.session(),
         ctx.wire_tx,
         ctx.cancel,
+        ctx.permissions,
+        ctx.protocol_version,
         &requests,
         reflections,
     )

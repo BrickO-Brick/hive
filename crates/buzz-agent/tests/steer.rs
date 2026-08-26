@@ -22,6 +22,8 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
+mod approve;
+
 /// Provider whose first generation calls a slow tool (giving the test a window
 /// to steer), and whose later generations answer with text.
 ///
@@ -198,6 +200,15 @@ impl Harness {
             let Ok(msg) = serde_json::from_str::<Value>(&line) else {
                 continue;
             };
+            // Answer the authorization gate so the tool under test actually
+            // runs. This suite's subject is not the permission boundary (see
+            // `permission_boundary.rs`), so approval is automatic.
+            if approve::is_permission_request(&msg) {
+                let response = approve::approve(&msg);
+                writeln!(self.stdin, "{response}").expect("write approval");
+                self.stdin.flush().expect("flush approval");
+                continue;
+            }
             if msg.get("id").and_then(Value::as_i64) == Some(id) {
                 return (msg, notifications);
             }
@@ -220,6 +231,15 @@ impl Harness {
             let Ok(msg) = serde_json::from_str::<Value>(&line) else {
                 continue;
             };
+            // Answer the authorization gate so the tool under test actually
+            // runs. This suite's subject is not the permission boundary (see
+            // `permission_boundary.rs`), so approval is automatic.
+            if approve::is_permission_request(&msg) {
+                let response = approve::approve(&msg);
+                writeln!(self.stdin, "{response}").expect("write approval");
+                self.stdin.flush().expect("flush approval");
+                continue;
+            }
             if let Some(run_id) = msg["params"]["update"]["_meta"]["goose"]["activeRunId"].as_str()
             {
                 return run_id.to_string();

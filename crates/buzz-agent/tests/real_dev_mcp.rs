@@ -20,6 +20,8 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
+mod approve;
+
 /// Locate the real `buzz-dev-mcp` binary in the workspace target dir.
 ///
 /// It is a separate binary crate, so `CARGO_BIN_EXE_` is unavailable here and
@@ -225,6 +227,15 @@ impl Harness {
             let Ok(msg) = serde_json::from_str::<Value>(&line) else {
                 continue;
             };
+            // Answer the authorization gate so the tool under test actually
+            // runs. This suite's subject is not the permission boundary (see
+            // `permission_boundary.rs`), so approval is automatic.
+            if approve::is_permission_request(&msg) {
+                let response = approve::approve(&msg);
+                writeln!(self.stdin, "{response}").expect("write approval");
+                self.stdin.flush().expect("flush approval");
+                continue;
+            }
             if msg.get("id").and_then(Value::as_i64) == Some(id) {
                 return (msg, notifications);
             }

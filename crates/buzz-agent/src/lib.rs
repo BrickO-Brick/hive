@@ -26,6 +26,7 @@ pub mod hooks;
 pub mod loop_drive;
 pub mod model;
 pub mod ops;
+pub mod permission;
 pub mod prompt;
 pub mod provider;
 pub mod session_store;
@@ -117,6 +118,17 @@ struct Session {
 pub struct App {
     cfg: Config,
     sessions: Mutex<HashMap<String, Session>>,
+    /// ACP protocol version negotiated at `initialize`, stored for the whole
+    /// connection lifetime. The `session/request_permission` wire shape derives
+    /// from this value — never from a later mutable session field — so a strict
+    /// client always receives exactly the shape it negotiated. Defaults to
+    /// [`PROTOCOL_VERSION`] before `initialize`; no prompt (and thus no
+    /// permission ask) can run before then.
+    negotiated_version: std::sync::atomic::AtomicU32,
+    /// Owns the entire `session/request_permission` correlation lifecycle:
+    /// process-wide admission, id allocation, response delivery, and abort-safe
+    /// cleanup. See [`permission::PermissionBroker`].
+    permissions: Arc<permission::PermissionBroker>,
 }
 
 /// Build a Goose agent for one ACP session.
@@ -340,9 +352,15 @@ pub async fn serve(cfg: Config) -> anyhow::Result<()> {
     // reach stdout before the runtime is dropped.
     let writer = tokio::spawn(wire::writer_task(wire_rx));
 
+    let permissions = Arc::new(permission::PermissionBroker::new(
+        cfg.max_pending_permissions,
+        cfg.permission_timeout,
+    ));
     let app = Arc::new(App {
         cfg,
         sessions: Mutex::new(HashMap::new()),
+        negotiated_version: std::sync::atomic::AtomicU32::new(PROTOCOL_VERSION),
+        permissions,
     });
 
     let mut stdin = tokio::io::BufReader::new(tokio::io::stdin());
@@ -406,7 +424,10 @@ async fn dispatch(app: &Arc<App>, msg: Value, wire_tx: &WireSender) {
                 cancel_session(app, params).await;
             }
         }
-        Inbound::Ignored => {}
+        // Client's answer to a `session/request_permission` we issued. The
+        // broker matches it to a live correlation id (waking that waiter) or
+        // ignores an unknown/late id.
+        Inbound::Response { id, result } => app.permissions.deliver(&id, result),
         Inbound::Invalid { id, code, message } => {
             wire::send(wire_tx, wire::err(id, code, &message)).await
         }
@@ -421,7 +442,7 @@ async fn handle_request(
     wire_tx: &WireSender,
 ) {
     match method.as_str() {
-        "initialize" => initialize(id, params, wire_tx).await,
+        "initialize" => initialize(app, id, params, wire_tx).await,
         "session/new" => {
             let app = app.clone();
             let wire_tx = wire_tx.clone();
@@ -454,7 +475,7 @@ async fn handle_request(
     }
 }
 
-async fn initialize(id: Value, params: Value, wire_tx: &WireSender) {
+async fn initialize(app: &Arc<App>, id: Value, params: Value, wire_tx: &WireSender) {
     let p: InitializeParams = match serde_json::from_value(params) {
         Ok(p) => p,
         Err(e) => {
@@ -468,6 +489,12 @@ async fn initialize(id: Value, params: Value, wire_tx: &WireSender) {
     // Honest negotiation: min(client, ours). Buzz squats on v2 ahead of the
     // upstream ACP RFD (#1237); see buzz-agent/src/lib.rs:279-283.
     let negotiated = p.protocol_version.min(PROTOCOL_VERSION);
+    // Store it for the connection lifetime: the `session/request_permission`
+    // wire shape derives from this value, never from a later mutable session
+    // field, so a strict client always receives exactly the shape it
+    // negotiated at `initialize`.
+    app.negotiated_version
+        .store(negotiated, std::sync::atomic::Ordering::Relaxed);
     wire::send(
         wire_tx,
         wire::ok(
@@ -781,6 +808,10 @@ async fn session_prompt(app: &Arc<App>, id: Value, params: Value, wire_tx: &Wire
             working_dir,
             history: &history,
             model: &model,
+            permissions: &app.permissions,
+            protocol_version: app
+                .negotiated_version
+                .load(std::sync::atomic::Ordering::Relaxed),
         },
         goose_provider_types::conversation::message::Message::user()
             .with_text(agent::prompt_to_text(&p.prompt)),
