@@ -217,6 +217,17 @@ final class BuzzPushSnapshotEnrichmentTests: XCTestCase {
 }
 
 final class BuzzPushNotificationResponseTests: XCTestCase {
+  func testMessageCategoryUsesConciseTitlesAndPublicActionIcons() {
+    let category = BuzzPushNotificationCategoryRegistrar.messageCategory()
+
+    XCTAssertEqual(category.identifier, BuzzPushNotificationActions.messageCategoryIdentifier)
+    XCTAssertEqual(
+      category.actions.map(\.title),
+      ["Reply", "Remind Me in 1 Hour", "Remind Me Tomorrow", "Remind Me Next Week"]
+    )
+    XCTAssertTrue(category.actions.allSatisfy { $0.icon != nil })
+  }
+
   func testBackgroundCompletionReturnsToMainThreadExactlyOnce() {
     let completed = expectation(description: "completion returned on main thread")
     var completionCount = 0

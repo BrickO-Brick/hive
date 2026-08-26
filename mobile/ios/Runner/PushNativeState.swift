@@ -73,10 +73,15 @@ enum BuzzPushNotificationResponseCoordinator {
 
 enum BuzzPushNotificationCategoryRegistrar {
   static func register(with center: UNUserNotificationCenter) {
+    center.setNotificationCategories([messageCategory()])
+  }
+
+  static func messageCategory() -> UNNotificationCategory {
     let reply = UNTextInputNotificationAction(
       identifier: BuzzPushNotificationActions.replyActionIdentifier,
       title: "Reply",
       options: [],
+      icon: UNNotificationActionIcon(systemImageName: "arrowshape.turn.up.left"),
       textInputButtonTitle: "Send",
       textInputPlaceholder: "Reply to Buzz"
     )
@@ -84,17 +89,16 @@ enum BuzzPushNotificationCategoryRegistrar {
       UNNotificationAction(
         identifier: preset.actionIdentifier,
         title: preset.actionTitle,
-        options: []
+        options: [],
+        icon: UNNotificationActionIcon(systemImageName: preset.systemImageName)
       )
     }
-    center.setNotificationCategories([
-      UNNotificationCategory(
-        identifier: BuzzPushNotificationActions.messageCategoryIdentifier,
-        actions: [reply] + reminderActions,
-        intentIdentifiers: [],
-        options: []
-      )
-    ])
+    return UNNotificationCategory(
+      identifier: BuzzPushNotificationActions.messageCategoryIdentifier,
+      actions: [reply] + reminderActions,
+      intentIdentifiers: [],
+      options: []
+    )
   }
 }
 
@@ -127,8 +131,16 @@ enum BuzzPushReminderPreset: CaseIterable, Equatable {
   var actionTitle: String {
     switch self {
     case .oneHour: "Remind Me in 1 Hour"
-    case .tomorrowAt9AM: "Remind Me Tomorrow at 9 AM"
-    case .nextMondayAt9AM: "Remind Me Next Monday at 9 AM"
+    case .tomorrowAt9AM: "Remind Me Tomorrow"
+    case .nextMondayAt9AM: "Remind Me Next Week"
+    }
+  }
+
+  var systemImageName: String {
+    switch self {
+    case .oneHour: "clock"
+    case .tomorrowAt9AM: "sun.max"
+    case .nextMondayAt9AM: "calendar"
     }
   }
 
