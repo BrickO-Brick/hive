@@ -10,9 +10,9 @@ import {
   buildHighlightPatterns,
   createMentionCaretSettlement,
   findHighlightMatches,
-  insertionForMentionTextInput,
+  insertPosForMentionTextInput,
   MentionHighlightExtension,
-  mentionTextInputInsertion,
+  mentionTextInputInsertPos,
   positionAfterArrowLeftThroughMentionSpace,
   selectionAfterMentionTrailingSpace,
   shouldAdvanceMentionCaret,
@@ -252,60 +252,35 @@ test("createMentionCaretSettlement keeps two editors independent", () => {
   assert.equal(composerB.peek(), 12);
 });
 
-test("insertionForMentionTextInput redirects a caret at the chip edge", () => {
+test("insertPosForMentionTextInput redirects a caret at the chip edge", () => {
   const doc = document(paragraph(text("@quinn ")));
   const spacePos = 1 + "@quinn".length;
-  assert.deepEqual(insertionForMentionTextInput(doc, spacePos, spacePos, "x"), {
-    insertAt: spacePos + 1,
-    text: "x",
-  });
   assert.equal(
-    insertionForMentionTextInput(doc, spacePos + 1, spacePos + 1, "x"),
+    insertPosForMentionTextInput(doc, spacePos, spacePos),
+    spacePos + 1,
+  );
+  assert.equal(
+    insertPosForMentionTextInput(doc, spacePos + 1, spacePos + 1),
     null,
   );
 });
 
-test("insertionForMentionTextInput keeps a selected trailing space", () => {
+test("insertPosForMentionTextInput keeps a selected trailing space", () => {
   const doc = document(paragraph(text("@quinn ")));
   const spacePos = 1 + "@quinn".length;
-  assert.deepEqual(
-    insertionForMentionTextInput(doc, spacePos, spacePos + 1, "x"),
-    { insertAt: spacePos + 1, text: "x" },
-  );
-});
-
-test("insertionForMentionTextInput keeps the draft space in a whitespace-run rewrite", () => {
-  // Chromium can rewrite the whole space run when typing between the
-  // mention's trailing space and a pre-existing draft space, emitting
-  // replace("  " → " a") — usually with a non-breaking space. The draft's
-  // space must survive either way.
-  const doc = document(paragraph(text("hello @bob  world")));
-  const spacePos = 1 + "hello @bob".length;
-  assert.deepEqual(
-    insertionForMentionTextInput(doc, spacePos, spacePos + 2, " a"),
-    { insertAt: spacePos + 1, text: "a" },
-  );
-  assert.deepEqual(
-    insertionForMentionTextInput(doc, spacePos, spacePos + 2, "\u00A0a"),
-    { insertAt: spacePos + 1, text: "a" },
-  );
-  // A rewrite that is not space-led is a real replacement — leave it alone.
   assert.equal(
-    insertionForMentionTextInput(doc, spacePos, spacePos + 2, "x"),
-    null,
+    insertPosForMentionTextInput(doc, spacePos, spacePos + 1),
+    spacePos + 1,
   );
 });
 
-test("mentionTextInputInsertion honors a deliberate caret after settlement", () => {
+test("mentionTextInputInsertPos honors a deliberate caret after settlement", () => {
   const doc = document(paragraph(text("@bob ")));
   const spacePos = 1 + "@bob".length;
+  assert.equal(mentionTextInputInsertPos(doc, spacePos, spacePos, false), null);
   assert.equal(
-    mentionTextInputInsertion(doc, spacePos, spacePos, "x", false),
-    null,
-  );
-  assert.deepEqual(
-    mentionTextInputInsertion(doc, spacePos, spacePos, "x", true),
-    { insertAt: spacePos + 1, text: "x" },
+    mentionTextInputInsertPos(doc, spacePos, spacePos, true),
+    spacePos + 1,
   );
 });
 
