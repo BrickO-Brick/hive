@@ -82,8 +82,9 @@ export type AddChannelMembersInput = {
   channelId: string;
   pubkeys: string[];
   role?: Exclude<ChannelRole, "owner">;
+  expectedRelayUrl?: string;
+  expectedSignerPubkey?: string;
 };
-
 export type AddChannelMembersResult = {
   added: string[];
   errors: Array<{
