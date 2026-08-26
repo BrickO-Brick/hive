@@ -69,18 +69,7 @@ export function buildMentionWakePlan({
   return { key: `${channelId}:${pubkeys.join(",")}`, pubkeys };
 }
 
-export function useMentionWakePreflight({
-  channelId,
-  contentRef,
-  enabled,
-  expectedRelayUrl,
-  expectedSignerPubkey,
-  getDraftMentionRefs,
-  getManagedAgentsByPubkey,
-  isManagedAgentPubkey,
-  memberPubkeys,
-  startManagedAgent,
-}: {
+export function useMentionWakePreflight(options: {
   channelId: string | null;
   contentRef: React.MutableRefObject<string>;
   enabled: boolean;
@@ -94,30 +83,10 @@ export function useMentionWakePreflight({
 }) {
   const timerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const activePlanKeyRef = React.useRef<string | null>(null);
-  const contextRef = React.useRef({
-    channelId,
-    contentRef,
-    enabled,
-    expectedRelayUrl,
-    expectedSignerPubkey,
-    getDraftMentionRefs,
-    getManagedAgentsByPubkey,
-    isManagedAgentPubkey,
-    memberPubkeys,
-    startManagedAgent,
-  });
-  contextRef.current = {
-    channelId,
-    contentRef,
-    enabled,
-    expectedRelayUrl,
-    expectedSignerPubkey,
-    getDraftMentionRefs,
-    getManagedAgentsByPubkey,
-    isManagedAgentPubkey,
-    memberPubkeys,
-    startManagedAgent,
-  };
+  // Latest-ref over the whole options object: the stable callbacks below read
+  // fresh values without a hand-maintained field list that could drift.
+  const optionsRef = React.useRef(options);
+  optionsRef.current = options;
 
   const cancelMentionWake = React.useCallback(() => {
     if (timerRef.current !== null) clearTimeout(timerRef.current);
@@ -126,7 +95,7 @@ export function useMentionWakePreflight({
   }, []);
 
   const currentPlan = React.useCallback((content: string) => {
-    const context = contextRef.current;
+    const context = optionsRef.current;
     if (
       !context.enabled ||
       !context.expectedRelayUrl ||
@@ -157,6 +126,20 @@ export function useMentionWakePreflight({
       : null;
   }, []);
 
+  // Not a mirror of the options object: this is the subset whose change should
+  // re-arm the preflight, deliberately excluding getManagedAgentsByPubkey and
+  // startManagedAgent (see the biome-ignore below).
+  const {
+    channelId,
+    contentRef,
+    enabled,
+    expectedRelayUrl,
+    expectedSignerPubkey,
+    getDraftMentionRefs,
+    isManagedAgentPubkey,
+    memberPubkeys,
+  } = options;
+
   const prepareMentionWake = React.useCallback(
     (content: string) => {
       const plan = currentPlan(content);
@@ -172,12 +155,12 @@ export function useMentionWakePreflight({
           const beforeLookup = currentPlan(contentRef.current);
           if (beforeLookup?.key !== plan.key) return;
           const managedAgents =
-            await contextRef.current.getManagedAgentsByPubkey();
+            await optionsRef.current.getManagedAgentsByPubkey();
           if (activePlanKeyRef.current !== plan.key) return;
           const beforeWake = currentPlan(contentRef.current);
           if (beforeWake?.key !== plan.key) return;
 
-          const context = contextRef.current;
+          const context = optionsRef.current;
           await Promise.allSettled(
             beforeWake.pubkeys.flatMap((pubkey) => {
               const agent = managedAgents.get(pubkey);
@@ -202,7 +185,7 @@ export function useMentionWakePreflight({
     [cancelMentionWake, contentRef, currentPlan],
   );
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: contextRef keeps callbacks fresh; these inputs are plan invalidation signals.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: optionsRef keeps callbacks fresh; these inputs are plan invalidation signals.
   React.useEffect(() => {
     prepareMentionWake(contentRef.current);
   }, [
