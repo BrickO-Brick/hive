@@ -485,6 +485,19 @@ test("non-member open channel header shows its member count and roster", async (
       "sidebar-member-bb22a5299220cad76ffd46190ccbeede8ab5dc260faa28b6e5a2cb31b9aff260",
     ),
   ).toBeVisible();
+
+  const memberSearch = members.getByTestId("channel-management-search-users");
+  await expect(memberSearch).toHaveAttribute(
+    "placeholder",
+    "Search people and agents",
+  );
+  await memberSearch.fill("char");
+  await expect(
+    members.getByText("Not in this channel", { exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    members.locator('[data-testid^="channel-user-search-result-"]'),
+  ).toHaveCount(0);
 });
 
 test("joining a channel from browser adds it to the sidebar", async ({

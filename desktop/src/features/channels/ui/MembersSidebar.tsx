@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { UserRoundPlus, X } from "lucide-react";
+import { Search, UserRoundPlus, X } from "lucide-react";
 import {
   invalidateChannelState,
   useAddChannelMembersMutation,
@@ -243,11 +243,14 @@ export function MembersSidebar({
     () => new Set(rawMembers.map((member) => normalizePubkey(member.pubkey))),
     [rawMembers],
   );
-  const canAddMembers = canAddChannelMembers({
-    channelType: channel?.channelType,
-    visibility: channel?.visibility,
-    selfRole: selfMember?.role,
-  });
+  const canAddMembers =
+    channel?.isMember === true &&
+    canAddChannelMembers({
+      channelType: channel?.channelType,
+      visibility: channel?.visibility,
+      selfRole: selfMember?.role,
+    });
+  const MemberSearchIcon = canAddMembers ? UserRoundPlus : Search;
   // Distinguish "you can't add here" from "nothing to add" so a non-member
   // viewing a private channel gets the reason instead of a silently missing affordance.
   const showPrivateAddDeniedNotice =
@@ -731,7 +734,7 @@ export function MembersSidebar({
               className={MODAL_SEARCH_SHELL_CLASS}
               htmlFor="channel-management-search-users"
             >
-              <UserRoundPlus className="h-4 w-4 shrink-0 text-muted-foreground/55 transition-colors duration-150 ease-out group-hover/search:text-muted-foreground group-focus-within/search:text-foreground" />
+              <MemberSearchIcon className="h-4 w-4 shrink-0 text-muted-foreground/55 transition-colors duration-150 ease-out group-hover/search:text-muted-foreground group-focus-within/search:text-foreground" />
               <input
                 autoCapitalize="none"
                 autoCorrect="off"
