@@ -4,6 +4,10 @@ import {
 } from "@/features/messages/lib/formatTimelineMessages";
 import { buildThreadPanelData } from "@/features/messages/lib/threadPanel";
 import type { RelayEvent } from "@/shared/api/types";
+import {
+  KIND_DELETION,
+  KIND_NIP29_DELETE_EVENT,
+} from "@/shared/constants/kinds";
 
 /**
  * Aux events (edits/deletions/reactions) already loaded in the channel window
@@ -17,17 +21,33 @@ import type { RelayEvent } from "@/shared/api/types";
  *
  * Restricted to non-content kinds so reply content events (which also `#e` the
  * head as their parent) never leak in here — replies come from `replyEvents`.
+ *
+ * Deletion closure: an edit/reaction on the head can itself be deleted by a
+ * kind:5/9005 that `#e`-references the *overlay's* id, not the head's. Those
+ * deletions are copied too, so a deleted edit/reaction stays deleted in the
+ * thread head instead of being resurrected until the async aux backfill lands
+ * (or permanently if it fails) — mirroring the closure the aux-backfill paths
+ * build (`mergeAuxEventsWithDeletionBackfill`).
  */
 function headAuxEventsFromChannelWindow(
   channelEvents: RelayEvent[],
   headId: string,
 ): RelayEvent[] {
-  return channelEvents.filter(
+  const directAux = channelEvents.filter(
     (event) =>
       event.id !== headId &&
       !isTimelineContentEvent(event) &&
       event.tags.some((tag) => tag[0] === "e" && tag[1] === headId),
   );
+  const directAuxIds = new Set(directAux.map((event) => event.id));
+  const deletionsOfAux = channelEvents.filter(
+    (event) =>
+      (event.kind === KIND_DELETION ||
+        event.kind === KIND_NIP29_DELETE_EVENT) &&
+      !directAuxIds.has(event.id) &&
+      event.tags.some((tag) => tag[0] === "e" && directAuxIds.has(tag[1])),
+  );
+  return [...directAux, ...deletionsOfAux];
 }
 
 export function buildIndependentThreadPanel(

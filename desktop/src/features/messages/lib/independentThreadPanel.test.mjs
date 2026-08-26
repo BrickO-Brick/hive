@@ -7,6 +7,8 @@ const ROOT_ID = "6".repeat(64);
 const EDIT_ID = "9".repeat(64);
 const REPLY_ID = "a".repeat(64);
 const DELETION_ID = "d".repeat(64);
+const AUX_DELETION_ID = "e".repeat(64);
+const REACTION_ID = "b".repeat(64);
 const AUTHOR = "f".repeat(64);
 const CHANNEL = "chan-uuid";
 
@@ -44,6 +46,21 @@ function deletionEvent(id, targetId) {
     kind: 5,
     created_at: 3000,
     content: "",
+    tags: [
+      ["h", CHANNEL],
+      ["e", targetId],
+    ],
+    sig: "s",
+  };
+}
+
+function reactionEvent(id, targetId, emoji) {
+  return {
+    id,
+    pubkey: AUTHOR,
+    kind: 7,
+    created_at: 2500,
+    content: emoji,
     tags: [
       ["h", CHANNEL],
       ["e", targetId],
@@ -142,4 +159,28 @@ test("applies a head deletion carried in the channel window", () => {
   const deletion = deletionEvent(DELETION_ID, ROOT_ID);
   const result = head([root, deletion], []);
   assert.equal(result, null);
+});
+
+// Deletion closure: the channel window holds an edit on the head PLUS a deletion
+// of that edit (the deletion `#e`-references the EDIT id, not the head). The
+// thread head must keep the original, un-edited body — the main timeline does,
+// because it has the deletion. Before the closure fix the deletion was dropped
+// and the panel resurrected the deleted edit.
+test("does not resurrect a deleted head edit carried in the channel window", () => {
+  const root = contentEvent(ROOT_ID, "two PRs");
+  const edit = editEvent(EDIT_ID, ROOT_ID, "these PRs (3)", 2000);
+  const deletion = deletionEvent(AUX_DELETION_ID, EDIT_ID);
+  const result = head([root, edit, deletion], []);
+  assert.equal(result?.body, "two PRs");
+  assert.equal(result?.edited, false);
+});
+
+// Same closure for reactions: a deleted reaction on the head must not reappear
+// in the thread panel.
+test("does not resurrect a deleted head reaction carried in the channel window", () => {
+  const root = contentEvent(ROOT_ID, "two PRs");
+  const reaction = reactionEvent(REACTION_ID, ROOT_ID, "👍");
+  const deletion = deletionEvent(AUX_DELETION_ID, REACTION_ID);
+  const result = head([root, reaction, deletion], []);
+  assert.equal(result?.reactions, undefined);
 });

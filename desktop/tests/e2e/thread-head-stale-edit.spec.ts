@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 import { installMockBridge, TEST_IDENTITIES } from "../helpers/bridge";
+import { waitForAnimations } from "../helpers/animations";
 
 // Regression coverage for the reported bug: the top-level timeline shows the
 // EDITED message body, but opening its thread panel shows the STALE, un-edited
@@ -131,5 +132,6 @@ test("thread head reflects the channel-window edit even before thread aux loads"
   await expect(headBody).toContainText("these PRs?");
   await expect(headBody).not.toContainText("these two PRs?");
 
+  await waitForAnimations(page);
   await page.screenshot({ path: `${SHOT}/thread-head-edited.png` });
 });
