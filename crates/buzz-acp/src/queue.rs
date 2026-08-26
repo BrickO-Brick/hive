@@ -617,17 +617,42 @@ impl EventQueue {
         None
     }
 
-    /// Re-queue a batch preserving original `received_at` timestamps.
+    /// Re-queue a **complete** flushed batch preserving original `received_at`
+    /// timestamps.
     ///
-    /// Used when a batch was flushed but no agent was available — we want to
-    /// retry without penalizing the channel's position in the fairness queue
-    /// and without imposing a retry throttle.
+    /// Used when a batch was flushed but could not run — no agent was available,
+    /// or the batch's session-owning worker was busy (thread-scope affinity
+    /// hold) — so we retry without penalizing the scope's fairness position and
+    /// without imposing a retry throttle.
     ///
-    /// Does NOT set `retry_after`. Does NOT remove from `in_flight_channels` —
+    /// Restores the **entire** batch, not just `events`: any
+    /// [`cancelled_events`](FlushBatch::cancelled_events) and their
+    /// [`cancel_reason`](FlushBatch::cancel_reason) are returned to the pending
+    /// cancelled-carryover so the next flush reconstructs the same merged
+    /// (interrupt/steer) prompt. Dropping them here would silently lose the
+    /// original request of an interrupted turn.
+    ///
+    /// Does NOT set `retry_after`. Does NOT remove from `in_flight_scopes` —
     /// caller must call `mark_complete` separately.
     pub fn requeue_preserve_timestamps(&mut self, batch: FlushBatch) {
         let channel_id = batch.channel_id;
         let scope = batch.scope.clone();
+
+        // Restore cancelled carryover FIRST so it precedes any carryover a
+        // concurrent cancel may have already staged for this scope, preserving
+        // original-before-newer ordering. `flush_next` re-merges it as the next
+        // batch's `cancelled_events`.
+        if !batch.cancelled_events.is_empty() {
+            let existing = self.cancelled_batches.remove(&scope).unwrap_or_default();
+            let mut restored = batch.cancelled_events;
+            restored.extend(existing);
+            self.cancelled_batches.insert(scope.clone(), restored);
+            if let Some(reason) = batch.cancel_reason {
+                // Keep the most recent reason if one was already staged.
+                self.cancel_reasons.entry(scope.clone()).or_insert(reason);
+            }
+        }
+
         let queue = self.queues.entry(scope.clone()).or_default();
         // Push to front in reverse order so original order is preserved.
         for be in batch.events.into_iter().rev() {
@@ -3517,6 +3542,52 @@ mod tests {
         // No retry_after set — should be immediately flushable.
         let batch2 = q.flush_next().expect("flush after requeue_preserve");
         assert_eq!(batch2.events[0].received_at, original_received_at);
+    }
+
+    #[test]
+    fn test_requeue_preserve_timestamps_round_trips_cancelled_carryover() {
+        // Regression: a held/exhausted merged batch (cancel + re-prompt) must
+        // not lose its original request. requeue_preserve_timestamps must
+        // restore events AND cancelled_events + cancel_reason so the next flush
+        // reconstructs the same merged batch.
+        let mut q = EventQueue::new(DedupMode::Queue);
+        let ch = Uuid::new_v4();
+        let scope = conv(ch);
+        let batch = FlushBatch {
+            channel_id: ch,
+            scope: scope.clone(),
+            events: vec![BatchEvent {
+                event: make_event("the follow-up"),
+                prompt_tag: "@mention".into(),
+                received_at: Instant::now(),
+            }],
+            cancelled_events: vec![BatchEvent {
+                event: make_event("the original request"),
+                prompt_tag: "@mention".into(),
+                received_at: Instant::now(),
+            }],
+            cancel_reason: Some(CancelReason::Interrupt),
+        };
+        // Simulate the flushed-then-held state: scope is in-flight.
+        q.push(make_queued(ch, "placeholder"));
+        let _ = q.flush_next().expect("scope now in-flight");
+
+        q.requeue_preserve_timestamps(batch);
+        q.mark_complete(scope);
+
+        let restored = q.flush_next().expect("merged batch re-flushes");
+        assert_eq!(restored.events.len(), 1);
+        assert_eq!(restored.events[0].event.content, "the follow-up");
+        assert_eq!(
+            restored.cancelled_events.len(),
+            1,
+            "cancelled carryover (original request) must survive the requeue"
+        );
+        assert_eq!(
+            restored.cancelled_events[0].event.content,
+            "the original request"
+        );
+        assert_eq!(restored.cancel_reason, Some(CancelReason::Interrupt));
     }
 
     #[test]
