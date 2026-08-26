@@ -18,6 +18,7 @@ export async function uploadMediaFile(
   file: File,
   progressId?: string,
   signal?: AbortSignal,
+  onDispatch?: () => void,
 ): Promise<BlobDescriptor> {
   const headers: Record<string, string> = {
     "x-buzz-filename": encodeRawIpcHeader(file.name),
@@ -29,7 +30,7 @@ export async function uploadMediaFile(
   if (signal?.aborted) throw new Error("upload cancelled");
   const bytes = new Uint8Array(await file.arrayBuffer());
   if (signal?.aborted) throw new Error("upload cancelled");
-
+  onDispatch?.();
   return invokeTauriRaw<BlobDescriptor>("upload_media_bytes_raw", bytes, {
     headers,
   });
@@ -38,6 +39,11 @@ export async function uploadMediaFile(
 /** Stop the native HTTP request associated with a background media upload. */
 export async function cancelMediaUpload(progressId: string): Promise<void> {
   await invokeTauri("cancel_media_upload", { progressId });
+}
+
+/** Release the renderer's cancellation ownership after an upload settles. */
+export async function releaseMediaUpload(progressId: string): Promise<void> {
+  await invokeTauri("release_media_upload", { progressId });
 }
 
 /**
