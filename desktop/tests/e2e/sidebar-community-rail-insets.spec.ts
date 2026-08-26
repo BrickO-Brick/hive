@@ -2,6 +2,8 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 
 import { installMockBridge } from "../helpers/bridge";
 
+const MOCK_PUBKEY = "deadbeef".repeat(8);
+const CUSTOM_SECTION = { id: "sec-projects", name: "Projects", order: 0 };
 const COMMUNITIES = [
   {
     id: "ws-a",
@@ -18,13 +20,20 @@ const COMMUNITIES = [
 ];
 
 async function seedCommunities(page: Page) {
-  await page.addInitScript((communities) => {
-    window.localStorage.setItem(
-      "buzz-communities",
-      JSON.stringify(communities),
-    );
-    window.localStorage.setItem("buzz-active-community-id", "ws-a");
-  }, COMMUNITIES);
+  await page.addInitScript(
+    ({ communities, pubkey, section }) => {
+      window.localStorage.setItem(
+        "buzz-communities",
+        JSON.stringify(communities),
+      );
+      window.localStorage.setItem("buzz-active-community-id", "ws-a");
+      window.localStorage.setItem(
+        `buzz-channel-sections.v1:${pubkey}`,
+        JSON.stringify({ version: 1, sections: [section], assignments: {} }),
+      );
+    },
+    { communities: COMMUNITIES, pubkey: MOCK_PUBKEY, section: CUSTOM_SECTION },
+  );
 }
 
 async function showUpdateCard(page: Page) {
@@ -62,8 +71,8 @@ async function settleElementAnimations(locator: Locator) {
 test("keeps sidebar cards and drag surfaces inset beside the community rail", async ({
   page,
 }) => {
-  await installMockBridge(page, undefined, { skipCommunitySeed: true });
   await seedCommunities(page);
+  await installMockBridge(page, undefined, { skipCommunitySeed: true });
   await page.goto("/");
   await expect(page.getByTestId("community-rail")).toBeVisible();
 
@@ -81,12 +90,24 @@ test("keeps sidebar cards and drag surfaces inset beside the community rail", as
   expect(updateCardBox).not.toBeNull();
   expect((updateCardBox?.x ?? 0) - (sidebarBox?.x ?? 0)).toBeCloseTo(8, 0);
 
-  const channelRow = page.getByTestId("channel-general");
+  const sectionTitle = page.getByTestId(`section-title-${CUSTOM_SECTION.id}`);
+  await expect(sectionTitle).toBeVisible();
+  const sectionDropTarget = sectionTitle.locator(
+    'xpath=ancestor::div[@data-sidebar="group"]/..',
+  );
+  const sectionDropTargetBox = await sectionDropTarget.boundingBox();
+  expect(sectionDropTargetBox).not.toBeNull();
+  expect((sectionDropTargetBox?.x ?? 0) - (sidebarBox?.x ?? 0)).toBeCloseTo(
+    3,
+    0,
+  );
+
+  const channelRow = page.getByTestId("channel-agents");
   await expect(channelRow).toBeVisible();
   const channelRowBox = await channelRow.boundingBox();
   expect(channelRowBox).not.toBeNull();
   expect((channelRowBox?.x ?? 0) - (sidebarBox?.x ?? 0)).toBeCloseTo(11, 0);
-  if (!channelRowBox) return;
+  if (!channelRowBox || !sectionDropTargetBox) return;
 
   await page.mouse.move(
     channelRowBox.x + channelRowBox.width / 2,
@@ -101,6 +122,13 @@ test("keeps sidebar cards and drag surfaces inset beside the community rail", as
 
   const dragOverlay = page.getByTestId("sidebar-channel-drag-overlay");
   await expect(dragOverlay).toBeVisible();
+  await page.mouse.move(
+    sectionDropTargetBox.x + sectionDropTargetBox.width - 16,
+    sectionDropTargetBox.y + sectionDropTargetBox.height / 2,
+    { steps: 12 },
+  );
+
+  await expect(sectionDropTarget).toHaveClass(/ring-2/);
   const dragOverlayBox = await dragOverlay.boundingBox();
   expect(dragOverlayBox).not.toBeNull();
   expect(
