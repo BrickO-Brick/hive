@@ -349,6 +349,57 @@ fn repo_context_args(argv: &[String]) -> Vec<String> {
     ctx
 }
 
+/// The caller's config-injecting global options: `-c key=value` (attached
+/// `-ckey=value` and split `-c` + `key=value` forms) and `--config-env=key=VAR`
+/// (attached and split forms). These are the channels through which a caller
+/// can introduce or override a git alias — directly (`-c alias.x=…`) or
+/// transitively (`-c include.path=…` pulling in a config file that defines one,
+/// `--config-env` sourcing the definition from an env var).
+///
+/// The alias probes ([`verify_alias_safety`], [`is_push_command`]) run
+/// `git config --get alias.<name>`. Running that probe under these globals
+/// makes it resolve the exact alias set git will when it later expands the
+/// command in-process — so an include- or config-env-introduced alias, and a
+/// case-varied `-c ALIAS.x`, all surface in the probe and meet the existing
+/// shell-alias refusal and bare-word allowlist. Without them the probe is blind
+/// to any alias not spelled as an exact-lowercase inline `-c alias.<name>=`, and
+/// the injected alias resolves only inside the real git we exec — unchecked.
+///
+/// Repository-context globals (`-C`, `--git-dir`, …) are supplied separately as
+/// `ctx`; git treats both families as independent globals, so the probe applies
+/// them together regardless of order.
+fn config_probe_globals(argv: &[String]) -> Vec<String> {
+    let (globals, _) = split_globals(argv);
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < globals.len() {
+        let g = globals[i].as_str();
+        if g == "-c" || g == "--config-env" {
+            // Split form: the value token was already paired in by split_globals.
+            out.push(globals[i].clone());
+            if i + 1 < globals.len() {
+                i += 1;
+                out.push(globals[i].clone());
+            }
+        } else if g.starts_with("-c") || g.starts_with("--config-env=") {
+            // Attached form (`-ckey=value`, `--config-env=key=VAR`). `-C` and its
+            // value never match: the prefix test is case-sensitive.
+            out.push(globals[i].clone());
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Build the probe context for alias resolution: the repository-context globals
+/// git needs to consult the right repo's config, plus the caller's
+/// config-injecting globals so the probe sees the same aliases git will.
+fn alias_probe_ctx(argv: &[String], ctx: &[String]) -> Vec<String> {
+    let mut probe_ctx = ctx.to_vec();
+    probe_ctx.extend(config_probe_globals(argv));
+    probe_ctx
+}
+
 /// The effective-command classification of an invocation.
 enum PushKind {
     /// The effective command is not `push`.
@@ -360,16 +411,17 @@ enum PushKind {
 
 /// Classify the invocation's *effective* command, resolving ordinary git
 /// aliases so `git pub` (with `alias.pub = push`) and `git -c alias.pub=push
-/// pub` are both recognized. Config aliases are read under `ctx` so a
-/// `-C <repo>` push consults the target repo's aliases.
+/// pub` are both recognized. Aliases are read under [`alias_probe_ctx`] — the
+/// repo-context globals plus the caller's config-injecting globals — so the
+/// probe consults the same aliases git will, including those introduced by a
+/// `-c include.path`/`--config-env` and case-varied `-c ALIAS.x`.
 ///
 /// This runs only in a managed session, *after* [`verify_alias_safety`] has
 /// already refused every shell (`!`) alias and every non-shell alias that is
 /// not a trivially-safe bare-word chain — so a shell alias never reaches here.
 /// Recursion is bounded to defeat cyclic alias definitions.
 fn is_push_command(real_git: &Path, argv: &[String], ctx: &[String]) -> PushKind {
-    let (globals, _) = split_globals(argv);
-    let inline = inline_aliases(&globals);
+    let probe_ctx = alias_probe_ctx(argv, ctx);
     let mut name = match subcommand(argv) {
         Some(s) => s,
         None => return PushKind::NotPush,
@@ -378,13 +430,11 @@ fn is_push_command(real_git: &Path, argv: &[String], ctx: &[String]) -> PushKind
         if name == "push" {
             return PushKind::Push;
         }
-        let def = inline.get(&name).cloned().or_else(|| {
-            capture(
-                real_git,
-                ctx,
-                &["config", "--get", &format!("alias.{name}")],
-            )
-        });
+        let def = capture(
+            real_git,
+            &probe_ctx,
+            &["config", "--get", &format!("alias.{name}")],
+        );
         let def = match def {
             Some(d) => d,
             None => return PushKind::NotPush, // not an alias — effective command
@@ -398,24 +448,6 @@ fn is_push_command(real_git: &Path, argv: &[String], ctx: &[String]) -> PushKind
         }
     }
     PushKind::NotPush
-}
-
-/// Map of inline `-c alias.NAME=BODY` definitions passed on the command line.
-/// These win over config-file aliases, matching git's own precedence.
-fn inline_aliases(globals: &[String]) -> std::collections::HashMap<String, String> {
-    let mut map = std::collections::HashMap::new();
-    for token in globals {
-        let cfg = token
-            .strip_prefix("-c")
-            .filter(|s| !s.is_empty())
-            .unwrap_or(token);
-        if let Some(rest) = cfg.strip_prefix("alias.") {
-            if let Some((name, body)) = rest.split_once('=') {
-                map.insert(name.to_string(), body.to_string());
-            }
-        }
-    }
-    map
 }
 
 /// Refuse any alias the wrapper cannot *trivially* prove safe, and — on success
@@ -460,8 +492,8 @@ fn verify_alias_safety(
     argv: &[String],
     ctx: &[String],
 ) -> Result<Option<Vec<String>>, String> {
-    let (globals, sub_idx) = split_globals(argv);
-    let inline = inline_aliases(&globals);
+    let (_, sub_idx) = split_globals(argv);
+    let probe_ctx = alias_probe_ctx(argv, ctx);
     let Some(sub_idx) = sub_idx else {
         return Ok(None); // no subcommand — nothing to expand
     };
@@ -477,13 +509,11 @@ fn verify_alias_safety(
             break; // no command word left
         };
         let name = &chain[cmd_idx];
-        let def = inline.get(name).cloned().or_else(|| {
-            capture(
-                real_git,
-                ctx,
-                &["config", "--get", &format!("alias.{name}")],
-            )
-        });
+        let def = capture(
+            real_git,
+            &probe_ctx,
+            &["config", "--get", &format!("alias.{name}")],
+        );
         let Some(def) = def else {
             break; // real subcommand — chain is fully expanded
         };
@@ -502,13 +532,12 @@ fn verify_alias_safety(
         return Err(alias_limit_reject_message());
     };
     let name = &chain[cmd_idx];
-    if inline.contains_key(name)
-        || capture(
-            real_git,
-            ctx,
-            &["config", "--get", &format!("alias.{name}")],
-        )
-        .is_some()
+    if capture(
+        real_git,
+        &probe_ctx,
+        &["config", "--get", &format!("alias.{name}")],
+    )
+    .is_some()
     {
         return Err(alias_limit_reject_message());
     }
@@ -1577,14 +1606,36 @@ mod tests {
         assert_eq!(reuse_commit_arg(&v(&["-m", "msg"])), None);
     }
 
-    // ── inline_aliases / repo_context_args ────────────────────────────────────
+    // ── config_probe_globals / repo_context_args ─────────────────────────────
 
     #[test]
-    fn inline_aliases_parses_dash_c_alias_definitions() {
-        let (globals, _) = split_globals(&v(&["-c", "alias.pub=push", "-calias.p=push", "pub"]));
-        let map = inline_aliases(&globals);
-        assert_eq!(map.get("pub").map(String::as_str), Some("push"));
-        assert_eq!(map.get("p").map(String::as_str), Some("push"));
+    fn config_probe_globals_captures_only_config_channels() {
+        // Both `-c` forms and both `--config-env` forms are captured; `-C` and
+        // its value, and the subcommand, are not.
+        assert_eq!(
+            config_probe_globals(&v(&[
+                "-C",
+                "/repo",
+                "-c",
+                "alias.x=push",
+                "-cinclude.path=/e",
+                "--config-env=alias.y=VAR",
+                "--config-env",
+                "alias.z=VAR2",
+                "pub",
+            ])),
+            v(&[
+                "-c",
+                "alias.x=push",
+                "-cinclude.path=/e",
+                "--config-env=alias.y=VAR",
+                "--config-env",
+                "alias.z=VAR2",
+            ])
+        );
+        // `-C <dir>` alone yields nothing (the case-sensitive `-c` prefix test
+        // must not swallow the repo-context flag or its value).
+        assert!(config_probe_globals(&v(&["-C", "/repo", "push"])).is_empty());
     }
 
     #[test]
@@ -1886,6 +1937,131 @@ mod tests {
             &ctx
         )
         .is_err());
+    }
+
+    // ── caller-config-introduced aliases: the probe must resolve the exact
+    //    alias set git will, so include.path / --config-env / case-varied `-c`
+    //    definitions cannot smuggle a shell alias past the safety check or a
+    //    push past outgoing-author verification. Each shape is exercised through
+    //    the real wrapper functions (`real_git`), in commit and push variants.
+
+    /// Write a git config file defining the given `alias.<name> = <body>` pairs
+    /// and return its absolute path (kept alive by the returned tempdir).
+    fn alias_include_file(aliases: &[(&str, &str)]) -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("evil.cfg");
+        let mut body = String::from("[alias]\n");
+        for (name, def) in aliases {
+            body.push_str(&format!("\t{name} = {def}\n"));
+        }
+        std::fs::write(&path, body).unwrap();
+        (dir, path.to_string_lossy().into_owned())
+    }
+
+    #[test]
+    fn include_path_shell_alias_is_refused_commit_variant() {
+        // `git -c include.path=<f> x` where the included file defines a shell
+        // alias `x = !git … commit …`. The probe now resolves under the caller's
+        // `-c include.path`, sees the `!` body, and refuses — closing the
+        // round-6 smuggling path for the commit case.
+        let (_d, inc) =
+            alias_include_file(&[("x", "!git -c user.email=evil@x.com commit --no-gpg-sign")]);
+        let ctx: Vec<String> = vec![];
+        let err = verify_alias_safety(
+            &real_git(),
+            &v(&["-c", &format!("include.path={inc}"), "x"]),
+            &ctx,
+        )
+        .expect_err("include.path-introduced shell alias must be refused");
+        assert!(err.contains("shell (`!`) git alias"), "{err}");
+    }
+
+    #[test]
+    fn include_path_alias_to_push_is_recognized_push_variant() {
+        // A non-shell alias introduced via include.path that resolves to push
+        // must be classified as a push so outgoing-author verification runs.
+        let (_d, inc) = alias_include_file(&[("x", "push origin main")]);
+        let ctx: Vec<String> = vec![];
+        assert!(matches!(
+            is_push_command(
+                &real_git(),
+                &v(&["-c", &format!("include.path={inc}"), "x"]),
+                &ctx
+            ),
+            PushKind::Push
+        ));
+    }
+
+    #[test]
+    fn config_env_shell_alias_is_refused_commit_variant() {
+        // `--config-env=alias.x=VAR` sources the alias body from an env var. The
+        // probe inherits the process env, so it resolves the alias git would.
+        std::env::set_var(
+            "BUZZ_TEST_EVIL_ALIAS",
+            "!git -c user.email=evil@x.com commit",
+        );
+        let ctx: Vec<String> = vec![];
+        let err = verify_alias_safety(
+            &real_git(),
+            &v(&["--config-env=alias.x=BUZZ_TEST_EVIL_ALIAS", "x"]),
+            &ctx,
+        )
+        .expect_err("--config-env shell alias must be refused");
+        std::env::remove_var("BUZZ_TEST_EVIL_ALIAS");
+        assert!(err.contains("shell (`!`) git alias"), "{err}");
+    }
+
+    #[test]
+    fn config_env_alias_to_push_is_recognized_push_variant() {
+        std::env::set_var("BUZZ_TEST_PUSH_ALIAS", "push origin main");
+        let ctx: Vec<String> = vec![];
+        let kind = is_push_command(
+            &real_git(),
+            &v(&["--config-env=alias.x=BUZZ_TEST_PUSH_ALIAS", "x"]),
+            &ctx,
+        );
+        std::env::remove_var("BUZZ_TEST_PUSH_ALIAS");
+        assert!(matches!(kind, PushKind::Push));
+    }
+
+    #[test]
+    fn case_varied_dash_c_alias_is_resolved() {
+        // Git normalizes config section names, so `-c ALIAS.x=…` defines
+        // `alias.x`. The old hand-rolled `strip_prefix("alias.")` matcher was
+        // case-sensitive and missed this; resolving through git closes it.
+        let ctx: Vec<String> = vec![];
+        // Push variant: `-c ALIAS.x=push x` classifies as push.
+        assert!(matches!(
+            is_push_command(&real_git(), &v(&["-c", "ALIAS.x=push", "x"]), &ctx),
+            PushKind::Push
+        ));
+        // Commit variant: a case-varied shell alias is refused.
+        let err = verify_alias_safety(&real_git(), &v(&["-c", "ALIAS.x=!git commit", "x"]), &ctx)
+            .expect_err("case-varied shell alias must be refused");
+        assert!(err.contains("shell (`!`) git alias"), "{err}");
+    }
+
+    #[test]
+    fn legitimate_repo_and_inline_aliases_still_work() {
+        // Regression guard: closing the visibility gap must not break the
+        // ordinary shapes. A repo-config `alias.pub = push` (set by
+        // `human_authored_repo`) resolves through the `-C` context, an inline
+        // `-c alias.ci=commit` still resolves, and a bare-word chain expands.
+        let (_d, repo) = human_authored_repo();
+        let ctx = vec!["-C".to_string(), repo.to_string_lossy().into_owned()];
+        assert!(matches!(
+            is_push_command(
+                &real_git(),
+                &v(&["-C", repo.to_str().unwrap(), "pub"]),
+                &ctx
+            ),
+            PushKind::Push
+        ));
+        let empty: Vec<String> = vec![];
+        assert_eq!(
+            verify_alias_safety(&real_git(), &v(&["-c", "alias.ci=commit", "ci"]), &empty).unwrap(),
+            Some(v(&["-c", "alias.ci=commit", "commit"]))
+        );
     }
 
     #[test]
