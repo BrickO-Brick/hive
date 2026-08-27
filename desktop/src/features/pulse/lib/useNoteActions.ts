@@ -1,6 +1,5 @@
 import * as React from "react";
 import { useAppNavigation } from "@/app/navigation/useAppNavigation";
-import { captureSwitchTraceAnchor } from "@/shared/lib/channelSwitchPerf";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
@@ -156,14 +155,12 @@ export function usePulseNoteActions({
   const startDm = React.useCallback(
     async (pubkey: string) => {
       // goChannel, not raw navigate: this is a first-class channel entry and
-      // must produce a switch measurement like every other one. Anchor before
-      // awaiting open_dm; see captureSwitchTraceAnchor.
-      const traceStartedAt = captureSwitchTraceAnchor();
+      // must go through the same navigation guard as every other one.
       try {
         const directMessage = await openDmMutation.mutateAsync({
           pubkeys: [pubkey],
         });
-        await goChannel(directMessage.id, { traceStartedAt });
+        await goChannel(directMessage.id);
       } catch (error) {
         toast.error(
           error instanceof Error ? error.message : "Failed to open DM",

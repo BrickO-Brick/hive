@@ -2,9 +2,7 @@ import * as React from "react";
 
 import {
   abandonChannelSwitchTrace,
-  cancelRouteExitAbandon,
   markChannelSwitchRouteCommit,
-  scheduleRouteExitAbandon,
   settleChannelSwitchTrace,
 } from "@/shared/lib/channelSwitchPerf";
 import type { ChannelType } from "@/shared/api/types";
@@ -31,24 +29,6 @@ export function useChannelSwitchTraceMarks({
   // "commit" as first-paint time rather than commit time.
   React.useLayoutEffect(() => {
     if (activeChannelId) markChannelSwitchRouteCommit(activeChannelId);
-  }, [activeChannelId]);
-  // Route-exit cancellation: leaving the channel surface before the trace
-  // settles (Projects, Home, … — none of which call goChannel) must drop the
-  // trace. Otherwise a history-back into the same channel within the trace
-  // timeout matches the stale singleton and records the time spent away as
-  // switch latency. Keyed per channel id: on an A→B switch this cleanup runs
-  // with A's id after B's trace already began, so it only ever abandons its
-  // own channel's trace. The abandon is scheduled (one microtask) rather
-  // than immediate so StrictMode's dev-only effect replay — whose re-setup
-  // runs synchronously right after this cleanup — cancels it instead of
-  // killing the just-opened trace.
-  React.useEffect(() => {
-    if (!activeChannelId) return;
-    const channelId = activeChannelId;
-    cancelRouteExitAbandon(channelId);
-    return () => {
-      scheduleRouteExitAbandon(channelId);
-    };
   }, [activeChannelId]);
   React.useEffect(() => {
     if (!activeChannelId) return;

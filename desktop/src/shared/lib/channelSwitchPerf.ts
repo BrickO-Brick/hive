@@ -1,80 +1,63 @@
 /**
- * Channel-switch tracing: measures click → settled-paint for channel
- * navigations, with the two relay fetches that can sit on that path
- * (message window, member roster) attributed to the switch.
+ * Channel-switch timing: click → route commit → settled paint, plus the
+ * message-window fetch when it lands inside that interval.
  *
- * One trace is active at a time; `beginChannelSwitchTrace` (called from
- * `goChannel`) opens it and `settleChannelSwitchTrace` (called when the
- * timeline settles for that channel) closes it after the next paint. Fetch
- * traces and settles for non-active channels are ignored, so background
- * refetches never pollute a switch measurement.
+ * Deliberately small. One trace is active at a time; `beginChannelSwitchTrace`
+ * (from `goChannel`, via `commitGuardedNavigation`) opens it and
+ * `settleChannelSwitchTrace` closes it one paint after the channel's timeline
+ * leaves its loading latch. Output is a `[switch-perf]` console line plus User
+ * Timing marks and measures (`buzz:channel-switch:*`) — the Performance panel
+ * and the Playwright perf harness read the same numbers. Nothing is persisted.
  *
- * Traced entry paths: every navigation that reaches `goChannel` — sidebar,
- * search, notification activation, and the DM actions, which capture
- * `captureSwitchTraceAnchor()` at the click so their `open_dm` round-trip is
- * inside the interval rather than before it. Deliberately untraced: history
- * back/forward (no click to anchor on) and navigations that stay on the
- * already-active channel (nothing re-runs the settle, so a trace could only
- * time out).
- *
- * Output per switch: a `[switch-perf]` console line plus User Timing
- * marks/measures (`buzz:channel-switch:*`) so Playwright perf specs and the
- * Performance panel can read the same numbers.
- *
- * Attribution window: fetches are credited to a switch only when they finish
- * before the settled paint. A roster fetch that completes after settle is
- * deliberately not part of the felt switch latency, so such switches report
- * `members=cache` — by design, not omission.
- *
- * The settled timestamp lands one rAF after the paint, so `totalMs` includes
- * up to one display refresh interval (~17ms at 60Hz, ~8ms at 120Hz) —
- * compare before/after runs on the same display.
+ * The honesty bounds below are chosen rather than inferred. Every extra
+ * inference this instrument tried to make became a way to report a number that
+ * never happened, so the scope is narrow on purpose:
+ * - Only navigations that reach `goChannel` are traced. History back/forward
+ *   and re-selecting the active channel are not.
+ * - The interval starts at the navigation, anchored to the triggering input
+ *   event when one is dispatching. Callers that await before navigating (DM
+ *   actions await `open_dm`) exclude that await by design.
+ * - A trace overlapping a hidden window is dropped, never measured: rAF
+ *   suspends and network throttles while hidden, so elapsed time there is not
+ *   the user's switch.
+ * - The settle waits a bounded number of frames for a pending render. Past
+ *   that bound the measure is still emitted, flagged `settleWaitTruncated` —
+ *   a slow switch is data, not an error.
+ * - Every abandoned trace prints why. Drops correlate with slow switches, so a
+ *   silent drop would make "no switches" and "switches discarded" look alike.
  */
-
-import { invoke, isTauri } from "@tauri-apps/api/core";
 
 export type ChannelSwitchTrace = {
   channelId: string;
-  /** Reported anchor: the click. May predate `openedAt` for DM entries. */
   startedAt: number;
-  /**
-   * When begin() ran. Liveness (timeout, starvation age) is measured from
-   * here, never from `startedAt`: a back-dated anchor would otherwise spend
-   * the trace's whole staleness budget on the relay round-trip that preceded
-   * the navigation, and an honest slow DM entry would go unmeasured.
-   */
-  openedAt: number;
-  /** Largest inter-frame gap seen while this trace was live. */
-  maxFrameGapMs: number;
-  /** The caller's anchor was too stale to trust; see MAX_ANCHOR_AGE_MS. */
-  anchorDiscarded: boolean;
-  /**
-   * When the timeline reported settled. The trace stays active past this
-   * point to wait for the deferred paint, so it bounds fetch attribution:
-   * work the user never waited on must not claim the switch's one-shot slot.
-   */
-  settleEnteredAt: number | null;
   routeCommitAt: number | null;
   windowFetch: { durationMs: number; eventCount: number } | null;
-  membersFetch: { durationMs: number; memberCount: number } | null;
+  /** Set when the timeline reports settled; bounds fetch attribution. */
+  settleEnteredAt: number | null;
 };
 
 /** A switch that hasn't settled after this long is abandoned, not measured. */
 const SWITCH_TRACE_TIMEOUT_MS = 30_000;
 
 /**
- * Oldest caller-supplied anchor still treated as this navigation's click.
- * A DM action captures its anchor before awaiting `open_dm`; if the user
- * navigates elsewhere while that await is outstanding, the anchor is no
- * longer the start of the switch that eventually commits. Beyond this the
- * anchor is discarded (and the record says so) rather than charging unrelated
- * activity to the switch.
+ * Frames the settle waits for a pending render before recording anyway.
+ * Bounded in frames rather than milliseconds so a stalled main thread cannot
+ * stretch the wait into the measurement.
  */
-const MAX_ANCHOR_AGE_MS = 10_000;
+const MAX_SETTLE_FRAMES = 30;
 
 export const CHANNEL_SWITCH_START_MARK = "buzz:channel-switch:start";
 export const CHANNEL_SWITCH_SETTLED_MARK = "buzz:channel-switch:settled";
 export const CHANNEL_SWITCH_MEASURE = "buzz:channel-switch:click-to-settled";
+
+/**
+ * Repo-wide marker for "a deferred commit is in flight", set by the message
+ * timeline and by the lazy channel pane's fallback. Other components use it
+ * too, so the settle wait is bounded in frames rather than trusting it to
+ * clear: a foreign owner can extend a switch by at most MAX_SETTLE_FRAMES,
+ * and that sample is flagged `settleWaitTruncated`.
+ */
+const RENDER_PENDING_SELECTOR = '[data-render-pending="true"]';
 
 let activeTrace: ChannelSwitchTrace | null = null;
 
@@ -93,241 +76,24 @@ export function summarizeChannelSwitchTrace(
     trace.windowFetch === null
       ? "cache"
       : `${trace.windowFetch.eventCount} events in ${Math.round(trace.windowFetch.durationMs)}ms`;
-  const members =
-    trace.membersFetch === null
-      ? "cache"
-      : `${trace.membersFetch.memberCount} members in ${Math.round(trace.membersFetch.durationMs)}ms`;
   return (
     `[switch-perf] channel=${trace.channelId.slice(0, 8)} total=${total}ms ` +
-    `commit=${commit} window=${window} members=${members}` +
+    `commit=${commit} window=${window}` +
     (settleWaitTruncated ? " settle=truncated" : "")
   );
 }
 
-/**
- * The JSONL record persisted per settled switch. The backend folds in the
- * build's git revision and the optional BUZZ_PERF_LOG_LABEL run label, so
- * before/after sessions are attributable offline. Pure for unit testing.
- */
-export function buildSwitchPerfLogRecord(
-  trace: ChannelSwitchTrace,
-  settledAt: number,
-  settleWaitTruncated = false,
-): {
-  ts: string;
-  channelId: string;
-  totalMs: number;
-  commitOffsetMs: number | null;
-  windowFetch: { durationMs: number; eventCount: number } | null;
-  membersFetch: { durationMs: number; memberCount: number } | null;
-  settleWaitTruncated?: true;
-  anchorDiscarded?: true;
-} {
-  return {
-    ...(settleWaitTruncated ? { settleWaitTruncated: true as const } : {}),
-    ...(trace.anchorDiscarded ? { anchorDiscarded: true as const } : {}),
-    ts: new Date().toISOString(),
-    channelId: trace.channelId,
-    totalMs: Math.round(settledAt - trace.startedAt),
-    commitOffsetMs:
-      trace.routeCommitAt === null
-        ? null
-        : Math.round(trace.routeCommitAt - trace.startedAt),
-    windowFetch: trace.windowFetch
-      ? {
-          durationMs: Math.round(trace.windowFetch.durationMs),
-          eventCount: trace.windowFetch.eventCount,
-        }
-      : null,
-    membersFetch: trace.membersFetch
-      ? {
-          durationMs: Math.round(trace.membersFetch.durationMs),
-          memberCount: trace.membersFetch.memberCount,
-        }
-      : null,
-  };
-}
-
-let hasAnnouncedLogPath = false;
-let hasWarnedSinkFailure = false;
-
-/**
- * Fire-and-forget JSONL append; diagnostics must never throw into the app.
- * A permanently dead sink must not be SILENT though — the console keeps
- * printing per-switch lines that read as "tracing works", so warn once when
- * persistence fails or an operator's before/after run yields an empty file
- * with no way to tell why.
- */
-function appendSwitchPerfLogRecord(record: Record<string, unknown>): void {
-  if (!isTauri()) return;
-  void invoke<string>("append_switch_perf_log", {
-    recordJson: JSON.stringify(record),
-  })
-    .then((path) => {
-      if (!hasAnnouncedLogPath) {
-        hasAnnouncedLogPath = true;
-        console.info(`[switch-perf] logging to ${path}`);
-      }
-    })
-    .catch((error) => {
-      if (!hasWarnedSinkFailure) {
-        hasWarnedSinkFailure = true;
-        console.warn(
-          "[switch-perf] failed to persist record; offline log may be incomplete:",
-          error,
-        );
-      }
-    });
-}
-
-export type SwitchDropReason =
-  | "timeout"
-  | "hidden-window"
-  | "frame-starvation"
-  | "settle-wait-exceeded"
-  | "route-exit"
-  | "unobservable-surface"
-  | "left-channel-surface"
-  | "navigation-failed"
-  | "superseded"
-  | "community-reset";
-
-/**
- * Every abandoned trace is accounted for. Drop conditions correlate with slow
- * switches (starvation, timeout, hidden window), so silent drops would censor
- * exactly the tail an operator is measuring and make "no samples" and "N
- * samples discarded" indistinguishable in the offline log.
- */
-function recordSwitchDrop(
-  trace: ChannelSwitchTrace,
-  reason: SwitchDropReason,
-): void {
+function dropTrace(trace: ChannelSwitchTrace, reason: string): void {
   console.info(
-    `[switch-perf] channel=${trace.channelId.slice(0, 8)} dropped reason=${reason}`,
+    `[switch-perf] channel=${trace.channelId.slice(0, 8)} dropped (${reason})`,
   );
-  appendSwitchPerfLogRecord({
-    ts: new Date().toISOString(),
-    channelId: trace.channelId,
-    dropped: reason,
-  });
+  if (activeTrace === trace) activeTrace = null;
 }
 
 /**
- * Decides what a settle call does with the active trace. A settle for a
- * different channel must leave the trace alone — a previous channel can
- * finish loading after the next switch already began, and clobbering the
- * newer trace would silently drop exactly the slow/rapid switches this
- * instrumentation exists to capture. Only the settled channel's own trace is
- * consumed (measured, or dropped when timed out). Pure so the attribution
- * rules are unit-testable.
- */
-export function resolveSettleAction(
-  trace: ChannelSwitchTrace | null,
-  channelId: string,
-  now: number,
-): { settledTrace: ChannelSwitchTrace | null; clearActive: boolean } {
-  if (!trace || trace.channelId !== channelId) {
-    return { settledTrace: null, clearActive: false };
-  }
-  if (now - trace.openedAt > SWITCH_TRACE_TIMEOUT_MS) {
-    return { settledTrace: null, clearActive: true };
-  }
-  return { settledTrace: trace, clearActive: true };
-}
-
-/**
- * Drops the active trace for surfaces whose readiness this instrument cannot
- * observe (e.g. forum channels, whose loading is owned by ForumView's own
- * queries). Better no measurement than a systematically underreported one.
- */
-export function abandonChannelSwitchTrace(
-  channelId: string,
-  reason: SwitchDropReason = "unobservable-surface",
-): void {
-  if (activeTrace?.channelId === channelId) {
-    recordSwitchDrop(activeTrace, reason);
-    activeTrace = null;
-  }
-}
-
-/**
- * dropActiveChannelSwitchTrace abandons whatever trace is active, regardless
- * of channel. Called when navigation leaves the channel surface (any
- * committed non-channel destination, any history traversal): a trace can be
- * live with no channel screen mounted at all — the route still resolving —
- * so no route-exit cleanup exists to abandon it, and a later untraced
- * re-entry within the timeout would settle it with the time spent away.
- */
-export function dropActiveChannelSwitchTrace(
-  reason: SwitchDropReason = "left-channel-surface",
-): void {
-  if (activeTrace) recordSwitchDrop(activeTrace, reason);
-  activeTrace = null;
-}
-
-// Route-exit abandons currently deferred; see scheduleRouteExitAbandon.
-const pendingRouteExitAbandons = new Set<string>();
-
-/**
- * scheduleRouteExitAbandon abandons the channel's trace one microtask from
- * now unless cancelRouteExitAbandon runs first. Call it from the route-exit
- * effect cleanup: deferring lets React StrictMode's dev-only effect replay
- * — cleanup + re-setup, synchronously within one commit — cancel the
- * abandon, where abandoning synchronously would kill every just-opened
- * trace in dev builds and break the Performance-panel workflow. A real
- * route exit has no re-setup, so the scheduled abandon still fires — and
- * microtasks run before any frame callback, so a queued settle cannot
- * record in the gap.
- */
-export function scheduleRouteExitAbandon(channelId: string): void {
-  pendingRouteExitAbandons.add(channelId);
-  queueMicrotask(() => {
-    if (!pendingRouteExitAbandons.delete(channelId)) return;
-    // The unmount may be a remount in disguise: a Suspense boundary between
-    // the two commits (project-home channels swap ChannelScreen for a lazy
-    // ChannelScreenView) means the re-setup that would have cancelled this
-    // has not run yet, and killing the trace here loses a switch the user
-    // did make. The route is the authority — if it still points at this
-    // channel, nothing exited.
-    if (routeStillOnChannel(channelId)) return;
-    abandonChannelSwitchTrace(channelId, "route-exit");
-  });
-}
-
-/**
- * Whether the current URL is still this channel's own route. Read from
- * location rather than React state: the check runs from a microtask, after
- * the unmount commit, where no component tree is authoritative.
- */
-function routeStillOnChannel(channelId: string): boolean {
-  if (typeof window === "undefined" || !window.location) return false;
-  // The app uses createHashHistory (app/router.tsx), so the route lives in
-  // location.hash and location.pathname is the document path. Reading
-  // pathname here made this guard inert — it answered false for every real
-  // channel route, degrading the caller to an unconditional abandon.
-  const hash = window.location.hash;
-  const route = hash.startsWith("#") ? hash.slice(1) : window.location.pathname;
-  const path = route.split("?")[0];
-  return (
-    path === `/channels/${channelId}` ||
-    path.startsWith(`/channels/${channelId}/`)
-  );
-}
-
-/**
- * cancelRouteExitAbandon revokes a pending scheduleRouteExitAbandon for the
- * channel. Call it from the route-enter effect setup, before any work.
- */
-export function cancelRouteExitAbandon(channelId: string): void {
-  pendingRouteExitAbandons.delete(channelId);
-}
-
-/**
- * Timestamp of the most recent visibilitychange. rAF suspends and network
- * work throttles while the window is hidden, so any visibility transition
- * inside a trace window means an off-screen interval overlaps the
- * measurement — such traces are dropped rather than charged with the
- * absence. One listener per document (tests swap documents).
+ * Timestamp of the most recent visibilitychange. Any transition inside a trace
+ * window means an off-screen interval overlaps the measurement. One listener
+ * per document (tests swap documents).
  */
 let lastVisibilityChangeAt = Number.NEGATIVE_INFINITY;
 const watchedDocuments = new WeakSet<object>();
@@ -341,180 +107,51 @@ function ensureVisibilityWatcher(): void {
   });
 }
 
-function traceOverlapsHiddenWindow(trace: ChannelSwitchTrace): boolean {
+function overlapsHiddenWindow(trace: ChannelSwitchTrace): boolean {
   return (
     document.visibilityState === "hidden" ||
     lastVisibilityChangeAt >= trace.startedAt
   );
 }
 
-/**
- * Timestamp to anchor a switch trace on, read during synchronous event
- * dispatch. Callers that must await before they know the target channel (DM
- * actions await `open_dm` for its id) capture this at the click and hand it to
- * `goChannel`, so the relay round-trip stays inside the measured interval
- * instead of silently preceding it.
- */
-export function captureSwitchTraceAnchor(): number {
-  // NaN, not 0: 0 is a valid timestamp meaning "time origin", and it would
-  // silently report the whole session uptime as switch latency.
-  if (typeof performance === "undefined") return Number.NaN;
-  const now = performance.now();
-  const dispatchingEvent =
-    typeof window === "undefined" ? undefined : window.event;
-  return dispatchingEvent && typeof dispatchingEvent.timeStamp === "number"
-    ? Math.min(dispatchingEvent.timeStamp, now)
-    : now;
-}
-
-/**
- * Samples inter-frame gaps for as long as `trace` is the active one. The
- * settle path guards its own frames, but the click -> settle-entry interval
- * had no starvation guard at all: process suspension there (App Nap, a
- * suspended VM) fires no `visibilitychange`, and the switch recorded the whole
- * absence as clean. The loop exits as soon as the trace is replaced, dropped,
- * or recorded, so at most one rAF per frame is live per switch.
- */
-function startStarvationHeartbeat(trace: ChannelSwitchTrace): void {
-  if (typeof window === "undefined" || !window.requestAnimationFrame) return;
-  // Bind the scheduler once. Reading the ambient `window` on every tick would
-  // follow a swapped-out global (tests replace it; a torn-down document in
-  // production would be equivalent) and throw from inside a frame callback,
-  // where nothing can catch it.
-  const schedule = window.requestAnimationFrame.bind(window);
-  let lastAt = trace.openedAt;
-  const tick = () => {
-    if (activeTrace !== trace) return;
-    const now = performance.now();
-    // Past its own liveness budget the trace can no longer be measured, so
-    // sampling it is pure cost. Without this the loop outlives any trace that
-    // is never settled, dropped, or replaced — one frame callback per frame,
-    // forever.
-    if (
-      now - trace.openedAt >
-      SWITCH_TRACE_TIMEOUT_MS + SETTLE_RENDER_WAIT_MS
-    ) {
-      return;
-    }
-    trace.maxFrameGapMs = Math.max(trace.maxFrameGapMs, now - lastAt);
-    lastAt = now;
-    try {
-      schedule(tick);
-    } catch {
-      // Frame loop is gone; the gap it would have measured is unknowable.
-      // Leave maxFrameGapMs at what was observed rather than guessing.
-    }
-  };
-  try {
-    schedule(tick);
-  } catch {
-    /* no frame loop available; settle-path guards still apply */
-  }
-}
-
-/**
- * Resolves the reported start for a trace. A caller-supplied anchor is used
- * only when it is finite, not in the future, and recent enough to still be
- * this navigation's click; otherwise `now` is used and the caller is told the
- * anchor was discarded so the record can say so. Pure for unit testing.
- */
-export function resolveTraceAnchor(
-  anchoredAt: number | undefined,
-  fallback: number,
-  now: number,
-): { startedAt: number; anchorDiscarded: boolean } {
-  if (anchoredAt === undefined) {
-    return {
-      startedAt: Number.isFinite(fallback)
-        ? Math.max(0, Math.min(fallback, now))
-        : now,
-      anchorDiscarded: false,
-    };
-  }
-  if (!Number.isFinite(anchoredAt) || now - anchoredAt > MAX_ANCHOR_AGE_MS) {
-    return { startedAt: now, anchorDiscarded: true };
-  }
-  return {
-    startedAt: Math.max(0, Math.min(anchoredAt, now)),
-    anchorDiscarded: false,
-  };
-}
-
-/** Opaque identity for one opened trace; see `cancelChannelSwitchTrace`. */
-export type ChannelSwitchTraceHandle = { readonly trace: ChannelSwitchTrace };
-
-/**
- * Cancels `handle`'s trace, and only that one. A later begin for the same
- * channel installs a different trace object, so a failed navigation can never
- * erase a newer attempt's measurement.
- */
-export function cancelChannelSwitchTrace(
-  handle: ChannelSwitchTraceHandle | null,
-): void {
-  if (handle && activeTrace === handle.trace) {
-    recordSwitchDrop(activeTrace, "navigation-failed");
-    activeTrace = null;
-  }
-}
-
-export function beginChannelSwitchTrace(
-  channelId: string,
-  anchoredAt?: number,
-): ChannelSwitchTraceHandle | null {
-  if (typeof performance === "undefined") return null;
-  ensureVisibilityWatcher();
-  // A same-task unmount-then-renavigate to this channel leaves the exit
-  // cleanup's scheduled abandon pending; it must not kill the fresh trace
-  // when its microtask drains.
-  cancelRouteExitAbandon(channelId);
-  // Anchor at the triggering input event when one is dispatching: a click
-  // can sit queued behind a long task before its handler runs, and that
-  // input delay is felt switch latency. window.event is set only during
-  // synchronous dispatch, so a stale timestamp can never leak in from async
-  // continuations; min() guards against skewed event clocks and against a
-  // caller-supplied anchor that a monotonic-clock skew put in the future.
-  const now = performance.now();
-  const { startedAt, anchorDiscarded } = resolveTraceAnchor(
-    anchoredAt,
-    captureSwitchTraceAnchor(),
-    now,
-  );
-  if (activeTrace) recordSwitchDrop(activeTrace, "superseded");
-  activeTrace = {
-    channelId,
-    startedAt,
-    openedAt: now,
-    maxFrameGapMs: 0,
-    anchorDiscarded,
-    settleEnteredAt: null,
-    routeCommitAt: null,
-    windowFetch: null,
-    membersFetch: null,
-  };
-  const handle: ChannelSwitchTraceHandle = { trace: activeTrace };
-  if (anchorDiscarded) {
-    console.info(
-      `[switch-perf] channel=${channelId.slice(0, 8)} anchor discarded (stale); measuring from navigation`,
-    );
-  }
-  startStarvationHeartbeat(activeTrace);
-  // Clear the whole previous switch here, not only in record(): traces that
-  // die without recording (forum visits, route exits, drops) never reach
-  // record()'s buffer clearing — weeks-long sessions would accumulate a
-  // stray start mark per abandon — and a consumer polling the buffer
-  // mid-switch (Playwright specs, Performance panel) must never read the
-  // previous switch's settled mark or measure as the current one's.
+function clearSwitchEntries(): void {
   performance.clearMarks(CHANNEL_SWITCH_START_MARK);
   performance.clearMarks(CHANNEL_SWITCH_SETTLED_MARK);
   performance.clearMeasures(CHANNEL_SWITCH_MEASURE);
-  // startTime keeps the mark on the same anchor as the measure — without it
-  // the Performance panel would show the measure starting before its own
-  // start mark by the input delay.
+}
+
+export function beginChannelSwitchTrace(channelId: string): void {
+  if (typeof performance === "undefined") return;
+  ensureVisibilityWatcher();
+  if (activeTrace) dropTrace(activeTrace, "superseded");
+  // Anchor at the triggering input event when one is dispatching: a click can
+  // sit queued behind a long task before its handler runs, and that input
+  // delay is felt switch latency. window.event is set only during synchronous
+  // dispatch, so a stale timestamp cannot leak in from an async continuation.
+  // min() guards a skewed event clock; max() keeps the mark non-negative,
+  // which performance.mark requires.
+  const now = performance.now();
+  const dispatching = typeof window === "undefined" ? undefined : window.event;
+  const startedAt =
+    dispatching && typeof dispatching.timeStamp === "number"
+      ? Math.max(0, Math.min(dispatching.timeStamp, now))
+      : now;
+  activeTrace = {
+    channelId,
+    startedAt,
+    routeCommitAt: null,
+    windowFetch: null,
+    settleEnteredAt: null,
+  };
+  // Clear the previous switch here, not only on record: traces that die
+  // without recording never reach record()'s clearing, and a consumer polling
+  // the buffer mid-switch must never read the previous switch's entries.
+  clearSwitchEntries();
+  // startTime keeps the mark on the same anchor as the measure.
   performance.mark(CHANNEL_SWITCH_START_MARK, {
     detail: { channelId },
     startTime: startedAt,
   });
-  return handle;
 }
 
 export function markChannelSwitchRouteCommit(channelId: string): void {
@@ -526,14 +163,11 @@ export function markChannelSwitchRouteCommit(channelId: string): void {
 
 /**
  * A fetch attributes to the active trace only when it targets the traced
- * channel and started inside the measured interval. Both bounds matter. A
- * fetch that started before the switch (the first leg of a rapid A→B→A
- * completing during the second A trace) is not this switch's cost, and
- * letting it claim the `??=` slot would also block the real fetch. A fetch
- * that started after the timeline settled is a background revalidation the
- * user never waited on; the trace stays active through the deferred-paint
- * wait, so without this upper bound it would be reported as switch cost.
- * Pure for unit testing.
+ * channel and started inside the measured interval. A fetch that started
+ * before the switch (the first leg of a rapid A→B→A completing during the
+ * second A trace) is not this switch's cost, and letting it claim the slot
+ * would block the real fetch. A fetch that started after the timeline settled
+ * is background revalidation the user never waited on. Pure for unit testing.
  */
 export function shouldAttributeFetch(
   trace: ChannelSwitchTrace | null,
@@ -558,241 +192,104 @@ export function traceChannelWindowFetch(
 }
 
 /**
- * Per-channel roster-fetch sequence numbers. A live join/leave invalidation
- * cancels-and-replaces an in-flight roster refetch, but the underlying
- * Tauri call cannot be cancelled — the superseded fetch still resolves and
- * must not claim the trace's one-shot slot with a stale count. The query's
- * AbortSignal is deliberately NOT used for this: merely reading
- * `context.signal` flips React Query to cancel-and-revert when the last
- * observer unsubscribes mid-fetch, discarding warm rosters on interrupted
- * switches (a product-behavior change this instrumentation must not make).
+ * Drops the active trace for surfaces whose readiness this instrument cannot
+ * observe (forum channels, whose loading ForumView owns). Better no
+ * measurement than a systematically underreported one.
  */
-const channelMembersFetchSequences = new Map<string, number>();
-
-/** Registers a roster fetch attempt; pass the token to traceChannelMembersFetch. */
-export function openChannelMembersFetch(channelId: string): number {
-  const next = (channelMembersFetchSequences.get(channelId) ?? 0) + 1;
-  channelMembersFetchSequences.set(channelId, next);
-  return next;
-}
-
-export function traceChannelMembersFetch(
-  channelId: string,
-  memberCount: number,
-  durationMs: number,
-  fetchStartedAt: number,
-  fetchAttempt?: number,
-): void {
-  if (
-    fetchAttempt !== undefined &&
-    channelMembersFetchSequences.get(channelId) !== fetchAttempt
-  ) {
-    return;
+export function abandonChannelSwitchTrace(channelId: string): void {
+  if (activeTrace?.channelId === channelId) {
+    dropTrace(activeTrace, "unobservable surface");
   }
-  if (!shouldAttributeFetch(activeTrace, channelId, fetchStartedAt)) return;
-  activeTrace.membersFetch ??= { durationMs, memberCount };
 }
 
 /**
- * Drops any active trace. Community switches remount the app shell but this
- * module-level singleton survives; channel ids are community-scoped, so a
- * stale trace could adopt the next community's fetches. Wired into
- * resetCommunityState() like every community-scoped singleton.
+ * Abandons whatever trace is active, regardless of channel. Called when
+ * navigation leaves the channel surface (any committed non-channel
+ * destination, any history traversal): a trace can be live with no channel
+ * screen mounted at all — the route still resolving — so this is the only
+ * reliable exit hook, and a later untraced re-entry would otherwise settle it
+ * with the time spent away.
  */
+export function dropActiveChannelSwitchTrace(): void {
+  if (activeTrace) dropTrace(activeTrace, "left channel surface");
+}
+
+/** Community switch (and test reset): nothing survives into the next one. */
 export function resetChannelSwitchTrace(): void {
-  if (activeTrace) recordSwitchDrop(activeTrace, "community-reset");
+  if (activeTrace) dropTrace(activeTrace, "community reset");
   activeTrace = null;
   lastVisibilityChangeAt = Number.NEGATIVE_INFINITY;
-  // A community switch must not leave the previous community's marks where a
-  // consumer polling the buffer would read them as the next community's.
-  if (typeof performance !== "undefined") {
-    performance.clearMarks(CHANNEL_SWITCH_START_MARK);
-    performance.clearMarks(CHANNEL_SWITCH_SETTLED_MARK);
-    performance.clearMeasures(CHANNEL_SWITCH_MEASURE);
-  }
-  pendingRouteExitAbandons.clear();
-  channelMembersFetchSequences.clear();
+  if (typeof performance !== "undefined") clearSwitchEntries();
 }
 
-/** Bound on waiting for the deferred timeline commit before recording. */
-const SETTLE_RENDER_WAIT_MS = 5_000;
-
 /**
- * Largest inter-frame gap attributable to real main-thread work (heavy
- * long tasks run a few hundred ms; 4x-throttled harness frames stay well
- * under this). Anything larger is rAF starvation — suspension without a
- * visibilitychange — and the sample drops.
+ * Decides what a settle call does with the active trace. A settle for a
+ * different channel must leave the trace alone — a previous channel can finish
+ * loading after the next switch began, and clobbering the newer trace would
+ * drop exactly the rapid switches worth capturing. Pure for unit testing.
  */
-const MAX_SETTLE_FRAME_GAP_MS = 3_000;
-
-/**
- * Per-frame decision for the bounded settle wait: keep waiting only while
- * the deferred render is still pending AND the deadline hasn't passed. When
- * the wait ends with the render still pending, the record must say so — the
- * >deadline tail is exactly what this tracer exists to expose, so the
- * measurement is kept but flagged rather than posing as an honest settled
- * paint. Frame starvation is dropped, not recorded: a healthy chain with
- * nothing pending records within a frame or two of settle entry, so a
- * not-pending frame landing past the wait deadline means the gap was rAF
- * suspension (system suspend, App Nap — cases that fire no
- * visibilitychange), not render time. A trace older than the settle-entry
- * timeout plus the render wait is dropped on the same grounds regardless of
- * pending state, as is a single inter-frame gap beyond any plausible
- * main-thread stall — a suspension latches the pending marker, so its truth
- * is not evidence the render was slow. The rare honest render that catches
- * up within one frame of the deadline is sacrificed by these rules — better
- * no measurement than a fabricated one. Pure for unit testing.
- */
-export function resolveSettleWait(
+export function resolveSettleAction(
+  trace: ChannelSwitchTrace | null,
+  channelId: string,
   now: number,
-  waitDeadline: number,
-  renderPending: boolean,
-  openedAt: number,
-  frameGapMs: number | null = null,
-): "wait" | "drop" | { settleWaitTruncated: boolean } {
-  if (now - openedAt > SWITCH_TRACE_TIMEOUT_MS + SETTLE_RENDER_WAIT_MS) {
-    return "drop";
+): { settledTrace: ChannelSwitchTrace | null; timedOut: boolean } {
+  if (!trace || trace.channelId !== channelId) {
+    return { settledTrace: null, timedOut: false };
   }
-  if (frameGapMs !== null && frameGapMs > MAX_SETTLE_FRAME_GAP_MS) {
-    return "drop";
+  if (now - trace.startedAt > SWITCH_TRACE_TIMEOUT_MS) {
+    return { settledTrace: null, timedOut: true };
   }
-  if (!renderPending && now > waitDeadline) return "drop";
-  if (renderPending && now < waitDeadline) return "wait";
-  return { settleWaitTruncated: renderPending };
-}
-
-/**
- * Decides whether the post-readiness paint frame may still be recorded.
- * `awaitDeferredCommit` guards every frame it drives, but the readiness →
- * paint frame is a starvation seam of its own: process suspension (App Nap,
- * a suspended VM) can land there with no `visibilitychange`, and the resumed
- * frame would record the whole absence as an ordinary clean switch. Pure for
- * unit testing.
- */
-/**
- * Reads the timeline's painted commit generation, or null when no timeline is
- * mounted (Suspense fallback, forum surface).
- */
-function readTimelineCommit(): number | null {
-  // Defensive: this runs on the settle path, and a diagnostic must never
-  // throw into the app.
-  const raw = document
-    .querySelector("[data-timeline-commit]")
-    ?.getAttribute?.("data-timeline-commit");
-  if (raw == null) return null;
-  const parsed = Number(raw);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-/**
- * Decides whether the switch's own deferred commit has painted. A pending
- * marker alone cannot distinguish "my rows have not committed yet" from "live
- * traffic arriving after my rows painted re-latched the marker" — and a burst
- * right after a switch (the subscription's catch-up) is exactly when the
- * second happens, which recorded the whole burst as switch latency, unflagged.
- * A commit generation past the one painted at settle entry proves the
- * timeline has committed since, so the switch's rows are on screen.
- * Pure for unit testing.
- */
-export function resolveRenderReadiness(
-  renderPending: boolean,
-  commitAtEntry: number | null,
-  commitNow: number | null,
-): boolean {
-  if (!renderPending) return true;
-  if (commitAtEntry === null || commitNow === null) return false;
-  return commitNow > commitAtEntry;
-}
-
-export function resolveFinalFrame(
-  now: number,
-  readyAt: number,
-  openedAt: number,
-  renderWasPending = false,
-): "record" | "drop" {
-  // A render still pending at readiness is direct evidence that a heavy
-  // commit — not a suspension — owns this frame, and that measurement is
-  // already flagged `settleWaitTruncated`. Dropping it here would discard
-  // exactly the pathological switch the instrument exists to expose.
-  if (!renderWasPending && now - readyAt > MAX_SETTLE_FRAME_GAP_MS) {
-    return "drop";
-  }
-  if (now - openedAt > SWITCH_TRACE_TIMEOUT_MS + SETTLE_RENDER_WAIT_MS) {
-    return "drop";
-  }
-  return "record";
+  return { settledTrace: trace, timedOut: false };
 }
 
 /**
  * Closes the active trace once the settled frame has painted. The timeline
- * renders rows through a deferred snapshot that exposes
- * `data-render-pending` until the low-priority commit catches up, and the
- * lazy channel pane's Suspense fallback carries the same marker while its
- * chunk is still loading — waiting for both (bounded) keeps `totalMs`
- * honest on render-heavy and cold-chunk switches; a final rAF pair then
- * lands the mark after the browser paints.
+ * exposes `data-render-pending` until its deferred commit catches up,
+ * and the lazy channel pane's fallback carries the same marker while its chunk
+ * loads; waiting for both (bounded) keeps `totalMs` honest on render-heavy and
+ * cold-chunk switches. A final frame then lands the mark after the paint.
  */
 export function settleChannelSwitchTrace(channelId: string): void {
   if (typeof performance === "undefined") return;
-  const { settledTrace, clearActive } = resolveSettleAction(
+  const { settledTrace, timedOut } = resolveSettleAction(
     activeTrace,
     channelId,
     performance.now(),
   );
   if (!settledTrace) {
-    if (clearActive && activeTrace) {
-      recordSwitchDrop(activeTrace, "timeout");
-      activeTrace = null;
-    }
+    if (timedOut && activeTrace) dropTrace(activeTrace, "timed out");
     return;
   }
   const trace = settledTrace;
-  // The click -> settle-entry interval is guarded by the heartbeat, not by
-  // the settle loop's own frame gaps: a suspension there fires no
-  // visibilitychange and would otherwise land as a clean record.
-  if (trace.maxFrameGapMs > MAX_SETTLE_FRAME_GAP_MS) {
-    recordSwitchDrop(trace, "frame-starvation");
-    activeTrace = null;
+  // These globals gate the whole settle path: the wait loop reads
+  // document.visibilityState, querySelector and rAF unguarded past this point.
+  if (
+    typeof window === "undefined" ||
+    typeof document === "undefined" ||
+    !window.requestAnimationFrame
+  ) {
+    dropTrace(trace, "no DOM");
     return;
   }
-  // Both globals gate the whole settle path: the wait loop reads
-  // document.visibilityState and querySelector unguarded past this point.
-  if (typeof window === "undefined" || typeof document === "undefined") {
-    activeTrace = null;
-    return;
-  }
-  // rAF suspends and network work throttles in hidden windows: a hidden
-  // interval anywhere between the click and the recorded settle would be
-  // charged to the switch as a clean record. Drop when the window is hidden
-  // now or any visibility transition happened since the click — better no
-  // measurement than a fabricated one.
   ensureVisibilityWatcher();
-  if (traceOverlapsHiddenWindow(trace)) {
-    recordSwitchDrop(trace, "hidden-window");
-    activeTrace = null;
+  if (overlapsHiddenWindow(trace)) {
+    dropTrace(trace, "hidden window");
     return;
   }
-  // Keep the trace active through the deferred-commit wait so fetches that
-  // finish inside the measured window still attribute to it. It is released
-  // when the record lands; a newer switch's begin() simply replaces it.
-  // Stamping settle entry closes attribution to fetches that START after
-  // this point — those are background work, not switch cost.
+  // Idempotent: a second settle for this channel must not restart the wait or
+  // move the fetch-attribution bound.
   if (trace.settleEnteredAt !== null) return;
-  // Bind once: a swapped-out global would otherwise throw from inside a frame
-  // callback, where nothing can catch it (same hazard as the heartbeat).
-  const schedule = window.requestAnimationFrame.bind(window);
   trace.settleEnteredAt = performance.now();
-  const commitAtEntry = readTimelineCommit();
-  const waitDeadline = performance.now() + SETTLE_RENDER_WAIT_MS;
+  // Bind once — reading the ambient global on every frame would follow a
+  // swapped-out window and throw from inside a callback nothing can catch.
+  const schedule = window.requestAnimationFrame.bind(window);
+
   const record = (settleWaitTruncated: boolean) => {
     const settledAt = performance.now();
     if (activeTrace === trace) activeTrace = null;
-    // Keep only the latest switch in the User Timing buffer: desktop
-    // sessions run for weeks and the buffer is never GC'd. DevTools
-    // recordings capture entries at emit time, so clearing loses nothing.
-    performance.clearMarks(CHANNEL_SWITCH_START_MARK);
-    performance.clearMarks(CHANNEL_SWITCH_SETTLED_MARK);
-    performance.clearMeasures(CHANNEL_SWITCH_MEASURE);
+    // Keep only the latest switch in the User Timing buffer: desktop sessions
+    // run for weeks and the buffer is never GC'd.
+    clearSwitchEntries();
     performance.mark(CHANNEL_SWITCH_SETTLED_MARK, {
       detail: { channelId },
       startTime: settledAt,
@@ -802,7 +299,6 @@ export function settleChannelSwitchTrace(channelId: string): void {
         channelId,
         routeCommitAt: trace.routeCommitAt,
         windowFetch: trace.windowFetch,
-        membersFetch: trace.membersFetch,
         ...(settleWaitTruncated ? { settleWaitTruncated: true } : {}),
       },
       start: trace.startedAt,
@@ -811,80 +307,32 @@ export function settleChannelSwitchTrace(channelId: string): void {
     console.info(
       summarizeChannelSwitchTrace(trace, settledAt, settleWaitTruncated),
     );
-    appendSwitchPerfLogRecord(
-      buildSwitchPerfLogRecord(trace, settledAt, settleWaitTruncated),
-    );
   };
-  const dropTrace = (reason: SwitchDropReason) => {
-    if (activeTrace === trace) {
-      recordSwitchDrop(trace, reason);
-      activeTrace = null;
-    }
-  };
-  // Seeded now, not on the first frame: the settle-entry → first-frame
-  // window must be starvation-guarded too, or a suspension there records a
-  // truncated measure inflated by the whole stall.
-  let lastFrameAt: number | null = performance.now();
-  const awaitDeferredCommit = () => {
-    if (activeTrace !== trace) {
-      // A newer switch replaced this trace, or a community reset dropped it.
-      // Either way the paint this callback would sample is not this switch's
-      // own — recording would charge the replacement's delay to the settled
-      // channel and could manufacture the very regression the tracer exists
-      // to diagnose. Better no measurement than a fabricated one.
+
+  let framesWaited = 0;
+  const awaitPaint = () => {
+    // A newer switch replaced this trace, or a reset dropped it. Either way
+    // the paint this callback would sample is not this switch's own.
+    if (activeTrace !== trace) return;
+    if (overlapsHiddenWindow(trace)) {
+      dropTrace(trace, "hidden window");
       return;
     }
-    if (traceOverlapsHiddenWindow(trace)) {
-      dropTrace("hidden-window");
+    const pending = document.querySelector(RENDER_PENDING_SELECTOR) !== null;
+    if (pending && framesWaited < MAX_SETTLE_FRAMES) {
+      framesWaited += 1;
+      schedule(awaitPaint);
       return;
     }
-    const now = performance.now();
-    const frameGapMs = lastFrameAt === null ? null : now - lastFrameAt;
-    lastFrameAt = now;
-    const renderPending = !resolveRenderReadiness(
-      document.querySelector('[data-render-pending="true"]') !== null,
-      commitAtEntry,
-      readTimelineCommit(),
-    );
-    const decision = resolveSettleWait(
-      now,
-      waitDeadline,
-      renderPending,
-      trace.openedAt,
-      frameGapMs,
-    );
-    if (decision === "wait") {
-      schedule(awaitDeferredCommit);
-      return;
-    }
-    if (decision === "drop") {
-      dropTrace(
-        frameGapMs !== null && frameGapMs > MAX_SETTLE_FRAME_GAP_MS
-          ? "frame-starvation"
-          : "settle-wait-exceeded",
-      );
-      return;
-    }
-    const readyAt = now;
+    // One more frame so the mark lands after the browser paints.
     schedule(() => {
       if (activeTrace !== trace) return;
-      if (traceOverlapsHiddenWindow(trace)) {
-        dropTrace("hidden-window");
+      if (overlapsHiddenWindow(trace)) {
+        dropTrace(trace, "hidden window");
         return;
       }
-      if (
-        resolveFinalFrame(
-          performance.now(),
-          readyAt,
-          trace.openedAt,
-          renderPending,
-        ) === "drop"
-      ) {
-        dropTrace("frame-starvation");
-        return;
-      }
-      record(decision.settleWaitTruncated);
+      record(pending);
     });
   };
-  schedule(awaitDeferredCommit);
+  schedule(awaitPaint);
 }

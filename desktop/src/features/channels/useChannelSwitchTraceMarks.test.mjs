@@ -101,26 +101,6 @@ it("a trace survives StrictMode's effect replay and still settles", async () => 
   dom.window.close();
 });
 
-it("a real route exit still abandons: a history-back settle records nothing", async () => {
-  const { dom, flushFrames } = setupDom();
-  performance.clearMeasures?.(CHANNEL_SWITCH_MEASURE);
-  beginChannelSwitchTrace("chan-exit");
-  const root = createRoot(document.getElementById("root"));
-  await renderHarness(root, {
-    channelId: "chan-exit",
-    isTimelineLoading: true,
-  });
-  // Leaving the channel surface unmounts the hook; with no re-setup to
-  // cancel it, the scheduled abandon must fire.
-  await act(async () => root.unmount());
-  await new Promise((resolve) => setImmediate(resolve));
-  // History-back re-enters without goChannel; its settle must find no trace.
-  settleChannelSwitchTrace("chan-exit");
-  flushFrames();
-  assert.deepEqual(measures(), []);
-  dom.window.close();
-});
-
 it("an A→B switch's deferred abandon of A never kills B's trace", async () => {
   const { dom, flushFrames } = setupDom();
   performance.clearMeasures?.(CHANNEL_SWITCH_MEASURE);

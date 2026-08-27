@@ -144,22 +144,12 @@ type TimelineSnapshot = {
    * finally land (the pass-1 tear, ledgered 2026-07-11).
    */
   historyExhausted: boolean;
-  /**
-   * Monotonic id of this snapshot. Rendered as `data-timeline-commit` from
-   * the DEFERRED snapshot, so the switch tracer can tell "the commit I was
-   * waiting for has painted" from "new live traffic re-latched the pending
-   * marker after my rows painted" — the two are indistinguishable from
-   * `data-render-pending` alone, and the second one used to inflate the
-   * recorded switch by the whole burst.
-   */
-  generation: number;
 };
 
 const EMPTY_TIMELINE_SNAPSHOT: TimelineSnapshot = {
   channelId: null,
   messages: EMPTY_MESSAGES,
   historyExhausted: false,
-  generation: 0,
 };
 
 const MessageTimelineBase = React.forwardRef<
@@ -256,18 +246,10 @@ const MessageTimelineBase = React.forwardRef<
   // Channel id travels with the deferred message snapshot. Without that guard, a
   // route change can paint the previous channel's deferred rows for a frame even
   // though the sidebar/header already moved to the new channel.
-  const snapshotGenerationRef = React.useRef(0);
-  const liveSnapshot = React.useMemo<TimelineSnapshot>(() => {
-    // Monotonic only — StrictMode's double-invoke may skip a number, which
-    // the tracer's `>` comparison tolerates.
-    snapshotGenerationRef.current += 1;
-    return {
-      channelId: channelId ?? null,
-      messages,
-      historyExhausted,
-      generation: snapshotGenerationRef.current,
-    };
-  }, [channelId, historyExhausted, messages]);
+  const liveSnapshot = React.useMemo<TimelineSnapshot>(
+    () => ({ channelId: channelId ?? null, messages, historyExhausted }),
+    [channelId, historyExhausted, messages],
+  );
   const deferredSnapshot = React.useDeferredValue(
     liveSnapshot,
     EMPTY_TIMELINE_SNAPSHOT,
@@ -719,7 +701,6 @@ const MessageTimelineBase = React.forwardRef<
       <div
         className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
         data-render-pending={isRenderPending ? "true" : undefined}
-        data-timeline-commit={deferredSnapshot.generation}
       >
         {showUnreadPill ? (
           <div

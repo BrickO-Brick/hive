@@ -3,7 +3,6 @@ import { RefreshCcw } from "lucide-react";
 
 import { useAppShell } from "@/app/AppShellContext";
 import { useAppNavigation } from "@/app/navigation/useAppNavigation";
-import { captureSwitchTraceAnchor } from "@/shared/lib/channelSwitchPerf";
 import { useKnownAgentPubkeys } from "@/features/agents/useKnownAgentPubkeys";
 import { useChannelsQuery, useOpenDmMutation } from "@/features/channels/hooks";
 import { RightAuxiliaryPane } from "@/features/channels/ui/RightAuxiliaryPane";
@@ -222,10 +221,8 @@ export function HomeView({
   const [isSendingReply, setIsSendingReply] = React.useState(false);
   const handleOpenDm = React.useCallback(
     async (pubkeys: string[]) => {
-      // Anchor before awaiting open_dm; see captureSwitchTraceAnchor.
-      const traceStartedAt = captureSwitchTraceAnchor();
       const dm = await openDm({ pubkeys });
-      await goChannel(dm.id, { traceStartedAt });
+      await goChannel(dm.id);
     },
     [goChannel, openDm],
   );

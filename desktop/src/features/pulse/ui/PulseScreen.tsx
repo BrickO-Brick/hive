@@ -1,7 +1,6 @@
 import * as React from "react";
 
 import { useAppNavigation } from "@/app/navigation/useAppNavigation";
-import { captureSwitchTraceAnchor } from "@/shared/lib/channelSwitchPerf";
 import { useOpenDmMutation } from "@/features/channels/hooks";
 import {
   type ProfilePanelTab,
@@ -54,10 +53,8 @@ export function PulseScreen() {
   const { goChannel } = useAppNavigation();
   const handleOpenDm = React.useCallback(
     async (pubkeys: string[]) => {
-      // Anchor before awaiting open_dm; see captureSwitchTraceAnchor.
-      const traceStartedAt = captureSwitchTraceAnchor();
       const dm = await openDmMutation.mutateAsync({ pubkeys });
-      await goChannel(dm.id, { traceStartedAt });
+      await goChannel(dm.id);
     },
     [goChannel, openDmMutation],
   );
