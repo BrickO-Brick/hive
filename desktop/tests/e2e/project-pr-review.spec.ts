@@ -11,6 +11,7 @@ const RELAY_REVIEW_AGENT_PUBKEY =
   "554cef57437abac34522ac2c9f0490d685b72c80478cf9f7ed6f9570ee8624ea";
 const LOCAL_REVIEW_AGENT_PUBKEY = "c".repeat(64);
 const STOPPED_LOCAL_REVIEW_AGENT_PUBKEY = "d".repeat(64);
+const PROPOSED_DIFF_EVENT_ID = "e".repeat(64);
 
 async function expectSinglePrimaryTextColumn(row: Locator) {
   const primary = row.locator('[data-projects-text-priority="primary"]');
@@ -171,8 +172,17 @@ test("review checks dispatch to an agent authorized for the relay identity", asy
   });
   expect(sentCheck?.content).toContain("Interface & design system");
   expect(sentCheck?.content).toContain("Commit under review:");
+  expect(sentCheck?.content).toContain("buzz messages send-diff");
   expect(sentCheck?.mentionPubkeys).toContain(RELAY_REVIEW_AGENT_PUBKEY);
   const requestId = requestIdFromCheckPrompt(sentCheck?.content);
+  const reviewedCommit = sentCheck?.content
+    ?.match(/Commit under review: ([^\n]+)/)?.[1]
+    ?.trim();
+  const diffRepoUrl = sentCheck?.content?.match(
+    /Repository URL for diff metadata: "([^"]+)"/,
+  )?.[1];
+  expect(reviewedCommit).toBeTruthy();
+  expect(diffRepoUrl).toBeTruthy();
   await expect
     .poll(() =>
       page.evaluate(() =>
@@ -183,13 +193,36 @@ test("review checks dispatch to an agent authorized for the relay identity", asy
 
   await waitForMockLiveSubscription(page, "DM");
   await page.evaluate(
-    ({ agentPubkey, requestId }) => {
+    ({ agentPubkey, diffEventId, diffRepoUrl, requestId, reviewedCommit }) => {
+      window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
+        channelName: "DM",
+        content: [
+          "diff --git a/desktop/src/shared/ui/button.tsx b/desktop/src/shared/ui/button.tsx",
+          "--- a/desktop/src/shared/ui/button.tsx",
+          "+++ b/desktop/src/shared/ui/button.tsx",
+          "@@ -1,3 +1,3 @@",
+          "-const focusStyle = 'outline-none';",
+          "+const focusStyle = 'focus-visible:ring-1';",
+          " export { focusStyle };",
+        ].join("\n"),
+        createdAt: Math.floor(Date.now() / 1_000) + 1,
+        extraTags: [
+          ["repo", diffRepoUrl],
+          ["commit", reviewedCommit],
+          ["file", "desktop/src/shared/ui/button.tsx"],
+          ["description", "Use the shared focus treatment"],
+        ],
+        id: diffEventId,
+        kind: 40008,
+        pubkey: agentPubkey,
+      });
       window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
         channelName: "DM",
         content: `BUZZ_CHECK_RESULT_V1\n${JSON.stringify({
           request_id: requestId,
           conclusion: "fix-recommended",
           summary: "Two interface fixes are needed before approval.",
+          diff_event_id: diffEventId,
           findings: [
             {
               title: "Use the shared button primitive",
@@ -205,16 +238,27 @@ test("review checks dispatch to an agent authorized for the relay identity", asy
             },
           ],
         })}`,
-        createdAt: Math.floor(Date.now() / 1_000) + 1,
+        createdAt: Math.floor(Date.now() / 1_000) + 2,
         kind: 9,
         pubkey: agentPubkey,
       });
     },
-    { agentPubkey: RELAY_REVIEW_AGENT_PUBKEY, requestId },
+    {
+      agentPubkey: RELAY_REVIEW_AGENT_PUBKEY,
+      diffEventId: PROPOSED_DIFF_EVENT_ID,
+      diffRepoUrl: diffRepoUrl ?? "",
+      requestId,
+      reviewedCommit: reviewedCommit ?? "",
+    },
   );
 
   const result = interfaceCheck.getByTestId("project-review-check-result");
-  await expect(result.getByRole("heading")).toHaveText("2 fixes recommended");
+  await expect(
+    result.getByRole("heading", {
+      name: "2 fixes recommended",
+      exact: true,
+    }),
+  ).toBeVisible();
   await expect(result).toContainText(
     "Two interface fixes are needed before approval.",
   );
@@ -222,6 +266,24 @@ test("review checks dispatch to an agent authorized for the relay identity", asy
     2,
   );
   await expect(result).toContainText("ProjectReviewChecks.tsx:742");
+  const proposal = result.getByTestId("project-review-check-diff-proposal");
+  await expect(proposal).toContainText("Proposed code changes");
+  await expect(proposal).toContainText("button.tsx");
+  await expect(proposal).toContainText("Use the shared focus treatment");
+  await expect(proposal).toContainText("focus-visible:ring-1");
+  const commandCountBeforeAccept = await page.evaluate(
+    () => window.__BUZZ_E2E_COMMANDS__?.length ?? 0,
+  );
+  await proposal.getByRole("button", { name: "Accept changes" }).click();
+  await expect(
+    proposal.getByRole("button", { name: "Accepted" }),
+  ).toBeVisible();
+  await expect(proposal).toContainText(
+    "No repository files or review state were changed.",
+  );
+  await expect
+    .poll(() => page.evaluate(() => window.__BUZZ_E2E_COMMANDS__?.length ?? 0))
+    .toBe(commandCountBeforeAccept);
   await waitForAnimations(page);
   await result.screenshot({ path: `${SHOTS}/review-check-result.png` });
 });

@@ -33,6 +33,7 @@ import { useThreadRepliesForRoots } from "@/features/messages/useThreadReplies";
 import {
   buildProjectReviewCheckPrompt,
   DEFAULT_PROJECT_REVIEW_CHECKS,
+  parseProjectReviewCheckDiffEvent,
   parseProjectReviewCheckResult,
   parseProjectReviewChecksConfig,
   PROJECT_REVIEW_CHECKS_CONFIG_PATH,
@@ -40,12 +41,14 @@ import {
   readProjectReviewCheckRuns,
   writeProjectReviewCheckRuns,
   type ProjectReviewCheckDefinition,
+  type ProjectReviewCheckDiffProposal,
   type ProjectReviewCheckResult,
 } from "@/features/projects/lib/projectReviewChecks.mjs";
 import { isAtOrAfterConversationOpener } from "@/features/projects/lib/projectAgentConversation";
 import type { ProjectsConversationOpener } from "@/features/projects/lib/projectAgentConversationStorage";
 import { pullRequestShareLink } from "@/features/projects/lib/projectShareLinks";
 import type { ProjectPullRequest, Repository } from "@/features/projects/hooks";
+import { ProjectReviewCheckResultCard } from "@/features/projects/ui/ProjectReviewCheckResultCard";
 import { useIdentityQuery } from "@/shared/api/hooks";
 import { listManagedAgents } from "@/shared/api/tauri";
 import { revalidateRelayAgents } from "@/shared/api/tauriRelayAgents";
@@ -54,6 +57,7 @@ import { getProjectRepoFileContent } from "@/shared/api/projectGit";
 import type { Channel, RelayEvent } from "@/shared/api/types";
 import {
   KIND_STREAM_MESSAGE,
+  KIND_STREAM_MESSAGE_DIFF,
   KIND_STREAM_MESSAGE_V2,
 } from "@/shared/constants/kinds";
 import { normalizePubkey } from "@/shared/lib/pubkey";
@@ -77,6 +81,8 @@ type ReviewCheckRun = {
   channelId?: string;
   opener?: ProjectsConversationOpener;
   result?: ProjectReviewCheckResult;
+  proposal?: ProjectReviewCheckDiffProposal;
+  acceptedProposalEventId?: string;
   resultCreatedAt?: number;
   error?: string;
 };
@@ -99,6 +105,51 @@ function isReviewCheckStatus(value: unknown): value is ReviewCheckStatus {
   );
 }
 
+function normalizeStoredProposal(
+  value: unknown,
+  agentPubkey: string | null,
+): ProjectReviewCheckDiffProposal | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const raw = value as Record<string, unknown>;
+  if (
+    !agentPubkey ||
+    typeof raw.eventId !== "string" ||
+    typeof raw.content !== "string" ||
+    typeof raw.repoUrl !== "string" ||
+    typeof raw.commitSha !== "string"
+  ) {
+    return undefined;
+  }
+  const tags = [
+    ["repo", raw.repoUrl],
+    ["commit", raw.commitSha],
+    ...(typeof raw.filePath === "string" ? [["file", raw.filePath]] : []),
+    ...(typeof raw.description === "string"
+      ? [["description", raw.description]]
+      : []),
+    ...(raw.truncated === true ? [["truncated", "true"]] : []),
+  ];
+  return (
+    parseProjectReviewCheckDiffEvent(
+      {
+        id: raw.eventId,
+        pubkey: agentPubkey,
+        kind: KIND_STREAM_MESSAGE_DIFF,
+        content: raw.content,
+        tags,
+      },
+      {
+        eventId: raw.eventId,
+        agentPubkey,
+        repoUrl: raw.repoUrl,
+        commit: raw.commitSha,
+      },
+    ) ?? undefined
+  );
+}
+
 function normalizeStoredRuns(value: Record<string, unknown>): ReviewCheckRuns {
   const runs: ReviewCheckRuns = {};
   for (const [checkId, candidate] of Object.entries(value)) {
@@ -112,6 +163,7 @@ function normalizeStoredRuns(value: Record<string, unknown>): ReviewCheckRuns {
     const raw = candidate as Record<string, unknown>;
     const agentPubkey =
       typeof raw.agentPubkey === "string" ? raw.agentPubkey : null;
+    const proposal = normalizeStoredProposal(raw.proposal, agentPubkey);
     const status = isReviewCheckStatus(raw.status) ? raw.status : "idle";
     const parsedResult = parseProjectReviewCheckResult(
       raw.result && typeof raw.result === "object"
@@ -142,6 +194,10 @@ function normalizeStoredRuns(value: Record<string, unknown>): ReviewCheckRuns {
         : {}),
       ...(opener ? { opener } : {}),
       ...(parsedResult ? { result: parsedResult } : {}),
+      ...(proposal ? { proposal } : {}),
+      ...(proposal && raw.acceptedProposalEventId === proposal.eventId
+        ? { acceptedProposalEventId: proposal.eventId }
+        : {}),
       ...(typeof raw.resultCreatedAt === "number"
         ? { resultCreatedAt: raw.resultCreatedAt }
         : {}),
@@ -273,7 +329,9 @@ function ReviewCheckResultObserver({
   checkId,
   onResult,
   opener,
+  repoUrl,
   requestId,
+  targetCommit,
 }: {
   agentPubkey: string;
   channel: Channel | null;
@@ -282,9 +340,12 @@ function ReviewCheckResultObserver({
     checkId: string,
     result: ProjectReviewCheckResult,
     createdAt: number,
+    proposal?: ProjectReviewCheckDiffProposal,
   ) => void;
   opener: ProjectsConversationOpener;
+  repoUrl: string | null;
   requestId: string | null;
+  targetCommit: string | null;
 }) {
   useChannelSubscription(channel);
   const messagesQuery = useChannelMessagesQuery(channel);
@@ -301,23 +362,44 @@ function ReviewCheckResultObserver({
   );
   const threadReplies = useThreadRepliesForRoots(channel, threadRootIds);
   const observedResult = React.useMemo(() => {
-    const events = [
+    const agentEvents = [
       ...(messagesQuery.data ?? []),
       ...(threadReplies.events ?? []),
-    ]
-      .filter(
-        (event) =>
-          isAgentMessage(event, agentPubkey) &&
-          isAtOrAfterConversationOpener(event, opener),
-      )
+    ].filter(
+      (event) =>
+        normalizePubkey(event.pubkey) === normalizePubkey(agentPubkey) &&
+        isAtOrAfterConversationOpener(event, opener),
+    );
+    const resultEvents = agentEvents
+      .filter((event) => isAgentMessage(event, agentPubkey))
       .sort(
         (left, right) =>
           left.created_at - right.created_at || right.id.localeCompare(left.id),
       );
-    for (const event of events) {
+    for (const event of resultEvents) {
       const result = parseProjectReviewCheckResult(event.content);
       if (result && (!requestId || result.requestId === requestId)) {
-        return { createdAt: event.created_at, result };
+        let proposal: ProjectReviewCheckDiffProposal | undefined;
+        if (result.diffEventId) {
+          if (!repoUrl) continue;
+          const diffEvent = agentEvents.find(
+            (candidate) =>
+              candidate.kind === KIND_STREAM_MESSAGE_DIFF &&
+              candidate.id.toLowerCase() === result.diffEventId,
+          );
+          proposal = diffEvent
+            ? (parseProjectReviewCheckDiffEvent(diffEvent, {
+                eventId: result.diffEventId,
+                agentPubkey,
+                repoUrl,
+                commit: targetCommit,
+              }) ?? undefined)
+            : undefined;
+          // The agent is instructed to publish the native diff before its
+          // result. Keep observing if relay delivery arrives out of order.
+          if (!proposal) continue;
+        }
+        return { createdAt: event.created_at, proposal, result };
       }
     }
     return null;
@@ -325,13 +407,20 @@ function ReviewCheckResultObserver({
     agentPubkey,
     messagesQuery.data,
     opener,
+    repoUrl,
     requestId,
+    targetCommit,
     threadReplies.events,
   ]);
 
   React.useEffect(() => {
     if (observedResult) {
-      onResult(checkId, observedResult.result, observedResult.createdAt);
+      onResult(
+        checkId,
+        observedResult.result,
+        observedResult.createdAt,
+        observedResult.proposal,
+      );
     }
   }, [checkId, observedResult, onResult]);
 
@@ -365,74 +454,6 @@ function CheckStatus({
     return <Badge variant="warning">Fix recommended</Badge>;
   }
   return null;
-}
-
-function ReviewCheckResultCard({
-  result,
-}: {
-  result: ProjectReviewCheckResult;
-}) {
-  const isApproved = result.conclusion === "approved";
-  const findingCount = result.findings.length;
-  const title = isApproved
-    ? "Approved"
-    : findingCount === 0
-      ? "Fix recommended"
-      : `${findingCount} ${findingCount === 1 ? "fix" : "fixes"} recommended`;
-
-  return (
-    <section
-      className="overflow-hidden rounded-xl border border-border/70 bg-background/70"
-      data-testid="project-review-check-result"
-    >
-      <div className="flex items-start gap-3 px-4 py-3.5">
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-muted/70">
-          {isApproved ? (
-            <CheckCircle2 className="h-5 w-5 text-emerald-500" />
-          ) : (
-            <CircleAlert className="h-5 w-5 text-amber-500" />
-          )}
-        </div>
-        <div className="min-w-0 flex-1">
-          <h5 className="text-sm font-semibold text-foreground">{title}</h5>
-          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            {result.summary}
-          </p>
-        </div>
-      </div>
-      {findingCount > 0 ? (
-        <div className="divide-y divide-border/55 border-t border-border/55">
-          {result.findings.map((finding) => (
-            <article
-              className="px-4 py-3"
-              data-testid="project-review-check-finding"
-              key={JSON.stringify(finding)}
-            >
-              <div className="flex items-start justify-between gap-4">
-                <p className="min-w-0 flex-1 text-xs font-medium text-foreground">
-                  {finding.title}
-                </p>
-                {finding.file ? (
-                  <span
-                    className="max-w-[45%] truncate font-mono text-2xs text-muted-foreground"
-                    title={`${finding.file}${finding.line ? `:${finding.line}` : ""}`}
-                  >
-                    {finding.file}
-                    {finding.line ? `:${finding.line}` : ""}
-                  </span>
-                ) : null}
-              </div>
-              {finding.detail ? (
-                <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                  {finding.detail}
-                </p>
-              ) : null}
-            </article>
-          ))}
-        </div>
-      ) : null}
-    </section>
-  );
 }
 
 function AgentPicker({
@@ -527,6 +548,14 @@ export function ProjectReviewChecks({
     () => new Set(),
   );
   const targetCommit = pullRequest.commit ?? pullRequest.initialCommit;
+  const diffRepoUrl = React.useMemo(
+    () =>
+      [project.webUrl, ...project.cloneUrls].find(
+        (url): url is string =>
+          typeof url === "string" && /^https?:\/\//i.test(url),
+      ) ?? null,
+    [project.cloneUrls, project.webUrl],
+  );
 
   React.useEffect(() => {
     storageKeyRef.current = storageKey;
@@ -575,12 +604,19 @@ export function ProjectReviewChecks({
   );
 
   const recordResult = React.useCallback(
-    (checkId: string, result: ProjectReviewCheckResult, createdAt: number) => {
+    (
+      checkId: string,
+      result: ProjectReviewCheckResult,
+      createdAt: number,
+      proposal?: ProjectReviewCheckDiffProposal,
+    ) => {
       const expectedStorageKey = storageKeyRef.current;
       if (!expectedStorageKey) return;
       updateRun(expectedStorageKey, checkId, (current) => ({
         ...current,
         error: undefined,
+        acceptedProposalEventId: undefined,
+        proposal,
         result,
         resultCreatedAt: createdAt,
         status: "completed",
@@ -590,6 +626,20 @@ export function ProjectReviewChecks({
           ? "Review check approved."
           : "Review check recommends a fix.",
       );
+    },
+    [updateRun],
+  );
+
+  const acceptProposal = React.useCallback(
+    (checkId: string, eventId: string) => {
+      const expectedStorageKey = storageKeyRef.current;
+      if (!expectedStorageKey) return;
+      updateRun(expectedStorageKey, checkId, (current) =>
+        current.proposal?.eventId === eventId
+          ? { ...current, acceptedProposalEventId: eventId }
+          : current,
+      );
+      toast.success("Proposal accepted locally. No code was changed.");
     },
     [updateRun],
   );
@@ -666,6 +716,8 @@ export function ProjectReviewChecks({
           check,
           projectName: project.name,
           repoAddress: pullRequest.repoAddress ?? project.repoAddress,
+          repoUrl: diffRepoUrl,
+          channelId: channel.id,
           reviewId: pullRequest.id,
           reviewLink: pullRequestShareLink(pullRequest) ?? "unavailable",
           reviewTitle: pullRequest.title,
@@ -698,6 +750,8 @@ export function ProjectReviewChecks({
             eventId: sent.eventId,
           },
           requestId,
+          acceptedProposalEventId: undefined,
+          proposal: undefined,
           result: undefined,
           resultCreatedAt: undefined,
           status: "running",
@@ -728,6 +782,7 @@ export function ProjectReviewChecks({
     },
     [
       openDmMutation,
+      diffRepoUrl,
       project.name,
       project.repoAddress,
       pullRequest,
@@ -857,7 +912,15 @@ export function ProjectReviewChecks({
                 <p className="text-xs text-destructive">{run.error}</p>
               ) : null}
               {run.result ? (
-                <ReviewCheckResultCard result={run.result} />
+                <ProjectReviewCheckResultCard
+                  acceptedProposalEventId={run.acceptedProposalEventId}
+                  canAcceptProposal={!isStale}
+                  onAcceptProposal={(eventId) =>
+                    acceptProposal(check.id, eventId)
+                  }
+                  proposal={run.proposal}
+                  result={run.result}
+                />
               ) : null}
               {run.status === "running" && run.opener && run.agentPubkey ? (
                 <ReviewCheckResultObserver
@@ -866,7 +929,9 @@ export function ProjectReviewChecks({
                   checkId={check.id}
                   onResult={recordResult}
                   opener={run.opener}
+                  repoUrl={diffRepoUrl}
                   requestId={run.requestId ?? null}
+                  targetCommit={run.targetCommit ?? targetCommit}
                 />
               ) : null}
             </article>

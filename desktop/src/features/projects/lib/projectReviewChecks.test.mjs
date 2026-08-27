@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   buildProjectReviewCheckPrompt,
   DEFAULT_PROJECT_REVIEW_CHECKS,
+  parseProjectReviewCheckDiffEvent,
   parseProjectReviewCheckResult,
   parseProjectReviewChecksConfig,
   PROJECT_REVIEW_CHECK_RESULT_MARKER,
@@ -108,10 +109,12 @@ test("normalizes a changes-requested result to fix-recommended", () => {
 });
 
 test("parses structured findings with bounded source locations", () => {
+  const diffEventId = "d".repeat(64);
   const result = parseProjectReviewCheckResult(
     `${PROJECT_REVIEW_CHECK_RESULT_MARKER}\n${JSON.stringify({
       conclusion: "fix-recommended",
       summary: "Two interface fixes are needed.",
+      diff_event_id: diffEventId,
       findings: [
         {
           title: "Use the shared button primitive",
@@ -130,6 +133,7 @@ test("parses structured findings with bounded source locations", () => {
   );
 
   assert.deepEqual(result, {
+    diffEventId,
     conclusion: "fix-recommended",
     summary: "Two interface fixes are needed.",
     findings: [
@@ -149,6 +153,62 @@ test("parses structured findings with bounded source locations", () => {
   });
 });
 
+test("resolves only the exact agent diff for the reviewed repository and commit", () => {
+  const eventId = "d".repeat(64);
+  const agentPubkey = "a".repeat(64);
+  const repoUrl = "https://github.com/block/buzz";
+  const commit = "b".repeat(40);
+  const event = {
+    id: eventId,
+    pubkey: agentPubkey,
+    kind: 40008,
+    content:
+      "diff --git a/src/check.ts b/src/check.ts\n--- a/src/check.ts\n+++ b/src/check.ts\n@@ -1 +1 @@\n-old\n+new",
+    tags: [
+      ["repo", repoUrl],
+      ["commit", commit],
+      ["file", "src/check.ts"],
+      ["description", "Review check request-123"],
+    ],
+  };
+
+  assert.deepEqual(
+    parseProjectReviewCheckDiffEvent(event, {
+      eventId,
+      agentPubkey,
+      repoUrl,
+      commit,
+    }),
+    {
+      eventId,
+      content: event.content,
+      repoUrl,
+      commitSha: commit,
+      filePath: "src/check.ts",
+      description: "Review check request-123",
+      truncated: false,
+    },
+  );
+  assert.equal(
+    parseProjectReviewCheckDiffEvent(event, {
+      eventId,
+      agentPubkey: "c".repeat(64),
+      repoUrl,
+      commit,
+    }),
+    null,
+  );
+  assert.equal(
+    parseProjectReviewCheckDiffEvent(event, {
+      eventId,
+      agentPubkey,
+      repoUrl,
+      commit: "e".repeat(40),
+    }),
+    null,
+  );
+});
+
 test("does not treat ordinary agent prose as a completed check", () => {
   assert.equal(
     parseProjectReviewCheckResult(
@@ -162,6 +222,28 @@ test("does not treat ordinary agent prose as a completed check", () => {
     ),
     null,
   );
+  assert.equal(
+    parseProjectReviewCheckResult(
+      `${PROJECT_REVIEW_CHECK_RESULT_MARKER}\n${JSON.stringify({
+        conclusion: "fix-recommended",
+        summary: "Malformed diff reference.",
+        diff_event_id: "not-an-event-id",
+        findings: [],
+      })}`,
+    ),
+    null,
+  );
+  assert.equal(
+    parseProjectReviewCheckResult(
+      `${PROJECT_REVIEW_CHECK_RESULT_MARKER}\n${JSON.stringify({
+        conclusion: "approved",
+        summary: "Approved results cannot propose changes.",
+        diff_event_id: "f".repeat(64),
+        findings: [],
+      })}`,
+    ),
+    null,
+  );
 });
 
 test("builds a review-only prompt pinned to the exact commit", () => {
@@ -169,6 +251,8 @@ test("builds a review-only prompt pinned to the exact commit", () => {
     check: DEFAULT_PROJECT_REVIEW_CHECKS[1],
     projectName: "Buzz",
     repoAddress: "30617:owner:buzz",
+    repoUrl: "https://github.com/block/buzz",
+    channelId: "check-channel",
     reviewId: "review-event",
     reviewLink: "buzz://pr?id=review-event",
     reviewTitle: "Add checks",
@@ -183,6 +267,9 @@ test("builds a review-only prompt pinned to the exact commit", () => {
   assert.match(prompt, /Frontend quality/);
   assert.match(prompt, /"request_id":"request-123"/);
   assert.match(prompt, /Echo request_id exactly/);
+  assert.match(prompt, /buzz messages send-diff/);
+  assert.match(prompt, /"diff_event_id":null/);
+  assert.match(prompt, /copy its exact 64-character event_id/);
   assert.match(prompt, new RegExp(PROJECT_REVIEW_CHECK_RESULT_MARKER));
 });
 

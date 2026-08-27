@@ -16,9 +16,20 @@ export type ProjectReviewCheckFinding = {
 
 export type ProjectReviewCheckResult = {
   requestId?: string;
+  diffEventId?: string;
   conclusion: ProjectReviewCheckConclusion;
   summary: string;
   findings: ProjectReviewCheckFinding[];
+};
+
+export type ProjectReviewCheckDiffProposal = {
+  eventId: string;
+  content: string;
+  repoUrl: string;
+  commitSha: string;
+  filePath: string | null;
+  description: string | null;
+  truncated: boolean;
 };
 
 export const PROJECT_REVIEW_CHECK_RESULT_MARKER: string;
@@ -33,10 +44,22 @@ export function parseProjectReviewCheckResult(
   content: unknown,
 ): ProjectReviewCheckResult | null;
 
+export function parseProjectReviewCheckDiffEvent(
+  event: unknown,
+  expected: {
+    eventId: string;
+    agentPubkey: string;
+    repoUrl: string;
+    commit: string | null;
+  },
+): ProjectReviewCheckDiffProposal | null;
+
 export function buildProjectReviewCheckPrompt(input: {
   check: ProjectReviewCheckDefinition;
   projectName: string;
   repoAddress: string;
+  repoUrl: string | null;
+  channelId: string;
   reviewId: string;
   reviewLink: string;
   reviewTitle: string;
