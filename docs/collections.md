@@ -10,6 +10,7 @@
 - Call the object a Collection for now; it may replace Projects later if it proves to be the better model.
 - A collection groups channels, repositories, tasks, threads, messages, documents, files, and arbitrary external references.
 - Membership is many-to-many: an item can belong to multiple collections.
+- Related content can be discovered dynamically, such as pull requests in channels and documents attached to meetings.
 - Each collection has a home for navigating its contents, understanding current activity, and orienting agents.
 - A collection may have an emoji or icon; otherwise it uses a neutral default glyph.
 - Persisted collection operations are available to people and agents.
