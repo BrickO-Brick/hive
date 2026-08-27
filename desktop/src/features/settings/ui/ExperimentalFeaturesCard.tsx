@@ -1,5 +1,5 @@
 import { setAgentManagedProfiles } from "@/shared/api/tauri";
-import { availableDesktopFeatures, useFeatureToggle } from "@/shared/features";
+import { desktopFeatures, useFeatureToggle } from "@/shared/features";
 import type { FeatureDefinition } from "@/shared/features";
 import { Switch } from "@/shared/ui/switch";
 import { SettingsOptionGroup, SettingsOptionRow } from "./SettingsOptionGroup";
@@ -42,7 +42,7 @@ function FeatureRow({ feature }: { feature: FeatureDefinition }) {
 export function ExperimentalFeaturesCard() {
   // Manifest is preview-only by definition; every desktop entry is a preview
   // feature.
-  const previewFeatures = availableDesktopFeatures;
+  const previewFeatures = desktopFeatures;
 
   return (
     <section className="min-w-0" data-testid="settings-experimental">

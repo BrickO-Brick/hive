@@ -1,9 +1,6 @@
 /** Platforms a feature is available on */
 export type FeaturePlatform = "desktop" | "mobile";
 
-/** Build-time capabilities that can make a preview available to users. */
-export type FeatureBuildFlag = "bestie";
-
 /**
  * A single feature definition from the manifest.
  *
@@ -19,8 +16,6 @@ export interface FeatureDefinition {
   defaultEnabled?: boolean;
   /** If omitted, feature is available on all platforms */
   platforms?: FeaturePlatform[];
-  /** If present, the build must opt in before the user can see or enable it */
-  requiredBuildFlag?: FeatureBuildFlag;
 }
 
 /** The root manifest schema */

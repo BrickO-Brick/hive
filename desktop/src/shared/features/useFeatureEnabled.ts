@@ -1,6 +1,6 @@
 import { useSyncExternalStore, useCallback, useEffect } from "react";
 import { getFeature } from "./manifest";
-import { resolveFeatureEnabledInThisBuild } from "./runtimeBuildAvailability";
+import { resolveEnabled } from "./resolveEnabled";
 import { getOverrides, setOverride, OVERRIDES_KEY } from "./store";
 
 type Listener = () => void;
@@ -102,8 +102,10 @@ export function useFeatureEnabled(featureId: string): boolean {
     return true;
   }
 
-  return resolveFeatureEnabledInThisBuild(feature, overrides);
+  return resolveEnabled(featureId, overrides, feature.defaultEnabled);
 }
+
+export { resolveEnabled } from "./resolveEnabled";
 
 /**
  * Hook to toggle a feature override. Returns [enabled, toggle].

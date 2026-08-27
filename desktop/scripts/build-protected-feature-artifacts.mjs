@@ -1,0 +1,108 @@
+import { spawnSync } from "node:child_process";
+import {
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const desktopRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+);
+const selectedInternalVariant = process.env.VITE_BUZZ_BESTIE === "1";
+const scratchRoot = mkdtempSync(
+  path.join(tmpdir(), "buzz-protected-feature-artifacts-"),
+);
+const selectedOutput = path.join(desktopRoot, "dist");
+const alternateOutput = path.join(scratchRoot, "alternate");
+const viteBinary = process.platform === "win32" ? "vite.cmd" : "vite";
+
+function buildVariant({ internal, output }) {
+  const env = { ...process.env };
+  if (internal) {
+    env.VITE_BUZZ_BESTIE = "1";
+  } else {
+    delete env.VITE_BUZZ_BESTIE;
+  }
+
+  const result = spawnSync(
+    viteBinary,
+    ["build", "--outDir", output, "--emptyOutDir"],
+    {
+      cwd: desktopRoot,
+      env,
+      stdio: "inherit",
+    },
+  );
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(
+      `${internal ? "internal" : "OSS"} desktop build failed with status ${result.status}`,
+    );
+  }
+}
+
+function emittedText(root) {
+  const chunks = [];
+  const visit = (candidate) => {
+    const stat = statSync(candidate);
+    if (stat.isDirectory()) {
+      for (const child of readdirSync(candidate)) {
+        visit(path.join(candidate, child));
+      }
+      return;
+    }
+    if (/\.(?:css|html|js|json)$/u.test(candidate)) {
+      chunks.push(readFileSync(candidate, "utf8"));
+    }
+  };
+  visit(root);
+  return chunks.join("\n");
+}
+
+function assertArtifactContract({ ossOutput, internalOutput }) {
+  const ossText = emittedText(ossOutput);
+  const internalText = emittedText(internalOutput);
+  const protectedContent = /\bbestie\b|chief of staff|builtin:bestie/iu;
+  const internalManifestMarker =
+    "Try a personal agent that is always close at hand";
+
+  if (protectedContent.test(ossText)) {
+    throw new Error(
+      "Official OSS desktop artifact contains protected Bestie/Chief content",
+    );
+  }
+  if (!internalText.includes(internalManifestMarker)) {
+    throw new Error(
+      "Protected internal desktop artifact is missing the Bestie manifest",
+    );
+  }
+}
+
+try {
+  // Build the unselected variant outside dist first, then leave the requested
+  // variant in dist for Vite/Tauri's ordinary packaging contract.
+  buildVariant({
+    internal: !selectedInternalVariant,
+    output: alternateOutput,
+  });
+  buildVariant({
+    internal: selectedInternalVariant,
+    output: selectedOutput,
+  });
+
+  assertArtifactContract({
+    ossOutput: selectedInternalVariant ? alternateOutput : selectedOutput,
+    internalOutput: selectedInternalVariant ? selectedOutput : alternateOutput,
+  });
+  console.log(
+    `Protected feature artifact matrix passed; dist contains the ${selectedInternalVariant ? "internal" : "OSS"} variant.`,
+  );
+} finally {
+  rmSync(scratchRoot, { recursive: true, force: true });
+}

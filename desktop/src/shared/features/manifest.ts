@@ -1,4 +1,5 @@
 import manifestJson from "@features-manifest";
+import { protectedFeatureDefinitions } from "@protected-features";
 import { z } from "zod";
 import type { FeatureDefinition, FeaturesManifest } from "./types";
 
@@ -8,7 +9,6 @@ import type { FeatureDefinition, FeaturesManifest } from "./types";
 // The app keeps working; gated UI stays hidden; nothing accidentally leaks.
 
 const FeaturePlatformSchema = z.enum(["desktop", "mobile"]);
-const FeatureBuildFlagSchema = z.enum(["bestie"]);
 
 const FeatureDefinitionSchema = z.object({
   id: z.string().min(1),
@@ -16,7 +16,6 @@ const FeatureDefinitionSchema = z.object({
   description: z.string(),
   defaultEnabled: z.boolean().optional(),
   platforms: z.array(FeaturePlatformSchema).optional(),
-  requiredBuildFlag: FeatureBuildFlagSchema.optional(),
 });
 
 const FeaturesManifestSchema = z.object({
@@ -27,7 +26,10 @@ const FeaturesManifestSchema = z.object({
 const EMPTY_MANIFEST: FeaturesManifest = { version: 1, features: [] };
 
 function loadManifest(): FeaturesManifest {
-  const result = FeaturesManifestSchema.safeParse(manifestJson);
+  const result = FeaturesManifestSchema.safeParse({
+    ...manifestJson,
+    features: [...manifestJson.features, ...protectedFeatureDefinitions],
+  });
   if (!result.success) {
     console.warn(
       "[FeatureFlags] preview-features.json failed schema validation; falling back to empty manifest.",

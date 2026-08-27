@@ -9,7 +9,7 @@ import {
 } from "@/shared/api/relayMembers";
 import {
   getFeature,
-  resolveFeatureEnabledInThisBuild,
+  resolveEnabled,
   useFeatureSnapshot,
 } from "@/shared/features";
 import { topChromeBackdrop } from "@/shared/layout/chromeLayout";
@@ -139,7 +139,7 @@ export function SettingsView({
         const feature = getFeature(s.featureGate);
         if (
           feature &&
-          !resolveFeatureEnabledInThisBuild(feature, featureState)
+          !resolveEnabled(s.featureGate, featureState, feature.defaultEnabled)
         ) {
           return false;
         }
