@@ -229,6 +229,52 @@ test("suppresses matching PR mention rows across sources but keeps unrelated cha
   );
 });
 
+test("suppresses a PR conversation without hiding another thread from the same channel source", () => {
+  const message = (eventId, threadRootId, label) => ({
+    activityType: "channel-message",
+    actorIdentity: "buzz:human",
+    authorPubkey: "human",
+    channelId: "channel-1",
+    createdAt: 1,
+    eventId,
+    kind: "thread",
+    label,
+    sourceMemberId: "channel-source",
+    threadRootId,
+    url: "",
+  });
+  const prConversation = message("pr-reply", "pr-thread", "PR chatter");
+  const unrelatedConversation = message(
+    "design-reply",
+    "design-thread",
+    "Unrelated design decision",
+  );
+  const pullRequest = {
+    ...prConversation,
+    activityType: "github-pr",
+    kind: "pull request",
+    label: "PR #7",
+    sourceEventIds: ["pr-reply"],
+    sourceMemberIds: ["channel-source"],
+    url: "https://github.com/block/buzz/pull/7",
+  };
+  const stateChange = {
+    ...pullRequest,
+    activityType: "github-pr-activity",
+    createdAt: 2,
+    kind: "PR review",
+    url: `${pullRequest.url}#pullrequestreview-1`,
+  };
+
+  assert.deepEqual(
+    projectCollectionActivity(
+      [prConversation, unrelatedConversation, pullRequest, stateChange],
+      { human: false },
+    ),
+    [unrelatedConversation, stateChange],
+  );
+});
+
 test("names channel-derived live thread provenance", () => {
   assert.equal(
     collectionChannelThreadProvenance("#design"),

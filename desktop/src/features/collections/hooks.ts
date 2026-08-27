@@ -67,7 +67,6 @@ function sourceLabel(member: CollectionMember): string {
 function messageActivity(
   member: CollectionMember,
   events: Awaited<ReturnType<typeof getChannelWindowEvents>>,
-  includePullRequests: boolean,
 ): DerivedCollectionActivity[] {
   const reference = member.reference;
   if (
@@ -102,25 +101,21 @@ function messageActivity(
         reference.type === "thread" ? reference.root_event_id : thread.rootId,
       url: "",
     };
-    const pullRequests = includePullRequests
-      ? extractGitHubPullRequestLinks([event]).map(
-          (link): DerivedCollectionActivity => ({
-            ...link,
-            activityType: "github-pr",
-            actorIdentity: `buzz:${event.pubkey.toLocaleLowerCase()}`,
-            authorPubkey: event.pubkey,
-            channelId,
-            createdAt: event.created_at,
-            eventId: event.id,
-            provenanceLabel: `${sourceLabel(member)} → mentioned PR`,
-            sourceMemberId: member.id,
-            threadRootId:
-              reference.type === "thread"
-                ? reference.root_event_id
-                : thread.rootId,
-          }),
-        )
-      : [];
+    const pullRequests = extractGitHubPullRequestLinks([event]).map(
+      (link): DerivedCollectionActivity => ({
+        ...link,
+        activityType: "github-pr",
+        actorIdentity: `buzz:${event.pubkey.toLocaleLowerCase()}`,
+        authorPubkey: event.pubkey,
+        channelId,
+        createdAt: event.created_at,
+        eventId: event.id,
+        provenanceLabel: `${sourceLabel(member)} → mentioned PR`,
+        sourceMemberId: member.id,
+        threadRootId:
+          reference.type === "thread" ? reference.root_event_id : thread.rootId,
+      }),
+    );
     return [message, ...pullRequests];
   });
 }
@@ -332,7 +327,7 @@ async function discoverCollectionMemberActivity(
       },
     );
     return {
-      items: [...threadActivity, ...messageActivity(member, messages, false)],
+      items: [...threadActivity, ...messageActivity(member, messages)],
       warnings: [],
     };
   }
@@ -344,14 +339,14 @@ async function discoverCollectionMemberActivity(
       { limit: COLLECTION_CHANNEL_DISCOVERY_LIMIT },
     );
     return {
-      items: messageActivity(member, [root, ...replies.events], true),
+      items: messageActivity(member, [root, ...replies.events]),
       warnings: [],
     };
   }
   if (member.reference.type === "message") {
     const event = await getEventById(member.reference.event_id);
     return {
-      items: messageActivity(member, [event], true),
+      items: messageActivity(member, [event]),
       warnings: [],
     };
   }

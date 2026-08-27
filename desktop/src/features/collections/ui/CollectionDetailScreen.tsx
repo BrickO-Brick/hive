@@ -52,6 +52,8 @@ import {
   CollectionRowActions,
   DerivedCollectionActivityRow,
 } from "./CollectionDetailRows";
+
+const PEOPLE_PREVIEW_LIMIT = 8;
 import { CollectionGlyph } from "./CollectionGlyph";
 import { CollectionIconDialog } from "./CollectionIconDialog";
 
@@ -98,6 +100,12 @@ export function CollectionDetailScreen({
       !identity.startsWith("buzz:") ||
       !profiles[identity.slice("buzz:".length)]?.isAgent,
   );
+  const visiblePeopleIdentities = peopleIdentities.slice(
+    0,
+    PEOPLE_PREVIEW_LIMIT,
+  );
+  const hiddenPeopleCount =
+    peopleIdentities.length - visiblePeopleIdentities.length;
   const members = (data?.members ?? []).filter((member) =>
     collectionMemberMatches(member, search, type),
   );
@@ -454,7 +462,7 @@ export function CollectionDetailScreen({
                   </p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
-                  {peopleIdentities.map((identity) => {
+                  {visiblePeopleIdentities.map((identity) => {
                     const pubkey = identity.startsWith("buzz:")
                       ? identity.slice("buzz:".length)
                       : null;
@@ -494,6 +502,11 @@ export function CollectionDetailScreen({
                       </button>
                     );
                   })}
+                  {hiddenPeopleCount > 0 ? (
+                    <span className="px-1 text-sm text-muted-foreground">
+                      +{hiddenPeopleCount} more
+                    </span>
+                  ) : null}
                   {selectedPerson ? (
                     <Button
                       onClick={() => setSelectedPerson(null)}

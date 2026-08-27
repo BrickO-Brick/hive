@@ -218,10 +218,10 @@ test("creates a collection and adds supported reference types", async ({
     });
   }, githubPullRequestUrl);
   await page.evaluate(
-    ({ failingUrl, url }) => {
+    ({ failingUrl }) => {
       window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
         channelName: "general",
-        content: `Thread status for Bird Voice: ${url} and ${failingUrl}`,
+        content: `Thread status for Bird Voice: ${failingUrl}`,
         parentEventId: "mock-general-welcome",
         extraTags: [
           ["e", "mock-general-welcome", "", "root"],
@@ -229,8 +229,14 @@ test("creates a collection and adds supported reference types", async ({
         ],
       });
     },
-    { failingUrl: failingGithubPullRequestUrl, url: githubPullRequestUrl },
+    { failingUrl: failingGithubPullRequestUrl },
   );
+  await page.evaluate(() => {
+    window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
+      channelName: "general",
+      content: "Unrelated channel update",
+    });
+  });
   await page.getByRole("button", { name: "Add to collection" }).click();
   await page
     .getByTestId("add-to-collection-dialog")
@@ -303,6 +309,9 @@ test("creates a collection and adds supported reference types", async ({
   );
   await expect(page.getByTestId("collection-activity")).not.toContainText(
     "Please review",
+  );
+  await expect(page.getByTestId("collection-activity")).toContainText(
+    "Unrelated channel update",
   );
   await expect(pullRequest.getByLabel(/^Derived from /)).toBeVisible();
   await expect(pullRequest).toContainText("Live collections activity feed");

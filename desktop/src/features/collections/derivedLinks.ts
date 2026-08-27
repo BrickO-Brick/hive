@@ -362,15 +362,22 @@ export function projectCollectionActivity(
   activity: readonly DerivedCollectionActivity[],
   actorIsAgent: Readonly<Record<string, boolean | undefined>>,
 ): DerivedCollectionActivity[] {
+  const conversationIdentity = (item: DerivedCollectionActivity) =>
+    item.channelId
+      ? `${item.channelId}:${item.threadRootId ?? item.eventId ?? item.sourceMemberId}`
+      : null;
   const pullRequestUrls = new Set(
     activity
       .filter((item) => item.activityType === "github-pr")
       .map((item) => item.url.toLocaleLowerCase()),
   );
-  const pullRequestSources = new Set(
+  const pullRequestConversations = new Set(
     activity
       .filter((item) => item.activityType === "github-pr")
-      .flatMap((item) => item.sourceMemberIds ?? [item.sourceMemberId]),
+      .flatMap((item) => {
+        const identity = conversationIdentity(item);
+        return identity ? [identity] : [];
+      }),
   );
   const pullRequestEvents = new Set(
     activity
@@ -384,7 +391,7 @@ export function projectCollectionActivity(
     ]).some((mention) => pullRequestUrls.has(mention.url.toLocaleLowerCase()));
     return (
       !mentionsResolvedPullRequest &&
-      !pullRequestSources.has(item.sourceMemberId) &&
+      !pullRequestConversations.has(conversationIdentity(item) ?? "") &&
       (!item.eventId || !pullRequestEvents.has(item.eventId))
     );
   });
