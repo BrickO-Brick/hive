@@ -824,6 +824,13 @@ class RelaySessionNotifier extends Notifier<SessionState> {
         );
       }
     } else {
+      // Back-pressure now arrives here rather than as a NOTICE: the relay
+      // rejects an over-quota EVENT on the OK channel so this pending publish
+      // can be settled at all. Without arming the gate the send would fail
+      // without ever backing off.
+      if (message.startsWith('rate-limited:')) {
+        _rateLimitGate.activate(parseRateLimitRetrySeconds(message));
+      }
       if (!pending.completer.isCompleted) {
         pending.completer.completeError(
           Exception(message.isNotEmpty ? message : 'Event rejected'),

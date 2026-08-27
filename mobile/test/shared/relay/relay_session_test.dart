@@ -1346,6 +1346,66 @@ void main() {
     expect(closedMessages, ['restricted: no longer valid']);
     unsubscribe();
   });
+
+  // The relay rejects an over-quota EVENT on the OK channel rather than with a
+  // bare NOTICE, because a NOTICE carries no event id and `_pendingEvents` is
+  // keyed by one — nothing settled, so the publish could only time out. The
+  // gate arming that used to depend on the NOTICE has to happen here too.
+  test(
+    'a rate-limited OK rejection fails the publish and arms the gate',
+    () async {
+      final gateTimers = <_ManualTimer>[];
+      final gate = RelayRateLimitGate(
+        now: () => DateTime(2026),
+        timerFactory: (duration, callback) {
+          final timer = _ManualTimer(duration, callback);
+          gateTimers.add(timer);
+          return timer;
+        },
+      );
+      final session = RelaySessionNotifier(rateLimitGate: gate);
+      session.debugAttachSocketForTest(_RecordingRelaySocket());
+
+      final publish = session.publish(_event());
+      session.debugHandleMessage([
+        'OK',
+        'event-1',
+        false,
+        'rate-limited: quota exceeded; retry in 4s',
+      ]);
+
+      await expectLater(publish, throwsA(isA<Exception>()));
+      expect(
+        gate.isActive,
+        isTrue,
+        reason:
+            'back-pressure now arrives on the OK channel — without arming here '
+            'the client fails the send and retries into the same quota',
+      );
+      expect(gateTimers.single.duration, const Duration(seconds: 4));
+    },
+  );
+
+  test('an ordinary OK rejection does not arm the gate', () async {
+    final gate = RelayRateLimitGate(now: () => DateTime(2026));
+    final session = RelaySessionNotifier(rateLimitGate: gate);
+    session.debugAttachSocketForTest(_RecordingRelaySocket());
+
+    final publish = session.publish(_event());
+    session.debugHandleMessage([
+      'OK',
+      'event-1',
+      false,
+      'invalid: bad signature',
+    ]);
+
+    await expectLater(publish, throwsA(isA<Exception>()));
+    expect(
+      gate.isActive,
+      isFalse,
+      reason: 'only `rate-limited:` rejections signal back-pressure',
+    );
+  });
 }
 
 class _ControlledHttpClient extends http.BaseClient {
