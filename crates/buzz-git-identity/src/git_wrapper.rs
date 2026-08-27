@@ -239,7 +239,7 @@ pub fn run() -> i32 {
         }
     };
 
-    let ctx = repo_context_args(&argv);
+    let ctx = caller_globals(&argv);
 
     // Alias preflight + unification. `verify_alias_safety` refuses every shell
     // (`!`) alias and every non-shell alias carrying config/quoting the wrapper
@@ -321,83 +321,37 @@ fn locate_install_dir() -> Option<PathBuf> {
     None
 }
 
-/// Global options that carry the repository context real git would apply. The
-/// verifier's internal `config`/`rev-list`/`show` probes must run under the
-/// same context or they resolve against the wrapper's cwd instead — the
-/// `git -C <repo> push` bypass. `-C` and its value are already paired into the
-/// globals by [`split_globals`].
-fn repo_context_args(argv: &[String]) -> Vec<String> {
-    let (globals, _) = split_globals(argv);
-    let mut ctx = Vec::new();
-    let mut i = 0;
-    while i < globals.len() {
-        let g = globals[i].as_str();
-        if matches!(g, "-C" | "--git-dir" | "--work-tree" | "--namespace") {
-            ctx.push(globals[i].clone());
-            if i + 1 < globals.len() {
-                i += 1;
-                ctx.push(globals[i].clone());
-            }
-        } else if g.starts_with("--git-dir=")
-            || g.starts_with("--work-tree=")
-            || g.starts_with("--namespace=")
-        {
-            ctx.push(globals[i].clone());
-        }
-        i += 1;
-    }
-    ctx
-}
-
-/// The caller's config-injecting global options: `-c key=value` (attached
-/// `-ckey=value` and split `-c` + `key=value` forms) and `--config-env=key=VAR`
-/// (attached and split forms). These are the channels through which a caller
-/// can introduce or override a git alias — directly (`-c alias.x=…`) or
-/// transitively (`-c include.path=…` pulling in a config file that defines one,
-/// `--config-env` sourcing the definition from an env var).
+/// Every global option the caller placed before the subcommand — the complete
+/// set git itself consumes before dispatching to the subcommand. This is the
+/// probe context for *every* verification probe: alias resolution
+/// ([`verify_alias_safety`], [`is_push_command`]) and the outgoing-commit
+/// authorship/signature checks ([`partition_outgoing`] via [`rev_list_outgoing`],
+/// [`commit_author_email`], [`commit_signature_is_agent`]). Each probe MUST run
+/// under the same effective repository and configuration git will use for the
+/// real invocation, or it resolves a different view and enforcement is bypassed.
 ///
-/// The alias probes ([`verify_alias_safety`], [`is_push_command`]) run
-/// `git config --get alias.<name>`. Running that probe under these globals
-/// makes it resolve the exact alias set git will when it later expands the
-/// command in-process — so an include- or config-env-introduced alias, and a
-/// case-varied `-c ALIAS.x`, all surface in the probe and meet the existing
-/// shell-alias refusal and bare-word allowlist. Without them the probe is blind
-/// to any alias not spelled as an exact-lowercase inline `-c alias.<name>=`, and
-/// the injected alias resolves only inside the real git we exec — unchecked.
-///
-/// Repository-context globals (`-C`, `--git-dir`, …) are supplied separately as
-/// `ctx`; git treats both families as independent globals, so the probe applies
-/// them together regardless of order.
-fn config_probe_globals(argv: &[String]) -> Vec<String> {
-    let (globals, _) = split_globals(argv);
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < globals.len() {
-        let g = globals[i].as_str();
-        if g == "-c" || g == "--config-env" {
-            // Split form: the value token was already paired in by split_globals.
-            out.push(globals[i].clone());
-            if i + 1 < globals.len() {
-                i += 1;
-                out.push(globals[i].clone());
-            }
-        } else if g.starts_with("-c") || g.starts_with("--config-env=") {
-            // Attached form (`-ckey=value`, `--config-env=key=VAR`). `-C` and its
-            // value never match: the prefix test is case-sensitive.
-            out.push(globals[i].clone());
-        }
-        i += 1;
-    }
-    out
-}
-
-/// Build the probe context for alias resolution: the repository-context globals
-/// git needs to consult the right repo's config, plus the caller's
-/// config-injecting globals so the probe sees the same aliases git will.
-fn alias_probe_ctx(argv: &[String], ctx: &[String]) -> Vec<String> {
-    let mut probe_ctx = ctx.to_vec();
-    probe_ctx.extend(config_probe_globals(argv));
-    probe_ctx
+/// INVARIANT — pass the caller's globals through wholesale; never an allowlist.
+/// This boundary was reopened three times by enumerating "known" context
+/// globals and missing one: repo-config keys (round 4), the config-injection
+/// channels `-c`/`--config-env`/`include.path` (round 6), then `--bare` — which
+/// changes repository discovery and therefore *which* config file supplies an
+/// alias, so an allowlist that dropped it let `git --bare <dir> x` expand an
+/// alias the probe never saw. The complete-set rule closes the whole class:
+///   • Any global that would corrupt a probe corrupts the real invocation
+///     identically (git parses globals before subcommand dispatch), so probe
+///     and real git always share one view and fail closed together — no probe
+///     can go blind (fail-open) while real git still expands an alias.
+///   • Pager/cosmetic globals (`-p`, `--paginate`, `--no-optional-locks`, …)
+///     are inert: probes capture piped stdout, so git auto-disables the pager,
+///     and none introduce config or aliases.
+///   • `--exec-path=` redirects builtin lookup for probe and real git alike;
+///     `config`/`rev-list`/`show`/`diff-tree`/`patch-id` are builtins, so it
+///     cannot make the probe resolve a different alias set than real git.
+/// The authoritative identity/signing `-c` entries always splice *after* these
+/// caller globals ([`inject_identity_args`], [`commit_signature_is_agent`]), so
+/// command-line last-wins precedence keeps a caller `-c` from overriding them.
+fn caller_globals(argv: &[String]) -> Vec<String> {
+    split_globals(argv).0
 }
 
 /// The effective-command classification of an invocation.
@@ -411,17 +365,17 @@ enum PushKind {
 
 /// Classify the invocation's *effective* command, resolving ordinary git
 /// aliases so `git pub` (with `alias.pub = push`) and `git -c alias.pub=push
-/// pub` are both recognized. Aliases are read under [`alias_probe_ctx`] — the
-/// repo-context globals plus the caller's config-injecting globals — so the
-/// probe consults the same aliases git will, including those introduced by a
-/// `-c include.path`/`--config-env` and case-varied `-c ALIAS.x`.
+/// pub` are both recognized. Aliases are read under `ctx` — the caller's
+/// complete global set ([`caller_globals`]) — so the probe consults the exact
+/// same aliases git will, including those introduced by a `-c include.path`/
+/// `--config-env`, case-varied `-c ALIAS.x`, or a repo view selected by
+/// `--bare`/`--git-dir`.
 ///
 /// This runs only in a managed session, *after* [`verify_alias_safety`] has
 /// already refused every shell (`!`) alias and every non-shell alias that is
 /// not a trivially-safe bare-word chain — so a shell alias never reaches here.
 /// Recursion is bounded to defeat cyclic alias definitions.
 fn is_push_command(real_git: &Path, argv: &[String], ctx: &[String]) -> PushKind {
-    let probe_ctx = alias_probe_ctx(argv, ctx);
     let mut name = match subcommand(argv) {
         Some(s) => s,
         None => return PushKind::NotPush,
@@ -432,7 +386,7 @@ fn is_push_command(real_git: &Path, argv: &[String], ctx: &[String]) -> PushKind
         }
         let def = capture(
             real_git,
-            &probe_ctx,
+            ctx,
             &["config", "--get", &format!("alias.{name}")],
         );
         let def = match def {
@@ -493,7 +447,6 @@ fn verify_alias_safety(
     ctx: &[String],
 ) -> Result<Option<Vec<String>>, String> {
     let (_, sub_idx) = split_globals(argv);
-    let probe_ctx = alias_probe_ctx(argv, ctx);
     let Some(sub_idx) = sub_idx else {
         return Ok(None); // no subcommand — nothing to expand
     };
@@ -511,7 +464,7 @@ fn verify_alias_safety(
         let name = &chain[cmd_idx];
         let def = capture(
             real_git,
-            &probe_ctx,
+            ctx,
             &["config", "--get", &format!("alias.{name}")],
         );
         let Some(def) = def else {
@@ -534,7 +487,7 @@ fn verify_alias_safety(
     let name = &chain[cmd_idx];
     if capture(
         real_git,
-        &probe_ctx,
+        ctx,
         &["config", "--get", &format!("alias.{name}")],
     )
     .is_some()
@@ -1192,8 +1145,9 @@ fn rev_list_outgoing(real_git: &Path, ctx: &[String], tip: &str) -> Option<Vec<S
 }
 
 /// Run `git <ctx...> <args...>` and capture trimmed stdout when it succeeds.
-/// `ctx` carries repository-context globals (`-C`, `--git-dir`, …) so the probe
-/// resolves against the same repository the user's command targets.
+/// `ctx` carries the caller's complete global set ([`caller_globals`]) so the
+/// probe resolves against the same repository, config, and aliases git will use
+/// for the real invocation.
 fn capture(real_git: &Path, ctx: &[String], args: &[&str]) -> Option<String> {
     let mut full = ctx.to_vec();
     full.extend(args.iter().map(|s| s.to_string()));
@@ -1606,49 +1560,48 @@ mod tests {
         assert_eq!(reuse_commit_arg(&v(&["-m", "msg"])), None);
     }
 
-    // ── config_probe_globals / repo_context_args ─────────────────────────────
+    // ── caller_globals ────────────────────────────────────────────────────────
 
     #[test]
-    fn config_probe_globals_captures_only_config_channels() {
-        // Both `-c` forms and both `--config-env` forms are captured; `-C` and
-        // its value, and the subcommand, are not.
+    fn caller_globals_captures_the_complete_global_set() {
+        // Every global before the subcommand is captured — repo-context
+        // (`-C`/`--git-dir`), config channels (`-c`/`--config-env`, attached +
+        // split), AND repository-selection flags an allowlist would drop
+        // (`--bare`) — with value tokens paired in and the subcommand excluded.
         assert_eq!(
-            config_probe_globals(&v(&[
+            caller_globals(&v(&[
                 "-C",
                 "/repo",
+                "--bare",
                 "-c",
                 "alias.x=push",
                 "-cinclude.path=/e",
                 "--config-env=alias.y=VAR",
                 "--config-env",
                 "alias.z=VAR2",
+                "--git-dir=/g",
                 "pub",
             ])),
             v(&[
+                "-C",
+                "/repo",
+                "--bare",
                 "-c",
                 "alias.x=push",
                 "-cinclude.path=/e",
                 "--config-env=alias.y=VAR",
                 "--config-env",
                 "alias.z=VAR2",
+                "--git-dir=/g",
             ])
         );
-        // `-C <dir>` alone yields nothing (the case-sensitive `-c` prefix test
-        // must not swallow the repo-context flag or its value).
-        assert!(config_probe_globals(&v(&["-C", "/repo", "push"])).is_empty());
-    }
-
-    #[test]
-    fn repo_context_args_extracts_repository_context_globals() {
+        // No globals before the subcommand → empty.
+        assert!(caller_globals(&v(&["push"])).is_empty());
+        // `-C <dir>` pairs its value; the subcommand is never captured.
         assert_eq!(
-            repo_context_args(&v(&["-C", "/repo", "-c", "core.x=y", "push"])),
+            caller_globals(&v(&["-C", "/repo", "push"])),
             v(&["-C", "/repo"])
         );
-        assert_eq!(
-            repo_context_args(&v(&["--git-dir=/g", "status"])),
-            v(&["--git-dir=/g"])
-        );
-        assert!(repo_context_args(&v(&["push"])).is_empty());
     }
 
     // ── manifest round-trip ───────────────────────────────────────────────────
@@ -2062,6 +2015,95 @@ mod tests {
             verify_alias_safety(&real_git(), &v(&["-c", "alias.ci=commit", "ci"]), &empty).unwrap(),
             Some(v(&["-c", "alias.ci=commit", "commit"]))
         );
+    }
+
+    /// Build a directory with two valid but *different* repository views (the
+    /// round-7 template): `<dir>/.git` is an ordinary repo carrying NO
+    /// `alias.<name>`, while `<dir>` itself holds a bare repository layout that
+    /// defines `alias.<name> = <body>`. `git -C <dir> config --get alias.<name>`
+    /// discovers the `.git` view and sees nothing; `git -C <dir> --bare config
+    /// --get alias.<name>` treats `<dir>` as the git dir and sees the alias. So
+    /// an alias probe that drops `--bare` is blind to what the real `--bare`
+    /// invocation will expand. Returns the tempdir (kept alive) and `<dir>`.
+    fn dir_with_bare_only_alias(name: &str, body: &str) -> (tempfile::TempDir, PathBuf) {
+        let td = tempfile::tempdir().unwrap();
+        let dir = td.path().join("d");
+        std::fs::create_dir(&dir).unwrap();
+        let dir_str = dir.to_str().unwrap();
+        // The `.git` view: an ordinary repo with no alias.
+        assert!(std::process::Command::new("git")
+            .args(["-C", dir_str, "init", "-q"])
+            .status()
+            .unwrap()
+            .success());
+        // The `--bare` view: a minimal bare repository layout laid directly at
+        // `<dir>` (HEAD + config + empty objects/refs is all `--bare` config
+        // access needs). `--git-dir <dir>` selects it regardless of the nested
+        // `.git`, so the alias is written into — and read only from — this view.
+        std::fs::write(dir.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(
+            dir.join("config"),
+            "[core]\n\trepositoryformatversion = 0\n\tbare = true\n",
+        )
+        .unwrap();
+        std::fs::create_dir(dir.join("objects")).unwrap();
+        std::fs::create_dir(dir.join("refs")).unwrap();
+        assert!(std::process::Command::new("git")
+            .args([
+                "--git-dir",
+                dir_str,
+                "config",
+                &format!("alias.{name}"),
+                body
+            ])
+            .status()
+            .unwrap()
+            .success());
+        (td, dir)
+    }
+
+    #[test]
+    fn bare_view_shell_alias_is_refused_commit_variant() {
+        // `git -C <dir> --bare x` where `x` is a shell alias visible ONLY in the
+        // `--bare` repository view. The probe context is now the caller's
+        // complete global set (including `--bare`), so the probe resolves the
+        // same view git will and sees the `!` body — refused. Dropping `--bare`
+        // from the probe (the round-6 allowlist) made this alias invisible.
+        let (_td, dir) = dir_with_bare_only_alias("x", "!git -c user.email=evil@x.com commit");
+        // Sanity: in the non-bare (`.git`) view the alias does not exist, so the
+        // probe finds no alias and treats `x` as a real command — proving the
+        // two views genuinely diverge and this is not a trivially-present alias.
+        assert_eq!(
+            verify_alias_safety(&real_git(), &v(&["-C", dir.to_str().unwrap(), "x"]), &[]).unwrap(),
+            None,
+            "non-bare view must not resolve the bare-only alias"
+        );
+        let argv = v(&["-C", dir.to_str().unwrap(), "--bare", "x"]);
+        let ctx = caller_globals(&argv);
+        let err = verify_alias_safety(&real_git(), &argv, &ctx)
+            .expect_err("bare-view shell alias must be refused");
+        assert!(err.contains("shell (`!`) git alias"), "{err}");
+    }
+
+    #[test]
+    fn bare_view_alias_to_push_is_recognized_push_variant() {
+        // A `--bare`-only alias resolving to push must classify as push so
+        // outgoing-author/signature verification runs — otherwise `git -C <dir>
+        // --bare p` (p = push …) would reach the real push unverified.
+        let (_td, dir) = dir_with_bare_only_alias("p", "push --no-verify origin main");
+        let argv = v(&["-C", dir.to_str().unwrap(), "--bare", "p"]);
+        let ctx = caller_globals(&argv);
+        assert!(matches!(
+            is_push_command(&real_git(), &argv, &ctx),
+            PushKind::Push
+        ));
+        // Without `--bare` in the probe context the alias is invisible and the
+        // command misclassifies as NotPush — the exact round-7 bypass.
+        let blind_ctx = vec!["-C".to_string(), dir.to_string_lossy().into_owned()];
+        assert!(matches!(
+            is_push_command(&real_git(), &argv, &blind_ctx),
+            PushKind::NotPush
+        ));
     }
 
     #[test]
