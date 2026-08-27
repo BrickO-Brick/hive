@@ -169,8 +169,10 @@ test("review checks dispatch to an agent authorized for the relay identity", asy
   await expect(checks).toBeVisible();
   await expect(checks.getByTestId("project-review-check")).toHaveCount(3);
   const interfaceCheck = checks.getByTestId("project-review-check").first();
-  await interfaceCheck.getByTestId("project-review-check-agent-picker").click();
-  await page.getByRole("menuitemradio", { name: /charlie/i }).click();
+  await page.getByTestId("project-review-debug-harness-trigger").click();
+  await page
+    .getByTestId("project-review-debug-agent-select")
+    .selectOption(RELAY_REVIEW_AGENT_PUBKEY);
   await interfaceCheck
     .getByRole("button", { name: "Run", exact: true })
     .click();
@@ -350,6 +352,13 @@ test("review checks dispatch to a running local managed agent", async ({
         respondTo: "allowlist",
         respondToAllowlist: [],
       },
+      ...Array.from({ length: 16 }, (_, index) => ({
+        pubkey: (index + 1).toString(16).padStart(64, "0"),
+        name: `Stopped prototype ${index + 1}`,
+        status: "stopped" as const,
+        respondTo: "allowlist" as const,
+        respondToAllowlist: [],
+      })),
     ],
   });
   await openBuzzProject(page);
@@ -362,12 +371,28 @@ test("review checks dispatch to a running local managed agent", async ({
 
   const checks = page.getByTestId("project-review-checks");
   const interfaceCheck = checks.getByTestId("project-review-check").first();
+  const debugHarness = page.getByTestId("project-review-debug-harness-trigger");
+  await expect(debugHarness).toHaveCount(1);
+  await expect(debugHarness).toHaveAccessibleName(
+    "Review check debug harness, agent Roof",
+  );
+  await debugHarness.click();
   await expect(
-    checks.getByTestId("project-review-check-agent-picker"),
-  ).toHaveCount(3);
+    page.getByTestId("project-review-debug-agent-select"),
+  ).toHaveValue(LOCAL_REVIEW_AGENT_PUBKEY);
   await expect(
-    interfaceCheck.getByTestId("project-review-check-agent-picker"),
-  ).toContainText("Roof");
+    page
+      .getByTestId("project-review-debug-agent-select")
+      .locator("option", { hasText: "Stopped prototype" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByTestId("project-review-debug-offline-agent-count"),
+  ).toHaveText("17 offline agents");
+  expect(
+    (await page.getByTestId("project-review-debug-harness-menu").boundingBox())
+      ?.height,
+  ).toBeLessThan(220);
+  await page.keyboard.press("Escape");
   const revalidationCountBefore = await page.evaluate(
     () =>
       window.__BUZZ_E2E_COMMANDS__?.filter(

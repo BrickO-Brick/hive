@@ -1,7 +1,6 @@
 import {
   Bot,
   CheckCircle2,
-  ChevronDown,
   CircleAlert,
   LoaderCircle,
   Play,
@@ -49,6 +48,10 @@ import type { ProjectsConversationOpener } from "@/features/projects/lib/project
 import { pullRequestShareLink } from "@/features/projects/lib/projectShareLinks";
 import type { ProjectPullRequest, Repository } from "@/features/projects/hooks";
 import { ProjectReviewCheckResultCard } from "@/features/projects/ui/ProjectReviewCheckResultCard";
+import {
+  ProjectReviewDebugHarness,
+  type ReviewCheckAgent,
+} from "@/features/projects/ui/ProjectReviewDebugHarness";
 import { useIdentityQuery } from "@/shared/api/hooks";
 import { listManagedAgents } from "@/shared/api/tauri";
 import { revalidateRelayAgents } from "@/shared/api/tauriRelayAgents";
@@ -63,13 +66,6 @@ import {
 import { normalizePubkey } from "@/shared/lib/pubkey";
 import { Badge } from "@/shared/ui/badge";
 import { Button } from "@/shared/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
-  DropdownMenuTrigger,
-} from "@/shared/ui/dropdown-menu";
 
 type ReviewCheckStatus = "idle" | "running" | "completed" | "failed";
 
@@ -88,13 +84,6 @@ type ReviewCheckRun = {
 };
 
 type ReviewCheckRuns = Record<string, ReviewCheckRun>;
-
-type ReviewCheckAgent = {
-  pubkey: string;
-  name: string;
-  isManaged: boolean;
-  isActive: boolean;
-};
 
 function isReviewCheckStatus(value: unknown): value is ReviewCheckStatus {
   return (
@@ -457,66 +446,6 @@ function CheckStatus({
   return null;
 }
 
-function AgentPicker({
-  candidates,
-  disabled,
-  onSelect,
-  selected,
-}: {
-  candidates: ReviewCheckAgent[];
-  disabled: boolean;
-  onSelect: (pubkey: string) => void;
-  selected: ReviewCheckAgent | null;
-}) {
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button
-          className="min-w-44 justify-between"
-          data-testid="project-review-check-agent-picker"
-          disabled={disabled}
-          size="sm"
-          type="button"
-          variant="outline"
-        >
-          <span className="flex min-w-0 items-center gap-1.5">
-            <Bot className="h-3.5 w-3.5" />
-            <span className="truncate">
-              {selected?.name ?? "Assign an agent"}
-            </span>
-          </span>
-          <ChevronDown className="h-3.5 w-3.5" />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="min-w-64">
-        <DropdownMenuRadioGroup
-          onValueChange={onSelect}
-          value={selected?.pubkey ?? ""}
-        >
-          {candidates.map((candidate) => (
-            <DropdownMenuRadioItem
-              className="flex items-center justify-between gap-3"
-              key={candidate.pubkey}
-              value={candidate.pubkey}
-            >
-              <span className="truncate">{candidate.name}</span>
-              <span className="shrink-0 text-xs text-muted-foreground">
-                {candidate.isManaged
-                  ? candidate.isActive
-                    ? "Running here"
-                    : "Can start here"
-                  : candidate.isActive
-                    ? "Online on relay"
-                    : "Offline"}
-              </span>
-            </DropdownMenuRadioItem>
-          ))}
-        </DropdownMenuRadioGroup>
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
-}
-
 export function ProjectReviewChecks({
   project,
   pullRequest,
@@ -548,6 +477,9 @@ export function ProjectReviewChecks({
   const [pendingCheckIds, setPendingCheckIds] = React.useState<Set<string>>(
     () => new Set(),
   );
+  const [selectedAgentPubkey, setSelectedAgentPubkey] = React.useState<
+    string | null
+  >(null);
   const targetCommit = pullRequest.commit ?? pullRequest.initialCommit;
   const diffRepoUrl = React.useMemo(
     () =>
@@ -566,6 +498,7 @@ export function ProjectReviewChecks({
     );
     setRuns(normalizeStoredRuns(stored));
     setPendingCheckIds(new Set());
+    setSelectedAgentPubkey(null);
   }, [storageKey]);
 
   const updateRun = React.useCallback(
@@ -591,17 +524,6 @@ export function ProjectReviewChecks({
       });
     },
     [],
-  );
-
-  const assignAgent = React.useCallback(
-    (checkId: string, pubkey: string) => {
-      if (!storageKey) return;
-      updateRun(storageKey, checkId, () => ({
-        agentPubkey: normalizePubkey(pubkey),
-        status: "idle",
-      }));
-    },
-    [storageKey, updateRun],
   );
 
   const recordResult = React.useCallback(
@@ -806,13 +728,19 @@ export function ProjectReviewChecks({
   const defaultAgent =
     reviewCheckAgents.candidates.find((candidate) => candidate.isActive) ??
     null;
+  const selectedAgent = selectedAgentPubkey
+    ? (reviewCheckAgents.candidates.find(
+        (candidate) =>
+          candidate.isActive &&
+          normalizePubkey(candidate.pubkey) ===
+            normalizePubkey(selectedAgentPubkey),
+      ) ?? defaultAgent)
+    : defaultAgent;
 
   return (
     <div className="-mx-6" data-testid="project-review-checks">
       <div className="border-b border-border/55 px-6 pb-3 text-xs text-muted-foreground">
-        The first running agent is selected automatically; you can choose a
-        different local managed agent or relay agent authorized for your
-        signed-in identity. Definitions come from the target branch
+        Definitions come from the target branch
         {checkDefinitions.source === "project"
           ? ` (${PROJECT_REVIEW_CHECKS_CONFIG_PATH})`
           : checkDefinitions.source === "starter"
@@ -826,13 +754,13 @@ export function ProjectReviewChecks({
             agentPubkey: null,
             status: "idle" as const,
           };
-          const selectedAgent = run.agentPubkey
+          const runAgent = run.agentPubkey
             ? (reviewCheckAgents.candidates.find(
                 (candidate) =>
                   normalizePubkey(candidate.pubkey) ===
                   normalizePubkey(run.agentPubkey ?? ""),
               ) ?? null)
-            : defaultAgent;
+            : null;
           const isPending = pendingCheckIds.has(check.id);
           const isStale =
             run.status === "completed" && run.targetCommit !== targetCommit;
@@ -870,12 +798,6 @@ export function ProjectReviewChecks({
                   </p>
                 </div>
                 <div className="flex flex-wrap items-center justify-end gap-2">
-                  <AgentPicker
-                    candidates={reviewCheckAgents.candidates}
-                    disabled={isPending || run.status === "running"}
-                    onSelect={(pubkey) => assignAgent(check.id, pubkey)}
-                    selected={selectedAgent}
-                  />
                   <Button
                     disabled={
                       !selectedAgent ||
@@ -905,8 +827,8 @@ export function ProjectReviewChecks({
               </div>
               {run.status === "running" ? (
                 <p className="text-xs text-muted-foreground">
-                  Waiting for {selectedAgent?.name ?? "the assigned agent"} to
-                  return a structured conclusion…
+                  Waiting for {runAgent?.name ?? "the assigned agent"} to return
+                  a structured conclusion…
                 </p>
               ) : null}
               {run.error ? (
@@ -960,6 +882,13 @@ export function ProjectReviewChecks({
             : "No local managed or authorized relay agents are available."}
         </div>
       ) : null}
+      <ProjectReviewDebugHarness
+        candidates={reviewCheckAgents.candidates}
+        hasError={reviewCheckAgents.isError}
+        isLoading={reviewCheckAgents.isLoading}
+        onSelect={setSelectedAgentPubkey}
+        selected={selectedAgent}
+      />
     </div>
   );
 }
