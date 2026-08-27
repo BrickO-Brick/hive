@@ -8,24 +8,47 @@ export const PROJECT_REVIEW_CHECK_RESULT_MARKER = "BUZZ_CHECK_RESULT_V1";
 export const DEFAULT_PROJECT_REVIEW_CHECKS = [
   {
     id: "interface",
-    name: "Interface & design system",
+    name: "Interface & frontend",
     description:
-      "Reviews user-facing changes against the design system and their backend contracts.",
+      "Reviews the user-facing experience and frontend implementation as one surface.",
     instructions: [
-      "Inspect user-facing changes and the backend behavior that supplies them.",
-      "Check design-system component usage, interaction states, accessibility, and visual consistency.",
+      "Inspect the user-facing behavior and frontend implementation changed by this review.",
+      "Check design-system usage, interaction states, accessibility, loading and error states, performance, and visual consistency.",
       "Flag hand-rolled UI where the project design system already provides the intended primitive.",
     ],
   },
   {
-    id: "frontend",
-    name: "Frontend quality",
+    id: "code-correctness",
+    name: "Code correctness",
     description:
-      "Reviews frontend correctness, state boundaries, accessibility, and maintainability.",
+      "Checks whether the changed code behaves correctly in normal, edge, and failure paths.",
     instructions: [
-      "Inspect the frontend implementation changed by this review.",
-      "Check data flow, loading and error states, accessibility, performance, and maintainability.",
-      "Only report issues introduced by or made materially worse by this review.",
+      "Trace the changed behavior through its callers, data flow, and external contracts.",
+      "Look for logic errors, invalid state transitions, missed edge cases, unsafe error handling, races, and resource-lifecycle defects.",
+      "Report behavior-level defects introduced by or made materially worse by this review; leave codebase conventions to their own check.",
+    ],
+  },
+  {
+    id: "codebase-patterns",
+    name: "Codebase patterns",
+    description:
+      "Checks whether the implementation follows the architecture and established patterns of this codebase.",
+    instructions: [
+      "Compare the change with contributor guidance and analogous code already in the repository.",
+      "Check architectural boundaries, shared abstractions, naming, error handling, and framework idioms for consistency with established patterns.",
+      "Report departures that create meaningful maintenance or integration risk; leave functional defects to the code correctness check.",
+    ],
+  },
+  {
+    id: "historical-intent",
+    name: "Historical intent",
+    description:
+      "Explores the history of the changed area to identify intentional or accidental shifts in project philosophy.",
+    instructions: [
+      "Inspect relevant line and path history with git blame and git log, then follow related commits into pull requests or review discussion when available.",
+      "Look for prior design rationale, analogous changes, reversions, and decisions from maintainers or frequent contributors to this area.",
+      "Evaluate whether this review continues, deliberately revises, or accidentally contradicts the philosophy behind the existing implementation; clearly distinguish historical evidence from inference.",
+      "Do not reject a change merely because it differs from precedent. Recommend a fix only when an unexplained philosophical shift creates material product, architecture, or maintenance risk.",
     ],
   },
   {

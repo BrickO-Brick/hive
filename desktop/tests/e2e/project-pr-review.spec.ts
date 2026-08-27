@@ -167,7 +167,7 @@ test("review checks dispatch to an agent authorized for the relay identity", asy
 
   const checks = page.getByTestId("project-review-checks");
   await expect(checks).toBeVisible();
-  await expect(checks.getByTestId("project-review-check")).toHaveCount(3);
+  await expect(checks.getByTestId("project-review-check")).toHaveCount(5);
   const interfaceCheck = checks.getByTestId("project-review-check").first();
   await page.getByTestId("project-review-debug-harness-trigger").click();
   await page
@@ -201,7 +201,7 @@ test("review checks dispatch to an agent authorized for the relay identity", asy
       | { content?: string; mentionPubkeys?: string[] }
       | undefined;
   });
-  expect(sentCheck?.content).toContain("Interface & design system");
+  expect(sentCheck?.content).toContain("Interface & frontend");
   expect(sentCheck?.content).toContain("Commit under review:");
   expect(sentCheck?.content).toContain("buzz messages send-diff");
   expect(sentCheck?.mentionPubkeys).toContain(RELAY_REVIEW_AGENT_PUBKEY);
@@ -449,11 +449,11 @@ test("concurrent review checks only accept their correlated result", async ({
   await page.getByRole("button", { name: "Checks", exact: true }).click();
 
   const checks = page.getByTestId("project-review-check");
-  await expect(checks).toHaveCount(3);
+  await expect(checks).toHaveCount(5);
   for (const check of await checks.all()) {
     await check.getByRole("button", { name: "Run", exact: true }).click();
   }
-  await expect(checks.filter({ hasText: "Running" })).toHaveCount(3);
+  await expect(checks.filter({ hasText: "Running" })).toHaveCount(5);
 
   await expect
     .poll(() =>
@@ -470,7 +470,7 @@ test("concurrent review checks only accept their correlated result", async ({
           ).length ?? 0,
       ),
     )
-    .toBe(3);
+    .toBe(5);
 
   const prompts = await page.evaluate(
     () =>
@@ -490,12 +490,20 @@ test("concurrent review checks only accept their correlated result", async ({
     requestIdFromCheckPrompt(
       prompts.find((prompt) => prompt.includes(`"${checkName}"`)),
     );
-  const interfaceRequestId = requestIdFor("Interface & design system");
-  const frontendRequestId = requestIdFor("Frontend quality");
+  const interfaceRequestId = requestIdFor("Interface & frontend");
+  const correctnessRequestId = requestIdFor("Code correctness");
+  const patternsRequestId = requestIdFor("Codebase patterns");
+  const historicalIntentRequestId = requestIdFor("Historical intent");
   const testRequestId = requestIdFor("Test quality");
   const openerByRequestId = new Map(
     await Promise.all(
-      [interfaceRequestId, frontendRequestId, testRequestId].map(
+      [
+        interfaceRequestId,
+        correctnessRequestId,
+        patternsRequestId,
+        historicalIntentRequestId,
+        testRequestId,
+      ].map(
         async (requestId) =>
           [requestId, await checkOpenerEventId(page, requestId)] as const,
       ),
@@ -503,14 +511,14 @@ test("concurrent review checks only accept their correlated result", async ({
   );
   const responses = [
     {
-      request_id: frontendRequestId,
+      request_id: patternsRequestId,
       conclusion: "fix-recommended",
-      summary: "Frontend-specific result.",
+      summary: "Pattern-specific result.",
       findings: [
         {
-          title: "Frontend-only finding",
-          detail: "This must stay on the frontend check.",
-          file: "desktop/src/frontend.tsx",
+          title: "Pattern-only finding",
+          detail: "This must stay on the codebase patterns check.",
+          file: "desktop/src/pattern.ts",
           line: 12,
         },
       ],
@@ -525,6 +533,18 @@ test("concurrent review checks only accept their correlated result", async ({
       request_id: interfaceRequestId,
       conclusion: "approved",
       summary: "Interface-specific result.",
+      findings: [],
+    },
+    {
+      request_id: correctnessRequestId,
+      conclusion: "approved",
+      summary: "Correctness-specific result.",
+      findings: [],
+    },
+    {
+      request_id: historicalIntentRequestId,
+      conclusion: "approved",
+      summary: "Historical-intent-specific result.",
       findings: [],
     },
   ];
@@ -547,9 +567,9 @@ test("concurrent review checks only accept their correlated result", async ({
       response: responses[0],
     },
   );
-  await expect(checks.nth(1)).toContainText("Running");
+  await expect(checks.nth(2)).toContainText("Running");
 
-  const targetIndexes = [1, 2, 0];
+  const targetIndexes = [2, 4, 0, 1, 3];
   for (const [index, response] of responses.entries()) {
     await page.evaluate(
       ({ agentPubkey, createdAt, openerEventId, response }) => {
@@ -574,16 +594,24 @@ test("concurrent review checks only accept their correlated result", async ({
     );
     if (index === 0) {
       await expect(checks.nth(0)).toContainText("Running");
-      await expect(checks.nth(2)).toContainText("Running");
+      await expect(checks.nth(1)).toContainText("Running");
+      await expect(checks.nth(3)).toContainText("Running");
+      await expect(checks.nth(4)).toContainText("Running");
     }
   }
 
   await expect(checks.nth(0)).toContainText("Interface-specific result.");
-  await expect(checks.nth(1)).toContainText("Frontend-specific result.");
-  await expect(checks.nth(1)).toContainText("Frontend-only finding");
-  await expect(checks.nth(2)).toContainText("Test-specific result.");
-  await expect(checks.nth(0)).not.toContainText("Frontend-specific result.");
-  await expect(checks.nth(2)).not.toContainText("Frontend-specific result.");
+  await expect(checks.nth(1)).toContainText("Correctness-specific result.");
+  await expect(checks.nth(2)).toContainText("Pattern-specific result.");
+  await expect(checks.nth(2)).toContainText("Pattern-only finding");
+  await expect(checks.nth(3)).toContainText(
+    "Historical-intent-specific result.",
+  );
+  await expect(checks.nth(4)).toContainText("Test-specific result.");
+  await expect(checks.nth(0)).not.toContainText("Pattern-specific result.");
+  await expect(checks.nth(1)).not.toContainText("Pattern-specific result.");
+  await expect(checks.nth(3)).not.toContainText("Pattern-specific result.");
+  await expect(checks.nth(4)).not.toContainText("Pattern-specific result.");
 });
 
 test("same-second request changes supersedes approval", async ({ page }) => {

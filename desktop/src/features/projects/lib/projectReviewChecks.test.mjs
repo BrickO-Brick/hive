@@ -12,11 +12,29 @@ import {
   writeProjectReviewCheckRuns,
 } from "./projectReviewChecks.mjs";
 
-test("starter checks cover interface, frontend, and test quality", () => {
+test("starter checks keep experience, correctness, patterns, history, and tests independent", () => {
   assert.deepEqual(
     DEFAULT_PROJECT_REVIEW_CHECKS.map((check) => check.id),
-    ["interface", "frontend", "test-quality"],
+    [
+      "interface",
+      "code-correctness",
+      "codebase-patterns",
+      "historical-intent",
+      "test-quality",
+    ],
   );
+});
+
+test("historical intent check investigates precedent without treating it as a veto", () => {
+  const check = DEFAULT_PROJECT_REVIEW_CHECKS.find(
+    (candidate) => candidate.id === "historical-intent",
+  );
+  assert.ok(check);
+  const instructions = check.instructions.join("\n");
+  assert.match(instructions, /git blame and git log/);
+  assert.match(instructions, /pull requests or review discussion/);
+  assert.match(instructions, /historical evidence from inference/);
+  assert.match(instructions, /Do not reject a change merely because/);
 });
 
 test("parses an approved structured agent result", () => {
@@ -220,7 +238,7 @@ test("builds a review-only prompt pinned to the exact commit", () => {
 
   assert.match(prompt, /Review only; do not modify code/);
   assert.match(prompt, /Commit under review: abc123/);
-  assert.match(prompt, /Frontend quality/);
+  assert.match(prompt, /Code correctness/);
   assert.match(prompt, /"request_id":"request-123"/);
   assert.match(prompt, /Echo request_id exactly/);
   assert.match(prompt, /process every event independently/);
@@ -256,7 +274,9 @@ test("local check state is isolated by relay, signer, repo, and review", () => {
     getItem: (key) => entries.get(key) ?? null,
     setItem: (key, value) => entries.set(key, value),
   };
-  const runs = { frontend: { agentPubkey: "agent", status: "idle" } };
+  const runs = {
+    "code-correctness": { agentPubkey: "agent", status: "idle" },
+  };
   writeProjectReviewCheckRuns(storage, first, runs);
   assert.deepEqual(readProjectReviewCheckRuns(storage, first), runs);
   assert.deepEqual(readProjectReviewCheckRuns(storage, second), {});
