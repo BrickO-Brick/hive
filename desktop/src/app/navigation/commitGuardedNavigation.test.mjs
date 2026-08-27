@@ -2,11 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { commitGuardedNavigation } from "./commitGuardedNavigation.ts";
-import { registerNavigationGuard } from "./navigationGuard.ts";
 
 const route = (href) => ({ kind: "route", href });
 
-test("an accepted navigation opens the trace after the guard, before navigate", async () => {
+test("an accepted navigation consults the guard before navigating", async () => {
   const order = [];
   const committed = await commitGuardedNavigation(
     {
@@ -28,7 +27,7 @@ test("an accepted navigation opens the trace after the guard, before navigate", 
   assert.deepEqual(order, ["guard", "navigate"]);
 });
 
-test("a same-destination no-op consults neither the guard nor the trace", async () => {
+test("a same-destination no-op never reaches the guard", async () => {
   const order = [];
   const committed = await commitGuardedNavigation(
     {
