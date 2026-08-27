@@ -1,6 +1,6 @@
 @import "tailwindcss";
 
-:root { --ink: #262626; }
+:root { --ink: #262626; --header-control-size: 42px; }
 * { box-sizing: border-box; }
 html, body, #root { margin: 0; min-height: 100%; }
 button { font: inherit; color: inherit; }
@@ -24,15 +24,15 @@ body { background: #e6f2f5; color: var(--ink); font-family: Inter, ui-sans-serif
   align-items: center;
   padding: 0 20px;
 }
-.segmented { display: flex; height: 42px; align-items: center; gap: 2px; padding: 3px; border: 1px solid rgba(255,255,255,.9); border-radius: 24px; background: rgba(226,239,245,.38); box-shadow: inset 0 1px 0 rgba(255,255,255,.35); backdrop-filter: blur(18px) saturate(115%); }
+.segmented { display: flex; height: var(--header-control-size); align-items: center; gap: 2px; padding: 3px; border: 1px solid rgba(255,255,255,.9); border-radius: 24px; background: rgba(226,239,245,.38); box-shadow: inset 0 1px 0 rgba(255,255,255,.35); backdrop-filter: blur(18px) saturate(115%); }
 .segmented button { height: 32px; padding: 0 19px; border: 0; border-radius: 18px; background: transparent; cursor: pointer; font-size: 14px; line-height: 1; }
 .segmented button:hover { background: rgba(255,255,255,.44); }
 .segmented .selected { min-width: 78px; background: rgba(255,255,255,.78); box-shadow: 0 1px 5px rgba(46,68,79,.055); }
 .segmented .add-button { width: 36px; padding: 0; display: grid; place-items: center; }
 .utilities { justify-self: end; display: flex; align-items: center; gap: 12px; }
-.round-button { width: 48px; height: 48px; border-radius: 50%; display: grid; place-items: center; border: 1px solid rgba(255,255,255,.9); background: rgba(244,249,251,.52); cursor: pointer; backdrop-filter: blur(16px); }
+.round-button { width: var(--header-control-size); height: var(--header-control-size); border-radius: 50%; display: grid; place-items: center; border: 1px solid rgba(255,255,255,.9); background: rgba(244,249,251,.52); cursor: pointer; backdrop-filter: blur(16px); }
 .search-icon { display: block; width: 18px; height: 18px; }
-.avatar { width: 46px; height: 46px; border-radius: 50%; display: grid; place-items: center; color: rgba(255,255,255,.95); background: radial-gradient(circle at 53% 29%, #d8af86 0 13%, transparent 14%), radial-gradient(ellipse at 50% 68%, #3f2923 0 25%, transparent 26%), linear-gradient(145deg, #99a65d, #49352d 65%, #c1a16e); border: 2px solid rgba(255,255,255,.95); box-shadow: 0 0 0 1px rgba(44,52,45,.08); font-size: 11px; font-weight: 650; }
+.avatar { width: var(--header-control-size); height: var(--header-control-size); border-radius: 50%; display: grid; place-items: center; color: rgba(255,255,255,.95); background: radial-gradient(circle at 53% 29%, #d8af86 0 13%, transparent 14%), radial-gradient(ellipse at 50% 68%, #3f2923 0 25%, transparent 26%), linear-gradient(145deg, #99a65d, #49352d 65%, #c1a16e); border: 2px solid rgba(255,255,255,.95); box-shadow: 0 0 0 1px rgba(44,52,45,.08); font-size: 11px; font-weight: 650; }
 .avatar span { transform: translateY(1px); text-shadow: 0 1px 3px rgba(0,0,0,.38); }
 
 .project-stage { position: relative; min-height: 100svh; overflow: hidden; touch-action: none; user-select: none; cursor: grab; }
