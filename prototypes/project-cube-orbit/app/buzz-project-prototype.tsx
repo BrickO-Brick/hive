@@ -332,10 +332,12 @@ function WrappedTaskLabels({
   const smoothedTraceRef = useRef<NoodlePoint[] | null>(null);
   const liveTraceRef = useRef<NoodlePoint[]>([]);
   const taskStartOverridesRef = useRef<Array<number | null>>([null, null, null]);
+  const taskCurrentStartsRef = useRef([0.82, 0, 0.82]);
   const dragRef = useRef<{
     index: number;
     startX: number;
     startY: number;
+    grabOffset: number;
     moved: boolean;
   } | null>(null);
   const [draggingIndex, setDraggingIndex] = useState<number | null>(null);
@@ -385,6 +387,7 @@ function WrappedTaskLabels({
         const navStart = taskStartOverridesRef.current[1] ?? topGap / 2;
         const reviewStart =
           taskStartOverridesRef.current[2] ?? defaultSupportStart - leftGap;
+        taskCurrentStartsRef.current = [supportStart, navStart, reviewStart];
         const noodleLength = (text: SVGTextElement | null, fallback: number) =>
           NOODLE_TEXT_OFFSET +
           (text?.getComputedTextLength() || fallback) +
@@ -479,15 +482,12 @@ function WrappedTaskLabels({
     return () => cancelAnimationFrame(frame);
   }, [motion]);
 
-  const moveTaskToPointer = (
-    event: ReactPointerEvent<SVGGElement>,
-    taskIndex: number,
-  ) => {
+  const pointerTraceFraction = (event: ReactPointerEvent<SVGGElement>) => {
     const svg = event.currentTarget.ownerSVGElement;
     const trace = liveTraceRef.current;
-    if (!svg || trace.length === 0) return;
+    if (!svg || trace.length === 0) return null;
     const rect = svg.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return;
+    if (rect.width <= 0 || rect.height <= 0) return null;
     const x = ((event.clientX - rect.left) / rect.width) * 760;
     const y = ((event.clientY - rect.top) / rect.height) * 720;
     let nearestIndex = 0;
@@ -499,7 +499,7 @@ function WrappedTaskLabels({
         nearestIndex = index;
       }
     });
-    taskStartOverridesRef.current[taskIndex] = nearestIndex / trace.length;
+    return nearestIndex / trace.length;
   };
 
   const beginTaskDrag = (
@@ -507,10 +507,17 @@ function WrappedTaskLabels({
     taskIndex: number,
   ) => {
     event.currentTarget.setPointerCapture(event.pointerId);
+    const pointerFraction = pointerTraceFraction(event);
+    const currentStart = taskCurrentStartsRef.current[taskIndex];
+    const grabOffset =
+      pointerFraction === null
+        ? 0
+        : ((currentStart - pointerFraction + 1.5) % 1) - 0.5;
     dragRef.current = {
       index: taskIndex,
       startX: event.clientX,
       startY: event.clientY,
+      grabOffset,
       moved: false,
     };
     setDraggingIndex(taskIndex);
@@ -525,7 +532,13 @@ function WrappedTaskLabels({
     if (Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) > 4) {
       drag.moved = true;
     }
-    if (drag.moved) moveTaskToPointer(event, taskIndex);
+    if (drag.moved) {
+      const pointerFraction = pointerTraceFraction(event);
+      if (pointerFraction !== null) {
+        taskStartOverridesRef.current[taskIndex] =
+          (pointerFraction + drag.grabOffset + 1) % 1;
+      }
+    }
   };
 
   const endTaskDrag = (
