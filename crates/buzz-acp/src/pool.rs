@@ -370,6 +370,19 @@ impl PromptSource {
             Self::Heartbeat => None,
         }
     }
+
+    /// The exact session scope this prompt belongs to, or `None` for
+    /// heartbeats. Callers that must target the precise thread (e.g. clearing a
+    /// typing indicator on completion) use this rather than [`channel_id`], so a
+    /// finishing turn never disturbs a sibling thread in the same channel.
+    ///
+    /// [`channel_id`]: PromptSource::channel_id
+    pub fn scope(&self) -> Option<&SessionScope> {
+        match self {
+            Self::Channel(scope) => Some(scope),
+            Self::Heartbeat => None,
+        }
+    }
 }
 
 /// Apply state effects for Race 1, where a control signal arrives just after the
@@ -1046,6 +1059,27 @@ impl AgentPool {
         // owner after the channel's sessions are gone.
         self.session_owners
             .retain(|scope, _| scope.channel_id() != channel_id);
+        count
+    }
+
+    /// Invalidate the session for one exact scope across every worker, and drop
+    /// its scope-owner entry. The scope-precise counterpart of
+    /// [`invalidate_channel_sessions`](Self::invalidate_channel_sessions): under
+    /// thread policy an idle `!rotate` in thread A must rotate only thread A's
+    /// session, leaving sibling threads in the same channel untouched. Under the
+    /// default channel policy the scope is `Conversation(channel_id)` — the sole
+    /// scope for the channel — so this matches the channel-wide behavior.
+    /// Returns the number of workers that held a session for the scope.
+    pub fn invalidate_scope_session(&mut self, scope: &SessionScope) -> usize {
+        let mut count = 0;
+        for slot in &mut self.agents {
+            if let Some(agent) = slot.as_mut() {
+                if agent.state.invalidate_scope(scope) {
+                    count += 1;
+                }
+            }
+        }
+        self.session_owners.remove(scope);
         count
     }
 
@@ -7247,6 +7281,67 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
         let cleared = s.invalidate_channel(&ch);
         assert_eq!(cleared, 3, "all three ch scopes had sessions");
         assert!(s.sessions.keys().all(|k| k.channel_id() == other));
+    }
+
+    #[test]
+    fn prompt_source_scope_exposes_thread_scope_and_none_for_heartbeat() {
+        let ch = Uuid::new_v4();
+        let scope = thread_scope(ch, &"a".repeat(64));
+        let channel = PromptSource::Channel(scope.clone());
+        // The scope-precise accessor returns the exact thread so a completing
+        // turn clears only its own typing indicator.
+        assert_eq!(channel.scope(), Some(&scope));
+        assert_eq!(channel.channel_id(), Some(ch));
+        assert_eq!(PromptSource::Heartbeat.scope(), None);
+    }
+
+    #[tokio::test]
+    async fn invalidate_scope_session_targets_one_thread_and_drops_its_owner() {
+        // The idle `!rotate` path: rotating thread A must invalidate only thread
+        // A's session and drop its scope-owner entry, leaving a sibling thread
+        // in the same channel fully intact.
+        let ch = Uuid::new_v4();
+        let ta = thread_scope(ch, &"a".repeat(64));
+        let tb = thread_scope(ch, &"b".repeat(64));
+        let acp = AcpClient::spawn("bash", &["-c".into(), "sleep 10".into()], &[], false)
+            .await
+            .expect("spawn dummy ACP");
+        let mut agent = OwnedAgent {
+            index: 0,
+            acp,
+            state: SessionState::default(),
+            model_capabilities: None,
+            desired_model: None,
+            model_overridden: false,
+            desired_model_request_id: None,
+            desired_model_pending_ack: false,
+            startup_effort: None,
+            agent_name: "test".into(),
+            goose_system_prompt_supported: None,
+            protocol_version: 2,
+        };
+        agent.state.sessions.insert(ta.clone(), "sess-a".into());
+        agent.state.sessions.insert(tb.clone(), "sess-b".into());
+        let mut pool = AgentPool::from_slots(vec![Some(agent)]);
+        pool.record_scope_owner(ta.clone(), 0);
+        pool.record_scope_owner(tb.clone(), 0);
+
+        let cleared = pool.invalidate_scope_session(&ta);
+
+        assert_eq!(cleared, 1, "exactly one worker held thread A's session");
+        assert!(!pool.has_session_for(&ta), "thread A session invalidated");
+        assert!(
+            pool.has_session_for(&tb),
+            "sibling thread B session survives"
+        );
+        assert!(
+            !pool.session_owners.contains_key(&ta),
+            "thread A owner dropped"
+        );
+        assert!(
+            pool.session_owners.contains_key(&tb),
+            "thread B owner retained"
+        );
     }
 
     #[test]
