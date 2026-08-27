@@ -566,6 +566,19 @@ export function MembersSidebar({
 
   const [editRespondToAgent, setEditRespondToAgent] =
     React.useState<ManagedAgent | null>(null);
+  // Membership can be revoked while the sidebar is open (member-removed
+  // notifications invalidate the channel queries live) and the roster
+  // deliberately stays visible afterwards, so the read-only fence must also
+  // fail closed over mutation surfaces opened BEFORE revocation. Clamp the
+  // agent-access dialog at render — an effect-only reset would leave its Save
+  // dispatchable for a frame — and clear the stale selection so a later
+  // re-join cannot spontaneously reopen the dialog.
+  const respondToDialogAgent = isReadOnlyRoster ? null : editRespondToAgent;
+  React.useEffect(() => {
+    if (isReadOnlyRoster) {
+      setEditRespondToAgent(null);
+    }
+  }, [isReadOnlyRoster]);
 
   React.useEffect(() => {
     if (!open) {
@@ -939,12 +952,12 @@ export function MembersSidebar({
         </DialogContent>
       </Dialog>
       <EditRespondToDialog
-        agent={editRespondToAgent}
+        agent={respondToDialogAgent}
         currentPubkey={currentPubkey}
         onOpenChange={(dialogOpen) => {
           if (!dialogOpen) setEditRespondToAgent(null);
         }}
-        open={editRespondToAgent !== null}
+        open={respondToDialogAgent !== null}
       />
     </>
   );
