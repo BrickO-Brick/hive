@@ -1,0 +1,60 @@
+import { RotateCcw, ShieldCheck } from "lucide-react";
+
+import type { OnboardingPreviewVariant } from "../onboardingPreview";
+import { Button } from "@/shared/ui/button";
+import { SegmentedControl } from "@/shared/ui/segmented-control";
+
+const PREVIEW_VARIANT_OPTIONS = [
+  { label: "Onboarding today", value: "today" },
+  { label: "V3", value: "v3" },
+] as const;
+
+export function OnboardingPreviewControls({
+  onRestart,
+  onVariantChange,
+  variant,
+}: {
+  onRestart: () => void;
+  onVariantChange: (variant: OnboardingPreviewVariant) => void;
+  variant: OnboardingPreviewVariant;
+}) {
+  return (
+    <aside
+      className="fixed right-4 top-4 z-[100] flex w-[320px] max-w-[calc(100vw-2rem)] flex-col gap-3 rounded-2xl border border-foreground/15 bg-background/95 px-4 py-3 text-left shadow-lg backdrop-blur"
+      data-testid="onboarding-preview-banner"
+    >
+      <div className="flex items-center gap-3">
+        <ShieldCheck className="h-5 w-5 shrink-0 text-primary" aria-hidden />
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-medium text-foreground">
+            Workshop preview
+          </p>
+          <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
+            Changes in this workshop aren’t saved.
+          </p>
+        </div>
+        <Button
+          aria-label="Restart onboarding preview"
+          className="h-8 w-8 shrink-0"
+          data-testid="onboarding-preview-restart"
+          onClick={onRestart}
+          size="icon"
+          type="button"
+          variant="ghost"
+        >
+          <RotateCcw className="h-4 w-4" aria-hidden />
+        </Button>
+      </div>
+      <SegmentedControl
+        className="w-full"
+        legend="Onboarding version"
+        onValueChange={onVariantChange}
+        optionTestIdPrefix="onboarding-preview-variant"
+        options={PREVIEW_VARIANT_OPTIONS}
+        size="wide"
+        testId="onboarding-preview-variant"
+        value={variant}
+      />
+    </aside>
+  );
+}

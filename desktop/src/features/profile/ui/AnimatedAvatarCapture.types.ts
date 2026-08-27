@@ -1,3 +1,8 @@
+export type AnimatedAvatarRecordingProcessor = (input: {
+  animationBytes: Uint8Array;
+  posterBytes: Uint8Array;
+}) => Promise<string>;
+
 export type AnimatedAvatarCaptureProps = {
   disabled?: boolean;
   testIdPrefix: string;
@@ -11,4 +16,5 @@ export type AnimatedAvatarCaptureProps = {
   showApplyButton?: boolean;
   autoStartCamera?: boolean;
   compactReview?: boolean;
+  processRecording?: AnimatedAvatarRecordingProcessor;
 };

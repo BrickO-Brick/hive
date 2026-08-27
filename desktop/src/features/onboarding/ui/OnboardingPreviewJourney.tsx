@@ -1,9 +1,13 @@
-import { Check, Plus, Users } from "lucide-react";
+import { Check, Copy, Users } from "lucide-react";
 import * as React from "react";
 
+import { HostedCommunityOnboarding } from "@/features/communities/ui/HostedCommunityOnboarding";
+import { pubkeyToNpub } from "@/shared/lib/nostrUtils";
 import { Button } from "@/shared/ui/button";
 import { Card } from "@/shared/ui/card";
 import { Input } from "@/shared/ui/input";
+import { InviteRedeemForm } from "./InviteRedeemForm";
+import { CommunityProfileStage } from "./CommunityProfileStage";
 import {
   ONBOARDING_PRIMARY_CTA_CLASS,
   ONBOARDING_SECONDARY_CTA_CLASS,
@@ -11,11 +15,15 @@ import {
 import { OnboardingFooter } from "./OnboardingFooter";
 import { OnboardingPreviewStep } from "./OnboardingPreviewShell";
 import { OnboardingSlideTransition } from "./OnboardingSlideTransition";
+import { WelcomeChannelAppPreview } from "./WelcomeChannelAppPreview";
 
 const FIELD_CLASS =
   "h-12 rounded-2xl border-foreground/15 bg-white px-4 text-sm shadow-none";
 const COMMUNITY_OPTION_CLASS =
   "w-full max-w-[320px] items-center px-6 py-4 text-center text-sm font-normal leading-6 text-foreground [--buzz-card-textured-min-height:88px] transition-[filter] duration-150 ease-out hover:brightness-[0.98] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-foreground/35";
+const PREVIEW_PUBLIC_ID = pubkeyToNpub(
+  "e5ebc6cdb579be112e336cc319b5989b4bb6af11786ea90dbe52b5f08d741b34",
+);
 
 function LabeledField({
   id,
@@ -313,17 +321,32 @@ export function DefaultConfigPreview({
 export type CommunityPreviewRoute = "join" | "create" | "existing";
 
 export function CommunityChoicePreview({
+  current = 5,
+  includeExistingCommunity = true,
   onBack,
   onChoose,
+  total,
 }: {
+  current?: number;
+  includeExistingCommunity?: boolean;
   onBack: () => void;
   onChoose: (route: CommunityPreviewRoute) => void;
+  total?: number;
 }) {
+  const routes: ReadonlyArray<readonly [CommunityPreviewRoute, string]> = [
+    ["join", "Join a community"],
+    ["create", "Create a community"],
+    ...(includeExistingCommunity
+      ? ([["existing", "I already have a community"]] as const)
+      : []),
+  ];
+
   return (
     <OnboardingPreviewStep
-      current={5}
+      current={current}
       onBack={onBack}
       testId="onboarding-preview-community-choice"
+      total={total}
     >
       <OnboardingSlideTransition
         className="flex min-h-full w-full flex-col items-center"
@@ -332,18 +355,13 @@ export function CommunityChoicePreview({
         <div className="w-full max-w-[760px]">
           <h1 className="text-title font-normal">Join or create a community</h1>
           <p className="mt-3 text-sm leading-6 text-foreground/80">
-            Join with an invite, create your own community, or reconnect one you
-            already have.
+            {includeExistingCommunity
+              ? "Join with an invite, create your own community, or reconnect one you already have."
+              : "Join with an invite or create your own community."}
           </p>
         </div>
-        <div className="flex w-full flex-1 flex-col items-center justify-center gap-8 py-10">
-          {(
-            [
-              ["join", "Join a community"],
-              ["create", "Create a community"],
-              ["existing", "I already have a community"],
-            ] as const
-          ).map(([route, label]) => (
+        <div className="flex w-full flex-1 translate-y-16 flex-col items-center justify-center gap-20 py-8">
+          {routes.map(([route, label]) => (
             <Card
               asChild
               className={COMMUNITY_OPTION_CLASS}
@@ -366,69 +384,119 @@ export function CommunityChoicePreview({
 }
 
 export function CommunityEntryPreview({
+  current = 5,
   onBack,
   onContinue,
   route,
+  total,
 }: {
+  current?: number;
   onBack: () => void;
   onContinue: (communityName: string) => void;
-  route: CommunityPreviewRoute;
+  route: Exclude<CommunityPreviewRoute, "create">;
+  total?: number;
 }) {
-  const [value, setValue] = React.useState("");
-  const isCreate = route === "create";
-  const heading = isCreate
-    ? "Create a community"
-    : route === "existing"
-      ? "Reconnect to your community"
-      : "Join a community";
+  const [copiedPublicId, setCopiedPublicId] = React.useState(false);
+  const heading =
+    route === "existing" ? "Reconnect to your community" : "Join a community";
+  const continueToCommunity = () => onContinue("Block Community");
 
   return (
     <OnboardingPreviewStep
-      current={5}
+      current={current}
       onBack={onBack}
       testId="onboarding-preview-community-entry"
+      total={total}
     >
       <OnboardingSlideTransition
-        className="flex min-h-full w-full max-w-[620px] flex-col items-center"
+        className="flex min-h-[calc(100dvh-15.625rem)] w-full flex-col items-center text-center"
         transitionKey={`preview-community-${route}`}
       >
-        <h1 className="text-title font-normal">{heading}</h1>
-        <p className="mt-3 max-w-[500px] text-sm leading-6 text-foreground/80">
-          {isCreate
-            ? "Choose a name for the space where your people and agents will work together."
-            : route === "existing"
+        <div className="w-full max-w-[620px]">
+          <h1 className="text-title font-normal">{heading}</h1>
+          <p className="mt-3 text-sm leading-6 text-foreground/80">
+            {route === "existing"
               ? "Enter the community URL or an invite link. Your role will be restored when you connect."
               : "Enter the invite link or community URL you received."}
-        </p>
-        <form
-          className="flex w-full flex-1 flex-col items-center justify-center gap-6 py-10"
-          onSubmit={(event) => {
-            event.preventDefault();
-            onContinue(
-              isCreate ? value.trim() || "Your community" : "Block Community",
-            );
-          }}
-        >
-          <LabeledField
-            id="onboarding-preview-community-value"
-            label={isCreate ? "Community name" : "Invite or community URL"}
-            onChange={setValue}
-            placeholder={
-              isCreate
-                ? "Enter a community name"
-                : "Paste an invite, code, or URL"
-            }
-            type={isCreate ? "text" : "url"}
-            value={value}
+          </p>
+        </div>
+        <div className="flex w-full flex-1 flex-col items-center justify-center gap-16">
+          <InviteRedeemForm
+            error={null}
+            isRedeeming={false}
+            onCancel={onBack}
+            onConnect={continueToCommunity}
+            onRedeem={continueToCommunity}
+            placeholder="Invite link or community URL"
+            previewMode
+            variant="onboarding-spotlight"
           />
-          <Button
-            className={ONBOARDING_PRIMARY_CTA_CLASS}
-            data-testid="onboarding-preview-community-continue"
-            type="submit"
-          >
-            {isCreate ? "Create community" : "Continue"}
-          </Button>
-        </form>
+          {route === "join" ? (
+            <div className="w-full max-w-[560px] text-left">
+              <p className="text-sm font-medium text-foreground">
+                Joining a private community?
+              </p>
+              <p className="mt-2 text-sm leading-6 text-foreground/75">
+                Some communities need the owner to add you before you can join.
+                Copy your public ID and send it to the community owner.
+              </p>
+              <div className="mt-4 flex items-center gap-3 rounded-xl border border-foreground/10 bg-background/35 px-4 py-3">
+                <code className="min-w-0 flex-1 truncate font-mono text-xs text-foreground/80">
+                  {PREVIEW_PUBLIC_ID}
+                </code>
+                <Button
+                  aria-label="Copy public ID"
+                  className="h-9 shrink-0 rounded-full px-3"
+                  onClick={() => {
+                    setCopiedPublicId(true);
+                    window.setTimeout(() => setCopiedPublicId(false), 1500);
+                  }}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  {copiedPublicId ? (
+                    <Check className="h-4 w-4" aria-hidden="true" />
+                  ) : (
+                    <Copy className="h-4 w-4" aria-hidden="true" />
+                  )}
+                  <span>{copiedPublicId ? "Copied" : "Copy"}</span>
+                </Button>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </OnboardingSlideTransition>
+    </OnboardingPreviewStep>
+  );
+}
+
+export function CommunityCreatePreview({
+  current = 5,
+  onBack,
+  onContinue,
+  total,
+}: {
+  current?: number;
+  onBack: () => void;
+  onContinue: (communityName: string) => void;
+  total?: number;
+}) {
+  return (
+    <OnboardingPreviewStep
+      current={current}
+      testId="onboarding-preview-community-entry"
+      total={total}
+    >
+      <OnboardingSlideTransition
+        className="flex min-h-full w-full flex-col items-center"
+        transitionKey="preview-community-create"
+      >
+        <HostedCommunityOnboarding
+          onBack={onBack}
+          onPreviewContinue={onContinue}
+          previewMode
+        />
       </OnboardingSlideTransition>
     </OnboardingPreviewStep>
   );
@@ -471,80 +539,48 @@ export function CommunityConnectingPreview({
 }
 
 export function CommunityProfilePreview({
+  avatarUrl,
+  current = 6,
   displayName,
-  hasAvatar,
-  onAvatarChange,
+  onAvatarUrlChange,
   onBack,
   onDisplayNameChange,
   onNext,
+  total,
 }: {
+  avatarUrl: string;
+  current?: number;
   displayName: string;
-  hasAvatar: boolean;
-  onAvatarChange: () => void;
+  onAvatarUrlChange: (value: string) => void;
   onBack: () => void;
   onDisplayNameChange: (value: string) => void;
   onNext: () => void;
+  total?: number;
 }) {
+  const [isUploadingAvatar, setIsUploadingAvatar] = React.useState(false);
+
   return (
     <OnboardingPreviewStep
-      current={6}
+      current={current}
       onBack={onBack}
       testId="onboarding-preview-community-profile"
+      total={total}
     >
       <OnboardingSlideTransition
         className="flex min-h-full w-full max-w-[500px] flex-col items-center"
         transitionKey="preview-community-profile"
       >
-        <div className="shrink-0">
-          <h1 className="text-title font-normal">Build your profile</h1>
-          <p className="mx-auto mt-3 max-w-[380px] text-sm leading-6 text-foreground/80">
-            Add a name and avatar. They’ll show up on your messages, reactions,
-            and agent handoffs.
-          </p>
-        </div>
-        <div className="flex w-full flex-1 flex-col items-center justify-center pt-8">
-          <button
-            aria-label={hasAvatar ? "Change your avatar" : "Add an avatar"}
-            className="flex h-36 w-36 items-center justify-center overflow-hidden rounded-full bg-white/30 text-[var(--buzz-onboarding-backup-ink)] shadow-xs transition-colors hover:bg-white/40"
-            data-testid="onboarding-preview-profile-avatar"
-            onClick={onAvatarChange}
-            type="button"
-          >
-            {hasAvatar ? (
-              <span className="text-5xl" role="img" aria-label="Bee avatar">
-                🐝
-              </span>
-            ) : (
-              <Plus className="h-7 w-7" aria-hidden />
-            )}
-          </button>
-          <label
-            className="mt-7 block w-full max-w-[412px] text-left"
-            htmlFor="onboarding-preview-community-name"
-          >
-            <span className="mb-2 block pl-4 text-sm text-foreground">
-              Your username
-            </span>
-            <Input
-              autoComplete="username"
-              className="h-14 rounded-2xl border-foreground/25 bg-white/95 px-5 text-sm shadow-none"
-              id="onboarding-preview-community-name"
-              onChange={(event) => onDisplayNameChange(event.target.value)}
-              placeholder="Enter your username here"
-              value={displayName}
-            />
-          </label>
-        </div>
-        <OnboardingFooter>
-          <Button
-            className={ONBOARDING_PRIMARY_CTA_CLASS}
-            data-testid="onboarding-preview-profile-next"
-            disabled={!displayName.trim()}
-            onClick={onNext}
-          >
-            Next
-          </Button>
-        </OnboardingFooter>
+        <CommunityProfileStage
+          avatarUrl={avatarUrl}
+          displayName={displayName}
+          isPending={false}
+          isUploadingAvatar={isUploadingAvatar}
+          onAvatarUrlChange={onAvatarUrlChange}
+          onDisplayNameChange={onDisplayNameChange}
+          onNext={onNext}
+          onUploadingChange={setIsUploadingAvatar}
+          previewMode
+        />
       </OnboardingSlideTransition>
     </OnboardingPreviewStep>
   );
@@ -666,40 +702,19 @@ export function WelcomeChannelPreview({
 }
 
 export function CommunityHomePreview({
+  avatarUrl,
   communityName,
-  onBack,
+  displayName,
 }: {
+  avatarUrl: string;
   communityName: string;
-  onBack: () => void;
+  displayName: string;
 }) {
   return (
-    <OnboardingPreviewStep
-      onBack={onBack}
-      current={7}
-      testId="onboarding-preview-community-home"
-    >
-      <OnboardingSlideTransition
-        className="flex min-h-full w-full max-w-[760px] flex-col items-center justify-center"
-        transitionKey="preview-community-home"
-      >
-        <p className="text-sm font-medium uppercase tracking-[0.16em] text-foreground/60">
-          {communityName}
-        </p>
-        <h1 className="mt-3 text-title font-normal">Welcome to Buzz</h1>
-        <p className="mt-4 max-w-[480px] text-sm leading-6 text-foreground/80">
-          You’re in the Welcome channel. Start with a message, meet the people
-          and agents here, or explore the rest of the community.
-        </p>
-        <Card
-          className="mt-10 w-full max-w-[620px] px-6 py-6 text-left"
-          variant="textured"
-        >
-          <p className="text-sm font-medium">Fizz</p>
-          <p className="mt-2 text-sm leading-6 text-foreground/75">
-            Welcome! I can show you around and help you get started.
-          </p>
-        </Card>
-      </OnboardingSlideTransition>
-    </OnboardingPreviewStep>
+    <WelcomeChannelAppPreview
+      avatarUrl={avatarUrl}
+      communityName={communityName}
+      displayName={displayName}
+    />
   );
 }

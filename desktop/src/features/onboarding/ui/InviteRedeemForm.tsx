@@ -57,6 +57,8 @@ type InviteRedeemFormProps = {
   onConnect?: (relayWsUrl: string) => void;
   onRedeem: (relayWsUrl: string, code: string, policyReceipt?: string) => void;
   placeholder?: string;
+  /** Render the production form without discovery or relay requests. */
+  previewMode?: boolean;
   variant?: "add-community" | "default" | "onboarding-spotlight";
 };
 
@@ -69,6 +71,7 @@ export function InviteRedeemForm({
   onConnect,
   onRedeem,
   placeholder,
+  previewMode = false,
   variant = "default",
 }: InviteRedeemFormProps) {
   const formId = React.useId();
@@ -104,6 +107,7 @@ export function InviteRedeemForm({
   const needsRelayField = isBareCode && defaultRelayUrl !== undefined;
 
   React.useEffect(() => {
+    if (previewMode) return;
     const relayWsUrl = normalizedRelayUrl
       ? normalizedRelayUrl
       : parsedInvite && hasInviteRelay(parsedInvite)
@@ -135,9 +139,10 @@ export function InviteRedeemForm({
       cancelled = true;
       window.clearTimeout(timeoutId);
     };
-  }, [bareCodeRelayUrl, normalizedRelayUrl, parsedInvite]);
+  }, [bareCodeRelayUrl, normalizedRelayUrl, parsedInvite, previewMode]);
 
   const canSubmit =
+    previewMode ||
     (parsedInvite !== null &&
       ("relayWsUrl" in parsedInvite ||
         (isBareCode && bareCodeRelayUrl.trim().length > 0))) ||
@@ -150,6 +155,10 @@ export function InviteRedeemForm({
   const handleSubmit = React.useCallback(
     async (event: React.FormEvent) => {
       event.preventDefault();
+      if (previewMode) {
+        onConnect?.(normalizedRelayUrl ?? "wss://preview.invalid");
+        return;
+      }
       if (normalizedRelayUrl) {
         setPolicyError(null);
         setIsLoadingPolicy(true);
@@ -257,6 +266,7 @@ export function InviteRedeemForm({
       onRedeem,
       parsedInvite,
       policyTarget,
+      previewMode,
     ],
   );
 

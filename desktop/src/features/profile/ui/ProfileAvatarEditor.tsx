@@ -77,6 +77,8 @@ export function ProfileAvatarEditor({
   onAnimatedAvatarApply,
   onDone,
   onUploadingChange,
+  processAnimatedAvatar,
+  processImage,
   showEmojiColorControlsWhenEmpty = false,
   disabled,
   testIdPrefix = "profile-avatar",
@@ -189,7 +191,7 @@ export function ProfileAvatarEditor({
     isUploading,
     openPicker,
     uploadFile,
-  } = useAvatarUpload(uploadPreviewLifecycle);
+  } = useAvatarUpload({ ...uploadPreviewLifecycle, processImage });
   const isInputDisabled = disabled || isUploading || isAnimatedApplyPending;
   const handleAnimatedApply = React.useCallback(
     (animatedUrl: string) => {
@@ -740,6 +742,7 @@ export function ProfileAvatarEditor({
                   onPreviewActiveChange={onAnimatedPreviewActiveChange}
                   onPreviewCaptionChange={onAnimatedPreviewCaptionChange}
                   previewContainer={animatedPreviewContainer}
+                  processRecording={processAnimatedAvatar}
                   registerApply={registerAnimatedApply}
                   compactReview={isOnboardingModal}
                   showApplyButton={!onDone}

@@ -1,4 +1,5 @@
 import type * as React from "react";
+import type { AnimatedAvatarRecordingProcessor } from "./AnimatedAvatarCapture.types";
 
 export type AvatarMode = "image" | "emoji" | "animated";
 export type AvatarEditorPresentation = "default" | "onboarding-modal";
@@ -30,4 +31,6 @@ export type ProfileAvatarEditorProps = {
   onAnimatedPreviewActiveChange?: (active: boolean) => void;
   onAnimatedPreviewCaptionChange?: (caption: string | null) => void;
   presentation?: AvatarEditorPresentation;
+  processImage?: (file: File) => Promise<string>;
+  processAnimatedAvatar?: AnimatedAvatarRecordingProcessor;
 };

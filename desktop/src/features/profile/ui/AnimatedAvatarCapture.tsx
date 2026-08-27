@@ -10,7 +10,6 @@ import {
   type AvatarComposition,
   buildPingPongAvatarFrames,
   composeAvatarFrame,
-  composeAvatarFrames,
   createAvatarFrameBitmaps,
   DEFAULT_PERSON_OFFSET_X,
   DEFAULT_PERSON_OFFSET_Y,
@@ -19,7 +18,6 @@ import {
   DEFAULT_SHAPE_OFFSET_X,
   DEFAULT_SHAPE_OFFSET_Y,
   DEFAULT_SHAPE_SCALE,
-  encodeAvatarAnimation,
   MAX_PERSON_SCALE,
   MAX_SHAPE_SCALE,
   MIN_PERSON_SCALE,
@@ -28,7 +26,6 @@ import {
   openAvatarCamera,
   preloadAvatarSegmenter,
   recordAnimatedAvatarFrames,
-  renderAvatarPosterPng,
   stopAvatarCamera,
 } from "@/features/profile/lib/animatedAvatarCapture";
 import { AnimatedAvatarBackdropPanel } from "@/features/profile/ui/AnimatedAvatarBackdropPanel";
@@ -49,8 +46,8 @@ import {
   defaultPersonScaleForSource,
   PERSON_SIZE_TIP,
   preferredCameraDevice,
-  presentAnimatedAvatar,
   randomBackdropColor,
+  saveAnimatedAvatar,
 } from "@/features/profile/ui/AnimatedAvatarCapture.helpers";
 import {
   AnimatedAvatarReviewNav,
@@ -63,7 +60,6 @@ import {
   hsvToHex,
   normalizeHue,
 } from "@/features/profile/ui/ProfileAvatarEditor.utils";
-import { uploadMediaBytes } from "@/shared/api/tauri";
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
 import { Spinner } from "@/shared/ui/spinner";
@@ -81,6 +77,7 @@ export function AnimatedAvatarCapture({
   showApplyButton = true,
   autoStartCamera = false,
   compactReview = false,
+  processRecording,
 }: AnimatedAvatarCaptureProps) {
   const [phase, setPhase] = React.useState<CapturePhase>("idle");
   const [errorMessage, setErrorMessage] = React.useState<string | null>(null);
@@ -329,7 +326,7 @@ export function AnimatedAvatarCapture({
       setPhase("starting");
       releaseCamera();
       // Warm the segmentation model while the user lines up their shot.
-      preloadAvatarSegmenter();
+      if (!processRecording) preloadAvatarSegmenter();
       try {
         let stream = await openAvatarCamera(cameraId || null);
         let resolvedCameraId = cameraId ?? null;
@@ -386,6 +383,7 @@ export function AnimatedAvatarCapture({
     [
       refreshCameraDevices,
       releaseCamera,
+      processRecording,
       selectedCameraId,
       selectedCameraSource,
     ],
@@ -444,6 +442,7 @@ export function AnimatedAvatarCapture({
 
     try {
       const captured = await recordAnimatedAvatarFrames(video, {
+        removeBackground: !processRecording,
         onProgress: setRecordProgress,
         signal: abort.signal,
       });
@@ -474,7 +473,13 @@ export function AnimatedAvatarCapture({
     } finally {
       recordAbortRef.current = null;
     }
-  }, [phase, releaseBitmaps, releaseCamera, selectedCameraSource]);
+  }, [
+    phase,
+    processRecording,
+    releaseBitmaps,
+    releaseCamera,
+    selectedCameraSource,
+  ]);
 
   const retake = React.useCallback(() => {
     setRecording(null);
@@ -501,26 +506,13 @@ export function AnimatedAvatarCapture({
     setIsSaving(true);
     setErrorMessage(null);
     try {
-      const composed = composeAvatarFrames(bitmaps, composition);
-      const posterFrame = composed[posterIndex] ?? composed[0];
-      if (!posterFrame) {
-        throw new Error("No frames were recorded.");
-      }
-      const animationBytes = encodeAvatarAnimation(composed);
-      const posterBytes = await renderAvatarPosterPng(posterFrame);
-      const [animationUpload, posterUpload] = await Promise.all([
-        uploadMediaBytes([...animationBytes], "animated-avatar.png"),
-        uploadMediaBytes([...posterBytes], "animated-avatar-poster.png"),
-      ]);
-      if (
-        !animationUpload.type.startsWith("image/") ||
-        !posterUpload.type.startsWith("image/")
-      ) {
-        setErrorMessage("The relay rejected the recording. Try again.");
-        return false;
-      }
       onApply(
-        presentAnimatedAvatar(posterUpload, animationUpload, posterBytes),
+        await saveAnimatedAvatar({
+          bitmaps,
+          composition,
+          posterIndex,
+          processRecording,
+        }),
       );
       return true;
     } catch (error) {
@@ -533,7 +525,7 @@ export function AnimatedAvatarCapture({
     } finally {
       setIsSaving(false);
     }
-  }, [bitmaps, composition, isSaving, onApply, posterIndex]);
+  }, [bitmaps, composition, isSaving, onApply, posterIndex, processRecording]);
 
   // Hand the host's Done button the current apply function whenever a
   // recording is ready to upload.

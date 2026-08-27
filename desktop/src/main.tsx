@@ -15,7 +15,10 @@ import { huddleWindowChannelId } from "@/features/huddle/lib/huddleWindow";
 import { CommunityOnboardingProvider } from "@/features/onboarding/communityOnboarding";
 import { onboardingPreviewRequested } from "@/features/onboarding/onboardingPreview";
 import { OnboardingPreviewApp } from "@/features/onboarding/ui/OnboardingPreviewApp";
-import { ThemeProvider } from "@/shared/theme/ThemeProvider";
+import {
+  NonPersistentThemeProvider,
+  ThemeProvider,
+} from "@/shared/theme/ThemeProvider";
 import { EmojiBurstProvider } from "@/shared/ui/EmojiBurstProvider";
 import { PoofBurstProvider } from "@/shared/ui/PoofBurstProvider";
 import { Toaster } from "@/shared/ui/sonner";
@@ -114,7 +117,9 @@ function renderOnboardingPreview() {
   ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <React.StrictMode>
       <RootErrorBoundary>
-        <OnboardingPreviewApp />
+        <NonPersistentThemeProvider>
+          <OnboardingPreviewApp />
+        </NonPersistentThemeProvider>
       </RootErrorBoundary>
     </React.StrictMode>,
   );

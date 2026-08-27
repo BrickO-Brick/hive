@@ -10,12 +10,14 @@ export function OnboardingPreviewStep({
   onBack,
   security = false,
   testId,
+  total,
 }: {
   children: React.ReactNode;
   current?: number;
   onBack?: () => void;
   security?: boolean;
   testId: string;
+  total?: number;
 }) {
   return (
     <div
@@ -25,7 +27,7 @@ export function OnboardingPreviewStep({
       data-testid={testId}
     >
       <StartupWindowDragRegion />
-      {!security ? <OnboardingChrome current={current} /> : null}
+      {!security ? <OnboardingChrome current={current} total={total} /> : null}
       <OnboardingFooterProvider
         backAction={onBack ? { onClick: onBack } : undefined}
       >

@@ -1,12 +1,18 @@
-import { Check, RotateCcw, ShieldCheck } from "lucide-react";
+import { Check } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import * as React from "react";
 
 import type { JoinPolicy } from "@/shared/api/invites";
+import { resetAvatarPresentations } from "@/features/profile/avatarPresentationStore";
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
 import { Input } from "@/shared/ui/input";
 import { StartupWindowDragRegion } from "@/shared/ui/StartupWindowDragRegion";
+import {
+  ONBOARDING_PREVIEW_JOURNEYS,
+  type OnboardingPreviewPage,
+  type OnboardingPreviewVariant,
+} from "../onboardingPreview";
 import { BackupStep } from "./BackupStep";
 import { JoinPolicyNotice } from "./JoinPolicyNotice";
 import { LandingBees } from "./LandingBees";
@@ -21,6 +27,7 @@ import {
   BackupPasswordPreview,
   CommunityChoicePreview,
   CommunityConnectingPreview,
+  CommunityCreatePreview,
   CommunityEntryPreview,
   CommunityHomePreview,
   CommunityProfilePreview,
@@ -30,27 +37,9 @@ import {
   WelcomeChannelPreview,
 } from "./OnboardingPreviewJourney";
 import { OnboardingPreviewStep } from "./OnboardingPreviewShell";
+import { OnboardingPreviewControls } from "./OnboardingPreviewControls";
 import { OnboardingSlideTransition } from "./OnboardingSlideTransition";
 import { SetupStepPreview } from "./SetupStepPreview";
-
-type PreviewPage =
-  | "landing"
-  | "email"
-  | "identity-key"
-  | "sign-in"
-  | "sign-in-key"
-  | "forgot-password"
-  | "backup-options"
-  | "backup-password"
-  | "setup"
-  | "config"
-  | "community-choice"
-  | "community-entry"
-  | "community-connecting"
-  | "community-profile"
-  | "starter-team"
-  | "welcome-channel"
-  | "community-home";
 
 const EMAIL_SIGNUP_POLICY: JoinPolicy = {
   ageAttestationRequired: true,
@@ -59,35 +48,11 @@ const EMAIL_SIGNUP_POLICY: JoinPolicy = {
   version: "email-signup-workshop",
 };
 
-function PreviewBanner({ onRestart }: { onRestart: () => void }) {
-  return (
-    <aside
-      className="fixed right-4 top-4 z-[100] flex max-w-sm items-center gap-3 rounded-2xl border border-foreground/15 bg-background/95 px-4 py-3 text-left shadow-lg backdrop-blur"
-      data-testid="onboarding-preview-banner"
-    >
-      <ShieldCheck className="h-5 w-5 shrink-0 text-primary" aria-hidden />
-      <div className="min-w-0 flex-1">
-        <p className="text-sm font-medium text-foreground">Workshop preview</p>
-        <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
-          Changes in this workshop aren’t saved.
-        </p>
-      </div>
-      <Button
-        aria-label="Restart onboarding preview"
-        className="h-8 w-8 shrink-0"
-        data-testid="onboarding-preview-restart"
-        onClick={onRestart}
-        size="icon"
-        type="button"
-        variant="ghost"
-      >
-        <RotateCcw className="h-4 w-4" aria-hidden />
-      </Button>
-    </aside>
-  );
-}
-
-function Landing({ onNavigate }: { onNavigate: (page: PreviewPage) => void }) {
+function Landing({
+  onNavigate,
+}: {
+  onNavigate: (page: OnboardingPreviewPage) => void;
+}) {
   return (
     <div
       className="buzz-onboarding-neutral-theme buzz-startup-shell buzz-onboarding-welcome flex max-h-dvh items-start justify-center overflow-hidden px-4 py-8 text-foreground"
@@ -431,11 +396,13 @@ function EmailSignup({
   onBack,
   onContinue,
   onPasswordChange,
+  total,
 }: {
   password: string;
   onBack: () => void;
   onContinue: (email: string) => void;
   onPasswordChange: (password: string) => void;
+  total: number;
 }) {
   const [email, setEmail] = React.useState("");
   const [confirmPassword, setConfirmPassword] = React.useState("");
@@ -444,15 +411,13 @@ function EmailSignup({
   const [openPolicyDocument, setOpenPolicyDocument] = React.useState<
     "terms" | "privacy" | null
   >(null);
-  const canContinue =
-    email.trim().includes("@") &&
-    password.length > 0 &&
-    confirmPassword === password &&
-    ageConfirmed &&
-    agreementConfirmed;
 
   return (
-    <OnboardingPreviewStep onBack={onBack} testId="onboarding-preview-email">
+    <OnboardingPreviewStep
+      onBack={onBack}
+      testId="onboarding-preview-email"
+      total={total}
+    >
       <OnboardingSlideTransition
         className="flex min-h-0 w-full max-w-[500px] flex-col items-center"
         transitionKey="preview-email"
@@ -467,7 +432,7 @@ function EmailSignup({
           className="mt-8 w-full space-y-5 text-left"
           onSubmit={(event) => {
             event.preventDefault();
-            if (canContinue) onContinue(email);
+            onContinue(email);
           }}
         >
           <PreviewCredentialsFields
@@ -497,7 +462,6 @@ function EmailSignup({
             <Button
               className={ONBOARDING_PRIMARY_CTA_CLASS}
               data-testid="onboarding-preview-email-continue"
-              disabled={!canContinue}
               onClick={() => onContinue(email)}
               type="button"
             >
@@ -562,6 +526,7 @@ function EmailSignIn({
   onEmailChange,
   onForgotPassword,
   onSignInWithKey,
+  total,
 }: {
   email: string;
   onBack: () => void;
@@ -569,12 +534,17 @@ function EmailSignIn({
   onEmailChange: (email: string) => void;
   onForgotPassword: () => void;
   onSignInWithKey: () => void;
+  total: number;
 }) {
   const [password, setPassword] = React.useState("");
   const canContinue = email.trim().length > 0 && password.length > 0;
 
   return (
-    <OnboardingPreviewStep onBack={onBack} testId="onboarding-preview-sign-in">
+    <OnboardingPreviewStep
+      onBack={onBack}
+      testId="onboarding-preview-sign-in"
+      total={total}
+    >
       <OnboardingSlideTransition
         className="flex min-h-0 w-full max-w-[500px] flex-col items-center"
         transitionKey="preview-sign-in"
@@ -646,9 +616,11 @@ function EmailSignIn({
 function PasswordReset({
   initialEmail,
   onBack,
+  total,
 }: {
   initialEmail: string;
   onBack: () => void;
+  total: number;
 }) {
   const [email, setEmail] = React.useState(initialEmail);
   const [submitted, setSubmitted] = React.useState(false);
@@ -658,6 +630,7 @@ function PasswordReset({
       <OnboardingPreviewStep
         onBack={onBack}
         testId="onboarding-preview-password-reset-sent"
+        total={total}
       >
         <OnboardingSlideTransition
           className="flex min-h-0 w-full max-w-[500px] flex-col items-center"
@@ -678,6 +651,7 @@ function PasswordReset({
     <OnboardingPreviewStep
       onBack={onBack}
       testId="onboarding-preview-password-reset"
+      total={total}
     >
       <OnboardingSlideTransition
         className="flex min-h-0 w-full max-w-[500px] flex-col items-center"
@@ -731,14 +705,17 @@ function PasswordReset({
 function KeySignIn({
   onBack,
   onContinue,
+  total,
 }: {
   onBack: () => void;
   onContinue: () => void;
+  total: number;
 }) {
   return (
     <OnboardingPreviewStep
       onBack={onBack}
       testId="onboarding-preview-sign-in-key"
+      total={total}
     >
       <OnboardingSlideTransition
         className="flex min-h-[calc(100dvh-13.25rem)] w-full max-w-[560px] flex-col items-center justify-center"
@@ -767,17 +744,19 @@ function KeySignIn({
 
 export function OnboardingPreviewApp() {
   const [run, setRun] = React.useState(0);
-  const [page, setPage] = React.useState<PreviewPage>("landing");
+  const [variant, setVariant] = React.useState<OnboardingPreviewVariant>("v3");
+  const [page, setPage] = React.useState<OnboardingPreviewPage>("landing");
   const [signInEmail, setSignInEmail] = React.useState("");
   const [signupPassword, setSignupPassword] = React.useState("");
   const [passwordResetEmail, setPasswordResetEmail] = React.useState("");
   const [setupBackPage, setSetupBackPage] =
-    React.useState<PreviewPage>("landing");
+    React.useState<OnboardingPreviewPage>("landing");
   const [communityRoute, setCommunityRoute] =
     React.useState<CommunityPreviewRoute>("join");
   const [communityName, setCommunityName] = React.useState("Block Community");
   const [displayName, setDisplayName] = React.useState("");
-  const [hasAvatar, setHasAvatar] = React.useState(false);
+  const [avatarUrl, setAvatarUrl] = React.useState("");
+  const journey = ONBOARDING_PREVIEW_JOURNEYS[variant];
 
   React.useEffect(() => {
     if (page === "landing") {
@@ -788,6 +767,7 @@ export function OnboardingPreviewApp() {
   }, [page]);
 
   const restart = React.useCallback(() => {
+    resetAvatarPresentations();
     setPage("landing");
     setPasswordResetEmail("");
     setRun((current) => current + 1);
@@ -796,8 +776,24 @@ export function OnboardingPreviewApp() {
     setCommunityRoute("join");
     setCommunityName("Block Community");
     setDisplayName("");
-    setHasAvatar(false);
+    setAvatarUrl("");
   }, []);
+
+  const changeVariant = React.useCallback(
+    (nextVariant: OnboardingPreviewVariant) => {
+      setVariant(nextVariant);
+      restart();
+    },
+    [restart],
+  );
+
+  const continueFromAccount = React.useCallback(
+    (backPage: OnboardingPreviewPage) => {
+      setSetupBackPage(backPage);
+      setPage(journey.afterAccount);
+    },
+    [journey.afterAccount],
+  );
 
   let content: React.ReactNode;
   if (page === "landing") {
@@ -807,11 +803,9 @@ export function OnboardingPreviewApp() {
       <EmailSignup
         password={signupPassword}
         onBack={() => setPage("landing")}
-        onContinue={() => {
-          setSetupBackPage("email");
-          setPage("setup");
-        }}
+        onContinue={() => continueFromAccount("email")}
         onPasswordChange={setSignupPassword}
+        total={journey.totalSteps}
       />
     );
   } else if (page === "identity-key") {
@@ -819,15 +813,16 @@ export function OnboardingPreviewApp() {
       <OnboardingPreviewStep
         onBack={() => setPage("landing")}
         testId="onboarding-preview-identity-key"
+        total={journey.totalSteps}
       >
         <BackupStep
           direction="forward"
-          onNext={() => {
-            setSetupBackPage("identity-key");
-            setPage("setup");
-          }}
+          onNext={() => continueFromAccount("identity-key")}
           onOpenPasswordBackup={() => setPage("backup-password")}
-          onShowOptions={() => setPage("backup-options")}
+          onShowOptions={() => {
+            setSetupBackPage("identity-key");
+            setPage("backup-options");
+          }}
           optionsExpanded={false}
           previewMode
           returningFromSecurity={false}
@@ -839,10 +834,11 @@ export function OnboardingPreviewApp() {
       <OnboardingPreviewStep
         onBack={() => setPage("identity-key")}
         testId="onboarding-preview-backup-options"
+        total={journey.totalSteps}
       >
         <BackupStep
           direction="forward"
-          onNext={() => setPage("setup")}
+          onNext={() => setPage(journey.afterAccount)}
           onOpenPasswordBackup={() => setPage("backup-password")}
           onShowOptions={() => setPage("backup-options")}
           optionsExpanded
@@ -863,16 +859,14 @@ export function OnboardingPreviewApp() {
       <EmailSignIn
         email={signInEmail}
         onBack={() => setPage("landing")}
-        onContinue={() => {
-          setSetupBackPage("sign-in");
-          setPage("setup");
-        }}
+        onContinue={() => continueFromAccount("sign-in")}
         onEmailChange={setSignInEmail}
         onForgotPassword={() => {
           setPasswordResetEmail(signInEmail);
           setPage("forgot-password");
         }}
         onSignInWithKey={() => setPage("sign-in-key")}
+        total={journey.totalSteps}
       />
     );
   } else if (page === "forgot-password") {
@@ -880,16 +874,15 @@ export function OnboardingPreviewApp() {
       <PasswordReset
         initialEmail={passwordResetEmail}
         onBack={() => setPage("sign-in")}
+        total={journey.totalSteps}
       />
     );
   } else if (page === "sign-in-key") {
     content = (
       <KeySignIn
         onBack={() => setPage("sign-in")}
-        onContinue={() => {
-          setSetupBackPage("sign-in-key");
-          setPage("setup");
-        }}
+        onContinue={() => continueFromAccount("sign-in-key")}
+        total={journey.totalSteps}
       />
     );
   } else if (page === "setup") {
@@ -909,24 +902,40 @@ export function OnboardingPreviewApp() {
   } else if (page === "community-choice") {
     content = (
       <CommunityChoicePreview
-        onBack={() => setPage("config")}
+        current={journey.communityStep}
+        includeExistingCommunity={journey.includeExistingCommunity}
+        onBack={() => setPage(journey.communityChoiceBack ?? setupBackPage)}
         onChoose={(route) => {
           setCommunityRoute(route);
           setPage("community-entry");
         }}
+        total={journey.totalSteps}
       />
     );
   } else if (page === "community-entry") {
-    content = (
-      <CommunityEntryPreview
-        onBack={() => setPage("community-choice")}
-        onContinue={(name) => {
-          setCommunityName(name);
-          setPage("community-connecting");
-        }}
-        route={communityRoute}
-      />
-    );
+    content =
+      communityRoute === "create" ? (
+        <CommunityCreatePreview
+          current={journey.communityStep}
+          onBack={() => setPage("community-choice")}
+          onContinue={(name) => {
+            setCommunityName(name);
+            setPage(journey.afterCommunityEntry);
+          }}
+          total={journey.totalSteps}
+        />
+      ) : (
+        <CommunityEntryPreview
+          current={journey.communityStep}
+          onBack={() => setPage("community-choice")}
+          onContinue={(name) => {
+            setCommunityName(name);
+            setPage(journey.afterCommunityEntry);
+          }}
+          route={communityRoute}
+          total={journey.totalSteps}
+        />
+      );
   } else if (page === "community-connecting") {
     content = (
       <CommunityConnectingPreview
@@ -938,12 +947,14 @@ export function OnboardingPreviewApp() {
   } else if (page === "community-profile") {
     content = (
       <CommunityProfilePreview
+        avatarUrl={avatarUrl}
+        current={journey.profileStep}
         displayName={displayName}
-        hasAvatar={hasAvatar}
-        onAvatarChange={() => setHasAvatar((current) => !current)}
+        onAvatarUrlChange={setAvatarUrl}
         onBack={() => setPage("community-entry")}
         onDisplayNameChange={setDisplayName}
-        onNext={() => setPage("starter-team")}
+        onNext={() => setPage(journey.afterProfile)}
+        total={journey.totalSteps}
       />
     );
   } else if (page === "starter-team") {
@@ -964,15 +975,20 @@ export function OnboardingPreviewApp() {
   } else {
     content = (
       <CommunityHomePreview
+        avatarUrl={avatarUrl}
         communityName={communityName}
-        onBack={() => setPage("welcome-channel")}
+        displayName={displayName}
       />
     );
   }
 
   return (
     <>
-      <PreviewBanner onRestart={restart} />
+      <OnboardingPreviewControls
+        onRestart={restart}
+        onVariantChange={changeVariant}
+        variant={variant}
+      />
       {content}
     </>
   );
