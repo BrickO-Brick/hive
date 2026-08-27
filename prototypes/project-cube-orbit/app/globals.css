@@ -37,7 +37,8 @@ body { background: #e6f2f5; color: var(--ink); font-family: Inter, ui-sans-serif
 
 .project-stage { position: relative; min-height: 100svh; overflow: hidden; touch-action: none; user-select: none; cursor: grab; }
 .project-stage.is-panning { cursor: grabbing; }
-.project-world { position: absolute; inset: 0; transform: translate3d(0,0,0); will-change: transform; }
+.project-world { position: absolute; inset: 0; transform: translate3d(0,0,0); transition: transform 520ms cubic-bezier(.22,1,.36,1); will-change: transform; }
+.project-stage.is-panning .project-world { transition: none; }
 .orbit-system {
   --orbit-scale: 1;
   --focus-x: 0px;

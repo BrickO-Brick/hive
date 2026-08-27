@@ -964,6 +964,20 @@ export function BuzzProjectPrototype() {
     setActiveTab(tab);
   };
 
+  const selectTask = (selection: SelectedTask) => {
+    const pan = canvasPanRef.current;
+    pan.pointerId = -1;
+    pan.originX = 0;
+    pan.originY = 0;
+    pan.x = 0;
+    pan.y = 0;
+    projectWorldRef.current?.style.setProperty(
+      "transform",
+      "translate3d(0px, 0px, 0)",
+    );
+    setSelectedTask(selection);
+  };
+
   const beginCanvasPan = (event: ReactPointerEvent<HTMLElement>) => {
     if (selectedTask) return;
     const target = event.target as Element;
@@ -1026,9 +1040,9 @@ export function BuzzProjectPrototype() {
             className="project-world"
             style={{ transform: `translate3d(${canvasPanRef.current.x}px, ${canvasPanRef.current.y}px, 0)` }}
           >
-            <ProjectOrbit projectKey="berd" displayName="Berd" className="orbit-primary" imageUrls={PRIMARY_IMAGE_URLS} state={PRIMARY_PROJECT_STATE} tasks={PRIMARY_TASKS} selectedTask={selectedTask} onSelectTask={setSelectedTask} />
-            <ProjectOrbit projectKey="goose" displayName="Goose" className="orbit-secondary" imageUrls={SECONDARY_IMAGE_URLS} state={SECONDARY_PROJECT_STATE} tasks={SECONDARY_TASKS} selectedTask={selectedTask} onSelectTask={setSelectedTask} />
-            <ProjectOrbit projectKey="buzz" displayName="Buzz" className="orbit-tertiary" imageUrls={TERTIARY_IMAGE_URLS} state={TERTIARY_PROJECT_STATE} tasks={TERTIARY_TASKS} selectedTask={selectedTask} onSelectTask={setSelectedTask} />
+            <ProjectOrbit projectKey="berd" displayName="Berd" className="orbit-primary" imageUrls={PRIMARY_IMAGE_URLS} state={PRIMARY_PROJECT_STATE} tasks={PRIMARY_TASKS} selectedTask={selectedTask} onSelectTask={selectTask} />
+            <ProjectOrbit projectKey="goose" displayName="Goose" className="orbit-secondary" imageUrls={SECONDARY_IMAGE_URLS} state={SECONDARY_PROJECT_STATE} tasks={SECONDARY_TASKS} selectedTask={selectedTask} onSelectTask={selectTask} />
+            <ProjectOrbit projectKey="buzz" displayName="Buzz" className="orbit-tertiary" imageUrls={TERTIARY_IMAGE_URLS} state={TERTIARY_PROJECT_STATE} tasks={TERTIARY_TASKS} selectedTask={selectedTask} onSelectTask={selectTask} />
           </div>
           {selectedTask ? <TaskDetailPanel selection={selectedTask} onClose={() => setSelectedTask(null)} /> : null}
         </section>
