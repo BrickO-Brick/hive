@@ -94,13 +94,16 @@ function Landing({
             </div>
             <OnboardingFooter className="max-w-none">
               <Button
-                className="text-foreground/70 hover:text-foreground"
+                className="h-auto flex-col gap-0.5 text-foreground/70 hover:text-foreground"
                 data-testid="onboarding-preview-without-email"
                 onClick={() => onNavigate("identity-key")}
                 type="button"
                 variant="link"
               >
-                Sign up without email
+                <span>Sign up without email</span>
+                <span className="text-2xs font-normal text-foreground/50 no-underline">
+                  Create a Nostr identity
+                </span>
               </Button>
             </OnboardingFooter>
           </OnboardingSlideTransition>

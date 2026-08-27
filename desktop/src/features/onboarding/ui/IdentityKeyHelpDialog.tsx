@@ -33,11 +33,19 @@ function rememberIdentityKeyHelpSeen() {
   }
 }
 
-export function IdentityKeyHelpDialog() {
-  const [isVisible, setIsVisible] = React.useState(hasSeenIdentityKeyHelp);
+export function IdentityKeyHelpDialog({
+  inline = false,
+  previewMode = false,
+}: {
+  inline?: boolean;
+  previewMode?: boolean;
+}) {
+  const [isVisible, setIsVisible] = React.useState(
+    previewMode ? true : hasSeenIdentityKeyHelp,
+  );
 
   React.useEffect(() => {
-    if (isVisible) return;
+    if (previewMode || isVisible) return;
 
     const timeout = window.setTimeout(() => {
       rememberIdentityKeyHelpSeen();
@@ -45,25 +53,31 @@ export function IdentityKeyHelpDialog() {
     }, IDENTITY_KEY_HELP_DELAY_MS);
 
     return () => window.clearTimeout(timeout);
-  }, [isVisible]);
+  }, [isVisible, previewMode]);
+
+  const trigger = (
+    <DialogTrigger asChild>
+      <Button
+        className={`text-foreground/70 transition-opacity duration-300 hover:text-foreground motion-reduce:transition-none ${
+          isVisible ? "opacity-100" : "pointer-events-none opacity-0"
+        }`}
+        data-testid="identity-key-help-trigger"
+        tabIndex={isVisible ? 0 : -1}
+        type="button"
+        variant="link"
+      >
+        What’s an identity key?
+      </Button>
+    </DialogTrigger>
+  );
 
   return (
     <Dialog>
-      <OnboardingFooter className="max-w-none">
-        <DialogTrigger asChild>
-          <Button
-            className={`text-foreground/70 transition-opacity duration-300 hover:text-foreground motion-reduce:transition-none ${
-              isVisible ? "opacity-100" : "pointer-events-none opacity-0"
-            }`}
-            data-testid="identity-key-help-trigger"
-            tabIndex={isVisible ? 0 : -1}
-            type="button"
-            variant="link"
-          >
-            What’s an identity key?
-          </Button>
-        </DialogTrigger>
-      </OnboardingFooter>
+      {inline ? (
+        trigger
+      ) : (
+        <OnboardingFooter className="max-w-none">{trigger}</OnboardingFooter>
+      )}
       <DialogContent
         className="buzz-onboarding-neutral-theme max-w-[47.5rem] -translate-y-5"
         closeButtonClassName={ONBOARDING_INK_ICON_CLASS}
@@ -82,18 +96,15 @@ export function IdentityKeyHelpDialog() {
           >
             <div>
               <p>
-                Buzz uses an identity key instead of a traditional account. It’s
-                created on your device and represents you whenever you use Buzz.
+                Your Nostr identity has two parts: a private key that signs you
+                in and a public key you can safely share. You can find your
+                public identity anytime in Buzz Settings.
               </p>
               <p>
-                Your identity belongs to you, not Buzz. There’s no password to
-                reset, and Buzz can’t recover your key if you lose it. Keep a
-                backup somewhere safe and never share it. Anyone with your key
-                can act as you.
-              </p>
-              <p>
-                If you’re new to Buzz, create a new identity key. If you already
-                have a Nostr identity, use your existing key.
+                Your identity belongs to you, not Buzz, and can move with you to
+                another device or compatible Nostr app. Because only you control
+                the private key, Buzz can’t reset or recover it. Keep a backup
+                somewhere safe and never share it.
               </p>
             </div>
           </DialogDescription>

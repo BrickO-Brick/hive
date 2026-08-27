@@ -1,4 +1,12 @@
-import { Check, Copy, Eye, EyeOff, Info, ShieldCheck } from "lucide-react";
+import {
+  Check,
+  Copy,
+  Download,
+  Eye,
+  EyeOff,
+  Info,
+  ShieldCheck,
+} from "lucide-react";
 import { useReducedMotion } from "motion/react";
 import * as React from "react";
 
@@ -14,6 +22,7 @@ import {
   ONBOARDING_PRIMARY_CTA_CLASS,
   ONBOARDING_SECONDARY_CTA_CLASS,
 } from "./OnboardingChrome";
+import { IdentityKeyHelpDialog } from "./IdentityKeyHelpDialog";
 import { OnboardingFooter } from "./OnboardingFooter";
 import {
   type OnboardingTransitionDirection,
@@ -190,12 +199,12 @@ export function BackupStep({
       >
         <div className="flex w-full max-w-140 shrink-0 flex-col text-center">
           <h1 className="text-title font-normal text-foreground">
-            Backup options
+            {previewMode ? "Back up your identity" : "Backup options"}
           </h1>
           <p className="mt-5 text-sm leading-6 text-foreground/75">
-            Your identity key works like a password for your Buzz account. Keep
-            a copy somewhere safe. You can create a backup file and lock it with
-            a password you can remember.
+            {previewMode
+              ? "Buzz keeps your identity key protected on this device, but you should make a separate backup in case you lose access."
+              : "Your identity key works like a password for your Buzz account. Keep a copy somewhere safe. You can create a backup file and lock it with a password you can remember."}
           </p>
         </div>
 
@@ -219,7 +228,9 @@ export function BackupStep({
               data-testid="backup-option-panel"
             >
               <span className="text-lg font-medium">
-                Saved in your password manager
+                {previewMode
+                  ? "Save in your password manager"
+                  : "Saved in your password manager"}
               </span>
               <span className="mt-3 block text-sm leading-6 text-foreground/65">
                 Copy your identity key, then save it in a password manager like
@@ -256,7 +267,9 @@ export function BackupStep({
               data-testid="backup-option-panel"
             >
               <span className="text-lg font-medium">
-                Locked in a backup file
+                {previewMode
+                  ? "Create a locked backup"
+                  : "Locked in a backup file"}
               </span>
               <span className="mt-3 block text-sm leading-6 text-foreground/65">
                 Create a backup file and choose a password you can remember.
@@ -306,9 +319,11 @@ export function BackupStep({
           className={`text-title font-normal text-foreground ${REVEAL_ANIMATION_CLASS}`}
           key={created ? "created" : "creating"}
         >
-          {created
-            ? "Your unique identity key has been created"
-            : "Creating your identity key"}
+          {created && previewMode
+            ? "Your identity key is ready"
+            : created
+              ? "Your unique identity key has been created"
+              : "Creating your identity key"}
         </h1>
         {created ? (
           <p
@@ -317,16 +332,25 @@ export function BackupStep({
               REVEAL_ANIMATION_CLASS,
             )}
           >
-            {introStorageDescription} You can continue now, or{" "}
-            <button
-              className="rounded-sm font-medium underline decoration-foreground/40 underline-offset-4 transition-colors hover:decoration-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-              data-testid="backup-options-link"
-              onClick={onShowOptions}
-              type="button"
-            >
-              review backup options
-            </button>{" "}
-            for ways to restore your account.
+            {previewMode ? (
+              <>
+                This works as the login and password for your Buzz account. Use
+                it to access Buzz from any device.
+              </>
+            ) : (
+              <>
+                {introStorageDescription} You can continue now, or{" "}
+                <button
+                  className="rounded-sm font-medium underline decoration-foreground/40 underline-offset-4 transition-colors hover:decoration-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                  data-testid="backup-options-link"
+                  onClick={onShowOptions}
+                  type="button"
+                >
+                  review backup options
+                </button>{" "}
+                for ways to restore your account.
+              </>
+            )}
           </p>
         ) : null}
       </div>
@@ -384,6 +408,28 @@ export function BackupStep({
                     <Eye className="h-6 w-6" aria-hidden="true" />
                   )}
                 </Button>
+                {previewMode ? (
+                  <Button
+                    aria-label={
+                      copyState === "copied"
+                        ? "Private key copied"
+                        : "Copy private key"
+                    }
+                    className="h-10 w-10 shrink-0 text-muted-foreground hover:text-foreground"
+                    data-testid="backup-key-copy"
+                    disabled={copyState === "copying"}
+                    onClick={() => void copyKeyToClipboard()}
+                    size="icon"
+                    type="button"
+                    variant="ghost"
+                  >
+                    {copyState === "copied" ? (
+                      <Check className="h-5 w-5" aria-hidden="true" />
+                    ) : (
+                      <Copy className="h-5 w-5" aria-hidden="true" />
+                    )}
+                  </Button>
+                ) : null}
               </div>
             </Card>
 
@@ -401,15 +447,33 @@ export function BackupStep({
             <p className="mx-auto mt-5 flex max-w-[440px] items-start justify-center gap-1.5 text-center text-xs leading-5 text-[var(--buzz-onboarding-backup-ink)]">
               <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
               <span>
-                Never share your private key. Anyone with this key can
-                impersonate you and access everything in your account.
+                {previewMode
+                  ? "Keep this key private. Anyone who has it can access your account. Your public identity is available anytime in Buzz Settings."
+                  : "Never share your private key. Anyone with this key can impersonate you and access everything in your account."}
               </span>
             </p>
+            {previewMode ? (
+              <div className="mt-3">
+                <IdentityKeyHelpDialog inline previewMode />
+              </div>
+            ) : null}
           </div>
         </div>
       )}
 
       <OnboardingFooter className={REVEAL_ANIMATION_CLASS}>
+        {previewMode && created ? (
+          <Button
+            className={cn(ONBOARDING_SECONDARY_CTA_CLASS, "gap-2")}
+            data-testid="backup-options-link"
+            onClick={onShowOptions}
+            type="button"
+            variant="ghost"
+          >
+            <Download className="h-4 w-4" aria-hidden="true" />
+            Back up your identity
+          </Button>
+        ) : null}
         <Button
           className={ONBOARDING_PRIMARY_CTA_CLASS}
           data-testid="onboarding-next"
