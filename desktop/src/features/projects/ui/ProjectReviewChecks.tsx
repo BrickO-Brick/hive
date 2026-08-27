@@ -47,6 +47,7 @@ import type { ProjectsConversationOpener } from "@/features/projects/lib/project
 import { pullRequestShareLink } from "@/features/projects/lib/projectShareLinks";
 import type { ProjectPullRequest, Repository } from "@/features/projects/hooks";
 import { useIdentityQuery } from "@/shared/api/hooks";
+import { listManagedAgents } from "@/shared/api/tauri";
 import { revalidateRelayAgents } from "@/shared/api/tauriRelayAgents";
 import { sendChannelMessage } from "@/shared/api/tauriMessages";
 import { getProjectRepoFileContent } from "@/shared/api/projectGit";
@@ -81,7 +82,7 @@ type ReviewCheckRun = {
 
 type ReviewCheckRuns = Record<string, ReviewCheckRun>;
 
-type RelayAssignedAgent = {
+type ReviewCheckAgent = {
   pubkey: string;
   name: string;
   isManaged: boolean;
@@ -146,47 +147,42 @@ function normalizeStoredRuns(value: Record<string, unknown>): ReviewCheckRuns {
   return runs;
 }
 
-/**
- * A strict relay-backed candidate list. Unlike the general Projects assistant
- * picker, this does not add machine-local agents that the active identity
- * cannot also resolve through the relay directory.
- */
-function useRelayAssignedAgents() {
+/** Local managed agents can run on this dev build; relay agents must pass the
+ * active identity's community-level respond-to policy. */
+function useReviewCheckAgents() {
   const identityQuery = useIdentityQuery();
   const managedAgentsQuery = useManagedAgentsQuery();
   const relayAgentsQuery = useRelayAgentsQuery();
   const channelsQuery = useChannelsQuery();
 
   const candidates = React.useMemo(() => {
+    const managedAgents = managedAgentsQuery.data ?? [];
     const managedByPubkey = new Map(
-      (managedAgentsQuery.data ?? []).map((agent) => [
-        normalizePubkey(agent.pubkey),
-        agent,
-      ]),
+      managedAgents.map((agent) => [normalizePubkey(agent.pubkey), agent]),
     );
     const relayAgents = relayAgentsQuery.data ?? [];
     const sharedChannelIds = getSharedChannelIds(channelsQuery.data);
     const allowedPubkeys = getMentionableAgentPubkeys({
       currentPubkey: identityQuery.data?.pubkey,
       eligibilityScope: { type: "community" },
-      managedAgentPubkeys: [],
+      managedAgentPubkeys: managedByPubkey.keys(),
       relayAgents,
       sharedChannelIds,
     });
-    const seen = new Set<string>();
-    const assigned: RelayAssignedAgent[] = [];
+    const assigned: ReviewCheckAgent[] = managedAgents.map((agent) => ({
+      pubkey: normalizePubkey(agent.pubkey),
+      name: agent.name,
+      isManaged: true,
+      isActive: isManagedAgentActive(agent),
+    }));
     for (const relayAgent of relayAgents) {
       const pubkey = normalizePubkey(relayAgent.pubkey);
-      if (seen.has(pubkey) || !allowedPubkeys.has(pubkey)) continue;
-      seen.add(pubkey);
-      const managedAgent = managedByPubkey.get(pubkey);
+      if (managedByPubkey.has(pubkey) || !allowedPubkeys.has(pubkey)) continue;
       assigned.push({
         pubkey,
         name: relayAgent.name,
-        isManaged: Boolean(managedAgent),
-        isActive: managedAgent
-          ? isManagedAgentActive(managedAgent)
-          : relayAgent.status !== "offline",
+        isManaged: false,
+        isActive: relayAgent.status !== "offline",
       });
     }
     return assigned.sort((left, right) => {
@@ -208,7 +204,7 @@ function useRelayAssignedAgents() {
       managedAgentsQuery.isLoading ||
       relayAgentsQuery.isLoading ||
       channelsQuery.isLoading,
-    isError: relayAgentsQuery.isError,
+    isError: managedAgentsQuery.isError || relayAgentsQuery.isError,
   };
 }
 
@@ -363,10 +359,10 @@ function AgentPicker({
   onSelect,
   selected,
 }: {
-  candidates: RelayAssignedAgent[];
+  candidates: ReviewCheckAgent[];
   disabled: boolean;
   onSelect: (pubkey: string) => void;
-  selected: RelayAssignedAgent | null;
+  selected: ReviewCheckAgent | null;
 }) {
   return (
     <DropdownMenu>
@@ -402,7 +398,7 @@ function AgentPicker({
               <span className="shrink-0 text-xs text-muted-foreground">
                 {candidate.isManaged
                   ? candidate.isActive
-                    ? "On this Mac"
+                    ? "Running here"
                     : "Can start here"
                   : candidate.isActive
                     ? "Online on relay"
@@ -428,7 +424,7 @@ export function ProjectReviewChecks({
   const channelsQuery = useChannelsQuery();
   const openDmMutation = useOpenDmMutation();
   const startAgentMutation = useStartManagedAgentMutation();
-  const relayAssignedAgents = useRelayAssignedAgents();
+  const reviewCheckAgents = useReviewCheckAgents();
   const checkDefinitions = useProjectReviewCheckDefinitions(project);
   const relayScope = activeCommunity?.relayUrl
     ? normalizeRelayUrl(activeCommunity.relayUrl)
@@ -516,7 +512,7 @@ export function ProjectReviewChecks({
   );
 
   const runCheck = React.useCallback(
-    async (check: ProjectReviewCheckDefinition, agent: RelayAssignedAgent) => {
+    async (check: ProjectReviewCheckDefinition, agent: ReviewCheckAgent) => {
       const expectedStorageKey = storageKey;
       if (!expectedStorageKey || !relayScope || !signerScope) return;
       if (!agent.isManaged && !agent.isActive) {
@@ -527,35 +523,60 @@ export function ProjectReviewChecks({
       }
       setPendingCheckIds((current) => new Set(current).add(check.id));
       try {
-        if (agent.isManaged && !agent.isActive) {
-          await startAgentMutation.mutateAsync({
-            pubkey: agent.pubkey,
-            expectedRelayUrl: relayScope,
-            expectedSignerPubkey: signerScope,
-          });
+        if (agent.isManaged) {
+          const managedAgent = (await listManagedAgents()).find(
+            (candidate) =>
+              normalizePubkey(candidate.pubkey) ===
+              normalizePubkey(agent.pubkey),
+          );
+          if (!managedAgent) {
+            throw new Error(
+              `${agent.name} is no longer managed by this dev build.`,
+            );
+          }
+          if (!isManagedAgentActive(managedAgent)) {
+            await startAgentMutation.mutateAsync({
+              pubkey: agent.pubkey,
+              expectedRelayUrl: relayScope,
+              expectedSignerPubkey: signerScope,
+            });
+          }
         }
         const channel = await openDmMutation.mutateAsync({
           pubkeys: [agent.pubkey],
           expectedRelayUrl: relayScope,
           expectedSignerPubkey: signerScope,
         });
-        // DMs represent every participant as a regular member, so authorization
-        // comes from the selected agent's relay-signed assignment elsewhere in
-        // the community rather than treating this transport channel as proof.
-        const revalidated = await revalidateRelayAgents(
-          [agent.pubkey],
-          undefined,
-        );
-        if (
-          !revalidated.some(
+        if (agent.isManaged) {
+          const isStillManaged = (await listManagedAgents()).some(
             (candidate) =>
               normalizePubkey(candidate.pubkey) ===
               normalizePubkey(agent.pubkey),
-          )
-        ) {
-          throw new Error(
-            `${agent.name} is no longer authorized for this identity on the relay.`,
           );
+          if (!isStillManaged) {
+            throw new Error(
+              `${agent.name} is no longer managed by this dev build.`,
+            );
+          }
+        } else {
+          // DMs represent every participant as a regular member, so remote
+          // authorization comes from the relay directory instead of treating
+          // this transport channel as proof.
+          const revalidated = await revalidateRelayAgents(
+            [agent.pubkey],
+            undefined,
+          );
+          if (
+            !revalidated.some(
+              (candidate) =>
+                normalizePubkey(candidate.pubkey) ===
+                normalizePubkey(agent.pubkey),
+            )
+          ) {
+            throw new Error(
+              `${agent.name} is no longer authorized for this identity on the relay.`,
+            );
+          }
         }
         const prompt = buildProjectReviewCheckPrompt({
           check,
@@ -644,8 +665,9 @@ export function ProjectReviewChecks({
   return (
     <div className="-mx-6" data-testid="project-review-checks">
       <div className="border-b border-border/55 px-6 pb-3 text-xs text-muted-foreground">
-        Agents are limited to identities the relay directory authorizes for your
-        signed-in identity. Definitions come from the target branch
+        Choose a local managed agent on this dev build or a relay agent
+        authorized for your signed-in identity. Definitions come from the target
+        branch
         {checkDefinitions.source === "project"
           ? ` (${PROJECT_REVIEW_CHECKS_CONFIG_PATH})`
           : checkDefinitions.source === "starter"
@@ -660,7 +682,7 @@ export function ProjectReviewChecks({
             status: "idle" as const,
           };
           const selectedAgent =
-            relayAssignedAgents.candidates.find(
+            reviewCheckAgents.candidates.find(
               (candidate) =>
                 normalizePubkey(candidate.pubkey) ===
                 normalizePubkey(run.agentPubkey ?? ""),
@@ -699,7 +721,7 @@ export function ProjectReviewChecks({
                 </div>
                 <div className="flex flex-wrap items-center justify-end gap-2">
                   <AgentPicker
-                    candidates={relayAssignedAgents.candidates}
+                    candidates={reviewCheckAgents.candidates}
                     disabled={isPending || run.status === "running"}
                     onSelect={(pubkey) => assignAgent(check.id, pubkey)}
                     selected={selectedAgent}
@@ -780,12 +802,12 @@ export function ProjectReviewChecks({
             : `Could not load ${PROJECT_REVIEW_CHECKS_CONFIG_PATH}.`}
         </div>
       ) : null}
-      {!relayAssignedAgents.isLoading &&
-      relayAssignedAgents.candidates.length === 0 ? (
+      {!reviewCheckAgents.isLoading &&
+      reviewCheckAgents.candidates.length === 0 ? (
         <div className="border-t border-border/55 px-6 py-3 text-xs text-muted-foreground">
-          {relayAssignedAgents.isError
-            ? "The relay agent directory could not be loaded."
-            : "No agents are currently assigned to this identity by the relay."}
+          {reviewCheckAgents.isError
+            ? "Local managed agents or the relay agent directory could not be loaded."
+            : "No local managed or authorized relay agents are available."}
         </div>
       ) : null}
     </div>

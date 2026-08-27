@@ -9,6 +9,7 @@ const REVIEWER_AGENT_PUBKEY = "a".repeat(64);
 const DEFAULT_MOCK_PUBKEY = "deadbeef".repeat(8);
 const RELAY_REVIEW_AGENT_PUBKEY =
   "554cef57437abac34522ac2c9f0490d685b72c80478cf9f7ed6f9570ee8624ea";
+const LOCAL_REVIEW_AGENT_PUBKEY = "c".repeat(64);
 
 async function expectSinglePrimaryTextColumn(row: Locator) {
   const primary = row.locator('[data-projects-text-priority="primary"]');
@@ -171,6 +172,69 @@ test("review checks dispatch to an agent authorized for the relay identity", asy
       ),
     )
     .toBe(true);
+});
+
+test("review checks dispatch to a running local managed agent", async ({
+  page,
+}) => {
+  await enableProjectsFeature(page);
+  await installMockBridge(page, {
+    managedAgents: [
+      {
+        pubkey: LOCAL_REVIEW_AGENT_PUBKEY,
+        name: "Roof",
+        status: "running",
+        // Deliberately exclude the signed-in identity from relay authorization.
+        // A local managed agent must still be available to this dev build.
+        respondTo: "allowlist",
+        respondToAllowlist: [],
+      },
+    ],
+  });
+  await openBuzzProject(page);
+
+  await page.getByRole("tab", { name: "Review" }).click();
+  const aliceRow = pullRequestRowByAuthor(page, "alice").first();
+  await expect(aliceRow).toBeVisible({ timeout: 10_000 });
+  await aliceRow.getByRole("button", { name: /^#/ }).click();
+  await page.getByRole("button", { name: "Checks", exact: true }).click();
+
+  const checks = page.getByTestId("project-review-checks");
+  const interfaceCheck = checks.locator("article").first();
+  await interfaceCheck.getByRole("button", { name: "Assign an agent" }).click();
+  await page
+    .getByRole("menuitemradio", { name: /Roof.*Running here/i })
+    .click();
+  const revalidationCountBefore = await page.evaluate(
+    () =>
+      window.__BUZZ_E2E_COMMANDS__?.filter(
+        (command) => command === "revalidate_relay_agents",
+      ).length ?? 0,
+  );
+  await interfaceCheck
+    .getByRole("button", { name: "Run", exact: true })
+    .click();
+
+  await expect(interfaceCheck).toContainText("Running");
+  await expect
+    .poll(() =>
+      page.evaluate((pubkey) => {
+        const entry = window.__BUZZ_E2E_COMMAND_PAYLOADS__?.findLast(
+          (candidate) => candidate.command === "send_channel_message",
+        );
+        return (
+          entry?.payload as { mentionPubkeys?: string[] } | undefined
+        )?.mentionPubkeys?.includes(pubkey);
+      }, LOCAL_REVIEW_AGENT_PUBKEY),
+    )
+    .toBe(true);
+  const commands = await page.evaluate(
+    () => window.__BUZZ_E2E_COMMANDS__ ?? [],
+  );
+  expect(
+    commands.filter((command) => command === "revalidate_relay_agents"),
+  ).toHaveLength(revalidationCountBefore);
+  expect(commands).not.toContain("start_managed_agent");
 });
 
 test("same-second request changes supersedes approval", async ({ page }) => {
