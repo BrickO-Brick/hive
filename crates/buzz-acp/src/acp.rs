@@ -5554,6 +5554,27 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn credential_helper_configured_detects_staged_helpers() {
+        // The gate also scans process env (a desktop stages the helper there),
+        // so the false-case assertion below is only meaningful with no ambient
+        // `GIT_CONFIG_*`. Snapshot every such var, clear them for the test, and
+        // restore them on drop — a review host may legitimately carry one.
+        struct GitConfigEnvGuard(Vec<(std::ffi::OsString, std::ffi::OsString)>);
+        impl Drop for GitConfigEnvGuard {
+            fn drop(&mut self) {
+                for (k, v) in self.0.drain(..) {
+                    std::env::set_var(k, v);
+                }
+            }
+        }
+        let _guard = GitConfigEnvGuard(
+            std::env::vars_os()
+                .filter(|(k, _)| k.to_str().is_some_and(|k| k.starts_with("GIT_CONFIG_")))
+                .collect(),
+        );
+        for (k, _) in &_guard.0 {
+            std::env::remove_var(k);
+        }
+
         // Bare credential.helper.
         let mut bare = tokio::process::Command::new("true");
         bare.env("GIT_CONFIG_KEY_0", "credential.helper");
