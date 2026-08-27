@@ -311,7 +311,13 @@ class RelaySessionNotifier extends Notifier<SessionState> {
   Future<NostrEvent> publish(
     NostrEvent event, {
     Duration timeout = const Duration(seconds: 8),
-  }) {
+  }) async {
+    final generation = _connectionGeneration;
+    if (_rateLimitGate.isActive) await _rateLimitGate.wait();
+    if (!_isActiveConnection(generation) || !_socketConnected) {
+      throw StateError('Relay session is not connected');
+    }
+
     final completer = Completer<NostrEvent>();
 
     final timer = Timer(timeout, () {

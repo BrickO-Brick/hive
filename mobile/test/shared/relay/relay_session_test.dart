@@ -1386,6 +1386,90 @@ void main() {
     },
   );
 
+  test(
+    'publish waits out the rate-limit gate before timeout registration and send',
+    () async {
+      final gateTimers = <_ManualTimer>[];
+      final gate = RelayRateLimitGate(
+        now: () => DateTime(2026),
+        timerFactory: (duration, callback) {
+          final timer = _ManualTimer(duration, callback);
+          gateTimers.add(timer);
+          return timer;
+        },
+      );
+      final socket = _RecordingRelaySocket();
+      final session = RelaySessionNotifier(rateLimitGate: gate);
+      session.debugAttachSocketForTest(socket);
+
+      final firstPublish = session.publish(_event(id: 'event-a'));
+      session.debugHandleMessage([
+        'OK',
+        'event-a',
+        false,
+        'rate-limited: quota exceeded; retry in 4s',
+      ]);
+      await expectLater(firstPublish, throwsA(isA<Exception>()));
+
+      var secondSettled = false;
+      final secondPublish = session.publish(
+        _event(id: 'event-b'),
+        timeout: Duration.zero,
+      );
+      unawaited(secondPublish.whenComplete(() => secondSettled = true));
+      await Future<void>.delayed(Duration.zero);
+
+      expect(
+        socket.messages.where((message) => message.first == 'EVENT'),
+        hasLength(1),
+        reason: 'the next EVENT must remain unsent while the gate is active',
+      );
+      expect(
+        secondSettled,
+        isFalse,
+        reason:
+            'the publish timeout must not start until after the gate expires',
+      );
+
+      gateTimers.single.fire();
+      await Future<void>.microtask(() {});
+
+      final events = socket.messages
+          .where((message) => message.first == 'EVENT')
+          .toList();
+      expect(events, hasLength(2));
+      expect((events.last[1] as Map<String, dynamic>)['id'], 'event-b');
+      session.debugHandleMessage(['OK', 'event-b', true, '']);
+      expect((await secondPublish).id, 'event-b');
+    },
+  );
+
+  test(
+    'a gated publish is cancelled if the connection changes while waiting',
+    () async {
+      final gateTimers = <_ManualTimer>[];
+      final gate = RelayRateLimitGate(
+        now: () => DateTime(2026),
+        timerFactory: (duration, callback) {
+          final timer = _ManualTimer(duration, callback);
+          gateTimers.add(timer);
+          return timer;
+        },
+      );
+      final socket = _RecordingRelaySocket();
+      final session = RelaySessionNotifier(rateLimitGate: gate);
+      session.debugAttachSocketForTest(socket);
+      gate.activate(4);
+
+      final publish = session.publish(_event(id: 'event-b'));
+      session.debugSupersedeConnection();
+      gateTimers.single.fire();
+
+      await expectLater(publish, throwsA(isA<StateError>()));
+      expect(socket.messages, isEmpty);
+    },
+  );
+
   test('an ordinary OK rejection does not arm the gate', () async {
     final gate = RelayRateLimitGate(now: () => DateTime(2026));
     final session = RelaySessionNotifier(rateLimitGate: gate);
@@ -1548,9 +1632,9 @@ class _FakeRelayConfigNotifier extends RelayConfigNotifier {
   RelayConfig build() => RelayConfig(baseUrl: _baseUrl, nsec: _nsec);
 }
 
-NostrEvent _event({int createdAt = 20}) {
+NostrEvent _event({int createdAt = 20, String id = 'event-1'}) {
   return NostrEvent(
-    id: 'event-1',
+    id: id,
     pubkey: 'alice',
     createdAt: createdAt,
     kind: EventKind.streamMessageV2,

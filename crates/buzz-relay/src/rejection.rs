@@ -1,10 +1,10 @@
 //! How a rejected client frame is addressed back to the client.
 //!
 //! NIP-01 gives every request type its own acknowledgement channel, and a
-//! rejection is only actionable if it travels on the same one: a REQ settles on
-//! `CLOSED`, an EVENT on `OK`. Rejecting an EVENT with a bare `NOTICE` leaves a
-//! client that tracks pending publishes by event id with nothing to key on, so
-//! the send cannot fail — it can only time out.
+//! rejection is only actionable if it travels on the same one: a REQ or COUNT
+//! refusal settles on `CLOSED`, an EVENT on `OK`. Rejecting an EVENT with a bare
+//! `NOTICE` leaves a client that tracks pending publishes by event id with
+//! nothing to key on, so the send cannot fail — it can only time out.
 
 use crate::admission::AdmissionError;
 use crate::connection::{AuthState, ConnectionState};
@@ -15,7 +15,7 @@ use buzz_auth::LimitType;
 /// What a rejected client frame is correlated back to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RejectionTarget<'a> {
-    /// A REQ names the subscription it opened.
+    /// A REQ or COUNT names the query it opened.
     Subscription(&'a str),
     /// An EVENT names the event it submitted.
     Event(nostr::EventId),
@@ -24,12 +24,11 @@ pub(crate) enum RejectionTarget<'a> {
 }
 
 /// Picks the acknowledgement channel a rejection of `msg` must travel on.
-///
-/// COUNT deliberately stays connection-scoped: NIP-45 has no rejection frame of
-/// its own, and no Buzz client issues COUNT.
 pub(crate) fn rejection_target_for(msg: &ClientMessage) -> RejectionTarget<'_> {
     match msg {
-        ClientMessage::Req { sub_id, .. } => RejectionTarget::Subscription(sub_id.as_str()),
+        ClientMessage::Req { sub_id, .. } | ClientMessage::Count { sub_id, .. } => {
+            RejectionTarget::Subscription(sub_id.as_str())
+        }
         ClientMessage::Event(event) => RejectionTarget::Event(event.id),
         _ => RejectionTarget::Connection,
     }
@@ -260,10 +259,9 @@ mod tests {
         assert_eq!(frame[2], "rate-limited: quota exceeded; retry in 7s");
     }
 
-    /// COUNT has no rejection frame of its own in NIP-45, so it stays
-    /// connection-scoped. Pinned so the fallback is a decision, not a leak.
+    /// NIP-45 uses `CLOSED(query_id, reason)` when a relay refuses a COUNT.
     #[test]
-    fn over_quota_count_falls_back_to_a_notice() {
+    fn over_quota_count_closes_the_query() {
         let (conn, mut rx) = test_conn();
         let raw = serde_json::json!(["COUNT", "count-abc", {"kinds": [1]}]).to_string();
         let msg = ClientMessage::parse(&raw).expect("parse COUNT");
@@ -274,7 +272,10 @@ mod tests {
             &msg,
         );
 
-        assert_eq!(sent_frame(&mut rx)[0], "NOTICE");
+        let frame = sent_frame(&mut rx);
+        assert_eq!(frame[0], "CLOSED");
+        assert_eq!(frame[1], "count-abc");
+        assert_eq!(frame[2], "rate-limited: quota exceeded; retry in 7s");
     }
 
     /// Drives the real entry point `handle_text_message` calls, so the wiring
@@ -311,6 +312,16 @@ mod tests {
         );
         assert_eq!(frame[1], event_id);
         assert_eq!(frame[2], false);
+    }
+
+    #[tokio::test]
+    async fn enforce_ws_admission_rejects_a_count_on_the_closed_channel() {
+        let raw = serde_json::json!(["COUNT", "count-abc", {"kinds": [1]}]).to_string();
+
+        let frame = enforce_against_unreachable_admission(&raw).await;
+
+        assert_eq!(frame[0], "CLOSED");
+        assert_eq!(frame[1], "count-abc");
     }
 
     #[tokio::test]

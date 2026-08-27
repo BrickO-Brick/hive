@@ -625,7 +625,8 @@ async fn handle_text_message(text: String, conn: Arc<ConnectionState>, state: Ar
             let permit = match state.handler_semaphore.clone().try_acquire_owned() {
                 Ok(p) => p,
                 Err(_) => {
-                    conn.send(RelayMessage::notice(
+                    conn.send(request_rejection_message(
+                        RejectionTarget::Subscription(&sub_id),
                         "rate-limited: too many concurrent requests",
                     ));
                     return;
@@ -757,6 +758,27 @@ pub(crate) mod tests {
         let frame = read_frame(&mut rx);
         assert_eq!(frame[0], "CLOSED");
         assert_eq!(frame[1], "history-abc");
+    }
+
+    /// COUNT refusals follow NIP-45 and close the named query.
+    #[tokio::test]
+    async fn saturated_handler_rejects_a_count_on_the_closed_channel() {
+        let state = crate::state::tests::test_state().await;
+        let (conn, mut rx) = test_conn_with_auth(AuthState::Failed);
+
+        let permits = state.handler_semaphore.available_permits();
+        let _held = Arc::clone(&state.handler_semaphore)
+            .acquire_many_owned(permits as u32)
+            .await
+            .expect("hold every handler permit");
+
+        let raw = serde_json::json!(["COUNT", "count-abc", {"kinds": [1]}]).to_string();
+        handle_text_message(raw, Arc::clone(&conn), Arc::clone(&state)).await;
+
+        let frame = read_frame(&mut rx);
+        assert_eq!(frame[0], "CLOSED");
+        assert_eq!(frame[1], "count-abc");
+        assert_eq!(frame[2], "rate-limited: too many concurrent requests");
     }
 
     #[derive(Debug, Default)]
