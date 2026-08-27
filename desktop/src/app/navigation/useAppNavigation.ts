@@ -41,7 +41,6 @@ export function useAppNavigation() {
       },
       behavior: NavigationBehavior = {},
       guardedTarget?: GuardedNavigation,
-      traceChannelId?: string,
     ) => {
       const nextLocation = router.buildLocation(next as never);
       return commitGuardedNavigation({
@@ -52,12 +51,6 @@ export function useAppNavigation() {
           href: nextLocation.href,
         },
         hasStateUpdate: next.state !== undefined,
-        // Leaving the channel surface must drop any active switch trace —
-        // including one whose channel screen never mounted (route still
-        // resolving), which no component cleanup can cover. Only the exact
-        // channel message-view route keeps a live trace: sibling routes
-        // (forum posts) mount different, untraced screens.
-        leavesChannelSurface: next.to !== "/channels/$channelId",
         navigate: () =>
           navigate({
             ...next,
@@ -65,7 +58,6 @@ export function useAppNavigation() {
             resetScroll: behavior.resetScroll,
           } as never),
         nextHref: nextLocation.href,
-        traceChannelId,
       });
     },
     [location.href, navigate, router],
@@ -325,19 +317,9 @@ export function useAppNavigation() {
               threadRootId: options.threadRootId ?? null,
             }
           : undefined,
-        // goChannel is the anchor for the switch trace; it opens inside
-        // commitGuardedNavigation only after the navigation guard accepts.
-        // Callers that await before navigating (DM actions await open_dm)
-        // are measured from the navigation, not from their click — see the
-        // scope note in channelSwitchPerf.ts. History back/forward is
-        // untraced, and navigations that stay on the already-active channel
-        // never re-run the settle effects, so a trace could only time out.
-        location.pathname.endsWith(`/channels/${channelId}`)
-          ? undefined
-          : channelId,
       );
     },
-    [commitNavigation, location.pathname],
+    [commitNavigation],
   );
 
   const goNewMessage = React.useCallback(

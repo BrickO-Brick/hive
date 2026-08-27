@@ -44,7 +44,6 @@ import {
   recordTimeoutFromRejection,
 } from "@/features/moderation/lib/timeoutStore";
 import { relayClient, setVisibleChannel } from "@/shared/api/relayClient";
-import { traceChannelWindowFetch } from "@/shared/lib/channelSwitchPerf";
 import { customEmojiQueryKey } from "@/features/custom-emoji/hooks";
 import { channelsQueryKey } from "@/features/channels/hooks";
 import { reactionEmojiUrl } from "@/shared/api/customEmoji";
@@ -285,47 +284,6 @@ export function reconcileFetchedChannelWindow(
   return reconcileChannelWindowMessages(next, previousMessages);
 }
 
-/**
- * Reconciles a fetched window and then attributes it to the active switch
- * trace. The ORDER is the contract: reconciliation throws for aborted
- * requests, so a canceled fetch never reaches attribution and cannot claim
- * the trace's one-shot slot ahead of the accepted replacement. Duration is
- * measured over the fetch alone and passed in. Exported so the ordering is
- * exercised by tests rather than restated by them.
- */
-export function reconcileAndAttributeChannelWindow({
-  queryClient,
-  channelId,
-  events,
-  previousMessages,
-  signal,
-  fetchDurationMs,
-  fetchStartedAt,
-}: {
-  queryClient: QueryClient;
-  channelId: string;
-  events: RelayEvent[];
-  previousMessages: RelayEvent[];
-  signal: AbortSignal;
-  fetchDurationMs: number;
-  fetchStartedAt: number;
-}): RelayEvent[] {
-  const result = reconcileFetchedChannelWindow(
-    queryClient,
-    channelId,
-    events,
-    previousMessages,
-    signal,
-  );
-  traceChannelWindowFetch(
-    channelId,
-    events.length,
-    fetchDurationMs,
-    fetchStartedAt,
-  );
-  return result;
-}
-
 export function useChannelMessagesQuery(channel: Channel | null) {
   const queryClient = useQueryClient();
   const queryKey = channelMessagesKey(channel?.id ?? "none");
@@ -343,18 +301,14 @@ export function useChannelMessagesQuery(channel: Channel | null) {
       }
       const previousMessages =
         queryClient.getQueryData<RelayEvent[]>(queryKey) ?? [];
-      const fetchStartedAt = performance.now();
       const events = await getChannelWindowEvents(channel.id);
-      const fetchDurationMs = performance.now() - fetchStartedAt;
-      return reconcileAndAttributeChannelWindow({
+      return reconcileFetchedChannelWindow(
         queryClient,
-        channelId: channel.id,
+        channel.id,
         events,
         previousMessages,
         signal,
-        fetchDurationMs,
-        fetchStartedAt,
-      });
+      );
     },
     staleTime: 5 * 60 * 1_000,
     gcTime: 60 * 60 * 1_000,

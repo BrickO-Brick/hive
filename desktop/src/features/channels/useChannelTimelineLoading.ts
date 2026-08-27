@@ -1,7 +1,6 @@
 import * as React from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
-import { useChannelSwitchTraceMarks } from "@/features/channels/useChannelSwitchTraceMarks";
 import { hasPersistedHydratedChannel } from "@/features/messages/lib/channelHeadCache";
 import {
   resolveTimelineLoadingLatch,
@@ -10,9 +9,9 @@ import {
 import type { Channel } from "@/shared/api/types";
 
 /**
- * Latches the timeline loading state per channel and drives the
- * channel-switch trace marks from that same latch, so the tracer settles on
- * exactly the loading state the screen renders from.
+ * Latches the timeline loading state per channel, so a channel that has
+ * already settled once does not flash its skeleton again while an
+ * authoritative refresh is in flight.
  */
 export function useChannelTimelineLoading(
   activeChannel: Channel | null,
@@ -52,10 +51,5 @@ export function useChannelTimelineLoading(
       timelineLoadingNow,
     );
   settledChannelIdRef.current = settledChannelId;
-  useChannelSwitchTraceMarks({
-    activeChannelId,
-    activeChannelType: activeChannel?.channelType ?? null,
-    isTimelineLoading,
-  });
   return isTimelineLoading;
 }

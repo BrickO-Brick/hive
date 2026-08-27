@@ -2,10 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { QueryClient, QueryObserver } from "@tanstack/react-query";
 
-import {
-  reconcileAndAttributeChannelWindow,
-  reconcileFetchedChannelWindow,
-} from "../hooks.ts";
+import { reconcileFetchedChannelWindow } from "../hooks.ts";
 import { channelMessagesKey, channelWindowKey } from "./messageQueryKeys.ts";
 import {
   appendOlderChannelWindow,
@@ -417,91 +414,5 @@ test("test_concurrent_refreshes_after_seeded_snapshot_share_one_authoritative_fe
     assert.deepEqual(contents(harness), ["seeded", "gap"]);
   } finally {
     unsubscribe();
-  }
-});
-
-test("canceled fetch never claims the switch trace's window slot; the accepted one does", async () => {
-  // Mirror of channelMessagesQueryOptions' queryFn contract: reconciliation
-  // throws for aborted requests BEFORE the fetch is attributed, so a canceled
-  // request cannot claim the trace's one-shot `windowFetch` slot and block
-  // the accepted replacement.
-  const frames = [];
-  const originalWindow = globalThis.window;
-  const originalDocument = globalThis.document;
-  globalThis.window = {
-    requestAnimationFrame: (cb) => frames.push(cb) && frames.length,
-    cancelAnimationFrame: () => {},
-  };
-  globalThis.document = {
-    addEventListener: () => {},
-    querySelector: () => null,
-    removeEventListener: () => {},
-    visibilityState: "visible",
-  };
-  const {
-    beginChannelSwitchTrace,
-    settleChannelSwitchTrace,
-    resetChannelSwitchTrace,
-    traceChannelWindowFetch,
-    CHANNEL_SWITCH_MEASURE,
-  } = await import("../../../shared/lib/channelSwitchPerf.ts");
-  performance.clearMeasures?.(CHANNEL_SWITCH_MEASURE);
-  try {
-    const client = new QueryClient();
-    const channelId = "channel"; // matches wirePage's bounds key
-    beginChannelSwitchTrace(channelId);
-
-    // Canceled-first: the queryFn reconciles BEFORE attributing; the aborted
-    // signal throws, so trace attribution is never reached.
-    const canceled = new AbortController();
-    canceled.abort();
-    const canceledEvents = wirePage([event("stale", 100)]);
-    const startedAt = performance.now();
-    // Drive the production helper, not a restatement of it: reverting the
-    // reconcile/attribute order inside it must fail this test.
-    assert.throws(() =>
-      reconcileAndAttributeChannelWindow({
-        queryClient: client,
-        channelId,
-        events: canceledEvents,
-        previousMessages: [],
-        signal: canceled.signal,
-        fetchDurationMs: 1,
-        fetchStartedAt: startedAt,
-      }),
-    );
-
-    // Accepted-second: reconciles cleanly, then claims the slot.
-    const acceptedEvents = wirePage([
-      event("fresh-2", 120),
-      event("fresh-1", 110),
-    ]);
-    reconcileAndAttributeChannelWindow({
-      queryClient: client,
-      channelId,
-      events: acceptedEvents,
-      previousMessages: [],
-      signal: new AbortController().signal,
-      fetchDurationMs: 2,
-      fetchStartedAt: performance.now(),
-    });
-
-    settleChannelSwitchTrace(channelId);
-    for (let i = 0; i < 10 && frames.length > 0; i += 1) {
-      for (const cb of frames.splice(0, frames.length)) cb();
-    }
-    const measure = performance.getEntriesByName(CHANNEL_SWITCH_MEASURE).at(-1);
-    assert.equal(
-      measure?.detail?.windowFetch?.eventCount,
-      acceptedEvents.length,
-      "the accepted fetch owns the attribution slot",
-    );
-    resetChannelSwitchTrace();
-  } finally {
-    performance.clearMeasures?.(CHANNEL_SWITCH_MEASURE);
-    if (originalWindow === undefined) delete globalThis.window;
-    else globalThis.window = originalWindow;
-    if (originalDocument === undefined) delete globalThis.document;
-    else globalThis.document = originalDocument;
   }
 });
