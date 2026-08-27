@@ -10,6 +10,7 @@ const DEFAULT_MOCK_PUBKEY = "deadbeef".repeat(8);
 const RELAY_REVIEW_AGENT_PUBKEY =
   "554cef57437abac34522ac2c9f0490d685b72c80478cf9f7ed6f9570ee8624ea";
 const LOCAL_REVIEW_AGENT_PUBKEY = "c".repeat(64);
+const STOPPED_LOCAL_REVIEW_AGENT_PUBKEY = "d".repeat(64);
 
 async function expectSinglePrimaryTextColumn(row: Locator) {
   const primary = row.locator('[data-projects-text-priority="primary"]');
@@ -132,7 +133,7 @@ test("review checks dispatch to an agent authorized for the relay identity", asy
   await expect(checks).toBeVisible();
   await expect(checks.locator("article")).toHaveCount(3);
   const interfaceCheck = checks.locator("article").first();
-  await interfaceCheck.getByRole("button", { name: "Assign an agent" }).click();
+  await interfaceCheck.getByTestId("project-review-check-agent-picker").click();
   await page.getByRole("menuitemradio", { name: /charlie/i }).click();
   await interfaceCheck
     .getByRole("button", { name: "Run", exact: true })
@@ -221,6 +222,13 @@ test("review checks dispatch to a running local managed agent", async ({
   await installMockBridge(page, {
     managedAgents: [
       {
+        pubkey: STOPPED_LOCAL_REVIEW_AGENT_PUBKEY,
+        name: "Fizz",
+        status: "stopped",
+        respondTo: "allowlist",
+        respondToAllowlist: [],
+      },
+      {
         pubkey: LOCAL_REVIEW_AGENT_PUBKEY,
         name: "Roof",
         status: "running",
@@ -241,10 +249,12 @@ test("review checks dispatch to a running local managed agent", async ({
 
   const checks = page.getByTestId("project-review-checks");
   const interfaceCheck = checks.locator("article").first();
-  await interfaceCheck.getByRole("button", { name: "Assign an agent" }).click();
-  await page
-    .getByRole("menuitemradio", { name: /Roof.*Running here/i })
-    .click();
+  await expect(
+    checks.getByTestId("project-review-check-agent-picker"),
+  ).toHaveCount(3);
+  await expect(
+    interfaceCheck.getByTestId("project-review-check-agent-picker"),
+  ).toContainText("Roof");
   const revalidationCountBefore = await page.evaluate(
     () =>
       window.__BUZZ_E2E_COMMANDS__?.filter(

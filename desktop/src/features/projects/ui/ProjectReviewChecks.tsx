@@ -437,6 +437,7 @@ function AgentPicker({
       <DropdownMenuTrigger asChild>
         <Button
           className="min-w-44 justify-between"
+          data-testid="project-review-check-agent-picker"
           disabled={disabled}
           size="sm"
           type="button"
@@ -729,13 +730,16 @@ export function ProjectReviewChecks({
       ),
     [channelsQuery.data],
   );
+  const defaultAgent =
+    reviewCheckAgents.candidates.find((candidate) => candidate.isActive) ??
+    null;
 
   return (
     <div className="-mx-6" data-testid="project-review-checks">
       <div className="border-b border-border/55 px-6 pb-3 text-xs text-muted-foreground">
-        Choose a local managed agent on this dev build or a relay agent
-        authorized for your signed-in identity. Definitions come from the target
-        branch
+        The first running agent is selected automatically; you can choose a
+        different local managed agent or relay agent authorized for your
+        signed-in identity. Definitions come from the target branch
         {checkDefinitions.source === "project"
           ? ` (${PROJECT_REVIEW_CHECKS_CONFIG_PATH})`
           : checkDefinitions.source === "starter"
@@ -749,12 +753,13 @@ export function ProjectReviewChecks({
             agentPubkey: null,
             status: "idle" as const,
           };
-          const selectedAgent =
-            reviewCheckAgents.candidates.find(
-              (candidate) =>
-                normalizePubkey(candidate.pubkey) ===
-                normalizePubkey(run.agentPubkey ?? ""),
-            ) ?? null;
+          const selectedAgent = run.agentPubkey
+            ? (reviewCheckAgents.candidates.find(
+                (candidate) =>
+                  normalizePubkey(candidate.pubkey) ===
+                  normalizePubkey(run.agentPubkey ?? ""),
+              ) ?? null)
+            : defaultAgent;
           const isPending = pendingCheckIds.has(check.id);
           const isStale =
             run.status === "completed" && run.targetCommit !== targetCommit;
