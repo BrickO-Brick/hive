@@ -62,6 +62,8 @@ export function buildProjectReviewCheckPrompt(input: {
   commit: string | null;
   branchName: string | null;
   targetBranch: string | null;
+  supersededRequestId?: string;
+  supersededEventId?: string;
 }): string;
 
 export function projectReviewChecksStorageKey(input: {

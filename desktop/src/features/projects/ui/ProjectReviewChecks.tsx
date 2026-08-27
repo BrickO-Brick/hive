@@ -81,15 +81,6 @@ type ReviewCheckRun = {
 
 type ReviewCheckRuns = Record<string, ReviewCheckRun>;
 
-function isReviewCheckStatus(value: unknown): value is ReviewCheckStatus {
-  return (
-    value === "idle" ||
-    value === "running" ||
-    value === "completed" ||
-    value === "failed"
-  );
-}
-
 function normalizeStoredProposal(
   value: unknown,
   agentPubkey: string | null,
@@ -148,13 +139,13 @@ function normalizeStoredRuns(value: Record<string, unknown>): ReviewCheckRuns {
     const raw = candidate as Record<string, unknown>;
     const agentPubkey =
       typeof raw.agentPubkey === "string" ? raw.agentPubkey : null;
-    const proposal = normalizeStoredProposal(raw.proposal, agentPubkey);
-    const status = isReviewCheckStatus(raw.status) ? raw.status : "idle";
     const parsedResult = parseProjectReviewCheckResult(
       raw.result && typeof raw.result === "object"
         ? `BUZZ_CHECK_RESULT_V1\n${JSON.stringify(raw.result)}`
         : "",
     );
+    if (raw.status !== "completed" || !parsedResult) continue;
+    const proposal = normalizeStoredProposal(raw.proposal, agentPubkey);
     const opener =
       raw.opener &&
       typeof raw.opener === "object" &&
@@ -167,7 +158,7 @@ function normalizeStoredRuns(value: Record<string, unknown>): ReviewCheckRuns {
         : undefined;
     runs[checkId] = {
       agentPubkey,
-      status: status === "completed" && !parsedResult ? "idle" : status,
+      status: "completed",
       ...(typeof raw.targetCommit === "string" || raw.targetCommit === null
         ? { targetCommit: raw.targetCommit as string | null }
         : {}),
@@ -178,7 +169,7 @@ function normalizeStoredRuns(value: Record<string, unknown>): ReviewCheckRuns {
         ? { requestId: raw.requestId }
         : {}),
       ...(opener ? { opener } : {}),
-      ...(parsedResult ? { result: parsedResult } : {}),
+      result: parsedResult,
       ...(proposal ? { proposal } : {}),
       ...(proposal && raw.acceptedProposalEventId === proposal.eventId
         ? { acceptedProposalEventId: proposal.eventId }
@@ -523,7 +514,11 @@ export function ProjectReviewChecks({
   );
 
   const runCheck = React.useCallback(
-    async (check: ProjectReviewCheckDefinition, agent: ReviewCheckAgent) => {
+    async (
+      check: ProjectReviewCheckDefinition,
+      agent: ReviewCheckAgent,
+      supersededRun?: ReviewCheckRun,
+    ) => {
       const expectedStorageKey = storageKey;
       if (!expectedStorageKey || !relayScope || !signerScope) return;
       const requestId = crypto.randomUUID();
@@ -603,6 +598,8 @@ export function ProjectReviewChecks({
           commit: targetCommit,
           branchName: pullRequest.branchName,
           targetBranch: pullRequest.targetBranch,
+          supersededRequestId: supersededRun?.requestId,
+          supersededEventId: supersededRun?.opener?.eventId,
         });
         const sent = await sendChannelMessage(
           channel.id,
@@ -640,13 +637,15 @@ export function ProjectReviewChecks({
           error instanceof Error
             ? error.message
             : "Failed to run review check.";
-        updateRun(expectedStorageKey, check.id, (current) => ({
-          ...current,
-          error: message,
-          result: undefined,
-          status: "failed",
-          targetCommit,
-        }));
+        if (!supersededRun) {
+          updateRun(expectedStorageKey, check.id, (current) => ({
+            ...current,
+            error: message,
+            result: undefined,
+            status: "failed",
+            targetCommit,
+          }));
+        }
         toast.error(message);
       } finally {
         if (storageKeyRef.current === expectedStorageKey) {
@@ -704,13 +703,23 @@ export function ProjectReviewChecks({
             agentPubkey: null,
             status: "idle" as const,
           };
-          const runAgent = run.agentPubkey
-            ? (reviewCheckAgents.candidates.find(
-                (candidate) =>
-                  normalizePubkey(candidate.pubkey) ===
-                  normalizePubkey(run.agentPubkey ?? ""),
-              ) ?? null)
-            : null;
+          const runningAgent =
+            run.status === "running" && run.agentPubkey
+              ? (reviewCheckAgents.candidates.find(
+                  (candidate) =>
+                    normalizePubkey(candidate.pubkey) ===
+                    normalizePubkey(run.agentPubkey ?? ""),
+                ) ?? null)
+              : null;
+          const actionAgent =
+            run.status === "running" ? runningAgent : selectedAgent;
+          const rerunsCheck = run.status !== "idle";
+          const actionLabel =
+            run.status === "running"
+              ? "Interrupt and rerun check"
+              : rerunsCheck
+                ? "Run check again"
+                : undefined;
           const isPending = pendingCheckIds.has(check.id);
           const isStale =
             run.status === "completed" && run.targetCommit !== targetCommit;
@@ -749,38 +758,33 @@ export function ProjectReviewChecks({
                 </div>
                 <div className="flex flex-wrap items-center justify-end gap-2">
                   <Button
-                    disabled={
-                      !selectedAgent ||
-                      isPending ||
-                      run.status === "running" ||
-                      !storageKey
-                    }
+                    aria-label={actionLabel}
+                    disabled={!actionAgent || isPending || !storageKey}
                     onClick={() => {
-                      if (selectedAgent) void runCheck(check, selectedAgent);
+                      if (actionAgent) {
+                        void runCheck(
+                          check,
+                          actionAgent,
+                          run.status === "running" ? run : undefined,
+                        );
+                      }
                     }}
-                    size="sm"
+                    size={rerunsCheck ? "icon" : "sm"}
+                    title={actionLabel}
                     type="button"
                     variant="secondary"
                   >
-                    {run.status === "completed" || run.status === "failed" ? (
-                      <RotateCcw />
-                    ) : isPending || run.status === "running" ? (
+                    {isPending ? (
                       <LoaderCircle className="animate-spin" />
+                    ) : rerunsCheck ? (
+                      <RotateCcw />
                     ) : (
                       <Play />
                     )}
-                    {run.status === "completed" || run.status === "failed"
-                      ? "Run again"
-                      : "Run"}
+                    {rerunsCheck ? null : "Run"}
                   </Button>
                 </div>
               </div>
-              {run.status === "running" ? (
-                <p className="text-xs text-muted-foreground">
-                  Waiting for {runAgent?.name ?? "the assigned agent"} to return
-                  a structured conclusion…
-                </p>
-              ) : null}
               {run.error ? (
                 <p className="text-xs text-destructive">{run.error}</p>
               ) : null}

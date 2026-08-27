@@ -425,6 +425,226 @@ test("review checks dispatch to a running local managed agent", async ({
   expect(commands).not.toContain("start_managed_agent");
 });
 
+test("running review check can be interrupted with a replacement request", async ({
+  page,
+}) => {
+  await enableProjectsFeature(page);
+  await installMockBridge(page, {
+    managedAgents: [
+      {
+        pubkey: RELAY_REVIEW_AGENT_PUBKEY,
+        name: "Roof",
+        status: "running",
+        respondTo: "allowlist",
+        respondToAllowlist: [],
+      },
+    ],
+  });
+  await openBuzzProject(page);
+
+  await page.getByRole("tab", { name: "Review" }).click();
+  const aliceRow = pullRequestRowByAuthor(page, "alice").first();
+  await expect(aliceRow).toBeVisible({ timeout: 10_000 });
+  await aliceRow.getByRole("button", { name: /^#/ }).click();
+  await page.getByRole("button", { name: "Checks", exact: true }).click();
+
+  const interfaceCheck = page.getByTestId("project-review-check").first();
+  await interfaceCheck
+    .getByRole("button", { name: "Run", exact: true })
+    .click();
+  const checkPrompts = () =>
+    page.evaluate(
+      () =>
+        window.__BUZZ_E2E_COMMAND_PAYLOADS__
+          ?.filter(
+            (entry) =>
+              entry.command === "send_channel_message" &&
+              typeof (entry.payload as { content?: unknown })?.content ===
+                "string" &&
+              (entry.payload as { content: string }).content.includes(
+                "BUZZ_CHECK_RESULT_V1",
+              ),
+          )
+          .map((entry) => (entry.payload as { content: string }).content) ?? [],
+    );
+  await expect.poll(async () => (await checkPrompts()).length).toBe(1);
+  const firstPrompt = (await checkPrompts())[0];
+  const firstRequestId = requestIdFromCheckPrompt(firstPrompt);
+  const firstOpenerEventId = await checkOpenerEventId(page, firstRequestId);
+
+  const interruptButton = interfaceCheck.getByRole("button", {
+    name: "Interrupt and rerun check",
+    exact: true,
+  });
+  await expect(interruptButton).toBeEnabled();
+  await expect(interruptButton).toHaveText("");
+  await interruptButton.click();
+
+  await expect.poll(async () => (await checkPrompts()).length).toBe(2);
+  const replacementPrompt = (await checkPrompts())[1];
+  const replacementRequestId = requestIdFromCheckPrompt(replacementPrompt);
+  expect(replacementRequestId).not.toBe(firstRequestId);
+  expect(replacementPrompt).toContain(
+    `Superseded request id: ${JSON.stringify(firstRequestId)}`,
+  );
+  expect(replacementPrompt).toContain(
+    `Superseded event id: ${firstOpenerEventId}`,
+  );
+  const replacementOpenerEventId = await checkOpenerEventId(
+    page,
+    replacementRequestId,
+  );
+  expect(replacementOpenerEventId).not.toBe(firstOpenerEventId);
+
+  await waitForMockLiveSubscription(page, "DM");
+  await page.evaluate(
+    ({
+      agentPubkey,
+      firstOpenerEventId,
+      firstRequestId,
+      replacementOpenerEventId,
+      replacementRequestId,
+    }) => {
+      window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
+        channelName: "DM",
+        content: `BUZZ_CHECK_RESULT_V1\n${JSON.stringify({
+          request_id: firstRequestId,
+          conclusion: "approved",
+          summary: "Superseded result must be ignored.",
+          diff_event_id: null,
+          findings: [],
+        })}`,
+        createdAt: Math.floor(Date.now() / 1_000) + 1,
+        kind: 9,
+        parentEventId: firstOpenerEventId,
+        pubkey: agentPubkey,
+      });
+      window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
+        channelName: "DM",
+        content: `BUZZ_CHECK_RESULT_V1\n${JSON.stringify({
+          request_id: replacementRequestId,
+          conclusion: "approved",
+          summary: "Replacement result accepted.",
+          diff_event_id: null,
+          findings: [],
+        })}`,
+        createdAt: Math.floor(Date.now() / 1_000) + 2,
+        kind: 9,
+        parentEventId: replacementOpenerEventId,
+        pubkey: agentPubkey,
+      });
+    },
+    {
+      agentPubkey: RELAY_REVIEW_AGENT_PUBKEY,
+      firstOpenerEventId,
+      firstRequestId,
+      replacementOpenerEventId,
+      replacementRequestId,
+    },
+  );
+
+  await expect(interfaceCheck).toContainText("Replacement result accepted.");
+  await expect(interfaceCheck).not.toContainText(
+    "Superseded result must be ignored.",
+  );
+});
+
+test("fresh review load restores completed checks but ignores unfinished runs", async ({
+  page,
+}) => {
+  await enableProjectsFeature(page);
+  await installMockBridge(page);
+  await openBuzzProject(page);
+
+  await page.getByRole("tab", { name: "Review" }).click();
+  const aliceRow = pullRequestRowByAuthor(page, "alice").first();
+  await expect(aliceRow).toBeVisible({ timeout: 10_000 });
+  await aliceRow.getByRole("button", { name: /^#/ }).click();
+  await page.getByRole("button", { name: "Checks", exact: true }).click();
+
+  const checkRows = page.getByTestId("project-review-check");
+  const interfaceCheck = checkRows.nth(0);
+  await page.getByTestId("project-review-debug-harness-trigger").click();
+  await page
+    .getByTestId("project-review-debug-agent-select")
+    .selectOption(RELAY_REVIEW_AGENT_PUBKEY);
+  await interfaceCheck
+    .getByRole("button", { name: "Run", exact: true })
+    .click();
+  await expect(interfaceCheck).toContainText("Running");
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        for (let index = 0; index < window.localStorage.length; index += 1) {
+          const key = window.localStorage.key(index);
+          if (!key?.startsWith("buzz.projects.review-checks.v1:")) continue;
+          const runs = JSON.parse(window.localStorage.getItem(key) ?? "{}");
+          if (runs.interface?.status === "running") return true;
+        }
+        return false;
+      }),
+    )
+    .toBe(true);
+
+  await page.evaluate(() => {
+    const key = Object.keys(window.localStorage).find((candidate) =>
+      candidate.startsWith("buzz.projects.review-checks.v1:"),
+    );
+    if (!key) throw new Error("Review check storage key was not created.");
+    const runs = JSON.parse(window.localStorage.getItem(key) ?? "{}");
+    const activeRun = runs.interface;
+    runs.interface = {
+      ...activeRun,
+      status: "completed",
+      result: {
+        request_id: activeRun.requestId,
+        conclusion: "approved",
+        summary: "Persisted completed result.",
+        diff_event_id: null,
+        findings: [],
+      },
+    };
+    runs["code-correctness"] = {
+      ...activeRun,
+      requestId: "unfinished-request",
+      status: "running",
+    };
+    runs["codebase-patterns"] = {
+      agentPubkey: activeRun.agentPubkey,
+      error: "Transient failure.",
+      status: "failed",
+    };
+    window.localStorage.setItem(key, JSON.stringify(runs));
+  });
+
+  await page
+    .getByRole("navigation", { name: "Project breadcrumb" })
+    .getByRole("button", { name: "Review", exact: true })
+    .click();
+  const reloadedAliceRow = pullRequestRowByAuthor(page, "alice").first();
+  await expect(reloadedAliceRow).toBeVisible({ timeout: 10_000 });
+  await reloadedAliceRow.getByRole("button", { name: /^#/ }).click();
+  await page.getByRole("button", { name: "Checks", exact: true }).click();
+
+  const reloadedRows = page.getByTestId("project-review-check");
+  await expect(reloadedRows.nth(0)).toContainText("Approved");
+  await expect(reloadedRows.nth(0)).toContainText(
+    "Persisted completed result.",
+  );
+  await expect(
+    reloadedRows.nth(0).getByRole("button", { name: "Run check again" }),
+  ).toHaveText("");
+  await expect(
+    reloadedRows.nth(1).getByRole("button", { name: "Run", exact: true }),
+  ).toBeEnabled();
+  await expect(reloadedRows.nth(1)).not.toContainText("Running");
+  await expect(
+    reloadedRows.nth(2).getByRole("button", { name: "Run", exact: true }),
+  ).toBeEnabled();
+  await expect(reloadedRows.nth(2)).not.toContainText("Couldn’t run");
+  await expect(reloadedRows.nth(2)).not.toContainText("Transient failure.");
+});
+
 test("concurrent review checks only accept their correlated result", async ({
   page,
 }) => {

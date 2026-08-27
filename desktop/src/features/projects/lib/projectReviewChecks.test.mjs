@@ -33,8 +33,31 @@ test("historical intent check investigates precedent without treating it as a ve
   const instructions = check.instructions.join("\n");
   assert.match(instructions, /git blame and git log/);
   assert.match(instructions, /pull requests or review discussion/);
-  assert.match(instructions, /historical evidence from inference/);
+  assert.match(instructions, /clearly distinguish evidence from inference/);
   assert.match(instructions, /Do not reject a change merely because/);
+});
+
+test("review guidance is assigned to the check that owns the concern", () => {
+  const instructionsFor = (id) => {
+    const check = DEFAULT_PROJECT_REVIEW_CHECKS.find(
+      (candidate) => candidate.id === id,
+    );
+    assert.ok(check);
+    return check.instructions.join("\n");
+  };
+
+  assert.match(
+    instructionsFor("code-correctness"),
+    /security and authorization boundaries, concurrency, persistence, and compatibility/,
+  );
+  assert.match(
+    instructionsFor("codebase-patterns"),
+    /smallest safe implementation/,
+  );
+  assert.match(
+    instructionsFor("test-quality"),
+    /exact reviewed commit and working-tree state/,
+  );
 });
 
 test("parses an approved structured agent result", () => {
@@ -221,7 +244,7 @@ test("does not treat ordinary agent prose as a completed check", () => {
 });
 
 test("builds a review-only prompt pinned to the exact commit", () => {
-  const prompt = buildProjectReviewCheckPrompt({
+  const input = {
     check: DEFAULT_PROJECT_REVIEW_CHECKS[1],
     projectName: "Buzz",
     repoAddress: "30617:owner:buzz",
@@ -234,11 +257,13 @@ test("builds a review-only prompt pinned to the exact commit", () => {
     commit: "abc123",
     branchName: "checks",
     targetBranch: "main",
-  });
+  };
+  const prompt = buildProjectReviewCheckPrompt(input);
 
   assert.match(prompt, /Review only; do not modify code/);
   assert.match(prompt, /Commit under review: abc123/);
   assert.match(prompt, /Code correctness/);
+  assert.match(prompt, /security and authorization boundaries/);
   assert.match(prompt, /"request_id":"request-123"/);
   assert.match(prompt, /Echo request_id exactly/);
   assert.match(prompt, /process every event independently/);
@@ -253,9 +278,25 @@ test("builds a review-only prompt pinned to the exact commit", () => {
   assert.match(prompt, /"diff_event_id":null/);
   assert.match(prompt, /copy its exact 64-character event_id/);
   assert.match(prompt, new RegExp(PROJECT_REVIEW_CHECK_RESULT_MARKER));
+  assert.doesNotMatch(prompt, /Superseded request id:/);
+
+  const replacementPrompt = buildProjectReviewCheckPrompt({
+    ...input,
+    requestId: "request-456",
+    supersededRequestId: "request-123",
+    supersededEventId: "a".repeat(64),
+  });
+  assert.match(replacementPrompt, /INTERRUPT DIRECTIVE: This replacement/);
+  assert.match(replacementPrompt, /Superseded request id: "request-123"/);
+  assert.match(
+    replacementPrompt,
+    new RegExp(`Superseded event id: ${"a".repeat(64)}`),
+  );
+  assert.match(replacementPrompt, /do not publish its result/);
+  assert.match(replacementPrompt, /does not cancel or combine any other/);
 });
 
-test("local check state is isolated by relay, signer, repo, and review", () => {
+test("local check state restores only completed runs within its scope", () => {
   const base = {
     relayUrl: "wss://relay.example",
     signerPubkey: "A".repeat(64),
@@ -275,9 +316,27 @@ test("local check state is isolated by relay, signer, repo, and review", () => {
     setItem: (key, value) => entries.set(key, value),
   };
   const runs = {
-    "code-correctness": { agentPubkey: "agent", status: "idle" },
+    interface: {
+      agentPubkey: "agent",
+      status: "completed",
+      result: {
+        request_id: "completed-request",
+        conclusion: "approved",
+        summary: "No material issues found.",
+        diff_event_id: null,
+        findings: [],
+      },
+    },
+    "code-correctness": { agentPubkey: "agent", status: "running" },
+    "codebase-patterns": {
+      agentPubkey: "agent",
+      status: "failed",
+      error: "Agent unavailable.",
+    },
   };
   writeProjectReviewCheckRuns(storage, first, runs);
-  assert.deepEqual(readProjectReviewCheckRuns(storage, first), runs);
+  assert.deepEqual(readProjectReviewCheckRuns(storage, first), {
+    interface: runs.interface,
+  });
   assert.deepEqual(readProjectReviewCheckRuns(storage, second), {});
 });

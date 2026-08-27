@@ -12,8 +12,9 @@ export const DEFAULT_PROJECT_REVIEW_CHECKS = [
     description:
       "Reviews the user-facing experience and frontend implementation as one surface.",
     instructions: [
-      "Inspect the user-facing behavior and frontend implementation changed by this review.",
+      "Trace the user-visible flow through the frontend state and backend contract changed by this review.",
       "Check design-system usage, interaction states, accessibility, loading and error states, performance, and visual consistency.",
+      "Probe alternate input modes, empty and partial data, permission boundaries, and failed or interrupted interactions where relevant.",
       "Flag hand-rolled UI where the project design system already provides the intended primitive.",
     ],
   },
@@ -25,6 +26,7 @@ export const DEFAULT_PROJECT_REVIEW_CHECKS = [
     instructions: [
       "Trace the changed behavior through its callers, data flow, and external contracts.",
       "Look for logic errors, invalid state transitions, missed edge cases, unsafe error handling, races, and resource-lifecycle defects.",
+      "Probe hidden assumptions, security and authorization boundaries, concurrency, persistence, and compatibility where relevant.",
       "Report behavior-level defects introduced by or made materially worse by this review; leave codebase conventions to their own check.",
     ],
   },
@@ -36,6 +38,7 @@ export const DEFAULT_PROJECT_REVIEW_CHECKS = [
     instructions: [
       "Compare the change with contributor guidance and analogous code already in the repository.",
       "Check architectural boundaries, shared abstractions, naming, error handling, and framework idioms for consistency with established patterns.",
+      "Prefer the smallest safe implementation that fully solves the problem; flag opportunistic refactors and speculative abstractions that add material risk.",
       "Report departures that create meaningful maintenance or integration risk; leave functional defects to the code correctness check.",
     ],
   },
@@ -47,7 +50,8 @@ export const DEFAULT_PROJECT_REVIEW_CHECKS = [
     instructions: [
       "Inspect relevant line and path history with git blame and git log, then follow related commits into pull requests or review discussion when available.",
       "Look for prior design rationale, analogous changes, reversions, and decisions from maintainers or frequent contributors to this area.",
-      "Evaluate whether this review continues, deliberately revises, or accidentally contradicts the philosophy behind the existing implementation; clearly distinguish historical evidence from inference.",
+      "Cite the exact commits, reviews, links, files, or lines supporting the historical interpretation, and clearly distinguish evidence from inference.",
+      "Evaluate whether this review continues, deliberately revises, or accidentally contradicts the philosophy behind the existing implementation.",
       "Do not reject a change merely because it differs from precedent. Recommend a fix only when an unexplained philosophical shift creates material product, architecture, or maintenance risk.",
     ],
   },
@@ -59,6 +63,7 @@ export const DEFAULT_PROJECT_REVIEW_CHECKS = [
     instructions: [
       "Compare the tests with the production behavior changed by this review.",
       "Look for missing behavioral coverage, assertions that cannot catch regressions, and over-mocked paths.",
+      "Attribute commands and verification results to the exact reviewed commit and working-tree state; do not claim a check ran without evidence that it did.",
       "Do not treat a green test command by itself as evidence of adequate test quality.",
     ],
   },
@@ -255,6 +260,8 @@ export function buildProjectReviewCheckPrompt({
   commit,
   branchName,
   targetBranch,
+  supersededRequestId,
+  supersededEventId,
 }) {
   const scope = [
     `Project: ${JSON.stringify(projectName)}`,
@@ -271,14 +278,25 @@ export function buildProjectReviewCheckPrompt({
     `Run the project review check ${JSON.stringify(check.name)}.`,
     "THREAD CONTRACT: This message is one independent project review check request.",
     "The enclosing Buzz event's Event ID (shown by the agent harness immediately above this message content) is THIS_REQUEST_EVENT_ID and is this request's thread root.",
-    "If one turn contains multiple project review check events, process every event independently. A newer event must never replace, cancel, combine with, or stand in for an earlier event.",
-    `For every check event, publish exactly one final result in that event's own thread by providing the marker and JSON below on stdin to: buzz messages send --channel ${JSON.stringify(channelId)} --content - --reply-to <THIS_REQUEST_EVENT_ID>`,
+    "If one turn contains multiple project review check events, process every event independently unless this request contains an INTERRUPT DIRECTIVE naming the exact request it supersedes.",
+    "A newer event without that directive must never replace, cancel, combine with, or stand in for an earlier event.",
+    `For every active, non-superseded check event, publish exactly one final result in that event's own thread by providing the marker and JSON below on stdin to: buzz messages send --channel ${JSON.stringify(channelId)} --content - --reply-to <THIS_REQUEST_EVENT_ID>`,
     "Replace <THIS_REQUEST_EVENT_ID> with the exact 64-character Event ID enclosing this request, without angle brackets. Never use the newest or another check event's ID as a shortcut.",
-    "Never post a check result at the DM top level or in another check's thread. Do not finish the turn after answering only the last event; every request_id delivered in the turn needs its own threaded result.",
+    "Never post a check result at the DM top level or in another check's thread. Do not finish the turn after answering only the last event; every non-superseded request_id delivered in the turn needs its own threaded result.",
     "Review only; do not modify code, push commits, or change the review.",
     "Use the repository and Buzz tools available to you to inspect the exact review commit.",
     "",
     ...scope,
+    ...(supersededRequestId && supersededEventId
+      ? [
+          "",
+          "INTERRUPT DIRECTIVE: This replacement request supersedes exactly one earlier check request.",
+          `Superseded request id: ${JSON.stringify(supersededRequestId)}`,
+          `Superseded event id: ${supersededEventId}`,
+          "Stop work on that superseded request and do not publish its result. Continue with this replacement request instead.",
+          "This directive does not cancel or combine any other check request.",
+        ]
+      : []),
     "",
     "Check definition:",
     ...check.instructions.map((instruction) => `- ${instruction}`),
@@ -336,9 +354,18 @@ export function readProjectReviewCheckRuns(storage, key) {
   if (!storage || !key) return {};
   try {
     const parsed = JSON.parse(storage.getItem(key) ?? "{}");
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? parsed
-      : {};
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+    return Object.fromEntries(
+      Object.entries(parsed).filter(
+        ([, run]) =>
+          run &&
+          typeof run === "object" &&
+          !Array.isArray(run) &&
+          run.status === "completed",
+      ),
+    );
   } catch {
     return {};
   }
