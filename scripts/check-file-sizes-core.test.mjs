@@ -37,7 +37,7 @@ function git(repo, ...args) {
   }).trim();
 }
 
-function createEntrypointFixture({ surface, files }) {
+function createEntrypointFixture({ surface, files, lineDelta = 1 }) {
   const repo = realpathSync(
     mkdtempSync(path.join(tmpdir(), `file-size-${surface}-`)),
   );
@@ -66,8 +66,9 @@ function createEntrypointFixture({ surface, files }) {
 
   for (const { relativeFile, maxLines } of files) {
     const governedFile = path.join(repo, surface, relativeFile);
+    const lineCount = maxLines + lineDelta;
     mkdirSync(path.dirname(governedFile), { recursive: true });
-    writeFileSync(governedFile, `${"line\n".repeat(maxLines)}line`);
+    writeFileSync(governedFile, `${"line\n".repeat(lineCount - 1)}line`);
   }
 
   const entrypointPath = path.join(surfaceScriptsDir, "check-file-sizes.mjs");
@@ -100,37 +101,37 @@ test("local base resolution uses the branch merge-base and fails without origin/
   );
 });
 
-test("surface entrypoints execute every production rule", () => {
-  const cases = [
-    {
-      surface: "desktop",
-      files: [
-        { relativeFile: "src-tauri/src/oversized.rs", maxLines: 1500 },
-        { relativeFile: "src-tauri/crates/oversized.rs", maxLines: 1500 },
-        { relativeFile: "src/app/oversized.ts", maxLines: 1200 },
-        { relativeFile: "src/features/oversized.tsx", maxLines: 1200 },
-        { relativeFile: "src/shared/api/oversized.ts", maxLines: 1200 },
-        { relativeFile: "src/shared/context/oversized.tsx", maxLines: 1200 },
-        { relativeFile: "src/shared/lib/oversized.ts", maxLines: 1200 },
-        { relativeFile: "src/shared/ui/oversized.tsx", maxLines: 1200 },
-        { relativeFile: "src/shared/styles/oversized.css", maxLines: 1200 },
-      ],
-    },
-    {
-      surface: "mobile",
-      files: [{ relativeFile: "lib/oversized.dart", maxLines: 1200 }],
-    },
-    {
-      surface: "web",
-      files: [
-        { relativeFile: "src/app/oversized.ts", maxLines: 1000 },
-        { relativeFile: "src/features/oversized.tsx", maxLines: 1000 },
-        { relativeFile: "src/shared/api/oversized.ts", maxLines: 1000 },
-      ],
-    },
-  ];
+const entrypointCases = [
+  {
+    surface: "desktop",
+    files: [
+      { relativeFile: "src-tauri/src/oversized.rs", maxLines: 1500 },
+      { relativeFile: "src-tauri/crates/oversized.rs", maxLines: 1500 },
+      { relativeFile: "src/app/oversized.ts", maxLines: 1200 },
+      { relativeFile: "src/features/oversized.tsx", maxLines: 1200 },
+      { relativeFile: "src/shared/api/oversized.ts", maxLines: 1200 },
+      { relativeFile: "src/shared/context/oversized.tsx", maxLines: 1200 },
+      { relativeFile: "src/shared/lib/oversized.ts", maxLines: 1200 },
+      { relativeFile: "src/shared/ui/oversized.tsx", maxLines: 1200 },
+      { relativeFile: "src/shared/styles/oversized.css", maxLines: 1200 },
+    ],
+  },
+  {
+    surface: "mobile",
+    files: [{ relativeFile: "lib/oversized.dart", maxLines: 1200 }],
+  },
+  {
+    surface: "web",
+    files: [
+      { relativeFile: "src/app/oversized.ts", maxLines: 1000 },
+      { relativeFile: "src/features/oversized.tsx", maxLines: 1000 },
+      { relativeFile: "src/shared/api/oversized.ts", maxLines: 1000 },
+    ],
+  },
+];
 
-  for (const fixture of cases) {
+test("surface entrypoints execute every production rule", () => {
+  for (const fixture of entrypointCases) {
     const { result, relativeFiles } = createEntrypointFixture(fixture);
     assert.equal(
       result.status,
@@ -143,6 +144,17 @@ test("surface entrypoints execute every production rule", () => {
         `${fixture.surface} should report ${relativeFile}: ${result.stderr}`,
       );
     }
+  }
+});
+
+test("surface entrypoints allow every production rule at its ceiling", () => {
+  for (const fixture of entrypointCases) {
+    const { result } = createEntrypointFixture({ ...fixture, lineDelta: 0 });
+    assert.equal(
+      result.status,
+      0,
+      `${fixture.surface} should allow every ceiling: ${result.stderr || result.stdout}`,
+    );
   }
 });
 
