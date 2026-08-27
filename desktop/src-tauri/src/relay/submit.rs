@@ -77,12 +77,14 @@ where
     ClassifyResponse: Fn(String) -> EventSubmitHttpError,
 {
     submit_event_response_with_keys_and_timeout(
-        http_client,
-        url,
-        keys,
-        auth_tag,
-        body_bytes,
-        EVENT_SUBMIT_TIMEOUT,
+        EventSubmitRequest {
+            http_client,
+            url,
+            keys,
+            auth_tag,
+            body_bytes,
+            timeout: EVENT_SUBMIT_TIMEOUT,
+        },
         consume_response,
         classify_response_error,
     )
@@ -161,6 +163,16 @@ impl EventSubmitHttpError {
     }
 }
 
+#[derive(Clone, Copy)]
+struct EventSubmitRequest<'a> {
+    http_client: &'a reqwest::Client,
+    url: &'a str,
+    keys: &'a Keys,
+    auth_tag: Option<&'a str>,
+    body_bytes: &'a [u8],
+    timeout: std::time::Duration,
+}
+
 /// Submit one already-signed event and fully consume the relay response.
 ///
 /// A timeout is ambiguous because relay ingest may complete before either the
@@ -170,12 +182,7 @@ impl EventSubmitHttpError {
 /// an accepted-first-attempt/body-stall without re-signing the user action
 /// under a second ID.
 async fn submit_event_response_with_keys_and_timeout<T, Consume, ResponseFuture, ClassifyResponse>(
-    http_client: &reqwest::Client,
-    url: &str,
-    keys: &Keys,
-    auth_tag: Option<&str>,
-    body_bytes: &[u8],
-    timeout: std::time::Duration,
+    request: EventSubmitRequest<'_>,
     mut consume_response: Consume,
     classify_response_error: ClassifyResponse,
 ) -> Result<T, EventSubmitHttpError>
@@ -187,15 +194,20 @@ where
     let mut last_timeout = None;
 
     for _ in 0..EVENT_SUBMIT_MAX_ATTEMPTS {
-        let auth_header = build_nip98_auth_header_for_keys(keys, &Method::POST, url, body_bytes)
-            .map_err(EventSubmitHttpError::Auth)?;
+        let auth_header = build_nip98_auth_header_for_keys(
+            request.keys,
+            &Method::POST,
+            request.url,
+            request.body_bytes,
+        )
+        .map_err(EventSubmitHttpError::Auth)?;
         let response = match send_event_http_request_once(
-            http_client,
-            url,
+            request.http_client,
+            request.url,
             &auth_header,
-            auth_tag,
-            body_bytes,
-            timeout,
+            request.auth_tag,
+            request.body_bytes,
+            request.timeout,
         )
         .await
         {
@@ -211,12 +223,11 @@ where
         };
 
         if !response.status().is_success() {
-            let error = EventSubmitHttpError::Rejected(relay_error_message(response).await);
-            if error.is_timeout() {
-                last_timeout = Some(error);
-                continue;
-            }
-            return Err(error);
+            // The status line makes this a definite rejection, even if reading
+            // its detail body later times out. Only ambiguous outcomes retry.
+            return Err(EventSubmitHttpError::Rejected(
+                relay_error_message(response).await,
+            ));
         }
 
         match consume_response(response).await {
@@ -322,12 +333,14 @@ pub(super) async fn submit_event_json_with_keys_for_test<T: DeserializeOwned>(
     timeout: std::time::Duration,
 ) -> Result<T, String> {
     submit_event_response_with_keys_and_timeout(
-        http_client,
-        url,
-        keys,
-        None,
-        body_bytes,
-        timeout,
+        EventSubmitRequest {
+            http_client,
+            url,
+            keys,
+            auth_tag: None,
+            body_bytes,
+            timeout,
+        },
         parse_json_response::<T>,
         EventSubmitHttpError::Response,
     )
@@ -344,12 +357,14 @@ pub(super) async fn submit_event_text_with_keys_for_test(
     timeout: std::time::Duration,
 ) -> Result<String, EventSubmitHttpError> {
     submit_event_response_with_keys_and_timeout(
-        http_client,
-        url,
-        keys,
-        None,
-        body_bytes,
-        timeout,
+        EventSubmitRequest {
+            http_client,
+            url,
+            keys,
+            auth_tag: None,
+            body_bytes,
+            timeout,
+        },
         |response| async move {
             crate::commands::engram_submit_response::read_engram_submit_response(response).await
         },
