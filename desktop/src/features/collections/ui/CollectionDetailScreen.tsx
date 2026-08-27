@@ -12,6 +12,7 @@ import * as React from "react";
 import { toast } from "sonner";
 
 import { useAppNavigation } from "@/app/navigation/useAppNavigation";
+import { useChannelsQuery } from "@/features/channels/hooks";
 import { useUsersBatchQuery } from "@/features/profile/hooks";
 import { truncatePubkey } from "@/shared/lib/pubkey";
 import { useOpenEntityLink } from "@/shared/ui/markdown/entityLinks";
@@ -34,8 +35,8 @@ import {
 import { UserAvatar } from "@/shared/ui/UserAvatar";
 import {
   COLLECTION_REFERENCE_TYPES,
+  collectionMemberDisplayLabel,
   collectionMemberMatches,
-  collectionReferenceIdentity,
 } from "../memberDisplay";
 import { collectionMemberNavigationTarget } from "../memberNavigation";
 import {
@@ -43,7 +44,11 @@ import {
   useCollectionQuery,
   useDerivedCollectionLinks,
 } from "../hooks";
-import { projectCollectionActivity } from "../derivedLinks";
+import {
+  filterCollectionActivityByType,
+  projectCollectionActivity,
+  type CollectionActivityTypeFilter,
+} from "../derivedLinks";
 import type { CollectionReference, CollectionReferenceType } from "../types";
 import { useCollectionScope } from "../useCollectionScope";
 import { AddCollectionReferenceForm } from "./AddCollectionReferenceForm";
@@ -54,6 +59,16 @@ import {
 } from "./CollectionDetailRows";
 
 const PEOPLE_PREVIEW_LIMIT = 8;
+const ACTIVITY_TYPE_FILTERS: ReadonlyArray<{
+  label: string;
+  value: CollectionActivityTypeFilter;
+}> = [
+  { label: "All activity", value: "all" },
+  { label: "Messages & threads", value: "messages" },
+  { label: "Pull requests", value: "pull-requests" },
+  { label: "Meetings", value: "meetings" },
+  { label: "Documents", value: "documents" },
+];
 import { CollectionGlyph } from "./CollectionGlyph";
 import { CollectionIconDialog } from "./CollectionIconDialog";
 
@@ -64,6 +79,7 @@ export function CollectionDetailScreen({
 }) {
   const scope = useCollectionScope();
   const collectionQuery = useCollectionQuery(scope, collectionId);
+  const channelsQuery = useChannelsQuery();
   const { addMember, remove, removeMember, setIcon } =
     useCollectionMutations(scope);
   const navigate = useNavigate();
@@ -78,11 +94,23 @@ export function CollectionDetailScreen({
   const [activeTab, setActiveTab] = React.useState<
     "overview" | "activity" | "sources"
   >("overview");
+  const [activityType, setActivityType] =
+    React.useState<CollectionActivityTypeFilter>("all");
   const [type, setType] = React.useState<CollectionReferenceType | "all">(
     "all",
   );
   const data = collectionQuery.data;
-  const derived = useDerivedCollectionLinks(data?.members ?? []);
+  const channelNamesById = React.useMemo(
+    () =>
+      new Map(
+        (channelsQuery.data ?? []).map((channel) => [channel.id, channel.name]),
+      ),
+    [channelsQuery.data],
+  );
+  const derived = useDerivedCollectionLinks(
+    data?.members ?? [],
+    channelNamesById,
+  );
   const participantIdentities = [
     ...new Set(
       derived.links.flatMap((activity) =>
@@ -107,10 +135,7 @@ export function CollectionDetailScreen({
   const hiddenPeopleCount =
     peopleIdentities.length - visiblePeopleIdentities.length;
   const members = (data?.members ?? []).filter((member) =>
-    collectionMemberMatches(member, search, type),
-  );
-  const pullRequests = derived.links.filter(
-    (activity) => activity.activityType === "github-pr",
+    collectionMemberMatches(member, search, type, channelNamesById),
   );
   const projectedActivity = projectCollectionActivity(
     derived.links,
@@ -130,6 +155,10 @@ export function CollectionDetailScreen({
           activity.actorIdentities?.includes(selectedPerson),
       )
     : projectedActivity;
+  const visibleActivity =
+    activeTab === "activity"
+      ? filterCollectionActivityByType(filteredActivity, activityType)
+      : filteredActivity;
   const sourceGroups = [
     {
       label: "Channels",
@@ -192,7 +221,7 @@ export function CollectionDetailScreen({
     const member = data?.members.find((candidate) => candidate.id === memberId);
     return {
       label: member
-        ? member.label || collectionReferenceIdentity(member.reference)
+        ? collectionMemberDisplayLabel(member, channelNamesById)
         : "source",
       memberId,
     };
@@ -403,9 +432,10 @@ export function CollectionDetailScreen({
                       const target = collectionMemberNavigationTarget(
                         member.reference,
                       );
-                      const label =
-                        member.label ||
-                        collectionReferenceIdentity(member.reference);
+                      const label = collectionMemberDisplayLabel(
+                        member,
+                        channelNamesById,
+                      );
                       const canOpen = target !== null;
                       return (
                         <div
@@ -536,54 +566,44 @@ export function CollectionDetailScreen({
                 failed for {warning.sourceLabel}: {warning.message}
               </div>
             ))}
-
-            {pullRequests.length > 0 ? (
-              <section className="mb-8" data-testid="collection-pull-requests">
-                <div className="mb-3">
-                  <h2 className="text-lg font-semibold">Pull requests</h2>
-                  <p className="text-sm text-muted-foreground">
-                    Pull requests mentioned by explicit thread and message
-                    sources.
-                  </p>
-                </div>
-                <div className="divide-y rounded-xl border bg-card">
-                  {pullRequests.map((activity) => (
-                    <DerivedCollectionActivityRow
-                      activity={activity}
-                      actorAvatarUrl={activity.actorAvatarUrl}
-                      actorLabel={activity.actorLabel}
-                      key={`${activity.url}:${activity.sourceMemberId}`}
-                      onOpenMessage={() => {}}
-                      onRemoveSource={() => {
-                        const source = sourceDetails(activity.sourceMemberId);
-                        return removeSource(
-                          source.memberId,
-                          source.label,
-                          true,
-                        );
-                      }}
-                    />
-                  ))}
-                </div>
-              </section>
-            ) : null}
           </>
         ) : null}
 
         {activeTab !== "sources" ? (
           <section className="mb-8" data-testid="collection-activity">
-            <div className="mb-3">
-              <h2 className="text-lg font-semibold">
-                {activeTab === "overview" ? "Recent activity" : "Activity"}
-              </h2>
-              <p className="text-sm text-muted-foreground">
-                Recent conversations and live context derived from your sources.
-              </p>
+            <div className="mb-3 flex items-end justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold">
+                  {activeTab === "overview" ? "Recent activity" : "Activity"}
+                </h2>
+                <p className="text-sm text-muted-foreground">
+                  Recent conversations and live context derived from your
+                  sources.
+                </p>
+              </div>
+              {activeTab === "activity" ? (
+                <select
+                  aria-label="Filter activity by type"
+                  className="h-8 shrink-0 rounded-lg border border-input/40 bg-background px-2 text-sm"
+                  onChange={(event) =>
+                    setActivityType(
+                      event.target.value as CollectionActivityTypeFilter,
+                    )
+                  }
+                  value={activityType}
+                >
+                  {ACTIVITY_TYPE_FILTERS.map((filter) => (
+                    <option key={filter.value} value={filter.value}>
+                      {filter.label}
+                    </option>
+                  ))}
+                </select>
+              ) : null}
             </div>
             <div className="divide-y rounded-xl border bg-card">
               {(activeTab === "overview"
-                ? filteredActivity.slice(0, 5)
-                : filteredActivity
+                ? visibleActivity.slice(0, 5)
+                : visibleActivity
               ).map((activity) => (
                 <DerivedCollectionActivityRow
                   activity={activity}
@@ -618,19 +638,21 @@ export function CollectionDetailScreen({
                   }}
                 />
               ))}
-              {filteredActivity.length === 0 ? (
+              {visibleActivity.length === 0 ? (
                 <div className="p-8 text-center text-sm text-muted-foreground">
                   {selectedPerson
                     ? "No activity from this person was found."
-                    : derived.isFetching
-                      ? "Loading activity…"
-                      : data.members.length === 0
-                        ? "Add a source to discover collection activity."
-                        : "No recent activity was found across linked sources."}
+                    : activeTab === "activity" && activityType !== "all"
+                      ? `No ${ACTIVITY_TYPE_FILTERS.find((filter) => filter.value === activityType)?.label.toLocaleLowerCase()} were found.`
+                      : derived.isFetching
+                        ? "Loading activity…"
+                        : data.members.length === 0
+                          ? "Add a source to discover collection activity."
+                          : "No recent activity was found across linked sources."}
                 </div>
               ) : null}
             </div>
-            {activeTab === "overview" && filteredActivity.length > 5 ? (
+            {activeTab === "overview" && visibleActivity.length > 5 ? (
               <Button
                 className="mt-3"
                 onClick={() => setActiveTab("activity")}
@@ -673,6 +695,10 @@ export function CollectionDetailScreen({
                         return (
                           <CollectionMemberRow
                             canOpen={target !== null}
+                            displayLabel={collectionMemberDisplayLabel(
+                              member,
+                              channelNamesById,
+                            )}
                             isRemoving={removeMember.isPending}
                             key={member.id}
                             member={member}
@@ -680,8 +706,10 @@ export function CollectionDetailScreen({
                             onRemove={() =>
                               removeSource(
                                 member.id,
-                                member.label ||
-                                  collectionReferenceIdentity(member.reference),
+                                collectionMemberDisplayLabel(
+                                  member,
+                                  channelNamesById,
+                                ),
                                 false,
                               )
                             }

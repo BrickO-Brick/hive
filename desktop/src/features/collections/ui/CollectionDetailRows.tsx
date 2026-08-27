@@ -47,10 +47,9 @@ export function DerivedCollectionActivityRow({
     activity.activityType === "document-edit" ||
     activity.activityType === "document-comment";
   const isPullRequest = activity.activityType === "github-pr";
-  const isPullRequestActivity = activity.activityType === "github-pr-activity";
   const identity = isMessage
     ? activity.eventId
-    : isDocumentActivity || isPullRequestActivity
+    : isDocumentActivity
       ? `${activity.url}:${activity.activityType}:${activity.createdAt}`
       : activity.url;
   const timestamp = activity.createdAt
@@ -87,25 +86,8 @@ export function DerivedCollectionActivityRow({
           <span className="font-medium">{activity.label}</span>
           {timestamp ? ` · ${timestamp}` : null}
         </div>
-      ) : isPullRequestActivity ? (
-        <div className="mt-1 text-sm">
-          {activity.actorLabel ?? "Unknown GitHub actor"}{" "}
-          {activity.kind.replace(/^PR /u, "")}
-          {activity.stateLabel ? ` · ${activity.stateLabel}` : null}
-          {timestamp ? ` · ${timestamp}` : null}
-        </div>
       ) : isPullRequest ? (
-        <div className="mt-1 text-sm">
-          {activity.stateLabel ? (
-            <span className="font-medium capitalize">
-              {activity.stateLabel}
-            </span>
-          ) : (
-            "Mentioned PR"
-          )}
-          {activity.actorLabel ? ` by ${activity.actorLabel}` : null}
-          {timestamp ? ` · ${timestamp}` : null}
-        </div>
+        <PullRequestActivitySummary activity={activity} timestamp={timestamp} />
       ) : isMessage ? (
         <div className="mt-1 text-sm">
           {actorLabel ?? "Unknown Buzz user"}
@@ -172,6 +154,59 @@ export function DerivedCollectionActivityRow({
   );
 }
 
+function PullRequestActivitySummary({
+  activity,
+  timestamp,
+}: {
+  activity: DerivedCollectionActivity;
+  timestamp: string | null;
+}) {
+  const recent = activity.pullRequestActivity ?? [];
+  const counts = { comment: 0, merge: 0, review: 0 };
+  for (const item of recent) counts[item.kind] += 1;
+  const countLabels = (["review", "comment", "merge"] as const).flatMap(
+    (kind) =>
+      counts[kind] > 0
+        ? [`${counts[kind]} ${kind}${counts[kind] === 1 ? "" : "s"}`]
+        : [],
+  );
+  const latest = recent.reduce<(typeof recent)[number] | null>(
+    (current, item) =>
+      current === null || item.createdAt > current.createdAt ? item : current,
+    null,
+  );
+  const latestTimestamp = latest
+    ? new Intl.DateTimeFormat(undefined, {
+        dateStyle: "medium",
+        timeStyle: "short",
+      }).format(new Date(latest.createdAt * 1_000))
+    : null;
+
+  return (
+    <div className="mt-1 space-y-1 text-sm">
+      <div>
+        {activity.stateLabel ? (
+          <span className="font-medium capitalize">{activity.stateLabel}</span>
+        ) : (
+          "Mentioned PR"
+        )}
+        {activity.actorLabel ? ` by ${activity.actorLabel}` : null}
+        {timestamp ? ` · ${timestamp}` : null}
+      </div>
+      {countLabels.length > 0 ? (
+        <div className="text-muted-foreground">{countLabels.join(" · ")}</div>
+      ) : null}
+      {latest ? (
+        <div className="text-xs text-muted-foreground">
+          Latest: {latest.actorLabel ?? "Unknown GitHub actor"} {latest.kind}
+          {latest.stateLabel ? ` · ${latest.stateLabel}` : null}
+          {latestTimestamp ? ` · ${latestTimestamp}` : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function ActivityTypeGlyph({
   activity,
 }: {
@@ -180,8 +215,7 @@ function ActivityTypeGlyph({
   const Icon =
     activity.activityType === "calendar-meeting"
       ? CalendarDays
-      : activity.activityType === "github-pr" ||
-          activity.activityType === "github-pr-activity"
+      : activity.activityType === "github-pr"
         ? GitPullRequest
         : activity.activityType === "calendar-document"
           ? CalendarDays
@@ -251,23 +285,24 @@ function MeetingActivitySummary({
 
 export function CollectionMemberRow({
   canOpen,
+  displayLabel,
   isRemoving,
   member,
   onOpen,
   onRemove,
 }: {
   canOpen: boolean;
+  displayLabel: string;
   isRemoving: boolean;
   member: CollectionMember;
   onOpen: () => void;
   onRemove: () => Promise<void>;
 }) {
   const identity = collectionReferenceIdentity(member.reference);
-  const label = member.label || identity;
   const content = (
     <div className="flex items-center gap-2">
       <SourceTypeGlyph type={member.reference.type} />
-      <span className="truncate text-sm font-medium">{label}</span>
+      <span className="truncate text-sm font-medium">{displayLabel}</span>
       {member.reference.type === "external" ? (
         <span className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground">
           {new URL(member.reference.url).hostname}
@@ -308,7 +343,7 @@ export function CollectionMemberRow({
       ) : null}
       <CollectionRowActions
         disabled={isRemoving}
-        label={member.label ?? member.reference.type}
+        label={displayLabel}
         onRemove={onRemove}
       />
     </div>

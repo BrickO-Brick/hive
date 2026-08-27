@@ -33,7 +33,6 @@ export function AddCollectionReferenceForm({
   const [coordinate, setCoordinate] = React.useState("");
   const [eventId, setEventId] = React.useState("");
   const [url, setUrl] = React.useState("");
-  const [label, setLabel] = React.useState("");
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -48,14 +47,13 @@ export function AddCollectionReferenceForm({
       return;
     }
     try {
-      await onAdd(result.reference, label.trim() || null);
+      await onAdd(result.reference, null);
     } catch {
       return;
     }
     setCoordinate("");
     setEventId("");
     setUrl("");
-    setLabel("");
   };
 
   return (
@@ -63,7 +61,7 @@ export function AddCollectionReferenceForm({
       className="mb-5 grid gap-3 rounded-xl border bg-card p-4"
       onSubmit={(event) => void submit(event)}
     >
-      <div className="grid gap-3 sm:grid-cols-2">
+      <div className="grid gap-3">
         <label
           className="grid gap-1 text-sm"
           htmlFor="collection-reference-type"
@@ -86,19 +84,6 @@ export function AddCollectionReferenceForm({
               ),
             )}
           </select>
-        </label>
-        <label
-          className="grid gap-1 text-sm"
-          htmlFor="collection-reference-label"
-        >
-          <span className="font-medium">Label</span>
-          <Input
-            aria-label="Reference label"
-            id="collection-reference-label"
-            onChange={(event) => setLabel(event.target.value)}
-            placeholder="Optional"
-            value={label}
-          />
         </label>
       </div>
 

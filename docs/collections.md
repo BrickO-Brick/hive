@@ -27,11 +27,13 @@
 - Keep Collections separate from Projects and local to one machine, with no relay changes.
 - Share persisted state between the desktop app and CLI without reading or copying installed production data during ordinary development.
 - Support adding and removing channels, repositories, repository-linked tasks, threads, messages, notes, and external references.
+- Resolve source titles from their native objects when available; do not expose editable member aliases yet.
 - Provide a lightweight home for overview, activity, and source management.
 - Show Collection membership on associated Buzz objects; access files through their messages rather than as standalone members.
 
 ## Later ideas
 
 - If collections prove to be the better model, replace the current Projects model and consider presenting collections as Projects.
+- Allow optional alias and notes metadata on a membership.
 - Support standalone tasks that do not require a repository.
 - Make documents and files first-class Buzz objects that can be uploaded directly or linked from external systems and added to collections.

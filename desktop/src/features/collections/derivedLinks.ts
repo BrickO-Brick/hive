@@ -80,8 +80,7 @@ export type DerivedCollectionActivity = DerivedCollectionLink & {
     | "channel-message"
     | "document-comment"
     | "document-edit"
-    | "github-pr"
-    | "github-pr-activity";
+    | "github-pr";
   actorLabel?: string;
   actorAvatarUrl?: string;
   actorIdentity?: string;
@@ -92,6 +91,12 @@ export type DerivedCollectionActivity = DerivedCollectionLink & {
   derivedFromSource?: boolean;
   eventId?: string;
   provenanceLabel?: string;
+  pullRequestActivity?: Array<{
+    actorLabel?: string;
+    createdAt: number;
+    kind: CollectionGithubPullRequestActivity["kind"];
+    stateLabel?: string;
+  }>;
   sourceEventIds?: string[];
   sourceMemberIds?: string[];
   sourceUrl?: string;
@@ -104,6 +109,35 @@ export type DerivedCollectionActivity = DerivedCollectionLink & {
     url: string;
   }>;
 };
+
+export type CollectionActivityTypeFilter =
+  | "all"
+  | "documents"
+  | "meetings"
+  | "messages"
+  | "pull-requests";
+
+/** Keep collection activity belonging to the selected presentation category. */
+export function filterCollectionActivityByType(
+  activity: readonly DerivedCollectionActivity[],
+  filter: CollectionActivityTypeFilter,
+): DerivedCollectionActivity[] {
+  if (filter === "all") return [...activity];
+  return activity.filter((item) => {
+    if (filter === "messages") return item.activityType === "channel-message";
+    if (filter === "pull-requests") return item.activityType === "github-pr";
+    if (filter === "meetings") {
+      return (
+        item.activityType === "calendar-meeting" ||
+        item.activityType === "calendar-document"
+      );
+    }
+    return (
+      item.activityType === "document-edit" ||
+      item.activityType === "document-comment"
+    );
+  });
+}
 
 const WEB_URL_PATTERN = /https?:\/\/[^\s<>"']+/giu;
 const TRAILING_URL_PUNCTUATION = /[),.;:!?\]}]+$/u;
@@ -172,6 +206,19 @@ export function githubPullRequestToDerived(
   pullRequest: CollectionGithubPullRequest,
 ): DerivedCollectionActivity[] {
   const label = pullRequest.title ?? mention.label;
+  const pullRequestActivity = pullRequest.activity.flatMap((item) => {
+    const createdAt = parseActivityTimestamp(item.created_at);
+    return createdAt === null
+      ? []
+      : [
+          {
+            actorLabel: item.author ?? undefined,
+            createdAt,
+            kind: item.kind,
+            stateLabel: item.state ?? undefined,
+          },
+        ];
+  });
   const status: DerivedCollectionActivity = {
     ...mention,
     actorLabel: pullRequest.author ?? undefined,
@@ -182,37 +229,14 @@ export function githubPullRequestToDerived(
     createdAt:
       parseActivityTimestamp(pullRequest.updated_at) ?? mention.createdAt,
     label,
+    actorIdentities: pullRequest.activity.flatMap((item) =>
+      item.author ? [`github:${item.author.toLocaleLowerCase()}`] : [],
+    ),
+    pullRequestActivity,
     stateLabel: pullRequest.state ?? undefined,
     url: pullRequest.url,
   };
-  const activity = pullRequest.activity.flatMap(
-    (item): DerivedCollectionActivity[] => {
-      const createdAt = parseActivityTimestamp(item.created_at);
-      if (createdAt === null) return [];
-      return [
-        {
-          activityType: "github-pr-activity",
-          actorLabel: item.author ?? undefined,
-          actorAvatarUrl: item.author_avatar_url ?? undefined,
-          actorIdentity: item.author
-            ? `github:${item.author.toLocaleLowerCase()}`
-            : undefined,
-          channelId: mention.channelId,
-          createdAt,
-          eventId: mention.eventId,
-          kind: `PR ${item.kind}`,
-          label,
-          provenanceLabel: mention.provenanceLabel,
-          sourceMemberId: mention.sourceMemberId,
-          sourceMemberIds: mention.sourceMemberIds,
-          stateLabel: item.state ?? undefined,
-          threadRootId: mention.threadRootId,
-          url: item.url ?? pullRequest.url,
-        },
-      ];
-    },
-  );
-  return [status, ...activity];
+  return [status];
 }
 
 /** Keep the newest distinct sourced PR mentions within fixed discovery caps. */
@@ -344,8 +368,7 @@ export function deduplicateDerivedCollectionActivity(
       identity = `message:${item.eventId}`;
     } else if (
       item.activityType === "document-edit" ||
-      item.activityType === "document-comment" ||
-      item.activityType === "github-pr-activity"
+      item.activityType === "document-comment"
     ) {
       identity = [
         item.activityType,
@@ -519,8 +542,7 @@ export function projectCollectionActivity(
   }
   const projected = activity.filter(
     (item) =>
-      item.activityType !== "github-pr" &&
-      (item.activityType !== "channel-message" || visibleMessages.has(item)),
+      item.activityType !== "channel-message" || visibleMessages.has(item),
   );
   return groupCalendarMeetingActivity(projected);
 }

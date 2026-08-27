@@ -11,6 +11,7 @@ import {
   deduplicateDerivedCollectionLinks,
   deduplicateDerivedCollectionWarnings,
   extractGitHubPullRequestLinks,
+  filterCollectionActivityByType,
   githubPullRequestToDerived,
   groupCalendarMeetingActivity,
   projectCollectionActivity,
@@ -62,7 +63,7 @@ test("projects low-signal agent chats while retaining sourced artifacts", () => 
   );
 });
 
-test("moves mentioned PR sources out of generic conversation activity", () => {
+test("replaces mentioned PR conversations with one consolidated PR card", () => {
   const sourceMessage = {
     activityType: "channel-message",
     authorPubkey: "human",
@@ -82,18 +83,52 @@ test("moves mentioned PR sources out of generic conversation activity", () => {
     label: "PR #1",
     url: "https://github.com/block/buzz/pull/1",
   };
-  const review = {
-    ...pullRequest,
-    activityType: "github-pr-activity",
-    kind: "PR review",
-  };
-
   assert.deepEqual(
-    projectCollectionActivity([sourceMessage, pullRequest, review], {
+    projectCollectionActivity([sourceMessage, pullRequest], {
       human: false,
     }),
-    [review],
+    [pullRequest],
   );
+});
+
+test("filters projected activity into compact content types", () => {
+  const item = (activityType, label = activityType) => ({
+    activityType,
+    createdAt: 1,
+    kind: activityType,
+    label,
+    sourceMemberId: "source",
+    url: label,
+  });
+  const activity = [
+    item("channel-message"),
+    { ...item("github-pr"), pullRequestActivity: [{ kind: "review" }] },
+    item("calendar-meeting"),
+    item("calendar-document"),
+    item("document-edit"),
+    item("document-comment"),
+  ];
+
+  assert.deepEqual(
+    filterCollectionActivityByType(activity, "pull-requests").map(
+      ({ activityType }) => activityType,
+    ),
+    ["github-pr"],
+  );
+  assert.deepEqual(
+    filterCollectionActivityByType(activity, "meetings").map(
+      ({ activityType }) => activityType,
+    ),
+    ["calendar-meeting", "calendar-document"],
+  );
+  assert.deepEqual(
+    filterCollectionActivityByType(activity, "documents").map(
+      ({ activityType }) => activityType,
+    ),
+    ["document-edit", "document-comment"],
+  );
+  assert.equal(filterCollectionActivityByType(activity, "messages").length, 1);
+  assert.deepEqual(filterCollectionActivityByType(activity, "all"), activity);
 });
 
 test("deduplicates identical warnings while preserving attachment failures", () => {
@@ -186,7 +221,7 @@ test("preserves every explicit source when duplicate PR mentions collapse", () =
   }));
   assert.deepEqual(
     projectCollectionActivity([...messages, pullRequest], { human: false }),
-    [],
+    [pullRequest],
   );
 });
 
@@ -226,7 +261,7 @@ test("suppresses matching PR mention rows across sources but keeps unrelated cha
     projectCollectionActivity([channelMention, unrelated, pullRequest], {
       human: false,
     }),
-    [unrelated],
+    [unrelated, pullRequest],
   );
 });
 
@@ -259,20 +294,12 @@ test("suppresses a PR conversation without hiding another thread from the same c
     sourceMemberIds: ["channel-source"],
     url: "https://github.com/block/buzz/pull/7",
   };
-  const stateChange = {
-    ...pullRequest,
-    activityType: "github-pr-activity",
-    createdAt: 2,
-    kind: "PR review",
-    url: `${pullRequest.url}#pullrequestreview-1`,
-  };
-
   assert.deepEqual(
     projectCollectionActivity(
-      [prConversation, unrelatedConversation, pullRequest, stateChange],
+      [prConversation, unrelatedConversation, pullRequest],
       { human: false },
     ),
-    [unrelatedConversation, stateChange],
+    [unrelatedConversation, pullRequest],
   );
 });
 
@@ -283,7 +310,7 @@ test("names channel-derived live thread provenance", () => {
   );
 });
 
-test("maps live PR status and recent activity onto a sourced mention", () => {
+test("consolidates live PR status and recent activity onto one sourced card", () => {
   const url = "https://github.com/block/buzz/pull/4242";
   const mention = {
     activityType: "github-pr",
@@ -324,7 +351,7 @@ test("maps live PR status and recent activity onto a sourced mention", () => {
     ],
   });
 
-  assert.equal(derived.length, 2);
+  assert.equal(derived.length, 1);
   assert.deepEqual(
     derived.map((item) => ({
       activityType: item.activityType,
@@ -333,6 +360,7 @@ test("maps live PR status and recent activity onto a sourced mention", () => {
       actorIdentity: item.actorIdentity,
       label: item.label,
       provenanceLabel: item.provenanceLabel,
+      pullRequestActivity: item.pullRequestActivity,
       stateLabel: item.stateLabel,
     })),
     [
@@ -343,16 +371,15 @@ test("maps live PR status and recent activity onto a sourced mention", () => {
         actorIdentity: "github:author",
         label: "Live collections activity feed",
         provenanceLabel: "Design thread → mentioned PR",
+        pullRequestActivity: [
+          {
+            actorLabel: "reviewer",
+            createdAt: 1_787_837_400,
+            kind: "review",
+            stateLabel: "approved",
+          },
+        ],
         stateLabel: "open",
-      },
-      {
-        activityType: "github-pr-activity",
-        actorLabel: "reviewer",
-        actorAvatarUrl: "https://avatars.githubusercontent.com/u/2?v=4",
-        actorIdentity: "github:reviewer",
-        label: "Live collections activity feed",
-        provenanceLabel: "Design thread → mentioned PR",
-        stateLabel: "approved",
       },
     ],
   );

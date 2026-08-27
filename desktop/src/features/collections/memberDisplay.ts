@@ -34,15 +34,29 @@ export function collectionReferenceIdentity(
   }
 }
 
+export function collectionMemberDisplayLabel(
+  member: CollectionMember,
+  channelNamesById: ReadonlyMap<string, string> = new Map(),
+): string {
+  if (member.reference.type === "channel") {
+    const channelName = channelNamesById
+      .get(member.reference.channel_id)
+      ?.trim();
+    if (channelName) return channelName;
+  }
+  return member.label?.trim() || collectionReferenceIdentity(member.reference);
+}
+
 export function collectionMemberMatches(
   member: CollectionMember,
   search: string,
   type: CollectionReferenceType | "all",
+  channelNamesById: ReadonlyMap<string, string> = new Map(),
 ): boolean {
   if (type !== "all" && member.reference.type !== type) return false;
   const query = search.trim().toLocaleLowerCase();
   if (!query) return true;
-  return `${member.label ?? ""} ${collectionReferenceIdentity(member.reference)}`
+  return `${collectionMemberDisplayLabel(member, channelNamesById)} ${collectionReferenceIdentity(member.reference)}`
     .toLocaleLowerCase()
     .includes(query);
 }

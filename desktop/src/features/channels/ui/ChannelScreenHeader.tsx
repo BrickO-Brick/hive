@@ -92,7 +92,7 @@ export function ChannelScreenHeader({
           reference={{ type: "channel", channel_id: activeChannel.id }}
         />
         <AddToCollection
-          label={activeChannelTitle}
+          label={activeChannel.name}
           reference={{ type: "channel", channel_id: activeChannel.id }}
         />
       </div>

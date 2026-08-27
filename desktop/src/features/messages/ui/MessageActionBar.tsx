@@ -12,7 +12,6 @@ import {
   MailOpen,
   Pencil,
   SmilePlus,
-  MessagesSquare,
   Trash2,
 } from "lucide-react";
 import * as React from "react";
@@ -20,6 +19,7 @@ import { toast } from "sonner";
 
 import { buildMessageLink } from "@/features/messages/lib/messageLink";
 import { collectionMessageLabel } from "@/features/collections/messageLabel";
+import { messageCollectionAction } from "@/features/collections/messageCollectionAction";
 import { AddToCollection } from "@/features/collections/ui/AddToCollection";
 import { MessageCollectionMembershipBadges } from "@/features/collections/ui/MessageCollectionMembershipBadges";
 import { EmojiPicker } from "@/features/custom-emoji/ui/EmojiPicker";
@@ -120,9 +120,8 @@ function MoreActionsMenu({
 }) {
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = React.useState(false);
   const [isReportDialogOpen, setIsReportDialogOpen] = React.useState(false);
-  const [collectionTarget, setCollectionTarget] = React.useState<
-    "message" | "thread" | null
-  >(null);
+  const [isCollectionDialogOpen, setIsCollectionDialogOpen] =
+    React.useState(false);
   // Set true the moment the user picks "Edit message". The
   // `onCloseAutoFocus` handler on `DropdownMenuContent` reads it to
   // suppress Radix's default focus-restoration (which would yank focus
@@ -147,11 +146,10 @@ function MoreActionsMenu({
     !message.pending &&
     message.kind !== KIND_HUDDLE_STARTED &&
     Boolean(channelId);
-  const threadRootId =
-    message.rootId ??
-    getThreadReference(message.tags ?? []).rootId ??
-    (message.depth === 0 ? message.id : null);
   const collectionLabel = collectionMessageLabel(message.body, message.author);
+  const collectionAction = channelId
+    ? messageCollectionAction(channelId, message)
+    : null;
 
   return (
     <>
@@ -302,21 +300,12 @@ function MoreActionsMenu({
             <FeatureGate feature="collections">
               <DropdownMenuSeparator />
               <DropdownMenuItem
-                data-testid={`add-message-to-collection-${message.id}`}
-                onSelect={() => setCollectionTarget("message")}
+                data-testid={`add-${collectionAction?.type}-to-collection-${message.id}`}
+                onSelect={() => setIsCollectionDialogOpen(true)}
               >
                 <FolderPlus className="h-4 w-4" />
-                Add message to collection
+                {collectionAction?.menuLabel}
               </DropdownMenuItem>
-              {threadRootId ? (
-                <DropdownMenuItem
-                  data-testid={`add-thread-to-collection-${message.id}`}
-                  onSelect={() => setCollectionTarget("thread")}
-                >
-                  <MessagesSquare className="h-4 w-4" />
-                  Add thread to collection
-                </DropdownMenuItem>
-              ) : null}
             </FeatureGate>
           ) : null}
 
@@ -356,36 +345,16 @@ function MoreActionsMenu({
         </DropdownMenuContent>
       </DropdownMenu>
 
-      {canAddToCollection && channelId && collectionTarget === "message" ? (
+      {canAddToCollection && collectionAction && isCollectionDialogOpen ? (
         <AddToCollection
-          label={collectionLabel}
-          onOpenChange={(nextOpen) => {
-            if (!nextOpen) setCollectionTarget(null);
-          }}
+          label={
+            collectionAction.type === "thread"
+              ? `Thread: ${collectionLabel}`
+              : collectionLabel
+          }
+          onOpenChange={setIsCollectionDialogOpen}
           open
-          reference={{
-            type: "message",
-            channel_id: channelId,
-            event_id: message.id,
-          }}
-          trigger={false}
-        />
-      ) : null}
-      {canAddToCollection &&
-      channelId &&
-      threadRootId &&
-      collectionTarget === "thread" ? (
-        <AddToCollection
-          label={`Thread: ${collectionLabel}`}
-          onOpenChange={(nextOpen) => {
-            if (!nextOpen) setCollectionTarget(null);
-          }}
-          open
-          reference={{
-            type: "thread",
-            channel_id: channelId,
-            root_event_id: threadRootId,
-          }}
+          reference={collectionAction.reference}
           trigger={false}
         />
       ) : null}

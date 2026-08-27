@@ -55,7 +55,16 @@ const COLLECTION_CALENDAR_ACTIVITY_DAYS = 30;
 export const COLLECTION_SOURCE_DISCOVERY_CONCURRENCY = 2;
 export const COLLECTION_PR_RESOLUTION_CONCURRENCY = 3;
 
-function sourceLabel(member: CollectionMember): string {
+function sourceLabel(
+  member: CollectionMember,
+  channelNamesById: ReadonlyMap<string, string>,
+): string {
+  if (member.reference.type === "channel") {
+    const channelName = channelNamesById
+      .get(member.reference.channel_id)
+      ?.trim();
+    if (channelName) return channelName;
+  }
   if (member.label) return member.label;
   if (member.reference.type === "external") return member.reference.url;
   if (member.reference.type === "channel") return member.reference.channel_id;
@@ -67,6 +76,7 @@ function sourceLabel(member: CollectionMember): string {
 function messageActivity(
   member: CollectionMember,
   events: Awaited<ReturnType<typeof getChannelWindowEvents>>,
+  channelNamesById: ReadonlyMap<string, string>,
 ): DerivedCollectionActivity[] {
   const reference = member.reference;
   if (
@@ -80,7 +90,7 @@ function messageActivity(
   return events.flatMap((event): DerivedCollectionActivity[] => {
     const thread = getThreadReference(event.tags);
     const compact = event.content.replace(/\s+/gu, " ").trim();
-    const provenanceLabel = `${sourceLabel(member)} → ${
+    const provenanceLabel = `${sourceLabel(member, channelNamesById)} → ${
       reference.type === "thread" ? "thread activity" : "message activity"
     }`;
     const message: DerivedCollectionActivity = {
@@ -110,7 +120,7 @@ function messageActivity(
         channelId,
         createdAt: event.created_at,
         eventId: event.id,
-        provenanceLabel: `${sourceLabel(member)} → mentioned PR`,
+        provenanceLabel: `${sourceLabel(member, channelNamesById)} → mentioned PR`,
         sourceMemberId: member.id,
         threadRootId:
           reference.type === "thread" ? reference.root_event_id : thread.rootId,
@@ -146,6 +156,7 @@ async function mapWithConcurrency<Input, Output>(
 async function resolveMentionedPullRequests(
   membersById: ReadonlyMap<string, CollectionMember>,
   items: DerivedCollectionActivity[],
+  channelNamesById: ReadonlyMap<string, string>,
 ): Promise<{
   items: DerivedCollectionActivity[];
   warnings: DerivedCollectionWarning[];
@@ -157,7 +168,9 @@ async function resolveMentionedPullRequests(
     COLLECTION_PR_RESOLUTION_CONCURRENCY,
     async (mention) => {
       const member = membersById.get(mention.sourceMemberId);
-      const memberLabel = member ? sourceLabel(member) : mention.sourceMemberId;
+      const memberLabel = member
+        ? sourceLabel(member, channelNamesById)
+        : mention.sourceMemberId;
       try {
         const pullRequest = await resolveCollectionGithubPullRequest(
           mention.url,
@@ -179,7 +192,7 @@ async function resolveMentionedPullRequests(
                 error instanceof Error
                   ? error.message
                   : "GitHub PR activity is unavailable",
-              sourceLabel: `${sourceMember ? sourceLabel(sourceMember) : memberLabel} → ${mention.label}`,
+              sourceLabel: `${sourceMember ? sourceLabel(sourceMember, channelNamesById) : memberLabel} → ${mention.label}`,
               sourceMemberId,
               warningType: "github-pr" as const,
             };
@@ -277,6 +290,7 @@ export function useCollectionMutations(scope: CollectionScope | null) {
 
 async function discoverCollectionMemberActivity(
   member: CollectionMember,
+  channelNamesById: ReadonlyMap<string, string>,
 ): Promise<{
   items: DerivedCollectionActivity[];
   warnings: DerivedCollectionWarning[];
@@ -317,7 +331,7 @@ async function discoverCollectionMemberActivity(
               .slice(0, 120)
               .join(""),
             provenanceLabel: collectionChannelThreadProvenance(
-              sourceLabel(member),
+              sourceLabel(member, channelNamesById),
             ),
             sourceMemberId: member.id,
             threadRootId: root.id,
@@ -327,7 +341,10 @@ async function discoverCollectionMemberActivity(
       },
     );
     return {
-      items: [...threadActivity, ...messageActivity(member, messages)],
+      items: [
+        ...threadActivity,
+        ...messageActivity(member, messages, channelNamesById),
+      ],
       warnings: [],
     };
   }
@@ -339,14 +356,18 @@ async function discoverCollectionMemberActivity(
       { limit: COLLECTION_CHANNEL_DISCOVERY_LIMIT },
     );
     return {
-      items: messageActivity(member, [root, ...replies.events]),
+      items: messageActivity(
+        member,
+        [root, ...replies.events],
+        channelNamesById,
+      ),
       warnings: [],
     };
   }
   if (member.reference.type === "message") {
     const event = await getEventById(member.reference.event_id);
     return {
-      items: messageActivity(member, [event]),
+      items: messageActivity(member, [event], channelNamesById),
       warnings: [],
     };
   }
@@ -369,21 +390,21 @@ async function discoverCollectionMemberActivity(
             ...link,
             activityType: "calendar-document",
             createdAt: null,
-            provenanceLabel: `${sourceLabel(member)} → attached document`,
+            provenanceLabel: `${sourceLabel(member, channelNamesById)} → attached document`,
             sourceMemberId: member.id,
             sourceUrl: calendarUrl,
           }),
         ),
         ...calendarDocumentActivityToDerived(
           member.id,
-          sourceLabel(member),
+          sourceLabel(member, channelNamesById),
           activity.activities,
         ),
       ],
       warnings: activity.errors.map((error) => ({
         failureSourceUrl: error.source_url,
         message: error.message,
-        sourceLabel: sourceLabel(member),
+        sourceLabel: sourceLabel(member, channelNamesById),
         sourceMemberId: member.id,
         warningType: "calendar" as const,
       })),
@@ -394,6 +415,7 @@ async function discoverCollectionMemberActivity(
 
 export function useDerivedCollectionLinks(
   members: readonly CollectionMember[],
+  channelNamesById: ReadonlyMap<string, string> = new Map(),
 ) {
   const sources = members.filter(
     (member) =>
@@ -407,7 +429,11 @@ export function useDerivedCollectionLinks(
     enabled: sources.length > 0,
     queryKey: [
       "collection-derived-links",
-      sources.map((member) => [member.id, member.label, member.reference]),
+      sources.map((member) => [
+        member.id,
+        sourceLabel(member, channelNamesById),
+        member.reference,
+      ]),
     ],
     queryFn: async () => {
       const sourceResults = await mapWithConcurrency(
@@ -415,7 +441,10 @@ export function useDerivedCollectionLinks(
         COLLECTION_SOURCE_DISCOVERY_CONCURRENCY,
         async (member) => {
           try {
-            return await discoverCollectionMemberActivity(member);
+            return await discoverCollectionMemberActivity(
+              member,
+              channelNamesById,
+            );
           } catch (error) {
             return {
               items: [],
@@ -425,7 +454,7 @@ export function useDerivedCollectionLinks(
                     error instanceof Error
                       ? error.message
                       : "Source activity is unavailable",
-                  sourceLabel: sourceLabel(member),
+                  sourceLabel: sourceLabel(member, channelNamesById),
                   sourceMemberId: member.id,
                   warningType:
                     member.reference.type === "external"
@@ -441,6 +470,7 @@ export function useDerivedCollectionLinks(
       const pullRequests = await resolveMentionedPullRequests(
         new Map(sources.map((member) => [member.id, member])),
         baseItems,
+        channelNamesById,
       );
       return {
         items: pullRequests.items,

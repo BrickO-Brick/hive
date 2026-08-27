@@ -159,13 +159,12 @@ test("creates a collection and adds supported reference types", async ({
   ).toBeVisible();
 
   await page.getByRole("button", { name: "Add", exact: true }).click();
+  await expect(page.getByLabel("Reference label")).toHaveCount(0);
   await page.getByLabel("External URL").fill("https://example.com/brief");
-  await page.getByLabel("Reference label").fill("Design brief");
   await page.getByRole("button", { name: "Add external link" }).click();
   await page.getByRole("tab", { name: "Sources" }).click();
 
   const row = page.getByTestId("collection-member-collection-member-1");
-  await expect(row).toContainText("Design brief");
   await expect(row).toContainText("https://example.com/brief");
 
   await page.getByLabel("Search collection").fill("missing");
@@ -179,7 +178,9 @@ test("creates a collection and adds supported reference types", async ({
   await expect(row).toBeVisible();
 
   page.once("dialog", (dialog) => dialog.accept());
-  await row.getByRole("button", { name: "Actions for Design brief" }).click();
+  await row
+    .getByRole("button", { name: "Actions for https://example.com/brief" })
+    .click();
   await page.getByRole("menuitem", { name: "Remove from Collection" }).click();
   await expect(
     page.getByText("No sources in this collection yet."),
@@ -188,26 +189,22 @@ test("creates a collection and adds supported reference types", async ({
   await page.getByRole("button", { name: "Add", exact: true }).click();
   await page.getByLabel("Reference type").selectOption("repository");
   await page.getByLabel("Repository coordinate").fill(repositoryCoordinate);
-  await page.getByLabel("Reference label").fill("Buzz repository");
   await page.getByRole("button", { name: "Add repository" }).click();
 
   await page.getByRole("button", { name: "Add", exact: true }).click();
   await page.getByLabel("Reference type").selectOption("task");
   await page.getByLabel("Repository coordinate").fill(repositoryCoordinate);
   await page.getByLabel("Task event ID").fill(taskEventId);
-  await page.getByLabel("Reference label").fill("Prototype task");
   await page.getByRole("button", { name: "Add repository task" }).click();
 
   await page.getByRole("button", { name: "Add", exact: true }).click();
   await page.getByLabel("Reference type").selectOption("note");
   await page.getByLabel("Note coordinate").fill(noteCoordinate);
-  await page.getByLabel("Reference label").fill("Design note");
   await page.getByRole("button", { name: "Add note" }).click();
 
   await page.getByRole("button", { name: "Add", exact: true }).click();
   await page.getByLabel("Reference type").selectOption("external");
   await page.getByLabel("External URL").fill(calendarUrl);
-  await page.getByLabel("Reference label").fill("Planning event");
   await page.getByRole("button", { name: "Add external link" }).click();
 
   await page.getByTestId("channel-general").click();
@@ -249,7 +246,7 @@ test("creates a collection and adds supported reference types", async ({
   const messageRow = page.getByTestId("message-row").first();
   await messageRow.hover();
   await messageRow.locator('[data-testid^="more-actions-"]').click();
-  await page.getByText("Add thread to collection", { exact: true }).click();
+  await page.getByText("Add thread to Collection", { exact: true }).click();
   await page
     .getByTestId("add-to-collection-dialog")
     .getByRole("button", { name: "Bird Voice" })
@@ -291,6 +288,9 @@ test("creates a collection and adds supported reference types", async ({
     sources.getByRole("heading", { name: "External" }),
   ).toBeVisible();
   await expect(sources.getByLabel("channel source")).toBeVisible();
+  await expect(
+    sources.getByRole("button", { name: "Actions for general" }),
+  ).toBeVisible();
   await expect(sources.getByLabel("repository source")).toBeVisible();
   const sourceDetails = sources.getByText("Details").first();
   await sourceDetails.click();
@@ -301,9 +301,9 @@ test("creates a collection and adds supported reference types", async ({
     `collection-derived-${encodeURIComponent(githubPullRequestUrl)}`,
   );
   await expect(pullRequest).toHaveCount(1);
-  await expect(page.getByTestId("collection-pull-requests")).toContainText(
-    "Live collections activity feed",
-  );
+  await expect(
+    page.getByRole("heading", { name: "Pull requests" }),
+  ).toHaveCount(0);
   await expect(page.getByTestId("collection-activity")).not.toContainText(
     "Thread status for Bird Voice",
   );
@@ -316,6 +316,10 @@ test("creates a collection and adds supported reference types", async ({
   await expect(pullRequest.getByLabel(/^Derived from /)).toBeVisible();
   await expect(pullRequest).toContainText("Live collections activity feed");
   await expect(pullRequest).toContainText("open by mock-author");
+  await expect(pullRequest).toContainText("1 review · 1 comment");
+  await expect(pullRequest).toContainText(
+    "Latest: mock-reviewer review · approved",
+  );
   await expect(pullRequest).toContainText("mentioned PR");
   await expect(pullRequest.getByAltText("mock-author avatar")).toBeVisible();
   await pullRequest
@@ -330,11 +334,11 @@ test("creates a collection and adds supported reference types", async ({
     `collection-derived-${encodeURIComponent(calendarUrl)}`,
   );
   await expect(calendarMeeting.getByLabel(/^Derived from /)).toBeVisible();
-  await expect(calendarMeeting).toContainText("Planning event");
+  await expect(calendarMeeting).toContainText(calendarUrl);
   await expect(calendarMeeting).toContainText(mockDesignDocumentTitle);
   await expect(calendarMeeting).toContainText("1 edit · 1 comment");
   await calendarMeeting
-    .getByRole("button", { name: "Actions for Planning event" })
+    .getByRole("button", { name: `Actions for ${calendarUrl}` })
     .click();
   await expect(
     page.getByRole("menuitem", { name: "Remove source from Collection" }),
@@ -358,6 +362,21 @@ test("creates a collection and adds supported reference types", async ({
     .getByRole("button", { name: mockDesignDocumentTitle })
     .click();
   await page.getByRole("tab", { name: "Activity" }).click();
+  await expect(page.getByLabel("Filter activity by type")).toHaveValue("all");
+  await page
+    .getByLabel("Filter activity by type")
+    .selectOption("pull-requests");
+  await expect(pullRequest).toHaveCount(1);
+  await expect(page.getByTestId("collection-activity")).not.toContainText(
+    "Unrelated channel update",
+  );
+  await expect(calendarMeeting).toHaveCount(0);
+  await page.getByLabel("Filter activity by type").selectOption("messages");
+  await expect(page.getByTestId("collection-activity")).toContainText(
+    "Unrelated channel update",
+  );
+  await expect(pullRequest).toHaveCount(0);
+  await page.getByLabel("Filter activity by type").selectOption("meetings");
   await expect(calendarMeeting).toHaveCount(1);
   await expect(calendarMeeting).toContainText("1 edit · 1 comment");
   await expect(calendarMeeting).toContainText("Aug 26, 2026");
@@ -372,12 +391,12 @@ test("creates a collection and adds supported reference types", async ({
   await expect(calendarMeeting).toBeVisible();
   await expect(calendarMeeting).toContainText(mockDesignDocumentTitle);
   await page.getByRole("tab", { name: "Overview" }).click();
-  await expect(page.getByTestId("collection-pull-requests")).toContainText(
-    "Live collections activity feed",
-  );
+  await expect(
+    page.getByRole("heading", { name: "Pull requests" }),
+  ).toHaveCount(0);
   await mockEditor.click();
   await expect(mockEditor).toHaveAttribute("aria-pressed", "false");
-  await expect(calendarMeeting).toContainText("Planning event");
+  await expect(calendarMeeting).toContainText(calendarUrl);
   const commands = await page.evaluate(
     () => window.__BUZZ_E2E_COMMAND_PAYLOADS__ ?? [],
   );
@@ -446,24 +465,24 @@ test("creates a collection and adds supported reference types", async ({
   const quickNavigation = page.getByTestId("collection-quick-navigation");
   page.once("dialog", (dialog) => dialog.dismiss());
   await quickNavigation
-    .getByRole("button", { name: "Actions for Buzz repository" })
+    .getByRole("button", { name: `Actions for ${repositoryCoordinate}` })
     .click();
   await page.getByRole("menuitem", { name: "Remove from Collection" }).click();
-  await expect(quickNavigation.getByText("Buzz repository")).toBeVisible();
+  await expect(quickNavigation.getByText(repositoryCoordinate)).toBeVisible();
 
   page.once("dialog", (dialog) => dialog.accept());
   await quickNavigation
-    .getByRole("button", { name: "Actions for Buzz repository" })
+    .getByRole("button", { name: `Actions for ${repositoryCoordinate}` })
     .click();
   await page.getByRole("menuitem", { name: "Remove from Collection" }).click();
-  await expect(quickNavigation.getByText("Buzz repository")).toHaveCount(0);
+  await expect(quickNavigation.getByText(repositoryCoordinate)).toHaveCount(0);
 
   page.once("dialog", (dialog) => {
     expect(dialog.message()).toContain("Related discovered activity");
     return dialog.accept();
   });
   await calendarMeeting
-    .getByRole("button", { name: "Actions for Planning event" })
+    .getByRole("button", { name: `Actions for ${calendarUrl}` })
     .click();
   await page
     .getByRole("menuitem", { name: "Remove source from Collection" })
@@ -508,18 +527,21 @@ test("surfaces Collection source removal errors", async ({ page }) => {
   await page.getByRole("button", { name: "Create", exact: true }).click();
   await page.getByRole("button", { name: "Add", exact: true }).click();
   await page.getByLabel("External URL").fill("https://example.com/locked");
-  await page.getByLabel("Reference label").fill("Locked source");
   await page.getByRole("button", { name: "Add external link" }).click();
   await page.getByRole("tab", { name: "Sources" }).click();
 
   page.once("dialog", (dialog) => dialog.accept());
   await page
-    .getByRole("button", { name: "Actions for Locked source" })
+    .getByRole("button", {
+      name: "Actions for https://example.com/locked",
+    })
     .last()
     .click();
   await page.getByRole("menuitem", { name: "Remove from Collection" }).click();
   await expect(page.getByText("Source is temporarily locked")).toBeVisible();
-  await expect(page.getByText("Locked source").first()).toBeVisible();
+  await expect(
+    page.getByText("https://example.com/locked").first(),
+  ).toBeVisible();
 
   const sidebarItem = page.getByTestId("sidebar-collection-collection-1");
   await sidebarItem.click({ button: "right" });
@@ -598,7 +620,10 @@ test("shows exact message and thread Collection memberships", async ({
   let rootRow = page.locator('[data-message-id="mock-general-welcome"]');
   await rootRow.hover();
   await rootRow.getByRole("button", { name: "More actions" }).click();
-  await page.getByText("Add thread to collection", { exact: true }).click();
+  await expect(
+    page.getByText("Add message to Collection", { exact: true }),
+  ).toHaveCount(0);
+  await page.getByText("Add thread to Collection", { exact: true }).click();
   await page
     .getByTestId("add-to-collection-dialog")
     .getByRole("button", { name: "Alpha work" })
@@ -617,7 +642,10 @@ test("shows exact message and thread Collection memberships", async ({
   rootRow = page.locator('[data-message-id="mock-general-welcome"]');
   await rootRow.hover();
   await rootRow.getByRole("button", { name: "More actions" }).click();
-  await page.getByText("Add thread to collection", { exact: true }).click();
+  await expect(
+    page.getByText("Add message to Collection", { exact: true }),
+  ).toHaveCount(0);
+  await page.getByText("Add thread to Collection", { exact: true }).click();
   await page
     .getByTestId("add-to-collection-dialog")
     .getByRole("button", { name: "Beta work" })
@@ -650,7 +678,10 @@ test("shows exact message and thread Collection memberships", async ({
   await expect(replyRow).toBeVisible();
   await replyRow.hover();
   await replyRow.getByRole("button", { name: "More actions" }).click();
-  await page.getByText("Add message to collection", { exact: true }).click();
+  await expect(
+    page.getByText("Add thread to Collection", { exact: true }),
+  ).toHaveCount(0);
+  await page.getByText("Add message to Collection", { exact: true }).click();
   await page
     .getByTestId("add-to-collection-dialog")
     .getByRole("button", { name: "Alpha work" })
@@ -676,7 +707,7 @@ test("shows exact message and thread Collection memberships", async ({
     .filter({ hasText: "Collection membership reply" });
   await replyRow.hover();
   await replyRow.getByRole("button", { name: "More actions" }).click();
-  await page.getByText("Add message to collection", { exact: true }).click();
+  await page.getByText("Add message to Collection", { exact: true }).click();
   page.once("dialog", (dialog) => dialog.accept());
   await page
     .getByTestId("add-to-collection-dialog")
@@ -701,12 +732,11 @@ test("scopes Calendar discovery warnings to their source", async ({ page }) => {
 
   await page.getByRole("button", { name: "Add", exact: true }).click();
   await page.getByLabel("External URL").fill(failingCalendarUrl);
-  await page.getByLabel("Reference label").fill("Planning calendar");
   await page.getByRole("button", { name: "Add external link" }).click();
 
   const warning = page.locator('[data-testid^="collection-calendar-warning-"]');
   await expect(warning).toContainText(
-    "Calendar discovery failed for Planning calendar: Calendar account needs attention",
+    `Calendar discovery failed for ${failingCalendarUrl}: Calendar account needs attention`,
   );
   await expect(
     page.getByText("No recent activity was found across linked sources."),
@@ -734,7 +764,7 @@ test("distinguishes explicit source failures from no activity", async ({
     .filter({ hasText: "Broken activity source" });
   await row.hover();
   await row.locator('[data-testid^="more-actions-"]').click();
-  await page.getByText("Add thread to collection", { exact: true }).click();
+  await page.getByText("Add thread to Collection", { exact: true }).click();
   await page
     .getByTestId("add-to-collection-dialog")
     .getByRole("button", { name: "Source health" })
