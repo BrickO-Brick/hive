@@ -37,12 +37,7 @@ function git(repo, ...args) {
   }).trim();
 }
 
-function createEntrypointFixture({
-  surface,
-  relativeFile,
-  extension,
-  maxLines,
-}) {
+function createEntrypointFixture({ surface, files }) {
   const repo = realpathSync(
     mkdtempSync(path.join(tmpdir(), `file-size-${surface}-`)),
   );
@@ -54,14 +49,12 @@ function createEntrypointFixture({
     path.join(repoRoot, "scripts/check-file-sizes-core.mjs"),
     path.join(scriptsDir, "check-file-sizes-core.mjs"),
   );
-  copyFileSync(
-    path.join(repoRoot, surface, "scripts/check-file-sizes.mjs"),
-    path.join(surfaceScriptsDir, "check-file-sizes.mjs"),
-  );
-  writeFileSync(
-    path.join(surfaceScriptsDir, "file-size-policy.mjs"),
-    `export const rules = [{ root: ${JSON.stringify(path.posix.dirname(relativeFile))}, extensions: new Set([${JSON.stringify(extension)}]), maxLines: ${maxLines} }];\n`,
-  );
+  for (const fileName of ["check-file-sizes.mjs", "file-size-policy.mjs"]) {
+    copyFileSync(
+      path.join(repoRoot, surface, "scripts", fileName),
+      path.join(surfaceScriptsDir, fileName),
+    );
+  }
 
   git(repo, "init", "-b", "main");
   git(repo, "config", "user.name", "Test");
@@ -71,9 +64,11 @@ function createEntrypointFixture({
   const base = git(repo, "rev-parse", "HEAD");
   git(repo, "switch", "-c", "feature");
 
-  const governedFile = path.join(repo, surface, relativeFile);
-  mkdirSync(path.dirname(governedFile), { recursive: true });
-  writeFileSync(governedFile, `${"line\n".repeat(maxLines)}line`);
+  for (const { relativeFile, maxLines } of files) {
+    const governedFile = path.join(repo, surface, relativeFile);
+    mkdirSync(path.dirname(governedFile), { recursive: true });
+    writeFileSync(governedFile, `${"line\n".repeat(maxLines)}line`);
+  }
 
   const entrypointPath = path.join(surfaceScriptsDir, "check-file-sizes.mjs");
   const result = spawnSync(realpathSync(process.execPath), [entrypointPath], {
@@ -81,7 +76,7 @@ function createEntrypointFixture({
     encoding: "utf8",
     env: { ...process.env, CHECK_FILE_SIZES_BASE: base },
   });
-  return { result, relativeFile };
+  return { result, relativeFiles: files.map(({ relativeFile }) => relativeFile) };
 }
 
 test("local base resolution uses the branch merge-base and fails without origin/main", () => {
@@ -105,36 +100,49 @@ test("local base resolution uses the branch merge-base and fails without origin/
   );
 });
 
-test("surface entrypoints execute their exported policies", () => {
+test("surface entrypoints execute every production rule", () => {
   const cases = [
     {
       surface: "desktop",
-      relativeFile: "src-tauri/src/oversized.rs",
-      extension: ".rs",
-      maxLines: 1500,
+      files: [
+        { relativeFile: "src-tauri/src/oversized.rs", maxLines: 1500 },
+        { relativeFile: "src-tauri/crates/oversized.rs", maxLines: 1500 },
+        { relativeFile: "src/app/oversized.ts", maxLines: 1200 },
+        { relativeFile: "src/features/oversized.tsx", maxLines: 1200 },
+        { relativeFile: "src/shared/api/oversized.ts", maxLines: 1200 },
+        { relativeFile: "src/shared/context/oversized.tsx", maxLines: 1200 },
+        { relativeFile: "src/shared/lib/oversized.ts", maxLines: 1200 },
+        { relativeFile: "src/shared/ui/oversized.tsx", maxLines: 1200 },
+        { relativeFile: "src/shared/styles/oversized.css", maxLines: 1200 },
+      ],
     },
     {
       surface: "mobile",
-      relativeFile: "lib/oversized.dart",
-      extension: ".dart",
-      maxLines: 1200,
+      files: [{ relativeFile: "lib/oversized.dart", maxLines: 1200 }],
     },
     {
       surface: "web",
-      relativeFile: "src/app/oversized.ts",
-      extension: ".ts",
-      maxLines: 1000,
+      files: [
+        { relativeFile: "src/app/oversized.ts", maxLines: 1000 },
+        { relativeFile: "src/features/oversized.tsx", maxLines: 1000 },
+        { relativeFile: "src/shared/api/oversized.ts", maxLines: 1000 },
+      ],
     },
   ];
 
   for (const fixture of cases) {
-    const { result, relativeFile } = createEntrypointFixture(fixture);
+    const { result, relativeFiles } = createEntrypointFixture(fixture);
     assert.equal(
       result.status,
       1,
-      `${fixture.surface} should reject ceiling + 1: ${result.stderr || result.stdout}`,
+      `${fixture.surface} should reject every ceiling + 1: ${result.stderr || result.stdout}`,
     );
-    assert.ok(result.stderr.includes(relativeFile), result.stderr);
+    for (const relativeFile of relativeFiles) {
+      assert.ok(
+        result.stderr.includes(relativeFile),
+        `${fixture.surface} should report ${relativeFile}: ${result.stderr}`,
+      );
+    }
   }
 });
 
