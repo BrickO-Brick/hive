@@ -2,9 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  CUSTOM_ACP_COMMAND_VALUE,
+  DEFAULT_ACP_COMMAND_VALUE,
   acpCommandPickerState,
-  acpCommandSelectionToValue,
 } from "./acpCommandPicker.ts";
 
 const candidate = {
@@ -12,63 +11,47 @@ const candidate = {
   binaryPath: "/bin/buzz-janet-acp",
 };
 
-test("stock and discovered commands select presets", () => {
-  assert.equal(
-    acpCommandPickerState("buzz-acp", [candidate]).selectValue,
-    "buzz-acp",
-  );
+test("stock and discovered commands select discovered options", () => {
+  const defaultState = acpCommandPickerState("buzz-acp", [candidate]);
+  assert.equal(defaultState.selectValue, "buzz-acp");
+  assert.deepEqual(defaultState.options, [
+    { label: "Buzz ACP (default)", value: "buzz-acp" },
+    { label: "buzz-janet-acp", value: "buzz-janet-acp" },
+  ]);
+
   assert.equal(
     acpCommandPickerState("buzz-janet-acp", [candidate]).selectValue,
     "buzz-janet-acp",
   );
 });
 
-test("arbitrary commands remain custom before discovery and on query failure", () => {
-  const state = acpCommandPickerState("my-acp", []);
-  assert.equal(state.isPreset, false);
-  assert.equal(state.selectValue, CUSTOM_ACP_COMMAND_VALUE);
-});
-
-test("late candidate arrival promotes the matching command without changing it", () => {
-  assert.equal(acpCommandPickerState("buzz-janet-acp", []).isPreset, false);
+test("an empty command selects the stock default", () => {
   assert.equal(
-    acpCommandPickerState("buzz-janet-acp", [candidate]).isPreset,
-    true,
+    acpCommandPickerState("", [candidate]).selectValue,
+    DEFAULT_ACP_COMMAND_VALUE,
   );
 });
 
-test("a custom command equal to the UI sentinel remains editable custom state", () => {
-  const state = acpCommandPickerState(CUSTOM_ACP_COMMAND_VALUE, [candidate]);
-  assert.equal(state.isPreset, false);
-  assert.equal(state.selectValue, CUSTOM_ACP_COMMAND_VALUE);
+test("a persisted unknown command is preserved as a read-only current option", () => {
+  const state = acpCommandPickerState("my-acp", [candidate]);
+  assert.equal(state.selectValue, "my-acp");
+  assert.deepEqual(state.options.at(-1), {
+    label: "my-acp (current)",
+    value: "my-acp",
+  });
 });
 
-test("choosing Custom clears a preset but preserves an existing custom command", () => {
-  assert.equal(
-    acpCommandSelectionToValue({
-      currentCommand: "buzz-janet-acp",
-      isPreset: true,
-      selection: CUSTOM_ACP_COMMAND_VALUE,
-    }),
-    "",
-  );
-  assert.equal(
-    acpCommandSelectionToValue({
-      currentCommand: "my-acp",
-      isPreset: false,
-      selection: CUSTOM_ACP_COMMAND_VALUE,
-    }),
-    "my-acp",
-  );
-});
+test("late discovery replaces the current marker without changing the command", () => {
+  const before = acpCommandPickerState("buzz-janet-acp", []);
+  assert.deepEqual(before.options.at(-1), {
+    label: "buzz-janet-acp (current)",
+    value: "buzz-janet-acp",
+  });
 
-test("choosing a concrete command persists it", () => {
-  assert.equal(
-    acpCommandSelectionToValue({
-      currentCommand: "my-acp",
-      isPreset: false,
-      selection: "buzz-acp",
-    }),
-    "buzz-acp",
-  );
+  const after = acpCommandPickerState("buzz-janet-acp", [candidate]);
+  assert.equal(after.selectValue, "buzz-janet-acp");
+  assert.deepEqual(after.options.at(-1), {
+    label: "buzz-janet-acp",
+    value: "buzz-janet-acp",
+  });
 });

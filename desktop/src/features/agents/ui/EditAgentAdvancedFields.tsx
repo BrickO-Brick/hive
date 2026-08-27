@@ -30,10 +30,7 @@ import {
 } from "../lib/agentConfigCore";
 
 import { PersonaDropdownField } from "./PersonaDropdownField";
-import {
-  acpCommandPickerState,
-  acpCommandSelectionToValue,
-} from "./acpCommandPicker";
+import { acpCommandPickerState } from "./acpCommandPicker";
 
 export function EditAgentAdvancedFields({
   acpCommand,
@@ -293,40 +290,11 @@ export function EditAgentAdvancedFields({
         <PersonaDropdownField
           disabled={disabled}
           id="edit-agent-acp-command"
-          onValueChange={(selection) =>
-            onAcpCommandChange(
-              acpCommandSelectionToValue({
-                currentCommand: acpCommand,
-                isPreset: acpCommandPicker.isPreset,
-                selection,
-              }),
-            )
-          }
+          onValueChange={onAcpCommandChange}
           options={acpCommandPicker.options}
           placeholder="Choose an ACP command"
           value={acpCommandPicker.selectValue}
         />
-        {!acpCommandPicker.isPreset ? (
-          <div
-            className={cn(
-              "flex min-h-11 items-center px-3",
-              PERSONA_FIELD_SHELL_CLASS,
-            )}
-          >
-            <Input
-              autoCorrect="off"
-              className={cn(
-                "h-8 px-0 py-0 leading-6",
-                PERSONA_FIELD_CONTROL_CLASS,
-              )}
-              disabled={disabled}
-              id="edit-agent-custom-acp-command"
-              onChange={(event) => onAcpCommandChange(event.target.value)}
-              placeholder="ACP command"
-              value={acpCommand}
-            />
-          </div>
-        ) : null}
       </div>
 
       {/* System prompt override — hidden for linked instances; the persona

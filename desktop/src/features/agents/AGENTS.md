@@ -291,9 +291,9 @@ with a TypeScript lookup table or an id comparison in a component.
   every profile tab when opened from Agents and from the agent's DM.
 - `ui/AgentConfigPanelPresentation.test.mjs` — shared profile/agent config rows
   show only effective values, with an em dash for unknown values.
-- `ui/acpCommandPicker.test.mjs` — stock/discovered/custom command mode,
-  late discovery, query-failure behavior, sentinel collision safety, and the
-  preset-to-custom clearing versus custom-command preservation contract.
+- `ui/acpCommandPicker.test.mjs` — stock/discovered/current command mode,
+  late discovery, query-failure compatibility, and conventional replacement of
+  persisted unknown commands.
 - `ui/effortPicker.test.mjs` — `effortPickerState` gating (local + discovered
   `effortConfigId` renders; provider backend or missing configId hides) and
   option/preselect compute, plus `effortSelectionToPersistedValue` sentinel →
