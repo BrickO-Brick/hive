@@ -17,6 +17,7 @@ import {
   type AgentSnapshotImportPreview,
   type AgentSnapshotImportResult,
 } from "@/features/agents/hooks";
+import { withoutBestiePersona } from "@/features/agents/lib/bestie";
 import {
   getLibraryPersonas,
   getPersonaLabelsById,
@@ -148,15 +149,17 @@ export function usePersonaActions() {
   );
   const catalogPersonas = React.useMemo(
     () =>
-      catalogPersonasFromPublications(
-        publications,
-        personas,
-        identityQuery.data?.pubkey,
+      withoutBestiePersona(
+        catalogPersonasFromPublications(
+          publications,
+          personas,
+          identityQuery.data?.pubkey,
+        ),
       ),
     [identityQuery.data?.pubkey, personas, publications],
   );
   const libraryPersonas = React.useMemo(
-    () => getLibraryPersonas(personas),
+    () => withoutBestiePersona(getLibraryPersonas(personas)),
     [personas],
   );
   const personaLabelsById = React.useMemo(

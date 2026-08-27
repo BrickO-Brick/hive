@@ -34,7 +34,7 @@ export function BestieSection({
   return (
     <section className="relative space-y-4" data-testid="agents-bestie-section">
       <SectionHeader
-        description="One agent that keeps up with work connected to you and helps you decide where your attention matters."
+        description="This is your primary agent in Buzz. It follows the work you’re a part of, takes action where you want it to, and helps you decide where your attention matters."
         title="Your bestie"
       />
 
@@ -70,7 +70,7 @@ export function BestieSection({
           </div>
 
           <div className="mt-5 border-t border-border/60 pt-4">
-            <p className="text-sm font-medium">What it can do right now</p>
+            <p className="text-sm font-medium">What it can do</p>
             {enabledCapabilities.length > 0 ? (
               <div className="mt-2.5 flex flex-wrap gap-1.5">
                 {enabledCapabilities.map((capability) => (
@@ -81,30 +81,32 @@ export function BestieSection({
               </div>
             ) : (
               <p className="mt-1.5 text-sm leading-6 text-muted-foreground">
-                It can keep up with your work and answer you, but it won’t act
-                for you or speak anywhere else yet.
+                {agent.name} follows your work and answers you. It can’t act for
+                you or post anywhere else.
               </p>
             )}
           </div>
         </div>
       ) : (
-        <div className="rounded-2xl border border-dashed border-border/70 p-6">
-          <span className="flex size-10 items-center justify-center rounded-xl bg-primary/12 text-primary">
-            <Sparkles />
-          </span>
-          <h3 className="mt-4 text-base font-semibold tracking-tight">
-            Set up your bestie
-          </h3>
-          <p className="mt-1.5 max-w-xl text-sm leading-6 text-muted-foreground">
-            Your bestie keeps up with conversations connected to you, catches
-            you up on what changed, and tells you when joining could make a
-            difference. Create a new agent or give the role to one you already
-            use.
-          </p>
-          <Button className="mt-5" onClick={onSetUp} size="sm">
+        <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-border/60 px-6 py-12 text-center">
+          <Sparkles className="size-9 text-muted-foreground/40" />
+          <div className="space-y-1">
+            <p className="text-sm font-medium text-foreground">
+              Set up your bestie
+            </p>
+            <p className="text-sm text-muted-foreground">
+              Configure your bestie’s persona and permissions.
+            </p>
+          </div>
+          <Button className="mt-2" onClick={onSetUp} size="sm">
             <Bot />
             Set up your bestie
           </Button>
+          <p className="mt-5 max-w-md border-t border-border/50 pt-5 text-sm italic leading-6 text-muted-foreground/70">
+            A thread you were mentioned in turns into a decision while you’re
+            heads down. Your bestie notices, sends you a message, and catches
+            you up. You decide what to do about it.
+          </p>
         </div>
       )}
     </section>
