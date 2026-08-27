@@ -353,11 +353,15 @@ export function CommunityChoicePreview({
         transitionKey="preview-community-choice"
       >
         <div className="w-full max-w-[760px]">
-          <h1 className="text-title font-normal">Join or create a community</h1>
+          <h1 className="text-title font-normal">
+            {includeExistingCommunity
+              ? "Join or create a community"
+              : "Buzz happens in communities"}
+          </h1>
           <p className="mt-3 text-sm leading-6 text-foreground/80">
             {includeExistingCommunity
               ? "Join with an invite, create your own community, or reconnect one you already have."
-              : "Join with an invite or create your own community."}
+              : "Communities are shared spaces where people and agents work together."}
           </p>
         </div>
         <div className="flex w-full flex-1 translate-y-16 flex-col items-center justify-center gap-20 py-8">
@@ -387,12 +391,14 @@ export function CommunityEntryPreview({
   current = 5,
   onBack,
   onContinue,
+  previewVariant = "today",
   route,
   total,
 }: {
   current?: number;
   onBack: () => void;
   onContinue: (communityName: string) => void;
+  previewVariant?: "today" | "v3";
   route: Exclude<CommunityPreviewRoute, "create">;
   total?: number;
 }) {
@@ -417,7 +423,9 @@ export function CommunityEntryPreview({
           <p className="mt-3 text-sm leading-6 text-foreground/80">
             {route === "existing"
               ? "Enter the community URL or an invite link. Your role will be restored when you connect."
-              : "Enter the invite link or community URL you received."}
+              : previewVariant === "v3"
+                ? "Paste the community URL or invite link you received."
+                : "Enter the invite link or community URL you received."}
           </p>
         </div>
         <div className="flex w-full flex-1 flex-col items-center justify-center gap-16">
@@ -434,11 +442,14 @@ export function CommunityEntryPreview({
           {route === "join" ? (
             <div className="w-full max-w-[560px] text-left">
               <p className="text-sm font-medium text-foreground">
-                Joining a private community?
+                {previewVariant === "v3"
+                  ? "Need to request access to a community?"
+                  : "Joining a private community?"}
               </p>
               <p className="mt-2 text-sm leading-6 text-foreground/75">
-                Some communities need the owner to add you before you can join.
-                Copy your public ID and send it to the community owner.
+                {previewVariant === "v3"
+                  ? "Some communities require an admin to add you before you can join. Copy your public ID and send it to them."
+                  : "Some communities need the owner to add you before you can join. Copy your public ID and send it to the community owner."}
               </p>
               <div className="mt-4 flex items-center gap-3 rounded-xl border border-foreground/10 bg-background/35 px-4 py-3">
                 <code className="min-w-0 flex-1 truncate font-mono text-xs text-foreground/80">

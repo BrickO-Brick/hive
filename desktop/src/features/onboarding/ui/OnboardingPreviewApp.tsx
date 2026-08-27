@@ -935,6 +935,7 @@ export function OnboardingPreviewApp() {
             setCommunityName(name);
             setPage(journey.afterCommunityEntry);
           }}
+          previewVariant={variant}
           route={communityRoute}
           total={journey.totalSteps}
         />
