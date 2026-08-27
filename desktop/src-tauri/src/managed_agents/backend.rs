@@ -1,3 +1,4 @@
+use super::discovery::resolve_command;
 use sha2::{Digest, Sha256};
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -583,6 +584,53 @@ fn provider_id_from_filename(name: &str) -> Option<&str> {
     (!id.is_empty()).then_some(id)
 }
 
+fn executable_search_dirs() -> Vec<PathBuf> {
+    let path_var = std::env::var_os("PATH").unwrap_or_default();
+    let mut dirs: Vec<PathBuf> = std::env::split_paths(&path_var).collect();
+
+    // Prepend the exe parent dir (Contents/MacOS/ in a .app bundle) so bundled
+    // extensions are found even when the process PATH is minimal.
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            let parent_buf = parent.to_path_buf();
+            if !dirs.contains(&parent_buf) {
+                dirs.insert(0, parent_buf);
+            }
+        }
+    }
+
+    // Also include ~/.local/bin — the conventional location for user-installed
+    // Buzz extension binaries (symlinks created by install scripts).
+    if let Some(home) = dirs::home_dir() {
+        let local_bin = home.join(".local").join("bin");
+        if !dirs.contains(&local_bin) {
+            dirs.push(local_bin);
+        }
+    }
+
+    dirs
+}
+
+fn strip_windows_command_extension(name: &str) -> &str {
+    [".exe", ".bat", ".cmd"]
+        .into_iter()
+        .find_map(|extension| {
+            name.get(name.len().saturating_sub(extension.len())..)
+                .filter(|suffix| suffix.eq_ignore_ascii_case(extension))
+                .map(|_| &name[..name.len() - extension.len()])
+        })
+        .unwrap_or(name)
+}
+
+fn acp_command_from_filename(name: &str, require_windows_extension: bool) -> Option<&str> {
+    let command = strip_windows_command_extension(name);
+    if require_windows_extension && command == name {
+        return None;
+    }
+    let middle = command.strip_prefix("buzz-")?.strip_suffix("-acp")?;
+    (!middle.is_empty()).then_some(command)
+}
+
 /// Enumerate PATH for buzz-backend-* executables. Returns (id, path) pairs.
 /// Only includes files that are executable. Does NOT execute any binaries.
 ///
@@ -595,30 +643,7 @@ pub fn discover_provider_candidates() -> Vec<(String, PathBuf)> {
     let mut seen = std::collections::HashSet::new();
     let mut results = Vec::new();
 
-    let path_var = std::env::var_os("PATH").unwrap_or_default();
-    let mut dirs: Vec<PathBuf> = std::env::split_paths(&path_var).collect();
-
-    // Prepend the exe parent dir (Contents/MacOS/ in a .app bundle) so bundled
-    // providers are found even when the process PATH is minimal.
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            let parent_buf = parent.to_path_buf();
-            if !dirs.contains(&parent_buf) {
-                dirs.insert(0, parent_buf);
-            }
-        }
-    }
-
-    // Also include ~/.local/bin — the conventional location for user-installed
-    // provider binaries (symlinks created by install scripts).
-    if let Some(home) = dirs::home_dir() {
-        let local_bin = home.join(".local").join("bin");
-        if !dirs.contains(&local_bin) {
-            dirs.push(local_bin);
-        }
-    }
-
-    for dir in dirs {
+    for dir in executable_search_dirs() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
@@ -634,6 +659,49 @@ pub fn discover_provider_candidates() -> Vec<(String, PathBuf)> {
             }
         }
     }
+    results
+}
+
+/// Enumerate executable `buzz-*-acp` drop-in wrappers without running them.
+/// The stock `buzz-acp` command is deliberately excluded because it has no
+/// namespaced middle segment and is always the editor's built-in default.
+///
+/// Candidate names come from the normal executable search directories, but
+/// each result is resolved through the same command resolver used at spawn.
+/// This guarantees the path shown for a command is the path that command will
+/// execute, even when managed shims or workspace builds take precedence.
+pub fn discover_acp_command_candidates() -> Vec<(String, PathBuf)> {
+    discover_acp_command_candidates_in(executable_search_dirs(), resolve_command)
+}
+
+fn discover_acp_command_candidates_in(
+    dirs: impl IntoIterator<Item = PathBuf>,
+    mut resolve: impl FnMut(&str) -> Option<PathBuf>,
+) -> Vec<(String, PathBuf)> {
+    let mut seen = std::collections::HashSet::new();
+    let mut results = Vec::new();
+
+    for dir in dirs {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let filename = entry.file_name().to_string_lossy().to_string();
+            let Some(command) = acp_command_from_filename(&filename, cfg!(windows)) else {
+                continue;
+            };
+            if !entry.path().is_file() || !is_executable(&entry.path()) {
+                continue;
+            }
+            if seen.insert(command.to_string()) {
+                if let Some(path) = resolve(command) {
+                    results.push((command.to_string(), path));
+                }
+            }
+        }
+    }
+
+    results.sort_by(|left, right| left.0.cmp(&right.0));
     results
 }
 
@@ -696,6 +764,14 @@ fn is_executable(path: &Path) -> bool {
 #[serde(rename_all = "camelCase")]
 pub struct BackendProviderInfo {
     pub id: String,
+    pub binary_path: String,
+}
+
+/// A PATH-discovered drop-in wrapper for the stock `buzz-acp` harness.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpCommandCandidate {
+    pub command: String,
     pub binary_path: String,
 }
 

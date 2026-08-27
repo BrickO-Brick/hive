@@ -252,6 +252,17 @@ with a TypeScript lookup table or an id comparison in a component.
 
 15. **Databricks model discovery has one shared catalog authority.** Desktop and ACP call the shared `buzz-agent` discovery library; Desktop passes the effective merged `DATABRICKS_MODEL_FILTER` explicitly, and the library applies it to raw workspace endpoint IDs and Unity Catalog model-service FQNs after the additive union. A successful filtered-empty catalog is authoritative: it stays empty, disables switching, and never falls through to configured or known-model fallback. UC FQNs are catalog data and always use the MLflow Chat Completions route, regardless of family-looking text in their components.
 
+16. **ACP command selection is convention-based.** The editor always offers
+    stock `buzz-acp` and installed executable `buzz-*-acp` aliases discovered
+    from normal executable search directories. It does not offer arbitrary
+    command entry. A persisted value outside that set remains visible as a
+    current compatibility option but is not editable; selecting a conventional
+    option replaces it. Discovery returns the path produced by the same resolver
+    used at spawn, so a duplicate alias must never advertise one executable and
+    later launch another. Keep these transitions in the pure
+    `ui/acpCommandPicker.ts` helper and preserve persisted values across loading,
+    failed discovery, and late candidate arrival.
+
 ## The tests that enforce this
 
 - `lib/agentConfigCore.test.mjs` — field model per harness × scope, clearing
@@ -280,6 +291,9 @@ with a TypeScript lookup table or an id comparison in a component.
   every profile tab when opened from Agents and from the agent's DM.
 - `ui/AgentConfigPanelPresentation.test.mjs` — shared profile/agent config rows
   show only effective values, with an em dash for unknown values.
+- `ui/acpCommandPicker.test.mjs` — stock/discovered/custom command mode,
+  late discovery, query-failure behavior, sentinel collision safety, and the
+  preset-to-custom clearing versus custom-command preservation contract.
 - `ui/effortPicker.test.mjs` — `effortPickerState` gating (local + discovered
   `effortConfigId` renders; provider backend or missing configId hides) and
   option/preselect compute, plus `effortSelectionToPersistedValue` sentinel →
