@@ -359,11 +359,7 @@ export function readProjectReviewCheckRuns(storage, key) {
     }
     return Object.fromEntries(
       Object.entries(parsed).filter(
-        ([, run]) =>
-          run &&
-          typeof run === "object" &&
-          !Array.isArray(run) &&
-          run.status === "completed",
+        ([, run]) => run && typeof run === "object" && !Array.isArray(run),
       ),
     );
   } catch {

@@ -549,7 +549,7 @@ test("running review check can be interrupted with a replacement request", async
   );
 });
 
-test("fresh review load restores completed checks but ignores unfinished runs", async ({
+test("fresh review load resumes unfinished checks and captures late results", async ({
   page,
 }) => {
   await enableProjectsFeature(page);
@@ -586,7 +586,7 @@ test("fresh review load restores completed checks but ignores unfinished runs", 
     )
     .toBe(true);
 
-  await page.evaluate(() => {
+  const unfinishedRun = await page.evaluate(() => {
     const key = Object.keys(window.localStorage).find((candidate) =>
       candidate.startsWith("buzz.projects.review-checks.v1:"),
     );
@@ -615,6 +615,11 @@ test("fresh review load restores completed checks but ignores unfinished runs", 
       status: "failed",
     };
     window.localStorage.setItem(key, JSON.stringify(runs));
+    return {
+      agentPubkey: activeRun.agentPubkey as string,
+      openerEventId: activeRun.opener.eventId as string,
+      requestId: "unfinished-request",
+    };
   });
 
   await page
@@ -635,14 +640,42 @@ test("fresh review load restores completed checks but ignores unfinished runs", 
     reloadedRows.nth(0).getByRole("button", { name: "Run check again" }),
   ).toHaveText("");
   await expect(
-    reloadedRows.nth(1).getByRole("button", { name: "Run", exact: true }),
+    reloadedRows.nth(1).getByRole("button", {
+      name: "Interrupt and rerun check",
+      exact: true,
+    }),
   ).toBeEnabled();
-  await expect(reloadedRows.nth(1)).not.toContainText("Running");
+  await expect(reloadedRows.nth(1)).toContainText("Running");
   await expect(
-    reloadedRows.nth(2).getByRole("button", { name: "Run", exact: true }),
+    reloadedRows.nth(2).getByRole("button", {
+      name: "Run check again",
+      exact: true,
+    }),
   ).toBeEnabled();
-  await expect(reloadedRows.nth(2)).not.toContainText("Couldn’t run");
-  await expect(reloadedRows.nth(2)).not.toContainText("Transient failure.");
+  await expect(reloadedRows.nth(2)).toContainText("Couldn’t run");
+  await expect(reloadedRows.nth(2)).toContainText("Transient failure.");
+
+  await waitForMockLiveSubscription(page, "DM");
+  await page.evaluate(({ agentPubkey, openerEventId, requestId }) => {
+    window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
+      channelName: "DM",
+      content: `BUZZ_CHECK_RESULT_V1\n${JSON.stringify({
+        request_id: requestId,
+        conclusion: "approved",
+        summary: "Late result captured after the review remounted.",
+        diff_event_id: null,
+        findings: [],
+      })}`,
+      createdAt: Math.floor(Date.now() / 1_000) + 1,
+      kind: 9,
+      parentEventId: openerEventId,
+      pubkey: agentPubkey,
+    });
+  }, unfinishedRun);
+  await expect(reloadedRows.nth(1)).toContainText("Approved");
+  await expect(reloadedRows.nth(1)).toContainText(
+    "Late result captured after the review remounted.",
+  );
 });
 
 test("concurrent review checks only accept their correlated result", async ({

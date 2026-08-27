@@ -71,6 +71,15 @@ type ReviewCheckRun = {
 
 type ReviewCheckRuns = Record<string, ReviewCheckRun>;
 
+function isReviewCheckStatus(value: unknown): value is ReviewCheckStatus {
+  return (
+    value === "idle" ||
+    value === "running" ||
+    value === "completed" ||
+    value === "failed"
+  );
+}
+
 function normalizeStoredProposal(
   value: unknown,
   agentPubkey: string | null,
@@ -129,13 +138,13 @@ function normalizeStoredRuns(value: Record<string, unknown>): ReviewCheckRuns {
     const raw = candidate as Record<string, unknown>;
     const agentPubkey =
       typeof raw.agentPubkey === "string" ? raw.agentPubkey : null;
+    const proposal = normalizeStoredProposal(raw.proposal, agentPubkey);
+    const status = isReviewCheckStatus(raw.status) ? raw.status : "idle";
     const parsedResult = parseProjectReviewCheckResult(
       raw.result && typeof raw.result === "object"
         ? `BUZZ_CHECK_RESULT_V1\n${JSON.stringify(raw.result)}`
         : "",
     );
-    if (raw.status !== "completed" || !parsedResult) continue;
-    const proposal = normalizeStoredProposal(raw.proposal, agentPubkey);
     const opener =
       raw.opener &&
       typeof raw.opener === "object" &&
@@ -148,7 +157,7 @@ function normalizeStoredRuns(value: Record<string, unknown>): ReviewCheckRuns {
         : undefined;
     runs[checkId] = {
       agentPubkey,
-      status: "completed",
+      status: status === "completed" && !parsedResult ? "idle" : status,
       ...(typeof raw.targetCommit === "string" || raw.targetCommit === null
         ? { targetCommit: raw.targetCommit as string | null }
         : {}),
@@ -159,7 +168,7 @@ function normalizeStoredRuns(value: Record<string, unknown>): ReviewCheckRuns {
         ? { requestId: raw.requestId }
         : {}),
       ...(opener ? { opener } : {}),
-      result: parsedResult,
+      ...(parsedResult ? { result: parsedResult } : {}),
       ...(proposal ? { proposal } : {}),
       ...(proposal && raw.acceptedProposalEventId === proposal.eventId
         ? { acceptedProposalEventId: proposal.eventId }

@@ -64,16 +64,25 @@ type ReviewContextRun = {
   targetCommit?: string | null;
 };
 
+function isReviewContextStatus(value: unknown): value is ReviewContextStatus {
+  return (
+    value === "idle" ||
+    value === "running" ||
+    value === "completed" ||
+    value === "failed"
+  );
+}
+
 function normalizeStoredRun(
   value: Record<string, unknown> | null,
 ): ReviewContextRun | null {
-  if (value?.status !== "completed") return null;
+  if (!value) return null;
+  const status = isReviewContextStatus(value.status) ? value.status : "idle";
   const result = parseProjectReviewContextResult(
     value.result && typeof value.result === "object"
       ? `${PROJECT_REVIEW_CONTEXT_RESULT_MARKER}\n${JSON.stringify(value.result)}`
       : "",
   );
-  if (!result) return null;
   const rawOpener =
     value.opener &&
     typeof value.opener === "object" &&
@@ -97,11 +106,11 @@ function normalizeStoredRun(
     ...(typeof value.requestId === "string"
       ? { requestId: value.requestId }
       : {}),
-    result,
+    ...(result ? { result } : {}),
     ...(typeof value.resultCreatedAt === "number"
       ? { resultCreatedAt: value.resultCreatedAt }
       : {}),
-    status: "completed",
+    status: status === "completed" && !result ? "idle" : status,
     ...(typeof value.targetCommit === "string" || value.targetCommit === null
       ? { targetCommit: value.targetCommit as string | null }
       : {}),

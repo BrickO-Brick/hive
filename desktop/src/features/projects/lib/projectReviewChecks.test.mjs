@@ -296,7 +296,7 @@ test("builds a review-only prompt pinned to the exact commit", () => {
   assert.match(replacementPrompt, /does not cancel or combine any other/);
 });
 
-test("local check state restores only completed runs within its scope", () => {
+test("local check lifecycle is restored within its scope", () => {
   const base = {
     relayUrl: "wss://relay.example",
     signerPubkey: "A".repeat(64),
@@ -335,8 +335,6 @@ test("local check state restores only completed runs within its scope", () => {
     },
   };
   writeProjectReviewCheckRuns(storage, first, runs);
-  assert.deepEqual(readProjectReviewCheckRuns(storage, first), {
-    interface: runs.interface,
-  });
+  assert.deepEqual(readProjectReviewCheckRuns(storage, first), runs);
   assert.deepEqual(readProjectReviewCheckRuns(storage, second), {});
 });

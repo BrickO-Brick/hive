@@ -272,10 +272,7 @@ export function readProjectReviewContextRun(
   if (!storage || !key) return null;
   try {
     const parsed: unknown = JSON.parse(storage.getItem(key) ?? "null");
-    return parsed &&
-      typeof parsed === "object" &&
-      !Array.isArray(parsed) &&
-      (parsed as Record<string, unknown>).status === "completed"
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
       ? (parsed as Record<string, unknown>)
       : null;
   } catch {

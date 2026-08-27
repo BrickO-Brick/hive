@@ -151,14 +151,15 @@ test("context prompt requests previous reviews and future-looking Buzz evidence"
   assert.match(prompt, /"request_id":"request-2"/);
 });
 
-test("only completed generated context is restored", () => {
+test("generated context lifecycle is restored", () => {
   const storage = storageFixture();
   const key = projectReviewContextStorageKey(scope);
-  writeProjectReviewContextRun(storage, key, {
+  const running = {
     agentPubkey: "agent",
     status: "running",
-  });
-  assert.equal(readProjectReviewContextRun(storage, key), null);
+  };
+  writeProjectReviewContextRun(storage, key, running);
+  assert.deepEqual(readProjectReviewContextRun(storage, key), running);
 
   const completed = {
     agentPubkey: "agent",

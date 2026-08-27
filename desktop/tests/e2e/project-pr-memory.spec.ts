@@ -141,6 +141,21 @@ test("review context is discovered by an agent and restored as sourced evidence"
 
   const requestId = requestIdFromPrompt(sentRequest?.content);
   const openerId = await openerEventId(page, requestId);
+
+  await page.getByRole("button", { name: "Review", exact: true }).click();
+  await openAliceReview(page);
+  await page
+    .getByRole("button", { name: "Prior art and future vision", exact: true })
+    .click();
+  const resumed = page.getByTestId("project-review-memory");
+  await expect(resumed).toContainText("Searching");
+  await expect(
+    resumed.getByRole("button", {
+      name: "Interrupt and find context again",
+      exact: true,
+    }),
+  ).toBeEnabled();
+
   await waitForDmSubscription(page);
   await page.evaluate(
     ({ agentPubkey, channelId, openerId, requestId }) => {
@@ -182,7 +197,7 @@ test("review context is discovered by an agent and restored as sourced evidence"
     },
   );
 
-  const result = memory.getByTestId("project-review-context-result");
+  const result = resumed.getByTestId("project-review-context-result");
   await expect(result).toContainText("Keep review checks advisory");
   await expect(result).toContainText("Turn review history into team memory");
   await expect(result).toContainText("#engineering");
