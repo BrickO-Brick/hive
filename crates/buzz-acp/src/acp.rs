@@ -460,7 +460,7 @@ fn install_git_identity(
     cmd: &mut tokio::process::Command,
 ) -> std::io::Result<Option<tempfile::TempDir>> {
     use std::io::{Error, ErrorKind};
-    use std::os::unix::fs::{symlink, PermissionsExt};
+    use std::os::unix::fs::symlink;
 
     // Operator's identity mode, read once here at spawn — never by the wrapper
     // per-invocation, which would let any agent `export BUZZ_GIT_IDENTITY=user`
@@ -510,18 +510,44 @@ fn install_git_identity(
     // the shim's credential-helper-only branch (relay git auth).
     cmd.env("NOSTR_PRIVATE_KEY", &raw_key);
 
-    // `user` mode stops here: the key is staged for the shim's credential
-    // helper, but no attribution machinery is installed — vanilla git resolves
-    // the operator's own identity. `Ok(None)` = no wrapper, manifest, or keyfile
-    // on the harness side.
+    // Whether a relay git credential helper is already configured for this
+    // child. The desktop stages a per-URL `credential.<relay>/git.helper` into
+    // the harness env the child inherits; a headless native `buzz-acp` launch
+    // stages nothing. Installing the nostr helper at the harness layer only
+    // when none is configured gives relay git auth on EVERY launch path
+    // (auth ≠ attribution) while leaving the desktop path byte-for-byte
+    // unchanged and never double-applying a helper.
+    let install_credential = !credential_helper_configured(cmd);
+
+    // `user` mode installs NO attribution machinery — no wrapper, manifest,
+    // keyfile, or authorship/signing config; vanilla git resolves the operator's
+    // own identity. It must still make relay git auth work headlessly: when no
+    // helper is configured (non-desktop launch), install ONLY the nostr
+    // credential helper — a `git-credential-nostr` symlink on PATH plus the
+    // credential config — which reads the staged `NOSTR_PRIVATE_KEY` from the
+    // child env. When the desktop already staged its helper, inherit it
+    // untouched (`Ok(None)`).
     if mode == buzz_git_identity::GitIdentityMode::User {
-        return Ok(None);
+        if !install_credential {
+            return Ok(None);
+        }
+        let dir = new_identity_dir()?;
+        symlink(
+            &std::env::current_exe()?,
+            dir.path().join("git-credential-nostr"),
+        )?;
+        prepend_child_path(cmd, dir.path())?;
+        for (key, value) in
+            buzz_git_identity::to_git_config_env(&buzz_git_identity::nostr_credential_entries())
+        {
+            cmd.env(key, value);
+        }
+        return Ok(Some(dir));
     }
 
     let self_exe = std::env::current_exe()?;
 
-    let dir = tempfile::Builder::new().prefix("buzz-acp-git-").tempdir()?;
-    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))?;
+    let dir = new_identity_dir()?;
 
     // The wrapper `git` shadows the real one; the two nostr helpers back the
     // signing + credential config. All resolve to this binary's multicall.
@@ -540,29 +566,85 @@ fn install_git_identity(
     })?;
 
     // Write the authoritative identity manifest the enforcement wrapper reads.
+    // Only the identity/signing entries go into it — the wrapper's manifest
+    // validator rejects any key outside the eight canonical ones, so the
+    // credential helper is injected as env config below, never persisted here.
     let identity = buzz_git_identity::identity_signing_entries(&id);
     buzz_git_identity::write_identity_manifest(dir.path(), &identity)?;
 
-    // Prepend the wrapper dir to the child's PATH. Prefer a cmd-staged PATH
-    // (a persona may set one), fall back to the process env, so we compose
-    // rather than clobber in both cases.
-    let base_path = child_env(cmd, "PATH")
-        .or_else(|| std::env::var_os("PATH"))
-        .unwrap_or_default();
-    let mut entries = vec![dir.path().to_path_buf()];
-    entries.extend(std::env::split_paths(&base_path));
-    let joined =
-        std::env::join_paths(entries).map_err(|e| Error::new(ErrorKind::InvalidInput, e))?;
-    cmd.env("PATH", joined);
+    // Prepend the wrapper dir to the child's PATH so the wrapper `git` shadows
+    // the real one and the nostr helpers are reachable.
+    prepend_child_path(cmd, dir.path())?;
 
-    // Identity + signing GIT_CONFIG_*, composed over any config already present
-    // (the desktop's per-URL credential helper at KEY_0/KEY_1). Our entries land
-    // at the next free indices so that helper is preserved.
-    for (key, value) in buzz_git_identity::to_git_config_env(&identity) {
+    // Identity + signing GIT_CONFIG_*, plus the relay credential helper when one
+    // is not already configured (so `agent` mode authenticates to relay git
+    // too, not just attributes commits). Composed over any config already
+    // present (the desktop's per-URL credential helper) at the next free
+    // indices, so that helper is preserved.
+    let mut entries = identity;
+    if install_credential {
+        entries.extend(buzz_git_identity::nostr_credential_entries());
+    }
+    for (key, value) in buzz_git_identity::to_git_config_env(&entries) {
         cmd.env(key, value);
     }
 
     Ok(Some(dir))
+}
+
+/// Create a 0700 session-scoped tempdir to hold the git-identity symlinks,
+/// keyfile, and manifest.
+#[cfg(unix)]
+fn new_identity_dir() -> std::io::Result<tempfile::TempDir> {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::Builder::new().prefix("buzz-acp-git-").tempdir()?;
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))?;
+    Ok(dir)
+}
+
+/// Prepend `dir` to the child's `PATH`. Prefer a cmd-staged `PATH` (a persona
+/// may set one), fall back to the process env, so we compose rather than
+/// clobber in both cases.
+#[cfg(unix)]
+fn prepend_child_path(
+    cmd: &mut tokio::process::Command,
+    dir: &std::path::Path,
+) -> std::io::Result<()> {
+    use std::io::{Error, ErrorKind};
+    let base_path = child_env(cmd, "PATH")
+        .or_else(|| std::env::var_os("PATH"))
+        .unwrap_or_default();
+    let mut entries = vec![dir.to_path_buf()];
+    entries.extend(std::env::split_paths(&base_path));
+    let joined =
+        std::env::join_paths(entries).map_err(|e| Error::new(ErrorKind::InvalidInput, e))?;
+    cmd.env("PATH", joined);
+    Ok(())
+}
+
+/// Whether a git credential helper is already configured for `cmd`'s child —
+/// on the harness process env (the desktop stages a per-URL
+/// `credential.<relay>/git.helper`) or staged directly on `cmd`. When true the
+/// harness must not inject its own relay credential helper: doing so would
+/// double-apply it on the desktop path. Scans the `GIT_CONFIG_KEY_*` entries
+/// (whose values are git config key names) for any `credential[.*].helper` key.
+#[cfg(unix)]
+fn credential_helper_configured(cmd: &tokio::process::Command) -> bool {
+    fn is_helper_key(value: &std::ffi::OsStr) -> bool {
+        value.to_str().is_some_and(|s| {
+            let lower = s.to_ascii_lowercase();
+            lower == "credential.helper"
+                || (lower.starts_with("credential.") && lower.ends_with(".helper"))
+        })
+    }
+    fn is_config_key_var(key: &std::ffi::OsStr) -> bool {
+        key.to_str()
+            .is_some_and(|k| k.starts_with("GIT_CONFIG_KEY_"))
+    }
+    cmd.as_std()
+        .get_envs()
+        .any(|(k, v)| is_config_key_var(k) && v.is_some_and(is_helper_key))
+        || std::env::vars_os().any(|(k, v)| is_config_key_var(&k) && is_helper_key(&v))
 }
 
 #[cfg(not(unix))]
@@ -5343,14 +5425,17 @@ mod tests {
 
     /// `BUZZ_GIT_IDENTITY=user` (staged per-agent on the command) installs no
     /// attribution machinery even with a valid key present, so the child's git
-    /// resolves the operator's own identity — but the canonical key is still
-    /// staged as the child's `NOSTR_PRIVATE_KEY` so the shim's credential helper
-    /// can authenticate to relay git (auth ≠ attribution on every launch path).
-    /// The staged mode value outranks the harness process env, proving
-    /// per-agent control.
+    /// resolves the operator's own identity. But a headless launch (no desktop
+    /// per-URL helper) still needs relay git auth, so the harness installs ONLY
+    /// the nostr credential helper: a `git-credential-nostr` symlink on PATH and
+    /// the `credential.helper`/`useHttpPath` config — no authorship or signing.
+    /// The canonical key is staged as the child's `NOSTR_PRIVATE_KEY` so the
+    /// helper (and dev-mcp's shim) can load it (auth ≠ attribution on every
+    /// launch path). The staged mode value outranks the harness process env,
+    /// proving per-agent control.
     #[cfg(unix)]
     #[test]
-    fn install_git_identity_user_mode_installs_nothing_but_stages_key() {
+    fn install_git_identity_user_mode_installs_credential_helper_but_no_attribution() {
         use nostr::ToBech32;
 
         let nsec = nostr::Keys::generate().secret_key().to_bech32().unwrap();
@@ -5358,31 +5443,82 @@ mod tests {
         cmd.env("BUZZ_PRIVATE_KEY", &nsec);
         cmd.env("BUZZ_GIT_IDENTITY", "user");
 
-        let dir = install_git_identity(&mut cmd).expect("user mode must not error");
+        let dir = install_git_identity(&mut cmd)
+            .expect("user mode must not error")
+            .expect("headless user mode must install the credential helper");
+
+        // The credential helper is reachable and configured, but no attribution.
         assert!(
-            dir.is_none(),
-            "user mode must install no identity dir (unconfigured path)"
+            dir.path().join("git-credential-nostr").exists(),
+            "user mode must symlink the credential helper on PATH"
         );
-        // No identity/signing config staged: the child git is vanilla git.
         assert!(
-            child_env(&cmd, "GIT_CONFIG_COUNT").is_none(),
-            "user mode must not inject GIT_CONFIG_* identity/signing config"
+            !dir.path().join("git").exists(),
+            "user mode must not install the enforcement wrapper"
         );
-        // The canonical key IS staged so the shim's credential helper works.
+        assert!(
+            buzz_git_identity::read_identity_manifest(dir.path()).is_none(),
+            "user mode writes no manifest"
+        );
+        assert!(
+            child_env_has_git_config(&cmd, "credential.helper", "nostr"),
+            "user mode must configure the nostr credential helper"
+        );
+        assert!(
+            !child_env_has_git_config_key(&cmd, "user.email"),
+            "user mode must not inject authorship"
+        );
+        assert!(
+            !child_env_has_git_config_key(&cmd, "commit.gpgSign"),
+            "user mode must not inject signing config"
+        );
+        // The canonical key IS staged so the credential helper can load it.
         let staged = child_env(&cmd, "NOSTR_PRIVATE_KEY")
             .and_then(|v| v.into_string().ok())
             .expect("user mode must stage NOSTR_PRIVATE_KEY for the credential helper");
+        assert_eq!(staged, nsec);
+    }
+
+    /// When the desktop already staged its per-URL relay credential helper on
+    /// the child, `user` mode inherits it untouched — no double-apply, no
+    /// harness-installed dir. The desktop path is unchanged.
+    #[cfg(unix)]
+    #[test]
+    fn install_git_identity_user_mode_defers_to_desktop_credential_helper() {
+        use nostr::ToBech32;
+
+        let nsec = nostr::Keys::generate().secret_key().to_bech32().unwrap();
+        let mut cmd = tokio::process::Command::new("true");
+        cmd.env("BUZZ_PRIVATE_KEY", &nsec);
+        cmd.env("BUZZ_GIT_IDENTITY", "user");
+        // Mimic the desktop's per-URL helper staged on the child.
+        cmd.env("GIT_CONFIG_COUNT", "1");
+        cmd.env(
+            "GIT_CONFIG_KEY_0",
+            "credential.https://relay.example/git.helper",
+        );
+        cmd.env("GIT_CONFIG_VALUE_0", "/opt/buzz/git-credential-nostr");
+
+        let dir = install_git_identity(&mut cmd).expect("user mode must not error");
+        assert!(
+            dir.is_none(),
+            "desktop-staged helper means no harness credential install"
+        );
+        // The desktop's config is left exactly as staged.
         assert_eq!(
-            staged, nsec,
-            "user mode must stage the canonical key so relay git auth still works"
+            child_env(&cmd, "GIT_CONFIG_COUNT").and_then(|v| v.into_string().ok()),
+            Some("1".to_string()),
+            "desktop path must be byte-for-byte unchanged"
         );
     }
 
-    /// `agent` (explicit) still enforces: a valid key installs the identity dir
-    /// and injects config, identical to the unset default.
+    /// `agent` (explicit) enforces AND installs the relay credential helper: a
+    /// valid key installs the identity dir + wrapper, writes the manifest, and
+    /// injects authorship/signing PLUS `credential.helper=nostr` (so headless
+    /// agent mode authenticates to relay git, not just attributes commits).
     #[cfg(unix)]
     #[test]
-    fn install_git_identity_agent_mode_enforces() {
+    fn install_git_identity_agent_mode_enforces_and_installs_credential_helper() {
         use nostr::ToBech32;
 
         let nsec = nostr::Keys::generate().secret_key().to_bech32().unwrap();
@@ -5397,6 +5533,75 @@ mod tests {
             buzz_git_identity::read_identity_manifest(dir.path()).is_some(),
             "agent mode must write the enforcement manifest"
         );
+        // The credential helper is NOT persisted into the manifest (the wrapper
+        // rejects non-canonical keys) but IS injected as env config.
+        let manifest = buzz_git_identity::read_identity_manifest(dir.path()).unwrap();
+        assert!(
+            !manifest.iter().any(|(k, _)| k == "credential.helper"),
+            "credential helper must not enter the wrapper manifest"
+        );
+        assert!(
+            child_env_has_git_config(&cmd, "credential.helper", "nostr"),
+            "agent mode must configure relay git auth"
+        );
+    }
+
+    /// The credential-helper detection gate: `credential_helper_configured`
+    /// must recognize a helper staged on `cmd` — both the desktop's per-URL
+    /// `credential.<url>.helper` and a bare `credential.helper` — and report
+    /// false when only unrelated git config (or none) is present. This gate is
+    /// what keeps the harness from double-applying a helper on the desktop path.
+    #[cfg(unix)]
+    #[test]
+    fn credential_helper_configured_detects_staged_helpers() {
+        // Bare credential.helper.
+        let mut bare = tokio::process::Command::new("true");
+        bare.env("GIT_CONFIG_KEY_0", "credential.helper");
+        assert!(credential_helper_configured(&bare));
+
+        // Desktop per-URL helper (case-insensitive, URL-scoped).
+        let mut per_url = tokio::process::Command::new("true");
+        per_url.env(
+            "GIT_CONFIG_KEY_0",
+            "credential.https://relay.example/git.helper",
+        );
+        assert!(credential_helper_configured(&per_url));
+
+        // Unrelated git config only → no helper.
+        let mut unrelated = tokio::process::Command::new("true");
+        unrelated.env("GIT_CONFIG_KEY_0", "credential.useHttpPath");
+        unrelated.env("GIT_CONFIG_KEY_1", "core.pager");
+        assert!(!credential_helper_configured(&unrelated));
+    }
+
+    /// Read the flattened `GIT_CONFIG_KEY_n`/`VALUE_n` staged on `cmd` and
+    /// report whether `key`=`value` is present.
+    #[cfg(unix)]
+    fn child_env_has_git_config(cmd: &tokio::process::Command, key: &str, value: &str) -> bool {
+        git_config_indices(cmd).any(|(k, v)| k == key && v == value)
+    }
+
+    /// Whether the flattened child git config carries `key` at all.
+    #[cfg(unix)]
+    fn child_env_has_git_config_key(cmd: &tokio::process::Command, key: &str) -> bool {
+        git_config_indices(cmd).any(|(k, _)| k == key)
+    }
+
+    /// Iterate the `(key, value)` pairs staged on `cmd` as `GIT_CONFIG_KEY_n`/
+    /// `GIT_CONFIG_VALUE_n` env vars.
+    #[cfg(unix)]
+    fn git_config_indices(
+        cmd: &tokio::process::Command,
+    ) -> impl Iterator<Item = (String, String)> + '_ {
+        (0..)
+            .map(|i| {
+                (
+                    child_env(cmd, &format!("GIT_CONFIG_KEY_{i}")),
+                    child_env(cmd, &format!("GIT_CONFIG_VALUE_{i}")),
+                )
+            })
+            .take_while(|(k, _)| k.is_some())
+            .filter_map(|(k, v)| Some((k?.into_string().ok()?, v?.into_string().ok()?)))
     }
 
     /// An unrecognized value fails the spawn loudly rather than silently

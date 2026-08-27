@@ -40,26 +40,18 @@ impl Shim {
         // helper are present in both modes: relay git-over-HTTP auth is
         // orthogonal to commit attribution (auth ≠ attribution). The `git`
         // enforcement wrapper (see git_wrapper.rs) and the `git-sign-nostr`
-        // signer are installed only in `agent` mode — in `user` mode the agent
-        // uses vanilla git resolving the operator's own identity, so shadowing
-        // `git` with a wrapper that has no manifest would only fail closed.
+        // signer are installed only once a valid identity + manifest exists
+        // (the `Some(id) if enforce` arm below) — never merely because the mode
+        // is `agent`. The wrapper reads the manifest as its authority and fails
+        // closed when it is absent, so installing it on a keyless/invalid/
+        // unwritable session (where no manifest is written) would shadow `git`
+        // with a wrapper that refuses EVERY command — including plain
+        // `git status`/`clone` — instead of the documented keyless passthrough.
+        // (Fail-closed for a manifest removed AFTER a managed install still
+        // holds: that leaves the wrapper on PATH with no manifest, which the
+        // wrapper itself refuses.) In `user` mode the agent likewise uses
+        // vanilla git resolving the operator's own identity, so no wrapper.
         let mut names = vec!["rg", "tree", "buzz", "git-credential-nostr"];
-        if enforce {
-            names.push("git");
-            names.push("git-sign-nostr");
-        }
-        for name in names {
-            symlink(&self_exe, &dir.path().join(name))?;
-        }
-
-        let original = std::env::var_os("PATH").unwrap_or_default();
-        let mut entries = vec![PathBuf::from(dir.path())];
-        entries.extend(std::env::split_paths(&original));
-        // join_paths uses the platform separator (':' on Unix, ';' on Windows).
-        let path_env = std::env::join_paths(entries)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?
-            .to_string_lossy()
-            .into_owned();
 
         // Ephemeral git config: NOSTR_PRIVATE_KEY → 0600 keyfile (and removed
         // from this process's env so children never see it) → derive identity →
@@ -72,7 +64,9 @@ impl Shim {
         // reads. `user` mode installs only the credential helper (plus the
         // `nostr.keyfile` pointer it loads the key from, since NOSTR_PRIVATE_KEY
         // was just scrubbed) — no authorship, no signing, no manifest, no
-        // wrapper — so commits carry the operator's own identity.
+        // wrapper — so commits carry the operator's own identity. A missing/
+        // invalid/unwritable key (`None`) installs neither wrapper nor config:
+        // plain passthrough git in either mode.
         let git_env = match buzz_git_identity::take_key_and_write(dir.path()) {
             Some(id) if enforce => {
                 let identity = buzz_git_identity::identity_signing_entries(&id);
@@ -81,8 +75,12 @@ impl Shim {
                 // before exec). Without it the wrapper cannot fail closed on an
                 // env-scrubbed identity, so a manifest-write failure disables
                 // enforcement — treat it as fatal rather than ship a wrapper
-                // that silently trusts mutable env.
+                // that silently trusts mutable env. Only after the manifest
+                // exists do we install the wrapper + signer, so the wrapper
+                // always has an authority to enforce against.
                 buzz_git_identity::write_identity_manifest(dir.path(), &identity)?;
+                names.push("git");
+                names.push("git-sign-nostr");
                 let mut entries = identity;
                 entries.extend(buzz_git_identity::nostr_credential_entries());
                 buzz_git_identity::to_git_config_env(&entries)
@@ -94,6 +92,19 @@ impl Shim {
             }
             None => Vec::new(),
         };
+
+        for name in names {
+            symlink(&self_exe, &dir.path().join(name))?;
+        }
+
+        let original = std::env::var_os("PATH").unwrap_or_default();
+        let mut entries = vec![PathBuf::from(dir.path())];
+        entries.extend(std::env::split_paths(&original));
+        // join_paths uses the platform separator (':' on Unix, ';' on Windows).
+        let path_env = std::env::join_paths(entries)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?
+            .to_string_lossy()
+            .into_owned();
 
         Ok(Self {
             _dir: dir,
@@ -146,9 +157,18 @@ mod tests {
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn install_with(mode: Option<&str>) -> Shim {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let nsec = nostr::Keys::generate().secret_key().to_bech32().unwrap();
-        std::env::set_var("NOSTR_PRIVATE_KEY", &nsec);
+        install_with_key(mode, Some(&nsec))
+    }
+
+    /// Install with an explicit `NOSTR_PRIVATE_KEY` state: `Some(k)` sets it,
+    /// `None` unsets it (the keyless direct-shim session).
+    fn install_with_key(mode: Option<&str>, key: Option<&str>) -> Shim {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        match key {
+            Some(k) => std::env::set_var("NOSTR_PRIVATE_KEY", k),
+            None => std::env::remove_var("NOSTR_PRIVATE_KEY"),
+        }
         match mode {
             Some(m) => std::env::set_var("BUZZ_GIT_IDENTITY", m),
             None => std::env::remove_var("BUZZ_GIT_IDENTITY"),
@@ -222,6 +242,46 @@ mod tests {
     fn unset_defaults_to_agent() {
         let shim = install_with(None);
         assert!(shim_dir(&shim).join("git").exists(), "default is agent");
+    }
+
+    #[test]
+    fn keyless_agent_session_gets_passthrough_git_not_a_bricked_wrapper() {
+        // A direct dev-mcp session with NO key (unset) must not shadow `git`:
+        // the wrapper reads a manifest as its authority and fails closed when it
+        // is absent, but no key means no manifest, so installing it would refuse
+        // even `git status`/`clone`. Documented keyless behavior is passthrough.
+        let shim = install_with_key(Some("agent"), None);
+        let dir = shim_dir(&shim);
+        assert!(
+            !dir.join("git").exists(),
+            "keyless session must not install the enforcement wrapper"
+        );
+        assert!(
+            !dir.join("git-sign-nostr").exists(),
+            "no signer without a key"
+        );
+        assert!(
+            buzz_git_identity::read_identity_manifest(&dir).is_none(),
+            "no manifest without a key"
+        );
+        assert!(shim.git_env.is_empty(), "no git config without a key");
+        // Non-git tools still install so the session is otherwise functional.
+        assert!(dir.join("buzz").exists(), "buzz tool still installed");
+    }
+
+    #[test]
+    fn invalid_key_agent_session_gets_passthrough_git_not_a_bricked_wrapper() {
+        // An unparseable key is treated like no key (write_keyfile → None): the
+        // session runs unattributed with plain passthrough git rather than a
+        // wrapper that would refuse every command.
+        let shim = install_with_key(Some("agent"), Some("not-a-valid-nsec"));
+        let dir = shim_dir(&shim);
+        assert!(
+            !dir.join("git").exists(),
+            "invalid-key session must not install the enforcement wrapper"
+        );
+        assert!(buzz_git_identity::read_identity_manifest(&dir).is_none());
+        assert!(shim.git_env.is_empty(), "no git config on an invalid key");
     }
 
     #[test]
