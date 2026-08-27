@@ -39,8 +39,20 @@ const SCRUBBED_ENV: &[&str] = &[
 const MAX_ALIAS_HOPS: usize = 10;
 
 /// Long global options that consume the *following* argv token as their value
-/// (the `--opt value` form; the `--opt=value` form is self-contained). Needed
-/// only to locate the subcommand correctly; agents almost never pass these.
+/// (the `--opt value` form; the `--opt=value` form is self-contained). This
+/// table is load-bearing for the whole enforcement design: [`split_globals`] is
+/// the single point of truth for where the subcommand begins, and every alias
+/// and push-verification probe resolves under the globals it extracts. Any
+/// separate-value global git honors but this table omits desyncs the probe from
+/// the real invocation and reopens an enforcement bypass (round-7 `--shallow-file`).
+///
+/// Must match git's `handle_options()` exactly. Audited against
+/// [git.c v2.54.0](https://github.com/git/git/blob/v2.54.0/git.c#L233-L370):
+/// the complete set of separate-value globals is `--git-dir`, `--work-tree`,
+/// `--namespace`, `--config-env`, `--attr-source`, and `--shallow-file`.
+/// `--super-prefix` is retained though v2.54 rejects it globally (over-enumeration
+/// is inert: it only ever pairs a value git would itself refuse). Re-audit this
+/// table when bumping the pinned git version.
 const VALUE_LONG_OPTS: &[&str] = &[
     "--git-dir",
     "--work-tree",
@@ -48,6 +60,7 @@ const VALUE_LONG_OPTS: &[&str] = &[
     "--super-prefix",
     "--config-env",
     "--attr-source",
+    "--shallow-file",
 ];
 
 /// The harness-owned identity authority: the identity/signing config the
@@ -1604,6 +1617,45 @@ mod tests {
         );
     }
 
+    #[test]
+    fn split_globals_pins_every_git_2_54_separate_value_global() {
+        // `split_globals` is the single point of truth for where the subcommand
+        // begins; every alias/push probe resolves under the globals it extracts.
+        // A separate-value global git honors but the table omits desyncs the
+        // probe from the real invocation (round-7 `--shallow-file`). Pin the
+        // complete git 2.54 `handle_options()` set: each must consume its
+        // following token so the *next* token is the subcommand.
+        //
+        // git.c v2.54.0: --git-dir, --work-tree, --namespace, --config-env,
+        // --attr-source, --shallow-file are the separate-value globals; `-C` and
+        // `-c` are the short-option pair. Re-audit when bumping git.
+        for opt in [
+            "--git-dir",
+            "--work-tree",
+            "--namespace",
+            "--config-env",
+            "--attr-source",
+            "--shallow-file",
+        ] {
+            let (globals, sub_idx) = split_globals(&v(&[opt, "VALUE", "status"]));
+            assert_eq!(
+                globals,
+                v(&[opt, "VALUE"]),
+                "{opt} must consume its following token as a value"
+            );
+            assert_eq!(
+                sub_idx,
+                Some(2),
+                "{opt} must leave `status` (index 2) as the subcommand"
+            );
+        }
+        // The short-option pair `-c`/`-C` likewise consumes a value.
+        for opt in ["-c", "-C"] {
+            let (_, sub_idx) = split_globals(&v(&[opt, "VALUE", "status"]));
+            assert_eq!(sub_idx, Some(2), "{opt} must consume its value token");
+        }
+    }
+
     // ── manifest round-trip ───────────────────────────────────────────────────
 
     #[test]
@@ -1690,9 +1742,10 @@ mod tests {
 
     #[test]
     fn inline_alias_resolving_to_push_is_recognized() {
-        let ctx: Vec<String> = vec![];
+        let argv = v(&["-c", "alias.pub=push", "pub"]);
+        let ctx = caller_globals(&argv);
         assert!(matches!(
-            is_push_command(&real_git(), &v(&["-c", "alias.pub=push", "pub"]), &ctx),
+            is_push_command(&real_git(), &argv, &ctx),
             PushKind::Push
         ));
     }
@@ -1722,115 +1775,90 @@ mod tests {
 
     #[test]
     fn verify_alias_safety_rejects_config_and_quoted_aliases() {
-        let ctx: Vec<String> = vec![];
+        // Each shape carries its alias definition inline (`-c alias.<n>=…`), so
+        // the probe context is the caller's own globals — exactly as `run`
+        // derives it via `caller_globals`.
+        let refused = |argv: Vec<String>| {
+            let ctx = caller_globals(&argv);
+            assert!(verify_alias_safety(&real_git(), &argv, &ctx).is_err());
+        };
         // Bare `-c` config channel.
-        assert!(verify_alias_safety(
-            &real_git(),
-            &v(&["-c", "alias.hc=-c user.email=e@x commit", "hc"]),
-            &ctx
-        )
-        .is_err());
+        refused(v(&["-c", "alias.hc=-c user.email=e@x commit", "hc"]));
         // `--config-env` channel.
-        assert!(verify_alias_safety(
-            &real_git(),
-            &v(&["-c", "alias.hc=--config-env=user.name=V commit", "hc"]),
-            &ctx
-        )
-        .is_err());
+        refused(v(&["-c", "alias.hc=--config-env=user.name=V commit", "hc"]));
         // Quoted tokens — the parser-parity bypass; refused without dequoting.
-        assert!(verify_alias_safety(
-            &real_git(),
-            &v(&["-c", "alias.q='-c' 'user.email=q@x' commit", "q"]),
-            &ctx
-        )
-        .is_err());
+        refused(v(&["-c", "alias.q='-c' 'user.email=q@x' commit", "q"]));
     }
 
     #[test]
     fn verify_alias_safety_rejects_all_shell_aliases() {
-        let ctx: Vec<String> = vec![];
+        let refused = |argv: Vec<String>| {
+            let ctx = caller_globals(&argv);
+            assert!(verify_alias_safety(&real_git(), &argv, &ctx).is_err());
+        };
         // A shell alias with no push and no config is still refused in managed mode.
-        assert!(
-            verify_alias_safety(&real_git(), &v(&["-c", "alias.sh=!git status", "sh"]), &ctx)
-                .is_err()
-        );
+        refused(v(&["-c", "alias.sh=!git status", "sh"]));
         // The commit-path shell bypass Thufir demonstrated.
-        assert!(verify_alias_safety(
-            &real_git(),
-            &v(&[
-                "-c",
-                "alias.sc=!f(){ git -c user.email=shell@x commit \"$@\"; }; f",
-                "sc",
-            ]),
-            &ctx
-        )
-        .is_err());
+        refused(v(&[
+            "-c",
+            "alias.sc=!f(){ git -c user.email=shell@x commit \"$@\"; }; f",
+            "sc",
+        ]));
     }
 
     #[test]
     fn verify_alias_safety_allows_bare_word_aliases() {
-        let ctx: Vec<String> = vec![];
         // Gurney's certified working shapes must all stay allowed, and resolve to
         // their expansion so the caller can hold it to the direct-command policy.
-        assert_eq!(
-            verify_alias_safety(&real_git(), &v(&["-c", "alias.ci=commit", "ci"]), &ctx).unwrap(),
-            Some(v(&["-c", "alias.ci=commit", "commit"]))
+        // The probe runs under `caller_globals(argv)`, exactly as `run` derives it.
+        let expands = |argv: Vec<String>, expected: Option<Vec<String>>| {
+            let ctx = caller_globals(&argv);
+            assert_eq!(
+                verify_alias_safety(&real_git(), &argv, &ctx).unwrap(),
+                expected
+            );
+        };
+        expands(
+            v(&["-c", "alias.ci=commit", "ci"]),
+            Some(v(&["-c", "alias.ci=commit", "commit"])),
         );
-        assert_eq!(
-            verify_alias_safety(&real_git(), &v(&["-c", "alias.st=status", "st"]), &ctx).unwrap(),
-            Some(v(&["-c", "alias.st=status", "status"]))
+        expands(
+            v(&["-c", "alias.st=status", "st"]),
+            Some(v(&["-c", "alias.st=status", "status"])),
         );
-        assert_eq!(
-            verify_alias_safety(
-                &real_git(),
-                &v(&["-c", "alias.lg=log --oneline", "lg"]),
-                &ctx
-            )
-            .unwrap(),
-            Some(v(&["-c", "alias.lg=log --oneline", "log", "--oneline"]))
+        expands(
+            v(&["-c", "alias.lg=log --oneline", "lg"]),
+            Some(v(&["-c", "alias.lg=log --oneline", "log", "--oneline"])),
         );
-        assert_eq!(
-            verify_alias_safety(
-                &real_git(),
-                &v(&["-c", "alias.pub=push origin main", "pub"]),
-                &ctx
-            )
-            .unwrap(),
+        expands(
+            v(&["-c", "alias.pub=push origin main", "pub"]),
             Some(v(&[
                 "-c",
                 "alias.pub=push origin main",
                 "push",
                 "origin",
-                "main"
-            ]))
+                "main",
+            ])),
         );
         // A real (non-alias) subcommand resolves immediately with no expansion.
-        assert_eq!(
-            verify_alias_safety(&real_git(), &v(&["commit", "-m", "x"]), &ctx).unwrap(),
-            None
-        );
+        expands(v(&["commit", "-m", "x"]), None);
     }
 
     #[test]
     fn verify_alias_safety_expands_bare_word_flags_and_appends_trailing_argv() {
-        let ctx: Vec<String> = vec![];
         // Thufir's rd-4 bypass shape: every body token is a bare word, so the
         // allowlist admits it — but the returned expansion carries the flags and
         // the caller's trailing argv, so the direct-command preflight can catch
         // `--author`/`--no-gpg-sign`. This is the unification contract.
+        let human = v(&[
+            "-c",
+            "alias.human=commit --author Human<h@x> --no-gpg-sign",
+            "human",
+            "-m",
+            "leak",
+        ]);
         assert_eq!(
-            verify_alias_safety(
-                &real_git(),
-                &v(&[
-                    "-c",
-                    "alias.human=commit --author Human<h@x> --no-gpg-sign",
-                    "human",
-                    "-m",
-                    "leak",
-                ]),
-                &ctx
-            )
-            .unwrap(),
+            verify_alias_safety(&real_git(), &human, &caller_globals(&human)).unwrap(),
             Some(v(&[
                 "-c",
                 "alias.human=commit --author Human<h@x> --no-gpg-sign",
@@ -1843,19 +1871,15 @@ mod tests {
             ]))
         );
         // A chain accumulates body tokens across hops onto the final command.
+        let chain = v(&[
+            "-c",
+            "alias.chain=co --no-gpg-sign",
+            "-c",
+            "alias.co=commit",
+            "chain",
+        ]);
         assert_eq!(
-            verify_alias_safety(
-                &real_git(),
-                &v(&[
-                    "-c",
-                    "alias.chain=co --no-gpg-sign",
-                    "-c",
-                    "alias.co=commit",
-                    "chain",
-                ]),
-                &ctx
-            )
-            .unwrap(),
+            verify_alias_safety(&real_git(), &chain, &caller_globals(&chain)).unwrap(),
             Some(v(&[
                 "-c",
                 "alias.chain=co --no-gpg-sign",
@@ -1869,27 +1893,18 @@ mod tests {
 
     #[test]
     fn verify_alias_safety_walks_bare_word_chains_and_rejects_config_at_the_end() {
-        let ctx: Vec<String> = vec![];
         // `a` → `b` (both bare-word) → allowed.
-        assert!(verify_alias_safety(
-            &real_git(),
-            &v(&["-c", "alias.a=b", "-c", "alias.b=commit", "a"]),
-            &ctx
-        )
-        .is_ok());
+        let ok = v(&["-c", "alias.a=b", "-c", "alias.b=commit", "a"]);
+        assert!(verify_alias_safety(&real_git(), &ok, &caller_globals(&ok)).is_ok());
         // `a` → `b` where `b` introduces config → refused via the chain.
-        assert!(verify_alias_safety(
-            &real_git(),
-            &v(&[
-                "-c",
-                "alias.a=b",
-                "-c",
-                "alias.b=-c commit.gpgSign=false commit",
-                "a",
-            ]),
-            &ctx
-        )
-        .is_err());
+        let bad = v(&[
+            "-c",
+            "alias.a=b",
+            "-c",
+            "alias.b=-c commit.gpgSign=false commit",
+            "a",
+        ]);
+        assert!(verify_alias_safety(&real_git(), &bad, &caller_globals(&bad)).is_err());
     }
 
     // ── caller-config-introduced aliases: the probe must resolve the exact
@@ -1919,13 +1934,9 @@ mod tests {
         // round-6 smuggling path for the commit case.
         let (_d, inc) =
             alias_include_file(&[("x", "!git -c user.email=evil@x.com commit --no-gpg-sign")]);
-        let ctx: Vec<String> = vec![];
-        let err = verify_alias_safety(
-            &real_git(),
-            &v(&["-c", &format!("include.path={inc}"), "x"]),
-            &ctx,
-        )
-        .expect_err("include.path-introduced shell alias must be refused");
+        let argv = v(&["-c", &format!("include.path={inc}"), "x"]);
+        let err = verify_alias_safety(&real_git(), &argv, &caller_globals(&argv))
+            .expect_err("include.path-introduced shell alias must be refused");
         assert!(err.contains("shell (`!`) git alias"), "{err}");
     }
 
@@ -1934,13 +1945,9 @@ mod tests {
         // A non-shell alias introduced via include.path that resolves to push
         // must be classified as a push so outgoing-author verification runs.
         let (_d, inc) = alias_include_file(&[("x", "push origin main")]);
-        let ctx: Vec<String> = vec![];
+        let argv = v(&["-c", &format!("include.path={inc}"), "x"]);
         assert!(matches!(
-            is_push_command(
-                &real_git(),
-                &v(&["-c", &format!("include.path={inc}"), "x"]),
-                &ctx
-            ),
+            is_push_command(&real_git(), &argv, &caller_globals(&argv)),
             PushKind::Push
         ));
     }
@@ -1953,13 +1960,9 @@ mod tests {
             "BUZZ_TEST_EVIL_ALIAS",
             "!git -c user.email=evil@x.com commit",
         );
-        let ctx: Vec<String> = vec![];
-        let err = verify_alias_safety(
-            &real_git(),
-            &v(&["--config-env=alias.x=BUZZ_TEST_EVIL_ALIAS", "x"]),
-            &ctx,
-        )
-        .expect_err("--config-env shell alias must be refused");
+        let argv = v(&["--config-env=alias.x=BUZZ_TEST_EVIL_ALIAS", "x"]);
+        let err = verify_alias_safety(&real_git(), &argv, &caller_globals(&argv))
+            .expect_err("--config-env shell alias must be refused");
         std::env::remove_var("BUZZ_TEST_EVIL_ALIAS");
         assert!(err.contains("shell (`!`) git alias"), "{err}");
     }
@@ -1967,12 +1970,8 @@ mod tests {
     #[test]
     fn config_env_alias_to_push_is_recognized_push_variant() {
         std::env::set_var("BUZZ_TEST_PUSH_ALIAS", "push origin main");
-        let ctx: Vec<String> = vec![];
-        let kind = is_push_command(
-            &real_git(),
-            &v(&["--config-env=alias.x=BUZZ_TEST_PUSH_ALIAS", "x"]),
-            &ctx,
-        );
+        let argv = v(&["--config-env=alias.x=BUZZ_TEST_PUSH_ALIAS", "x"]);
+        let kind = is_push_command(&real_git(), &argv, &caller_globals(&argv));
         std::env::remove_var("BUZZ_TEST_PUSH_ALIAS");
         assert!(matches!(kind, PushKind::Push));
     }
@@ -1982,14 +1981,15 @@ mod tests {
         // Git normalizes config section names, so `-c ALIAS.x=…` defines
         // `alias.x`. The old hand-rolled `strip_prefix("alias.")` matcher was
         // case-sensitive and missed this; resolving through git closes it.
-        let ctx: Vec<String> = vec![];
         // Push variant: `-c ALIAS.x=push x` classifies as push.
+        let push_argv = v(&["-c", "ALIAS.x=push", "x"]);
         assert!(matches!(
-            is_push_command(&real_git(), &v(&["-c", "ALIAS.x=push", "x"]), &ctx),
+            is_push_command(&real_git(), &push_argv, &caller_globals(&push_argv)),
             PushKind::Push
         ));
         // Commit variant: a case-varied shell alias is refused.
-        let err = verify_alias_safety(&real_git(), &v(&["-c", "ALIAS.x=!git commit", "x"]), &ctx)
+        let shell_argv = v(&["-c", "ALIAS.x=!git commit", "x"]);
+        let err = verify_alias_safety(&real_git(), &shell_argv, &caller_globals(&shell_argv))
             .expect_err("case-varied shell alias must be refused");
         assert!(err.contains("shell (`!`) git alias"), "{err}");
     }
@@ -2010,9 +2010,9 @@ mod tests {
             ),
             PushKind::Push
         ));
-        let empty: Vec<String> = vec![];
+        let inline = v(&["-c", "alias.ci=commit", "ci"]);
         assert_eq!(
-            verify_alias_safety(&real_git(), &v(&["-c", "alias.ci=commit", "ci"]), &empty).unwrap(),
+            verify_alias_safety(&real_git(), &inline, &caller_globals(&inline)).unwrap(),
             Some(v(&["-c", "alias.ci=commit", "commit"]))
         );
     }
@@ -2103,6 +2103,65 @@ mod tests {
         assert!(matches!(
             is_push_command(&real_git(), &argv, &blind_ctx),
             PushKind::NotPush
+        ));
+    }
+
+    #[test]
+    fn shallow_file_value_shape_shell_alias_is_refused_commit_variant() {
+        // Round-7 grammar desync: `git -C <repo> --shallow-file -c x`. Git 2.54
+        // consumes `-c` as the `--shallow-file` VALUE and dispatches alias `x`.
+        // If `split_globals` omitted `--shallow-file` it would treat `x` as the
+        // value of `-c`, find no subcommand, and skip every preflight — letting
+        // the shell alias through. With `--shallow-file` in the table the
+        // subcommand is located at `x` and the probe (under the same globals)
+        // resolves the alias and refuses it.
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        let git = |args: &[&str]| {
+            assert!(std::process::Command::new("git")
+                .args(args)
+                .current_dir(repo)
+                .status()
+                .unwrap()
+                .success());
+        };
+        git(&["init", "-q"]);
+        git(&["config", "alias.x", "!git -c user.email=evil@x.com commit"]);
+        let repo_str = repo.to_str().unwrap();
+        let argv = v(&["-C", repo_str, "--shallow-file", "-c", "x"]);
+        // The subcommand must be located at `x` (index 4), proving the value
+        // token `-c` was consumed by `--shallow-file`.
+        assert_eq!(subcommand(&argv).as_deref(), Some("x"));
+        let ctx = caller_globals(&argv);
+        let err = verify_alias_safety(&real_git(), &argv, &ctx)
+            .expect_err("shallow-file-shape shell alias must be refused");
+        assert!(err.contains("shell (`!`) git alias"), "{err}");
+    }
+
+    #[test]
+    fn shallow_file_value_shape_alias_to_push_is_recognized_push_variant() {
+        // Same desync shape, push variant: `--shallow-file -c p` where `p`
+        // resolves to push must classify as push so the outgoing-author gate
+        // runs. A blind table (no `--shallow-file`) finds no subcommand and
+        // returns NotPush — the round-7 signature-gate bypass.
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        let git = |args: &[&str]| {
+            assert!(std::process::Command::new("git")
+                .args(args)
+                .current_dir(repo)
+                .status()
+                .unwrap()
+                .success());
+        };
+        git(&["init", "-q"]);
+        git(&["config", "alias.p", "push --no-verify origin main"]);
+        let repo_str = repo.to_str().unwrap();
+        let argv = v(&["-C", repo_str, "--shallow-file", "-c", "p"]);
+        let ctx = caller_globals(&argv);
+        assert!(matches!(
+            is_push_command(&real_git(), &argv, &ctx),
+            PushKind::Push
         ));
     }
 
