@@ -786,9 +786,11 @@ export function AppShell() {
                       hasCommunityRail={hasCommunityRail}
                       onGoBack={goBack}
                       onGoForward={goForward}
-                      trailingContent={
-                        bestieEnabled ? <BestieChatPopover /> : null
-                      }
+                    />
+                  ) : null}
+                  {bestieEnabled ? (
+                    <BestieChatPopover
+                      showTrigger={!settingsOpen && !isHuddleRoom}
                     />
                   ) : null}
                   {settingsOpen ? (
