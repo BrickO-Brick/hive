@@ -297,6 +297,14 @@ fn roster_reconcile_action(
     }
 }
 
+fn runtime_needs_mode_probe(current_owners: Option<&[String]>) -> bool {
+    current_owners.is_none_or(<[String]>::is_empty)
+}
+
+fn open_runtime_should_restart(query: &Result<Option<Vec<String>>, String>) -> bool {
+    matches!(query, Ok(Some(_)))
+}
+
 async fn reconcile_roster(
     app: &AppHandle,
     pending_shrink: &mut Option<Vec<String>>,
@@ -312,8 +320,32 @@ async fn reconcile_roster(
             }
         }
     };
-    let Some(current_owners) = current_request.trusted_owner_ids.as_ref() else {
+    let current_owners = current_request.trusted_owner_ids.as_ref();
+    // Closed runtimes keep the existing roster-only reconciliation path. Open
+    // runtimes re-probe NIP-11 so a later open -> closed relay restart is not
+    // hidden by a permanent mode cache.
+    let relay_url = current_request
+        .relay_url
+        .as_deref()
+        .map(str::to_owned)
+        .unwrap_or_else(|| crate::relay::relay_ws_url_with_override(&state));
+    if current_owners.is_none() {
+        let query =
+            crate::commands::mesh_llm::resolve_trusted_owner_ids_at(&state, &relay_url).await;
+        if open_runtime_should_restart(&query) {
+            eprintln!(
+                "buzz-mesh: relay now enforces membership; restarting Buzz to apply its allowlist"
+            );
+            app.request_restart();
+        } else if let Err(error) = query {
+            eprintln!(
+                "buzz-mesh: open-relay mode recheck failed; keeping the running policy: {error}"
+            );
+        }
         *pending_shrink = None;
+        return Ok(());
+    }
+    let Some(current_owners) = current_owners else {
         return Ok(());
     };
     // A failed roster query must NOT be treated as "the roster became empty":
@@ -321,12 +353,16 @@ async fn reconcile_roster(
     // other member on a transient relay blip (the flapping restart loop). Keep
     // the current allowlist and try again on the next poll. A shrink is held
     // for one extra poll (hysteresis) so a single short-read never tears down.
-    let relay_url = current_request
-        .relay_url
-        .as_deref()
-        .map(str::to_owned)
-        .unwrap_or_else(|| crate::relay::relay_ws_url_with_override(&state));
-    let query = crate::commands::mesh_llm::resolve_trusted_owner_ids_at(&state, &relay_url).await;
+    let query = if runtime_needs_mode_probe(Some(current_owners)) {
+        // Self-only is the fail-safe startup policy when the initial NIP-11
+        // probe is inconclusive. Re-probe this isolated state so a later valid
+        // open result can recover it; errors still keep it self-only.
+        crate::commands::mesh_llm::resolve_trusted_owner_ids_at(&state, &relay_url).await
+    } else {
+        crate::commands::mesh_llm::resolve_closed_trusted_owner_ids_at(&state, &relay_url)
+            .await
+            .map(Some)
+    };
     match roster_reconcile_action(current_owners, pending_shrink.as_deref(), query) {
         RosterReconcileAction::Keep => {
             *pending_shrink = None;
@@ -684,6 +720,26 @@ mod tests {
         let recovered =
             roster_reconcile_action(&current, Some(&reduced), Ok(Some(current.clone())));
         assert_eq!(recovered, RosterReconcileAction::Keep);
+    }
+
+    #[test]
+    fn only_open_or_self_only_runtimes_reprobe_mode() {
+        let self_only: Vec<String> = Vec::new();
+        let closed = vec!["owner-a".to_string()];
+        assert!(runtime_needs_mode_probe(None));
+        assert!(runtime_needs_mode_probe(Some(&self_only)));
+        assert!(!runtime_needs_mode_probe(Some(&closed)));
+    }
+
+    #[test]
+    fn open_runtime_restarts_only_for_a_proven_closed_roster() {
+        assert!(open_runtime_should_restart(&Ok(Some(vec![
+            "owner-a".to_string()
+        ]))));
+        assert!(!open_runtime_should_restart(&Ok(None)));
+        assert!(!open_runtime_should_restart(&Err(
+            "NIP-11 timed out".to_string()
+        )));
     }
 
     #[test]

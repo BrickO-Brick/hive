@@ -61,7 +61,19 @@ pub fn relay_mesh_mode_from_nip11(document: &serde_json::Value) -> Result<MeshRe
         .get("supported_nips")
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| "NIP-11 document has no supported_nips array".to_string())?;
-    if nips.iter().any(|nip| nip.as_u64() == Some(43)) {
+    let nips = nips
+        .iter()
+        .enumerate()
+        .map(|(index, nip)| {
+            nip.as_u64()
+                .filter(|value| *value <= u32::MAX as u64)
+                .map(|value| value as u32)
+                .ok_or_else(|| {
+                    format!("NIP-11 supported_nips[{index}] is not a valid u32 NIP number")
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if nips.contains(&43) {
         Ok(MeshRelayMode::ClosedMembershipEnforced)
     } else {
         Ok(MeshRelayMode::OpenNoMembership)

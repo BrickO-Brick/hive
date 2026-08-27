@@ -682,10 +682,22 @@ fn relay_mesh_mode_reads_nip43_advertisement() {
         ),
         Ok(MeshRelayMode::OpenNoMembership)
     );
-    // Missing or malformed mode evidence must fail closed at the caller. An
-    // ambiguous NIP-11 response is not proof that membership is disabled.
+    // Missing, malformed, or partially malformed mode evidence must fail at
+    // the caller. An ambiguous NIP-11 response is not proof of either mode.
     assert!(super::relay_mesh_mode_from_nip11(&json!({})).is_err());
     assert!(super::relay_mesh_mode_from_nip11(&json!({"supported_nips": "not-an-array"})).is_err());
+    for malformed in [
+        json!({"supported_nips": [1, "43"]}),
+        json!({"supported_nips": [1, {"nip": 43}]}),
+        json!({"supported_nips": [1, -1]}),
+        json!({"supported_nips": [1, 43.5]}),
+        json!({"supported_nips": [1, 4_294_967_296_u64]}),
+    ] {
+        assert!(
+            super::relay_mesh_mode_from_nip11(&malformed).is_err(),
+            "partially malformed supported_nips must not prove a relay mode: {malformed}"
+        );
+    }
 }
 
 #[test]
