@@ -737,6 +737,85 @@ fn send_admission_result(
 }
 
 #[cfg(test)]
+mod send_stall_diagnosis {
+    //! Diagnostic: a rate-limited EVENT is unacknowledgeable by the client.
+    //!
+    //! `enforce_ws_admission` rejects an over-quota EVENT via
+    //! `request_rejection_message(None, reason)`, because an EVENT carries no
+    //! subscription id. That yields a bare NOTICE, which contains no event id —
+    //! so a client tracking pending publishes by event id has nothing to key on
+    //! and cannot settle the send. `handle_text_message` then returns early, so
+    //! no OK frame is ever emitted for that event either.
+    //!
+    //! These tests pin the current (defective) shape. They are written to fail
+    //! the moment the rejection becomes a settleable `OK: false`, which is the
+    //! intended fix.
+
+    use super::*;
+
+    /// An over-quota REQ is rejectable: CLOSED carries the sub id, so the
+    /// client can settle the corresponding pending subscription.
+    #[test]
+    fn rejected_req_carries_the_subscription_id() {
+        let frame = request_rejection_message(
+            Some("history-abc"),
+            "rate-limited: quota exceeded; retry in 7s",
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&frame).expect("valid JSON frame");
+        assert_eq!(parsed[0], "CLOSED");
+        assert_eq!(
+            parsed[1], "history-abc",
+            "a REQ rejection must name the subscription it rejected"
+        );
+    }
+
+    /// An over-quota EVENT is NOT rejectable: the frame is a bare NOTICE with
+    /// no correlation id of any kind. This is the send-stall defect.
+    #[test]
+    fn rejected_event_carries_no_correlation_id() {
+        let frame = request_rejection_message(None, "rate-limited: quota exceeded; retry in 7s");
+        let parsed: serde_json::Value = serde_json::from_str(&frame).expect("valid JSON frame");
+
+        assert_eq!(
+            parsed[0], "NOTICE",
+            "current behavior: an EVENT rejection degrades to NOTICE"
+        );
+
+        // The frame is exactly ["NOTICE", reason] — two elements, no id.
+        let array = parsed.as_array().expect("frame is a JSON array");
+        assert_eq!(
+            array.len(),
+            2,
+            "a NOTICE has no slot for an event id, so the client cannot \
+             correlate this rejection with the send that caused it"
+        );
+        assert_ne!(
+            parsed[0], "OK",
+            "REGRESSION GUARD: once an over-quota EVENT is answered with \
+             OK:false, this test must be updated — and the client-side \
+             25s publish stall it documents is fixed"
+        );
+    }
+
+    /// The shape a settleable rejection would have, for contrast: `OK` binds
+    /// the verdict to the event id, which is what the desktop client's pending
+    /// publish map is keyed by.
+    #[test]
+    fn ok_false_would_be_settleable() {
+        let event_id = "b".repeat(64);
+        let frame = RelayMessage::ok(
+            &event_id,
+            false,
+            "rate-limited: quota exceeded; retry in 7s",
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&frame).expect("valid JSON frame");
+        assert_eq!(parsed[0], "OK");
+        assert_eq!(parsed[1], event_id, "OK binds the verdict to the event id");
+        assert_eq!(parsed[2], false, "and carries an explicit rejection");
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
