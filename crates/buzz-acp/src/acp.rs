@@ -48,6 +48,16 @@ const PERMISSION_ASK_TIMEOUT_SECS: u64 = 300;
 /// `min(now + SENTINEL_PUBLISH_TIMEOUT_SECS, expiresAt)`.
 pub(crate) const SENTINEL_PUBLISH_TIMEOUT_SECS: u64 = 10;
 
+/// Delay between resolved kind-40003 edit retransmission attempts.
+///
+/// The permission decision is already irreversible by the time the resolved
+/// edit publishes, so the edit must reach the relay to retire the UI card.
+/// While the relay is disconnected an acked publish resolves as `Uncertain`
+/// immediately; this backoff paces retransmission of the same signed event
+/// across a reconnect instead of busy-looping. Bounded overall by the card's
+/// expiry.
+const RESOLVED_RETRANSMIT_BACKOFF: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// An MCP server configuration passed to `session/new`.
 ///
 /// Corresponds to the `McpServerStdio` variant in the ACP schema.
@@ -1556,6 +1566,7 @@ impl AcpClient {
                         e.card_actions.clone(),
                         e.nonce.clone(),
                         e.expiry_unix_secs,
+                        e.deadline,
                     )
                 });
                 // Remove entry — absence of the nonce is the replay guard.
@@ -1582,6 +1593,7 @@ impl AcpClient {
                     card_actions,
                     entry_nonce,
                     expiry_unix_secs,
+                    entry_deadline,
                 )) = sentinel_context
                 {
                     // Clone all relay context upfront to avoid holding &mut self borrows
@@ -1621,7 +1633,20 @@ impl AcpClient {
                                 &original_event_id,
                                 &content,
                             ) {
-                                let _ = publisher.publish_event(event).await;
+                                // The decision is already irreversible (ACP
+                                // response written, entry removed above). Publish
+                                // via the acked lane with bounded retransmission
+                                // so a socket failure at this instant doesn't
+                                // permanently strand the card as "Timed out" —
+                                // the same signed event is idempotently resent on
+                                // Uncertain until the relay accepts it or the
+                                // card expires. Detached so the read loop is
+                                // never blocked.
+                                tokio::spawn(retransmit_resolved_edit(
+                                    publisher,
+                                    event,
+                                    entry_deadline,
+                                ));
                             }
                         }
                     }
@@ -3923,6 +3948,81 @@ fn build_kind40003_sentinel(
         .tags(tags)
         .sign_with_keys(keys)
         .ok()
+}
+
+/// Retransmit an already-signed resolved kind-40003 edit until the relay
+/// accepts it, bounded by the card's expiry deadline.
+///
+/// The permission decision is irreversible before this runs (`finish_permission`
+/// has already written the ACP response and removed the entry). A plain
+/// fire-and-forget publish loses the edit whenever the socket is down at that
+/// instant — the relay background task drops non-observer publishes while
+/// disconnected — leaving the authoritative thread card stuck as "Timed out"
+/// even though execution continued. Reusing the pending path's acked lane, this
+/// retransmits the *same signed event* (idempotent by event id) on every
+/// `Uncertain` outcome, pausing [`RESOLVED_RETRANSMIT_BACKOFF`] between tries so
+/// a reconnect can carry it through. `Accepted`/`Rejected` are terminal (the
+/// relay saw it); past `expiry_deadline` the card is timed-out anyway, so that
+/// is the natural retry bound.
+///
+/// Spawned detached so it never blocks the read loop. `event` is consumed and
+/// resent by clone each attempt so the signature and id are stable across retries.
+async fn retransmit_resolved_edit(
+    publisher: RelayEventPublisher,
+    event: nostr::Event,
+    expiry_deadline: tokio::time::Instant,
+) {
+    loop {
+        if tokio::time::Instant::now() >= expiry_deadline {
+            tracing::warn!(
+                target: "acp::permission",
+                "resolved edit {} not accepted before card expiry — giving up",
+                event.id.to_hex()
+            );
+            return;
+        }
+        // Register the acked publish with the card's expiry as the per-waiter
+        // deadline so a disconnected relay resolves the waiter promptly rather
+        // than parking it past the point the card is useful.
+        match publisher
+            .register_publish_ack(event.clone(), expiry_deadline)
+            .await
+        {
+            Ok(ack_rx) => match ack_rx.await.unwrap_or(crate::relay::AckOutcome::Uncertain) {
+                crate::relay::AckOutcome::Accepted => {
+                    tracing::debug!(
+                        target: "acp::permission",
+                        "resolved edit {} accepted by relay",
+                        event.id.to_hex()
+                    );
+                    return;
+                }
+                crate::relay::AckOutcome::Rejected { message } => {
+                    tracing::warn!(
+                        target: "acp::permission",
+                        "resolved edit {} rejected by relay: {message} — not retrying",
+                        event.id.to_hex()
+                    );
+                    return;
+                }
+                crate::relay::AckOutcome::Uncertain => {
+                    // Socket down or ACK deadline swept: back off, then resend
+                    // the identical signed event once a reconnect is possible.
+                }
+            },
+            Err(_) => {
+                // Command channel closed — the relay task is gone for good;
+                // no reconnect will happen, so stop.
+                tracing::warn!(
+                    target: "acp::permission",
+                    "resolved edit {} publish channel closed — giving up",
+                    event.id.to_hex()
+                );
+                return;
+            }
+        }
+        tokio::time::sleep(RESOLVED_RETRANSMIT_BACKOFF).await;
+    }
 }
 
 /// Select the unique `allow_once` option from a permission request's option list.
@@ -8278,6 +8378,14 @@ mod tests {
                 .handle_permission_request(&msg, hard_deadline)
                 .await
                 .expect("ask registration must succeed");
+            // In production the relay ACK transitions the entry Publishing →
+            // Pending in the read loop before the next request arrives, so two
+            // Pending entries legitimately coexist. This test does not drive the
+            // loop between registrations, so apply that transition explicitly —
+            // otherwise the publish-in-flight guard denies the second request.
+            if let Some(entry) = client.pending_permissions.get_mut(&i.to_string()) {
+                entry.state = PermissionEntryState::Pending;
+            }
             // Capture the nonce that was bound to this entry.
             let nonce = client
                 .pending_permissions
@@ -9173,6 +9281,14 @@ mod tests {
                 .handle_permission_request(&msg, hard)
                 .await
                 .expect("ask registration must succeed");
+            // In production the relay ACK transitions the entry Publishing →
+            // Pending in the read loop before the next request arrives, so two
+            // Pending entries legitimately coexist. This test does not drive the
+            // loop between registrations, so apply that transition explicitly —
+            // otherwise the publish-in-flight guard denies the second request.
+            if let Some(entry) = client.pending_permissions.get_mut(&i.to_string()) {
+                entry.state = PermissionEntryState::Pending;
+            }
         }
         assert_eq!(
             client.pending_permissions.len(),
@@ -9917,6 +10033,159 @@ mod tests {
             !denial_writes.is_empty(),
             "a denial write must be emitted after deadline fires during Publishing; events: {events:?}"
         );
+    }
+
+    /// Resolved-edit delivery survives a relay disconnect at decision time.
+    ///
+    /// The permission decision is irreversible once `finish_permission` writes
+    /// the ACP response and removes the entry, so the resolved kind-40003 edit
+    /// that retires the UI card MUST reach the relay even if the socket is down
+    /// at that instant. This drives the full production lifecycle (Publishing →
+    /// Pending → Writing via an early-buffered decision → `finish_permission`),
+    /// with a publisher that reports the FIRST resolved-edit publish as
+    /// `Uncertain` (disconnected) and every later one as `Accepted`
+    /// (reconnected). The fix retransmits the *same signed event* on Uncertain,
+    /// so the card is repaired on reconnect.
+    ///
+    /// Acceptance bar (mutation proof): reverting the production path to a
+    /// fire-and-forget `publisher.publish_event(event)` publishes the resolved
+    /// edit exactly once with no ACK awaited, so only ONE kind-40003 event is
+    /// ever emitted and this test goes red on the retransmission assertion.
+    #[tokio::test]
+    async fn resolved_edit_retransmitted_until_accepted_across_disconnect() {
+        // Script reads the one permission response line (early-decision path), then idles.
+        let capture_file = std::env::temp_dir().join(format!(
+            "buzz-acp-resolved-retx-{}.json",
+            uuid::Uuid::new_v4()
+        ));
+        let script = format!(
+            r#"read -r resp; printf '%s' "$resp" > {capture}; sleep 5"#,
+            capture = capture_file.display(),
+        );
+        let mut client = spawn_script(&script).await;
+        client.set_permission_config(
+            ResolvedPermissionConfig::resolve(PermissionPolicy::Ask, None).unwrap(),
+        );
+        client.set_owner_pubkey_known(true);
+
+        // Publisher: kind-9 sentinel Accepted (lifecycle proceeds); the first
+        // resolved kind-40003 publish is Uncertain (socket down), then Accepted.
+        let keys = Keys::generate();
+        let owner_hex = keys.public_key().to_hex();
+        let (publisher, event_rx) =
+            crate::relay::RelayEventPublisher::test_pair_resolved_reconnect(1);
+        // Collect every published event (including each retransmission attempt).
+        let published: std::sync::Arc<std::sync::Mutex<Vec<(u16, String)>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let published_drain = published.clone();
+        tokio::spawn(async move {
+            let mut rx = event_rx;
+            while let Some(ev) = rx.recv().await {
+                published_drain
+                    .lock()
+                    .unwrap()
+                    .push((ev.kind.as_u16(), ev.id.to_hex()));
+            }
+        });
+        client.set_relay_publisher(publisher, keys.clone());
+        client.set_agent_owner_pubkey_hex(Some(owner_hex));
+        client.set_turn_initiator_pubkey(Some(keys.public_key()));
+        client.set_turn_channel_context(
+            Some(uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000008").unwrap()),
+            None,
+        );
+        let obs = crate::observer::ObserverHandle::in_process();
+        client.set_observer(Some(obs.clone()), 0);
+        let (perm_tx, perm_rx) = tokio::sync::mpsc::channel::<PermissionDecision>(8);
+        client.install_permission_decision_rx(perm_rx);
+
+        let msg = perm_request(88, default_opts());
+        let hard = tokio::time::Instant::now() + std::time::Duration::from_secs(300);
+        client
+            .handle_permission_request(&msg, hard)
+            .await
+            .expect("registration must succeed");
+
+        // Buffer an allow decision while still Publishing; applied on ACK.
+        let nonce = client
+            .pending_permissions
+            .get("88")
+            .expect("entry must be in map")
+            .nonce
+            .clone();
+        perm_tx
+            .send(PermissionDecision {
+                request_nonce: nonce,
+                option_id: "opt-allow".to_string(),
+            })
+            .await
+            .expect("decision send must succeed");
+
+        // Drive the loop: ACK Accepted → Pending → buffered decision applied →
+        // finish_permission writes the ACP response and spawns the resolved-edit
+        // retransmit task. Loop exits on the short idle timeout.
+        let idle = std::time::Duration::from_millis(200);
+        let max_dur = std::time::Duration::from_secs(5);
+        let hard2 = tokio::time::Instant::now() + max_dur;
+        let _ = tokio::time::timeout(
+            max_dur,
+            client.read_until_response_with_idle_timeout(
+                "sess-resolved-retx",
+                999,
+                idle,
+                hard2,
+                max_dur,
+            ),
+        )
+        .await;
+
+        assert!(
+            client.pending_permissions.is_empty(),
+            "map must be empty after the decision is applied"
+        );
+
+        // Wait for the detached retransmit task: first attempt (Uncertain),
+        // RESOLVED_RETRANSMIT_BACKOFF, second attempt (Accepted). Poll until two
+        // resolved-edit publishes are observed or a generous bound elapses.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(6);
+        loop {
+            let resolved_count = published
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(kind, _)| *kind == 40003)
+                .count();
+            if resolved_count >= 2 || tokio::time::Instant::now() >= deadline {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+
+        let resolved_ids: Vec<String> = published
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(kind, _)| *kind == 40003)
+            .map(|(_, id)| id.clone())
+            .collect();
+
+        // The resolved edit was retransmitted across the disconnect — this is
+        // the assertion the fire-and-forget mutation turns red (it publishes
+        // the edit exactly once with no ACK, so resolved_ids.len() == 1).
+        assert!(
+            resolved_ids.len() >= 2,
+            "resolved kind-40003 edit must be retransmitted after an Uncertain outcome; \
+             saw {} publish(es): {resolved_ids:?}",
+            resolved_ids.len()
+        );
+        // Every retransmission is the SAME signed event (idempotent by id) —
+        // the spec requirement that a retry resends the identical event.
+        assert!(
+            resolved_ids.windows(2).all(|w| w[0] == w[1]),
+            "every retransmission must be the same signed event id; saw {resolved_ids:?}"
+        );
+
+        let _ = std::fs::remove_file(&capture_file);
     }
 
     // ── Item 5: exact kind-9 content string from build_sentinel_pending_payload ─

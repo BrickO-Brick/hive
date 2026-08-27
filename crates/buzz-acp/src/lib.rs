@@ -8489,6 +8489,7 @@ mod error_outcome_emission_tests {
                 control_tx: None,
                 steer_tx: None,
                 successful_steer_deliveries: HashSet::new(),
+                permission_decision_tx: None,
             },
         );
         let mut queue = EventQueue::new(config::DedupMode::Queue);

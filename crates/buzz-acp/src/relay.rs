@@ -816,6 +816,51 @@ impl RelayEventPublisher {
         (Self { cmd_tx }, event_rx)
     }
 
+    /// Test publisher that simulates a relay which is disconnected when the
+    /// resolved kind-40003 edit is first published, then reconnects.
+    ///
+    /// - kind-9 sentinel publishes (`PublishEventAcked`) are always `Accepted`
+    ///   so the permission lifecycle proceeds normally to `finish_permission`.
+    /// - the first `resolved_uncertain_before_accept` kind-40003 publishes
+    ///   resolve as `Uncertain` (socket down), then every later one is
+    ///   `Accepted` (reconnected).
+    ///
+    /// Every published event — including each retransmission attempt — is
+    /// forwarded to the returned receiver so a test can count attempts and
+    /// assert the *same* signed event id is retransmitted.
+    #[cfg(test)]
+    #[allow(clippy::collapsible_match)]
+    pub(crate) fn test_pair_resolved_reconnect(
+        resolved_uncertain_before_accept: usize,
+    ) -> (Self, mpsc::Receiver<Event>) {
+        let (cmd_tx, mut cmd_rx) = mpsc::channel::<RelayCommand>(64);
+        let (event_tx, event_rx) = mpsc::channel(64);
+        tokio::spawn(async move {
+            let mut resolved_uncertain_remaining = resolved_uncertain_before_accept;
+            while let Some(cmd) = cmd_rx.recv().await {
+                match cmd {
+                    RelayCommand::PublishEvent { event } => {
+                        if event_tx.send(*event).await.is_err() {
+                            break;
+                        }
+                    }
+                    RelayCommand::PublishEventAcked { event, ack_tx, .. } => {
+                        let is_resolved = event.kind.as_u16() == 40003;
+                        let _ = event_tx.send(*event).await;
+                        if is_resolved && resolved_uncertain_remaining > 0 {
+                            resolved_uncertain_remaining -= 1;
+                            let _ = ack_tx.send(AckOutcome::Uncertain);
+                        } else {
+                            let _ = ack_tx.send(AckOutcome::Accepted);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        });
+        (Self { cmd_tx }, event_rx)
+    }
+
     /// Test publisher whose command channel is dead on arrival (receiver dropped
     /// before the first send). Any [`RelayCommand`] sent through this publisher
     /// returns `Err(SendError)`, which the production code maps to
