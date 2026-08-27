@@ -833,10 +833,8 @@ pub(crate) async fn submit_engram_event(
         return Err(format!("relay rejected engram: {msg}"));
     }
 
-    let body = response
-        .text()
-        .await
-        .map_err(|e| format!("failed to read relay response: {e}"))?;
+    let body =
+        crate::commands::engram_submit_response::read_engram_submit_response(response).await?;
     let parsed: serde_json::Value =
         serde_json::from_str(&body).map_err(|e| format!("relay response not JSON: {e}"))?;
     let accepted = parsed

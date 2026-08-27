@@ -196,6 +196,15 @@ fn classify_body_timeout(e: &reqwest::Error) -> Option<String> {
     e.is_timeout().then(|| classify_request_error(e))
 }
 
+/// Preserve timeout bodies as connectivity failures while allowing each caller
+/// to retain its established non-timeout error behavior.
+pub(crate) fn classify_body_read_error(
+    e: &reqwest::Error,
+    fallback: impl FnOnce() -> String,
+) -> String {
+    classify_body_timeout(e).unwrap_or_else(fallback)
+}
+
 /// Detect responses that were intercepted by a captive portal or auth proxy.
 ///
 /// Returns `Some(msg)` when the response clearly did not come from the relay:

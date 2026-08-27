@@ -272,6 +272,7 @@ const EVENTS_INVENTORY: &[(&str, usize, usize, usize)] = &[
     ("src/native_websocket.rs", 0, 2, 0),                  // boundary 8 (WS frames; no events URL)
     // Test-only fixtures — no production egress, no guard or production submit call:
     ("src/relay/tests.rs", 2, 0, 0),
+    ("src/commands/engram_submit_response.rs", 2, 0, 0),
     ("src/relay_admission.rs", 1, 0, 0),
     ("src/archive/mod_tests.rs", 1, 0, 0),
     ("src/managed_agents/persona_events/tests.rs", 1, 0, 0),
