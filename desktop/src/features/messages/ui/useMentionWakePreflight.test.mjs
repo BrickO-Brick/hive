@@ -35,7 +35,7 @@ const OTHER_AGENT = "b".repeat(64);
 
 const fizzRef = { displayName: "Fizz", pubkey: AGENT, isAgent: true };
 
-const localAgentOptions = (contentRef, onStart) => ({
+const localAgentOptions = (contentRef, onStart, overrides = {}) => ({
   channelId: "general",
   contentRef,
   enabled: true,
@@ -52,7 +52,31 @@ const localAgentOptions = (contentRef, onStart) => ({
     onStart();
     return { pubkey: AGENT, status: "running" };
   },
+  ...overrides,
 });
+
+// Suspends the managed-agent lookup so a matured wake can be held mid-flight,
+// which is the window in which a cancelled arming could resurrect itself.
+const suspendedLookup = () => {
+  let resolve;
+  const lookup = new Promise((r) => {
+    resolve = r;
+  });
+  return {
+    getManagedAgentsByPubkey: () => lookup,
+    settle: async () => {
+      resolve(
+        new Map([
+          [
+            AGENT,
+            { pubkey: AGENT, status: "stopped", backend: { type: "local" } },
+          ],
+        ]),
+      );
+      await lookup;
+    },
+  };
+};
 
 test("mention-only composer content is not substantive", () => {
   assert.equal(hasSubstantiveNonMentionText("@Fizz ", [fizzRef]), false);
@@ -184,6 +208,117 @@ test("a lapse in the gates requires a fresh full gate hold", async (t) => {
   await act(async () => t.mock.timers.tick(MENTION_WAKE_GATE_HOLD_MS - 1));
   assert.equal(starts, 0);
   await act(async () => t.mock.timers.tick(1));
+
+  assert.equal(starts, 1);
+});
+
+test("a trimmed-then-retyped draft cannot resurrect the cancelled wake", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { act, renderHook } = await import("@testing-library/react");
+  const lookup = suspendedLookup();
+  let starts = 0;
+  const contentRef = { current: "@Fizz initial" };
+  const view = renderHook(() =>
+    useMentionWakePreflight(
+      localAgentOptions(
+        contentRef,
+        () => {
+          starts += 1;
+        },
+        { getManagedAgentsByPubkey: lookup.getManagedAgentsByPubkey },
+      ),
+    ),
+  );
+
+  // Mature the hold, then park the arming inside its managed-agent lookup.
+  await act(async () => t.mock.timers.tick(MENTION_WAKE_GATE_HOLD_MS));
+
+  // Trimming to the bare mention lapses the substantive-text gate and cancels
+  // that arming; retyping restores an identical plan key within the same round
+  // trip. Only the arming's identity separates the dead window from the new one.
+  contentRef.current = "@Fizz ";
+  act(() => view.result.current.prepareMentionWake(contentRef.current));
+  contentRef.current = "@Fizz back again";
+  act(() => view.result.current.prepareMentionWake(contentRef.current));
+  await act(async () => t.mock.timers.tick(1));
+  await act(lookup.settle);
+  assert.equal(starts, 0);
+
+  // The replacement window is still live, so this is a fence, not a mute.
+  await act(async () => t.mock.timers.tick(MENTION_WAKE_GATE_HOLD_MS));
+
+  assert.equal(starts, 1);
+});
+
+test("removing and re-adding the mention cannot resurrect the cancelled wake", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { act, renderHook } = await import("@testing-library/react");
+  const lookup = suspendedLookup();
+  let starts = 0;
+  const contentRef = { current: "@Fizz initial" };
+  const view = renderHook(() =>
+    useMentionWakePreflight(
+      localAgentOptions(
+        contentRef,
+        () => {
+          starts += 1;
+        },
+        { getManagedAgentsByPubkey: lookup.getManagedAgentsByPubkey },
+      ),
+    ),
+  );
+
+  await act(async () => t.mock.timers.tick(MENTION_WAKE_GATE_HOLD_MS));
+
+  // Same race, reached down the other cancellation path: dropping the mention
+  // entirely nulls the plan on the "@"-free short-circuit rather than on the
+  // substantive-text gate.
+  contentRef.current = "please investigate";
+  act(() => view.result.current.prepareMentionWake(contentRef.current));
+  contentRef.current = "@Fizz back again";
+  act(() => view.result.current.prepareMentionWake(contentRef.current));
+  await act(async () => t.mock.timers.tick(1));
+  await act(lookup.settle);
+  assert.equal(starts, 0);
+
+  await act(async () => t.mock.timers.tick(MENTION_WAKE_GATE_HOLD_MS));
+
+  assert.equal(starts, 1);
+});
+
+test("navigating away and back cannot resurrect the cancelled wake", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { act, renderHook } = await import("@testing-library/react");
+  const lookup = suspendedLookup();
+  let starts = 0;
+  const contentRef = { current: "@Fizz please investigate" };
+  const view = renderHook(
+    ({ channelId }) =>
+      useMentionWakePreflight(
+        localAgentOptions(
+          contentRef,
+          () => {
+            starts += 1;
+          },
+          {
+            channelId,
+            getManagedAgentsByPubkey: lookup.getManagedAgentsByPubkey,
+          },
+        ),
+      ),
+    { initialProps: { channelId: "general" } },
+  );
+
+  await act(async () => t.mock.timers.tick(MENTION_WAKE_GATE_HOLD_MS));
+
+  // The plan key carries the channel, so navigating away cancels the in-flight
+  // arming and navigating back hands the same key to a new one.
+  await act(async () => view.rerender({ channelId: "random" }));
+  await act(async () => view.rerender({ channelId: "general" }));
+  await act(lookup.settle);
+  assert.equal(starts, 0);
+
+  await act(async () => t.mock.timers.tick(MENTION_WAKE_GATE_HOLD_MS));
 
   assert.equal(starts, 1);
 });

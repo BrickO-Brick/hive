@@ -42,6 +42,14 @@ type MentionWakePlan = {
   pubkeys: string[];
 };
 
+/**
+ * One arming of the wake window. Plan keys are deliberately reusable — the same
+ * relay, signer, channel, and agent set produce the same string — so a fresh
+ * object per arming is what distinguishes *this* window from a later one that
+ * happens to describe the same intent.
+ */
+type ArmedWake = { key: string };
+
 export function hasSubstantiveNonMentionText(
   content: string,
   mentionRefs: readonly DraftMentionRef[],
@@ -100,7 +108,17 @@ export function useMentionWakePreflight(options: {
   startManagedAgent: (input: ManagedAgentStartInput) => Promise<ManagedAgent>;
 }) {
   const timerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-  const activePlanKeyRef = React.useRef<string | null>(null);
+  // The currently armed window, or null if none is. Two comparison styles are
+  // used against it on purpose:
+  //
+  // - by identity (`armedRef.current !== armed`) to ask "is this lifetime still
+  //   the live one". Comparing keys here would let a cancelled window resurrect
+  //   itself: cancel nulls the ref, and re-arming an identical plan restores an
+  //   equal key, so a stale continuation would compare equal and fire early.
+  // - by value (`armedRef.current?.key === plan.key`) to ask "is the live
+  //   window already for this plan", which is what lets continued typing extend
+  //   the hold instead of restarting it.
+  const armedRef = React.useRef<ArmedWake | null>(null);
   // Latest-ref over the whole options object: the stable callbacks below read
   // fresh values without a hand-maintained field list that could drift.
   const optionsRef = React.useRef(options);
@@ -109,7 +127,7 @@ export function useMentionWakePreflight(options: {
   const cancelMentionWake = React.useCallback(() => {
     if (timerRef.current !== null) clearTimeout(timerRef.current);
     timerRef.current = null;
-    activePlanKeyRef.current = null;
+    armedRef.current = null;
   }, []);
 
   const currentPlan = React.useCallback((content: string) => {
@@ -167,23 +185,27 @@ export function useMentionWakePreflight(options: {
       if (!plan) return cancelMentionWake();
       // The gates are still holding for the same plan, so leave the running
       // window alone. Re-arming here would turn the interval into a keystroke
-      // debounce and never fire for an uninterrupted typist.
-      if (activePlanKeyRef.current === plan.key) return;
+      // debounce and never fire for an uninterrupted typist. This one compares
+      // keys, not identity: a live window for an equal plan is the same window.
+      if (armedRef.current?.key === plan.key) return;
 
       cancelMentionWake();
-      activePlanKeyRef.current = plan.key;
+      const armed: ArmedWake = { key: plan.key };
+      armedRef.current = armed;
       timerRef.current = setTimeout(() => {
         timerRef.current = null;
         void (async () => {
-          // Re-confirm the gates at fire time and again after the lookup await,
-          // so the interval is a hold on live draft state rather than a promise
-          // made once at arming time.
-          if (activePlanKeyRef.current !== plan.key) return;
+          // Two questions at each checkpoint, not one. The identity check asks
+          // whether this arming is still the live one; the plan check asks
+          // whether the live draft still satisfies the gates. Both must hold, at
+          // fire time and again after the lookup await, so the interval is a
+          // hold on live draft state rather than a promise made once at arming.
+          if (armedRef.current !== armed) return;
           const beforeLookup = currentPlan(contentRef.current);
           if (beforeLookup?.key !== plan.key) return;
           const managedAgents =
             await optionsRef.current.getManagedAgentsByPubkey();
-          if (activePlanKeyRef.current !== plan.key) return;
+          if (armedRef.current !== armed) return;
           const beforeWake = currentPlan(contentRef.current);
           if (beforeWake?.key !== plan.key) return;
 
