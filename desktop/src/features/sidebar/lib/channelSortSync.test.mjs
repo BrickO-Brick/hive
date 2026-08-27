@@ -252,12 +252,13 @@ test("timestamp clamp: published createdAt stays inside the relay future window"
   let call = 0;
   mock.method(relayClient, "fetchEvents", () => {
     call++;
-    // First call primes lastRemoteCreatedAt to farFutureHead (undecryptable so
-    // no adopt); pre-publish call returns created_at=0 so the local edit wins.
+    // First call primes lastRemoteCreatedAt to farFutureHead; the pre-publish
+    // call returns a decryptable head at created_at=0 so the local edit wins
+    // LWW and publishes (an undecryptable head would now `retain`, not publish).
     return Promise.resolve([
       {
         pubkey: "pk-clamp",
-        content: "bad-cipher",
+        content: "good-cipher",
         created_at: call === 1 ? farFutureHead : 0,
         id: "evt-clamp",
       },
@@ -281,6 +282,179 @@ test("timestamp clamp: published createdAt stays inside the relay future window"
     assert.ok(
       signedCreatedAt <= Math.floor(Date.now() / 1000) + 840,
       `createdAt must be clamped inside the future window — got ${signedCreatedAt}`,
+    );
+  } finally {
+    tauri.restore();
+    restore();
+    mock.reset();
+  }
+});
+
+// ─── Unreadable head: retain, never overwrite (Carl P1) ───────────────────────
+
+// A pre-publish head event exists but cannot be decrypted (transient keychain
+// fault, future NIP-44 scheme). We cannot inspect it to decide adopt-or-publish,
+// so publishing our blob over it would blindly clobber authoritative state.
+// Fix: `retain` — keep the durable pending edit and retry, never publish.
+// Mutation: reverting `retain` to `publish` fires publishEvent and drops the
+// head's unread state.
+test("unreadable head (decrypt failure) retains the pending edit and retries, never publishing", async () => {
+  mock.method(relayClient, "fetchEvents", () =>
+    Promise.resolve([
+      {
+        pubkey: "pk-undec",
+        content: "bad-cipher",
+        created_at: 500,
+        id: "evt-undec",
+      },
+    ]),
+  );
+  const publishCalls = [];
+  mock.method(relayClient, "publishEvent", (...args) => {
+    publishCalls.push(args);
+    return Promise.resolve();
+  });
+  const fw = makeFakeWindow();
+  const restore = installFakeWindow(fw);
+  const tauri = installTauriMock("{}");
+  try {
+    const manager = new ChannelSortSyncManager("pk-undec", RELAY);
+    manager.publishSortPrefs(makeStore({ channels: "recent" }));
+    fw._fireTimer();
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(
+      publishCalls.length,
+      0,
+      "must not publish over a head we could not read",
+    );
+    assert.ok(
+      manager.getPendingStore() !== null,
+      "unreadable head must retain the pending edit",
+    );
+    assert.ok(
+      readChannelSortOutbox("pk-undec", RELAY) !== null,
+      "durable outbox must survive an unreadable head",
+    );
+    assert.ok(fw._hasTimer(), "a retry must be scheduled");
+  } finally {
+    tauri.restore();
+    restore();
+    mock.reset();
+  }
+});
+
+// An unsupported/unparseable payload version is equally unreadable: it decrypts
+// but `parseChannelSortPayload` rejects it, so the manager must `retain`, not
+// overwrite.
+test("unsupported head payload version retains the pending edit, never publishing", async () => {
+  mock.method(relayClient, "fetchEvents", () =>
+    Promise.resolve([
+      {
+        pubkey: "pk-badver",
+        content: "good-cipher",
+        created_at: 500,
+        id: "evt-badver",
+      },
+    ]),
+  );
+  const publishCalls = [];
+  mock.method(relayClient, "publishEvent", (...args) => {
+    publishCalls.push(args);
+    return Promise.resolve();
+  });
+  const fw = makeFakeWindow();
+  const restore = installFakeWindow(fw);
+  // Decrypts cleanly but carries a future schema version the parser rejects.
+  const tauri = installTauriMock(JSON.stringify({ version: 2, groups: {} }));
+  try {
+    const manager = new ChannelSortSyncManager("pk-badver", RELAY);
+    manager.publishSortPrefs(makeStore({ channels: "recent" }));
+    fw._fireTimer();
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(
+      publishCalls.length,
+      0,
+      "must not publish over a head whose payload version we do not support",
+    );
+    assert.ok(
+      manager.getPendingStore() !== null,
+      "unsupported head must retain the pending edit",
+    );
+    assert.ok(fw._hasTimer(), "a retry must be scheduled");
+  } finally {
+    tauri.restore();
+    restore();
+    mock.reset();
+  }
+});
+
+// ─── Reconnect keeps the frozen baseline (Carl P1) ────────────────────────────
+
+// The reconnect handler re-drives a pending edit through retryPendingPublish(),
+// NOT the public publishSortPrefs(). A remote that advanced while the edit was
+// pending must be adopted on reconnect, not published over: retryPendingPublish
+// keeps the generation and the baseline frozen at queue time, so the pre-publish
+// check still sees the head as advanced and adopts. Mutation: reverting the
+// reconnect handler to publishSortPrefs(pending) resets the baseline to the
+// just-fetched head, so the pre-publish check sees no advancement and publishes
+// the stale edit over the remote (adopt never fires, publishEvent does).
+test("reconnect adopts a remote that advanced while the edit was pending, never publishing over it", async () => {
+  const REMOTE_KEY = "remote-group-won-lww";
+  let call = 0;
+  // call 1: prime lastRemoteHead to the baseline head (created_at 100).
+  // call 2+: the remote has since advanced to 200 (reconnect fetch + pre-publish
+  // fetch both see the advanced head).
+  mock.method(relayClient, "fetchEvents", () => {
+    call++;
+    return Promise.resolve([
+      {
+        pubkey: "pk-recon",
+        content: "good-cipher",
+        created_at: call === 1 ? 100 : 200,
+        id: call === 1 ? "evt-100" : "evt-200",
+      },
+    ]);
+  });
+  const publishCalls = [];
+  mock.method(relayClient, "publishEvent", (...args) => {
+    publishCalls.push(args);
+    return Promise.resolve();
+  });
+  const fw = makeFakeWindow();
+  const restore = installFakeWindow(fw);
+  const tauri = installTauriMock(
+    JSON.stringify({ version: 1, groups: { [REMOTE_KEY]: "recent" } }),
+  );
+  try {
+    const manager = new ChannelSortSyncManager("pk-recon", RELAY);
+    const adopted = [];
+    manager.setOnRemoteAdopted((r) => adopted.push(r));
+    // Prime the baseline: the head stood at created_at 100 when the edit began.
+    await manager.fetchRemoteSortPrefs();
+    manager.publishSortPrefs(makeStore({ "local-group": "recent" }));
+
+    // Reconnect fires: the hook re-fetches (head now 200) then wakes the
+    // existing generation via retryPendingPublish — WITHOUT bumping generation
+    // or resetting the frozen baseline.
+    await manager.fetchRemoteSortPrefs();
+    manager.retryPendingPublish();
+    fw._fireTimer();
+    await new Promise((r) => setTimeout(r, 20));
+
+    assert.equal(
+      publishCalls.length,
+      0,
+      "must adopt the advanced remote, never publish the stale edit over it",
+    );
+    assert.equal(adopted.length, 1, "the advanced remote must be adopted");
+    assert.ok(
+      REMOTE_KEY in adopted[0].store.groups,
+      "adopted store must be the remote content that won LWW",
+    );
+    assert.equal(
+      manager.getPendingStore(),
+      null,
+      "the losing pending edit must be cleared on adopt",
     );
   } finally {
     tauri.restore();

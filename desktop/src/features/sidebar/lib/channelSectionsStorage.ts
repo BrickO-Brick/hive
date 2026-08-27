@@ -216,14 +216,15 @@ function legacyOutboxKey(pubkey: string, relayUrl: string): string {
  * synchronously on every edit as a single unconditional `setItem` (no shared-
  * key read-modify-write); resumed on next mount so an edit made <2s before
  * quit/community-switch is never dropped. `queuedAt` stamps the write so resume
- * replays only the newest queued blob (whole-blob LWW).
+ * replays only the newest queued blob (whole-blob LWW). Returns whether the
+ * intent is now durably held in this window's own v2 key (see `writeOwnOutbox`).
  */
 export function writeChannelSectionsOutbox(
   pubkey: string,
   store: ChannelSectionStore,
   relayUrl: string,
-): void {
-  writeOwnOutbox(
+): boolean {
+  return writeOwnOutbox(
     OUTBOX_KEY_PREFIX,
     pubkey,
     relayUrl,

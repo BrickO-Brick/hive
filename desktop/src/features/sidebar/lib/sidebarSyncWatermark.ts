@@ -245,6 +245,14 @@ function parseEnvelope<T>(
  * of a proven-stale foreign key can never race a rewrite. Best-effort: the
  * in-memory pending edit still drives this session's publish even if the
  * persisted copy could not be written.
+ *
+ * Returns whether the fresh key's `setItem` succeeded — i.e. whether the intent
+ * is now durably held in this window's own v2 key. A whole-blob legacy replay
+ * gates its consumption marker on this: the marker may be written only once the
+ * transfer is durable, so a `setItem` failure (quota) leaves the legacy record
+ * replayable on a later boot rather than silently consumed. A failure to drop
+ * this window's superseded keys does NOT falsify durability of the fresh key,
+ * so it does not lower the return value.
  */
 export function writeOwnOutbox(
   prefix: string,
@@ -252,21 +260,30 @@ export function writeOwnOutbox(
   relayUrl: string,
   store: unknown,
   nowSecs: number = Math.floor(Date.now() / 1_000),
-): void {
+): boolean {
   const base = ownKeyBase(prefix, pubkey, relayUrl);
+  let key: string;
   try {
-    const key = nextOwnKey(base);
+    key = nextOwnKey(base);
     window.localStorage.setItem(
       key,
       JSON.stringify({ store, queuedAt: nowSecs }),
     );
-    // Drop this window's now-superseded own keys (all but the one just written).
+  } catch {
+    // The fresh key could not be persisted — the intent is NOT durably held.
+    return false;
+  }
+  // The fresh key is durable. Best-effort drop of this window's now-superseded
+  // own keys (all but the one just written); a failure here only leaves a stale
+  // own key that the next publish/boot re-evaluates.
+  try {
     for (const k of ownKeys(base)) {
       if (k !== key) window.localStorage.removeItem(k);
     }
   } catch {
-    // Best-effort durability.
+    // Ignore — durability of the fresh key already holds.
   }
+  return true;
 }
 
 /** Remove all of this window's own outbox keys (its edit published or a no-op). */

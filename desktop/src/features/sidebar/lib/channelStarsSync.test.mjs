@@ -7,6 +7,7 @@ import { ChannelStarSyncManager } from "./channelStarsSync.ts";
 import {
   installFakeWindow,
   installTauriMock,
+  installEchoTauri,
   makeFakeWindow,
 } from "./sidebarSyncTestHelpers.mjs";
 
@@ -159,19 +160,27 @@ test("destroy: is safe to call with no pending publish", () => {
 // generation CAS in discardPending lets A's success null out B's pending+outbox.
 test("A-in-flight → B-click → A-succeeds: B stays pending and B publishes", async () => {
   let releaseFirst = null;
-  const publishedContents = [];
-  mock.method(relayClient, "fetchEvents", () => Promise.resolve([]));
-  mock.method(relayClient, "publishEvent", () => {
-    if (releaseFirst === null && publishedContents.length === 0) {
+  let publishCount = 0;
+  let storedHead = [];
+  mock.method(relayClient, "fetchEvents", () => Promise.resolve(storedHead));
+  mock.method(relayClient, "publishEvent", (event) => {
+    publishCount++;
+    if (publishCount === 1) {
+      // A reaches the relay; hold its ACK open until the test releases it, then
+      // record it as the retained head.
       return new Promise((res) => {
-        releaseFirst = res;
+        releaseFirst = () => {
+          storedHead = [event];
+          res();
+        };
       });
     }
+    storedHead = [event];
     return Promise.resolve();
   });
   const t = makeMultiTimerWindow();
   const restore = installFakeWindow(t.win);
-  const tauri = installTauriMock("{}");
+  const tauri = installEchoTauri("pk-ab");
   try {
     const manager = new ChannelStarSyncManager("pk-ab", RELAY);
     const storeA = makeStore({ a: E(true, 100, 1) });
@@ -203,7 +212,9 @@ test("A-in-flight → B-click → A-succeeds: B stays pending and B publishes", 
       "older A completion leaves B outbox",
     );
 
-    // B's own debounce fires and B reaches the relay (published) with no kick.
+    // B's own debounce fires and B reaches the relay with no kick; the
+    // post-publish retained-head fetch reads B's own write back and confirms
+    // subsumption, so B's outbox clears.
     const capturedBefore = tauri.capturedPlaintext();
     await t.fireDelay(2000);
     for (let i = 0; i < 50; i++) await Promise.resolve();
@@ -215,7 +226,7 @@ test("A-in-flight → B-click → A-succeeds: B stays pending and B publishes", 
     assert.equal(
       manager.getPendingStarStore(),
       null,
-      "B cleared after publish",
+      "B cleared after confirmed publish",
     );
     assert.equal(
       readChannelStarsOutbox("pk-ab", RELAY),
@@ -235,19 +246,21 @@ test("A-in-flight → B-click → A-succeeds: B stays pending and B publishes", 
 test("A-in-flight → B-click → A-fails: B remains pending and B publishes", async () => {
   let rejectFirst = null;
   let publishCount = 0;
-  mock.method(relayClient, "fetchEvents", () => Promise.resolve([]));
-  mock.method(relayClient, "publishEvent", () => {
+  let storedHead = [];
+  mock.method(relayClient, "fetchEvents", () => Promise.resolve(storedHead));
+  mock.method(relayClient, "publishEvent", (event) => {
     publishCount++;
     if (publishCount === 1) {
       return new Promise((_res, rej) => {
         rejectFirst = () => rej(new Error("socket error"));
       });
     }
+    storedHead = [event];
     return Promise.resolve();
   });
   const t = makeMultiTimerWindow();
   const restore = installFakeWindow(t.win);
-  const tauri = installTauriMock("{}");
+  const tauri = installEchoTauri("pk-abfail");
   try {
     const manager = new ChannelStarSyncManager("pk-abfail", RELAY);
     manager.publishStars(makeStore({ a: E(true, 100, 1) }));
@@ -268,7 +281,8 @@ test("A-in-flight → B-click → A-fails: B remains pending and B publishes", a
       "B outbox intact after A's failure",
     );
 
-    // B's debounce fires and B publishes successfully.
+    // B's debounce fires and B publishes successfully; the retained-head fetch
+    // confirms B's own write and clears it.
     await t.fireDelay(2000);
     for (let i = 0; i < 50; i++) await Promise.resolve();
     const captured = tauri.capturedPlaintext();
@@ -290,15 +304,17 @@ test("A-in-flight → B-click → A-fails: B remains pending and B publishes", a
 // edit stranded (Will's "make another change to kick it" symptom).
 test("failed publish schedules a bounded-backoff retry and keeps the pending edit", async () => {
   let publishCount = 0;
-  mock.method(relayClient, "fetchEvents", () => Promise.resolve([]));
-  mock.method(relayClient, "publishEvent", () => {
+  let storedHead = [];
+  mock.method(relayClient, "fetchEvents", () => Promise.resolve(storedHead));
+  mock.method(relayClient, "publishEvent", (event) => {
     publishCount++;
     if (publishCount === 1) return Promise.reject(new Error("timeout"));
+    storedHead = [event];
     return Promise.resolve();
   });
   const t = makeMultiTimerWindow();
   const restore = installFakeWindow(t.win);
-  const tauri = installTauriMock("{}");
+  const tauri = installEchoTauri("pk-retry");
   try {
     const manager = new ChannelStarSyncManager("pk-retry", RELAY);
     manager.publishStars(makeStore({ a: E(true, 100, 1) }));
@@ -309,7 +325,8 @@ test("failed publish schedules a bounded-backoff retry and keeps the pending edi
     );
     assert.ok(t.hasDelay(2000), "a retry timer at RETRY_BASE_MS is scheduled");
 
-    // The retry fires and the second publish succeeds → pending cleared.
+    // The retry fires and the second publish succeeds; the retained-head fetch
+    // confirms the write → pending cleared.
     await t.fireDelay(2000);
     for (let i = 0; i < 50; i++) await Promise.resolve();
     assert.equal(publishCount, 2, "retry re-published");
@@ -317,6 +334,72 @@ test("failed publish schedules a bounded-backoff retry and keeps the pending edi
       manager.getPendingStarStore(),
       null,
       "pending cleared on retry success",
+    );
+    manager.destroy();
+  } finally {
+    tauri.restore();
+    restore();
+    mock.reset();
+  }
+});
+
+// ─── Retention confirmation (Carl P1): OK is not proof of retention ───────────
+
+// The relay OKs a superseded NIP-33 write as a no-op, so two windows racing
+// distinct blobs from the same head can both get OK while only one is retained.
+// The loser must NOT clear its durable outbox on OK alone: it fetches the
+// authoritative retained head and clears only when that head subsumes its
+// write. A retained head carrying a peer's distinct blob does not subsume the
+// loser's click, so the outbox is kept and a retry is scheduled.
+// Mutation: clearing on OK alone (dropping confirmRetainedHeadSubsumes) would
+// null the pending edit here and lose the click.
+test("publish OK but a peer blob is retained: loser keeps its outbox and retries", async () => {
+  let publishCount = 0;
+  // The retained head is a peer window's distinct blob from the same base —
+  // it does NOT contain our channel `a`, so it cannot subsume our write.
+  let storedHead = [];
+  mock.method(relayClient, "fetchEvents", () => Promise.resolve(storedHead));
+  const tauri = installEchoTauri("pk-loser");
+  mock.method(relayClient, "publishEvent", (event) => {
+    publishCount++;
+    if (publishCount === 1) {
+      // Our write is OK'd by the relay but immediately superseded: the retained
+      // head is the peer's blob for a different channel, minted through the same
+      // echo seam so it decrypts.
+      storedHead = [tauri.mintHead(makeStore({ z: E(true, 200, 5) }), 100)];
+      return Promise.resolve();
+    }
+    // The retry (which max-merges the peer head in) is retained.
+    storedHead = [event];
+    return Promise.resolve();
+  });
+  const t = makeMultiTimerWindow();
+  const restore = installFakeWindow(t.win);
+  try {
+    const manager = new ChannelStarSyncManager("pk-loser", RELAY);
+    manager.publishStars(makeStore({ a: E(true, 100, 1) }));
+    await t.fireDelay(2000); // publish OK, but peer blob is what's retained
+    for (let i = 0; i < 50; i++) await Promise.resolve();
+
+    assert.ok(
+      manager.getPendingStarStore() !== null,
+      "unconfirmed publish keeps the pending edit",
+    );
+    assert.ok(
+      readChannelStarsOutbox("pk-loser", RELAY),
+      "loser keeps its durable outbox — OK is not proof of retention",
+    );
+    assert.ok(t.hasDelay(2000), "a retry is scheduled");
+
+    // The retry re-publishes the max-merge of our click and the peer head; this
+    // time it is retained (subsumes our `a`) and the outbox clears.
+    await t.fireDelay(2000);
+    for (let i = 0; i < 50; i++) await Promise.resolve();
+    assert.equal(publishCount, 2, "loser retried");
+    assert.equal(
+      manager.getPendingStarStore(),
+      null,
+      "pending cleared once the retained head subsumes our click",
     );
     manager.destroy();
   } finally {

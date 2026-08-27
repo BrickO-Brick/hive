@@ -152,13 +152,17 @@ export function useChannelSortPreference(
       const outbox = readChannelSortOutbox(pubkey, relayUrl);
       if (outbox) {
         // publishSortPrefs synchronously copies the intent into this window's
-        // own v2 key, so marking the legacy blob consumed afterward can never
-        // lose it: a crash before the marker write replays the legacy blob once
-        // more, a crash after resumes it from the v2 key. The marker is what
-        // stops the never-deleted legacy key republishing above the head every
-        // boot (Thufir pass-2 resurrection finding).
-        managerRef.current?.publishSortPrefs(outbox.store);
-        if (outbox.legacyRawToConsume !== null) {
+        // own v2 key and returns whether that transfer is durable. Mark the
+        // legacy blob consumed ONLY when it is: a `setItem` failure (quota)
+        // returns false, so the marker is not written and the legacy record
+        // stays replayable on a later boot rather than being silently
+        // suppressed (Thufir pass-3 finding). A crash between a durable
+        // transfer and the marker write replays the legacy blob once more, a
+        // crash after resumes it from the v2 key. The marker is what stops the
+        // never-deleted legacy key republishing above the head every boot
+        // (Thufir pass-2 resurrection finding).
+        const durable = managerRef.current?.publishSortPrefs(outbox.store);
+        if (durable && outbox.legacyRawToConsume !== null) {
           markChannelSortLegacyConsumed(
             pubkey,
             relayUrl,
@@ -263,10 +267,13 @@ export function useChannelSortPreference(
         if (result.status === "found") {
           setStore(applyRemote(result.data));
         }
-        const pending = managerRef.current?.getPendingStore();
-        if (pending) {
-          managerRef.current?.publishSortPrefs(pending);
-        }
+        // Wake the existing pending edit's cycle rather than re-queueing it via
+        // publishSortPrefs(): a re-queue would bump the generation and reset the
+        // frozen publishBaseline to the just-fetched head, so a remote that won
+        // LWW while the edit was pending would be published over instead of
+        // adopted (Carl P1). retryPendingPublish keeps the baseline, so the
+        // pre-publish check still adopts a genuinely-advanced remote.
+        managerRef.current?.retryPendingPublish();
       });
     });
     return () => {

@@ -44,10 +44,17 @@ export type RemoteSortPrefs = {
  *               and must be discarded in favour of the remote store so UI and
  *               relay converge. The manager hands the remote back to the hook
  *               and never publishes.
+ * - `retain`  — a head event exists but could not be decrypted/parsed (future
+ *               schema, transient keychain/decrypt fault, malformed payload).
+ *               The client cannot inspect it to decide adopt-or-publish, so
+ *               overwriting it would be blind data loss (Carl P1). Keep the
+ *               durable pending edit and retry rather than clobber authoritative
+ *               state the client could not read.
  */
 type PublishDecision =
   | { kind: "publish"; store: ChannelSortStore }
-  | { kind: "adopt"; remote: RemoteSortPrefs };
+  | { kind: "adopt"; remote: RemoteSortPrefs }
+  | { kind: "retain" };
 
 /**
  * The canonical remote head as it stood when an edit was queued. The pre-publish
@@ -232,6 +239,22 @@ export class ChannelSortSyncManager {
     return this.pendingStore;
   }
 
+  /**
+   * Re-drive the CURRENT pending edit's publish immediately without opening a
+   * new generation — used by the reconnect handler. Calling the public
+   * `publishSortPrefs()` there would bump the generation and reset
+   * `publishBaseline` to the just-fetched head, so a remote that won LWW while
+   * the edit was pending would be published over instead of adopted (Carl P1).
+   * Waking the existing generation keeps the frozen baseline, so the debounced
+   * cycle's pre-publish check still adopts a genuinely-advanced remote. No-op
+   * when nothing is pending.
+   */
+  retryPendingPublish(): void {
+    if (this.pendingStore === null) return;
+    this.cancelPendingPublish();
+    this.startCycle();
+  }
+
   /** True while an unpublished local edit is queued (debouncing or retrying). */
   hasPendingEdit(): boolean {
     return this.pendingStore !== null;
@@ -270,7 +293,7 @@ export class ChannelSortSyncManager {
     clearChannelSortOutbox(this.pubkey, this.relayUrl);
   }
 
-  publishSortPrefs(store: ChannelSortStore): void {
+  publishSortPrefs(store: ChannelSortStore): boolean {
     this.pendingStore = store;
     ++this.pendingGeneration;
     // Freeze the canonical head this edit is racing against at queue time so a
@@ -285,8 +308,10 @@ export class ChannelSortSyncManager {
     // survives teardown and resumes on next mount (durable outbox). This
     // window's own key is the only one written — a single unconditional
     // setItem, never a shared-key read-modify-write; `queuedAt` stamps it so
-    // resume replays only the newest queued blob (whole-blob LWW).
-    writeChannelSortOutbox(this.pubkey, store, this.relayUrl);
+    // resume replays only the newest queued blob (whole-blob LWW). The returned
+    // flag reports whether the intent is now durably held, so a legacy replay
+    // can gate its consumption marker on a proven transfer.
+    const durable = writeChannelSortOutbox(this.pubkey, store, this.relayUrl);
     if (this.debounceTimer !== null) {
       window.clearTimeout(this.debounceTimer);
     }
@@ -300,6 +325,7 @@ export class ChannelSortSyncManager {
       this.debounceTimer = null;
       this.startCycle();
     }, DEBOUNCE_MS);
+    return durable;
   }
 
   /**
@@ -343,7 +369,11 @@ export class ChannelSortSyncManager {
       // Record the head after decrypt attempt so the watermark/head-tuple
       // advance even for an undecryptable payload.
       this.recordRemoteHead(event.created_at, event.id);
-      if (!remote) return { kind: "publish", store };
+      // A head event exists but we could not read it (future schema, transient
+      // decrypt fault, malformed payload). We cannot decide adopt-or-publish
+      // against state we cannot inspect, so retain the pending edit and retry
+      // rather than blindly overwrite authoritative state (Carl P1).
+      if (!remote) return { kind: "retain" };
       // Sort prefs use whole-blob LWW. Compare the fetched head against the
       // baseline frozen when this edit was queued — NOT the live watermark. If
       // the canonical head advanced since the edit began, the local edit lost
@@ -410,6 +440,12 @@ export class ChannelSortSyncManager {
       if (gen !== this.pendingGeneration) return;
       if (decision.kind === "adopt") {
         this.adoptRemote(decision.remote, gen);
+        return;
+      }
+      if (decision.kind === "retain") {
+        // Head exists but is unreadable — keep the durable pending edit and
+        // retry with backoff rather than overwrite state we could not inspect.
+        this.scheduleRetry(gen);
         return;
       }
       const merged = decision.store;

@@ -162,9 +162,21 @@ export function writeChannelMutesStore(
  * `updatedAt` is primary so a strictly-later edit — from any build, whether it
  * carries `rev` or (older build) reads `rev: 0` — wins outright. `rev` breaks
  * only a same-second `updatedAt` tie: the ambiguous integer-second window the
- * clock cannot resolve, where a click that minted `rev = maxSeen + 1` dominates
- * any same-second state it observed. On a full tie (equal `updatedAt` AND equal
- * `rev`) `true` wins as the deterministic leaf.
+ * clock cannot resolve, where a NEW-build click that minted `rev = maxSeen + 1`
+ * dominates same-second state it observed. On a full tie (equal `updatedAt` AND
+ * equal `rev`) `true` wins as the deterministic leaf.
+ *
+ * ACCEPTED MIXED-FLEET RESIDUAL (Carl P1 #5, no protocol change): an OLD build
+ * mints no `rev`, so its click reads `rev: 0`. A later old-build click that
+ * lands in the SAME integer second as an earlier new-build write carrying
+ * `rev >= 1` therefore loses that same-second tie — the old click's intent is
+ * suppressed until the user clicks again in a strictly-later second, when the
+ * primary `updatedAt` key carries it. This is bounded (one integer second,
+ * old-build writer only, self-heals on the next later-second click) and is no
+ * worse than the shipped LWW behavior; closing it would need a version
+ * migration we deliberately do not build. `mergeStores: same-second old-build
+ * click (rev 0) loses to an earlier new-build rev, heals next second` pins the
+ * exact current outcome.
  */
 export function mergeStores(
   a: ChannelMuteStore,

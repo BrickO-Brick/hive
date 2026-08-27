@@ -275,3 +275,270 @@ test("equal-timestamp tie-break applies the lower event id (relay canonical winn
     window.__TAURI_INTERNALS__ = origTauri;
   }
 });
+
+// Carl P1-sections regression: on reconnect the hook must wake the EXISTING
+// pending edit (retryPendingPublish) rather than re-queue it via
+// publishSections(). A re-queue bumps the generation and resets the frozen
+// publishBaseline to the just-fetched head, so a remote that won whole-blob LWW
+// while the edit was pending would be published over instead of adopted. Here
+// the head advances (100 → 200) while a local edit is pending; on reconnect the
+// advanced remote must be adopted (the losing local section dropped) and NOTHING
+// published. Reverting the reconnect handler to publishSections(pending) resets
+// the baseline and publishes the stale edit.
+test("reconnect adopts a remote that advanced while the edit was pending, never publishing over it", async () => {
+  const { act, cleanup, renderHook } = await import("@testing-library/react");
+  const { relayClient } = await import("@/shared/api/relayClient");
+  const { useChannelSections } = await import("./useChannelSections.ts");
+
+  const origFetch = relayClient.fetchEvents;
+  const origLive = relayClient.subscribeLive;
+  const origReconnect = relayClient.subscribeToReconnects;
+  const origPublish = relayClient.publishEvent;
+  const origTauri = window.__TAURI_INTERNALS__;
+
+  let reconnect = null;
+  // A single mutable head; bumped to created_at 200 (a remote that won LWW)
+  // right before the reconnect fires.
+  let head = {
+    pubkey: "pk-sec-recon",
+    content: "remote-cipher",
+    created_at: 100,
+    id: "evt-100",
+  };
+  const publishCalls = [];
+  relayClient.fetchEvents = async () => [head];
+  relayClient.subscribeLive = async () => async () => {};
+  relayClient.subscribeToReconnects = (cb) => {
+    reconnect = cb;
+    return () => {};
+  };
+  relayClient.publishEvent = async (...args) => {
+    publishCalls.push(args);
+  };
+  window.__TAURI_INTERNALS__ = {
+    invoke: (cmd) => {
+      // The head decrypts to a remote store with a single "remote" section.
+      if (cmd === "nip44_decrypt_from_self")
+        return Promise.resolve(
+          JSON.stringify({
+            version: 1,
+            sections: [{ id: "remote", name: "Remote", order: 0 }],
+            assignments: {},
+          }),
+        );
+      if (cmd === "nip44_encrypt_to_self") return Promise.resolve("ct");
+      if (cmd === "sign_event")
+        return Promise.resolve(
+          JSON.stringify({
+            id: "signed",
+            pubkey: "pk-sec-recon",
+            content: "ct",
+            created_at: 0,
+            kind: 30078,
+            tags: [],
+            sig: "s",
+          }),
+        );
+      return Promise.reject(new Error(`unmocked ${cmd}`));
+    },
+  };
+
+  const pubkey = "pk-sec-recon";
+  const relayUrl = "wss://r.recon";
+  let hook = null;
+  try {
+    await act(async () => {
+      hook = renderHook(() => useChannelSections(pubkey, relayUrl));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.ok(reconnect, "reconnect handler installed");
+
+    // Local edit while the head stands at created_at 100 — the baseline the
+    // edit is frozen against.
+    await act(async () => {
+      hook.result.current.createSection("Local");
+    });
+    assert.ok(
+      hook.result.current.sections.some((s) => s.name === "Local"),
+      "optimistic local section applied",
+    );
+
+    // The remote advances to created_at 200 (a peer won LWW), then reconnect
+    // fires: the hook re-fetches and wakes the existing generation.
+    head = {
+      pubkey: "pk-sec-recon",
+      content: "remote-cipher",
+      created_at: 200,
+      id: "evt-200",
+    };
+    await act(async () => {
+      reconnect();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    assert.equal(
+      publishCalls.length,
+      0,
+      "must adopt the advanced remote on reconnect, never publish the stale edit over it",
+    );
+    // On adopt the whole-blob store is replaced by the remote (only a "remote"
+    // section), so the losing local edit is dropped. Under the mutation
+    // (re-queue) the pending edit is never adopted away and "Local" survives.
+    assert.deepEqual(
+      hook.result.current.sections.map((s) => s.id),
+      ["remote"],
+      "the losing local edit must be adopted away by the advanced remote",
+    );
+    hook.unmount();
+  } finally {
+    cleanup();
+    relayClient.fetchEvents = origFetch;
+    relayClient.subscribeLive = origLive;
+    relayClient.subscribeToReconnects = origReconnect;
+    relayClient.publishEvent = origPublish;
+    window.__TAURI_INTERNALS__ = origTauri;
+  }
+});
+
+// Thufir pass-3 regression (sections lane): a legacy replay whose durability
+// transfer into this window's own v2 key fails (quota) must NOT write the
+// consumed marker. Otherwise the marker permanently suppresses the only copy of
+// the legacy edit on every later boot — silent loss of exactly the durability
+// this PR guarantees. The hook now gates markLegacyConsumed on the `durable`
+// flag publishSections() returns; removing that guard writes the marker
+// unconditionally and this test goes red.
+test("legacy replay whose v2 transfer fails (quota) does not write the consumed marker", async () => {
+  const { act, cleanup, renderHook } = await import("@testing-library/react");
+  const { relayClient } = await import("@/shared/api/relayClient");
+  const { useChannelSections } = await import("./useChannelSections.ts");
+  const { readChannelSectionsOutbox } = await import(
+    "./channelSectionsStorage.ts"
+  );
+  const { normalizeRelayUrl } = await import("@/shared/lib/normalizeRelayUrl");
+
+  const origFetch = relayClient.fetchEvents;
+  const origLive = relayClient.subscribeLive;
+  const origReconnect = relayClient.subscribeToReconnects;
+  const origPublish = relayClient.publishEvent;
+  const origTauri = window.__TAURI_INTERNALS__;
+  const origLocalStorage = window.localStorage;
+
+  const pubkey = "pk-sec-quota";
+  const relayUrl = "wss://r.sec-quota";
+  const scope = `${pubkey}:${encodeURIComponent(normalizeRelayUrl(relayUrl))}`;
+  const legacyKey = `buzz-channel-sections-outbox.v1:${scope}`;
+  const v2Prefix = `buzz-channel-sections-outbox.v1:${scope}:`; // nonce/seq suffix
+  const legacyRaw = JSON.stringify({
+    store: {
+      version: 1,
+      sections: [{ id: "legacy", name: "Legacy", order: 0 }],
+      assignments: {},
+    },
+    queuedAt: 0,
+  });
+
+  // A backing localStorage that throws on any v2 outbox write (the quota
+  // failure), while allowing the legacy read, the marker write, and applied
+  // state through — so the ONLY failure is the durability transfer.
+  const map = new Map([[legacyKey, legacyRaw]]);
+  const throwingStorage = {
+    getItem: (k) => (map.has(k) ? map.get(k) : null),
+    setItem: (k, v) => {
+      if (k.startsWith(v2Prefix)) throw new Error("QuotaExceededError");
+      map.set(k, String(v));
+    },
+    removeItem: (k) => map.delete(k),
+    clear: () => map.clear(),
+    get length() {
+      return map.size;
+    },
+    key: (i) => [...map.keys()][i] ?? null,
+  };
+
+  const head = null;
+  relayClient.fetchEvents = async () => (head ? [head] : []);
+  relayClient.subscribeLive = async () => async () => {};
+  relayClient.subscribeToReconnects = () => () => {};
+  relayClient.publishEvent = async () => {};
+  window.__TAURI_INTERNALS__ = {
+    invoke: (cmd) => {
+      if (cmd === "nip44_encrypt_to_self") return Promise.resolve("ct");
+      if (cmd === "sign_event")
+        return Promise.resolve(
+          JSON.stringify({
+            id: "signed",
+            pubkey,
+            content: "ct",
+            created_at: 0,
+            kind: 30078,
+            tags: [],
+            sig: "s",
+          }),
+        );
+      return Promise.reject(new Error(`unmocked ${cmd}`));
+    },
+  };
+
+  let hook = null;
+  try {
+    // Seed a prior watermark so bootstrap holds (no first-sync seed) and the
+    // legacy blob is the sole outbox record resumed.
+    Object.defineProperty(window, "localStorage", {
+      value: throwingStorage,
+      configurable: true,
+    });
+    window.localStorage.setItem(
+      `buzz-sync-watermark.v1:channel-sections:${pubkey}:${encodeURIComponent(
+        normalizeRelayUrl(relayUrl),
+      )}`,
+      "1700000000",
+    );
+
+    await act(async () => {
+      hook = renderHook(() => useChannelSections(pubkey, relayUrl));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // The marker must NOT have been written: the v2 transfer threw.
+    const markerWritten = [...map.keys()].some((k) =>
+      k.includes("-legacy-consumed:"),
+    );
+    assert.equal(
+      markerWritten,
+      false,
+      "consumed marker must not be written after a failed v2 transfer",
+    );
+    // The legacy blob is still enumerated as replayable — not silently lost.
+    const resumed = readChannelSectionsOutbox(pubkey, relayUrl);
+    assert.ok(resumed !== null, "legacy blob must remain replayable");
+    assert.equal(
+      resumed.store.sections[0]?.id,
+      "legacy",
+      "the exact legacy intent survives for a later boot",
+    );
+    assert.ok(
+      resumed.legacyRawToConsume !== null,
+      "legacy record still reports itself for consumption on a later boot",
+    );
+    hook.unmount();
+  } finally {
+    cleanup();
+    Object.defineProperty(window, "localStorage", {
+      value: origLocalStorage,
+      configurable: true,
+    });
+    relayClient.fetchEvents = origFetch;
+    relayClient.subscribeLive = origLive;
+    relayClient.subscribeToReconnects = origReconnect;
+    relayClient.publishEvent = origPublish;
+    window.__TAURI_INTERNALS__ = origTauri;
+  }
+});

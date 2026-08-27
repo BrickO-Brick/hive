@@ -8,6 +8,7 @@ import type { RelayEvent } from "@/shared/api/types";
 import { KIND_CHANNEL_STARS } from "@/shared/constants/kinds";
 import {
   clearChannelStarsOutbox,
+  isStarsStoreSubsumedBy,
   mergeStores,
   parseStarPayload,
   writeChannelStarsOutbox,
@@ -231,6 +232,41 @@ export class ChannelStarSyncManager {
     }
   }
 
+  /**
+   * After a publish OK, fetch the authoritative retained head and report whether
+   * it subsumes the store we attempted to write. The relay returns OK for a
+   * superseded NIP-33 write as a no-op, so two windows racing distinct blobs
+   * from the same head can both get OK while only one blob is retained (Carl
+   * P1). Only a retained head that subsumes our store proves our click is
+   * durable on the relay; otherwise the outbox must be kept and retried.
+   *
+   * A failed/absent/undecryptable fetch cannot prove subsumption and returns
+   * false, so the durable click is retained and retried rather than dropped.
+   * Records the fetched head and observes it so a subsequent merge/retry folds
+   * the retained blob in.
+   */
+  private async confirmRetainedHeadSubsumes(
+    store: ChannelStarStore,
+  ): Promise<boolean> {
+    try {
+      const events = await relayClient.fetchEvents({
+        kinds: [KIND_CHANNEL_STARS],
+        authors: [this.pubkey],
+        "#d": [D_TAG],
+        limit: 1,
+      });
+      if (events.length === 0 || events[0].pubkey !== this.pubkey) return false;
+      const event = events[0];
+      this.recordRemoteHead(event.created_at);
+      const remote = await decryptAndParse(event);
+      if (!remote) return false;
+      this.observe(remote.store);
+      return isStarsStoreSubsumedBy(store, remote.store);
+    } catch {
+      return false;
+    }
+  }
+
   private isIdenticalToLastPublished(store: ChannelStarStore): boolean {
     if (!this.lastPublishedStore) return false;
     const lastKeys = Object.keys(this.lastPublishedStore.channels);
@@ -321,6 +357,20 @@ export class ChannelStarSyncManager {
       );
       this.recordRemoteHead(event.created_at);
       this.observe(merged);
+      // A publish OK is NOT proof of retention: the relay OKs a superseded
+      // NIP-33 write as a no-op, so a peer window racing a distinct blob from
+      // the same head can win retention while ours is silently dropped (Carl
+      // P1). Fetch the authoritative retained head and clear the durable outbox
+      // only when it subsumes what we wrote. If it does not (or the fetch
+      // could not prove it), keep the outbox and retry so the click is never
+      // lost; the retry's pre-publish max-merge folds the retained blob in.
+      if (this.destroyed) return;
+      const confirmed = await this.confirmRetainedHeadSubsumes(merged);
+      if (this.destroyed) return;
+      if (!confirmed) {
+        this.scheduleRetry(gen);
+        return;
+      }
       // Only claim this store as the published head if it is still the current
       // edit; a newer edit queued mid-flight owns lastPublishedStore now.
       if (gen === this.pendingGeneration) {

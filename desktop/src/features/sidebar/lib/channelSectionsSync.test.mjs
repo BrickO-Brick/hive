@@ -334,6 +334,108 @@ test("timestamp clamp: published createdAt stays inside the relay future window"
   }
 });
 
+// ─── Unreadable head: retain, never overwrite (Carl P1) ───────────────────────
+
+// A pre-publish head event exists but cannot be decrypted (transient keychain
+// fault, future NIP-44 scheme). We cannot inspect it to decide adopt-or-publish,
+// so publishing our blob over it would blindly clobber authoritative state.
+// Fix: `retain` — keep the durable pending edit and retry, never publish.
+// Mutation: reverting `retain` to `publish` fires publishEvent and drops the
+// head's unread state.
+test("unreadable head (decrypt failure) retains the pending edit and retries, never publishing", async () => {
+  mock.method(relayClient, "fetchEvents", () =>
+    Promise.resolve([
+      {
+        pubkey: "pk-undec",
+        content: "bad-cipher",
+        created_at: 500,
+        id: "evt-undec",
+      },
+    ]),
+  );
+  const publishCalls = [];
+  mock.method(relayClient, "publishEvent", (...args) => {
+    publishCalls.push(args);
+    return Promise.resolve();
+  });
+  const fw = makeFakeWindow();
+  const restore = installFakeWindow(fw);
+  const tauri = installTauriMock("{}");
+  try {
+    const manager = new ChannelSectionSyncManager("pk-undec", RELAY);
+    manager.publishSections(
+      makeSectionsStore([{ id: "s1", name: "Work", order: 0 }]),
+    );
+    fw._fireTimer();
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(
+      publishCalls.length,
+      0,
+      "must not publish over a head we could not read",
+    );
+    assert.ok(
+      manager.getPendingStore() !== null,
+      "unreadable head must retain the pending edit",
+    );
+    assert.ok(
+      readChannelSectionsOutbox("pk-undec", RELAY) !== null,
+      "durable outbox must survive an unreadable head",
+    );
+    assert.ok(fw._hasTimer(), "a retry must be scheduled");
+  } finally {
+    tauri.restore();
+    restore();
+    mock.reset();
+  }
+});
+
+// A malformed payload that decrypts to non-JSON is equally unreadable:
+// `decryptAndParse` throws in `JSON.parse` and returns null, so the manager
+// must `retain`, not overwrite.
+test("malformed (non-JSON) head payload retains the pending edit, never publishing", async () => {
+  mock.method(relayClient, "fetchEvents", () =>
+    Promise.resolve([
+      {
+        pubkey: "pk-badver",
+        content: "good-cipher",
+        created_at: 500,
+        id: "evt-badver",
+      },
+    ]),
+  );
+  const publishCalls = [];
+  mock.method(relayClient, "publishEvent", (...args) => {
+    publishCalls.push(args);
+    return Promise.resolve();
+  });
+  const fw = makeFakeWindow();
+  const restore = installFakeWindow(fw);
+  // Decrypts cleanly but the plaintext is not JSON — parsing throws.
+  const tauri = installTauriMock("not-json{");
+  try {
+    const manager = new ChannelSectionSyncManager("pk-badver", RELAY);
+    manager.publishSections(
+      makeSectionsStore([{ id: "s1", name: "Work", order: 0 }]),
+    );
+    fw._fireTimer();
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(
+      publishCalls.length,
+      0,
+      "must not publish over a head whose payload we could not parse",
+    );
+    assert.ok(
+      manager.getPendingStore() !== null,
+      "malformed head must retain the pending edit",
+    );
+    assert.ok(fw._hasTimer(), "a retry must be scheduled");
+  } finally {
+    tauri.restore();
+    restore();
+    mock.reset();
+  }
+});
+
 // 5. live-sub: undecryptable event on live path records head before decrypt
 // Mutation test: removing recordRemoteHead before decrypt in the live callback
 // leaves watermark at 0 after a live event.

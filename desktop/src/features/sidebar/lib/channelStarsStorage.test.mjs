@@ -156,6 +156,31 @@ test("mergeStores: equal updatedAt AND equal rev → starred=true wins (leaf)", 
   assert.deepEqual(result.channels.c, E(true, 100, 3));
 });
 
+test("mergeStores: same-second old-build click (rev 0) loses to an earlier new-build rev, heals next second", () => {
+  // ACCEPTED MIXED-FLEET RESIDUAL (Carl P1 #5). A new build wrote {starred:true,
+  // rev:2} at second 100; an old build then UNSTARS in the SAME second — old
+  // builds mint no rev, so its click reads rev:0. It loses the same-second tie
+  // to the earlier rev-2 entry: the later intent is suppressed until a
+  // strictly-later second carries it on the primary updatedAt key. This pins the
+  // current deterministic outcome; it is not a regression to fix here.
+  const newBuildStar = S(E(true, 100, 2));
+  const oldBuildUnstarSameSecond = S(E(false, 100, 0));
+  assert.deepEqual(
+    mergeStores(newBuildStar, oldBuildUnstarSameSecond).channels.c,
+    E(true, 100, 2),
+    "the earlier new-build rev-2 star wins the same-second tie — old click's unstar is lost",
+  );
+
+  // The same old-build unstar one second later wins outright on updatedAt: the
+  // residual self-heals the moment the user clicks again in a later second.
+  const oldBuildUnstarNextSecond = S(E(false, 101, 0));
+  assert.deepEqual(
+    mergeStores(newBuildStar, oldBuildUnstarNextSecond).channels.c,
+    E(false, 101, 0),
+    "a strictly-later-second old-build unstar wins — the residual is transient",
+  );
+});
+
 test("mergeStores: unstar with higher updatedAt overrides star", () => {
   const result = mergeStores(S(E(true, 100, 9)), S(E(false, 999, 1)));
   assert.deepEqual(result.channels.c, E(false, 999, 1));
