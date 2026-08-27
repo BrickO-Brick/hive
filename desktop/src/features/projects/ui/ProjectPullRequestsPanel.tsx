@@ -48,6 +48,7 @@ import {
 } from "./ProjectProfileIdentity";
 import { ProjectRichContent } from "./ProjectRichContent";
 import { ProjectReviewChecks } from "./ProjectReviewChecks";
+import { ProjectReviewMemory } from "./ProjectReviewMemory";
 import { PullRequestMetaHeader } from "./PullRequestMetaRail";
 import { PullRequestReviewCard } from "./PullRequestReviewCard";
 import { ShareLinkButton } from "./ShareLinkButton";
@@ -617,6 +618,12 @@ export function ProjectPullRequestDetail({
       </ProjectDetailSection>
       <ProjectDetailSection defaultOpen={false} title="Checks">
         <ProjectReviewChecks project={project} pullRequest={pullRequest} />
+      </ProjectDetailSection>
+      <ProjectDetailSection
+        defaultOpen={false}
+        title="Prior art and future vision"
+      >
+        <ProjectReviewMemory project={project} pullRequest={pullRequest} />
       </ProjectDetailSection>
       <ProjectDetailSection defaultOpen title="Activity">
         <div className="space-y-3">
