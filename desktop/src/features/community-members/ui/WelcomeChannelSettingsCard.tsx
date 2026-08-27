@@ -833,7 +833,7 @@ export function WelcomeComposer({
             tabIndex={0}
           />
         </ContextMenuTrigger>
-        <ContextMenuContent className="bg-popover">
+        <ContextMenuContent className={ACTION_TRAY_SURFACE_CLASS}>
           <ContextMenuItem onSelect={() => insertAtCaret("member")}>
             <UserRound className="h-4 w-4" />
             New member’s name
