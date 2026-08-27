@@ -394,7 +394,12 @@ export class ChannelSortSyncManager {
       }
       return { kind: "publish", store };
     } catch {
-      return { kind: "publish", store };
+      // The pre-publish fetch itself failed (timeout / auth / socket) — this is
+      // NOT proof that no head exists. Publishing here would sign above a stale
+      // watermark and could erase an unseen newer head during a transient
+      // outage. Retain the durable pending edit and retry rather than overwrite
+      // state we could not read (Carl P1).
+      return { kind: "retain" };
     }
   }
 

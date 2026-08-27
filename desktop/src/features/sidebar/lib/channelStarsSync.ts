@@ -38,6 +38,18 @@ export type RemoteStars = {
   eventId: string;
 };
 
+/**
+ * Pre-publish decision for the merge lane. `publish` carries the max-merged
+ * store to write; `retain` keeps the durable pending edit and retries. Retain
+ * covers two unreadable cases where publishing would blindly overwrite state we
+ * could not inspect (Carl P1): a pre-publish fetch that THREW (timeout / auth /
+ * socket — not proof no head exists), and an existing head that failed
+ * decryption/parsing (a max-merge is only safe once both operands were read).
+ */
+type MergePublishDecision =
+  | { kind: "publish"; store: ChannelStarStore }
+  | { kind: "retain" };
+
 async function decryptAndParse(event: RelayEvent): Promise<RemoteStars | null> {
   try {
     const plaintext = await nip44DecryptFromSelf(event.content);
@@ -209,27 +221,38 @@ export class ChannelStarSyncManager {
 
   private async fetchOwnBlobBeforePublish(
     store: ChannelStarStore,
-  ): Promise<ChannelStarStore> {
+  ): Promise<MergePublishDecision> {
+    let events: RelayEvent[];
     try {
-      const events = await relayClient.fetchEvents({
+      events = await relayClient.fetchEvents({
         kinds: [KIND_CHANNEL_STARS],
         authors: [this.pubkey],
         "#d": [D_TAG],
         limit: 1,
       });
-      if (events.length === 0 || events[0].pubkey !== this.pubkey) return store;
-      const event = events[0];
-      // Record the raw head before decrypt on the pre-publish path too.
-      this.recordRemoteHead(event.created_at);
-      const remote = await decryptAndParse(event);
-      if (!remote) return store;
-      this.observe(remote.store);
-      // Max-merge: the local edit's per-entry winners survive by construction
-      // and any newer remote entries fold in, so no adopt step is needed.
-      return mergeStores(store, remote.store);
     } catch {
-      return store;
+      // The fetch itself failed (timeout / auth / socket) — NOT proof that no
+      // head exists. Publishing the local store here could erase an unseen
+      // newer head during a transient outage, so retain and retry (Carl P1).
+      return { kind: "retain" };
     }
+    // A successful fetch that proves no head exists: publish the local store.
+    if (events.length === 0 || events[0].pubkey !== this.pubkey)
+      return { kind: "publish", store };
+    const event = events[0];
+    // Record the raw head before decrypt on the pre-publish path too.
+    this.recordRemoteHead(event.created_at);
+    const remote = await decryptAndParse(event);
+    // A head exists but could not be read (decrypt fault / malformed / future
+    // schema). A max-merge is only safe once both operands were actually read,
+    // so retain rather than publish the local store over an uninspectable head
+    // (Carl P1). The whole-blob lanes retain here too; the durable outbox and
+    // bounded retry resume normal resolution once a readable head returns.
+    if (!remote) return { kind: "retain" };
+    this.observe(remote.store);
+    // Max-merge: the local edit's per-entry winners survive by construction and
+    // any newer remote entries fold in, so no adopt step is needed.
+    return { kind: "publish", store: mergeStores(store, remote.store) };
   }
 
   /**
@@ -317,7 +340,7 @@ export class ChannelStarSyncManager {
     // pending state and will publish the latest store — abandon this stale run.
     if (gen !== this.pendingGeneration) return;
     try {
-      const merged = await this.fetchOwnBlobBeforePublish(store);
+      const decision = await this.fetchOwnBlobBeforePublish(store);
       // Guard: manager may have been destroyed while fetchOwnBlobBeforePublish
       // was awaited (community switch during in-flight fetch).
       if (this.destroyed) return;
@@ -325,6 +348,14 @@ export class ChannelStarSyncManager {
       // convergence now; the serialized cycle re-drives for it once this run
       // unwinds.
       if (gen !== this.pendingGeneration) return;
+      // The pre-publish read failed or the head was unreadable — keep the
+      // durable pending edit and retry rather than publish over uninspectable
+      // state (Carl P1).
+      if (decision.kind === "retain") {
+        this.scheduleRetry(gen);
+        return;
+      }
+      const merged = decision.store;
       if (this.isIdenticalToLastPublished(merged)) {
         this.discardPending(gen);
         return;

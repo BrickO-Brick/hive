@@ -6,7 +6,6 @@ import { readChannelMutesOutbox } from "./channelMutesStorage.ts";
 import { ChannelMuteSyncManager } from "./channelMutesSync.ts";
 import {
   installFakeWindow,
-  installTauriMock,
   installEchoTauri,
   makeFakeWindow,
 } from "./sidebarSyncTestHelpers.mjs";
@@ -490,6 +489,145 @@ test("revert-fix: relay-A watermark does not suppress first-sync seed on relay-B
   }
 });
 
+// ─── Failed pre-publish fetch: retain, never publish (Carl P1) ────────────────
+
+// The pre-publish fetch THROWS (timeout / auth / socket) — NOT proof that no
+// head exists. Publishing the local store here could erase an unseen newer head
+// during a transient outage. Fix: `retain` — keep the durable outbox and retry.
+// Mutation: reverting the merge-lane catch to `publish` fires publishEvent over
+// the unseen head.
+test("failed pre-publish fetch retains the pending edit and retries, never publishing", async () => {
+  mock.method(relayClient, "fetchEvents", () =>
+    Promise.reject(new Error("socket timeout")),
+  );
+  const publishCalls = [];
+  mock.method(relayClient, "publishEvent", (...args) => {
+    publishCalls.push(args);
+    return Promise.resolve();
+  });
+  const fw = makeFakeWindow();
+  const restore = installFakeWindow(fw);
+  const tauri = installEchoTauri("pk-fetchfail");
+  try {
+    const manager = new ChannelMuteSyncManager("pk-fetchfail", RELAY);
+    manager.publishMutes(makeStore({ a: E(true, 100, 1) }));
+    fw._fireTimer();
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(
+      publishCalls.length,
+      0,
+      "must not publish when the pre-publish fetch failed",
+    );
+    assert.ok(
+      manager.getPendingMuteStore() !== null,
+      "a failed fetch must retain the pending edit",
+    );
+    assert.ok(
+      readChannelMutesOutbox("pk-fetchfail", RELAY),
+      "durable outbox must survive a failed fetch",
+    );
+    assert.ok(fw._hasTimer(), "a retry must be scheduled");
+  } finally {
+    tauri.restore();
+    restore();
+    mock.reset();
+  }
+});
+
+// ─── Unreadable head: retain, never max-merge over it (Carl P1) ───────────────
+
+// A pre-publish head event exists but cannot be decrypted (transient keychain
+// fault, future NIP-44 scheme, malformed/unsupported payload). A max-merge is
+// only safe once both operands were actually read, so publishing the local
+// store over an uninspectable head would drop its unread entries. Fix: `retain`
+// — keep the durable outbox and retry, never publish. Mutation: reverting the
+// `!remote` branch to `publish` fires publishEvent and clobbers the unread head.
+test("unreadable head (decrypt failure) retains the pending edit and retries, never publishing", async () => {
+  // A head event exists but its ciphertext is not registered in the echo map,
+  // so decrypt rejects → decryptAndParse returns null → retain.
+  mock.method(relayClient, "fetchEvents", () =>
+    Promise.resolve([
+      {
+        pubkey: "pk-undec",
+        content: "unregistered-cipher",
+        created_at: 500,
+        id: "evt-undec",
+      },
+    ]),
+  );
+  const publishCalls = [];
+  mock.method(relayClient, "publishEvent", (...args) => {
+    publishCalls.push(args);
+    return Promise.resolve();
+  });
+  const fw = makeFakeWindow();
+  const restore = installFakeWindow(fw);
+  const tauri = installEchoTauri("pk-undec");
+  try {
+    const manager = new ChannelMuteSyncManager("pk-undec", RELAY);
+    manager.publishMutes(makeStore({ a: E(true, 100, 1) }));
+    fw._fireTimer();
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(
+      publishCalls.length,
+      0,
+      "must not publish over a head we could not read",
+    );
+    assert.ok(
+      manager.getPendingMuteStore() !== null,
+      "unreadable head must retain the pending edit",
+    );
+    assert.ok(
+      readChannelMutesOutbox("pk-undec", RELAY),
+      "durable outbox must survive an unreadable head",
+    );
+    assert.ok(fw._hasTimer(), "a retry must be scheduled");
+  } finally {
+    tauri.restore();
+    restore();
+    mock.reset();
+  }
+});
+
+// A readable head whose decrypted payload carries an unsupported schema version
+// (parseMutePayload rejects it → decryptAndParse returns null). Distinct from a
+// decrypt fault: the ciphertext decrypts fine, but we still cannot trust the
+// contents, so retain rather than max-merge over it.
+test("unsupported head payload schema retains the pending edit, never publishing", async () => {
+  const fw = makeFakeWindow();
+  const restore = installFakeWindow(fw);
+  const tauri = installEchoTauri("pk-badver");
+  // mintHead stringifies the given object as the head plaintext; a future schema
+  // version decrypts cleanly but parseMutePayload returns null.
+  const head = tauri.mintHead({ version: 2, channels: {} }, 500);
+  mock.method(relayClient, "fetchEvents", () => Promise.resolve([head]));
+  const publishCalls = [];
+  mock.method(relayClient, "publishEvent", (...args) => {
+    publishCalls.push(args);
+    return Promise.resolve();
+  });
+  try {
+    const manager = new ChannelMuteSyncManager("pk-badver", RELAY);
+    manager.publishMutes(makeStore({ a: E(true, 100, 1) }));
+    fw._fireTimer();
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(
+      publishCalls.length,
+      0,
+      "must not publish over a head whose schema we do not support",
+    );
+    assert.ok(
+      manager.getPendingMuteStore() !== null,
+      "unsupported schema must retain the pending edit",
+    );
+    assert.ok(fw._hasTimer(), "a retry must be scheduled");
+  } finally {
+    tauri.restore();
+    restore();
+    mock.reset();
+  }
+});
+
 // ─── Timestamp clamp (Carl P2): a far-future remote head must not push our
 //     published createdAt past the relay's ±15min future-drift window.
 // Mutation test: removing the clamp lets createdAt = lastRemote+1 (~now+3600),
@@ -497,24 +635,16 @@ test("revert-fix: relay-A watermark does not suppress first-sync seed on relay-B
 test("timestamp clamp: published createdAt stays inside the relay future window", async () => {
   const nowSecs = Math.floor(Date.now() / 1000);
   const farFutureHead = nowSecs + 3_600; // 1h ahead — beyond the ±15min window
-  let call = 0;
-  mock.method(relayClient, "fetchEvents", () => {
-    call++;
-    // First call primes lastRemoteCreatedAt to farFutureHead (undecryptable so
-    // it does not merge into the store); pre-publish call returns created_at=0.
-    return Promise.resolve([
-      {
-        pubkey: "pk-clamp",
-        content: "bad-cipher",
-        created_at: call === 1 ? farFutureHead : 0,
-        id: "evt-clamp",
-      },
-    ]);
-  });
-  let signedCreatedAt = null;
   const fw = makeFakeWindow();
   const restore = installFakeWindow(fw);
-  const tauri = installTauriMock(JSON.stringify({ version: 1, channels: {} }));
+  const tauri = installEchoTauri("pk-clamp");
+  // A readable far-future head: primes lastRemoteCreatedAt to farFutureHead on
+  // the priming fetch and is max-merged on the pre-publish fetch. It must be
+  // decryptable — an unreadable head now retains rather than publishes, so the
+  // clamp is only exercised via a head we actually read.
+  const head = tauri.mintHead(makeStore({}), farFutureHead);
+  mock.method(relayClient, "fetchEvents", () => Promise.resolve([head]));
+  let signedCreatedAt = null;
   mock.method(relayClient, "publishEvent", (evt) => {
     signedCreatedAt = evt.created_at;
     return Promise.resolve();

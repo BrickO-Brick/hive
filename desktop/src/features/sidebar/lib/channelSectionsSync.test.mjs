@@ -436,6 +436,54 @@ test("malformed (non-JSON) head payload retains the pending edit, never publishi
   }
 });
 
+// ─── Failed pre-publish fetch: retain, never publish (Carl P1) ────────────────
+
+// The pre-publish fetch THROWS (timeout / auth / socket) — this is NOT proof
+// that no head exists. Publishing here would sign above a stale watermark and
+// could erase an unseen newer head during a transient outage. Fix: `retain` —
+// keep the durable pending edit and retry, never publish on a failed fetch.
+// Mutation: reverting the catch to `publish` fires publishEvent over the unseen
+// head.
+test("failed pre-publish fetch retains the pending edit and retries, never publishing", async () => {
+  mock.method(relayClient, "fetchEvents", () =>
+    Promise.reject(new Error("socket timeout")),
+  );
+  const publishCalls = [];
+  mock.method(relayClient, "publishEvent", (...args) => {
+    publishCalls.push(args);
+    return Promise.resolve();
+  });
+  const fw = makeFakeWindow();
+  const restore = installFakeWindow(fw);
+  const tauri = installTauriMock("{}");
+  try {
+    const manager = new ChannelSectionSyncManager("pk-fetchfail", RELAY);
+    manager.publishSections(
+      makeSectionsStore([{ id: "s1", name: "Work", order: 0 }]),
+    );
+    fw._fireTimer();
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(
+      publishCalls.length,
+      0,
+      "must not publish when the pre-publish fetch failed",
+    );
+    assert.ok(
+      manager.getPendingStore() !== null,
+      "a failed fetch must retain the pending edit",
+    );
+    assert.ok(
+      readChannelSectionsOutbox("pk-fetchfail", RELAY) !== null,
+      "durable outbox must survive a failed fetch",
+    );
+    assert.ok(fw._hasTimer(), "a retry must be scheduled");
+  } finally {
+    tauri.restore();
+    restore();
+    mock.reset();
+  }
+});
+
 // 5. live-sub: undecryptable event on live path records head before decrypt
 // Mutation test: removing recordRemoteHead before decrypt in the live callback
 // leaves watermark at 0 after a live event.

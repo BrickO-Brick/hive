@@ -34,7 +34,7 @@ test("parseStarPayload: missing rev normalizes to 0 (old-build blob, entry kept)
   });
 });
 
-test("parseStarPayload: malformed rev (string / negative / non-integer / NaN) normalizes to 0", () => {
+test("parseStarPayload: malformed rev (string / negative / non-integer / NaN / unsafe) normalizes to 0", () => {
   const result = parseStarPayload({
     version: 1,
     channels: {
@@ -42,9 +42,13 @@ test("parseStarPayload: malformed rev (string / negative / non-integer / NaN) no
       neg: { starred: true, updatedAt: 1, rev: -2 },
       frac: { starred: true, updatedAt: 1, rev: 1.5 },
       nan: { starred: true, updatedAt: 1, rev: NaN },
+      // Above Number.MAX_SAFE_INTEGER: `maxRev + 1` cannot advance past it, so a
+      // malformed entry at this magnitude would wedge later toggles forever
+      // unless rejected here (Carl P2).
+      huge: { starred: true, updatedAt: 1, rev: Number.MAX_SAFE_INTEGER + 1 },
     },
   });
-  for (const id of ["str", "neg", "frac", "nan"]) {
+  for (const id of ["str", "neg", "frac", "nan", "huge"]) {
     assert.equal(result.channels[id].rev, 0, `${id} rev normalized to 0`);
     assert.equal(result.channels[id].starred, true, `${id} entry kept`);
   }
@@ -94,7 +98,7 @@ test("parseStarPayload: malformed channel entries missing starred/updatedAt are 
   });
 });
 
-test("parseStarPayload: NaN/Infinity/negative updatedAt entries are filtered out", () => {
+test("parseStarPayload: NaN/Infinity/negative/unsafe updatedAt entries are filtered out", () => {
   const result = parseStarPayload({
     version: 1,
     channels: {
@@ -102,6 +106,10 @@ test("parseStarPayload: NaN/Infinity/negative updatedAt entries are filtered out
       inf: { starred: true, updatedAt: Infinity },
       "neg-inf": { starred: true, updatedAt: -Infinity },
       neg: { starred: true, updatedAt: -1 },
+      // Beyond Number.MAX_SAFE_INTEGER: an unrepresentable second is not a
+      // trustworthy watermark, so the entry is dropped rather than kept (Carl
+      // P2 — same bound as `rev`).
+      unsafe: { starred: true, updatedAt: Number.MAX_SAFE_INTEGER + 1 },
       valid: { starred: true, updatedAt: 100, rev: 2 },
     },
   });
@@ -178,6 +186,26 @@ test("mergeStores: same-second old-build click (rev 0) loses to an earlier new-b
     mergeStores(newBuildStar, oldBuildUnstarNextSecond).channels.c,
     E(false, 101, 0),
     "a strictly-later-second old-build unstar wins — the residual is transient",
+  );
+});
+
+test("mergeStores: a huge (unsafe) rev entry cannot wedge a later false toggle", () => {
+  // Carl P2 regression. A malformed blob carries a same-second rev far above
+  // Number.MAX_SAFE_INTEGER on a `starred:true` entry. Before the parse bound,
+  // this survived as-is and — since a real later click mints rev = maxSeen + 1,
+  // which cannot advance past an unsafe integer — the true entry won the
+  // same-second tie forever, suppressing every later unstar. The parser now
+  // normalizes the unsafe rev to 0, so a same-second later click (rev 1) wins.
+  const wedged = parseStarPayload({
+    version: 1,
+    channels: { c: { starred: true, updatedAt: 100, rev: Number.MAX_VALUE } },
+  });
+  assert.equal(wedged.channels.c.rev, 0, "unsafe rev is normalized to 0");
+  const laterUnstar = S(E(false, 100, 1));
+  assert.deepEqual(
+    mergeStores(wedged, laterUnstar).channels.c,
+    E(false, 100, 1),
+    "the same-second later unstar (rev 1) wins — no permanent wedge",
   );
 });
 

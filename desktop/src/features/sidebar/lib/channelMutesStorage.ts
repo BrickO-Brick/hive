@@ -50,20 +50,24 @@ export function parseMutePayload(json: unknown): ChannelMuteStore | null {
                 v !== null &&
                 typeof (v as Record<string, unknown>).muted === "boolean" &&
                 typeof (v as Record<string, unknown>).updatedAt === "number" &&
-                Number.isFinite(
+                Number.isSafeInteger(
                   (v as Record<string, unknown>).updatedAt as number,
                 ) &&
                 ((v as Record<string, unknown>).updatedAt as number) >= 0
               );
             })
-            // Normalize `rev`: accept a non-negative integer, otherwise 0. An
-            // entry is never dropped solely because `rev` is absent (older
-            // build) or malformed — absence is a valid mergeable value.
+            // Normalize `rev`: accept a safe non-negative integer, otherwise 0.
+            // An entry is never dropped solely because `rev` is absent (older
+            // build) or malformed — absence is a valid mergeable value. `rev`
+            // above `Number.MAX_SAFE_INTEGER` is rejected here: at that
+            // magnitude `maxRev + 1` no longer advances, so a malformed entry
+            // could wedge every later toggle. Treating it as rev 0 lets a real
+            // later click win the same-second tie instead (Carl P2).
             .map(([id, v]) => {
               const rawRev = v.rev;
               const rev =
                 typeof rawRev === "number" &&
-                Number.isInteger(rawRev) &&
+                Number.isSafeInteger(rawRev) &&
                 rawRev >= 0
                   ? rawRev
                   : 0;
