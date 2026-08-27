@@ -1154,7 +1154,6 @@ test("selecting a persona mention creates a channel agent before sending", async
     baselineCommands,
     "start_managed_agent",
   );
-
   await page.getByTestId("send-message").click();
   await expect(page.getByRole("alertdialog")).toHaveCount(0);
 
@@ -1260,7 +1259,7 @@ test("selecting a persona mention reuses an existing persona agent", async ({
   await expect(mentionChip).toHaveText("Fizz");
 });
 
-test("managed relay-profile agents with member roles use the agent address tray", async ({
+test("managed relay-profile agents with member roles can be addressed explicitly", async ({
   page,
 }) => {
   await installMockBridge(page, {
@@ -1286,9 +1285,17 @@ test("managed relay-profile agents with member roles use the agent address tray"
   await input.fill("@char");
 
   const dropdown = autocomplete(page);
-  await expect(dropdown.getByText("charlie")).toBeVisible();
-  await expect(dropdown.getByText("agent")).toBeVisible();
-  await input.press("Enter");
+  const charlieRow = dropdown.getByTestId(
+    `mention-suggestion-${TEST_IDENTITIES.charlie.pubkey}`,
+  );
+  await expect(charlieRow.getByText("charlie")).toBeVisible();
+  await expect(charlieRow.getByText("agent")).toBeVisible();
+  await charlieRow
+    .getByRole("button", {
+      name: "Automatically mention charlie",
+      exact: true,
+    })
+    .click();
 
   await expect(input).toHaveText("@charlie ");
   await expect(input.locator(".agent-mention-highlight")).toHaveText("charlie");
@@ -2153,11 +2160,21 @@ test("mentioning a non-member managed agent adds and starts it before sending", 
   page,
 }) => {
   await installMockBridge(page, {
+    personas: [
+      {
+        id: "persona-owner",
+        displayName: "Fizz",
+        systemPrompt: "",
+      },
+    ],
     managedAgents: [
       {
         pubkey: OUT_OF_CHANNEL_MANAGED_AGENT_PUBKEY,
         name: "fizz",
+        personaId: "persona-owner",
         status: "stopped",
+        respondTo: "anyone",
+        respondToAllowlist: [TEST_IDENTITIES.outsider.pubkey],
       },
     ],
   });
@@ -2183,6 +2200,7 @@ test("mentioning a non-member managed agent adds and starts it before sending", 
     baselineCommands,
     "start_managed_agent",
   );
+  const baselinePayloadCount = (await readCommandPayloadLog(page)).length;
 
   await page.getByTestId("send-message").click();
   await expect(page.getByRole("alertdialog")).toHaveCount(0);
@@ -2198,11 +2216,55 @@ test("mentioning a non-member managed agent adds and starts it before sending", 
     )
     .toBeGreaterThan(baselineStartCount);
 
+  const sendCommands = (await readCommandPayloadLog(page)).slice(
+    baselinePayloadCount,
+  );
+  const updateIndex = sendCommands.findIndex(
+    (entry) => entry.command === "update_managed_agent",
+  );
+  const addIndex = sendCommands.findIndex(
+    (entry) => entry.command === "add_channel_members",
+  );
+  const startIndex = sendCommands.findIndex(
+    (entry) => entry.command === "start_managed_agent",
+  );
+  expect(updateIndex).toBeGreaterThanOrEqual(0);
+  expect(updateIndex).toBeLessThan(addIndex);
+  expect(updateIndex).toBeLessThan(startIndex);
+  expect(sendCommands[updateIndex]?.payload).toMatchObject({
+    input: {
+      pubkey: OUT_OF_CHANNEL_MANAGED_AGENT_PUBKEY,
+      respondTo: "owner-only",
+      respondToAllowlist: [],
+    },
+  });
+
   const mentionChip = page
     .getByTestId("message-row")
     .last()
     .locator("[data-mention].agent-mention-highlight", { hasText: "fizz" });
   await expect(mentionChip).toBeVisible();
+
+  const persistedPolicy = await page.evaluate(async (pubkey) => {
+    const invoke = window.__BUZZ_E2E_INVOKE_MOCK_COMMAND__;
+    if (!invoke) throw new Error("Mock bridge is not installed.");
+    const agents = (await invoke("list_managed_agents", {})) as Array<{
+      pubkey: string;
+      respond_to: string;
+      respond_to_allowlist: string[];
+    }>;
+    const agent = agents.find((candidate) => candidate.pubkey === pubkey);
+    return agent
+      ? {
+          respondTo: agent.respond_to,
+          respondToAllowlist: agent.respond_to_allowlist,
+        }
+      : null;
+  }, OUT_OF_CHANNEL_MANAGED_AGENT_PUBKEY);
+  expect(persistedPolicy).toEqual({
+    respondTo: "owner-only",
+    respondToAllowlist: [],
+  });
 });
 
 test("mentioning a non-member provider managed agent deploys it before sending", async ({
@@ -2618,7 +2680,7 @@ test("system member-joined rows render the joined person as a plain profile name
   await expect(joinedPersonName).not.toHaveAttribute("data-mention");
 });
 
-test("selecting a managed non-member agent from a DM addresses it", async ({
+test("a managed non-member agent from a DM can be addressed explicitly", async ({
   page,
 }) => {
   await installMockBridge(page, {
@@ -2638,10 +2700,18 @@ test("selecting a managed non-member agent from a DM addresses it", async ({
   await input.fill("@char");
 
   const dropdown = autocomplete(page);
-  await expect(dropdown.getByText("charlie")).toBeVisible();
+  const charlieRow = dropdown.getByTestId(
+    `mention-suggestion-${TEST_IDENTITIES.charlie.pubkey}`,
+  );
+  await expect(charlieRow.getByText("charlie")).toBeVisible();
   await expect(autocomplete(page)).toHaveCount(1);
   await expect(input.locator(".mention-chip")).toHaveCount(0);
-  await input.press("Enter");
+  await charlieRow
+    .getByRole("button", {
+      name: "Automatically mention charlie",
+      exact: true,
+    })
+    .click();
 
   await expect(input).toHaveText("@charlie ");
   await expect(input.locator(".agent-mention-highlight")).toHaveText("charlie");
