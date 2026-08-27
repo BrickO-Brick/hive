@@ -1025,7 +1025,31 @@ function MessagesView() {
     y: number;
     connectedAtStart: boolean;
     hasBroken: boolean;
+    previewCell: HTMLElement | null;
+    previewEdge: MessagePanelEdge | null;
   } | null>(null);
+
+  const clearMergePreview = (drag: NonNullable<typeof dragRef.current>) => {
+    if (drag.previewCell && drag.previewEdge) {
+      drag.previewCell.classList.remove(`merge-preview-${drag.previewEdge}`);
+    }
+    drag.previewCell = null;
+    drag.previewEdge = null;
+  };
+
+  const updateMergePreview = (
+    drag: NonNullable<typeof dragRef.current>,
+    snap: ReturnType<typeof findSnapTarget>,
+  ) => {
+    if (snap && drag.previewCell?.dataset.panelId === snap.target && drag.previewEdge === snap.edge) return;
+    clearMergePreview(drag);
+    if (!snap) return;
+    const targetCell = boardRef.current?.querySelector<HTMLElement>(`[data-panel-id="${snap.target}"]`);
+    if (!targetCell) return;
+    targetCell.classList.add(`merge-preview-${snap.edge}`);
+    drag.previewCell = targetCell;
+    drag.previewEdge = snap.edge;
+  };
 
   const isPanelConnected = (id: MessagePanelId) =>
     connections.some((connection) => connection.a === id || connection.b === id);
@@ -1149,6 +1173,8 @@ function MessagesView() {
       y: current.y,
       connectedAtStart,
       hasBroken: false,
+      previewCell: null,
+      previewEdge: null,
     };
     cell.classList.add("is-pulling", "is-active-drag");
   };
@@ -1173,6 +1199,10 @@ function MessagesView() {
     drag.cell.style.setProperty("--panel-y", `${drag.y}px`);
     drag.cell.style.setProperty("--panel-tilt", `${Math.max(-1.2, Math.min(1.2, (event.clientX - drag.startX) * 0.012))}deg`);
     drag.cell.classList.toggle("is-breaking", drag.hasBroken);
+    updateMergePreview(
+      drag,
+      drag.connectedAtStart && !drag.hasBroken ? null : findSnapTarget(drag.id, drag.x, drag.y),
+    );
   };
 
   const endPanelDrag = (event: ReactPointerEvent<HTMLElement>) => {
@@ -1186,6 +1216,7 @@ function MessagesView() {
       ? connections
       : connections.filter((connection) => connection.a !== drag.id && connection.b !== drag.id);
     const snap = stayedConnected ? null : findSnapTarget(drag.id, drag.x, drag.y);
+    clearMergePreview(drag);
     const next = stayedConnected
       ? { x: drag.originX, y: drag.originY }
       : snap
@@ -1223,6 +1254,7 @@ function MessagesView() {
       <div ref={boardRef} className="messages-board">
         <div data-panel-id="sidebar" className={`message-panel-cell sidebar-cell${isPanelConnected("sidebar") ? "" : " is-detached"}`} style={panelStyle("sidebar")}>
           <aside className="message-panel channel-panel">
+            <span className="merge-edge-indicator" aria-hidden="true" />
             <div className="panel-drag-handle channel-search-wrap" {...dragHandlers("sidebar")}>
               <Search aria-hidden="true" size={18} strokeWidth={1.7} />
               <input aria-label="Search channels" placeholder="Search" />
@@ -1240,6 +1272,7 @@ function MessagesView() {
 
         <div data-panel-id="chat" className={`message-panel-cell chat-cell${isPanelConnected("chat") ? "" : " is-detached"}`} style={panelStyle("chat")}>
           <article className="message-panel chat-panel">
+            <span className="merge-edge-indicator" aria-hidden="true" />
             <header className="panel-drag-handle chat-header" {...dragHandlers("chat")}>
               <div><LockKeyhole aria-hidden="true" size={18} strokeWidth={1.7} /><strong>buzz-interface-squad</strong></div>
               <div className="chat-header-actions"><button type="button" aria-label="Channel privacy"><LockKeyhole aria-hidden="true" size={18} strokeWidth={1.7} /></button><button type="button" aria-label="Members"><Users aria-hidden="true" size={18} strokeWidth={1.7} /><span>13</span></button><button type="button" aria-label="Huddle"><Headphones aria-hidden="true" size={18} strokeWidth={1.7} /></button><button type="button" aria-label="More"><MoreVertical aria-hidden="true" size={18} strokeWidth={1.7} /></button></div>
@@ -1255,6 +1288,7 @@ function MessagesView() {
 
         <div data-panel-id="thread" className={`message-panel-cell thread-cell${isPanelConnected("thread") ? "" : " is-detached"}`} style={panelStyle("thread")}>
           <aside className="message-panel thread-panel">
+            <span className="merge-edge-indicator" aria-hidden="true" />
             <header className="panel-drag-handle thread-header" {...dragHandlers("thread")}><div><PanelRightOpen aria-hidden="true" size={18} strokeWidth={1.7} /><strong>Thread</strong></div><button type="button" aria-label="Close thread"><X aria-hidden="true" size={18} strokeWidth={1.7} /></button></header>
             <div className="thread-content">
               <div className="thread-message"><img src="/berd-agent-avatars/pushback-gloopies-5.png" alt="" /><div><p><strong>Caroline McKenzie</strong><span>Yesterday at 7:05PM</span></p><div>Brought copy link out of the context menu and into the main message rail. Also tried simplifying by removing quick reactions but can put them back later if people really miss them.</div></div></div>

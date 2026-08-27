@@ -198,6 +198,32 @@ body { background: #e6f2f5; color: var(--ink); font-family: Inter, ui-sans-serif
 .message-panel-cell.is-pulling { --panel-scale: .997; }
 .message-panel-cell.is-pulling.is-breaking { --panel-scale: 1; }
 .message-panel-cell.is-pulling .message-panel { transition: border-radius 180ms ease-out, box-shadow 180ms ease-out; }
+.merge-edge-indicator {
+  position: absolute;
+  z-index: 20;
+  pointer-events: none;
+  background: rgba(0, 112, 255, .4);
+  opacity: 0;
+  transition: opacity 80ms ease-out;
+}
+.merge-preview-left .merge-edge-indicator,
+.merge-preview-right .merge-edge-indicator {
+  top: 18px;
+  bottom: 18px;
+  width: 2px;
+  opacity: 1;
+}
+.merge-preview-left .merge-edge-indicator { left: 0; }
+.merge-preview-right .merge-edge-indicator { right: 0; }
+.merge-preview-top .merge-edge-indicator,
+.merge-preview-bottom .merge-edge-indicator {
+  right: 18px;
+  left: 18px;
+  height: 2px;
+  opacity: 1;
+}
+.merge-preview-top .merge-edge-indicator { top: 0; }
+.merge-preview-bottom .merge-edge-indicator { bottom: 0; }
 .panel-drag-handle { cursor: grab; touch-action: none; user-select: none; }
 .message-panel-cell.is-pulling .panel-drag-handle { cursor: grabbing; }
 .channel-panel { padding: 10px; }
@@ -437,6 +463,7 @@ body { background: #e6f2f5; color: var(--ink); font-family: Inter, ui-sans-serif
   .wrapped-labels { will-change: auto; }
   .orbit-system, .task-detail-panel { transition-duration: 1ms; animation-duration: 1ms; }
   .message-panel { transition: none; }
+  .merge-edge-indicator { transition: none; }
   .response-composer { transition: none; }
   .response-composer textarea { animation: none; }
   .project-name-pill { transition: none; }
