@@ -71,6 +71,7 @@ type ReviewCheckStatus = "idle" | "running" | "completed" | "failed";
 
 type ReviewCheckRun = {
   agentPubkey: string | null;
+  requestId?: string;
   status: ReviewCheckStatus;
   targetCommit?: string | null;
   channelId?: string;
@@ -135,6 +136,9 @@ function normalizeStoredRuns(value: Record<string, unknown>): ReviewCheckRuns {
         : {}),
       ...(typeof raw.channelId === "string"
         ? { channelId: raw.channelId }
+        : {}),
+      ...(typeof raw.requestId === "string"
+        ? { requestId: raw.requestId }
         : {}),
       ...(opener ? { opener } : {}),
       ...(parsedResult ? { result: parsedResult } : {}),
@@ -269,6 +273,7 @@ function ReviewCheckResultObserver({
   checkId,
   onResult,
   opener,
+  requestId,
 }: {
   agentPubkey: string;
   channel: Channel | null;
@@ -279,6 +284,7 @@ function ReviewCheckResultObserver({
     createdAt: number,
   ) => void;
   opener: ProjectsConversationOpener;
+  requestId: string | null;
 }) {
   useChannelSubscription(channel);
   const messagesQuery = useChannelMessagesQuery(channel);
@@ -310,10 +316,18 @@ function ReviewCheckResultObserver({
       );
     for (const event of events) {
       const result = parseProjectReviewCheckResult(event.content);
-      if (result) return { createdAt: event.created_at, result };
+      if (result && (!requestId || result.requestId === requestId)) {
+        return { createdAt: event.created_at, result };
+      }
     }
     return null;
-  }, [agentPubkey, messagesQuery.data, opener, threadReplies.events]);
+  }, [
+    agentPubkey,
+    messagesQuery.data,
+    opener,
+    requestId,
+    threadReplies.events,
+  ]);
 
   React.useEffect(() => {
     if (observedResult) {
@@ -584,6 +598,7 @@ export function ProjectReviewChecks({
     async (check: ProjectReviewCheckDefinition, agent: ReviewCheckAgent) => {
       const expectedStorageKey = storageKey;
       if (!expectedStorageKey || !relayScope || !signerScope) return;
+      const requestId = crypto.randomUUID();
       if (!agent.isManaged && !agent.isActive) {
         toast.error(
           `${agent.name} is offline and cannot be started from this dev build.`,
@@ -654,6 +669,7 @@ export function ProjectReviewChecks({
           reviewId: pullRequest.id,
           reviewLink: pullRequestShareLink(pullRequest) ?? "unavailable",
           reviewTitle: pullRequest.title,
+          requestId,
           commit: targetCommit,
           branchName: pullRequest.branchName,
           targetBranch: pullRequest.targetBranch,
@@ -681,6 +697,7 @@ export function ProjectReviewChecks({
             createdAt: sent.createdAt,
             eventId: sent.eventId,
           },
+          requestId,
           result: undefined,
           resultCreatedAt: undefined,
           status: "running",
@@ -767,7 +784,11 @@ export function ProjectReviewChecks({
             ? (channelsById.get(run.channelId) ?? null)
             : null;
           return (
-            <article className="space-y-3 px-6 py-4" key={check.id}>
+            <article
+              className="space-y-3 px-6 py-4"
+              data-testid="project-review-check"
+              key={check.id}
+            >
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="min-w-0 flex-1 space-y-1">
                   <div className="flex flex-wrap items-center gap-2">
@@ -845,6 +866,7 @@ export function ProjectReviewChecks({
                   checkId={check.id}
                   onResult={recordResult}
                   opener={run.opener}
+                  requestId={run.requestId ?? null}
                 />
               ) : null}
             </article>

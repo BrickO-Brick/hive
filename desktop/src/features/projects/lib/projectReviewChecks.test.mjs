@@ -67,10 +67,11 @@ test("parses an approved structured agent result", () => {
 
 ${PROJECT_REVIEW_CHECK_RESULT_MARKER}
 \`\`\`json
-{"conclusion":"approved","summary":"The change follows the contract.","findings":[]}
+{"request_id":"request-123","conclusion":"approved","summary":"The change follows the contract.","findings":[]}
 \`\`\``);
 
   assert.deepEqual(result, {
+    requestId: "request-123",
     conclusion: "approved",
     summary: "The change follows the contract.",
     findings: [],
@@ -171,6 +172,7 @@ test("builds a review-only prompt pinned to the exact commit", () => {
     reviewId: "review-event",
     reviewLink: "buzz://pr?id=review-event",
     reviewTitle: "Add checks",
+    requestId: "request-123",
     commit: "abc123",
     branchName: "checks",
     targetBranch: "main",
@@ -179,6 +181,8 @@ test("builds a review-only prompt pinned to the exact commit", () => {
   assert.match(prompt, /Review only; do not modify code/);
   assert.match(prompt, /Commit under review: abc123/);
   assert.match(prompt, /Frontend quality/);
+  assert.match(prompt, /"request_id":"request-123"/);
+  assert.match(prompt, /Echo request_id exactly/);
   assert.match(prompt, new RegExp(PROJECT_REVIEW_CHECK_RESULT_MARKER));
 });
 

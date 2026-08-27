@@ -15,6 +15,7 @@ export type ProjectReviewCheckFinding = {
 };
 
 export type ProjectReviewCheckResult = {
+  requestId?: string;
   conclusion: ProjectReviewCheckConclusion;
   summary: string;
   findings: ProjectReviewCheckFinding[];
@@ -39,6 +40,7 @@ export function buildProjectReviewCheckPrompt(input: {
   reviewId: string;
   reviewLink: string;
   reviewTitle: string;
+  requestId: string;
   commit: string | null;
   branchName: string | null;
   targetBranch: string | null;

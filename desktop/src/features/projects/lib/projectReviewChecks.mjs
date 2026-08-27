@@ -196,10 +196,19 @@ export function parseProjectReviewCheckResult(content) {
       const conclusion = normalizedConclusion(parsed.conclusion);
       const summary = normalizedText(parsed.summary, 4_000);
       if (!conclusion || !summary) continue;
+      const requestId = normalizedText(
+        parsed.request_id ?? parsed.requestId,
+        200,
+      );
       const findings = Array.isArray(parsed.findings)
         ? parsed.findings.map(normalizedFinding).filter(Boolean).slice(0, 20)
         : [];
-      return { conclusion, summary, findings };
+      return {
+        ...(requestId ? { requestId } : {}),
+        conclusion,
+        summary,
+        findings,
+      };
     } catch {
       // Agents occasionally wrap the JSON with prose. Try the next bounded
       // candidate instead of accepting an unstructured response as a result.
@@ -215,6 +224,7 @@ export function buildProjectReviewCheckPrompt({
   reviewId,
   reviewLink,
   reviewTitle,
+  requestId,
   commit,
   branchName,
   targetBranch,
@@ -224,6 +234,7 @@ export function buildProjectReviewCheckPrompt({
     `Repository address: ${JSON.stringify(repoAddress)}`,
     `Review: ${JSON.stringify(reviewTitle)} (${reviewId})`,
     `Review link: ${reviewLink}`,
+    `Request id: ${JSON.stringify(requestId)}`,
     `Commit under review: ${commit ?? "unknown"}`,
     `Branch: ${branchName ?? "unknown"} -> ${targetBranch ?? "unknown"}`,
   ];
@@ -239,7 +250,20 @@ export function buildProjectReviewCheckPrompt({
     "",
     "End your response with exactly this marker and one JSON object:",
     PROJECT_REVIEW_CHECK_RESULT_MARKER,
-    '{"conclusion":"approved|fix-recommended","summary":"short explanation","findings":[{"title":"concise actionable fix","detail":"why this matters and what to change","file":"relative/path.ext","line":123}]}',
+    JSON.stringify({
+      request_id: requestId,
+      conclusion: "fix-recommended",
+      summary: "short explanation",
+      findings: [
+        {
+          title: "concise actionable fix",
+          detail: "why this matters and what to change",
+          file: "relative/path.ext",
+          line: 123,
+        },
+      ],
+    }),
+    "Echo request_id exactly as provided so this result is matched to the correct concurrent check.",
     "Return an empty findings array when approved. For every recommended fix, return one finding object.",
     "Use null for file or line when the finding is not tied to a precise source location.",
     "Use approved only when no material fix is recommended. Use fix-recommended otherwise.",

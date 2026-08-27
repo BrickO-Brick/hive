@@ -103,6 +103,12 @@ function pullRequestRowByAuthor(
   });
 }
 
+function requestIdFromCheckPrompt(content: string | undefined): string {
+  const requestId = content?.match(/"request_id":"([^"]+)"/)?.[1];
+  expect(requestId).toBeTruthy();
+  return requestId ?? "";
+}
+
 async function expectLocalRepositoryOpenAction(
   page: import("@playwright/test").Page,
 ) {
@@ -131,8 +137,8 @@ test("review checks dispatch to an agent authorized for the relay identity", asy
 
   const checks = page.getByTestId("project-review-checks");
   await expect(checks).toBeVisible();
-  await expect(checks.locator("article")).toHaveCount(3);
-  const interfaceCheck = checks.locator("article").first();
+  await expect(checks.getByTestId("project-review-check")).toHaveCount(3);
+  const interfaceCheck = checks.getByTestId("project-review-check").first();
   await interfaceCheck.getByTestId("project-review-check-agent-picker").click();
   await page.getByRole("menuitemradio", { name: /charlie/i }).click();
   await interfaceCheck
@@ -166,6 +172,7 @@ test("review checks dispatch to an agent authorized for the relay identity", asy
   expect(sentCheck?.content).toContain("Interface & design system");
   expect(sentCheck?.content).toContain("Commit under review:");
   expect(sentCheck?.mentionPubkeys).toContain(RELAY_REVIEW_AGENT_PUBKEY);
+  const requestId = requestIdFromCheckPrompt(sentCheck?.content);
   await expect
     .poll(() =>
       page.evaluate(() =>
@@ -175,32 +182,36 @@ test("review checks dispatch to an agent authorized for the relay identity", asy
     .toBe(true);
 
   await waitForMockLiveSubscription(page, "DM");
-  await page.evaluate((agentPubkey) => {
-    window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
-      channelName: "DM",
-      content: `BUZZ_CHECK_RESULT_V1\n${JSON.stringify({
-        conclusion: "fix-recommended",
-        summary: "Two interface fixes are needed before approval.",
-        findings: [
-          {
-            title: "Use the shared button primitive",
-            detail: "The custom control misses the standard focus treatment.",
-            file: "desktop/src/features/projects/ui/ProjectReviewChecks.tsx",
-            line: 742,
-          },
-          {
-            title: "Cover the disabled interaction state",
-            detail: "Add a UI assertion for the pending check state.",
-            file: "desktop/tests/e2e/project-pr-review.spec.ts",
-            line: 118,
-          },
-        ],
-      })}`,
-      createdAt: Math.floor(Date.now() / 1_000) + 1,
-      kind: 9,
-      pubkey: agentPubkey,
-    });
-  }, RELAY_REVIEW_AGENT_PUBKEY);
+  await page.evaluate(
+    ({ agentPubkey, requestId }) => {
+      window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
+        channelName: "DM",
+        content: `BUZZ_CHECK_RESULT_V1\n${JSON.stringify({
+          request_id: requestId,
+          conclusion: "fix-recommended",
+          summary: "Two interface fixes are needed before approval.",
+          findings: [
+            {
+              title: "Use the shared button primitive",
+              detail: "The custom control misses the standard focus treatment.",
+              file: "desktop/src/features/projects/ui/ProjectReviewChecks.tsx",
+              line: 742,
+            },
+            {
+              title: "Cover the disabled interaction state",
+              detail: "Add a UI assertion for the pending check state.",
+              file: "desktop/tests/e2e/project-pr-review.spec.ts",
+              line: 118,
+            },
+          ],
+        })}`,
+        createdAt: Math.floor(Date.now() / 1_000) + 1,
+        kind: 9,
+        pubkey: agentPubkey,
+      });
+    },
+    { agentPubkey: RELAY_REVIEW_AGENT_PUBKEY, requestId },
+  );
 
   const result = interfaceCheck.getByTestId("project-review-check-result");
   await expect(result.getByRole("heading")).toHaveText("2 fixes recommended");
@@ -248,7 +259,7 @@ test("review checks dispatch to a running local managed agent", async ({
   await page.getByRole("button", { name: "Checks", exact: true }).click();
 
   const checks = page.getByTestId("project-review-checks");
-  const interfaceCheck = checks.locator("article").first();
+  const interfaceCheck = checks.getByTestId("project-review-check").first();
   await expect(
     checks.getByTestId("project-review-check-agent-picker"),
   ).toHaveCount(3);
@@ -285,6 +296,135 @@ test("review checks dispatch to a running local managed agent", async ({
     commands.filter((command) => command === "revalidate_relay_agents"),
   ).toHaveLength(revalidationCountBefore);
   expect(commands).not.toContain("start_managed_agent");
+});
+
+test("concurrent review checks only accept their correlated result", async ({
+  page,
+}) => {
+  await enableProjectsFeature(page);
+  await installMockBridge(page, {
+    managedAgents: [
+      {
+        pubkey: RELAY_REVIEW_AGENT_PUBKEY,
+        name: "Roof",
+        status: "running",
+        respondTo: "allowlist",
+        respondToAllowlist: [],
+      },
+    ],
+  });
+  await openBuzzProject(page);
+
+  await page.getByRole("tab", { name: "Review" }).click();
+  const aliceRow = pullRequestRowByAuthor(page, "alice").first();
+  await expect(aliceRow).toBeVisible({ timeout: 10_000 });
+  await aliceRow.getByRole("button", { name: /^#/ }).click();
+  await page.getByRole("button", { name: "Checks", exact: true }).click();
+
+  const checks = page.getByTestId("project-review-check");
+  await expect(checks).toHaveCount(3);
+  for (const check of await checks.all()) {
+    await check.getByRole("button", { name: "Run", exact: true }).click();
+  }
+  await expect(checks.filter({ hasText: "Running" })).toHaveCount(3);
+
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          window.__BUZZ_E2E_COMMAND_PAYLOADS__?.filter(
+            (entry) =>
+              entry.command === "send_channel_message" &&
+              typeof (entry.payload as { content?: unknown })?.content ===
+                "string" &&
+              (entry.payload as { content: string }).content.includes(
+                "BUZZ_CHECK_RESULT_V1",
+              ),
+          ).length ?? 0,
+      ),
+    )
+    .toBe(3);
+
+  const prompts = await page.evaluate(
+    () =>
+      window.__BUZZ_E2E_COMMAND_PAYLOADS__
+        ?.filter(
+          (entry) =>
+            entry.command === "send_channel_message" &&
+            typeof (entry.payload as { content?: unknown })?.content ===
+              "string" &&
+            (entry.payload as { content: string }).content.includes(
+              "BUZZ_CHECK_RESULT_V1",
+            ),
+        )
+        .map((entry) => (entry.payload as { content: string }).content) ?? [],
+  );
+  const requestIdFor = (checkName: string) =>
+    requestIdFromCheckPrompt(
+      prompts.find((prompt) => prompt.includes(`"${checkName}"`)),
+    );
+  const responses = [
+    {
+      request_id: requestIdFor("Frontend quality"),
+      conclusion: "fix-recommended",
+      summary: "Frontend-specific result.",
+      findings: [
+        {
+          title: "Frontend-only finding",
+          detail: "This must stay on the frontend check.",
+          file: "desktop/src/frontend.tsx",
+          line: 12,
+        },
+      ],
+    },
+    {
+      request_id: requestIdFor("Test quality"),
+      conclusion: "approved",
+      summary: "Test-specific result.",
+      findings: [],
+    },
+    {
+      request_id: requestIdFor("Interface & design system"),
+      conclusion: "approved",
+      summary: "Interface-specific result.",
+      findings: [],
+    },
+  ];
+
+  await waitForMockLiveSubscription(page, "DM");
+  const targetIndexes = [1, 2, 0];
+  for (const [index, response] of responses.entries()) {
+    await page.evaluate(
+      ({ agentPubkey, createdAt, response }) => {
+        window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
+          channelName: "DM",
+          content: `BUZZ_CHECK_RESULT_V1\n${JSON.stringify(response)}`,
+          createdAt,
+          kind: 9,
+          pubkey: agentPubkey,
+        });
+      },
+      {
+        agentPubkey: RELAY_REVIEW_AGENT_PUBKEY,
+        createdAt: Math.floor(Date.now() / 1_000) + index + 1,
+        response,
+      },
+    );
+    await expect(checks.nth(targetIndexes[index])).toContainText(
+      response.summary,
+    );
+    if (index === 0) {
+      await expect(checks.nth(0)).toContainText("Running");
+      await expect(checks.nth(2)).toContainText("Running");
+    }
+  }
+
+  await expect(checks.nth(0)).toContainText("Interface-specific result.");
+  await expect(checks.nth(1)).toContainText("Frontend-specific result.");
+  await expect(checks.nth(1)).toContainText("Frontend-only finding");
+  await expect(checks.nth(2)).toContainText("Test-specific result.");
+  await expect(checks.nth(0)).not.toContainText("Frontend-specific result.");
+  await expect(checks.nth(2)).not.toContainText("Frontend-specific result.");
 });
 
 test("same-second request changes supersedes approval", async ({ page }) => {
