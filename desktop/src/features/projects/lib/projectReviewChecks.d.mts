@@ -7,10 +7,17 @@ export type ProjectReviewCheckDefinition = {
 
 export type ProjectReviewCheckConclusion = "approved" | "fix-recommended";
 
+export type ProjectReviewCheckFinding = {
+  title: string;
+  detail: string | null;
+  file: string | null;
+  line: number | null;
+};
+
 export type ProjectReviewCheckResult = {
   conclusion: ProjectReviewCheckConclusion;
   summary: string;
-  findings: string[];
+  findings: ProjectReviewCheckFinding[];
 };
 
 export const PROJECT_REVIEW_CHECK_RESULT_MARKER: string;

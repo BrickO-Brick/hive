@@ -353,6 +353,74 @@ function CheckStatus({
   return null;
 }
 
+function ReviewCheckResultCard({
+  result,
+}: {
+  result: ProjectReviewCheckResult;
+}) {
+  const isApproved = result.conclusion === "approved";
+  const findingCount = result.findings.length;
+  const title = isApproved
+    ? "Approved"
+    : findingCount === 0
+      ? "Fix recommended"
+      : `${findingCount} ${findingCount === 1 ? "fix" : "fixes"} recommended`;
+
+  return (
+    <section
+      className="overflow-hidden rounded-xl border border-border/70 bg-background/70"
+      data-testid="project-review-check-result"
+    >
+      <div className="flex items-start gap-3 px-4 py-3.5">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-muted/70">
+          {isApproved ? (
+            <CheckCircle2 className="h-5 w-5 text-emerald-500" />
+          ) : (
+            <CircleAlert className="h-5 w-5 text-amber-500" />
+          )}
+        </div>
+        <div className="min-w-0 flex-1">
+          <h5 className="text-sm font-semibold text-foreground">{title}</h5>
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+            {result.summary}
+          </p>
+        </div>
+      </div>
+      {findingCount > 0 ? (
+        <div className="divide-y divide-border/55 border-t border-border/55">
+          {result.findings.map((finding) => (
+            <article
+              className="px-4 py-3"
+              data-testid="project-review-check-finding"
+              key={JSON.stringify(finding)}
+            >
+              <div className="flex items-start justify-between gap-4">
+                <p className="min-w-0 flex-1 text-xs font-medium text-foreground">
+                  {finding.title}
+                </p>
+                {finding.file ? (
+                  <span
+                    className="max-w-[45%] truncate font-mono text-2xs text-muted-foreground"
+                    title={`${finding.file}${finding.line ? `:${finding.line}` : ""}`}
+                  >
+                    {finding.file}
+                    {finding.line ? `:${finding.line}` : ""}
+                  </span>
+                ) : null}
+              </div>
+              {finding.detail ? (
+                <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                  {finding.detail}
+                </p>
+              ) : null}
+            </article>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function AgentPicker({
   candidates,
   disabled,
@@ -763,18 +831,7 @@ export function ProjectReviewChecks({
                 <p className="text-xs text-destructive">{run.error}</p>
               ) : null}
               {run.result ? (
-                <div className="rounded-lg border border-border/55 bg-muted/25 p-3">
-                  <p className="text-sm text-foreground">
-                    {run.result.summary}
-                  </p>
-                  {run.result.findings.length > 0 ? (
-                    <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-muted-foreground">
-                      {run.result.findings.map((finding) => (
-                        <li key={finding}>{finding}</li>
-                      ))}
-                    </ul>
-                  ) : null}
-                </div>
+                <ReviewCheckResultCard result={run.result} />
               ) : null}
               {run.status === "running" && run.opener && run.agentPubkey ? (
                 <ReviewCheckResultObserver

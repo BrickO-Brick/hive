@@ -144,6 +144,26 @@ function normalizedConclusion(value) {
   return null;
 }
 
+function normalizedFinding(value) {
+  if (typeof value === "string") {
+    const title = normalizedText(value, 240);
+    return title ? { title, detail: null, file: null, line: null } : null;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const title = normalizedText(value.title, 240);
+  if (!title) return null;
+  const line =
+    Number.isInteger(value.line) && value.line > 0 && value.line <= 10_000_000
+      ? value.line
+      : null;
+  return {
+    title,
+    detail: normalizedText(value.detail, 1_000),
+    file: normalizedText(value.file, 500),
+    line,
+  };
+}
+
 function jsonObjectsAfterMarker(content) {
   const markerIndex = content.lastIndexOf(PROJECT_REVIEW_CHECK_RESULT_MARKER);
   if (markerIndex < 0) return [];
@@ -177,10 +197,7 @@ export function parseProjectReviewCheckResult(content) {
       const summary = normalizedText(parsed.summary, 4_000);
       if (!conclusion || !summary) continue;
       const findings = Array.isArray(parsed.findings)
-        ? parsed.findings
-            .map((finding) => normalizedText(finding, 1_000))
-            .filter(Boolean)
-            .slice(0, 20)
+        ? parsed.findings.map(normalizedFinding).filter(Boolean).slice(0, 20)
         : [];
       return { conclusion, summary, findings };
     } catch {
@@ -222,7 +239,9 @@ export function buildProjectReviewCheckPrompt({
     "",
     "End your response with exactly this marker and one JSON object:",
     PROJECT_REVIEW_CHECK_RESULT_MARKER,
-    '{"conclusion":"approved|fix-recommended","summary":"short explanation","findings":["actionable finding"]}',
+    '{"conclusion":"approved|fix-recommended","summary":"short explanation","findings":[{"title":"concise actionable fix","detail":"why this matters and what to change","file":"relative/path.ext","line":123}]}',
+    "Return an empty findings array when approved. For every recommended fix, return one finding object.",
+    "Use null for file or line when the finding is not tied to a precise source location.",
     "Use approved only when no material fix is recommended. Use fix-recommended otherwise.",
   ].join("\n");
 }

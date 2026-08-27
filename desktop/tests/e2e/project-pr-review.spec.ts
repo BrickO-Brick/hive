@@ -172,6 +172,46 @@ test("review checks dispatch to an agent authorized for the relay identity", asy
       ),
     )
     .toBe(true);
+
+  await waitForMockLiveSubscription(page, "DM");
+  await page.evaluate((agentPubkey) => {
+    window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
+      channelName: "DM",
+      content: `BUZZ_CHECK_RESULT_V1\n${JSON.stringify({
+        conclusion: "fix-recommended",
+        summary: "Two interface fixes are needed before approval.",
+        findings: [
+          {
+            title: "Use the shared button primitive",
+            detail: "The custom control misses the standard focus treatment.",
+            file: "desktop/src/features/projects/ui/ProjectReviewChecks.tsx",
+            line: 742,
+          },
+          {
+            title: "Cover the disabled interaction state",
+            detail: "Add a UI assertion for the pending check state.",
+            file: "desktop/tests/e2e/project-pr-review.spec.ts",
+            line: 118,
+          },
+        ],
+      })}`,
+      createdAt: Math.floor(Date.now() / 1_000) + 1,
+      kind: 9,
+      pubkey: agentPubkey,
+    });
+  }, RELAY_REVIEW_AGENT_PUBKEY);
+
+  const result = interfaceCheck.getByTestId("project-review-check-result");
+  await expect(result.getByRole("heading")).toHaveText("2 fixes recommended");
+  await expect(result).toContainText(
+    "Two interface fixes are needed before approval.",
+  );
+  await expect(result.getByTestId("project-review-check-finding")).toHaveCount(
+    2,
+  );
+  await expect(result).toContainText("ProjectReviewChecks.tsx:742");
+  await waitForAnimations(page);
+  await result.screenshot({ path: `${SHOTS}/review-check-result.png` });
 });
 
 test("review checks dispatch to a running local managed agent", async ({

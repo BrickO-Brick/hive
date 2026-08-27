@@ -89,7 +89,62 @@ test("normalizes a changes-requested result to fix-recommended", () => {
   assert.deepEqual(result, {
     conclusion: "fix-recommended",
     summary: "The empty state has no accessible name.",
-    findings: ["Add an accessible label.", "Cover it with a UI test."],
+    findings: [
+      {
+        title: "Add an accessible label.",
+        detail: null,
+        file: null,
+        line: null,
+      },
+      {
+        title: "Cover it with a UI test.",
+        detail: null,
+        file: null,
+        line: null,
+      },
+    ],
+  });
+});
+
+test("parses structured findings with bounded source locations", () => {
+  const result = parseProjectReviewCheckResult(
+    `${PROJECT_REVIEW_CHECK_RESULT_MARKER}\n${JSON.stringify({
+      conclusion: "fix-recommended",
+      summary: "Two interface fixes are needed.",
+      findings: [
+        {
+          title: "Use the shared button primitive",
+          detail: "The custom button misses the standard focus treatment.",
+          file: "desktop/src/features/projects/ui/ProjectReviewChecks.tsx",
+          line: 742,
+        },
+        {
+          title: "Add an accessible name",
+          detail: "Icon-only controls need an explicit label.",
+          file: null,
+          line: -1,
+        },
+      ],
+    })}`,
+  );
+
+  assert.deepEqual(result, {
+    conclusion: "fix-recommended",
+    summary: "Two interface fixes are needed.",
+    findings: [
+      {
+        title: "Use the shared button primitive",
+        detail: "The custom button misses the standard focus treatment.",
+        file: "desktop/src/features/projects/ui/ProjectReviewChecks.tsx",
+        line: 742,
+      },
+      {
+        title: "Add an accessible name",
+        detail: "Icon-only controls need an explicit label.",
+        file: null,
+        line: null,
+      },
+    ],
   });
 });
 
