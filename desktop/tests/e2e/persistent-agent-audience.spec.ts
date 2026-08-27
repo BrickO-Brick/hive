@@ -14,9 +14,9 @@ const SCOPE = `${OWNER}:${CHANNEL_ID}:thread:${THREAD_ROOT_ID}`;
 async function seedAudience(page: Page, pubkeys: string[], theme = "buzz") {
   await page.addInitScript(
     ({ audience, scope, selectedTheme }) => {
-      window.localStorage.setItem("buzz:keep-addressed-agents-active", "1");
+      window.localStorage.setItem("buzz:keep-addressed-agents-active:v2", "1");
       window.localStorage.setItem(
-        "buzz:persistent-agent-audiences:v2",
+        "buzz:persistent-agent-audiences:v3",
         JSON.stringify({ [scope]: audience }),
       );
       window.localStorage.setItem("buzz-theme", selectedTheme);
@@ -101,7 +101,7 @@ test("first thread open inherits explicitly addressed agents in authored order",
   page,
 }) => {
   await page.addInitScript(() => {
-    window.localStorage.setItem("buzz:keep-addressed-agents-active", "1");
+    window.localStorage.setItem("buzz:keep-addressed-agents-active:v2", "1");
   });
   await installAudienceFixtures(page);
   await openGeneral(page);
@@ -122,7 +122,7 @@ test("first thread open inherits explicitly addressed agents in authored order",
       page.evaluate(
         ({ owner, channelId, rootId }) => {
           const stored = JSON.parse(
-            localStorage.getItem("buzz:persistent-agent-audiences:v2") ?? "{}",
+            localStorage.getItem("buzz:persistent-agent-audiences:v3") ?? "{}",
           );
           return stored[`${owner}:${channelId}:thread:${rootId}`] ?? null;
         },
@@ -258,7 +258,7 @@ test("persistent agents restore through the native inline mention UI", async ({
       page.evaluate(
         ({ scope }) => {
           const stored = JSON.parse(
-            localStorage.getItem("buzz:persistent-agent-audiences:v2") ?? "{}",
+            localStorage.getItem("buzz:persistent-agent-audiences:v3") ?? "{}",
           );
           return stored[scope] ?? [];
         },
