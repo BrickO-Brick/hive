@@ -16,12 +16,6 @@
 - Tasks do not inherently require a repository; repository relationships are optional.
 - Canvases belong to channels and are not a separate member type.
 
-## Derived context
-
-- Explicit members are durable; related documents, pull requests, and activity are resolved dynamically and are not persisted as members.
-- Derived context retains its provenance and remains visually distinct from direct membership.
-- The home favors meaningful outcomes over duplicated references or conversational noise.
-
 ## First prototype
 
 - Keep Collections separate from Projects and local to one machine, with no relay changes.
