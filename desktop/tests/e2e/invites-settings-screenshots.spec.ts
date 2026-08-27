@@ -146,7 +146,19 @@ test("builds a personalized welcome sequence", async ({ page }) => {
   );
   const editor = builder.getByTestId("welcome-inline-message");
   await editor.click({ button: "right", position: { x: 420, y: 22 } });
-  await expect(page.getByRole("menuitem", { name: "Link" })).toBeVisible();
+  const linkMenuItem = page.getByRole("menuitem", { name: "Link" });
+  await expect(linkMenuItem).toBeVisible();
+  const restingMenuItemColor = await linkMenuItem.evaluate(
+    (element) => getComputedStyle(element).backgroundColor,
+  );
+  await linkMenuItem.hover();
+  await expect
+    .poll(() =>
+      linkMenuItem.evaluate(
+        (element) => getComputedStyle(element).backgroundColor,
+      ),
+    )
+    .not.toBe(restingMenuItemColor);
   await waitForAnimations(page);
   await builder.screenshot({
     path: `${OUTDIR}/03-welcome-channel-builder.png`,

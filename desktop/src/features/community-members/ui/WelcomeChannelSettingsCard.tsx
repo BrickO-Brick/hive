@@ -834,19 +834,31 @@ export function WelcomeComposer({
           />
         </ContextMenuTrigger>
         <ContextMenuContent className={ACTION_TRAY_SURFACE_CLASS}>
-          <ContextMenuItem onSelect={() => insertAtCaret("member")}>
+          <ContextMenuItem
+            className="hover:bg-muted/50 hover:text-foreground"
+            onSelect={() => insertAtCaret("member")}
+          >
             <UserRound className="h-4 w-4" />
             New member’s name
           </ContextMenuItem>
-          <ContextMenuItem onSelect={() => insertAtCaret("link")}>
+          <ContextMenuItem
+            className="hover:bg-muted/50 hover:text-foreground"
+            onSelect={() => insertAtCaret("link")}
+          >
             <Link2 className="h-4 w-4" />
             Link
           </ContextMenuItem>
-          <ContextMenuItem onSelect={() => insertAtCaret("image")}>
+          <ContextMenuItem
+            className="hover:bg-muted/50 hover:text-foreground"
+            onSelect={() => insertAtCaret("image")}
+          >
             <ImageIcon className="h-4 w-4" />
             Image
           </ContextMenuItem>
-          <ContextMenuItem onSelect={() => insertAtCaret("channel")}>
+          <ContextMenuItem
+            className="hover:bg-muted/50 hover:text-foreground"
+            onSelect={() => insertAtCaret("channel")}
+          >
             <Hash className="h-4 w-4" />
             Channel
           </ContextMenuItem>
