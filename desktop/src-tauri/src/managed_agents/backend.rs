@@ -1,4 +1,4 @@
-use super::discovery::resolve_command;
+use super::discovery::{command_search::command_discovery_dirs, resolve_command};
 use sha2::{Digest, Sha256};
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -671,7 +671,7 @@ pub fn discover_provider_candidates() -> Vec<(String, PathBuf)> {
 /// This guarantees the path shown for a command is the path that command will
 /// execute, even when managed shims or workspace builds take precedence.
 pub fn discover_acp_command_candidates() -> Vec<(String, PathBuf)> {
-    discover_acp_command_candidates_in(executable_search_dirs(), resolve_command)
+    discover_acp_command_candidates_in(command_discovery_dirs(), resolve_command)
 }
 
 fn discover_acp_command_candidates_in(

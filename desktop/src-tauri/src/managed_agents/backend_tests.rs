@@ -422,6 +422,31 @@ fn provider_filename_strips_the_windows_extension() {
 }
 
 #[test]
+fn command_discovery_dirs_include_all_spawn_search_sources_without_duplicates() {
+    let workspace = PathBuf::from("workspace");
+    let path = PathBuf::from("path");
+    let managed = PathBuf::from("managed");
+    let login = PathBuf::from("login");
+    let nvm = PathBuf::from("nvm");
+
+    assert_eq!(
+        discovery::command_search::merge_command_discovery_dirs([
+            vec![workspace.clone(), path.clone()],
+            vec![path, managed.clone()],
+            vec![login.clone()],
+            vec![managed, nvm.clone()],
+        ]),
+        vec![
+            workspace,
+            PathBuf::from("path"),
+            PathBuf::from("managed"),
+            login,
+            nvm
+        ]
+    );
+}
+
+#[test]
 fn acp_command_filename_supports_windows_shims_and_rejects_extensionless_windows_files() {
     assert_eq!(
         acp_command_from_filename("buzz-janet-acp.EXE", true),
