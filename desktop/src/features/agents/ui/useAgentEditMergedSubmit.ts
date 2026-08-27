@@ -7,7 +7,7 @@
 
 import * as React from "react";
 import { toast } from "sonner";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 
 import {
   managedAgentsQueryKey,
@@ -69,6 +69,12 @@ export type AgentEditSubmitState = {
   acpCommand: string;
   showInst: boolean;
   defReadOnly: boolean;
+  /**
+   * Definition `updatedAt` captured when the form was seeded. Passed to the
+   * coordinator's concurrent-edit guard: a definition write is aborted if the
+   * latest ctx definition was revised since the form opened.
+   */
+  seededDefinitionUpdatedAt: string | null;
   inheritedSubmissionProvider: string | null;
   runtimes: readonly AcpRuntimeCatalogEntry[];
   updatePersona: (input: UpdatePersonaInput) => Promise<unknown>;
@@ -179,6 +185,52 @@ export function buildNextAgentFormModel(
   };
 }
 
+// ── Store refetch adapter ──────────────────────────────────────────────────────
+
+/**
+ * Refetch both agent stores and return the current (persona, agent) pair for
+ * the edited entities. This is the production `refetchStores` seam consumed by
+ * the save coordinator's verification step.
+ *
+ * `refetchQueries` (not `invalidateQueries`) so the await resolves only after
+ * the fresh data has been written to the cache — `invalidateQueries` only marks
+ * a query stale, so `getQueryData` immediately after would still return the
+ * pre-save value and the coordinator's observed-state check would see a phantom
+ * mismatch and leave the dialog open.
+ *
+ * `{ throwOnError: true }` is REQUIRED: TanStack Query v5 swallows refetch
+ * errors by default (`refetchQueries` resolves even when the underlying fetch
+ * rejects), so without it a failed verification refetch would resolve, then
+ * `getQueryData` would read the retained STALE cache and the coordinator would
+ * misclassify a possibly-committed write as an observed non-persist. With it, a
+ * failed refetch rejects and flows into the coordinator's verification-unknown
+ * path — persistence reported as unknown, never as a failed write.
+ */
+export async function refetchAgentStores(
+  queryClient: Pick<QueryClient, "refetchQueries" | "getQueryData">,
+  def: { id: string } | null,
+  inst: { pubkey: string } | null,
+): Promise<{ persona: AgentPersona | null; agent: ManagedAgent | null }> {
+  await Promise.all([
+    queryClient.refetchQueries(
+      { queryKey: personasQueryKey },
+      { throwOnError: true },
+    ),
+    queryClient.refetchQueries(
+      { queryKey: managedAgentsQueryKey },
+      { throwOnError: true },
+    ),
+  ]);
+  const personas =
+    queryClient.getQueryData<AgentPersona[]>(personasQueryKey) ?? [];
+  const agents =
+    queryClient.getQueryData<ManagedAgent[]>(managedAgentsQueryKey) ?? [];
+  return {
+    persona: def ? (personas.find((p) => p.id === def.id) ?? null) : null,
+    agent: inst ? (agents.find((a) => a.pubkey === inst.pubkey) ?? null) : null,
+  };
+}
+
 // ── Hook ──────────────────────────────────────────────────────────────────────
 
 export function useAgentEditMergedSubmit(
@@ -222,30 +274,7 @@ export function useAgentEditMergedSubmit(
           s.ctx,
         );
 
-        const refetchStores = async () => {
-          // Use refetchQueries (not invalidateQueries) so the await resolves only
-          // after the fresh data has been written to the cache. invalidateQueries
-          // only marks the query stale; getQueryData immediately after still returns
-          // the pre-save value, causing the coordinator's observed-state check to
-          // see a phantom mismatch and leave the dialog open.
-          await Promise.all([
-            queryClient.refetchQueries({ queryKey: personasQueryKey }),
-            queryClient.refetchQueries({ queryKey: managedAgentsQueryKey }),
-          ]);
-          const personas =
-            queryClient.getQueryData<AgentPersona[]>(personasQueryKey) ?? [];
-          const agents =
-            queryClient.getQueryData<ManagedAgent[]>(managedAgentsQueryKey) ??
-            [];
-          return {
-            persona: def
-              ? (personas.find((p) => p.id === def.id) ?? null)
-              : null,
-            agent: inst
-              ? (agents.find((a) => a.pubkey === inst.pubkey) ?? null)
-              : null,
-          };
-        };
+        const refetchStores = () => refetchAgentStores(queryClient, def, inst);
 
         const success = await runAgentSaveCoordinator({
           ctx: s.ctx,
@@ -253,6 +282,7 @@ export function useAgentEditMergedSubmit(
           agentInput,
           policySets,
           publishCatalogUpdates: !!(def?.shared && !s.defReadOnly),
+          expectedDefinitionUpdatedAt: s.seededDefinitionUpdatedAt,
           runtimes: s.runtimes.length > 0 ? s.runtimes : undefined,
           updatePersona: s.updatePersona,
           updatePersonaAndPublish: s.updatePersonaAndPublish,

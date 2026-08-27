@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { buildNextAgentFormModel } from "./useAgentEditMergedSubmit.ts";
 import { seedAgentFormModel, emitAgentFormDiff } from "./agentFormModel.ts";
+import { refetchAgentStores } from "./useAgentEditMergedSubmit.ts";
 
 // ── Shared fixtures ────────────────────────────────────────────────────────────
 
@@ -169,4 +170,77 @@ test("test_definition_only_valid_parallelism_is_carried_through", () => {
     8,
     "the behavior group carries the new parallelism value",
   );
+});
+
+// ── P1-1: production refetch adapter must reject on refetch failure ────────────
+//
+// TanStack Query v5 `refetchQueries` swallows the underlying fetch error by
+// default (it resolves even when the query function rejects) UNLESS
+// `{ throwOnError: true }` is passed as the second arg. Without it, a failed
+// verification refetch resolves, `getQueryData` reads the retained stale cache,
+// and the coordinator misclassifies a possibly-committed write as an observed
+// non-persist. `refetchAgentStores` must pass `throwOnError: true` so a failed
+// refetch REJECTS and flows into the coordinator's verification-unknown path.
+//
+// This fake mirrors v5: `refetchQueries` only rejects when the caller opts into
+// `throwOnError`; otherwise it resolves regardless of the fetch outcome.
+
+function makeFakeQueryClient({ failing = false, data = {} } = {}) {
+  return {
+    refetchQueries(_filters, options) {
+      if (failing && options?.throwOnError) {
+        return Promise.reject(new Error("network down"));
+      }
+      // Default v5 behavior: resolve even when the underlying fetch failed.
+      return Promise.resolve();
+    },
+    getQueryData(key) {
+      return data[Array.isArray(key) ? key[0] : key];
+    },
+  };
+}
+
+test("test_refetch_adapter_rejects_when_refetch_fails", async () => {
+  // A failing refetch must reject — proving throwOnError is passed. If the
+  // adapter omitted it, this resolve()s and the assertion below never fires.
+  const client = makeFakeQueryClient({ failing: true });
+
+  await assert.rejects(
+    refetchAgentStores(client, { id: "def-1" }, { pubkey: "pk-abc" }),
+    /network down/,
+    "a failed verification refetch must reject, not resolve with stale cache",
+  );
+});
+
+test("test_refetch_adapter_returns_edited_entities_on_success", async () => {
+  // On success the adapter resolves with the edited persona/agent read from the
+  // refreshed cache — the observed-state pair the coordinator settles against.
+  const persona = { id: "def-1", displayName: "Alice" };
+  const agent = { pubkey: "pk-abc", name: "Alice" };
+  const client = makeFakeQueryClient({
+    data: { personas: [persona], "managed-agents": [agent] },
+  });
+
+  const result = await refetchAgentStores(
+    client,
+    { id: "def-1" },
+    { pubkey: "pk-abc" },
+  );
+
+  assert.deepEqual(
+    result,
+    { persona, agent },
+    "adapter returns the edited entities from the refreshed cache",
+  );
+});
+
+test("test_refetch_adapter_returns_null_for_absent_context_entities", async () => {
+  // definition-only / instance-only contexts pass a null counterpart; the
+  // adapter must return null for the absent side rather than probing the cache.
+  const persona = { id: "def-1", displayName: "Alice" };
+  const client = makeFakeQueryClient({ data: { personas: [persona] } });
+
+  const result = await refetchAgentStores(client, { id: "def-1" }, null);
+
+  assert.deepEqual(result, { persona, agent: null });
 });

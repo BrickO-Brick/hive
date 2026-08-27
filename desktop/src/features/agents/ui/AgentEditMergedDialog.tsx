@@ -196,6 +196,11 @@ export function AgentEditMergedDialog({
   // Track whether the D-runtime was auto-seeded (not a deliberate user choice).
   // Prevents a no-op save from persisting the app default as the definition runtime.
   const autoSeededDefinitionRuntimeRef = React.useRef<string | null>(null);
+  // Definition `updatedAt` captured at seed time. The submit-path concurrent-edit
+  // guard compares this against the latest ctx definition: if another writer
+  // revised the definition while this form was open, the stale full-replacement
+  // input would clobber their values, so the save aborts before any write.
+  const seededDefinitionUpdatedAtRef = React.useRef<string | null>(null);
   // I-fields — harness pin state (I-section only, independent of D-runtime)
   const [selectedRuntimeId, setSelectedRuntimeId] = React.useState("custom");
   // D-section LLM model/provider — for the definition (D-owned)
@@ -309,6 +314,8 @@ export function AgentEditMergedDialog({
     setIsAvatarUploadPending(false);
     runtimeTouched.current = false;
     autoSeededDefinitionRuntimeRef.current = null;
+    // Capture the definition revision the form is baselined against.
+    seededDefinitionUpdatedAtRef.current = def?.updatedAt ?? null;
 
     // Seed definition runtime (D-field) from definition record.
     const defRuntimeId = def?.runtime?.trim() ?? "";
@@ -519,6 +526,7 @@ export function AgentEditMergedDialog({
     acpCommand,
     showInst,
     defReadOnly,
+    seededDefinitionUpdatedAt: seededDefinitionUpdatedAtRef.current,
     inheritedSubmissionProvider: inheritedSubmission.provider ?? null,
     runtimes,
     updatePersona: (

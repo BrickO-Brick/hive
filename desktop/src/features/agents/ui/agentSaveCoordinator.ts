@@ -53,6 +53,15 @@ export type SaveCoordinatorOptions = {
   >;
   /** Whether the submitted definition was flagged for catalog publish. */
   publishCatalogUpdates?: boolean;
+  /**
+   * The definition `updatedAt` observed when the form was seeded. When a
+   * `personaInput` is submitted, the coordinator compares this against the
+   * latest `ctx` definition and aborts before any write if they differ — the
+   * definition was revised by another writer while this form was open, so the
+   * stale form would clobber the newer values. Undefined/null skips the check
+   * (e.g. instance-only saves, which emit no `personaInput`).
+   */
+  expectedDefinitionUpdatedAt?: string | null;
   /** Validated runtime catalog for the runtime-edit gate. */
   runtimes?: readonly AcpRuntimeCatalogEntry[];
 
@@ -97,6 +106,7 @@ export async function runAgentSaveCoordinator(
     agentInput,
     policySets,
     publishCatalogUpdates,
+    expectedDefinitionUpdatedAt,
     runtimes,
     updatePersona,
     updatePersonaAndPublish,
@@ -143,6 +153,23 @@ export async function runAgentSaveCoordinator(
   };
 
   // ── Step 0: Validate ──────────────────────────────────────────────────────
+  // Concurrent-edit guard: a submitted definition write is built from the form
+  // baseline captured at seed time. If the definition was revised by another
+  // writer since (the latest ctx `updatedAt` differs from the seed-time value),
+  // the stale full-replacement input would clobber the newer values. Abort
+  // before any write — nothing is persisted and the dialog stays open.
+  if (
+    personaInput &&
+    def &&
+    expectedDefinitionUpdatedAt != null &&
+    def.updatedAt !== expectedDefinitionUpdatedAt
+  ) {
+    toast.error(
+      `${def.displayName} changed while you were editing — reopen the editor to get the latest before saving.`,
+    );
+    return false;
+  }
+
   if (personaInput && def && inst) {
     const runtimeError = validateLinkedAgentRuntimeEdit({
       input: personaInput,

@@ -1095,3 +1095,110 @@ test("test_mutation_throws_then_refetch_rejects_reports_unknown_not_failed", asy
     cap.restore();
   }
 });
+
+// ── Test family 8: concurrent-edit drift guard (P1-2) ────────────────────────
+//
+// A definition write is built from the form baseline captured at seed time. If
+// another writer revised the definition while the form was open, the latest ctx
+// `updatedAt` differs from the seed-time value. Submitting the stale
+// full-replacement input would clobber the newer writer's values, so the
+// coordinator must abort BEFORE any write — nothing persisted, dialog stays
+// open (returns false), and the toast tells the user to reopen.
+
+test("test_definition_drift_aborts_before_any_write", async () => {
+  const cap = captureToasts();
+  try {
+    const opts = makeOpts({
+      ctx: {
+        kind: "definition-only",
+        // Latest ctx definition was revised (updatedAt advanced).
+        definition: makeDefinition({ updatedAt: "2025-06-01T00:00:00Z" }),
+      },
+      personaInput: makePersonaInput({ displayName: "Alice-renamed" }),
+      // Form was seeded against the OLD revision.
+      expectedDefinitionUpdatedAt: "2025-01-01T00:00:00Z",
+    });
+
+    const result = await runAgentSaveCoordinator(opts);
+
+    assert.equal(
+      result,
+      false,
+      "drift must abort the save (dialog stays open)",
+    );
+    assert.equal(
+      opts._calls.updatePersona,
+      0,
+      "no definition write may be attempted on drift",
+    );
+    assert.equal(opts._calls.onDone, 0, "onDone must NOT fire on drift abort");
+    const errors = cap.captured.filter((c) => c.kind === "error");
+    assert.equal(errors.length, 1, "exactly one error toast");
+    assert.match(
+      errors[0].message,
+      /changed while you were editing/i,
+      "toast must tell the user the template changed — reopen",
+    );
+  } finally {
+    cap.restore();
+  }
+});
+
+test("test_no_drift_when_updatedAt_matches_proceeds_with_write", async () => {
+  const updated = makeDefinition({
+    displayName: "Alice-renamed",
+    updatedAt: "2025-01-01T00:00:00Z",
+  });
+  const opts = makeOpts({
+    ctx: {
+      kind: "definition-only",
+      definition: makeDefinition({ updatedAt: "2025-01-01T00:00:00Z" }),
+    },
+    personaInput: makePersonaInput({ displayName: "Alice-renamed" }),
+    expectedDefinitionUpdatedAt: "2025-01-01T00:00:00Z",
+    refetchStores: async () => ({ persona: updated, agent: null }),
+  });
+
+  const result = await runAgentSaveCoordinator(opts);
+
+  assert.equal(result, true, "matching updatedAt must not block the write");
+  assert.equal(opts._calls.updatePersona, 1, "definition write proceeds");
+  assert.equal(opts._calls.onDone, 1, "onDone fires on success");
+});
+
+test("test_instance_only_save_skips_drift_guard", async () => {
+  // Instance-only saves emit no personaInput; the guard must never fire even
+  // when no expectedDefinitionUpdatedAt is supplied.
+  const updated = makeInstance({ name: "Alice-renamed" });
+  const opts = makeOpts({
+    ctx: { kind: "instance-only", instance: makeInstance() },
+    agentInput: makeAgentInput({ name: "Alice-renamed" }),
+    updateManagedAgent: async () => ({
+      agent: updated,
+      profileSyncError: null,
+    }),
+    refetchStores: async () => ({ persona: null, agent: updated }),
+  });
+
+  const result = await runAgentSaveCoordinator(opts);
+
+  assert.equal(result, true, "instance-only save is unaffected by the guard");
+  assert.equal(opts._calls.onDone, 1);
+});
+
+test("test_drift_guard_inert_when_no_expected_updatedAt_supplied", async () => {
+  // A personaInput with no expectedDefinitionUpdatedAt (null) must not abort —
+  // the guard is opt-in and skips when the seed-time value is absent.
+  const updated = makeDefinition({ displayName: "Alice-renamed" });
+  const opts = makeOpts({
+    ctx: { kind: "definition-only", definition: makeDefinition() },
+    personaInput: makePersonaInput({ displayName: "Alice-renamed" }),
+    expectedDefinitionUpdatedAt: null,
+    refetchStores: async () => ({ persona: updated, agent: null }),
+  });
+
+  const result = await runAgentSaveCoordinator(opts);
+
+  assert.equal(result, true, "null expected updatedAt skips the guard");
+  assert.equal(opts._calls.updatePersona, 1);
+});
