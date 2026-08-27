@@ -6,39 +6,33 @@ export type CommunityComputeKpiRowProps = {
   className?: string;
 };
 
-/** Compact, responsive headline figures for the community compute pool. */
+/** The two figures that help a member understand and grow the compute commons. */
 export function CommunityComputeKpiRow({
   kpis,
   className,
 }: CommunityComputeKpiRowProps) {
   const items = [
     {
-      label: "Members sharing",
+      label: "People contributing",
       value: formatCount(kpis.contributorMemberCount),
-      detail: `${formatCount(kpis.memberCount)} community members`,
-    },
-    {
-      label: "Contributed VRAM",
-      value: formatCapacity(kpis.sharedCapacityGb),
-      detail: `${formatCount(kpis.deploymentCount)} models available`,
-    },
-    {
-      label: "VRAM allocated",
-      value:
-        kpis.allocatedPercent === null
-          ? "—"
-          : `${Math.round(kpis.allocatedPercent)}%`,
       detail:
-        kpis.allocatedCapacityGb === null
-          ? "Not fully reported"
-          : `${formatCapacity(kpis.allocatedCapacityGb)} hosting models`,
+        kpis.contributorMemberCount === 0
+          ? "Be the first contributor"
+          : `${formatCount(kpis.memberCount)} people in this community`,
+      testId: "members-sharing",
+    },
+    {
+      label: "Compute shared",
+      value: formatCapacity(kpis.sharedCapacityGb),
+      detail: "Available to community agents",
+      testId: "contributed-vram",
     },
   ];
 
   return (
     <dl
       className={cn(
-        "grid grid-cols-1 overflow-hidden rounded-xl border border-border/70 bg-muted/15 sm:grid-cols-3",
+        "grid grid-cols-1 overflow-hidden rounded-xl border border-border/70 bg-muted/15 sm:grid-cols-2",
         className,
       )}
       data-testid="community-compute-kpis"
@@ -49,7 +43,7 @@ export function CommunityComputeKpiRow({
             "min-w-0 px-3 py-2.5",
             index > 0 && "border-border/60 border-t sm:border-l sm:border-t-0",
           )}
-          data-testid={`community-compute-kpi-${kpiTestId(item.label)}`}
+          data-testid={`community-compute-kpi-${item.testId}`}
           key={item.label}
         >
           <dt className="truncate text-2xs font-medium tracking-wide text-muted-foreground uppercase">
@@ -76,8 +70,4 @@ function formatCount(value: number): string {
 function formatCapacity(value: number | null): string {
   if (value === null) return "—";
   return `${new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(value)} GB`;
-}
-
-function kpiTestId(label: string): string {
-  return label.toLowerCase().replaceAll(" ", "-");
 }

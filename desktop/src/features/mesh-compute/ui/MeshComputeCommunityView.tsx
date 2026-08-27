@@ -14,9 +14,11 @@ export function MeshComputeCommunityView({
   error,
   onRefresh,
   snapshot,
+  isPreparing = false,
 }: {
   communityName: string;
   error: string | null;
+  isPreparing?: boolean;
   onRefresh: () => void;
   snapshot: MeshSnapshot | CommunityComputeSnapshotInput | null;
 }) {
@@ -43,13 +45,15 @@ export function MeshComputeCommunityView({
           <div>
             <h2 className="text-lg font-semibold tracking-tight">
               {model.deployments.length === 1
-                ? "Your community’s first compute node"
+                ? "The mesh starts here"
                 : "Community mesh"}
             </h2>
             <p className="text-sm text-muted-foreground">
-              {model.deployments.length === 1
-                ? "This machine is the foundation of the mesh. More contributors add capacity, model choice, and resilience."
-                : "See the compute currently available to your community. Larger territories offer more model memory."}
+              {isPreparing
+                ? "Your contribution is being prepared and will appear here when it is ready."
+                : model.deployments.length === 1
+                  ? "One tile is a beginning. Every contributor makes the mesh more capable and resilient."
+                  : "Each tile is compute a community member is making available."}
             </p>
           </div>
           <Button

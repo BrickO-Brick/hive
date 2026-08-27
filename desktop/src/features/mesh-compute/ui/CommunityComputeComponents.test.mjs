@@ -22,8 +22,8 @@ describe("community compute visual components", () => {
     );
     assert.match(html, /community-compute-kpi-members-sharing/);
     assert.match(html, /community-compute-kpi-contributed-vram/);
-    assert.match(html, /community-compute-kpi-vram-allocated/);
-    assert.match(html, /24 community members/);
+    assert.doesNotMatch(html, /community-compute-kpi-vram-allocated/);
+    assert.match(html, /24 people in this community/);
     assert.match(html, />2,744 GB</);
   });
 

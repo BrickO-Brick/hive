@@ -1,8 +1,12 @@
-import { Cpu, LoaderCircle, ShieldCheck, Sparkles, Zap } from "lucide-react";
+import { Cpu, LoaderCircle } from "lucide-react";
 
-import { Switch } from "@/shared/ui/switch";
 import { cn } from "@/shared/lib/cn";
+import { Switch } from "@/shared/ui/switch";
 import type { useMeshComputeState } from "../hooks/useMeshComputeState";
+import {
+  downloadPercent,
+  formatDownloadBytes,
+} from "../hooks/useMeshDownloadProgress";
 
 export function MeshComputeShareBanner({
   communityName,
@@ -12,26 +16,17 @@ export function MeshComputeShareBanner({
   mesh: ReturnType<typeof useMeshComputeState>;
 }) {
   const {
-    error,
-    memory,
-    modelToShare,
+    downloadProgress,
     pendingAction,
     shareSwitchChecked,
-    status,
     toggle,
     setSharing,
   } = mesh;
   const busy = pendingAction !== null;
-  const model = status?.modelName ?? status?.modelId ?? modelToShare;
-  const capacity = memory.totalGb == null ? null : formatGb(memory.totalGb);
-  const statusCopy = shareStatusCopy({
-    communityName,
-    modelToShare,
-    pendingAction,
-    statusModel: status?.modelName ?? status?.modelId ?? null,
-    isConsuming: toggle.isConsuming,
-    isSharing: toggle.isSharing,
-  });
+  const progress = downloadProgress ? downloadPercent(downloadProgress) : null;
+  const progressDetail = downloadProgress
+    ? formatDownloadBytes(downloadProgress)
+    : "";
 
   return (
     <section
@@ -57,56 +52,66 @@ export function MeshComputeShareBanner({
             className="text-base font-semibold"
             htmlFor="compute-share-banner-toggle"
           >
-            Automatic contribution
+            Share compute
           </label>
           <p className="mt-1 max-w-2xl text-sm leading-relaxed text-muted-foreground">
-            Let Buzz choose the most useful compatible model and make this
-            machine available when {communityName} needs it.
+            Contribute this machine’s spare capacity so {communityName}’s agents
+            have more compute available. Pause anytime.
           </p>
         </div>
         <Switch
           checked={shareSwitchChecked}
           data-testid="compute-share-banner-toggle"
-          disabled={busy || (!toggle.isSharing && !modelToShare)}
+          disabled={busy || (!toggle.isSharing && !mesh.modelToShare)}
           id="compute-share-banner-toggle"
           onCheckedChange={setSharing}
         />
       </div>
 
-      <div className="grid gap-px border-border/60 border-t bg-border/60 sm:grid-cols-3">
-        <Benefit
-          icon={Sparkles}
-          label="Unlock community models"
-          detail={
-            model ? `Recommended: ${model}` : "Hardware-aware model selection"
-          }
-        />
-        <Benefit
-          icon={Zap}
-          label="Increase availability"
-          detail={
-            capacity
-              ? `Offer up to ${capacity}`
-              : "Uses compatible spare capacity"
-          }
-        />
-        <Benefit
-          icon={ShieldCheck}
-          label="You stay in control"
-          detail="Pause anytime; advanced limits in Settings"
-        />
-      </div>
-
-      <div className="border-border/60 border-t bg-background/60 px-4 py-2.5">
-        <p
-          className="text-xs text-muted-foreground"
-          data-testid="compute-share-banner-status"
-        >
-          {statusCopy}
+      <div
+        aria-live="polite"
+        className="border-border/60 border-t bg-background/60 px-4 py-3"
+      >
+        <p className="text-sm" data-testid="compute-share-banner-status">
+          {statusCopy(mesh, communityName)}
         </p>
-        {error ? (
+        {downloadProgress ? (
+          <div className="mt-2" data-testid="mesh-download-progress">
+            <div className="flex justify-between gap-3 text-xs text-muted-foreground">
+              <span className="truncate">
+                {downloadProgress.status === "preparing"
+                  ? "Preparing"
+                  : "Downloading"}{" "}
+                {downloadProgress.label}
+              </span>
+              <span className="shrink-0">
+                {progress !== null
+                  ? `${progress}%`
+                  : progressDetail || "Working…"}
+              </span>
+            </div>
+            {progressDetail && progress !== null ? (
+              <p className="mt-1 text-2xs text-muted-foreground">
+                {progressDetail}
+              </p>
+            ) : null}
+            <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-muted">
+              <div
+                className={cn(
+                  "h-full rounded-full bg-primary transition-[width] duration-300",
+                  progress === null &&
+                    "w-1/4 animate-pulse motion-reduce:animate-none",
+                )}
+                style={
+                  progress !== null ? { width: `${progress}%` } : undefined
+                }
+              />
+            </div>
+          </div>
+        ) : null}
+        {mesh.error ? (
           <p className="mt-1 text-xs text-destructive" role="alert">
-            {error}
+            {mesh.error}
           </p>
         ) : null}
       </div>
@@ -114,58 +119,23 @@ export function MeshComputeShareBanner({
   );
 }
 
-function Benefit({
-  icon: Icon,
-  label,
-  detail,
-}: {
-  icon: typeof Sparkles;
-  label: string;
-  detail: string;
-}) {
-  return (
-    <div className="flex items-start gap-2 bg-background/80 px-4 py-3">
-      <Icon className="mt-0.5 size-3.5 shrink-0" />
-      <div className="min-w-0">
-        <p className="text-xs font-medium">{label}</p>
-        <p
-          className="mt-0.5 truncate text-2xs text-muted-foreground"
-          title={detail}
-        >
-          {detail}
-        </p>
-      </div>
-    </div>
-  );
-}
-
-function shareStatusCopy({
-  communityName,
-  isConsuming,
-  isSharing,
-  modelToShare,
-  pendingAction,
-  statusModel,
-}: {
-  communityName: string;
-  isConsuming: boolean;
-  isSharing: boolean;
-  modelToShare: string | null;
-  pendingAction: "start" | "stop" | null;
-  statusModel: string | null;
-}): string {
-  if (pendingAction === "start")
-    return `Preparing ${statusModel ?? modelToShare ?? "a model"} for ${communityName}…`;
-  if (pendingAction === "stop") return "Stopping shared compute…";
-  if (isSharing)
-    return `${statusModel ?? modelToShare ?? "A model"} is available to ${communityName}`;
-  if (isConsuming)
-    return "Using another member’s compute; enable this to contribute instead";
-  if (modelToShare)
-    return "Ready to contribute automatically when you turn this on";
-  return "Checking this machine and choosing a compatible model…";
-}
-
-function formatGb(value: number): string {
-  return `${new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(value)} GB`;
+function statusCopy(
+  mesh: ReturnType<typeof useMeshComputeState>,
+  communityName: string,
+): string {
+  const model =
+    mesh.status?.modelName ?? mesh.status?.modelId ?? mesh.modelToShare;
+  if (mesh.pendingAction === "start") {
+    return mesh.downloadProgress
+      ? "Downloading the files needed to contribute. Your tile will appear when this machine is ready."
+      : "Checking this machine and preparing shared compute. Your tile will appear when it is ready.";
+  }
+  if (mesh.pendingAction === "stop") return "Stopping shared compute…";
+  if (mesh.toggle.isSharing)
+    return `This machine is sharing compute with ${communityName}${model ? ` using ${model}` : ""}.`;
+  if (mesh.toggle.isConsuming)
+    return "This machine is using shared compute. Turn this on to contribute too.";
+  if (mesh.modelToShare)
+    return "Ready to contribute. Buzz will choose compatible settings automatically.";
+  return "Checking whether this machine can contribute…";
 }
