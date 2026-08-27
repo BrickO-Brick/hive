@@ -1009,6 +1009,8 @@ function MessagesView() {
     cell: HTMLElement;
     x: number;
     y: number;
+    detachedAtStart: boolean;
+    hasBroken: boolean;
   } | null>(null);
 
   const beginPanelDrag = (
@@ -1030,6 +1032,8 @@ function MessagesView() {
       cell,
       x: current.x,
       y: current.y,
+      detachedAtStart: current.detached,
+      hasBroken: current.detached,
     };
     cell.classList.add("is-pulling", "is-active-drag");
   };
@@ -1041,15 +1045,20 @@ function MessagesView() {
       endPanelDrag(event);
       return;
     }
-    drag.x = Math.max(-340, Math.min(340, drag.originX + event.clientX - drag.startX));
-    drag.y = Math.max(-190, Math.min(190, drag.originY + event.clientY - drag.startY));
+    const rawX = Math.max(-340, Math.min(340, drag.originX + event.clientX - drag.startX));
+    const rawY = Math.max(-190, Math.min(190, drag.originY + event.clientY - drag.startY));
+    const rawDistance = Math.hypot(rawX, rawY);
+    if (!drag.detachedAtStart && rawDistance > 112) drag.hasBroken = true;
+    const resistance = drag.detachedAtStart || drag.hasBroken
+      ? 1
+      : 0.76 + Math.min(rawDistance / 112, 1) * 0.12;
+    drag.x = rawX * resistance;
+    drag.y = rawY * resistance;
     const distance = Math.hypot(drag.x, drag.y);
     drag.cell.style.setProperty("--panel-x", `${drag.x}px`);
     drag.cell.style.setProperty("--panel-y", `${drag.y}px`);
-    drag.cell.style.setProperty("--tether-distance", `${Math.min(distance, 126)}px`);
-    drag.cell.style.setProperty("--tether-angle", `${Math.atan2(drag.y, drag.x)}rad`);
-    drag.cell.style.setProperty("--tether-squeeze", String(Math.max(0.28, 1 - distance / 170)));
-    drag.cell.classList.toggle("is-breaking", distance > 94);
+    drag.cell.style.setProperty("--panel-tilt", `${Math.max(-1.2, Math.min(1.2, (event.clientX - drag.startX) * 0.012))}deg`);
+    drag.cell.classList.toggle("is-breaking", drag.hasBroken);
   };
 
   const endPanelDrag = (event: ReactPointerEvent<HTMLElement>) => {
@@ -1059,12 +1068,13 @@ function MessagesView() {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
     const distance = Math.hypot(drag.x, drag.y);
-    const shouldAttach = distance < (layouts[drag.id].detached ? 54 : 72);
+    const shouldAttach = drag.detachedAtStart ? distance < 54 : !drag.hasBroken;
     const next = shouldAttach
       ? { x: 0, y: 0, detached: false }
       : { x: drag.x, y: drag.y, detached: true };
     drag.cell.style.setProperty("--panel-x", `${next.x}px`);
     drag.cell.style.setProperty("--panel-y", `${next.y}px`);
+    drag.cell.style.setProperty("--panel-tilt", "0deg");
     drag.cell.classList.remove("is-pulling", "is-breaking", "is-active-drag");
     setLayouts((current) => ({ ...current, [drag.id]: next }));
     dragRef.current = null;
@@ -1073,6 +1083,7 @@ function MessagesView() {
   const panelStyle = (id: MessagePanelId) => ({
     "--panel-x": `${layouts[id].x}px`,
     "--panel-y": `${layouts[id].y}px`,
+    "--panel-tilt": "0deg",
   }) as CSSProperties;
 
   const dragHandlers = (id: MessagePanelId) => ({
@@ -1084,9 +1095,8 @@ function MessagesView() {
 
   return (
     <section className="messages-stage" aria-label="Composable messages workspace">
-      <div className={`messages-board${Object.values(layouts).some((panel) => panel.detached) ? " has-detached-panel" : ""}`}>
+      <div className={`messages-board${Object.values(layouts).some((panel) => panel.detached) ? " has-detached-panel" : ""}${layouts.sidebar.detached ? " sidebar-is-detached" : ""}${layouts.chat.detached ? " chat-is-detached" : ""}${layouts.thread.detached ? " thread-is-detached" : ""}`}>
         <div className={`message-panel-cell sidebar-cell${layouts.sidebar.detached ? " is-detached" : ""}`} style={panelStyle("sidebar")}>
-          <div className="liquid-tether" aria-hidden="true" />
           <aside className="message-panel channel-panel">
             <div className="panel-drag-handle channel-search-wrap" {...dragHandlers("sidebar")}>
               <Search aria-hidden="true" size={18} strokeWidth={1.7} />
@@ -1104,7 +1114,6 @@ function MessagesView() {
         </div>
 
         <div className={`message-panel-cell chat-cell${layouts.chat.detached ? " is-detached" : ""}`} style={panelStyle("chat")}>
-          <div className="liquid-tether" aria-hidden="true" />
           <article className="message-panel chat-panel">
             <header className="panel-drag-handle chat-header" {...dragHandlers("chat")}>
               <div><LockKeyhole aria-hidden="true" size={18} strokeWidth={1.7} /><strong>buzz-interface-squad</strong></div>
@@ -1120,7 +1129,6 @@ function MessagesView() {
         </div>
 
         <div className={`message-panel-cell thread-cell${layouts.thread.detached ? " is-detached" : ""}`} style={panelStyle("thread")}>
-          <div className="liquid-tether" aria-hidden="true" />
           <aside className="message-panel thread-panel">
             <header className="panel-drag-handle thread-header" {...dragHandlers("thread")}><div><PanelRightOpen aria-hidden="true" size={18} strokeWidth={1.7} /><strong>Thread</strong></div><button type="button" aria-label="Close thread"><X aria-hidden="true" size={18} strokeWidth={1.7} /></button></header>
             <div className="thread-content">
