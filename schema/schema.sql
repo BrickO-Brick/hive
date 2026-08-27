@@ -1199,8 +1199,6 @@ CREATE TABLE replica_heartbeat (
     id    smallint PRIMARY KEY CHECK (id = 1),
     epoch uuid     NOT NULL DEFAULT gen_random_uuid(),
     token bigint   NOT NULL DEFAULT 0
-) WITH (
-    vacuum_truncate = false
 );
 
 INSERT INTO replica_heartbeat (id) VALUES (1);
