@@ -10,14 +10,13 @@ import {
   CHANNEL_SWITCH_MEASURE,
   beginChannelSwitchTrace,
   resetChannelSwitchTrace,
-  settleChannelSwitchTrace,
 } from "../../shared/lib/channelSwitchPerf.ts";
 import { useChannelSwitchTraceMarks } from "./useChannelSwitchTraceMarks.ts";
 
 // These tests run the hook under the real react-dom development build, whose
-// StrictMode replays every effect (setup → cleanup → setup) on mount — the
-// exact dev-runtime lifecycle that used to abandon a just-opened trace and
-// break the Performance-panel workflow.
+// StrictMode replays every effect (setup → cleanup → setup) on mount. The
+// Performance-panel workflow runs on that build, so a trace opened just
+// before mount has to survive the replay.
 
 const originalDocument = globalThis.document;
 const originalWindow = globalThis.window;
@@ -101,7 +100,7 @@ it("a trace survives StrictMode's effect replay and still settles", async () => 
   dom.window.close();
 });
 
-it("an A→B switch's deferred abandon of A never kills B's trace", async () => {
+it("an A→B switch records B, never the superseded A", async () => {
   const { dom, flushFrames } = setupDom();
   performance.clearMeasures?.(CHANNEL_SWITCH_MEASURE);
   beginChannelSwitchTrace("chan-a");
