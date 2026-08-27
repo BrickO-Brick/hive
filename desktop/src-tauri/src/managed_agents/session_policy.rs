@@ -76,11 +76,16 @@ pub(crate) fn apply_acp_session_policy_env(
     command.env(ACP_SESSION_POLICY_ENV_VAR, policy.as_str());
 }
 
+/// Resolve the effective policy, apply it to `command`, and return it so the
+/// caller can stamp the same value onto the spawn snapshot (env and badge can
+/// never disagree about what the child launched with).
 pub(crate) fn apply_app_acp_session_policy_env(
     app: &AppHandle,
     command: &mut std::process::Command,
-) {
-    apply_acp_session_policy_env(command, acp_session_policy(app.state::<AppState>().inner()));
+) -> AcpSessionPolicy {
+    let policy = acp_session_policy(app.state::<AppState>().inner());
+    apply_acp_session_policy_env(command, policy);
+    policy
 }
 
 pub(crate) fn insert_acp_session_policy_env(
