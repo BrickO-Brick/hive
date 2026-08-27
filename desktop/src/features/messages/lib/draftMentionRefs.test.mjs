@@ -29,7 +29,14 @@ test("edit mention refs resolve from visible text and loaded profiles", () => {
       profiles,
       () => false,
     ),
-    [{ displayName: "Alice", isAgent: false, pubkey: ALICE }],
+    [
+      {
+        displayName: "Alice",
+        isAgent: false,
+        offset: 20,
+        pubkey: ALICE,
+      },
+    ],
   );
 
   const target = buildMessageComposerEditTarget(
@@ -38,6 +45,40 @@ test("edit mention refs resolve from visible text and loaded profiles", () => {
     () => false,
   );
   assert.deepEqual(target.unresolvedMentionPubkeys, []);
+});
+
+test("edit mention refs preserve duplicate-name identity by tag and occurrence order", () => {
+  const content = "@Will asks @Will";
+  const profilesByPubkey = {
+    [ALICE]: { displayName: "Will" },
+    [BOB]: { displayName: "Will" },
+  };
+
+  assert.deepEqual(
+    resolveEditMentionRefs(
+      content,
+      [
+        ["p", ALICE],
+        ["p", BOB],
+      ],
+      profilesByPubkey,
+      (pubkey) => pubkey === BOB,
+    ),
+    [
+      {
+        displayName: "Will",
+        isAgent: false,
+        offset: 0,
+        pubkey: ALICE,
+      },
+      {
+        displayName: "Will",
+        isAgent: true,
+        offset: 11,
+        pubkey: BOB,
+      },
+    ],
+  );
 });
 
 test("shared edit mention state preserves tagged identities while profiles are unavailable", () => {
@@ -80,7 +121,12 @@ test("edit target separates resolved refs from identities missing profiles", () 
   );
 
   assert.deepEqual(target.mentionRefs, [
-    { displayName: "Alice", isAgent: false, pubkey: ALICE },
+    {
+      displayName: "Alice",
+      isAgent: false,
+      offset: 20,
+      pubkey: ALICE,
+    },
   ]);
   assert.deepEqual(target.unresolvedMentionPubkeys, [BOB]);
 });

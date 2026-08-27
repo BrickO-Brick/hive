@@ -30,6 +30,12 @@ import {
 } from "@/features/profile/hooks";
 import { useIdentityQuery } from "@/shared/api/hooks";
 import type { AutocompleteEdit } from "./useRichTextEditor";
+import {
+  isOccurrenceManagedName,
+  reconcileMentionIdentityRefs,
+  type MentionIdentityRef,
+  type MentionTextChange,
+} from "./mentionIdentityRefs";
 import type {
   AgentPersona,
   ChannelMember,
@@ -80,6 +86,12 @@ export function useMentions(
     React.useState<string[]>([]);
   const selectedAgentMentionNamesRef = React.useRef<string[]>([]);
   const selectedAgentMentionPubkeysRef = React.useRef<Set<string>>(new Set());
+  const mentionIdentityRefsRef = React.useRef<MentionIdentityRef[]>([]);
+  const occurrenceManagedNamesRef = React.useRef<Set<string>>(new Set());
+  const pendingMentionIdentityIdsRef = React.useRef<Set<string>>(new Set());
+  const pendingMentionReplacementChangeRef =
+    React.useRef<MentionTextChange | null>(null);
+  const mentionTextRef = React.useRef("");
   selectedAgentMentionNamesRef.current = selectedAgentMentionNames;
   const mentionMapRef = React.useRef<Map<string, string>>(new Map());
   const personaMentionMapRef = React.useRef<Map<string, string>>(new Map());
@@ -603,17 +615,44 @@ export function useMentions(
       const insertText = teamMembers
         ? formatTeamMention(displayName, teamMembers)
         : `@${displayName} `;
+      const startIndex =
+        flushedMentionStartIndexRef.current ?? mentionStartIndex;
+      flushedMentionStartIndexRef.current = null;
 
       const mentions = mentionMapRef.current;
       const personaMentions = personaMentionMapRef.current;
       const selectedMentions = teamMembers ?? [suggestion];
+      let nextOccurrenceOffset = teamMembers ? insertText.indexOf("@") : 0;
       for (const selected of selectedMentions) {
+        const selectedOffset = teamMembers
+          ? insertText.indexOf(`@${selected.displayName}`, nextOccurrenceOffset)
+          : 0;
+        const offset = startIndex + Math.max(selectedOffset, 0);
+        if (teamMembers) {
+          nextOccurrenceOffset =
+            selectedOffset + selected.displayName.length + 1;
+        }
         if (selected.kind === "persona" && selected.personaId) {
           personaMentions.set(selected.displayName, selected.personaId);
           mentions.delete(selected.displayName);
         } else if (selected.pubkey) {
           mentions.set(selected.displayName, selected.pubkey);
           personaMentions.delete(selected.displayName);
+          const normalizedName = selected.displayName.trim().toLowerCase();
+          occurrenceManagedNamesRef.current.add(normalizedName);
+          const normalizedPubkey = normalizePubkey(selected.pubkey);
+          const id = crypto.randomUUID();
+          pendingMentionIdentityIdsRef.current.add(id);
+          mentionIdentityRefsRef.current.push({
+            id,
+            displayName: selected.displayName,
+            pubkey: normalizedPubkey,
+            isAgent:
+              suggestion.kind === "team" ||
+              suggestion.isAgent === true ||
+              knownAgentPubkeys.has(normalizedPubkey),
+            offset,
+          });
         }
       }
       setSelectedMentionNames((current) => {
@@ -654,10 +693,13 @@ export function useMentions(
       trimMapToSize(personaMentions, 200);
       setMentionQuery(null);
       setMentionSelectedIndex(0);
+      pendingMentionReplacementChangeRef.current = {
+        oldFrom: startIndex,
+        oldTo: selectionEnd,
+        newFrom: startIndex,
+        newTo: startIndex + insertText.length,
+      };
 
-      const startIndex =
-        flushedMentionStartIndexRef.current ?? mentionStartIndex;
-      flushedMentionStartIndexRef.current = null;
       return {
         replaceFromOffset: startIndex,
         replaceToOffset: selectionEnd,
@@ -668,21 +710,47 @@ export function useMentions(
   );
 
   const registerMentionPubkey = React.useCallback(
-    (displayName: string, pubkey: string, options?: { isAgent?: boolean }) => {
+    (
+      displayName: string,
+      pubkey: string,
+      options?: { isAgent?: boolean; offset?: number },
+    ) => {
       const trimmedName = displayName.trim();
       if (!trimmedName) {
         return;
       }
 
-      mentionMapRef.current.set(trimmedName, pubkey);
+      const normalizedPubkey = normalizePubkey(pubkey);
+      if (options?.offset !== undefined) {
+        occurrenceManagedNamesRef.current.add(trimmedName.toLowerCase());
+      }
+      const existingIdentity = mentionIdentityRefsRef.current.find(
+        (ref) =>
+          ref.offset === options?.offset &&
+          ref.displayName.toLowerCase() === trimmedName.toLowerCase() &&
+          ref.pubkey === normalizedPubkey,
+      );
+      mentionMapRef.current.set(trimmedName, normalizedPubkey);
       personaMentionMapRef.current.delete(trimmedName);
       trimMapToSize(mentionMapRef.current, 200);
+      if (options?.offset !== undefined && !existingIdentity) {
+        const id = crypto.randomUUID();
+        pendingMentionIdentityIdsRef.current.add(id);
+        mentionIdentityRefsRef.current.push({
+          id,
+          displayName: trimmedName,
+          pubkey: normalizedPubkey,
+          isAgent: options.isAgent === true,
+          offset: options.offset,
+        });
+      }
 
       setSelectedMentionNames((current) =>
         appendUniqueName(current, trimmedName),
       );
 
       if (options?.isAgent) {
+        selectedAgentMentionPubkeysRef.current.add(normalizedPubkey);
         setSelectedAgentMentionNames((current) => {
           const next = appendUniqueName(current, trimmedName);
           selectedAgentMentionNamesRef.current = next;
@@ -707,11 +775,21 @@ export function useMentions(
       replaceToOffset: number;
       isAgent?: boolean;
     }): AutocompleteEdit => {
-      registerMentionPubkey(displayName, pubkey, { isAgent });
+      const insertText = `@${displayName.trim()} `;
+      registerMentionPubkey(displayName, pubkey, {
+        isAgent,
+        offset: replaceFromOffset,
+      });
+      pendingMentionReplacementChangeRef.current = {
+        oldFrom: replaceFromOffset,
+        oldTo: replaceToOffset,
+        newFrom: replaceFromOffset,
+        newTo: replaceFromOffset + insertText.length,
+      };
       return {
         replaceFromOffset,
         replaceToOffset,
-        insertText: `@${displayName.trim()} `,
+        insertText,
       };
     },
     [registerMentionPubkey],
@@ -779,16 +857,49 @@ export function useMentions(
     [],
   );
 
+  const reconcileMentionIdentities = React.useCallback(
+    (text: string, textChange?: MentionTextChange | null) => {
+      const effectiveTextChange =
+        pendingMentionIdentityIdsRef.current.size > 0
+          ? pendingMentionReplacementChangeRef.current
+          : textChange;
+      mentionIdentityRefsRef.current = reconcileMentionIdentityRefs(
+        mentionIdentityRefsRef.current,
+        mentionTextRef.current,
+        text,
+        effectiveTextChange,
+        pendingMentionIdentityIdsRef.current,
+      );
+      pendingMentionIdentityIdsRef.current.clear();
+      pendingMentionReplacementChangeRef.current = null;
+      mentionTextRef.current = text;
+    },
+    [],
+  );
+
   const extractMentionPubkeysForCurrentMentions = React.useCallback(
     (text: string): string[] => {
+      reconcileMentionIdentities(text);
+      const occurrencePubkeys = mentionIdentityRefsRef.current.map(
+        (ref) => ref.pubkey,
+      );
+      const occurrenceNames = occurrenceManagedNamesRef.current;
       const extracted = extractMentionPubkeys({
         text,
-        selectedMentions: mentionMapRef.current,
+        selectedMentions: new Map(
+          [...mentionMapRef.current].filter(
+            ([displayName]) =>
+              !isOccurrenceManagedName(displayName, occurrenceNames),
+          ),
+        ),
         selectedDisplayNames: personaMentionMapRef.current.keys(),
-        memberCandidates: mentionCandidates,
+        memberCandidates: mentionCandidates.filter(
+          (candidate) =>
+            !isOccurrenceManagedName(candidate.displayName, occurrenceNames),
+        ),
       });
       return filterAdmittedMentionPubkeys(
-        extracted,
+        [...occurrencePubkeys, ...extracted],
         new Set([
           ...agentIdentityPubkeys,
           ...selectedAgentMentionPubkeysRef.current,
@@ -796,7 +907,12 @@ export function useMentions(
         admittedAgentPubkeys,
       );
     },
-    [admittedAgentPubkeys, agentIdentityPubkeys, mentionCandidates],
+    [
+      admittedAgentPubkeys,
+      agentIdentityPubkeys,
+      mentionCandidates,
+      reconcileMentionIdentities,
+    ],
   );
   const getSelectedAgentPubkeys = React.useRef(
     () => selectedAgentMentionPubkeysRef.current,
@@ -850,6 +966,11 @@ export function useMentions(
     cancelMentionAutocomplete();
     mentionMapRef.current.clear();
     personaMentionMapRef.current.clear();
+    mentionIdentityRefsRef.current = [];
+    occurrenceManagedNamesRef.current.clear();
+    pendingMentionIdentityIdsRef.current.clear();
+    pendingMentionReplacementChangeRef.current = null;
+    mentionTextRef.current = "";
     selectedAgentMentionNamesRef.current = [];
     selectedAgentMentionPubkeysRef.current.clear();
     setSelectedMentionNames([]);
@@ -859,6 +980,9 @@ export function useMentions(
   const { getDraftMentionRefs, restoreDraftMentionRefs } =
     useDraftMentionRouting({
       mentionMapRef,
+      mentionIdentityRefsRef,
+      occurrenceManagedNamesRef,
+      mentionTextRef,
       personaMentionMapRef,
       selectedAgentNamesRef: selectedAgentMentionNamesRef,
       cancelAutocomplete: cancelMentionAutocomplete,
@@ -955,6 +1079,7 @@ export function useMentions(
     extractMentionPersonas,
     extractMentionPubkeys: extractMentionPubkeysForCurrentMentions,
     revalidateMentionPubkeys,
+    reconcileMentionIdentities,
     getDraftMentionRefs,
     getMentionDisplayName,
     handleMentionKeyDown,

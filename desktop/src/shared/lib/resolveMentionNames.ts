@@ -18,7 +18,7 @@ export function getMentionTagPubkey(tag: string[]): string | null {
  * to a pubkey. Emitting every known alias — display name, kind-0 `name`, and
  * the NIP-05 local part — keeps rendered chips and pubkey resolution in sync.
  */
-function collectProfileAliases(
+export function collectProfileAliases(
   profile: UserProfileSummary | undefined,
 ): string[] {
   if (!profile) {

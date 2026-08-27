@@ -636,13 +636,17 @@ export function useRichTextEditor({
           return handler();
         },
       },
-      onUpdate: ({ editor: ed }) => {
+      onUpdate: ({ editor: ed, transaction }) => {
         // Keep the hot typing path lightweight. Markdown serialization is
         // still available through `getMarkdown()` for send/draft boundaries;
         // per-keystroke consumers only need textarea-shaped plain text for
         // autocomplete and empty/non-empty state.
         onUpdateRef.current?.(
-          buildPreviewUpdate(ed.state.doc, ed.state.selection.anchor),
+          buildPreviewUpdate(
+            ed.state.doc,
+            ed.state.selection.anchor,
+            transaction,
+          ),
         );
       },
     },

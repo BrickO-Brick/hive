@@ -93,6 +93,7 @@ function MessageComposerImpl({
   typingParentEventId = null,
   typingRootEventId = null,
 }: MessageComposerProps) {
+  const plainTextRef = React.useRef("");
   const {
     contentRef,
     isContentEmpty,
@@ -181,6 +182,7 @@ function MessageComposerImpl({
       setComposerContent(content);
       richText.setContent(content);
     },
+    getMentionText: () => richText.getPlainTextAndCursor().text,
     clearContent: () => {
       setComposerContent("");
       richText.clearContent();
@@ -266,9 +268,11 @@ function MessageComposerImpl({
     onEditLink: (info) => onEditLinkRef.current?.(info),
     onLinkSelectionChange: (info) => onLinkSelectionChangeRef.current?.(info),
     onLinkShortcut: () => onLinkShortcutRef.current?.() ?? false,
-    onUpdate: ({ cursor, linkPreviewContent, text }) => {
+    onUpdate: ({ cursor, linkPreviewContent, text, textChange }) => {
+      plainTextRef.current = text;
       setComposerContentFromText(text);
       setPreviewContent(linkPreviewContent);
+      mentions.reconcileMentionIdentities(text, textChange);
       mentions.updateMentionQuery(text, cursor);
       channelLinks.updateChannelQuery(text, cursor);
       emojiAutocomplete.updateEmojiQuery(text, cursor);
@@ -361,7 +365,12 @@ function MessageComposerImpl({
       richText.setContent(editableBody);
       // Seed pending imeta with removable originals before saving the edit.
       // New attachments can then be added through the same row.
-      mentions.restoreDraftMentionRefs(editTarget.mentionRefs ?? []);
+      mentions.restoreDraftMentionRefs(
+        (editTarget.mentionRefs ?? []).map(
+          ({ offset: _offset, ...ref }) => ref,
+        ),
+        richText.getPlainTextAndCursor().text,
+      );
       media.setPendingImeta(editableImeta);
       media.clearQueuedAttachments();
       setSpoileredAttachmentUrls(
@@ -520,9 +529,9 @@ function MessageComposerImpl({
         content: trimmed,
         editTargetId: editTargetRef.current.id,
         customEmoji,
-        originalContent: editTargetRef.current.body,
         ownerPubkey: ownerPubkeyRef.current,
         editTarget: editTargetRef.current,
+        mentionText: plainTextRef.current.trim(),
         getMentionRefs: mentions.getDraftMentionRefs,
         pendingImeta: media.pendingImetaRef.current,
         queuedAttachments: media.queuedAttachmentsRef.current,
@@ -590,6 +599,7 @@ function MessageComposerImpl({
       await mentionSendFlow.sendMessageWithMentionFlow({
         capturedChannelId: channelId,
         capturedThreadContext,
+        mentionText: plainTextRef.current.trim(),
         pendingImeta: currentPendingImeta,
         queuedAttachments: currentQueuedAttachments,
         linkPreviewTags: preparedLinkPreviews ? [] : getReadyLinkPreviewTags(),

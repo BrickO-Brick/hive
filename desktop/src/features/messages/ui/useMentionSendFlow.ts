@@ -541,7 +541,10 @@ export function useMentionSendFlow({
           richText.setContent(draft.savedContent);
           setPendingImeta(draft.savedImeta);
           restoreQueuedAttachments(draft.queuedAttachments);
-          mentions.restoreDraftMentionRefs(draft.savedMentionRefs);
+          mentions.restoreDraftMentionRefs(
+            draft.savedMentionRefs,
+            draft.savedMentionText,
+          );
           setSpoileredAttachmentUrls?.(
             new Set(draft.savedSpoileredAttachmentUrls),
           );
@@ -681,6 +684,7 @@ export function useMentionSendFlow({
     async ({
       capturedChannelId,
       capturedThreadContext = null,
+      mentionText,
       pendingImeta,
       queuedAttachments = [],
       linkPreviewTags = [],
@@ -707,7 +711,7 @@ export function useMentionSendFlow({
       try {
         if (isSendCancelled()) return;
         const dmThreadAgentMentionErrorMessage = dmThreadAgentMentionError({
-          trimmed,
+          trimmed: mentionText,
           isThreadReply: capturedThreadContext != null,
           channelType,
           extractMentionPersonas: mentions.extractMentionPersonas,
@@ -753,7 +757,7 @@ export function useMentionSendFlow({
           createdPersonaAgentPubkeys.map(normalizePubkey),
         );
         const explicitMentionPubkeys = uniqueNormalizedPubkeys([
-          ...mentions.extractMentionPubkeys(trimmed),
+          ...mentions.extractMentionPubkeys(mentionText),
           ...createdPersonaAgentPubkeys,
         ]);
         const explicitAgentPubkeys = explicitMentionPubkeys.filter(
@@ -804,12 +808,13 @@ export function useMentionSendFlow({
               ? []
               : createdPersonaAgentPubkeys,
           savedContent: trimmed,
+          savedMentionText: mentionText,
           savedImeta: [...pendingImeta],
           queuedAttachments: [...queuedAttachments],
           savedSpoileredAttachmentUrls: new Set(spoileredAttachmentUrls),
           sentDraftKey,
           recoveryDraftKey,
-          savedMentionRefs: mentions.getDraftMentionRefs(trimmed),
+          savedMentionRefs: mentions.getDraftMentionRefs(mentionText),
           audienceGeneration,
           audienceRevision,
           explicitAgentPubkeys,

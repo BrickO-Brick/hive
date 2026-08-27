@@ -1,6 +1,5 @@
 import type { QueuedMediaAttachment } from "@/features/messages/lib/backgroundMediaUploadStore";
 import { enqueueBackgroundMediaUpload } from "@/features/messages/lib/backgroundMediaUploadStore";
-import { hasMention } from "@/features/messages/lib/hasMention";
 import type { DraftMentionRef } from "@/features/messages/lib/useDrafts";
 import type { MessageComposerEditTarget } from "@/features/messages/ui/MessageComposer.types";
 import {
@@ -15,6 +14,7 @@ import type { CustomEmoji } from "@/shared/lib/remarkCustomEmoji";
 
 type EditDraft = {
   content: string;
+  mentionText: string;
   mentionRefs: DraftMentionRef[];
   pendingImeta: ImetaMedia[];
   queuedAttachments: QueuedMediaAttachment[];
@@ -24,11 +24,13 @@ type EditDraft = {
 
 type SubmitMessageEditOptions = Omit<
   EditDraft,
-  "mentionRefs" | "unresolvedMentionPubkeys"
+  "mentionText" | "mentionRefs" | "unresolvedMentionPubkeys"
 > & {
   clearComposer: () => void;
   customEmoji: ReadonlyArray<CustomEmoji>;
   extractMentionPubkeys: (content: string) => string[];
+  /** Plain-text projection matching occurrence offsets. */
+  mentionText: string;
   getMentionRefs: (content: string) => DraftMentionRef[];
   editTargetId: string;
   enqueueUpload?: typeof enqueueBackgroundMediaUpload;
@@ -36,10 +38,9 @@ type SubmitMessageEditOptions = Omit<
     MessageComposerEditTarget,
     "mentionRefs" | "unresolvedMentionPubkeys"
   >;
-  originalContent: string;
   ownerPubkey: string | null;
   restoreComposer: (draft: EditDraft) => void;
-  restoreMentionRefs: (refs: DraftMentionRef[]) => void;
+  restoreMentionRefs: (refs: DraftMentionRef[], content?: string) => void;
   revalidateMentionPubkeys: (pubkeys: readonly string[]) => Promise<string[]>;
   shouldRestoreComposer: () => boolean;
   setDeferredUploadPending: (isPending: boolean) => void;
@@ -60,8 +61,8 @@ export async function submitMessageEdit({
   enqueueUpload = enqueueBackgroundMediaUpload,
   editTarget,
   extractMentionPubkeys,
+  mentionText,
   getMentionRefs,
-  originalContent,
   ownerPubkey,
   pendingImeta,
   queuedAttachments,
@@ -74,15 +75,10 @@ export async function submitMessageEdit({
   setUploadError,
   spoileredAttachmentUrls,
 }: SubmitMessageEditOptions): Promise<void> {
-  const currentMentionRefs = editTarget.mentionRefs ?? [];
   const draft: EditDraft = {
     content,
-    mentionRefs: [
-      ...getMentionRefs(content),
-      ...currentMentionRefs.filter((ref) =>
-        hasMention(content, ref.displayName),
-      ),
-    ],
+    mentionText,
+    mentionRefs: getMentionRefs(mentionText),
     pendingImeta: [...pendingImeta],
     queuedAttachments: [...queuedAttachments],
     spoileredAttachmentUrls: new Set(spoileredAttachmentUrls),
@@ -91,12 +87,17 @@ export async function submitMessageEdit({
   const restoreDraft = () => {
     if (shouldRestoreComposer()) {
       restoreComposer(draft);
-      restoreMentionRefs(draft.mentionRefs);
+      restoreMentionRefs(draft.mentionRefs, draft.mentionText);
     }
   };
+  const currentMentionPubkeys = extractMentionPubkeys(mentionText);
+  const originalMentionPubkeys = [
+    ...(editTarget.mentionRefs ?? []).map(({ pubkey }) => pubkey),
+    ...(editTarget.unresolvedMentionPubkeys ?? []),
+  ];
   const addedMentionPubkeys = diffAddedMentionPubkeys(
-    extractMentionPubkeys(originalContent),
-    extractMentionPubkeys(content),
+    originalMentionPubkeys,
+    currentMentionPubkeys,
     ownerPubkey ?? "",
   );
   const hasQueuedAttachments = draft.queuedAttachments.length > 0;

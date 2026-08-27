@@ -22,6 +22,13 @@ const COLD_SELECTED_ORIGINAL_CONTENT = "Cold Inbox reply original text.";
 const COLD_SELECTED_RETRACTED_CONTENT = "Cold Inbox reply retracted edit text.";
 const COLD_SIBLING_ORIGINAL_CONTENT = "Cold Inbox sibling reply original text.";
 const COLD_SIBLING_EDITED_CONTENT = "Cold Inbox sibling reply edited text.";
+const DUPLICATE_MENTION_MESSAGE_ID = "3d".repeat(32);
+const DROPPED_MENTION_MESSAGE_ID = "4e".repeat(32);
+const DUPLICATE_MENTION_CONTENT = "**@Will** @Will edit lifecycle";
+const DUPLICATE_MENTION_PLAIN_TEXT = "@Will @Will edit lifecycle";
+const DROPPED_MENTION_CONTENT = "@Will @Will drop lifecycle";
+const FIRST_WILL_PUBKEY = "1".repeat(64);
+const SECOND_WILL_PUBKEY = "2".repeat(64);
 const ATTACHMENT_URL = `https://mock.relay/media/${"a".repeat(64)}.pdf`;
 const ATTACHMENT_FILENAME = "inbox-edit-proof.pdf";
 const SHOTS = "test-results/inbox-edit";
@@ -319,6 +326,147 @@ test("editing an immediate attachment reply preserves its media tags", async ({
   await expect(replyRow).toContainText("Attachment reply after editing.");
   await expect(replyRow.getByTestId("file-card")).toContainText(
     ATTACHMENT_FILENAME,
+  );
+});
+
+test("editing duplicate same-name mentions preserves identities and drops a removed occurrence", async ({
+  page,
+}) => {
+  await installMockBridge(page, {
+    searchProfiles: [
+      { pubkey: FIRST_WILL_PUBKEY, displayName: "Will" },
+      { pubkey: SECOND_WILL_PUBKEY, displayName: "Will" },
+    ],
+  });
+  await page.goto("/");
+  await expect(page.getByTestId("home-inbox-list")).toBeVisible();
+  await page.waitForFunction(
+    () =>
+      typeof (window as MockWindow).__BUZZ_E2E_PUSH_MOCK_FEED_ITEM__ ===
+      "function",
+  );
+
+  await page.evaluate(
+    ({
+      channelId,
+      content,
+      currentPubkey,
+      droppedContent,
+      droppedMessageId,
+      firstWill,
+      messageId,
+      secondWill,
+    }) => {
+      const pushFeedItem = (window as MockWindow)
+        .__BUZZ_E2E_PUSH_MOCK_FEED_ITEM__;
+      if (!pushFeedItem) {
+        throw new Error("Mock feed helper is not installed.");
+      }
+      const createdAt = Math.floor(Date.now() / 1_000);
+      for (const id of [messageId, droppedMessageId]) {
+        pushFeedItem({
+          category: "mention",
+          channel_id: channelId,
+          channel_name: "general",
+          content: id === messageId ? content : droppedContent,
+          created_at: id === messageId ? createdAt : createdAt - 1,
+          id,
+          kind: 9,
+          pubkey: currentPubkey,
+          tags: [
+            ["h", channelId],
+            ["p", firstWill],
+            ["p", secondWill],
+          ],
+        });
+      }
+    },
+    {
+      channelId: GENERAL_CHANNEL_ID,
+      content: DUPLICATE_MENTION_CONTENT,
+      currentPubkey: CURRENT_PUBKEY,
+      droppedContent: DROPPED_MENTION_CONTENT,
+      droppedMessageId: DROPPED_MENTION_MESSAGE_ID,
+      firstWill: FIRST_WILL_PUBKEY,
+      messageId: DUPLICATE_MENTION_MESSAGE_ID,
+      secondWill: SECOND_WILL_PUBKEY,
+    },
+  );
+
+  await page
+    .getByTestId(`home-inbox-item-${DUPLICATE_MENTION_MESSAGE_ID}`)
+    .click();
+  const detail = page.getByTestId("home-inbox-detail");
+  await openMoreActions(page, DUPLICATE_MENTION_MESSAGE_ID);
+  await page
+    .getByTestId(`edit-message-${DUPLICATE_MENTION_MESSAGE_ID}`)
+    .click();
+  await expect(detail.getByTestId("edit-target")).toBeVisible();
+
+  const input = detail.getByTestId("message-input");
+  await expect(input).toHaveText(DUPLICATE_MENTION_PLAIN_TEXT);
+  await input.press("Enter");
+
+  let editPayload = await page.evaluate(() => {
+    const payloads = (window as MockWindow).__BUZZ_E2E_COMMAND_PAYLOADS__ ?? [];
+    return payloads.findLast((entry) => entry.command === "edit_message")
+      ?.payload as
+      | {
+          input?: { mentionPubkeys?: string[]; mentionTags?: string[][] };
+        }
+      | undefined;
+  });
+  expect(editPayload?.input).toEqual(
+    expect.objectContaining({
+      mentionPubkeys: [],
+      mentionTags: [
+        ["mention", FIRST_WILL_PUBKEY],
+        ["mention", SECOND_WILL_PUBKEY],
+      ],
+    }),
+  );
+
+  await page
+    .getByTestId(`home-inbox-item-${DROPPED_MENTION_MESSAGE_ID}`)
+    .click();
+  await openMoreActions(page, DROPPED_MENTION_MESSAGE_ID);
+  await page.getByTestId(`edit-message-${DROPPED_MENTION_MESSAGE_ID}`).click();
+  await expect(input).toHaveText(DROPPED_MENTION_CONTENT);
+  await input.evaluate((element) => {
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    const range = document.createRange();
+    let remaining = "@Will ".length;
+    let node = walker.nextNode();
+    if (!node) throw new Error("message input text node was not found");
+    range.setStart(node, 0);
+    while (node && remaining > (node.textContent?.length ?? 0)) {
+      remaining -= node.textContent?.length ?? 0;
+      node = walker.nextNode();
+    }
+    if (!node) throw new Error("first mention range was not found");
+    range.setEnd(node, remaining);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  });
+  await input.press("Backspace");
+  await expect(input).toHaveText("@Will drop lifecycle");
+  await page.keyboard.press("Enter");
+
+  editPayload = await page.evaluate(() => {
+    const payloads = (window as MockWindow).__BUZZ_E2E_COMMAND_PAYLOADS__ ?? [];
+    return payloads.findLast((entry) => entry.command === "edit_message")
+      ?.payload as
+      | {
+          input?: { mentionPubkeys?: string[]; mentionTags?: string[][] };
+        }
+      | undefined;
+  });
+  expect(editPayload?.input).toEqual(
+    expect.objectContaining({
+      mentionPubkeys: [],
+      mentionTags: [["mention", SECOND_WILL_PUBKEY]],
+    }),
   );
 });
 

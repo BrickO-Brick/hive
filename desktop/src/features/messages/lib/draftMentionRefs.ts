@@ -1,4 +1,7 @@
-import { hasMention } from "@/features/messages/lib/hasMention";
+import {
+  getMentionOffsets,
+  hasMention,
+} from "@/features/messages/lib/hasMention";
 import { imetaMediaFromTags } from "@/features/messages/lib/imetaMediaMarkdown";
 import type { DraftMentionRef } from "@/features/messages/lib/useDrafts";
 import type { TimelineMessage } from "@/features/messages/types";
@@ -6,8 +9,8 @@ import type { MessageComposerEditTarget } from "@/features/messages/ui/MessageCo
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import { normalizePubkey } from "@/shared/lib/pubkey";
 import {
+  collectProfileAliases,
   getMentionTagPubkey,
-  resolveMentionProps,
 } from "@/shared/lib/resolveMentionNames";
 
 export function resolveEditMentionRefs(
@@ -16,25 +19,36 @@ export function resolveEditMentionRefs(
   profiles: UserProfileLookup | undefined,
   isAgentPubkey: (pubkey: string) => boolean,
 ): DraftMentionRef[] {
-  const { mentionNames, mentionPubkeysByName } = resolveMentionProps(
-    tags,
-    profiles,
-  );
-  const refs = (mentionNames ?? [])
-    .filter((displayName) => hasMention(content, displayName))
-    .flatMap((displayName) => {
-      const pubkey = mentionPubkeysByName?.[displayName.toLowerCase()];
-      return pubkey
-        ? [
-            {
-              displayName,
-              pubkey,
-              isAgent: isAgentPubkey(normalizePubkey(pubkey)),
-            },
-          ]
-        : [];
-    });
-  return refs;
+  const offsetsByAlias = new Map<string, number[]>();
+  const nextOccurrenceByAlias = new Map<string, number>();
+  const refs: DraftMentionRef[] = [];
+
+  for (const tag of tags ?? []) {
+    const pubkey = getMentionTagPubkey(tag);
+    if (!pubkey) continue;
+
+    const normalizedPubkey = normalizePubkey(pubkey);
+    for (const alias of collectProfileAliases(profiles?.[normalizedPubkey])) {
+      const key = alias.toLowerCase();
+      const offsets =
+        offsetsByAlias.get(key) ?? getMentionOffsets(content, alias);
+      offsetsByAlias.set(key, offsets);
+      const occurrenceIndex = nextOccurrenceByAlias.get(key) ?? 0;
+      const offset = offsets[occurrenceIndex];
+      if (offset === undefined) continue;
+
+      nextOccurrenceByAlias.set(key, occurrenceIndex + 1);
+      refs.push({
+        displayName: alias,
+        pubkey: normalizedPubkey,
+        isAgent: isAgentPubkey(normalizedPubkey),
+        offset,
+      });
+      break;
+    }
+  }
+
+  return refs.sort((left, right) => (left.offset ?? 0) - (right.offset ?? 0));
 }
 
 function unresolvedEditMentionPubkeys(
@@ -124,8 +138,18 @@ function normalizeDraftMentionRefs(
   for (const ref of refs) {
     const displayName = ref.displayName.trim();
     const pubkey = normalizePubkey(ref.pubkey);
-    if (displayName && pubkey) {
-      normalized.push({ displayName, pubkey, isAgent: ref.isAgent });
+    if (
+      displayName &&
+      pubkey &&
+      (ref.offset === undefined ||
+        (Number.isInteger(ref.offset) && ref.offset >= 0))
+    ) {
+      normalized.push({
+        displayName,
+        pubkey,
+        isAgent: ref.isAgent,
+        ...(ref.offset !== undefined ? { offset: ref.offset } : {}),
+      });
     }
   }
   return normalized;

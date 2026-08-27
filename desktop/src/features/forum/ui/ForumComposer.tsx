@@ -122,7 +122,8 @@ export function ForumComposer({
     onEditLink: (info) => onEditLinkRef.current?.(info),
     onLinkSelectionChange: (info) => onLinkSelectionChangeRef.current?.(info),
     onLinkShortcut: () => onLinkShortcutRef.current?.() ?? false,
-    onUpdate: ({ cursor, text }) => {
+    onUpdate: ({ cursor, text, textChange }) => {
+      mentions.reconcileMentionIdentities(text, textChange);
       const markdown = richText.getMarkdown();
       setContent(markdown);
       contentRef.current = markdown;
@@ -238,8 +239,9 @@ export function ForumComposer({
       channelLinks.clearChannels();
       setIsEmojiPickerOpen(false);
       try {
+        const mentionText = richText.getPlainTextAndCursor().text.trim();
         const pubkeys = await mentions.revalidateMentionPubkeys(
-          mentions.extractMentionPubkeys(trimmed),
+          mentions.extractMentionPubkeys(mentionText),
         );
 
         // Reuse the shared send-path builder so forum/notes posts emit the same
@@ -291,6 +293,7 @@ export function ForumComposer({
       mentions.clearMentions,
       channelLinks.clearChannels,
       richText.clearContent,
+      richText.getPlainTextAndCursor,
       richText.setContent,
     ],
   );

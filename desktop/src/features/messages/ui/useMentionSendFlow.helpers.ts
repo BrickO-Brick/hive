@@ -25,6 +25,7 @@ export type PendingNonMemberMentionSend = {
   preparedManagedAgents?: ManagedAgent[];
   readyAgentPubkeys?: string[];
   savedContent: string;
+  savedMentionText: string;
   savedImeta: ImetaMedia[];
   queuedAttachments: QueuedMediaAttachment[];
   savedSpoileredAttachmentUrls: Set<string>;
@@ -46,6 +47,8 @@ export type SendMessageWithMentionFlowInput = {
   sentDraftKey: string | null | undefined;
   recoveryDraftKey: string | null | undefined;
   spoileredAttachmentUrls?: ReadonlySet<string>;
+  /** Plain-text projection matching the occurrence-offset coordinate space. */
+  mentionText: string;
   trimmed: string;
   audienceGeneration?: number;
   audienceRevision?: number | null;

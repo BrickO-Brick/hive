@@ -24,7 +24,10 @@ type UseDraftPersistLifecycleParams = {
   /** Snapshot selected mention identities still present in current content. */
   getMentionRefs: (content: string) => DraftMentionRef[];
   /** Replace mention routing/highlight state when a draft is restored or cleared. */
-  restoreMentionRefs: (refs: readonly DraftMentionRef[]) => void;
+  restoreMentionRefs: (
+    refs: readonly DraftMentionRef[],
+    content?: string,
+  ) => void;
   /** Live `pendingImeta` from React state — used for render-time ref sync. */
   livePendingImeta: ImetaMedia[];
   /** Async setter for pendingImeta — called after the synchronous snapshot. */
@@ -44,6 +47,8 @@ type UseDraftPersistLifecycleParams = {
   takeQueuedAttachmentsForDraft?: (draftKey: string) => QueuedMediaAttachment[];
   /** Set the rich-text editor content from a draft string. */
   setContent: (content: string) => void;
+  /** Called after setContent so the editor's plain projection is current. */
+  getMentionText?: () => string;
   /** Clear the rich-text editor content (no-draft path). */
   clearContent: () => void;
   /** Set the spoilered attachment URLs state. */
@@ -88,6 +93,7 @@ type UseDraftPersistLifecycleParams = {
 export function useDraftPersistLifecycle({
   effectiveDraftKey,
   channelId,
+  getMentionText,
   loadDraft,
   persistDraft,
   getMentionRefs,
@@ -137,7 +143,10 @@ export function useDraftPersistLifecycle({
     const saved = effectiveDraftKey ? loadDraft(effectiveDraftKey) : undefined;
     if (saved) {
       setContent(saved.content);
-      restoreMentionRefs(saved.mentionRefs ?? []);
+      restoreMentionRefs(
+        saved.mentionRefs ?? [],
+        getMentionText?.() ?? saved.content,
+      );
       // Set the persist-snapshot ref SYNCHRONOUSLY before calling the async
       // state setter, so the cleanup closure (which may fire before the state
       // update commits in React StrictMode's simulate-unmount pass) reads the
@@ -167,7 +176,7 @@ export function useDraftPersistLifecycle({
           channelId ?? effectiveDraftKey,
           [...pendingImetaForPersistRef.current],
           [...spoileredAttachmentUrlsRef.current],
-          getMentionRefs(content),
+          getMentionRefs(getMentionText?.() ?? content),
         );
       }
     };

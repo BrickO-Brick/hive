@@ -734,6 +734,76 @@ for (const selectedWill of ["first", "second"] as const) {
   });
 }
 
+test("autocomplete preserves and removes exact same-name identities", async ({
+  page,
+}) => {
+  const firstWillPubkey = "1".repeat(64);
+  const secondWillPubkey = "2".repeat(64);
+  await installMockBridge(page, {
+    searchProfiles: [
+      { pubkey: firstWillPubkey, displayName: "Will" },
+      { pubkey: secondWillPubkey, displayName: "Will" },
+    ],
+  });
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+
+  const input = page.getByTestId("message-input");
+  await input.fill("@Will");
+  await autocomplete(page)
+    .getByTestId(`mention-suggestion-${firstWillPubkey}`)
+    .click();
+  await page.keyboard.type("@Will");
+  await autocomplete(page)
+    .getByTestId(`mention-suggestion-${secondWillPubkey}`)
+    .click();
+  await page.keyboard.type("hello both");
+
+  const message = "@Will @Will hello both";
+  await expect(input).toHaveText(message);
+  await page.getByTestId("send-message").click();
+  await page.getByRole("button", { name: "Invite" }).click();
+  await expect
+    .poll(() => readOutgoingMentionPubkeys(page, message))
+    .toEqual([firstWillPubkey, secondWillPubkey]);
+
+  await input.fill("@Will");
+  await autocomplete(page)
+    .getByTestId(`mention-suggestion-${firstWillPubkey}`)
+    .click();
+  await page.keyboard.type("@Will");
+  await autocomplete(page)
+    .getByTestId(`mention-suggestion-${secondWillPubkey}`)
+    .click();
+  await page.keyboard.type("survivor");
+  await input.evaluate((element) => {
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    const range = document.createRange();
+    let remaining = "@Will ".length;
+    let node = walker.nextNode();
+    if (!node) throw new Error("message input text node was not found");
+    range.setStart(node, 0);
+    while (node && remaining > node.textContent.length) {
+      remaining -= node.textContent.length;
+      node = walker.nextNode();
+    }
+    if (!node) throw new Error("first mention range was not found");
+    range.setEnd(node, remaining);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  });
+  await input.press("Backspace");
+
+  const survivorMessage = "@Will survivor";
+  await expect(input).toHaveText(survivorMessage);
+  await page.getByTestId("send-message").click();
+  await page.getByRole("button", { name: "Invite" }).click();
+  await expect
+    .poll(() => readOutgoingMentionPubkeys(page, survivorMessage))
+    .toEqual([secondWillPubkey]);
+});
+
 test("mention autocomplete caps global people search at 50 results", async ({
   page,
 }) => {

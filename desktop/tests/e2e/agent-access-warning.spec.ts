@@ -268,6 +268,60 @@ for (const selectedFirstPageCount of [50, 49]) {
   });
 }
 
+test("selected-people search refills after paste filters an active page", async ({
+  page,
+}) => {
+  const firstPageProfiles = Array.from({ length: 50 }, (_, index) => ({
+    pubkey: (index + 1).toString(16).padStart(64, "0"),
+    displayName: `Will ${String(index).padStart(2, "0")}`,
+  }));
+  const targetPubkey = "f".repeat(64);
+  const agent = TEST_IDENTITIES.charlie;
+  await installMockBridge(page, {
+    managedAgents: [
+      {
+        pubkey: agent.pubkey,
+        name: "Hack Day Helper",
+        status: "running",
+        channelNames: ["general"],
+        respondTo: "allowlist",
+        respondToAllowlist: [],
+      },
+    ],
+    searchProfiles: [
+      ...firstPageProfiles,
+      { pubkey: targetPubkey, displayName: "Will Target" },
+    ],
+  });
+  await page.goto("/");
+  await openAgentAccessDialog(page, agent.pubkey);
+  await page.getByTestId("agent-respond-to-search").fill("Will");
+  await expect(
+    page.getByTestId(`agent-respond-to-result-${firstPageProfiles[0].pubkey}`),
+  ).toBeVisible();
+
+  await page.getByTestId("agent-respond-to-toggle-direct").click();
+  await page
+    .getByTestId("agent-respond-to-paste")
+    .fill(firstPageProfiles.map((profile) => profile.pubkey).join("\n"));
+  await page.getByTestId("agent-respond-to-paste-add").click();
+
+  await expect
+    .poll(
+      () =>
+        page.evaluate(() =>
+          (window.__BUZZ_E2E_COMMAND_LOG__ ?? [])
+            .filter((entry) => entry.command === "search_users")
+            .map((entry) => entry.payload),
+        ),
+      { message: "filtered active results should request the second page" },
+    )
+    .toContainEqual(expect.objectContaining({ cursor: "2" }));
+  await expect(
+    page.getByTestId(`agent-respond-to-result-${targetPubkey}`),
+  ).toContainText("Will Target");
+});
+
 test("full agent editor tightens the exact sidebar agent instance", async ({
   page,
 }) => {

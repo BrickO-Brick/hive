@@ -147,6 +147,9 @@ export function CreateAgentRespondToField({
   );
   const searchViewportRef = React.useRef<HTMLDivElement>(null);
   React.useEffect(() => {
+    // Filtered count changes can turn an active page from scrollable into a
+    // dead end after allowlist paste/add, so it is intentionally a signal.
+    void searchResults.length;
     const viewport = searchViewportRef.current;
     if (
       !viewport ||
@@ -159,6 +162,7 @@ export function CreateAgentRespondToField({
 
     void userSearchQuery.fetchNextPage();
   }, [
+    searchResults.length,
     userSearchQuery.fetchNextPage,
     userSearchQuery.hasNextPage,
     userSearchQuery.isFetchingNextPage,

@@ -44,6 +44,8 @@ export type DraftMentionRef = {
   displayName: string;
   pubkey: string;
   isAgent: boolean;
+  /** Plain-text offset for exact same-name occurrence restoration. */
+  offset?: number;
 };
 
 export type DraftState = {
@@ -234,7 +236,9 @@ function isValidDraftState(v: unknown): v is DraftState {
         ref.displayName.trim().length === 0 ||
         typeof ref.pubkey !== "string" ||
         ref.pubkey.trim().length === 0 ||
-        typeof ref.isAgent !== "boolean",
+        typeof ref.isAgent !== "boolean" ||
+        (ref.offset !== undefined &&
+          (!Number.isInteger(ref.offset) || ref.offset < 0)),
     )
   ) {
     return false;
@@ -361,7 +365,8 @@ function draftStatesEqual(a: DraftState, b: DraftState): boolean {
     if (
       ar.displayName !== br.displayName ||
       ar.pubkey !== br.pubkey ||
-      ar.isAgent !== br.isAgent
+      ar.isAgent !== br.isAgent ||
+      ar.offset !== br.offset
     ) {
       return false;
     }
