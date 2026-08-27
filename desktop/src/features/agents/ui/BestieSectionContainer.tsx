@@ -2,6 +2,7 @@ import * as React from "react";
 import { toast } from "sonner";
 
 import { useFeatureEnabled } from "@/shared/features";
+import { BestieRemoveDialog } from "./BestieRemoveDialog";
 import { BestieSection } from "./BestieSection";
 import {
   BestieSetupDialog,
@@ -24,6 +25,7 @@ function BestieSectionContent() {
   const role = useBestieRole();
   const [isSetupOpen, setIsSetupOpen] = React.useState(false);
   const [isManaging, setIsManaging] = React.useState(false);
+  const [isRemoveOpen, setIsRemoveOpen] = React.useState(false);
 
   async function handleSubmit(submission: BestieSetupSubmission) {
     await role.assign(submission);
@@ -53,11 +55,43 @@ function BestieSectionContent() {
             );
           });
         }}
+        onRemove={() => setIsRemoveOpen(true)}
         onSetUp={() => {
           setIsManaging(false);
           setIsSetupOpen(true);
         }}
       />
+
+      {role.agent ? (
+        <BestieRemoveDialog
+          agent={role.agent}
+          isPending={role.isRemovePending}
+          onDeleteAgent={() => {
+            const name = role.agent?.name ?? "That agent";
+            void role
+              .unassignAndDelete()
+              .then(() => {
+                setIsRemoveOpen(false);
+                toast.success(`Deleted ${name}`);
+              })
+              .catch((cause: unknown) => {
+                toast.error(
+                  cause instanceof Error
+                    ? cause.message
+                    : "Couldn’t delete that agent.",
+                );
+              });
+          }}
+          onKeepAgent={() => {
+            const name = role.agent?.name ?? "That agent";
+            role.unassign();
+            setIsRemoveOpen(false);
+            toast.success(`${name} is no longer your bestie`);
+          }}
+          onOpenChange={setIsRemoveOpen}
+          open={isRemoveOpen}
+        />
+      ) : null}
 
       <BestieSetupDialog
         agents={role.agents}

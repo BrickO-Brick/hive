@@ -5,8 +5,10 @@ import {
   useAcpRuntimesQuery,
   useCreateManagedAgentMutation,
   useCreatePersonaMutation,
+  useDeleteManagedAgentMutation,
   useManagedAgentsQuery,
   useStartManagedAgentMutation,
+  useStopManagedAgentMutation,
   useUpdateManagedAgentMutation,
 } from "@/features/agents/hooks";
 import {
@@ -49,6 +51,8 @@ export function useBestieRole() {
   const createAgentMutation = useCreateManagedAgentMutation();
   const updateAgentMutation = useUpdateManagedAgentMutation();
   const startAgentMutation = useStartManagedAgentMutation();
+  const stopAgentMutation = useStopManagedAgentMutation();
+  const deleteAgentMutation = useDeleteManagedAgentMutation();
   const openDmMutation = useOpenDmMutation();
 
   const relayUrl = canonicalRelayUrl(activeCommunity?.relayUrl ?? "");
@@ -150,8 +154,26 @@ export function useBestieRole() {
     await agentsQuery.refetch();
   }
 
+  /**
+   * Drops the role and leaves the agent alone: it keeps its name, avatar,
+   * instructions, and history, and reappears as an ordinary agent. Deliberately
+   * does not restore the pre-assignment `respondTo` or prompt — we don't have a
+   * snapshot of those, and silently rewriting an agent's configuration on
+   * removal would be a worse surprise than leaving it as the user last saw it.
+   */
   function unassign() {
     if (!relayUrl) return;
+    clearBestieAssignment(relayUrl);
+    setAssignment(null);
+  }
+
+  /** Drops the role and deletes the agent. Only offered for local agents. */
+  async function unassignAndDelete() {
+    if (!relayUrl || !agent) return;
+    if (agent.status === "running" && agent.backend.type === "local") {
+      await stopAgentMutation.mutateAsync(agent.pubkey);
+    }
+    await deleteAgentMutation.mutateAsync({ pubkey: agent.pubkey });
     clearBestieAssignment(relayUrl);
     setAssignment(null);
   }
@@ -175,8 +197,11 @@ export function useBestieRole() {
     isAgentsLoading: agentsQuery.isLoading,
     isMessagePending: openDmMutation.isPending || startAgentMutation.isPending,
     isOrphaned,
+    isRemovePending:
+      stopAgentMutation.isPending || deleteAgentMutation.isPending,
     message,
     relayUrl,
     unassign,
+    unassignAndDelete,
   };
 }

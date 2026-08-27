@@ -8,6 +8,13 @@ import { ProfileAvatar } from "@/features/profile/ui/ProfileAvatar";
 import type { ManagedAgent } from "@/shared/api/types";
 import { Badge } from "@/shared/ui/badge";
 import { Button } from "@/shared/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/shared/ui/dropdown-menu";
 import { SectionHeader } from "@/shared/ui/PageHeader";
 
 type BestieSectionProps = {
@@ -16,6 +23,7 @@ type BestieSectionProps = {
   isMessagePending: boolean;
   onManage: () => void;
   onMessage: () => void;
+  onRemove: () => void;
   onSetUp: () => void;
 };
 
@@ -25,6 +33,7 @@ export function BestieSection({
   isMessagePending,
   onManage,
   onMessage,
+  onRemove,
   onSetUp,
 }: BestieSectionProps) {
   const enabledCapabilities = capabilities
@@ -62,10 +71,26 @@ export function BestieSection({
                 <MessageCircle />
                 {isMessagePending ? "Opening…" : `Message ${agent.name}`}
               </Button>
-              <Button onClick={onManage} size="sm" variant="outline">
-                <Settings2 />
-                Manage
-              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button size="sm" variant="outline">
+                    <Settings2 />
+                    Manage
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onSelect={onManage}>
+                    Persona and permissions
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    className="text-destructive focus:text-destructive"
+                    onSelect={onRemove}
+                  >
+                    Remove as bestie
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
           </div>
 

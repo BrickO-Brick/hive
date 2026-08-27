@@ -190,6 +190,13 @@ export function BestieSetupDialog({
    * rather than silently replacing it.
    */
   function selectExistingAgent(agent: ManagedAgent) {
+    // Tapping the selected agent again clears the choice, so a mis-pick is
+    // undoable in place instead of requiring a trip backward through the flow.
+    if (agent.pubkey === selectedPubkey) {
+      setSelectedPubkey(null);
+      setAdditionalInstructions("");
+      return;
+    }
     setSelectedPubkey(agent.pubkey);
     setAdditionalInstructions(agent.systemPrompt?.trim() ?? "");
   }
