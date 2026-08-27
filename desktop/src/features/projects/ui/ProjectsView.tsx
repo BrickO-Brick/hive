@@ -551,9 +551,19 @@ export function ProjectsView() {
   }
 
   if (projectsQuery.isError) {
+    const errorMessage =
+      projectsQuery.error instanceof Error
+        ? projectsQuery.error.message
+        : "The relay request failed.";
     return (
-      <div className="flex flex-1 flex-col items-center justify-center gap-2 text-muted-foreground">
+      <div className="flex flex-1 flex-col items-center justify-center gap-2 px-8 text-center text-muted-foreground">
         <p className="text-sm text-red-400">Failed to load projects</p>
+        <p
+          className="max-w-xl text-xs text-muted-foreground"
+          data-testid="projects-load-error"
+        >
+          {errorMessage}
+        </p>
         <Button
           onClick={() => void projectsQuery.refetch()}
           size="sm"

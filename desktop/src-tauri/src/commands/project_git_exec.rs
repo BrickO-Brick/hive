@@ -337,6 +337,23 @@ fn validate_github_clone_url(clone_url: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Converts GitHub's SCP-style SSH shorthand to the public HTTPS clone URL
+/// accepted by the desktop's read-only repository workflows. All other values
+/// are returned trimmed and unchanged so their existing validation still
+/// fails closed.
+pub(crate) fn normalize_local_clone_url(clone_url: &str) -> String {
+    let clone_url = clone_url.trim();
+    let Some(path) = clone_url.strip_prefix("git@github.com:") else {
+        return clone_url.to_string();
+    };
+    let candidate = format!("https://github.com/{path}");
+    if validate_github_clone_url(&candidate).is_ok() {
+        candidate
+    } else {
+        clone_url.to_string()
+    }
+}
+
 pub(crate) fn validate_local_clone_url(clone_url: &str) -> Result<(), String> {
     if validate_clone_url(clone_url).is_ok() || validate_github_clone_url(clone_url).is_ok() {
         return Ok(());
@@ -394,9 +411,30 @@ fn validate_clone_url_against_relay(clone_url: &str, relay_base: &str) -> Result
 mod tests {
     use super::{
         clean_branch, clean_target_ref, credential_helper_config_value, git_needs_credentials,
-        git_subcommand, validate_clone_url, validate_clone_url_against_relay,
-        validate_local_clone_url,
+        git_subcommand, normalize_local_clone_url, validate_clone_url,
+        validate_clone_url_against_relay, validate_local_clone_url,
     };
+
+    #[test]
+    fn normalize_local_clone_url_converts_github_ssh_shorthand() {
+        assert_eq!(
+            normalize_local_clone_url("git@github.com:block/buzz.git"),
+            "https://github.com/block/buzz.git"
+        );
+    }
+
+    #[test]
+    fn normalize_local_clone_url_preserves_unrecognized_relative_values() {
+        assert_eq!(
+            normalize_local_clone_url("../buzz"),
+            "../buzz",
+            "unrecognized values must still reach the fail-closed validator"
+        );
+        assert_eq!(
+            normalize_local_clone_url("git@github.com:block/buzz/extra.git"),
+            "git@github.com:block/buzz/extra.git"
+        );
+    }
 
     #[test]
     fn credential_helper_config_value_uses_forward_slashes() {
