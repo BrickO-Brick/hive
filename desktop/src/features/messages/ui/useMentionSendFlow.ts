@@ -8,8 +8,10 @@ import {
   useAvailableAcpRuntimes,
   useCreateChannelManagedAgentMutation,
   useManagedAgentsQuery,
+  usePersonasQuery,
   useProvisionChannelManagedAgentMutation,
 } from "@/features/agents/hooks";
+import { applyReusableAgentAccessPolicy } from "@/features/agents/channelAgents";
 import { resolvePersonaRuntime } from "@/features/agents/lib/resolvePersonaRuntime";
 import { useAddChannelMembersMutation } from "@/features/channels/hooks";
 import { useCanAddChannelMembers } from "@/features/channels/useCanAddChannelMembers";
@@ -99,6 +101,7 @@ export function useMentionSendFlow({
     useProvisionChannelManagedAgentMutation(channelId);
   const availableRuntimesQuery = useAvailableAcpRuntimes();
   const managedAgentsQuery = useManagedAgentsQuery();
+  const personasQuery = usePersonasQuery();
   const queryClient = useQueryClient();
   const {
     expectedRelayUrl,
@@ -115,6 +118,9 @@ export function useMentionSendFlow({
       agents.map((agent) => [normalizePubkey(agent.pubkey), agent]),
     );
   }, [managedAgentsQuery.refetch, queryClient]);
+  const getPersonas = React.useCallback(async () => {
+    return personasQuery.data ?? (await personasQuery.refetch()).data ?? [];
+  }, [personasQuery.data, personasQuery.refetch]);
   const { prepareMentionWake } = useMentionWakePreflight({
     channelId,
     contentRef,
@@ -161,55 +167,62 @@ export function useMentionSendFlow({
           pubkeys: [] as string[],
         };
       }
-      const managedAgentsByPubkey = await getManagedAgentsByPubkey();
+      const [managedAgentsByPubkey, personas] = await Promise.all([
+        getManagedAgentsByPubkey(),
+        getPersonas(),
+      ]);
       for (const agent of preparedManagedAgents) {
         managedAgentsByPubkey.set(normalizePubkey(agent.pubkey), agent);
       }
-      const participantPubkeys = new Set([
-        ...mentions.memberPubkeys,
+      const existingMembers = new Set(
+        [...mentions.memberPubkeys].map(normalizePubkey),
+      );
+      const participants = new Set([
+        ...existingMembers,
         ...preparedParticipantPubkeys.map(normalizePubkey),
       ]);
       const errors: string[] = [];
       const pubkeys: string[] = [];
       for (const pubkey of uniqueNormalizedPubkeys(mentionPubkeys)) {
         const agent = managedAgentsByPubkey.get(pubkey);
-        if (!agent) {
-          continue;
-        }
+        if (!agent) continue;
         try {
-          if (participantPubkeys.has(pubkey)) {
-            if (isProviderBackedAgent(agent)) {
-              if (agent.status !== "deployed") {
-                await startManagedAgentForScope(agent.pubkey);
-              }
-            } else if (!isManagedAgentRunning(agent)) {
-              await startManagedAgentForScope(agent.pubkey);
+          const readyAgent = existingMembers.has(pubkey)
+            ? agent
+            : await applyReusableAgentAccessPolicy(
+                agent,
+                {},
+                personas.find((persona) => persona.id === agent.personaId),
+              );
+          if (participants.has(pubkey)) {
+            if (
+              (isProviderBackedAgent(readyAgent) &&
+                readyAgent.status !== "deployed") ||
+              (!isProviderBackedAgent(readyAgent) &&
+                !isManagedAgentRunning(readyAgent))
+            ) {
+              await startManagedAgentForScope(readyAgent.pubkey);
             }
           } else {
             await attachAgentMutation.mutateAsync({
               channelId: capturedChannelId,
-              agent,
+              agent: readyAgent,
               role: "bot",
             });
           }
           pubkeys.push(pubkey);
         } catch (error) {
           errors.push(
-            `${agent.name}: ${getErrorMessage(
-              error,
-              "Could not prepare agent.",
-            )}`,
+            `${agent.name}: ${getErrorMessage(error, "Could not prepare agent.")}`,
           );
         }
       }
-      return {
-        errors,
-        pubkeys: uniqueNormalizedPubkeys(pubkeys),
-      };
+      return { errors, pubkeys: uniqueNormalizedPubkeys(pubkeys) };
     },
     [
       attachAgentMutation,
       getManagedAgentsByPubkey,
+      getPersonas,
       mentions.memberPubkeys,
       startManagedAgentForScope,
     ],
