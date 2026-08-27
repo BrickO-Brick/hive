@@ -1,5 +1,73 @@
 use super::*;
 
+/// Per-request deadline for `POST /events`, scoped to event publication so the
+/// shared client can remain unbounded for long-running model and media work.
+const EVENT_SUBMIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Send one authenticated event request with a bounded header/body deadline.
+///
+/// Every production `POST /events` path funnels through this helper. Callers
+/// retain their existing status and response-body semantics; the request-level
+/// deadline follows the returned response through body consumption.
+pub(crate) async fn send_event_http_request(
+    http_client: &reqwest::Client,
+    url: &str,
+    auth_header: &str,
+    auth_tag: Option<&str>,
+    body_bytes: Vec<u8>,
+) -> Result<reqwest::Response, String> {
+    send_event_http_request_with_timeout(
+        http_client,
+        url,
+        auth_header,
+        auth_tag,
+        body_bytes,
+        EVENT_SUBMIT_TIMEOUT,
+    )
+    .await
+}
+
+async fn send_event_http_request_with_timeout(
+    http_client: &reqwest::Client,
+    url: &str,
+    auth_header: &str,
+    auth_tag: Option<&str>,
+    body_bytes: Vec<u8>,
+    timeout: std::time::Duration,
+) -> Result<reqwest::Response, String> {
+    let mut request = http_client
+        .post(url)
+        .header("Authorization", auth_header)
+        .header("Content-Type", "application/json")
+        .timeout(timeout);
+    if let Some(tag) = auth_tag {
+        request = request.header("x-auth-tag", tag);
+    }
+    request
+        .body(body_bytes)
+        .send()
+        .await
+        .map_err(|error| classify_request_error(&error))
+}
+
+#[cfg(test)]
+pub(super) async fn send_event_http_request_for_test(
+    http_client: &reqwest::Client,
+    url: &str,
+    body_bytes: Vec<u8>,
+    timeout: std::time::Duration,
+) -> Result<reqwest::Response, String> {
+    send_event_http_request_with_timeout(
+        http_client,
+        url,
+        "Nostr test-auth",
+        None,
+        body_bytes,
+        timeout,
+    )
+    .await
+}
+
 /// Response from `POST /events`.
 #[derive(Debug, Deserialize, serde::Serialize)]
 pub struct SubmitEventResponse {
@@ -28,15 +96,8 @@ pub async fn submit_signed_event_at_with_keys(
     crate::egress_guard::assert_no_key_backup_bytes(&body_bytes, "relay event submit")?;
     let auth_header = build_nip98_auth_header_for_keys(keys, &Method::POST, &url, &body_bytes)?;
 
-    let response = state
-        .http_client
-        .post(&url)
-        .header("Authorization", auth_header)
-        .header("Content-Type", "application/json")
-        .body(body_bytes)
-        .send()
-        .await
-        .map_err(|e| classify_request_error(&e))?;
+    let response =
+        send_event_http_request(&state.http_client, &url, &auth_header, None, body_bytes).await?;
 
     if !response.status().is_success() {
         return Err(relay_error_message(response).await);

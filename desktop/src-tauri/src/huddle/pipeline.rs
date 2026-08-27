@@ -709,15 +709,14 @@ pub(crate) fn spawn_transcription_task(
                 }
             };
 
-            let response = {
-                http_client
-                    .post(&url)
-                    .header("Authorization", auth_header)
-                    .header("Content-Type", "application/json")
-                    .body(body_bytes)
-                    .send()
-                    .await
-            };
+            let response = crate::relay::send_event_http_request(
+                &http_client,
+                &url,
+                &auth_header,
+                None,
+                body_bytes,
+            )
+            .await;
 
             match response {
                 Ok(resp) if resp.status().is_success() => {}

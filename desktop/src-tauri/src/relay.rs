@@ -530,19 +530,8 @@ pub async fn sync_managed_agent_profile(
     let url = format!("{}/events", relay_http_base_url(relay_url));
     let auth = build_nip98_auth_header_for_keys(agent_keys, &Method::POST, &url, &body_bytes)?;
 
-    let mut request = state
-        .http_client
-        .post(&url)
-        .header("Authorization", auth)
-        .header("Content-Type", "application/json");
-    if let Some(tag) = auth_tag {
-        request = request.header("x-auth-tag", tag);
-    }
-    let response = request
-        .body(body_bytes)
-        .send()
-        .await
-        .map_err(|e| classify_request_error(&e))?;
+    let response =
+        send_event_http_request(&state.http_client, &url, &auth, auth_tag, body_bytes).await?;
 
     if !response.status().is_success() {
         let msg = relay_error_message(response).await;
@@ -611,6 +600,7 @@ mod get;
 pub use get::get_relay_json;
 
 mod submit;
+pub(crate) use submit::send_event_http_request;
 pub use submit::{
     submit_event, submit_event_at_created_at, submit_event_at_with_keys,
     submit_event_with_keys_created_at, submit_signed_event_at_with_keys, SubmitEventResponse,
@@ -649,20 +639,9 @@ pub async fn submit_signed_event_with_keys(
     crate::egress_guard::assert_no_key_backup_bytes(&body_bytes, "signed event submit (keys)")?;
     let auth_header = build_nip98_auth_header_for_keys(keys, &Method::POST, &url, &body_bytes)?;
 
-    let mut request = state
-        .http_client
-        .post(&url)
-        .header("Authorization", auth_header)
-        .header("Content-Type", "application/json");
-    if let Some(tag) = auth_tag {
-        request = request.header("x-auth-tag", tag);
-    }
-
-    let response = request
-        .body(body_bytes)
-        .send()
-        .await
-        .map_err(|e| classify_request_error(&e))?;
+    let response =
+        send_event_http_request(&state.http_client, &url, &auth_header, auth_tag, body_bytes)
+            .await?;
 
     if !response.status().is_success() {
         return Err(relay_error_message(response).await);

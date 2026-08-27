@@ -3,7 +3,8 @@
 
 use super::{
     build_profile_event, classify_intercepted_response, effective_agent_relay_url,
-    extract_retry_in_hint, parse_command_response, relay_http_base_url, MALFORMED_RESPONSE_MESSAGE,
+    extract_retry_in_hint, parse_command_response, relay_http_base_url,
+    submit::send_event_http_request_for_test, MALFORMED_RESPONSE_MESSAGE,
 };
 use serde::Deserialize;
 
@@ -599,6 +600,75 @@ fn profile_event_without_auth_tag() {
     assert_eq!(auth_tags.len(), 0, "expected no auth tags");
 
     assert_eq!(event.kind, nostr::Kind::Metadata);
+}
+
+#[tokio::test]
+async fn stalled_event_submit_times_out_with_classified_error() {
+    use std::io::Read as _;
+    use std::time::Duration;
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = std::thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf);
+            std::thread::sleep(Duration::from_secs(2));
+        }
+    });
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        send_event_http_request_for_test(
+            &reqwest::Client::new(),
+            &format!("http://{addr}/events"),
+            b"{}".to_vec(),
+            Duration::from_millis(200),
+        ),
+    )
+    .await
+    .expect("the event submit helper must honor its per-request timeout and resolve within 5s");
+
+    assert_eq!(
+        result.expect_err("a stalled event submit must fail"),
+        "relay unreachable: request timed out"
+    );
+    let _ = handle.join();
+}
+
+#[tokio::test]
+async fn event_submit_timeout_covers_response_body() {
+    use std::io::{Read as _, Write as _};
+    use std::time::Duration;
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = std::thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf);
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 64\r\n\r\n",
+            );
+            let _ = stream.flush();
+            std::thread::sleep(Duration::from_secs(2));
+        }
+    });
+
+    let response = send_event_http_request_for_test(
+        &reqwest::Client::new(),
+        &format!("http://{addr}/events"),
+        b"{}".to_vec(),
+        Duration::from_millis(200),
+    )
+    .await
+    .expect("response headers should arrive before the request deadline");
+    let err = super::parse_json_response::<serde_json::Value>(response)
+        .await
+        .expect_err("the stalled response body must time out");
+
+    assert_eq!(err, "relay unreachable: request timed out");
+    let _ = handle.join();
 }
 
 #[test]

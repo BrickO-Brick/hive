@@ -914,19 +914,14 @@ pub(crate) async fn submit_engram_event(
     // wait produces a stale `created_at` that the relay will reject.
     crate::relay_admission::wait_for_rate_limit().await;
     let auth = build_nip98_auth_header_for_keys(agent_keys, &Method::POST, url, event_json)?;
-    let mut request = state
-        .http_client
-        .post(url)
-        .header("Authorization", auth)
-        .header("Content-Type", "application/json");
-    if let Some(tag) = auth_tag {
-        request = request.header("x-auth-tag", tag);
-    }
-    let response = request
-        .body(event_json.to_vec())
-        .send()
-        .await
-        .map_err(|e| crate::relay::classify_request_error(&e))?;
+    let response = crate::relay::send_event_http_request(
+        &state.http_client,
+        url,
+        &auth,
+        auth_tag,
+        event_json.to_vec(),
+    )
+    .await?;
 
     if !response.status().is_success() {
         let msg = crate::relay::relay_error_message(response).await;
