@@ -183,11 +183,23 @@ export function BestieSetupDialog({
     setCapabilities((current) => ({ ...current, [id]: value }));
   }
 
+  /**
+   * Selecting an existing agent carries its real identity into the flow: its
+   * name and avatar are shown as already-decided, and its own instructions seed
+   * the instructions field so the role is layered onto what it already does
+   * rather than silently replacing it.
+   */
+  function selectExistingAgent(agent: ManagedAgent) {
+    setSelectedPubkey(agent.pubkey);
+    setAdditionalInstructions(agent.systemPrompt?.trim() ?? "");
+  }
+
   function back() {
-    if (step === "existing" || step === "identity") setStep("source");
-    else if (step === "capabilities") {
-      setStep(source === "existing" ? "existing" : "identity");
-    } else if (step === "review") setStep("capabilities");
+    if (step === "existing") setStep("source");
+    else if (step === "identity") {
+      setStep(source === "existing" ? "existing" : "source");
+    } else if (step === "capabilities") setStep("identity");
+    else if (step === "review") setStep("capabilities");
   }
 
   async function submit() {
@@ -218,7 +230,8 @@ export function BestieSetupDialog({
   const title = {
     source: "Set up your bestie",
     existing: "Choose an agent",
-    identity: "Create your bestie",
+    identity:
+      source === "existing" ? `Set up ${displayName}` : "Create your bestie",
     capabilities: isManaging
       ? `What ${displayName} can do`
       : "What your bestie can do",
@@ -229,7 +242,10 @@ export function BestieSetupDialog({
     source:
       "Create a new agent for the role or give it to one you already use.",
     existing: "Its name, personality, and existing work stay the same.",
-    identity: "You can change any of this later.",
+    identity:
+      source === "existing"
+        ? "It keeps everything it already has. You can add to it here."
+        : "You can change any of this later.",
     capabilities:
       "Your bestie always keeps up with your work and explains itself. Choose what else it can do.",
     review: "One last look before you save.",
@@ -238,10 +254,18 @@ export function BestieSetupDialog({
   const canContinue = {
     source: false,
     existing: Boolean(selectedAgent),
-    identity: Boolean(newName.trim()),
+    // An existing agent already has a name; only the create path needs one.
+    identity:
+      source === "existing" ? Boolean(selectedAgent) : Boolean(newName.trim()),
     capabilities: true,
     review: true,
   }[step];
+
+  function continueFrom() {
+    if (step === "existing") setStep("identity");
+    else if (step === "identity") setStep("capabilities");
+    else if (step === "capabilities") setStep("review");
+  }
 
   const footer = (
     <div className="flex w-full items-center justify-between gap-3">
@@ -269,12 +293,7 @@ export function BestieSetupDialog({
               : `Make ${agentName} your bestie`}
         </Button>
       ) : (
-        <Button
-          disabled={!canContinue}
-          onClick={() =>
-            setStep(step === "capabilities" ? "review" : "capabilities")
-          }
-        >
+        <Button disabled={!canContinue} onClick={continueFrom}>
           Continue
         </Button>
       )}
@@ -321,6 +340,7 @@ export function BestieSetupDialog({
                 setSource("existing");
                 setStep("existing");
               }}
+              data-testid="bestie-source-existing"
               type="button"
             >
               <span className="flex size-9 items-center justify-center rounded-lg bg-muted text-muted-foreground">
@@ -356,7 +376,7 @@ export function BestieSetupDialog({
                 <button
                   className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors hover:bg-muted/60 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
                   key={agent.pubkey}
-                  onClick={() => setSelectedPubkey(agent.pubkey)}
+                  onClick={() => selectExistingAgent(agent)}
                   type="button"
                 >
                   <ProfileAvatar
@@ -388,28 +408,46 @@ export function BestieSetupDialog({
 
         {step === "identity" ? (
           <div className="space-y-5">
-            <div className="space-y-1.5">
-              <FieldLabel htmlFor="bestie-name">Agent name</FieldLabel>
-              <div
-                className={cn(
-                  "flex min-h-11 items-center px-3",
-                  PERSONA_FIELD_SHELL_CLASS,
-                )}
-              >
-                <Input
-                  autoCorrect="off"
-                  autoFocus
-                  className={cn(
-                    "h-8 px-0 py-0 leading-6",
-                    PERSONA_FIELD_CONTROL_CLASS,
-                  )}
-                  id="bestie-name"
-                  onChange={(event) => setNewName(event.target.value)}
-                  placeholder="Name your agent"
-                  value={newName}
+            {selectedAgent ? (
+              <div className="flex items-center gap-3 rounded-xl bg-muted/40 p-4">
+                <ProfileAvatar
+                  avatarUrl={selectedAgent.avatarUrl}
+                  className="size-12"
+                  label={selectedAgent.name}
                 />
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium text-foreground">
+                    {selectedAgent.name}
+                  </p>
+                  <p className="text-sm text-muted-foreground">
+                    Keeps its name and avatar
+                  </p>
+                </div>
               </div>
-            </div>
+            ) : (
+              <div className="space-y-1.5">
+                <FieldLabel htmlFor="bestie-name">Agent name</FieldLabel>
+                <div
+                  className={cn(
+                    "flex min-h-11 items-center px-3",
+                    PERSONA_FIELD_SHELL_CLASS,
+                  )}
+                >
+                  <Input
+                    autoCorrect="off"
+                    autoFocus
+                    className={cn(
+                      "h-8 px-0 py-0 leading-6",
+                      PERSONA_FIELD_CONTROL_CLASS,
+                    )}
+                    id="bestie-name"
+                    onChange={(event) => setNewName(event.target.value)}
+                    placeholder="Name your agent"
+                    value={newName}
+                  />
+                </div>
+              </div>
+            )}
 
             <div className="space-y-1.5">
               <FieldLabel htmlFor="bestie-personality">Personality</FieldLabel>
@@ -425,17 +463,25 @@ export function BestieSetupDialog({
                   value={personality}
                 />
               </div>
+              {selectedAgent ? (
+                <p className="text-sm leading-5 text-muted-foreground">
+                  Optional. Add this only if you want to change how{" "}
+                  {selectedAgent.name} talks to you.
+                </p>
+              ) : null}
             </div>
 
-            <AgentHarnessField
-              disabled={runtimesLoading}
-              onValueChange={(value) =>
-                setRuntime(value === NO_RUNTIME_DROPDOWN_VALUE ? "" : value)
-              }
-              options={runtimeDropdownOptions}
-              placeholder={blankRuntimeOptionLabel}
-              value={runtime.trim() || NO_RUNTIME_DROPDOWN_VALUE}
-            />
+            {selectedAgent ? null : (
+              <AgentHarnessField
+                disabled={runtimesLoading}
+                onValueChange={(value) =>
+                  setRuntime(value === NO_RUNTIME_DROPDOWN_VALUE ? "" : value)
+                }
+                options={runtimeDropdownOptions}
+                placeholder={blankRuntimeOptionLabel}
+                value={runtime.trim() || NO_RUNTIME_DROPDOWN_VALUE}
+              />
+            )}
           </div>
         ) : null}
 
@@ -479,8 +525,9 @@ export function BestieSetupDialog({
                 Agent instructions
               </FieldLabel>
               <p className="text-sm leading-5 text-muted-foreground">
-                How it should handle your attention. These can’t widen what you
-                turned off.
+                {source === "existing"
+                  ? "Its existing instructions, plus anything you want to add for the role. These can’t widen what you turned off."
+                  : "How it should handle your attention. These can’t widen what you turned off."}
               </p>
               <div className={PERSONA_FIELD_SHELL_CLASS}>
                 <Textarea
