@@ -326,13 +326,15 @@ test("creates a collection and adds supported reference types", async ({
   ).toBeVisible();
   await page.keyboard.press("Escape");
 
-  const calendarDocument = page.getByTestId(
-    `collection-derived-${encodeURIComponent(calendarDocumentUrl)}`,
+  const calendarMeeting = page.getByTestId(
+    `collection-derived-${encodeURIComponent(calendarUrl)}`,
   );
-  await expect(calendarDocument.getByLabel(/^Derived from /)).toBeVisible();
-  await expect(calendarDocument).toContainText(mockDesignDocumentTitle);
-  await calendarDocument
-    .getByRole("button", { name: `Actions for ${mockDesignDocumentTitle}` })
+  await expect(calendarMeeting.getByLabel(/^Derived from /)).toBeVisible();
+  await expect(calendarMeeting).toContainText("Planning event");
+  await expect(calendarMeeting).toContainText(mockDesignDocumentTitle);
+  await expect(calendarMeeting).toContainText("1 edit · 1 comment");
+  await calendarMeeting
+    .getByRole("button", { name: "Actions for Planning event" })
     .click();
   await expect(
     page.getByRole("menuitem", { name: "Remove source from Collection" }),
@@ -352,23 +354,13 @@ test("creates a collection and adds supported reference types", async ({
     page.locator('[data-testid^="collection-github-pr-warning-"]'),
   ).toContainText("GitHub PR resolution failed");
 
-  await calendarDocument
-    .getByRole("button", {
-      name: `Open derived link ${mockDesignDocumentTitle}`,
-    })
+  await calendarMeeting
+    .getByRole("button", { name: mockDesignDocumentTitle })
     .click();
   await page.getByRole("tab", { name: "Activity" }).click();
-  const editActivity = page.getByText(
-    `Mock Editor edited ${mockDesignDocumentTitle}`,
-    { exact: false },
-  );
-  await expect(editActivity).toBeVisible();
-  await expect(editActivity).toContainText("Aug 26, 2026");
-  await expect(
-    page.getByText(`Mock Commenter commented on ${mockDesignDocumentTitle}`, {
-      exact: false,
-    }),
-  ).toBeVisible();
+  await expect(calendarMeeting).toHaveCount(1);
+  await expect(calendarMeeting).toContainText("1 edit · 1 comment");
+  await expect(calendarMeeting).toContainText("Aug 26, 2026");
   await page.getByRole("tab", { name: "Overview" }).click();
   const mockEditor = peopleSection.getByRole("button", {
     name: /Mock Editor/,
@@ -377,21 +369,15 @@ test("creates a collection and adds supported reference types", async ({
   await mockEditor.click();
   await expect(mockEditor).toHaveAttribute("aria-pressed", "true");
   await page.getByRole("tab", { name: "Activity" }).click();
-  await expect(page.getByTestId("collection-activity")).toContainText(
-    `Mock Editor edited ${mockDesignDocumentTitle}`,
-  );
-  await expect(page.getByTestId("collection-activity")).not.toContainText(
-    `Mock Commenter commented on ${mockDesignDocumentTitle}`,
-  );
+  await expect(calendarMeeting).toBeVisible();
+  await expect(calendarMeeting).toContainText(mockDesignDocumentTitle);
   await page.getByRole("tab", { name: "Overview" }).click();
   await expect(page.getByTestId("collection-pull-requests")).toContainText(
     "Live collections activity feed",
   );
   await mockEditor.click();
   await expect(mockEditor).toHaveAttribute("aria-pressed", "false");
-  await expect(
-    page.getByText("From Planning event → Mock Collections Design Doc").first(),
-  ).toBeVisible();
+  await expect(calendarMeeting).toContainText("Planning event");
   const commands = await page.evaluate(
     () => window.__BUZZ_E2E_COMMAND_PAYLOADS__ ?? [],
   );
@@ -476,13 +462,13 @@ test("creates a collection and adds supported reference types", async ({
     expect(dialog.message()).toContain("Related discovered activity");
     return dialog.accept();
   });
-  await calendarDocument
-    .getByRole("button", { name: `Actions for ${mockDesignDocumentTitle}` })
+  await calendarMeeting
+    .getByRole("button", { name: "Actions for Planning event" })
     .click();
   await page
     .getByRole("menuitem", { name: "Remove source from Collection" })
     .click();
-  await expect(calendarDocument).toHaveCount(0);
+  await expect(calendarMeeting).toHaveCount(0);
 
   const removalCommands = await page.evaluate(
     () => window.__BUZZ_E2E_COMMAND_PAYLOADS__ ?? [],

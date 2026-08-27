@@ -41,6 +41,7 @@ export function DerivedCollectionActivityRow({
   onRemoveSource: () => Promise<void>;
 }) {
   const isMessage = activity.activityType === "channel-message";
+  const isMeeting = activity.activityType === "calendar-meeting";
   const isDerived = !isMessage || activity.derivedFromSource === true;
   const isDocumentActivity =
     activity.activityType === "document-edit" ||
@@ -75,7 +76,9 @@ export function DerivedCollectionActivityRow({
         ) : null}
         <span className="truncate text-sm font-medium">{activity.label}</span>
       </div>
-      {isDocumentActivity ? (
+      {isMeeting ? (
+        <MeetingActivitySummary activity={activity} timestamp={timestamp} />
+      ) : isDocumentActivity ? (
         <div className="mt-1 text-sm">
           {activity.actorLabel}{" "}
           {activity.activityType === "document-edit"
@@ -111,12 +114,12 @@ export function DerivedCollectionActivityRow({
       ) : timestamp ? (
         <div className="mt-1 text-xs text-muted-foreground">{timestamp}</div>
       ) : null}
-      {activity.provenanceLabel ? (
+      {activity.provenanceLabel && !isMeeting ? (
         <div className="mt-1 text-xs text-muted-foreground">
           From {activity.provenanceLabel}
         </div>
       ) : null}
-      {activity.url ? (
+      {activity.url && !isMeeting ? (
         <div className="mt-1 truncate text-xs text-muted-foreground">
           {activity.url}
         </div>
@@ -175,21 +178,74 @@ function ActivityTypeGlyph({
   activity: DerivedCollectionActivity;
 }) {
   const Icon =
-    activity.activityType === "github-pr" ||
-    activity.activityType === "github-pr-activity"
-      ? GitPullRequest
-      : activity.activityType === "calendar-document"
-        ? CalendarDays
-        : activity.activityType === "channel-message"
-          ? activity.kind === "thread"
-            ? MessagesSquare
-            : MessageSquare
-          : FileText;
+    activity.activityType === "calendar-meeting"
+      ? CalendarDays
+      : activity.activityType === "github-pr" ||
+          activity.activityType === "github-pr-activity"
+        ? GitPullRequest
+        : activity.activityType === "calendar-document"
+          ? CalendarDays
+          : activity.activityType === "channel-message"
+            ? activity.kind === "thread"
+              ? MessagesSquare
+              : MessageSquare
+            : FileText;
   return (
     <Icon
       aria-label={activity.kind}
       className="h-4 w-4 shrink-0 text-muted-foreground"
     />
+  );
+}
+
+function MeetingActivitySummary({
+  activity,
+  timestamp,
+}: {
+  activity: DerivedCollectionActivity;
+  timestamp: string | null;
+}) {
+  const documents = activity.meetingDocuments ?? [];
+  const editCount = documents.reduce(
+    (total, document) => total + document.editCount,
+    0,
+  );
+  const commentCount = documents.reduce(
+    (total, document) => total + document.commentCount,
+    0,
+  );
+  const updates = [
+    editCount > 0 ? `${editCount} ${editCount === 1 ? "edit" : "edits"}` : null,
+    commentCount > 0
+      ? `${commentCount} ${commentCount === 1 ? "comment" : "comments"}`
+      : null,
+  ].filter(Boolean);
+
+  return (
+    <div className="mt-2 space-y-2">
+      <div className="text-sm text-muted-foreground">
+        {updates.length > 0 ? updates.join(" · ") : "Attached documents"}
+        {timestamp ? ` · ${timestamp}` : null}
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {documents.map((document) => (
+          <Button
+            className="h-7 max-w-full gap-1.5 px-2 text-xs"
+            key={document.url}
+            onClick={() => {
+              void openUrl(document.url).catch(() =>
+                toast.error("Failed to open document"),
+              );
+            }}
+            size="sm"
+            variant="outline"
+          >
+            <FileText className="h-3.5 w-3.5 shrink-0" />
+            <span className="truncate">{document.label}</span>
+          </Button>
+        ))}
+      </div>
+    </div>
   );
 }
 

@@ -125,7 +125,9 @@ export function CollectionDetailScreen({
   );
   const filteredActivity = selectedPerson
     ? projectedActivity.filter(
-        (activity) => activity.actorIdentity === selectedPerson,
+        (activity) =>
+          activity.actorIdentity === selectedPerson ||
+          activity.actorIdentities?.includes(selectedPerson),
       )
     : projectedActivity;
   const sourceGroups = [

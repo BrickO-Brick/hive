@@ -75,6 +75,7 @@ export function deduplicateDerivedCollectionWarnings(
 
 export type DerivedCollectionActivity = DerivedCollectionLink & {
   activityType:
+    | "calendar-meeting"
     | "calendar-document"
     | "channel-message"
     | "document-comment"
@@ -84,6 +85,7 @@ export type DerivedCollectionActivity = DerivedCollectionLink & {
   actorLabel?: string;
   actorAvatarUrl?: string;
   actorIdentity?: string;
+  actorIdentities?: string[];
   authorPubkey?: string;
   channelId?: string;
   createdAt: number | null;
@@ -95,6 +97,12 @@ export type DerivedCollectionActivity = DerivedCollectionLink & {
   sourceUrl?: string;
   stateLabel?: string;
   threadRootId?: string | null;
+  meetingDocuments?: Array<{
+    commentCount: number;
+    editCount: number;
+    label: string;
+    url: string;
+  }>;
 };
 
 const WEB_URL_PATTERN = /https?:\/\/[^\s<>"']+/giu;
@@ -357,6 +365,92 @@ export function deduplicateDerivedCollectionActivity(
   );
 }
 
+/** Present one Calendar source as one meeting update with its attached docs. */
+export function groupCalendarMeetingActivity(
+  activity: readonly DerivedCollectionActivity[],
+): DerivedCollectionActivity[] {
+  const calendarItems = new Map<string, DerivedCollectionActivity[]>();
+
+  for (const item of activity) {
+    const isCalendarItem =
+      item.activityType === "calendar-document" ||
+      ((item.activityType === "document-edit" ||
+        item.activityType === "document-comment") &&
+        Boolean(item.sourceUrl && isGoogleCalendarEventUrl(item.sourceUrl)));
+    if (!isCalendarItem) {
+      continue;
+    }
+    const items = calendarItems.get(item.sourceMemberId) ?? [];
+    items.push(item);
+    calendarItems.set(item.sourceMemberId, items);
+  }
+
+  const meetings = new Map<string, DerivedCollectionActivity>(
+    [...calendarItems.entries()].map(
+      ([sourceMemberId, items]): [string, DerivedCollectionActivity] => {
+        const documents = new Map<
+          string,
+          {
+            commentCount: number;
+            editCount: number;
+            label: string;
+            url: string;
+          }
+        >();
+        const actorIdentities = new Set<string>();
+        let newestActivityAt: number | null = null;
+        for (const item of items) {
+          const identity = item.url.toLocaleLowerCase();
+          const document = documents.get(identity) ?? {
+            commentCount: 0,
+            editCount: 0,
+            label: item.label,
+            url: item.url,
+          };
+          if (item.activityType === "document-comment")
+            document.commentCount += 1;
+          if (item.activityType === "document-edit") document.editCount += 1;
+          documents.set(identity, document);
+          if (item.actorIdentity) actorIdentities.add(item.actorIdentity);
+          if (
+            item.createdAt !== null &&
+            (newestActivityAt === null || item.createdAt > newestActivityAt)
+          ) {
+            newestActivityAt = item.createdAt;
+          }
+        }
+        const first = items[0];
+        const sourceUrl = first?.sourceUrl;
+        const provenanceLabel = first?.provenanceLabel?.split(" → ")[0];
+        return [
+          sourceMemberId,
+          {
+            activityType: "calendar-meeting" as const,
+            actorIdentities: [...actorIdentities],
+            createdAt: newestActivityAt,
+            kind: "calendar meeting",
+            label: provenanceLabel ?? "Calendar meeting",
+            meetingDocuments: [...documents.values()],
+            provenanceLabel,
+            sourceMemberId: first?.sourceMemberId ?? "",
+            sourceUrl,
+            url: sourceUrl ?? "",
+          },
+        ];
+      },
+    ),
+  );
+
+  const emittedMeetings = new Set<string>();
+  return activity.flatMap((item) => {
+    const meeting = meetings.get(item.sourceMemberId);
+    if (!meeting) return [item];
+    if (emittedMeetings.has(item.sourceMemberId)) return [];
+    emittedMeetings.add(item.sourceMemberId);
+    return [meeting];
+  });
+}
+
 /** Apply sourced homepage projection without hiding concrete artifact activity. */
 export function projectCollectionActivity(
   activity: readonly DerivedCollectionActivity[],
@@ -423,9 +517,10 @@ export function projectCollectionActivity(
       for (const item of items) visibleMessages.add(item);
     }
   }
-  return activity.filter(
+  const projected = activity.filter(
     (item) =>
       item.activityType !== "github-pr" &&
       (item.activityType !== "channel-message" || visibleMessages.has(item)),
   );
+  return groupCalendarMeetingActivity(projected);
 }

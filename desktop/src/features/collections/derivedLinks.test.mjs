@@ -12,6 +12,7 @@ import {
   deduplicateDerivedCollectionWarnings,
   extractGitHubPullRequestLinks,
   githubPullRequestToDerived,
+  groupCalendarMeetingActivity,
   projectCollectionActivity,
 } from "./derivedLinks.ts";
 
@@ -414,6 +415,87 @@ test("maps sourced document edits and comments into distinct chronological activ
       ],
     ],
   );
+});
+
+test("groups a calendar source into one meeting activity with attached documents", () => {
+  const calendarUrl = "https://calendar.google.com/calendar/event?eid=planning";
+  const firstDocument = "https://docs.google.com/document/d/design";
+  const secondDocument = "https://docs.google.com/document/d/notes";
+  const base = {
+    sourceMemberId: "calendar-member",
+    sourceUrl: calendarUrl,
+  };
+  const grouped = groupCalendarMeetingActivity([
+    {
+      ...base,
+      activityType: "calendar-document",
+      createdAt: null,
+      kind: "document",
+      label: "Design",
+      provenanceLabel: "Planning meeting → attached document",
+      url: firstDocument,
+    },
+    {
+      ...base,
+      activityType: "calendar-document",
+      createdAt: null,
+      kind: "document",
+      label: "Notes",
+      provenanceLabel: "Planning meeting → attached document",
+      url: secondDocument,
+    },
+    {
+      ...base,
+      activityType: "document-edit",
+      actorIdentity: "google:editor@example.com",
+      createdAt: 10,
+      kind: "document edit",
+      label: "Design",
+      provenanceLabel: "Planning meeting → Design",
+      url: firstDocument,
+    },
+    {
+      ...base,
+      activityType: "document-comment",
+      actorIdentity: "google:commenter@example.com",
+      createdAt: 20,
+      kind: "document comment",
+      label: "Design",
+      provenanceLabel: "Planning meeting → Design",
+      url: firstDocument,
+    },
+  ]);
+
+  assert.deepEqual(grouped, [
+    {
+      activityType: "calendar-meeting",
+      actorIdentities: [
+        "google:editor@example.com",
+        "google:commenter@example.com",
+      ],
+      createdAt: 20,
+      kind: "calendar meeting",
+      label: "Planning meeting",
+      meetingDocuments: [
+        {
+          commentCount: 1,
+          editCount: 1,
+          label: "Design",
+          url: firstDocument,
+        },
+        {
+          commentCount: 0,
+          editCount: 0,
+          label: "Notes",
+          url: secondDocument,
+        },
+      ],
+      provenanceLabel: "Planning meeting",
+      sourceMemberId: "calendar-member",
+      sourceUrl: calendarUrl,
+      url: calendarUrl,
+    },
+  ]);
 });
 
 test("extracts canonical GitHub pull-request URLs from channel messages", () => {
