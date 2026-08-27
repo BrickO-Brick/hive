@@ -15,9 +15,21 @@ import {
   ONBOARDING_LANDING_CTA_CLASS,
   ONBOARDING_PRIMARY_CTA_CLASS,
   ONBOARDING_SECONDARY_CTA_CLASS,
-  OnboardingChrome,
 } from "./OnboardingChrome";
 import { OnboardingFooter, OnboardingFooterProvider } from "./OnboardingFooter";
+import {
+  BackupPasswordPreview,
+  CommunityChoicePreview,
+  CommunityConnectingPreview,
+  CommunityEntryPreview,
+  CommunityHomePreview,
+  CommunityProfilePreview,
+  type CommunityPreviewRoute,
+  DefaultConfigPreview,
+  StarterTeamPreview,
+  WelcomeChannelPreview,
+} from "./OnboardingPreviewJourney";
+import { OnboardingPreviewStep } from "./OnboardingPreviewShell";
 import { OnboardingSlideTransition } from "./OnboardingSlideTransition";
 import { SetupStepPreview } from "./SetupStepPreview";
 
@@ -28,7 +40,17 @@ type PreviewPage =
   | "sign-in"
   | "sign-in-key"
   | "forgot-password"
-  | "setup";
+  | "backup-options"
+  | "backup-password"
+  | "setup"
+  | "config"
+  | "community-choice"
+  | "community-entry"
+  | "community-connecting"
+  | "community-profile"
+  | "starter-team"
+  | "welcome-channel"
+  | "community-home";
 
 const EMAIL_SIGNUP_POLICY: JoinPolicy = {
   ageAttestationRequired: true,
@@ -117,33 +139,6 @@ function Landing({ onNavigate }: { onNavigate: (page: PreviewPage) => void }) {
               </Button>
             </OnboardingFooter>
           </OnboardingSlideTransition>
-        </div>
-      </OnboardingFooterProvider>
-    </div>
-  );
-}
-
-function PreviewStep({
-  children,
-  current = 2,
-  onBack,
-  testId,
-}: {
-  children: React.ReactNode;
-  current?: number;
-  onBack: () => void;
-  testId: string;
-}) {
-  return (
-    <div
-      className="buzz-onboarding-neutral-theme buzz-startup-shell flex max-h-dvh items-start justify-center overflow-x-hidden overflow-y-auto px-4 pb-28 pt-[106px] text-foreground"
-      data-testid={testId}
-    >
-      <StartupWindowDragRegion />
-      <OnboardingChrome current={current} />
-      <OnboardingFooterProvider backAction={{ onClick: onBack }}>
-        <div className="buzz-onboarding-step-frame relative flex w-full max-w-[1040px] flex-col items-center text-center">
-          {children}
         </div>
       </OnboardingFooterProvider>
     </div>
@@ -446,12 +441,18 @@ function EmailSignup({
   const [confirmPassword, setConfirmPassword] = React.useState("");
   const [ageConfirmed, setAgeConfirmed] = React.useState(false);
   const [agreementConfirmed, setAgreementConfirmed] = React.useState(false);
-  // This workshop never creates an account, so it deliberately permits the
-  // next preview step without collecting real credentials or consent.
-  const canContinue = true;
+  const [openPolicyDocument, setOpenPolicyDocument] = React.useState<
+    "terms" | "privacy" | null
+  >(null);
+  const canContinue =
+    email.trim().includes("@") &&
+    password.length > 0 &&
+    confirmPassword === password &&
+    ageConfirmed &&
+    agreementConfirmed;
 
   return (
-    <PreviewStep onBack={onBack} testId="onboarding-preview-email">
+    <OnboardingPreviewStep onBack={onBack} testId="onboarding-preview-email">
       <OnboardingSlideTransition
         className="flex min-h-0 w-full max-w-[500px] flex-col items-center"
         transitionKey="preview-email"
@@ -487,7 +488,7 @@ function EmailSignup({
             agreementConfirmed={agreementConfirmed}
             onAgeConfirmedChange={setAgeConfirmed}
             onAgreementConfirmedChange={setAgreementConfirmed}
-            onOpenDocument={() => undefined}
+            onOpenDocument={setOpenPolicyDocument}
             policy={EMAIL_SIGNUP_POLICY}
             relayWsUrl="wss://preview.invalid"
             textTone="foreground"
@@ -504,8 +505,35 @@ function EmailSignup({
             </Button>
           </OnboardingFooter>
         </form>
+        {openPolicyDocument ? (
+          <div
+            aria-modal="true"
+            className="fixed inset-0 z-[110] flex items-center justify-center bg-black/30 p-6 backdrop-blur-sm"
+            role="dialog"
+          >
+            <div className="w-full max-w-lg rounded-2xl border border-foreground/15 bg-background p-6 text-left shadow-xl">
+              <h2 className="text-xl font-medium text-foreground">
+                {openPolicyDocument === "terms"
+                  ? "Terms of Service"
+                  : "Privacy Policy"}
+              </h2>
+              <p className="mt-3 text-sm leading-6 text-foreground/80">
+                {openPolicyDocument === "terms"
+                  ? "Review the terms that apply when you use Buzz."
+                  : "Review how information is handled when you use Buzz."}
+              </p>
+              <Button
+                className="mt-5"
+                onClick={() => setOpenPolicyDocument(null)}
+                type="button"
+              >
+                Close
+              </Button>
+            </div>
+          </div>
+        ) : null}
       </OnboardingSlideTransition>
-    </PreviewStep>
+    </OnboardingPreviewStep>
   );
 }
 
@@ -517,9 +545,13 @@ function AgentHarnessStep({
   onNext: () => void;
 }) {
   return (
-    <PreviewStep current={3} onBack={onBack} testId="onboarding-preview-setup">
+    <OnboardingPreviewStep
+      current={3}
+      onBack={onBack}
+      testId="onboarding-preview-setup"
+    >
       <SetupStepPreview onBack={onBack} onNext={onNext} />
-    </PreviewStep>
+    </OnboardingPreviewStep>
   );
 }
 
@@ -542,7 +574,7 @@ function EmailSignIn({
   const canContinue = email.trim().length > 0 && password.length > 0;
 
   return (
-    <PreviewStep onBack={onBack} testId="onboarding-preview-sign-in">
+    <OnboardingPreviewStep onBack={onBack} testId="onboarding-preview-sign-in">
       <OnboardingSlideTransition
         className="flex min-h-0 w-full max-w-[500px] flex-col items-center"
         transitionKey="preview-sign-in"
@@ -607,7 +639,7 @@ function EmailSignIn({
           </div>
         </form>
       </OnboardingSlideTransition>
-    </PreviewStep>
+    </OnboardingPreviewStep>
   );
 }
 
@@ -623,7 +655,7 @@ function PasswordReset({
 
   if (submitted) {
     return (
-      <PreviewStep
+      <OnboardingPreviewStep
         onBack={onBack}
         testId="onboarding-preview-password-reset-sent"
       >
@@ -638,12 +670,15 @@ function PasswordReset({
             Use the link we sent to {email.trim()} to reset your password.
           </p>
         </OnboardingSlideTransition>
-      </PreviewStep>
+      </OnboardingPreviewStep>
     );
   }
 
   return (
-    <PreviewStep onBack={onBack} testId="onboarding-preview-password-reset">
+    <OnboardingPreviewStep
+      onBack={onBack}
+      testId="onboarding-preview-password-reset"
+    >
       <OnboardingSlideTransition
         className="flex min-h-0 w-full max-w-[500px] flex-col items-center"
         transitionKey="preview-password-reset"
@@ -689,7 +724,7 @@ function PasswordReset({
           </OnboardingFooter>
         </form>
       </OnboardingSlideTransition>
-    </PreviewStep>
+    </OnboardingPreviewStep>
   );
 }
 
@@ -701,7 +736,10 @@ function KeySignIn({
   onContinue: () => void;
 }) {
   return (
-    <PreviewStep onBack={onBack} testId="onboarding-preview-sign-in-key">
+    <OnboardingPreviewStep
+      onBack={onBack}
+      testId="onboarding-preview-sign-in-key"
+    >
       <OnboardingSlideTransition
         className="flex min-h-[calc(100dvh-13.25rem)] w-full max-w-[560px] flex-col items-center justify-center"
         transitionKey="preview-sign-in-key"
@@ -723,7 +761,7 @@ function KeySignIn({
           />
         </div>
       </OnboardingSlideTransition>
-    </PreviewStep>
+    </OnboardingPreviewStep>
   );
 }
 
@@ -735,6 +773,11 @@ export function OnboardingPreviewApp() {
   const [passwordResetEmail, setPasswordResetEmail] = React.useState("");
   const [setupBackPage, setSetupBackPage] =
     React.useState<PreviewPage>("landing");
+  const [communityRoute, setCommunityRoute] =
+    React.useState<CommunityPreviewRoute>("join");
+  const [communityName, setCommunityName] = React.useState("Block Community");
+  const [displayName, setDisplayName] = React.useState("");
+  const [hasAvatar, setHasAvatar] = React.useState(false);
 
   React.useEffect(() => {
     if (page === "landing") {
@@ -750,6 +793,10 @@ export function OnboardingPreviewApp() {
     setRun((current) => current + 1);
     setSignInEmail("");
     setSignupPassword("");
+    setCommunityRoute("join");
+    setCommunityName("Block Community");
+    setDisplayName("");
+    setHasAvatar(false);
   }, []);
 
   let content: React.ReactNode;
@@ -769,7 +816,7 @@ export function OnboardingPreviewApp() {
     );
   } else if (page === "identity-key") {
     content = (
-      <PreviewStep
+      <OnboardingPreviewStep
         onBack={() => setPage("landing")}
         testId="onboarding-preview-identity-key"
       >
@@ -779,13 +826,37 @@ export function OnboardingPreviewApp() {
             setSetupBackPage("identity-key");
             setPage("setup");
           }}
-          onOpenPasswordBackup={() => undefined}
-          onShowOptions={() => undefined}
+          onOpenPasswordBackup={() => setPage("backup-password")}
+          onShowOptions={() => setPage("backup-options")}
           optionsExpanded={false}
           previewMode
           returningFromSecurity={false}
         />
-      </PreviewStep>
+      </OnboardingPreviewStep>
+    );
+  } else if (page === "backup-options") {
+    content = (
+      <OnboardingPreviewStep
+        onBack={() => setPage("identity-key")}
+        testId="onboarding-preview-backup-options"
+      >
+        <BackupStep
+          direction="forward"
+          onNext={() => setPage("setup")}
+          onOpenPasswordBackup={() => setPage("backup-password")}
+          onShowOptions={() => setPage("backup-options")}
+          optionsExpanded
+          previewMode
+          returningFromSecurity={false}
+        />
+      </OnboardingPreviewStep>
+    );
+  } else if (page === "backup-password") {
+    content = (
+      <BackupPasswordPreview
+        onBack={() => setPage("backup-options")}
+        onDone={() => setPage("backup-options")}
+      />
     );
   } else if (page === "sign-in") {
     content = (
@@ -821,11 +892,80 @@ export function OnboardingPreviewApp() {
         }}
       />
     );
-  } else {
+  } else if (page === "setup") {
     content = (
       <AgentHarnessStep
         onBack={() => setPage(setupBackPage)}
-        onNext={() => undefined}
+        onNext={() => setPage("config")}
+      />
+    );
+  } else if (page === "config") {
+    content = (
+      <DefaultConfigPreview
+        onBack={() => setPage("setup")}
+        onNext={() => setPage("community-choice")}
+      />
+    );
+  } else if (page === "community-choice") {
+    content = (
+      <CommunityChoicePreview
+        onBack={() => setPage("config")}
+        onChoose={(route) => {
+          setCommunityRoute(route);
+          setPage("community-entry");
+        }}
+      />
+    );
+  } else if (page === "community-entry") {
+    content = (
+      <CommunityEntryPreview
+        onBack={() => setPage("community-choice")}
+        onContinue={(name) => {
+          setCommunityName(name);
+          setPage("community-connecting");
+        }}
+        route={communityRoute}
+      />
+    );
+  } else if (page === "community-connecting") {
+    content = (
+      <CommunityConnectingPreview
+        communityName={communityName}
+        onBack={() => setPage("community-entry")}
+        onContinue={() => setPage("community-profile")}
+      />
+    );
+  } else if (page === "community-profile") {
+    content = (
+      <CommunityProfilePreview
+        displayName={displayName}
+        hasAvatar={hasAvatar}
+        onAvatarChange={() => setHasAvatar((current) => !current)}
+        onBack={() => setPage("community-entry")}
+        onDisplayNameChange={setDisplayName}
+        onNext={() => setPage("starter-team")}
+      />
+    );
+  } else if (page === "starter-team") {
+    content = (
+      <StarterTeamPreview
+        onBack={() => setPage("community-profile")}
+        onNext={() => setPage("welcome-channel")}
+      />
+    );
+  } else if (page === "welcome-channel") {
+    content = (
+      <WelcomeChannelPreview
+        communityName={communityName}
+        onBack={() => setPage("starter-team")}
+        onNext={() => setPage("community-home")}
+      />
+    );
+  } else {
+    content = (
+      <CommunityHomePreview
+        communityName={communityName}
+        onBack={() => setPage("welcome-channel")}
       />
     );
   }
