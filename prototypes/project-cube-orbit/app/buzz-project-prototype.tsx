@@ -2,7 +2,23 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 import type { CSSProperties, MutableRefObject, PointerEvent as ReactPointerEvent } from "react";
-import { ChevronDown, Plus, Search, SquareDashed, X } from "lucide-react";
+import {
+  ArrowUp,
+  AtSign,
+  ChevronDown,
+  Hash,
+  Headphones,
+  LockKeyhole,
+  MoreVertical,
+  Paperclip,
+  PanelRightOpen,
+  Plus,
+  Search,
+  SmilePlus,
+  SquareDashed,
+  Users,
+  X,
+} from "lucide-react";
 import { ProjectArtifactRenderer } from "./berd-project-cube/ProjectArtifactRenderer";
 import type {
   ProjectArtifactProjection,
@@ -958,8 +974,168 @@ function TaskDetailPanel({
   );
 }
 
+type MessagePanelId = "sidebar" | "chat" | "thread";
+type MessagePanelLayout = { x: number; y: number; detached: boolean };
+
+const INITIAL_MESSAGE_LAYOUT: Record<MessagePanelId, MessagePanelLayout> = {
+  sidebar: { x: 0, y: 0, detached: false },
+  chat: { x: 0, y: 0, detached: false },
+  thread: { x: 0, y: 0, detached: false },
+};
+
+function MessageComposer({ compact = false }: { compact?: boolean }) {
+  return (
+    <div className={`message-composer${compact ? " is-compact" : ""}`}>
+      <span>Message #buzz-design</span>
+      <div className="message-composer-actions">
+        <AtSign aria-hidden="true" size={18} strokeWidth={1.7} />
+        <Paperclip aria-hidden="true" size={18} strokeWidth={1.7} />
+        <SmilePlus aria-hidden="true" size={18} strokeWidth={1.7} />
+        <button type="button" aria-label="Send message"><ArrowUp aria-hidden="true" size={18} strokeWidth={1.8} /></button>
+      </div>
+    </div>
+  );
+}
+
+function MessagesView() {
+  const [layouts, setLayouts] = useState(INITIAL_MESSAGE_LAYOUT);
+  const dragRef = useRef<{
+    id: MessagePanelId;
+    pointerId: number;
+    startX: number;
+    startY: number;
+    originX: number;
+    originY: number;
+    cell: HTMLElement;
+    x: number;
+    y: number;
+  } | null>(null);
+
+  const beginPanelDrag = (
+    event: ReactPointerEvent<HTMLElement>,
+    id: MessagePanelId,
+  ) => {
+    if ((event.target as Element).closest("button, input")) return;
+    const cell = event.currentTarget.closest(".message-panel-cell") as HTMLElement | null;
+    if (!cell) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const current = layouts[id];
+    dragRef.current = {
+      id,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: current.x,
+      originY: current.y,
+      cell,
+      x: current.x,
+      y: current.y,
+    };
+    cell.classList.add("is-pulling", "is-active-drag");
+  };
+
+  const updatePanelDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (event.buttons === 0) {
+      endPanelDrag(event);
+      return;
+    }
+    drag.x = Math.max(-340, Math.min(340, drag.originX + event.clientX - drag.startX));
+    drag.y = Math.max(-190, Math.min(190, drag.originY + event.clientY - drag.startY));
+    const distance = Math.hypot(drag.x, drag.y);
+    drag.cell.style.setProperty("--panel-x", `${drag.x}px`);
+    drag.cell.style.setProperty("--panel-y", `${drag.y}px`);
+    drag.cell.style.setProperty("--tether-distance", `${Math.min(distance, 126)}px`);
+    drag.cell.style.setProperty("--tether-angle", `${Math.atan2(drag.y, drag.x)}rad`);
+    drag.cell.style.setProperty("--tether-squeeze", String(Math.max(0.28, 1 - distance / 170)));
+    drag.cell.classList.toggle("is-breaking", distance > 94);
+  };
+
+  const endPanelDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    const distance = Math.hypot(drag.x, drag.y);
+    const shouldAttach = distance < (layouts[drag.id].detached ? 54 : 72);
+    const next = shouldAttach
+      ? { x: 0, y: 0, detached: false }
+      : { x: drag.x, y: drag.y, detached: true };
+    drag.cell.style.setProperty("--panel-x", `${next.x}px`);
+    drag.cell.style.setProperty("--panel-y", `${next.y}px`);
+    drag.cell.classList.remove("is-pulling", "is-breaking", "is-active-drag");
+    setLayouts((current) => ({ ...current, [drag.id]: next }));
+    dragRef.current = null;
+  };
+
+  const panelStyle = (id: MessagePanelId) => ({
+    "--panel-x": `${layouts[id].x}px`,
+    "--panel-y": `${layouts[id].y}px`,
+  }) as CSSProperties;
+
+  const dragHandlers = (id: MessagePanelId) => ({
+    onPointerDown: (event: ReactPointerEvent<HTMLElement>) => beginPanelDrag(event, id),
+    onPointerMove: updatePanelDrag,
+    onPointerUp: endPanelDrag,
+    onPointerCancel: endPanelDrag,
+  });
+
+  return (
+    <section className="messages-stage" aria-label="Composable messages workspace">
+      <div className={`messages-board${Object.values(layouts).some((panel) => panel.detached) ? " has-detached-panel" : ""}`}>
+        <div className={`message-panel-cell sidebar-cell${layouts.sidebar.detached ? " is-detached" : ""}`} style={panelStyle("sidebar")}>
+          <div className="liquid-tether" aria-hidden="true" />
+          <aside className="message-panel channel-panel">
+            <div className="panel-drag-handle channel-search-wrap" {...dragHandlers("sidebar")}>
+              <Search aria-hidden="true" size={18} strokeWidth={1.7} />
+              <input aria-label="Search channels" placeholder="Search" />
+            </div>
+            <nav className="channel-list" aria-label="Channels">
+              <p>Buzz</p>
+              {['design-system', 'buzz-interface', 'launch-planning', 'agent-tools'].map((name, index) => <button type="button" className={index === 0 ? "is-current" : ""} key={name}><Hash aria-hidden="true" size={18} strokeWidth={1.7} />{name}</button>)}
+              <p>Berd</p>
+              {['project-cubes', 'design-reviews', 'research'].map((name) => <button type="button" key={name}><Hash aria-hidden="true" size={18} strokeWidth={1.7} />{name}</button>)}
+              <p>Messages</p>
+              {['morganmartin', 'tho', 'tulsi', 'laurenkenny'].map((name) => <button type="button" key={name}><SquareDashed aria-hidden="true" size={17} strokeWidth={1.5} />{name}</button>)}
+            </nav>
+          </aside>
+        </div>
+
+        <div className={`message-panel-cell chat-cell${layouts.chat.detached ? " is-detached" : ""}`} style={panelStyle("chat")}>
+          <div className="liquid-tether" aria-hidden="true" />
+          <article className="message-panel chat-panel">
+            <header className="panel-drag-handle chat-header" {...dragHandlers("chat")}>
+              <div><LockKeyhole aria-hidden="true" size={18} strokeWidth={1.7} /><strong>buzz-interface-squad</strong></div>
+              <div className="chat-header-actions"><button type="button" aria-label="Channel privacy"><LockKeyhole aria-hidden="true" size={18} strokeWidth={1.7} /></button><button type="button" aria-label="Members"><Users aria-hidden="true" size={18} strokeWidth={1.7} /><span>13</span></button><button type="button" aria-label="Huddle"><Headphones aria-hidden="true" size={18} strokeWidth={1.7} /></button><button type="button" aria-label="More"><MoreVertical aria-hidden="true" size={18} strokeWidth={1.7} /></button></div>
+            </header>
+            <div className="chat-feed">
+              <div className="day-divider"><span>Yesterday</span></div>
+              <div className="chat-message"><img src="/berd-agent-avatars/pushback-gloopies-5.png" alt="" /><div><p><strong>Caroline McKenzie</strong><span>Yesterday at 7:05PM</span></p><div>Brought copy link out of the context menu and into the main message rail. Testing whether people miss quick reactions before we add more controls back.</div></div></div>
+              <div className="chat-message"><img src="/berd-agent-avatars/builderbot-gloopies-20.png" alt="" /><div><p><strong>Jude</strong><span>5:03AM</span></p><div>Outside of the code review process, do you have any feedback or concerns about Buzz development that you can share with engineers?</div><button type="button" className="reply-link"><span className="mini-avatars"><img src="/berd-agent-avatars/berdy-gloopies-22.png" alt="" /><img src="/berd-agent-avatars/pushback-gloopies-5.png" alt="" /></span><strong>4 replies</strong><span>last reply 5 hours ago</span></button></div></div>
+            </div>
+            <MessageComposer />
+          </article>
+        </div>
+
+        <div className={`message-panel-cell thread-cell${layouts.thread.detached ? " is-detached" : ""}`} style={panelStyle("thread")}>
+          <div className="liquid-tether" aria-hidden="true" />
+          <aside className="message-panel thread-panel">
+            <header className="panel-drag-handle thread-header" {...dragHandlers("thread")}><div><PanelRightOpen aria-hidden="true" size={18} strokeWidth={1.7} /><strong>Thread</strong></div><button type="button" aria-label="Close thread"><X aria-hidden="true" size={18} strokeWidth={1.7} /></button></header>
+            <div className="thread-content">
+              <div className="thread-message"><img src="/berd-agent-avatars/pushback-gloopies-5.png" alt="" /><div><p><strong>Caroline McKenzie</strong><span>Yesterday at 7:05PM</span></p><div>Brought copy link out of the context menu and into the main message rail. Also tried simplifying by removing quick reactions but can put them back later if people really miss them.</div></div></div>
+            </div>
+            <MessageComposer compact />
+          </aside>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 export function BuzzProjectPrototype() {
-  const [activeTab, setActiveTab] = useState<"me" | "projects">("me");
+  const [activeTab, setActiveTab] = useState<"me" | "messages" | "projects">("me");
   const [selectedTask, setSelectedTask] = useState<SelectedTask | null>(null);
   const appShellRef = useRef<HTMLElement>(null);
   const projectWorldRef = useRef<HTMLDivElement>(null);
@@ -973,7 +1149,7 @@ export function BuzzProjectPrototype() {
     y: 0,
   });
 
-  const showTab = (tab: "me" | "projects") => {
+  const showTab = (tab: "me" | "messages" | "projects") => {
     setSelectedTask(null);
     setActiveTab(tab);
   };
@@ -1044,13 +1220,15 @@ export function BuzzProjectPrototype() {
       <header className="topbar">
         <div className="header-spacer" aria-hidden="true" />
         <nav className="segmented" aria-label="Primary navigation">
-          <button type="button" className={activeTab === "me" ? "selected" : ""} onClick={() => showTab("me")}>Me</button><button type="button">Messages</button><button type="button" className={activeTab === "projects" ? "selected" : ""} onClick={() => showTab("projects")}>Projects</button><button type="button" className="add-button" aria-label="Create new"><Plus aria-hidden="true" size={18} strokeWidth={1.75} /></button>
+          <button type="button" className={activeTab === "me" ? "selected" : ""} onClick={() => showTab("me")}>Me</button><button type="button" className={activeTab === "messages" ? "selected" : ""} onClick={() => showTab("messages")}>Messages</button><button type="button" className={activeTab === "projects" ? "selected" : ""} onClick={() => showTab("projects")}>Projects</button><button type="button" className="add-button" aria-label="Create new"><Plus aria-hidden="true" size={18} strokeWidth={1.75} /></button>
         </nav>
         <div className="utilities"><button type="button" className="round-button" aria-label="Search"><Search className="search-icon" aria-hidden="true" size={18} strokeWidth={1.75} /></button><div className="avatar" aria-label="Cynthia"><span>C</span></div></div>
       </header>
 
       {activeTab === "projects" ? (
         <ProjectsView />
+      ) : activeTab === "messages" ? (
+        <MessagesView />
       ) : (
         <section
           className="project-stage"

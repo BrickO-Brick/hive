@@ -138,6 +138,142 @@ body { background: #e6f2f5; color: var(--ink); font-family: Inter, ui-sans-serif
 .label-ribbon.is-selected .ribbon-stroke { stroke: var(--task-accent); filter: drop-shadow(0 12px 25px color-mix(in srgb, var(--task-accent) 42%, transparent)); }
 .label-ribbon.is-selected .ribbon-text { fill: #fff; }
 
+.messages-stage {
+  position: relative;
+  height: 100svh;
+  overflow: hidden;
+  padding: 74px 20px 20px;
+  background:
+    radial-gradient(circle, rgba(92,116,126,.12) 1px, transparent 1.2px),
+    radial-gradient(circle at 82% 12%, rgba(182,222,239,.72), transparent 36%),
+    radial-gradient(circle at 10% 90%, rgba(255,255,255,.9), transparent 34%);
+  background-size: 42px 42px, auto, auto;
+}
+.messages-board {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(220px, 255px) minmax(440px, 1fr) minmax(300px, 340px);
+  width: 100%;
+  height: 100%;
+  isolation: isolate;
+  filter: drop-shadow(0 14px 30px rgba(57,78,87,.12));
+}
+.message-panel-cell {
+  --panel-x: 0px;
+  --panel-y: 0px;
+  --tether-distance: 0px;
+  --tether-angle: 0rad;
+  --tether-squeeze: 1;
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+}
+.message-panel-cell.is-active-drag { z-index: 20; }
+.message-panel {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  flex-direction: column;
+  overflow: hidden;
+  background: rgba(255,255,255,.94);
+  border: 1px solid rgba(255,255,255,.96);
+  transform: translate3d(var(--panel-x), var(--panel-y), 0);
+  transition:
+    transform 480ms cubic-bezier(.22,1,.36,1),
+    border-radius 260ms ease-out,
+    box-shadow 260ms ease-out;
+  will-change: transform;
+}
+.sidebar-cell .message-panel { border-radius: 28px 0 0 28px; }
+.chat-cell .message-panel { border-radius: 0; border-left-color: rgba(38,38,38,.09); }
+.thread-cell .message-panel { border-radius: 0 28px 28px 0; border-left-color: rgba(38,38,38,.09); }
+.message-panel-cell.is-detached .message-panel,
+.message-panel-cell.is-breaking .message-panel {
+  border-radius: 28px;
+  box-shadow: 0 18px 44px rgba(53,76,86,.16), inset 0 1px 0 rgba(255,255,255,.9);
+}
+.message-panel-cell.is-pulling .message-panel { transition: border-radius 180ms ease-out, box-shadow 180ms ease-out; }
+.panel-drag-handle { cursor: grab; touch-action: none; user-select: none; }
+.message-panel-cell.is-pulling .panel-drag-handle { cursor: grabbing; }
+.liquid-tether {
+  position: absolute;
+  z-index: 1;
+  left: 50%;
+  top: 50%;
+  width: calc(var(--tether-distance) + 88px);
+  height: 112px;
+  border-radius: 999px;
+  background: rgba(255,255,255,.92);
+  opacity: 0;
+  transform-origin: 0 50%;
+  transform: translateY(-50%) rotate(var(--tether-angle)) scaleY(var(--tether-squeeze));
+  transition: opacity 90ms ease, transform 120ms ease-out;
+  pointer-events: none;
+  filter: blur(1px);
+}
+.message-panel-cell.is-pulling .liquid-tether { opacity: 1; transition: none; }
+.message-panel-cell.is-pulling.is-breaking .liquid-tether { opacity: 0; transform: translateY(-50%) rotate(var(--tether-angle)) scaleY(.08); transition: opacity 100ms ease-out, transform 160ms ease-out; }
+
+.channel-panel { padding: 10px; }
+.channel-search-wrap { display: flex; height: 42px; align-items: center; gap: 10px; padding: 0 12px; border-radius: 13px; background: rgba(243,243,243,.8); }
+.channel-search-wrap svg { flex: 0 0 auto; color: rgba(38,38,38,.5); }
+.channel-search-wrap input { width: 100%; min-width: 0; border: 0; outline: 0; color: #262626; background: transparent; font-size: 14px; }
+.channel-search-wrap input::placeholder { color: rgba(38,38,38,.42); }
+.channel-list { overflow: auto; padding: 8px 0 20px; }
+.channel-list p { margin: 20px 10px 8px; color: rgba(38,38,38,.72); font-size: 14px; }
+.channel-list button { display: flex; width: 100%; height: 36px; align-items: center; gap: 10px; padding: 0 10px; border: 0; border-radius: 11px; background: transparent; cursor: pointer; text-align: left; font-size: 14px; }
+.channel-list button:hover,
+.channel-list button.is-current { background: rgba(38,38,38,.055); }
+.channel-list button svg { flex: 0 0 auto; }
+
+.chat-header,
+.thread-header { display: flex; min-height: 64px; align-items: center; justify-content: space-between; gap: 16px; padding: 0 20px; border-bottom: 1px solid rgba(38,38,38,.09); }
+.chat-header > div:first-child,
+.thread-header > div:first-child { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.chat-header strong,
+.thread-header strong { overflow: hidden; font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.chat-header-actions { display: flex; align-items: center; gap: 8px; }
+.chat-header-actions button,
+.thread-header button { display: inline-flex; height: 36px; min-width: 36px; align-items: center; justify-content: center; gap: 7px; padding: 0 9px; border: 1px solid rgba(38,38,38,.12); border-radius: 9px; background: rgba(255,255,255,.72); cursor: pointer; }
+.thread-header button { border: 0; background: transparent; }
+.chat-header-actions button:hover,
+.thread-header button:hover { background: rgba(38,38,38,.05); }
+.chat-feed { flex: 1; overflow: auto; padding: 48px 20px 120px; }
+.day-divider { display: flex; align-items: center; gap: 14px; margin-bottom: 46px; color: rgba(38,38,38,.68); font-size: 11px; }
+.day-divider::before,
+.day-divider::after { content: ""; height: 1px; flex: 1; background: rgba(38,38,38,.1); }
+.day-divider span { padding: 8px 13px; border: 1px solid rgba(38,38,38,.12); border-radius: 999px; }
+.chat-message,
+.thread-message { display: grid; grid-template-columns: 42px 1fr; gap: 12px; margin-bottom: 30px; font-size: 14px; line-height: 1.42; }
+.chat-message > img,
+.thread-message > img { width: 42px; height: 42px; object-fit: contain; border-radius: 50%; }
+.chat-message p,
+.thread-message p { margin: 0 0 6px; }
+.chat-message p strong,
+.thread-message p strong { margin-right: 10px; font-weight: 650; }
+.chat-message p span,
+.thread-message p span { color: rgba(38,38,38,.65); }
+.reply-link { display: flex; align-items: center; gap: 8px; margin-top: 12px; padding: 0; border: 0; color: #262626; background: transparent; cursor: pointer; font-size: 13px; }
+.reply-link > span:last-child { color: rgba(38,38,38,.42); }
+.mini-avatars { display: flex; padding-left: 10px; }
+.mini-avatars img { width: 26px; height: 26px; margin-left: -10px; object-fit: contain; border: 2px solid #fff; border-radius: 50%; }
+.message-composer { position: absolute; z-index: 4; left: 20px; right: 20px; bottom: 18px; min-height: 112px; padding: 18px; border: 1px solid rgba(38,38,38,.13); border-radius: 18px; color: rgba(38,38,38,.38); background: rgba(255,255,255,.84); box-shadow: 0 8px 28px rgba(57,78,87,.04); backdrop-filter: blur(18px); font-size: 14px; }
+.message-composer-actions { position: absolute; left: 18px; right: 18px; bottom: 14px; display: flex; align-items: center; gap: 14px; color: #262626; }
+.message-composer-actions button { width: 34px; height: 34px; margin-left: auto; display: grid; place-items: center; border: 0; border-radius: 50%; color: #262626; background: #f3e7ff; cursor: pointer; }
+
+.thread-content { flex: 1; overflow: auto; padding: 28px 20px 130px; }
+.thread-message { grid-template-columns: 40px 1fr; }
+.thread-message > img { width: 40px; height: 40px; }
+.thread-panel .message-composer { left: 18px; right: 18px; }
+
+@media (max-width: 1050px) {
+  .messages-board { grid-template-columns: 215px minmax(370px, 1fr) 290px; }
+  .chat-header-actions button:nth-child(2), .chat-header-actions button:nth-child(3) { display: none; }
+}
+
 .projects-stage {
   position: relative;
   height: 100svh;
@@ -317,6 +453,7 @@ body { background: #e6f2f5; color: var(--ink); font-family: Inter, ui-sans-serif
 @media (prefers-reduced-motion: reduce) {
   .wrapped-labels { will-change: auto; }
   .orbit-system, .task-detail-panel { transition-duration: 1ms; animation-duration: 1ms; }
+  .message-panel, .liquid-tether { transition: none; }
   .response-composer { transition: none; }
   .response-composer textarea { animation: none; }
   .project-name-pill { transition: none; }
