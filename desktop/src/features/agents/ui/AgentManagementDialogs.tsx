@@ -1,4 +1,5 @@
 import { useAgentManagement } from "@/features/agents/useAgentManagement";
+import { ProjectChannelRequestDialog } from "@/features/projects/ui/ProjectChannelRequestDialog";
 import { AgentCardDialogs } from "./AgentCardViewerDialog";
 import { AgentDialog } from "./AgentDialog";
 import { AgentEditDialog } from "./AgentEditDialog";
@@ -62,6 +63,7 @@ export function AgentManagementDialogs() {
           initialValueOverrides={management.reviewOverrides}
         />
       ) : null}
+      <ProjectChannelRequestDialog />
       <AgentCardDialogs />
     </>
   );
