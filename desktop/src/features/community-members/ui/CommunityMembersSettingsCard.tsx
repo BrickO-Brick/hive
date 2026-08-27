@@ -30,6 +30,7 @@ import {
 } from "@/shared/ui/dropdown-menu";
 import { VirtualizedList } from "@/shared/ui/VirtualizedList";
 import { CommunityInviteDialog } from "./CommunityInviteDialog";
+import { WelcomeChannelSettings } from "./WelcomeChannelSettings";
 
 function formatDisplayName(member: RelayMember, displayName?: string | null) {
   const trimmedDisplayName = displayName?.trim();
@@ -377,6 +378,8 @@ export function CommunityMembersSettingsCard({
           )}
         </div>
       </SettingsOptionGroup>
+
+      <WelcomeChannelSettings />
 
       <CommunityInviteDialog
         isOwner={currentRole === "owner"}

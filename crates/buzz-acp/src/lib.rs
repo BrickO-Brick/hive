@@ -33,7 +33,7 @@ use buzz_core::observer::{
 use clap::Parser;
 use config::{
     AuthAgentArgs, AuthMethodsArgs, AuthenticateArgs, Config, DedupMode, ModelsArgs,
-    MultipleEventHandling, RespondTo, SubscribeMode,
+    MultipleEventHandling, PromptArgs, RespondTo, SubscribeMode,
 };
 use filter::SubscriptionRule;
 use futures_util::FutureExt;
@@ -1915,6 +1915,16 @@ async fn tokio_main() -> Result<()> {
             .collect();
         let args = ModelsArgs::parse_from(&filtered);
         return run_models(args).await;
+    }
+
+    if is_subcommand("prompt") {
+        let filtered: Vec<String> = std::env::args()
+            .enumerate()
+            .filter(|(i, _)| *i != 1)
+            .map(|(_, a)| a)
+            .collect();
+        let args = PromptArgs::parse_from(&filtered);
+        return run_one_shot_prompt(args).await;
     }
 
     if is_subcommand("auth-methods") {
@@ -5063,6 +5073,68 @@ async fn run_models(args: ModelsArgs) -> Result<()> {
     }
 
     client.shutdown().await;
+    Ok(())
+}
+
+/// `buzz-acp prompt` — run one provider-agnostic ACP turn locally.
+///
+/// This intentionally shares `AcpClient` with the relay harness, so every
+/// supported adapter follows the same initialize/session/prompt protocol.
+async fn run_one_shot_prompt(args: PromptArgs) -> Result<()> {
+    use std::io::Read;
+
+    let mut prompt = String::new();
+    std::io::stdin()
+        .read_to_string(&mut prompt)
+        .context("failed to read prompt from stdin")?;
+    ensure!(!prompt.trim().is_empty(), "prompt must not be empty");
+
+    let agent_args = config::normalize_agent_args(&args.agent.agent_command, args.agent.agent_args);
+    let cwd = current_working_directory()?;
+    let mut client = AcpClient::spawn(&args.agent.agent_command, &agent_args, &[], false)
+        .await
+        .context("failed to start the configured agent")?;
+
+    let result = async {
+        client.initialize().await?;
+        let session = client.session_new_full(&cwd, vec![], None, None).await?;
+        let stop_reason = client
+            .session_prompt_with_idle_timeout(
+                &session.session_id,
+                prompt.trim(),
+                Duration::from_secs(30),
+                Duration::from_secs(120),
+            )
+            .await?;
+        Ok::<_, acp::AcpError>((client.take_agent_message(), stop_reason))
+    }
+    .await;
+
+    client.shutdown().await;
+    let (message, stop_reason) = result.context("agent prompt did not complete")?;
+    ensure!(
+        !message.trim().is_empty(),
+        "agent returned an empty message"
+    );
+
+    let stop_reason = match stop_reason {
+        acp::StopReason::EndTurn => "end_turn",
+        acp::StopReason::Cancelled => "cancelled",
+        acp::StopReason::MaxTokens => "max_tokens",
+        acp::StopReason::MaxTurnRequests => "max_turn_requests",
+        acp::StopReason::Refusal => "refusal",
+    };
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({
+                "message": message,
+                "stopReason": stop_reason,
+            }))?
+        );
+    } else {
+        print!("{message}");
+    }
     Ok(())
 }
 
