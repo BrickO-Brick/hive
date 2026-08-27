@@ -15,6 +15,67 @@ type E2eWindow = Window & {
   }) => void;
 };
 
+test("Mesh Buddy introduces its status display with an LED bee", async ({
+  page,
+}) => {
+  await installMockBridge(page);
+  await page.goto("/mesh-buddy.html");
+
+  const display = page.getByRole("img", {
+    name: "Mesh compute status display",
+  });
+  await expect(display).toHaveAttribute("data-phase", "intro");
+  await expect(display).toHaveAttribute("data-phase", "status", {
+    timeout: 4_000,
+  });
+});
+
+test("top chrome power button controls the saved sharing model", async ({
+  page,
+}) => {
+  const modelRef = "hf://demo/chrome-model:Q4_K_M";
+  await page.addInitScript((model) => {
+    window.localStorage.setItem("buzz.mesh-compute.share.model.v1", model);
+  }, modelRef);
+  await installMockBridge(page);
+  await page.goto("/");
+
+  const power = page.getByTestId("mesh-share-power");
+  await expect(power).toBeVisible();
+  await expect(power).toHaveAttribute("aria-label", "Start sharing compute");
+  await power.click();
+
+  await expect(power).toHaveAttribute("aria-label", "Stop sharing compute");
+  await expect(power).toHaveAttribute("aria-pressed", "true");
+  const startedCommands = await page.evaluate(
+    () => (window as E2eWindow).__BUZZ_E2E_COMMANDS__ ?? [],
+  );
+  expect(startedCommands).toContain("open_mesh_buddy_window");
+  expect(startedCommands.indexOf("open_mesh_buddy_window")).toBeLessThan(
+    startedCommands.indexOf("mesh_start_node"),
+  );
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => (window as E2eWindow).__BUZZ_E2E_COMMAND_PAYLOADS__ ?? [],
+      ),
+    )
+    .toContainEqual({
+      command: "mesh_start_node",
+      payload: {
+        request: { mode: "serve", modelId: modelRef },
+      },
+    });
+
+  await power.click();
+  await expect(power).toHaveAttribute("aria-label", "Start sharing compute");
+  await expect
+    .poll(() =>
+      page.evaluate(() => (window as E2eWindow).__BUZZ_E2E_COMMANDS__ ?? []),
+    )
+    .toContain("mesh_stop_node");
+});
+
 test("Share compute chooses a model before sharing", async ({ page }) => {
   const modelRef = "hf://demo/SmolLM2-135M-Instruct-GGUF:Q4_K_M";
   await installMockBridge(page);
@@ -52,7 +113,14 @@ test("Share compute chooses a model before sharing", async ({ page }) => {
   await expect(toggle).toBeChecked();
   await expect(
     page.getByTestId("mesh-share-compute-sharing-status"),
-  ).toContainText("SmolLM2 135M with relay members");
+  ).toContainText("SmolLM2 135M with MeshLLM community members");
+  const startedCommands = await page.evaluate(
+    () => (window as E2eWindow).__BUZZ_E2E_COMMANDS__ ?? [],
+  );
+  expect(startedCommands).toContain("open_mesh_buddy_window");
+  expect(startedCommands.indexOf("open_mesh_buddy_window")).toBeLessThan(
+    startedCommands.indexOf("mesh_start_node"),
+  );
   await expect
     .poll(() =>
       page.evaluate(() => (window as E2eWindow).__BUZZ_E2E_COMMANDS__ ?? []),

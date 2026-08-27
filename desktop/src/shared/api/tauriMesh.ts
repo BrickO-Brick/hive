@@ -52,6 +52,10 @@ export async function meshNodeStatus(): Promise<MeshNodeStatus> {
   return await invokeTauri<MeshNodeStatus>("mesh_node_status");
 }
 
+export async function openMeshBuddyWindow(): Promise<void> {
+  await invokeTauri<void>("open_mesh_buddy_window");
+}
+
 /**
  * Host-side usage of the compute this machine is sharing. The
  * local/remote/endpoint attempt split distinguishes this machine's own agents

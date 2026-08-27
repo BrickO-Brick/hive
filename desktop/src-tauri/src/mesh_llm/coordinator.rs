@@ -145,18 +145,19 @@ async fn reconcile_buzz_mesh_join(app: &AppHandle) -> Result<(), String> {
             .start_request()
             .relay_url
             .clone()
-            .unwrap_or_else(|| crate::relay::relay_ws_url_with_override(&state));
+            .unwrap_or_else(|| crate::commands::mesh_llm::MESHLLM_COMMUNITY_RELAY_URL.to_string());
         (visible_peer_ids(&payload), relay_url)
     };
 
     let targets =
         crate::commands::mesh_llm::resolve_buzz_mesh_join_targets_at(&state, &relay_url).await?;
-    let Some(target) = targets
+    let targets: Vec<_> = targets
         .into_iter()
-        .find(|target| !target_is_visible(target, &peer_ids))
-    else {
+        .filter(|target| !target_is_visible(target, &peer_ids))
+        .collect();
+    if targets.is_empty() {
         return Ok(());
-    };
+    }
 
     let runtime = state.mesh_llm_runtime.lock().await;
     let Some(runtime) = runtime.as_ref() else {
@@ -166,13 +167,25 @@ async fn reconcile_buzz_mesh_join(app: &AppHandle) -> Result<(), String> {
         .status_report_payload()
         .await
         .map_err(|error| error.to_string())?;
-    if target_is_visible(&target, &visible_peer_ids(&payload)) {
-        return Ok(());
+    let peer_ids = visible_peer_ids(&payload);
+    // Dial every member we cannot see yet, not just the first. A dial is a
+    // background bootstrap hint to MeshLLM (success here does not prove the
+    // connection landed), so stopping after one target can starve every
+    // member that sorts after a permanently unreachable one.
+    let mut failures = Vec::new();
+    for target in targets {
+        if target_is_visible(&target, &peer_ids) {
+            continue;
+        }
+        if let Err(error) = runtime.dial_endpoint_addr(target.endpoint_addr).await {
+            failures.push(format!("mesh join failed: {error:#}"));
+        }
     }
-    runtime
-        .dial_endpoint_addr(target.endpoint_addr)
-        .await
-        .map_err(|error| format!("mesh join failed: {error:#}"))
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
+    }
 }
 
 fn visible_peer_ids(payload: &serde_json::Value) -> Vec<String> {
@@ -298,7 +311,7 @@ async fn reconcile_roster(
         .relay_url
         .as_deref()
         .map(str::to_owned)
-        .unwrap_or_else(|| crate::relay::relay_ws_url_with_override(&state));
+        .unwrap_or_else(|| crate::commands::mesh_llm::MESHLLM_COMMUNITY_RELAY_URL.to_string());
     let query = crate::commands::mesh_llm::resolve_trusted_owner_ids_at(&state, &relay_url).await;
     match roster_reconcile_action(current_owners, pending_shrink.as_deref(), query) {
         RosterReconcileAction::Keep => {
@@ -396,12 +409,14 @@ async fn publish_current_status_for_state(state: &AppState) -> Result<(), String
                     .start_request()
                     .relay_url
                     .clone()
-                    .unwrap_or_else(|| crate::relay::relay_ws_url_with_override(state));
+                    .unwrap_or_else(|| {
+                        crate::commands::mesh_llm::MESHLLM_COMMUNITY_RELAY_URL.to_string()
+                    });
                 (payload, relay_url)
             }
             None => (
                 stopped_status_payload(&identity),
-                crate::relay::relay_ws_url_with_override(state),
+                crate::commands::mesh_llm::MESHLLM_COMMUNITY_RELAY_URL.to_string(),
             ),
         }
     };
@@ -419,7 +434,7 @@ async fn publish_stopped_status_for_state(
     bind_payload_to_member(state, &identity, &mut payload)?;
     let relay_url = relay_url
         .map(str::to_owned)
-        .unwrap_or_else(|| crate::relay::relay_ws_url_with_override(state));
+        .unwrap_or_else(|| crate::commands::mesh_llm::MESHLLM_COMMUNITY_RELAY_URL.to_string());
     publish_status_report_at(state, &relay_url, payload).await
 }
 

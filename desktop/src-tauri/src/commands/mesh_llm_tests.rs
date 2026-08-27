@@ -179,6 +179,21 @@ fn role_switch_checkpoint_starts_exactly_once_after_restart() {
 }
 
 #[test]
+fn normal_launch_stays_off_but_role_switch_starts_once() {
+    let enabled = MeshSharingConfig {
+        enabled: true,
+        start_on_next_launch: false,
+        model_id: "test-model".to_string(),
+        max_vram_gb: Some(24),
+        relay_url: Some("wss://community.example".to_string()),
+    };
+    assert!(!should_start_sharing_after_restart(&enabled));
+
+    let role_switch = one_shot_restart_checkpoint(&enabled);
+    assert!(should_start_sharing_after_restart(&role_switch));
+}
+
+#[test]
 fn mesh_status_cursor_uses_relay_composite_tiebreak() {
     let event = nostr::EventBuilder::new(nostr::Kind::TextNote, "status")
         .custom_created_at(nostr::Timestamp::from(1_234))

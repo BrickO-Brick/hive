@@ -1,0 +1,662 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mesh Buddy</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        background: #000;
+      }
+
+      html,
+      body,
+      canvas {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        display: block;
+        overflow: hidden;
+        background: #000;
+      }
+
+      body {
+        user-select: none;
+        cursor: default;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="display" aria-label="Mesh compute status display" role="img"></canvas>
+    <script>
+      const GRID = 64;
+      const POLL_MS = 1000;
+      const IDLE_SLEEP_MS = 10000;
+      const DISSOLVE_MS = 450;
+      const INTRO_MS = 1800;
+      const INTRO_FADE_MS = 350;
+      const pixels = new Float32Array(GRID * GRID);
+      const lastFrame = new Float32Array(GRID * GRID);
+      const transitionFrom = new Float32Array(GRID * GRID);
+      const textureBytes = new Uint8Array(GRID * GRID * 4);
+
+      const FONT = {
+        " ": ["000", "000", "000", "000", "000"],
+        "+": ["000", "010", "111", "010", "000"],
+        ".": ["000", "000", "000", "000", "100"],
+        "0": ["111", "101", "101", "101", "111"],
+        "1": ["010", "110", "010", "010", "111"],
+        "2": ["111", "001", "111", "100", "111"],
+        "3": ["111", "001", "111", "001", "111"],
+        "4": ["101", "101", "111", "001", "001"],
+        "5": ["111", "100", "111", "001", "111"],
+        "6": ["111", "100", "111", "101", "111"],
+        "7": ["111", "001", "010", "010", "010"],
+        "8": ["111", "101", "111", "101", "111"],
+        "9": ["111", "101", "111", "001", "111"],
+        A: ["010", "101", "111", "101", "101"],
+        B: ["110", "101", "110", "101", "110"],
+        D: ["110", "101", "101", "101", "110"],
+        E: ["111", "100", "110", "100", "111"],
+        F: ["111", "100", "110", "100", "100"],
+        G: ["111", "100", "101", "101", "111"],
+        H: ["101", "101", "111", "101", "101"],
+        I: ["111", "010", "010", "010", "111"],
+        K: ["101", "101", "110", "101", "101"],
+        L: ["100", "100", "100", "100", "111"],
+        N: ["101", "111", "111", "111", "101"],
+        O: ["111", "101", "101", "101", "111"],
+        P: ["111", "101", "111", "100", "100"],
+        Q: ["111", "101", "101", "111", "001"],
+        R: ["110", "101", "110", "101", "101"],
+        S: ["111", "100", "111", "001", "111"],
+        T: ["111", "010", "010", "010", "010"],
+        U: ["101", "101", "101", "101", "111"],
+        V: ["101", "101", "101", "101", "010"],
+        W: ["101", "101", "111", "111", "101"],
+        Y: ["101", "101", "010", "010", "010"],
+        Z: ["111", "001", "010", "100", "111"],
+      };
+
+      const BEE_BODY_DOTS = [
+        [8, 2],
+        [10, 2],
+        [9, 3],
+        [7, 4],
+        [8, 4],
+        [9, 4],
+        [10, 4],
+        [11, 4],
+        [7, 5],
+        [9, 5],
+        [11, 5],
+        [7, 6],
+        [8, 6],
+        [9, 6],
+        [10, 6],
+        [11, 6],
+        [7, 7],
+        [11, 7],
+        [7, 8],
+        [8, 8],
+        [9, 8],
+        [10, 8],
+        [11, 8],
+        [7, 9],
+        [11, 9],
+        [8, 10],
+        [9, 10],
+        [10, 10],
+      ];
+      const BEE_LEFT_WING_DOTS = [
+        [4, 5],
+        [5, 5],
+        [3, 6],
+        [4, 6],
+        [5, 6],
+        [3, 7],
+        [4, 7],
+        [5, 7],
+        [4, 8],
+        [5, 8],
+      ];
+      const BEE_RIGHT_WING_DOTS = BEE_LEFT_WING_DOTS.map(([x, y]) => [
+        18 - x,
+        y,
+      ]);
+
+      const canvas = document.getElementById("display");
+      const invoke =
+        window.__TAURI__?.core?.invoke || window.__TAURI_INTERNALS__?.invoke;
+      const introStartedAt = performance.now();
+      const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+      const model = {
+        state: "SLEEP",
+        manualState: null,
+        tokens: 0,
+        tokenDelta: 0,
+        nodes: 0,
+        inflight: 0,
+        history: Array(52).fill(0),
+        lastTokens: null,
+        lastInflight: 0,
+        lastActivityAt: performance.now(),
+        requestUntil: 0,
+        servedUntil: 0,
+        transitionAt: 0,
+      };
+
+      function put(x, y, value = 1) {
+        if (x < 0 || y < 0 || x >= GRID || y >= GRID) return;
+        pixels[y * GRID + x] = Math.max(pixels[y * GRID + x], value);
+      }
+
+      function drawText(text, x, y, scale = 1, value = 1) {
+        let cursor = x;
+        for (const character of text) {
+          const glyph = FONT[character] || FONT[" "];
+          for (let row = 0; row < glyph.length; row += 1) {
+            for (let column = 0; column < 3; column += 1) {
+              if (glyph[row][column] !== "1") continue;
+              for (let dy = 0; dy < scale; dy += 1) {
+                for (let dx = 0; dx < scale; dx += 1) {
+                  put(cursor + column * scale + dx, y + row * scale + dy, value);
+                }
+              }
+            }
+          }
+          cursor += (character === "." ? 2 : 4) * scale;
+        }
+      }
+
+      function textWidth(text, scale = 1) {
+        const width = Array.from(text).reduce(
+          (sum, character) => sum + (character === "." ? 2 : 4) * scale,
+          0,
+        );
+        return Math.max(0, width - scale);
+      }
+
+      function drawCentered(text, y, scale = 1, value = 1) {
+        drawText(text, Math.floor((GRID - textWidth(text, scale)) / 2), y, scale, value);
+      }
+
+      function formatCount(value) {
+        if (value < 1000) return String(value);
+        if (value < 1000000) return `${Math.floor(value / 100) / 10}K`;
+        return `${Math.floor(value / 100000) / 10}M`;
+      }
+
+      function drawLine(x0, y0, x1, y1, value) {
+        const dx = Math.abs(x1 - x0);
+        const sx = x0 < x1 ? 1 : -1;
+        const dy = -Math.abs(y1 - y0);
+        const sy = y0 < y1 ? 1 : -1;
+        let error = dx + dy;
+        while (true) {
+          put(x0, y0, value);
+          if (x0 === x1 && y0 === y1) break;
+          const twice = error * 2;
+          if (twice >= dy) {
+            error += dy;
+            x0 += sx;
+          }
+          if (twice <= dx) {
+            error += dx;
+            y0 += sy;
+          }
+        }
+      }
+
+      function drawSparkline(value, compact) {
+        const values = model.history;
+        const min = Math.min(...values);
+        const max = Math.max(...values);
+        const range = Math.max(1, max - min);
+        const left = compact ? 6 : 4;
+        const right = compact ? 57 : 59;
+        const top = compact ? 40 : 45;
+        const bottom = compact ? 46 : 51;
+        for (let index = 1; index < values.length; index += 1) {
+          const previousX =
+            left + Math.round(((index - 1) / (values.length - 1)) * (right - left));
+          const currentX =
+            left + Math.round((index / (values.length - 1)) * (right - left));
+          const previousY =
+            bottom - Math.round(((values[index - 1] - min) / range) * (bottom - top));
+          const currentY =
+            bottom - Math.round(((values[index] - min) / range) * (bottom - top));
+          drawLine(previousX, previousY, currentX, currentY, value);
+        }
+      }
+
+      function drawSleepingZs(now, value) {
+        for (let index = 0; index < 3; index += 1) {
+          const phase = (now / 2800 + index / 3) % 1;
+          const opacity = Math.sin(phase * Math.PI) * value * (0.45 + index * 0.14);
+          const x = Math.round(44 + phase * 10 + Math.sin(phase * Math.PI * 2) * 1.5);
+          const y = Math.round(18 - phase * 15 + Math.sin(phase * Math.PI * 4));
+          drawText("Z", x, y, 1, opacity);
+        }
+      }
+
+      function drawRequestMotion(now) {
+        const left = 8;
+        const width = 48;
+        const head = Math.floor((now / 55) % width);
+        for (let trail = 0; trail < 7; trail += 1) {
+          const x = left + ((head - trail + width) % width);
+          const value = Math.max(0.12, 0.9 - trail * 0.12);
+          put(x, 12, value);
+          if (trail < 3) put(x, 13, value * 0.7);
+        }
+      }
+
+      function drawWorkingMotion(now) {
+        for (let index = 0; index < 9; index += 1) {
+          const x = 11 + index * 5;
+          const wave = (Math.sin(now / 180 + index * 1.35) + 1) / 2;
+          const height = 2 + Math.round(wave * 7);
+          for (let offset = 0; offset < height; offset += 1) {
+            put(x, 17 - offset, 0.28 + (offset / height) * 0.62);
+            put(x + 1, 17 - offset, 0.2 + (offset / height) * 0.45);
+          }
+        }
+
+        const railPosition = 20 + Math.floor((now / 70) % 23);
+        for (let trail = 0; trail < 5; trail += 1) {
+          const y = 20 + ((railPosition - 20 - trail + 23) % 23);
+          const value = 0.78 - trail * 0.13;
+          put(2, y, value);
+          put(61, 62 - y, value);
+        }
+      }
+
+      function drawServedMotion(now) {
+        const phase = (now / 700) % 1;
+        const radius = 2 + phase * 8;
+        const opacity = Math.sin(phase * Math.PI) * 0.8;
+        for (let index = 0; index < 20; index += 1) {
+          const angle = (index / 20) * Math.PI * 2;
+          put(
+            Math.round(32 + Math.cos(angle) * radius),
+            Math.round(13 + Math.sin(angle) * radius * 0.48),
+            opacity,
+          );
+        }
+      }
+
+      function drawBeeDots(dots, originX, originY, xShift, value) {
+        for (const [x, y] of dots) {
+          const left = originX + x * 2 + xShift;
+          const top = originY + y * 2;
+          put(left, top, value);
+          put(left + 1, top, value);
+          put(left, top + 1, value);
+          put(left + 1, top + 1, value);
+        }
+      }
+
+      function drawStartupBee(now) {
+        const elapsed = now - introStartedAt;
+        const fadeStart = INTRO_MS - INTRO_FADE_MS;
+        const fade =
+          elapsed > fadeStart ? Math.max(0, 1 - (elapsed - fadeStart) / INTRO_FADE_MS) : 1;
+        const bob = reduceMotion ? 0 : Math.round(Math.sin(now / 210));
+        const flap = reduceMotion ? 0 : Math.round((Math.sin(now / 70) + 1) * 0.75);
+        const originX = 13;
+        const originY = 16 + bob;
+        const breath = reduceMotion ? 1 : 0.82 + Math.sin(now / 170) * 0.18;
+
+        drawBeeDots(BEE_LEFT_WING_DOTS, originX, originY, -flap, fade * 0.72);
+        drawBeeDots(BEE_RIGHT_WING_DOTS, originX, originY, flap, fade * 0.72);
+        drawBeeDots(BEE_BODY_DOTS, originX, originY, 0, fade * breath);
+      }
+
+      function composeFrame(now) {
+        pixels.fill(0);
+        if (now - introStartedAt < INTRO_MS) {
+          canvas.dataset.phase = "intro";
+          drawStartupBee(now);
+          lastFrame.set(pixels);
+          return;
+        }
+        canvas.dataset.phase = "status";
+        const compact = Math.min(canvas.clientWidth, canvas.clientHeight) < 280;
+        const state = model.manualState || model.state;
+        const muted = state === "OFF";
+        const breath = state === "SLEEP" ? 0.68 + Math.sin(now / 900) * 0.18 : 1;
+        const activePulse =
+          state === "REQUEST" || state === "WORKING"
+            ? 0.82 + Math.sin(now / 170) * 0.18
+            : 1;
+        const value = muted ? 0.24 : breath * activePulse;
+
+        drawCentered(state, compact ? 19 : 22, 2, value);
+        drawSparkline(muted ? 0.16 : 0.48, compact);
+        if (state === "SLEEP") drawSleepingZs(now, breath);
+        if (state === "REQUEST") drawRequestMotion(now);
+        if (state === "WORKING") drawWorkingMotion(now);
+        if (state === "SERVED") drawServedMotion(now);
+
+        const tokens = `TOK ${formatCount(model.tokens)}`;
+        const nodes = `${model.nodes}ND`;
+        const counterInset = compact ? 6 : 4;
+        const displaySize = Math.min(canvas.clientWidth, canvas.clientHeight);
+        const counterY = compact ? 52 : displaySize >= 480 ? 56 : 55;
+        drawText(tokens, counterInset, counterY, 1, muted ? 0.2 : 0.72);
+        drawText(
+          nodes,
+          GRID - counterInset - textWidth(nodes),
+          counterY,
+          1,
+          muted ? 0.2 : 0.72,
+        );
+
+        if (state === "SERVED" && model.tokenDelta > 0) {
+          drawCentered(`+${formatCount(model.tokenDelta)}`, 18, 1, 0.65);
+        }
+        if (state === "BOOT") {
+          const phase = Math.floor(now / 180) % 4;
+          for (let index = 0; index < 3; index += 1) {
+            put(29 + index * 3, 40, index <= phase % 3 ? 0.85 : 0.16);
+          }
+        }
+        if (model.inflight > 0 && Math.floor(now / 280) % 2 === 0) {
+          put(59, 4, 0.9);
+          put(60, 4, 0.9);
+          put(59, 5, 0.9);
+          put(60, 5, 0.9);
+        }
+
+        if (now - model.transitionAt < DISSOLVE_MS) {
+          const progress = (now - model.transitionAt) / DISSOLVE_MS;
+          for (let index = 0; index < pixels.length; index += 1) {
+            const x = index % GRID;
+            const y = Math.floor(index / GRID);
+            const threshold = ((x * 37 + y * 17 + x * y * 13) % 101) / 100;
+            if (threshold > progress) pixels[index] = transitionFrom[index];
+          }
+        }
+        lastFrame.set(pixels);
+      }
+
+      function setState(nextState) {
+        if (model.state === nextState) return;
+        transitionFrom.set(lastFrame);
+        model.state = nextState;
+        model.transitionAt = performance.now();
+      }
+
+      function liveState(now = performance.now()) {
+        if (now < model.requestUntil) return "REQUEST";
+        if (model.inflight > 0) return "WORKING";
+        if (now < model.servedUntil) return "SERVED";
+        if (now - model.lastActivityAt >= IDLE_SLEEP_MS) return "SLEEP";
+        return "ONLINE";
+      }
+
+      function applyLiveState(now = performance.now()) {
+        if (model.manualState) return;
+        setState(liveState(now));
+      }
+
+      function ingest(usage, status) {
+        const now = performance.now();
+        const tokens = usage?.tokensServed || 0;
+        const inflight = usage?.inflight || 0;
+        const tokensPerSecond = usage?.tokensPerSecond || 0;
+        const runtimeState = status?.state || "off";
+
+        model.tokenDelta =
+          model.lastTokens === null ? 0 : Math.max(0, tokens - model.lastTokens);
+        if (inflight > 0 && model.lastInflight === 0) {
+          model.requestUntil = now + 900;
+          model.lastActivityAt = now;
+        }
+        if (model.tokenDelta > 0) {
+          model.servedUntil = now + 1800;
+          model.lastActivityAt = now;
+        }
+
+        model.tokens = tokens;
+        model.inflight = inflight;
+        model.nodes =
+          runtimeState === "running" || runtimeState === "starting"
+            ? (usage?.peers || 0) + 1
+            : 0;
+        const graphSample =
+          inflight > 0
+            ? Math.max(1, Math.round(tokensPerSecond))
+            : model.lastInflight > 0
+              ? 0
+              : model.tokenDelta;
+        model.history.push(graphSample);
+        model.history.shift();
+        model.lastTokens = tokens;
+        model.lastInflight = inflight;
+
+        if (model.manualState) return;
+        if (runtimeState === "starting") setState("BOOT");
+        else if (runtimeState === "stopping") setState("HALT");
+        else if (runtimeState === "failed") setState("FAULT");
+        else if (runtimeState === "running") applyLiveState(now);
+        else setState("OFF");
+      }
+
+      async function tick() {
+        if (!invoke) return;
+        try {
+          const [usage, status] = await Promise.all([
+            invoke("mesh_serving_usage"),
+            invoke("mesh_node_status"),
+          ]);
+          ingest(usage, status);
+        } catch {
+          if (!model.manualState) setState("FAULT");
+        }
+      }
+
+      const KEY_STATES = {
+        1: "SLEEP",
+        2: "ONLINE",
+        3: "REQUEST",
+        4: "WORKING",
+        5: "SERVED",
+        6: "BOOT",
+        7: "HALT",
+        8: "FAULT",
+        9: "OFF",
+      };
+      window.addEventListener("keydown", (event) => {
+        if (event.key === "0" || event.key === "Escape") {
+          model.manualState = null;
+          tick();
+          return;
+        }
+        const state = KEY_STATES[event.key];
+        if (!state) return;
+        transitionFrom.set(lastFrame);
+        model.manualState = state;
+        model.transitionAt = performance.now();
+      });
+
+      function createRenderer() {
+        const gl = canvas.getContext("webgl", {
+          alpha: false,
+          antialias: false,
+          depth: false,
+          preserveDrawingBuffer: false,
+        });
+        if (!gl) return createFallbackRenderer();
+
+        const compile = (type, source) => {
+          const shader = gl.createShader(type);
+          gl.shaderSource(shader, source);
+          gl.compileShader(shader);
+          if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+            throw new Error(gl.getShaderInfoLog(shader) || "shader compile failed");
+          }
+          return shader;
+        };
+        const program = gl.createProgram();
+        gl.attachShader(
+          program,
+          compile(
+            gl.VERTEX_SHADER,
+            "attribute vec2 p; varying vec2 uv; void main(){uv=(p+1.0)*0.5;gl_Position=vec4(p,0,1);}",
+          ),
+        );
+        gl.attachShader(
+          program,
+          compile(
+            gl.FRAGMENT_SHADER,
+            `precision mediump float;
+             varying vec2 uv;
+             uniform sampler2D bitmap;
+             uniform float grid;
+             void main() {
+               vec2 cell = floor(uv * grid);
+               vec2 local = fract(uv * grid) - 0.5;
+               float lit = texture2D(bitmap, (cell + 0.5) / grid).r;
+               float distanceToCenter = length(local);
+               float dot = 1.0 - smoothstep(0.30, 0.43, distanceToCenter);
+               float glow = exp(-distanceToCenter * 7.0) * lit * 0.24;
+               float pin = (1.0 - smoothstep(0.10, 0.22, distanceToCenter)) * 0.035;
+               float brightness = max(pin, lit * dot + glow);
+               gl_FragColor = vec4(vec3(brightness), 1.0);
+             }`,
+          ),
+        );
+        gl.linkProgram(program);
+        if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+          throw new Error(gl.getProgramInfoLog(program) || "shader link failed");
+        }
+
+        const buffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+        gl.bufferData(
+          gl.ARRAY_BUFFER,
+          new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]),
+          gl.STATIC_DRAW,
+        );
+        // biome-ignore lint/correctness/useHookAtTopLevel: WebGL API method, not a React hook.
+        gl.useProgram(program);
+        const position = gl.getAttribLocation(program, "p");
+        gl.enableVertexAttribArray(position);
+        gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
+        gl.uniform1f(gl.getUniformLocation(program, "grid"), GRID);
+
+        const texture = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+
+        return () => {
+          const ratio = window.devicePixelRatio || 1;
+          const width = Math.max(1, Math.round(canvas.clientWidth * ratio));
+          const height = Math.max(1, Math.round(canvas.clientHeight * ratio));
+          if (canvas.width !== width || canvas.height !== height) {
+            canvas.width = width;
+            canvas.height = height;
+          }
+          for (let index = 0; index < pixels.length; index += 1) {
+            const byte = Math.round(pixels[index] * 255);
+            const offset = index * 4;
+            textureBytes[offset] = byte;
+            textureBytes[offset + 1] = byte;
+            textureBytes[offset + 2] = byte;
+            textureBytes[offset + 3] = 255;
+          }
+          gl.viewport(0, 0, width, height);
+          gl.texImage2D(
+            gl.TEXTURE_2D,
+            0,
+            gl.RGBA,
+            GRID,
+            GRID,
+            0,
+            gl.RGBA,
+            gl.UNSIGNED_BYTE,
+            textureBytes,
+          );
+          gl.drawArrays(gl.TRIANGLES, 0, 6);
+        };
+      }
+
+      function createFallbackRenderer() {
+        const context = canvas.getContext("2d");
+        return () => {
+          const ratio = window.devicePixelRatio || 1;
+          const width = Math.max(1, Math.round(canvas.clientWidth * ratio));
+          const height = Math.max(1, Math.round(canvas.clientHeight * ratio));
+          if (canvas.width !== width || canvas.height !== height) {
+            canvas.width = width;
+            canvas.height = height;
+          }
+          context.fillStyle = "#000";
+          context.fillRect(0, 0, width, height);
+          const cellWidth = width / GRID;
+          const cellHeight = height / GRID;
+          const radius = Math.min(cellWidth, cellHeight) * 0.36;
+          for (let y = 0; y < GRID; y += 1) {
+            for (let x = 0; x < GRID; x += 1) {
+              const value = Math.max(0.025, pixels[y * GRID + x]);
+              context.fillStyle = `rgba(255,255,255,${value})`;
+              context.beginPath();
+              context.arc(
+                (x + 0.5) * cellWidth,
+                (y + 0.5) * cellHeight,
+                radius,
+                0,
+                Math.PI * 2,
+              );
+              context.fill();
+            }
+          }
+        };
+      }
+
+      let render;
+      try {
+        render = createRenderer();
+      } catch (error) {
+        console.warn("Mesh Buddy WebGL unavailable; using canvas fallback", error);
+        render = createFallbackRenderer();
+      }
+
+      function frame(now) {
+        if (!model.manualState && model.state === "ONLINE") applyLiveState(now);
+        composeFrame(now);
+        render();
+        requestAnimationFrame(frame);
+      }
+
+      if (invoke) {
+        tick();
+        setInterval(tick, POLL_MS);
+      } else {
+        let demoTokens = 456;
+        ingest(
+          { tokensServed: demoTokens, inflight: 0, peers: 6 },
+          { state: "running" },
+        );
+        setInterval(() => {
+          const active = Math.random() > 0.55;
+          const delta = active ? 8 + Math.floor(Math.random() * 28) : 0;
+          demoTokens += delta;
+          ingest(
+            { tokensServed: demoTokens, inflight: active ? 1 : 0, peers: 6 },
+            { state: "running" },
+          );
+        }, 1800);
+      }
+      requestAnimationFrame(frame);
+    </script>
+  </body>
+</html>

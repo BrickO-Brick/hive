@@ -8,6 +8,7 @@ import { DrawerPanelIcon } from "@/shared/ui/DrawerPanelIcon";
 import { cn } from "@/shared/lib/cn";
 import { topChromeBackdrop } from "@/shared/layout/chromeLayout";
 import { useOptionalSidebar } from "@/shared/ui/sidebar";
+import { MeshSharePowerButton } from "@/features/mesh-compute/ui/MeshSharePowerButton";
 
 type AppTopChromeProps = {
   canGoBack: boolean;
@@ -160,6 +161,14 @@ export function AppTopChrome({
         data-tauri-drag-region
         id="app-top-chrome-content"
       />
+      <div
+        className={cn(
+          "ml-auto flex shrink-0 items-center",
+          navRowAlignmentClass,
+        )}
+      >
+        <MeshSharePowerButton />
+      </div>
     </div>
   );
 }

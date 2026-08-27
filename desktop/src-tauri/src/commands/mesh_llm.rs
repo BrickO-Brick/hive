@@ -37,6 +37,10 @@ fn one_shot_restart_checkpoint(config: &MeshSharingConfig) -> MeshSharingConfig 
     checkpoint
 }
 
+fn should_start_sharing_after_restart(config: &MeshSharingConfig) -> bool {
+    config.start_on_next_launch && !config.model_id.trim().is_empty()
+}
+
 fn mesh_sharing_config_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app
         .path()
@@ -69,6 +73,12 @@ fn load_mesh_sharing_config(app: &AppHandle) -> Result<Option<MeshSharingConfig>
 
 const RELAY_MESH_RUNTIME_NO_TARGET: &str =
     "Buzz shared compute requires a live serving member; start serving the selected model on a member, then try again";
+
+/// Dedicated Buzz community used as this branch's shared-compute trust and
+/// discovery boundary. Keeping this backend-owned prevents companion windows
+/// or agent configuration from redirecting compute discovery to arbitrary
+/// relays.
+pub(crate) const MESHLLM_COMMUNITY_RELAY_URL: &str = "wss://meshllm.communities.buzz.xyz";
 
 /// Whether the Share-compute "stop sharing" path (`mesh_stop_node`) should tear
 /// down the runtime currently occupying the single slot.
@@ -159,8 +169,8 @@ fn buzz_mesh_name_for_relay(relay_url: &str) -> String {
     format!("buzz-community-{}", &digest[..32])
 }
 
-pub(super) fn buzz_mesh_name(state: &AppState) -> String {
-    buzz_mesh_name_for_relay(&relay::relay_ws_url_with_override(state))
+pub(super) fn buzz_mesh_name(_state: &AppState) -> String {
+    buzz_mesh_name_for_relay(MESHLLM_COMMUNITY_RELAY_URL)
 }
 
 fn advance_mesh_status_cursor(
@@ -220,7 +230,7 @@ async fn query_mesh_discovery_events_at(
 }
 
 async fn query_mesh_discovery_events(state: &AppState) -> Result<Vec<nostr::Event>, String> {
-    query_mesh_discovery_events_at(state, &relay::relay_ws_url_with_override(state)).await
+    query_mesh_discovery_events_at(state, MESHLLM_COMMUNITY_RELAY_URL).await
 }
 
 /// Resolve the admission roster by intersecting member-signed mesh status
@@ -341,31 +351,28 @@ pub(crate) async fn restore_mesh_sharing(app: &AppHandle, state: &AppState) -> C
     let Some(mut config) = load_mesh_sharing_config(app)? else {
         return Ok(());
     };
-    if (!config.enabled && !config.start_on_next_launch) || config.model_id.trim().is_empty() {
+    if !should_start_sharing_after_restart(&config) {
+        if config.enabled || config.start_on_next_launch {
+            save_mesh_sharing_config(app, &pending_new_start_checkpoint(&config))?;
+        }
         return Ok(());
     }
     config.model_id = mesh_llm::canonical_curated_model_id(&config.model_id).to_string();
+    config.relay_url = Some(MESHLLM_COMMUNITY_RELAY_URL.to_string());
     if state.mesh_llm_runtime.lock().await.is_some() {
         return Ok(());
     }
-    let relay_url = config
-        .relay_url
-        .clone()
-        .unwrap_or_else(|| relay::relay_ws_url_with_override(state));
+    let relay_url = MESHLLM_COMMUNITY_RELAY_URL.to_string();
     let (trusted_owner_ids, join_token) = resolve_buzz_mesh_startup_at(state, &relay_url).await;
     let mut runtime = state.mesh_llm_runtime.lock().await;
     if runtime.is_some() {
         return Ok(());
     }
-    if config.start_on_next_launch {
-        // Consume a role-switch request before doing any potentially long model
-        // work. If Buzz exits during that work, the next launch stays stopped.
-        config = pending_new_start_checkpoint(&config);
-        save_mesh_sharing_config(app, &config)?;
-    }
-    // This is restoration of a previously inference-ready serving node. Keep
-    // the enabled checkpoint armed while restoring so a transient startup
-    // failure does not silently turn Share Compute off.
+    // Consume the explicit role-switch request before doing any potentially
+    // long model work. A normal app launch never resumes sharing automatically.
+    config = pending_new_start_checkpoint(&config);
+    save_mesh_sharing_config(app, &config)?;
+    super::mesh_buddy_window::open_mesh_buddy_window_on_main_thread(app).await?;
     let request = mesh_llm::StartMeshNodeRequest {
         mode: mesh_llm::MeshNodeMode::Serve,
         model_id: Some(config.model_id.clone()),
@@ -378,15 +385,14 @@ pub(crate) async fn restore_mesh_sharing(app: &AppHandle, state: &AppState) -> C
     let started = mesh_llm::DesktopMeshRuntime::start(request)
         .await
         .map_err(|error| format!("failed to restore Share Compute: {error:#}"))?;
-    // Install the restored runtime immediately: it is tracked by AppState from
-    // here on, so it can never be orphaned. Restoring a previously
-    // inference-ready node still has to load ~tens of GB of weights and may
+    // Install the restarted runtime immediately: it is tracked by AppState
+    // from here on, so it can never be orphaned. It still has to load ~tens of
+    // GB of weights and may
     // download package layers after the ports bind, and the readiness probe
     // itself serializes behind any first inference. None of that is a failed
-    // restore — stopping the node and reporting failure (the old behaviour)
-    // tore down a node that was simply still warming up. The checkpoint stays
-    // armed (`enabled`), so a genuinely broken restore is retried next launch
-    // rather than silently turning Share Compute off.
+    // start — stopping the node and reporting failure (the old behaviour)
+    // tore down a node that was simply still warming up. The saved enabled bit
+    // describes this live process only; a later normal app launch disarms it.
     *runtime = Some(started);
     config.enabled = true;
     config.start_on_next_launch = false;
@@ -408,7 +414,7 @@ pub async fn mesh_start_node(
     state: State<'_, AppState>,
     mut request: mesh_llm::StartMeshNodeRequest,
 ) -> CmdResult<mesh_llm::MeshNodeStatus> {
-    let relay_url = relay::relay_ws_url_with_override(&state);
+    let relay_url = MESHLLM_COMMUNITY_RELAY_URL.to_string();
     request.relay_url = Some(relay_url.clone());
     if let Some(model_id) = request.model_id.as_mut() {
         *model_id = mesh_llm::canonical_curated_model_id(model_id).to_string();
@@ -514,8 +520,9 @@ pub async fn mesh_start_node(
     drop(runtime);
     if let Some(config) = sharing_config.as_ref() {
         // Installed + tracked == Share Compute is on, so persist the enabled
-        // config now (mirroring restore), not gated on the probe. Gating it
-        // meant a slow first start served fine but came back OFF next launch.
+        // config now (mirroring the one-shot restart), not gated on the probe.
+        // A normal later app launch deliberately disarms this current-process
+        // marker and starts with sharing off.
         // Safe: neither the watchdog (evicts only a closed port) nor restore
         // (leaves a warming node alone) can loop a slow-but-alive node, and an
         // unstartable config fails earlier in `start()`. Probe is informational.
@@ -523,7 +530,7 @@ pub async fn mesh_start_node(
         if let Err(error) = wait_for_mesh_inference(&config.model_id).await {
             eprintln!(
                 "buzz-mesh: node started but inference is not ready yet ({error}); \
-                 leaving it to warm up (Share Compute stays armed for next launch)"
+                 leaving it to warm up"
             );
         }
     }
@@ -589,7 +596,7 @@ pub(crate) async fn ensure_client_node_for_model(
         max_vram_gb: None,
         join_token: Some(join_token.clone()),
         mesh_name: Some(buzz_mesh_name(state)),
-        relay_url: Some(relay::relay_ws_url_with_override(state)),
+        relay_url: Some(MESHLLM_COMMUNITY_RELAY_URL.to_string()),
         trusted_owner_ids: Some(resolve_trusted_owner_ids_or_self_only(state).await),
     };
     let mut runtime = state.mesh_llm_runtime.lock().await;
@@ -732,12 +739,11 @@ pub(crate) async fn ensure_relay_mesh_for_record(
         }
     }
 
-    // A persisted Share Compute configuration is authoritative about this
-    // machine's role. If no runtime is currently tracked (for example after a
-    // clean process restart), restore the serving node instead of treating an
-    // agent request as permission to replace it with a client node.
+    // Only an explicit one-shot role switch is authoritative across a process
+    // boundary. Normal app launches start with sharing off and may create a
+    // client node when an agent requests community compute.
     if load_mesh_sharing_config(app)?
-        .is_some_and(|config| config.enabled && !config.model_id.trim().is_empty())
+        .is_some_and(|config| should_start_sharing_after_restart(&config))
     {
         restore_mesh_sharing(app, &state).await?;
         return wait_for_mesh_inference(model_id).await;

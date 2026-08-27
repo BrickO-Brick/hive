@@ -20,6 +20,7 @@ import {
   meshStopNode,
   meshInstalledModels,
   meshModelCatalog,
+  openMeshBuddyWindow,
 } from "@/shared/api/tauriMesh";
 import type {
   MeshCatalogEntry,
@@ -37,11 +38,14 @@ import {
 } from "../hooks/useMeshDownloadProgress";
 import { useMeshNodeStatus } from "../hooks/useMeshNodeStatus";
 import { useMeshServingUsage } from "../hooks/useMeshServingUsage";
+import {
+  MESH_SHARE_MAX_VRAM_STORAGE_KEY,
+  MESH_SHARE_MODEL_STORAGE_KEY,
+  readMeshShareDraft,
+  writeMeshShareDraft,
+} from "../sharePreferences";
 import { deriveMeshShareToggle } from "../shareToggleState";
 import { deriveServingIndicator } from "../servingUsage";
-
-const MODEL_DRAFT_STORAGE_KEY = "buzz.mesh-compute.share.model.v1";
-const MAX_VRAM_DRAFT_STORAGE_KEY = "buzz.mesh-compute.share.max-vram-gb.v1";
 
 // Keep the Share compute controls visually and behaviorally aligned with the
 // agent configuration fields. This is intentionally the same shell used by
@@ -56,26 +60,6 @@ const SHARE_COMPUTE_REVEAL_TRANSITION = {
   duration: 0.22,
   ease: [0.23, 1, 0.32, 1],
 } as const;
-
-function readDraft(key: string): string {
-  try {
-    return window.localStorage.getItem(key) ?? "";
-  } catch {
-    return "";
-  }
-}
-
-function writeDraft(key: string, value: string): void {
-  try {
-    if (value === "") {
-      window.localStorage.removeItem(key);
-    } else {
-      window.localStorage.setItem(key, value);
-    }
-  } catch {
-    // Ignore unavailable/full storage; the input still works for this session.
-  }
-}
 
 /**
  * Settings → Compute → Share compute.
@@ -92,10 +76,10 @@ export function MeshComputeSettingsCard() {
   >([]);
   const [catalog, setCatalog] = React.useState<MeshModelCatalog | null>(null);
   const [modelInput, setModelInput] = React.useState(() =>
-    readDraft(MODEL_DRAFT_STORAGE_KEY),
+    readMeshShareDraft(MESH_SHARE_MODEL_STORAGE_KEY),
   );
   const [maxVramGb, setMaxVramGb] = React.useState<string>(() =>
-    readDraft(MAX_VRAM_DRAFT_STORAGE_KEY),
+    readMeshShareDraft(MESH_SHARE_MAX_VRAM_STORAGE_KEY),
   );
   const [isCustomModelEditing, setIsCustomModelEditing] = React.useState(false);
   const [advancedOpen, setAdvancedOpen] = React.useState(false);
@@ -142,7 +126,7 @@ export function MeshComputeSettingsCard() {
         setCatalog(value);
         setModelInput((current) => {
           if (current.trim() !== "" || !value.recommended) return current;
-          writeDraft(MODEL_DRAFT_STORAGE_KEY, value.recommended);
+          writeMeshShareDraft(MESH_SHARE_MODEL_STORAGE_KEY, value.recommended);
           return value.recommended;
         });
       } catch {
@@ -166,7 +150,7 @@ export function MeshComputeSettingsCard() {
       status.modelId !== modelInput
     ) {
       setModelInput(status.modelId);
-      writeDraft(MODEL_DRAFT_STORAGE_KEY, status.modelId);
+      writeMeshShareDraft(MESH_SHARE_MODEL_STORAGE_KEY, status.modelId);
     }
   }, [status?.state, status?.mode, status?.modelId, modelInput]);
 
@@ -203,6 +187,7 @@ export function MeshComputeSettingsCard() {
       if (next) {
         const maxVram =
           maxVramGb.trim() === "" ? undefined : Number.parseFloat(maxVramGb);
+        await openMeshBuddyWindow();
         await meshStartNode({
           mode: "serve",
           modelId: modelInput.trim() || undefined,
@@ -228,7 +213,7 @@ export function MeshComputeSettingsCard() {
     <section className="min-w-0" data-testid="settings-mesh-share-compute">
       <SettingsSectionHeader
         title="Share compute"
-        description="Share this machine with members of this relay so they can run agents here."
+        description="Share this machine with members of the MeshLLM Buzz community so they can run agents here."
       />
 
       {error ? (
@@ -291,7 +276,7 @@ export function MeshComputeSettingsCard() {
             onCustomModelEditingChange={setIsCustomModelEditing}
             onModelChange={(next) => {
               setModelInput(next);
-              writeDraft(MODEL_DRAFT_STORAGE_KEY, next);
+              writeMeshShareDraft(MESH_SHARE_MODEL_STORAGE_KEY, next);
             }}
           />
 
@@ -324,7 +309,7 @@ export function MeshComputeSettingsCard() {
                   onChange={(e) => {
                     const next = e.target.value;
                     setMaxVramGb(next);
-                    writeDraft(MAX_VRAM_DRAFT_STORAGE_KEY, next);
+                    writeMeshShareDraft(MESH_SHARE_MAX_VRAM_STORAGE_KEY, next);
                   }}
                   placeholder="No limit"
                   usePersonaInputStyle
@@ -679,7 +664,7 @@ function StatusLine({
       <p className="text-sm text-muted-foreground">
         {omitSharingVerb ? "" : "Sharing"}
         {modelLabel ? `${omitSharingVerb ? "" : " "}${modelLabel}` : ""} with
-        relay members.
+        MeshLLM community members.
       </p>
     );
   }

@@ -11775,6 +11775,8 @@ export function maybeInstallE2eTauriMocks() {
         return meshNodeStatus(mockMeshState.nodeState, mockMeshState.nodeMode);
       case "mesh_serving_usage":
         return mockMeshState.servingUsage;
+      case "open_mesh_buddy_window":
+        return null;
       case "mesh_start_node": {
         const req = (
           payload as {
