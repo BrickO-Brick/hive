@@ -301,8 +301,46 @@ fn runtime_needs_mode_probe(current_owners: Option<&[String]>) -> bool {
     current_owners.is_none_or(<[String]>::is_empty)
 }
 
-fn open_runtime_should_restart(query: &Result<Option<Vec<String>>, String>) -> bool {
-    matches!(query, Ok(Some(_)))
+#[derive(Debug, PartialEq, Eq)]
+enum OpenRuntimeObservation {
+    Open,
+    ClosedWithRoster,
+    ClosedWithoutRoster(String),
+    Unknown(String),
+}
+
+fn open_runtime_should_restart(observation: &OpenRuntimeObservation) -> bool {
+    matches!(
+        observation,
+        OpenRuntimeObservation::ClosedWithRoster | OpenRuntimeObservation::ClosedWithoutRoster(_)
+    )
+}
+
+fn classify_open_runtime_observation(
+    mode: Result<crate::mesh_llm::MeshRelayMode, String>,
+    closed_roster: Option<Result<Vec<String>, String>>,
+) -> OpenRuntimeObservation {
+    match mode {
+        Ok(mode) if mode.is_open() => OpenRuntimeObservation::Open,
+        Ok(_) => match closed_roster {
+            Some(Ok(_)) => OpenRuntimeObservation::ClosedWithRoster,
+            Some(Err(error)) => OpenRuntimeObservation::ClosedWithoutRoster(error),
+            None => OpenRuntimeObservation::ClosedWithoutRoster(
+                "closed relay roster was not queried".to_string(),
+            ),
+        },
+        Err(error) => OpenRuntimeObservation::Unknown(error),
+    }
+}
+
+async fn observe_open_runtime_relay(state: &AppState, relay_url: &str) -> OpenRuntimeObservation {
+    let mode = crate::commands::mesh_llm::resolved_relay_mesh_mode(relay_url).await;
+    let closed_roster = if matches!(&mode, Ok(mode) if !mode.is_open()) {
+        Some(crate::commands::mesh_llm::resolve_closed_trusted_owner_ids_at(state, relay_url).await)
+    } else {
+        None
+    };
+    classify_open_runtime_observation(mode, closed_roster)
 }
 
 async fn reconcile_roster(
@@ -330,14 +368,19 @@ async fn reconcile_roster(
         .map(str::to_owned)
         .unwrap_or_else(|| crate::relay::relay_ws_url_with_override(&state));
     if current_owners.is_none() {
-        let query =
-            crate::commands::mesh_llm::resolve_trusted_owner_ids_at(&state, &relay_url).await;
-        if open_runtime_should_restart(&query) {
-            eprintln!(
-                "buzz-mesh: relay now enforces membership; restarting Buzz to apply its allowlist"
-            );
+        let observation = observe_open_runtime_relay(&state, &relay_url).await;
+        if open_runtime_should_restart(&observation) {
+            match &observation {
+                OpenRuntimeObservation::ClosedWithRoster => eprintln!(
+                    "buzz-mesh: relay now enforces membership; restarting Buzz to apply its allowlist"
+                ),
+                OpenRuntimeObservation::ClosedWithoutRoster(error) => eprintln!(
+                    "buzz-mesh: relay now enforces membership but its roster is unavailable; restarting Buzz fail-closed: {error}"
+                ),
+                OpenRuntimeObservation::Open | OpenRuntimeObservation::Unknown(_) => {}
+            }
             app.request_restart();
-        } else if let Err(error) = query {
+        } else if let OpenRuntimeObservation::Unknown(error) = observation {
             eprintln!(
                 "buzz-mesh: open-relay mode recheck failed; keeping the running policy: {error}"
             );
@@ -732,14 +775,34 @@ mod tests {
     }
 
     #[test]
-    fn open_runtime_restarts_only_for_a_proven_closed_roster() {
-        assert!(open_runtime_should_restart(&Ok(Some(vec![
-            "owner-a".to_string()
-        ]))));
-        assert!(!open_runtime_should_restart(&Ok(None)));
-        assert!(!open_runtime_should_restart(&Err(
-            "NIP-11 timed out".to_string()
-        )));
+    fn open_to_closed_with_unavailable_roster_fails_closed() {
+        let observation = classify_open_runtime_observation(
+            Ok(crate::mesh_llm::MeshRelayMode::ClosedMembershipEnforced),
+            Some(Err("relay returned no membership snapshot".to_string())),
+        );
+        assert_eq!(
+            observation,
+            OpenRuntimeObservation::ClosedWithoutRoster(
+                "relay returned no membership snapshot".to_string()
+            )
+        );
+        assert!(open_runtime_should_restart(&observation));
+    }
+
+    #[test]
+    fn open_runtime_restarts_for_any_proven_closed_mode() {
+        assert!(!open_runtime_should_restart(&OpenRuntimeObservation::Open));
+        assert!(open_runtime_should_restart(
+            &OpenRuntimeObservation::ClosedWithRoster
+        ));
+        assert!(open_runtime_should_restart(
+            &OpenRuntimeObservation::ClosedWithoutRoster(
+                "relay returned no membership snapshot".to_string()
+            )
+        ));
+        assert!(!open_runtime_should_restart(
+            &OpenRuntimeObservation::Unknown("NIP-11 timed out".to_string())
+        ));
     }
 
     #[test]

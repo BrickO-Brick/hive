@@ -209,7 +209,9 @@ async fn probe_relay_mesh_mode(relay_url: &str) -> Result<mesh_llm::MeshRelayMod
 /// HTTP, and document errors remain errors so callers can preserve a running
 /// admission policy instead of turning an observation failure into a mode
 /// transition.
-async fn resolved_relay_mesh_mode(relay_url: &str) -> Result<mesh_llm::MeshRelayMode, String> {
+pub(crate) async fn resolved_relay_mesh_mode(
+    relay_url: &str,
+) -> Result<mesh_llm::MeshRelayMode, String> {
     probe_relay_mesh_mode(relay_url).await
 }
 
