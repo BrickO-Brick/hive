@@ -368,7 +368,8 @@ function ReviewCheckResultObserver({
     ].filter(
       (event) =>
         normalizePubkey(event.pubkey) === normalizePubkey(agentPubkey) &&
-        isAtOrAfterConversationOpener(event, opener),
+        isAtOrAfterConversationOpener(event, opener) &&
+        getThreadReference(event.tags).rootId === opener.eventId,
     );
     const resultEvents = agentEvents
       .filter((event) => isAgentMessage(event, agentPubkey))

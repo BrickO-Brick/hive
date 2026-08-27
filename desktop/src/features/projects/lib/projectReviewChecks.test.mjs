@@ -267,7 +267,15 @@ test("builds a review-only prompt pinned to the exact commit", () => {
   assert.match(prompt, /Frontend quality/);
   assert.match(prompt, /"request_id":"request-123"/);
   assert.match(prompt, /Echo request_id exactly/);
+  assert.match(prompt, /process every event independently/);
+  assert.match(prompt, /answering only the last event/);
+  assert.match(prompt, /exact 64-character Event ID enclosing this request/);
+  assert.match(
+    prompt,
+    /buzz messages send --channel "check-channel" --content - --reply-to <THIS_REQUEST_EVENT_ID>/,
+  );
   assert.match(prompt, /buzz messages send-diff/);
+  assert.match(prompt, /send-diff[^\n]+--reply-to <THIS_REQUEST_EVENT_ID>/);
   assert.match(prompt, /"diff_event_id":null/);
   assert.match(prompt, /copy its exact 64-character event_id/);
   assert.match(prompt, new RegExp(PROJECT_REVIEW_CHECK_RESULT_MARKER));

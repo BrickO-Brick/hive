@@ -327,6 +327,12 @@ export function buildProjectReviewCheckPrompt({
   ];
   return [
     `Run the project review check ${JSON.stringify(check.name)}.`,
+    "THREAD CONTRACT: This message is one independent project review check request.",
+    "The enclosing Buzz event's Event ID (shown by the agent harness immediately above this message content) is THIS_REQUEST_EVENT_ID and is this request's thread root.",
+    "If one turn contains multiple project review check events, process every event independently. A newer event must never replace, cancel, combine with, or stand in for an earlier event.",
+    `For every check event, publish exactly one final result in that event's own thread by providing the marker and JSON below on stdin to: buzz messages send --channel ${JSON.stringify(channelId)} --content - --reply-to <THIS_REQUEST_EVENT_ID>`,
+    "Replace <THIS_REQUEST_EVENT_ID> with the exact 64-character Event ID enclosing this request, without angle brackets. Never use the newest or another check event's ID as a shortcut.",
+    "Never post a check result at the DM top level or in another check's thread. Do not finish the turn after answering only the last event; every request_id delivered in the turn needs its own threaded result.",
     "Review only; do not modify code, push commits, or change the review.",
     "Use the repository and Buzz tools available to you to inspect the exact review commit.",
     "",
@@ -335,7 +341,7 @@ export function buildProjectReviewCheckPrompt({
     "Check definition:",
     ...check.instructions.map((instruction) => `- ${instruction}`),
     "",
-    "End your response with exactly this marker and one JSON object:",
+    "End this request's threaded result with exactly this marker and one JSON object:",
     PROJECT_REVIEW_CHECK_RESULT_MARKER,
     JSON.stringify({
       request_id: requestId,
@@ -358,7 +364,7 @@ export function buildProjectReviewCheckPrompt({
     ...(repoUrl && commit
       ? [
           "When recommending a fix and you can express it safely as code, create one valid unified diff against the exact commit without modifying or committing the review branch.",
-          `Pipe that patch into this command before the final result to publish one native Buzz diff message (kind 40008): buzz messages send-diff --channel ${JSON.stringify(channelId)} --diff - --repo ${JSON.stringify(repoUrl)} --commit ${JSON.stringify(commit)} --description ${JSON.stringify(`Review check ${requestId}`)}`,
+          `Pipe that patch into this command before the final result to publish one native Buzz diff message (kind 40008) in this request's thread: buzz messages send-diff --channel ${JSON.stringify(channelId)} --diff - --repo ${JSON.stringify(repoUrl)} --commit ${JSON.stringify(commit)} --description ${JSON.stringify(`Review check ${requestId}`)} --reply-to <THIS_REQUEST_EVENT_ID>`,
           "Only after send-diff succeeds, copy its exact 64-character event_id into diff_event_id in the final JSON. Never invent or reuse an event id. Do not paste the patch into the JSON.",
           "Use diff_event_id: null when there is no safe code patch. Approved results must use diff_event_id: null.",
         ]

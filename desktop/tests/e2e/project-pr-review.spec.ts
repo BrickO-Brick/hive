@@ -110,6 +110,35 @@ function requestIdFromCheckPrompt(content: string | undefined): string {
   return requestId ?? "";
 }
 
+async function checkOpenerEventId(
+  page: import("@playwright/test").Page,
+  requestId: string,
+): Promise<string> {
+  const findOpener = () =>
+    page.evaluate((expectedRequestId) => {
+      for (let index = 0; index < window.localStorage.length; index += 1) {
+        const key = window.localStorage.key(index);
+        if (!key?.startsWith("buzz.projects.review-checks.v1:")) continue;
+        try {
+          const runs = JSON.parse(window.localStorage.getItem(key) ?? "{}");
+          for (const run of Object.values(runs) as Array<{
+            requestId?: string;
+            opener?: { eventId?: string };
+          }>) {
+            if (run.requestId === expectedRequestId && run.opener?.eventId) {
+              return run.opener.eventId;
+            }
+          }
+        } catch {
+          // Ignore unrelated or partially written local state.
+        }
+      }
+      return null;
+    }, requestId);
+  await expect.poll(findOpener).not.toBeNull();
+  return (await findOpener()) ?? "";
+}
+
 async function expectLocalRepositoryOpenAction(
   page: import("@playwright/test").Page,
 ) {
@@ -175,6 +204,7 @@ test("review checks dispatch to an agent authorized for the relay identity", asy
   expect(sentCheck?.content).toContain("buzz messages send-diff");
   expect(sentCheck?.mentionPubkeys).toContain(RELAY_REVIEW_AGENT_PUBKEY);
   const requestId = requestIdFromCheckPrompt(sentCheck?.content);
+  const openerEventId = await checkOpenerEventId(page, requestId);
   const reviewedCommit = sentCheck?.content
     ?.match(/Commit under review: ([^\n]+)/)?.[1]
     ?.trim();
@@ -193,7 +223,14 @@ test("review checks dispatch to an agent authorized for the relay identity", asy
 
   await waitForMockLiveSubscription(page, "DM");
   await page.evaluate(
-    ({ agentPubkey, diffEventId, diffRepoUrl, requestId, reviewedCommit }) => {
+    ({
+      agentPubkey,
+      diffEventId,
+      diffRepoUrl,
+      openerEventId,
+      requestId,
+      reviewedCommit,
+    }) => {
       window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
         channelName: "DM",
         content: [
@@ -214,6 +251,7 @@ test("review checks dispatch to an agent authorized for the relay identity", asy
         ],
         id: diffEventId,
         kind: 40008,
+        parentEventId: openerEventId,
         pubkey: agentPubkey,
       });
       window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
@@ -240,6 +278,7 @@ test("review checks dispatch to an agent authorized for the relay identity", asy
         })}`,
         createdAt: Math.floor(Date.now() / 1_000) + 2,
         kind: 9,
+        parentEventId: openerEventId,
         pubkey: agentPubkey,
       });
     },
@@ -247,6 +286,7 @@ test("review checks dispatch to an agent authorized for the relay identity", asy
       agentPubkey: RELAY_REVIEW_AGENT_PUBKEY,
       diffEventId: PROPOSED_DIFF_EVENT_ID,
       diffRepoUrl: diffRepoUrl ?? "",
+      openerEventId,
       requestId,
       reviewedCommit: reviewedCommit ?? "",
     },
@@ -425,9 +465,20 @@ test("concurrent review checks only accept their correlated result", async ({
     requestIdFromCheckPrompt(
       prompts.find((prompt) => prompt.includes(`"${checkName}"`)),
     );
+  const interfaceRequestId = requestIdFor("Interface & design system");
+  const frontendRequestId = requestIdFor("Frontend quality");
+  const testRequestId = requestIdFor("Test quality");
+  const openerByRequestId = new Map(
+    await Promise.all(
+      [interfaceRequestId, frontendRequestId, testRequestId].map(
+        async (requestId) =>
+          [requestId, await checkOpenerEventId(page, requestId)] as const,
+      ),
+    ),
+  );
   const responses = [
     {
-      request_id: requestIdFor("Frontend quality"),
+      request_id: frontendRequestId,
       conclusion: "fix-recommended",
       summary: "Frontend-specific result.",
       findings: [
@@ -440,13 +491,13 @@ test("concurrent review checks only accept their correlated result", async ({
       ],
     },
     {
-      request_id: requestIdFor("Test quality"),
+      request_id: testRequestId,
       conclusion: "approved",
       summary: "Test-specific result.",
       findings: [],
     },
     {
-      request_id: requestIdFor("Interface & design system"),
+      request_id: interfaceRequestId,
       conclusion: "approved",
       summary: "Interface-specific result.",
       findings: [],
@@ -454,21 +505,42 @@ test("concurrent review checks only accept their correlated result", async ({
   ];
 
   await waitForMockLiveSubscription(page, "DM");
+  await page.evaluate(
+    ({ agentPubkey, openerEventId, response }) => {
+      window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
+        channelName: "DM",
+        content: `BUZZ_CHECK_RESULT_V1\n${JSON.stringify(response)}`,
+        createdAt: Math.floor(Date.now() / 1_000) + 1,
+        kind: 9,
+        parentEventId: openerEventId,
+        pubkey: agentPubkey,
+      });
+    },
+    {
+      agentPubkey: RELAY_REVIEW_AGENT_PUBKEY,
+      openerEventId: openerByRequestId.get(interfaceRequestId) ?? "",
+      response: responses[0],
+    },
+  );
+  await expect(checks.nth(1)).toContainText("Running");
+
   const targetIndexes = [1, 2, 0];
   for (const [index, response] of responses.entries()) {
     await page.evaluate(
-      ({ agentPubkey, createdAt, response }) => {
+      ({ agentPubkey, createdAt, openerEventId, response }) => {
         window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
           channelName: "DM",
           content: `BUZZ_CHECK_RESULT_V1\n${JSON.stringify(response)}`,
           createdAt,
           kind: 9,
+          parentEventId: openerEventId,
           pubkey: agentPubkey,
         });
       },
       {
         agentPubkey: RELAY_REVIEW_AGENT_PUBKEY,
-        createdAt: Math.floor(Date.now() / 1_000) + index + 1,
+        createdAt: Math.floor(Date.now() / 1_000) + index + 2,
+        openerEventId: openerByRequestId.get(response.request_id) ?? "",
         response,
       },
     );
