@@ -56,19 +56,22 @@ export function parseStarPayload(json: unknown): ChannelStarStore | null {
                 ((v as Record<string, unknown>).updatedAt as number) >= 0
               );
             })
-            // Normalize `rev`: accept a safe non-negative integer, otherwise 0.
-            // An entry is never dropped solely because `rev` is absent (older
-            // build) or malformed — absence is a valid mergeable value. `rev`
-            // above `Number.MAX_SAFE_INTEGER` is rejected here: at that
-            // magnitude `maxRev + 1` no longer advances, so a malformed entry
-            // could wedge every later toggle. Treating it as rev 0 lets a real
-            // later click win the same-second tie instead (Carl P2).
+            // Normalize `rev`: accept a non-negative integer with headroom for
+            // one mint, otherwise 0. An entry is never dropped solely because
+            // `rev` is absent (older build) or malformed — absence is a valid
+            // mergeable value. `rev >= Number.MAX_SAFE_INTEGER` is rejected:
+            // the click path mints `maxRev + 1`, so accepting the boundary
+            // itself would overflow to the same unsafe value and stop
+            // advancing, wedging every later toggle. Requiring strictly-below
+            // keeps `maxRev + 1` safe. Treating an out-of-range value as rev 0
+            // lets a real later click win the same-second tie instead (Carl P2).
             .map(([id, v]) => {
               const rawRev = v.rev;
               const rev =
                 typeof rawRev === "number" &&
                 Number.isSafeInteger(rawRev) &&
-                rawRev >= 0
+                rawRev >= 0 &&
+                rawRev < Number.MAX_SAFE_INTEGER
                   ? rawRev
                   : 0;
               return [

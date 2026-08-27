@@ -42,13 +42,15 @@ test("parseMutePayload: malformed rev (string / negative / non-integer / NaN / u
       neg: { muted: true, updatedAt: 1, rev: -2 },
       frac: { muted: true, updatedAt: 1, rev: 1.5 },
       nan: { muted: true, updatedAt: 1, rev: NaN },
-      // Above Number.MAX_SAFE_INTEGER: `maxRev + 1` cannot advance past it, so a
-      // malformed entry at this magnitude would wedge later toggles forever
-      // unless rejected here (Carl P2).
+      // At or above Number.MAX_SAFE_INTEGER: `maxRev + 1` cannot advance past
+      // Number.MAX_SAFE_INTEGER, so an entry at the boundary itself (or beyond)
+      // would wedge later toggles forever unless rejected here (Carl P2 /
+      // Thufir off-by-one). The bound is exclusive, so the boundary normalizes.
+      boundary: { muted: true, updatedAt: 1, rev: Number.MAX_SAFE_INTEGER },
       huge: { muted: true, updatedAt: 1, rev: Number.MAX_SAFE_INTEGER + 1 },
     },
   });
-  for (const id of ["str", "neg", "frac", "nan", "huge"]) {
+  for (const id of ["str", "neg", "frac", "nan", "boundary", "huge"]) {
     assert.equal(result.channels[id].rev, 0, `${id} rev normalized to 0`);
     assert.equal(result.channels[id].muted, true, `${id} entry kept`);
   }
@@ -189,24 +191,48 @@ test("mergeStores: same-second old-build click (rev 0) loses to an earlier new-b
   );
 });
 
-test("mergeStores: a huge (unsafe) rev entry cannot wedge a later false toggle", () => {
-  // Carl P2 regression. A malformed blob carries a same-second rev far above
-  // Number.MAX_SAFE_INTEGER on a `muted:true` entry. Before the parse bound,
-  // this survived as-is and — since a real later click mints rev = maxSeen + 1,
-  // which cannot advance past an unsafe integer — the true entry won the
-  // same-second tie forever, suppressing every later unmute. The parser now
-  // normalizes the unsafe rev to 0, so a same-second later click (rev 1) wins.
+test("mergeStores: a boundary (MAX_SAFE_INTEGER) rev cannot wedge later same-second toggles", () => {
+  // Carl P2 / Thufir off-by-one regression. A malformed blob carries a
+  // same-second rev of exactly Number.MAX_SAFE_INTEGER on a `muted:true`
+  // entry — the largest value the pre-fix `Number.isSafeInteger` guard still
+  // ACCEPTED. Had it survived, the click path (`rev = max(seen) + 1`) would
+  // mint Number.MAX_SAFE_INTEGER + 1, an unsafe integer that never advances,
+  // so the true entry would win every same-second tie forever. The parser now
+  // rejects `rev >= Number.MAX_SAFE_INTEGER` (exclusive), normalizing it to 0
+  // and preserving headroom for `maxRev + 1`. Drive the production mint
+  // (`Math.max(localRev, maxRevSeen) + 1`) through alternating same-second
+  // toggles and assert each later toggle mints a strictly-advancing rev and wins.
   const wedged = parseMutePayload({
     version: 1,
-    channels: { c: { muted: true, updatedAt: 100, rev: Number.MAX_VALUE } },
+    channels: {
+      c: { muted: true, updatedAt: 100, rev: Number.MAX_SAFE_INTEGER },
+    },
   });
-  assert.equal(wedged.channels.c.rev, 0, "unsafe rev is normalized to 0");
-  const laterUnmute = S(E(false, 100, 1));
-  assert.deepEqual(
-    mergeStores(wedged, laterUnmute).channels.c,
-    E(false, 100, 1),
-    "the same-second later unmute (rev 1) wins — no permanent wedge",
-  );
+  assert.equal(wedged.channels.c.rev, 0, "boundary rev is normalized to 0");
+
+  // Production mint: same fixed second (100), rev = max(local, seen) + 1.
+  const mint = (store, muted) => {
+    const local = store.channels.c;
+    const rev = Math.max(local?.rev ?? 0, 0) + 1;
+    return { store: S(E(muted, 100, rev)), rev };
+  };
+
+  let state = wedged;
+  let prevRev = state.channels.c.rev; // 0
+  for (const muted of [false, true, false, true]) {
+    const { store: click, rev } = mint(state, muted);
+    assert.ok(
+      rev > prevRev,
+      `mint rev ${rev} strictly advances past ${prevRev}`,
+    );
+    state = mergeStores(state, click);
+    assert.deepEqual(
+      state.channels.c,
+      E(muted, 100, rev),
+      `same-second toggle to ${muted} (rev ${rev}) wins — no wedge`,
+    );
+    prevRev = rev;
+  }
 });
 
 test("mergeStores: unmute with higher updatedAt overrides mute", () => {
