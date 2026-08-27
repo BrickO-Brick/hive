@@ -861,6 +861,65 @@ impl RelayEventPublisher {
         (Self { cmd_tx }, event_rx)
     }
 
+    /// Test publisher that simulates a relay whose `OK` is lost on a connected
+    /// socket: the EVENT frame is written, but the acknowledgement never arrives
+    /// and the waiter is only resolved when its own per-waiter deadline sweeps.
+    ///
+    /// - kind-9 sentinel publishes are always `Accepted` immediately so the
+    ///   permission lifecycle proceeds to `finish_permission`.
+    /// - the first `resolved_lost_before_accept` kind-40003 publishes forward the
+    ///   event but withhold the ACK until the supplied `deadline`, then resolve
+    ///   `Uncertain` — exactly what the relay background task does when it sweeps
+    ///   a waiter whose `OK` never came back. Every later one is `Accepted`.
+    ///
+    /// This distinguishes the per-attempt-deadline seam from
+    /// [`Self::test_pair_resolved_reconnect`]: here the socket is *connected* and
+    /// the event reaches the relay, so only a bounded per-attempt ACK deadline —
+    /// not the card expiry — sweeps the stuck waiter in time to retransmit.
+    #[cfg(test)]
+    #[allow(clippy::collapsible_match)]
+    pub(crate) fn test_pair_resolved_lost_ok(
+        resolved_lost_before_accept: usize,
+    ) -> (Self, mpsc::Receiver<Event>) {
+        let (cmd_tx, mut cmd_rx) = mpsc::channel::<RelayCommand>(64);
+        let (event_tx, event_rx) = mpsc::channel(64);
+        tokio::spawn(async move {
+            let mut lost_remaining = resolved_lost_before_accept;
+            while let Some(cmd) = cmd_rx.recv().await {
+                match cmd {
+                    RelayCommand::PublishEvent { event } => {
+                        if event_tx.send(*event).await.is_err() {
+                            break;
+                        }
+                    }
+                    RelayCommand::PublishEventAcked {
+                        event,
+                        ack_tx,
+                        deadline,
+                        ..
+                    } => {
+                        let is_resolved = event.kind.as_u16() == 40003;
+                        let _ = event_tx.send(*event).await;
+                        if is_resolved && lost_remaining > 0 {
+                            lost_remaining -= 1;
+                            // Withhold the ACK until the caller's per-waiter
+                            // deadline, then sweep it Uncertain — the connected
+                            // socket wrote the EVENT but the OK was lost.
+                            tokio::spawn(async move {
+                                tokio::time::sleep_until(deadline).await;
+                                let _ = ack_tx.send(AckOutcome::Uncertain);
+                            });
+                        } else {
+                            let _ = ack_tx.send(AckOutcome::Accepted);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        });
+        (Self { cmd_tx }, event_rx)
+    }
+
     /// Test publisher whose command channel is dead on arrival (receiver dropped
     /// before the first send). Any [`RelayCommand`] sent through this publisher
     /// returns `Err(SendError)`, which the production code maps to

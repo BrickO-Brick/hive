@@ -3981,11 +3981,19 @@ async fn retransmit_resolved_edit(
             );
             return;
         }
-        // Register the acked publish with the card's expiry as the per-waiter
-        // deadline so a disconnected relay resolves the waiter promptly rather
-        // than parking it past the point the card is useful.
+        // Per-attempt ACK deadline: min(fixed publish timeout, card expiry),
+        // mirroring the pending sentinel path. A connected socket can write the
+        // EVENT frame yet never see the relay's `OK` (lost response, no observed
+        // disconnect); with the raw card expiry as the waiter deadline that
+        // single attempt would park for the whole ≤300s window and exit with
+        // zero retransmissions. Capping each attempt at SENTINEL_PUBLISH_TIMEOUT
+        // sweeps the stuck waiter Uncertain promptly so the same signed event is
+        // resent, while the loop-top check keeps card expiry as the overall bound.
+        let attempt_deadline = (tokio::time::Instant::now()
+            + std::time::Duration::from_secs(SENTINEL_PUBLISH_TIMEOUT_SECS))
+        .min(expiry_deadline);
         match publisher
-            .register_publish_ack(event.clone(), expiry_deadline)
+            .register_publish_ack(event.clone(), attempt_deadline)
             .await
         {
             Ok(ack_rx) => match ack_rx.await.unwrap_or(crate::relay::AckOutcome::Uncertain) {
@@ -10186,6 +10194,80 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(&capture_file);
+    }
+
+    /// Resolved-edit delivery survives a *lost `OK` on a connected socket*.
+    ///
+    /// Distinct from the disconnect case: here the relay receives the EVENT but
+    /// its `OK` never comes back, so the acked waiter is resolved only when its
+    /// per-waiter deadline sweeps. With the raw card expiry (≤300s) as that
+    /// deadline the single attempt would park the whole window and exit with
+    /// zero retransmissions; the fix caps each attempt at
+    /// `SENTINEL_PUBLISH_TIMEOUT_SECS` so the stuck waiter sweeps promptly and
+    /// the identical signed event is resent and accepted.
+    ///
+    /// Acceptance bar (mutation proof): reverting the per-attempt deadline back
+    /// to the raw `expiry_deadline` (`register_publish_ack(event.clone(),
+    /// expiry_deadline)`) makes the first attempt park until card expiry, so
+    /// only ONE kind-40003 publish is ever emitted and this test goes red.
+    ///
+    /// Runs under paused tokio time so the 10s per-attempt deadline and the 2s
+    /// backoff advance deterministically without real waiting.
+    #[tokio::test(start_paused = true)]
+    async fn resolved_edit_retransmitted_after_lost_ok_on_connected_socket() {
+        let keys = Keys::generate();
+        let (publisher, mut event_rx) =
+            crate::relay::RelayEventPublisher::test_pair_resolved_lost_ok(1);
+
+        // Collect every resolved-edit publish (each retransmission attempt).
+        let published: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let published_drain = published.clone();
+        tokio::spawn(async move {
+            while let Some(ev) = event_rx.recv().await {
+                if ev.kind.as_u16() == 40003 {
+                    published_drain.lock().unwrap().push(ev.id.to_hex());
+                }
+            }
+        });
+
+        // Sign the resolved edit once; the retransmit loop resends this exact event.
+        let event = build_kind40003_sentinel(
+            &keys,
+            uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000009").unwrap(),
+            "target-event-id",
+            "resolved-edit-content",
+        )
+        .expect("sentinel must build");
+
+        // Card expiry generously beyond one per-attempt deadline (10s) so the
+        // first attempt sweeps and a second attempt is still within the window.
+        let expiry_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+
+        let task = tokio::spawn(retransmit_resolved_edit(publisher, event, expiry_deadline));
+
+        // Under paused time the runtime auto-advances the clock while every task
+        // is parked on a timer, fast-forwarding the 10s per-attempt deadline sweep
+        // and the 2s backoff. Joining the task drives it to the Accepted second
+        // attempt; a wall-clock guard keeps a regression from hanging.
+        let joined = tokio::time::timeout(std::time::Duration::from_secs(120), task).await;
+        assert!(joined.is_ok(), "retransmit task must terminate, not hang");
+        // Let the collector task drain the forwarded publishes.
+        tokio::task::yield_now().await;
+
+        let resolved_ids = published.lock().unwrap().clone();
+        // Retransmitted despite the connected-socket lost OK — the assertion the
+        // raw-expiry-deadline mutation turns red (it parks 60s, publishes once).
+        assert!(
+            resolved_ids.len() >= 2,
+            "resolved kind-40003 edit must be retransmitted after a lost OK on a \
+             connected socket; saw {} publish(es): {resolved_ids:?}",
+            resolved_ids.len()
+        );
+        assert!(
+            resolved_ids.windows(2).all(|w| w[0] == w[1]),
+            "every retransmission must be the same signed event id; saw {resolved_ids:?}"
+        );
     }
 
     // ── Item 5: exact kind-9 content string from build_sentinel_pending_payload ─
