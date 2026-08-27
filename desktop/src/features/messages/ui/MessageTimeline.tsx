@@ -693,16 +693,7 @@ const MessageTimelineBase = React.forwardRef<
 
   return (
     <TooltipProvider>
-      {/* The render-pending marker must live on this always-mounted wrapper:
-          during the skeleton→loaded transition the message-list branches (and
-          their own markers) are not mounted yet, so a reader would see "not
-          pending" and treat the channel as painted before the heavy deferred
-          list ever committed. Readers are the perf benchmark and the e2e
-          readiness specs; see member-heavy-switch.perf.ts. */}
-      <div
-        className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
-        data-render-pending={isRenderPending ? "true" : undefined}
-      >
+      <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         {showUnreadPill ? (
           <div
             className={cn(
@@ -761,7 +752,12 @@ const MessageTimelineBase = React.forwardRef<
           ref={scrollContainerRef}
         >
           {useTimelineVirtualizer && timelineList ? (
-            <div className="h-full min-h-0 w-full">{timelineList}</div>
+            <div
+              className="h-full min-h-0 w-full"
+              data-render-pending={isRenderPending ? "true" : undefined}
+            >
+              {timelineList}
+            </div>
           ) : (
             <div
               className={cn(
@@ -853,6 +849,7 @@ const MessageTimelineBase = React.forwardRef<
                       !showIntro && !useTimelineVirtualizer && "mt-auto",
                       useTimelineVirtualizer && "min-h-0 flex-1",
                     )}
+                    data-render-pending={isRenderPending ? "true" : undefined}
                   >
                     {timelineList}
                   </div>
