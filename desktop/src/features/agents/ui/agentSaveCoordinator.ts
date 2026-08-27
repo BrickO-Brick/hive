@@ -111,6 +111,37 @@ export async function runAgentSaveCoordinator(
   const def = editContextDefinition(ctx);
   const inst = editContextInstance(ctx);
 
+  // Settlement refetch that never lets a rejection escape the save path. A
+  // rejection means we could not OBSERVE whether the preceding write persisted
+  // — a "verification unknown" state distinct from an observed non-persist. The
+  // write may well have committed, so callers must stop advancing and report
+  // that persistence is unverified rather than claiming the write failed.
+  const verifiedRefetch = async (): Promise<
+    | {
+        verified: true;
+        persona: AgentPersona | null;
+        agent: ManagedAgent | null;
+      }
+    | { verified: false }
+  > => {
+    try {
+      const { persona, agent } = await refetchStores();
+      return { verified: true, persona, agent };
+    } catch {
+      return { verified: false };
+    }
+  };
+
+  // Bail-out for a refetch rejection: dialog stays open (return false) and the
+  // toast states persistence is unverified — never that the write failed.
+  const reportVerificationUnknown = (): false => {
+    const name = def?.displayName ?? inst?.name ?? "the agent";
+    toast.warning(
+      `Could not verify whether ${name}'s changes saved — they may have been applied. Reopen the editor to check before retrying.`,
+    );
+    return false;
+  };
+
   // ── Step 0: Validate ──────────────────────────────────────────────────────
   if (personaInput && def && inst) {
     const runtimeError = validateLinkedAgentRuntimeEdit({
@@ -155,7 +186,9 @@ export async function runAgentSaveCoordinator(
     // persistence (not the command result) decides whether the step failed: a
     // throw whose write is on disk is NOT a failed step, and a silent no-op
     // that did not persist IS. Only a genuine non-persisted write stops advance.
-    const { persona: settled } = await refetchStores();
+    const settle = await verifiedRefetch();
+    if (!settle.verified) return reportVerificationUnknown();
+    const settled = settle.persona;
     const persisted =
       settled !== null &&
       observedStateMatchesPersonaInput(settled, personaInput);
@@ -178,7 +211,9 @@ export async function runAgentSaveCoordinator(
     }
     // Settle after instance write — re-fetch regardless of throw; observed
     // persistence decides (a throw whose write persisted is not a failure).
-    const { agent: settled } = await refetchStores();
+    const settle = await verifiedRefetch();
+    if (!settle.verified) return reportVerificationUnknown();
+    const settled = settle.agent;
     const persisted =
       settled !== null && observedStateMatchesAgentInput(settled, agentInput);
     if (!persisted) {
@@ -211,7 +246,9 @@ export async function runAgentSaveCoordinator(
       // both Tauri setters save the record BEFORE building their returned
       // summary, so a post-save summary error is a thrown-but-persisted write
       // and must NOT stop the sequence. Only an observed non-persist does.
-      const { agent: settled } = await refetchStores();
+      const settle = await verifiedRefetch();
+      if (!settle.verified) return reportVerificationUnknown();
+      const settled = settle.agent;
       const persisted =
         settled !== null && observedPolicyMatches(settled, policy);
       policyResults.push({ policy, written: persisted });
@@ -228,8 +265,10 @@ export async function runAgentSaveCoordinator(
   // Runs after all writes (success or partial/full error). Per-boundary
   // settlement above stopped advancing on any observed mismatch; this final
   // refetch establishes the definitive post-write state for toasts and retry.
-  const { persona: observedPersona, agent: observedAgent } =
-    await refetchStores();
+  const finalSettle = await verifiedRefetch();
+  if (!finalSettle.verified) return reportVerificationUnknown();
+  const observedPersona = finalSettle.persona;
+  const observedAgent = finalSettle.agent;
 
   // ── Derive what persisted from observed state ─────────────────────────────
   const persistedParts: string[] = [];

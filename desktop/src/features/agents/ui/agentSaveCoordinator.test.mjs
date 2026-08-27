@@ -1,7 +1,31 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { toast } from "sonner";
 import { runAgentSaveCoordinator } from "./agentSaveCoordinator.ts";
+
+// Capture toast calls by kind. The coordinator and this test import the same
+// `toast` object from sonner, so overriding its methods here intercepts the
+// calls made inside runAgentSaveCoordinator. Returns a restore fn.
+function captureToasts() {
+  const captured = [];
+  const original = {
+    success: toast.success,
+    warning: toast.warning,
+    error: toast.error,
+  };
+  for (const kind of ["success", "warning", "error"]) {
+    toast[kind] = (message) => {
+      captured.push({ kind, message });
+    };
+  }
+  return {
+    captured,
+    restore() {
+      Object.assign(toast, original);
+    },
+  };
+}
 
 // ── Shared fixtures ────────────────────────────────────────────────────────────
 
@@ -889,4 +913,185 @@ test("test_parallelism_clear_applied_settles_as_persisted", async () => {
     1,
     "onDone must fire when the clear applied",
   );
+});
+
+// ── Test family 7: refetch-rejection verification-unknown (Carl review) ──────
+//
+// refetchStores() is awaited bare at every settlement boundary. If a
+// verification refetch REJECTS after a write may have committed, the rejection
+// must never escape: the coordinator returns false (dialog stays open), fires a
+// "could not verify" warning — NOT a "write failed" error — and stops
+// advancing. Each boundary (definition, instance, policy, final) is covered.
+
+/** A refetchStores whose Nth call (1-based) rejects; earlier/later calls use `ok`. */
+function refetchRejectingOnCall(rejectOn, ok) {
+  let n = 0;
+  return async () => {
+    n += 1;
+    if (n === rejectOn) throw new Error("Store refetch failed");
+    return ok();
+  };
+}
+
+test("test_refetch_rejection_after_definition_write_reports_unknown_not_failed", async () => {
+  const cap = captureToasts();
+  try {
+    const opts = makeOpts({
+      personaInput: makePersonaInput({ displayName: "Alice-renamed" }),
+      agentInput: makeAgentInput({ name: "Alice-renamed" }),
+      updatePersona: async () => {},
+      // First refetch (after the definition write) rejects.
+      refetchStores: refetchRejectingOnCall(1, () => ({
+        persona: makeDefinition({ displayName: "Alice-renamed" }),
+        agent: makeInstance({ name: "Alice-renamed" }),
+      })),
+    });
+
+    const result = await runAgentSaveCoordinator(opts);
+
+    assert.equal(result, false, "refetch rejection must return false");
+    assert.equal(
+      opts._calls.onDone,
+      0,
+      "onDone must NOT fire when persistence could not be verified",
+    );
+    assert.equal(
+      opts._calls.updateManagedAgent,
+      0,
+      "must stop advancing to the instance write after a refetch rejection",
+    );
+    const warnings = cap.captured.filter((c) => c.kind === "warning");
+    assert.equal(warnings.length, 1, "exactly one warning toast");
+    assert.match(
+      warnings[0].message,
+      /could not verify/i,
+      "toast must say persistence could not be verified",
+    );
+    assert.equal(
+      cap.captured.some((c) => c.kind === "error"),
+      false,
+      "must NOT claim the write failed",
+    );
+  } finally {
+    cap.restore();
+  }
+});
+
+test("test_refetch_rejection_after_instance_write_reports_unknown", async () => {
+  const cap = captureToasts();
+  try {
+    const opts = makeOpts({
+      agentInput: makeAgentInput({ name: "Alice-renamed" }),
+      updateManagedAgent: async () => ({
+        agent: makeInstance({ name: "Alice-renamed" }),
+        profileSyncError: null,
+      }),
+      // Only the instance write is present, so its settlement is the first
+      // refetch call.
+      refetchStores: refetchRejectingOnCall(1, () => ({
+        persona: null,
+        agent: makeInstance({ name: "Alice-renamed" }),
+      })),
+    });
+
+    const result = await runAgentSaveCoordinator(opts);
+
+    assert.equal(result, false, "refetch rejection must return false");
+    assert.equal(opts._calls.onDone, 0, "onDone must NOT fire");
+    const warnings = cap.captured.filter((c) => c.kind === "warning");
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0].message, /could not verify/i);
+  } finally {
+    cap.restore();
+  }
+});
+
+test("test_refetch_rejection_after_policy_setter_reports_unknown", async () => {
+  const cap = captureToasts();
+  try {
+    const opts = makeOpts({
+      policySets: [{ type: "autoRestart", pubkey: "pk-abc", value: true }],
+      setAutoRestart: async () => {},
+      // The policy setter's settlement is the first refetch call.
+      refetchStores: refetchRejectingOnCall(1, () => ({
+        persona: null,
+        agent: makeInstance({ autoRestartOnConfigChange: true }),
+      })),
+    });
+
+    const result = await runAgentSaveCoordinator(opts);
+
+    assert.equal(result, false, "refetch rejection must return false");
+    assert.equal(opts._calls.onDone, 0, "onDone must NOT fire");
+    const warnings = cap.captured.filter((c) => c.kind === "warning");
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0].message, /could not verify/i);
+  } finally {
+    cap.restore();
+  }
+});
+
+test("test_refetch_rejection_at_final_settlement_reports_unknown", async () => {
+  const cap = captureToasts();
+  try {
+    // No writes: the only refetch is the final settlement. Its rejection must
+    // still be contained and reported as unverified.
+    const opts = makeOpts({
+      refetchStores: refetchRejectingOnCall(1, () => ({
+        persona: null,
+        agent: null,
+      })),
+    });
+
+    const result = await runAgentSaveCoordinator(opts);
+
+    assert.equal(result, false, "final-settlement rejection must return false");
+    assert.equal(opts._calls.onDone, 0, "onDone must NOT fire");
+    const warnings = cap.captured.filter((c) => c.kind === "warning");
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0].message, /could not verify/i);
+  } finally {
+    cap.restore();
+  }
+});
+
+test("test_mutation_throws_then_refetch_rejects_reports_unknown_not_failed", async () => {
+  // Carl's named case: a write throws AND the verification refetch then rejects.
+  // The mutation may have committed on disk, so the coordinator must report
+  // verification-unknown — never assert the write failed — and keep the dialog
+  // open.
+  const cap = captureToasts();
+  try {
+    const opts = makeOpts({
+      personaInput: makePersonaInput({ displayName: "Alice-renamed" }),
+      updatePersona: async () => {
+        throw new Error("Relay timeout after commit");
+      },
+      refetchStores: refetchRejectingOnCall(1, () => ({
+        persona: null,
+        agent: null,
+      })),
+    });
+
+    const result = await runAgentSaveCoordinator(opts);
+
+    assert.equal(result, false, "must return false — dialog stays open");
+    assert.equal(opts._calls.onDone, 0, "onDone must NOT fire");
+    const warnings = cap.captured.filter((c) => c.kind === "warning");
+    assert.equal(
+      warnings.length,
+      1,
+      "exactly one verification-unknown warning",
+    );
+    assert.match(warnings[0].message, /could not verify/i);
+    assert.equal(
+      cap.captured.some(
+        (c) => c.kind === "error" || /failed/i.test(String(c.message)),
+      ),
+      false,
+      "must NOT claim the write failed when it may have committed",
+    );
+  } finally {
+    cap.restore();
+  }
 });

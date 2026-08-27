@@ -298,6 +298,18 @@ export function useAgentEditMergedSubmit(
           const updated = agents.find((a) => a.pubkey === inst.pubkey);
           if (updated) s.onUpdated?.(updated);
         }
+      } catch (err) {
+        // Belt-and-braces: the coordinator already contains every settlement
+        // rejection, but nothing thrown inside the submit path may escape
+        // silently — an uncaught rejection would leave the dialog stuck on
+        // "Saving..." with no error. Surface it as an unverified-save state.
+        setSaveError(
+          new Error(
+            err instanceof Error && err.message
+              ? `Could not verify whether your changes saved: ${err.message}. Reopen to check before retrying.`
+              : "Could not verify whether your changes saved. Reopen to check before retrying.",
+          ),
+        );
       } finally {
         setIsSaving(false);
       }
