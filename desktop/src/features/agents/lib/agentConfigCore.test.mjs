@@ -139,6 +139,36 @@ for (const scope of ["global", "onboarding"]) {
   });
 }
 
+// Per-agent scopes (definition/instance) intentionally keep effort on the
+// generic legacy BUZZ_AGENT_THINKING_EFFORT row until PR 2.7 migrates Goose —
+// currentPersistence/value stay legacy while targetApplication is native
+// (agents/AGENTS.md rule 2). The scope gate must not broaden to these scopes.
+for (const scope of ["definition", "instance"]) {
+  test(`Goose effort stays on the legacy persistence key at ${scope} scope`, () => {
+    const model = deriveAgentConfigFieldModel({
+      config: {
+        ...config,
+        env_vars: {
+          BUZZ_AGENT_THINKING_EFFORT: "high",
+          GOOSE_THINKING_EFFORT: "low",
+        },
+      },
+      runtime: runtime("goose", { thinkingEnvVar: "GOOSE_THINKING_EFFORT" }),
+      scope,
+    });
+    const effort = field(model, "effort");
+    assert.deepEqual(effort.currentPersistence, {
+      kind: "envVar",
+      key: "BUZZ_AGENT_THINKING_EFFORT",
+    });
+    assert.deepEqual(effort.targetApplication, {
+      kind: "envVar",
+      key: "GOOSE_THINKING_EFFORT",
+    });
+    assert.equal(effort.value, "high");
+  });
+}
+
 test("Claude models effort as a deferred native ACP option", () => {
   const model = deriveAgentConfigFieldModel({
     config,
