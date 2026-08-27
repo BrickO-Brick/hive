@@ -695,9 +695,10 @@ const MessageTimelineBase = React.forwardRef<
     <TooltipProvider>
       {/* The render-pending marker must live on this always-mounted wrapper:
           during the skeleton→loaded transition the message-list branches (and
-          their own markers) are not mounted yet, and the switch tracer would
-          read "not pending" and record a settle before the heavy deferred
-          list ever committed or painted. */}
+          their own markers) are not mounted yet, so a reader would see "not
+          pending" and treat the channel as painted before the heavy deferred
+          list ever committed. Readers are the perf benchmark and the e2e
+          readiness specs; see member-heavy-switch.perf.ts. */}
       <div
         className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
         data-render-pending={isRenderPending ? "true" : undefined}
