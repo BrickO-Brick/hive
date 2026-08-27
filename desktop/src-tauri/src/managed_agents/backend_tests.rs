@@ -446,14 +446,19 @@ fn acp_command_filename_supports_windows_shims_and_rejects_extensionless_windows
 #[test]
 fn discovers_only_namespaced_acp_commands() {
     let dir = tempfile::tempdir().expect("temp dir");
-    for name in [
+    for command in [
         "buzz-janet-acp",
         "buzz-acp",
         "buzz--acp",
         "janet-acp",
         "buzz-janet-helper",
     ] {
-        let path = dir.path().join(name);
+        let filename = if cfg!(windows) {
+            format!("{command}.cmd")
+        } else {
+            command.to_string()
+        };
+        let path = dir.path().join(filename);
         std::fs::write(&path, "#!/bin/sh\n").expect("write fixture");
         #[cfg(unix)]
         {
@@ -480,8 +485,14 @@ fn discovers_only_namespaced_acp_commands() {
 fn acp_command_discovery_deduplicates_path_entries() {
     let first = tempfile::tempdir().expect("first temp dir");
     let second = tempfile::tempdir().expect("second temp dir");
+    let command = "buzz-janet-acp";
+    let filename = if cfg!(windows) {
+        format!("{command}.cmd")
+    } else {
+        command.to_string()
+    };
     for dir in [first.path(), second.path()] {
-        let path = dir.join("buzz-janet-acp");
+        let path = dir.join(&filename);
         std::fs::write(&path, "#!/bin/sh\n").expect("write fixture");
         #[cfg(unix)]
         {
@@ -492,7 +503,7 @@ fn acp_command_discovery_deduplicates_path_entries() {
         }
     }
 
-    let resolved = second.path().join("buzz-janet-acp");
+    let resolved = second.path().join(&filename);
     let candidates = discover_acp_command_candidates_in(
         [first.path().to_path_buf(), second.path().to_path_buf()],
         |_| Some(resolved.clone()),
