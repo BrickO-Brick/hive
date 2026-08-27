@@ -6,7 +6,6 @@ import {
   Play,
   RotateCcw,
 } from "lucide-react";
-import { useQuery } from "@tanstack/react-query";
 import * as React from "react";
 import { toast } from "sonner";
 
@@ -34,8 +33,6 @@ import {
   DEFAULT_PROJECT_REVIEW_CHECKS,
   parseProjectReviewCheckDiffEvent,
   parseProjectReviewCheckResult,
-  parseProjectReviewChecksConfig,
-  PROJECT_REVIEW_CHECKS_CONFIG_PATH,
   projectReviewChecksStorageKey,
   readProjectReviewCheckRuns,
   writeProjectReviewCheckRuns,
@@ -56,7 +53,6 @@ import { useIdentityQuery } from "@/shared/api/hooks";
 import { listManagedAgents } from "@/shared/api/tauri";
 import { revalidateRelayAgents } from "@/shared/api/tauriRelayAgents";
 import { sendChannelMessage } from "@/shared/api/tauriMessages";
-import { getProjectRepoFileContent } from "@/shared/api/projectGit";
 import type { Channel, RelayEvent } from "@/shared/api/types";
 import {
   KIND_STREAM_MESSAGE,
@@ -257,51 +253,10 @@ function useReviewCheckAgents() {
   };
 }
 
-function useProjectReviewCheckDefinitions(project: Repository) {
-  const cloneUrl = project.cloneUrls[0] ?? null;
-  const configQuery = useQuery({
-    queryKey: [
-      "project-review-checks",
-      project.id,
-      cloneUrl ?? "no-clone-url",
-      project.defaultBranch,
-    ],
-    enabled: Boolean(cloneUrl),
-    queryFn: async () => {
-      if (!cloneUrl) return null;
-      const content = await getProjectRepoFileContent({
-        cloneUrl,
-        defaultBranch: project.defaultBranch,
-        path: PROJECT_REVIEW_CHECKS_CONFIG_PATH,
-      });
-      return content
-        ? {
-            checks: parseProjectReviewChecksConfig(content),
-            source: "project" as const,
-          }
-        : {
-            checks: DEFAULT_PROJECT_REVIEW_CHECKS,
-            source: "starter" as const,
-          };
-    },
-    staleTime: Number.POSITIVE_INFINITY,
-    retry: false,
-  });
-
-  if (!cloneUrl) {
-    return {
-      checks: DEFAULT_PROJECT_REVIEW_CHECKS,
-      error: null,
-      isLoading: false,
-      source: "starter" as const,
-    };
-  }
-  return {
-    checks: configQuery.data?.checks ?? [],
-    error: configQuery.error,
-    isLoading: configQuery.isLoading,
-    source: configQuery.data?.source ?? null,
-  };
+function useProjectReviewCheckDefinitions() {
+  // Future project-owned definitions can be loaded from the target branch here.
+  // Keep the prototype synchronous and local so opening Checks never clones a repo.
+  return DEFAULT_PROJECT_REVIEW_CHECKS;
 }
 
 function isAgentMessage(event: RelayEvent, agentPubkey: string) {
@@ -459,7 +414,7 @@ export function ProjectReviewChecks({
   const openDmMutation = useOpenDmMutation();
   const startAgentMutation = useStartManagedAgentMutation();
   const reviewCheckAgents = useReviewCheckAgents();
-  const checkDefinitions = useProjectReviewCheckDefinitions(project);
+  const checkDefinitions = useProjectReviewCheckDefinitions();
   const relayScope = activeCommunity?.relayUrl
     ? normalizeRelayUrl(activeCommunity.relayUrl)
     : null;
@@ -740,16 +695,11 @@ export function ProjectReviewChecks({
   return (
     <div className="-mx-6" data-testid="project-review-checks">
       <div className="border-b border-border/55 px-6 pb-3 text-xs text-muted-foreground">
-        Definitions come from the target branch
-        {checkDefinitions.source === "project"
-          ? ` (${PROJECT_REVIEW_CHECKS_CONFIG_PATH})`
-          : checkDefinitions.source === "starter"
-            ? " (starter checks)"
-            : ""}
-        ; assignments and results are local to this dev build.
+        Prototype definitions, assignments, and results are local to this dev
+        build.
       </div>
       <div className="divide-y divide-border/55">
-        {checkDefinitions.checks.map((check) => {
+        {checkDefinitions.map((check) => {
           const run = runs[check.id] ?? {
             agentPubkey: null,
             status: "idle" as const,
@@ -861,19 +811,6 @@ export function ProjectReviewChecks({
           );
         })}
       </div>
-      {checkDefinitions.isLoading ? (
-        <div className="flex items-center gap-2 px-6 py-4 text-xs text-muted-foreground">
-          <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> Loading project
-          checks…
-        </div>
-      ) : null}
-      {checkDefinitions.error ? (
-        <div className="px-6 py-4 text-xs text-destructive">
-          {checkDefinitions.error instanceof Error
-            ? checkDefinitions.error.message
-            : `Could not load ${PROJECT_REVIEW_CHECKS_CONFIG_PATH}.`}
-        </div>
-      ) : null}
       {!reviewCheckAgents.isLoading &&
       reviewCheckAgents.candidates.length === 0 ? (
         <div className="border-t border-border/55 px-6 py-3 text-xs text-muted-foreground">

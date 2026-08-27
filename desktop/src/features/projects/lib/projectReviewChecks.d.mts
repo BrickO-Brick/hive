@@ -33,12 +33,7 @@ export type ProjectReviewCheckDiffProposal = {
 };
 
 export const PROJECT_REVIEW_CHECK_RESULT_MARKER: string;
-export const PROJECT_REVIEW_CHECKS_CONFIG_PATH: string;
 export const DEFAULT_PROJECT_REVIEW_CHECKS: ProjectReviewCheckDefinition[];
-
-export function parseProjectReviewChecksConfig(
-  content: string,
-): ProjectReviewCheckDefinition[];
 
 export function parseProjectReviewCheckResult(
   content: unknown,

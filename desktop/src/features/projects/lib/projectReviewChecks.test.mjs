@@ -6,7 +6,6 @@ import {
   DEFAULT_PROJECT_REVIEW_CHECKS,
   parseProjectReviewCheckDiffEvent,
   parseProjectReviewCheckResult,
-  parseProjectReviewChecksConfig,
   PROJECT_REVIEW_CHECK_RESULT_MARKER,
   projectReviewChecksStorageKey,
   readProjectReviewCheckRuns,
@@ -17,49 +16,6 @@ test("starter checks cover interface, frontend, and test quality", () => {
   assert.deepEqual(
     DEFAULT_PROJECT_REVIEW_CHECKS.map((check) => check.id),
     ["interface", "frontend", "test-quality"],
-  );
-});
-
-test("parses repository-owned YAML check definitions", () => {
-  assert.deepEqual(
-    parseProjectReviewChecksConfig(`
-version: 1
-checks:
-  - id: architecture
-    name: Architecture
-    description: Checks module boundaries.
-    instructions:
-      - Compare changed dependencies with the architecture contract.
-`),
-    [
-      {
-        id: "architecture",
-        name: "Architecture",
-        description: "Checks module boundaries.",
-        instructions: [
-          "Compare changed dependencies with the architecture contract.",
-        ],
-      },
-    ],
-  );
-});
-
-test("rejects invalid or duplicate project check ids", () => {
-  assert.throws(
-    () =>
-      parseProjectReviewChecksConfig(`
-version: 1
-checks:
-  - id: frontend
-    name: Frontend
-    description: First.
-    instructions: [Review it.]
-  - id: frontend
-    name: Frontend again
-    description: Second.
-    instructions: [Review it again.]
-`),
-    /Duplicate check id/,
   );
 });
 

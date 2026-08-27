@@ -1,7 +1,4 @@
-import { parse as parseYaml } from "yaml";
-
 export const PROJECT_REVIEW_CHECK_RESULT_MARKER = "BUZZ_CHECK_RESULT_V1";
-export const PROJECT_REVIEW_CHECKS_CONFIG_PATH = ".buzz/review-checks.yml";
 
 /**
  * Starter checks for the dev prototype. The execution model intentionally
@@ -43,84 +40,6 @@ export const DEFAULT_PROJECT_REVIEW_CHECKS = [
     ],
   },
 ];
-
-function requiredConfigText(value, field, maxLength) {
-  if (typeof value !== "string" || !value.trim()) {
-    throw new Error(`${field} must be a non-empty string.`);
-  }
-  if (value.trim().length > maxLength) {
-    throw new Error(`${field} must be at most ${maxLength} characters.`);
-  }
-  return value.trim();
-}
-
-/** Parse and bound the repository-owned check definition file. */
-export function parseProjectReviewChecksConfig(content) {
-  let parsed;
-  try {
-    parsed = parseYaml(content);
-  } catch (error) {
-    throw new Error(
-      `Could not parse ${PROJECT_REVIEW_CHECKS_CONFIG_PATH}: ${
-        error instanceof Error ? error.message : "invalid YAML"
-      }`,
-    );
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error(`${PROJECT_REVIEW_CHECKS_CONFIG_PATH} must be an object.`);
-  }
-  if (parsed.version !== 1) {
-    throw new Error(
-      `${PROJECT_REVIEW_CHECKS_CONFIG_PATH} must declare version: 1.`,
-    );
-  }
-  if (
-    !Array.isArray(parsed.checks) ||
-    parsed.checks.length === 0 ||
-    parsed.checks.length > 12
-  ) {
-    throw new Error(
-      `${PROJECT_REVIEW_CHECKS_CONFIG_PATH} must define between 1 and 12 checks.`,
-    );
-  }
-  const ids = new Set();
-  return parsed.checks.map((raw, index) => {
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-      throw new Error(`checks[${index}] must be an object.`);
-    }
-    const id = requiredConfigText(raw.id, `checks[${index}].id`, 49);
-    if (!/^[a-z0-9][a-z0-9-]*$/.test(id)) {
-      throw new Error(
-        `checks[${index}].id may only use lowercase letters, numbers, and hyphens.`,
-      );
-    }
-    if (ids.has(id)) throw new Error(`Duplicate check id: ${id}.`);
-    ids.add(id);
-    const name = requiredConfigText(raw.name, `checks[${index}].name`, 80);
-    const description = requiredConfigText(
-      raw.description,
-      `checks[${index}].description`,
-      240,
-    );
-    if (
-      !Array.isArray(raw.instructions) ||
-      raw.instructions.length === 0 ||
-      raw.instructions.length > 12
-    ) {
-      throw new Error(
-        `checks[${index}].instructions must contain between 1 and 12 items.`,
-      );
-    }
-    const instructions = raw.instructions.map((instruction, instructionIndex) =>
-      requiredConfigText(
-        instruction,
-        `checks[${index}].instructions[${instructionIndex}]`,
-        500,
-      ),
-    );
-    return { id, name, description, instructions };
-  });
-}
 
 function normalizedText(value, maxLength) {
   return typeof value === "string" && value.trim()
