@@ -71,10 +71,14 @@ export function useBestieRole() {
   // An assignment whose agent no longer exists should not keep claiming a role.
   const isOrphaned = Boolean(assignment && !agentsQuery.isLoading && !agent);
 
-  function resolveRuntime(): AcpRuntime {
+  function resolveRuntime(preferredId?: string): AcpRuntime {
     const available = (runtimesQuery.data ?? []).filter(
       (runtime): runtime is AcpRuntime => runtime.availability === "available",
     );
+    const chosen = preferredId?.trim()
+      ? available.find((candidate) => candidate.id === preferredId.trim())
+      : null;
+    if (chosen) return chosen;
     const runtime = getDefaultPersonaRuntime(
       available,
       globalConfig.preferred_runtime,
@@ -95,13 +99,14 @@ export function useBestieRole() {
     const systemPrompt = composeBestiePrompt({
       additionalInstructions: submission.additionalInstructions,
       capabilities: submission.capabilities,
+      personality: submission.personality,
     });
     const respondTo = respondToForCapabilities(submission.capabilities);
 
     let agentPubkey = submission.agentPubkey;
 
     if (submission.source === "new") {
-      const runtime = resolveRuntime();
+      const runtime = resolveRuntime(submission.runtime);
       const persona = await createPersonaMutation.mutateAsync({
         behavior: { respondTo, respondToAllowlist: [] },
         displayName: submission.agentName,
@@ -163,6 +168,8 @@ export function useBestieRole() {
   return {
     agent,
     agents: agentsQuery.data ?? [],
+    runtimes: runtimesQuery.data ?? [],
+    runtimesLoading: runtimesQuery.isLoading,
     assign,
     assignment,
     isAgentsLoading: agentsQuery.isLoading,

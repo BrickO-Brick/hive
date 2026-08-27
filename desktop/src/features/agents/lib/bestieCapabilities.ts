@@ -148,6 +148,8 @@ export type ComposeBestiePromptInput = {
   capabilities: BestieCapabilityState;
   /** Free-form preferences from setup. Never overrides the core contract. */
   additionalInstructions?: string;
+  /** How the agent talks. Voice only; never authority. */
+  personality?: string;
 };
 
 /**
@@ -157,12 +159,18 @@ export type ComposeBestiePromptInput = {
 export function composeBestiePrompt({
   additionalInstructions,
   capabilities,
+  personality,
 }: ComposeBestiePromptInput): string {
   const authority = BESTIE_CAPABILITIES.map((capability) =>
     capabilities[capability.id] ? capability.grant : capability.restriction,
   ).join(" ");
 
   const sections = [BESTIE_CORE_PROMPT];
+
+  const voice = personality?.trim();
+  if (voice) {
+    sections.push(`Your personality:\n${voice}`);
+  }
 
   const preferences = additionalInstructions?.trim();
   if (preferences) {

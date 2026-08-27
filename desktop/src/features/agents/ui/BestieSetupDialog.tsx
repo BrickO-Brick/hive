@@ -1,11 +1,4 @@
-import {
-  ArrowLeft,
-  Bot,
-  Check,
-  ChevronRight,
-  Plus,
-  ShieldCheck,
-} from "lucide-react";
+import { ArrowLeft, Bot, Check, ChevronRight, Plus } from "lucide-react";
 import * as React from "react";
 
 import {
@@ -15,28 +8,33 @@ import {
   type BestieCapabilityState,
 } from "@/features/agents/lib/bestieCapabilities";
 import { ProfileAvatar } from "@/features/profile/ui/ProfileAvatar";
-import type { ManagedAgent } from "@/shared/api/types";
+import type { AcpRuntimeCatalogEntry, ManagedAgent } from "@/shared/api/types";
+import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
-import { Dialog, DialogContent } from "@/shared/ui/dialog";
+import { ChooserDialogContent } from "@/shared/ui/chooser-dialog-content";
+import { Dialog } from "@/shared/ui/dialog";
 import { Input } from "@/shared/ui/input";
 import { Switch } from "@/shared/ui/switch";
 import { Textarea } from "@/shared/ui/textarea";
+import {
+  buildPersonaRuntimeDropdownOptions,
+  NO_RUNTIME_DROPDOWN_VALUE,
+  PERSONA_FIELD_CONTROL_CLASS,
+  PERSONA_FIELD_SHELL_CLASS,
+} from "./agentConfigOptions";
+import { AgentHarnessField } from "./AgentHarnessField";
 
 export type BestieSetupSubmission = {
   additionalInstructions: string;
   agentName: string;
   agentPubkey: string | null;
   capabilities: BestieCapabilityState;
+  personality: string;
+  runtime: string;
   source: "existing" | "new";
 };
 
-type SetupStep =
-  | "capabilities"
-  | "source"
-  | "existing"
-  | "identity"
-  | "instructions"
-  | "review";
+type SetupStep = "source" | "existing" | "identity" | "capabilities" | "review";
 
 type BestieSetupDialogProps = {
   agents: ManagedAgent[];
@@ -50,7 +48,24 @@ type BestieSetupDialogProps = {
   onOpenChange: (open: boolean) => void;
   onSubmit: (submission: BestieSetupSubmission) => Promise<void>;
   open: boolean;
+  runtimes: AcpRuntimeCatalogEntry[];
+  runtimesLoading: boolean;
 };
+
+/** Matches the shared persona-dialog field shell so both dialogs read alike. */
+function FieldLabel({
+  children,
+  htmlFor,
+}: {
+  children: React.ReactNode;
+  htmlFor: string;
+}) {
+  return (
+    <label className="text-sm font-medium text-foreground" htmlFor={htmlFor}>
+      {children}
+    </label>
+  );
+}
 
 function CapabilityRow({
   checked,
@@ -68,16 +83,16 @@ function CapabilityRow({
   onCheckedChange: (checked: boolean) => void;
 }) {
   return (
-    <div className="flex items-start justify-between gap-6 py-4">
+    <div className="flex items-start justify-between gap-6 py-3.5">
       <div className="min-w-0">
-        <label className="text-sm font-medium" htmlFor={id}>
+        <label className="text-sm font-medium text-foreground" htmlFor={id}>
           {label}
         </label>
-        <p className="mt-1 max-w-lg text-sm leading-5 text-muted-foreground">
+        <p className="mt-1 text-sm leading-5 text-muted-foreground">
           {description}
         </p>
         {enforcementNote ? (
-          <p className="mt-1.5 text-xs leading-5 text-muted-foreground/80">
+          <p className="mt-1 text-xs leading-5 text-muted-foreground/60">
             {enforcementNote}
           </p>
         ) : null}
@@ -94,14 +109,18 @@ export function BestieSetupDialog({
   onOpenChange,
   onSubmit,
   open,
+  runtimes,
+  runtimesLoading,
 }: BestieSetupDialogProps) {
   const isManaging = Boolean(initial);
-  const [step, setStep] = React.useState<SetupStep>("capabilities");
+  const [step, setStep] = React.useState<SetupStep>("source");
   const [source, setSource] = React.useState<"existing" | "new">("new");
   const [selectedPubkey, setSelectedPubkey] = React.useState<string | null>(
     null,
   );
   const [newName, setNewName] = React.useState("");
+  const [personality, setPersonality] = React.useState("");
+  const [runtime, setRuntime] = React.useState("");
   const [additionalInstructions, setAdditionalInstructions] =
     React.useState("");
   const [capabilities, setCapabilities] = React.useState<BestieCapabilityState>(
@@ -110,12 +129,13 @@ export function BestieSetupDialog({
   const [isSaving, setIsSaving] = React.useState(false);
   const [saveError, setSaveError] = React.useState<string | null>(null);
 
-  // Re-seed whenever the dialog opens so managing an assignment starts from
-  // its stored values and a fresh setup starts from role defaults.
+  // Seed once per open: managing starts from stored values, a fresh setup from
+  // role defaults.
   const seededRef = React.useRef(false);
   if (open && !seededRef.current) {
     seededRef.current = true;
     if (initial) {
+      setStep("capabilities");
       setSource("existing");
       setSelectedPubkey(initial.agentPubkey);
       setCapabilities(initial.capabilities);
@@ -132,11 +152,21 @@ export function BestieSetupDialog({
     source === "existing" ? (selectedAgent?.name ?? "") : newName.trim();
   const displayName = agentName || "your bestie";
 
+  const { blankRuntimeOptionLabel, runtimeDropdownOptions } =
+    buildPersonaRuntimeDropdownOptions({
+      isCreateMode: true,
+      runtime,
+      runtimes,
+      runtimesLoading,
+    });
+
   function reset() {
-    setStep("capabilities");
+    setStep("source");
     setSource("new");
     setSelectedPubkey(null);
     setNewName("");
+    setPersonality("");
+    setRuntime("");
     setAdditionalInstructions("");
     setCapabilities(DEFAULT_BESTIE_CAPABILITIES);
     setIsSaving(false);
@@ -144,6 +174,7 @@ export function BestieSetupDialog({
   }
 
   function handleOpenChange(nextOpen: boolean) {
+    if (!nextOpen && isSaving) return;
     onOpenChange(nextOpen);
     if (!nextOpen) reset();
   }
@@ -153,17 +184,10 @@ export function BestieSetupDialog({
   }
 
   function back() {
-    if (step === "source") setStep("capabilities");
-    else if (step === "existing" || step === "identity") setStep("source");
-    else if (step === "instructions")
-      setStep(
-        isManaging
-          ? "capabilities"
-          : source === "existing"
-            ? "existing"
-            : "identity",
-      );
-    else if (step === "review") setStep("instructions");
+    if (step === "existing" || step === "identity") setStep("source");
+    else if (step === "capabilities") {
+      setStep(source === "existing" ? "existing" : "identity");
+    } else if (step === "review") setStep("capabilities");
   }
 
   async function submit() {
@@ -175,6 +199,8 @@ export function BestieSetupDialog({
         agentName,
         agentPubkey: source === "existing" ? selectedPubkey : null,
         capabilities,
+        personality,
+        runtime,
         source,
       });
       handleOpenChange(false);
@@ -190,321 +216,330 @@ export function BestieSetupDialog({
   }
 
   const title = {
+    source: "Set up your bestie",
+    existing: "Choose an agent",
+    identity: "Create your bestie",
     capabilities: isManaging
       ? `What ${displayName} can do`
       : "What your bestie can do",
-    source: "Choose how to set it up",
-    existing: "Choose an agent",
-    identity: "Name your agent",
-    instructions: `How should ${displayName} work with you?`,
     review: agentName ? `${agentName} is ready` : "Review",
   }[step];
 
-  const description = {
-    capabilities:
-      "Set what the role can do. You can give these capabilities to a new agent or one you already use.",
-    source: "Create a new agent or give the role to one you already use.",
+  const subtitle = {
+    source:
+      "Create a new agent for the role or give it to one you already use.",
     existing: "Its name, personality, and existing work stay the same.",
-    identity:
-      "This is the name you’ll see across Buzz. You can change it later.",
-    instructions:
-      "Add preferences for tone, detail, or timing. These never change its privacy or authority boundaries.",
-    review: "Review the role before you save it.",
+    identity: "You can change any of this later.",
+    capabilities:
+      "Your bestie always keeps up with your work and explains itself. Choose what else it can do.",
+    review: "One last look before you save.",
   }[step];
+
+  const canContinue = {
+    source: false,
+    existing: Boolean(selectedAgent),
+    identity: Boolean(newName.trim()),
+    capabilities: true,
+    review: true,
+  }[step];
+
+  const footer = (
+    <div className="flex w-full items-center justify-between gap-3">
+      {step === "source" ? (
+        <span />
+      ) : (
+        <Button
+          disabled={isSaving}
+          onClick={back}
+          size="sm"
+          type="button"
+          variant="ghost"
+        >
+          <ArrowLeft />
+          Back
+        </Button>
+      )}
+
+      {step === "source" ? null : step === "review" ? (
+        <Button disabled={isSaving} onClick={() => void submit()}>
+          {isSaving
+            ? "Saving…"
+            : isManaging
+              ? "Save changes"
+              : `Make ${agentName} your bestie`}
+        </Button>
+      ) : (
+        <Button
+          disabled={!canContinue}
+          onClick={() =>
+            setStep(step === "capabilities" ? "review" : "capabilities")
+          }
+        >
+          Continue
+        </Button>
+      )}
+    </div>
+  );
 
   return (
     <Dialog onOpenChange={handleOpenChange} open={open}>
-      <DialogContent
-        className="flex max-h-[88vh] max-w-2xl flex-col gap-0 overflow-hidden p-0"
+      <ChooserDialogContent
+        className="max-w-2xl"
         data-testid="bestie-setup-dialog"
+        footer={footer}
+        headerSubtitle={subtitle}
+        title={title}
       >
-        <div className="flex min-h-20 shrink-0 items-center border-b border-border/60 px-7 pr-14">
-          {step !== "capabilities" ? (
-            <Button
-              aria-label="Back"
-              className="mr-3"
-              onClick={back}
-              size="icon"
-              variant="ghost"
+        {step === "source" ? (
+          <div className="grid gap-3 sm:grid-cols-2">
+            <button
+              className="group flex flex-col items-start rounded-xl border border-input bg-muted/40 p-5 text-left transition-colors hover:border-muted-foreground/40 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+              onClick={() => {
+                setSource("new");
+                setStep("identity");
+              }}
+              type="button"
             >
-              <ArrowLeft />
-            </Button>
-          ) : null}
-          <div>
-            <h2 className="text-lg font-semibold tracking-tight">{title}</h2>
-            <p className="mt-0.5 text-sm text-muted-foreground">
-              {description}
-            </p>
+              <span className="flex size-9 items-center justify-center rounded-lg bg-primary/12 text-primary">
+                <Plus className="size-4" />
+              </span>
+              <span className="mt-9 flex w-full items-end justify-between gap-3">
+                <span>
+                  <span className="block text-sm font-medium text-foreground">
+                    Create a new agent
+                  </span>
+                  <span className="mt-1 block text-sm leading-5 text-muted-foreground">
+                    Start fresh and name it yourself.
+                  </span>
+                </span>
+                <ChevronRight className="size-4 shrink-0 text-muted-foreground/60 transition-transform group-hover:translate-x-0.5" />
+              </span>
+            </button>
+            <button
+              className="group flex flex-col items-start rounded-xl border border-input bg-muted/40 p-5 text-left transition-colors hover:border-muted-foreground/40 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+              onClick={() => {
+                setSource("existing");
+                setStep("existing");
+              }}
+              type="button"
+            >
+              <span className="flex size-9 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+                <Bot className="size-4" />
+              </span>
+              <span className="mt-9 flex w-full items-end justify-between gap-3">
+                <span>
+                  <span className="block text-sm font-medium text-foreground">
+                    Use an agent you have
+                  </span>
+                  <span className="mt-1 block text-sm leading-5 text-muted-foreground">
+                    Add the role without changing its identity.
+                  </span>
+                </span>
+                <ChevronRight className="size-4 shrink-0 text-muted-foreground/60 transition-transform group-hover:translate-x-0.5" />
+              </span>
+            </button>
           </div>
-        </div>
+        ) : null}
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-7 py-6">
-          {step === "capabilities" ? (
-            <div className="space-y-7">
-              <section>
-                <div className="flex items-center gap-2">
-                  <ShieldCheck className="size-4 text-primary" />
-                  <h3 className="text-sm font-semibold">
-                    Always included with the role
-                  </h3>
-                </div>
-                <div className="mt-3 grid gap-x-5 gap-y-2 rounded-xl bg-muted/55 p-4 sm:grid-cols-2">
-                  {BESTIE_INCLUDED_BEHAVIORS.map((behavior) => (
-                    <div
-                      className="flex items-start gap-2 text-sm"
-                      key={behavior}
-                    >
-                      <Check className="mt-0.5 size-4 shrink-0 text-primary" />
-                      <span>{behavior}</span>
-                    </div>
-                  ))}
-                </div>
-              </section>
-              <section className="divide-y divide-border/60">
-                {BESTIE_CAPABILITIES.map((capability) => (
-                  <CapabilityRow
-                    checked={capabilities[capability.id]}
-                    description={capability.description}
-                    enforcementNote={capability.enforcementNote}
-                    id={`bestie-capability-${capability.id}`}
-                    key={capability.id}
-                    label={capability.label}
-                    onCheckedChange={(checked) =>
-                      setCapability(capability.id, checked)
-                    }
-                  />
-                ))}
-              </section>
-            </div>
-          ) : null}
-
-          {step === "source" ? (
-            <div className="grid gap-3 sm:grid-cols-2">
-              <button
-                className="group flex min-h-48 flex-col rounded-2xl border border-border/70 p-5 text-left transition-colors hover:bg-muted/60 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
-                onClick={() => {
-                  setSource("new");
-                  setStep("identity");
-                }}
-                type="button"
-              >
-                <span className="flex size-10 items-center justify-center rounded-xl bg-primary/12 text-primary">
-                  <Plus />
-                </span>
-                <span className="mt-auto flex items-end justify-between gap-4">
-                  <span>
-                    <span className="block text-sm font-semibold">
-                      Create a new agent
-                    </span>
-                    <span className="mt-1 block text-sm leading-5 text-muted-foreground">
-                      Start fresh and name it yourself.
-                    </span>
-                  </span>
-                  <ChevronRight className="size-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
-                </span>
-              </button>
-              <button
-                className="group flex min-h-48 flex-col rounded-2xl border border-border/70 p-5 text-left transition-colors hover:bg-muted/60 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
-                onClick={() => {
-                  setSource("existing");
-                  setStep("existing");
-                }}
-                type="button"
-              >
-                <span className="flex size-10 items-center justify-center rounded-xl bg-muted text-muted-foreground">
-                  <Bot />
-                </span>
-                <span className="mt-auto flex items-end justify-between gap-4">
-                  <span>
-                    <span className="block text-sm font-semibold">
-                      Use an agent you have
-                    </span>
-                    <span className="mt-1 block text-sm leading-5 text-muted-foreground">
-                      Add the role without changing its identity.
-                    </span>
-                  </span>
-                  <ChevronRight className="size-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
-                </span>
-              </button>
-            </div>
-          ) : null}
-
-          {step === "existing" ? (
-            isLoadingAgents ? (
-              <p className="py-12 text-center text-sm text-muted-foreground">
-                Loading your agents…
-              </p>
-            ) : agents.length === 0 ? (
-              <p className="py-12 text-center text-sm text-muted-foreground">
-                You don’t have an agent to use yet.
-              </p>
-            ) : (
-              <div className="space-y-1">
-                {agents.map((agent) => (
-                  <button
-                    className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left transition-colors hover:bg-muted/60 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
-                    key={agent.pubkey}
-                    onClick={() => setSelectedPubkey(agent.pubkey)}
-                    type="button"
-                  >
-                    <ProfileAvatar
-                      avatarUrl={agent.avatarUrl}
-                      className="size-11"
-                      label={agent.name}
-                    />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-sm font-medium">
-                        {agent.name}
-                      </span>
-                      <span className="block text-xs text-muted-foreground">
-                        Keeps its current personality and instructions
-                      </span>
-                    </span>
-                    <span
-                      className={
-                        agent.pubkey === selectedPubkey
-                          ? "text-primary"
-                          : "text-transparent"
-                      }
-                    >
-                      <Check />
-                    </span>
-                  </button>
-                ))}
-              </div>
-            )
-          ) : null}
-
-          {step === "identity" ? (
-            <div className="mx-auto max-w-md space-y-5 py-4">
-              <div className="flex items-center gap-4">
-                <span className="flex size-16 items-center justify-center rounded-2xl bg-primary/12 text-primary">
-                  <Bot className="size-7" />
-                </span>
-                <div className="min-w-0 flex-1">
-                  <label className="text-sm font-medium" htmlFor="bestie-name">
-                    Name
-                  </label>
-                  <Input
-                    autoFocus
-                    id="bestie-name"
-                    onChange={(event) => setNewName(event.target.value)}
-                    placeholder="Name your agent"
-                    value={newName}
-                  />
-                </div>
-              </div>
-              <p className="text-sm leading-6 text-muted-foreground">
-                Bestie is the role this agent holds. Everywhere else in Buzz,
-                you’ll see the name you choose.
-              </p>
-            </div>
-          ) : null}
-
-          {step === "instructions" ? (
-            <div className="space-y-3">
-              <label
-                className="text-sm font-medium"
-                htmlFor="bestie-instructions"
-              >
-                Additional instructions
-              </label>
-              <Textarea
-                className="min-h-40 resize-none"
-                id="bestie-instructions"
-                onChange={(event) =>
-                  setAdditionalInstructions(event.target.value)
-                }
-                placeholder="Keep it brief. Lead with what changed and why the timing matters. Don’t interrupt me about routine activity."
-                value={additionalInstructions}
-              />
-              <p className="text-sm leading-5 text-muted-foreground">
-                {displayName} follows these when helping you. They can’t widen
-                what you turned off.
-              </p>
-            </div>
-          ) : null}
-
-          {step === "review" ? (
-            <div className="space-y-5">
-              <div className="flex items-center gap-4 rounded-2xl bg-muted/55 p-4">
-                {selectedAgent ? (
+        {step === "existing" ? (
+          isLoadingAgents ? (
+            <p className="py-10 text-center text-sm text-muted-foreground">
+              Loading your agents…
+            </p>
+          ) : agents.length === 0 ? (
+            <p className="py-10 text-center text-sm text-muted-foreground">
+              You don’t have an agent to use yet.
+            </p>
+          ) : (
+            <div className="space-y-1">
+              {agents.map((agent) => (
+                <button
+                  className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors hover:bg-muted/60 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+                  key={agent.pubkey}
+                  onClick={() => setSelectedPubkey(agent.pubkey)}
+                  type="button"
+                >
                   <ProfileAvatar
-                    avatarUrl={selectedAgent.avatarUrl}
-                    className="size-14"
-                    label={agentName}
+                    avatarUrl={agent.avatarUrl}
+                    className="size-10"
+                    label={agent.name}
                   />
-                ) : (
-                  <span className="flex size-14 items-center justify-center rounded-2xl bg-primary/12 text-primary">
-                    <Bot />
-                  </span>
-                )}
-                <div>
-                  <p className="font-semibold">{agentName}</p>
-                  <p className="text-sm text-muted-foreground">Your bestie</p>
-                </div>
-              </div>
-              <div className="divide-y divide-border/60 rounded-xl border border-border/60 px-4">
-                {BESTIE_CAPABILITIES.map((capability) => (
-                  <div
-                    className="flex items-center justify-between gap-4 py-3 text-sm"
-                    key={capability.id}
-                  >
-                    <span className="font-medium">{capability.label}</span>
-                    <span className="text-muted-foreground">
-                      {capabilities[capability.id] ? "On" : "Off"}
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-medium text-foreground">
+                      {agent.name}
                     </span>
+                    <span className="block text-xs text-muted-foreground">
+                      Keeps its current personality and instructions
+                    </span>
+                  </span>
+                  <Check
+                    className={cn(
+                      "size-4 shrink-0",
+                      agent.pubkey === selectedPubkey
+                        ? "text-primary"
+                        : "text-transparent",
+                    )}
+                  />
+                </button>
+              ))}
+            </div>
+          )
+        ) : null}
+
+        {step === "identity" ? (
+          <div className="space-y-5">
+            <div className="space-y-1.5">
+              <FieldLabel htmlFor="bestie-name">Agent name</FieldLabel>
+              <div
+                className={cn(
+                  "flex min-h-11 items-center px-3",
+                  PERSONA_FIELD_SHELL_CLASS,
+                )}
+              >
+                <Input
+                  autoCorrect="off"
+                  autoFocus
+                  className={cn(
+                    "h-8 px-0 py-0 leading-6",
+                    PERSONA_FIELD_CONTROL_CLASS,
+                  )}
+                  id="bestie-name"
+                  onChange={(event) => setNewName(event.target.value)}
+                  placeholder="Name your agent"
+                  value={newName}
+                />
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <FieldLabel htmlFor="bestie-personality">Personality</FieldLabel>
+              <div className={PERSONA_FIELD_SHELL_CLASS}>
+                <Textarea
+                  className={cn(
+                    "min-h-28 resize-y px-3 py-3 leading-5",
+                    PERSONA_FIELD_CONTROL_CLASS,
+                  )}
+                  id="bestie-personality"
+                  onChange={(event) => setPersonality(event.target.value)}
+                  placeholder="How it talks to you. Direct and brief, warm and chatty, dry sense of humor."
+                  value={personality}
+                />
+              </div>
+            </div>
+
+            <AgentHarnessField
+              disabled={runtimesLoading}
+              onValueChange={(value) =>
+                setRuntime(value === NO_RUNTIME_DROPDOWN_VALUE ? "" : value)
+              }
+              options={runtimeDropdownOptions}
+              placeholder={blankRuntimeOptionLabel}
+              value={runtime.trim() || NO_RUNTIME_DROPDOWN_VALUE}
+            />
+          </div>
+        ) : null}
+
+        {step === "capabilities" ? (
+          <div className="space-y-5">
+            <div className="rounded-xl bg-muted/40 p-4">
+              <p className="text-sm font-medium text-foreground">
+                Always included
+              </p>
+              <div className="mt-2.5 grid gap-x-5 gap-y-1.5 sm:grid-cols-2">
+                {BESTIE_INCLUDED_BEHAVIORS.map((behavior) => (
+                  <div
+                    className="flex items-start gap-2 text-sm text-muted-foreground"
+                    key={behavior}
+                  >
+                    <Check className="mt-0.5 size-3.5 shrink-0 text-primary" />
+                    <span>{behavior}</span>
                   </div>
                 ))}
               </div>
             </div>
-          ) : null}
-        </div>
 
-        {saveError ? (
-          <p className="shrink-0 border-t border-destructive/20 bg-destructive/5 px-7 py-3 text-sm text-destructive">
-            {saveError}
-          </p>
+            <div className="divide-y divide-border/50">
+              {BESTIE_CAPABILITIES.map((capability) => (
+                <CapabilityRow
+                  checked={capabilities[capability.id]}
+                  description={capability.description}
+                  enforcementNote={capability.enforcementNote}
+                  id={`bestie-capability-${capability.id}`}
+                  key={capability.id}
+                  label={capability.label}
+                  onCheckedChange={(checked) =>
+                    setCapability(capability.id, checked)
+                  }
+                />
+              ))}
+            </div>
+
+            <div className="space-y-1.5 border-t border-border/50 pt-5">
+              <FieldLabel htmlFor="bestie-instructions">
+                Agent instructions
+              </FieldLabel>
+              <p className="text-sm leading-5 text-muted-foreground">
+                How it should handle your attention. These can’t widen what you
+                turned off.
+              </p>
+              <div className={PERSONA_FIELD_SHELL_CLASS}>
+                <Textarea
+                  className={cn(
+                    "min-h-28 resize-y px-3 py-3 leading-5",
+                    PERSONA_FIELD_CONTROL_CLASS,
+                  )}
+                  id="bestie-instructions"
+                  onChange={(event) =>
+                    setAdditionalInstructions(event.target.value)
+                  }
+                  placeholder="Lead with what changed and why the timing matters. Don’t interrupt me about routine activity."
+                  value={additionalInstructions}
+                />
+              </div>
+            </div>
+          </div>
         ) : null}
 
-        <div className="flex shrink-0 justify-end gap-2 border-t border-border/60 px-7 py-4">
-          {step === "capabilities" ? (
-            <Button
-              onClick={() => setStep(isManaging ? "instructions" : "source")}
-            >
-              Continue
-            </Button>
-          ) : null}
-          {step === "existing" ? (
-            <Button
-              disabled={!selectedAgent}
-              onClick={() => setStep("instructions")}
-            >
-              Use {selectedAgent?.name ?? "this agent"}
-            </Button>
-          ) : null}
-          {step === "identity" ? (
-            <Button
-              disabled={!newName.trim()}
-              onClick={() => setStep("instructions")}
-            >
-              Continue
-            </Button>
-          ) : null}
-          {step === "instructions" ? (
-            <Button onClick={() => setStep("review")}>Review</Button>
-          ) : null}
-          {step === "review" ? (
-            <Button disabled={isSaving} onClick={() => void submit()}>
-              {isSaving
-                ? "Saving…"
-                : isManaging
-                  ? "Save changes"
-                  : `Make ${agentName} your bestie`}
-            </Button>
-          ) : null}
-        </div>
-      </DialogContent>
+        {step === "review" ? (
+          <div className="space-y-4">
+            <div className="flex items-center gap-3 rounded-xl bg-muted/40 p-4">
+              {selectedAgent ? (
+                <ProfileAvatar
+                  avatarUrl={selectedAgent.avatarUrl}
+                  className="size-12"
+                  label={agentName}
+                />
+              ) : (
+                <span className="flex size-12 items-center justify-center rounded-xl bg-primary/12 text-primary">
+                  <Bot className="size-5" />
+                </span>
+              )}
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium text-foreground">
+                  {agentName}
+                </p>
+                <p className="text-sm text-muted-foreground">Your bestie</p>
+              </div>
+            </div>
+            <div className="divide-y divide-border/50 rounded-xl border border-input px-4">
+              {BESTIE_CAPABILITIES.map((capability) => (
+                <div
+                  className="flex items-center justify-between gap-4 py-2.5 text-sm"
+                  key={capability.id}
+                >
+                  <span className="text-foreground">{capability.label}</span>
+                  <span className="text-muted-foreground">
+                    {capabilities[capability.id] ? "On" : "Off"}
+                  </span>
+                </div>
+              ))}
+            </div>
+            {saveError ? (
+              <p className="text-sm text-destructive">{saveError}</p>
+            ) : null}
+          </div>
+        ) : null}
+      </ChooserDialogContent>
     </Dialog>
   );
 }

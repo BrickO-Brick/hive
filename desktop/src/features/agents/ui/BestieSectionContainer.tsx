@@ -74,6 +74,8 @@ function BestieSectionContent() {
         onOpenChange={setIsSetupOpen}
         onSubmit={handleSubmit}
         open={isSetupOpen}
+        runtimes={role.runtimes}
+        runtimesLoading={role.runtimesLoading}
       />
     </>
   );
