@@ -7,6 +7,8 @@ const SHOTS = "test-results/project-pr-review";
 const RECOVERY_SHOTS = "test-results/project-pr-conflict-recovery";
 const REVIEWER_AGENT_PUBKEY = "a".repeat(64);
 const DEFAULT_MOCK_PUBKEY = "deadbeef".repeat(8);
+const RELAY_REVIEW_AGENT_PUBKEY =
+  "554cef57437abac34522ac2c9f0490d685b72c80478cf9f7ed6f9570ee8624ea";
 
 async function expectSinglePrimaryTextColumn(row: Locator) {
   const primary = row.locator('[data-projects-text-priority="primary"]');
@@ -111,6 +113,65 @@ async function expectLocalRepositoryOpenAction(
     page.getByRole("link", { name: "Open", exact: true }),
   ).toHaveCount(0);
 }
+
+test("review checks dispatch to an agent authorized for the relay identity", async ({
+  page,
+}) => {
+  await enableProjectsFeature(page);
+  await installMockBridge(page);
+  await openBuzzProject(page);
+
+  await page.getByRole("tab", { name: "Review" }).click();
+  const aliceRow = pullRequestRowByAuthor(page, "alice").first();
+  await expect(aliceRow).toBeVisible({ timeout: 10_000 });
+  await aliceRow.getByRole("button", { name: /^#/ }).click();
+  await page.getByRole("button", { name: "Checks", exact: true }).click();
+
+  const checks = page.getByTestId("project-review-checks");
+  await expect(checks).toBeVisible();
+  await expect(checks.locator("article")).toHaveCount(3);
+  const interfaceCheck = checks.locator("article").first();
+  await interfaceCheck.getByRole("button", { name: "Assign an agent" }).click();
+  await page.getByRole("menuitemradio", { name: /charlie/i }).click();
+  await interfaceCheck
+    .getByRole("button", { name: "Run", exact: true })
+    .click();
+
+  await expect(interfaceCheck).toContainText("Running");
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        window.__BUZZ_E2E_COMMAND_PAYLOADS__?.some(
+          (entry) =>
+            entry.command === "send_channel_message" &&
+            typeof (entry.payload as { content?: unknown })?.content ===
+              "string" &&
+            (entry.payload as { content: string }).content.includes(
+              "BUZZ_CHECK_RESULT_V1",
+            ),
+        ),
+      ),
+    )
+    .toBe(true);
+  const sentCheck = await page.evaluate(() => {
+    const entry = window.__BUZZ_E2E_COMMAND_PAYLOADS__?.findLast(
+      (candidate) => candidate.command === "send_channel_message",
+    );
+    return entry?.payload as
+      | { content?: string; mentionPubkeys?: string[] }
+      | undefined;
+  });
+  expect(sentCheck?.content).toContain("Interface & design system");
+  expect(sentCheck?.content).toContain("Commit under review:");
+  expect(sentCheck?.mentionPubkeys).toContain(RELAY_REVIEW_AGENT_PUBKEY);
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        window.__BUZZ_E2E_COMMANDS__?.includes("revalidate_relay_agents"),
+      ),
+    )
+    .toBe(true);
+});
 
 test("same-second request changes supersedes approval", async ({ page }) => {
   await enableProjectsFeature(page);

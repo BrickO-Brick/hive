@@ -47,6 +47,7 @@ import {
   ProfileIdentityButton,
 } from "./ProjectProfileIdentity";
 import { ProjectRichContent } from "./ProjectRichContent";
+import { ProjectReviewChecks } from "./ProjectReviewChecks";
 import { PullRequestMetaHeader } from "./PullRequestMetaRail";
 import { PullRequestReviewCard } from "./PullRequestReviewCard";
 import { ShareLinkButton } from "./ShareLinkButton";
@@ -615,9 +616,7 @@ export function ProjectPullRequestDetail({
         </div>
       </ProjectDetailSection>
       <ProjectDetailSection defaultOpen={false} title="Checks">
-        <p className="text-sm text-muted-foreground">
-          No checks have been reported for this review yet.
-        </p>
+        <ProjectReviewChecks project={project} pullRequest={pullRequest} />
       </ProjectDetailSection>
       <ProjectDetailSection defaultOpen title="Activity">
         <div className="space-y-3">
