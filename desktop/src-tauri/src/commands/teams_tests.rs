@@ -4,8 +4,8 @@
 
 use super::{
     apply_team_membership_delta, commit_team_create, commit_team_update,
-    detach_agents_outside_roster, pending_team_membership_state, propagate_membership,
-    PendingTeamMembershipState, PendingTeamMembershipUpdate,
+    detach_agents_outside_roster, load_pending_team_membership_at, pending_replay_delta,
+    propagate_membership, save_pending_team_membership_at, PendingTeamMembershipUpdate,
 };
 use crate::managed_agents::{ManagedAgentRecord, TeamRecord};
 use std::cell::RefCell;
@@ -553,34 +553,59 @@ fn detach_outside_roster_is_scoped_to_this_team_and_absent_personas() {
     );
 }
 
-/// A staged update replays only when the team keeps the staged roster. The
-/// prior roster means the team write did not land. A missing team or a different
-/// roster means an inbound event superseded the stage. Each stale stage is safe
-/// to clear without a membership change.
+/// A replay keeps each staged direction whose evidence still matches the
+/// current roster. An inbound extension or reorder does not discard a local
+/// add. An inbound reversal does discard the obsolete direction.
 #[test]
-fn pending_membership_state_distinguishes_replay_and_stale_stages() {
+fn pending_replay_delta_merges_with_an_inbound_roster_change() {
+    let pending = PendingTeamMembershipUpdate {
+        team_id: "team-a".to_string(),
+        previous_persona_ids: ids(&["duncan"]),
+        current_persona_ids: ids(&["duncan", "ada"]),
+    };
+
+    assert_eq!(
+        pending_replay_delta(&pending, &ids(&["ada", "duncan", "paul"])),
+        (ids(&[]), ids(&["ada"])),
+        "a reorder and an inbound extension preserve the staged add"
+    );
+    assert_eq!(
+        pending_replay_delta(&pending, &ids(&["duncan"])),
+        (ids(&[]), ids(&[])),
+        "an inbound removal makes the staged add obsolete"
+    );
+}
+
+/// Writing an empty pending state must preserve the app-facing symlink. On a
+/// later launch the worktree sync can retain that link without reviving the old
+/// canonical stage.
+#[cfg(unix)]
+#[test]
+fn clearing_a_pending_stage_preserves_the_shared_symlink_on_relaunch() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let canonical = directory.path().join("canonical.json");
+    let worktree = directory.path().join("worktree.json");
+    std::fs::write(&canonical, "null").expect("create canonical pending file");
+    std::os::unix::fs::symlink(&canonical, &worktree).expect("create shared link");
     let pending = PendingTeamMembershipUpdate {
         team_id: "team-a".to_string(),
         previous_persona_ids: ids(&["duncan"]),
         current_persona_ids: ids(&["ada"]),
     };
 
-    assert!(matches!(
-        pending_team_membership_state(&pending, &[team("team-a", &["ada"])]),
-        Ok(PendingTeamMembershipState::Pending)
-    ));
-    assert!(matches!(
-        pending_team_membership_state(&pending, &[team("team-a", &["duncan"])]),
-        Ok(PendingTeamMembershipState::Superseded)
-    ));
-    assert!(matches!(
-        pending_team_membership_state(&pending, &[]),
-        Ok(PendingTeamMembershipState::MissingTeam)
-    ));
-    assert!(matches!(
-        pending_team_membership_state(&pending, &[team("team-a", &["paul"])]),
-        Ok(PendingTeamMembershipState::UnexpectedRoster)
-    ));
+    save_pending_team_membership_at(&worktree, Some(&pending)).expect("stage through link");
+    assert_eq!(
+        load_pending_team_membership_at(&canonical).expect("read staged canonical file"),
+        Some(pending.clone())
+    );
+    save_pending_team_membership_at(&worktree, None).expect("clear through link");
+
+    assert!(worktree.is_symlink(), "the worktree path stays a symlink");
+    assert_eq!(
+        load_pending_team_membership_at(&worktree).expect("read after relaunch"),
+        None,
+        "the canonical file keeps the cleared state"
+    );
 }
 
 /// The durable replay uses the original replace delta after the first agent
@@ -631,4 +656,76 @@ fn detach_outside_roster_is_inert_when_nothing_is_stale() {
         &ids(&["duncan"]),
     ));
     assert_eq!(records[0].team_id.as_deref(), Some("team-a"));
+}
+
+/// A failed removal must replay before a new team accepts the same persona.
+/// The replay clears the old binding, so the new team's explicit add becomes
+/// the final binding instead of an older stage clearing it after the create.
+#[test]
+fn replay_before_create_preserves_the_new_team_binding() {
+    let agents = RefCell::new(vec![instance('a', "duncan", Some("team-a"))]);
+
+    propagate_membership(
+        "team-a",
+        &ids(&["duncan"]),
+        &ids(&[]),
+        || Ok(agents.borrow().clone()),
+        |_| Err("disk full".to_string()),
+    )
+    .expect_err("the team-a removal remains staged after a failed save");
+
+    propagate_membership(
+        "team-a",
+        &ids(&["duncan"]),
+        &ids(&[]),
+        || Ok(agents.borrow().clone()),
+        |records| {
+            *agents.borrow_mut() = records.to_vec();
+            Ok(())
+        },
+    )
+    .expect("create replays the earlier removal before its validation");
+
+    let mut teams = Vec::new();
+    commit_team_create(
+        &mut teams,
+        team("team-b", &["duncan"]),
+        |_| Ok(()),
+        || Ok(agents.borrow().clone()),
+        |records| {
+            *agents.borrow_mut() = records.to_vec();
+            Ok(())
+        },
+    )
+    .expect("the new team binds the now-unbound persona");
+
+    assert_eq!(agents.borrow()[0].team_id.as_deref(), Some("team-b"));
+}
+
+/// A shared persona keeps the explicit local-add evidence after an inbound
+/// extension and reorder. The latest roster still drives stale-binding cleanup.
+#[test]
+fn replay_after_inbound_extension_binds_the_explicit_shared_add() {
+    let pending = PendingTeamMembershipUpdate {
+        team_id: "team-a".to_string(),
+        previous_persona_ids: ids(&[]),
+        current_persona_ids: ids(&["ada"]),
+    };
+    let current_roster = ids(&["paul", "ada"]);
+    let (previous, current) = pending_replay_delta(&pending, &current_roster);
+    let agents = RefCell::new(vec![instance('a', "ada", None)]);
+
+    propagate_membership(
+        &pending.team_id,
+        &previous,
+        &current,
+        || Ok(agents.borrow().clone()),
+        |records| {
+            *agents.borrow_mut() = records.to_vec();
+            Ok(())
+        },
+    )
+    .expect("the staged add binds the instance despite a shared persona");
+
+    assert_eq!(agents.borrow()[0].team_id.as_deref(), Some("team-a"));
 }

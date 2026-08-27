@@ -31,7 +31,7 @@ fn trim_optional(value: Option<String>) -> Option<String> {
 
 /// A staged team update. The record persists before the two stores change so a
 /// later save or launch can replay the original membership delta.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct PendingTeamMembershipUpdate {
     team_id: String,
     previous_persona_ids: Vec<String>,
@@ -42,60 +42,73 @@ fn pending_team_membership_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(crate::managed_agents::managed_agents_base_dir(app)?.join("pending-team-membership.json"))
 }
 
+fn save_pending_team_membership_at(
+    path: &std::path::Path,
+    pending: Option<&PendingTeamMembershipUpdate>,
+) -> Result<(), String> {
+    let payload = serde_json::to_vec_pretty(&pending)
+        .map_err(|error| format!("failed to serialize pending team update: {error}"))?;
+    crate::managed_agents::storage::atomic_write_json(path, &payload)
+}
+
+fn load_pending_team_membership_at(
+    path: &std::path::Path,
+) -> Result<Option<PendingTeamMembershipUpdate>, String> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let payload = std::fs::read_to_string(path)
+        .map_err(|error| format!("failed to read pending team update: {error}"))?;
+    serde_json::from_str(&payload)
+        .map_err(|error| format!("failed to parse pending team update: {error}"))
+}
+
 fn save_pending_team_membership(
     app: &AppHandle,
     pending: &PendingTeamMembershipUpdate,
 ) -> Result<(), String> {
-    let path = pending_team_membership_path(app)?;
-    let payload = serde_json::to_vec_pretty(pending)
-        .map_err(|error| format!("failed to serialize pending team update: {error}"))?;
-    crate::managed_agents::storage::atomic_write_json(&path, &payload)
+    save_pending_team_membership_at(&pending_team_membership_path(app)?, Some(pending))
 }
 
 fn load_pending_team_membership(
     app: &AppHandle,
 ) -> Result<Option<PendingTeamMembershipUpdate>, String> {
-    let path = pending_team_membership_path(app)?;
-    if !path.exists() {
-        return Ok(None);
-    }
-    let payload = std::fs::read_to_string(&path)
-        .map_err(|error| format!("failed to read pending team update: {error}"))?;
-    serde_json::from_str(&payload)
-        .map(Some)
-        .map_err(|error| format!("failed to parse pending team update: {error}"))
+    load_pending_team_membership_at(&pending_team_membership_path(app)?)
 }
 
 fn clear_pending_team_membership(app: &AppHandle) -> Result<(), String> {
-    let path = pending_team_membership_path(app)?;
-    match std::fs::remove_file(&path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("failed to clear pending team update: {error}")),
-    }
+    // Write `null` through the link instead of unlinking it. The pending file
+    // is shared by dev worktrees, and `atomic_write_json` preserves the link.
+    save_pending_team_membership_at(&pending_team_membership_path(app)?, None)
 }
 
-enum PendingTeamMembershipState {
-    Pending,
-    Superseded,
-    MissingTeam,
-    UnexpectedRoster,
-}
-
-fn pending_team_membership_state(
+/// The part of a staged delta that still agrees with the current team roster.
+///
+/// An inbound event can extend or reorder the roster while a local agent-store
+/// write is pending. It does not erase the local add or removal evidence that
+/// still holds. An inbound reversal does erase that evidence, so the replay
+/// leaves that membership direction alone.
+fn pending_replay_delta(
     pending: &PendingTeamMembershipUpdate,
-    teams: &[TeamRecord],
-) -> Result<PendingTeamMembershipState, String> {
-    let Some(team) = teams.iter().find(|team| team.id == pending.team_id) else {
-        return Ok(PendingTeamMembershipState::MissingTeam);
-    };
-    if team.persona_ids == pending.current_persona_ids {
-        Ok(PendingTeamMembershipState::Pending)
-    } else if team.persona_ids == pending.previous_persona_ids {
-        Ok(PendingTeamMembershipState::Superseded)
-    } else {
-        Ok(PendingTeamMembershipState::UnexpectedRoster)
-    }
+    current_persona_ids: &[String],
+) -> (Vec<String>, Vec<String>) {
+    let removed = pending
+        .previous_persona_ids
+        .iter()
+        .filter(|id| {
+            !pending.current_persona_ids.contains(*id) && !current_persona_ids.contains(*id)
+        })
+        .cloned()
+        .collect();
+    let added = pending
+        .current_persona_ids
+        .iter()
+        .filter(|id| {
+            !pending.previous_persona_ids.contains(*id) && current_persona_ids.contains(*id)
+        })
+        .cloned()
+        .collect();
+    (removed, added)
 }
 
 /// Replay a staged membership delta. Callers hold `managed_agents_store_lock`.
@@ -103,27 +116,25 @@ pub(crate) fn replay_pending_team_membership(app: &AppHandle) -> Result<(), Stri
     let Some(pending) = load_pending_team_membership(app)? else {
         return Ok(());
     };
-    match pending_team_membership_state(&pending, &load_teams(app)?)? {
-        PendingTeamMembershipState::Pending => {
-            propagate_membership(
-                &pending.team_id,
-                &pending.previous_persona_ids,
-                &pending.current_persona_ids,
-                || load_managed_agents(app),
-                |records| save_managed_agents(app, records),
-            )
-            .map_err(|error| format!("could not replay pending team update: {error}"))?;
-        }
-        PendingTeamMembershipState::Superseded => {}
-        PendingTeamMembershipState::MissingTeam => eprintln!(
+    let teams = load_teams(app)?;
+    let Some(team) = teams.iter().find(|team| team.id == pending.team_id) else {
+        eprintln!(
             "buzz-desktop: pending-team-membership: discarding staged update for missing team {:?}",
             pending.team_id
-        ),
-        PendingTeamMembershipState::UnexpectedRoster => eprintln!(
-            "buzz-desktop: pending-team-membership: discarding staged update for team {:?} with a different roster",
-            pending.team_id
-        ),
-    }
+        );
+        return clear_pending_team_membership(app);
+    };
+    let (previous_persona_ids, current_persona_ids) =
+        pending_replay_delta(&pending, &team.persona_ids);
+    propagate_membership_with_roster(
+        &pending.team_id,
+        &previous_persona_ids,
+        &current_persona_ids,
+        &team.persona_ids,
+        || load_managed_agents(app),
+        |records| save_managed_agents(app, records),
+    )
+    .map_err(|error| format!("could not replay pending team update: {error}"))?;
     clear_pending_team_membership(app)
 }
 
@@ -188,6 +199,27 @@ pub(in crate::commands) fn propagate_membership(
     load_agents: impl FnOnce() -> Result<Vec<crate::managed_agents::ManagedAgentRecord>, String>,
     save_agents: impl FnOnce(&[crate::managed_agents::ManagedAgentRecord]) -> Result<(), String>,
 ) -> Result<(), MembershipPropagationError> {
+    propagate_membership_with_roster(
+        team_id,
+        previous_persona_ids,
+        current_persona_ids,
+        current_persona_ids,
+        load_agents,
+        save_agents,
+    )
+}
+
+/// Apply a membership delta, then reconcile bindings with the authoritative
+/// roster. Replay uses a smaller delta when an inbound edit has changed the
+/// roster after staging, while the reconciliation always uses that latest roster.
+fn propagate_membership_with_roster(
+    team_id: &str,
+    previous_persona_ids: &[String],
+    current_persona_ids: &[String],
+    authoritative_persona_ids: &[String],
+    load_agents: impl FnOnce() -> Result<Vec<crate::managed_agents::ManagedAgentRecord>, String>,
+    save_agents: impl FnOnce(&[crate::managed_agents::ManagedAgentRecord]) -> Result<(), String>,
+) -> Result<(), MembershipPropagationError> {
     let mut records = load_agents().map_err(MembershipPropagationError::Load)?;
     let delta_changed = apply_team_membership_delta(
         &mut records,
@@ -195,7 +227,7 @@ pub(in crate::commands) fn propagate_membership(
         previous_persona_ids,
         current_persona_ids,
     );
-    let detached = detach_agents_outside_roster(&mut records, team_id, current_persona_ids);
+    let detached = detach_agents_outside_roster(&mut records, team_id, authoritative_persona_ids);
     if delta_changed || detached {
         save_agents(&records).map_err(MembershipPropagationError::Save)?;
     }
@@ -512,6 +544,7 @@ pub async fn create_team(input: CreateTeamRequest, app: AppHandle) -> Result<Tea
             .managed_agents_store_lock
             .lock()
             .map_err(|error| error.to_string())?;
+        replay_pending_team_membership(&app)?;
         let personas = load_personas(&app)?;
         ensure_persona_ids_are_active(&personas, &input.persona_ids)?;
         let mut teams = load_teams(&app)?;
