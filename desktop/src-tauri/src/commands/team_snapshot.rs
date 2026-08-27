@@ -904,32 +904,29 @@ pub(crate) async fn submit_engram_event(
     url: &str,
     auth_tag: Option<&str>,
 ) -> Result<(), String> {
-    use crate::relay::build_nip98_auth_header_for_keys;
-    use reqwest::Method;
-
     crate::egress_guard::assert_no_key_backup_bytes(event_json, "team snapshot engram submit")?;
 
     // Wait before signing: the relay enforces NIP-98 freshness (±60s) and the
     // gate may hold for up to MAX_HINT_SECONDS (300s). Building auth before the
     // wait produces a stale `created_at` that the relay will reject.
     crate::relay_admission::wait_for_rate_limit().await;
-    let auth = build_nip98_auth_header_for_keys(agent_keys, &Method::POST, url, event_json)?;
-    let response = crate::relay::send_event_http_request(
+    let body = match crate::relay::submit_event_text_with_keys(
         &state.http_client,
         url,
-        &auth,
+        agent_keys,
         auth_tag,
-        event_json.to_vec(),
+        event_json,
     )
-    .await?;
+    .await
+    {
+        Ok(body) => body,
+        Err(crate::relay::EventSubmitHttpError::Auth(error)) => return Err(error),
+        Err(crate::relay::EventSubmitHttpError::Rejected(error)) => {
+            return Err(format!("relay rejected engram: {error}"));
+        }
+        Err(error) => return Err(error.into_message()),
+    };
 
-    if !response.status().is_success() {
-        let msg = crate::relay::relay_error_message(response).await;
-        return Err(format!("relay rejected engram: {msg}"));
-    }
-
-    let body =
-        crate::commands::engram_submit_response::read_engram_submit_response(response).await?;
     let parsed: serde_json::Value =
         serde_json::from_str(&body).map_err(|e| format!("relay response not JSON: {e}"))?;
     let accepted = parsed

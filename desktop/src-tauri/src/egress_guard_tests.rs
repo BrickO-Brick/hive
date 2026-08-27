@@ -250,7 +250,7 @@ fn src_rust_files() -> Vec<std::path::PathBuf> {
 
 /// Site-granular `/events` inventory: `(file suffix, expected non-comment
 /// `/events` occurrences, expected guard call sites, expected calls into the
-/// bounded HTTP event-submit funnel)`.
+/// bounded, idempotent HTTP event-submit funnel)`.
 ///
 /// Every production entry pairs the URL-construction count with both safety
 /// boundaries for that file, so all of these fail the scan (not just a
@@ -258,7 +258,7 @@ fn src_rust_files() -> Vec<std::path::PathBuf> {
 ///   - adding an unguarded ninth `/events` site inside an already-listed file
 ///     (count goes up without a matching table update),
 ///   - removing/refactoring away a guard call while its egress site remains,
-///   - bypassing `send_event_http_request` and its per-request deadline.
+///   - bypassing the retrying event-submit funnel and its per-request deadline.
 ///
 /// Updating a row here is the deliberate act that must accompany wiring both
 /// boundaries and adding an injection test for a new production site.
@@ -271,7 +271,7 @@ const EVENTS_INVENTORY: &[(&str, usize, usize, usize)] = &[
     ("src/commands/personas/snapshot/import.rs", 2, 1, 1), // boundary 7 + its in-file injection-test fixture URL
     ("src/native_websocket.rs", 0, 2, 0),                  // boundary 8 (WS frames; no events URL)
     // Test-only fixtures — no production egress, no guard or production submit call:
-    ("src/relay/tests.rs", 2, 0, 0),
+    ("src/relay/tests.rs", 5, 0, 0),
     ("src/commands/engram_submit_response.rs", 2, 0, 0),
     ("src/relay_admission.rs", 1, 0, 0),
     ("src/archive/mod_tests.rs", 1, 0, 0),
@@ -295,13 +295,18 @@ fn guard_needle() -> String {
     ["egress_guard::", "assert_no_key_backup"].concat()
 }
 fn event_submit_call_count(content: &str) -> usize {
-    let needle = &["send_event_", "http_request("].concat();
+    let needles = [
+        ["send_event_", "http_request_with_keys("].concat(),
+        ["submit_event_", "json_with_keys("].concat(),
+        ["submit_event_", "text_with_keys("].concat(),
+    ];
     content
         .lines()
         .filter(|line| {
-            line.contains(needle)
+            needles.iter().any(|needle| line.contains(needle))
                 && !line.trim_start().starts_with("//")
                 && !line.contains("fn send_event_")
+                && !line.contains("fn submit_event_")
         })
         .count()
 }
@@ -424,9 +429,9 @@ fn inventory_scan_catches_removed_guard_call() {
     );
 }
 
-/// The timeout boundary also fires in reverse: a production event path that
-/// bypasses the bounded HTTP funnel while retaining its `/events` URL and egress
-/// guard is caught.
+/// The timeout/retry boundary also fires in reverse: a production event path
+/// that bypasses the bounded idempotent funnel while retaining its `/events`
+/// URL and egress guard is caught.
 #[test]
 fn inventory_scan_catches_removed_bounded_submit_call() {
     let mut files = read_src_files();
@@ -435,7 +440,7 @@ fn inventory_scan_catches_removed_bounded_submit_call() {
         .find(|(rel, _)| rel.ends_with("src/huddle/pipeline.rs"))
         .expect("huddle pipeline must be in the scan set");
     huddle.1 = huddle.1.replacen(
-        &["send_event_", "http_request("].concat(),
+        &["send_event_", "http_request_with_keys("].concat(),
         "unbounded_event_submit(",
         1,
     );
