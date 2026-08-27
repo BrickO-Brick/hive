@@ -22,50 +22,17 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use async_trait::async_trait;
-use goose::agents::state_machine::{
-    applied, not_applicable, yielded, ConversationEffect, Emitter, Operation, OperationResult,
-};
 use goose::agents::Agent;
 use goose::conversation::Conversation;
 use goose::session::Session;
+use goose_agent::machine::{StateMachine, Step};
+use goose_agent::operation::{
+    applied, assistant_turn_count, messages_since_kickoff, not_applicable, yielded,
+    ConversationEffect, Emitter, Operation, OperationResult,
+};
 use goose_provider_types::conversation::message::{Message, ToolRequest};
 
 use crate::types::StopReason;
-
-/// Messages belonging to the current turn: everything from the last
-/// user-visible, non-tool-response message onward.
-///
-/// goose has this as `messages_since_kickoff`, but its `operation` module is
-/// private (`mod operation;`) so only the names re-exported from
-/// `state_machine` escape the crate — the helpers do not. Reimplemented here
-/// to match goose's semantics exactly; see `operation.rs:23`.
-fn messages_since_kickoff(conversation: &Conversation) -> Option<&[Message]> {
-    let messages = conversation.messages();
-    let start = messages.iter().rposition(|message| {
-        message.role == rmcp::model::Role::User
-            && message.is_user_visible()
-            && !message.is_tool_response()
-    })?;
-    Some(&messages[start..])
-}
-
-/// Count assistant turns, treating a run of consecutive assistant messages as
-/// one turn. Mirrors goose's `assistant_turn_count` (`operation.rs:47`).
-fn assistant_turn_count(messages: &[Message]) -> u32 {
-    let mut turns = 0;
-    let mut in_assistant_block = false;
-    for message in messages.iter().rev() {
-        if message.role == rmcp::model::Role::Assistant {
-            if !in_assistant_block {
-                turns += 1;
-                in_assistant_block = true;
-            }
-        } else {
-            in_assistant_block = false;
-        }
-    }
-    turns
-}
 
 /// Why the turn stopped, as decided by whichever operation applied.
 ///
@@ -145,7 +112,7 @@ impl Operation<Session, ConversationEffect> for BuzzMaxRoundsOperation {
         // does not leak across prompts in a long-lived session. Counting
         // assistant turns rather than loop iterations also means the bound
         // survives a restart, which a loop-local counter did not.
-        let Some(messages) = messages_since_kickoff(conversation) else {
+        let Ok(messages) = messages_since_kickoff(conversation) else {
             // No kickoff message means no turn is in progress, so there is no
             // budget to exceed. goose errors here; buzz declines instead --
             // an operation that cannot decide must not end the turn.
@@ -247,7 +214,7 @@ impl Operation<Session, ConversationEffect> for BuzzStopVetoOperation {
         conversation: &Conversation,
         _emit: &Emitter,
     ) -> Result<OperationResult<ConversationEffect>> {
-        let Some(messages) = messages_since_kickoff(conversation) else {
+        let Ok(messages) = messages_since_kickoff(conversation) else {
             return not_applicable();
         };
         // Only a turn that is trying to end can be vetoed.
@@ -362,7 +329,7 @@ impl Operation<Session, ConversationEffect> for BuzzReplyGuardOperation {
         conversation: &Conversation,
         _emit: &Emitter,
     ) -> Result<OperationResult<ConversationEffect>> {
-        let Some(messages) = messages_since_kickoff(conversation) else {
+        let Ok(messages) = messages_since_kickoff(conversation) else {
             return not_applicable();
         };
         if !ends_turn(messages) {
@@ -554,9 +521,7 @@ pub fn round_gate(
     cancel: tokio_util::sync::CancellationToken,
     stop_veto: Option<(Arc<Agent>, String)>,
     reply_guard_tools: Option<Vec<String>>,
-) -> goose::agents::state_machine::StateMachine<'static, Session, ConversationEffect> {
-    use goose::agents::state_machine::Step;
-
+) -> StateMachine<'static, Session, ConversationEffect> {
     // Order is precedence. The round budget is checked first: once it is
     // spent the turn ends, and asking `_Stop` to veto a turn we are ending
     // anyway would dispatch a tool call whose answer cannot be honoured.
@@ -579,7 +544,7 @@ pub fn round_gate(
             available_tools,
         ))));
     }
-    goose::agents::state_machine::StateMachine::new(steps, cancel)
+    StateMachine::new(steps, cancel)
 }
 
 /// The operations that run at the start of a round, before inference.
@@ -593,13 +558,11 @@ pub fn round_start(
     steers: crate::steer::SteerQueue,
     compaction: BuzzCompactionOperation,
     cancel: tokio_util::sync::CancellationToken,
-) -> goose::agents::state_machine::StateMachine<'static, Session, ConversationEffect> {
-    use goose::agents::state_machine::Step;
-
+) -> StateMachine<'static, Session, ConversationEffect> {
     // Steer before compaction: a steer that arrives just as the window fills
     // should be part of what gets summarised, not appended to a conversation
     // that was compacted a moment earlier without it.
-    goose::agents::state_machine::StateMachine::new(
+    StateMachine::new(
         vec![
             Step::Operation(Arc::new(BuzzSteerOperation::new(steers))),
             Step::Operation(Arc::new(compaction)),

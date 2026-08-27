@@ -30,6 +30,9 @@ path = "tests/bin/fake_mcp.rs"
 # the token cache that goose (and the desktop model picker) then read.
 buzz-model-catalog = { path = "../buzz-model-catalog" }
 goose = { git = "https://github.com/aaif-goose/goose", rev = "92caef37f8c80e0ee31ab9acad117662bc169f78", default-features = false, features = ["rustls-tls"] }
+# Consume the GDK loop primitives from their owning crate. Keep this on the
+# exact same Goose revision as `goose` so shared conversation types stay unified.
+goose-agent = { git = "https://github.com/aaif-goose/goose", rev = "92caef37f8c80e0ee31ab9acad117662bc169f78" }
 goose-provider-types = { git = "https://github.com/aaif-goose/goose", rev = "92caef37f8c80e0ee31ab9acad117662bc169f78" }
 # ModelConfig: goose re-exports it from goose-providers; goose::model_config
 # keeps its own copy private.

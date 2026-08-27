@@ -1203,6 +1203,7 @@ dependencies = [
  "futures",
  "getrandom 0.4.3",
  "goose",
+ "goose-agent",
  "goose-provider-types",
  "goose-providers",
  "hex",

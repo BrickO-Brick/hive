@@ -52,7 +52,8 @@ use goose_provider_types::conversation::message::{Message, MessageContent, ToolR
 use goose_provider_types::conversation::Conversation;
 
 use crate::types::{AgentError, StopReason};
-use goose::agents::state_machine::{ConversationEffect, Emitter};
+use goose_agent::machine::StateMachine;
+use goose_agent::operation::{ConversationEffect, Emitter};
 
 /// buzz's state machine, spelled once.
 ///
@@ -62,7 +63,7 @@ use goose::agents::state_machine::{ConversationEffect, Emitter};
 /// goose's own `GooseEffect`: the extra variants there (recipes, extension
 /// data, recorded usage) exist for operations buzz does not run, so naming the
 /// narrower type keeps unreachable cases out of `apply_effects` entirely.
-type BuzzMachine<'a> = goose::agents::state_machine::StateMachine<'a, Session, ConversationEffect>;
+type BuzzMachine<'a> = StateMachine<'a, Session, ConversationEffect>;
 
 use crate::wire::WireSender;
 
