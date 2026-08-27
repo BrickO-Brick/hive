@@ -2,6 +2,7 @@ import { Activity, Bot, Folders, Inbox, Zap } from "lucide-react";
 
 import { TopbarSearch } from "@/features/search/ui/TopbarSearch";
 import { SidebarProjectsSection } from "@/features/sidebar/ui/SidebarProjectsSection";
+import { SidebarCollectionsSection } from "@/features/collections/ui/SidebarCollectionsSection";
 import { FeatureGate } from "@/shared/features";
 import type { Channel, SearchHit } from "@/shared/api/types";
 import {
@@ -20,7 +21,8 @@ type SidebarSelectedView =
   | "agents"
   | "workflows"
   | "pulse"
-  | "projects";
+  | "projects"
+  | "collections";
 
 type AppSidebarPinnedHeaderProps = {
   channelLabels: Record<string, string>;
@@ -183,6 +185,7 @@ export function AppSidebarPrimaryMenu({
           </FeatureGate>
         </SidebarMenu>
       </SidebarHeader>
+      <SidebarCollectionsSection />
       <SidebarProjectsSection />
     </>
   );

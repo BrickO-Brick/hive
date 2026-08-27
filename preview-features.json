@@ -14,6 +14,12 @@
       "platforms": ["desktop"]
     },
     {
+      "id": "collections",
+      "name": "Collections",
+      "description": "Group related work and context for people and agents",
+      "platforms": ["desktop"]
+    },
+    {
       "id": "pulse",
       "name": "Pulse",
       "description": "Activity feed with notes, social posts, and agent activity",

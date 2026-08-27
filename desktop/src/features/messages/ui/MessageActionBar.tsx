@@ -6,17 +6,22 @@ import {
   CornerUpLeft,
   EllipsisVertical,
   Flag,
+  FolderPlus,
   Link2,
   MailCheck,
   MailOpen,
   Pencil,
   SmilePlus,
+  MessagesSquare,
   Trash2,
 } from "lucide-react";
 import * as React from "react";
 import { toast } from "sonner";
 
 import { buildMessageLink } from "@/features/messages/lib/messageLink";
+import { collectionMessageLabel } from "@/features/collections/messageLabel";
+import { AddToCollection } from "@/features/collections/ui/AddToCollection";
+import { MessageCollectionMembershipBadges } from "@/features/collections/ui/MessageCollectionMembershipBadges";
 import { EmojiPicker } from "@/features/custom-emoji/ui/EmojiPicker";
 import { useCustomEmoji } from "@/features/custom-emoji/hooks";
 import { getThreadReference } from "@/features/messages/lib/threading";
@@ -37,6 +42,7 @@ import { emojiDisplayName } from "@/shared/lib/emojiName";
 import { rewriteRelayUrl } from "@/shared/lib/mediaUrl";
 import { KIND_HUDDLE_STARTED } from "@/shared/constants/kinds";
 import { Button } from "@/shared/ui/button";
+import { FeatureGate } from "@/shared/features";
 import { HashArrowIn } from "@/shared/ui/icons";
 import { DeleteMessageConfirmDialog } from "./DeleteMessageConfirmDialog";
 import {
@@ -114,6 +120,9 @@ function MoreActionsMenu({
 }) {
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = React.useState(false);
   const [isReportDialogOpen, setIsReportDialogOpen] = React.useState(false);
+  const [collectionTarget, setCollectionTarget] = React.useState<
+    "message" | "thread" | null
+  >(null);
   // Set true the moment the user picks "Edit message". The
   // `onCloseAutoFocus` handler on `DropdownMenuContent` reads it to
   // suppress Radix's default focus-restoration (which would yank focus
@@ -134,6 +143,15 @@ function MoreActionsMenu({
     !message.pending &&
     message.kind !== KIND_HUDDLE_STARTED &&
     Boolean(message.pubkey);
+  const canAddToCollection =
+    !message.pending &&
+    message.kind !== KIND_HUDDLE_STARTED &&
+    Boolean(channelId);
+  const threadRootId =
+    message.rootId ??
+    getThreadReference(message.tags ?? []).rootId ??
+    (message.depth === 0 ? message.id : null);
+  const collectionLabel = collectionMessageLabel(message.body, message.author);
 
   return (
     <>
@@ -280,6 +298,28 @@ function MoreActionsMenu({
             </DropdownMenuItem>
           ) : null}
 
+          {canAddToCollection && channelId ? (
+            <FeatureGate feature="collections">
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                data-testid={`add-message-to-collection-${message.id}`}
+                onSelect={() => setCollectionTarget("message")}
+              >
+                <FolderPlus className="h-4 w-4" />
+                Add message to collection
+              </DropdownMenuItem>
+              {threadRootId ? (
+                <DropdownMenuItem
+                  data-testid={`add-thread-to-collection-${message.id}`}
+                  onSelect={() => setCollectionTarget("thread")}
+                >
+                  <MessagesSquare className="h-4 w-4" />
+                  Add thread to collection
+                </DropdownMenuItem>
+              ) : null}
+            </FeatureGate>
+          ) : null}
+
           {canReport || onDelete ? <DropdownMenuSeparator /> : null}
 
           {canReport ? (
@@ -315,6 +355,40 @@ function MoreActionsMenu({
           ) : null}
         </DropdownMenuContent>
       </DropdownMenu>
+
+      {canAddToCollection && channelId && collectionTarget === "message" ? (
+        <AddToCollection
+          label={collectionLabel}
+          onOpenChange={(nextOpen) => {
+            if (!nextOpen) setCollectionTarget(null);
+          }}
+          open
+          reference={{
+            type: "message",
+            channel_id: channelId,
+            event_id: message.id,
+          }}
+          trigger={false}
+        />
+      ) : null}
+      {canAddToCollection &&
+      channelId &&
+      threadRootId &&
+      collectionTarget === "thread" ? (
+        <AddToCollection
+          label={`Thread: ${collectionLabel}`}
+          onOpenChange={(nextOpen) => {
+            if (!nextOpen) setCollectionTarget(null);
+          }}
+          open
+          reference={{
+            type: "thread",
+            channel_id: channelId,
+            root_event_id: threadRootId,
+          }}
+          trigger={false}
+        />
+      ) : null}
 
       {onDelete ? (
         <DeleteMessageConfirmDialog
@@ -502,6 +576,14 @@ export const MessageActionBar = React.memo(function MessageActionBar({
     >
       <div className="overflow-hidden rounded-full border border-border/70 bg-background/95 shadow-xs backdrop-blur-sm supports-[backdrop-filter]:bg-background/85">
         <div className="flex items-center gap-0.5 p-1">
+          {channelId && !message.pending ? (
+            <FeatureGate feature="collections">
+              <MessageCollectionMembershipBadges
+                channelId={channelId}
+                message={message}
+              />
+            </FeatureGate>
+          ) : null}
           {hasReactionAction && quickReactionItems.length > 0 ? (
             <div className="hidden items-center gap-0.5 sm:flex">
               {quickReactionItems.map(({ customEmojiUrl, emoji }) => (

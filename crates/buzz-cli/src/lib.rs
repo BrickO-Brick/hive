@@ -216,6 +216,9 @@ enum Cmd {
     /// Create and manage multi-repo projects (NIP-MP)
     #[command(subcommand)]
     Projects(ProjectsCmd),
+    /// Organize local Buzz content into Collections
+    #[command(subcommand)]
+    Collections(commands::collections::CollectionsCmd),
     /// Send, get, list, and set status on git patches (NIP-34)
     #[command(subcommand)]
     Patches(PatchesCmd),
@@ -2088,6 +2091,7 @@ async fn run(cli: Cli) -> Result<(), CliError> {
         Cmd::Notes(sub) => commands::notes::dispatch(sub, &client).await,
         Cmd::Repos(sub) => commands::repos::dispatch(sub, &client).await,
         Cmd::Projects(sub) => commands::projects::dispatch(sub, &client).await,
+        Cmd::Collections(sub) => commands::collections::dispatch(sub, &client),
         Cmd::Patches(sub) => commands::patches::dispatch(sub, &client).await,
         Cmd::Issues(sub) => commands::issues::dispatch(sub, &client).await,
         Cmd::Pr(sub) => commands::pr::dispatch(sub, &client).await,
@@ -2226,6 +2230,7 @@ mod tests {
             "agents",
             "canvas",
             "channels",
+            "collections",
             "dms",
             "emoji",
             "feed",

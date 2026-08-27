@@ -2,6 +2,8 @@ import { LogIn, SquareTerminal } from "lucide-react";
 import type * as React from "react";
 
 import { ChatHeader } from "@/features/chat/ui/ChatHeader";
+import { AddToCollection } from "@/features/collections/ui/AddToCollection";
+import { CollectionMembershipBadges } from "@/features/collections/ui/CollectionMembershipBadges";
 import type { EphemeralChannelDisplay } from "@/features/channels/lib/ephemeralChannel";
 import type { ActiveDmHeaderParticipant } from "@/features/channels/useActiveChannelHeader";
 import { getChannelDescription } from "@/features/channels/lib/channelDescription";
@@ -16,6 +18,7 @@ import {
 } from "@/features/profile/ui/ProfileAvatarWithStatus";
 import { UserProfilePopover } from "@/features/profile/ui/UserProfilePopover";
 import { Button } from "@/shared/ui/button";
+import { FeatureGate } from "@/shared/features";
 import type { Channel, PresenceStatus } from "@/shared/api/types";
 import { UserAvatar } from "@/shared/ui/UserAvatar";
 import {
@@ -82,6 +85,19 @@ export function ChannelScreenHeader({
     onJoinChannel;
 
   const terminalPanel = useTerminalPanel();
+  const collectionButton = activeChannel ? (
+    <FeatureGate feature="collections">
+      <div className="flex items-center gap-1">
+        <CollectionMembershipBadges
+          reference={{ type: "channel", channel_id: activeChannel.id }}
+        />
+        <AddToCollection
+          label={activeChannelTitle}
+          reference={{ type: "channel", channel_id: activeChannel.id }}
+        />
+      </div>
+    </FeatureGate>
+  ) : null;
   const terminalButton = activeChannel ? (
     <Button
       aria-label={
@@ -126,8 +142,9 @@ export function ChannelScreenHeader({
     headerEndActions
   );
   const actions =
-    terminalButton || channelActions ? (
+    collectionButton || terminalButton || channelActions ? (
       <div className="flex items-center gap-1">
+        {collectionButton}
         {terminalButton}
         {channelActions}
       </div>

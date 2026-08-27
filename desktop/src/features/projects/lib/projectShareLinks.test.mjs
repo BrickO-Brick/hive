@@ -3,7 +3,6 @@ import { test } from "node:test";
 
 import {
   issueShareLink,
-  parseAddressableCoordinate,
   projectShareLink,
   pullRequestShareLink,
   repositoryShareLink,
@@ -15,34 +14,6 @@ const OWNER = "a".repeat(64);
 const EVENT_ID = "b".repeat(64);
 const REPO_ADDRESS = `30617:${OWNER}:flappy-bee`;
 const PROJECT_ADDRESS = `30621:${OWNER}:pollinator`;
-
-test("parseAddressableCoordinate splits only the two structural separators", () => {
-  assert.deepEqual(parseAddressableCoordinate(`30617:${OWNER}:a:b`), {
-    kind: 30617,
-    owner: OWNER,
-    dtag: "a:b",
-  });
-  assert.deepEqual(
-    parseAddressableCoordinate(`30617:${OWNER.toUpperCase()}:repo`)?.owner,
-    OWNER,
-  );
-});
-
-test("parseAddressableCoordinate rejects malformed coordinates", () => {
-  for (const address of [
-    null,
-    undefined,
-    "",
-    OWNER,
-    `30617:${OWNER}`,
-    `30617:not-a-pubkey:repo`,
-    `30617:${OWNER}:`,
-    `:${OWNER}:repo`,
-    `notakind:${OWNER}:repo`,
-  ]) {
-    assert.equal(parseAddressableCoordinate(address), null, String(address));
-  }
-});
 
 test("projectShareLink links explicit projects by their 30621 coordinate", () => {
   assert.equal(

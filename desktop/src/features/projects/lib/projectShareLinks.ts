@@ -22,44 +22,21 @@ import {
   type EntityLinkTab,
   isLinkableCoordinate,
 } from "@/shared/lib/entityLink";
+import {
+  type AddressableCoordinate,
+  parseAddressableCoordinate,
+} from "@/shared/lib/addressableCoordinate";
 
 import type { ProjectIssue } from "../projectIssues.mjs";
 import type { Project, Repository } from "../projectModels";
 import type { ProjectPullRequest } from "../projectPullRequests.mjs";
 
-type Coordinate = { kind: number; owner: string; dtag: string };
-
 const HEX64_RE = /^[a-fA-F0-9]{64}$/;
 const GIT_OBJECT_ID_RE = /^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$/;
 
-/**
- * Split an addressable coordinate (`<kind>:<owner>:<d>`). Only the first two
- * separators are structural — d-tags may themselves contain colons, so the
- * remainder is taken verbatim.
- */
-export function parseAddressableCoordinate(
-  address: string | null | undefined,
-): Coordinate | null {
-  if (!address) return null;
-
-  const kindEnd = address.indexOf(":");
-  if (kindEnd < 1) return null;
-  const ownerEnd = address.indexOf(":", kindEnd + 1);
-  if (ownerEnd < 0) return null;
-
-  const kind = Number(address.slice(0, kindEnd));
-  const owner = address.slice(kindEnd + 1, ownerEnd);
-  const dtag = address.slice(ownerEnd + 1);
-  if (!Number.isInteger(kind) || !HEX64_RE.test(owner) || dtag.length === 0) {
-    return null;
-  }
-
-  return { kind, owner: owner.toLowerCase(), dtag };
-}
-
 function repositoryCoordinate(
   repoAddress: string | null | undefined,
-): Coordinate | null {
+): AddressableCoordinate | null {
   const coordinate = parseAddressableCoordinate(repoAddress);
   return coordinate?.kind === KIND_REPO_ANNOUNCEMENT ? coordinate : null;
 }

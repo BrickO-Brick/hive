@@ -10,11 +10,13 @@ import { Route as settingsRouteImport } from "./routes/settings";
 import { Route as remindersRouteImport } from "./routes/reminders";
 import { Route as pulseRouteImport } from "./routes/pulse";
 import { Route as projectsRouteImport } from "./routes/projects";
+import { Route as collectionsRouteImport } from "./routes/collections";
 import { Route as agentsRouteImport } from "./routes/agents";
 import { Route as indexRouteImport } from "./routes/index";
 import { Route as workflowsDotworkflowIdRouteImport } from "./routes/workflows.$workflowId";
 import { Route as projectsDotprojectIdRouteImport } from "./routes/projects.$projectId";
 import { Route as messagesDotnewRouteImport } from "./routes/messages.new";
+import { Route as collectionsDotcollectionIdRouteImport } from "./routes/collections.$collectionId";
 import { Route as channelsDotchannelIdRouteImport } from "./routes/channels.$channelId";
 import { Route as channelsDotchannelIdDotpostsDotpostIdRouteImport } from "./routes/channels.$channelId.posts.$postId";
 
@@ -43,6 +45,11 @@ const projectsRoute = projectsRouteImport.update({
   path: "/projects",
   getParentRoute: () => rootRouteImport,
 } as any);
+const collectionsRoute = collectionsRouteImport.update({
+  id: "/collections",
+  path: "/collections",
+  getParentRoute: () => rootRouteImport,
+} as any);
 const agentsRoute = agentsRouteImport.update({
   id: "/agents",
   path: "/agents",
@@ -68,6 +75,12 @@ const messagesDotnewRoute = messagesDotnewRouteImport.update({
   path: "/messages/new",
   getParentRoute: () => rootRouteImport,
 } as any);
+const collectionsDotcollectionIdRoute =
+  collectionsDotcollectionIdRouteImport.update({
+    id: "/collections/$collectionId",
+    path: "/collections/$collectionId",
+    getParentRoute: () => rootRouteImport,
+  } as any);
 const channelsDotchannelIdRoute = channelsDotchannelIdRouteImport.update({
   id: "/channels/$channelId",
   path: "/channels/$channelId",
@@ -83,12 +96,14 @@ const channelsDotchannelIdDotpostsDotpostIdRoute =
 export interface FileRoutesByFullPath {
   "/": typeof indexRoute;
   "/agents": typeof agentsRoute;
+  "/collections": typeof collectionsRoute;
   "/projects": typeof projectsRoute;
   "/pulse": typeof pulseRoute;
   "/reminders": typeof remindersRoute;
   "/settings": typeof settingsRoute;
   "/workflows": typeof workflowsRoute;
   "/channels/$channelId": typeof channelsDotchannelIdRoute;
+  "/collections/$collectionId": typeof collectionsDotcollectionIdRoute;
   "/messages/new": typeof messagesDotnewRoute;
   "/projects/$projectId": typeof projectsDotprojectIdRoute;
   "/workflows/$workflowId": typeof workflowsDotworkflowIdRoute;
@@ -97,12 +112,14 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   "/": typeof indexRoute;
   "/agents": typeof agentsRoute;
+  "/collections": typeof collectionsRoute;
   "/projects": typeof projectsRoute;
   "/pulse": typeof pulseRoute;
   "/reminders": typeof remindersRoute;
   "/settings": typeof settingsRoute;
   "/workflows": typeof workflowsRoute;
   "/channels/$channelId": typeof channelsDotchannelIdRoute;
+  "/collections/$collectionId": typeof collectionsDotcollectionIdRoute;
   "/messages/new": typeof messagesDotnewRoute;
   "/projects/$projectId": typeof projectsDotprojectIdRoute;
   "/workflows/$workflowId": typeof workflowsDotworkflowIdRoute;
@@ -112,12 +129,14 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport;
   "/": typeof indexRoute;
   "/agents": typeof agentsRoute;
+  "/collections": typeof collectionsRoute;
   "/projects": typeof projectsRoute;
   "/pulse": typeof pulseRoute;
   "/reminders": typeof remindersRoute;
   "/settings": typeof settingsRoute;
   "/workflows": typeof workflowsRoute;
   "/channels/$channelId": typeof channelsDotchannelIdRoute;
+  "/collections/$collectionId": typeof collectionsDotcollectionIdRoute;
   "/messages/new": typeof messagesDotnewRoute;
   "/projects/$projectId": typeof projectsDotprojectIdRoute;
   "/workflows/$workflowId": typeof workflowsDotworkflowIdRoute;
@@ -128,12 +147,14 @@ export interface FileRouteTypes {
   fullPaths:
     | "/"
     | "/agents"
+    | "/collections"
     | "/projects"
     | "/pulse"
     | "/reminders"
     | "/settings"
     | "/workflows"
     | "/channels/$channelId"
+    | "/collections/$collectionId"
     | "/messages/new"
     | "/projects/$projectId"
     | "/workflows/$workflowId"
@@ -142,12 +163,14 @@ export interface FileRouteTypes {
   to:
     | "/"
     | "/agents"
+    | "/collections"
     | "/projects"
     | "/pulse"
     | "/reminders"
     | "/settings"
     | "/workflows"
     | "/channels/$channelId"
+    | "/collections/$collectionId"
     | "/messages/new"
     | "/projects/$projectId"
     | "/workflows/$workflowId"
@@ -156,12 +179,14 @@ export interface FileRouteTypes {
     | "__root__"
     | "/"
     | "/agents"
+    | "/collections"
     | "/projects"
     | "/pulse"
     | "/reminders"
     | "/settings"
     | "/workflows"
     | "/channels/$channelId"
+    | "/collections/$collectionId"
     | "/messages/new"
     | "/projects/$projectId"
     | "/workflows/$workflowId"
@@ -171,12 +196,14 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   indexRoute: typeof indexRoute;
   agentsRoute: typeof agentsRoute;
+  collectionsRoute: typeof collectionsRoute;
   projectsRoute: typeof projectsRoute;
   pulseRoute: typeof pulseRoute;
   remindersRoute: typeof remindersRoute;
   settingsRoute: typeof settingsRoute;
   workflowsRoute: typeof workflowsRoute;
   channelsDotchannelIdRoute: typeof channelsDotchannelIdRoute;
+  collectionsDotcollectionIdRoute: typeof collectionsDotcollectionIdRoute;
   messagesDotnewRoute: typeof messagesDotnewRoute;
   projectsDotprojectIdRoute: typeof projectsDotprojectIdRoute;
   workflowsDotworkflowIdRoute: typeof workflowsDotworkflowIdRoute;
@@ -220,6 +247,13 @@ declare module "@tanstack/react-router" {
       preLoaderRoute: typeof projectsRouteImport;
       parentRoute: typeof rootRouteImport;
     };
+    "/collections": {
+      id: "/collections";
+      path: "/collections";
+      fullPath: "/collections";
+      preLoaderRoute: typeof collectionsRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
     "/agents": {
       id: "/agents";
       path: "/agents";
@@ -255,6 +289,13 @@ declare module "@tanstack/react-router" {
       preLoaderRoute: typeof messagesDotnewRouteImport;
       parentRoute: typeof rootRouteImport;
     };
+    "/collections/$collectionId": {
+      id: "/collections/$collectionId";
+      path: "/collections/$collectionId";
+      fullPath: "/collections/$collectionId";
+      preLoaderRoute: typeof collectionsDotcollectionIdRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
     "/channels/$channelId": {
       id: "/channels/$channelId";
       path: "/channels/$channelId";
@@ -275,12 +316,14 @@ declare module "@tanstack/react-router" {
 const rootRouteChildren: RootRouteChildren = {
   indexRoute: indexRoute,
   agentsRoute: agentsRoute,
+  collectionsRoute: collectionsRoute,
   projectsRoute: projectsRoute,
   pulseRoute: pulseRoute,
   remindersRoute: remindersRoute,
   settingsRoute: settingsRoute,
   workflowsRoute: workflowsRoute,
   channelsDotchannelIdRoute: channelsDotchannelIdRoute,
+  collectionsDotcollectionIdRoute: collectionsDotcollectionIdRoute,
   messagesDotnewRoute: messagesDotnewRoute,
   projectsDotprojectIdRoute: projectsDotprojectIdRoute,
   workflowsDotworkflowIdRoute: workflowsDotworkflowIdRoute,

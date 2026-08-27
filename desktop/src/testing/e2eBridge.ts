@@ -24,6 +24,11 @@ import type {
   FeedItemCategory,
   RelayEvent,
 } from "@/shared/api/types";
+import type {
+  Collection,
+  CollectionMember,
+  CollectionWithMembers,
+} from "@/features/collections/types";
 import { getMarkdownParseCount } from "@/shared/ui/markdown/nodeCache";
 import { syncAgentTurnsFromEvents } from "@/features/agents/activeAgentTurnsStore";
 import { recordTimeoutFromRejection } from "@/features/moderation/lib/timeoutStore";
@@ -438,6 +443,59 @@ type E2eConfig = {
     autoUpdateSupported?: boolean;
     /** Reject `plugin:opener|open_url` to exercise browser-return fallback UI. */
     openerError?: string;
+    /** Ephemeral links returned for Google Calendar collection members. */
+    collectionCalendarLinksByUrl?: Record<
+      string,
+      Array<{ url: string; label: string; kind: string }>
+    >;
+    /** Ephemeral Drive edit/comment activity resolved from Calendar sources. */
+    collectionCalendarActivityByUrl?: Record<
+      string,
+      {
+        activities: Array<{
+          action_type: "edit" | "comment";
+          timestamp: string;
+          actor_display_name: string | null;
+          actor_email: string | null;
+          document_title: string;
+          document_url: string;
+          document_file_id: string;
+          source_calendar_url: string;
+          source_attachment_url: string;
+        }>;
+        errors: Array<{ source_url: string; message: string }>;
+      }
+    >;
+    /** Source-scoped failures for Google Calendar collection discovery. */
+    collectionCalendarErrorsByUrl?: Record<string, string>;
+    /** Removal failures keyed by explicit Collection member ID. */
+    collectionRemoveMemberErrorsById?: Record<string, string>;
+    /** Rename failures keyed by Collection ID. */
+    collectionSetNameErrorsById?: Record<string, string>;
+    /** Live PR status/activity keyed by the sourced canonical GitHub URL. */
+    collectionGithubPullRequestsByUrl?: Record<
+      string,
+      {
+        url: string;
+        title: string;
+        state: string;
+        author: string | null;
+        author_avatar_url: string | null;
+        updated_at: string;
+        activity: Array<{
+          kind: "review" | "comment" | "merge";
+          author: string | null;
+          author_avatar_url: string | null;
+          state: string | null;
+          created_at: string;
+          url: string | null;
+        }>;
+      }
+    >;
+    /** PR-scoped resolver failures keyed by canonical GitHub URL. */
+    collectionGithubPullRequestErrorsByUrl?: Record<string, string>;
+    /** Explicit thread activity failures keyed by root event ID. */
+    collectionThreadActivityErrorsByRootId?: Record<string, string>;
     /** Delay binding signatures so specs can exercise request supersession. */
     nostrBindSignDelayMs?: number;
     /** Reject successive mock WebSocket connect attempts, then resume. */
@@ -3134,6 +3192,7 @@ const deferredSendMessageLiveEchoes: Array<{
 }> = [];
 const mockUserStatuses: RelayEvent[] = [];
 const mockReminderEvents: RelayEvent[] = [];
+let mockCollections: CollectionWithMembers[] = [];
 const mockPersonaEvents: RelayEvent[] = [];
 let mockRelayMembers: RawRelayMember[] = [];
 const mockSockets = new Map<number, MockSocket>();
@@ -5096,6 +5155,9 @@ async function handleGetThreadReplies(
   },
   config: E2eConfig | undefined,
 ): Promise<RawThreadRepliesResponse> {
+  const activityError =
+    config?.mock?.collectionThreadActivityErrorsByRootId?.[args.rootEventId];
+  if (activityError) throw new Error(activityError);
   const cap = Math.min(args.limit ?? 200, 500);
   const filter: MockFilter & Record<string, unknown> = {
     "#e": [args.rootEventId],
@@ -10800,6 +10862,7 @@ export function maybeInstallE2eTauriMocks() {
   resetMockPersonaCatalogEvents(config);
   resetMockObservedUnread();
   resetMockSaveSubscriptions(config);
+  mockCollections = [];
   resetMockPendingCommunityDeepLinks(config);
   resetMockPendingNavigationDeepLinks(config);
   resetMockPendingEntityDeepLinks(config);
@@ -11183,6 +11246,8 @@ export function maybeInstallE2eTauriMocks() {
       sourceUrl: null;
     };
   }> = [];
+  let mockCollectionCounter = 0;
+  let mockCollectionMemberCounter = 0;
   const handleMockCommand = async (
     command: string,
     payload: unknown,
@@ -11207,6 +11272,147 @@ export function maybeInstallE2eTauriMocks() {
     window.__BUZZ_E2E_COMMAND_LOG__?.push({ command, payload });
 
     switch (command) {
+      case "list_collections":
+        return structuredClone(
+          mockCollections.map((entry) => entry.collection),
+        );
+      case "get_collection": {
+        const { id } = payload as { id: string };
+        const entry = mockCollections.find(
+          (candidate) => candidate.collection.id === id,
+        );
+        return entry ? structuredClone(entry) : null;
+      }
+      case "create_collection": {
+        const { input } = payload as {
+          input: {
+            relay_url: string;
+            owner_pubkey: string;
+            name: string;
+            description: string | null;
+            icon: string | null;
+          };
+        };
+        mockCollectionCounter += 1;
+        const now = new Date().toISOString();
+        const collection: Collection = {
+          id: `collection-${mockCollectionCounter}`,
+          relay_url: input.relay_url,
+          owner_pubkey: input.owner_pubkey,
+          name: input.name,
+          description: input.description,
+          icon: input.icon,
+          created_at: now,
+          updated_at: now,
+        };
+        mockCollections.push({ collection, members: [] });
+        return structuredClone(collection);
+      }
+      case "set_collection_icon": {
+        const { input } = payload as {
+          input: { collection_id: string; icon: string | null };
+        };
+        const entry = mockCollections.find(
+          (candidate) => candidate.collection.id === input.collection_id,
+        );
+        if (!entry) throw new Error("Collection not found");
+        entry.collection.icon = input.icon?.trim() || null;
+        entry.collection.updated_at = new Date().toISOString();
+        return structuredClone(entry.collection);
+      }
+      case "set_collection_name": {
+        const { input } = payload as {
+          input: { collection_id: string; name: string };
+        };
+        const renameError =
+          activeConfig?.mock?.collectionSetNameErrorsById?.[
+            input.collection_id
+          ];
+        if (renameError) throw new Error(renameError);
+        const entry = mockCollections.find(
+          (candidate) => candidate.collection.id === input.collection_id,
+        );
+        if (!entry) throw new Error("Collection not found");
+        entry.collection.name = input.name.trim();
+        entry.collection.updated_at = new Date().toISOString();
+        return structuredClone(entry.collection);
+      }
+      case "delete_collection": {
+        const { id } = payload as { id: string };
+        mockCollections = mockCollections.filter(
+          (entry) => entry.collection.id !== id,
+        );
+        return null;
+      }
+      case "add_collection_member": {
+        const { input } = payload as {
+          input: {
+            collection_id: string;
+            reference: CollectionMember["reference"];
+            label: string | null;
+          };
+        };
+        const entry = mockCollections.find(
+          (candidate) => candidate.collection.id === input.collection_id,
+        );
+        if (!entry) throw new Error("Collection not found");
+        mockCollectionMemberCounter += 1;
+        const member: CollectionMember = {
+          id: `collection-member-${mockCollectionMemberCounter}`,
+          collection_id: input.collection_id,
+          reference: structuredClone(input.reference),
+          label: input.label,
+          added_at: new Date().toISOString(),
+        };
+        entry.members.push(member);
+        return structuredClone(member);
+      }
+      case "remove_collection_member": {
+        const { collectionId, memberId } = payload as {
+          collectionId: string;
+          memberId: string;
+        };
+        const entry = mockCollections.find(
+          (candidate) => candidate.collection.id === collectionId,
+        );
+        if (!entry) throw new Error("Collection not found");
+        const removalError =
+          activeConfig?.mock?.collectionRemoveMemberErrorsById?.[memberId];
+        if (removalError) throw new Error(removalError);
+        entry.members = entry.members.filter(
+          (member) => member.id !== memberId,
+        );
+        return null;
+      }
+      case "discover_collection_calendar_links": {
+        const { url } = payload as { url: string };
+        const error = activeConfig?.mock?.collectionCalendarErrorsByUrl?.[url];
+        if (error) throw new Error(error);
+        return structuredClone(
+          activeConfig?.mock?.collectionCalendarLinksByUrl?.[url] ?? [],
+        );
+      }
+      case "discover_collection_calendar_activity": {
+        const { calendarUrl } = payload as { calendarUrl: string };
+        return structuredClone(
+          activeConfig?.mock?.collectionCalendarActivityByUrl?.[
+            calendarUrl
+          ] ?? {
+            activities: [],
+            errors: [],
+          },
+        );
+      }
+      case "resolve_collection_github_pull_request": {
+        const { url } = payload as { url: string };
+        const error =
+          activeConfig?.mock?.collectionGithubPullRequestErrorsByUrl?.[url];
+        if (error) throw new Error(error);
+        const pullRequest =
+          activeConfig?.mock?.collectionGithubPullRequestsByUrl?.[url];
+        if (!pullRequest) throw new Error(`No mock PR resolution for ${url}`);
+        return structuredClone(pullRequest);
+      }
       case "get_huddle_state": {
         const snapshot = mockHuddle ? structuredClone(mockHuddle.state) : null;
         const delayMs = activeConfig?.mock?.huddleStateReadDelayMs ?? 0;

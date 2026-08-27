@@ -95,3 +95,7 @@ if git rev-parse --is-inside-work-tree &>/dev/null; then
 fi
 
 export BUZZ_TAURI_CONFIG
+
+# Desktop and its bundled/local `buzz collections` CLI share one explicitly
+# named development store. This never selects or copies installed Buzz data.
+source "$WORKTREE_ROOT/scripts/collections-profile.sh"

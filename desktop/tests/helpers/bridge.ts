@@ -360,6 +360,59 @@ type MockBridgeOptions = {
   autoUpdateSupported?: boolean;
   /** Reject browser opener calls to exercise manual pairing fallback UI. */
   openerError?: string;
+  /** Ephemeral links returned for Google Calendar collection members. */
+  collectionCalendarLinksByUrl?: Record<
+    string,
+    Array<{ url: string; label: string; kind: string }>
+  >;
+  /** Ephemeral Drive edit/comment activity resolved from Calendar sources. */
+  collectionCalendarActivityByUrl?: Record<
+    string,
+    {
+      activities: Array<{
+        action_type: "edit" | "comment";
+        timestamp: string;
+        actor_display_name: string | null;
+        actor_email: string | null;
+        document_title: string;
+        document_url: string;
+        document_file_id: string;
+        source_calendar_url: string;
+        source_attachment_url: string;
+      }>;
+      errors: Array<{ source_url: string; message: string }>;
+    }
+  >;
+  /** Source-scoped failures for Google Calendar collection discovery. */
+  collectionCalendarErrorsByUrl?: Record<string, string>;
+  /** Removal failures keyed by explicit Collection member ID. */
+  collectionRemoveMemberErrorsById?: Record<string, string>;
+  /** Rename failures keyed by Collection ID. */
+  collectionSetNameErrorsById?: Record<string, string>;
+  /** Live PR status/activity keyed by the sourced canonical GitHub URL. */
+  collectionGithubPullRequestsByUrl?: Record<
+    string,
+    {
+      url: string;
+      title: string;
+      state: string;
+      author: string | null;
+      author_avatar_url: string | null;
+      updated_at: string;
+      activity: Array<{
+        kind: "review" | "comment" | "merge";
+        author: string | null;
+        author_avatar_url: string | null;
+        state: string | null;
+        created_at: string;
+        url: string | null;
+      }>;
+    }
+  >;
+  /** PR-scoped resolver failures keyed by canonical GitHub URL. */
+  collectionGithubPullRequestErrorsByUrl?: Record<string, string>;
+  /** Explicit thread activity failures keyed by root event ID. */
+  collectionThreadActivityErrorsByRootId?: Record<string, string>;
   /** Delay binding signatures so specs can exercise request supersession. */
   nostrBindSignDelayMs?: number;
   /** Reject successive mock WebSocket connect attempts, then resume. */

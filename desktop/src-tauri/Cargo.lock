@@ -1059,6 +1059,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "buzz-collections"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "dirs",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "buzz-core"
 version = "0.1.0"
 dependencies = [
@@ -1091,6 +1105,7 @@ dependencies = [
  "base64 0.22.1",
  "block2",
  "buzz-agent",
+ "buzz-collections",
  "buzz-core",
  "buzz-media",
  "buzz-persona",

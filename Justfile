@@ -656,6 +656,15 @@ desktop-dev:
 
 # ─── Web ─────────────────────────────────────────────────────────────────────
 
+# Run the local Collections CLI against the same isolated profile selected by
+# this checkout's Desktop dev launcher (for example: `just collections ls`).
+collections *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PATH="{{justfile_directory()}}/bin:$PATH"
+    source scripts/collections-profile.sh
+    cargo run -q -p buzz-cli -- collections {{ARGS}}
+
 # Run the web frontend dev server (port derived from worktree to avoid collisions)
 web:
     #!/usr/bin/env bash

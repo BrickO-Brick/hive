@@ -44,7 +44,8 @@ export type AppSidebarProps = {
     | "agents"
     | "workflows"
     | "pulse"
-    | "projects";
+    | "projects"
+    | "collections";
   unreadChannelCounts: ReadonlyMap<string, number>;
   unreadChannelIds: ReadonlySet<string>;
   previewActivityChannelIds: ReadonlySet<string>;
