@@ -52,38 +52,42 @@ export function clampPublishCreatedAt(
   );
 }
 
-// ── Per-window durable outbox ────────────────────────────────────────────────
+// ── Per-window durable outbox (write-once, append-only) ──────────────────────
 //
 // Each sidebar-sync lane persists an unpublished edit so it survives a
 // quit/community-switch inside the 2s publish debounce. The durability boundary
 // is localStorage, which offers no atomic compare-and-delete or transactional
-// read-modify-write, so a single key shared across every window can never be
-// mutated safely: one window's read→write or read→remove can race a peer's
-// write in the gap and drop its still-unpublished edit (the defect a per-write
-// ownership token could narrow but not close).
+// read-modify-write: a single key shared across windows can never be mutated
+// safely, and even a per-window key a window OVERWRITES can change between a
+// peer's reclaim decision-read and its delete (the recheck race a byte-compare
+// narrows but cannot close).
 //
-// The outbox is therefore keyed PER WINDOW:
-// `<prefix>:<pubkey>:<relay>:<nonce>`, where `nonce` is stable for one window's
-// lifetime (parked in sessionStorage — survives reload, gone on window close).
-// Each window is the ONLY writer of its own key, so a hot-path write is a single
-// unconditional `setItem` with no read and no shared-key contention: the write
-// race is designed out rather than guarded.
+// The outbox is therefore keyed per window AND write-once. A key is
+// `<prefix>:<pubkey>:<relay>:<nonce>:<seq>`, where `nonce` is stable for one
+// window's lifetime (sessionStorage — survives reload, gone on window close) and
+// `seq` is a per-window monotonic counter. A window NEVER rewrites a key: a new
+// edit writes a NEW key (next `seq`) as a single unconditional `setItem`, then
+// deletes its own now-superseded key(s). Both are own-key operations and the
+// write precedes the delete, so a crash between them leaves ≥1 record for
+// replay to coalesce, never zero.
 //
-// A window clears only its own key once its publish completes. Redundant foreign
-// keys (a peer that published then crashed, or an edit the relay has since
-// absorbed) are reclaimed at boot, gated on durable relay evidence so a live
-// peer's genuinely-unpublished edit is never destroyed:
+// Because records are immutable, foreign reclamation is safe by construction: a
+// booting window reads an immutable foreign record, proves it reclaimable
+// against durable relay evidence, and deletes it. Nothing can have changed at
+// that key since the proof — the only competing interleave is the owner
+// deleting it first, and `removeItem` on an absent key is a no-op. No byte
+// recheck and no destructive-path residual remain.
 //   - merge lanes:      delete a record the fetched relay head already subsumes.
-//   - whole-blob lanes:  delete a record the head's own timestamp supersedes
-//                        (`queuedAt` ≤ head `created_at`) — never one that
-//                        merely loses a local comparison.
-// Reclamation runs only when the head fetch succeeded, never on a failed fetch,
-// and re-reads each foreign key immediately before removing it so a value that
-// changed since the decision is left for its owner. This is not atomic —
-// localStorage cannot be — but it narrows the residual to a recheck→remove gap
-// that additionally requires the owner to quit before its own debounce publish
-// (its in-memory pending re-drives otherwise). After any successful publish the
-// relay head is newest, so foreign keys still drain to zero across boots.
+//   - whole-blob lanes:  delete a record the head STRICTLY supersedes
+//                        (`queuedAt` < head `created_at`); a same-second record
+//                        is kept until a strictly-newer head lands.
+// Reclamation runs only after a successful head fetch, never touches this
+// window's own keys, and never touches the legacy v1 shared key — that key is
+// mutable (a live old-build window may be rewriting it) and its `queuedAt=0`
+// makes supersession meaningless, so no gating makes deleting it safe; v2 only
+// ever replays it. The bounded cost is at most one lingering legacy key per lane
+// per (pubkey, relay), and only when the last old-build session quit with an
+// unpublished edit.
 
 const OUTBOX_WINDOW_NONCE_KEY = "buzz-sidebar-outbox-window.v1";
 
@@ -100,7 +104,7 @@ function mintNonce(): string {
 
 /**
  * The stable per-window nonce that scopes this window's outbox keys. Minted
- * once and parked in sessionStorage so a reload re-owns the same key while a
+ * once and parked in sessionStorage so a reload re-owns the same keys while a
  * new window gets its own; an unavailable sessionStorage (private mode, test
  * harness without one) falls back to a process-lifetime in-memory nonce.
  */
@@ -126,12 +130,11 @@ function scopeSuffix(pubkey: string, relayUrl: string): string {
   return `${pubkey}:${encodeURIComponent(normalizeRelayUrl(relayUrl))}`;
 }
 
-/** This window's own outbox key — the only key it ever writes or removes. */
-export function ownOutboxKey(
-  prefix: string,
-  pubkey: string,
-  relayUrl: string,
-): string {
+/**
+ * The base every own key for this (lane, pubkey, relay, window) shares:
+ * `<prefix>:<pubkey>:<relay>:<nonce>`. Own keys append `:<seq>`.
+ */
+function ownKeyBase(prefix: string, pubkey: string, relayUrl: string): string {
   return `${prefix}:${scopeSuffix(pubkey, relayUrl)}:${outboxWindowNonce()}`;
 }
 
@@ -144,6 +147,42 @@ function outboxScopePrefix(
   return `${prefix}:${scopeSuffix(pubkey, relayUrl)}:`;
 }
 
+// Per-window monotonic `seq`, keyed by own-key base. Lazily seeded above the max
+// `seq` among this window's surviving own keys so a reload (nonce survives in
+// sessionStorage, this in-memory counter restarts) can never reuse — and thus
+// overwrite — a key. Overwriting an own key would silently break immutability
+// and reopen the reclaim race.
+const ownSeqCounter = new Map<string, number>();
+
+// `seq` is zero-padded to a fixed width so a key's lexicographic order matches
+// its numeric order. That makes the whole-blob replay tiebreak (max `queuedAt`,
+// then key string) pick the higher `seq` — the newer edit — when a crash
+// between write-new and delete-old leaves two same-second own keys with
+// adjacent seqs that cross a digit boundary (…:9 vs …:10). 12 digits bound a
+// window's edit count far past any reachable value.
+const SEQ_WIDTH = 12;
+
+/** This window's own keys for a base (`<base>:<seq>`). */
+function ownKeys(base: string): string[] {
+  const p = `${base}:`;
+  return localStorageKeys().filter((k) => k.startsWith(p));
+}
+
+/** Allocate this window's next write-once own key for a base. */
+function nextOwnKey(base: string): string {
+  let last = ownSeqCounter.get(base);
+  if (last === undefined) {
+    last = -1;
+    for (const k of ownKeys(base)) {
+      const seq = Number(k.slice(base.length + 1));
+      if (Number.isInteger(seq) && seq > last) last = seq;
+    }
+  }
+  const seq = last + 1;
+  ownSeqCounter.set(base, seq);
+  return `${base}:${String(seq).padStart(SEQ_WIDTH, "0")}`;
+}
+
 /** A durable outbox record enumerated across all windows for a lane. */
 export type OutboxRecord<T> = {
   key: string;
@@ -151,8 +190,6 @@ export type OutboxRecord<T> = {
   // Seconds since epoch when the edit was queued (0 for a legacy entry written
   // before per-window keys, which therefore never wins a whole-blob tie).
   queuedAt: number;
-  // The exact stored string at enumeration time, for the pre-delete recheck.
-  raw: string;
   isOwn: boolean;
 };
 
@@ -193,10 +230,16 @@ function parseEnvelope<T>(
 }
 
 /**
- * Persist this window's unpublished edit under its own key. A single
- * unconditional `setItem` — no read, no merge, no shared-key contention.
- * Best-effort: the in-memory pending edit still drives this session's publish
- * even if the persisted copy could not be written.
+ * Persist this window's unpublished edit under a fresh write-once key.
+ *
+ * Allocates the next `seq` for this window and `setItem`s the record there (a
+ * single unconditional write — no read, no merge, no shared-key contention),
+ * THEN deletes this window's older own keys. Write-before-delete: a crash
+ * between the two leaves ≥1 record for replay to coalesce, never zero. Because
+ * a key is written exactly once and never rewritten, a peer's boot-time reclaim
+ * of a proven-stale foreign key can never race a rewrite. Best-effort: the
+ * in-memory pending edit still drives this session's publish even if the
+ * persisted copy could not be written.
  */
 export function writeOwnOutbox(
   prefix: string,
@@ -205,24 +248,32 @@ export function writeOwnOutbox(
   store: unknown,
   nowSecs: number = Math.floor(Date.now() / 1_000),
 ): void {
+  const base = ownKeyBase(prefix, pubkey, relayUrl);
   try {
+    const key = nextOwnKey(base);
     window.localStorage.setItem(
-      ownOutboxKey(prefix, pubkey, relayUrl),
+      key,
       JSON.stringify({ store, queuedAt: nowSecs }),
     );
+    // Drop this window's now-superseded own keys (all but the one just written).
+    for (const k of ownKeys(base)) {
+      if (k !== key) window.localStorage.removeItem(k);
+    }
   } catch {
     // Best-effort durability.
   }
 }
 
-/** Remove this window's own outbox key (its edit published or is a no-op). */
+/** Remove all of this window's own outbox keys (its edit published or a no-op). */
 export function clearOwnOutbox(
   prefix: string,
   pubkey: string,
   relayUrl: string,
 ): void {
   try {
-    window.localStorage.removeItem(ownOutboxKey(prefix, pubkey, relayUrl));
+    for (const k of ownKeys(ownKeyBase(prefix, pubkey, relayUrl))) {
+      window.localStorage.removeItem(k);
+    }
   } catch {
     // Ignore — a stale own key is re-evaluated on the next publish/boot.
   }
@@ -241,7 +292,8 @@ function localStorageKeys(): string[] {
 /**
  * Enumerate every window's durable outbox record for a lane, plus the single
  * legacy shared key from a pre-per-window build (treated as one more record so
- * an edit persisted by a prior build still resumes and is later reclaimed).
+ * an edit persisted by a prior build still resumes; never reclaimed — see
+ * `reclaimOutbox`).
  */
 export function enumerateOutbox<T>(
   prefix: string,
@@ -251,7 +303,7 @@ export function enumerateOutbox<T>(
   parseStore: (json: unknown) => T | null,
 ): OutboxRecord<T>[] {
   const scopePrefix = outboxScopePrefix(prefix, pubkey, relayUrl);
-  const own = ownOutboxKey(prefix, pubkey, relayUrl);
+  const ownPrefix = `${ownKeyBase(prefix, pubkey, relayUrl)}:`;
   const records: OutboxRecord<T>[] = [];
   try {
     for (const key of localStorageKeys()) {
@@ -263,8 +315,7 @@ export function enumerateOutbox<T>(
           key,
           store: parsed.store,
           queuedAt: parsed.queuedAt,
-          raw,
-          isOwn: key === own,
+          isOwn: key.startsWith(ownPrefix),
         });
       }
     }
@@ -275,7 +326,6 @@ export function enumerateOutbox<T>(
         key: legacyKey,
         store: legacy.store,
         queuedAt: legacy.queuedAt,
-        raw: legacyRaw,
         isOwn: false,
       });
     }
@@ -287,9 +337,12 @@ export function enumerateOutbox<T>(
 
 /**
  * Reclaim redundant FOREIGN outbox keys whose edits durable relay evidence
- * shows are safe to drop (`shouldReclaim`). Never touches this window's own
- * key. Re-reads each key immediately before removing it and skips if the stored
- * value changed since enumeration, so a live owner's fresh write is preserved.
+ * shows are safe to drop (`shouldReclaim`). Records are write-once, so a proven
+ * key cannot have changed since enumeration — the delete needs no recheck and
+ * cannot destroy a peer's fresh edit (a new edit lives under a new key). Never
+ * touches this window's own keys, and never touches the legacy v1 shared key:
+ * that key is mutable and `queuedAt=0`, so no gating makes deleting it safe;
+ * v2 only ever replays it. Call only after a successful head fetch.
  */
 export function reclaimOutbox<T>(
   prefix: string,
@@ -306,15 +359,10 @@ export function reclaimOutbox<T>(
     relayUrl,
     parseStore,
   )) {
-    if (record.isOwn) continue;
+    if (record.isOwn || record.key === legacyKey) continue;
     if (!shouldReclaim(record)) continue;
     try {
-      // Recheck: only remove if the value is byte-identical to what the
-      // reclaim decision was made against. A peer that rewrote the key in the
-      // gap owns a fresh edit we must not destroy.
-      if (window.localStorage.getItem(record.key) === record.raw) {
-        window.localStorage.removeItem(record.key);
-      }
+      window.localStorage.removeItem(record.key);
     } catch {
       // Leave for the next boot's reclamation.
     }

@@ -5,21 +5,25 @@ import test from "node:test";
 //
 // All four sidebar-sync lanes persist an unpublished edit so it survives a
 // quit/community-switch inside the 2s publish debounce. localStorage offers no
-// atomic compare-and-delete or transactional read-modify-write, so a single key
-// shared across windows can never be mutated safely: one window's read→write or
-// read→remove races a peer's write and drops its still-unpublished edit.
+// atomic compare-and-delete or transactional read-modify-write, so neither a
+// single shared key nor a per-window key a window OVERWRITES can be reclaimed
+// by a peer safely: the value can change between the reclaim decision-read and
+// the delete (the recheck race a byte-compare narrows but cannot close).
 //
-// The fix keys the outbox PER WINDOW: `<prefix>:<pubkey>:<relay>:<nonce>`, where
-// the nonce is stable per window (sessionStorage). Each window is the sole
-// writer of its own key, so a hot-path write is one unconditional `setItem` — no
-// read, no shared-key contention (prong b is designed out, not guarded). Resume
-// enumerates ALL windows' keys: merge lanes (stars/mutes) fold every record
-// (order-independent); whole-blob lanes (sort/sections) replay the max-`queuedAt`
-// record, ties broken by key. Redundant FOREIGN keys are reclaimed at boot,
-// gated on durable relay evidence and re-read immediately before removal so a
-// live peer's fresh write in the recheck gap is never destroyed. A window never
-// removes another window's key on the hot path and never touches its own key
-// during reclamation.
+// The fix keys the outbox per window AND write-once:
+// `<prefix>:<pubkey>:<relay>:<nonce>:<seq>`, where the nonce is stable per
+// window (sessionStorage) and `seq` is a per-window monotonic counter. A window
+// NEVER rewrites a key: a new edit writes a NEW key, then deletes its own older
+// keys (write-before-delete, so a crash leaves ≥1 record, never zero). Because
+// records are immutable, a booting peer that proves a foreign key reclaimable
+// against durable relay evidence can delete it with no recheck — nothing can
+// have changed at that key since the proof. Resume enumerates ALL windows'
+// keys: merge lanes (stars/mutes) fold every record (order-independent);
+// whole-blob lanes (sort/sections) replay the max-`queuedAt` record, ties broken
+// by key. Reclamation runs AFTER replay so a same-second record the head appears
+// to supersede is consumed into pending first. Whole-blob supersession is STRICT
+// (`queuedAt` < head `created_at`) so a same-second record is never dropped, and
+// the legacy v1 shared key is never deleted by v2 (it is mutable; only replayed).
 //
 // This matrix drives the shared helpers directly through a mock Storage seam —
 // no relay, no timers — so each interleaving is deterministic. The seam mocks
@@ -102,8 +106,12 @@ const PREFIX = {
 };
 
 // A foreign window's key: same (pubkey, relay) scope, a different nonce than
-// this process's own. `legacyKey` is the pre-per-window shared key (no nonce).
-const foreignKey = (lane, nonce) => `${PREFIX[lane]}:${SCOPE}:${nonce}`;
+// this process's own, plus a zero-padded `seq`. `legacyKey` is the
+// pre-per-window shared key (no nonce/seq).
+const SEQ_WIDTH = 12;
+const pad = (seq) => String(seq).padStart(SEQ_WIDTH, "0");
+const foreignKey = (lane, nonce, seq) =>
+  `${PREFIX[lane]}:${SCOPE}:${nonce}:${pad(seq)}`;
 const legacyKey = (lane) => `${PREFIX[lane]}:${SCOPE}`;
 const writeAt = (ls, key, store, queuedAt) =>
   ls.setItem(key, JSON.stringify({ store, queuedAt }));
@@ -119,56 +127,64 @@ const sectionStore = (secs, assignments = {}) => ({
   assignments,
 });
 
-// ── (i) Recheck skips a foreign write injected between decision-read and delete ─
+// ── (i) Reclaim never deletes a foreign edit written in the decision→delete gap ─
 //
-// reclaimOutbox re-reads each foreign key immediately before removing it and
-// skips when the value changed since the reclaim decision. A peer that rewrote
-// its key in that gap owns a fresh edit that must survive. Merge lane (stars):
-// the head subsumes the enumerated value, so reclaim would fire — but the peer's
-// interposed write must be preserved.
+// Records are write-once: an owner's fresh edit lands on a NEW key, never a
+// rewrite of the enumerated one. reclaimOutbox proves the enumerated (stale)
+// key reclaimable and deletes it; a peer edit injected during enumeration lives
+// under its own key and is evaluated on its own merits (kept when the head does
+// not subsume/supersede it). We interpose that fresh write via the read-mutate
+// seam to prove GC removes only the proven-stale key and never the fresh one.
 
-test("(i) stars: reclaim recheck skips a foreign key rewritten in the decision→delete gap", () => {
+test("(i) stars: reclaim deletes the proven-stale key and keeps a fresh edit written in the gap", () => {
   withStorage((ls) => {
-    const key = foreignKey("stars", "peerB");
+    const stale = foreignKey("stars", "peerB", 0);
     // Foreign edit the fetched head has already absorbed → decision = reclaim.
-    writeAt(ls, key, starStore({ a: starEntry(true, 100, 1) }), 100);
-    // Between the enumerate read (#1) and the recheck read (#2), the peer writes
-    // a FRESH edit the head does not reflect.
-    ls.onReadMutate(key, 1, (map) =>
+    writeAt(ls, stale, starStore({ a: starEntry(true, 100, 1) }), 100);
+    // During enumeration (read of the stale key), the peer commits a FRESH edit
+    // to a NEW key the head does not reflect — the write-once analogue of the
+    // owner rewriting in the gap.
+    const fresh = foreignKey("stars", "peerB", 1);
+    ls.onReadMutate(stale, 1, (map) =>
       map.set(
-        key,
+        fresh,
         JSON.stringify({
-          store: starStore({ a: starEntry(false, 300, 9) }),
+          store: starStore({ z: starEntry(true, 300, 9) }),
           queuedAt: 300,
         }),
       ),
     );
-    // Head carries `a` at (100,1) — subsumes the enumerated value.
+    // Head carries `a` at (100,1) — subsumes the stale value, not the fresh one.
     stars.reclaimSubsumedStarsOutbox(
       PK,
       RELAY,
       starStore({ a: starEntry(true, 100, 1) }),
     );
-    assert.ok(ls.has(key), "peer's fresh edit must survive the recheck");
-    const survived = stars.readChannelStarsOutbox(PK, RELAY);
-    assert.deepEqual(survived.channels.a, starEntry(false, 300, 9));
+    assert.ok(!ls.has(stale), "proven-stale key is reclaimed");
+    assert.ok(ls.has(fresh), "peer's fresh edit under a new key survives");
+    assert.deepEqual(
+      stars.readChannelStarsOutbox(PK, RELAY).channels.z,
+      starEntry(true, 300, 9),
+    );
   });
 });
 
-test("(i) sort: reclaim recheck skips a foreign key rewritten in the decision→delete gap", () => {
+test("(i) sort: reclaim deletes the proven-stale key and keeps a fresh edit written in the gap", () => {
   withStorage((ls) => {
-    const key = foreignKey("sort", "peerB");
-    writeAt(ls, key, sortStore({ dms: "alpha" }), 100);
-    ls.onReadMutate(key, 1, (map) =>
+    const stale = foreignKey("sort", "peerB", 0);
+    writeAt(ls, stale, sortStore({ dms: "alpha" }), 100);
+    const fresh = foreignKey("sort", "peerB", 1);
+    ls.onReadMutate(stale, 1, (map) =>
       map.set(
-        key,
+        fresh,
         JSON.stringify({ store: sortStore({ dms: "recent" }), queuedAt: 500 }),
       ),
     );
-    // Head created_at 200 supersedes the queuedAt=100 decision, but not the
-    // interposed queuedAt=500 write.
+    // Head created_at 200 strictly supersedes the queuedAt=100 stale record,
+    // not the interposed queuedAt=500 fresh key.
     sort.reclaimSupersededSortOutbox(PK, RELAY, 200);
-    assert.ok(ls.has(key), "peer's fresh edit must survive the recheck");
+    assert.ok(!ls.has(stale), "proven-stale key is reclaimed");
+    assert.ok(ls.has(fresh), "peer's fresh edit under a new key survives");
     assert.equal(sort.readChannelSortOutbox(PK, RELAY).groups.dms, "recent");
   });
 });
@@ -183,13 +199,13 @@ test("(ii) stars (merge): both windows' distinct-channel edits resume", () => {
   withStorage((ls) => {
     writeAt(
       ls,
-      foreignKey("stars", "A"),
+      foreignKey("stars", "A", 0),
       starStore({ a: starEntry(true, 100, 1) }),
       100,
     );
     writeAt(
       ls,
-      foreignKey("stars", "B"),
+      foreignKey("stars", "B", 0),
       starStore({ b: starEntry(true, 200, 1) }),
       200,
     );
@@ -203,13 +219,13 @@ test("(ii) mutes (merge): both windows' distinct-channel edits resume", () => {
   withStorage((ls) => {
     writeAt(
       ls,
-      foreignKey("mutes", "A"),
+      foreignKey("mutes", "A", 0),
       muteStore({ a: muteEntry(true, 100, 1) }),
       100,
     );
     writeAt(
       ls,
-      foreignKey("mutes", "B"),
+      foreignKey("mutes", "B", 0),
       muteStore({ b: muteEntry(true, 200, 1) }),
       200,
     );
@@ -221,10 +237,15 @@ test("(ii) mutes (merge): both windows' distinct-channel edits resume", () => {
 
 test("(ii) sort (whole-blob): the newest queued window resumes; older is LWW-superseded", () => {
   withStorage((ls) => {
-    writeAt(ls, foreignKey("sort", "A"), sortStore({ channels: "alpha" }), 100);
     writeAt(
       ls,
-      foreignKey("sort", "B"),
+      foreignKey("sort", "A", 0),
+      sortStore({ channels: "alpha" }),
+      100,
+    );
+    writeAt(
+      ls,
+      foreignKey("sort", "B", 0),
       sortStore({ channels: "recent" }),
       200,
     );
@@ -239,13 +260,13 @@ test("(ii) sections (whole-blob): the newest queued window resumes; older is LWW
   withStorage((ls) => {
     writeAt(
       ls,
-      foreignKey("sections", "A"),
+      foreignKey("sections", "A", 0),
       sectionStore([{ id: "s1", name: "One", order: 0 }]),
       100,
     );
     writeAt(
       ls,
-      foreignKey("sections", "B"),
+      foreignKey("sections", "B", 0),
       sectionStore([{ id: "s2", name: "Two", order: 0 }]),
       200,
     );
@@ -255,13 +276,54 @@ test("(ii) sections (whole-blob): the newest queued window resumes; older is LWW
   });
 });
 
-// ── (iii) Legacy v1 shared key: replays, then reclaimed only by relay gating ───
+// ── (iii) Same-second whole-blob: head at t keeps a record queued at t ─────────
 //
-// A pre-per-window build wrote one shared key. It enumerates as one more record
-// (queuedAt 0 for a bare store), resumes, and is reclaimed by the same relay-
-// gated rule — never dropped on replay alone (mixed dev/DMG fleet residual).
+// One-second clock granularity means a record queued in the same second as the
+// head cannot be proven to have lost LWW. Strict supersession (`queuedAt` <
+// head `created_at`) keeps it; a strictly-earlier record is reclaimed.
 
-test("(iii) stars: legacy shared key resumes, then is reclaimed once the head subsumes it", () => {
+test("(iii) sort: same-second record kept, strictly-earlier reclaimed", () => {
+  withStorage((ls) => {
+    const sameSecond = foreignKey("sort", "same", 0);
+    const earlier = foreignKey("sort", "old", 0);
+    writeAt(ls, sameSecond, sortStore({ dms: "recent" }), 100);
+    writeAt(ls, earlier, sortStore({ dms: "alpha" }), 99);
+    sort.reclaimSupersededSortOutbox(PK, RELAY, 100);
+    assert.ok(ls.has(sameSecond), "same-second record (queuedAt == head) kept");
+    assert.ok(!ls.has(earlier), "strictly-earlier record reclaimed");
+  });
+});
+
+test("(iii) sections: same-second record kept, strictly-earlier reclaimed", () => {
+  withStorage((ls) => {
+    const sameSecond = foreignKey("sections", "same", 0);
+    const earlier = foreignKey("sections", "old", 0);
+    writeAt(
+      ls,
+      sameSecond,
+      sectionStore([{ id: "s2", name: "Two", order: 0 }]),
+      100,
+    );
+    writeAt(
+      ls,
+      earlier,
+      sectionStore([{ id: "s1", name: "One", order: 0 }]),
+      99,
+    );
+    sections.reclaimSupersededSectionsOutbox(PK, RELAY, 100);
+    assert.ok(ls.has(sameSecond), "same-second record (queuedAt == head) kept");
+    assert.ok(!ls.has(earlier), "strictly-earlier record reclaimed");
+  });
+});
+
+// ── (iv) Legacy v1 shared key: replays, and is NEVER deleted by v2 ─────────────
+//
+// A pre-per-window build wrote one shared, MUTABLE key. v2 enumerates it as one
+// more record (queuedAt 0 for a bare store) so it resumes, but never deletes it
+// under any relay gating — a live old-build window may be rewriting it, and
+// queuedAt 0 makes supersession meaningless (mixed dev/DMG fleet residual).
+
+test("(iv) stars: legacy shared key resumes and is never reclaimed", () => {
   withStorage((ls) => {
     // Legacy bare store (no envelope) from a pre-per-window build.
     ls.setItem(
@@ -274,27 +336,20 @@ test("(iii) stars: legacy shared key resumes, then is reclaimed once the head su
       starEntry(true, 100, 1),
       "legacy entry resumes",
     );
-    // A head that does NOT subsume it (older rev) keeps it.
-    stars.reclaimSubsumedStarsOutbox(
-      PK,
-      RELAY,
-      starStore({ a: starEntry(true, 50, 0) }),
-    );
-    assert.ok(ls.has(legacyKey("stars")), "unsubsumed legacy entry is kept");
-    // A head that subsumes it reclaims it.
+    // Even a head that fully subsumes it must not delete the mutable v1 key.
     stars.reclaimSubsumedStarsOutbox(
       PK,
       RELAY,
       starStore({ a: starEntry(true, 100, 1) }),
     );
     assert.ok(
-      !ls.has(legacyKey("stars")),
-      "subsumed legacy entry is reclaimed",
+      ls.has(legacyKey("stars")),
+      "legacy v1 key is never deleted by v2",
     );
   });
 });
 
-test("(iii) sections: legacy shared key resumes, then is reclaimed once the head supersedes it", () => {
+test("(iv) sections: legacy shared key resumes and is never reclaimed", () => {
   withStorage((ls) => {
     // Legacy entry as a {store, queuedAt} envelope from an interim build.
     writeAt(
@@ -306,52 +361,138 @@ test("(iii) sections: legacy shared key resumes, then is reclaimed once the head
     assert.deepEqual(sections.readChannelSectionsOutbox(PK, RELAY).sections, [
       { id: "s1", name: "One", order: 0 },
     ]);
-    // Head created_at before the queued stamp keeps it (not yet superseded).
-    sections.reclaimSupersededSectionsOutbox(PK, RELAY, 50);
+    // A head strictly past the queued stamp still must not delete the v1 key.
+    sections.reclaimSupersededSectionsOutbox(PK, RELAY, 999);
     assert.ok(
       ls.has(legacyKey("sections")),
-      "un-superseded legacy entry is kept",
-    );
-    // Head created_at at/after the queued stamp supersedes and reclaims it.
-    sections.reclaimSupersededSectionsOutbox(PK, RELAY, 100);
-    assert.ok(
-      !ls.has(legacyKey("sections")),
-      "superseded legacy entry is reclaimed",
+      "legacy v1 key is never deleted by v2",
     );
   });
 });
 
-// ── (iv) Whole-blob replay tie → deterministic nonce (key) tiebreak ────────────
+// ── (v) Owner crash between write-new and delete-old → both replay-coalesce ────
+//
+// writeOwnOutbox writes the new key BEFORE deleting older own keys. A crash in
+// that gap leaves two own records for the same window; replay coalesces them
+// (merge fold / whole-blob max) with no loss and no duplicate publish.
 
-test("(iv) sort: equal-queuedAt records resolve by key so replay is deterministic", () => {
+test("(v) stars: two own records from a write-new/delete-old crash merge-coalesce", () => {
   withStorage((ls) => {
-    writeAt(ls, foreignKey("sort", "aaa"), sortStore({ forums: "alpha" }), 100);
+    const base = `${PREFIX.stars}:${SCOPE}:${outboxWindowNonce()}`;
+    // Simulate the crash residue: the pre-crash key (seq 0) plus the freshly
+    // written key (seq 1) both present. Merge must keep both channels.
     writeAt(
       ls,
-      foreignKey("sort", "zzz"),
+      `${base}:${pad(0)}`,
+      starStore({ a: starEntry(true, 100, 1) }),
+      100,
+    );
+    writeAt(
+      ls,
+      `${base}:${pad(1)}`,
+      starStore({ b: starEntry(true, 200, 1) }),
+      200,
+    );
+    const resumed = stars.readChannelStarsOutbox(PK, RELAY);
+    assert.deepEqual(resumed.channels.a, starEntry(true, 100, 1));
+    assert.deepEqual(resumed.channels.b, starEntry(true, 200, 1));
+  });
+});
+
+test("(v) sort: two own records from a crash resume the newer seq (padded key order)", () => {
+  withStorage((ls) => {
+    const base = `${PREFIX.sort}:${SCOPE}:${outboxWindowNonce()}`;
+    // Same-second seqs crossing a digit boundary: unpadded, "9" > "10"
+    // lexically and would wrongly resume the OLDER edit. Zero-padding makes the
+    // higher seq win the whole-blob tiebreak.
+    writeAt(ls, `${base}:${pad(9)}`, sortStore({ dms: "alpha" }), 100);
+    writeAt(ls, `${base}:${pad(10)}`, sortStore({ dms: "recent" }), 100);
+    assert.equal(
+      sort.readChannelSortOutbox(PK, RELAY).groups.dms,
+      "recent",
+      "newer seq resumes despite the digit-boundary crossing",
+    );
+  });
+});
+
+// ── (vi) Reload seeds seq above surviving own keys → no key reuse/overwrite ────
+//
+// After a reload the sessionStorage nonce survives but the in-memory seq counter
+// restarts. A fresh write must allocate a seq ABOVE the max surviving own key so
+// it never overwrites (and thus mutates) an existing immutable record.
+
+test("(vi) reload: a write after surviving own keys allocates a strictly-higher key", () => {
+  withStorage((ls) => {
+    const base = `${PREFIX.stars}:${SCOPE}:${outboxWindowNonce()}`;
+    // A surviving own key from before the (simulated) reload.
+    writeAt(
+      ls,
+      `${base}:${pad(5)}`,
+      starStore({ a: starEntry(true, 50, 1) }),
+      50,
+    );
+    // First write of the "new session" — seq counter cold, must seed above 5.
+    stars.writeChannelStarsOutbox(
+      PK,
+      starStore({ b: starEntry(true, 100, 1) }),
+      RELAY,
+    );
+    // The pre-reload key must NOT have been overwritten; the new write lands on
+    // a strictly-higher key, and delete-old drops the seq-5 key.
+    const ownKeys = [];
+    for (let i = 0; i < ls.length; i++) {
+      const k = ls.key(i);
+      if (k?.startsWith(`${base}:`)) ownKeys.push(k);
+    }
+    assert.equal(ownKeys.length, 1, "delete-old leaves exactly one own key");
+    assert.ok(
+      ownKeys[0] > `${base}:${pad(5)}`,
+      "new key seq is strictly above the surviving key",
+    );
+    // No data loss: the newest edit resumes.
+    assert.deepEqual(
+      stars.readChannelStarsOutbox(PK, RELAY).channels.b,
+      starEntry(true, 100, 1),
+    );
+  });
+});
+
+// ── (vii) Whole-blob replay tie → deterministic nonce (key) tiebreak ───────────
+
+test("(vii) sort: equal-queuedAt records resolve by key so replay is deterministic", () => {
+  withStorage((ls) => {
+    writeAt(
+      ls,
+      foreignKey("sort", "aaa", 0),
+      sortStore({ forums: "alpha" }),
+      100,
+    );
+    writeAt(
+      ls,
+      foreignKey("sort", "zzz", 0),
       sortStore({ forums: "recent" }),
       100,
     );
-    // Same queuedAt → the lexicographically-greater key wins (…:zzz).
+    // Same queuedAt → the lexicographically-greater key wins (…:zzz:…).
     assert.equal(sort.readChannelSortOutbox(PK, RELAY).groups.forums, "recent");
   });
 });
 
-// ── (v) Merge-lane replay is order-independent ─────────────────────────────────
+// ── (viii) Merge-lane replay is order-independent ──────────────────────────────
 
-test("(v) stars: same-channel records fold to the max entry regardless of key order", () => {
+test("(viii) stars: same-channel records fold to the max entry regardless of key order", () => {
   withStorage((ls) => {
     // Lower-rev record under a lexicographically-greater key (enumerated later)
     // must still lose to the higher-rev record — merge is order-independent.
     writeAt(
       ls,
-      foreignKey("stars", "aaa"),
+      foreignKey("stars", "aaa", 0),
       starStore({ c: starEntry(true, 100, 5) }),
       100,
     );
     writeAt(
       ls,
-      foreignKey("stars", "zzz"),
+      foreignKey("stars", "zzz", 0),
       starStore({ c: starEntry(false, 100, 2) }),
       200,
     );
@@ -364,7 +505,7 @@ test("(v) stars: same-channel records fold to the max entry regardless of key or
   });
 });
 
-// ── (vi) GC no-op when the head subsumes/supersedes nothing ────────────────────
+// ── (ix) GC no-op when the head subsumes/supersedes nothing ────────────────────
 //
 // The hook calls reclaim only inside the `apply-remote` branch, so a `failed`
 // head fetch (or `absent`) never invokes it — that guard is structural in the
@@ -372,9 +513,9 @@ test("(v) stars: same-channel records fold to the max entry regardless of key or
 // subsumes/supersedes nothing removes nothing: a foreign edit newer than the
 // head is live intent and is kept, so a stale/empty head can never over-collect.
 
-test("(vi) stars: a head that subsumes nothing reclaims nothing", () => {
+test("(ix) stars: a head that subsumes nothing reclaims nothing", () => {
   withStorage((ls) => {
-    const key = foreignKey("stars", "B");
+    const key = foreignKey("stars", "B", 0);
     writeAt(ls, key, starStore({ a: starEntry(true, 300, 2) }), 300);
     // Empty head subsumes no channel → keep everything.
     stars.reclaimSubsumedStarsOutbox(PK, RELAY, starStore({}));
@@ -382,9 +523,9 @@ test("(vi) stars: a head that subsumes nothing reclaims nothing", () => {
   });
 });
 
-test("(vi) sort: a head older than the queued edit supersedes nothing", () => {
+test("(ix) sort: a head older than the queued edit supersedes nothing", () => {
   withStorage((ls) => {
-    const key = foreignKey("sort", "B");
+    const key = foreignKey("sort", "B", 0);
     writeAt(ls, key, sortStore({ dms: "recent" }), 300);
     // headCreatedAt=0 (absent-equivalent) < queuedAt → keep.
     sort.reclaimSupersededSortOutbox(PK, RELAY, 0);
@@ -394,26 +535,33 @@ test("(vi) sort: a head older than the queued edit supersedes nothing", () => {
 
 // ── Own-key round trip: write, read, clear (single-window baseline) ────────────
 
-test("own key: write resumes, clear removes only this window's own key", () => {
+test("own key: write resumes, clear removes only this window's own keys", () => {
   withStorage((ls) => {
     stars.writeChannelStarsOutbox(
       PK,
       starStore({ a: starEntry(true, 100, 1) }),
       RELAY,
     );
-    const ownKey = `${PREFIX.stars}:${SCOPE}:${outboxWindowNonce()}`;
-    assert.ok(ls.has(ownKey), "own edit is written under this window's nonce");
+    const ownBase = `${PREFIX.stars}:${SCOPE}:${outboxWindowNonce()}`;
+    const hasOwn = () => {
+      for (let i = 0; i < ls.length; i++) {
+        const k = ls.key(i);
+        if (k?.startsWith(`${ownBase}:`)) return true;
+      }
+      return false;
+    };
+    assert.ok(hasOwn(), "own edit is written under this window's nonce");
     // A foreign peer key is untouched by an own-key clear.
     writeAt(
       ls,
-      foreignKey("stars", "peer"),
+      foreignKey("stars", "peer", 0),
       starStore({ z: starEntry(true, 9, 1) }),
       9,
     );
     stars.clearChannelStarsOutbox(PK, RELAY);
-    assert.ok(!ls.has(ownKey), "own key cleared");
+    assert.ok(!hasOwn(), "own keys cleared");
     assert.ok(
-      ls.has(foreignKey("stars", "peer")),
+      ls.has(foreignKey("stars", "peer", 0)),
       "foreign key untouched by own clear",
     );
   });

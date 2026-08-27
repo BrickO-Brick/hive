@@ -257,13 +257,15 @@ export function clearChannelSectionsOutbox(
 }
 
 /**
- * Reclaim foreign outbox keys the relay head itself supersedes: a whole-blob
- * record queued at or before the durable head's `created_at` (`queuedAt` ≤
- * `headCreatedAt`) lost LWW to a blob the relay already holds, so dropping it
- * matches the relay's own resolution. A record queued AFTER the head is live
- * intent the head does not yet reflect and is kept — never reclaimed merely for
- * losing a local max-`queuedAt` comparison. Never touches this window's own key
- * and rechecks each key before removing. Call only after a successful fetch.
+ * Reclaim foreign outbox keys the relay head itself STRICTLY supersedes: a
+ * whole-blob record queued strictly before the durable head's `created_at`
+ * (`queuedAt` < `headCreatedAt`) lost LWW to a blob the relay already holds, so
+ * dropping it matches the relay's own resolution. A same-second record
+ * (`queuedAt` == `headCreatedAt`) is kept — one-second clock granularity cannot
+ * prove it lost, so it drains only when a strictly-newer head lands. A record
+ * queued after the head is live intent and is likewise kept. Records are
+ * write-once so the delete needs no recheck; never touches this window's own
+ * keys or the legacy shared key. Call only after a successful fetch.
  */
 export function reclaimSupersededSectionsOutbox(
   pubkey: string,
@@ -276,6 +278,6 @@ export function reclaimSupersededSectionsOutbox(
     pubkey,
     relayUrl,
     parseChannelSectionPayload,
-    (record) => record.queuedAt <= headCreatedAt,
+    (record) => record.queuedAt < headCreatedAt,
   );
 }

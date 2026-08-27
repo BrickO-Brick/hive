@@ -107,20 +107,24 @@ export function useChannelMutes(
       if (cancelled) return;
       if (result.action === "apply-remote") {
         setStore(applyRemote(result.data));
-        // Head fetch succeeded: reclaim any foreign window's outbox key the
-        // head already subsumes (a peer that published then quit). Gated on the
-        // fetched head and rechecked per key, so a live peer's unpublished edit
-        // is never destroyed. A `hold` (absent/failed head) reclaims nothing.
-        reclaimSubsumedMutesOutbox(pubkey, relayUrl, result.data.store);
       }
-      // "hold": seed already performed by bootstrap (if first-sync), or blocked.
       // Resume any edit persisted to the durable outbox before a prior
       // quit/community-switch so a click made <2s before teardown still syncs.
+      // Replay runs BEFORE reclamation so a same-second record the head appears
+      // to supersede is consumed into pending here and can never be GC'd out.
       const outbox = readChannelMutesOutbox(pubkey, relayUrl);
       if (outbox) {
         managerRef.current?.publishMutes(outbox);
       } else {
         clearChannelMutesOutbox(pubkey, relayUrl);
+      }
+      if (result.action === "apply-remote") {
+        // Head fetch succeeded: reclaim any foreign window's write-once outbox
+        // key the head already subsumes (a peer that published then quit).
+        // Gated on the fetched head; records are immutable so no recheck is
+        // needed and a live peer's unpublished edit (under a different key) is
+        // never destroyed. A `hold` (absent/failed head) reclaims nothing.
+        reclaimSubsumedMutesOutbox(pubkey, relayUrl, result.data.store);
       }
     });
     return () => {

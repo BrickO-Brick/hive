@@ -107,20 +107,25 @@ export function useChannelStars(
       if (cancelled) return;
       if (result.action === "apply-remote") {
         setStore(applyRemote(result.data));
-        // Head fetch succeeded: reclaim any foreign window's outbox key the
-        // head already subsumes (a peer that published then quit). Gated on the
-        // fetched head and rechecked per key, so a live peer's unpublished edit
-        // is never destroyed. A `hold` (absent/failed head) reclaims nothing.
-        reclaimSubsumedStarsOutbox(pubkey, relayUrl, result.data.store);
       }
       // Resume every window's edit persisted to the durable outbox before a
       // prior quit/community-switch so a click made <2s before teardown still
-      // syncs. Merges all records (order-independent), then publishes.
+      // syncs. Merges all records (order-independent), then publishes. Replay
+      // runs BEFORE reclamation so a same-second record the head appears to
+      // supersede is consumed into pending here and can never be GC'd out.
       const outbox = readChannelStarsOutbox(pubkey, relayUrl);
       if (outbox) {
         managerRef.current?.publishStars(outbox);
       } else {
         clearChannelStarsOutbox(pubkey, relayUrl);
+      }
+      if (result.action === "apply-remote") {
+        // Head fetch succeeded: reclaim any foreign window's write-once outbox
+        // key the head already subsumes (a peer that published then quit).
+        // Gated on the fetched head; records are immutable so no recheck is
+        // needed and a live peer's unpublished edit (under a different key) is
+        // never destroyed. A `hold` (absent/failed head) reclaims nothing.
+        reclaimSubsumedStarsOutbox(pubkey, relayUrl, result.data.store);
       }
     });
     return () => {
