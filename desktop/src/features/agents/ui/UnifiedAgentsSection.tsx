@@ -23,6 +23,11 @@ import { PersonaActionsMenu } from "./PersonaActionsMenu";
 import { buildUnifiedGroups } from "./unifiedAgentGroups";
 
 type UnifiedAgentsSectionProps = {
+  /**
+   * Optional section header. The page header used to carry this section on its
+   * own; a peer section rendered before it needs this section to name itself.
+   */
+  header?: React.ReactNode;
   defaultModel: string;
   actionErrorMessage: string | null;
   actionNoticeMessage: string | null;
@@ -71,6 +76,7 @@ export function UnifiedAgentsSection(props: UnifiedAgentsSectionProps) {
     defaultModel,
     agents,
     agentsError,
+    header,
     isActionPending,
     isAgentsLoading,
     restartingAgentPubkey,
@@ -119,6 +125,8 @@ export function UnifiedAgentsSection(props: UnifiedAgentsSectionProps) {
       className="relative space-y-4"
       data-testid="agents-library-personas"
     >
+      {header}
+
       {isLoading ? <LoadingSkeleton /> : null}
 
       {!isLoading ? (

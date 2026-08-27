@@ -35,7 +35,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/shared/ui/dropdown-menu";
-import { PageHeader } from "@/shared/ui/PageHeader";
+import { PageHeader, SectionHeader } from "@/shared/ui/PageHeader";
 import { getInheritedAgentDefaults } from "./bakedEnvHelpers";
 
 export function AgentsView() {
@@ -212,6 +212,12 @@ export function AgentsView() {
             <BestieSectionContainer />
 
             <UnifiedAgentsSection
+              header={
+                <SectionHeader
+                  description="Create agents and add them to your channels."
+                  title="Your agents"
+                />
+              }
               defaultModel={inheritedDefaults.model.value}
               actionErrorMessage={agents.actionErrorMessage}
               actionNoticeMessage={agents.actionNoticeMessage}
