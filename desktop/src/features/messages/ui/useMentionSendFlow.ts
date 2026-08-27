@@ -57,6 +57,7 @@ export function useMentionSendFlow({
   onAddressedAgentsComposerCleared,
   onAddressedAgentsSendFailed,
   onAddressedAgentsSendSucceeded,
+  onDraftEntryKindRestored,
   onSendRef,
   richText,
   setContent,
@@ -343,6 +344,7 @@ export function useMentionSendFlow({
           draft.savedImeta,
           [...draft.savedSpoileredAttachmentUrls],
           draft.savedMentionRefs,
+          draft.savedEntryKind,
         );
         saveQueuedAttachmentsForDraft(
           draft.recoveryDraftKey,
@@ -360,7 +362,8 @@ export function useMentionSendFlow({
             JSON.stringify(existing.pendingImeta) !==
               JSON.stringify(draft.savedImeta) ||
             JSON.stringify(existing.spoileredAttachmentUrls) !==
-              JSON.stringify([...draft.savedSpoileredAttachmentUrls]))
+              JSON.stringify([...draft.savedSpoileredAttachmentUrls]) ||
+            existing.entryKind !== draft.savedEntryKind)
         ) {
           return;
         }
@@ -371,6 +374,7 @@ export function useMentionSendFlow({
           draft.savedImeta,
           [...draft.savedSpoileredAttachmentUrls],
           draft.savedMentionRefs,
+          draft.savedEntryKind,
         );
       };
       let composerCleared = false;
@@ -405,6 +409,7 @@ export function useMentionSendFlow({
         setContent(draft.savedContent);
         contentRef.current = draft.savedContent;
         richText.setContent(draft.savedContent);
+        onDraftEntryKindRestored?.(draft.savedEntryKind);
         setPendingImeta(draft.savedImeta);
         restoreQueuedAttachments(draft.queuedAttachments);
         mentions.restoreDraftMentionRefs(draft.savedMentionRefs);
@@ -562,6 +567,16 @@ export function useMentionSendFlow({
           const newlyPinnedPubkeys = draft.inlineAgentMentionPubkeys.filter(
             (pubkey) => sentMentionPubkeys.has(normalizePubkey(pubkey)),
           );
+          if (draft.sentDraftKey) {
+            drafts.markDraftSent(
+              draft.sentDraftKey,
+              draft.savedContent,
+              draft.capturedChannelId ?? draft.sentDraftKey,
+              draft.savedImeta,
+              [...draft.savedSpoileredAttachmentUrls],
+              draft.savedEntryKind,
+            );
+          }
           if (
             draft.capturedChannelId === channelIdRef.current ||
             channelIdRef.current === null
@@ -574,15 +589,6 @@ export function useMentionSendFlow({
                 ]),
               ],
               newlyPinnedPubkeys,
-            );
-          }
-          if (draft.sentDraftKey) {
-            drafts.markDraftSent(
-              draft.sentDraftKey,
-              draft.savedContent,
-              draft.capturedChannelId ?? draft.sentDraftKey,
-              draft.savedImeta,
-              [...draft.savedSpoileredAttachmentUrls],
             );
           }
         };
@@ -652,6 +658,7 @@ export function useMentionSendFlow({
       onAddressedAgentsComposerCleared,
       onAddressedAgentsSendFailed,
       onAddressedAgentsSendSucceeded,
+      onDraftEntryKindRestored,
       onPrepareSendChannel,
       onSendRef,
       richText.setContent,
@@ -677,6 +684,7 @@ export function useMentionSendFlow({
       recoveryDraftKey,
       spoileredAttachmentUrls = new Set(),
       trimmed,
+      entryKind,
     }: SendMessageWithMentionFlowInput) => {
       if (isMentionSendPendingRef.current) {
         return;
@@ -799,6 +807,7 @@ export function useMentionSendFlow({
           sentDraftKey,
           recoveryDraftKey,
           savedMentionRefs,
+          savedEntryKind: entryKind,
         };
         if (promptNonMemberPubkeys.length > 0) {
           setNonMemberPromptError(null);

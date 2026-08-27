@@ -58,20 +58,24 @@ export function useAgentAddressLockPicker({
   audienceScope,
   mentions,
   onAddressAgentMention,
+  onAgentPrefillChanged,
   onAutoPinAgentMention,
   onPulseAddressLock,
   profiles,
   richText,
+  shouldKeepAgentPrefill,
 }: {
   applyAutocompleteEdit: (edit: AutocompleteEdit) => void;
   audience: ReturnType<typeof usePersistentAgentAudience>;
   audienceScope: string | null;
   mentions: UseMentionsResult;
   onAddressAgentMention?: (suggestion: MentionSuggestion) => void;
+  onAgentPrefillChanged?: (content: string) => void;
   onAutoPinAgentMention?: (suggestion: MentionSuggestion) => void;
   onPulseAddressLock: (pubkey: string) => void;
   profiles?: UserProfileLookup;
   richText: UseRichTextEditorResult;
+  shouldKeepAgentPrefill?: (currentContent: string) => boolean;
 }) {
   const lockedAgentPubkeys = React.useMemo(
     () => new Set(audience.pubkeys),
@@ -165,12 +169,19 @@ export function useAgentAddressLockPicker({
       const normalized = normalizePubkey(pubkey);
       if (!audienceScope || !normalized) return;
       const { text } = richText.getPlainTextAndCursor();
+      const keepAgentPrefill = shouldKeepAgentPrefill?.(text) ?? false;
       const matchingDisplayNames = mentions
         .getDraftMentionRefs(text)
         .filter((ref) => normalizePubkey(ref.pubkey) === normalized)
         .map((ref) => ref.displayName);
       for (const edit of buildMentionRemovalEdits(text, matchingDisplayNames)) {
-        applyAutocompleteEdit(edit);
+        applyAutocompleteEdit(
+          keepAgentPrefill ? { ...edit, preventUpdate: true } : edit,
+        );
+      }
+      const nextContent = richText.getPlainTextAndCursor().text;
+      if (keepAgentPrefill) {
+        onAgentPrefillChanged?.(nextContent);
       }
       removeAddressedAgent(normalized);
     },
@@ -178,14 +189,17 @@ export function useAgentAddressLockPicker({
       applyAutocompleteEdit,
       audienceScope,
       mentions.getDraftMentionRefs,
+      onAgentPrefillChanged,
       removeAddressedAgent,
       richText.getPlainTextAndCursor,
+      shouldKeepAgentPrefill,
     ],
   );
   const toggleAlwaysAddressAgent = React.useCallback(
     (suggestion: MentionSuggestion) => {
       const pubkey = normalizePubkey(suggestion.pubkey ?? "");
       if (!audienceScope || !pubkey || !suggestion.isAgent) return;
+      let keepAgentPrefill = false;
 
       if (lockedAgentPubkeys.has(pubkey)) {
         removeAddressedAgentMentions(pubkey);
@@ -198,12 +212,14 @@ export function useAgentAddressLockPicker({
           isAgent: true,
         });
         const { text } = richText.getPlainTextAndCursor();
+        keepAgentPrefill = shouldKeepAgentPrefill?.(text) ?? false;
         if (getMentionOffsets(text, suggestion.displayName).length === 0) {
           applyAutocompleteEdit({
             replaceFromOffset: 0,
             replaceToOffset: 0,
             insertText: `@${suggestion.displayName} `,
             preserveSelection: true,
+            ...(keepAgentPrefill ? { preventUpdate: true } : {}),
           });
         }
         trackMentionAddressedAgent(pubkey);
@@ -235,6 +251,10 @@ export function useAgentAddressLockPicker({
         });
         mentions.openMentionPicker(queryStart, "preserve");
       }
+      const nextContent = richText.getPlainTextAndCursor().text;
+      if (keepAgentPrefill) {
+        onAgentPrefillChanged?.(nextContent);
+      }
     },
     [
       applyAutocompleteEdit,
@@ -247,9 +267,11 @@ export function useAgentAddressLockPicker({
       mentions.openMentionPicker,
       mentions.registerMentionPubkey,
       onAddressAgentMention,
+      onAgentPrefillChanged,
       onPulseAddressLock,
       removeAddressedAgentMentions,
       richText.getPlainTextAndCursor,
+      shouldKeepAgentPrefill,
       trackMentionAddressedAgent,
     ],
   );
@@ -361,6 +383,7 @@ export function useAgentAddressLockPicker({
         replaceToOffset: 0,
         insertText: insertedText,
         preserveSelection: true,
+        preventUpdate: true,
       });
       return `${insertedText}${text}`;
     },

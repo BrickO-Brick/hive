@@ -5,7 +5,10 @@ import {
 } from "@/features/messages/lib/imetaMediaMarkdown";
 import type { QueuedMediaAttachment } from "@/features/messages/lib/backgroundMediaUploadStore";
 import type { PreparedBackgroundLinkPreviews } from "@/features/messages/lib/linkPreviewPreparationStore";
-import type { DraftMentionRef } from "@/features/messages/lib/useDrafts";
+import type {
+  DraftEntryKind,
+  DraftMentionRef,
+} from "@/features/messages/lib/useDrafts";
 import { normalizePubkey } from "@/shared/lib/pubkey";
 import { MENTION_REFERENCE_TAG } from "@/shared/lib/resolveMentionNames";
 
@@ -33,6 +36,7 @@ export type PendingNonMemberMentionSend = {
   sentDraftKey: string | null | undefined;
   recoveryDraftKey: string | null | undefined;
   savedMentionRefs: DraftMentionRef[];
+  savedEntryKind: DraftEntryKind;
 };
 
 export type SendMessageWithMentionFlowInput = {
@@ -47,6 +51,7 @@ export type SendMessageWithMentionFlowInput = {
   recoveryDraftKey: string | null | undefined;
   spoileredAttachmentUrls?: ReadonlySet<string>;
   trimmed: string;
+  entryKind: DraftEntryKind;
 };
 
 export async function resolvePreviewTags(
