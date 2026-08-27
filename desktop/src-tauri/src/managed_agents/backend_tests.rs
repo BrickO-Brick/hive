@@ -1,4 +1,5 @@
 use super::*;
+use crate::managed_agents::discovery::command_search;
 
 #[test]
 fn redact_secrets_replaces_nsec() {
@@ -430,7 +431,7 @@ fn command_discovery_dirs_include_all_spawn_search_sources_without_duplicates() 
     let nvm = PathBuf::from("nvm");
 
     assert_eq!(
-        discovery::command_search::merge_command_discovery_dirs([
+        command_search::merge_command_discovery_dirs([
             vec![workspace.clone(), path.clone()],
             vec![path, managed.clone()],
             vec![login.clone()],
