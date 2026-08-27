@@ -649,7 +649,7 @@ mod tests {
         let mut migrations: Vec<_> = MIGRATOR.iter().collect();
         migrations.sort_by_key(|migration| migration.version);
 
-        assert_eq!(migrations.len(), 34);
+        assert_eq!(migrations.len(), 35);
         assert_eq!(migrations[0].version, 1);
         assert_eq!(&*migrations[0].description, "initial schema");
         assert!(migrations[0]
@@ -1111,6 +1111,24 @@ mod tests {
         assert!(heartbeat_vacuum.contains("ALTER TABLE replica_heartbeat"));
         assert!(heartbeat_vacuum.contains("vacuum_truncate = false"));
         assert!(desired_schema.contains("vacuum_truncate = false"));
+
+        // Workflow revision capture is additive: nullable 32-byte event IDs on
+        // both the materialized definition and run, with identical fresh-schema
+        // constraints and no backfill hidden in startup migration state.
+        assert_eq!(migrations[34].version, 35);
+        let workflow_revision_binding = migrations[34].sql.as_str();
+        assert!(workflow_revision_binding.contains("ALTER TABLE workflows"));
+        assert!(workflow_revision_binding.contains("ALTER TABLE workflow_runs"));
+        assert!(workflow_revision_binding.contains("octet_length(definition_event_id) = 32"));
+        assert!(!workflow_revision_binding
+            .to_ascii_lowercase()
+            .contains("update "));
+        assert_eq!(
+            desired_schema
+                .matches("octet_length(definition_event_id) = 32")
+                .count(),
+            2
+        );
 
         // pgschema intentionally reconciles DDL, not seed DML or table storage
         // parameters. Its post-apply reconciliation must restore and verify

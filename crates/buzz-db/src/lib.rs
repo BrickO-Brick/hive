@@ -3330,6 +3330,7 @@ impl Db {
     #[datastore_span(name = "upsert_workflow", system = "postgresql")]
     pub async fn upsert_workflow(
         &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         community_id: CommunityId,
         id: Uuid,
         channel_id: Option<Uuid>,
@@ -3337,9 +3338,10 @@ impl Db {
         name: &str,
         definition_json: &str,
         definition_hash: &[u8],
+        definition_event_id: &[u8],
     ) -> Result<()> {
         workflow::upsert_workflow(
-            &self.pool,
+            tx,
             community_id,
             id,
             channel_id,
@@ -3347,6 +3349,7 @@ impl Db {
             name,
             definition_json,
             definition_hash,
+            definition_event_id,
         )
         .await
     }
@@ -3548,6 +3551,7 @@ impl Db {
         &self,
         community_id: CommunityId,
         workflow_id: Uuid,
+        definition_event_id: Option<&[u8]>,
         trigger_event_id: Option<&[u8]>,
         trigger_context: Option<&serde_json::Value>,
     ) -> Result<Uuid> {
@@ -3555,6 +3559,7 @@ impl Db {
             &self.pool,
             community_id,
             workflow_id,
+            definition_event_id,
             trigger_event_id,
             trigger_context,
         )
