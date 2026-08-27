@@ -285,6 +285,47 @@ export function reconcileFetchedChannelWindow(
   return reconcileChannelWindowMessages(next, previousMessages);
 }
 
+/**
+ * Reconciles a fetched window and then attributes it to the active switch
+ * trace. The ORDER is the contract: reconciliation throws for aborted
+ * requests, so a canceled fetch never reaches attribution and cannot claim
+ * the trace's one-shot slot ahead of the accepted replacement. Duration is
+ * measured over the fetch alone and passed in. Exported so the ordering is
+ * exercised by tests rather than restated by them.
+ */
+export function reconcileAndAttributeChannelWindow({
+  queryClient,
+  channelId,
+  events,
+  previousMessages,
+  signal,
+  fetchDurationMs,
+  fetchStartedAt,
+}: {
+  queryClient: QueryClient;
+  channelId: string;
+  events: RelayEvent[];
+  previousMessages: RelayEvent[];
+  signal: AbortSignal;
+  fetchDurationMs: number;
+  fetchStartedAt: number;
+}): RelayEvent[] {
+  const result = reconcileFetchedChannelWindow(
+    queryClient,
+    channelId,
+    events,
+    previousMessages,
+    signal,
+  );
+  traceChannelWindowFetch(
+    channelId,
+    events.length,
+    fetchDurationMs,
+    fetchStartedAt,
+  );
+  return result;
+}
+
 export function useChannelMessagesQuery(channel: Channel | null) {
   const queryClient = useQueryClient();
   const queryKey = channelMessagesKey(channel?.id ?? "none");
@@ -305,24 +346,15 @@ export function useChannelMessagesQuery(channel: Channel | null) {
       const fetchStartedAt = performance.now();
       const events = await getChannelWindowEvents(channel.id);
       const fetchDurationMs = performance.now() - fetchStartedAt;
-      const result = reconcileFetchedChannelWindow(
+      return reconcileAndAttributeChannelWindow({
         queryClient,
-        channel.id,
+        channelId: channel.id,
         events,
         previousMessages,
         signal,
-      );
-      // Attribute only ACCEPTED fetches: reconciliation throws for aborted
-      // requests, and a canceled fetch that claimed the trace's one-shot
-      // attribution slot would block the accepted replacement from being
-      // recorded. Duration still measures the fetch alone, captured above.
-      traceChannelWindowFetch(
-        channel.id,
-        events.length,
         fetchDurationMs,
         fetchStartedAt,
-      );
-      return result;
+      });
     },
     staleTime: 5 * 60 * 1_000,
     gcTime: 60 * 60 * 1_000,

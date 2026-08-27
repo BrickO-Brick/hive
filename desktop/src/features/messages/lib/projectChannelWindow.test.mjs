@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { QueryClient, QueryObserver } from "@tanstack/react-query";
 
-import { reconcileFetchedChannelWindow } from "../hooks.ts";
+import {
+  reconcileAndAttributeChannelWindow,
+  reconcileFetchedChannelWindow,
+} from "../hooks.ts";
 import { channelMessagesKey, channelWindowKey } from "./messageQueryKeys.ts";
 import {
   appendOlderChannelWindow,
@@ -454,35 +457,34 @@ test("canceled fetch never claims the switch trace's window slot; the accepted o
     canceled.abort();
     const canceledEvents = wirePage([event("stale", 100)]);
     const startedAt = performance.now();
-    assert.throws(() => {
-      reconcileFetchedChannelWindow(
-        client,
+    // Drive the production helper, not a restatement of it: reverting the
+    // reconcile/attribute order inside it must fail this test.
+    assert.throws(() =>
+      reconcileAndAttributeChannelWindow({
+        queryClient: client,
         channelId,
-        canceledEvents,
-        [],
-        canceled.signal,
-      );
-      traceChannelWindowFetch(channelId, canceledEvents.length, 1, startedAt);
-    });
+        events: canceledEvents,
+        previousMessages: [],
+        signal: canceled.signal,
+        fetchDurationMs: 1,
+        fetchStartedAt: startedAt,
+      }),
+    );
 
     // Accepted-second: reconciles cleanly, then claims the slot.
     const acceptedEvents = wirePage([
       event("fresh-2", 120),
       event("fresh-1", 110),
     ]);
-    reconcileFetchedChannelWindow(
-      client,
+    reconcileAndAttributeChannelWindow({
+      queryClient: client,
       channelId,
-      acceptedEvents,
-      [],
-      new AbortController().signal,
-    );
-    traceChannelWindowFetch(
-      channelId,
-      acceptedEvents.length,
-      2,
-      performance.now(),
-    );
+      events: acceptedEvents,
+      previousMessages: [],
+      signal: new AbortController().signal,
+      fetchDurationMs: 2,
+      fetchStartedAt: performance.now(),
+    });
 
     settleChannelSwitchTrace(channelId);
     for (let i = 0; i < 10 && frames.length > 0; i += 1) {

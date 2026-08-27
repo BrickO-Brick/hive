@@ -13,6 +13,7 @@ import {
   TerminalContextOverrideProvider,
 } from "@/app/TerminalContextOverrideContext";
 import { useAppNavigation } from "@/app/navigation/useAppNavigation";
+import { captureSwitchTraceAnchor } from "@/shared/lib/channelSwitchPerf";
 import { useBackForwardControls } from "@/app/navigation/useBackForwardControls";
 import { useCommunityNavigationTransitions } from "@/app/useCommunityNavigationTransitions";
 import { useLiveHomeFeedActions } from "@/app/useLiveHomeFeedActions";
@@ -865,11 +866,16 @@ export function AppShell() {
                           onMarkChannelUnread={markChannelUnread}
                           onBrowseChannels={handleOpenBrowseChannels}
                           onOpenDm={async ({ pubkeys }) => {
+                            // Anchor before awaiting open_dm; see
+                            // captureSwitchTraceAnchor.
+                            const traceStartedAt = captureSwitchTraceAnchor();
                             const directMessage =
                               await openDmMutation.mutateAsync({
                                 pubkeys,
                               });
-                            await goChannel(directMessage.id);
+                            await goChannel(directMessage.id, {
+                              traceStartedAt,
+                            });
                           }}
                           onSelectAgents={() => void goAgents()}
                           onSelectChannel={handleSidebarChannelSelect}

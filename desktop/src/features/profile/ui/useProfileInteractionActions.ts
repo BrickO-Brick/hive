@@ -170,9 +170,10 @@ export function useProfileInteractionActions({
       return;
     }
 
+    const traceStartedAt = captureSwitchTraceAnchor();
     void runAction("huddle", async (targetPubkey) => {
       const dm = await openDm({ pubkeys: [targetPubkey] });
-      await goChannel(dm.id);
+      await goChannel(dm.id, { traceStartedAt });
       await startHuddle(dm.id, isBot ? [targetPubkey] : []);
       await queryClient.invalidateQueries({ queryKey: channelsQueryKey });
       if (isMountedRef.current) {
@@ -196,6 +197,7 @@ export function useProfileInteractionActions({
       return;
     }
 
+    const traceStartedAt = captureSwitchTraceAnchor();
     void runAction("wave", async (targetPubkey) => {
       const identity = identityQuery.data;
       if (!identity) {
@@ -231,7 +233,7 @@ export function useProfileInteractionActions({
       );
 
       try {
-        await goChannel(dm.id);
+        await goChannel(dm.id, { traceStartedAt });
         if (isMountedRef.current) {
           onClose();
         }

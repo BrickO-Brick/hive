@@ -10,6 +10,10 @@ import {
   resetChannelSwitchTrace,
   resolveFinalFrame,
   resolveSettleWait,
+  abandonChannelSwitchTrace,
+  resolveRenderReadiness,
+  scheduleRouteExitAbandon,
+  resolveTraceAnchor,
   settleChannelSwitchTrace,
   summarizeChannelSwitchTrace,
 } from "./channelSwitchPerf.ts";
@@ -18,6 +22,11 @@ function trace(overrides = {}) {
   return {
     channelId: "abcdef1234567890",
     startedAt: 1_000,
+    // Liveness clock defaults to the anchor; DM entries back-date startedAt
+    // below openedAt, which is exactly why the two are separate fields.
+    openedAt: overrides.startedAt ?? 1_000,
+    maxFrameGapMs: 0,
+    settleEnteredAt: null,
     routeCommitAt: null,
     windowFetch: null,
     membersFetch: null,
@@ -189,6 +198,15 @@ test("fetches attribute only when started after the switch began", () => {
   // Other channel or no trace: never.
   assert.equal(shouldAttributeFetch(active, "bbbb0000bbbb0000", 1_500), false);
   assert.equal(shouldAttributeFetch(null, "abcdef1234567890", 1_500), false);
+  // Started after the timeline settled: background revalidation the user
+  // never waited on. The trace is still active (it waits for the deferred
+  // paint), so without the upper bound this would be reported as switch cost.
+  const settling = trace({ startedAt: 1_000, settleEnteredAt: 2_000 });
+  assert.equal(shouldAttributeFetch(settling, "abcdef1234567890", 1_999), true);
+  assert.equal(
+    shouldAttributeFetch(settling, "abcdef1234567890", 2_001),
+    false,
+  );
 });
 
 test("a superseded members fetch never claims the trace's one-shot slot", async () => {
@@ -232,7 +250,9 @@ test("a suspension before the first settle frame drops, not records truncated", 
       // The deferred marker stays latched during a suspension, so its truth
       // is not evidence of slow rendering — the settle-entry → first-frame
       // window must be starvation-guarded like every later frame.
-      globalThis.document.querySelector = () => ({});
+      // Element-like: carries the pending marker but no committed timeline
+      // generation, so readiness stays gated on the marker alone.
+      globalThis.document.querySelector = () => ({ getAttribute: () => null });
       begin("aaaa1111aaaa1111");
       settle("aaaa1111aaaa1111");
       virtualClock.now = 20_000;
@@ -634,4 +654,165 @@ test("a prompt paint frame after readiness still records", () => {
     step(26);
     assert.equal(measures(), 1, "the guard must not drop healthy switches");
   });
+});
+
+test("a stale caller anchor is discarded rather than charged to the switch", () => {
+  // DM flow: anchor captured at the click, open_dm awaited. If the user
+  // navigates away during that await, the anchor is no longer this switch's
+  // start and would charge unrelated activity to it.
+  assert.deepEqual(resolveTraceAnchor(1_000, 500, 30_000), {
+    startedAt: 30_000,
+    anchorDiscarded: true,
+  });
+  // Inside the bound: the open_dm round-trip stays in the measurement.
+  assert.deepEqual(resolveTraceAnchor(25_000, 500, 30_000), {
+    startedAt: 25_000,
+    anchorDiscarded: false,
+  });
+});
+
+test("anchors are never negative, non-finite, or in the future", () => {
+  // performance.mark({startTime}) throws on a negative timestamp, and begin()
+  // runs inside the click handler — a diagnostic must never break navigation.
+  assert.equal(resolveTraceAnchor(-5, 100, 100).startedAt, 0);
+  assert.equal(resolveTraceAnchor(Number.NaN, 100, 100).anchorDiscarded, true);
+  assert.equal(resolveTraceAnchor(Number.NaN, 100, 100).startedAt, 100);
+  // A skewed event clock reporting the future is clamped to now.
+  assert.equal(resolveTraceAnchor(200, 100, 100).startedAt, 100);
+  // No anchor supplied, and performance was unavailable at capture time.
+  assert.equal(resolveTraceAnchor(undefined, Number.NaN, 100).startedAt, 100);
+});
+
+test("a truncated settle survives a slow paint frame; a clean one does not", () => {
+  // renderWasPending is direct evidence the long frame is a heavy commit, not
+  // a suspension — and that measurement is already flagged. Dropping it would
+  // discard exactly the pathological switch the instrument exists to expose.
+  assert.equal(resolveFinalFrame(3_600, 10, 0, true), "record");
+  assert.equal(resolveFinalFrame(3_600, 10, 0, false), "drop");
+  // The age cap still applies to both.
+  assert.equal(resolveFinalFrame(35_001, 35_000, 0, true), "drop");
+});
+
+test("post-paint churn does not keep a settled switch waiting", () => {
+  // Nothing pending: ready, regardless of generations.
+  assert.equal(resolveRenderReadiness(false, 4, 4), true);
+  // Pending and the timeline has not committed since settle entry: the
+  // switch's own rows are still unpainted, so keep waiting.
+  assert.equal(resolveRenderReadiness(true, 4, 4), false);
+  // Pending, but the timeline committed past the generation painted at settle
+  // entry: the rows are on screen and this marker belongs to live traffic
+  // that arrived afterwards. Recording the burst would inflate the switch.
+  assert.equal(resolveRenderReadiness(true, 4, 5), true);
+  // No timeline mounted (Suspense fallback still up): the pending marker is
+  // the fallback's own, and there is nothing painted yet to be ready.
+  assert.equal(resolveRenderReadiness(true, null, null), false);
+  assert.equal(resolveRenderReadiness(true, 4, null), false);
+});
+
+// --- Drop accounting: no measurement disappears without a record -----------
+
+function withDropCapture(run) {
+  const drops = [];
+  const originalInfo = console.info;
+  console.info = (line) => {
+    if (typeof line === "string" && line.includes("dropped reason=")) {
+      drops.push(line.slice(line.indexOf("dropped reason=") + 15));
+    }
+  };
+  try {
+    run(drops);
+  } finally {
+    console.info = originalInfo;
+    resetChannelSwitchTrace();
+  }
+}
+
+test("an impatient second click accounts for the trace it supersedes", () => {
+  withClockedFrames(({ at }) => {
+    withDropCapture((drops) => {
+      at(0);
+      beginChannelSwitchTrace("aaaa");
+      at(400);
+      // The user gave up on A and clicked B. A's trace is gone — and A being
+      // slow is exactly why they clicked again, so a silent discard censors
+      // the switches worth measuring.
+      beginChannelSwitchTrace("bbbb");
+      assert.deepEqual(drops, ["superseded"]);
+    });
+  });
+});
+
+test("a community reset accounts for the trace it clears", () => {
+  withClockedFrames(({ at }) => {
+    withDropCapture((drops) => {
+      at(0);
+      beginChannelSwitchTrace("aaaa");
+      resetChannelSwitchTrace();
+      assert.deepEqual(drops, ["community-reset"]);
+    });
+  });
+});
+
+test("an unobservable surface accounts for its abandon", () => {
+  withClockedFrames(({ at }) => {
+    withDropCapture((drops) => {
+      at(0);
+      beginChannelSwitchTrace("aaaa");
+      abandonChannelSwitchTrace("aaaa");
+      assert.deepEqual(drops, ["unobservable-surface"]);
+    });
+  });
+});
+
+test("a timed-out settle accounts for the drop", () => {
+  withClockedFrames(({ at, measures }) => {
+    withDropCapture((drops) => {
+      at(0);
+      beginChannelSwitchTrace("aaaa");
+      at(31_000);
+      settleChannelSwitchTrace("aaaa");
+      assert.deepEqual(drops, ["timeout"]);
+      assert.equal(measures(), 0);
+    });
+  });
+});
+
+test("route-exit abandon respects hash-history routes", async () => {
+  // The app uses createHashHistory, so the route lives in location.hash.
+  // Reading location.pathname made this guard answer false for every real
+  // channel route, degrading it to an unconditional abandon.
+  const drops = [];
+  const originalInfo = console.info;
+  const originalWindow = globalThis.window;
+  const originalNow = performance.now;
+  const base = originalNow.call(performance) + 1_000;
+  performance.now = () => base;
+  console.info = (line) => {
+    if (typeof line === "string" && line.includes("dropped reason=")) {
+      drops.push(line.slice(line.indexOf("dropped reason=") + 15));
+    }
+  };
+  globalThis.window = {
+    requestAnimationFrame: () => 1,
+    cancelAnimationFrame: () => {},
+    location: { pathname: "/index.html", hash: "#/channels/aaaa" },
+  };
+  try {
+    beginChannelSwitchTrace("aaaa");
+    scheduleRouteExitAbandon("aaaa");
+    await Promise.resolve();
+    assert.deepEqual(drops, [], "the route still points at this channel");
+
+    // A real exit still abandons.
+    globalThis.window.location.hash = "#/projects";
+    scheduleRouteExitAbandon("aaaa");
+    await Promise.resolve();
+    assert.deepEqual(drops, ["route-exit"]);
+  } finally {
+    console.info = originalInfo;
+    performance.now = originalNow;
+    resetChannelSwitchTrace();
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+  }
 });

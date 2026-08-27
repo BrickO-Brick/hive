@@ -285,6 +285,9 @@ export function NewMessageScreen() {
       if (!isMountedRef.current) {
         return;
       }
+      // No click anchor here: the switch begins at navigation. Back-dating to
+      // the Send click would report the whole publish round-trip as switch
+      // latency.
       await goChannel(directMessage.id, { replace: true });
     },
     [
