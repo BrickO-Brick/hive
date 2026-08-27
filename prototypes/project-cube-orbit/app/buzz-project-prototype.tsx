@@ -975,13 +975,25 @@ function TaskDetailPanel({
 }
 
 type MessagePanelId = "sidebar" | "chat" | "thread";
-type MessagePanelLayout = { x: number; y: number; detached: boolean };
+type MessagePanelLayout = { x: number; y: number };
+type MessagePanelEdge = "left" | "right" | "top" | "bottom";
+type MessagePanelConnection = {
+  a: MessagePanelId;
+  b: MessagePanelId;
+  edge: MessagePanelEdge;
+};
 
 const INITIAL_MESSAGE_LAYOUT: Record<MessagePanelId, MessagePanelLayout> = {
-  sidebar: { x: 0, y: 0, detached: false },
-  chat: { x: 0, y: 0, detached: false },
-  thread: { x: 0, y: 0, detached: false },
+  sidebar: { x: 0, y: 0 },
+  chat: { x: 0, y: 0 },
+  thread: { x: 0, y: 0 },
 };
+
+const MESSAGE_PANEL_IDS: MessagePanelId[] = ["sidebar", "chat", "thread"];
+const INITIAL_MESSAGE_CONNECTIONS: MessagePanelConnection[] = [
+  { a: "sidebar", b: "chat", edge: "left" },
+  { a: "chat", b: "thread", edge: "left" },
+];
 
 function MessageComposer({ compact = false }: { compact?: boolean }) {
   return (
@@ -999,6 +1011,8 @@ function MessageComposer({ compact = false }: { compact?: boolean }) {
 
 function MessagesView() {
   const [layouts, setLayouts] = useState(INITIAL_MESSAGE_LAYOUT);
+  const [connections, setConnections] = useState(INITIAL_MESSAGE_CONNECTIONS);
+  const boardRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{
     id: MessagePanelId;
     pointerId: number;
@@ -1009,9 +1023,109 @@ function MessagesView() {
     cell: HTMLElement;
     x: number;
     y: number;
-    detachedAtStart: boolean;
+    connectedAtStart: boolean;
     hasBroken: boolean;
   } | null>(null);
+
+  const isPanelConnected = (id: MessagePanelId) =>
+    connections.some((connection) => connection.a === id || connection.b === id);
+
+  const panelRadius = (id: MessagePanelId) => {
+    const corners = [28, 28, 28, 28];
+    const flatten = (left: boolean, top: boolean, right: boolean, bottom: boolean) => {
+      if (left && top) corners[0] = 0;
+      if (right && top) corners[1] = 0;
+      if (right && bottom) corners[2] = 0;
+      if (left && bottom) corners[3] = 0;
+    };
+    connections.forEach((connection) => {
+      const isA = connection.a === id;
+      const isB = connection.b === id;
+      if (!isA && !isB) return;
+      if ((isA && connection.edge === "left") || (isB && connection.edge === "right")) flatten(false, true, true, true);
+      if ((isA && connection.edge === "right") || (isB && connection.edge === "left")) flatten(true, true, false, true);
+      if ((isA && connection.edge === "top") || (isB && connection.edge === "bottom")) flatten(true, false, true, true);
+      if ((isA && connection.edge === "bottom") || (isB && connection.edge === "top")) flatten(true, true, true, false);
+    });
+    return `${corners[0]}px ${corners[1]}px ${corners[2]}px ${corners[3]}px`;
+  };
+
+  const findSnapTarget = (
+    id: MessagePanelId,
+    x: number,
+    y: number,
+  ) => {
+    const cell = boardRef.current?.querySelector<HTMLElement>(`[data-panel-id="${id}"]`);
+    if (!cell) return null;
+    const base = cell.getBoundingClientRect();
+    const dragged = {
+      left: base.left + x,
+      right: base.right + x,
+      top: base.top + y,
+      bottom: base.bottom + y,
+      width: base.width,
+      height: base.height,
+    };
+    const candidates: Array<{
+      target: MessagePanelId;
+      edge: MessagePanelEdge;
+      distance: number;
+      x: number;
+      y: number;
+    }> = [];
+    const remainingConnections = connections.filter(
+      (connection) => connection.a !== id && connection.b !== id,
+    );
+    const targetSideOccupied = (target: MessagePanelId, side: MessagePanelEdge) =>
+      remainingConnections.some((connection) => {
+        if (connection.a === target) {
+          const usedSide: MessagePanelEdge = {
+            left: "right",
+            right: "left",
+            top: "bottom",
+            bottom: "top",
+          }[connection.edge] as MessagePanelEdge;
+          return usedSide === side;
+        }
+        return connection.b === target && connection.edge === side;
+      });
+    MESSAGE_PANEL_IDS.filter((target) => target !== id).forEach((target) => {
+      const targetCell = boardRef.current?.querySelector<HTMLElement>(`[data-panel-id="${target}"]`);
+      if (!targetCell) return;
+      const targetBase = targetCell.getBoundingClientRect();
+      const targetLayout = layouts[target];
+      const targetRect = {
+        left: targetBase.left + targetLayout.x,
+        right: targetBase.right + targetLayout.x,
+        top: targetBase.top + targetLayout.y,
+        bottom: targetBase.bottom + targetLayout.y,
+      };
+      const rowAlignment = Math.abs(dragged.top - targetRect.top);
+      const columnAlignment = Math.abs(dragged.left - targetRect.left);
+      const draggedCenterX = (dragged.left + dragged.right) / 2;
+      const draggedCenterY = (dragged.top + dragged.bottom) / 2;
+      const targetCenterX = (targetRect.left + targetRect.right) / 2;
+      const targetCenterY = (targetRect.top + targetRect.bottom) / 2;
+      if (rowAlignment <= 58) {
+        const edge: MessagePanelEdge = draggedCenterX < targetCenterX ? "left" : "right";
+        if (!targetSideOccupied(target, edge)) {
+          candidates.push(edge === "left"
+            ? { target, edge, distance: Math.abs(dragged.right - targetRect.left), x: targetRect.left - base.left - dragged.width, y: targetRect.top - base.top }
+            : { target, edge, distance: Math.abs(dragged.left - targetRect.right), x: targetRect.right - base.left, y: targetRect.top - base.top });
+        }
+      }
+      if (columnAlignment <= 58) {
+        const edge: MessagePanelEdge = draggedCenterY < targetCenterY ? "top" : "bottom";
+        if (!targetSideOccupied(target, edge)) {
+          candidates.push(edge === "top"
+            ? { target, edge, distance: Math.abs(dragged.bottom - targetRect.top), x: targetRect.left - base.left, y: targetRect.top - base.top - dragged.height }
+            : { target, edge, distance: Math.abs(dragged.top - targetRect.bottom), x: targetRect.left - base.left, y: targetRect.bottom - base.top });
+        }
+      }
+    });
+    const best = candidates.sort((a, b) => a.distance - b.distance)[0];
+    return best && best.distance <= 58 ? best : null;
+  };
 
   const beginPanelDrag = (
     event: ReactPointerEvent<HTMLElement>,
@@ -1022,6 +1136,7 @@ function MessagesView() {
     if (!cell) return;
     event.currentTarget.setPointerCapture(event.pointerId);
     const current = layouts[id];
+    const connectedAtStart = isPanelConnected(id);
     dragRef.current = {
       id,
       pointerId: event.pointerId,
@@ -1032,8 +1147,8 @@ function MessagesView() {
       cell,
       x: current.x,
       y: current.y,
-      detachedAtStart: current.detached,
-      hasBroken: current.detached,
+      connectedAtStart,
+      hasBroken: false,
     };
     cell.classList.add("is-pulling", "is-active-drag");
   };
@@ -1045,16 +1160,15 @@ function MessagesView() {
       endPanelDrag(event);
       return;
     }
-    const rawX = Math.max(-340, Math.min(340, drag.originX + event.clientX - drag.startX));
-    const rawY = Math.max(-190, Math.min(190, drag.originY + event.clientY - drag.startY));
-    const rawDistance = Math.hypot(rawX, rawY);
-    if (!drag.detachedAtStart && rawDistance > 112) drag.hasBroken = true;
-    const resistance = drag.detachedAtStart || drag.hasBroken
+    const deltaX = event.clientX - drag.startX;
+    const deltaY = event.clientY - drag.startY;
+    const pullDistance = Math.hypot(deltaX, deltaY);
+    if (drag.connectedAtStart && pullDistance > 112) drag.hasBroken = true;
+    const resistance = !drag.connectedAtStart || drag.hasBroken
       ? 1
-      : 0.76 + Math.min(rawDistance / 112, 1) * 0.12;
-    drag.x = rawX * resistance;
-    drag.y = rawY * resistance;
-    const distance = Math.hypot(drag.x, drag.y);
+      : 0.76 + Math.min(pullDistance / 112, 1) * 0.12;
+    drag.x = Math.max(-900, Math.min(900, drag.originX + deltaX * resistance));
+    drag.y = Math.max(-560, Math.min(560, drag.originY + deltaY * resistance));
     drag.cell.style.setProperty("--panel-x", `${drag.x}px`);
     drag.cell.style.setProperty("--panel-y", `${drag.y}px`);
     drag.cell.style.setProperty("--panel-tilt", `${Math.max(-1.2, Math.min(1.2, (event.clientX - drag.startX) * 0.012))}deg`);
@@ -1067,16 +1181,26 @@ function MessagesView() {
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
-    const distance = Math.hypot(drag.x, drag.y);
-    const shouldAttach = drag.detachedAtStart ? distance < 54 : !drag.hasBroken;
-    const next = shouldAttach
-      ? { x: 0, y: 0, detached: false }
-      : { x: drag.x, y: drag.y, detached: true };
+    const stayedConnected = drag.connectedAtStart && !drag.hasBroken;
+    const baseConnections = stayedConnected
+      ? connections
+      : connections.filter((connection) => connection.a !== drag.id && connection.b !== drag.id);
+    const snap = stayedConnected ? null : findSnapTarget(drag.id, drag.x, drag.y);
+    const next = stayedConnected
+      ? { x: drag.originX, y: drag.originY }
+      : snap
+        ? { x: snap.x, y: snap.y }
+        : { x: drag.x, y: drag.y };
     drag.cell.style.setProperty("--panel-x", `${next.x}px`);
     drag.cell.style.setProperty("--panel-y", `${next.y}px`);
     drag.cell.style.setProperty("--panel-tilt", "0deg");
     drag.cell.classList.remove("is-pulling", "is-breaking", "is-active-drag");
     setLayouts((current) => ({ ...current, [drag.id]: next }));
+    if (!stayedConnected) {
+      setConnections(snap
+        ? [...baseConnections, { a: drag.id, b: snap.target, edge: snap.edge }]
+        : baseConnections);
+    }
     dragRef.current = null;
   };
 
@@ -1084,6 +1208,7 @@ function MessagesView() {
     "--panel-x": `${layouts[id].x}px`,
     "--panel-y": `${layouts[id].y}px`,
     "--panel-tilt": "0deg",
+    "--panel-radius": panelRadius(id),
   }) as CSSProperties;
 
   const dragHandlers = (id: MessagePanelId) => ({
@@ -1095,8 +1220,8 @@ function MessagesView() {
 
   return (
     <section className="messages-stage" aria-label="Composable messages workspace">
-      <div className={`messages-board${Object.values(layouts).some((panel) => panel.detached) ? " has-detached-panel" : ""}${layouts.sidebar.detached ? " sidebar-is-detached" : ""}${layouts.chat.detached ? " chat-is-detached" : ""}${layouts.thread.detached ? " thread-is-detached" : ""}`}>
-        <div className={`message-panel-cell sidebar-cell${layouts.sidebar.detached ? " is-detached" : ""}`} style={panelStyle("sidebar")}>
+      <div ref={boardRef} className="messages-board">
+        <div data-panel-id="sidebar" className={`message-panel-cell sidebar-cell${isPanelConnected("sidebar") ? "" : " is-detached"}`} style={panelStyle("sidebar")}>
           <aside className="message-panel channel-panel">
             <div className="panel-drag-handle channel-search-wrap" {...dragHandlers("sidebar")}>
               <Search aria-hidden="true" size={18} strokeWidth={1.7} />
@@ -1113,7 +1238,7 @@ function MessagesView() {
           </aside>
         </div>
 
-        <div className={`message-panel-cell chat-cell${layouts.chat.detached ? " is-detached" : ""}`} style={panelStyle("chat")}>
+        <div data-panel-id="chat" className={`message-panel-cell chat-cell${isPanelConnected("chat") ? "" : " is-detached"}`} style={panelStyle("chat")}>
           <article className="message-panel chat-panel">
             <header className="panel-drag-handle chat-header" {...dragHandlers("chat")}>
               <div><LockKeyhole aria-hidden="true" size={18} strokeWidth={1.7} /><strong>buzz-interface-squad</strong></div>
@@ -1128,7 +1253,7 @@ function MessagesView() {
           </article>
         </div>
 
-        <div className={`message-panel-cell thread-cell${layouts.thread.detached ? " is-detached" : ""}`} style={panelStyle("thread")}>
+        <div data-panel-id="thread" className={`message-panel-cell thread-cell${isPanelConnected("thread") ? "" : " is-detached"}`} style={panelStyle("thread")}>
           <aside className="message-panel thread-panel">
             <header className="panel-drag-handle thread-header" {...dragHandlers("thread")}><div><PanelRightOpen aria-hidden="true" size={18} strokeWidth={1.7} /><strong>Thread</strong></div><button type="button" aria-label="Close thread"><X aria-hidden="true" size={18} strokeWidth={1.7} /></button></header>
             <div className="thread-content">
