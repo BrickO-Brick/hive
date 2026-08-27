@@ -374,7 +374,7 @@ test("review checks dispatch to a running local managed agent", async ({
   const debugHarness = page.getByTestId("project-review-debug-harness-trigger");
   await expect(debugHarness).toHaveCount(1);
   await expect(debugHarness).toHaveAccessibleName(
-    "Review check debug harness, agent Roof",
+    "Review debug harness, agent Roof",
   );
   await debugHarness.click();
   await expect(

@@ -3,14 +3,14 @@ import { Bug } from "lucide-react";
 import { Button } from "@/shared/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/shared/ui/popover";
 
-export type ReviewCheckAgent = {
+export type ReviewAgent = {
   pubkey: string;
   name: string;
   isManaged: boolean;
   isActive: boolean;
 };
 
-function agentAvailabilityLabel(agent: ReviewCheckAgent) {
+function agentAvailabilityLabel(agent: ReviewAgent) {
   return agent.isManaged ? "Running here" : "Online on relay";
 }
 
@@ -21,11 +21,11 @@ export function ProjectReviewDebugHarness({
   onSelect,
   selected,
 }: {
-  candidates: ReviewCheckAgent[];
+  candidates: ReviewAgent[];
   hasError: boolean;
   isLoading: boolean;
   onSelect: (pubkey: string) => void;
-  selected: ReviewCheckAgent | null;
+  selected: ReviewAgent | null;
 }) {
   const activeCandidates = candidates.filter((candidate) => candidate.isActive);
   const offlineAgentCount = candidates.length - activeCandidates.length;
@@ -35,10 +35,10 @@ export function ProjectReviewDebugHarness({
       <Popover>
         <PopoverTrigger asChild>
           <Button
-            aria-label={`Review check debug harness${selected ? `, agent ${selected.name}` : ""}`}
+            aria-label={`Review debug harness${selected ? `, agent ${selected.name}` : ""}`}
             className="h-12 w-12 rounded-full p-0 shadow-lg ring-1 ring-border/60"
             data-testid="project-review-debug-harness-trigger"
-            title="Review check debug harness"
+            title="Review debug harness"
             type="button"
           >
             <Bug className="h-5 w-5" />
@@ -54,7 +54,7 @@ export function ProjectReviewDebugHarness({
           <div className="space-y-0.5">
             <p className="text-sm font-semibold">Review debug harness</p>
             <p className="text-xs text-muted-foreground">
-              Choose the agent used for new checks.
+              Choose the agent used for checks and context discovery.
             </p>
           </div>
           <label className="block space-y-1.5 text-xs font-medium">

@@ -97,8 +97,12 @@ test("review context is discovered by an agent and restored as sourced evidence"
   await expect(
     memory.getByRole("button", { name: "Record outcome" }),
   ).toHaveCount(0);
-  await memory
-    .getByRole("combobox", { name: "Context agent" })
+  await expect(
+    memory.getByRole("combobox", { name: "Context agent" }),
+  ).toHaveCount(0);
+  await page.getByTestId("project-review-debug-harness-trigger").click();
+  await page
+    .getByTestId("project-review-debug-agent-select")
     .selectOption(RELAY_REVIEW_AGENT_PUBKEY);
   await memory
     .getByRole("button", { name: "Find context", exact: true })

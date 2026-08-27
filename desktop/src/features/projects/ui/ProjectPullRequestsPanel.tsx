@@ -48,6 +48,10 @@ import {
 } from "./ProjectProfileIdentity";
 import { ProjectRichContent } from "./ProjectRichContent";
 import { ProjectReviewChecks } from "./ProjectReviewChecks";
+import {
+  ProjectReviewAgentSelectionHarness,
+  useProjectReviewAgentSelection,
+} from "./ProjectReviewAgentSelection";
 import { ProjectReviewMemory } from "./ProjectReviewMemory";
 import { PullRequestMetaHeader } from "./PullRequestMetaRail";
 import { PullRequestReviewCard } from "./PullRequestReviewCard";
@@ -423,6 +427,7 @@ export function ProjectPullRequestDetail({
   pullRequest: ProjectPullRequest;
 }) {
   const identityQuery = useIdentityQuery();
+  const reviewAgents = useProjectReviewAgentSelection();
   const commentMutation = useCreateProjectPullRequestCommentMutation(project);
   const [
     expandedReviewHistoryPullRequestIds,
@@ -617,14 +622,23 @@ export function ProjectPullRequestDetail({
         </div>
       </ProjectDetailSection>
       <ProjectDetailSection defaultOpen={false} title="Checks">
-        <ProjectReviewChecks project={project} pullRequest={pullRequest} />
+        <ProjectReviewChecks
+          project={project}
+          pullRequest={pullRequest}
+          reviewAgents={reviewAgents}
+        />
       </ProjectDetailSection>
       <ProjectDetailSection
         defaultOpen={false}
         title="Prior art and future vision"
       >
-        <ProjectReviewMemory project={project} pullRequest={pullRequest} />
+        <ProjectReviewMemory
+          project={project}
+          pullRequest={pullRequest}
+          reviewAgents={reviewAgents}
+        />
       </ProjectDetailSection>
+      <ProjectReviewAgentSelectionHarness selection={reviewAgents} />
       <ProjectDetailSection defaultOpen title="Activity">
         <div className="space-y-3">
           <DiscussedInChannels

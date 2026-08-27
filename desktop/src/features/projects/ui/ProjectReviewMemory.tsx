@@ -1,5 +1,4 @@
 import {
-  Bot,
   History,
   LoaderCircle,
   Play,
@@ -10,15 +9,7 @@ import {
 import * as React from "react";
 import { toast } from "sonner";
 
-import {
-  useManagedAgentsQuery,
-  useRelayAgentsQuery,
-  useStartManagedAgentMutation,
-} from "@/features/agents/hooks";
-import {
-  getMentionableAgentPubkeys,
-  getSharedChannelIds,
-} from "@/features/agents/lib/agentAutocompleteEligibility";
+import { useStartManagedAgentMutation } from "@/features/agents/hooks";
 import { isManagedAgentActive } from "@/features/agents/lib/managedAgentControlActions";
 import { useChannelsQuery, useOpenDmMutation } from "@/features/channels/hooks";
 import { normalizeRelayUrl } from "@/features/communities/communityStorage";
@@ -43,7 +34,8 @@ import {
 } from "@/features/projects/lib/projectReviewMemory";
 import { pullRequestShareLink } from "@/features/projects/lib/projectShareLinks";
 import type { ProjectPullRequest, Repository } from "@/features/projects/hooks";
-import type { ReviewCheckAgent } from "@/features/projects/ui/ProjectReviewDebugHarness";
+import type { ProjectReviewAgentSelection } from "@/features/projects/ui/ProjectReviewAgentSelection";
+import type { ReviewAgent } from "@/features/projects/ui/ProjectReviewDebugHarness";
 import { useIdentityQuery } from "@/shared/api/hooks";
 import { listManagedAgents } from "@/shared/api/tauri";
 import { revalidateRelayAgents } from "@/shared/api/tauriRelayAgents";
@@ -113,64 +105,6 @@ function normalizeStoredRun(
     ...(typeof value.targetCommit === "string" || value.targetCommit === null
       ? { targetCommit: value.targetCommit as string | null }
       : {}),
-  };
-}
-
-function useReviewContextAgents() {
-  const identityQuery = useIdentityQuery();
-  const managedAgentsQuery = useManagedAgentsQuery();
-  const relayAgentsQuery = useRelayAgentsQuery();
-  const channelsQuery = useChannelsQuery();
-
-  const candidates = React.useMemo(() => {
-    const managedAgents = managedAgentsQuery.data ?? [];
-    const managedByPubkey = new Map(
-      managedAgents.map((agent) => [normalizePubkey(agent.pubkey), agent]),
-    );
-    const relayAgents = relayAgentsQuery.data ?? [];
-    const allowedPubkeys = getMentionableAgentPubkeys({
-      currentPubkey: identityQuery.data?.pubkey,
-      eligibilityScope: { type: "community" },
-      managedAgentPubkeys: managedByPubkey.keys(),
-      relayAgents,
-      sharedChannelIds: getSharedChannelIds(channelsQuery.data),
-    });
-    const available: ReviewCheckAgent[] = managedAgents.map((agent) => ({
-      pubkey: normalizePubkey(agent.pubkey),
-      name: agent.name,
-      isManaged: true,
-      isActive: isManagedAgentActive(agent),
-    }));
-    for (const relayAgent of relayAgents) {
-      const pubkey = normalizePubkey(relayAgent.pubkey);
-      if (managedByPubkey.has(pubkey) || !allowedPubkeys.has(pubkey)) continue;
-      available.push({
-        pubkey,
-        name: relayAgent.name,
-        isManaged: false,
-        isActive: relayAgent.status !== "offline",
-      });
-    }
-    return available.sort((left, right) => {
-      if (left.isActive !== right.isActive) return left.isActive ? -1 : 1;
-      if (left.isManaged !== right.isManaged) return left.isManaged ? -1 : 1;
-      return left.name.localeCompare(right.name);
-    });
-  }, [
-    channelsQuery.data,
-    identityQuery.data?.pubkey,
-    managedAgentsQuery.data,
-    relayAgentsQuery.data,
-  ]);
-
-  return {
-    candidates,
-    isLoading:
-      identityQuery.isLoading ||
-      managedAgentsQuery.isLoading ||
-      relayAgentsQuery.isLoading ||
-      channelsQuery.isLoading,
-    isError: managedAgentsQuery.isError || relayAgentsQuery.isError,
   };
 }
 
@@ -387,16 +321,17 @@ function ReviewContextResultCard({
 export function ProjectReviewMemory({
   project,
   pullRequest,
+  reviewAgents,
 }: {
   project: Repository;
   pullRequest: ProjectPullRequest;
+  reviewAgents: ProjectReviewAgentSelection;
 }) {
   const { activeCommunity } = useCommunities();
   const identityQuery = useIdentityQuery();
   const channelsQuery = useChannelsQuery();
   const openDmMutation = useOpenDmMutation();
   const startAgentMutation = useStartManagedAgentMutation();
-  const reviewContextAgents = useReviewContextAgents();
   const relayScope = activeCommunity?.relayUrl
     ? normalizeRelayUrl(activeCommunity.relayUrl)
     : null;
@@ -415,9 +350,6 @@ export function ProjectReviewMemory({
     status: "idle",
   });
   const [isPending, setIsPending] = React.useState(false);
-  const [selectedAgentPubkey, setSelectedAgentPubkey] = React.useState<
-    string | null
-  >(null);
   const targetCommit = pullRequest.commit ?? pullRequest.initialCommit;
   const repoUrl = React.useMemo(
     () =>
@@ -438,7 +370,6 @@ export function ProjectReviewMemory({
     );
     setRun(stored ?? { agentPubkey: null, status: "idle" });
     setIsPending(false);
-    setSelectedAgentPubkey(null);
   }, [storageKey]);
 
   const updateRun = React.useCallback(
@@ -477,7 +408,7 @@ export function ProjectReviewMemory({
   );
 
   const runDiscovery = React.useCallback(
-    async (agent: ReviewCheckAgent, supersededRun?: ReviewContextRun) => {
+    async (agent: ReviewAgent, supersededRun?: ReviewContextRun) => {
       const expectedStorageKey = storageKey;
       if (!expectedStorageKey || !relayScope || !signerScope) return;
       const requestId = crypto.randomUUID();
@@ -623,20 +554,10 @@ export function ProjectReviewMemory({
       ),
     [channelsQuery.data],
   );
-  const activeCandidates = reviewContextAgents.candidates.filter(
-    (candidate) => candidate.isActive,
-  );
-  const defaultAgent = activeCandidates[0] ?? null;
-  const selectedAgent = selectedAgentPubkey
-    ? (activeCandidates.find(
-        (candidate) =>
-          normalizePubkey(candidate.pubkey) ===
-          normalizePubkey(selectedAgentPubkey),
-      ) ?? defaultAgent)
-    : defaultAgent;
+  const selectedAgent = reviewAgents.selected;
   const runningAgent =
     run.status === "running" && run.agentPubkey
-      ? (reviewContextAgents.candidates.find(
+      ? (reviewAgents.candidates.find(
           (candidate) =>
             normalizePubkey(candidate.pubkey) ===
             normalizePubkey(run.agentPubkey ?? ""),
@@ -704,33 +625,6 @@ export function ProjectReviewMemory({
             {hasRun ? null : "Find context"}
           </Button>
         </div>
-        <label className="mt-3 flex max-w-sm items-center gap-2 text-xs font-medium text-muted-foreground">
-          <Bot className="h-3.5 w-3.5 shrink-0" />
-          <span className="shrink-0">Agent</span>
-          <select
-            aria-label="Context agent"
-            className="h-8 min-w-0 flex-1 rounded-lg border border-input bg-background px-2.5 text-xs font-normal text-foreground outline-hidden focus:ring-1 focus:ring-ring disabled:opacity-50"
-            disabled={activeCandidates.length === 0 || run.status === "running"}
-            onChange={(event) => setSelectedAgentPubkey(event.target.value)}
-            value={selectedAgent?.pubkey ?? ""}
-          >
-            {activeCandidates.length === 0 ? (
-              <option value="">
-                {reviewContextAgents.isLoading
-                  ? "Loading available agents…"
-                  : reviewContextAgents.isError
-                    ? "Agents could not be loaded"
-                    : "No running agents are available"}
-              </option>
-            ) : null}
-            {activeCandidates.map((candidate) => (
-              <option key={candidate.pubkey} value={candidate.pubkey}>
-                {candidate.name}
-                {candidate.isManaged ? " · Running here" : " · Online"}
-              </option>
-            ))}
-          </select>
-        </label>
         {run.error ? (
           <p className="mt-2 text-xs text-destructive">{run.error}</p>
         ) : null}

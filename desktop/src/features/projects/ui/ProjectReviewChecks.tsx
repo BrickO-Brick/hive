@@ -9,15 +9,7 @@ import {
 import * as React from "react";
 import { toast } from "sonner";
 
-import {
-  useManagedAgentsQuery,
-  useRelayAgentsQuery,
-  useStartManagedAgentMutation,
-} from "@/features/agents/hooks";
-import {
-  getMentionableAgentPubkeys,
-  getSharedChannelIds,
-} from "@/features/agents/lib/agentAutocompleteEligibility";
+import { useStartManagedAgentMutation } from "@/features/agents/hooks";
 import { isManagedAgentActive } from "@/features/agents/lib/managedAgentControlActions";
 import { useChannelsQuery, useOpenDmMutation } from "@/features/channels/hooks";
 import { normalizeRelayUrl } from "@/features/communities/communityStorage";
@@ -45,10 +37,8 @@ import type { ProjectsConversationOpener } from "@/features/projects/lib/project
 import { pullRequestShareLink } from "@/features/projects/lib/projectShareLinks";
 import type { ProjectPullRequest, Repository } from "@/features/projects/hooks";
 import { ProjectReviewCheckResultCard } from "@/features/projects/ui/ProjectReviewCheckResultCard";
-import {
-  ProjectReviewDebugHarness,
-  type ReviewCheckAgent,
-} from "@/features/projects/ui/ProjectReviewDebugHarness";
+import type { ProjectReviewAgentSelection } from "@/features/projects/ui/ProjectReviewAgentSelection";
+import type { ReviewAgent } from "@/features/projects/ui/ProjectReviewDebugHarness";
 import { useIdentityQuery } from "@/shared/api/hooks";
 import { listManagedAgents } from "@/shared/api/tauri";
 import { revalidateRelayAgents } from "@/shared/api/tauriRelayAgents";
@@ -181,67 +171,6 @@ function normalizeStoredRuns(value: Record<string, unknown>): ReviewCheckRuns {
     };
   }
   return runs;
-}
-
-/** Local managed agents can run on this dev build; relay agents must pass the
- * active identity's community-level respond-to policy. */
-function useReviewCheckAgents() {
-  const identityQuery = useIdentityQuery();
-  const managedAgentsQuery = useManagedAgentsQuery();
-  const relayAgentsQuery = useRelayAgentsQuery();
-  const channelsQuery = useChannelsQuery();
-
-  const candidates = React.useMemo(() => {
-    const managedAgents = managedAgentsQuery.data ?? [];
-    const managedByPubkey = new Map(
-      managedAgents.map((agent) => [normalizePubkey(agent.pubkey), agent]),
-    );
-    const relayAgents = relayAgentsQuery.data ?? [];
-    const sharedChannelIds = getSharedChannelIds(channelsQuery.data);
-    const allowedPubkeys = getMentionableAgentPubkeys({
-      currentPubkey: identityQuery.data?.pubkey,
-      eligibilityScope: { type: "community" },
-      managedAgentPubkeys: managedByPubkey.keys(),
-      relayAgents,
-      sharedChannelIds,
-    });
-    const assigned: ReviewCheckAgent[] = managedAgents.map((agent) => ({
-      pubkey: normalizePubkey(agent.pubkey),
-      name: agent.name,
-      isManaged: true,
-      isActive: isManagedAgentActive(agent),
-    }));
-    for (const relayAgent of relayAgents) {
-      const pubkey = normalizePubkey(relayAgent.pubkey);
-      if (managedByPubkey.has(pubkey) || !allowedPubkeys.has(pubkey)) continue;
-      assigned.push({
-        pubkey,
-        name: relayAgent.name,
-        isManaged: false,
-        isActive: relayAgent.status !== "offline",
-      });
-    }
-    return assigned.sort((left, right) => {
-      if (left.isActive !== right.isActive) return left.isActive ? -1 : 1;
-      if (left.isManaged !== right.isManaged) return left.isManaged ? -1 : 1;
-      return left.name.localeCompare(right.name);
-    });
-  }, [
-    channelsQuery.data,
-    identityQuery.data?.pubkey,
-    managedAgentsQuery.data,
-    relayAgentsQuery.data,
-  ]);
-
-  return {
-    candidates,
-    isLoading:
-      identityQuery.isLoading ||
-      managedAgentsQuery.isLoading ||
-      relayAgentsQuery.isLoading ||
-      channelsQuery.isLoading,
-    isError: managedAgentsQuery.isError || relayAgentsQuery.isError,
-  };
 }
 
 function useProjectReviewCheckDefinitions() {
@@ -395,16 +324,17 @@ function CheckStatus({
 export function ProjectReviewChecks({
   project,
   pullRequest,
+  reviewAgents,
 }: {
   project: Repository;
   pullRequest: ProjectPullRequest;
+  reviewAgents: ProjectReviewAgentSelection;
 }) {
   const { activeCommunity } = useCommunities();
   const identityQuery = useIdentityQuery();
   const channelsQuery = useChannelsQuery();
   const openDmMutation = useOpenDmMutation();
   const startAgentMutation = useStartManagedAgentMutation();
-  const reviewCheckAgents = useReviewCheckAgents();
   const checkDefinitions = useProjectReviewCheckDefinitions();
   const relayScope = activeCommunity?.relayUrl
     ? normalizeRelayUrl(activeCommunity.relayUrl)
@@ -423,9 +353,6 @@ export function ProjectReviewChecks({
   const [pendingCheckIds, setPendingCheckIds] = React.useState<Set<string>>(
     () => new Set(),
   );
-  const [selectedAgentPubkey, setSelectedAgentPubkey] = React.useState<
-    string | null
-  >(null);
   const targetCommit = pullRequest.commit ?? pullRequest.initialCommit;
   const diffRepoUrl = React.useMemo(
     () =>
@@ -444,7 +371,6 @@ export function ProjectReviewChecks({
     );
     setRuns(normalizeStoredRuns(stored));
     setPendingCheckIds(new Set());
-    setSelectedAgentPubkey(null);
   }, [storageKey]);
 
   const updateRun = React.useCallback(
@@ -516,7 +442,7 @@ export function ProjectReviewChecks({
   const runCheck = React.useCallback(
     async (
       check: ProjectReviewCheckDefinition,
-      agent: ReviewCheckAgent,
+      agent: ReviewAgent,
       supersededRun?: ReviewCheckRun,
     ) => {
       const expectedStorageKey = storageKey;
@@ -679,17 +605,7 @@ export function ProjectReviewChecks({
       ),
     [channelsQuery.data],
   );
-  const defaultAgent =
-    reviewCheckAgents.candidates.find((candidate) => candidate.isActive) ??
-    null;
-  const selectedAgent = selectedAgentPubkey
-    ? (reviewCheckAgents.candidates.find(
-        (candidate) =>
-          candidate.isActive &&
-          normalizePubkey(candidate.pubkey) ===
-            normalizePubkey(selectedAgentPubkey),
-      ) ?? defaultAgent)
-    : defaultAgent;
+  const selectedAgent = reviewAgents.selected;
 
   return (
     <div className="-mx-6" data-testid="project-review-checks">
@@ -705,7 +621,7 @@ export function ProjectReviewChecks({
           };
           const runningAgent =
             run.status === "running" && run.agentPubkey
-              ? (reviewCheckAgents.candidates.find(
+              ? (reviewAgents.candidates.find(
                   (candidate) =>
                     normalizePubkey(candidate.pubkey) ===
                     normalizePubkey(run.agentPubkey ?? ""),
@@ -815,21 +731,13 @@ export function ProjectReviewChecks({
           );
         })}
       </div>
-      {!reviewCheckAgents.isLoading &&
-      reviewCheckAgents.candidates.length === 0 ? (
+      {!reviewAgents.isLoading && reviewAgents.candidates.length === 0 ? (
         <div className="border-t border-border/55 px-6 py-3 text-xs text-muted-foreground">
-          {reviewCheckAgents.isError
+          {reviewAgents.isError
             ? "Local managed agents or the relay agent directory could not be loaded."
             : "No local managed or authorized relay agents are available."}
         </div>
       ) : null}
-      <ProjectReviewDebugHarness
-        candidates={reviewCheckAgents.candidates}
-        hasError={reviewCheckAgents.isError}
-        isLoading={reviewCheckAgents.isLoading}
-        onSelect={setSelectedAgentPubkey}
-        selected={selectedAgent}
-      />
     </div>
   );
 }
