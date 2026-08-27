@@ -91,6 +91,7 @@ type AppSidebarProps = {
   isCreatingChannel: boolean;
   isCreatingForum: boolean;
   profile?: Profile;
+  projectsOverviewActive: boolean;
   relayConnectionCard: ReturnType<typeof useSidebarRelayConnectionCard>;
   selfPresenceStatus: PresenceStatus;
   errorMessage?: string;
@@ -146,7 +147,7 @@ type AppSidebarProps = {
   onSelectWorkflows: () => void;
   onSelectHome: () => void;
   onSelectChannel: (channelId: string) => void;
-  onOpenSearchResult: (hit: SearchHit) => void;
+  onOpenSearchResult: (hit: SearchHit, query: string) => void;
   /** Full channel set for global search, including channels outside the joined sidebar list. */
   searchChannels: Channel[];
   searchFocusRequests: readonly [global: number, channel: number];
@@ -184,6 +185,7 @@ export function AppSidebar({
   isCreatingChannel,
   isCreatingForum,
   profile,
+  projectsOverviewActive,
   relayConnectionCard,
   selfPresenceStatus,
   errorMessage,
@@ -612,6 +614,7 @@ export function AppSidebar({
                 onSelectProjects={onSelectProjects}
                 onSelectPulse={onSelectPulse}
                 onSelectWorkflows={onSelectWorkflows}
+                projectsOverviewActive={projectsOverviewActive}
                 selectedView={selectedView}
               />
 
