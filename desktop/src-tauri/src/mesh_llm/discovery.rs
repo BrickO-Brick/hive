@@ -232,11 +232,12 @@ fn endpoint_binding_is_valid(event: &nostr::Event, content: &serde_json::Value) 
         .is_ok()
 }
 
+#[cfg(test)]
 pub fn availability_from_events(events: Vec<nostr::Event>) -> MeshAvailability {
     availability_from_events_for_mode(events, MeshRelayMode::ClosedMembershipEnforced)
 }
 
-/// [`availability_from_events`], scoped to the relay's membership mode.
+/// Resolve availability from relay events, scoped to the relay's membership mode.
 ///
 /// On a membership-enforcing relay the NIP-43 snapshot gates routing: a serve
 /// target is selectable only when its status note is signed by a current
