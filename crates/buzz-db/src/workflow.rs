@@ -394,6 +394,52 @@ pub async fn get_workflow(
     row_to_workflow_record(row)
 }
 
+/// List workflows that predate exact signed revision capture.
+pub async fn list_legacy_workflows(pool: &PgPool) -> Result<Vec<WorkflowRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT id, community_id, name, owner_pubkey, channel_id, definition, definition_hash, definition_event_id,
+               status::text AS status, enabled, created_at, updated_at
+        FROM workflows
+        WHERE definition_event_id IS NULL
+        ORDER BY community_id, created_at, id
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter().map(row_to_workflow_record).collect()
+}
+
+/// Bind a legacy workflow to a provenance-checked signed definition.
+///
+/// The caller must verify the event's owner, coordinate, channel, and semantic
+/// definition. The NULL compare-and-set keeps concurrent new definition ingest
+/// authoritative and makes reconciliation idempotent across relay pods.
+pub async fn bind_legacy_workflow_revision(
+    pool: &PgPool,
+    community_id: CommunityId,
+    workflow_id: Uuid,
+    definition_event_id: &[u8],
+) -> Result<bool> {
+    let result = sqlx::query(
+        r#"
+        UPDATE workflows
+        SET definition_event_id = $3
+        WHERE community_id = $1
+          AND id = $2
+          AND definition_event_id IS NULL
+        "#,
+    )
+    .bind(community_id.as_uuid())
+    .bind(workflow_id)
+    .bind(definition_event_id)
+    .execute(pool)
+    .await?;
+
+    Ok(result.rows_affected() == 1)
+}
+
 /// List workflows for a channel, ordered newest first.
 ///
 /// `limit` is capped at [`LIST_MAX_LIMIT`]. Pass `None` to use [`LIST_DEFAULT_LIMIT`].
@@ -1862,6 +1908,44 @@ mod tests {
         .await
         .expect("create workflow");
         (workflow_id, community)
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn legacy_revision_binding_is_idempotent_and_never_rewrites_runs() {
+        let pool = setup_pool().await;
+        let community = make_community(&pool).await;
+        let (workflow_id, _) = make_workflow_in(&pool, community).await;
+        let run_id = create_workflow_run(&pool, community, workflow_id, None, None, None)
+            .await
+            .expect("create legacy run");
+        let first_revision = [0x31; 32];
+        let competing_revision = [0x32; 32];
+
+        assert!(
+            bind_legacy_workflow_revision(&pool, community, workflow_id, &first_revision,)
+                .await
+                .expect("bind revision")
+        );
+        assert!(
+            !bind_legacy_workflow_revision(&pool, community, workflow_id, &competing_revision,)
+                .await
+                .expect("repeat binding")
+        );
+
+        assert_eq!(
+            get_workflow(&pool, community, workflow_id)
+                .await
+                .expect("read workflow")
+                .definition_event_id
+                .as_deref(),
+            Some(first_revision.as_slice())
+        );
+        assert!(get_workflow_run(&pool, community, run_id)
+            .await
+            .expect("read historical run")
+            .definition_event_id
+            .is_none());
     }
 
     #[tokio::test]

@@ -363,6 +363,21 @@ async fn main() -> anyhow::Result<()> {
         Err(e) => error!("Failed to backfill d_tags: {e}"),
     }
 
+    // Bind legacy workflow rows only when the retained signed definition head
+    // exactly proves the materialized JSON. Runs are intentionally untouched:
+    // a present-day head cannot prove which historical revision they executed.
+    match buzz_relay::handlers::command_executor::reconcile_legacy_workflow_revisions(&db).await {
+        Ok(report) if report.examined > 0 => info!(
+            examined = report.examined,
+            bound = report.bound,
+            unprovable = report.unprovable,
+            raced = report.raced,
+            "Reconciled provenance-safe legacy workflow revisions"
+        ),
+        Ok(_) => {}
+        Err(e) => error!("Failed to reconcile legacy workflow revisions: {e}"),
+    }
+
     let audit = if config.audit_enabled {
         let audit_pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(5)

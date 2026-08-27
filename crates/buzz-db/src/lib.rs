@@ -3354,6 +3354,29 @@ impl Db {
         .await
     }
 
+    /// List workflows that have not yet captured an exact signed revision.
+    #[datastore_span(name = "list_legacy_workflows", system = "postgresql")]
+    pub async fn list_legacy_workflows(&self) -> Result<Vec<workflow::WorkflowRecord>> {
+        workflow::list_legacy_workflows(&self.pool).await
+    }
+
+    /// Compare-and-set an exact revision onto a legacy workflow.
+    #[datastore_span(name = "bind_legacy_workflow_revision", system = "postgresql")]
+    pub async fn bind_legacy_workflow_revision(
+        &self,
+        community_id: CommunityId,
+        workflow_id: Uuid,
+        definition_event_id: &[u8],
+    ) -> Result<bool> {
+        workflow::bind_legacy_workflow_revision(
+            &self.pool,
+            community_id,
+            workflow_id,
+            definition_event_id,
+        )
+        .await
+    }
+
     /// Fetch a single workflow by ID, scoped to its community.
     #[datastore_span(name = "get_workflow", system = "postgresql")]
     pub async fn get_workflow(
