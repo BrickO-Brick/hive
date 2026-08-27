@@ -2,8 +2,9 @@ import { normalizeRelayUrl } from "@/shared/lib/normalizeRelayUrl";
 import type { Channel } from "@/shared/api/types";
 import {
   clearOwnOutbox,
-  latestOutbox,
+  markLegacyConsumed,
   reclaimOutbox,
+  resumeWholeBlobOutbox,
   writeOwnOutbox,
 } from "./sidebarSyncWatermark";
 
@@ -169,21 +170,38 @@ export function writeChannelSortOutbox(
 }
 
 /**
- * The newest window's persisted unpublished sort edit for resume, or null when
- * none exists. Whole-blob LWW: only the max-`queuedAt` record is replayed, so
- * an older blob a peer queued is superseded by definition, never resurrected.
+ * The whole-blob outbox record to resume on boot, or null when none exists.
+ * Whole-blob LWW: only the max-`queuedAt` record is replayed. Returns the
+ * winning store plus, when that winner is a not-yet-consumed legacy blob, the
+ * raw string the caller marks consumed (via `markChannelSortLegacyConsumed`)
+ * once it has durably re-queued the intent — the legacy key is never deleted,
+ * so this one-shot marker is what stops it republishing above the head forever.
  */
 export function readChannelSortOutbox(
   pubkey: string,
   relayUrl: string,
-): ChannelSortStore | null {
-  return latestOutbox(
+): { store: ChannelSortStore; legacyRawToConsume: string | null } | null {
+  return resumeWholeBlobOutbox(
     OUTBOX_KEY_PREFIX,
     legacyOutboxKey(pubkey, relayUrl),
     pubkey,
     relayUrl,
     parseChannelSortPayload,
   );
+}
+
+/**
+ * Mark a replayed legacy sort blob consumed so it is not resumed again on a
+ * later boot. Call only AFTER the intent is durably held in this window's own
+ * v2 key (its synchronous publish path), so a crash before this write replays
+ * the legacy blob once more rather than losing it.
+ */
+export function markChannelSortLegacyConsumed(
+  pubkey: string,
+  relayUrl: string,
+  raw: string,
+): void {
+  markLegacyConsumed(OUTBOX_KEY_PREFIX, pubkey, relayUrl, raw);
 }
 
 /** Clear this window's own outbox key (its edit published or is a no-op). */

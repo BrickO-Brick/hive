@@ -317,7 +317,7 @@ test("durable outbox: edit destroyed inside the debounce resumes and publishes o
     // Window 2: resume the persisted outbox (the hook does this after bootstrap
     // via readChannelSortOutbox, which enumerates every window's outbox key).
     const m2 = new ChannelSortSyncManager("pk-resume", RELAY);
-    m2.publishSortPrefs(persisted);
+    m2.publishSortPrefs(persisted.store);
     fw._fireTimer();
     await new Promise((r) => setTimeout(r, 20));
     assert.equal(publishCalls.length, 1, "resumed edit must publish");
@@ -434,7 +434,9 @@ test("overlapping publishes: older completion does not erase a newer queued edit
       "B is now the pending edit",
     );
     assert.deepEqual(
-      Object.keys(readChannelSortOutbox("pk-overlap", RELAY)?.groups ?? {}),
+      Object.keys(
+        readChannelSortOutbox("pk-overlap", RELAY)?.store.groups ?? {},
+      ),
       ["dms"],
       "outbox holds B",
     );

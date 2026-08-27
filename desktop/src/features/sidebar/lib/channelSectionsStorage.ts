@@ -1,8 +1,9 @@
 import { normalizeRelayUrl } from "@/shared/lib/normalizeRelayUrl";
 import {
   clearOwnOutbox,
-  latestOutbox,
+  markLegacyConsumed,
   reclaimOutbox,
+  resumeWholeBlobOutbox,
   writeOwnOutbox,
 } from "./sidebarSyncWatermark";
 
@@ -231,21 +232,38 @@ export function writeChannelSectionsOutbox(
 }
 
 /**
- * The newest window's persisted unpublished edit for resume, or null when none
- * exists. Whole-blob LWW: only the max-`queuedAt` record is replayed, so an
- * older blob a peer queued is superseded by definition, never resurrected.
+ * The whole-blob outbox record to resume on boot, or null when none exists.
+ * Whole-blob LWW: only the max-`queuedAt` record is replayed. Returns the
+ * winning store plus, when that winner is a not-yet-consumed legacy blob, the
+ * raw string the caller marks consumed (via `markChannelSectionsLegacyConsumed`)
+ * once it has durably re-queued the intent — the legacy key is never deleted,
+ * so this one-shot marker is what stops it republishing above the head forever.
  */
 export function readChannelSectionsOutbox(
   pubkey: string,
   relayUrl: string,
-): ChannelSectionStore | null {
-  return latestOutbox(
+): { store: ChannelSectionStore; legacyRawToConsume: string | null } | null {
+  return resumeWholeBlobOutbox(
     OUTBOX_KEY_PREFIX,
     legacyOutboxKey(pubkey, relayUrl),
     pubkey,
     relayUrl,
     parseChannelSectionPayload,
   );
+}
+
+/**
+ * Mark a replayed legacy sections blob consumed so it is not resumed again on a
+ * later boot. Call only AFTER the intent is durably held in this window's own
+ * v2 key (its synchronous publish path), so a crash before this write replays
+ * the legacy blob once more rather than losing it.
+ */
+export function markChannelSectionsLegacyConsumed(
+  pubkey: string,
+  relayUrl: string,
+  raw: string,
+): void {
+  markLegacyConsumed(OUTBOX_KEY_PREFIX, pubkey, relayUrl, raw);
 }
 
 /** Clear this window's own outbox key (its edit published or is a no-op). */

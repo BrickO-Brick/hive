@@ -5,6 +5,7 @@ import {
   boundChannelSortStore,
   clearChannelSortOutbox,
   DEFAULT_STORE,
+  markChannelSortLegacyConsumed,
   readChannelSortOutbox,
   readChannelSortStore,
   reclaimSupersededSortOutbox,
@@ -150,7 +151,20 @@ export function useChannelSortPreference(
       // consumed into pending here and can never be GC'd out.
       const outbox = readChannelSortOutbox(pubkey, relayUrl);
       if (outbox) {
-        managerRef.current?.publishSortPrefs(outbox);
+        // publishSortPrefs synchronously copies the intent into this window's
+        // own v2 key, so marking the legacy blob consumed afterward can never
+        // lose it: a crash before the marker write replays the legacy blob once
+        // more, a crash after resumes it from the v2 key. The marker is what
+        // stops the never-deleted legacy key republishing above the head every
+        // boot (Thufir pass-2 resurrection finding).
+        managerRef.current?.publishSortPrefs(outbox.store);
+        if (outbox.legacyRawToConsume !== null) {
+          markChannelSortLegacyConsumed(
+            pubkey,
+            relayUrl,
+            outbox.legacyRawToConsume,
+          );
+        }
       } else {
         clearChannelSortOutbox(pubkey, relayUrl);
       }

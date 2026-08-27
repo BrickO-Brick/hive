@@ -258,6 +258,20 @@ export function clearChannelMutesOutbox(
 }
 
 /**
+ * True when the fetched relay `head` already reflects every entry in
+ * `candidate` — merging the candidate into the head leaves it unchanged. Used
+ * both to reclaim a subsumed foreign key and to skip a redundant boot-time
+ * replay publish of a fold the head already carries (e.g. only the
+ * never-deleted legacy key lingers).
+ */
+export function isMutesStoreSubsumedBy(
+  candidate: ChannelMuteStore,
+  head: ChannelMuteStore,
+): boolean {
+  return muteStoresEqual(mergeStores(head, candidate), head);
+}
+
+/**
  * Reclaim foreign outbox keys the fetched relay head already subsumes: a record
  * is redundant when merging it into `head` yields `head` unchanged (the head
  * carries an entry at least as new for every channel). Never touches this
@@ -275,7 +289,7 @@ export function reclaimSubsumedMutesOutbox(
     pubkey,
     relayUrl,
     parseMutePayload,
-    (record) => muteStoresEqual(mergeStores(head, record.store), head),
+    (record) => isMutesStoreSubsumedBy(record.store, head),
   );
 }
 

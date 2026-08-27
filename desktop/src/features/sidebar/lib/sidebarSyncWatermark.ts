@@ -187,6 +187,11 @@ function nextOwnKey(base: string): string {
 export type OutboxRecord<T> = {
   key: string;
   store: T;
+  // The exact stored string this record parsed from. The whole-blob legacy
+  // consumption marker records it verbatim so an unchanged legacy blob is
+  // replayed once and then skipped, while a live old build rewriting the key
+  // (a different raw) is replayed again.
+  raw: string;
   // Seconds since epoch when the edit was queued (0 for a legacy entry written
   // before per-window keys, which therefore never wins a whole-blob tie).
   queuedAt: number;
@@ -314,6 +319,7 @@ export function enumerateOutbox<T>(
         records.push({
           key,
           store: parsed.store,
+          raw,
           queuedAt: parsed.queuedAt,
           isOwn: key.startsWith(ownPrefix),
         });
@@ -325,6 +331,7 @@ export function enumerateOutbox<T>(
       records.push({
         key: legacyKey,
         store: legacy.store,
+        raw: legacyRaw,
         queuedAt: legacy.queuedAt,
         isOwn: false,
       });
@@ -370,20 +377,32 @@ export function reclaimOutbox<T>(
 }
 
 /**
- * The single winning record among all windows' whole-blob outbox entries for
- * resume: max `queuedAt`, ties broken by the (nonce-bearing) key string so the
- * choice is deterministic across windows. Null when no record exists.
+ * Resolve the single whole-blob outbox record to replay on boot: max `queuedAt`,
+ * ties broken by the (nonce-bearing) key string so the choice is deterministic
+ * across windows. Whole-blob LWW means only the newest queued intent is
+ * replayed; an older blob a peer queued is superseded by definition and never
+ * resurrected.
  *
- * Whole-blob LWW means only the newest queued intent is replayed; an older
- * blob a peer queued is superseded by definition and never resurrected.
+ * The legacy shared key is excluded when its exact raw string matches this
+ * lane's consumption marker — it was already replayed into a durable v2 key on
+ * a prior boot, so replaying it again would resurrect a stale blob above the
+ * current relay head on every boot (the legacy key is never deleted). A live
+ * old build that rewrites the legacy key stores a different raw, which no longer
+ * matches the marker and is replayed again (value-sensitive).
+ *
+ * Returns the winning store plus, when the winner is a not-yet-consumed legacy
+ * record, the raw string the caller must mark consumed via `markLegacyConsumed`
+ * AFTER it has durably transferred the intent into its own v2 key. Null when no
+ * replayable record exists.
  */
-export function latestOutbox<T>(
+export function resumeWholeBlobOutbox<T>(
   prefix: string,
   legacyKey: string,
   pubkey: string,
   relayUrl: string,
   parseStore: (json: unknown) => T | null,
-): T | null {
+): { store: T; legacyRawToConsume: string | null } | null {
+  const consumed = readLegacyConsumed(prefix, pubkey, relayUrl);
   let best: OutboxRecord<T> | null = null;
   for (const record of enumerateOutbox(
     prefix,
@@ -393,6 +412,13 @@ export function latestOutbox<T>(
     parseStore,
   )) {
     if (
+      record.key === legacyKey &&
+      consumed !== null &&
+      record.raw === consumed
+    ) {
+      continue;
+    }
+    if (
       best === null ||
       record.queuedAt > best.queuedAt ||
       (record.queuedAt === best.queuedAt && record.key > best.key)
@@ -400,7 +426,67 @@ export function latestOutbox<T>(
       best = record;
     }
   }
-  return best?.store ?? null;
+  if (best === null) return null;
+  return {
+    store: best.store,
+    legacyRawToConsume: best.key === legacyKey ? best.raw : null,
+  };
+}
+
+/**
+ * Per-lane marker recording the exact legacy raw string a prior boot already
+ * replayed into a durable v2 key. Whole-blob lanes read it via
+ * `resumeWholeBlobOutbox` to resume an unchanged legacy blob exactly once
+ * rather than republishing it above the current relay head on every boot.
+ *
+ * A shared mutable key, but every write is a single unconditional `setItem` of
+ * the value just consumed — no read-modify-write, value-idempotent. The worst
+ * interleaving (two v2 windows racing a live old build's rewrite) costs one
+ * extra bounded replay of a value, never loss and never a per-boot loop.
+ * Bounded at one marker per whole-blob lane per (pubkey, relay).
+ */
+function legacyConsumedKey(
+  prefix: string,
+  pubkey: string,
+  relayUrl: string,
+): string {
+  return `${prefix}-legacy-consumed:${scopeSuffix(pubkey, relayUrl)}`;
+}
+
+function readLegacyConsumed(
+  prefix: string,
+  pubkey: string,
+  relayUrl: string,
+): string | null {
+  try {
+    return window.localStorage.getItem(
+      legacyConsumedKey(prefix, pubkey, relayUrl),
+    );
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Record `raw` as this lane's consumed legacy blob. Call only AFTER the intent
+ * has been durably transferred into a v2 key (e.g. via a synchronous
+ * publish→`writeOwnOutbox`), so a crash before this write replays the legacy
+ * blob once more rather than losing it.
+ */
+export function markLegacyConsumed(
+  prefix: string,
+  pubkey: string,
+  relayUrl: string,
+  raw: string,
+): void {
+  try {
+    window.localStorage.setItem(
+      legacyConsumedKey(prefix, pubkey, relayUrl),
+      raw,
+    );
+  } catch {
+    // Best-effort — worst case the legacy blob is replayed once more next boot.
+  }
 }
 
 /**

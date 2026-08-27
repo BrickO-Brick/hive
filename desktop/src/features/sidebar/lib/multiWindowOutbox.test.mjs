@@ -185,7 +185,10 @@ test("(i) sort: reclaim deletes the proven-stale key and keeps a fresh edit writ
     sort.reclaimSupersededSortOutbox(PK, RELAY, 200);
     assert.ok(!ls.has(stale), "proven-stale key is reclaimed");
     assert.ok(ls.has(fresh), "peer's fresh edit under a new key survives");
-    assert.equal(sort.readChannelSortOutbox(PK, RELAY).groups.dms, "recent");
+    assert.equal(
+      sort.readChannelSortOutbox(PK, RELAY).store.groups.dms,
+      "recent",
+    );
   });
 });
 
@@ -250,7 +253,7 @@ test("(ii) sort (whole-blob): the newest queued window resumes; older is LWW-sup
       200,
     );
     assert.equal(
-      sort.readChannelSortOutbox(PK, RELAY).groups.channels,
+      sort.readChannelSortOutbox(PK, RELAY).store.groups.channels,
       "recent",
     );
   });
@@ -270,9 +273,10 @@ test("(ii) sections (whole-blob): the newest queued window resumes; older is LWW
       sectionStore([{ id: "s2", name: "Two", order: 0 }]),
       200,
     );
-    assert.deepEqual(sections.readChannelSectionsOutbox(PK, RELAY).sections, [
-      { id: "s2", name: "Two", order: 0 },
-    ]);
+    assert.deepEqual(
+      sections.readChannelSectionsOutbox(PK, RELAY).store.sections,
+      [{ id: "s2", name: "Two", order: 0 }],
+    );
   });
 });
 
@@ -358,9 +362,10 @@ test("(iv) sections: legacy shared key resumes and is never reclaimed", () => {
       sectionStore([{ id: "s1", name: "One", order: 0 }]),
       100,
     );
-    assert.deepEqual(sections.readChannelSectionsOutbox(PK, RELAY).sections, [
-      { id: "s1", name: "One", order: 0 },
-    ]);
+    assert.deepEqual(
+      sections.readChannelSectionsOutbox(PK, RELAY).store.sections,
+      [{ id: "s1", name: "One", order: 0 }],
+    );
     // A head strictly past the queued stamp still must not delete the v1 key.
     sections.reclaimSupersededSectionsOutbox(PK, RELAY, 999);
     assert.ok(
@@ -408,7 +413,7 @@ test("(v) sort: two own records from a crash resume the newer seq (padded key or
     writeAt(ls, `${base}:${pad(9)}`, sortStore({ dms: "alpha" }), 100);
     writeAt(ls, `${base}:${pad(10)}`, sortStore({ dms: "recent" }), 100);
     assert.equal(
-      sort.readChannelSortOutbox(PK, RELAY).groups.dms,
+      sort.readChannelSortOutbox(PK, RELAY).store.groups.dms,
       "recent",
       "newer seq resumes despite the digit-boundary crossing",
     );
@@ -474,7 +479,10 @@ test("(vii) sort: equal-queuedAt records resolve by key so replay is determinist
       100,
     );
     // Same queuedAt → the lexicographically-greater key wins (…:zzz:…).
-    assert.equal(sort.readChannelSortOutbox(PK, RELAY).groups.forums, "recent");
+    assert.equal(
+      sort.readChannelSortOutbox(PK, RELAY).store.groups.forums,
+      "recent",
+    );
   });
 });
 
@@ -530,6 +538,138 @@ test("(ix) sort: a head older than the queued edit supersedes nothing", () => {
     // headCreatedAt=0 (absent-equivalent) < queuedAt → keep.
     sort.reclaimSupersededSortOutbox(PK, RELAY, 0);
     assert.ok(ls.has(key), "edit queued after the head is kept");
+  });
+});
+
+// ── (x) Legacy whole-blob replay is one-shot and value-sensitive ───────────────
+//
+// The legacy v1 key is never deleted (it is mutable), so without a consumption
+// marker `resumeWholeBlobOutbox` would return it on EVERY boot and the hook would
+// republish the stale blob above the current relay head forever (Thufir pass-2
+// resurrection finding). The per-value marker records the exact legacy raw a
+// prior boot replayed: an unchanged legacy blob is skipped, a rewritten one (a
+// live old build) is replayed again. The hook transfers the intent into its own
+// v2 key (synchronous publish) BEFORE writing the marker, so a crash between the
+// two replays the legacy blob once more rather than losing it.
+
+test("(x) sort: retained legacy blob replays once, then is skipped across later boots", () => {
+  withStorage((ls) => {
+    ls.setItem(legacyKey("sort"), JSON.stringify(sortStore({ dms: "recent" })));
+
+    // Boot 1: the legacy blob resumes and reports itself for consumption.
+    const boot1 = sort.readChannelSortOutbox(PK, RELAY);
+    assert.equal(boot1.store.groups.dms, "recent", "legacy blob resumes");
+    assert.equal(
+      boot1.legacyRawToConsume,
+      JSON.stringify(sortStore({ dms: "recent" })),
+      "reports the exact legacy raw to consume",
+    );
+    // Hook: publish transfers intent to a v2 key, then marks consumed; model the
+    // published-and-cleared steady state (own key gone after a successful ACK).
+    sort.markChannelSortLegacyConsumed(PK, RELAY, boot1.legacyRawToConsume);
+    assert.ok(ls.has(legacyKey("sort")), "legacy key is still never deleted");
+
+    // Boot 2 and beyond: the unchanged legacy blob is excluded — no resurrection.
+    assert.equal(
+      sort.readChannelSortOutbox(PK, RELAY),
+      null,
+      "consumed legacy blob is not replayed again",
+    );
+    assert.equal(
+      sort.readChannelSortOutbox(PK, RELAY),
+      null,
+      "still skipped on a third boot",
+    );
+  });
+});
+
+test("(x) sections: a rewritten legacy blob (live old build) is replayed again", () => {
+  withStorage((ls) => {
+    writeAt(
+      ls,
+      legacyKey("sections"),
+      sectionStore([{ id: "s1", name: "One", order: 0 }]),
+      0,
+    );
+    const boot1 = sections.readChannelSectionsOutbox(PK, RELAY);
+    assert.deepEqual(boot1.store.sections, [
+      { id: "s1", name: "One", order: 0 },
+    ]);
+    sections.markChannelSectionsLegacyConsumed(
+      PK,
+      RELAY,
+      boot1.legacyRawToConsume,
+    );
+    assert.equal(
+      sections.readChannelSectionsOutbox(PK, RELAY),
+      null,
+      "consumed blob skipped",
+    );
+
+    // A live old build rewrites the legacy key with NEW intent (different raw).
+    writeAt(
+      ls,
+      legacyKey("sections"),
+      sectionStore([{ id: "s2", name: "Two", order: 0 }]),
+      0,
+    );
+    const boot3 = sections.readChannelSectionsOutbox(PK, RELAY);
+    assert.deepEqual(
+      boot3.store.sections,
+      [{ id: "s2", name: "Two", order: 0 }],
+      "changed legacy value is replayed",
+    );
+    assert.ok(
+      boot3.legacyRawToConsume !== null,
+      "new legacy raw reported for a fresh consumption marker",
+    );
+  });
+});
+
+test("(x) sort: crash after v2 transfer but before the marker resumes from the v2 key", () => {
+  withStorage((ls) => {
+    ls.setItem(legacyKey("sort"), JSON.stringify(sortStore({ dms: "recent" })));
+    const boot1 = sort.readChannelSortOutbox(PK, RELAY);
+    // Hook order: publish (synchronous writeOwnOutbox → v2 key) THEN mark. Model
+    // a crash in that gap: the v2 key exists, the marker was never written.
+    sort.writeChannelSortOutbox(PK, boot1.store, RELAY);
+    // No markChannelSortLegacyConsumed — crash before it.
+
+    // Boot 2: marker absent, so the legacy blob (queuedAt 0) is enumerated, but
+    // the v2 key (queuedAt > 0) wins the whole-blob max — intent is not lost,
+    // and the winner is not the legacy record so nothing is re-consumed.
+    const boot2 = sort.readChannelSortOutbox(PK, RELAY);
+    assert.equal(boot2.store.groups.dms, "recent", "intent survives in v2 key");
+    assert.equal(
+      boot2.legacyRawToConsume,
+      null,
+      "winner is the v2 key, not the legacy record",
+    );
+  });
+});
+
+test("(x) stars (merge lane): a legacy blob the head subsumes needs no replay publish", () => {
+  withStorage((ls) => {
+    ls.setItem(
+      legacyKey("stars"),
+      JSON.stringify(starStore({ a: starEntry(true, 100, 1) })),
+    );
+    const outbox = stars.readChannelStarsOutbox(PK, RELAY);
+    // The hook skips the boot replay publish when the found head subsumes the
+    // fold — so a lingering never-deleted legacy key doesn't re-drive an
+    // identical publish on every boot.
+    assert.ok(
+      stars.isStarsStoreSubsumedBy(
+        outbox,
+        starStore({ a: starEntry(true, 100, 1) }),
+      ),
+      "head-subsumed legacy fold is publish-free",
+    );
+    // A head that does NOT yet reflect the legacy click still publishes.
+    assert.ok(
+      !stars.isStarsStoreSubsumedBy(outbox, starStore({})),
+      "an unsubsumed legacy click still needs a publish",
+    );
   });
 });
 

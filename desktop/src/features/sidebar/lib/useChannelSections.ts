@@ -5,6 +5,7 @@ import {
   boundChannelSectionsStore,
   clearChannelSectionsOutbox,
   DEFAULT_STORE,
+  markChannelSectionsLegacyConsumed,
   readChannelSectionsOutbox,
   readChannelSectionsStore,
   reclaimSupersededSectionsOutbox,
@@ -153,7 +154,20 @@ export function useChannelSections(
       // to supersede is consumed into pending here and can never be GC'd out.
       const outbox = readChannelSectionsOutbox(pubkey, relayUrl);
       if (outbox) {
-        managerRef.current?.publishSections(outbox);
+        // publishSections synchronously copies the intent into this window's
+        // own v2 key, so marking the legacy blob consumed afterward can never
+        // lose it: a crash before the marker write replays the legacy blob once
+        // more, a crash after resumes it from the v2 key. The marker is what
+        // stops the never-deleted legacy key republishing above the head every
+        // boot (Thufir pass-2 resurrection finding).
+        managerRef.current?.publishSections(outbox.store);
+        if (outbox.legacyRawToConsume !== null) {
+          markChannelSectionsLegacyConsumed(
+            pubkey,
+            relayUrl,
+            outbox.legacyRawToConsume,
+          );
+        }
       } else {
         clearChannelSectionsOutbox(pubkey, relayUrl);
       }

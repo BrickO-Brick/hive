@@ -448,7 +448,7 @@ test("overlapping publishes: older completion does not erase a newer queued edit
       "B is now the pending edit",
     );
     assert.equal(
-      readChannelSectionsOutbox("pk-overlap", RELAY).sections[0].id,
+      readChannelSectionsOutbox("pk-overlap", RELAY).store.sections[0].id,
       "b",
       "outbox holds B",
     );
