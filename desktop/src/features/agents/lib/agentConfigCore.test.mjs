@@ -85,13 +85,59 @@ test("Goose exposes provider, model, and its real effort application key", () =>
   );
   assert.deepEqual(field(model, "effort").currentPersistence, {
     kind: "envVar",
-    key: "BUZZ_AGENT_THINKING_EFFORT",
+    key: "GOOSE_THINKING_EFFORT",
   });
   assert.deepEqual(field(model, "effort").targetApplication, {
     kind: "envVar",
     key: "GOOSE_THINKING_EFFORT",
   });
+  // Goose reads/writes its native key at global scope — the launch projection's
+  // global tier is native-only, so the legacy BUZZ_AGENT_THINKING_EFFORT in the
+  // config is not surfaced as the effort value (it would be silently ignored).
+  assert.equal(field(model, "effort").value, null);
 });
+
+// Carl (review 5036131024): global/onboarding effort persistence must use the
+// runtime's native key so a selection reaches the spawn. The launch projection's
+// global tier reads native-only (legacy alias is record/persona-scope), so
+// persisting the legacy key for Goose round-trips in the UI but is ignored at
+// spawn. Both scopes derive the same persistence/application key.
+for (const scope of ["global", "onboarding"]) {
+  test(`effort persists to the runtime native key at ${scope} scope`, () => {
+    const goose = deriveAgentConfigFieldModel({
+      config: { ...config, env_vars: { GOOSE_THINKING_EFFORT: "high" } },
+      runtime: runtime("goose", { thinkingEnvVar: "GOOSE_THINKING_EFFORT" }),
+      scope,
+    });
+    const gooseEffort = field(goose, "effort");
+    assert.deepEqual(gooseEffort.currentPersistence, {
+      kind: "envVar",
+      key: "GOOSE_THINKING_EFFORT",
+    });
+    assert.deepEqual(gooseEffort.targetApplication, {
+      kind: "envVar",
+      key: "GOOSE_THINKING_EFFORT",
+    });
+    assert.equal(gooseEffort.value, "high");
+    assert.deepEqual(structuredEnvKeys([gooseEffort]), [
+      "GOOSE_THINKING_EFFORT",
+    ]);
+
+    const buzz = deriveAgentConfigFieldModel({
+      config,
+      runtime: runtime("buzz-agent", {
+        thinkingEnvVar: "BUZZ_AGENT_THINKING_EFFORT",
+      }),
+      scope,
+    });
+    const buzzEffort = field(buzz, "effort");
+    assert.deepEqual(buzzEffort.currentPersistence, {
+      kind: "envVar",
+      key: "BUZZ_AGENT_THINKING_EFFORT",
+    });
+    assert.equal(buzzEffort.value, "high");
+  });
+}
 
 test("Claude models effort as a deferred native ACP option", () => {
   const model = deriveAgentConfigFieldModel({

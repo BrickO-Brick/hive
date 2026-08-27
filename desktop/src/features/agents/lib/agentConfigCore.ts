@@ -2,7 +2,6 @@ import type {
   AcpRuntimeCatalogEntry,
   GlobalAgentConfig,
 } from "@/shared/api/types";
-import { BUZZ_AGENT_THINKING_EFFORT } from "../ui/buzzAgentConfig";
 
 /**
  * Lifecycle status of the ACP runtime catalog query on a per-agent surface.
@@ -204,6 +203,12 @@ export function deriveAgentConfigFieldModel({
   });
 
   if (runtime?.thinkingEnvVar) {
+    // Global/onboarding persists to the runtime's native key — the same key the
+    // launch projection reads at global tier (native-only; the legacy alias is
+    // record/persona-scope only). For buzz-agent this IS BUZZ_AGENT_THINKING_EFFORT;
+    // for Goose it is GOOSE_THINKING_EFFORT, so a global selection actually reaches
+    // the spawn rather than persisting a legacy key the projection ignores.
+    const thinkingKey = runtime.thinkingEnvVar;
     fields.push({
       kind: "effort",
       optionSource:
@@ -212,11 +217,11 @@ export function deriveAgentConfigFieldModel({
           : "legacyProviderModelCatalog",
       currentPersistence: {
         kind: "envVar",
-        key: BUZZ_AGENT_THINKING_EFFORT,
+        key: thinkingKey,
       },
-      targetApplication: { kind: "envVar", key: runtime.thinkingEnvVar },
+      targetApplication: { kind: "envVar", key: thinkingKey },
       render: "control",
-      value: valueFromEnv(config, BUZZ_AGENT_THINKING_EFFORT),
+      value: valueFromEnv(config, thinkingKey),
     });
   } else if (runtime?.id === "claude") {
     fields.push({
