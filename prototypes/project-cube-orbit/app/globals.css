@@ -1,5 +1,17 @@
 @import "tailwindcss";
 
+@property --gradient-shift-x {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 0px;
+}
+
+@property --gradient-shift-y {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 0px;
+}
+
 :root { --ink: #262626; --header-control-size: 42px; }
 * { box-sizing: border-box; }
 html, body, #root { margin: 0; min-height: 100%; }
@@ -7,12 +19,16 @@ button { font: inherit; color: inherit; }
 body { background: #e6f2f5; color: var(--ink); font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; overflow: hidden; }
 
 .app-shell {
+  --gradient-shift-x: 0px;
+  --gradient-shift-y: 0px;
   min-height: 100svh;
   background:
-    radial-gradient(circle at 7% 42%, rgba(255,255,255,.92) 0 7%, transparent 30%),
-    radial-gradient(circle at 91% 89%, rgba(248,247,198,.84), transparent 30%),
+    radial-gradient(circle at calc(7% + var(--gradient-shift-x)) calc(42% + var(--gradient-shift-y)), rgba(255,255,255,.92) 0 7%, transparent 30%),
+    radial-gradient(circle at calc(91% - var(--gradient-shift-x)) calc(89% - var(--gradient-shift-y)), rgba(248,247,198,.84), transparent 30%),
     linear-gradient(112deg, #f6f8f8 0%, #e4f1f6 42%, #c7e4f1 100%);
+  transition: --gradient-shift-x 520ms cubic-bezier(.22,1,.36,1), --gradient-shift-y 520ms cubic-bezier(.22,1,.36,1);
 }
+.app-shell.is-canvas-panning { transition: none; }
 
 .topbar {
   position: fixed;

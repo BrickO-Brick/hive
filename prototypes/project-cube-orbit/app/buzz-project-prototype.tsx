@@ -948,6 +948,7 @@ function TaskDetailPanel({
 export function BuzzProjectPrototype() {
   const [activeTab, setActiveTab] = useState<"me" | "projects">("me");
   const [selectedTask, setSelectedTask] = useState<SelectedTask | null>(null);
+  const appShellRef = useRef<HTMLElement>(null);
   const projectWorldRef = useRef<HTMLDivElement>(null);
   const canvasPanRef = useRef({
     pointerId: -1,
@@ -964,6 +965,13 @@ export function BuzzProjectPrototype() {
     setActiveTab(tab);
   };
 
+  const setGradientPan = (x: number, y: number) => {
+    const shell = appShellRef.current;
+    if (!shell) return;
+    shell.style.setProperty("--gradient-shift-x", `${x * 0.16}px`);
+    shell.style.setProperty("--gradient-shift-y", `${y * 0.14}px`);
+  };
+
   const selectTask = (selection: SelectedTask) => {
     const pan = canvasPanRef.current;
     pan.pointerId = -1;
@@ -975,6 +983,7 @@ export function BuzzProjectPrototype() {
       "transform",
       "translate3d(0px, 0px, 0)",
     );
+    setGradientPan(0, 0);
     setSelectedTask(selection);
   };
 
@@ -992,6 +1001,7 @@ export function BuzzProjectPrototype() {
       originY: canvasPanRef.current.y,
     };
     event.currentTarget.classList.add("is-panning");
+    appShellRef.current?.classList.add("is-canvas-panning");
   };
 
   const updateCanvasPan = (event: ReactPointerEvent<HTMLElement>) => {
@@ -1003,6 +1013,7 @@ export function BuzzProjectPrototype() {
     pan.x = Math.max(-limitX, Math.min(limitX, pan.originX + event.clientX - pan.startX));
     pan.y = Math.max(-limitY, Math.min(limitY, pan.originY + event.clientY - pan.startY));
     world.style.transform = `translate3d(${pan.x}px, ${pan.y}px, 0)`;
+    setGradientPan(pan.x, pan.y);
   };
 
   const endCanvasPan = (event: ReactPointerEvent<HTMLElement>) => {
@@ -1012,10 +1023,11 @@ export function BuzzProjectPrototype() {
     }
     canvasPanRef.current.pointerId = -1;
     event.currentTarget.classList.remove("is-panning");
+    appShellRef.current?.classList.remove("is-canvas-panning");
   };
 
   return (
-    <main className="app-shell">
+    <main ref={appShellRef} className="app-shell">
       <header className="topbar">
         <div className="header-spacer" aria-hidden="true" />
         <nav className="segmented" aria-label="Primary navigation">
