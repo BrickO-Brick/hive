@@ -11,6 +11,10 @@ use std::time::Duration;
 use nostr::Tag;
 use tauri::{AppHandle, Manager};
 
+use super::coordinator_admission::{
+    clear_mode_recovery_restart, mark_mode_recovery_restart, mode_reconcile_action,
+    mode_recovery_restart_is_throttled, ModeEvidence, ModeReconcileAction, ModeReconcileState,
+};
 use crate::app_state::AppState;
 
 /// Client-owned parameterized-replaceable discovery note. We use the standard
@@ -32,7 +36,6 @@ const INGRESS_WATCHDOG_MAX: Duration = Duration::from_secs(120);
 /// mesh instead of remaining independent islands.
 const MESH_JOIN_POLL_INTERVAL: Duration = Duration::from_secs(15);
 const MESH_JOIN_RETRY_MAX: Duration = Duration::from_secs(120);
-
 pub struct MeshCoordinator {
     _status_publisher: tokio::task::JoinHandle<()>,
     _roster_watcher: tokio::task::JoinHandle<()>,
@@ -63,12 +66,15 @@ pub async fn start_coordinator(app: AppHandle) {
     });
     let roster_app = app.clone();
     let roster_watcher = tokio::spawn(async move {
-        // Carries a shrink awaiting confirmation across polls (hysteresis):
-        // a reduced roster must be seen twice in a row before we tear down.
+        // Carries pending observations across polls. Roster reductions and
+        // admission-mode changes must both be seen twice before a restart.
         let mut pending_shrink: Option<Vec<String>> = None;
+        let mut mode_reconcile = ModeReconcileState::default();
         loop {
             tokio::time::sleep(ROSTER_POLL_INTERVAL).await;
-            if let Err(error) = reconcile_roster(&roster_app, &mut pending_shrink).await {
+            if let Err(error) =
+                reconcile_roster(&roster_app, &mut pending_shrink, &mut mode_reconcile).await
+            {
                 eprintln!("buzz-mesh: roster reconcile failed: {error}");
             }
         }
@@ -297,8 +303,8 @@ fn roster_reconcile_action(
     }
 }
 
-fn runtime_needs_mode_probe(current_owners: Option<&[String]>) -> bool {
-    current_owners.is_none_or(<[String]>::is_empty)
+fn runtime_needs_mode_probe(current_owners: &[String]) -> bool {
+    current_owners.is_empty()
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -307,13 +313,6 @@ enum OpenRuntimeObservation {
     ClosedWithRoster,
     ClosedWithoutRoster(String),
     Unknown(String),
-}
-
-fn open_runtime_should_restart(observation: &OpenRuntimeObservation) -> bool {
-    matches!(
-        observation,
-        OpenRuntimeObservation::ClosedWithRoster | OpenRuntimeObservation::ClosedWithoutRoster(_)
-    )
 }
 
 fn classify_open_runtime_observation(
@@ -346,6 +345,7 @@ async fn observe_open_runtime_relay(state: &AppState, relay_url: &str) -> OpenRu
 async fn reconcile_roster(
     app: &AppHandle,
     pending_shrink: &mut Option<Vec<String>>,
+    mode_reconcile: &mut ModeReconcileState,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
     let current_request = {
@@ -354,6 +354,7 @@ async fn reconcile_roster(
             Some(runtime) => runtime.start_request().clone(),
             None => {
                 *pending_shrink = None;
+                *mode_reconcile = ModeReconcileState::default();
                 return Ok(());
             }
         }
@@ -368,27 +369,44 @@ async fn reconcile_roster(
         .map(str::to_owned)
         .unwrap_or_else(|| crate::relay::relay_ws_url_with_override(&state));
     if current_owners.is_none() {
-        let observation = observe_open_runtime_relay(&state, &relay_url).await;
-        if open_runtime_should_restart(&observation) {
-            match &observation {
-                OpenRuntimeObservation::ClosedWithRoster => eprintln!(
-                    "buzz-mesh: relay now enforces membership; restarting Buzz to apply its allowlist"
-                ),
-                OpenRuntimeObservation::ClosedWithoutRoster(error) => eprintln!(
-                    "buzz-mesh: relay now enforces membership but its roster is unavailable; restarting Buzz fail-closed: {error}"
-                ),
-                OpenRuntimeObservation::Open | OpenRuntimeObservation::Unknown(_) => {}
-            }
-            app.request_restart();
-        } else if let OpenRuntimeObservation::Unknown(error) = observation {
-            eprintln!(
-                "buzz-mesh: open-relay mode recheck failed; keeping the running policy: {error}"
-            );
-        }
-        *pending_shrink = None;
-        return Ok(());
+        clear_mode_recovery_restart(app);
     }
     let Some(current_owners) = current_owners else {
+        let observation = observe_open_runtime_relay(&state, &relay_url).await;
+        let evidence = match &observation {
+            OpenRuntimeObservation::Open => Ok(ModeEvidence::Open),
+            OpenRuntimeObservation::ClosedWithRoster
+            | OpenRuntimeObservation::ClosedWithoutRoster(_) => Ok(ModeEvidence::Closed),
+            OpenRuntimeObservation::Unknown(_) => Err(()),
+        };
+        match mode_reconcile_action(mode_reconcile, evidence, true) {
+            ModeReconcileAction::Keep => {
+                if let OpenRuntimeObservation::Unknown(error) = observation {
+                    eprintln!(
+                        "buzz-mesh: open-relay mode recheck failed once; keeping the running policy pending one retry: {error}"
+                    );
+                }
+            }
+            ModeReconcileAction::AwaitConfirm => eprintln!(
+                "buzz-mesh: relay membership mode changed; awaiting confirmation before restarting Buzz"
+            ),
+            ModeReconcileAction::RestartProcess => {
+                match &observation {
+                    OpenRuntimeObservation::ClosedWithRoster => eprintln!(
+                        "buzz-mesh: relay repeatedly reports membership enforcement; restarting Buzz to apply its allowlist"
+                    ),
+                    OpenRuntimeObservation::ClosedWithoutRoster(error) => eprintln!(
+                        "buzz-mesh: relay repeatedly reports membership enforcement but its roster is unavailable; restarting Buzz fail-closed: {error}"
+                    ),
+                    OpenRuntimeObservation::Unknown(error) => eprintln!(
+                        "buzz-mesh: open-relay mode remained unknown across two polls; restarting Buzz fail-closed: {error}"
+                    ),
+                    OpenRuntimeObservation::Open => {}
+                }
+                app.request_restart();
+            }
+        }
+        *pending_shrink = None;
         return Ok(());
     };
     // A failed roster query must NOT be treated as "the roster became empty":
@@ -396,7 +414,7 @@ async fn reconcile_roster(
     // other member on a transient relay blip (the flapping restart loop). Keep
     // the current allowlist and try again on the next poll. A shrink is held
     // for one extra poll (hysteresis) so a single short-read never tears down.
-    let query = if runtime_needs_mode_probe(Some(current_owners)) {
+    let query = if runtime_needs_mode_probe(current_owners) {
         // Self-only is the fail-safe startup policy when the initial NIP-11
         // probe is inconclusive. Re-probe this isolated state so a later valid
         // open result can recover it; errors still keep it self-only.
@@ -406,6 +424,38 @@ async fn reconcile_roster(
             .await
             .map(Some)
     };
+    if current_owners.is_empty() {
+        match &query {
+            Ok(None) => {
+                match mode_reconcile_action(mode_reconcile, Ok(ModeEvidence::Open), false) {
+                    ModeReconcileAction::Keep => return Ok(()),
+                    ModeReconcileAction::AwaitConfirm => {
+                        eprintln!(
+                        "buzz-mesh: isolated startup fallback observed an open relay; awaiting confirmation before restarting Buzz"
+                    );
+                        return Ok(());
+                    }
+                    ModeReconcileAction::RestartProcess => {
+                        if mode_recovery_restart_is_throttled(app)? {
+                            eprintln!(
+                            "buzz-mesh: open-mode recovery restart is throttled after a recent attempt; keeping the self-only fallback"
+                        );
+                            return Ok(());
+                        }
+                        mark_mode_recovery_restart(app)?;
+                    }
+                }
+            }
+            Err(_) => {
+                let _ = mode_reconcile_action(mode_reconcile, Err(()), false);
+            }
+            Ok(Some(_)) => {
+                let _ = mode_reconcile_action(mode_reconcile, Ok(ModeEvidence::Closed), false);
+            }
+        }
+    } else {
+        *mode_reconcile = ModeReconcileState::default();
+    }
     match roster_reconcile_action(current_owners, pending_shrink.as_deref(), query) {
         RosterReconcileAction::Keep => {
             *pending_shrink = None;
@@ -766,12 +816,11 @@ mod tests {
     }
 
     #[test]
-    fn only_open_or_self_only_runtimes_reprobe_mode() {
+    fn only_self_only_closed_runtimes_reprobe_mode() {
         let self_only: Vec<String> = Vec::new();
         let closed = vec!["owner-a".to_string()];
-        assert!(runtime_needs_mode_probe(None));
-        assert!(runtime_needs_mode_probe(Some(&self_only)));
-        assert!(!runtime_needs_mode_probe(Some(&closed)));
+        assert!(runtime_needs_mode_probe(&self_only));
+        assert!(!runtime_needs_mode_probe(&closed));
     }
 
     #[test]
@@ -786,23 +835,6 @@ mod tests {
                 "relay returned no membership snapshot".to_string()
             )
         );
-        assert!(open_runtime_should_restart(&observation));
-    }
-
-    #[test]
-    fn open_runtime_restarts_for_any_proven_closed_mode() {
-        assert!(!open_runtime_should_restart(&OpenRuntimeObservation::Open));
-        assert!(open_runtime_should_restart(
-            &OpenRuntimeObservation::ClosedWithRoster
-        ));
-        assert!(open_runtime_should_restart(
-            &OpenRuntimeObservation::ClosedWithoutRoster(
-                "relay returned no membership snapshot".to_string()
-            )
-        ));
-        assert!(!open_runtime_should_restart(
-            &OpenRuntimeObservation::Unknown("NIP-11 timed out".to_string())
-        ));
     }
 
     #[test]

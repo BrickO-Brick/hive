@@ -179,6 +179,10 @@ fn advance_mesh_status_cursor(
 /// Resolve whether a relay enforces NIP-43 relay membership, from its NIP-11
 /// document.
 ///
+/// The relay's advertisement is authoritative only to the extent that the
+/// HTTP transport is authenticated: `wss://` relay URLs produce HTTPS NIP-11
+/// reads, while a `ws://` override is vulnerable to on-path modification.
+///
 /// The relay advertises NIP-43 only when membership is actually enforced
 /// (`nip11_facts` in `buzz-relay`), so this is the one signal that separates
 /// "no roster because nobody is a direct member here" from "no roster because

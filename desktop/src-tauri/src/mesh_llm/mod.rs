@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 mod coordinator;
+mod coordinator_admission;
 pub(crate) use coordinator::{publish_current_status_once, publish_stopped_status_once_at};
 pub use coordinator::{start_coordinator, MeshCoordinator, KIND_BUZZ_MESH_MEMBER_STATUS};
 

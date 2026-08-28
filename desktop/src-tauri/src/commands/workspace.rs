@@ -345,7 +345,7 @@ pub async fn apply_workspace(
                 }
             }
         });
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(not(feature = "mesh-llm"))]
@@ -364,9 +364,11 @@ pub async fn apply_workspace(
         return Ok(());
     }
 
-    assert_current_apply_generation(&state.workspace_apply_generation, apply_generation)?;
-
-    Ok(())
+    #[cfg(not(feature = "mesh-llm"))]
+    {
+        assert_current_apply_generation(&state.workspace_apply_generation, apply_generation)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

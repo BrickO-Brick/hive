@@ -17,8 +17,8 @@ use mesh_llm_system::vram::{format_rated_capacity, rated_capacity_gb};
 ///
 /// The recommended ladder follows rated unified memory:
 /// - below 32 GB: Gemma 4 E4B;
-/// - 32 through 64 GB: Qwen3.5 9B;
-/// - above 64 GB: Qwen3.8 27B.
+/// - 32 through 79 GB: Qwen3.5 9B;
+/// - 80 GB and above: Qwen3.8 27B.
 ///
 /// The Qwen entries are canonicalized from mesh-llm's compiled
 /// `MODEL_CATALOG` rather than synthesized.
@@ -28,13 +28,15 @@ const CURATED_MEDIUM: &str = "unsloth/Qwen3.5-9B-GGUF:Q4_K_M";
 const CURATED_MEDIUM_ALIAS: &str = "Qwen3.5-9B-Vision-Q4_K_M";
 const CURATED_SMALL: &str = "unsloth/gemma-4-E4B-it-GGUF:Q4_K_M";
 const CURATED_SMALL_ALIAS: &str = "Gemma-4-E4B-it-Q4_K_M";
-/// Superseded large pick, still mapped so machines that already selected it
-/// keep resolving to a model id Mesh's OpenAI ingress accepts.
+/// Superseded large alias retained only to preserve the historical string
+/// canonicalization contract. Availability in a particular Mesh runtime is
+/// determined by that runtime's compiled catalog.
 const LEGACY_LARGE: &str = "unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_M";
 const LEGACY_LARGE_ALIAS: &str = "gemma-4-26B-A4B-it-UD-Q4_K_M";
 /// Rated-capacity boundary for the balanced Qwen3.5 9B tier.
 const CURATED_MEDIUM_MIN_RATED_GB: u64 = 32;
-/// Qwen3.8 27B is reserved for rated capacity classes above 64 GB.
+/// Qwen3.8 27B is reserved for 80 GB-and-larger rated capacity classes,
+/// leaving headroom beyond the model weights for KV cache and runtime use.
 const CURATED_LARGE_MIN_RATED_GB: u64 = 80;
 
 /// The Buzz-curated recommendation for a machine's rated memory capacity.
@@ -266,7 +268,7 @@ mod tests {
         assert_eq!(CURATED_MEDIUM, "unsloth/Qwen3.5-9B-GGUF:Q4_K_M");
         assert_eq!(CURATED_LARGE, "unsloth/Qwen3.8-27B-GGUF:Q4_K_M");
 
-        // Qwen3.8 is reserved for rated capacity classes above 64 GB.
+        // Qwen3.8 is reserved for 80 GB-and-larger rated capacity classes.
         let large = build_catalog(None, 80_000_000_000, 80.0, &[]);
         assert_eq!(large.recommended.as_deref(), Some(CURATED_LARGE));
         let big = build_catalog(None, 128_000_000_000, 128.0, &[]);

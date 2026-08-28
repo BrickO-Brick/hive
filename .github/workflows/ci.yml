@@ -214,6 +214,10 @@ jobs:
         run: just desktop-tauri-test
         env:
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+      - name: Desktop Mesh clippy
+        run: cargo clippy --manifest-path desktop/src-tauri/Cargo.toml --workspace --all-targets --features mesh-llm -- -D warnings
+        env:
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
       - name: Desktop Mesh admission tests
         run: cargo test --manifest-path desktop/src-tauri/Cargo.toml --features mesh-llm --lib
         env:
