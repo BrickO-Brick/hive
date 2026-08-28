@@ -28,7 +28,8 @@ pub use keys::{
 };
 pub use storage::{
     BlobHeadMeta, BlobMeta, BlobStream, BulkDeleteOutcome, ByteStream, MediaStorage,
-    PayloadByteRange, PayloadRangeRead,
+    ObjectVersionEntry, ObjectVersionKind, ObjectVersionRef, ObjectVersionsPage, PayloadByteRange,
+    PayloadRangeRead,
 };
 pub use types::BlobDescriptor;
 pub use upload::{process_file_upload, process_upload, process_video_upload};
