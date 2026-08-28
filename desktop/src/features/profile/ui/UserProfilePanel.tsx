@@ -406,8 +406,9 @@ export function UserProfilePanel({
     return true;
   }, [managedAgent, resolvedPersona]);
   const handleEditAgent = React.useCallback(() => {
+    if (openResolvedPersonaEditor()) return;
     setEditAgentOpen(true);
-  }, [setEditAgentOpen]);
+  }, [openResolvedPersonaEditor, setEditAgentOpen]);
   const { deleteManagedAgentRecord, deleteManagedAgentsForPersona } =
     useProfileAgentDeletion({
       channels: channelsQuery.data,
