@@ -55,6 +55,7 @@ class ChannelsNotifier extends AsyncNotifier<List<Channel>> {
   Set<String> _participatedRootIds = {};
   Set<String> _authoredRootIds = {};
   String? _threadInterestPubkey;
+  String? _publishedChannelScope;
   bool _hasLoaded = false;
   String? _memberSnapshotRelayBaseUrl;
   String? _memberSnapshotPubkey;
@@ -62,7 +63,6 @@ class ChannelsNotifier extends AsyncNotifier<List<Channel>> {
   List<NostrEvent> _directoryMetas = const [];
   Set<String> _hiddenDmIds = const {};
 
-  /// Fences directory responses to the relay and identity that requested them.
   late final _ChannelRefreshCoordinator _refreshCoordinator =
       _ChannelRefreshCoordinator.forRef(ref);
 
@@ -378,13 +378,13 @@ class ChannelsNotifier extends AsyncNotifier<List<Channel>> {
     // Scoped narrowly to the archived flip — broader metadata staleness
     // (renames, topic changes, etc.) is a separate, pre-existing concern that
     // already affects this provider for other reasons.
-    // await above is fenced, but the switch can also land in the synchronous
-    // gap, so the guard sits immediately before the write.
     fence.ensureCurrent();
 
-    final prevById = <String, Channel>{
-      for (final c in state.value ?? const <Channel>[]) c.id: c,
-    };
+    final prevById = _publishedChannelScope == fence.scope
+        ? <String, Channel>{
+            for (final c in state.value ?? const <Channel>[]) c.id: c,
+          }
+        : const <String, Channel>{};
     for (var i = 0; i < channels.length; i++) {
       final previous = prevById[channels[i].id]?.lastMessageAt;
       if (previous != null &&
@@ -419,6 +419,7 @@ class ChannelsNotifier extends AsyncNotifier<List<Channel>> {
     // Guard the provider-state write in `retryDirectory` and `build`: the
     // caller assigns whatever this returns, so the last check belongs here.
     fence.ensureCurrent();
+    _publishedChannelScope = fence.scope;
     return channels;
   }
 

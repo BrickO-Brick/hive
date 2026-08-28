@@ -2429,6 +2429,54 @@ void main() {
   );
 
   test(
+    'same channel id does not inherit a timestamp across communities',
+    () async {
+      final session = _FakeRelaySession(
+        memberships: [_membership(_channelA, myPk)],
+        metadata: [_meta(id: _channelA, name: 'community-a')],
+        recentMessages: [
+          _message(id: 'a-message', channelId: _channelA, createdAt: 50),
+        ],
+      );
+      final container = _buildContainer(session: session);
+      addTearDown(container.dispose);
+
+      expect(
+        (await container.read(
+          channelsProvider.future,
+        )).single.lastMessageAt?.millisecondsSinceEpoch,
+        50 * 1000,
+      );
+
+      session.setStatus(SessionStatus.disconnected);
+      session.metadata = [_meta(id: _channelA, name: 'community-b')];
+      session.recentMessages = [
+        _message(id: 'b-message', channelId: _channelA, createdAt: 10),
+      ];
+      container
+          .read(relayConfigProvider.notifier)
+          .update(baseUrl: 'https://new-community.example');
+      await Future<void>.delayed(Duration.zero);
+      session.setStatus(SessionStatus.connected);
+      await _waitUntil(
+        () =>
+            container.read(channelsProvider).value?.single.name ==
+            'community-b',
+      );
+
+      expect(
+        container
+            .read(channelsProvider)
+            .value!
+            .single
+            .lastMessageAt
+            ?.millisecondsSinceEpoch,
+        10 * 1000,
+      );
+    },
+  );
+
+  test(
     'refreshes cached channels after a disconnected community switch',
     () async {
       final session = _FakeRelaySession(
@@ -2561,6 +2609,22 @@ NostrEvent _hiddenDms(List<String> channelIds, {required String pubkey}) =>
       content: '',
       sig: 'sig',
     );
+
+NostrEvent _message({
+  required String id,
+  required String channelId,
+  required int createdAt,
+}) => NostrEvent(
+  id: id,
+  pubkey: 'alice',
+  createdAt: createdAt,
+  kind: EventKind.streamMessageV2,
+  tags: [
+    ['h', channelId],
+  ],
+  content: 'message',
+  sig: 'sig',
+);
 
 /// Build a kind:39000 channel metadata event.
 NostrEvent _meta({
