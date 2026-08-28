@@ -1070,22 +1070,18 @@ function BestieChat({ onClose }: { onClose: () => void }) {
       const targetRect = { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, width: rect.width, height: rect.height };
       const rowAlignment = Math.min(Math.abs(dragged.top - rect.top), Math.abs(dragged.bottom - rect.bottom));
       const columnAlignment = Math.min(Math.abs(dragged.left - rect.left), Math.abs(dragged.right - rect.right));
-      const draggedCenterX = (dragged.left + dragged.right) / 2;
-      const draggedCenterY = (dragged.top + dragged.bottom) / 2;
-      const targetCenterX = (rect.left + rect.right) / 2;
-      const targetCenterY = (rect.top + rect.bottom) / 2;
       const canSlotInside = cell.dataset.panelId !== "sidebar";
       if (rowAlignment <= 68) {
-        const edge: MessagePanelEdge = draggedCenterX < targetCenterX ? "left" : "right";
-        candidates.push(edge === "left"
-          ? { cell, edge, distance: Math.min(Math.abs(dragged.right - rect.left), canSlotInside ? Math.abs(dragged.left - rect.left) : Number.POSITIVE_INFINITY), x: rect.left - dragged.width, y: rect.top, targetRect }
-          : { cell, edge, distance: Math.min(Math.abs(dragged.left - rect.right), canSlotInside ? Math.abs(dragged.right - rect.right) : Number.POSITIVE_INFINITY), x: rect.right, y: rect.top, targetRect });
+        candidates.push(
+          { cell, edge: "left", distance: Math.min(Math.abs(dragged.right - rect.left), canSlotInside ? Math.abs(dragged.left - rect.left) : Number.POSITIVE_INFINITY), x: rect.left - dragged.width, y: rect.top, targetRect },
+          { cell, edge: "right", distance: Math.min(Math.abs(dragged.left - rect.right), canSlotInside ? Math.abs(dragged.right - rect.right) : Number.POSITIVE_INFINITY), x: rect.right, y: rect.top, targetRect },
+        );
       }
       if (columnAlignment <= 68) {
-        const edge: MessagePanelEdge = draggedCenterY < targetCenterY ? "top" : "bottom";
-        candidates.push(edge === "top"
-          ? { cell, edge, distance: Math.min(Math.abs(dragged.bottom - rect.top), canSlotInside ? Math.abs(dragged.top - rect.top) : Number.POSITIVE_INFINITY), x: rect.left, y: rect.top - dragged.height, targetRect }
-          : { cell, edge, distance: Math.min(Math.abs(dragged.top - rect.bottom), canSlotInside ? Math.abs(dragged.bottom - rect.bottom) : Number.POSITIVE_INFINITY), x: rect.left, y: rect.bottom, targetRect });
+        candidates.push(
+          { cell, edge: "top", distance: Math.min(Math.abs(dragged.bottom - rect.top), canSlotInside ? Math.abs(dragged.top - rect.top) : Number.POSITIVE_INFINITY), x: rect.left, y: rect.top - dragged.height, targetRect },
+          { cell, edge: "bottom", distance: Math.min(Math.abs(dragged.top - rect.bottom), canSlotInside ? Math.abs(dragged.bottom - rect.bottom) : Number.POSITIVE_INFINITY), x: rect.left, y: rect.bottom, targetRect },
+        );
       }
     });
     const best = candidates.sort((a, b) => a.distance - b.distance)[0];
@@ -1197,7 +1193,7 @@ function BestieChat({ onClose }: { onClose: () => void }) {
         const slotted = !targetIsSidebar;
         const nextSlotSize = slotted
           ? horizontal
-            ? { width: Math.max(220, Math.min(300, snap.targetRect.width * .42)), height: Math.min(430, snap.targetRect.height) }
+            ? { width: Math.max(220, Math.min(300, snap.targetRect.width * .42)), height: snap.targetRect.height }
             : { width: snap.targetRect.width, height: Math.max(220, Math.min(300, snap.targetRect.height * .36)) }
           : null;
         if (nextSlotSize) {
