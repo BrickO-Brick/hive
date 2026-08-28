@@ -191,6 +191,7 @@ fn global_writer_record(global: &crate::managed_agents::GlobalAgentConfig) -> Ma
         provider_policy_pending: false,
         provider_binary_path: None,
         team_id: None,
+        team_catalog_source: None,
         persona_team_dir: None,
         persona_name_in_team: None,
         created_at: String::new(),
