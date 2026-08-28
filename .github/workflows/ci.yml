@@ -707,6 +707,16 @@ jobs:
             --run-ignored ignored-only
         env:
           BUZZ_TEST_DATABASE_URL: postgres://buzz:${{ env.BUZZ_TEST_POSTGRES_PASSWORD }}@localhost:5432/buzz
+      - name: Manual workflow trigger PostgreSQL tests
+        # Pin delivery identity, result-preserving replay, authorization, and
+        # exact-revision execution; infra-free unit runs ignore these cases.
+        run: |
+          cargo nextest run \
+            --archive-file target/ci/backend-integration-tests.tar.zst \
+            -E 'package(buzz-relay) and (test(/^handlers::command_executor::tests::/) or test(/revoked_immutable_owner_receives_only_revision_id/))' \
+            --run-ignored ignored-only
+        env:
+          BUZZ_TEST_DATABASE_URL: postgres://buzz:${{ env.BUZZ_TEST_POSTGRES_PASSWORD }}@localhost:5432/buzz
       - name: Database pressure observability PostgreSQL tests
         # Explicit pool acquisition and advisory-lock metrics require real
         # Postgres and are ignored by the infrastructure-free unit-test job.
