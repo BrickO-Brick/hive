@@ -690,7 +690,7 @@ mod tests {
         let mut migrations: Vec<_> = MIGRATOR.iter().collect();
         migrations.sort_by_key(|migration| migration.version);
 
-        assert_eq!(migrations.len(), 40);
+        assert_eq!(migrations.len(), 41);
         assert_eq!(migrations[0].version, 1);
         assert_eq!(&*migrations[0].description, "initial schema");
         assert!(migrations[0]
@@ -1156,8 +1156,8 @@ mod tests {
         // Workflow revision capture is additive: nullable 32-byte event IDs on
         // both the materialized definition and run, with identical fresh-schema
         // constraints and no backfill hidden in startup migration state.
-        assert_eq!(migrations[39].version, 40);
-        let workflow_revision_binding = migrations[39].sql.as_str();
+        assert_eq!(migrations[40].version, 41);
+        let workflow_revision_binding = migrations[40].sql.as_str();
         assert!(workflow_revision_binding.contains("ALTER TABLE workflows"));
         assert!(workflow_revision_binding.contains("ALTER TABLE workflow_runs"));
         assert!(workflow_revision_binding.contains("octet_length(definition_event_id) = 32"));
