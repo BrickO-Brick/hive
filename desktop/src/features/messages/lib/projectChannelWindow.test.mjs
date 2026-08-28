@@ -467,3 +467,62 @@ test("gap refresh refetches after an in-flight prefetch settles (no dedupe)", as
   client.clear();
   resetChannelWindowPrefetches();
 });
+
+test("the post-subscribe refresh never aborts the fetch the timeline is watching", async () => {
+  // Hover dwell fires AFTER the click: prefetchQuery does not start a fetch,
+  // it dedupes onto the mount fetch the user is already watching a skeleton
+  // for. The prefetch marker cannot tell those apart, so the refresh must
+  // wait for the in-flight fetch rather than cancel it — cancelling made a
+  // hovered channel slower to open than an unhovered one.
+  resetChannelWindowPrefetches();
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  const channelId = "chan-hover-then-click";
+  const queryKey = channelMessagesKey(channelId);
+  let calls = 0;
+  let mountSignal = null;
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const options = {
+    queryKey,
+    queryFn: async ({ signal }) => {
+      calls += 1;
+      if (calls === 1) {
+        mountSignal = signal;
+        await gate;
+      }
+      return [event(`fetch-${calls}`, 100 + calls)];
+    },
+    staleTime: 300_000,
+  };
+
+  // The click mounts the screen and starts the fetch it will paint.
+  const observer = new QueryObserver(client, options);
+  const unsubscribe = observer.subscribe(() => {});
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  // The dwell fires afterwards and merely joins that fetch.
+  markChannelPrefetchStarted(channelId);
+  void client
+    .prefetchQuery(options)
+    .finally(() => markChannelPrefetchSettled(channelId));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  const refresh = refreshChannelWindowMessages(client, channelId);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  release();
+  await Promise.allSettled([refresh]);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  assert.equal(
+    mountSignal?.aborted,
+    false,
+    "the mounted timeline's own fetch must not be aborted",
+  );
+  unsubscribe();
+  client.clear();
+  resetChannelWindowPrefetches();
+});

@@ -47,11 +47,14 @@ export async function refreshChannelWindowMessages(
     await query.promise?.catch(() => {});
   } else if (hasInFlightChannelPrefetch(channelId)) {
     // A hover prefetch reached the relay before this subscription existed, so
-    // its snapshot can miss events that landed in between. Cancel it so the
-    // invalidate below issues a fetch that starts after this refresh; a cold
-    // mount fetch is still parked on the hydration gate above, carries no such
-    // gap, and keeps deduping.
-    await queryClient.cancelQueries({ queryKey, exact: true });
+    // its snapshot can miss events that landed in between — the invalidate
+    // below re-reads the window after the subscription. Wait for the in-flight
+    // fetch rather than cancelling it: by the time this runs the mounted
+    // timeline has very likely joined that same fetch (TanStack dedupes onto a
+    // cold query's in-flight request rather than starting a second one), so
+    // cancelling would abort the fetch the user is watching a skeleton for and
+    // make a hovered channel slower to open than an unhovered one.
+    await query?.promise?.catch(() => {});
   }
   await queryClient.invalidateQueries(
     { queryKey, exact: true, refetchType: "active" },
