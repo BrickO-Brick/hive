@@ -590,6 +590,39 @@ impl EventQueue {
             .any(|id| !self.in_flight_channels.contains(id))
     }
 
+    /// Returns `true` if any undispatched work remains for a channel that is
+    /// NOT currently in-flight — *including* work held back only by a
+    /// `retry_after` backoff throttle.
+    ///
+    /// This is deliberately broader than [`has_flushable_work`](Self::has_flushable_work):
+    /// that method excludes `retry_after`-throttled channels because they are
+    /// not flushable *right now*, but the events are still queued and MUST be
+    /// delivered once the backoff deadline passes. Idle-pool-sleep teardown
+    /// must gate on this, not on flushability — a failed turn requeued with a
+    /// future backoff deadline is real queued work, and sleeping on it (while
+    /// the maintenance timer is disabled and lazy re-wake is itself gated by
+    /// flushability) would strand the batch until unrelated traffic arrives.
+    ///
+    /// Covers the three tables where undispatched, non-in-flight work can
+    /// live: non-empty `queues` (throttled or not), pending `cancelled_batches`,
+    /// and `withheld_native_steer` events. Read-only (no in-flight expiry) —
+    /// in-flight liveness is gated separately by [`has_in_flight`](Self::has_in_flight).
+    pub fn has_undispatched_work(&self) -> bool {
+        let has_queued = self
+            .queues
+            .iter()
+            .any(|(id, q)| !q.is_empty() && !self.in_flight_channels.contains(id));
+        let has_cancelled = self
+            .cancelled_batches
+            .keys()
+            .any(|id| !self.in_flight_channels.contains(id));
+        let has_withheld = self
+            .withheld_native_steer
+            .iter()
+            .any(|(id, v)| !v.is_empty() && !self.in_flight_channels.contains(id));
+        has_queued || has_cancelled || has_withheld
+    }
+
     /// Number of channels with pending events.
     pub fn pending_channels(&self) -> usize {
         self.queues.len()
@@ -1415,6 +1448,8 @@ fn format_conversation_context(
 #[derive(Default)]
 pub struct FormatPromptArgs<'a> {
     pub agent_core: Option<&'a str>,
+    /// Owner-signed instructions for an active huddle channel.
+    pub huddle_instructions: Option<&'a str>,
     pub channel_info: Option<&'a PromptChannelInfo>,
     pub conversation_context: Option<&'a ConversationContext>,
     /// True when delivery-delta filtering removed at least one event that this
@@ -1463,13 +1498,14 @@ pub(crate) struct StandingContext<'a> {
     pub system_prompt: Option<&'a str>,
     pub team_instructions: Option<&'a str>,
     pub agent_core: Option<&'a str>,
+    pub huddle_instructions: Option<&'a str>,
     pub agent_canvas: Option<&'a str>,
 }
 
 impl StandingContext<'_> {
     /// Render the sections in the order legacy agents have always seen them.
     pub(crate) fn sections(&self) -> Vec<String> {
-        let mut sections = Vec::with_capacity(5);
+        let mut sections = Vec::with_capacity(6);
         if let Some(bp) = self.base_prompt {
             sections.push(base_section(bp));
         }
@@ -1485,6 +1521,13 @@ impl StandingContext<'_> {
         }
         if let Some(core) = self.agent_core {
             sections.push(core.to_string());
+        }
+        if let Some(instructions) = self
+            .huddle_instructions
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            sections.push(format!("[Huddle Instructions]\n{instructions}"));
         }
         if let Some(canvas) = self.agent_canvas {
             sections.push(canvas.to_string());
@@ -1554,6 +1597,7 @@ pub fn format_prompt(batch: &FlushBatch, args: &FormatPromptArgs<'_>) -> Vec<Str
                 system_prompt: args.system_prompt,
                 team_instructions: args.team_instructions,
                 agent_core: args.agent_core,
+                huddle_instructions: args.huddle_instructions,
                 agent_canvas: args.agent_canvas,
             }
             .sections(),
@@ -2250,6 +2294,85 @@ mod tests {
         assert_eq!(batch2.events[1].event.content, "msg2");
     }
 
+    // ── Retry-throttled work must block idle-pool-sleep teardown ────────────
+    //
+    // Regression for the PR #5682 review blocker: a failed turn requeued with a
+    // future backoff deadline is real queued work. `has_flushable_work()`
+    // returns false for it (throttled → not flushable *now*), so gating
+    // idle-pool-sleep on flushability would tear down the pool while the batch
+    // sits waiting — and because lazy re-wake is itself gated on flushability
+    // and the maintenance timer is disabled while sleeping, the batch would be
+    // stranded until unrelated traffic arrived. `has_undispatched_work()` must
+    // see the throttled batch so the sleep gate keeps the pool alive.
+    #[test]
+    fn test_retry_throttled_batch_is_undispatched_but_not_flushable() {
+        let mut queue = EventQueue::new(DedupMode::Queue);
+        let ch = Uuid::new_v4();
+        queue.push(make_queued(ch, "msg1"));
+        queue.push(make_queued(ch, "msg2"));
+
+        // Drive a real failure → requeue-with-backoff → mark_complete cycle.
+        let batch = queue.flush_next().unwrap();
+        assert_eq!(batch.events.len(), 2);
+        assert!(
+            queue.requeue(batch).is_none(),
+            "batch requeued, not dead-lettered"
+        );
+        queue.mark_complete(ch);
+
+        // The batch is back in the queue, no longer in-flight, and throttled by
+        // a future `retry_after`. BASE_RETRY_DELAY guarantees the deadline is in
+        // the future, so this is not timing-fragile.
+        assert!(
+            queue
+                .retry_after
+                .get(&ch)
+                .is_some_and(|&t| t > Instant::now()),
+            "requeue must have set a future backoff deadline"
+        );
+        assert!(!queue.has_in_flight(), "turn completed, nothing in-flight");
+
+        // The bug: throttled work is invisible to flushability...
+        assert!(
+            !queue.has_flushable_work(),
+            "throttled batch must NOT be flushable yet"
+        );
+        // ...but it IS undispatched work the sleep gate must protect.
+        assert!(
+            queue.has_undispatched_work(),
+            "retry-throttled batch MUST count as undispatched work"
+        );
+    }
+
+    #[test]
+    fn test_has_undispatched_work_false_when_truly_empty_or_in_flight() {
+        let mut queue = EventQueue::new(DedupMode::Queue);
+        let ch = Uuid::new_v4();
+
+        // Empty queue: no undispatched work.
+        assert!(!queue.has_undispatched_work());
+
+        // Dispatched batch (in-flight): the events left the queue, and an
+        // in-flight turn is gated separately (has_in_flight), so this must be
+        // false — otherwise the pool could never sleep after any turn.
+        queue.push(make_queued(ch, "msg1"));
+        assert!(
+            queue.has_undispatched_work(),
+            "queued-but-not-flushed is undispatched"
+        );
+        let batch = queue.flush_next().unwrap();
+        assert!(queue.has_in_flight());
+        assert!(
+            !queue.has_undispatched_work(),
+            "in-flight work is not undispatched — it is gated by has_in_flight"
+        );
+
+        // Completed cleanly (no requeue): fully drained, nothing left.
+        queue.mark_complete(batch.channel_id);
+        assert!(!queue.has_undispatched_work());
+        assert!(!queue.has_in_flight());
+    }
+
     #[test]
     fn test_requeue_interleaves_with_other_channels() {
         let mut queue = EventQueue::new(DedupMode::Queue);
@@ -2532,6 +2655,7 @@ mod tests {
             system_prompt: Some("test system prompt"),
             team_instructions: Some("ship small"),
             agent_core: Some(core),
+            huddle_instructions: None,
             agent_canvas: Some(canvas),
             standing_context_sent: sent,
             ..Default::default()
