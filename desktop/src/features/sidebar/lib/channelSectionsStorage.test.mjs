@@ -357,6 +357,71 @@ test("readChannelSectionsStore: scoped key takes precedence over legacy key afte
   assert.deepEqual(result, newStore);
 });
 
+// Migration failure safety (Thufir r6 IMPORTANT): legacy data must be exposed
+// to bootstrap ONLY once the legacy key is provably gone. If the scoped write
+// throws, or the legacy delete does not take, the reader must roll back and
+// return DEFAULT_STORE so no relay publishes legacy prefs while the legacy key
+// still holds them (which would let a second relay import the same value).
+
+test("readChannelSectionsStore: scoped-write failure returns DEFAULT and leaves neither relay able to seed the legacy value", () => {
+  const pubkey = "pk-migrate-writefail";
+  const relayA = "wss://relay-a-writefail.example.com";
+  const relayB = "wss://relay-b-writefail.example.com";
+  const legacy = makeStore({
+    sections: [makeSection({ id: "sw", name: "Legacy", order: 0 })],
+    assignments: {},
+  });
+  writeChannelSectionsStore(pubkey, legacy);
+  const scopedA = storageKey(pubkey, relayA);
+  const origSet = window.localStorage.setItem;
+  window.localStorage.setItem = (k, v) => {
+    if (k === scopedA) throw new Error("QuotaExceededError");
+    return origSet.call(window.localStorage, k, v);
+  };
+  try {
+    // Relay A cannot claim the legacy value — it must NOT be exposed to publish.
+    assert.deepEqual(readChannelSectionsStore(pubkey, relayA), DEFAULT_STORE);
+    // Rolled back: no partial scoped copy left behind for A.
+    assert.equal(window.localStorage.getItem(scopedA), null);
+  } finally {
+    window.localStorage.setItem = origSet;
+  }
+  // Legacy key survived (migration is retryable), and relay B likewise cannot
+  // be seeded — the value is claimed by whichever relay first deletes it.
+  assert.notEqual(window.localStorage.getItem(storageKey(pubkey)), null);
+  assert.deepEqual(readChannelSectionsStore(pubkey, relayB), legacy);
+  // Once B claims it, the legacy key is gone and A can no longer seed.
+  assert.equal(window.localStorage.getItem(storageKey(pubkey)), null);
+  assert.deepEqual(readChannelSectionsStore(pubkey, relayA), DEFAULT_STORE);
+});
+
+test("readChannelSectionsStore: a legacy delete that does not take rolls back and returns DEFAULT", () => {
+  const pubkey = "pk-migrate-delfail";
+  const relay = "wss://relay-delfail.example.com";
+  const legacy = makeStore({
+    sections: [makeSection({ id: "sd", name: "Legacy", order: 0 })],
+    assignments: {},
+  });
+  writeChannelSectionsStore(pubkey, legacy);
+  const legacyKey = storageKey(pubkey);
+  const scoped = storageKey(pubkey, relay);
+  const origRemove = window.localStorage.removeItem;
+  window.localStorage.removeItem = (k) => {
+    if (k === legacyKey) return; // silently no-op: delete "does not take"
+    return origRemove.call(window.localStorage, k);
+  };
+  try {
+    assert.deepEqual(readChannelSectionsStore(pubkey, relay), DEFAULT_STORE);
+    // Partial scoped copy rolled back so the migration stays retryable.
+    assert.equal(window.localStorage.getItem(scoped), null);
+  } finally {
+    window.localStorage.removeItem = origRemove;
+  }
+  // With the delete working again, the migration completes cleanly.
+  assert.deepEqual(readChannelSectionsStore(pubkey, relay), legacy);
+  assert.equal(window.localStorage.getItem(legacyKey), null);
+});
+
 test("parseChannelSectionPayload: preserves icon field when present", () => {
   const payload = {
     version: 1,

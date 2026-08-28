@@ -118,11 +118,21 @@ function parseRaw(raw: string | null): ChannelMuteStore | null {
  * Read the mute store for `pubkey` scoped to `relayUrl`.
  *
  * On first access for a scoped key, migrates any existing data from the legacy
- * pubkey-only key so users don't lose their mutes on upgrade. After a
- * successful migration write the legacy key is deleted, making this a globally
- * one-time operation — a subsequent empty scoped-key read on a DIFFERENT relay
- * won't see legacy data, so a non-empty store from relay A can never seed onto
- * a first-visited relay B (Carl P1).
+ * pubkey-only key so users don't lose their mutes on upgrade. Migrated data is
+ * exposed to the caller (and thus to publish) ONLY once the legacy key is
+ * provably gone: we write the scoped key, delete the legacy key, and confirm
+ * the delete took. On any write/delete failure we roll back the partial scoped
+ * copy and return `DEFAULT_STORE`, leaving the migration safely retryable — so
+ * legacy preferences can never be exposed while still importable by a second
+ * relay, which would let relay A's mutes seed-publish onto relay B (Carl P1).
+ *
+ * This makes the migration first-scope-only, not merely "usually deletes
+ * afterward." Concurrent claimants are safe: every window (main and huddle)
+ * resolves the same app-wide active community (`buzz-active-community-id`), so
+ * at any instant they scope to the same relay and any race migrates the
+ * identical legacy value to the identical scoped key (idempotent). A second
+ * relay only enters play after a community switch, which happens strictly after
+ * the first scoped read consumed the legacy key.
  */
 export function readChannelMutesStore(
   pubkey: string,
@@ -143,20 +153,44 @@ export function readChannelMutesStore(
       const legacyKey = storageKey(pubkey);
       const migrated = parseRaw(window.localStorage.getItem(legacyKey));
       if (migrated && Object.keys(migrated.channels).length > 0) {
-        // Persist under the scoped key and remove the legacy key so this
-        // migration cannot fire again for any other relay scope.
-        try {
-          window.localStorage.setItem(key, JSON.stringify(migrated));
-          window.localStorage.removeItem(legacyKey);
-        } catch {
-          // Ignore write failures — we still return the migrated value.
-        }
-        return migrated;
+        return migrateLegacyStore(key, legacyKey, migrated);
       }
     }
 
     return DEFAULT_STORE;
   } catch {
+    return DEFAULT_STORE;
+  }
+}
+
+/**
+ * Claim the legacy value for the scoped key: persist it, delete the legacy key,
+ * and expose it only if the legacy key is confirmed gone. Any failure rolls
+ * back the partial scoped copy and returns `DEFAULT_STORE` so the migration is
+ * retryable and no relay imports legacy data the legacy key still holds.
+ */
+function migrateLegacyStore(
+  key: string,
+  legacyKey: string,
+  migrated: ChannelMuteStore,
+): ChannelMuteStore {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(migrated));
+    window.localStorage.removeItem(legacyKey);
+    if (window.localStorage.getItem(legacyKey) !== null) {
+      // Delete did not take — do not expose data another relay could import.
+      window.localStorage.removeItem(key);
+      return DEFAULT_STORE;
+    }
+    return migrated;
+  } catch {
+    // Scoped write or legacy delete threw — roll back the partial scoped copy
+    // so the scoped key stays empty and the migration can retry later.
+    try {
+      window.localStorage.removeItem(key);
+    } catch {
+      // Best effort; a stuck partial copy self-heals on the next read.
+    }
     return DEFAULT_STORE;
   }
 }
