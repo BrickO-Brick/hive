@@ -21,6 +21,8 @@ type DiffViewerProps = {
   viewType?: ViewType;
   className?: string;
   searchQuery?: string;
+  fileIndex?: number;
+  hideFileHeader?: boolean;
 };
 
 function FileChangeBadge({
@@ -50,11 +52,15 @@ export function DiffViewer({
   viewType = "unified",
   className,
   searchQuery,
+  fileIndex,
+  hideFileHeader = false,
 }: DiffViewerProps) {
   const { files, parseError } = useMemo(
     () => parseUnifiedDiff(content),
     [content],
   );
+  const visibleFiles =
+    fileIndex === undefined ? files : files.slice(fileIndex, fileIndex + 1);
   const searchPreview = searchQuery
     ? buildSearchResultPreview(content, searchQuery, 160)
     : null;
@@ -89,15 +95,13 @@ export function DiffViewer({
         </pre>
       ) : null}
       <div className="space-y-3">
-        {files.map((file) => {
+        {visibleFiles.map((file) => {
           const label = getDiffFileLabel(file, fallbackFilePath);
           const { additions, deletions } = countDiffFileChanges(file);
           const diffType = normalizeDiffType(file.type);
-          const showFileHeader = shouldShowDiffFileHeader(
-            label,
-            files.length,
-            fallbackFilePath,
-          );
+          const showFileHeader =
+            !hideFileHeader &&
+            shouldShowDiffFileHeader(label, files.length, fallbackFilePath);
           const fileKey = [
             file.oldPath || "",
             file.newPath || "",

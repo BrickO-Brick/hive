@@ -29,7 +29,7 @@ import {
   readProjectReviewCheckRuns,
   writeProjectReviewCheckRuns,
   type ProjectReviewCheckDefinition,
-  type ProjectReviewCheckDiffProposal,
+  type ProjectReviewCheckResolvedProposal,
   type ProjectReviewCheckResult,
 } from "@/features/projects/lib/projectReviewChecks.mjs";
 import { isAtOrAfterConversationOpener } from "@/features/projects/lib/projectAgentConversation";
@@ -63,8 +63,10 @@ type ReviewCheckRun = {
   channelId?: string;
   opener?: ProjectsConversationOpener;
   result?: ProjectReviewCheckResult;
-  proposal?: ProjectReviewCheckDiffProposal;
+  proposals?: ProjectReviewCheckResolvedProposal[];
   acceptedProposalEventId?: string;
+  keptCurrentApproach?: boolean;
+  resultEventIds?: string[];
   resultCreatedAt?: number;
   error?: string;
 };
@@ -83,7 +85,9 @@ function isReviewCheckStatus(value: unknown): value is ReviewCheckStatus {
 function normalizeStoredProposal(
   value: unknown,
   agentPubkey: string | null,
-): ProjectReviewCheckDiffProposal | undefined {
+  fallbackTitle: string,
+  fallbackSummary: string,
+): ProjectReviewCheckResolvedProposal | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return undefined;
   }
@@ -106,23 +110,33 @@ function normalizeStoredProposal(
       : []),
     ...(raw.truncated === true ? [["truncated", "true"]] : []),
   ];
-  return (
-    parseProjectReviewCheckDiffEvent(
-      {
-        id: raw.eventId,
-        pubkey: agentPubkey,
-        kind: KIND_STREAM_MESSAGE_DIFF,
-        content: raw.content,
-        tags,
-      },
-      {
-        eventId: raw.eventId,
-        agentPubkey,
-        repoUrl: raw.repoUrl,
-        commit: raw.commitSha,
-      },
-    ) ?? undefined
+  const proposal = parseProjectReviewCheckDiffEvent(
+    {
+      id: raw.eventId,
+      pubkey: agentPubkey,
+      kind: KIND_STREAM_MESSAGE_DIFF,
+      content: raw.content,
+      tags,
+    },
+    {
+      eventId: raw.eventId,
+      agentPubkey,
+      repoUrl: raw.repoUrl,
+      commit: raw.commitSha,
+    },
   );
+  if (!proposal) return undefined;
+  return {
+    ...proposal,
+    title:
+      typeof raw.title === "string" && raw.title.trim()
+        ? raw.title.trim().slice(0, 160)
+        : fallbackTitle,
+    summary:
+      typeof raw.summary === "string" && raw.summary.trim()
+        ? raw.summary.trim().slice(0, 1_000)
+        : fallbackSummary,
+  };
 }
 
 function normalizeStoredRuns(value: Record<string, unknown>): ReviewCheckRuns {
@@ -138,13 +152,35 @@ function normalizeStoredRuns(value: Record<string, unknown>): ReviewCheckRuns {
     const raw = candidate as Record<string, unknown>;
     const agentPubkey =
       typeof raw.agentPubkey === "string" ? raw.agentPubkey : null;
-    const proposal = normalizeStoredProposal(raw.proposal, agentPubkey);
     const status = isReviewCheckStatus(raw.status) ? raw.status : "idle";
     const parsedResult = parseProjectReviewCheckResult(
       raw.result && typeof raw.result === "object"
         ? `BUZZ_CHECK_RESULT_V1\n${JSON.stringify(raw.result)}`
         : "",
     );
+    const fallbackTitle =
+      parsedResult?.findings[0]?.title ?? "Apply the recommended change";
+    const fallbackSummary =
+      parsedResult?.findings[0]?.detail ??
+      parsedResult?.summary ??
+      "Apply the agent's proposed implementation.";
+    const storedProposals = Array.isArray(raw.proposals)
+      ? raw.proposals
+      : raw.proposal
+        ? [raw.proposal]
+        : [];
+    const proposals = storedProposals
+      .map((proposal) =>
+        normalizeStoredProposal(
+          proposal,
+          agentPubkey,
+          fallbackTitle,
+          fallbackSummary,
+        ),
+      )
+      .filter((proposal): proposal is ProjectReviewCheckResolvedProposal =>
+        Boolean(proposal),
+      );
     const opener =
       raw.opener &&
       typeof raw.opener === "object" &&
@@ -169,9 +205,22 @@ function normalizeStoredRuns(value: Record<string, unknown>): ReviewCheckRuns {
         : {}),
       ...(opener ? { opener } : {}),
       ...(parsedResult ? { result: parsedResult } : {}),
-      ...(proposal ? { proposal } : {}),
-      ...(proposal && raw.acceptedProposalEventId === proposal.eventId
-        ? { acceptedProposalEventId: proposal.eventId }
+      ...(proposals.length > 0 ? { proposals } : {}),
+      ...(proposals.some(
+        (proposal) => raw.acceptedProposalEventId === proposal.eventId,
+      )
+        ? { acceptedProposalEventId: raw.acceptedProposalEventId as string }
+        : {}),
+      ...(raw.keptCurrentApproach === true
+        ? { keptCurrentApproach: true }
+        : {}),
+      ...(Array.isArray(raw.resultEventIds)
+        ? {
+            resultEventIds: raw.resultEventIds.filter(
+              (eventId): eventId is string =>
+                typeof eventId === "string" && /^[0-9a-f]{64}$/i.test(eventId),
+            ),
+          }
         : {}),
       ...(typeof raw.resultCreatedAt === "number"
         ? { resultCreatedAt: raw.resultCreatedAt }
@@ -204,6 +253,7 @@ function ReviewCheckResultObserver({
   opener,
   repoUrl,
   requestId,
+  resultEventIds,
   targetCommit,
 }: {
   agentPubkey: string;
@@ -213,11 +263,13 @@ function ReviewCheckResultObserver({
     checkId: string,
     result: ProjectReviewCheckResult,
     createdAt: number,
-    proposal?: ProjectReviewCheckDiffProposal,
+    resultEventId: string,
+    proposals: ProjectReviewCheckResolvedProposal[],
   ) => void;
   opener: ProjectsConversationOpener;
   repoUrl: string | null;
   requestId: string | null;
+  resultEventIds: string[];
   targetCommit: string | null;
 }) {
   useChannelSubscription(channel);
@@ -245,7 +297,11 @@ function ReviewCheckResultObserver({
         getThreadReference(event.tags).rootId === opener.eventId,
     );
     const resultEvents = agentEvents
-      .filter((event) => isAgentMessage(event, agentPubkey))
+      .filter(
+        (event) =>
+          isAgentMessage(event, agentPubkey) &&
+          !resultEventIds.includes(event.id),
+      )
       .sort(
         (left, right) =>
           left.created_at - right.created_at || right.id.localeCompare(left.id),
@@ -253,27 +309,55 @@ function ReviewCheckResultObserver({
     for (const event of resultEvents) {
       const result = parseProjectReviewCheckResult(event.content);
       if (result && (!requestId || result.requestId === requestId)) {
-        let proposal: ProjectReviewCheckDiffProposal | undefined;
-        if (result.diffEventId) {
-          if (!repoUrl) continue;
+        const proposalReferences =
+          result.proposals ??
+          (result.diffEventId
+            ? [
+                {
+                  diffEventId: result.diffEventId,
+                  title:
+                    result.findings[0]?.title ?? "Apply the recommended change",
+                  summary: result.findings[0]?.detail ?? result.summary,
+                },
+              ]
+            : []);
+        const proposals: ProjectReviewCheckResolvedProposal[] = [];
+        if (proposalReferences.length > 0 && !repoUrl) continue;
+        for (const reference of proposalReferences) {
           const diffEvent = agentEvents.find(
             (candidate) =>
               candidate.kind === KIND_STREAM_MESSAGE_DIFF &&
-              candidate.id.toLowerCase() === result.diffEventId,
+              candidate.id.toLowerCase() === reference.diffEventId,
           );
-          proposal = diffEvent
-            ? (parseProjectReviewCheckDiffEvent(diffEvent, {
-                eventId: result.diffEventId,
-                agentPubkey,
-                repoUrl,
-                commit: targetCommit,
-              }) ?? undefined)
-            : undefined;
-          // The agent is instructed to publish the native diff before its
-          // result. Keep observing if relay delivery arrives out of order.
-          if (!proposal) continue;
+          const parsedProposal =
+            diffEvent && repoUrl
+              ? parseProjectReviewCheckDiffEvent(diffEvent, {
+                  eventId: reference.diffEventId,
+                  agentPubkey,
+                  repoUrl,
+                  commit: targetCommit,
+                })
+              : null;
+          if (!parsedProposal) {
+            // Each diff is published before the structured result, but relay
+            // delivery may arrive out of order. Keep observing until every
+            // referenced alternative is available and verified.
+            proposals.length = 0;
+            break;
+          }
+          proposals.push({
+            ...parsedProposal,
+            title: reference.title,
+            summary: reference.summary,
+          });
         }
-        return { createdAt: event.created_at, proposal, result };
+        if (proposals.length !== proposalReferences.length) continue;
+        return {
+          createdAt: event.created_at,
+          proposals,
+          result,
+          resultEventId: event.id,
+        };
       }
     }
     return null;
@@ -283,6 +367,7 @@ function ReviewCheckResultObserver({
     opener,
     repoUrl,
     requestId,
+    resultEventIds,
     targetCommit,
     threadReplies.events,
   ]);
@@ -293,7 +378,8 @@ function ReviewCheckResultObserver({
         checkId,
         observedResult.result,
         observedResult.createdAt,
-        observedResult.proposal,
+        observedResult.resultEventId,
+        observedResult.proposals,
       );
     }
   }, [checkId, observedResult, onResult]);
@@ -325,7 +411,7 @@ function CheckStatus({
     return <Badge variant="success">Approved</Badge>;
   }
   if (run.result?.conclusion === "fix-recommended") {
-    return <Badge variant="warning">Fix recommended</Badge>;
+    return <Badge variant="warning">Proposal ready</Badge>;
   }
   return null;
 }
@@ -412,7 +498,8 @@ export function ProjectReviewChecks({
       checkId: string,
       result: ProjectReviewCheckResult,
       createdAt: number,
-      proposal?: ProjectReviewCheckDiffProposal,
+      resultEventId: string,
+      proposals: ProjectReviewCheckResolvedProposal[],
     ) => {
       const expectedStorageKey = storageKeyRef.current;
       if (!expectedStorageKey) return;
@@ -420,15 +507,19 @@ export function ProjectReviewChecks({
         ...current,
         error: undefined,
         acceptedProposalEventId: undefined,
-        proposal,
+        keptCurrentApproach: undefined,
+        proposals,
         result,
+        resultEventIds: [
+          ...new Set([...(current.resultEventIds ?? []), resultEventId]),
+        ],
         resultCreatedAt: createdAt,
         status: "completed",
       }));
       toast.success(
         result.conclusion === "approved"
           ? "Review check approved."
-          : "Review check recommends a fix.",
+          : "Review proposals are ready.",
       );
     },
     [updateRun],
@@ -439,13 +530,83 @@ export function ProjectReviewChecks({
       const expectedStorageKey = storageKeyRef.current;
       if (!expectedStorageKey) return;
       updateRun(expectedStorageKey, checkId, (current) =>
-        current.proposal?.eventId === eventId
-          ? { ...current, acceptedProposalEventId: eventId }
+        current.proposals?.some((proposal) => proposal.eventId === eventId)
+          ? {
+              ...current,
+              acceptedProposalEventId: eventId,
+              keptCurrentApproach: undefined,
+            }
           : current,
       );
       toast.success("Proposal accepted locally. No code was changed.");
     },
     [updateRun],
+  );
+
+  const keepCurrentApproach = React.useCallback(
+    (checkId: string) => {
+      const expectedStorageKey = storageKeyRef.current;
+      if (!expectedStorageKey) return;
+      updateRun(expectedStorageKey, checkId, (current) => ({
+        ...current,
+        acceptedProposalEventId: undefined,
+        keptCurrentApproach: true,
+      }));
+      toast.success("The current approach is being kept locally.");
+    },
+    [updateRun],
+  );
+
+  const respondToCheck = React.useCallback(
+    async (checkId: string, response: string) => {
+      const expectedStorageKey = storageKeyRef.current;
+      const run = runs[checkId];
+      const trimmed = response.trim();
+      if (
+        !expectedStorageKey ||
+        !trimmed ||
+        !run?.channelId ||
+        !run.opener ||
+        !run.agentPubkey ||
+        !relayScope ||
+        !signerScope
+      ) {
+        throw new Error("This review conversation is no longer available.");
+      }
+
+      try {
+        await sendChannelMessage(
+          run.channelId,
+          trimmed,
+          run.opener.eventId,
+          undefined,
+          [run.agentPubkey],
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          relayScope,
+          signerScope,
+          run.opener.eventId,
+        );
+        updateRun(expectedStorageKey, checkId, (current) => ({
+          ...current,
+          acceptedProposalEventId: undefined,
+          keptCurrentApproach: undefined,
+          status: "running",
+        }));
+        toast.success("Reasoning sent. Waiting for revised proposals.");
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Failed to continue the review conversation.";
+        toast.error(message);
+        throw error;
+      }
+    },
+    [relayScope, runs, signerScope, updateRun],
   );
 
   const runCheck = React.useCallback(
@@ -561,8 +722,10 @@ export function ProjectReviewChecks({
           },
           requestId,
           acceptedProposalEventId: undefined,
-          proposal: undefined,
+          keptCurrentApproach: undefined,
+          proposals: undefined,
           result: undefined,
+          resultEventIds: [],
           resultCreatedAt: undefined,
           status: "running",
           targetCommit,
@@ -716,11 +879,14 @@ export function ProjectReviewChecks({
               {run.result ? (
                 <ProjectReviewCheckResultCard
                   acceptedProposalEventId={run.acceptedProposalEventId}
-                  canAcceptProposal={!isStale}
+                  canDecide={!isStale && run.status === "completed"}
+                  keptCurrentApproach={run.keptCurrentApproach === true}
                   onAcceptProposal={(eventId) =>
                     acceptProposal(check.id, eventId)
                   }
-                  proposal={run.proposal}
+                  onKeepCurrentApproach={() => keepCurrentApproach(check.id)}
+                  onRespond={(response) => respondToCheck(check.id, response)}
+                  proposals={run.proposals ?? []}
                   result={run.result}
                 />
               ) : null}
@@ -733,6 +899,7 @@ export function ProjectReviewChecks({
                   opener={run.opener}
                   repoUrl={diffRepoUrl}
                   requestId={run.requestId ?? null}
+                  resultEventIds={run.resultEventIds ?? []}
                   targetCommit={run.targetCommit ?? targetCommit}
                 />
               ) : null}

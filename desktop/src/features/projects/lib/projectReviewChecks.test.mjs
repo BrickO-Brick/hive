@@ -150,6 +150,94 @@ test("parses structured findings with bounded source locations", () => {
   });
 });
 
+test("parses competing proposal directions with exact diff references", () => {
+  const firstDiffEventId = "d".repeat(64);
+  const secondDiffEventId = "e".repeat(64);
+  const result = parseProjectReviewCheckResult(
+    `${PROJECT_REVIEW_CHECK_RESULT_MARKER}\n${JSON.stringify({
+      request_id: "request-123",
+      conclusion: "fix-recommended",
+      summary: "Choose where the read boundary should live.",
+      proposals: [
+        {
+          title: "Follow the rendered timeline",
+          summary: "Only mark messages read once they are visible.",
+          diff_event_id: firstDiffEventId,
+        },
+        {
+          title: "Follow the loaded query",
+          summary: "Treat loaded messages as read at the physical bottom.",
+          diff_event_id: secondDiffEventId,
+        },
+      ],
+      findings: [],
+    })}`,
+  );
+
+  assert.deepEqual(result, {
+    requestId: "request-123",
+    conclusion: "fix-recommended",
+    summary: "Choose where the read boundary should live.",
+    proposals: [
+      {
+        title: "Follow the rendered timeline",
+        summary: "Only mark messages read once they are visible.",
+        diffEventId: firstDiffEventId,
+      },
+      {
+        title: "Follow the loaded query",
+        summary: "Treat loaded messages as read at the physical bottom.",
+        diffEventId: secondDiffEventId,
+      },
+    ],
+    findings: [],
+  });
+});
+
+test("bounds proposal copy to two short sentences", () => {
+  const result = parseProjectReviewCheckResult(`
+${PROJECT_REVIEW_CHECK_RESULT_MARKER}
+${JSON.stringify({
+  request_id: "request-123",
+  conclusion: "fix-recommended",
+  summary: "Choose a read boundary.",
+  proposals: [
+    {
+      title: "Use rendered rows",
+      summary:
+        "Keep unread state tied to what the user can see. This preserves the navigation signal. This implementation detail should not appear in the decision copy.",
+      diff_event_id: "a".repeat(64),
+    },
+  ],
+  findings: [],
+})}
+`);
+
+  assert.equal(
+    result?.proposals?.[0]?.summary,
+    "Keep unread state tied to what the user can see. This preserves the navigation signal.",
+  );
+});
+
+test("bounds the shared decision summary", () => {
+  const result = parseProjectReviewCheckResult(`
+${PROJECT_REVIEW_CHECK_RESULT_MARKER}
+${JSON.stringify({
+  request_id: "request-123",
+  conclusion: "fix-recommended",
+  summary:
+    "Choose whether visibility or loaded state owns the read boundary. Both preserve valid behavior. This extra analysis belongs in the finding.",
+  proposals: [],
+  findings: [],
+})}
+`);
+
+  assert.equal(
+    result?.summary,
+    "Choose whether visibility or loaded state owns the read boundary. Both preserve valid behavior.",
+  );
+});
+
 test("resolves only the exact agent diff for the reviewed repository and commit", () => {
   const eventId = "d".repeat(64);
   const agentPubkey = "a".repeat(64);
@@ -202,6 +290,45 @@ test("resolves only the exact agent diff for the reviewed repository and commit"
       repoUrl,
       commit: "e".repeat(40),
     }),
+    null,
+  );
+  assert.equal(
+    parseProjectReviewCheckResult(
+      `${PROJECT_REVIEW_CHECK_RESULT_MARKER}\n${JSON.stringify({
+        conclusion: "fix-recommended",
+        summary: "Proposal references must be unique.",
+        proposals: [
+          {
+            title: "First",
+            summary: "First direction.",
+            diff_event_id: "f".repeat(64),
+          },
+          {
+            title: "Second",
+            summary: "Second direction.",
+            diff_event_id: "f".repeat(64),
+          },
+        ],
+        findings: [],
+      })}`,
+    ),
+    null,
+  );
+  assert.equal(
+    parseProjectReviewCheckResult(
+      `${PROJECT_REVIEW_CHECK_RESULT_MARKER}\n${JSON.stringify({
+        conclusion: "fix-recommended",
+        summary: "Every proposal needs a verified patch reference.",
+        proposals: [
+          {
+            title: "Missing reference",
+            summary: "This direction cannot be correlated to a patch.",
+            diff_event_id: null,
+          },
+        ],
+        findings: [],
+      })}`,
+    ),
     null,
   );
 });
@@ -275,7 +402,13 @@ test("builds a review-only prompt pinned to the exact commit", () => {
   );
   assert.match(prompt, /buzz messages send-diff/);
   assert.match(prompt, /send-diff[^\n]+--reply-to <THIS_REQUEST_EVENT_ID>/);
-  assert.match(prompt, /"diff_event_id":null/);
+  assert.match(prompt, /"proposals":\[/);
+  assert.match(prompt, /countering viable direction/);
+  assert.match(prompt, /two genuinely distinct proposal directions/);
+  assert.match(prompt, /DECISION COPY CONTRACT/);
+  assert.match(prompt, /no more than two short sentences and 240 characters/);
+  assert.match(prompt, /implementation details, identifiers, evidence/);
+  assert.match(prompt, /continuation of this review negotiation/);
   assert.match(prompt, /copy its exact 64-character event_id/);
   assert.match(prompt, new RegExp(PROJECT_REVIEW_CHECK_RESULT_MARKER));
   assert.doesNotMatch(prompt, /Superseded request id:/);

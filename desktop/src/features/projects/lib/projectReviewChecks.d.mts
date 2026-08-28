@@ -14,9 +14,17 @@ export type ProjectReviewCheckFinding = {
   line: number | null;
 };
 
+export type ProjectReviewCheckProposalReference = {
+  title: string;
+  summary: string;
+  diffEventId: string;
+};
+
 export type ProjectReviewCheckResult = {
   requestId?: string;
+  /** Legacy single-proposal reference. New results use `proposals`. */
   diffEventId?: string;
+  proposals?: ProjectReviewCheckProposalReference[];
   conclusion: ProjectReviewCheckConclusion;
   summary: string;
   findings: ProjectReviewCheckFinding[];
@@ -31,6 +39,12 @@ export type ProjectReviewCheckDiffProposal = {
   description: string | null;
   truncated: boolean;
 };
+
+export type ProjectReviewCheckResolvedProposal =
+  ProjectReviewCheckDiffProposal & {
+    title: string;
+    summary: string;
+  };
 
 export const PROJECT_REVIEW_CHECK_RESULT_MARKER: string;
 export const DEFAULT_PROJECT_REVIEW_CHECKS: ProjectReviewCheckDefinition[];

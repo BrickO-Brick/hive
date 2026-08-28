@@ -55,6 +55,49 @@ export function getDiffFileLabel(
   return newPath || oldPath || fallbackFilePath || "diff";
 }
 
+/** Return the resulting file path, preferring the new side of a rename. */
+export function getDiffFilePath(
+  file: FileData,
+  fallbackFilePath?: string,
+): string {
+  const oldPath = file.oldPath === "/dev/null" ? undefined : file.oldPath;
+  const newPath = file.newPath === "/dev/null" ? undefined : file.newPath;
+  return newPath || oldPath || fallbackFilePath || "diff";
+}
+
+/** Reduce paths to the shortest unique suffix, usually just the filename. */
+export function getShortestUniquePathLabels(paths: string[]): string[] {
+  const pathParts = paths.map((path) => {
+    const parts = path.split(/[\\/]/).filter(Boolean);
+    return parts.length > 0 ? parts : [path];
+  });
+  const depths = pathParts.map(() => 1);
+
+  while (true) {
+    const labels = pathParts.map((parts, index) =>
+      parts.slice(-depths[index]).join("/"),
+    );
+    const collisions = new Set<string>();
+    const counts = new Map<string, number>();
+    for (const label of labels) {
+      counts.set(label, (counts.get(label) ?? 0) + 1);
+    }
+    for (const [label, count] of counts) {
+      if (count > 1) collisions.add(label);
+    }
+    if (collisions.size === 0) return labels;
+
+    let expanded = false;
+    for (const [index, label] of labels.entries()) {
+      if (collisions.has(label) && depths[index] < pathParts[index].length) {
+        depths[index] += 1;
+        expanded = true;
+      }
+    }
+    if (!expanded) return labels;
+  }
+}
+
 export function shouldShowDiffFileHeader(
   label: string,
   fileCount: number,

@@ -75,6 +75,22 @@ function normalizedText(value, maxLength) {
     : null;
 }
 
+function normalizedDecisionCopy(value) {
+  const text = normalizedText(value, 1_000)?.replace(/\s+/g, " ");
+  if (!text) return null;
+
+  const sentenceBounded = text
+    .split(/(?<=[.!?])\s+/)
+    .slice(0, 2)
+    .join(" ");
+  if (sentenceBounded.length <= 240) return sentenceBounded;
+
+  const visible = sentenceBounded.slice(0, 239);
+  const wordBoundary = visible.lastIndexOf(" ");
+  const cutoff = wordBoundary >= 160 ? wordBoundary : visible.length;
+  return `${visible.slice(0, cutoff).trimEnd()}…`;
+}
+
 function normalizedConclusion(value) {
   if (typeof value !== "string") return null;
   const normalized = value.trim().toLowerCase();
@@ -117,6 +133,18 @@ function normalizedFinding(value) {
   };
 }
 
+function normalizedProposalReference(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const title = normalizedText(value.title, 160);
+  const summary = normalizedDecisionCopy(value.summary);
+  const diffEventId = normalizedEventId(
+    value.diff_event_id ?? value.diffEventId,
+  );
+  return title && summary && diffEventId
+    ? { title, summary, diffEventId }
+    : null;
+}
+
 function jsonObjectsAfterMarker(content) {
   const markerIndex = content.lastIndexOf(PROJECT_REVIEW_CHECK_RESULT_MARKER);
   if (markerIndex < 0) return [];
@@ -147,7 +175,7 @@ export function parseProjectReviewCheckResult(content) {
         continue;
       }
       const conclusion = normalizedConclusion(parsed.conclusion);
-      const summary = normalizedText(parsed.summary, 4_000);
+      const summary = normalizedDecisionCopy(parsed.summary);
       if (!conclusion || !summary) continue;
       const requestId = normalizedText(
         parsed.request_id ?? parsed.requestId,
@@ -155,11 +183,23 @@ export function parseProjectReviewCheckResult(content) {
       );
       const rawDiffEventId = parsed.diff_event_id ?? parsed.diffEventId;
       const diffEventId = normalizedEventId(rawDiffEventId);
+      const rawProposals = parsed.proposals;
+      if (rawProposals !== undefined && !Array.isArray(rawProposals)) {
+        continue;
+      }
+      const proposalCandidates = Array.isArray(rawProposals)
+        ? rawProposals.slice(0, 4).map(normalizedProposalReference)
+        : [];
+      const proposals = proposalCandidates.filter(Boolean);
       if (
         (rawDiffEventId !== undefined &&
           rawDiffEventId !== null &&
           !diffEventId) ||
-        (conclusion === "approved" && diffEventId)
+        proposals.length !== proposalCandidates.length ||
+        new Set(proposals.map((proposal) => proposal.diffEventId)).size !==
+          proposals.length ||
+        (diffEventId && proposals.length > 0) ||
+        (conclusion === "approved" && (diffEventId || proposals.length > 0))
       ) {
         continue;
       }
@@ -170,6 +210,9 @@ export function parseProjectReviewCheckResult(content) {
         ...(requestId ? { requestId } : {}),
         ...(conclusion === "fix-recommended" && diffEventId
           ? { diffEventId }
+          : {}),
+        ...(conclusion === "fix-recommended" && proposals.length > 0
+          ? { proposals }
           : {}),
         conclusion,
         summary,
@@ -306,8 +349,19 @@ export function buildProjectReviewCheckPrompt({
     JSON.stringify({
       request_id: requestId,
       conclusion: "fix-recommended",
-      summary: "short explanation",
-      diff_event_id: null,
+      summary: "one short sentence framing the decision",
+      proposals: [
+        {
+          title: "first viable direction",
+          summary: "one plain-language sentence about the outcome",
+          diff_event_id: null,
+        },
+        {
+          title: "countering viable direction",
+          summary: "one plain-language sentence about the tradeoff",
+          diff_event_id: null,
+        },
+      ],
       findings: [
         {
           title: "concise actionable fix",
@@ -321,15 +375,19 @@ export function buildProjectReviewCheckPrompt({
     "Return an empty findings array when approved. For every recommended fix, return one finding object.",
     "Use null for file or line when the finding is not tied to a precise source location.",
     "Use approved only when no material fix is recommended. Use fix-recommended otherwise.",
+    "Treat a fix-recommended result as a decision to negotiate, not a verdict. Frame the concern neutrally and look for countering viewpoints that could each be a defensible implementation.",
+    "When code can safely express alternatives, return two genuinely distinct proposal directions. Do not manufacture a second option when only one is safe.",
+    "DECISION COPY CONTRACT: The top-level summary and each proposal summary MUST be no more than two short sentences and 240 characters total; prefer one sentence. Proposal titles must be action-oriented and no more than eight words. State only the user-visible outcome or essential tradeoff in plain language. Put implementation details, identifiers, evidence, and reasoning in the finding or diff, never in decision copy.",
+    "A human may reply in this request's thread with their reasoning. Treat that as a continuation of this review negotiation: reconsider the concern, inspect any newly suggested direction, and publish a revised structured result in the same thread with the same request_id. Create new diff events for revised code proposals; never reuse an earlier diff event id.",
     ...(repoUrl && commit
       ? [
-          "When recommending a fix and you can express it safely as code, create one valid unified diff against the exact commit without modifying or committing the review branch.",
-          `Pipe that patch into this command before the final result to publish one native Buzz diff message (kind 40008) in this request's thread: buzz messages send-diff --channel ${JSON.stringify(channelId)} --diff - --repo ${JSON.stringify(repoUrl)} --commit ${JSON.stringify(commit)} --description ${JSON.stringify(`Review check ${requestId}`)} --reply-to <THIS_REQUEST_EVENT_ID>`,
-          "Only after send-diff succeeds, copy its exact 64-character event_id into diff_event_id in the final JSON. Never invent or reuse an event id. Do not paste the patch into the JSON.",
-          "Use diff_event_id: null when there is no safe code patch. Approved results must use diff_event_id: null.",
+          "For each proposed direction you can express safely as code, create a valid unified diff against the exact commit without modifying or committing the review branch.",
+          `Pipe each patch into this command before the final result to publish a native Buzz diff message (kind 40008) in this request's thread: buzz messages send-diff --channel ${JSON.stringify(channelId)} --diff - --repo ${JSON.stringify(repoUrl)} --commit ${JSON.stringify(commit)} --description <PROPOSAL_TITLE> --reply-to <THIS_REQUEST_EVENT_ID>`,
+          "Only after each send-diff succeeds, copy its exact 64-character event_id into that proposal's diff_event_id in the final JSON. Never invent or reuse an event id. Do not paste patches into the JSON.",
+          "Omit any proposal that has no safe code patch. Return proposals: [] when no direction can be expressed safely as code. Approved results must return proposals: [].",
         ]
       : [
-          "Use diff_event_id: null because this review does not expose the repository URL and exact commit required for a native diff proposal.",
+          "Return proposals: [] because this review does not expose the repository URL and exact commit required for native diff proposals.",
         ]),
   ].join("\n");
 }

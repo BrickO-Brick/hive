@@ -12,6 +12,8 @@ const RELAY_REVIEW_AGENT_PUBKEY =
 const LOCAL_REVIEW_AGENT_PUBKEY = "c".repeat(64);
 const STOPPED_LOCAL_REVIEW_AGENT_PUBKEY = "d".repeat(64);
 const PROPOSED_DIFF_EVENT_ID = "e".repeat(64);
+const ALTERNATE_DIFF_EVENT_ID = "f".repeat(64);
+const REVISED_DIFF_EVENT_ID = "1".repeat(64);
 
 async function expectSinglePrimaryTextColumn(row: Locator) {
   const primary = row.locator('[data-projects-text-priority="primary"]');
@@ -227,6 +229,7 @@ test("review checks dispatch to an agent authorized for the relay identity", asy
   await page.evaluate(
     ({
       agentPubkey,
+      alternateDiffEventId,
       diffEventId,
       diffRepoUrl,
       openerEventId,
@@ -258,23 +261,55 @@ test("review checks dispatch to an agent authorized for the relay identity", asy
       });
       window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
         channelName: "DM",
+        content: [
+          "diff --git a/desktop/src/shared/ui/button.tsx b/desktop/src/shared/ui/button.tsx",
+          "--- a/desktop/src/shared/ui/button.tsx",
+          "+++ b/desktop/src/shared/ui/button.tsx",
+          "@@ -1,3 +1,3 @@",
+          "-const focusStyle = 'outline-none';",
+          "+const focusStyle = 'outline-offset-2';",
+          " export { focusStyle };",
+        ].join("\n"),
+        createdAt: Math.floor(Date.now() / 1_000) + 1,
+        extraTags: [
+          ["repo", diffRepoUrl],
+          ["commit", reviewedCommit],
+          ["file", "desktop/src/shared/ui/button.tsx"],
+          ["description", "Preserve the custom control"],
+        ],
+        id: alternateDiffEventId,
+        kind: 40008,
+        parentEventId: openerEventId,
+        pubkey: agentPubkey,
+      });
+      window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
+        channelName: "DM",
         content: `BUZZ_CHECK_RESULT_V1\n${JSON.stringify({
           request_id: requestId,
           conclusion: "fix-recommended",
-          summary: "Two interface fixes are needed before approval.",
-          diff_event_id: diffEventId,
-          findings: [
+          summary:
+            "The focus behavior can follow the shared primitive or preserve the custom control's semantics.",
+          proposals: [
             {
-              title: "Use the shared button primitive",
-              detail: "The custom control misses the standard focus treatment.",
-              file: "desktop/src/features/projects/ui/ProjectReviewChecks.tsx",
-              line: 742,
+              title: "Use the shared focus treatment",
+              summary:
+                "Align this control with the standard keyboard focus behavior.",
+              diff_event_id: diffEventId,
             },
             {
-              title: "Cover the disabled interaction state",
-              detail: "Add a UI assertion for the pending check state.",
-              file: "desktop/tests/e2e/project-pr-review.spec.ts",
-              line: 118,
+              title: "Preserve the custom control",
+              summary:
+                "Keep the specialized control and make its focus boundary explicit.",
+              diff_event_id: alternateDiffEventId,
+            },
+          ],
+          findings: [
+            {
+              title: "Choose a consistent focus boundary",
+              detail:
+                "The current control has no visible keyboard focus treatment.",
+              file: "desktop/src/features/projects/ui/ProjectReviewChecks.tsx",
+              line: 742,
             },
           ],
         })}`,
@@ -286,6 +321,7 @@ test("review checks dispatch to an agent authorized for the relay identity", asy
     },
     {
       agentPubkey: RELAY_REVIEW_AGENT_PUBKEY,
+      alternateDiffEventId: ALTERNATE_DIFF_EVENT_ID,
       diffEventId: PROPOSED_DIFF_EVENT_ID,
       diffRepoUrl: diffRepoUrl ?? "",
       openerEventId,
@@ -297,37 +333,154 @@ test("review checks dispatch to an agent authorized for the relay identity", asy
   const result = interfaceCheck.getByTestId("project-review-check-result");
   await expect(
     result.getByRole("heading", {
-      name: "2 fixes recommended",
+      name: "Choose a direction",
       exact: true,
     }),
   ).toBeVisible();
   await expect(result).toContainText(
-    "Two interface fixes are needed before approval.",
+    "The focus behavior can follow the shared primitive or preserve the custom control's semantics.",
   );
-  await expect(result.getByTestId("project-review-check-finding")).toHaveCount(
-    2,
+  const proposals = result.getByTestId("project-review-check-proposal");
+  await expect(proposals).toHaveCount(2);
+  const sharedDirection = proposals.nth(0);
+  const customDirection = proposals.nth(1);
+  await expect(sharedDirection).toContainText("Use the shared focus treatment");
+  await expect(customDirection).toContainText("Preserve the custom control");
+  const sharedFile = sharedDirection.getByTestId(
+    "project-review-check-proposal-file",
   );
-  await expect(result).toContainText("ProjectReviewChecks.tsx:742");
-  const proposal = result.getByTestId("project-review-check-diff-proposal");
-  await expect(proposal).toContainText("Proposed code changes");
-  await expect(proposal).toContainText("button.tsx");
-  await expect(proposal).toContainText("Use the shared focus treatment");
-  await expect(proposal).toContainText("focus-visible:ring-1");
+  await expect(sharedDirection).toContainText("+1");
+  await expect(sharedDirection).toContainText("-1");
+  const sharedDetails = sharedDirection.getByTestId(
+    "project-review-check-proposal-details",
+  );
+  await expect(sharedDetails).not.toHaveAttribute("open", "");
+  await sharedDetails.getByText("Read more").click();
+  await expect(sharedDetails).toHaveAttribute("open", "");
+  await expect(sharedFile).toContainText("button.tsx");
+  await expect(sharedFile).not.toHaveAttribute("open", "");
+  await sharedFile.locator("summary").click();
+  await expect(sharedFile).toHaveAttribute("open", "");
+  await expect(
+    sharedDirection.getByText("const focusStyle = 'focus-visible:ring-1';"),
+  ).toBeVisible();
   const commandCountBeforeAccept = await page.evaluate(
     () => window.__BUZZ_E2E_COMMANDS__?.length ?? 0,
   );
-  await proposal.getByRole("button", { name: "Accept changes" }).click();
+  await sharedDirection
+    .getByRole("button", { name: "Accept", exact: true })
+    .click();
   await expect(
-    proposal.getByRole("button", { name: "Accepted" }),
+    sharedDirection.getByRole("button", { name: "Accepted" }),
   ).toBeVisible();
-  await expect(proposal).toContainText(
-    "No repository files or review state were changed.",
-  );
   await expect
     .poll(() => page.evaluate(() => window.__BUZZ_E2E_COMMANDS__?.length ?? 0))
     .toBe(commandCountBeforeAccept);
   await waitForAnimations(page);
   await result.screenshot({ path: `${SHOTS}/review-check-result.png` });
+
+  await result.getByRole("button", { name: "Keep it as-is" }).click();
+  await expect(
+    result.getByRole("button", { name: "Keeping it as-is" }),
+  ).toBeVisible();
+
+  await result.getByRole("button", { name: "Propose", exact: true }).click();
+  await result
+    .getByRole("textbox", { name: "Propose another direction" })
+    .fill("Can we keep the custom control but use the shared focus token?");
+  await result.getByRole("button", { name: "Respond" }).click();
+  await expect(interfaceCheck).toContainText("Running");
+  const response = await page.evaluate(() => {
+    const entry = window.__BUZZ_E2E_COMMAND_PAYLOADS__?.findLast(
+      (candidate) =>
+        candidate.command === "send_channel_message" &&
+        (candidate.payload as { content?: unknown })?.content ===
+          "Can we keep the custom control but use the shared focus token?",
+    );
+    return entry?.payload as
+      | {
+          mentionPubkeys?: string[];
+          parentEventId?: string;
+          rootEventId?: string;
+        }
+      | undefined;
+  });
+  expect(response?.mentionPubkeys).toContain(RELAY_REVIEW_AGENT_PUBKEY);
+  expect(response?.parentEventId).toBe(openerEventId);
+  expect(response?.rootEventId).toBe(openerEventId);
+
+  await page.evaluate(
+    ({
+      agentPubkey,
+      diffEventId,
+      diffRepoUrl,
+      openerEventId,
+      requestId,
+      reviewedCommit,
+    }) => {
+      window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
+        channelName: "DM",
+        content: [
+          "diff --git a/desktop/src/shared/ui/button.tsx b/desktop/src/shared/ui/button.tsx",
+          "--- a/desktop/src/shared/ui/button.tsx",
+          "+++ b/desktop/src/shared/ui/button.tsx",
+          "@@ -1,3 +1,3 @@",
+          "-const focusStyle = 'outline-none';",
+          "+const focusStyle = sharedFocusToken;",
+          " export { focusStyle };",
+        ].join("\n"),
+        createdAt: Math.floor(Date.now() / 1_000) + 4,
+        extraTags: [
+          ["repo", diffRepoUrl],
+          ["commit", reviewedCommit],
+          ["file", "desktop/src/shared/ui/button.tsx"],
+          ["description", "Use the shared token in the custom control"],
+        ],
+        id: diffEventId,
+        kind: 40008,
+        parentEventId: openerEventId,
+        pubkey: agentPubkey,
+      });
+      window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
+        channelName: "DM",
+        content: `BUZZ_CHECK_RESULT_V1\n${JSON.stringify({
+          request_id: requestId,
+          conclusion: "fix-recommended",
+          summary:
+            "Your hybrid direction preserves the custom control while sharing the established focus token.",
+          proposals: [
+            {
+              title: "Share the focus token",
+              summary:
+                "Keep the specialized control and reuse the common visual contract.",
+              diff_event_id: diffEventId,
+            },
+          ],
+          findings: [],
+        })}`,
+        createdAt: Math.floor(Date.now() / 1_000) + 5,
+        kind: 9,
+        parentEventId: openerEventId,
+        pubkey: agentPubkey,
+      });
+    },
+    {
+      agentPubkey: RELAY_REVIEW_AGENT_PUBKEY,
+      diffEventId: REVISED_DIFF_EVENT_ID,
+      diffRepoUrl: diffRepoUrl ?? "",
+      openerEventId,
+      requestId,
+      reviewedCommit: reviewedCommit ?? "",
+    },
+  );
+  await expect(interfaceCheck).toContainText("Proposal ready");
+  await expect(result).toContainText(
+    "Your hybrid direction preserves the custom control while sharing the established focus token.",
+  );
+  await expect(result.getByTestId("project-review-check-proposal")).toHaveCount(
+    1,
+  );
+  await expect(result).toContainText("Share the focus token");
 });
 
 test("review checks dispatch to a running local managed agent", async ({

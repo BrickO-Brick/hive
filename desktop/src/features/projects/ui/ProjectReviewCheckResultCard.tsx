@@ -1,179 +1,411 @@
-import { Check, CheckCircle2, CircleAlert, FileDiff } from "lucide-react";
+import { Check, ChevronRight, FileDiff, LoaderCircle, X } from "lucide-react";
 import * as React from "react";
 
+import {
+  countDiffFileChanges,
+  getDiffFilePath,
+  getShortestUniquePathLabels,
+  parseUnifiedDiff,
+} from "@/features/messages/lib/parseDiff";
+import { DiffViewer } from "@/features/messages/ui/DiffViewer";
 import type {
-  ProjectReviewCheckDiffProposal,
+  ProjectReviewCheckResolvedProposal,
   ProjectReviewCheckResult,
 } from "@/features/projects/lib/projectReviewChecks.mjs";
+import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
+import { Textarea } from "@/shared/ui/textarea";
 
-const DiffMessage = React.lazy(
-  () => import("@/features/messages/ui/DiffMessage"),
-);
-const DiffMessageExpanded = React.lazy(
-  () => import("@/features/messages/ui/DiffMessageExpanded"),
-);
+function ProposalDiffFiles({
+  files,
+  parseError,
+  proposal,
+}: {
+  files: ReturnType<typeof parseUnifiedDiff>["files"];
+  parseError: boolean;
+  proposal: ProjectReviewCheckResolvedProposal;
+}) {
+  if (parseError || files.length === 0) {
+    const label = getShortestUniquePathLabels([
+      proposal.filePath ?? "Proposed patch",
+    ])[0];
 
-function ReviewCheckDiffProposal({
+    return (
+      <details className="group overflow-hidden rounded-lg border border-border/60 bg-background/50">
+        <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-xs [&::-webkit-details-marker]:hidden">
+          <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
+          <FileDiff className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <span className="min-w-0 truncate font-mono text-foreground/85">
+            {label}
+          </span>
+        </summary>
+        <div className="overflow-auto border-t border-border/50 p-2">
+          <DiffViewer
+            content={proposal.content}
+            fallbackFilePath={proposal.filePath ?? undefined}
+          />
+        </div>
+      </details>
+    );
+  }
+
+  const labels = getShortestUniquePathLabels(
+    files.map((file) => getDiffFilePath(file, proposal.filePath ?? undefined)),
+  );
+
+  return (
+    <div className="space-y-1.5">
+      {files.map((file, index) => {
+        const label = labels[index];
+        const { additions, deletions } = countDiffFileChanges(file);
+        const key = `${file.oldPath ?? ""}:${file.newPath ?? ""}:${index}`;
+
+        return (
+          <details
+            className="group overflow-hidden rounded-lg border border-border/60 bg-background/50"
+            data-testid="project-review-check-proposal-file"
+            key={key}
+          >
+            <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-xs [&::-webkit-details-marker]:hidden">
+              <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
+              <span className="min-w-0 flex-1 truncate font-mono text-foreground/85">
+                {label}
+              </span>
+              <span className="flex shrink-0 items-center gap-1.5 font-mono text-2xs font-semibold">
+                <span className="text-status-added">+{additions}</span>
+                <span className="text-status-deleted">-{deletions}</span>
+              </span>
+            </summary>
+            <div className="max-h-[24rem] overflow-auto border-t border-border/50 p-2">
+              <DiffViewer
+                content={proposal.content}
+                fallbackFilePath={proposal.filePath ?? undefined}
+                fileIndex={index}
+                hideFileHeader
+              />
+            </div>
+          </details>
+        );
+      })}
+    </div>
+  );
+}
+
+function ProposalOption({
   accepted,
   canAccept,
+  index,
   onAccept,
   proposal,
 }: {
   accepted: boolean;
   canAccept: boolean;
+  index: number;
   onAccept: () => void;
-  proposal: ProjectReviewCheckDiffProposal;
+  proposal: ProjectReviewCheckResolvedProposal;
 }) {
-  const [expanded, setExpanded] = React.useState(false);
   const acceptEnabled = canAccept && !proposal.truncated;
+  const parsedDiff = React.useMemo(
+    () => parseUnifiedDiff(proposal.content),
+    [proposal.content],
+  );
+  const totals = parsedDiff.files.reduce(
+    (sum, file) => {
+      const changes = countDiffFileChanges(file);
+      return {
+        additions: sum.additions + changes.additions,
+        deletions: sum.deletions + changes.deletions,
+      };
+    },
+    { additions: 0, deletions: 0 },
+  );
 
   return (
-    <div
-      className="space-y-3 border-t border-border/55 px-4 py-4"
-      data-testid="project-review-check-diff-proposal"
+    <article
+      className={cn(
+        "space-y-3 rounded-xl p-3.5",
+        accepted ? "bg-emerald-500/12" : "bg-emerald-500/8",
+      )}
+      data-testid="project-review-check-proposal"
     >
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex min-w-0 items-center gap-2">
-          <FileDiff className="h-4 w-4 shrink-0 text-muted-foreground" />
-          <div className="min-w-0">
-            <h6 className="text-xs font-semibold text-foreground">
-              Proposed code changes
-            </h6>
-            <p className="truncate text-2xs text-muted-foreground">
-              Native Buzz diff · {proposal.commitSha.slice(0, 7)}
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-2xs font-semibold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
+            Direction {index + 1}
+          </p>
+          <h6 className="mt-0.5 line-clamp-2 text-sm font-semibold text-foreground">
+            {proposal.title}
+          </h6>
+        </div>
+        <div className="flex shrink-0 items-center gap-3">
+          {!parsedDiff.parseError && parsedDiff.files.length > 0 ? (
+            <span className="flex items-center gap-1.5 font-mono text-2xs font-semibold">
+              <span className="text-status-added">+{totals.additions}</span>
+              <span className="text-status-deleted">-{totals.deletions}</span>
+            </span>
+          ) : null}
+          <Button
+            aria-pressed={accepted}
+            className={cn(
+              "shrink-0",
+              accepted
+                ? "border border-emerald-500/35 bg-emerald-500/10 text-emerald-700 shadow-none hover:bg-emerald-500/15 dark:text-emerald-300"
+                : "bg-emerald-600 text-white hover:bg-emerald-600/90",
+            )}
+            disabled={accepted || !acceptEnabled}
+            onClick={onAccept}
+            size="sm"
+            type="button"
+            variant={accepted ? "secondary" : "default"}
+          >
+            {accepted ? <Check /> : null}
+            {accepted ? "Accepted" : "Accept"}
+          </Button>
+        </div>
+      </div>
+
+      <details
+        className="group"
+        data-testid="project-review-check-proposal-details"
+      >
+        <summary className="flex w-fit cursor-pointer list-none items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground [&::-webkit-details-marker]:hidden">
+          <ChevronRight className="h-3.5 w-3.5 transition-transform group-open:rotate-90" />
+          <span className="group-open:hidden">Read more</span>
+          <span className="hidden group-open:inline">Hide details</span>
+        </summary>
+        <div className="space-y-3 pt-3">
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            {proposal.summary}
+          </p>
+          {proposal.truncated || !canAccept ? (
+            <p className="text-2xs text-muted-foreground">
+              {proposal.truncated
+                ? "The patch is incomplete and cannot be selected."
+                : "Run this check again to select a current proposal."}
             </p>
-          </div>
+          ) : null}
+          <ProposalDiffFiles
+            files={parsedDiff.files}
+            parseError={parsedDiff.parseError}
+            proposal={proposal}
+          />
+        </div>
+      </details>
+    </article>
+  );
+}
+
+function ReviewResponse({
+  canRespond,
+  onRespond,
+}: {
+  canRespond: boolean;
+  onRespond?: (response: string) => Promise<void>;
+}) {
+  const [response, setResponse] = React.useState("");
+  const [expanded, setExpanded] = React.useState(false);
+  const [isSending, setIsSending] = React.useState(false);
+  const responseId = React.useId();
+  const canSubmit =
+    canRespond && Boolean(onRespond) && Boolean(response.trim());
+
+  if (!expanded) {
+    return (
+      <article
+        className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-muted/20 p-3.5"
+        data-testid="project-review-check-response"
+      >
+        <div>
+          <p className="text-sm font-semibold text-foreground">
+            Propose another direction
+          </p>
+          <p className="text-2xs text-muted-foreground">
+            Suggest a different approach for the agent to consider.
+          </p>
         </div>
         <Button
-          disabled={accepted || !acceptEnabled}
-          onClick={onAccept}
-          size="sm"
+          disabled={!canRespond || !onRespond}
+          onClick={() => setExpanded(true)}
           type="button"
-          variant={accepted ? "secondary" : "default"}
+          variant="secondary"
         >
-          {accepted ? <Check /> : null}
-          {accepted ? "Accepted" : "Accept changes"}
+          Propose
         </Button>
+      </article>
+    );
+  }
+
+  return (
+    <form
+      className="space-y-2 rounded-xl bg-muted/20 p-3.5"
+      data-testid="project-review-check-response"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!canSubmit || !onRespond) return;
+        setIsSending(true);
+        void onRespond(response.trim())
+          .then(() => {
+            setResponse("");
+            setExpanded(false);
+          })
+          .catch(() => undefined)
+          .finally(() => setIsSending(false));
+      }}
+    >
+      <div>
+        <label
+          className="text-sm font-semibold text-foreground"
+          htmlFor={responseId}
+        >
+          Propose another direction
+        </label>
+        <p className="text-2xs text-muted-foreground">
+          Suggest a different approach for the agent to consider.
+        </p>
       </div>
-      <React.Suspense
-        fallback={
-          <div className="p-3 text-xs text-muted-foreground">
-            Loading proposed changes…
-          </div>
-        }
-      >
-        <DiffMessage
-          commitSha={proposal.commitSha}
-          content={proposal.content}
-          description={proposal.description ?? undefined}
-          filePath={proposal.filePath ?? undefined}
-          onExpand={() => setExpanded(true)}
-          repoUrl={proposal.repoUrl}
-          truncated={proposal.truncated}
+      <div className="flex items-end gap-2">
+        <Textarea
+          className="min-h-16 resize-none text-sm"
+          disabled={!canRespond || isSending}
+          id={responseId}
+          onChange={(event) => setResponse(event.target.value)}
+          placeholder="Share your reasoning or suggest a different fix…"
+          rows={2}
+          value={response}
         />
-      </React.Suspense>
-      <p className="text-2xs text-muted-foreground">
-        {accepted
-          ? "Accepted for this prototype. No repository files or review state were changed."
-          : proposal.truncated
-            ? "This proposal is truncated and cannot be accepted. No code was changed."
-            : acceptEnabled
-              ? "Preview only. Accepting records your choice in this dev build and does not change code."
-              : "This proposal is outdated. Run the check again before accepting it. No code was changed."}
-      </p>
-      {expanded ? (
-        <React.Suspense fallback={null}>
-          <DiffMessageExpanded
-            content={proposal.content}
-            filePath={proposal.filePath ?? undefined}
-            onClose={() => setExpanded(false)}
-          />
-        </React.Suspense>
-      ) : null}
-    </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <Button
+            disabled={isSending}
+            onClick={() => setExpanded(false)}
+            size="sm"
+            type="button"
+            variant="ghost"
+          >
+            Cancel
+          </Button>
+          <Button
+            disabled={!canSubmit || isSending}
+            size="sm"
+            type="submit"
+            variant="secondary"
+          >
+            {isSending ? <LoaderCircle className="animate-spin" /> : null}
+            Respond
+          </Button>
+        </div>
+      </div>
+    </form>
   );
 }
 
 export function ProjectReviewCheckResultCard({
   acceptedProposalEventId,
-  canAcceptProposal,
+  canDecide,
+  keptCurrentApproach,
   onAcceptProposal,
-  proposal,
+  onKeepCurrentApproach,
+  onRespond,
+  proposals,
   result,
 }: {
   acceptedProposalEventId?: string;
-  canAcceptProposal: boolean;
+  canDecide: boolean;
+  keptCurrentApproach: boolean;
   onAcceptProposal: (eventId: string) => void;
-  proposal?: ProjectReviewCheckDiffProposal;
+  onKeepCurrentApproach: () => void;
+  onRespond?: (response: string) => Promise<void>;
+  proposals: ProjectReviewCheckResolvedProposal[];
   result: ProjectReviewCheckResult;
 }) {
   const isApproved = result.conclusion === "approved";
-  const findingCount = result.findings.length;
   const title = isApproved
-    ? "Approved"
-    : findingCount === 0
-      ? "Fix recommended"
-      : `${findingCount} ${findingCount === 1 ? "fix" : "fixes"} recommended`;
+    ? "Aligned"
+    : proposals.length > 0
+      ? "Choose a direction"
+      : "Review the concern";
 
   return (
-    <section
-      className="overflow-hidden rounded-xl border border-border/70 bg-background/70"
-      data-testid="project-review-check-result"
-    >
-      <div className="flex items-start gap-3 px-4 py-3.5">
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-muted/70">
-          {isApproved ? (
-            <CheckCircle2 className="h-5 w-5 text-emerald-500" />
-          ) : (
-            <CircleAlert className="h-5 w-5 text-amber-500" />
-          )}
-        </div>
-        <div className="min-w-0 flex-1">
-          <h5 className="text-sm font-semibold text-foreground">{title}</h5>
-          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            {result.summary}
-          </p>
-        </div>
-      </div>
-      {findingCount > 0 ? (
-        <div className="divide-y divide-border/55 border-t border-border/55">
+    <section className="space-y-3" data-testid="project-review-check-result">
+      <header>
+        <h5 className="text-sm font-semibold text-foreground">{title}</h5>
+        <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted-foreground">
+          {result.summary}
+        </p>
+      </header>
+
+      {!isApproved && proposals.length === 0 && result.findings.length > 0 ? (
+        <div className="divide-y divide-border/45 border-t border-border/55 px-4">
           {result.findings.map((finding) => (
-            <article
-              className="px-4 py-3"
+            <div
+              className="py-2.5"
               data-testid="project-review-check-finding"
               key={JSON.stringify(finding)}
             >
-              <div className="flex items-start justify-between gap-4">
-                <p className="min-w-0 flex-1 text-xs font-medium text-foreground">
-                  {finding.title}
-                </p>
-                {finding.file ? (
-                  <span
-                    className="max-w-[45%] truncate font-mono text-2xs text-muted-foreground"
-                    title={`${finding.file}${finding.line ? `:${finding.line}` : ""}`}
-                  >
-                    {finding.file}
-                    {finding.line ? `:${finding.line}` : ""}
-                  </span>
-                ) : null}
-              </div>
+              <p className="text-xs font-medium text-foreground">
+                {finding.title}
+              </p>
               {finding.detail ? (
-                <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                <p className="mt-0.5 text-xs text-muted-foreground">
                   {finding.detail}
                 </p>
               ) : null}
-            </article>
+            </div>
           ))}
         </div>
       ) : null}
-      {proposal ? (
-        <ReviewCheckDiffProposal
-          accepted={acceptedProposalEventId === proposal.eventId}
-          canAccept={canAcceptProposal}
-          onAccept={() => onAcceptProposal(proposal.eventId)}
-          proposal={proposal}
-        />
+
+      {proposals.length > 0 ? (
+        <>
+          <p className="text-2xs text-muted-foreground">
+            Preview only — selecting a direction records the decision without
+            changing code.
+          </p>
+          {proposals.map((proposal, index) => (
+            <ProposalOption
+              accepted={acceptedProposalEventId === proposal.eventId}
+              canAccept={canDecide}
+              index={index}
+              key={proposal.eventId}
+              onAccept={() => onAcceptProposal(proposal.eventId)}
+              proposal={proposal}
+            />
+          ))}
+
+          <article
+            className={cn(
+              "flex flex-wrap items-center justify-between gap-3 rounded-xl bg-muted/20 p-3.5",
+              keptCurrentApproach && "bg-muted/35",
+            )}
+          >
+            <div>
+              <p className="text-sm font-semibold text-foreground">
+                Keep it as-is
+              </p>
+              <p className="text-2xs text-muted-foreground">
+                Reject the proposals and leave the review unchanged.
+              </p>
+            </div>
+            <Button
+              aria-pressed={keptCurrentApproach}
+              className={cn(
+                "border-rose-500/35 text-rose-600 hover:bg-rose-500/10 hover:text-rose-700 dark:text-rose-400",
+                keptCurrentApproach && "bg-rose-500/10",
+              )}
+              disabled={!canDecide || keptCurrentApproach}
+              onClick={onKeepCurrentApproach}
+              size="sm"
+              type="button"
+              variant="outline"
+            >
+              {keptCurrentApproach ? <Check /> : <X />}
+              {keptCurrentApproach ? "Keeping it as-is" : "Keep it as-is"}
+            </Button>
+          </article>
+        </>
+      ) : null}
+
+      {!isApproved ? (
+        <ReviewResponse canRespond={canDecide} onRespond={onRespond} />
       ) : null}
     </section>
   );
