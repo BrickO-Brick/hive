@@ -24,7 +24,15 @@ export type ChannelWindowPage = {
   hasMore: boolean;
 };
 export type ChannelWindowStore = {
+  /** Monotonic publication token; changes only when authoritative pages commit. */
+  revision: number;
+  /** Retires older requests when an authoritative head replaces their chain. */
+  generation: number;
   pages: ChannelWindowPage[];
+  /** A recoverable head refresh failure; retained history remains readable. */
+  refreshError?: string;
+  /** Explicit recovery request; retire retained history only after a new head succeeds. */
+  refreshLatestOnly?: boolean;
   /** Top-level live events not represented in an authoritative relay page. */
   liveOverlay: RelayEvent[];
   /** Live structural events retained independently from frozen page closure. */
@@ -37,6 +45,8 @@ export type ChannelWindowStore = {
 };
 
 export const emptyChannelWindowStore = (): ChannelWindowStore => ({
+  revision: 0,
+  generation: 0,
   pages: [],
   liveOverlay: [],
   liveAux: [],
@@ -111,6 +121,8 @@ export function replaceNewestChannelWindow(
   const ids = new Set(page.rows.map((row) => row.event.id));
   const auxIds = new Set(page.aux.map((event) => event.id));
   return {
+    revision: current.revision + 1,
+    generation: current.generation + 1,
     pages: [page],
     liveOverlay: current.liveOverlay.filter((event) => !ids.has(event.id)),
     liveAux: current.liveAux.filter((event) => !auxIds.has(event.id)),
@@ -150,6 +162,7 @@ export function appendOlderChannelWindow(
   const pageIds = new Set(page.rows.map((row) => row.event.id));
   return {
     ...current,
+    revision: current.revision + 1,
     pages: [...current.pages, page],
     liveOverlay: current.liveOverlay.filter((event) => !pageIds.has(event.id)),
   };

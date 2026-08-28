@@ -210,7 +210,7 @@ export function ChannelScreen({
     effectiveOpenThreadHeadId,
   );
   useChannelSubscription(activeChannel);
-  const { fetchOlder, hasOlderMessages, historyExhausted, isFetchingOlder } =
+  const { fetchOlder, isFetchingOlder } =
     useFetchOlderMessages(activeChannel);
   const latestActiveMessage = React.useMemo(() => {
     const messages = messagesQuery.data;
@@ -257,8 +257,7 @@ export function ChannelScreen({
   const editMessageMutation = useEditMessageMutation(activeChannel);
   const joinChannelMutation = useJoinChannelMutation(activeChannelId);
   const {
-    resolvedMessages,
-    threadSummaries,
+    resolvedMessages, threadSummaries, historyRevision, historyExhausted, hasOlderMessages,
     threadRepliesError: huddleThreadRepliesError,
     onRetryThreadReplies: onRetryHuddleThreadReplies,
   } = useHuddleChannelMessages({
@@ -859,6 +858,7 @@ export function ChannelScreen({
                   currentPubkey={currentPubkey}
                   canResetThreadPanelWidth={canResetThreadPanelWidth}
                   fetchOlder={fetchOlder}
+                  historyRevision={historyRevision}
                   header={channelHeader}
                   {...{ idleAuxiliaryHeaderActions, idleAuxiliaryOverridesThread, idleAuxiliaryPanel, idleAuxiliaryTitle, hasOlderMessages, historyExhausted }}
                   {...{ onAddFiles }}
