@@ -169,11 +169,14 @@ export function readChannelMutesStore(
 /**
  * Enforce the ownership invariant: expose `owned` only once the legacy key is
  * provably gone. Write the scoped copy when it is not already present, delete
- * the legacy key, and confirm the delete took. On any failure return
- * `DEFAULT_STORE`, rolling back only a scoped copy WE just wrote — never a
- * pre-existing one, whose deletion could itself throw and lose owned data. An
- * unproven copy is thus never exposed while the legacy key can still be
- * imported by another relay; the next read re-attempts once storage recovers.
+ * the legacy key, and confirm the delete took. On failure return
+ * `DEFAULT_STORE`, and roll back a scoped copy WE just wrote only when the
+ * legacy key is provably still present — if legacy is already gone (a delete
+ * that succeeded before a later read threw), the scoped copy is the sole
+ * surviving copy and must be kept, and if the probe itself throws we keep it
+ * too, favoring no-data-loss. A kept-but-unproven copy is never exposed while
+ * an importable legacy key remains (the read-time gate above), so it can never
+ * seed early; the next healthy read completes or retries the claim.
  */
 function claimLegacy(
   key: string,
@@ -193,10 +196,19 @@ function claimLegacy(
   } catch {
     if (!scopedExists) {
       try {
-        window.localStorage.removeItem(key);
+        // Roll back only if legacy is provably still importable: keeping the
+        // scoped copy then would let a second relay scope claim legacy too
+        // (double-seed). If legacy is already gone, the scoped copy is the only
+        // one left and must be kept — rolling it back is permanent data loss.
+        if (window.localStorage.getItem(legacyKey) !== null) {
+          window.localStorage.removeItem(key);
+        }
       } catch {
-        // Best effort. A stuck scoped copy is re-exposed only by a future read
-        // that proves the legacy key gone, so it can never seed early.
+        // Residual (deliberate): the legacy delete AND this probe both throw,
+        // so we cannot prove legacy gone. We keep the scoped copy to favor
+        // no-data-loss; while legacy remains the read-time gate keeps it hidden
+        // so it cannot seed early, but if storage partially recovers and this
+        // window then switches relays, both scopes can carry the legacy value.
       }
     }
     return DEFAULT_STORE;

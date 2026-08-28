@@ -730,3 +730,107 @@ test("readChannelMutesStore: legacy delete + rollback both throw — every read 
   assert.equal(window.localStorage.getItem(legacyKey), null);
   assert.notEqual(window.localStorage.getItem(scoped), null);
 });
+
+test("readChannelMutesStore: legacy delete succeeds but the confirmation read throws — scoped copy retained, no data loss", () => {
+  const pubkey = "pk-mute-migrate-confirmthrow";
+  const relay = "wss://relay-confirmthrow.example.com";
+  const legacy = makeMuteStore({ chc: MUTE_E(true, 800, 3) });
+  writeChannelMutesStore(pubkey, legacy);
+  const legacyKey = storageKey(pubkey);
+  const scoped = storageKey(pubkey, relay);
+  const origGet = window.localStorage.getItem;
+  const origRemove = window.localStorage.removeItem;
+  let legacyDeleted = false;
+  let threwOnce = false;
+  window.localStorage.removeItem = (k) => {
+    if (k === legacyKey) legacyDeleted = true;
+    return origRemove.call(window.localStorage, k);
+  };
+  // Only the post-delete confirmation read of the legacy key throws, once.
+  window.localStorage.getItem = (k) => {
+    if (k === legacyKey && legacyDeleted && !threwOnce) {
+      threwOnce = true;
+      throw new Error("SecurityError");
+    }
+    return origGet.call(window.localStorage, k);
+  };
+  try {
+    // Legacy is already gone; the catch probe sees null and must NOT roll back
+    // the scoped copy — it is the only surviving copy. First read is DEFAULT.
+    assert.deepEqual(readChannelMutesStore(pubkey, relay), DEFAULT_STORE);
+    assert.notEqual(window.localStorage.getItem(scoped), null);
+  } finally {
+    window.localStorage.getItem = origGet;
+    window.localStorage.removeItem = origRemove;
+  }
+  // Legacy gone + scoped retained → the next healthy read exposes the value.
+  assert.equal(window.localStorage.getItem(legacyKey), null);
+  assert.deepEqual(readChannelMutesStore(pubkey, relay), legacy);
+});
+
+test("readChannelMutesStore: legacy delete throws while the probe stays healthy — scoped rollback, DEFAULT, single future claimant", () => {
+  const pubkey = "pk-mute-migrate-delthrow-probeok";
+  const relay = "wss://relay-delthrow-probeok.example.com";
+  const legacy = makeMuteStore({ cht: MUTE_E(true, 600, 2) });
+  writeChannelMutesStore(pubkey, legacy);
+  const legacyKey = storageKey(pubkey);
+  const scoped = storageKey(pubkey, relay);
+  const origRemove = window.localStorage.removeItem;
+  let thrown = false;
+  window.localStorage.removeItem = (k) => {
+    if (k === legacyKey && !thrown) {
+      thrown = true;
+      throw new Error("SecurityError");
+    }
+    return origRemove.call(window.localStorage, k);
+  };
+  try {
+    assert.deepEqual(readChannelMutesStore(pubkey, relay), DEFAULT_STORE);
+    // Probe saw legacy still present → rolled back the just-written scoped copy
+    // so a second relay scope cannot double-import the same legacy value.
+    assert.equal(window.localStorage.getItem(scoped), null);
+    assert.notEqual(window.localStorage.getItem(legacyKey), null);
+  } finally {
+    window.localStorage.removeItem = origRemove;
+  }
+  // Legacy survived, so exactly one future healthy read claims it.
+  assert.deepEqual(readChannelMutesStore(pubkey, relay), legacy);
+  assert.equal(window.localStorage.getItem(legacyKey), null);
+});
+
+test("readChannelMutesStore: legacy delete and the catch probe both throw — scoped kept but hidden while legacy remains", () => {
+  const pubkey = "pk-mute-migrate-delthrow-probethrow";
+  const relay = "wss://relay-delthrow-probethrow.example.com";
+  const legacy = makeMuteStore({ chb: MUTE_E(true, 500, 1) });
+  writeChannelMutesStore(pubkey, legacy);
+  const legacyKey = storageKey(pubkey);
+  const scoped = storageKey(pubkey, relay);
+  const origGet = window.localStorage.getItem;
+  const origRemove = window.localStorage.removeItem;
+  let removeAttempted = false;
+  window.localStorage.removeItem = (k) => {
+    if (k === legacyKey) {
+      removeAttempted = true;
+      throw new Error("SecurityError");
+    }
+    return origRemove.call(window.localStorage, k);
+  };
+  window.localStorage.getItem = (k) => {
+    if (k === legacyKey && removeAttempted) throw new Error("SecurityError");
+    return origGet.call(window.localStorage, k);
+  };
+  try {
+    // Delete throws, then the catch probe throws too: legacy cannot be proven
+    // gone, so we KEEP the scoped copy (no-data-loss residual).
+    assert.deepEqual(readChannelMutesStore(pubkey, relay), DEFAULT_STORE);
+    assert.notEqual(window.localStorage.getItem(scoped), null);
+    // While legacy remains and storage is broken, every read returns DEFAULT.
+    assert.deepEqual(readChannelMutesStore(pubkey, relay), DEFAULT_STORE);
+  } finally {
+    window.localStorage.getItem = origGet;
+    window.localStorage.removeItem = origRemove;
+  }
+  // Storage recovers with legacy still present → the claim completes once.
+  assert.deepEqual(readChannelMutesStore(pubkey, relay), legacy);
+  assert.equal(window.localStorage.getItem(legacyKey), null);
+});
