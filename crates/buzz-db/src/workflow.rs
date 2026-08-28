@@ -413,26 +413,33 @@ pub async fn list_legacy_workflows(pool: &PgPool) -> Result<Vec<WorkflowRecord>>
 
 /// Bind a legacy workflow to a provenance-checked signed definition.
 ///
-/// The caller must verify the event's owner, coordinate, channel, and semantic
-/// definition. The NULL compare-and-set keeps concurrent new definition ingest
-/// authoritative and makes reconciliation idempotent across relay pods.
+/// The validated workflow snapshot is part of the compare-and-set. This keeps
+/// a legacy writer in a rolling deployment from changing the materialized
+/// workflow between reconciliation's proof check and this bind.
 pub async fn bind_legacy_workflow_revision(
     pool: &PgPool,
-    community_id: CommunityId,
-    workflow_id: Uuid,
+    workflow: &WorkflowRecord,
     definition_event_id: &[u8],
 ) -> Result<bool> {
     let result = sqlx::query(
         r#"
         UPDATE workflows
-        SET definition_event_id = $3
+        SET definition_event_id = $7
         WHERE community_id = $1
           AND id = $2
+          AND owner_pubkey = $3
+          AND channel_id IS NOT DISTINCT FROM $4
+          AND definition = $5
+          AND definition_hash = $6
           AND definition_event_id IS NULL
         "#,
     )
-    .bind(community_id.as_uuid())
-    .bind(workflow_id)
+    .bind(workflow.community_id.as_uuid())
+    .bind(workflow.id)
+    .bind(&workflow.owner_pubkey)
+    .bind(workflow.channel_id)
+    .bind(&workflow.definition)
+    .bind(&workflow.definition_hash)
     .bind(definition_event_id)
     .execute(pool)
     .await?;
@@ -1922,13 +1929,16 @@ mod tests {
         let first_revision = [0x31; 32];
         let competing_revision = [0x32; 32];
 
+        let workflow = get_workflow(&pool, community, workflow_id)
+            .await
+            .expect("read legacy workflow");
         assert!(
-            bind_legacy_workflow_revision(&pool, community, workflow_id, &first_revision,)
+            bind_legacy_workflow_revision(&pool, &workflow, &first_revision)
                 .await
                 .expect("bind revision")
         );
         assert!(
-            !bind_legacy_workflow_revision(&pool, community, workflow_id, &competing_revision,)
+            !bind_legacy_workflow_revision(&pool, &workflow, &competing_revision)
                 .await
                 .expect("repeat binding")
         );
@@ -1946,6 +1956,45 @@ mod tests {
             .expect("read historical run")
             .definition_event_id
             .is_none());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn legacy_revision_binding_rejects_a_rewritten_snapshot() {
+        let pool = setup_pool().await;
+        let community = make_community(&pool).await;
+        let (workflow_id, _) = make_workflow_in(&pool, community).await;
+        let snapshot = get_workflow(&pool, community, workflow_id)
+            .await
+            .expect("read legacy workflow snapshot");
+
+        let rewritten_definition = r#"{"trigger":{"on":"schedule"},"steps":[{"id":"changed","action":"send_message","text":"new"}]}"#;
+        let rewritten_hash = [0x77; 32];
+        sqlx::query(
+            r#"
+            UPDATE workflows
+            SET definition = $3::jsonb, definition_hash = $4, updated_at = NOW()
+            WHERE community_id = $1 AND id = $2
+            "#,
+        )
+        .bind(community.as_uuid())
+        .bind(workflow_id)
+        .bind(rewritten_definition)
+        .bind(rewritten_hash.as_slice())
+        .execute(&pool)
+        .await
+        .expect("simulate legacy writer rewrite");
+
+        assert!(
+            !bind_legacy_workflow_revision(&pool, &snapshot, &[0x41; 32])
+                .await
+                .expect("reject stale snapshot")
+        );
+        let current = get_workflow(&pool, community, workflow_id)
+            .await
+            .expect("read rewritten workflow");
+        assert!(current.definition_event_id.is_none());
+        assert_eq!(current.definition_hash, rewritten_hash);
     }
 
     #[tokio::test]

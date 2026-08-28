@@ -361,7 +361,12 @@ pub async fn reconcile_legacy_workflow_revisions(
             continue;
         };
         let mut query = EventQuery::for_community(workflow.community_id);
-        query.channel_id = Some(channel_id);
+        // Workflow definitions written before exact revision capture were
+        // retained as channel-less rows even though their signed `h` tag was
+        // channel-scoped. Search both historical and current storage shapes;
+        // legacy_definition_matches remains the authority for the signed tag.
+        query.channel_ids = Some(vec![channel_id]);
+        query.channel_ids_include_global = true;
         query.kinds = Some(vec![KIND_WORKFLOW_DEF as i32]);
         query.pubkey = Some(workflow.owner_pubkey.clone());
         query.d_tag = Some(workflow.id.to_string());
@@ -378,11 +383,7 @@ pub async fn reconcile_legacy_workflow_revisions(
         }
 
         if db
-            .bind_legacy_workflow_revision(
-                workflow.community_id,
-                workflow.id,
-                stored.event.id.as_bytes(),
-            )
+            .bind_legacy_workflow_revision(&workflow, stored.event.id.as_bytes())
             .await?
         {
             report.bound += 1;
@@ -1599,6 +1600,70 @@ mod tests {
         );
 
         assert!(legacy_definition_matches(&workflow, &event));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn reconciliation_finds_historical_null_channel_event_and_binds_it() {
+        let (db, tenant) = persistence_test_context().await;
+        let keys = Keys::generate();
+        let owner = keys.public_key().to_bytes();
+        db.ensure_user(tenant.community(), owner.as_slice())
+            .await
+            .expect("ensure workflow owner");
+        let channel = db
+            .create_channel(
+                tenant.community(),
+                "legacy-workflow",
+                buzz_db::channel::ChannelType::Stream,
+                buzz_db::channel::ChannelVisibility::Private,
+                None,
+                owner.as_slice(),
+                None,
+            )
+            .await
+            .expect("create workflow channel");
+        let content = "name: legacy\ntrigger:\n  on: message_posted\nsteps:\n  - id: notify\n    action: send_message\n    text: hello\n";
+        let (_, canonical_json) = buzz_workflow::WorkflowEngine::parse_yaml(content)
+            .expect("canonical workflow definition");
+        let workflow_id = db
+            .create_workflow(
+                tenant.community(),
+                Some(channel.id),
+                owner.as_slice(),
+                "legacy",
+                &canonical_json,
+                &compute_definition_hash(&canonical_json),
+            )
+            .await
+            .expect("create legacy workflow");
+        let event = EventBuilder::new(Kind::Custom(KIND_WORKFLOW_DEF as u16), content)
+            .tags([
+                Tag::parse(["d", workflow_id.to_string().as_str()]).expect("d tag"),
+                Tag::parse(["h", channel.id.to_string().as_str()]).expect("h tag"),
+            ])
+            .sign_with_keys(&keys)
+            .expect("sign historical definition");
+
+        let (_, inserted) = db
+            .insert_event(tenant.community(), &event, None)
+            .await
+            .expect("store historical channel-less event");
+        assert!(inserted);
+
+        let report = reconcile_legacy_workflow_revisions(&db)
+            .await
+            .expect("reconcile legacy workflow");
+        assert_eq!(report.bound, 1);
+        assert_eq!(report.raced, 0);
+        assert_eq!(
+            db.get_workflow(tenant.community(), workflow_id)
+                .await
+                .expect("read reconciled workflow")
+                .definition_event_id
+                .as_deref(),
+            Some(event.id.as_bytes().as_slice())
+        );
     }
 
     #[test]
