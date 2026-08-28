@@ -12,8 +12,8 @@ use nostr::Tag;
 use tauri::{AppHandle, Manager};
 
 use super::coordinator_admission::{
-    clear_mode_recovery_restart, mark_mode_recovery_restart, mode_reconcile_action,
-    mode_recovery_restart_is_throttled, ModeEvidence, ModeReconcileAction, ModeReconcileState,
+    clear_mode_restart, mode_reconcile_action, request_mode_restart, ModeEvidence,
+    ModeReconcileAction, ModeReconcileState,
 };
 use crate::app_state::AppState;
 
@@ -342,11 +342,42 @@ async fn observe_open_runtime_relay(state: &AppState, relay_url: &str) -> OpenRu
     classify_open_runtime_observation(mode, closed_roster)
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum SelfOnlyModeAction {
+    Keep,
+    AwaitConfirm,
+    RestartProcess,
+}
+
+fn reconcile_self_only_mode(
+    state: &mut ModeReconcileState,
+    query: &Result<Option<Vec<String>>, String>,
+) -> SelfOnlyModeAction {
+    match query {
+        Ok(None) => match mode_reconcile_action(state, Ok(ModeEvidence::Open), false) {
+            ModeReconcileAction::Keep => SelfOnlyModeAction::Keep,
+            ModeReconcileAction::AwaitConfirm => SelfOnlyModeAction::AwaitConfirm,
+            ModeReconcileAction::RestartProcess => SelfOnlyModeAction::RestartProcess,
+        },
+        Err(_) => {
+            let _ = mode_reconcile_action(state, Err(()), false);
+            SelfOnlyModeAction::Keep
+        }
+        Ok(Some(_)) => {
+            let _ = mode_reconcile_action(state, Ok(ModeEvidence::Closed), false);
+            SelfOnlyModeAction::Keep
+        }
+    }
+}
+
 async fn reconcile_roster(
     app: &AppHandle,
     pending_shrink: &mut Option<Vec<String>>,
     mode_reconcile: &mut ModeReconcileState,
 ) -> Result<(), String> {
+    if mode_reconcile.restart_requested() {
+        return Ok(());
+    }
     let state = app.state::<AppState>();
     let current_request = {
         let runtime = state.mesh_llm_runtime.lock().await;
@@ -368,9 +399,6 @@ async fn reconcile_roster(
         .as_deref()
         .map(str::to_owned)
         .unwrap_or_else(|| crate::relay::relay_ws_url_with_override(&state));
-    if current_owners.is_none() {
-        clear_mode_recovery_restart(app);
-    }
     let Some(current_owners) = current_owners else {
         let observation = observe_open_runtime_relay(&state, &relay_url).await;
         let evidence = match &observation {
@@ -391,19 +419,32 @@ async fn reconcile_roster(
                 "buzz-mesh: relay membership mode changed; awaiting confirmation before restarting Buzz"
             ),
             ModeReconcileAction::RestartProcess => {
-                match &observation {
-                    OpenRuntimeObservation::ClosedWithRoster => eprintln!(
-                        "buzz-mesh: relay repeatedly reports membership enforcement; restarting Buzz to apply its allowlist"
-                    ),
-                    OpenRuntimeObservation::ClosedWithoutRoster(error) => eprintln!(
-                        "buzz-mesh: relay repeatedly reports membership enforcement but its roster is unavailable; restarting Buzz fail-closed: {error}"
-                    ),
-                    OpenRuntimeObservation::Unknown(error) => eprintln!(
-                        "buzz-mesh: open-relay mode remained unknown across two polls; restarting Buzz fail-closed: {error}"
-                    ),
-                    OpenRuntimeObservation::Open => {}
+                let reason = match &observation {
+                    OpenRuntimeObservation::ClosedWithRoster => "open-to-closed",
+                    OpenRuntimeObservation::ClosedWithoutRoster(_) => {
+                        "open-to-closed-without-roster"
+                    }
+                    OpenRuntimeObservation::Unknown(_) => "open-mode-unknown",
+                    OpenRuntimeObservation::Open => return Ok(()),
+                };
+                if !request_mode_restart(app, mode_reconcile, reason)? {
+                    eprintln!(
+                        "buzz-mesh: mode-policy restart is already pending or throttled after a recent attempt; keeping the running policy"
+                    );
+                } else {
+                    match &observation {
+                        OpenRuntimeObservation::ClosedWithRoster => eprintln!(
+                            "buzz-mesh: relay repeatedly reports membership enforcement; restarting Buzz to apply its allowlist"
+                        ),
+                        OpenRuntimeObservation::ClosedWithoutRoster(error) => eprintln!(
+                            "buzz-mesh: relay repeatedly reports membership enforcement but its roster is unavailable; restarting Buzz fail-closed: {error}"
+                        ),
+                        OpenRuntimeObservation::Unknown(error) => eprintln!(
+                            "buzz-mesh: open-relay mode remained unknown across two polls; restarting Buzz fail-closed: {error}"
+                        ),
+                        OpenRuntimeObservation::Open => {}
+                    }
                 }
-                app.request_restart();
             }
         }
         *pending_shrink = None;
@@ -424,33 +465,27 @@ async fn reconcile_roster(
             .await
             .map(Some)
     };
+    if matches!(query, Ok(Some(_))) {
+        // A successful closed-roster read is decisive non-restarting mode
+        // evidence, so a prior cross-process mode-restart throttle may clear.
+        clear_mode_restart(app);
+    }
     if current_owners.is_empty() {
-        match &query {
-            Ok(None) => {
-                match mode_reconcile_action(mode_reconcile, Ok(ModeEvidence::Open), false) {
-                    ModeReconcileAction::Keep => return Ok(()),
-                    ModeReconcileAction::AwaitConfirm => {
-                        eprintln!(
-                        "buzz-mesh: isolated startup fallback observed an open relay; awaiting confirmation before restarting Buzz"
+        match reconcile_self_only_mode(mode_reconcile, &query) {
+            SelfOnlyModeAction::Keep => {}
+            SelfOnlyModeAction::AwaitConfirm => {
+                eprintln!(
+                    "buzz-mesh: isolated startup fallback observed an open relay; awaiting confirmation before restarting Buzz"
+                );
+                return Ok(());
+            }
+            SelfOnlyModeAction::RestartProcess => {
+                if !request_mode_restart(app, mode_reconcile, "self-only-to-open")? {
+                    eprintln!(
+                        "buzz-mesh: open-mode recovery restart is already pending or throttled after a recent attempt; keeping the self-only fallback"
                     );
-                        return Ok(());
-                    }
-                    ModeReconcileAction::RestartProcess => {
-                        if mode_recovery_restart_is_throttled(app)? {
-                            eprintln!(
-                            "buzz-mesh: open-mode recovery restart is throttled after a recent attempt; keeping the self-only fallback"
-                        );
-                            return Ok(());
-                        }
-                        mark_mode_recovery_restart(app)?;
-                    }
                 }
-            }
-            Err(_) => {
-                let _ = mode_reconcile_action(mode_reconcile, Err(()), false);
-            }
-            Ok(Some(_)) => {
-                let _ = mode_reconcile_action(mode_reconcile, Ok(ModeEvidence::Closed), false);
+                return Ok(());
             }
         }
     } else {
@@ -714,21 +749,27 @@ mod tests {
         );
     }
 
-    // Regression: a transient NIP-11 probe failure at startup on an OPEN relay
-    // falls back to the enforcing path and starts the node with a self-only
-    // allowlist. If reconcile then treated `Ok(None)` as an unconditional
-    // `Keep`, that node would sit at "1 NODE" until an app restart — the
-    // original open-relay bug, reintroduced by a single HTTP blip. A self-only
-    // roster admits nobody else, so restarting to run unenforced relaxes
-    // nothing that was protecting anyone.
     #[test]
-    fn open_relay_recovers_a_fallback_isolated_node() {
-        let self_only: Vec<String> = Vec::new();
-        let action = roster_reconcile_action(&self_only, None, Ok(None));
+    fn self_only_wiring_never_restarts_after_one_open_observation() {
+        let mut state = ModeReconcileState::default();
+        let query = Ok(None);
         assert_eq!(
-            action,
-            RosterReconcileAction::RestartProcess,
-            "a fallback-isolated node on an open relay must restart into open mesh"
+            reconcile_self_only_mode(&mut state, &query),
+            SelfOnlyModeAction::AwaitConfirm
+        );
+    }
+
+    #[test]
+    fn self_only_wiring_restarts_after_two_open_observations() {
+        let mut state = ModeReconcileState::default();
+        let query = Ok(None);
+        assert_eq!(
+            reconcile_self_only_mode(&mut state, &query),
+            SelfOnlyModeAction::AwaitConfirm
+        );
+        assert_eq!(
+            reconcile_self_only_mode(&mut state, &query),
+            SelfOnlyModeAction::RestartProcess
         );
     }
 

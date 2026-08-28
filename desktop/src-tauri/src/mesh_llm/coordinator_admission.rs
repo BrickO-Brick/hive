@@ -2,43 +2,54 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Manager};
 
-/// Prevent a flaky startup mode probe from creating an unbounded whole-app
-/// restart loop while recovering a self-only fallback into open mode.
-const MODE_RECOVERY_RESTART_COOLDOWN: Duration = Duration::from_secs(10 * 60);
-const MODE_RECOVERY_RESTART_MARKER: &str = "mesh-mode-recovery-restart";
+/// Prevent a flaky mode probe from creating an unbounded whole-app restart
+/// loop while changing admission policy.
+const MODE_RESTART_COOLDOWN: Duration = Duration::from_secs(10 * 60);
+const MODE_RESTART_MARKER: &str = "mesh-mode-recovery-restart";
 
-fn mode_recovery_restart_marker(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+fn mode_restart_marker(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     Ok(app
         .path()
         .app_data_dir()
         .map_err(|error| format!("failed to resolve app data directory: {error}"))?
-        .join(MODE_RECOVERY_RESTART_MARKER))
+        .join(MODE_RESTART_MARKER))
 }
 
-pub(super) fn mode_recovery_restart_is_throttled(app: &AppHandle) -> Result<bool, String> {
-    let marker = mode_recovery_restart_marker(app)?;
+fn restart_marker_is_throttled(
+    modified: std::time::SystemTime,
+    now: std::time::SystemTime,
+) -> bool {
+    // A clock rollback makes the marker appear to be in the future. Fail safe:
+    // retain the throttle rather than disabling the only cross-process bound.
+    now.duration_since(modified)
+        .map_or(true, |elapsed| elapsed < MODE_RESTART_COOLDOWN)
+}
+
+fn mode_restart_is_throttled(app: &AppHandle) -> Result<bool, String> {
+    let marker = mode_restart_marker(app)?;
     let modified = match std::fs::metadata(marker).and_then(|metadata| metadata.modified()) {
         Ok(modified) => modified,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(format!("failed to read mesh restart marker: {error}")),
     };
-    Ok(modified
-        .elapsed()
-        .is_ok_and(|elapsed| elapsed < MODE_RECOVERY_RESTART_COOLDOWN))
+    Ok(restart_marker_is_throttled(
+        modified,
+        std::time::SystemTime::now(),
+    ))
 }
 
-pub(super) fn mark_mode_recovery_restart(app: &AppHandle) -> Result<(), String> {
-    let marker = mode_recovery_restart_marker(app)?;
+fn mark_mode_restart(app: &AppHandle, reason: &str) -> Result<(), String> {
+    let marker = mode_restart_marker(app)?;
     if let Some(parent) = marker.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|error| format!("failed to create app data directory: {error}"))?;
     }
-    std::fs::write(marker, b"self-only-to-open\n")
+    std::fs::write(marker, format!("{reason}\n"))
         .map_err(|error| format!("failed to write mesh restart marker: {error}"))
 }
 
-pub(super) fn clear_mode_recovery_restart(app: &AppHandle) {
-    if let Ok(marker) = mode_recovery_restart_marker(app) {
+pub(super) fn clear_mode_restart(app: &AppHandle) {
+    if let Ok(marker) = mode_restart_marker(app) {
         match std::fs::remove_file(marker) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -57,6 +68,22 @@ pub(super) enum ModeEvidence {
 pub(super) struct ModeReconcileState {
     pending: Option<ModeEvidence>,
     consecutive_unknown: u8,
+    restart_requested: bool,
+}
+
+impl ModeReconcileState {
+    pub(super) fn restart_requested(&self) -> bool {
+        self.restart_requested
+    }
+
+    pub(super) fn latch_restart(&mut self) -> bool {
+        if self.restart_requested {
+            false
+        } else {
+            self.restart_requested = true;
+            true
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -64,6 +91,22 @@ pub(super) enum ModeReconcileAction {
     Keep,
     AwaitConfirm,
     RestartProcess,
+}
+
+pub(super) fn request_mode_restart(
+    app: &AppHandle,
+    state: &mut ModeReconcileState,
+    reason: &str,
+) -> Result<bool, String> {
+    if state.restart_requested || mode_restart_is_throttled(app)? {
+        return Ok(false);
+    }
+    mark_mode_restart(app, reason)?;
+    if !state.latch_restart() {
+        return Ok(false);
+    }
+    app.request_restart();
+    Ok(true)
 }
 
 /// Require two consecutive mode observations before restarting the whole app.
@@ -107,6 +150,28 @@ pub(super) fn mode_reconcile_action(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn restart_latch_only_arms_once() {
+        let mut state = ModeReconcileState::default();
+        assert!(state.latch_restart());
+        assert!(state.restart_requested());
+        assert!(!state.latch_restart());
+    }
+
+    #[test]
+    fn clock_rollback_keeps_restart_throttled() {
+        let now = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+        let future_marker = now + Duration::from_secs(1);
+        assert!(restart_marker_is_throttled(future_marker, now));
+    }
+
+    #[test]
+    fn old_restart_marker_is_not_throttled() {
+        let marker = std::time::SystemTime::UNIX_EPOCH;
+        let now = marker + MODE_RESTART_COOLDOWN + Duration::from_secs(1);
+        assert!(!restart_marker_is_throttled(marker, now));
+    }
 
     #[test]
     fn transition_requires_two_matching_observations() {
