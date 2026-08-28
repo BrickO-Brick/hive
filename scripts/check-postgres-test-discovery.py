@@ -176,14 +176,13 @@ def integration_binary_is_postgres(path: Path) -> bool:
     )
 
 
-def out_of_line_module_names(path: Path) -> list[str]:
-    """Return sibling module names whose explicit path resolves to path."""
-    names = []
-    resolved_path = path.resolve()
-    for parent_source in path.parent.glob("*.rs"):
-        if parent_source.resolve() == resolved_path:
-            continue
+def out_of_line_module_index(files: list[Path]) -> dict[Path, list[str]]:
+    """Index explicit-path module names by their resolved source file."""
+    names: dict[Path, list[str]] = {}
+    for parent_source in files:
         source = parent_source.read_text(encoding="utf-8")
+        if "path" not in source:
+            continue
         sanitized = sanitize_rust(source)
         for attribute in PATH_ATTRIBUTE.finditer(sanitized):
             equals = source.find("=", attribute.start(), attribute.end())
@@ -191,19 +190,20 @@ def out_of_line_module_names(path: Path) -> list[str]:
             if parsed is None:
                 continue
             module_path, literal_end = parsed
-            if (parent_source.parent / module_path).resolve() != resolved_path:
-                continue
             module = OUT_OF_LINE_MODULE.search(sanitized, literal_end)
             if module is not None:
-                names.append(module.group("name"))
+                resolved_path = (parent_source.parent / module_path).resolve()
+                names.setdefault(resolved_path, []).append(module.group("name"))
     return names
 
 
-def file_has_postgres_lane_test(path: Path) -> bool:
+def file_has_postgres_lane_test(
+    path: Path, out_of_line_modules: dict[Path, list[str]]
+) -> bool:
     source = path.read_text(encoding="utf-8")
     sanitized = sanitize_rust(source)
     ranges = module_ranges(source)
-    external_modules = out_of_line_module_names(path)
+    external_modules = out_of_line_modules.get(path.resolve(), [])
 
     for attribute_start, _attribute_end, reason in ignore_attributes(source, sanitized):
         reason_lower = reason.lower()
@@ -221,11 +221,13 @@ def file_has_postgres_lane_test(path: Path) -> bool:
     return False
 
 
-def postgres_packages(files: list[Path]) -> list[str]:
+def postgres_packages(
+    files: list[Path], out_of_line_modules: dict[Path, list[str]]
+) -> list[str]:
     roots = {
         root
         for path in files
-        if file_has_postgres_lane_test(path)
+        if file_has_postgres_lane_test(path, out_of_line_modules)
         if (root := crate_root(path)) is not None
     }
     packages = []
@@ -239,11 +241,13 @@ def postgres_packages(files: list[Path]) -> list[str]:
     return sorted(packages)
 
 
-def validate_file(path: Path) -> list[str]:
+def validate_file(
+    path: Path, out_of_line_modules: dict[Path, list[str]]
+) -> list[str]:
     source = path.read_text(encoding="utf-8")
     sanitized = sanitize_rust(source)
     ranges = module_ranges(source)
-    external_modules = out_of_line_module_names(path)
+    external_modules = out_of_line_modules.get(path.resolve(), [])
     errors = []
 
     for match in BARE_IGNORE_ATTRIBUTE.finditer(sanitized):
@@ -343,7 +347,12 @@ def main() -> int:
     except ValueError as error:
         print(error, file=sys.stderr)
         return 2
-    errors = [error for path in files for error in validate_file(path)]
+    out_of_line_modules = out_of_line_module_index(files)
+    errors = [
+        error
+        for path in files
+        for error in validate_file(path, out_of_line_modules)
+    ]
     if errors:
         print("PostgreSQL test discovery validation failed:", file=sys.stderr)
         for error in errors:
@@ -351,7 +360,7 @@ def main() -> int:
         return 1
     if print_packages:
         try:
-            packages = postgres_packages(files)
+            packages = postgres_packages(files, out_of_line_modules)
         except (OSError, tomllib.TOMLDecodeError, ValueError) as error:
             print(error, file=sys.stderr)
             return 1
