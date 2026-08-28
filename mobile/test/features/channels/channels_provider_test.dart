@@ -2024,9 +2024,16 @@ void main() {
       final container = _buildContainer(session: session);
       addTearDown(container.dispose);
 
+      final stopwatch = Stopwatch()..start();
       await container.read(channelsProvider.future);
       await _waitUntil(() => session.queryBatches.length == 2);
+      stopwatch.stop();
 
+      expect(
+        stopwatch.elapsed,
+        greaterThanOrEqualTo(const Duration(milliseconds: 450)),
+      );
+      expect(stopwatch.elapsed, lessThan(const Duration(seconds: 2)));
       expect(session.peakNeverEoseSubscriptions, 4);
       expect(session.totalSubscribeCount, 5);
       expect(session.activeChannels, ids.toSet());
