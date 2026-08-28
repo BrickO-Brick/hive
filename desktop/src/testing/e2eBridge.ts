@@ -1053,6 +1053,7 @@ type MockSubscription = {
 
 type MockFilter = {
   "#a"?: string[];
+  "#buzz-channel"?: string[];
   "#d"?: string[];
   "#e"?: string[];
   "#h"?: string[];
@@ -1256,6 +1257,8 @@ declare global {
     }>;
     /** Omits kind 30621 seeds while retaining standalone kind 30617 repositories. */
     __BUZZ_E2E_REPOSITORY_ONLY_PROJECTS__?: boolean;
+    /** Leaves broad project enumeration pending while scoped project queries remain available. */
+    __BUZZ_E2E_DEFER_FULL_PROJECT_QUERIES__?: boolean;
     /** Project-scoped events accepted by the mock relay. */
     __BUZZ_E2E_ACCEPTED_PROJECT_EVENTS__?: Array<{
       content: string;
@@ -3228,7 +3231,7 @@ function mockObservedUnreadProjections(
       badgeCount: 0,
       appBadgeCount: 0,
       topLevelUnread: false,
-      highPriorityUnread: false,
+      highPriorityCount: 0,
     });
   }
   for (const event of scope.events.values()) {
@@ -3250,14 +3253,14 @@ function mockObservedUnreadProjections(
       badgeCount: 0,
       appBadgeCount: 0,
       topLevelUnread: false,
-      highPriorityUnread: false,
+      highPriorityCount: 0,
     };
     projection.latest = Math.max(projection.latest, event.createdAt);
     projection.count += 1;
     projection.badgeCount += event.countsTowardBadge ? 1 : 0;
     projection.appBadgeCount += event.countsTowardAppBadge ? 1 : 0;
     projection.topLevelUnread ||= event.rootId === null;
-    projection.highPriorityUnread ||= event.highPriority;
+    projection.highPriorityCount += event.highPriority ? 1 : 0;
     channels.set(event.channelId, projection);
   }
   return [...channels.values()].sort((left, right) =>
@@ -10488,6 +10491,17 @@ function sendToMockSocket(args: {
           subId,
           "mock project query failure",
         ]);
+        return;
+      }
+      if (
+        window.__BUZZ_E2E_DEFER_FULL_PROJECT_QUERIES__ &&
+        !filter.authors &&
+        !filter["#a"] &&
+        !filter["#buzz-channel"] &&
+        !filter["#d"] &&
+        !filter["#e"] &&
+        !filter.ids
+      ) {
         return;
       }
       for (const event of filterMockProjectEvents(filter)) {
