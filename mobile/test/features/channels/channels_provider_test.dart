@@ -1593,6 +1593,7 @@ void main() {
       addTearDown(container.dispose);
 
       await container.read(channelsProvider.future);
+      await _waitUntil(() => session.activeSubscriptionCount == 2);
 
       // One subscription per joined, non-archived channel.
       expect(session.subscribeFilters, hasLength(2));
@@ -1643,6 +1644,11 @@ void main() {
       addTearDown(container.dispose);
 
       await container.read(channelsProvider.future);
+      await _waitUntil(() => session.activeSubscriptionCount == 2);
+      // Active fake subscriptions become visible just before the notifier
+      // records their unsubscribe handles. Let that synchronous handoff settle
+      // before testing an unchanged refresh.
+      await Future<void>.delayed(const Duration(milliseconds: 10));
       final initialSubscribeCount = session.totalSubscribeCount;
 
       await container.read(channelsProvider.notifier).refresh();
@@ -1709,6 +1715,7 @@ void main() {
       addTearDown(container.dispose);
 
       await container.read(channelsProvider.future);
+      await _waitUntil(() => session.activeSubscriptionCount == 2);
       session.memberships = [];
       session.metadata = [];
 
@@ -1899,6 +1906,58 @@ void main() {
       );
     },
   );
+
+  test('initial list retains a live event overlapping its snapshot', () async {
+    final session = _FakeRelaySession(
+      memberships: [_membership(_channelA, myPk)],
+      metadata: [_meta(id: _channelA, name: 'general')],
+      recentMessages: [
+        NostrEvent(
+          id: 'snapshot',
+          pubkey: 'alice',
+          createdAt: 10,
+          kind: EventKind.streamMessageV2,
+          tags: const [
+            ['h', _channelA],
+          ],
+          content: 'snapshot',
+          sig: 'sig',
+        ),
+      ],
+    )..pauseNextLatestMessageQuery();
+    final container = _buildContainer(session: session);
+    addTearDown(container.dispose);
+
+    final channelsFuture = container.read(channelsProvider.future);
+    await session.nextLatestMessageQueryStarted;
+    await _waitUntil(() => session.activeSubscriptionCount == 1);
+    final live = NostrEvent(
+      id: 'live',
+      pubkey: 'alice',
+      createdAt: 20,
+      kind: EventKind.streamMessageV2,
+      tags: const [
+        ['h', _channelA],
+      ],
+      content: 'live',
+      sig: 'sig',
+    );
+    session.emit(live);
+    session.emit(live);
+    session.resumePausedLatestMessageQuery();
+
+    final channels = await channelsFuture;
+    expect(
+      channels.single.lastMessageAt,
+      DateTime.fromMillisecondsSinceEpoch(20 * 1000, isUtc: true),
+    );
+    expect(
+      container
+          .read(channelsProvider.notifier)
+          .observedUnreadEventsByChannel[_channelA],
+      contains('live'),
+    );
+  });
 
   test('ephemeral (TTL) channels appear in the list', () async {
     // Regression: previously the provider unconditionally dropped any channel
@@ -2402,7 +2461,7 @@ Future<void> _settle() async {
 Future<void> _waitUntil(bool Function() predicate) async {
   for (var i = 0; i < 100; i++) {
     if (predicate()) return;
-    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(const Duration(milliseconds: 5));
   }
   fail('Timed out waiting for asynchronous provider work');
 }
@@ -2439,6 +2498,8 @@ class _FakeRelaySession extends RelaySessionNotifier {
   final List<NostrEvent> huddleStarts;
   List<NostrEvent> recentMessages;
   int membershipFailures;
+  Completer<void>? _pausedLatestMessageQuery;
+  Completer<void>? _latestMessageQueryStarted;
   int directoryFailures = 0;
   bool failClaimedMemberCountQuery = false;
   bool failClaimedUnreadCatchUpQuery = false;
@@ -2483,6 +2544,21 @@ class _FakeRelaySession extends RelaySessionNotifier {
       throw StateError('No paused subscription is pending');
     }
     await started.future;
+  }
+
+  Future<void> get nextLatestMessageQueryStarted async {
+    final started = _latestMessageQueryStarted;
+    if (started == null) throw StateError('No latest-message query pending');
+    await started.future;
+  }
+
+  void pauseNextLatestMessageQuery() {
+    _pausedLatestMessageQuery = Completer<void>();
+    _latestMessageQueryStarted = Completer<void>();
+  }
+
+  void resumePausedLatestMessageQuery() {
+    _pausedLatestMessageQuery!.complete();
   }
 
   void pauseNextSubscribe() {
@@ -2793,6 +2869,16 @@ class _FakeRelaySession extends RelaySessionNotifier {
       return filter.until == null ? directorySnapshot : const [];
     }
     queryBatches.add(filters);
+    final isLatestMessage =
+        filters.isNotEmpty && filters.every((filter) => filter.since == null);
+    if (isLatestMessage && _pausedLatestMessageQuery != null) {
+      final messages = List<NostrEvent>.of(recentMessages);
+      _latestMessageQueryStarted!.complete();
+      await _pausedLatestMessageQuery!.future;
+      _pausedLatestMessageQuery = null;
+      _latestMessageQueryStarted = null;
+      return _matchingMessages(filters, messages);
+    }
     // The unread catch-up is the only batch that carries `since` on every
     // filter; the latest-message batch leaves it null. Snapshot the messages at
     // request time so a parked response reflects the scope that asked for it.
@@ -2814,7 +2900,14 @@ class _FakeRelaySession extends RelaySessionNotifier {
         }
       }
     }
-    return messageSnapshot.where((event) {
+    return _matchingMessages(filters, messageSnapshot);
+  }
+
+  List<NostrEvent> _matchingMessages(
+    List<NostrFilter> filters,
+    List<NostrEvent> messages,
+  ) {
+    return messages.where((event) {
       return filters.any((filter) {
         if (!filter.kinds.contains(event.kind)) return false;
         for (final entry in filter.tags.entries) {

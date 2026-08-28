@@ -331,7 +331,7 @@ void main() {
     expect(gate.isActive, isFalse);
   });
 
-  test('queryRelay does not wait for an active rate-limit gate', () async {
+  test('queryRelay waits for an active rate-limit gate', () async {
     final gate = RelayRateLimitGate(
       now: () => DateTime(2026),
       timerFactory: _ManualTimer.new,
@@ -356,10 +356,10 @@ void main() {
     final query = harness.session.queryRelay(const []);
     await Future<void>.delayed(Duration.zero);
 
-    expect(requestCount, 1);
+    expect(requestCount, 0);
+    gate.reset();
     expect(await query, isEmpty);
-    // Still armed: the read must neither wait on the gate nor clear it.
-    expect(gate.isActive, isTrue);
+    expect(requestCount, 1);
   });
 
   test(
