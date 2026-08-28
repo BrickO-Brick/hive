@@ -6,6 +6,7 @@ import {
   FolderKanban,
   Hash,
   Home,
+  Lock,
   Mic,
   Paperclip,
   Plus,
@@ -16,10 +17,6 @@ import {
 } from "lucide-react";
 import * as React from "react";
 
-import {
-  WelcomeComposerGuidanceLayer,
-  type WelcomeComposerBannerState,
-} from "@/features/channels/ui/WelcomeComposerBanner";
 import { ProfileAvatar } from "@/features/profile/ui/ProfileAvatar";
 import { ChannelIntroBlock } from "@/features/messages/ui/ChannelIntroBlock";
 import { ComposerDockBackdrop } from "@/features/messages/ui/ComposerDockBackdrop";
@@ -29,6 +26,11 @@ import { cn } from "@/shared/lib/cn";
 
 const CHANNEL_ROW_CLASS =
   "flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-sm transition-colors";
+const WELCOME_TEAM = [
+  { name: "Fizz", image: "/onboarding/starter-team/fizz.png" },
+  { name: "Honey", image: "/onboarding/starter-team/honey.png" },
+  { name: "Pollen", image: "/onboarding/starter-team/pollen.png" },
+] as const;
 
 export function WelcomeChannelAppPreview({
   avatarUrl,
@@ -39,10 +41,10 @@ export function WelcomeChannelAppPreview({
   communityName: string;
   displayName: string;
 }) {
-  const [bannerState, setBannerState] =
-    React.useState<WelcomeComposerBannerState>("prompt");
   const [draft, setDraft] = React.useState("");
   const [messages, setMessages] = React.useState<string[]>([]);
+  const [channelName, setChannelName] = React.useState("Welcome");
+  const [showRenamePrompt, setShowRenamePrompt] = React.useState(true);
   const [activePreviewAction, setActivePreviewAction] = React.useState<
     string | null
   >(null);
@@ -77,7 +79,7 @@ export function WelcomeChannelAppPreview({
       },
     ],
     channelKindLabel: "private welcome channel",
-    channelName: "Welcome",
+    channelName,
     description: null,
     icon: <Sparkles aria-hidden className="h-7 w-7" />,
   };
@@ -202,8 +204,8 @@ export function WelcomeChannelAppPreview({
               data-testid="channel-Welcome"
               type="button"
             >
-              <Sparkles className="h-4 w-4" aria-hidden />
-              Welcome
+              <Lock className="h-4 w-4" aria-hidden />
+              {channelName}
             </button>
           </div>
 
@@ -224,18 +226,116 @@ export function WelcomeChannelAppPreview({
 
         <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-background">
           <header className="relative z-20 flex h-14 shrink-0 items-center border-b border-border/55 bg-background/80 px-5 backdrop-blur-md">
-            <Hash className="h-4 w-4 text-muted-foreground" aria-hidden />
+            <Lock className="h-4 w-4 text-muted-foreground" aria-hidden />
             <h1
               className="ml-1 text-base font-semibold"
               data-testid="chat-title"
             >
-              Welcome
+              {channelName}
             </h1>
           </header>
 
           <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-56 pt-4">
             <div className="mx-auto w-full max-w-[920px]">
               <ChannelIntroBlock intro={intro} />
+
+              <section
+                className="mx-3 mt-7 max-w-[680px] border-t border-border/60 pt-6 text-left"
+                data-testid="welcome-preview-community-message"
+              >
+                <p className="text-lg font-semibold">
+                  Welcome to {communityName}
+                </p>
+                <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                  Everyone starts with a private channel to get settled. This
+                  one is yours. Use it to try out features, draft messages, or
+                  work privately with agents.
+                </p>
+              </section>
+
+              {showRenamePrompt ? (
+                <section
+                  className="mx-3 mt-6 flex max-w-[680px] items-center gap-4 rounded-2xl border border-border/70 bg-background/70 px-5 py-4 text-left"
+                  data-testid="welcome-preview-rename-prompt"
+                >
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
+                    <Lock className="h-4 w-4" aria-hidden />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-semibold">
+                      Make this space yours
+                    </p>
+                    <p className="mt-1 text-sm leading-5 text-muted-foreground">
+                      This private channel is yours to keep. Rename it for how
+                      you want to use it.
+                    </p>
+                  </div>
+                  <Button
+                    className="h-9 shrink-0 rounded-full px-5"
+                    onClick={() => {
+                      setChannelName(
+                        profileName === "Your profile"
+                          ? "My space"
+                          : `${profileName}’s space`,
+                      );
+                      setShowRenamePrompt(false);
+                      setActivePreviewAction("Channel details opened");
+                    }}
+                    type="button"
+                    variant="outline"
+                  >
+                    Rename channel
+                  </Button>
+                </section>
+              ) : null}
+
+              <section
+                className="mx-3 mt-6 max-w-[680px] overflow-hidden rounded-2xl border border-border/70 bg-muted/35 text-left"
+                data-testid="welcome-preview-agent-activation"
+              >
+                <div className="flex items-center gap-4 p-5">
+                  <div className="flex shrink-0 -space-x-3">
+                    {WELCOME_TEAM.map((agent) => (
+                      <img
+                        alt={agent.name}
+                        className="h-14 w-14 rounded-2xl border-2 border-background bg-background object-contain"
+                        key={agent.name}
+                        src={agent.image}
+                      />
+                    ))}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <p className="text-base font-semibold">
+                        Bring your starter team online
+                      </p>
+                      <span className="rounded-full bg-foreground/8 px-2 py-0.5 text-xs font-medium text-muted-foreground">
+                        Not connected
+                      </span>
+                    </div>
+                    <p className="mt-1.5 text-sm leading-5 text-muted-foreground">
+                      Connect an AI provider to start Fizz, Honey, and Pollen.
+                      They can help you learn Buzz and work through something
+                      you’re building.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between border-t border-border/60 bg-background/45 px-5 py-3">
+                  <p className="text-xs text-muted-foreground">
+                    You can change providers or agents later.
+                  </p>
+                  <Button
+                    className="h-9 rounded-full px-5"
+                    onClick={() =>
+                      setActivePreviewAction("Connect AI provider")
+                    }
+                    type="button"
+                  >
+                    Connect AI provider
+                  </Button>
+                </div>
+              </section>
+
               {messages.map((message, index) => (
                 <div
                   className="mt-5 flex items-start gap-3 px-3 text-left"
@@ -257,14 +357,6 @@ export function WelcomeChannelAppPreview({
 
           <div className="pointer-events-none absolute inset-x-0 bottom-0 z-40 isolate before:absolute before:inset-x-0 before:bottom-0 before:-z-10 before:h-24 before:bg-gradient-to-b before:from-transparent before:to-background before:content-[''] after:absolute after:inset-x-0 after:bottom-0 after:-z-10 after:h-12 after:bg-background after:content-['']">
             <div className="composer-dock composer-overlay-corner-masks relative pointer-events-auto">
-              {bannerState !== "hidden" ? (
-                <WelcomeComposerGuidanceLayer
-                  onDismiss={() => setBannerState("hidden")}
-                  state={bannerState}
-                >
-                  {null}
-                </WelcomeComposerGuidanceLayer>
-              ) : null}
               <ComposerDockBackdrop gutterClassName="inset-x-5" />
               <form
                 className="relative z-10 mx-5 rounded-2xl border border-border/50 bg-background/80 px-4 pb-2 pt-3 shadow-none backdrop-blur-md"
@@ -272,11 +364,11 @@ export function WelcomeChannelAppPreview({
                 onSubmit={submitDraft}
               >
                 <textarea
-                  aria-label="Message Welcome"
+                  aria-label={`Message ${channelName}`}
                   className="min-h-11 w-full resize-none bg-transparent text-sm leading-5 outline-none placeholder:text-muted-foreground/65"
                   data-testid="welcome-preview-composer-input"
                   onChange={(event) => setDraft(event.target.value)}
-                  placeholder="Message #Welcome"
+                  placeholder={`Message #${channelName}`}
                   rows={2}
                   value={draft}
                 />
