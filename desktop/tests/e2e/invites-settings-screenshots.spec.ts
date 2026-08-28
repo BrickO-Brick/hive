@@ -115,7 +115,7 @@ test("builds a personalized welcome sequence", async ({ page }) => {
   await expect(welcomeSettings).toBeVisible();
   await welcomeSettings.scrollIntoViewIfNeeded();
   const welcomeRow = welcomeSettings.getByTestId("welcome-channel-row");
-  await expect(welcomeRow).toContainText("Welcome channel");
+  await expect(welcomeRow).toContainText("Custom welcome message");
   await expect(
     welcomeRow.getByRole("button", { name: "Create" }),
   ).toBeVisible();
@@ -385,7 +385,7 @@ test("builds a personalized welcome sequence", async ({ page }) => {
   await expect(welcomeRow.getByRole("button", { name: "Edit" })).toBeVisible();
   await welcomeRow.getByRole("button", { name: "Edit" }).click();
   await expect(
-    builder.getByRole("heading", { name: "Edit welcome message" }),
+    builder.getByRole("heading", { name: "Custom welcome message" }),
   ).toBeVisible();
   await expect(builder.getByRole("button", { name: "Save" })).toBeDisabled();
 });

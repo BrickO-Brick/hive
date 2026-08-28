@@ -82,12 +82,13 @@ export function WelcomeChannelSettings() {
       <SettingsOptionGroup>
         <SettingsOptionRow data-testid="welcome-channel-row">
           <div className="min-w-0 flex-1">
-            <p className="text-sm font-medium">Welcome channel</p>
+            <p className="text-sm font-medium">Custom welcome message</p>
             <p
               className="text-xs text-muted-foreground/70"
               data-settings-subcopy
             >
-              Set the message new members see when they join.
+              Create a message new members will see in their own Welcome
+              channel.
             </p>
           </div>
           <Button
@@ -109,15 +110,13 @@ export function WelcomeChannelSettings() {
           <DialogHeader>
             <DialogTitle>
               {creationMode === "assist"
-                ? "Help me write a welcome message"
-                : savedMessage
-                  ? "Edit welcome message"
-                  : "Create a welcome message"}
+                ? "Get writing help"
+                : "Custom welcome message"}
             </DialogTitle>
             <DialogDescription>
               {creationMode === "assist"
-                ? "Describe what you want new members to know. We’ll create a structured draft you can edit."
-                : "Write freely, then right-click to insert a member, link, image, or channel."}
+                ? "Describe what new members should know, and generate a draft you can edit."
+                : "Welcome new members and share helpful information, channels, and community practices. Right-click to add names, channels, images, or links."}
             </DialogDescription>
           </DialogHeader>
 
@@ -129,11 +128,12 @@ export function WelcomeChannelSettings() {
                   autoFocus
                   className="min-h-0 flex-1 resize-none rounded-2xl border-border/50 bg-background/80 px-4 py-3 text-base shadow-none placeholder:text-muted-foreground/65"
                   onChange={(event) => setAssistantPrompt(event.target.value)}
-                  placeholder="Welcome new members by name, ask them to introduce themselves in #introductions, and share our community guide and team photo."
+                  placeholder="Welcome new members by name. Ask them to introduce themselves in #introductions, then share our community guide and team photo."
                   value={assistantPrompt}
                 />
                 <p className="text-xs text-muted-foreground">
-                  Include the tone, links, images, and channels you want to use.
+                  Describe the tone and include any links, images, or channels
+                  you want to share.
                 </p>
               </div>
 
@@ -143,7 +143,7 @@ export function WelcomeChannelSettings() {
                   type="button"
                   variant="ghost"
                 >
-                  Create manually
+                  Back to editor
                 </Button>
                 <Button
                   aria-busy={isGenerating}

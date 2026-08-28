@@ -78,13 +78,19 @@ const NEW_MEMBER_TOKEN = "{{member}}";
 const ALL_TOKEN_PATTERN = /\{\{member\}\}|\{\{insert:([^}]+)\}\}/g;
 
 export const DEFAULT_MESSAGE: WelcomeMessage = {
-  text: `Welcome, ${NEW_MEMBER_TOKEN}! We’re so glad you’re here. Take a look around and tell us what you’re excited to build.\n\nIntroduce yourself and visit {{insert:community-guide}} to get started.`,
+  text: `Welcome, ${NEW_MEMBER_TOKEN}! We’re glad you’re here. Take a look around.\n\nIntroduce yourself in {{insert:choose-channel}}, and visit {{insert:add-link}} to learn more about our community.`,
   inserts: [
     {
-      id: "community-guide",
+      id: "choose-channel",
+      type: "channel",
+      title: "Choose a channel",
+      url: "",
+    },
+    {
+      id: "add-link",
       type: "link",
-      title: "Community guide",
-      url: "https://example.com/community-guide",
+      title: "Add a link",
+      url: "",
     },
   ],
 };
