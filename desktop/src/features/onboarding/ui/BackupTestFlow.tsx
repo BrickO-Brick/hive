@@ -65,6 +65,16 @@ type BackupTestFlowProps = {
   onProgressChange: React.Dispatch<React.SetStateAction<BackupTestProgress>>;
   /** Fired once when the user completes the test successfully. */
   onVerified?: () => void;
+  /** Replace native verification and identity reads in the dev-only preview. */
+  previewMode?: boolean;
+};
+
+const PREVIEW_BACKUP_FILENAME = "Buzz identity backup.ncryptsec";
+const PREVIEW_PRIVATE_KEY = `nsec1${"q".repeat(58)}`;
+const PREVIEW_VERIFICATION: BackupVerification = {
+  matchesCurrentIdentity: true,
+  npub: `npub1${"q".repeat(58)}`,
+  pubkey: "e5ebc6cdb579be112e336cc319b5989b4bb6af11786ea90dbe52b5f08d741b34",
 };
 
 const BURST_EMOJIS = ["🎉", "✨", "🐝", "🍯", "🔑", "💛"] as const;
@@ -204,6 +214,7 @@ export function BackupTestFlow({
   progress,
   onProgressChange,
   onVerified,
+  previewMode = false,
 }: BackupTestFlowProps) {
   const reduceMotion = useReducedMotion() ?? false;
   const { stage, fileName, ncryptsec, result } = progress;
@@ -318,7 +329,9 @@ export function BackupTestFlow({
     // the typed password never lingers in the field.
     setAttempt("");
     try {
-      const verified = await verifyNcryptsecBackup(ncryptsec, password);
+      const verified = previewMode
+        ? PREVIEW_VERIFICATION
+        : await verifyNcryptsecBackup(ncryptsec, password);
       if (!mountedRef.current || requestId !== requestRef.current) return;
       onProgressChange((prev) => ({
         ...prev,
@@ -335,7 +348,14 @@ export function BackupTestFlow({
       if (mountedRef.current && requestId === requestRef.current)
         setIsVerifying(false);
     }
-  }, [attempt, isVerifying, ncryptsec, onProgressChange, onVerified]);
+  }, [
+    attempt,
+    isVerifying,
+    ncryptsec,
+    onProgressChange,
+    onVerified,
+    previewMode,
+  ]);
 
   const toggleSuccessNsec = React.useCallback(async () => {
     if (isSuccessNsecRevealed) {
@@ -349,7 +369,7 @@ export function BackupTestFlow({
     setIsLoadingSuccessNsec(true);
     setSuccessNsecError(null);
     try {
-      const value = await getNsec();
+      const value = previewMode ? PREVIEW_PRIVATE_KEY : await getNsec();
       if (!mountedRef.current) return;
       setSuccessNsec(value);
       setIsSuccessNsecRevealed(true);
@@ -361,7 +381,7 @@ export function BackupTestFlow({
     } finally {
       if (mountedRef.current) setIsLoadingSuccessNsec(false);
     }
-  }, [isSuccessNsecRevealed, successNsec]);
+  }, [isSuccessNsecRevealed, previewMode, successNsec]);
 
   const isSpotlight = variant === "spotlight";
 
@@ -527,7 +547,20 @@ export function BackupTestFlow({
                 : "h-9 px-6 text-primary-foreground",
             )}
             data-testid="backup-test-dropzone"
-            onClick={() => fileInputRef.current?.click()}
+            onClick={() => {
+              if (previewMode && expectedNcryptsec) {
+                setError(null);
+                setAttempt("");
+                onProgressChange({
+                  stage: "password",
+                  fileName: PREVIEW_BACKUP_FILENAME,
+                  ncryptsec: expectedNcryptsec,
+                  result: null,
+                });
+                return;
+              }
+              fileInputRef.current?.click();
+            }}
             type="button"
           >
             <span className="font-medium text-sm">Select your backup file</span>

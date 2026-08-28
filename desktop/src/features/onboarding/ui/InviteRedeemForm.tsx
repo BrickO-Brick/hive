@@ -12,6 +12,7 @@ import {
   isJoinPolicyDiscoveryCandidate,
   type JoinPolicy,
 } from "@/shared/api/invites";
+import { relayRequiresMembership } from "@/shared/api/relayMembers";
 import { normalizeRelayUrl } from "@/features/communities/relayProbe";
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
@@ -55,6 +56,7 @@ type InviteRedeemFormProps = {
   isRedeeming: boolean;
   onCancel: () => void;
   onConnect?: (relayWsUrl: string) => void;
+  onMembershipRequirementChange?: (required: boolean) => void;
   onRedeem: (relayWsUrl: string, code: string, policyReceipt?: string) => void;
   placeholder?: string;
   /** Render the production form without discovery or relay requests. */
@@ -69,6 +71,7 @@ export function InviteRedeemForm({
   isRedeeming,
   onCancel,
   onConnect,
+  onMembershipRequirementChange,
   onRedeem,
   placeholder,
   previewMode = false,
@@ -140,6 +143,42 @@ export function InviteRedeemForm({
       window.clearTimeout(timeoutId);
     };
   }, [bareCodeRelayUrl, normalizedRelayUrl, parsedInvite, previewMode]);
+
+  React.useEffect(() => {
+    if (!onMembershipRequirementChange) return;
+
+    onMembershipRequirementChange(false);
+    if (!normalizedRelayUrl || parsedInvite?.code) return;
+
+    let cancelled = false;
+    const timeoutId = window.setTimeout(() => {
+      if (previewMode) {
+        // The workshop preview stays offline while still demonstrating the
+        // conditional state a membership-gated community would produce.
+        if (!cancelled) onMembershipRequirementChange(true);
+        return;
+      }
+
+      void relayRequiresMembership(normalizedRelayUrl)
+        .then((required) => {
+          if (!cancelled) onMembershipRequirementChange(required);
+        })
+        .catch(() => {
+          // Discovery is best-effort. The connection flow remains the
+          // authoritative fallback when relay information is unavailable.
+        });
+    }, POLICY_DISCOVERY_DELAY_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [
+    normalizedRelayUrl,
+    onMembershipRequirementChange,
+    parsedInvite?.code,
+    previewMode,
+  ]);
 
   const canSubmit =
     previewMode ||
@@ -274,6 +313,7 @@ export function InviteRedeemForm({
     event: React.ChangeEvent<HTMLInputElement>,
   ) => {
     setInviteInput(event.target.value);
+    onMembershipRequirementChange?.(false);
     setJoinPolicy(null);
     setPolicyTarget(null);
     setAgeConfirmed(false);
@@ -285,6 +325,7 @@ export function InviteRedeemForm({
     event: React.ChangeEvent<HTMLInputElement>,
   ) => {
     setBareCodeRelayUrl(event.target.value);
+    onMembershipRequirementChange?.(false);
     setJoinPolicy(null);
     setPolicyTarget(null);
     setAgeConfirmed(false);

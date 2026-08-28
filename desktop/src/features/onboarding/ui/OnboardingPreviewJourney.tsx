@@ -5,13 +5,11 @@ import { HostedCommunityOnboarding } from "@/features/communities/ui/HostedCommu
 import { pubkeyToNpub } from "@/shared/lib/nostrUtils";
 import { Button } from "@/shared/ui/button";
 import { Card } from "@/shared/ui/card";
-import { Input } from "@/shared/ui/input";
 import { InviteRedeemForm } from "./InviteRedeemForm";
 import { CommunityProfileStage } from "./CommunityProfileStage";
-import {
-  ONBOARDING_PRIMARY_CTA_CLASS,
-  ONBOARDING_SECONDARY_CTA_CLASS,
-} from "./OnboardingChrome";
+import { DownloadKeyStep } from "./DownloadKeyStep";
+import type { EncryptedBackupSession } from "./EncryptedBackupCreator";
+import { ONBOARDING_PRIMARY_CTA_CLASS } from "./OnboardingChrome";
 import { OnboardingFooter } from "./OnboardingFooter";
 import { OnboardingPreviewStep } from "./OnboardingPreviewShell";
 import { OnboardingSlideTransition } from "./OnboardingSlideTransition";
@@ -25,189 +23,31 @@ const PREVIEW_PUBLIC_ID = pubkeyToNpub(
   "e5ebc6cdb579be112e336cc319b5989b4bb6af11786ea90dbe52b5f08d741b34",
 );
 
-function LabeledField({
-  id,
-  label,
-  onChange,
-  placeholder,
-  type = "text",
-  value,
-}: {
-  id: string;
-  label: string;
-  onChange: (value: string) => void;
-  placeholder: string;
-  type?: "password" | "text" | "url";
-  value: string;
-}) {
-  return (
-    <label className="block w-full text-left" htmlFor={id}>
-      <span className="mb-2 block pl-3 text-sm font-medium text-foreground">
-        {label}
-      </span>
-      <Input
-        autoComplete="off"
-        className={FIELD_CLASS}
-        id={id}
-        onChange={(event) => onChange(event.target.value)}
-        placeholder={placeholder}
-        type={type}
-        value={value}
-      />
-    </label>
-  );
-}
-
-type BackupPhase = "password" | "saved" | "verify" | "verified";
-
 export function BackupPasswordPreview({
   onBack,
   onDone,
+  session,
 }: {
   onBack: () => void;
   onDone: () => void;
+  session: EncryptedBackupSession;
 }) {
-  const [phase, setPhase] = React.useState<BackupPhase>("password");
-  const [password, setPassword] = React.useState("");
-  const [verificationPassword, setVerificationPassword] = React.useState("");
-  const heading =
-    phase === "verified"
-      ? "Your backup is verified"
-      : phase === "verify"
-        ? "That’s your backup file"
-        : phase === "saved"
-          ? "Optionally, test your backup"
-          : "Backup your key with a password";
-  const description =
-    phase === "verified"
-      ? "Your file and password can restore your identity."
-      : phase === "verify"
-        ? "Now enter your password to prove you can unlock it."
-        : phase === "saved"
-          ? "Learn how your backup works. Choose the file you just saved and unlock it with your password."
-          : "Keep the downloaded file private — you need both it and your password to restore your identity. Save the backup password somewhere safe; Buzz cannot reset it if lost.";
+  const [testRequested, setTestRequested] = React.useState(false);
 
   return (
     <OnboardingPreviewStep
-      onBack={phase === "password" ? onBack : () => setPhase("password")}
+      onBack={testRequested ? () => setTestRequested(false) : onBack}
       security
       testId="onboarding-preview-backup-password"
     >
-      <OnboardingSlideTransition
-        className="flex min-h-0 w-full flex-col items-center"
-        transitionKey={`preview-backup-${phase}`}
-      >
-        <div className="w-full max-w-[500px] shrink-0 text-center">
-          <h1 className="text-title font-normal text-foreground">{heading}</h1>
-          <p className="mt-5 text-sm leading-6 text-foreground/80">
-            {description}
-          </p>
-        </div>
-        <div className="flex w-full max-w-[560px] flex-1 items-center justify-center py-10">
-          {phase === "password" ? (
-            <div className="w-full space-y-5">
-              <LabeledField
-                id="preview-backup-password"
-                label="Backup password"
-                onChange={setPassword}
-                placeholder="Create a backup password"
-                type="password"
-                value={password}
-              />
-              <Card className="px-5 py-4 text-left" variant="textured">
-                <p className="text-sm font-medium">Buzz identity backup</p>
-                <p className="mt-1 text-xs leading-5 text-foreground/65">
-                  Protected with your backup password and ready to save.
-                </p>
-              </Card>
-            </div>
-          ) : phase === "saved" ? (
-            <Card
-              className="flex w-full items-center gap-4 px-6 py-5 text-left"
-              variant="textured"
-            >
-              <span className="flex h-10 w-10 items-center justify-center rounded-full bg-green-600 text-white">
-                <Check className="h-5 w-5" aria-hidden />
-              </span>
-              <span>
-                <span className="block text-sm font-medium">
-                  Buzz identity backup saved
-                </span>
-                <span className="mt-1 block text-xs text-foreground/65">
-                  Keep the file and password somewhere safe.
-                </span>
-              </span>
-            </Card>
-          ) : phase === "verify" ? (
-            <div className="w-full space-y-5">
-              <Card className="px-5 py-4 text-left" variant="textured">
-                <p className="text-sm font-medium">Buzz identity backup</p>
-                <p className="mt-1 text-xs text-foreground/65">
-                  Selected and ready to unlock.
-                </p>
-              </Card>
-              <LabeledField
-                id="preview-backup-verification-password"
-                label="Backup password"
-                onChange={setVerificationPassword}
-                placeholder="Enter your backup password"
-                type="password"
-                value={verificationPassword}
-              />
-            </div>
-          ) : (
-            <span className="flex h-20 w-20 items-center justify-center rounded-full bg-green-600 text-white shadow-sm">
-              <Check className="h-10 w-10" aria-hidden />
-            </span>
-          )}
-        </div>
-        <OnboardingFooter>
-          {phase === "password" ? (
-            <Button
-              className={ONBOARDING_PRIMARY_CTA_CLASS}
-              data-testid="preview-create-locked-backup"
-              disabled={!password}
-              onClick={() => setPhase("saved")}
-            >
-              Create locked backup
-            </Button>
-          ) : phase === "saved" ? (
-            <>
-              <Button
-                className={ONBOARDING_PRIMARY_CTA_CLASS}
-                data-testid="preview-test-backup"
-                onClick={() => setPhase("verify")}
-              >
-                Test backup
-              </Button>
-              <Button
-                className={ONBOARDING_SECONDARY_CTA_CLASS}
-                onClick={onDone}
-                variant="ghost"
-              >
-                Skip for now
-              </Button>
-            </>
-          ) : phase === "verify" ? (
-            <Button
-              className={ONBOARDING_PRIMARY_CTA_CLASS}
-              data-testid="preview-verify-backup"
-              disabled={!verificationPassword}
-              onClick={() => setPhase("verified")}
-            >
-              Verify backup
-            </Button>
-          ) : (
-            <Button
-              className={ONBOARDING_PRIMARY_CTA_CLASS}
-              data-testid="preview-finish-backup"
-              onClick={onDone}
-            >
-              Finish
-            </Button>
-          )}
-        </OnboardingFooter>
-      </OnboardingSlideTransition>
+      <DownloadKeyStep
+        direction="forward"
+        onBack={onDone}
+        onPreviewTestRequest={() => setTestRequested(true)}
+        previewMode
+        previewTestRequested={testRequested}
+        session={session}
+      />
     </OnboardingPreviewStep>
   );
 }
@@ -403,6 +243,7 @@ export function CommunityEntryPreview({
   total?: number;
 }) {
   const [copiedPublicId, setCopiedPublicId] = React.useState(false);
+  const [membershipRequired, setMembershipRequired] = React.useState(false);
   const heading =
     route === "existing" ? "Reconnect to your community" : "Join a community";
   const continueToCommunity = () => onContinue("Block Community");
@@ -434,22 +275,22 @@ export function CommunityEntryPreview({
             isRedeeming={false}
             onCancel={onBack}
             onConnect={continueToCommunity}
+            onMembershipRequirementChange={
+              route === "join" ? setMembershipRequired : undefined
+            }
             onRedeem={continueToCommunity}
             placeholder="Invite link or community URL"
             previewMode
             variant="onboarding-spotlight"
           />
-          {route === "join" ? (
-            <div className="w-full max-w-[560px] text-left">
+          {route === "join" && membershipRequired ? (
+            <div aria-live="polite" className="w-full max-w-[560px] text-left">
               <p className="text-sm font-medium text-foreground">
-                {previewVariant === "v3"
-                  ? "Need to request access to a community?"
-                  : "Joining a private community?"}
+                You’ll need to request access to this community
               </p>
               <p className="mt-2 text-sm leading-6 text-foreground/75">
-                {previewVariant === "v3"
-                  ? "Some communities require an admin to add you before you can join. Copy your public ID and send it to them."
-                  : "Some communities need the owner to add you before you can join. Copy your public ID and send it to the community owner."}
+                This community requires an admin to add you before you can join.
+                Copy your public ID and send it to them.
               </p>
               <div className="mt-4 flex items-center gap-3 rounded-xl border border-foreground/10 bg-background/35 px-4 py-3">
                 <code className="min-w-0 flex-1 truncate font-mono text-xs text-foreground/80">

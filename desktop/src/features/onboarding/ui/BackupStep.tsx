@@ -1,9 +1,11 @@
 import {
   Check,
+  CircleSlash2,
   Copy,
   Download,
   Eye,
   EyeOff,
+  HardDriveDownload,
   Info,
   ShieldCheck,
 } from "lucide-react";
@@ -17,6 +19,8 @@ import { writeTextToClipboard } from "@/shared/lib/clipboard";
 import { Button } from "@/shared/ui/button";
 import { FuzzyLogo } from "@/shared/ui/buzz-logo/FuzzyLogo";
 import { Card } from "@/shared/ui/card";
+import { SpoilerInline } from "@/shared/ui/markdown/SpoilerInline";
+import { supportsSpoilerParticles } from "@/shared/ui/SpoilerParticles";
 import { Spinner } from "@/shared/ui/spinner";
 import {
   ONBOARDING_PRIMARY_CTA_CLASS,
@@ -63,8 +67,10 @@ type BackupStepProps = {
   onOpenPasswordBackup: () => void;
   onShowOptions: () => void;
   optionsExpanded: boolean;
+  lockedBackupCreated?: boolean;
   previewMode?: boolean;
   returningFromSecurity: boolean;
+  showPreviewBackupShortcut?: boolean;
 };
 
 /**
@@ -80,8 +86,10 @@ export function BackupStep({
   onOpenPasswordBackup,
   onShowOptions,
   optionsExpanded,
+  lockedBackupCreated = false,
   previewMode = false,
   returningFromSecurity,
+  showPreviewBackupShortcut = true,
 }: BackupStepProps) {
   const reduceMotion = useReducedMotion() ?? false;
   const [created, setCreated] = React.useState(introPlayed || reduceMotion);
@@ -91,6 +99,10 @@ export function BackupStep({
   const [copyError, setCopyError] = React.useState<string | null>(null);
   const [nsec, setNsec] = React.useState<string | null>(null);
   const [isRevealed, setIsRevealed] = React.useState(false);
+  const canUseSpoilerParticles = React.useMemo(
+    () => previewMode && supportsSpoilerParticles(),
+    [previewMode],
+  );
   const cancelledRef = React.useRef(false);
   const copiedTimerRef = React.useRef<number | null>(null);
 
@@ -199,108 +211,167 @@ export function BackupStep({
       >
         <div className="flex w-full max-w-140 shrink-0 flex-col text-center">
           <h1 className="text-title font-normal text-foreground">
-            {previewMode ? "Back up your identity" : "Backup options"}
+            {previewMode ? "Create a private identity key" : "Backup options"}
           </h1>
-          <p className="mt-5 text-sm leading-6 text-foreground/75">
-            {previewMode
-              ? "Buzz keeps your identity key protected on this device, but you should make a separate backup in case you lose access."
-              : "Your identity key works like a password for your Buzz account. Keep a copy somewhere safe. You can create a backup file and lock it with a password you can remember."}
-          </p>
+          {previewMode ? (
+            <div className="mt-3">
+              <IdentityKeyHelpDialog inline previewMode />
+            </div>
+          ) : (
+            <p className="mt-5 text-sm leading-6 text-foreground/75">
+              Your identity key works like a password for your Buzz account.
+              Keep a copy somewhere safe. You can create a backup file and lock
+              it with a password you can remember.
+            </p>
+          )}
         </div>
 
-        <div className="flex w-full max-w-260 flex-1 flex-col justify-center py-10">
-          <div
-            className="grid w-full grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3"
-            data-testid="backup-options"
-          >
+        {previewMode ? (
+          <div className="flex w-full max-w-[560px] flex-1 items-center py-10">
             <div
-              className={cn(BACKUP_OPTION_CLASS, "md:col-span-2 lg:col-span-1")}
-              data-testid="backup-option-panel"
+              className="w-full space-y-6"
+              data-testid="onboarding-preview-key-guidance"
             >
-              <span className="text-lg font-medium">{storageTitle}</span>
-              <span className="mt-3 block text-sm leading-6 text-foreground/65">
-                {storageDescription}
-              </span>
-            </div>
-
-            <div
-              className={BACKUP_OPTION_CLASS}
-              data-testid="backup-option-panel"
-            >
-              <span className="text-lg font-medium">
-                {previewMode
-                  ? "Save in your password manager"
-                  : "Saved in your password manager"}
-              </span>
-              <span className="mt-3 block text-sm leading-6 text-foreground/65">
-                Copy your identity key, then save it in a password manager like
-                1Password.
-              </span>
-              <Button
-                className={cn(
-                  ONBOARDING_SECONDARY_CTA_CLASS,
-                  "mt-5 w-fit gap-2 px-5",
-                )}
-                data-testid="backup-copy-key"
-                disabled={copyState === "copying"}
-                onClick={() => void copyKeyToClipboard()}
-                type="button"
-                variant="ghost"
-              >
-                {copyState === "copying" ? (
-                  <Spinner className="h-4 w-4 border-2" />
-                ) : copyState === "copied" ? (
-                  <Check className="h-4 w-4" aria-hidden="true" />
-                ) : (
-                  <Copy className="h-4 w-4" aria-hidden="true" />
-                )}
-                {copyState === "copying"
-                  ? "Copying…"
-                  : copyState === "copied"
-                    ? "Copied to clipboard"
-                    : "Copy to clipboard"}
-              </Button>
-            </div>
-
-            <div
-              className={BACKUP_OPTION_CLASS}
-              data-testid="backup-option-panel"
-            >
-              <span className="text-lg font-medium">
-                {previewMode
-                  ? "Create a locked backup"
-                  : "Locked in a backup file"}
-              </span>
-              <span className="mt-3 block text-sm leading-6 text-foreground/65">
-                Create a backup file and choose a password you can remember.
-                You’ll need both to restore your account.
-              </span>
-              <Button
-                className={cn(
-                  ONBOARDING_SECONDARY_CTA_CLASS,
-                  "mt-5 w-fit gap-2 px-5",
-                )}
-                data-testid="backup-option-password"
-                onClick={onOpenPasswordBackup}
-                type="button"
-                variant="ghost"
-              >
-                <ShieldCheck className="h-5 w-5" aria-hidden="true" />
-                Create locked backup
-              </Button>
+              <div className="flex min-h-14 items-center gap-4 text-left">
+                <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-foreground/10 text-foreground/80">
+                  <ShieldCheck className="h-5 w-5" aria-hidden="true" />
+                </span>
+                <p className="text-base leading-6 text-foreground">
+                  Keep it private and secure at all times.
+                </p>
+              </div>
+              <div className="flex min-h-14 items-center gap-4 text-left">
+                <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-foreground/10 text-foreground/80">
+                  <CircleSlash2 className="h-5 w-5" aria-hidden="true" />
+                </span>
+                <p className="text-base leading-6 text-foreground">
+                  Don’t share it with anyone.
+                </p>
+              </div>
+              <div className="flex min-h-14 items-center gap-4 text-left">
+                <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-foreground/10 text-foreground/80">
+                  <HardDriveDownload className="h-5 w-5" aria-hidden="true" />
+                </span>
+                <p className="text-base leading-6 text-foreground">
+                  Keep a backup because Buzz can’t reset or recover it.
+                </p>
+              </div>
             </div>
           </div>
-
-          {copyError ? (
-            <p
-              className="mt-4 text-center text-sm text-destructive"
-              data-testid="backup-copy-error"
+        ) : (
+          <div className="flex w-full max-w-260 flex-1 flex-col justify-center py-10">
+            <div
+              className="grid w-full grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3"
+              data-testid="backup-options"
             >
-              Could not retrieve your private key: {copyError}. You can continue
-              and find it later in Settings &gt; Profile &gt; Identity.
-            </p>
-          ) : null}
-        </div>
+              <div
+                className={cn(
+                  BACKUP_OPTION_CLASS,
+                  "md:col-span-2 lg:col-span-1",
+                )}
+                data-testid="backup-option-panel"
+              >
+                <span className="text-lg font-medium">{storageTitle}</span>
+                <span className="mt-3 block text-sm leading-6 text-foreground/65">
+                  {storageDescription}
+                </span>
+              </div>
+
+              <div
+                className={BACKUP_OPTION_CLASS}
+                data-testid="backup-option-panel"
+              >
+                <span className="text-lg font-medium">
+                  Saved in your password manager
+                </span>
+                <span className="mt-3 block text-sm leading-6 text-foreground/65">
+                  Copy your identity key, then save it in a password manager
+                  like 1Password.
+                </span>
+                <Button
+                  className={cn(
+                    ONBOARDING_SECONDARY_CTA_CLASS,
+                    "mt-5 w-fit gap-2 px-5",
+                  )}
+                  data-testid="backup-copy-key"
+                  disabled={copyState === "copying"}
+                  onClick={() => void copyKeyToClipboard()}
+                  type="button"
+                  variant="ghost"
+                >
+                  {copyState === "copying" ? (
+                    <Spinner className="h-4 w-4 border-2" />
+                  ) : copyState === "copied" ? (
+                    <Check className="h-4 w-4" aria-hidden="true" />
+                  ) : (
+                    <Copy className="h-4 w-4" aria-hidden="true" />
+                  )}
+                  {copyState === "copying"
+                    ? "Copying…"
+                    : copyState === "copied"
+                      ? "Copied to clipboard"
+                      : "Copy to clipboard"}
+                </Button>
+              </div>
+
+              <div
+                className={BACKUP_OPTION_CLASS}
+                data-testid="backup-option-panel"
+              >
+                <span className="text-lg font-medium">
+                  Locked in a backup file
+                </span>
+                <span className="mt-3 block text-sm leading-6 text-foreground/65">
+                  Create a backup file and choose a password you can remember.
+                  You’ll need both to restore your account.
+                </span>
+                <Button
+                  className={cn(
+                    ONBOARDING_SECONDARY_CTA_CLASS,
+                    "mt-5 w-fit gap-2 px-5",
+                  )}
+                  data-testid="backup-option-password"
+                  onClick={onOpenPasswordBackup}
+                  type="button"
+                  variant="ghost"
+                >
+                  {lockedBackupCreated ? (
+                    <Check className="h-5 w-5" aria-hidden="true" />
+                  ) : (
+                    <ShieldCheck className="h-5 w-5" aria-hidden="true" />
+                  )}
+                  {lockedBackupCreated
+                    ? "Created locked backup"
+                    : "Create locked backup"}
+                </Button>
+              </div>
+            </div>
+
+            {copyError ? (
+              <p
+                className="mt-4 text-center text-sm text-destructive"
+                data-testid="backup-copy-error"
+              >
+                Could not retrieve your private key: {copyError}. You can
+                continue and find it later in Settings &gt; Profile &gt;
+                Identity.
+              </p>
+            ) : null}
+          </div>
+        )}
+
+        {previewMode ? (
+          <OnboardingFooter>
+            <Button
+              className={ONBOARDING_PRIMARY_CTA_CLASS}
+              data-testid="onboarding-preview-private-key-next"
+              onClick={onNext}
+              type="button"
+            >
+              I understand, generate key
+            </Button>
+          </OnboardingFooter>
+        ) : null}
       </OnboardingSlideTransition>
     );
   }
@@ -320,7 +391,7 @@ export function BackupStep({
           key={created ? "created" : "creating"}
         >
           {created && previewMode
-            ? "Your identity key is ready"
+            ? "Your private identity key"
             : created
               ? "Your unique identity key has been created"
               : "Creating your identity key"}
@@ -333,10 +404,7 @@ export function BackupStep({
             )}
           >
             {previewMode ? (
-              <>
-                This works as the login and password for your Buzz account. Use
-                it to access Buzz from any device.
-              </>
+              "Keep this key private. Anyone who has it can access your account."
             ) : (
               <>
                 {introStorageDescription} You can continue now, or{" "}
@@ -379,59 +447,103 @@ export function BackupStep({
             <Card className="px-8 py-6" variant="textured">
               <div className="mx-auto flex w-full min-w-0 max-w-[832px] items-center gap-4">
                 <div className="min-w-0 flex-1">
-                  <p
-                    className={cn(
-                      ONBOARDING_KEY_TEXT_CLASS,
-                      isRevealed && nsec
-                        ? "select-text"
-                        : "select-none blur-[4px]",
-                    )}
-                    data-testid="backup-key-value"
-                  >
-                    {isRevealed && nsec ? nsec : maskedKey}
-                  </p>
-                </div>
-                <Button
-                  aria-label={
-                    isRevealed ? "Hide private key" : "Reveal private key"
-                  }
-                  className="h-10 w-10 shrink-0 text-muted-foreground hover:text-foreground"
-                  data-testid="backup-key-reveal-toggle"
-                  onClick={() => void toggleReveal()}
-                  size="icon"
-                  type="button"
-                  variant="ghost"
-                >
-                  {isRevealed ? (
-                    <EyeOff className="h-6 w-6" aria-hidden="true" />
+                  {canUseSpoilerParticles ? (
+                    <div
+                      className="buzz-onboarding-private-key-spoiler"
+                      data-testid="backup-key-spoiler"
+                    >
+                      <SpoilerInline block revealOnHover>
+                        <p
+                          className={cn(
+                            ONBOARDING_KEY_TEXT_CLASS,
+                            "select-text",
+                          )}
+                          data-testid="backup-key-value"
+                        >
+                          {PREVIEW_KEY_TEXT}
+                        </p>
+                      </SpoilerInline>
+                    </div>
                   ) : (
-                    <Eye className="h-6 w-6" aria-hidden="true" />
+                    <p
+                      className={cn(
+                        ONBOARDING_KEY_TEXT_CLASS,
+                        isRevealed && nsec
+                          ? "select-text"
+                          : "select-none blur-[4px]",
+                      )}
+                      data-testid="backup-key-value"
+                    >
+                      {isRevealed && nsec ? nsec : maskedKey}
+                    </p>
                   )}
-                </Button>
-                {previewMode ? (
+                </div>
+                {canUseSpoilerParticles ? null : (
                   <Button
                     aria-label={
-                      copyState === "copied"
-                        ? "Private key copied"
-                        : "Copy private key"
+                      isRevealed ? "Hide private key" : "Reveal private key"
                     }
                     className="h-10 w-10 shrink-0 text-muted-foreground hover:text-foreground"
-                    data-testid="backup-key-copy"
-                    disabled={copyState === "copying"}
-                    onClick={() => void copyKeyToClipboard()}
+                    data-testid="backup-key-reveal-toggle"
+                    onClick={() => void toggleReveal()}
                     size="icon"
                     type="button"
                     variant="ghost"
                   >
-                    {copyState === "copied" ? (
-                      <Check className="h-5 w-5" aria-hidden="true" />
+                    {isRevealed ? (
+                      <EyeOff className="h-6 w-6" aria-hidden="true" />
                     ) : (
-                      <Copy className="h-5 w-5" aria-hidden="true" />
+                      <Eye className="h-6 w-6" aria-hidden="true" />
                     )}
                   </Button>
-                ) : null}
+                )}
               </div>
             </Card>
+
+            {previewMode ? (
+              <div
+                className="mt-8 flex flex-wrap items-center justify-center gap-3"
+                data-testid="backup-options"
+              >
+                <Button
+                  className={cn(ONBOARDING_SECONDARY_CTA_CLASS, "gap-2 px-5")}
+                  data-testid="backup-copy-key"
+                  disabled={copyState === "copying"}
+                  onClick={() => void copyKeyToClipboard()}
+                  type="button"
+                  variant="ghost"
+                >
+                  {copyState === "copying" ? (
+                    <Spinner className="h-4 w-4 border-2" />
+                  ) : copyState === "copied" ? (
+                    <Check className="h-4 w-4" aria-hidden="true" />
+                  ) : (
+                    <Copy className="h-4 w-4" aria-hidden="true" />
+                  )}
+                  {copyState === "copying"
+                    ? "Copying…"
+                    : copyState === "copied"
+                      ? "Copied to clipboard"
+                      : "Copy to clipboard"}
+                </Button>
+                <Button
+                  className={cn(ONBOARDING_SECONDARY_CTA_CLASS, "gap-2 px-5")}
+                  data-testid="backup-option-password"
+                  onClick={onOpenPasswordBackup}
+                  type="button"
+                  variant="ghost"
+                >
+                  {lockedBackupCreated ? (
+                    <Check className="h-5 w-5" aria-hidden="true" />
+                  ) : (
+                    <ShieldCheck className="h-5 w-5" aria-hidden="true" />
+                  )}
+                  {lockedBackupCreated
+                    ? "Created locked backup"
+                    : "Create locked backup"}
+                </Button>
+              </div>
+            ) : null}
 
             {copyError ? (
               <p
@@ -444,25 +556,21 @@ export function BackupStep({
               </p>
             ) : null}
 
-            <p className="mx-auto mt-5 flex max-w-[440px] items-start justify-center gap-1.5 text-center text-xs leading-5 text-[var(--buzz-onboarding-backup-ink)]">
-              <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-              <span>
-                {previewMode
-                  ? "Keep this key private. Anyone who has it can access your account. Your public identity is available anytime in Buzz Settings."
-                  : "Never share your private key. Anyone with this key can impersonate you and access everything in your account."}
-              </span>
-            </p>
-            {previewMode ? (
-              <div className="mt-3">
-                <IdentityKeyHelpDialog inline previewMode />
-              </div>
+            {!previewMode ? (
+              <p className="mx-auto mt-5 flex max-w-[440px] items-start justify-center gap-1.5 text-center text-xs leading-5 text-[var(--buzz-onboarding-backup-ink)]">
+                <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <span>
+                  Never share your private key. Anyone with this key can
+                  impersonate you and access everything in your account.
+                </span>
+              </p>
             ) : null}
           </div>
         </div>
       )}
 
       <OnboardingFooter className={REVEAL_ANIMATION_CLASS}>
-        {previewMode && created ? (
+        {previewMode && created && showPreviewBackupShortcut ? (
           <Button
             className={cn(ONBOARDING_SECONDARY_CTA_CLASS, "gap-2")}
             data-testid="backup-options-link"
@@ -481,7 +589,7 @@ export function BackupStep({
           onClick={onNext}
           type="button"
         >
-          Next
+          {previewMode ? "I’ve saved my key" : "Next"}
         </Button>
       </OnboardingFooter>
     </OnboardingSlideTransition>

@@ -14,6 +14,10 @@ import {
   type OnboardingPreviewVariant,
 } from "../onboardingPreview";
 import { BackupStep } from "./BackupStep";
+import {
+  resetEncryptedBackupSession,
+  useEncryptedBackupSession,
+} from "./EncryptedBackupCreator";
 import { JoinPolicyNotice } from "./JoinPolicyNotice";
 import { LandingBees } from "./LandingBees";
 import { NostrKeyImportForm } from "./NostrKeyImportForm";
@@ -94,16 +98,13 @@ function Landing({
             </div>
             <OnboardingFooter className="max-w-none">
               <Button
-                className="h-auto flex-col gap-0.5 text-foreground/70 hover:text-foreground"
+                className="h-auto text-foreground/70 hover:text-foreground"
                 data-testid="onboarding-preview-without-email"
-                onClick={() => onNavigate("identity-key")}
+                onClick={() => onNavigate("backup-options")}
                 type="button"
                 variant="link"
               >
-                <span>Sign up without email</span>
-                <span className="text-2xs font-normal text-foreground/50 no-underline">
-                  Create a Nostr identity
-                </span>
+                Sign up without email
               </Button>
             </OnboardingFooter>
           </OnboardingSlideTransition>
@@ -759,6 +760,7 @@ export function OnboardingPreviewApp() {
   const [communityName, setCommunityName] = React.useState("Block Community");
   const [displayName, setDisplayName] = React.useState("");
   const [avatarUrl, setAvatarUrl] = React.useState("");
+  const backupSession = useEncryptedBackupSession();
   const journey = ONBOARDING_PREVIEW_JOURNEYS[variant];
 
   React.useEffect(() => {
@@ -771,6 +773,7 @@ export function OnboardingPreviewApp() {
 
   const restart = React.useCallback(() => {
     resetAvatarPresentations();
+    resetEncryptedBackupSession(backupSession);
     setPage("landing");
     setPasswordResetEmail("");
     setRun((current) => current + 1);
@@ -780,7 +783,7 @@ export function OnboardingPreviewApp() {
     setCommunityName("Block Community");
     setDisplayName("");
     setAvatarUrl("");
-  }, []);
+  }, [backupSession]);
 
   const changeVariant = React.useCallback(
     (nextVariant: OnboardingPreviewVariant) => {
@@ -814,12 +817,13 @@ export function OnboardingPreviewApp() {
   } else if (page === "identity-key") {
     content = (
       <OnboardingPreviewStep
-        onBack={() => setPage("landing")}
+        onBack={() => setPage("backup-options")}
         testId="onboarding-preview-identity-key"
         total={journey.totalSteps}
       >
         <BackupStep
           direction="forward"
+          lockedBackupCreated={backupSession.created}
           onNext={() => continueFromAccount("identity-key")}
           onOpenPasswordBackup={() => setPage("backup-password")}
           onShowOptions={() => {
@@ -829,19 +833,21 @@ export function OnboardingPreviewApp() {
           optionsExpanded={false}
           previewMode
           returningFromSecurity={false}
+          showPreviewBackupShortcut={false}
         />
       </OnboardingPreviewStep>
     );
   } else if (page === "backup-options") {
     content = (
       <OnboardingPreviewStep
-        onBack={() => setPage("identity-key")}
+        onBack={() => setPage("landing")}
         testId="onboarding-preview-backup-options"
         total={journey.totalSteps}
       >
         <BackupStep
           direction="forward"
-          onNext={() => setPage(journey.afterAccount)}
+          lockedBackupCreated={backupSession.created}
+          onNext={() => setPage("identity-key")}
           onOpenPasswordBackup={() => setPage("backup-password")}
           onShowOptions={() => setPage("backup-options")}
           optionsExpanded
@@ -853,8 +859,9 @@ export function OnboardingPreviewApp() {
   } else if (page === "backup-password") {
     content = (
       <BackupPasswordPreview
-        onBack={() => setPage("backup-options")}
-        onDone={() => setPage("backup-options")}
+        onBack={() => setPage("identity-key")}
+        onDone={() => setPage("identity-key")}
+        session={backupSession}
       />
     );
   } else if (page === "sign-in") {

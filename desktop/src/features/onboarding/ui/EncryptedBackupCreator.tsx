@@ -57,6 +57,21 @@ const SEPARATOR_OPTIONS = [
 
 const DEFAULT_SEPARATOR = SEPARATOR_OPTIONS[0].value;
 
+const PREVIEW_BACKUP_FILENAME = "Buzz identity backup.ncryptsec";
+const PREVIEW_NCRYPTSEC = `ncryptsec1${"q".repeat(120)}`;
+const PREVIEW_PASSPHRASE_WORDS = [
+  "honey",
+  "harbor",
+  "lantern",
+  "meadow",
+  "copper",
+  "willow",
+  "sunrise",
+  "orbit",
+  "river",
+  "garden",
+] as const;
+
 /**
  * Pause after the last keystroke before the background KDF starts, so typing
  * past the minimum length doesn't launch an encryption per character.
@@ -257,6 +272,8 @@ type EncryptedBackupCreatorProps = {
   guidedTest?: boolean;
   /** Fired once when the user completes the backup test successfully. */
   onVerified?: () => void;
+  /** Replace native identity and file operations inside the dev-only preview. */
+  previewMode?: boolean;
 };
 
 /**
@@ -272,11 +289,13 @@ function PassphraseGeneratorPopover({
   disabled = false,
   onRequestGenerate,
   onGenerated,
+  previewMode = false,
   securityTheme = false,
 }: {
   disabled?: boolean;
   onRequestGenerate?: () => void;
   onGenerated: (value: string) => void;
+  previewMode?: boolean;
   securityTheme?: boolean;
 }) {
   const [open, setOpen] = React.useState(false);
@@ -302,21 +321,26 @@ function PassphraseGeneratorPopover({
     };
   }, []);
 
-  const generate = React.useCallback(async (wordCount: number, sep: string) => {
-    setError(null);
-    try {
-      const passphrase = await generateBackupPassphrase({
-        words: wordCount,
-        separator: sep,
-      });
-      if (mountedRef.current) onGeneratedRef.current(passphrase);
-    } catch (err) {
-      if (!mountedRef.current) return;
-      setError(
-        err instanceof Error ? err.message : "Failed to generate a password.",
-      );
-    }
-  }, []);
+  const generate = React.useCallback(
+    async (wordCount: number, sep: string) => {
+      setError(null);
+      try {
+        const passphrase = previewMode
+          ? PREVIEW_PASSPHRASE_WORDS.slice(0, wordCount).join(sep)
+          : await generateBackupPassphrase({
+              words: wordCount,
+              separator: sep,
+            });
+        if (mountedRef.current) onGeneratedRef.current(passphrase);
+      } catch (err) {
+        if (!mountedRef.current) return;
+        setError(
+          err instanceof Error ? err.message : "Failed to generate a password.",
+        );
+      }
+    },
+    [previewMode],
+  );
 
   // Fill the password field on every open and whenever a control changes.
   React.useEffect(() => {
@@ -453,6 +477,7 @@ export function EncryptedBackupCreator({
   onSaved,
   guidedTest = true,
   onVerified,
+  previewMode = false,
 }: EncryptedBackupCreatorProps) {
   // Hosts without a longer-lived session get a private one (settings card).
   const fallbackSession = useEncryptedBackupSession();
@@ -489,7 +514,10 @@ export function EncryptedBackupCreator({
     const start = () => {
       if (cancelled) return;
       dispatch({ type: "encrypt-started", requestId });
-      void createNcryptsecBackup(pendingPassphrase)
+      const createBackup = previewMode
+        ? Promise.resolve(PREVIEW_NCRYPTSEC)
+        : createNcryptsecBackup(pendingPassphrase);
+      void createBackup
         .then((ncryptsec) =>
           dispatch({ type: "encrypt-succeeded", requestId, ncryptsec }),
         )
@@ -512,7 +540,13 @@ export function EncryptedBackupCreator({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [dispatch, pendingPassphrase, skipDebounce, state.nextRequestId]);
+  }, [
+    dispatch,
+    pendingPassphrase,
+    previewMode,
+    skipDebounce,
+    state.nextRequestId,
+  ]);
 
   // Download commit: fires once per committed blob, whether the commit was
   // instant (encryption already done) or resolved a queued download. The flow
@@ -530,7 +564,10 @@ export function EncryptedBackupCreator({
       savedForRef.current = null;
       dispatch({ type: "back-to-password" });
     };
-    void saveNcryptsecCopy(ncryptsec)
+    const saveBackup = previewMode
+      ? Promise.resolve(PREVIEW_BACKUP_FILENAME)
+      : saveNcryptsecCopy(ncryptsec);
+    void saveBackup
       .then((path) => {
         if (path) {
           setSavedPath(path);
@@ -554,6 +591,7 @@ export function EncryptedBackupCreator({
     dispatch,
     onCreated,
     onSaved,
+    previewMode,
     savedForRef,
     setSavedPath,
     state.ncryptsec,
@@ -564,7 +602,9 @@ export function EncryptedBackupCreator({
     setIsSaving(true);
     setSaveError(null);
     try {
-      const path = await saveNcryptsecCopy(state.ncryptsec);
+      const path = previewMode
+        ? PREVIEW_BACKUP_FILENAME
+        : await saveNcryptsecCopy(state.ncryptsec);
       if (mountedRef.current && path) {
         setSavedPath(path);
         onSaved?.(path);
@@ -577,7 +617,7 @@ export function EncryptedBackupCreator({
     } finally {
       if (mountedRef.current) setIsSaving(false);
     }
-  }, [isSaving, onSaved, setSavedPath, state.ncryptsec]);
+  }, [isSaving, onSaved, previewMode, setSavedPath, state.ncryptsec]);
 
   const { setVerified, test, setTest } = session;
   const handleVerified = React.useCallback(() => {
@@ -604,6 +644,7 @@ export function EncryptedBackupCreator({
           onSaveCopy={() => void handleSaveCopy()}
           onVerified={handleVerified}
           progress={test}
+          previewMode={previewMode}
           saveError={saveError}
           variant={variant}
           verifyButtonPortal={verifyButtonPortal}
@@ -739,6 +780,7 @@ export function EncryptedBackupCreator({
               // A generated password must be visible so the user can save it.
               setIsRevealed(true);
             }}
+            previewMode={previewMode}
             securityTheme={variant === "spotlight"}
           />
           {issue ? (

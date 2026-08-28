@@ -1,3 +1,4 @@
+import { Check } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
 import * as React from "react";
 
@@ -21,6 +22,12 @@ type DownloadKeyStepProps = {
   /** Backup state owned by the parent flow across the creation and test views. */
   session: EncryptedBackupSession;
   onBack: () => void;
+  /** Use in-memory backup operations inside the dev-only workshop preview. */
+  previewMode?: boolean;
+  /** Whether the workshop user explicitly chose to test their saved backup. */
+  previewTestRequested?: boolean;
+  /** Opens the existing guided test from the preview's saved confirmation. */
+  onPreviewTestRequest?: () => void;
 };
 
 /**
@@ -32,6 +39,9 @@ export function DownloadKeyStep({
   direction,
   session,
   onBack,
+  previewMode = false,
+  previewTestRequested = false,
+  onPreviewTestRequest,
 }: DownloadKeyStepProps) {
   const reduceMotion = useReducedMotion() ?? false;
   // Once the encrypted payload is saved, the creator advances to its guided
@@ -39,6 +49,7 @@ export function DownloadKeyStep({
   const hasCreated = session.created;
   const hasVerifiedBackup = session.verified;
   const hasSelectedBackup = session.test.stage === "password";
+  const showPreviewSaved = previewMode && hasCreated && !previewTestRequested;
   const [primaryActionSlot, setPrimaryActionSlot] =
     React.useState<HTMLElement | null>(null);
 
@@ -54,33 +65,39 @@ export function DownloadKeyStep({
         className="flex w-full max-w-[500px] shrink-0 flex-col text-center"
         initial={reduceMotion ? false : { opacity: 0, y: 10 }}
         key={
-          hasVerifiedBackup
-            ? "success-heading"
-            : hasCreated
-              ? "test-heading"
-              : "password-heading"
+          showPreviewSaved
+            ? "saved-heading"
+            : hasVerifiedBackup
+              ? "success-heading"
+              : hasCreated
+                ? "test-heading"
+                : "password-heading"
         }
         transition={{ duration: reduceMotion ? 0 : 0.3, ease: "easeOut" }}
       >
         {/* Plain string concat: cn()'s tailwind-merge misreads the custom
             text-title size token as conflicting with text-foreground. */}
         <h1 className="text-title font-normal text-foreground">
-          {hasVerifiedBackup
-            ? "Your backup is verified"
-            : hasSelectedBackup
-              ? "That’s your backup file"
-              : hasCreated
-                ? "Optionally, test your backup"
-                : "Backup your key with a password"}
+          {showPreviewSaved
+            ? "Your backup is ready"
+            : hasVerifiedBackup
+              ? "Your backup is verified"
+              : hasSelectedBackup
+                ? "That’s your backup file"
+                : hasCreated
+                  ? "Optionally, test your backup"
+                  : "Backup your key with a password"}
         </h1>
         <p className="mt-5 text-sm leading-6 text-foreground/80">
-          {hasVerifiedBackup
-            ? "Your file and password can restore your identity."
-            : hasSelectedBackup
-              ? "Now enter your password to prove you can unlock it."
-              : hasCreated
-                ? "Learn how your backup works. Drop the file you just saved and unlock it with your password."
-                : "Keep the downloaded file private — you need both it and your password to restore your identity. Save the backup password somewhere safe; Buzz cannot reset it if lost."}
+          {showPreviewSaved
+            ? "Keep the backup file and password somewhere safe. You’ll need both to restore your identity."
+            : hasVerifiedBackup
+              ? "Your file and password can restore your identity."
+              : hasSelectedBackup
+                ? "Now enter your password to prove you can unlock it."
+                : hasCreated
+                  ? "Learn how your backup works. Drop the file you just saved and unlock it with your password."
+                  : "Keep the downloaded file private — you need both it and your password to restore your identity. Save the backup password somewhere safe; Buzz cannot reset it if lost."}
         </p>
       </motion.div>
 
@@ -89,7 +106,13 @@ export function DownloadKeyStep({
           <motion.div
             animate={{ opacity: 1, y: 0 }}
             initial={reduceMotion ? false : { opacity: 0, y: 12 }}
-            key={hasCreated ? "test-panel" : "password-panel"}
+            key={
+              showPreviewSaved
+                ? "saved-panel"
+                : hasCreated
+                  ? "test-panel"
+                  : "password-panel"
+            }
             transition={{
               delay: reduceMotion ? 0 : 0.12,
               duration: reduceMotion ? 0 : 0.4,
@@ -97,30 +120,66 @@ export function DownloadKeyStep({
             }}
           >
             <div
-              className="mx-auto w-full max-w-140 px-6 py-5"
+              className="mx-auto flex w-full max-w-140 justify-center px-6 py-5"
               data-testid="backup-password-panel"
             >
-              <EncryptedBackupCreator
-                createButtonClassName={ONBOARDING_SECURITY_PRIMARY_CTA_CLASS}
-                createButtonPortal={primaryActionSlot}
-                session={session}
-                variant="spotlight"
-                verifyButtonPortal={primaryActionSlot}
-              />
+              {showPreviewSaved ? (
+                <div className="flex flex-col items-center gap-5">
+                  <div
+                    className="flex size-20 items-center justify-center rounded-full bg-white text-black/80"
+                    data-testid="onboarding-preview-backup-saved"
+                  >
+                    <Check
+                      aria-hidden="true"
+                      className="size-10"
+                      strokeWidth={3}
+                    />
+                  </div>
+                  <Button
+                    className={ONBOARDING_SECONDARY_CTA_CLASS}
+                    data-testid="onboarding-preview-test-backup"
+                    onClick={onPreviewTestRequest}
+                    type="button"
+                    variant="ghost"
+                  >
+                    Test your backup
+                  </Button>
+                </div>
+              ) : (
+                <EncryptedBackupCreator
+                  createButtonClassName={ONBOARDING_SECURITY_PRIMARY_CTA_CLASS}
+                  createButtonPortal={primaryActionSlot}
+                  previewMode={previewMode}
+                  session={session}
+                  variant="spotlight"
+                  verifyButtonPortal={primaryActionSlot}
+                />
+              )}
             </div>
           </motion.div>
         </div>
       </div>
 
       <OnboardingFooter>
-        <div
-          className="flex justify-center"
-          data-testid={
-            hasCreated ? "onboarding-verify-slot" : "onboarding-create-slot"
-          }
-          ref={setPrimaryActionSlot}
-        />
-        {hasCreated ? (
+        {showPreviewSaved ? (
+          <Button
+            className={ONBOARDING_SECURITY_PRIMARY_CTA_CLASS}
+            data-testid="onboarding-preview-backup-done"
+            onClick={onBack}
+            type="button"
+          >
+            Done
+          </Button>
+        ) : (
+          <div
+            className="flex justify-center"
+            data-testid={
+              hasCreated ? "onboarding-verify-slot" : "onboarding-create-slot"
+            }
+            ref={setPrimaryActionSlot}
+          />
+        )}
+        {hasCreated && !showPreviewSaved ? (
           <Button
             className={
               hasVerifiedBackup
