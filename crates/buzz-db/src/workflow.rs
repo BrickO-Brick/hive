@@ -424,13 +424,14 @@ pub async fn bind_legacy_workflow_revision(
     let result = sqlx::query(
         r#"
         UPDATE workflows
-        SET definition_event_id = $7
+        SET definition_event_id = $8
         WHERE community_id = $1
           AND id = $2
           AND owner_pubkey = $3
           AND channel_id IS NOT DISTINCT FROM $4
           AND definition = $5
           AND definition_hash = $6
+          AND updated_at = $7
           AND definition_event_id IS NULL
         "#,
     )
@@ -440,6 +441,7 @@ pub async fn bind_legacy_workflow_revision(
     .bind(workflow.channel_id)
     .bind(&workflow.definition)
     .bind(&workflow.definition_hash)
+    .bind(workflow.updated_at)
     .bind(definition_event_id)
     .execute(pool)
     .await?;
@@ -1995,6 +1997,43 @@ mod tests {
             .expect("read rewritten workflow");
         assert!(current.definition_event_id.is_none());
         assert_eq!(current.definition_hash, rewritten_hash);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn legacy_revision_binding_rejects_an_equal_definition_rewrite() {
+        let pool = setup_pool().await;
+        let community = make_community(&pool).await;
+        let (workflow_id, _) = make_workflow_in(&pool, community).await;
+        let snapshot = get_workflow(&pool, community, workflow_id)
+            .await
+            .expect("read legacy workflow snapshot");
+
+        sqlx::query(
+            r#"
+            UPDATE workflows
+            SET definition = definition,
+                definition_hash = definition_hash,
+                updated_at = updated_at + INTERVAL '1 microsecond'
+            WHERE community_id = $1 AND id = $2
+            "#,
+        )
+        .bind(community.as_uuid())
+        .bind(workflow_id)
+        .execute(&pool)
+        .await
+        .expect("simulate equal-materialization legacy rewrite");
+
+        assert!(
+            !bind_legacy_workflow_revision(&pool, &snapshot, &[0x42; 32])
+                .await
+                .expect("reject stale generation")
+        );
+        assert!(get_workflow(&pool, community, workflow_id)
+            .await
+            .expect("read rewritten workflow")
+            .definition_event_id
+            .is_none());
     }
 
     #[tokio::test]
