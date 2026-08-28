@@ -19,8 +19,8 @@ import {
   useEncryptedBackupSession,
 } from "./EncryptedBackupCreator";
 import { JoinPolicyNotice } from "./JoinPolicyNotice";
+import { KeySignInPreview } from "./KeySignInPreview";
 import { LandingBees } from "./LandingBees";
-import { NostrKeyImportForm } from "./NostrKeyImportForm";
 import {
   ONBOARDING_LANDING_CTA_CLASS,
   ONBOARDING_PRIMARY_CTA_CLASS,
@@ -618,46 +618,6 @@ function EmailSignIn({
   );
 }
 
-function KeySignIn({
-  onBack,
-  onContinue,
-  total,
-}: {
-  onBack: () => void;
-  onContinue: () => void;
-  total: number;
-}) {
-  return (
-    <OnboardingPreviewStep
-      onBack={onBack}
-      testId="onboarding-preview-sign-in-key"
-      total={total}
-    >
-      <OnboardingSlideTransition
-        className="flex min-h-[calc(100dvh-13.25rem)] w-full max-w-[560px] flex-col items-center justify-center"
-        transitionKey="preview-sign-in-key"
-      >
-        <h1 className="text-title font-normal text-foreground">
-          Enter your private key
-        </h1>
-        <p className="mt-5 max-w-[440px] text-sm leading-6 text-foreground/80">
-          Paste your private key to sign in to Buzz. You can also use a backup
-          file, or recover from your phone.
-        </p>
-        <div className="buzz-onboarding-key-import-position w-full">
-          <NostrKeyImportForm
-            onBack={onBack}
-            onImport={async () => onContinue()}
-            previewMode
-            showBack={false}
-            variant="spotlight"
-          />
-        </div>
-      </OnboardingSlideTransition>
-    </OnboardingPreviewStep>
-  );
-}
-
 export function OnboardingPreviewApp() {
   const [run, setRun] = React.useState(0);
   const [variant, setVariant] = React.useState<OnboardingPreviewVariant>("v3");
@@ -801,7 +761,7 @@ export function OnboardingPreviewApp() {
     );
   } else if (page === "sign-in-key") {
     content = (
-      <KeySignIn
+      <KeySignInPreview
         onBack={() => setPage("sign-in")}
         onContinue={() => continueFromAccount("sign-in-key")}
         total={journey.totalSteps}
