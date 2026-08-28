@@ -2979,4 +2979,155 @@ mod tests {
             "only the accepted forward advances may persist"
         );
     }
+
+    /// NIP-FI identity FK contract: a binding's provenance is determined from
+    /// operation evidence and is independent of the enrollment policy's mode.
+    /// The corrected FK references only `(community_id, policy_revision)`;
+    /// the original composite FK `(community_id, policy_revision,
+    /// binding_provenance) → (community_id, policy_revision, enrollment_mode)`
+    /// would have rejected valid admissions such as TOFU policy +
+    /// attested-key provenance (NIP-FI.md §352, §424).
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn identity_binding_provenance_is_independent_of_enrollment_mode() {
+        let pool = connect_test_pool().await;
+        reset_public_schema(&pool).await;
+        MIGRATOR
+            .run_to(40, &pool)
+            .await
+            .expect("apply migrations 1-40");
+
+        let community_id = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO communities (id, host) VALUES ($1, $2)")
+            .bind(community_id)
+            .bind(format!("provenance-{}.example", community_id.simple()))
+            .execute(&pool)
+            .await
+            .expect("insert community");
+
+        // Enrollment policy: mode 3 (TOFU).
+        let policy_revision: i64 = 1;
+        sqlx::query(
+            "INSERT INTO identity_enrollment_policies \
+             (community_id, policy_revision, enrollment_mode, policy_digest, effective_at) \
+             VALUES ($1, $2, 3, $3, '2026-01-01T00:00:00Z')",
+        )
+        .bind(community_id)
+        .bind(policy_revision)
+        .bind(vec![0xA0_u8; 32]) // policy_digest
+        .execute(&pool)
+        .await
+        .expect("insert TOFU enrollment policy");
+
+        // Insert a binding with provenance 1 (attested-key) under the TOFU
+        // policy.  The circular deferred FK between identity_bindings and
+        // identity_lifecycle_history requires both to be committed in one
+        // transaction; all cross-table FKs in this pair are DEFERRABLE
+        // INITIALLY DEFERRED.  A pinned connection is required so that BEGIN
+        // and each subsequent statement share the same session/transaction.
+        let binding_id = uuid::Uuid::new_v4();
+        let history_id = uuid::Uuid::new_v4();
+        let operation_id = uuid::Uuid::new_v4();
+        let request_fingerprint = vec![0xAB_u8; 32];
+
+        let mut conn = pool.acquire().await.expect("acquire connection");
+
+        sqlx::query("BEGIN")
+            .execute(&mut *conn)
+            .await
+            .expect("begin");
+
+        // Enrollment history must be inserted BEFORE the operation receipt:
+        // authorization_operation_receipt_history_guard_v1 fires AFTER INSERT
+        // on authorization_operation_receipts and checks that lifecycle receipts
+        // already have exactly one history row.  The history → receipt FK is
+        // DEFERRABLE INITIALLY DEFERRED, so this order is safe.
+        sqlx::query(
+            "INSERT INTO identity_lifecycle_history \
+             (community_id, history_id, transition_kind, outcome_code, \
+              successor_binding_id, successor_binding_version, \
+              successor_lifecycle_revision, successor_state, \
+              operation_id, request_fingerprint, transition_digest) \
+             VALUES ($1, $2, 1, 1, $3, 1, 1, 1, $4, $5, $6)",
+        )
+        .bind(community_id)
+        .bind(history_id)
+        .bind(binding_id)
+        .bind(operation_id)
+        .bind(&request_fingerprint)
+        .bind(vec![0xAE_u8; 32])
+        .execute(&mut *conn)
+        .await
+        .expect("insert lifecycle history");
+
+        // Operation receipt: kind 1 (enroll), outcome 1 (applied).
+        // The receipt_history_cardinality trigger fires here and validates the
+        // history row inserted above.
+        sqlx::query(
+            "INSERT INTO authorization_operation_receipts \
+             (community_id, operation_id, request_fingerprint, operation_kind, \
+              actor_fingerprint, outcome_code, result_digest) \
+             VALUES ($1, $2, $3, 1, $4, 1, $5)",
+        )
+        .bind(community_id)
+        .bind(operation_id)
+        .bind(&request_fingerprint)
+        .bind(vec![0xAC_u8; 32])
+        .bind(vec![0xAD_u8; 32])
+        .execute(&mut *conn)
+        .await
+        .expect("insert operation receipt");
+
+        // Binding: provenance 1 (attested-key) under TOFU-mode policy.
+        // Before the FK fix this INSERT would fail at commit with a FK
+        // violation because 1 (attested-key) ≠ 3 (TOFU mode).
+        sqlx::query(
+            "INSERT INTO identity_bindings \
+             (community_id, binding_id, issuer, subject, \
+              principal_fingerprint, event_author_pubkey, \
+              binding_state, lifecycle_revision, binding_provenance, \
+              policy_revision, enrollment_evidence_digest, \
+              birth_history_id, creation_operation_id, \
+              creation_request_fingerprint) \
+             VALUES ($1, $2, 'https://issuer.example', 'sub-01', \
+                     $3, $4, 1, 1, 1, $5, $6, $7, $8, $9)",
+        )
+        .bind(community_id)
+        .bind(binding_id)
+        .bind(vec![0xAF_u8; 32]) // principal_fingerprint
+        .bind(vec![0xB0_u8; 32]) // event_author_pubkey
+        .bind(policy_revision)
+        .bind(vec![0xB1_u8; 32]) // enrollment_evidence_digest
+        .bind(history_id)
+        .bind(operation_id)
+        .bind(&request_fingerprint)
+        .execute(&mut *conn)
+        .await
+        .expect("insert binding");
+
+        sqlx::query("COMMIT")
+            .execute(&mut *conn)
+            .await
+            .expect("attested-key binding under TOFU policy must commit — FK is on (community_id, policy_revision) only");
+
+        // Confirm the binding persisted with provenance 1, policy mode 3.
+        let (stored_provenance, stored_mode): (i16, i16) = sqlx::query_as(
+            "SELECT b.binding_provenance, p.enrollment_mode \
+             FROM identity_bindings b \
+             JOIN identity_enrollment_policies p \
+               ON p.community_id = b.community_id AND p.policy_revision = b.policy_revision \
+             WHERE b.community_id = $1 AND b.binding_id = $2",
+        )
+        .bind(community_id)
+        .bind(binding_id)
+        .fetch_one(&pool)
+        .await
+        .expect("read persisted binding");
+        assert_eq!(stored_provenance, 1, "provenance must be attested-key (1)");
+        assert_eq!(stored_mode, 3, "enrollment mode must be TOFU (3)");
+        assert_ne!(
+            stored_provenance, stored_mode,
+            "provenance and mode are independent: they must differ here"
+        );
+    }
 }
