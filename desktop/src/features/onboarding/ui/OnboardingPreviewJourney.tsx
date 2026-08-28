@@ -5,6 +5,7 @@ import { HostedCommunityOnboarding } from "@/features/communities/ui/HostedCommu
 import { pubkeyToNpub } from "@/shared/lib/nostrUtils";
 import { Button } from "@/shared/ui/button";
 import { Card } from "@/shared/ui/card";
+import { Input } from "@/shared/ui/input";
 import { InviteRedeemForm } from "./InviteRedeemForm";
 import { CommunityProfileStage } from "./CommunityProfileStage";
 import { DownloadKeyStep } from "./DownloadKeyStep";
@@ -48,6 +49,95 @@ export function BackupPasswordPreview({
         previewTestRequested={testRequested}
         session={session}
       />
+    </OnboardingPreviewStep>
+  );
+}
+
+export function PasswordReset({
+  initialEmail,
+  onBack,
+  total,
+}: {
+  initialEmail: string;
+  onBack: () => void;
+  total: number;
+}) {
+  const [email, setEmail] = React.useState(initialEmail);
+  const [submitted, setSubmitted] = React.useState(false);
+
+  if (submitted) {
+    return (
+      <OnboardingPreviewStep
+        onBack={onBack}
+        testId="onboarding-preview-password-reset-sent"
+        total={total}
+      >
+        <OnboardingSlideTransition
+          className="flex min-h-0 w-full max-w-[500px] flex-col items-center"
+          transitionKey="preview-password-reset-sent"
+        >
+          <h1 className="text-title font-normal text-foreground">
+            Check your email
+          </h1>
+          <p className="mt-5 max-w-[440px] text-sm leading-6 text-foreground/80">
+            Use the link we sent to {email.trim()} to reset your password.
+          </p>
+        </OnboardingSlideTransition>
+      </OnboardingPreviewStep>
+    );
+  }
+
+  return (
+    <OnboardingPreviewStep
+      onBack={onBack}
+      testId="onboarding-preview-password-reset"
+      total={total}
+    >
+      <OnboardingSlideTransition
+        className="flex min-h-0 w-full max-w-[500px] flex-col items-center"
+        transitionKey="preview-password-reset"
+      >
+        <h1 className="text-title font-normal text-foreground">
+          Reset your password
+        </h1>
+        <p className="mt-5 max-w-[440px] text-sm leading-6 text-foreground/80">
+          Enter your email address and we'll send you a link to reset your
+          password.
+        </p>
+        <form
+          className="mt-8 w-full text-left"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (email.trim()) setSubmitted(true);
+          }}
+        >
+          <label
+            className="mb-2 block text-sm font-medium text-foreground"
+            htmlFor="onboarding-preview-password-reset-email"
+          >
+            Email
+          </label>
+          <Input
+            autoComplete="email"
+            className="h-12 rounded-2xl border-foreground/15 bg-white px-4"
+            id="onboarding-preview-password-reset-email"
+            onChange={(event) => setEmail(event.target.value)}
+            placeholder="Enter your email address"
+            type="email"
+            value={email}
+          />
+          <OnboardingFooter>
+            <Button
+              className={ONBOARDING_PRIMARY_CTA_CLASS}
+              disabled={!email.trim()}
+              onClick={() => setSubmitted(true)}
+              type="button"
+            >
+              Send reset link
+            </Button>
+          </OnboardingFooter>
+        </form>
+      </OnboardingSlideTransition>
     </OnboardingPreviewStep>
   );
 }
