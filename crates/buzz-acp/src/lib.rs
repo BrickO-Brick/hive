@@ -20,7 +20,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
-use acp::{AcpClient, EnvVar, McpServer};
+use acp::{AcpClient, EnvVar, McpServer, SystemPromptTransport};
 use anyhow::{ensure, Context, Result};
 use buzz_core::kind::{
     KIND_MEMBER_ADDED_NOTIFICATION, KIND_MEMBER_REMOVED_NOTIFICATION, KIND_STREAM_MESSAGE,
@@ -5089,15 +5089,37 @@ async fn run_one_shot_prompt(args: PromptArgs) -> Result<()> {
         .context("failed to read prompt from stdin")?;
     ensure!(!prompt.trim().is_empty(), "prompt must not be empty");
 
-    let agent_args = config::normalize_agent_args(&args.agent.agent_command, args.agent.agent_args);
+    let agent_command = args.agent.agent_command;
+    let agent_args = config::normalize_agent_args(&agent_command, args.agent.agent_args);
     let cwd = current_working_directory()?;
-    let mut client = AcpClient::spawn(&args.agent.agent_command, &agent_args, &[], false)
+    let mut client = AcpClient::spawn(&agent_command, &agent_args, &[], false)
         .await
         .context("failed to start the configured agent")?;
 
     let result = async {
-        client.initialize().await?;
-        let session = client.session_new_full(&cwd, vec![], None, None).await?;
+        let initialized = client.initialize().await?;
+        let protocol_version = initialized["protocolVersion"].as_u64().unwrap_or(1);
+        let agent_name = initialized
+            .pointer("/agentInfo/name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        let normalized_agent = config::normalize_agent_command_identity(&agent_command);
+        let is_goose = agent_name == "goose" || normalized_agent == "goose";
+        let system_prompt = args
+            .system_prompt
+            .as_deref()
+            .filter(|prompt| !prompt.trim().is_empty());
+        let is_claude_agent = agent_name == "@agentclientprotocol/claude-agent-acp";
+        let system_prompt_transport = if is_goose || (protocol_version < 2 && !is_claude_agent) {
+            None
+        } else if is_claude_agent {
+            system_prompt.map(SystemPromptTransport::ClaudeMeta)
+        } else {
+            system_prompt.map(SystemPromptTransport::Field)
+        };
+        let session = client
+            .session_new_full(&cwd, vec![], system_prompt_transport, None)
+            .await?;
         let stop_reason = client
             .session_prompt_with_idle_timeout(
                 &session.session_id,

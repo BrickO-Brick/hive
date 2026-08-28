@@ -27,6 +27,10 @@ The admin described the welcome message they want below:
 {request}
 </request>"#;
 
+const WELCOME_WRITER_SYSTEM_PROMPT: &str =
+    "You are a focused writing assistant. Follow the user's output-format instructions exactly. \
+     Respond with plain text only and do not call tools.";
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WelcomeMessageDraft {
@@ -89,7 +93,8 @@ pub async fn generate_welcome_message(
             .arg("prompt")
             .arg("--json")
             .env("BUZZ_ACP_AGENT_COMMAND", &resolved_agent)
-            .env("BUZZ_ACP_AGENT_ARGS", descriptor.args.join(","));
+            .env("BUZZ_ACP_AGENT_ARGS", descriptor.args.join(","))
+            .env("BUZZ_ACP_SYSTEM_PROMPT", WELCOME_WRITER_SYSTEM_PROMPT);
         if let Some(meta) = known_acp_runtime(&descriptor.command) {
             for (key, value) in meta.default_env {
                 if std::env::var(key).is_err() {

@@ -202,6 +202,10 @@ pub struct PromptArgs {
     #[command(flatten)]
     pub agent: AuthAgentArgs,
 
+    /// Optional system prompt for this one-shot session.
+    #[arg(long, env = "BUZZ_ACP_SYSTEM_PROMPT")]
+    pub system_prompt: Option<String>,
+
     /// Output structured JSON instead of the message text alone.
     #[arg(long)]
     pub json: bool,
