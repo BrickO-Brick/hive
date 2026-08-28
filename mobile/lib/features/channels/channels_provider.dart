@@ -378,10 +378,8 @@ class ChannelsNotifier extends AsyncNotifier<List<Channel>> {
     // Scoped narrowly to the archived flip — broader metadata staleness
     // (renames, topic changes, etc.) is a separate, pre-existing concern that
     // already affects this provider for other reasons.
-    // Re-check before the first write that other providers can observe. Every
     // await above is fenced, but the switch can also land in the synchronous
-    // gap, so the guard sits immediately before the write rather than only
-    // after the await.
+    // gap, so the guard sits immediately before the write.
     fence.ensureCurrent();
 
     final prevById = <String, Channel>{
@@ -390,7 +388,7 @@ class ChannelsNotifier extends AsyncNotifier<List<Channel>> {
     for (var i = 0; i < channels.length; i++) {
       final previous = prevById[channels[i].id]?.lastMessageAt;
       if (previous != null &&
-          (channels[i].lastMessageAt?.isBefore(previous) ?? true)) {
+          previous.isAfter(channels[i].lastMessageAt ?? DateTime(0))) {
         channels[i] = channels[i].copyWith(lastMessageAt: previous);
       }
     }
