@@ -21,6 +21,8 @@ body { background: #e6f2f5; color: var(--ink); font-family: Inter, ui-sans-serif
 .app-shell {
   --gradient-shift-x: 0px;
   --gradient-shift-y: 0px;
+  --messages-pan-x: 0px;
+  --messages-pan-y: 0px;
   min-height: 100svh;
   background:
     radial-gradient(circle at calc(7% + var(--gradient-shift-x)) calc(42% + var(--gradient-shift-y)), rgba(255,255,255,.92) 0 7%, transparent 30%),
@@ -76,13 +78,20 @@ body { background: #e6f2f5; color: var(--ink); font-family: Inter, ui-sans-serif
   top: 0;
   right: auto;
   left: 0;
-  transform: translate3d(var(--bestie-x), var(--bestie-y), 0) scale(1);
+  transform: translate3d(calc(var(--bestie-x) + var(--messages-pan-x)), calc(var(--bestie-y) + var(--messages-pan-y)), 0) scale(1);
   animation: none;
   will-change: transform;
 }
-.bestie-chat.is-detached { z-index: 44; background: rgba(255,255,255,.9); transition: transform 240ms cubic-bezier(.455,.03,.515,.955), box-shadow 180ms ease; }
+.bestie-chat.is-detached { z-index: 10; background: rgba(255,255,255,.9); transition: transform 240ms cubic-bezier(.455,.03,.515,.955), box-shadow 180ms ease; }
+.bestie-chat.is-detached.is-dragging { z-index: 45; }
 .bestie-chat.is-dragging { transition: none; }
-.bestie-chat.is-tearing { transform: translate3d(var(--bestie-x), var(--bestie-y), 0) scale(1.018); box-shadow: 0 24px 64px rgba(53,76,86,.22), inset 0 1px 0 rgba(255,255,255,.9); }
+.bestie-chat.is-tearing { transform: translate3d(calc(var(--bestie-x) + var(--messages-pan-x)), calc(var(--bestie-y) + var(--messages-pan-y)), 0) scale(1.018); box-shadow: 0 24px 64px rgba(53,76,86,.22), inset 0 1px 0 rgba(255,255,255,.9); }
+.bestie-chat.is-merged-sticky { transform: translate3d(var(--bestie-x), var(--bestie-y), 0) scale(1); }
+.bestie-chat.is-merged-sticky.is-tearing { transform: translate3d(var(--bestie-x), var(--bestie-y), 0) scale(1.018); }
+.bestie-chat.is-merged-left { border-radius: 28px 0 0 28px; }
+.bestie-chat.is-merged-right { border-radius: 0 28px 28px 0; }
+.bestie-chat.is-merged-top { border-radius: 28px 28px 0 0; }
+.bestie-chat.is-merged-bottom { border-radius: 0 0 28px 28px; }
 .bestie-chat-header { display: flex; height: 58px; align-items: center; justify-content: space-between; padding: 0 14px 0 16px; border-bottom: 1px solid rgba(38,38,38,.08); cursor: grab; touch-action: none; user-select: none; }
 .bestie-chat.is-dragging .bestie-chat-header { cursor: grabbing; }
 .bestie-chat-header > div { display: flex; align-items: center; gap: 9px; }
@@ -203,7 +212,11 @@ body { background: #e6f2f5; color: var(--ink); font-family: Inter, ui-sans-serif
     radial-gradient(circle at 82% 12%, rgba(182,222,239,.72), transparent 36%),
     radial-gradient(circle at 10% 90%, rgba(255,255,255,.9), transparent 34%);
   background-size: 42px 42px, auto, auto;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
 }
+.messages-stage.is-panning { cursor: grabbing; }
 .messages-board {
   position: relative;
   display: grid;
@@ -223,7 +236,24 @@ body { background: #e6f2f5; color: var(--ink); font-family: Inter, ui-sans-serif
   min-width: 0;
   min-height: 0;
 }
+.sidebar-cell {
+  z-index: 30;
+}
+.chat-cell,
+.thread-cell {
+  transform: translate3d(var(--messages-pan-x), var(--messages-pan-y), 0);
+  will-change: transform;
+}
 .message-panel-cell.is-active-drag { z-index: 20; }
+.message-panel-cell.merge-preview-left,
+.message-panel-cell.merge-preview-right,
+.message-panel-cell.merge-preview-top,
+.message-panel-cell.merge-preview-bottom { z-index: 25; }
+.sidebar-cell.is-active-drag { z-index: 31; }
+.sidebar-cell.merge-preview-left,
+.sidebar-cell.merge-preview-right,
+.sidebar-cell.merge-preview-top,
+.sidebar-cell.merge-preview-bottom { z-index: 32; }
 .message-panel {
   position: relative;
   z-index: 2;
@@ -259,6 +289,7 @@ body { background: #e6f2f5; color: var(--ink); font-family: Inter, ui-sans-serif
   pointer-events: none;
   background: rgba(0, 112, 255, .4);
   opacity: 0;
+  transform: translate3d(var(--panel-x), var(--panel-y), 0);
   transition: opacity 80ms ease-out;
 }
 .merge-preview-left .merge-edge-indicator,
@@ -268,8 +299,8 @@ body { background: #e6f2f5; color: var(--ink); font-family: Inter, ui-sans-serif
   width: 2px;
   opacity: 1;
 }
-.merge-preview-left .merge-edge-indicator { left: 0; }
-.merge-preview-right .merge-edge-indicator { right: 0; }
+.merge-preview-left > .merge-edge-indicator { left: -6px; }
+.merge-preview-right > .merge-edge-indicator { right: -6px; }
 .merge-preview-top .merge-edge-indicator,
 .merge-preview-bottom .merge-edge-indicator {
   right: 18px;
@@ -277,8 +308,12 @@ body { background: #e6f2f5; color: var(--ink); font-family: Inter, ui-sans-serif
   height: 2px;
   opacity: 1;
 }
-.merge-preview-top .merge-edge-indicator { top: 0; }
-.merge-preview-bottom .merge-edge-indicator { bottom: 0; }
+.merge-preview-top > .merge-edge-indicator { top: -6px; }
+.merge-preview-bottom > .merge-edge-indicator { bottom: -6px; }
+.bestie-merge-target-left .message-panel { border-top-left-radius: 0; border-bottom-left-radius: 0; }
+.bestie-merge-target-right .message-panel { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.bestie-merge-target-top .message-panel { border-top-left-radius: 0; border-top-right-radius: 0; }
+.bestie-merge-target-bottom .message-panel { border-bottom-right-radius: 0; border-bottom-left-radius: 0; }
 .panel-drag-handle { cursor: grab; touch-action: none; user-select: none; }
 .message-panel-cell.is-pulling .panel-drag-handle { cursor: grabbing; }
 .channel-panel { padding: 10px; }

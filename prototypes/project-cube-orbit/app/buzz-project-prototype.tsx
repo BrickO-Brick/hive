@@ -1012,36 +1012,122 @@ function MessageComposer({ compact = false }: { compact?: boolean }) {
 function BestieChat({ onClose }: { onClose: () => void }) {
   const [detached, setDetached] = useState(false);
   const [position, setPosition] = useState({ x: 0, y: 0 });
+  const [mergedEdge, setMergedEdge] = useState<MessagePanelEdge | null>(null);
+  const [mergedToStickyPanel, setMergedToStickyPanel] = useState(false);
   const panelRef = useRef<HTMLElement>(null);
-  const dragRef = useRef({
-    pointerId: -1,
-    startX: 0,
-    startY: 0,
-    originX: 0,
-    originY: 0,
-    x: 0,
-    y: 0,
-    beganDetached: false,
-  });
+  const mergedTargetRef = useRef<{ cell: HTMLElement; edge: MessagePanelEdge } | null>(null);
+  const dragRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    originX: number;
+    originY: number;
+    x: number;
+    y: number;
+    beganDetached: boolean;
+    connectedAtStart: boolean;
+    hasBroken: boolean;
+    panX: number;
+    panY: number;
+    shellPanX: number;
+    shellPanY: number;
+    previewCell: HTMLElement | null;
+    previewEdge: MessagePanelEdge | null;
+  }>({ pointerId: -1, startX: 0, startY: 0, originX: 0, originY: 0, x: 0, y: 0, beganDetached: false, connectedAtStart: false, hasBroken: false, panX: 0, panY: 0, shellPanX: 0, shellPanY: 0, previewCell: null, previewEdge: null });
+
+  const clearPreview = () => {
+    const drag = dragRef.current;
+    if (drag.previewCell && drag.previewEdge) drag.previewCell.classList.remove(`merge-preview-${drag.previewEdge}`);
+    drag.previewCell = null;
+    drag.previewEdge = null;
+  };
+
+  const removeMergedTarget = () => {
+    const merged = mergedTargetRef.current;
+    if (!merged) return;
+    merged.cell.classList.remove(`bestie-merge-target-${merged.edge}`);
+    mergedTargetRef.current = null;
+  };
+
+  useEffect(() => () => {
+    removeMergedTarget();
+    clearPreview();
+  }, []);
+
+  const findSnapTarget = () => {
+    const panel = panelRef.current;
+    if (!panel) return null;
+    const dragged = panel.getBoundingClientRect();
+    const candidates: Array<{ cell: HTMLElement; edge: MessagePanelEdge; distance: number; x: number; y: number }> = [];
+    document.querySelectorAll<HTMLElement>(".message-panel-cell[data-panel-id]").forEach((cell) => {
+      const target = cell.querySelector<HTMLElement>(".message-panel");
+      if (!target) return;
+      const rect = target.getBoundingClientRect();
+      const rowAlignment = Math.abs(dragged.top - rect.top);
+      const columnAlignment = Math.abs(dragged.left - rect.left);
+      const draggedCenterX = (dragged.left + dragged.right) / 2;
+      const draggedCenterY = (dragged.top + dragged.bottom) / 2;
+      const targetCenterX = (rect.left + rect.right) / 2;
+      const targetCenterY = (rect.top + rect.bottom) / 2;
+      if (rowAlignment <= 68) {
+        const edge: MessagePanelEdge = draggedCenterX < targetCenterX ? "left" : "right";
+        candidates.push(edge === "left"
+          ? { cell, edge, distance: Math.abs(dragged.right - rect.left), x: rect.left - dragged.width, y: rect.top }
+          : { cell, edge, distance: Math.abs(dragged.left - rect.right), x: rect.right, y: rect.top });
+      }
+      if (columnAlignment <= 68) {
+        const edge: MessagePanelEdge = draggedCenterY < targetCenterY ? "top" : "bottom";
+        candidates.push(edge === "top"
+          ? { cell, edge, distance: Math.abs(dragged.bottom - rect.top), x: rect.left, y: rect.top - dragged.height }
+          : { cell, edge, distance: Math.abs(dragged.top - rect.bottom), x: rect.left, y: rect.bottom });
+      }
+    });
+    const best = candidates.sort((a, b) => a.distance - b.distance)[0];
+    return best && best.distance <= 58 ? best : null;
+  };
+
+  const updatePreview = (snap: ReturnType<typeof findSnapTarget>) => {
+    const drag = dragRef.current;
+    if (snap && drag.previewCell === snap.cell && drag.previewEdge === snap.edge) return;
+    clearPreview();
+    if (!snap) return;
+    snap.cell.classList.add(`merge-preview-${snap.edge}`);
+    drag.previewCell = snap.cell;
+    drag.previewEdge = snap.edge;
+  };
 
   const beginDrag = (event: ReactPointerEvent<HTMLElement>) => {
     if ((event.target as Element).closest("button, input")) return;
     const panel = panelRef.current;
     if (!panel) return;
     const rect = panel.getBoundingClientRect();
+    const shell = panel.closest<HTMLElement>(".app-shell");
+    const shellStyle = shell ? getComputedStyle(shell) : null;
+    const shellPanX = Number.parseFloat(shellStyle?.getPropertyValue("--messages-pan-x") || "0") || 0;
+    const shellPanY = Number.parseFloat(shellStyle?.getPropertyValue("--messages-pan-y") || "0") || 0;
+    const panX = mergedToStickyPanel ? 0 : shellPanX;
+    const panY = mergedToStickyPanel ? 0 : shellPanY;
     event.currentTarget.setPointerCapture(event.pointerId);
     dragRef.current = {
       pointerId: event.pointerId,
       startX: event.clientX,
       startY: event.clientY,
-      originX: rect.left,
-      originY: rect.top,
-      x: rect.left,
-      y: rect.top,
+      originX: rect.left - panX,
+      originY: rect.top - panY,
+      x: rect.left - panX,
+      y: rect.top - panY,
       beganDetached: detached,
+      connectedAtStart: mergedTargetRef.current !== null,
+      hasBroken: false,
+      panX,
+      panY,
+      shellPanX,
+      shellPanY,
+      previewCell: null,
+      previewEdge: null,
     };
-    panel.style.setProperty("--bestie-x", `${rect.left}px`);
-    panel.style.setProperty("--bestie-y", `${rect.top}px`);
+    panel.style.setProperty("--bestie-x", `${rect.left - panX}px`);
+    panel.style.setProperty("--bestie-y", `${rect.top - panY}px`);
     panel.classList.add("is-dragging");
   };
 
@@ -1050,11 +1136,32 @@ function BestieChat({ onClose }: { onClose: () => void }) {
     const panel = panelRef.current;
     if (!panel || drag.pointerId !== event.pointerId) return;
     const pullDistance = Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY);
-    drag.x = Math.max(16, Math.min(window.innerWidth - panel.offsetWidth - 16, drag.originX + event.clientX - drag.startX));
-    drag.y = Math.max(74, Math.min(window.innerHeight - panel.offsetHeight - 16, drag.originY + event.clientY - drag.startY));
+    if (drag.connectedAtStart && pullDistance > 112) {
+      drag.hasBroken = true;
+      removeMergedTarget();
+      setMergedEdge(null);
+      if (mergedToStickyPanel) {
+        drag.originX -= drag.shellPanX;
+        drag.originY -= drag.shellPanY;
+        drag.x -= drag.shellPanX;
+        drag.y -= drag.shellPanY;
+        drag.panX = drag.shellPanX;
+        drag.panY = drag.shellPanY;
+        panel.classList.remove("is-merged-sticky");
+        setMergedToStickyPanel(false);
+      }
+    }
+    const resistance = drag.connectedAtStart && !drag.hasBroken
+      ? 0.76 + Math.min(pullDistance / 112, 1) * 0.12
+      : 1;
+    const nextX = drag.originX + (event.clientX - drag.startX) * resistance;
+    const nextY = drag.originY + (event.clientY - drag.startY) * resistance;
+    drag.x = Math.max(16 - drag.panX, Math.min(window.innerWidth - panel.offsetWidth - 16 - drag.panX, nextX));
+    drag.y = Math.max(74 - drag.panY, Math.min(window.innerHeight - panel.offsetHeight - 16 - drag.panY, nextY));
     panel.style.setProperty("--bestie-x", `${drag.x}px`);
     panel.style.setProperty("--bestie-y", `${drag.y}px`);
     panel.classList.toggle("is-tearing", !drag.beganDetached && pullDistance > 48);
+    updatePreview(drag.connectedAtStart && !drag.hasBroken ? null : findSnapTarget());
   };
 
   const endDrag = (event: ReactPointerEvent<HTMLElement>) => {
@@ -1064,12 +1171,31 @@ function BestieChat({ onClose }: { onClose: () => void }) {
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
-    const shouldDetach = drag.beganDetached || Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) > 84;
+    const stayedConnected = drag.connectedAtStart && !drag.hasBroken;
+    const snap = stayedConnected ? null : findSnapTarget();
+    clearPreview();
+    const shouldDetach = stayedConnected || snap || drag.beganDetached || Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) > 84;
     panel.classList.remove("is-dragging", "is-tearing");
     if (shouldDetach) {
       panel.classList.add("is-detached");
       setDetached(true);
-      setPosition({ x: drag.x, y: drag.y });
+      if (snap) {
+        removeMergedTarget();
+        snap.cell.classList.add(`bestie-merge-target-${snap.edge}`);
+        mergedTargetRef.current = { cell: snap.cell, edge: snap.edge };
+        setMergedEdge(snap.edge);
+        setMergedToStickyPanel(snap.cell.dataset.panelId === "sidebar");
+      }
+      const next = stayedConnected
+        ? { x: drag.originX, y: drag.originY }
+        : snap
+          ? snap.cell.dataset.panelId === "sidebar"
+            ? { x: snap.x, y: snap.y }
+            : { x: snap.x - drag.shellPanX, y: snap.y - drag.shellPanY }
+          : { x: drag.x, y: drag.y };
+      panel.style.setProperty("--bestie-x", `${next.x}px`);
+      panel.style.setProperty("--bestie-y", `${next.y}px`);
+      setPosition(next);
     } else {
       panel.style.removeProperty("--bestie-x");
       panel.style.removeProperty("--bestie-y");
@@ -1077,10 +1203,18 @@ function BestieChat({ onClose }: { onClose: () => void }) {
     drag.pointerId = -1;
   };
 
+  const closeChat = () => {
+    removeMergedTarget();
+    clearPreview();
+    setMergedEdge(null);
+    setMergedToStickyPanel(false);
+    onClose();
+  };
+
   return (
     <aside
       ref={panelRef}
-      className={`bestie-chat${detached ? " is-detached" : ""}`}
+      className={`bestie-chat${detached ? " is-detached" : ""}${mergedEdge ? ` is-merged-${mergedEdge}` : ""}${mergedToStickyPanel ? " is-merged-sticky" : ""}`}
       role="dialog"
       aria-label="Chat with Bestie"
       style={detached ? ({ "--bestie-x": `${position.x}px`, "--bestie-y": `${position.y}px` } as CSSProperties) : undefined}
@@ -1093,7 +1227,7 @@ function BestieChat({ onClose }: { onClose: () => void }) {
         onPointerCancel={endDrag}
       >
         <div><img src="/snek.png" alt="" /><strong>Bestie</strong></div>
-        <button type="button" aria-label="Close Bestie chat" onClick={onClose}><X aria-hidden="true" size={18} strokeWidth={1.7} /></button>
+        <button type="button" aria-label="Close Bestie chat" onClick={closeChat}><X aria-hidden="true" size={18} strokeWidth={1.7} /></button>
       </header>
       <div className="bestie-chat-content">
         <div className="bestie-message is-bestie"><img src="/snek.png" alt="" /><p>Hi! What are you working through?</p></div>
@@ -1109,6 +1243,7 @@ function MessagesView() {
   const [layouts, setLayouts] = useState(INITIAL_MESSAGE_LAYOUT);
   const [connections, setConnections] = useState(INITIAL_MESSAGE_CONNECTIONS);
   const boardRef = useRef<HTMLDivElement>(null);
+  const panRef = useRef({ pointerId: -1, startX: 0, startY: 0, originX: 0, originY: 0, x: 0, y: 0 });
   const dragRef = useRef<{
     id: MessagePanelId;
     pointerId: number;
@@ -1345,12 +1480,50 @@ function MessagesView() {
     onPointerCancel: endPanelDrag,
   });
 
+  const beginCanvasPan = (event: ReactPointerEvent<HTMLElement>) => {
+    if ((event.target as Element).closest(".message-panel, button, input")) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    panRef.current = {
+      ...panRef.current,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: panRef.current.x,
+      originY: panRef.current.y,
+    };
+    event.currentTarget.classList.add("is-panning");
+  };
+
+  const updateCanvasPan = (event: ReactPointerEvent<HTMLElement>) => {
+    const pan = panRef.current;
+    if (pan.pointerId !== event.pointerId) return;
+    pan.x = Math.max(-1200, Math.min(1200, pan.originX + event.clientX - pan.startX));
+    pan.y = Math.max(-800, Math.min(800, pan.originY + event.clientY - pan.startY));
+    const shell = event.currentTarget.closest<HTMLElement>(".app-shell");
+    shell?.style.setProperty("--messages-pan-x", `${pan.x}px`);
+    shell?.style.setProperty("--messages-pan-y", `${pan.y}px`);
+  };
+
+  const endCanvasPan = (event: ReactPointerEvent<HTMLElement>) => {
+    if (panRef.current.pointerId !== event.pointerId) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    panRef.current.pointerId = -1;
+    event.currentTarget.classList.remove("is-panning");
+  };
+
   return (
-    <section className="messages-stage" aria-label="Composable messages workspace">
+    <section
+      className="messages-stage"
+      aria-label="Composable messages workspace"
+      onPointerDown={beginCanvasPan}
+      onPointerMove={updateCanvasPan}
+      onPointerUp={endCanvasPan}
+      onPointerCancel={endCanvasPan}
+    >
       <div ref={boardRef} className="messages-board">
         <div data-panel-id="sidebar" className={`message-panel-cell sidebar-cell${isPanelConnected("sidebar") ? "" : " is-detached"}`} style={panelStyle("sidebar")}>
+          <span className="merge-edge-indicator" aria-hidden="true" />
           <aside className="message-panel channel-panel">
-            <span className="merge-edge-indicator" aria-hidden="true" />
             <div className="panel-drag-handle channel-search-wrap" {...dragHandlers("sidebar")}>
               <Search aria-hidden="true" size={18} strokeWidth={1.7} />
               <input aria-label="Search channels" placeholder="Search" />
@@ -1367,8 +1540,8 @@ function MessagesView() {
         </div>
 
         <div data-panel-id="chat" className={`message-panel-cell chat-cell${isPanelConnected("chat") ? "" : " is-detached"}`} style={panelStyle("chat")}>
+          <span className="merge-edge-indicator" aria-hidden="true" />
           <article className="message-panel chat-panel">
-            <span className="merge-edge-indicator" aria-hidden="true" />
             <header className="panel-drag-handle chat-header" {...dragHandlers("chat")}>
               <div><LockKeyhole aria-hidden="true" size={18} strokeWidth={1.7} /><strong>buzz-interface-squad</strong></div>
               <div className="chat-header-actions"><button type="button" aria-label="Channel privacy"><LockKeyhole aria-hidden="true" size={18} strokeWidth={1.7} /></button><button type="button" aria-label="Members"><Users aria-hidden="true" size={18} strokeWidth={1.7} /><span>13</span></button><button type="button" aria-label="Huddle"><Headphones aria-hidden="true" size={18} strokeWidth={1.7} /></button><button type="button" aria-label="More"><MoreVertical aria-hidden="true" size={18} strokeWidth={1.7} /></button></div>
@@ -1383,8 +1556,8 @@ function MessagesView() {
         </div>
 
         <div data-panel-id="thread" className={`message-panel-cell thread-cell${isPanelConnected("thread") ? "" : " is-detached"}`} style={panelStyle("thread")}>
+          <span className="merge-edge-indicator" aria-hidden="true" />
           <aside className="message-panel thread-panel">
-            <span className="merge-edge-indicator" aria-hidden="true" />
             <header className="panel-drag-handle thread-header" {...dragHandlers("thread")}><div><PanelRightOpen aria-hidden="true" size={18} strokeWidth={1.7} /><strong>Thread</strong></div><button type="button" aria-label="Close thread"><X aria-hidden="true" size={18} strokeWidth={1.7} /></button></header>
             <div className="thread-content">
               <div className="thread-message"><img src="/berd-agent-avatars/pushback-gloopies-5.png" alt="" /><div><p><strong>Caroline McKenzie</strong><span>Yesterday at 7:05PM</span></p><div>Brought copy link out of the context menu and into the main message rail. Also tried simplifying by removing quick reactions but can put them back later if people really miss them.</div></div></div>
