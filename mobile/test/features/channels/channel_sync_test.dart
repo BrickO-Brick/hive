@@ -79,7 +79,7 @@ void main() {
       isCancelled: () => false,
       delay: (_) async {},
     );
-    await _waitUntil(() => releases.length == 4);
+    await _waitUntil(() => releases.length >= 4);
     expect(peakInFlight, 4);
     while (releases.length < 12) {
       final count = releases.length;
