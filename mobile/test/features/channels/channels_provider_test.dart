@@ -1938,6 +1938,106 @@ void main() {
     },
   );
 
+  test('loaded refresh preserves a newer live timestamp', () async {
+    final session = _FakeRelaySession(
+      memberships: [_membership(_channelA, myPk)],
+      metadata: [_meta(id: _channelA, name: 'general')],
+      recentMessages: [
+        NostrEvent(
+          id: 'snapshot',
+          pubkey: 'alice',
+          createdAt: 10,
+          kind: EventKind.streamMessageV2,
+          tags: const [
+            ['h', _channelA],
+          ],
+          content: 'snapshot',
+          sig: 'sig',
+        ),
+      ],
+    );
+    final container = _buildContainer(session: session);
+    addTearDown(container.dispose);
+
+    await container.read(channelsProvider.future);
+    await _waitUntil(() => session.activeSubscriptionCount == 1);
+    session.pauseNextLatestMessageQuery();
+    final refresh = container.read(channelsProvider.notifier).refresh();
+    await session.nextLatestMessageQueryStarted;
+    session.emit(
+      NostrEvent(
+        id: 'live',
+        pubkey: 'alice',
+        createdAt: 50,
+        kind: EventKind.streamMessageV2,
+        tags: const [
+          ['h', _channelA],
+        ],
+        content: 'live',
+        sig: 'sig',
+      ),
+    );
+    session.resumePausedLatestMessageQuery();
+    await refresh;
+
+    expect(
+      container.read(channelsProvider).value!.single.lastMessageAt,
+      DateTime.fromMillisecondsSinceEpoch(50 * 1000, isUtc: true),
+    );
+  });
+
+  test(
+    'chunks latest-message and unread queries at exactly 100 channels',
+    () async {
+      final ids = [for (var i = 0; i < 100; i++) 'channel-$i'];
+      final session = _FakeRelaySession(
+        memberships: [for (final id in ids) _membership(id, myPk)],
+        metadata: [for (final id in ids) _meta(id: id, name: id)],
+      );
+      final container = _buildContainer(session: session);
+      addTearDown(container.dispose);
+
+      await container.read(channelsProvider.future);
+      await _waitUntil(() => session.queryBatches.length == 2);
+
+      expect(session.queryBatches.map((batch) => batch.length), [100, 100]);
+      expect(
+        session.queryBatches.first.every((filter) => filter.since == null),
+        isTrue,
+      );
+      expect(
+        session.queryBatches.last.every((filter) => filter.since != null),
+        isTrue,
+      );
+    },
+  );
+
+  test(
+    'never-EOSE workers release and allow later subscriptions and catch-up',
+    () async {
+      final ids = [for (var i = 0; i < 5; i++) 'channel-$i'];
+      final session = _FakeRelaySession(
+        memberships: [for (final id in ids) _membership(id, myPk)],
+        metadata: [for (final id in ids) _meta(id: id, name: id)],
+        neverEoseSubscribeCount: 4,
+      );
+      final container = _buildContainer(session: session);
+      addTearDown(container.dispose);
+
+      await container.read(channelsProvider.future);
+      await _waitUntil(() => session.queryBatches.length == 2);
+
+      expect(session.peakNeverEoseSubscriptions, 4);
+      expect(session.totalSubscribeCount, 5);
+      expect(session.activeChannels, ids.toSet());
+      expect(session.queryBatches.last, hasLength(5));
+      expect(
+        session.queryBatches.last.every((filter) => filter.since != null),
+        isTrue,
+      );
+    },
+  );
+
   test(
     'chunks latest-message and unread queries at 100 for 129 channels',
     () async {
@@ -2551,6 +2651,7 @@ class _FakeRelaySession extends RelaySessionNotifier {
     this.huddleStarts = const [],
     this.recentMessages = const [],
     this.membershipFailures = 0,
+    this.neverEoseSubscribeCount = 0,
   });
 
   List<NostrEvent> memberships;
@@ -2566,6 +2667,10 @@ class _FakeRelaySession extends RelaySessionNotifier {
   final List<NostrEvent> huddleStarts;
   List<NostrEvent> recentMessages;
   int membershipFailures;
+  final int neverEoseSubscribeCount;
+  int activeNeverEoseSubscriptions = 0;
+  int peakNeverEoseSubscriptions = 0;
+  int statusSubscribeAttempts = 0;
   Completer<void>? _pausedLatestMessageQuery;
   Completer<void>? _latestMessageQueryStarted;
   int directoryFailures = 0;
@@ -3002,7 +3107,19 @@ class _FakeRelaySession extends RelaySessionNotifier {
     void Function(NostrEvent) onEvent, {
     void Function(String message)? onClosed,
     required void Function(RelaySubscriptionStatus status) onStatusChanged,
-  }) => subscribe(filter, onEvent, onClosed: onClosed);
+  }) async {
+    final shouldAwaitReadiness =
+        statusSubscribeAttempts++ < neverEoseSubscribeCount;
+    if (shouldAwaitReadiness) {
+      activeNeverEoseSubscriptions++;
+      if (activeNeverEoseSubscriptions > peakNeverEoseSubscriptions) {
+        peakNeverEoseSubscriptions = activeNeverEoseSubscriptions;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      activeNeverEoseSubscriptions--;
+    }
+    return subscribe(filter, onEvent, onClosed: onClosed);
+  }
 
   @override
   Future<void Function()> subscribe(

@@ -387,6 +387,13 @@ class ChannelsNotifier extends AsyncNotifier<List<Channel>> {
     final prevById = <String, Channel>{
       for (final c in state.value ?? const <Channel>[]) c.id: c,
     };
+    for (var i = 0; i < channels.length; i++) {
+      final previous = prevById[channels[i].id]?.lastMessageAt;
+      if (previous != null &&
+          (channels[i].lastMessageAt?.isBefore(previous) ?? true)) {
+        channels[i] = channels[i].copyWith(lastMessageAt: previous);
+      }
+    }
     for (final channel in channels) {
       final prev = prevById[channel.id];
       if (prev != null && prev.isArchived != channel.isArchived) {
@@ -881,7 +888,6 @@ class ChannelsNotifier extends AsyncNotifier<List<Channel>> {
     }
   }
 
-  /// Backstop refresh that preserves existing state on transient failure.
   Future<void> _backstopRefresh() async {
     try {
       final sessionState = ref.read(relaySessionProvider);
