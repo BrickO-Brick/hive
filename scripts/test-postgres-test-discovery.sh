@@ -49,6 +49,7 @@ fn out_of_line_database_test() {}
 RS
 
 python3 "$checker" "$fixture_root"
+python3 "$checker" "$fixture_root/src/out_of_line.rs"
 
 packages="$("$repo_root/scripts/postgres-test-packages.sh" "$fixture_root")"
 if [[ "$packages" != "postgres-discovery-fixture" ]]; then
