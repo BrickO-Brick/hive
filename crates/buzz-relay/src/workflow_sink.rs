@@ -8,7 +8,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Weak};
 
-use buzz_core::kind::{KIND_STREAM_MESSAGE, KIND_WORKFLOW_MENTION_WAKE};
+use buzz_core::kind::KIND_STREAM_MESSAGE;
 use buzz_core::workflow_wake::WorkflowMentionWake;
 use buzz_workflow::action_sink::{ActionSink, ActionSinkError, WorkflowMessageContext};
 use chrono::Utc;
@@ -319,9 +319,8 @@ impl ActionSink for RelayActionSink {
             }
 
             // Resolve `@Name` mentions to channel-member pubkeys and append a
-            // `p` tag for each (skipping the author, already tagged above). A
-            // resolution failure must not drop the message, so log and proceed
-            // with the base tags.
+            // `p` tag for each (skipping the author, already tagged above).
+            // Fail before persistence if resolution cannot establish recipients.
             let members = state
                 .db
                 .get_members(tenant.community(), channel_uuid)
@@ -422,53 +421,36 @@ impl ActionSink for RelayActionSink {
                 },
             });
 
-            let (stored_event, was_inserted) = state
-                .db
-                .insert_event_with_thread_metadata(
-                    tenant.community(),
-                    &event,
-                    Some(channel_uuid),
-                    thread_meta,
-                )
-                .await
-                .map_err(|e| ActionSinkError::Database(e.to_string()))?;
-
-            // 5. Post-persist side effects (fan-out, search, audit).
-            if was_inserted {
-                let _ = dispatch_persistent_event(
-                    &tenant,
-                    &state,
-                    &stored_event,
-                    kind_u32,
-                    &author_pubkey_hex,
-                    None,
-                )
-                .await;
-            }
-
-            // Persist one recipient-gated identifier wake for every mentioned
-            // agent. This also runs when the message insert was an idempotent
-            // duplicate, so a retry repairs a crash/failure between message and
-            // wake persistence instead of permanently losing the notification.
-            for wake in build_workflow_wakes(
+            // Build every wake before writing. The message, thread counters,
+            // mentions, and all recipients commit together; replay can recover
+            // committed wakes even if the relay dies before publishing them.
+            let wakes = build_workflow_wakes(
                 &state.relay_keypair,
                 channel_uuid,
                 run_id,
                 definition_event_id,
                 event.id,
                 mentioned_pubkeys,
-            )? {
-                let (stored_wake, wake_inserted) = state
-                    .db
-                    .insert_event(tenant.community(), &wake, Some(channel_uuid))
-                    .await
-                    .map_err(|error| ActionSinkError::Database(error.to_string()))?;
-                if wake_inserted {
+            )?;
+            let stored = state
+                .db
+                .insert_event_with_notifications(
+                    tenant.community(),
+                    &event,
+                    channel_uuid,
+                    thread_meta,
+                    &wakes,
+                )
+                .await
+                .map_err(|error| ActionSinkError::Database(error.to_string()))?;
+            let was_inserted = stored.first().is_some_and(|(_, inserted)| *inserted);
+            for (stored_event, inserted) in &stored {
+                if *inserted {
                     let _ = dispatch_persistent_event(
                         &tenant,
                         &state,
-                        &stored_wake,
-                        KIND_WORKFLOW_MENTION_WAKE,
+                        stored_event,
+                        u32::from(stored_event.event.kind.as_u16()),
                         &author_pubkey_hex,
                         None,
                     )
@@ -774,7 +756,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod integration_tests {
+pub(crate) mod integration_tests {
     //! Regression test for `e3661764` / `7899c1a8`: a workflow `send_message`
     //! that mentions a channel member by name (`@Name`) must emit a `p` tag for
     //! that member so ACP agent wake (`event_mentions_agent`, p-tag gated) fires.
@@ -787,7 +769,7 @@ mod integration_tests {
     use std::sync::Arc;
 
     /// Real-PG state mirroring `handlers::event::tests::test_state_with_redis_url`.
-    async fn test_state() -> Arc<AppState> {
+    pub(crate) async fn test_state() -> Arc<AppState> {
         let mut config = crate::config::Config::from_env().expect("default config loads");
         config.require_relay_membership = false;
         config.redis_url = "redis://127.0.0.1:1".to_string();
@@ -1304,3 +1286,7 @@ mod integration_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "workflow_delivery_tests.rs"]
+mod workflow_delivery_tests;
