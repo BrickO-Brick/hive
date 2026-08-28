@@ -4,7 +4,7 @@
 
 use buzz_datastore_tracing::datastore_span;
 use chrono::{Datelike, TimeZone, Utc};
-use sqlx::{PgPool, Row};
+use sqlx::PgPool;
 use tracing::info;
 
 use crate::error::{DbError, Result};
@@ -112,22 +112,7 @@ async fn ensure_partition(
 
     let partition_name = format!("{table_name}_p{suffix}");
 
-    let row = sqlx::query(
-        r#"
-        SELECT COUNT(*) as cnt
-        FROM pg_catalog.pg_class c
-        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-        WHERE n.nspname = current_schema()
-          AND c.relname = $1
-          AND c.relispartition = true
-        "#,
-    )
-    .bind(&partition_name)
-    .fetch_one(pool)
-    .await?;
-
-    let cnt: i64 = row.try_get("cnt")?;
-    if cnt > 0 {
+    if partition_range_covered(pool, table_name, start_date_str, end_date_str).await? {
         return Ok(());
     }
 
@@ -137,26 +122,88 @@ async fn ensure_partition(
          FOR VALUES FROM ('{start_date_str}') TO ('{end_date_str}')"
     );
 
-    match sqlx::query(sqlx::AssertSqlSafe(sql)).execute(pool).await {
+    // SET LOCAL applies only to this transaction, and the DDL must use the same
+    // connection for the timeout to bound its parent-table lock wait.
+    let mut tx = pool.begin().await?;
+    sqlx::query("SET LOCAL lock_timeout = '2s'")
+        .execute(&mut *tx)
+        .await?;
+    let result = sqlx::query(sqlx::AssertSqlSafe(sql))
+        .execute(&mut *tx)
+        .await;
+
+    match result {
         Ok(_) => {
+            tx.commit().await?;
             info!("added partition {partition_name}");
             Ok(())
         }
-        Err(sqlx::Error::Database(db_err))
-            if db_err.code().as_deref() == Some("42P17")
-                && db_err.message().contains("would overlap partition") =>
-        {
-            // Fresh schemas include a right-edge catch-all partition (`*_p_future`).
-            // If it already covers this month, the table is still safe for writes;
-            // treat the overlap as "ensured" rather than failing startup.
-            info!(
-                partition_name,
-                "partition range already covered by an existing partition"
+        Err(error) => {
+            let range_is_covered = matches!(
+                &error,
+                sqlx::Error::Database(db_error)
+                    if db_error.code().as_deref() == Some("42P17")
+                        && db_error.message().contains("would overlap partition")
             );
-            Ok(())
+            tx.rollback().await?;
+            if range_is_covered {
+                // A concurrent creator can cover the range between the catalog
+                // pre-check and this DDL.
+                info!(
+                    partition_name,
+                    "partition range already covered by an existing partition"
+                );
+                Ok(())
+            } else {
+                Err(error.into())
+            }
         }
-        Err(e) => Err(e.into()),
     }
+}
+
+async fn partition_range_covered(
+    pool: &PgPool,
+    table_name: &str,
+    start_date_str: &str,
+    end_date_str: &str,
+) -> Result<bool> {
+    let covered = sqlx::query_scalar(
+        r#"
+        WITH partition_bounds AS (
+            SELECT pg_get_expr(c.relpartbound, c.oid, true) AS bound
+            FROM pg_catalog.pg_partition_tree(to_regclass($1)) AS tree
+            JOIN pg_catalog.pg_class c ON c.oid = tree.relid
+            WHERE tree.isleaf
+        ),
+        parsed_bounds AS (
+            SELECT
+                CASE
+                    WHEN bound LIKE 'FOR VALUES FROM (MINVALUE)%'
+                        THEN '-infinity'::timestamptz
+                    ELSE split_part(bound, '''', 2)::timestamptz
+                END AS start_at,
+                CASE
+                    WHEN bound LIKE '% TO (MAXVALUE)'
+                        THEN 'infinity'::timestamptz
+                    ELSE split_part(bound, '''', 4)::timestamptz
+                END AS end_at
+            FROM partition_bounds
+        )
+        SELECT EXISTS (
+            SELECT 1
+            FROM parsed_bounds
+            WHERE start_at <= to_date($2, 'YYYY-MM-DD')::timestamp AT TIME ZONE 'UTC'
+              AND end_at >= to_date($3, 'YYYY-MM-DD')::timestamp AT TIME ZONE 'UTC'
+        )
+        "#,
+    )
+    .bind(table_name)
+    .bind(start_date_str)
+    .bind(end_date_str)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(covered)
 }
 
 #[cfg(test)]
@@ -188,5 +235,205 @@ mod tests {
         assert!(PARTITIONED_TABLES.contains(&"delivery_log"));
         assert!(!PARTITIONED_TABLES.contains(&"api_tokens"));
         assert!(!PARTITIONED_TABLES.contains(&"users"));
+    }
+
+    async fn admin_pool() -> PgPool {
+        let url = std::env::var("TEST_DATABASE_URL")
+            .expect("TEST_DATABASE_URL must point to a database where tests can create databases");
+        PgPool::connect(&url).await.expect("connect admin database")
+    }
+
+    async fn create_scratch_db(admin: &PgPool, prefix: &str) -> (PgPool, String) {
+        create_scratch_db_with_timezone(admin, prefix, "UTC").await
+    }
+
+    async fn create_scratch_db_with_timezone(
+        admin: &PgPool,
+        prefix: &str,
+        timezone: &str,
+    ) -> (PgPool, String) {
+        let name = format!("{prefix}_{}", uuid::Uuid::new_v4().simple());
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE DATABASE {name}")))
+            .execute(admin)
+            .await
+            .expect("create scratch database");
+
+        let admin_url = std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL");
+        let path_start = admin_url
+            .rfind('/')
+            .expect("database URL has a path segment");
+        let scratch_url = format!("{}/{}", &admin_url[..path_start], name);
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&scratch_url)
+            .await
+            .expect("connect scratch database");
+        let mut first = pool.acquire().await.expect("acquire first connection");
+        let mut second = pool.acquire().await.expect("acquire second connection");
+        for connection in [&mut *first, &mut *second] {
+            sqlx::query("SELECT set_config('TimeZone', $1, false)")
+                .bind(timezone)
+                .execute(connection)
+                .await
+                .expect("set test connection timezone");
+        }
+        drop(first);
+        drop(second);
+        create_partitioned_tables(&pool).await;
+        (pool, name)
+    }
+
+    async fn create_partitioned_tables(pool: &PgPool) {
+        for statement in [
+            "CREATE TABLE events (created_at TIMESTAMPTZ NOT NULL) PARTITION BY RANGE (created_at)",
+            "CREATE TABLE events_p_future PARTITION OF events FOR VALUES FROM ('2000-01-01') TO (MAXVALUE)",
+            "CREATE TABLE delivery_log (delivered_at TIMESTAMPTZ NOT NULL) PARTITION BY RANGE (delivered_at)",
+            "CREATE TABLE delivery_log_p_future PARTITION OF delivery_log FOR VALUES FROM ('2000-01-01') TO (MAXVALUE)",
+        ] {
+            sqlx::query(statement)
+                .execute(pool)
+                .await
+                .expect("create partitioned test table");
+        }
+    }
+
+    async fn drop_scratch_db(admin: &PgPool, pool: PgPool, name: &str) {
+        pool.close().await;
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DROP DATABASE IF EXISTS {name} WITH (FORCE)"
+        )))
+        .execute(admin)
+        .await
+        .expect("drop scratch database");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn existing_catch_all_bounds_avoid_partition_ddl() {
+        let admin = admin_pool().await;
+        let (pool, name) = create_scratch_db(&admin, "partition_coverage").await;
+        let mut blocker = pool.begin().await.expect("begin blocker");
+        sqlx::query("LOCK TABLE events IN ACCESS SHARE MODE")
+            .execute(&mut *blocker)
+            .await
+            .expect("lock partition parent");
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            ensure_future_partitions(&pool, 0),
+        )
+        .await;
+
+        blocker.rollback().await.expect("release parent lock");
+        drop_scratch_db(&admin, pool, &name).await;
+        result
+            .expect("coverage pre-check must return without waiting for a DDL lock")
+            .expect("covered partition range is already ensured");
+    }
+
+    fn is_lock_timeout(error: &DbError) -> bool {
+        matches!(
+            error,
+            DbError::Sqlx(sqlx::Error::Database(db_error))
+                if db_error.code().as_deref() == Some("55P03")
+        )
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn blocked_partition_ddl_stops_at_lock_timeout() {
+        let admin = admin_pool().await;
+        let (pool, name) = create_scratch_db(&admin, "partition_lock_timeout").await;
+        sqlx::query("DROP TABLE events_p_future")
+            .execute(&pool)
+            .await
+            .expect("remove partition coverage");
+        let mut blocker = pool.begin().await.expect("begin blocker");
+        sqlx::query("LOCK TABLE events IN ACCESS SHARE MODE")
+            .execute(&mut *blocker)
+            .await
+            .expect("lock partition parent");
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(4),
+            ensure_future_partitions(&pool, 0),
+        )
+        .await;
+
+        blocker.rollback().await.expect("release parent lock");
+        drop_scratch_db(&admin, pool, &name).await;
+        let error = result
+            .expect("partition DDL must stop at the transaction-local lock timeout")
+            .expect_err("blocked partition DDL must return a lock timeout");
+        assert!(is_lock_timeout(&error), "unexpected error: {error}");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn exact_utc_bounds_are_covered_in_non_utc_session() {
+        let admin = admin_pool().await;
+        let (pool, name) =
+            create_scratch_db_with_timezone(&admin, "partition_non_utc", "America/Los_Angeles")
+                .await;
+        let timezone: String = sqlx::query_scalar("SHOW timezone")
+            .fetch_one(&pool)
+            .await
+            .expect("read scratch database timezone");
+        assert_eq!(timezone, "America/Los_Angeles");
+        sqlx::query("DROP TABLE events_p_future, delivery_log_p_future")
+            .execute(&pool)
+            .await
+            .expect("remove catch-all partitions");
+
+        let now = Utc::now();
+        let start = Utc
+            .with_ymd_and_hms(now.year(), now.month(), 1, 0, 0, 0)
+            .single()
+            .expect("current month starts at a valid date");
+        let (end_year, end_month) = if now.month() == 12 {
+            (now.year() + 1, 1)
+        } else {
+            (now.year(), now.month() + 1)
+        };
+        let end = Utc
+            .with_ymd_and_hms(end_year, end_month, 1, 0, 0, 0)
+            .single()
+            .expect("next month starts at a valid date");
+        for statement in [
+            format!(
+                "CREATE TABLE events_existing_range PARTITION OF events \
+                 FOR VALUES FROM ('{}') TO ('{}')",
+                start.to_rfc3339(),
+                end.to_rfc3339()
+            ),
+            format!(
+                "CREATE TABLE delivery_log_existing_range PARTITION OF delivery_log \
+                 FOR VALUES FROM ('{}') TO ('{}')",
+                start.to_rfc3339(),
+                end.to_rfc3339()
+            ),
+        ] {
+            sqlx::query(sqlx::AssertSqlSafe(statement))
+                .execute(&pool)
+                .await
+                .expect("create exact UTC monthly partition");
+        }
+
+        let mut blocker = pool.begin().await.expect("begin blocker");
+        sqlx::query("LOCK TABLE events IN ACCESS SHARE MODE")
+            .execute(&mut *blocker)
+            .await
+            .expect("lock partition parent");
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            ensure_future_partitions(&pool, 0),
+        )
+        .await;
+
+        blocker.rollback().await.expect("release parent lock");
+        drop_scratch_db(&admin, pool, &name).await;
+        result
+            .expect("UTC partition coverage must not depend on the session timezone")
+            .expect("exact UTC monthly partitions are already ensured");
     }
 }
