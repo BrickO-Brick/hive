@@ -202,6 +202,7 @@ fn serialized_catalog_matches_the_typescript_contract() {
         source_persona_id: "persona-1".into(),
         created_at: 42,
         agent: CatalogAgentProjection {
+            acp_command: None,
             display_name: "Ada".into(),
             avatar_url: Some("https://example.com/a.png".into()),
             system_prompt: "be kind".into(),
@@ -232,4 +233,29 @@ fn serialized_catalog_matches_the_typescript_contract() {
         },
     }]);
     assert_eq!(actual, expected);
+}
+
+#[test]
+fn catalog_preserves_portable_acp_alias_and_rejects_nonportable_values() {
+    let mut content = valid_content("Reviewer");
+    assert_eq!(parse_agent(&content.to_string()).unwrap().acp_command, None);
+    for command in ["buzz-acp", "buzz-janet-acp"] {
+        content["acp_command"] = json!(command);
+        let projected = parse_agent(&content.to_string()).unwrap();
+        assert_eq!(projected.acp_command.as_deref(), Some(command));
+        assert_eq!(
+            serde_json::to_value(projected).unwrap()["acpCommand"],
+            command
+        );
+    }
+    for command in [
+        json!("/tmp/buzz-janet-acp"),
+        json!(r"C:\buzz-janet-acp.cmd"),
+        json!("sh"),
+        json!("buzz-a&b-acp"),
+        json!(7),
+    ] {
+        content["acp_command"] = command;
+        assert!(parse_agent(&content.to_string()).is_none());
+    }
 }

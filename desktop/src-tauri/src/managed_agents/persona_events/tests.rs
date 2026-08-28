@@ -632,6 +632,23 @@ fn snapshot_applies_persona_acp_command_to_linked_instance() {
     apply_persona_snapshot(&mut record, &persona);
 
     assert_eq!(record.acp_command, "buzz-janet-acp");
+
+    // Saving stock transport round-trips through the unified store as None.
+    persona.acp_command = Some("buzz-acp".to_string());
+    let restored = persona
+        .clone()
+        .into_agent_record()
+        .to_definition_view()
+        .unwrap();
+    assert_eq!(restored.acp_command, None);
+    apply_persona_snapshot(&mut record, &restored);
+    assert_eq!(record.acp_command, "buzz-acp");
+
+    // Owner-controlled legacy custom commands remain definition state.
+    persona.acp_command = Some("/opt/custom-acp".to_string());
+    let restored = persona.into_agent_record().to_definition_view().unwrap();
+    apply_persona_snapshot(&mut record, &restored);
+    assert_eq!(record.acp_command, "/opt/custom-acp");
 }
 
 // ── PersonaSnapshot.runtime ───────────────────────────────────────────────

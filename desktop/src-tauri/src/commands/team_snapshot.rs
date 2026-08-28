@@ -123,7 +123,7 @@ fn definition_from_snapshot(
         display_name: member.profile.display_name.trim().to_string(),
         avatar_url: effective_avatar(member),
         system_prompt: member.definition.system_prompt.clone().unwrap_or_default(),
-        acp_command: None,
+        acp_command: member.definition.acp_command.clone(),
         runtime: member.definition.runtime.clone(),
         model: member.definition.model.clone(),
         provider: member.definition.provider.clone(),

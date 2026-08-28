@@ -252,7 +252,7 @@ with a TypeScript lookup table or an id comparison in a component.
 
 15. **Databricks model discovery has one shared catalog authority.** Desktop and ACP call the shared `buzz-agent` discovery library; Desktop passes the effective merged `DATABRICKS_MODEL_FILTER` explicitly, and the library applies it to raw workspace endpoint IDs and Unity Catalog model-service FQNs after the additive union. A successful filtered-empty catalog is authoritative: it stays empty, disables switching, and never falls through to configured or known-model fallback. UC FQNs are catalog data and always use the MLflow Chat Completions route, regardless of family-looking text in their components.
 
-16. **ACP transport is persona-owned before deployment.** Select `acp_command` in the persona create/edit form beside the harness. Deployment inherits that value; linked instances do not expose a competing post-deploy override. Legacy definitions without the field and definition-less agents continue to use the stored/default `buzz-acp` command. Shared persona events and restart snapshots carry the field so edits apply on the next spawn.
+16. **ACP transport is persona-owned before deployment.** Select `acp_command` in the persona create/edit form beside the harness. Deployment inherits that value; linked instances do not expose a competing post-deploy override. Legacy definitions without the field use `buzz-acp`; definition-less agents retain their stored command. Switching a linked definition back to stock resets the instance transport on the next spawn. Shared persona events and restart snapshots carry the field so edits apply on the next spawn.
 
 17. **ACP command selection is convention-based.** The editor always offers
     stock `buzz-acp` and installed executable `buzz-*-acp` aliases discovered
@@ -263,7 +263,13 @@ with a TypeScript lookup table or an id comparison in a component.
     used at spawn, so a duplicate alias must never advertise one executable and
     later launch another. Keep these transitions in the pure
     `ui/acpCommandPicker.ts` helper and preserve persisted values across loading,
-    failed discovery, and late candidate arrival.
+    failed discovery, and late candidate arrival. ACP-only selections must mark
+    the form dirty, including catalog-update and embedded discard protection.
+    Catalog and portable agent/team snapshots carry only stock or conventional
+    aliases (ASCII letters, digits, hyphens, and underscores in the middle).
+    Foreign artifacts with other command values are rejected; exports omit
+    legacy machine-local commands. Owner-native and owner-device synchronization
+    retain custom-command compatibility and are not an execution sandbox.
 
 ## The tests that enforce this
 

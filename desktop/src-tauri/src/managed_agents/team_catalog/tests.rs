@@ -1,5 +1,6 @@
 use super::*;
 use std::{collections::BTreeMap, path::PathBuf};
+mod acp_transport;
 mod concealment; // executable-text concealment gate (Carl P1)
 mod reuse_hint; // built-in reuse-hint projection-hash boundary gate (Carl r9 P1)
 
