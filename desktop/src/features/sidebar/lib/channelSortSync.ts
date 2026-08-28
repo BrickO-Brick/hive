@@ -170,10 +170,13 @@ export class ChannelSortSyncManager {
   private publishInFlight = false;
   // Event ids we signed and sent to the relay but whose ACK never arrived. The
   // relay MAY have accepted such a write, so if a later cycle's pre-publish
-  // fetch returns a head whose id is in this set, that head is OUR OWN accepted
+  // fetch returns a head whose id is in this map, that head is OUR OWN accepted
   // predecessor — fold it forward and publish above it, rather than adopting it
   // and erasing the queued edit.
-  private ambiguousAttemptIds = new Set<string>();
+  // Maps attempt id → pendingGeneration at the time of signing, so
+  // foldSupersedingAttemptWinner can require the baseline was poisoned by a
+  // strictly prior generation (gen < pendingGeneration).
+  private ambiguousAttemptIds = new Map<string, number>();
   private lastPublishedStore: ChannelSortStore | null = null;
   private destroyed = false;
   // Set by the hook so an adopted remote head (local edit lost whole-blob LWW)
@@ -281,12 +284,22 @@ export class ChannelSortSyncManager {
    * attempted (but non-retained) event ids and `remote` is the same-second
    * lower-id peer that won the collision, the baseline is poisoned: the
    * next pre-publish check would see the winner as having advanced past our
-   * phantom attempt and adopt the edit away (Carl P1). Folding the winner
-   * in repairs the baseline so the pre-publish check sees equality and
-   * publishes above the true retained head.
+   * phantom attempt and adopt the edit away (Carl P1 / same-second variants).
+   * Folding the winner in repairs the baseline so the pre-publish check sees
+   * the true retained head and publishes above it.
    *
    * Scoped to same-second lower-id only: a strictly-later remote is a genuine
    * advance that the pending edit must still adopt (pass-2 invariant).
+   *
+   * Requires the baseline attempt to be prior-generation (gen < pendingGeneration):
+   * if no newer edit was queued, the current generation's own in-flight attempt
+   * cannot trigger the fold — the loser must adopt (LWW correctness).
+   * The post-ACK ordering is load-bearing for causal soundness: because A's
+   * ACK returned before B queued, the peer winner pre-existed B, so preserving
+   * B is causally justified. If B queues while A's ACK is pending, the peer may
+   * have been accepted after B and is a genuine remote advance B must adopt —
+   * B's baseline will not equal A's attempt id in that case, so the fold
+   * does not fire (correct behaviour, by the causal argument above).
    *
    * Returns true when the fold was applied (caller may use for branching).
    */
@@ -294,9 +307,11 @@ export class ChannelSortSyncManager {
     createdAt: number;
     eventId: string;
   }): boolean {
+    const attempt = this.ambiguousAttemptIds.get(this.publishBaseline.eventId);
     if (
       this.publishBaseline.eventId !== "" &&
-      this.ambiguousAttemptIds.has(this.publishBaseline.eventId) &&
+      attempt !== undefined &&
+      attempt < this.pendingGeneration &&
       remote.createdAt === this.publishBaseline.createdAt &&
       remote.eventId < this.publishBaseline.eventId
     ) {
@@ -598,7 +613,7 @@ export class ChannelSortSyncManager {
       // send it. If the ACK is lost below, a later cycle that fetches this id as
       // the head recognises it as our own accepted write and folds it forward
       // rather than adopting it away.
-      this.ambiguousAttemptIds.add(event.id);
+      this.ambiguousAttemptIds.set(event.id, gen);
       await relayClient.publishEvent(
         event,
         "Timed out publishing channel sort preferences.",

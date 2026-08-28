@@ -806,6 +806,87 @@ test("revert-fix: undecryptable live event advances watermark before decrypt att
   }
 });
 
+// Same-second collision, single edit, confirmation-retain path: after the ACK
+// resolves and confirmation transiently fails (retain), the retry's pre-publish
+// fetch sees the peer same-second winner. The loser must ADOPT the winner, not
+// republish above it. Verifies the generation guard in
+// foldSupersedingAttemptWinner prevents a same-generation retry from folding.
+// Mutation: removing `attemptGen < this.pendingGeneration` could cause a retry
+// to republish above the winner when the baseline was poisoned by a prior-gen
+// attempt; this companion test proves the correct adopt in the single-edit path.
+test("same-second collision: single-edit retry adopts winner, does not republish", async () => {
+  let fetchCalls = 0;
+  let publishCalls = 0;
+  let storedHead = [];
+  const storage = new Map();
+  const timers = new Map();
+  let nextId = 1;
+  const win = {
+    localStorage: {
+      getItem: (k) => storage.get(k) ?? null,
+      setItem: (k, v) => storage.set(k, v),
+      removeItem: (k) => storage.delete(k),
+    },
+    setTimeout: (fn, ms) => {
+      const id = nextId++;
+      timers.set(id, { fn, ms });
+      return id;
+    },
+    clearTimeout: (id) => timers.delete(id),
+  };
+  const fireDelay = async (ms) => {
+    const entry = [...timers.entries()].find(([, v]) => v.ms === ms);
+    assert.ok(entry, `expected a timer scheduled at ${ms}ms`);
+    timers.delete(entry[0]);
+    entry[1].fn();
+    for (let i = 0; i < 100; i++) await Promise.resolve();
+  };
+  const restore = installFakeWindow(win);
+  const tauri = installEchoTauri("pk-collide3");
+  mock.method(relayClient, "fetchEvents", () => {
+    fetchCalls++;
+    if (fetchCalls === 1) return Promise.resolve([]);
+    if (fetchCalls === 2) return Promise.resolve([]); // confirmation: no head → retain
+    return Promise.resolve(storedHead); // retry pre-publish: peer winner
+  });
+  mock.method(relayClient, "publishEvent", (event) => {
+    publishCalls++;
+    storedHead = [
+      tauri.mintHead(
+        makeStore({ channels: "alpha" }),
+        event.created_at,
+        "0-peer-winner",
+      ),
+    ];
+    return Promise.resolve();
+  });
+  try {
+    const manager = new ChannelSortSyncManager("pk-collide3", RELAY);
+    const adopted = [];
+    manager.setOnRemoteAdopted((r) => adopted.push(r.eventId));
+
+    manager.publishSortPrefs(makeStore({ channels: "recent" }));
+    await fireDelay(2000);
+    for (let i = 0; i < 100; i++) await Promise.resolve();
+
+    await fireDelay(2000);
+    for (let i = 0; i < 100; i++) await Promise.resolve();
+
+    assert.equal(publishCalls, 1, "retry does not republish above the winner");
+    assert.equal(adopted.length, 1, "retry adopts the peer winner");
+    assert.equal(
+      manager.getPendingStore(),
+      null,
+      "pending edit is cleared by the adopt",
+    );
+    manager.destroy();
+  } finally {
+    tauri.restore();
+    restore();
+    mock.reset();
+  }
+});
+
 // Same-second collision variant (Carl r6 P1 / queued-during-confirmation): the
 // second edit is queued AFTER the publish ACK but BEFORE confirmRetainedHead
 // resolves. When confirmation returns the peer winner, adoptRemote fires with
@@ -859,7 +940,11 @@ test("same-second collision: second edit queued during confirmation survives", a
     publishCalls++;
     if (publishCalls === 1) {
       storedHead = [
-        tauri.mintHead(makeStore({ channels: "alpha" }), event.created_at),
+        tauri.mintHead(
+          makeStore({ channels: "alpha" }),
+          event.created_at,
+          "0-peer-winner",
+        ),
       ];
       return Promise.resolve();
     }

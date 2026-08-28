@@ -100,11 +100,14 @@ export function installEchoTauri(pubkey) {
     // Mint a decryptable relay event for an arbitrary store payload — models a
     // peer window's retained head. Registers its ciphertext in the same map the
     // decrypt path reads, so the manager decrypts it back to `store`.
-    mintHead: (store, createdAt = 0) => {
+    // Pass an explicit `id` when the test needs a specific event id (e.g. to
+    // guarantee the peer id is lexicographically lower than our attempt id for
+    // same-second LWW collision tests).
+    mintHead: (store, createdAt = 0, id = null) => {
       const ct = `ct-peer-${seq++}`;
       cipherToPlain.set(ct, JSON.stringify(store));
       return {
-        id: `peer-${seq}`,
+        id: id ?? `peer-${seq}`,
         pubkey,
         content: ct,
         created_at: createdAt,
