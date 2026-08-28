@@ -33,6 +33,7 @@ import {
   useChannelsQuery,
   useCreateChannelMutation,
   useHideDmMutation,
+  useOpenDmMutation,
 } from "@/features/channels/hooks";
 import { useDmResurfaceFromMessages } from "@/features/channels/useDmResurfaceFromMessages";
 import { useUnreadChannels } from "@/features/channels/useUnreadChannels";
@@ -504,6 +505,7 @@ export function AppShell() {
   const createChannelMutation = useCreateChannelMutation(),
     createForumMutation = useCreateChannelMutation();
   const { applyCanvas, applyAgents } = useApplyTemplate();
+  const openDmMutation = useOpenDmMutation();
   const openDm = useScopedOpenDmNavigation({
     goChannel,
     relayUrl: communitiesHook.activeCommunity?.relayUrl,
