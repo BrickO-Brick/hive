@@ -173,11 +173,17 @@ mod tests {
     use crate::media_layout_common::DestinationVerification;
 
     #[test]
-    fn rejects_start_after_flag() {
-        let error = ensure_no_start_after(Some("_meta/community/sha.json"), false)
-            .expect_err("start-after must be unsafe for legacy deletion");
+    fn shared_legacy_key_cleanup_cannot_resume_between_communities() {
+        // A flat legacy CAS key can be shared by community-a and community-b.
+        // Resuming at community-b would skip verification of community-a before
+        // deleting that shared key, so destructive cleanup must reject the
+        // checkpoint and force a full-bucket scan.
+        let error = ensure_no_start_after(Some("_meta/community-b/shared-sha.json"), false)
+            .expect_err("checkpointed cleanup could strand an earlier community");
 
-        assert!(error.to_string().contains("unsafe for legacy deletion"));
+        let message = error.to_string();
+        assert!(message.contains("unsafe for legacy deletion"));
+        assert!(message.contains("rerun from the beginning"));
     }
 
     #[test]
